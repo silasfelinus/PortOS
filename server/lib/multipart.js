@@ -100,6 +100,12 @@ function streamMultipart(req, boundary, fileFieldNames, maxSize, fileFilter, nex
       // Best-effort cleanup of the partially-written file.
       if (writePath) unlink(writePath).catch(() => {});
     }
+    // Also unlink any already-finalized file. Matters for the TOO_MANY_FILES
+    // path: the first accepted file part has already flushed to disk and is
+    // sitting at fileResult.path before the second part triggers fail().
+    // Without this, every TOO_MANY_FILES rejection leaks the first temp
+    // file in the OS tmp dir.
+    if (fileResult?.path) unlink(fileResult.path).catch(() => {});
     req.removeAllListeners('data');
     next(err);
   };
