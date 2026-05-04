@@ -657,7 +657,7 @@ router.post('/:id/build', loadApp, asyncHandler(async (req, res) => {
       const label = sub || 'root';
       console.log(`📦 Installing ${label} dependencies for ${app.name}`);
       const installResult = await new Promise((resolve) => {
-        const child = spawn('npm', ['install'], { cwd: subDir, windowsHide: true, shell: IS_WIN32 });
+        const child = spawn('npm', ['install'], { cwd: subDir, windowsHide: true, shell: needsShell('npm') });
         let stdout = '';
         let stderr = '';
         let settled = false;
@@ -667,7 +667,7 @@ router.post('/:id/build', loadApp, asyncHandler(async (req, res) => {
         }, INSTALL_TIMEOUT_MS);
         child.stdout.on('data', d => { stdout += d; if (stdout.length > MAX) stdout = stdout.slice(-MAX); });
         child.stderr.on('data', d => { stderr += d; if (stderr.length > MAX) stderr = stderr.slice(-MAX); });
-        child.on('close', exitCode => { if (!settled) { settled = true; clearTimeout(timer); resolve({ success: exitCode === 0, exitCode, output: (stderr.trim() || stdout.trim()).slice(0, 1024) }); } });
+        child.on('close', exitCode => { if (!settled) { settled = true; clearTimeout(timer); resolve({ success: exitCode === 0, exitCode, output: (stderr.trim() || stdout.trim()).slice(-1024) }); } });
         child.on('error', err => { if (!settled) { settled = true; clearTimeout(timer); resolve({ success: false, exitCode: -1, output: err.message }); } });
       });
       if (!installResult.success) {
@@ -679,7 +679,7 @@ router.post('/:id/build', loadApp, asyncHandler(async (req, res) => {
   }
 
   const result = await new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd: app.repoPath, windowsHide: true, shell: IS_WIN32 });
+    const child = spawn(cmd, args, { cwd: app.repoPath, windowsHide: true, shell: needsShell(cmd) });
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -773,6 +773,11 @@ const ALLOWED_BUILD_CMDS = new Set([
 ]);
 
 const IS_WIN32 = process.platform === 'win32';
+// npm/npx are .cmd shims on Windows — enable shell only for these so cmd.exe
+// can resolve them, without enabling shell metacharacter interpretation for
+// native binaries (xcodebuild, swift, make, cargo).
+const WIN_CMD_SHIMS = new Set(['npm', 'npx']);
+const needsShell = (cmd) => IS_WIN32 && WIN_CMD_SHIMS.has(cmd);
 const INSTALL_TIMEOUT_MS = 3 * 60 * 1000;
 const BUILD_TIMEOUT_MS = 5 * 60 * 1000;
 
