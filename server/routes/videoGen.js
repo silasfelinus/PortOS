@@ -255,7 +255,11 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     const history = await loadHistory();
     const videoEntry = history.find((h) => h.id === body.extendFromVideoId);
     if (!videoEntry) {
-      await cleanupTempUpload();
+      // cleanupAllStaged covers durable copies that may have been written
+      // before this validation point — extend mode and image uploads are
+      // mutually exclusive in the UI but the route doesn't enforce that,
+      // so be defensive.
+      await cleanupAllStaged();
       throw new ServerError(
         `extendFromVideoId not found in history: ${body.extendFromVideoId}`,
         { status: 404, code: 'EXTEND_SOURCE_NOT_FOUND' },
@@ -263,7 +267,7 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     }
     const candidate = safeUnder(PATHS.videos, videoEntry.filename);
     if (!candidate || !existsSync(candidate)) {
-      await cleanupTempUpload();
+      await cleanupAllStaged();
       throw new ServerError(
         `extendFromVideoId resolved to a missing file: ${videoEntry.filename}`,
         { status: 404, code: 'EXTEND_SOURCE_FILE_MISSING' },
