@@ -35,7 +35,7 @@ vi.mock('../lib/multipart.js', () => ({
 }));
 
 vi.mock('../lib/fileUtils.js', () => ({
-  PATHS: { images: '/mock/images' },
+  PATHS: { images: '/mock/images', videos: '/mock/videos' },
 }));
 
 vi.mock('fs', () => ({
@@ -183,6 +183,52 @@ describe('videoGen routes', () => {
       });
       expect(r.status).toBe(400);
       expect(r.body.error).toMatch(/chunks/i);
+    });
+
+    it('forwards extendFromVideoId by resolving to a real disk path under data/videos/', async () => {
+      const id = '11111111-1111-4111-8111-111111111111';
+      const videoSvc = await import('../services/videoGen/local.js');
+      videoSvc.loadHistory.mockResolvedValueOnce([{ id, filename: `${id}.mp4` }]);
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'continue the scene',
+        mode: 'extend',
+        extendFromVideoId: id,
+      });
+      expect(r.status).toBe(200);
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'video',
+        params: expect.objectContaining({
+          mode: 'extend',
+          // The route resolves the id to an absolute path under PATHS.videos
+          // (mocked to /mock/images for these tests; videos root is taken
+          // from PATHS.videos which is also /mock-rooted).
+          extendFromVideoPath: expect.stringContaining(`${id}.mp4`),
+        }),
+      }));
+    });
+
+    it('returns 404 when extendFromVideoId is not in history', async () => {
+      const id = '22222222-2222-4222-8222-222222222222';
+      const videoSvc = await import('../services/videoGen/local.js');
+      videoSvc.loadHistory.mockResolvedValueOnce([]); // empty history
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'continue',
+        mode: 'extend',
+        extendFromVideoId: id,
+      });
+      expect(r.status).toBe(404);
+      expect(r.body.error).toMatch(/not found in history/i);
+      expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
+    });
+
+    it('rejects malformed extendFromVideoId at the schema layer', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'continue',
+        mode: 'extend',
+        extendFromVideoId: 'not-a-uuid',
+      });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/extendFromVideoId/i);
     });
 
     it('rejects an unknown mode value', async () => {

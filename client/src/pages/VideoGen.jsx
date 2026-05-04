@@ -340,6 +340,15 @@ export default function VideoGen() {
       setExtendingFrame(false);
       return;
     }
+    // ltx2 runtime: native ExtendPipeline conditions on the entire source
+    // video's latent, so we DON'T need a last-frame PNG. Skip the ffmpeg
+    // extract roundtrip — the route resolves the video id to a disk path
+    // server-side. Saves ~1s per pick + avoids the i2v fallback when the
+    // extract fails.
+    if (currentModel?.runtime === 'ltx2') {
+      setExtendingFrame(false);
+      return;
+    }
     setExtendingFrame(true);
     const res = await extractLastFrame(videoId).catch((err) => {
       toast.error(err.message || 'Failed to extract last frame');
@@ -382,9 +391,17 @@ export default function VideoGen() {
       tiling,
       disableAudio: disableAudio ? 'true' : 'false',
       mode,
-      sourceImageFile: (mode === 'image' || mode === 'fflf' || mode === 'extend') ? (sourceImageFile || '') : '',
+      // ltx2-extend bypasses the last-frame i2v path: we send the source
+      // video's history id directly so the server resolves it to a disk
+      // path and routes through ExtendPipeline. Legacy extend (mlx_video)
+      // still uses sourceImageFile populated from extractLastFrame.
+      sourceImageFile: (mode === 'image' || mode === 'fflf'
+        || (mode === 'extend' && currentModel?.runtime !== 'ltx2'))
+        ? (sourceImageFile || '') : '',
       sourceImage: (mode === 'image' || mode === 'fflf') ? (sourceImageUpload || '') : '',
       lastImageFile: mode === 'fflf' ? (lastImageFile || '') : '',
+      extendFromVideoId: (mode === 'extend' && currentModel?.runtime === 'ltx2')
+        ? (extendFromVideoId || '') : '',
       chunks: chunks > 1 ? chunks : '',
     };
   };
@@ -486,8 +503,13 @@ export default function VideoGen() {
   // is empty and the request would silently fall back to T2V while still
   // sending mode='extend'. Block submit/enqueue until the extend frame is
   // actually ready (and unblocks the disabled state on the buttons too).
-  const extendModeBlocked = mode === 'extend'
-    && (extendingFrame || !extendFromVideoId || !sourceImageFile);
+  // ltx2-extend doesn't need a frame extraction — the route resolves the
+  // video id directly. Block only on extendFromVideoId being unset (and on
+  // legacy runtime, also wait for the extracted frame).
+  const extendModeBlocked = mode === 'extend' && (
+    !extendFromVideoId
+    || (currentModel?.runtime !== 'ltx2' && (extendingFrame || !sourceImageFile))
+  );
 
   const handleGenerate = async (e) => {
     e?.preventDefault?.();

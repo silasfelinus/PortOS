@@ -176,7 +176,13 @@ def run_fflf(args: argparse.Namespace) -> str:
 
 
 def run_extend(args: argparse.Namespace) -> str:
+    """Extend an existing video by N latent frames (1 latent ≈ 8 pixel frames).
+    Conditions on the entire source video's latent — motion AND visual content
+    flow into the new frames. Mirrors dgrauet's CLI `_cmd_extend` memory pattern:
+    free DiT + text encoder before decode (otherwise OOMs at the VAE pass).
+    """
     from ltx_pipelines_mlx import ExtendPipeline
+    from ltx_core_mlx.utils.memory import aggressive_cleanup
     if not args.extend_from_video:
         raise SystemExit("--extend-from-video is required for extend mode")
     emit_status(f"Loading Extend pipeline ({args.model})…")
@@ -193,6 +199,17 @@ def run_extend(args: argparse.Namespace) -> str:
         num_steps=args.steps if args.steps is not None else 30,
         cfg_scale=args.cfg_scale if args.cfg_scale is not None else 3.0,
     )
+    # Mirror cli._decode_and_save: drop the DiT + text encoder before the VAE
+    # decode — otherwise full-res decode + the still-resident transformer OOMs
+    # the unified-memory budget. Then load_decoders() pulls the VAE back in
+    # on demand.
+    if pipe.low_memory:
+        pipe.dit = None
+        pipe.text_encoder = None
+        pipe.feature_extractor = None
+        pipe._loaded = False
+        aggressive_cleanup()
+    pipe._load_decoders()
     return pipe._decode_and_save_video(video_latent, audio_latent, args.output)
 
 

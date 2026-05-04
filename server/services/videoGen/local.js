@@ -87,25 +87,33 @@ export const saveHistory = (h) => atomicWrite(HISTORY_FILE, h);
 // The helper lives in the ltx-2-mlx venv (so its `import ltx_pipelines_mlx`
 // resolves) but the script file lives in the PortOS repo so updates ship
 // with PortOS releases instead of the user's HF cache.
-const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, lastImagePath, mode, disableAudio, outputPath, textEncoderRepo }) => {
+const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, lastImagePath, extendFromVideoPath, mode, disableAudio, outputPath, textEncoderRepo }) => {
   if (!existsSync(LTX2_VENV_PYTHON)) {
     throw new ServerError(
       `ltx-2-mlx venv not found at ${LTX2_VENV_PYTHON}. Run \`INSTALL_LTX2=1 bash scripts/setup-image-video.sh\` to install.`,
       { status: 500, code: 'LTX2_VENV_MISSING' },
     );
   }
-  // Map PortOS UI modes to the helper's subcommand. Extend isn't reachable
-  // from the current videoGen.generateVideo signature — that mode runs as
-  // a chain of i2v renders today (see generateChainedVideo). Native extend
-  // is a future enhancement; we route 'extend' to 'image' for now since
-  // the chain orchestrator already handed us a frame.
+  // Map PortOS UI modes to the helper's subcommand. Native extend on ltx2
+  // routes to ExtendPipeline.extend_from_video — conditions on the entire
+  // source video's latent (motion + visual content) rather than just the
+  // last frame. Falls back to i2v only if the caller supplied no source
+  // video (e.g., the chained-render orchestrator already handed us a frame).
+  const wantsNativeExtend = mode === 'extend' && !!extendFromVideoPath;
   const helperMode = mode === 'fflf' ? 'fflf'
+    : wantsNativeExtend ? 'extend'
     : mode === 'image' || mode === 'extend' ? 'image'
     : 'text';
   if (helperMode === 'fflf' && (!sourceImagePath || !lastImagePath)) {
     throw new ServerError(
       'FFLF mode on the ltx2 runtime requires BOTH a start image (sourceImagePath) and an end image (lastImagePath).',
       { status: 400, code: 'LTX2_FFLF_MISSING_KEYFRAMES' },
+    );
+  }
+  if (helperMode === 'extend' && !existsSync(extendFromVideoPath)) {
+    throw new ServerError(
+      `Extend source video not found on disk: ${extendFromVideoPath}`,
+      { status: 400, code: 'LTX2_EXTEND_SOURCE_MISSING' },
     );
   }
   // Stage-2 OOM clamp on the keyframe pipeline.
@@ -157,15 +165,25 @@ const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames
     args.push('--image', sourceImagePath);
     args.push('--last-image', lastImagePath);
   }
+  if (helperMode === 'extend') {
+    args.push('--extend-from-video', extendFromVideoPath);
+    // Translate the user's requested numFrames into a latent-frame count
+    // for ExtendPipeline. 1 latent ≈ 8 pixel frames, with no leading +1
+    // because the source already supplies the anchor frame. Floor at 1
+    // so a too-small numFrames still produces something.
+    const extendLatents = Math.max(1, Math.floor(Number(numFrames) / 8));
+    args.push('--extend-frames', String(extendLatents));
+    args.push('--extend-direction', 'after');
+  }
   return { bin: LTX2_VENV_PYTHON, args };
 };
 
-const buildArgs = ({ pythonPath, modelId, model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, mode, imageStrength, textEncoderRepo, outputPath }) => {
+const buildArgs = ({ pythonPath, modelId, model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, extendFromVideoPath, mode, imageStrength, textEncoderRepo, outputPath }) => {
   // Route to the dgrauet/ltx-2-mlx helper when the model declares the new
   // runtime. Existing notapalindrome models default to runtime: 'mlx_video'
   // (or undefined in legacy registries — see backfillRuntime in mediaModels.js).
   if (model.runtime === 'ltx2') {
-    return buildLtx2Args({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, lastImagePath, mode, disableAudio, outputPath, textEncoderRepo });
+    return buildLtx2Args({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, lastImagePath, extendFromVideoPath, mode, disableAudio, outputPath, textEncoderRepo });
   }
   if (IS_WIN) {
     const scriptPath = join(PATHS.root, 'scripts', 'generate_win.py');
@@ -219,7 +237,7 @@ const buildArgs = ({ pythonPath, modelId, model, prompt, negativePrompt, width, 
   return { bin: pythonPath, args };
 };
 
-export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = 768, height = 512, numFrames = 121, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, lastImagePath = null, mode = null, imageStrength = null, jobId: providedJobId = null }) {
+export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = 768, height = 512, numFrames = 121, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, lastImagePath = null, extendFromVideoPath = null, mode = null, imageStrength = null, jobId: providedJobId = null }) {
   if (!pythonPath) throw new ServerError('Python path not configured — set it in Settings > Image Gen', { status: 400, code: 'VIDEO_GEN_NOT_CONFIGURED' });
   if (!prompt?.trim()) throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
   // Single-flight is now enforced by the mediaJobQueue worker upstream — only
@@ -294,7 +312,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   const job = { ...meta, clients: [], status: 'running' };
   jobs.set(jobId, job);
 
-  const { bin, args } = buildArgs({ pythonPath, modelId, model, prompt, negativePrompt, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, steps: actualSteps, guidance: actualGuidance, seed: actualSeed, tiling, disableAudio, sourceImagePath: resolvedSourceImage, lastImagePath: resolvedLastImage, mode, imageStrength: actualImageStrength, textEncoderRepo: actualTextEncoderRepo, outputPath });
+  const { bin, args } = buildArgs({ pythonPath, modelId, model, prompt, negativePrompt, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, steps: actualSteps, guidance: actualGuidance, seed: actualSeed, tiling, disableAudio, sourceImagePath: resolvedSourceImage, lastImagePath: resolvedLastImage, extendFromVideoPath, mode, imageStrength: actualImageStrength, textEncoderRepo: actualTextEncoderRepo, outputPath });
 
   console.log(`🎬 Generating video [${jobId.slice(0, 8)}]: ${modelId} ${w}x${h} frames=${parsedNumFrames} steps=${actualSteps}`);
   videoGenEvents.emit('started', { generationId: jobId, totalSteps: actualSteps, ...meta });

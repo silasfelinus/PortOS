@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { uploadSingle } from '../lib/multipart.js';
 import { PATHS, ensureDir } from '../lib/fileUtils.js';
+import { safeUnder } from '../lib/ffmpeg.js';
 import { getSettings } from '../services/settings.js';
 import {
   listVideoModels,
@@ -75,6 +76,11 @@ const generateBodySchema = z.object({
   // chunk's start frame, then ffmpeg concats them into one clip. 1..8 to
   // keep the worst-case wall time bounded (8 × ~5min ≈ 40min on M3 Max).
   chunks: optionalNum(1, 8, 'chunks'),
+  // History id of a prior render to extend natively (ltx2 runtime only —
+  // routes through ExtendPipeline.extend_from_video which conditions on
+  // the entire source video's latent rather than a single last frame).
+  // The legacy chained-i2v path keeps using sourceImageFile.
+  extendFromVideoId: z.string().uuid().optional(),
 });
 
 router.get('/status', asyncHandler(async (_req, res) => {
@@ -193,6 +199,32 @@ router.post('/', sourceImageUpload, asyncHandler(async (req, res) => {
   // FFLF end-frame: gallery-pick only. Same path-traversal guard.
   const lastImagePath = body.lastImageFile ? resolveGalleryImage(body.lastImageFile) : null;
 
+  // Native extend (ltx2 runtime): resolve the history id to a video file
+  // path under data/videos/ and forward it as extendFromVideoPath. Reject
+  // a missing/tampered id rather than silently falling back to t2v —
+  // surfaces a clear error to the user instead of producing wrong content.
+  let extendFromVideoPath = null;
+  if (body.extendFromVideoId) {
+    const history = await loadHistory();
+    const videoEntry = history.find((h) => h.id === body.extendFromVideoId);
+    if (!videoEntry) {
+      await cleanupTempUpload();
+      throw new ServerError(
+        `extendFromVideoId not found in history: ${body.extendFromVideoId}`,
+        { status: 404, code: 'EXTEND_SOURCE_NOT_FOUND' },
+      );
+    }
+    const candidate = safeUnder(PATHS.videos, videoEntry.filename);
+    if (!candidate || !existsSync(candidate)) {
+      await cleanupTempUpload();
+      throw new ServerError(
+        `extendFromVideoId resolved to a missing file: ${videoEntry.filename}`,
+        { status: 404, code: 'EXTEND_SOURCE_FILE_MISSING' },
+      );
+    }
+    extendFromVideoPath = candidate;
+  }
+
   // Enqueue rather than spawn synchronously — the mediaJobQueue worker will
   // run this when no other render is in flight. Caller never sees BUSY.
   const { jobId, position, status } = enqueueJob({
@@ -214,6 +246,7 @@ router.post('/', sourceImageUpload, asyncHandler(async (req, res) => {
       sourceImagePath,
       uploadedTempPath,
       lastImagePath,
+      extendFromVideoPath,
       mode: body.mode,
       imageStrength: body.imageStrength,
       chunks: body.chunks ?? 1,
