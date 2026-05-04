@@ -71,6 +71,10 @@ const generateBodySchema = z.object({
   // UI mode hint — backend only uses it for logging/branching; absence
   // falls back to inferring (sourceImage→i2v, no source→t2v).
   mode: z.enum(['text', 'image', 'fflf', 'extend']).optional(),
+  // Chain N renders end-to-end: each chunk's last frame becomes the next
+  // chunk's start frame, then ffmpeg concats them into one clip. 1..8 to
+  // keep the worst-case wall time bounded (8 × ~5min ≈ 40min on M3 Max).
+  chunks: optionalNum(1, 8, 'chunks'),
 });
 
 router.get('/status', asyncHandler(async (_req, res) => {
@@ -212,6 +216,7 @@ router.post('/', sourceImageUpload, asyncHandler(async (req, res) => {
       lastImagePath,
       mode: body.mode,
       imageStrength: body.imageStrength,
+      chunks: body.chunks ?? 1,
     },
   });
   // Match the legacy response shape (jobId, generationId, filename, model,

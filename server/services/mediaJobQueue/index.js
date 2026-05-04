@@ -1,17 +1,27 @@
 /**
- * Media Job Queue — single-worker FIFO for image + video gen jobs.
+ * Media Job Queue — lane-aware FIFO for image + video gen jobs.
  *
  * Why this exists: video gen (mlx_video) and image gen (mflux/diffusers) both
  * spawn heavy GPU/Metal child processes. Running two simultaneously OOMs the
  * machine, so the gen modules used to throw 409 BUSY when one was already in
- * flight. That made any agent-driven pipeline (e.g. Creative Director) need
- * to retry/backoff. This queue serializes submissions so callers always get
- * an immediate `queued` ack and watch progress via SSE.
+ * flight. The codex image provider had the same single-flight constraint at
+ * the provider level. That made any agent-driven pipeline (Creative Director,
+ * writers-room storyboard) need to retry/backoff. This queue serializes
+ * submissions so callers always get an immediate `queued` ack and watch
+ * progress via SSE.
  *
- * Scope: gates `videoGen/local#generateVideo` (always) and
- * `imageGen/local#generateImage` (only when imageGen mode === 'local'). The
- * external/codex image-gen backends bypass the queue — they don't share the
- * MLX runtime so they can run concurrently with anything in the queue.
+ * Lanes: jobs run concurrently across lanes but serialize within a lane.
+ *   - `gpu` lane: videoGen/local + imageGen/local — share the MLX/Metal
+ *     runtime and OOM together, so they all share a single slot.
+ *   - `codex` lane: imageGen/codex — runs the external `codex` CLI, doesn't
+ *     touch the MLX runtime, gets its own slot so a writers-room storyboard
+ *     burst doesn't sit behind unrelated video work.
+ *
+ * Scope: gates `videoGen/local#generateVideo` (always),
+ * `imageGen/local#generateImage` (when imageGen mode === 'local'), and
+ * `imageGen/codex#generateImage` (when imageGen mode === 'codex'). The
+ * external SD-API backend bypasses the queue — it's a remote call with no
+ * shared local state.
  *
  * Persistence: data/media-jobs.json holds queued + running + recently-finished
  * jobs. On boot, any 'running' is reclassified as 'failed (interrupted by
@@ -75,12 +85,52 @@ export const JOB_STATUSES = Object.freeze(['queued', 'running', 'completed', 'fa
 
 export const mediaJobEvents = new EventEmitter();
 
-// Live state. Single worker → at most one job in `running` at a time. `queue`
-// holds pending jobs in submission order. `archive` holds recently-finished
-// jobs (visible for ~24h via /api/media-jobs?status=completed).
+// Lane keying — controls which jobs share a single in-flight slot.
+//
+// `gpu` lane: video gen (mlx_video) + local image gen (mflux/diffusers/flux2)
+// share the Metal/MLX runtime and OOM the box if they run together, so only
+// one runs at a time across both kinds.
+//
+// `codex` lane: codex CLI image gen runs externally (it shells out to the
+// user's locally-installed `codex` binary, which doesn't touch our GPU/MLX
+// runtime). It needs its own slot so a queued storyboard render doesn't sit
+// behind a video render that has nothing to do with it. Multiple codex jobs
+// still serialize against EACH OTHER on this lane (the codex provider only
+// holds one child process at a time).
+const LANE_GPU = 'gpu';
+const LANE_CODEX = 'codex';
+
+const isCodexJob = (job) => job.kind === 'image' && job.params?.mode === 'codex';
+
+function laneForJob(job) {
+  return isCodexJob(job) ? LANE_CODEX : LANE_GPU;
+}
+
+// Resolve the gen module that owns the job's process so cancel() and the
+// watchdog know which provider's `cancel()` to call. Codex image jobs route
+// through a separate provider from local image jobs even though they share
+// the kind='image' bucket, so dispatching by kind alone wouldn't suffice.
+async function importGenModuleForJob(job) {
+  if (job.kind === 'video') return import('../videoGen/local.js');
+  if (job.kind === 'image') {
+    return isCodexJob(job)
+      ? import('../imageGen/codex.js')
+      : import('../imageGen/local.js');
+  }
+  return null;
+}
+
+// Live state. `queue` holds pending jobs in submission order. `running` maps
+// lane → job (at most one job per lane at any time). `archive` holds
+// recently-finished jobs (visible for ~24h via /api/media-jobs?status=completed).
 const queue = [];
-let running = null;
+const running = new Map();
 const archive = [];
+
+// Snapshot of all currently-running jobs as an array, in lane-insertion order.
+// Convenience for the persistence + listing paths that previously did
+// `running ? [running] : []`.
+const runningArray = () => Array.from(running.values());
 
 // jobId → entry consumed by lib/sseUtils.js#{broadcastSse,attachSseClient,
 // closeJobAfterDelay}. Each entry carries `clients: []` and `lastPayload`,
@@ -94,7 +144,9 @@ let workerStarted = false;
 let initPromise = null;
 
 function findJob(jobId) {
-  if (running && running.id === jobId) return running;
+  for (const r of running.values()) {
+    if (r.id === jobId) return r;
+  }
   const inQueue = queue.find((j) => j.id === jobId);
   if (inQueue) return inQueue;
   return archive.find((j) => j.id === jobId) || null;
@@ -106,7 +158,7 @@ export function getJob(jobId) {
 
 export function listJobs({ status, kind, owner } = {}) {
   const all = [
-    ...(running ? [running] : []),
+    ...runningArray(),
     ...queue,
     ...archive,
   ];
@@ -140,7 +192,7 @@ async function persistImpl() {
   archive.length = 0;
   archive.push(...trimmedArchive);
   const live = [
-    ...(running ? [running] : []),
+    ...runningArray(),
     ...queue,
     ...archive,
   ];
@@ -227,56 +279,71 @@ function startWorker() {
 
 async function drainLoop() {
   while (true) {
-    if (running || queue.length === 0) {
-      await sleep(150);
-      continue;
+    // Walk the queue in submission order and start the first job in each
+    // currently-free lane. Lanes run concurrently — a codex render and a
+    // video render can be in flight at the same time without sharing a
+    // single global slot. Within a lane, jobs serialize FIFO.
+    let started = false;
+    for (let i = 0; i < queue.length; i++) {
+      const j = queue[i];
+      const lane = laneForJob(j);
+      if (running.has(lane)) continue;
+      const [job] = queue.splice(i, 1);
+      i--;
+      job.status = 'running';
+      job.startedAt = new Date().toISOString();
+      // The running job is always slot 1 in its lane. Without this, a job
+      // dequeued from position 2 (queued behind another lane-mate that just
+      // finished) would keep its old position=2 even while running.
+      job.position = 1;
+      running.set(lane, job);
+      // Recompute positions for everyone still queued AND broadcast the new
+      // position over SSE so clients listening to /:jobId/events see their
+      // updated slot instead of staying frozen at the original enqueue-time
+      // value.
+      recomputeQueuePositions();
+      persist().catch((e) => console.log(`⚠️ mediaJobQueue persist on start failed: ${e.message}`));
+      broadcastSse(ensureSseEntry(job.id), { type: 'started', kind: job.kind });
+      mediaJobEvents.emit('started', job);
+      console.log(`▶️  media-job [${job.id.slice(0, 8)}] ${job.kind} started (lane=${lane})`);
+      // Detach: each lane runs its own job concurrently. runJobInLane wraps
+      // runJob with the lane cleanup (release the lane, archive, recompute,
+      // persist) so when this iteration of the drainLoop continues we can
+      // start the next free-lane job without waiting for the in-flight one.
+      runJobInLane(job, lane);
+      started = true;
     }
-    const job = queue.shift();
-    job.status = 'running';
-    job.startedAt = new Date().toISOString();
-    // The running job is always slot 1 in the overall pipeline. Without
-    // this, a job dequeued from position 2 (queued behind another job that
-    // just finished) would keep its old position=2 even while running, and
-    // /api/media-jobs would show "running, 2 in queue" when it's really 1.
-    job.position = 1;
-    running = job;
-    // Recompute positions for everyone still queued AND broadcast the new
-    // position over SSE so clients listening to /:jobId/events see "you are
-    // now #2" instead of staying frozen at the original enqueue-time slot.
-    recomputeQueuePositions();
-    persist().catch((e) => console.log(`⚠️ mediaJobQueue persist on start failed: ${e.message}`));
-    broadcastSse(ensureSseEntry(job.id), { type: 'started', kind: job.kind });
-    mediaJobEvents.emit('started', job);
-    console.log(`▶️  media-job [${job.id.slice(0, 8)}] ${job.kind} started`);
-    // The worker loop is a top-level fire-and-forget — if runJob throws
-    // unexpectedly (an unhandled emitter / listener edge case, etc.), an
-    // uncaught error here would terminate the loop and freeze the queue
-    // until the next enqueueJob re-armed startWorker. Catch + recover so a
-    // single bad job can't kill the worker.
-    try {
-      await runJob(job);
-    } catch (err) {
-      console.log(`❌ media-job [${job.id.slice(0, 8)}] runJob threw: ${err.message}`);
-      if (job.status === 'running') {
-        job.status = 'failed';
-        job.error = `runJob threw: ${err.message}`;
-        job.completedAt = new Date().toISOString();
-        broadcastSse(ensureSseEntry(job.id), { type: 'error', error: job.error });
-        // Mirror the in-job failed path: schedule SSE cleanup so this rare
-        // recovery doesn't leak the sseJobs entry + open clients forever.
-        closeJobAfterDelay(sseJobs, job.id);
-        mediaJobEvents.emit('failed', job);
-      }
-    }
-    running = null;
-    archive.push(job);
-    // Now that running is cleared, every queued job has shifted up one slot.
-    // Recompute immediately so /api/media-jobs and any subsequent persist()
-    // see accurate positions even before the next dequeue, and broadcast
-    // the new position to each waiting client.
-    recomputeQueuePositions();
-    persist().catch((e) => console.log(`⚠️ mediaJobQueue persist on done failed: ${e.message}`));
+    if (!started) await sleep(150);
   }
+}
+
+async function runJobInLane(job, lane) {
+  // The worker is a top-level fire-and-forget — if runJob throws unexpectedly
+  // (an unhandled emitter / listener edge case, etc.), an uncaught error here
+  // would orphan the lane (running.has(lane) would stay true forever and
+  // freeze that lane's queue). Catch + recover so a single bad job can't kill
+  // the lane.
+  try {
+    await runJob(job);
+  } catch (err) {
+    console.log(`❌ media-job [${job.id.slice(0, 8)}] runJob threw: ${err.message}`);
+    if (job.status === 'running') {
+      job.status = 'failed';
+      job.error = `runJob threw: ${err.message}`;
+      job.completedAt = new Date().toISOString();
+      broadcastSse(ensureSseEntry(job.id), { type: 'error', error: job.error });
+      closeJobAfterDelay(sseJobs, job.id);
+      mediaJobEvents.emit('failed', job);
+    }
+  }
+  running.delete(lane);
+  archive.push(job);
+  // Now that the lane is free, every same-lane queued job has shifted up
+  // one slot. Recompute immediately so /api/media-jobs and any subsequent
+  // persist() see accurate positions even before the next dequeue, and
+  // broadcast the new position to each waiting client.
+  recomputeQueuePositions();
+  persist().catch((e) => console.log(`⚠️ mediaJobQueue persist on done failed: ${e.message}`));
 }
 
 // Recompute queue positions and notify each waiting SSE client of its new
@@ -284,15 +351,27 @@ async function drainLoop() {
 // canceled mid-queue). Without the broadcast, a client connected to
 // /:jobId/events would keep showing the position from its original enqueue
 // frame even after the line ahead of it cleared.
+//
+// Position is per-lane: a queued GPU job sits behind only the running GPU
+// job + other queued GPU jobs, ignoring codex jobs entirely (and vice versa).
+// Without this, a writers-room storyboard with 5 codex renders queued behind
+// one running video would show position 6, which is misleading — the codex
+// jobs have nothing to wait on except each other.
 function recomputeQueuePositions() {
-  queue.forEach((q, i) => {
-    const newPosition = i + 1 + (running ? 1 : 0);
+  const counters = new Map();
+  for (const lane of running.keys()) {
+    counters.set(lane, 1); // running occupies slot 1 in its lane
+  }
+  for (const q of queue) {
+    const lane = laneForJob(q);
+    const newPosition = (counters.get(lane) ?? 0) + 1;
+    counters.set(lane, newPosition);
     if (q.position !== newPosition) {
       q.position = newPosition;
       const entry = sseJobs.get(q.id);
       if (entry) broadcastSse(entry, { type: 'queued', position: newPosition });
     }
-  });
+  }
 }
 
 // Filter videoGenEvents/imageGenEvents down to a single jobId and translate
@@ -436,7 +515,14 @@ async function runJob(job) {
   // `watchdogMs(envValue, defaultMs)` helper that parses the env-var
   // overrides. Both lived as `watchdogMs` previously and made the call
   // site easy to misread.
-  const watchdogTimeoutMs = job.kind === 'video' ? WATCHDOG_VIDEO_MS : WATCHDOG_IMAGE_MS;
+  // Multi-chunk video chains run N renders end-to-end, so the wall time
+  // scales linearly with chunks. Without this the watchdog would SIGTERM
+  // the chain mid-stream on a healthy 4-chunk render. Route-side Zod has
+  // already validated chunks ∈ 1..8.
+  const chunks = Number(job.params?.chunks) || 1;
+  const watchdogTimeoutMs = job.kind === 'video'
+    ? WATCHDOG_VIDEO_MS * chunks
+    : WATCHDOG_IMAGE_MS;
   watchdogTimer = setTimeout(async () => {
     // Two-stage status guard: first check stops us if the gen settled
     // before the timer fired. The await on the dynamic import below opens
@@ -446,10 +532,7 @@ async function runJob(job) {
     // current activeProcess; once handlers.failed marks this job
     // terminal, runJob's await exits and the worker advances).
     if (job.status !== 'running') return;
-    const importer = job.kind === 'video'
-      ? import('../videoGen/local.js')
-      : job.kind === 'image' ? import('../imageGen/local.js') : null;
-    const mod = importer ? await importer : null;
+    const mod = await importGenModuleForJob(job);
     if (job.status !== 'running') return;
     console.log(`⏱️ media-job [${job.id.slice(0, 8)}] watchdog fired after ${watchdogTimeoutMs}ms — marking failed`);
     // Cancel BEFORE marking failed — that ordering keeps the SIGTERM
@@ -463,10 +546,18 @@ async function runJob(job) {
 
   try {
     if (job.kind === 'video') {
-      const { generateVideo } = await import('../videoGen/local.js');
-      await generateVideo({ ...safeParams, jobId: job.id });
+      // Route to the chain orchestrator when chunks > 1. The chain function
+      // delegates to generateVideo for chunks=1, so we could always call it,
+      // but keeping the chunks=1 path on plain generateVideo means the simple
+      // case never carries chain bookkeeping or the activeChain global.
+      const wantsChain = Number(safeParams.chunks) > 1;
+      const mod = await import('../videoGen/local.js');
+      const fn = wantsChain ? mod.generateChainedVideo : mod.generateVideo;
+      await fn({ ...safeParams, jobId: job.id });
     } else if (job.kind === 'image') {
-      const { generateImage } = await import('../imageGen/local.js');
+      const { generateImage } = isCodexJob(job)
+        ? await import('../imageGen/codex.js')
+        : await import('../imageGen/local.js');
       await generateImage({ ...safeParams, jobId: job.id });
     } else {
       throw new Error(`Unknown job kind: ${job.kind}`);
@@ -494,6 +585,12 @@ export function enqueueJob({ kind, params, owner = null }) {
     throw new Error(`enqueueJob: invalid kind '${kind}'`);
   }
   const id = randomUUID();
+  const probe = { kind, params };
+  const lane = laneForJob(probe);
+  // Per-lane position: running same-lane job (if any) occupies slot 1, then
+  // queued same-lane jobs follow. Cross-lane jobs don't add to this count.
+  const sameLaneQueued = queue.filter((j) => laneForJob(j) === lane).length;
+  const position = sameLaneQueued + (running.has(lane) ? 1 : 0) + 1;
   const job = {
     id,
     kind,
@@ -501,10 +598,7 @@ export function enqueueJob({ kind, params, owner = null }) {
     status: 'queued',
     queuedAt: new Date().toISOString(),
     params,
-    // position counts "where you sit in the overall pipeline" — the running
-    // job (if any) occupies slot 1, then queued jobs follow. So the second
-    // submission while one is running sits at position 2.
-    position: queue.length + (running ? 1 : 0) + 1,
+    position,
   };
   queue.push(job);
   const sseEntry = ensureSseEntry(id);
@@ -551,19 +645,15 @@ export async function cancelJob(jobId) {
     console.log(`🛑 media-job [${jobId.slice(0, 8)}] canceled (was queued)`);
     return { ok: true, status: 'canceled' };
   }
-  if (running && running.id === jobId) {
+  for (const r of running.values()) {
+    if (r.id !== jobId) continue;
     // Flag the job so the dispatcher's `failed` handler treats the SIGTERM-
     // induced failure as `canceled` rather than `failed`. Without this the
     // job would land in archive with status='failed' and listing by
     // status='canceled' would be empty for running cancels.
-    running.cancelRequested = true;
-    if (running.kind === 'video') {
-      const { cancel } = await import('../videoGen/local.js');
-      cancel();
-    } else if (running.kind === 'image') {
-      const { cancel } = await import('../imageGen/local.js');
-      cancel();
-    }
+    r.cancelRequested = true;
+    const mod = await importGenModuleForJob(r);
+    mod?.cancel?.();
     console.log(`🛑 media-job [${jobId.slice(0, 8)}] cancel signal sent (was running)`);
     return { ok: true, status: 'canceling' };
   }
@@ -638,7 +728,7 @@ function sleep(ms) {
 // Test-only reset hook. Real callers go through enqueueJob/cancelJob.
 export function __resetForTests() {
   queue.length = 0;
-  running = null;
+  running.clear();
   archive.length = 0;
   sseJobs.clear();
   workerStarted = false;

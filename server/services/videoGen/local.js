@@ -40,11 +40,20 @@ const HISTORY_FILE = join(PATHS.data, 'video-history.json');
 
 const jobs = new Map();
 let activeProcess = null;
+// Chain state for multi-chunk renders. cancel() flips `stopped` so the chain
+// loop bails before kicking off the next chunk; the in-flight chunk's child
+// is killed via the existing activeProcess SIGTERM path. There is at most
+// one chain in flight at a time (mediaJobQueue serializes the gpu lane).
+let activeChain = null;
 
 export const attachSseClient = (jobId, res) => attachSse(jobs, jobId, res);
 
 export const cancel = () => {
-  if (!activeProcess) return false;
+  // Flag the chain (if any) so the loop stops between chunks. We still
+  // kill the in-flight child below — without that the current chunk would
+  // run to completion before the chain saw the stop flag.
+  if (activeChain) activeChain.stopped = true;
+  if (!activeProcess) return !!activeChain;
   const proc = activeProcess;
   proc.kill('SIGTERM');
   // KEEP activeProcess set until proc.on('close') clears it. Without this,
@@ -329,6 +338,200 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   return { jobId, generationId: jobId, filename, mode: 'local', model: modelId };
 }
 
+// Generate a chain of N video chunks where each chunk's last frame seeds
+// the next, then stitch them into a single longer clip. Reports progress +
+// terminal events against the OUTER jobId (so the mediaJobQueue's dispatcher
+// sees one logical job through the chain) while each inner chunk runs as a
+// normal generateVideo() with its own inner jobId, file, and history entry.
+//
+// On completion the inner chunk entries are hidden so only the stitched clip
+// is visible by default; the user can toggle hidden in the gallery to
+// inspect individual chunks.
+//
+// On cancel the chain stops before the next chunk; the in-flight chunk's
+// child is SIGTERM'd by cancel() and surfaces a 'failed' event we translate
+// into a chain-level failure. Already-completed inner chunks are hidden but
+// not deleted (the partial output is still on disk if the user wants it).
+export async function generateChainedVideo({ chunks, jobId: outerJobId, ...rest }) {
+  const totalChunks = Number(chunks) || 1;
+  if (totalChunks === 1) {
+    return generateVideo({ jobId: outerJobId, ...rest });
+  }
+  if (!outerJobId) throw new ServerError('generateChainedVideo requires jobId', { status: 500, code: 'INTERNAL' });
+
+  const chainState = { stopped: false };
+  activeChain = chainState;
+
+  // Hold an outer job entry so attachSseClient(outerJobId) wires up against
+  // the same SSE stream the queue sees. Without this, /api/video-gen/:id/events
+  // attached at the outer id would 404 because no `jobs` map entry exists.
+  const outerJob = { id: outerJobId, clients: [], status: 'running' };
+  jobs.set(outerJobId, outerJob);
+
+  const chunkIds = [];
+  let currentSource = rest.sourceImagePath;
+  // First chunk preserves the user's mode (text or image). Subsequent chunks
+  // are always image-conditioned on the previous chunk's last frame.
+  const firstMode = rest.mode || (currentSource ? 'image' : 'text');
+
+  const runChunk = (i) => new Promise((resolve, reject) => {
+    const innerJobId = randomUUID();
+    chunkIds.push(innerJobId);
+    const onProgress = (e) => {
+      if (e.generationId !== innerJobId) return;
+      const innerProg = typeof e.progress === 'number' ? e.progress : 0;
+      const aggregate = (i + Math.max(0, Math.min(1, innerProg))) / totalChunks;
+      videoGenEvents.emit('progress', {
+        generationId: outerJobId,
+        progress: aggregate,
+        step: typeof e.step === 'number' ? e.step : undefined,
+        totalSteps: typeof e.totalSteps === 'number' ? e.totalSteps : undefined,
+        message: `Chunk ${i + 1}/${totalChunks}${e.message ? ` — ${e.message}` : ''}`,
+      });
+      broadcastSse(outerJob, {
+        type: 'progress',
+        progress: aggregate,
+        message: `Chunk ${i + 1}/${totalChunks}`,
+      });
+    };
+    const detach = () => {
+      videoGenEvents.off('progress', onProgress);
+      videoGenEvents.off('completed', onCompleted);
+      videoGenEvents.off('failed', onFailed);
+    };
+    const onCompleted = (e) => {
+      if (e.generationId !== innerJobId) return;
+      detach();
+      resolve(e);
+    };
+    const onFailed = (e) => {
+      if (e.generationId !== innerJobId) return;
+      detach();
+      reject(new Error(e.error || 'chunk failed'));
+    };
+    videoGenEvents.on('progress', onProgress);
+    videoGenEvents.on('completed', onCompleted);
+    videoGenEvents.on('failed', onFailed);
+
+    // Bump the seed by chunk index when the user supplied one — keeps each
+    // chunk visually varied while remaining reproducible from the user's
+    // chosen seed. When seed is unset, generateVideo picks one randomly
+    // per chunk (existing behavior).
+    const chunkSeed = rest.seed != null && rest.seed !== ''
+      ? Number(rest.seed) + i
+      : undefined;
+    generateVideo({
+      ...rest,
+      seed: chunkSeed,
+      jobId: innerJobId,
+      sourceImagePath: currentSource,
+      // Only the first chunk consumes the user's uploadedTempPath (durable
+      // copy under data/uploads). Later chunks use a frame extracted from a
+      // prior render, which lives under data/images.
+      uploadedTempPath: i === 0 ? rest.uploadedTempPath : null,
+      mode: i === 0 ? firstMode : 'image',
+      // After the first chunk, drop FFLF-style last image — chained continuation
+      // is single-conditioned on the previous chunk's tail frame.
+      lastImagePath: i === 0 ? rest.lastImagePath : null,
+    }).catch((err) => {
+      detach();
+      reject(err);
+    });
+  });
+
+  const finishOk = (payload) => {
+    if (activeChain === chainState) activeChain = null;
+    videoGenEvents.emit('completed', { generationId: outerJobId, ...payload });
+    broadcastSse(outerJob, { type: 'complete', result: payload });
+    closeJobAfterDelay(jobs, outerJobId);
+  };
+  const finishFail = (error) => {
+    if (activeChain === chainState) activeChain = null;
+    videoGenEvents.emit('failed', { generationId: outerJobId, error });
+    broadcastSse(outerJob, { type: 'error', error });
+    closeJobAfterDelay(jobs, outerJobId);
+  };
+
+  // Schedule the chain on the next tick and return the descriptor
+  // synchronously — matches generateVideo's spawn-then-emit contract.
+  (async () => {
+    for (let i = 0; i < totalChunks; i++) {
+      if (chainState.stopped) {
+        await setHistoryItemsHidden(chunkIds, true);
+        finishFail('Canceled mid-chain');
+        return;
+      }
+      // eslint-disable-next-line no-await-in-loop
+      const completed = await runChunk(i).catch((err) => ({ error: err.message }));
+      if (completed?.error) {
+        await setHistoryItemsHidden(chunkIds, true);
+        finishFail(completed.error);
+        return;
+      }
+      if (i < totalChunks - 1) {
+        // extractLastFrame caches by id, so re-clicks (e.g. from gallery
+        // "Continue") don't re-spawn ffmpeg.
+        // eslint-disable-next-line no-await-in-loop
+        const frame = await extractLastFrame(chunkIds[chunkIds.length - 1]).catch((err) => ({ error: err.message }));
+        if (frame?.error) {
+          await setHistoryItemsHidden(chunkIds, true);
+          finishFail(`Failed to extract frame between chunks: ${frame.error}`);
+          return;
+        }
+        currentSource = join(PATHS.images, frame.filename);
+      }
+    }
+    const stitched = await stitchVideos(chunkIds, {
+      id: outerJobId,
+      filenamePrefix: 'chained',
+      historyKey: 'chainedFrom',
+      promptOverride: rest.prompt || null,
+    }).catch((err) => ({ error: err.message }));
+    if (stitched?.error) {
+      await setHistoryItemsHidden(chunkIds, true);
+      finishFail(`Stitch failed: ${stitched.error}`);
+      return;
+    }
+    await setHistoryItemsHidden(chunkIds, true);
+    finishOk({
+      filename: stitched.filename,
+      thumbnail: stitched.thumbnail,
+      path: `/data/videos/${stitched.filename}`,
+      chainedFrom: chunkIds,
+    });
+  })().catch((err) => {
+    console.log(`❌ chain orchestration crashed [${outerJobId.slice(0, 8)}]: ${err.message}`);
+    finishFail(err.message);
+  });
+
+  // Match the synchronous shape of generateVideo so the route's response
+  // assembly doesn't need a chain-specific branch. The actual filename is
+  // delivered via SSE 'complete' once the chain settles.
+  return {
+    jobId: outerJobId,
+    generationId: outerJobId,
+    filename: `chained-${outerJobId}.mp4`,
+    mode: 'local',
+    model: rest.modelId,
+  };
+}
+
+// Hide many history entries in one load+save. The per-id setHistoryItemHidden
+// would re-read + atomic-write the entire history file once per id; for an
+// 8-chunk chain that's 16 file ops on every terminal path. Best-effort —
+// errors are swallowed because the stitched clip is more important than
+// the visibility flag.
+async function setHistoryItemsHidden(ids, hidden) {
+  if (!ids?.length) return;
+  const wanted = new Set(ids);
+  const history = await loadHistory().catch(() => null);
+  if (!Array.isArray(history)) return;
+  for (const item of history) {
+    if (wanted.has(item.id)) item.hidden = !!hidden;
+  }
+  await saveHistory(history).catch(() => {});
+}
+
 // Extract the last frame of a video as a PNG into data/images/ — used to
 // chain a clip into Imagine for "continue from last frame" remixing.
 export async function extractLastFrame(historyId) {
@@ -408,7 +611,17 @@ export async function extractLastFrame(historyId) {
 // concat demuxer which is stream-copy, so it's fast and lossless — but the
 // inputs must share codec/resolution. The Media History page already only
 // lets users stitch from a single model so this holds in practice.
-export async function stitchVideos(videoIds) {
+//
+// `opts` lets the chained-render code reuse the same ffmpeg path with a
+// different identity (id, filename prefix, history-link key, prompt) without
+// duplicating the validation + concat-manifest plumbing.
+export async function stitchVideos(videoIds, opts = {}) {
+  const {
+    id = randomUUID(),
+    filenamePrefix = 'stitched',
+    historyKey = 'stitchedFrom',
+    promptOverride = null,
+  } = opts;
   if (!Array.isArray(videoIds) || videoIds.length < 2) {
     throw new ServerError('Need at least 2 videos to stitch', { status: 400, code: 'VALIDATION_ERROR' });
   }
@@ -416,7 +629,7 @@ export async function stitchVideos(videoIds) {
   if (!ffmpeg) throw new ServerError('ffmpeg not found on PATH', { status: 500, code: 'FFMPEG_MISSING' });
 
   const history = await loadHistory();
-  const videos = videoIds.map((id) => history.find((h) => h.id === id)).filter(Boolean);
+  const videos = videoIds.map((vid) => history.find((h) => h.id === vid)).filter(Boolean);
   if (videos.length < 2) throw new ServerError('Some videos not found', { status: 400, code: 'VALIDATION_ERROR' });
 
   // Validate every history-supplied filename through safeUnder before
@@ -430,8 +643,7 @@ export async function stitchVideos(videoIds) {
     if (!existsSync(p)) throw new ServerError(`Missing: ${basename(p)}`, { status: 404, code: 'NOT_FOUND' });
   }
 
-  const jobId = randomUUID();
-  const listFile = join(tmpdir(), `concat-${jobId}.txt`);
+  const listFile = join(tmpdir(), `concat-${id}.txt`);
   // ffmpeg concat-demuxer escape: per its docs, single quotes in filenames
   // must be replaced with `'\''`. Inside quoted strings ffmpeg also treats
   // backslash as an escape character — on Windows where paths are
@@ -440,7 +652,7 @@ export async function stitchVideos(videoIds) {
   const escapeForConcat = (p) => p.replace(/\\/g, '/').replace(/'/g, "'\\''");
   await writeFile(listFile, videoPaths.map((p) => `file '${escapeForConcat(p)}'`).join('\n'));
 
-  const outFilename = `stitched-${jobId}.mp4`;
+  const outFilename = `${filenamePrefix}-${id}.mp4`;
   const outPath = join(PATHS.videos, outFilename);
 
   // Use a try/finally so the concat list temp file is cleaned up even when
@@ -455,12 +667,14 @@ export async function stitchVideos(videoIds) {
     await unlink(listFile).catch(() => {});
   }
 
-  const thumb = await generateThumbnail(outPath, jobId);
+  const thumb = await generateThumbnail(outPath, id);
   const stitchedMeta = {
-    id: jobId,
-    prompt: `Stitched: ${videos.map((v) => v.prompt).join(' + ')}`,
+    id,
+    prompt: promptOverride != null
+      ? promptOverride
+      : `Stitched: ${videos.map((v) => v.prompt).join(' + ')}`,
     modelId: videos[0].modelId,
-    seed: 0,
+    seed: videos[0].seed ?? 0,
     width: videos[0].width,
     height: videos[0].height,
     numFrames: videos.reduce((sum, v) => sum + (v.numFrames || 0), 0),
@@ -468,12 +682,12 @@ export async function stitchVideos(videoIds) {
     filename: outFilename,
     thumbnail: thumb,
     createdAt: new Date().toISOString(),
-    stitchedFrom: videoIds,
+    [historyKey]: videoIds,
   };
   const h = await loadHistory();
   h.unshift(stitchedMeta);
   await saveHistory(h);
-  console.log(`🎬 Stitched ${videos.length} videos: ${outFilename}`);
+  console.log(`🎬 Stitched ${videos.length} videos → ${outFilename}`);
   return stitchedMeta;
 }
 

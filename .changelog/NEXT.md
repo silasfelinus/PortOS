@@ -1,5 +1,13 @@
 # Unreleased Changes
 
+## Fixed
+
+- Writers-room storyboard renders queued through Codex now wait their turn instead of erroring with "A Codex generation is already in progress" when you fire a second render before the first finishes. Codex jobs run on their own queue lane, so they don't block (and aren't blocked by) local image or video renders.
+
+## Added
+
+- Video Gen "Chunks" control (1–8) chains multiple LTX renders into a single longer clip. Each chunk's last frame seeds the next, then ffmpeg stitches them into one output. The individual chunks land in history hidden by default, so the gallery shows just the stitched result.
+
 ## Changed
 
 - Release workflow no longer silently skips creating the GitHub Release when something else pushed the version tag before the workflow ran.

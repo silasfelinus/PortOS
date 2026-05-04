@@ -153,6 +153,38 @@ describe('videoGen routes', () => {
       }));
     });
 
+    it('forwards chunks > 1 so the queue dispatches the chain orchestrator', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a long shot',
+        chunks: 4,
+      });
+      expect(r.status).toBe(200);
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'video',
+        params: expect.objectContaining({ chunks: 4 }),
+      }));
+    });
+
+    it('coerces chunks=1 (and missing) to 1 — the non-chained path', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'a single render',
+      });
+      expect(r.status).toBe(200);
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'video',
+        params: expect.objectContaining({ chunks: 1 }),
+      }));
+    });
+
+    it('rejects chunks above the 1..8 cap', async () => {
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'too long',
+        chunks: 99,
+      });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/chunks/i);
+    });
+
     it('rejects an unknown mode value', async () => {
       const r = await request(app).post('/api/video-gen/').send({
         prompt: 'a cat',

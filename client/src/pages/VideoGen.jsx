@@ -109,6 +109,7 @@ export default function VideoGen() {
   const [height, setHeight] = useState(512);
   const [numFrames, setNumFrames] = useState(121);
   const [fps, setFps] = useState(24);
+  const [chunks, setChunks] = useState(1);
   const [steps, setSteps] = useState('');
   const [guidanceScale, setGuidanceScale] = useState('');
   const [seed, setSeed] = useState('');
@@ -384,6 +385,7 @@ export default function VideoGen() {
       sourceImageFile: (mode === 'image' || mode === 'fflf' || mode === 'extend') ? (sourceImageFile || '') : '',
       sourceImage: (mode === 'image' || mode === 'fflf') ? (sourceImageUpload || '') : '',
       lastImageFile: mode === 'fflf' ? (lastImageFile || '') : '',
+      chunks: chunks > 1 ? chunks : '',
     };
   };
 
@@ -835,6 +837,23 @@ export default function VideoGen() {
                 className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
               >
                 {FRAME_OPTIONS.map((f) => <option key={f} value={f}>{f} ({(f / fps).toFixed(1)}s @ {fps}fps)</option>)}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1" title="Chain N renders end-to-end. Each chunk's last frame seeds the next, then they're stitched into one clip. Wall time scales linearly with chunks.">
+                Chunks
+              </label>
+              <select
+                value={chunks}
+                onChange={(e) => setChunks(Number(e.target.value))}
+                className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
+              >
+                {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+                  <option key={n} value={n}>
+                    {n === 1 ? '1 (single)' : `${n} (~${((n * numFrames) / fps).toFixed(0)}s total)`}
+                  </option>
+                ))}
               </select>
             </div>
 
