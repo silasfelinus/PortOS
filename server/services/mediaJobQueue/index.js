@@ -525,9 +525,19 @@ async function runJob(job) {
       return false;
     });
     safeParams.uploadedTempPaths = filtered;
+  } else if (typeof safeParams.uploadedTempPaths === 'string') {
+    // Persisted as a string (corrupted JSON or older shape) — normalize to a
+    // single-entry array if the path is safe so generateVideo's cleanup loop
+    // still unlinks it on completion. Drop otherwise.
+    if (isUnderUploadsRoot(safeParams.uploadedTempPaths)) {
+      safeParams.uploadedTempPaths = [safeParams.uploadedTempPaths];
+    } else {
+      console.log(`⚠️ media-job [${job.id.slice(0, 8)}] uploadedTempPaths string outside PATHS.uploads — dropped before gen invoke: ${safeParams.uploadedTempPaths}`);
+      safeParams.uploadedTempPaths = [];
+    }
   } else if (safeParams.uploadedTempPaths != null) {
-    // Persisted as a non-array (corrupted JSON) — drop it rather than feed
-    // a non-iterable into the worker's cleanup loop.
+    // Any other non-array, non-string value — drop it rather than feed a
+    // non-iterable into the worker's cleanup loop.
     safeParams.uploadedTempPaths = [];
   }
 

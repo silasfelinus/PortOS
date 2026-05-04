@@ -169,12 +169,23 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     }
   }
 
+  // Track every durable file we've already copied into PATHS.uploads so a
+  // *later* staging failure can roll them back. Without this, staging
+  // sourceImage successfully then failing on lastImage would leave the
+  // sourceImage durable copy orphaned (the job is never enqueued, so the
+  // worker's cleanup never runs).
+  const stagedDurablePaths = [];
+  const cleanupAllStaged = async () => {
+    for (const p of stagedDurablePaths) await unlink(p).catch(() => {});
+    await cleanupTempUploads();
+  };
+
   // Stage a multipart upload into data/uploads so the queue worker can find
   // it after a server restart — the OS temp dir gets reaped on reboot, and a
   // persisted `queued` job may replay long after the original POST. Worker
   // unlinks the durable file when the job completes or cancels. Throws
-  // ServerError on copy failure (and cleans up every staged temp upload so a
-  // mid-flight failure doesn't leak files under /tmp + data/uploads).
+  // ServerError on copy failure (and cleans up every staged file + multipart
+  // temp upload so a mid-flight failure doesn't leak under /tmp + data/uploads).
   const stageUploadDurable = async (file, kind) => {
     const ext = extname(file.originalname || file.path) || '.bin';
     const durablePath = join(PATHS.uploads, `video-${kind}-${randomUUID()}${ext}`);
@@ -182,13 +193,14 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
       await copyFile(file.path, durablePath);
     } catch (err) {
       await unlink(durablePath).catch(() => {});
-      await cleanupTempUploads();
+      await cleanupAllStaged();
       throw new ServerError(
         `Failed to stage upload to durable location: ${err.message}`,
         { status: 500, code: 'VIDEO_GEN_UPLOAD_STAGE_FAILED' },
       );
     }
     await unlink(file.path).catch(() => {});
+    stagedDurablePaths.push(durablePath);
     return durablePath;
   };
 
@@ -213,7 +225,7 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     try {
       await ensureDir(PATHS.uploads);
     } catch (err) {
-      await cleanupTempUploads();
+      await cleanupAllStaged();
       throw new ServerError(
         `Failed to prepare uploads directory: ${err.message}`,
         { status: 500, code: 'VIDEO_GEN_UPLOADS_DIR_FAILED' },
