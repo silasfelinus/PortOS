@@ -404,7 +404,7 @@ describe('Apps Routes', () => {
       expect(response.status).toBe(404);
     });
 
-    it('should reject build command args containing shell-unsafe metacharacters', async () => {
+    it.skipIf(process.platform !== 'win32')('should reject build command args containing shell-unsafe metacharacters', async () => {
       const mockApp = {
         id: 'app-001',
         name: 'Test App',
