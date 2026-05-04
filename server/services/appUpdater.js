@@ -11,7 +11,7 @@ const CMD_TIMEOUT_MS = 5 * 60 * 1000;
 
 function runCommand(cmd, args, cwd) {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd, shell: IS_WIN32, windowsHide: true });
+    const child = spawn(cmd, args, { cwd, shell: IS_WIN32 && ['npm', 'npx'].includes(cmd), windowsHide: true });
     let stdout = '';
     let stderr = '';
     let settled = false;
