@@ -16,7 +16,15 @@ function runCommand(cmd, args, cwd) {
     let stderr = '';
     let settled = false;
     const timer = setTimeout(() => {
-      if (!settled) { settled = true; child.kill('SIGTERM'); reject(new Error(`${cmd} timed out after ${CMD_TIMEOUT_MS / 1000}s`)); }
+      if (!settled) {
+        settled = true;
+        if (IS_WIN32 && child.pid) {
+          spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], { stdio: 'ignore' }).unref();
+        } else {
+          child.kill('SIGTERM');
+        }
+        reject(new Error(`${cmd} timed out after ${CMD_TIMEOUT_MS / 1000}s`));
+      }
     }, CMD_TIMEOUT_MS);
     child.stdout.on('data', d => { stdout += d; if (stdout.length > MAX_OUTPUT_BYTES) stdout = stdout.slice(-MAX_OUTPUT_BYTES); });
     child.stderr.on('data', d => { stderr += d; if (stderr.length > MAX_OUTPUT_BYTES) stderr = stderr.slice(-MAX_OUTPUT_BYTES); });

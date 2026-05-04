@@ -644,6 +644,10 @@ router.post('/:id/build', loadApp, asyncHandler(async (req, res) => {
     throw new ServerError(`Build command '${cmd}' is not allowed. Allowed: ${[...ALLOWED_BUILD_CMDS].join(', ')}`, { status: 400, code: 'INVALID_BUILD_COMMAND' });
   }
 
+  if (WIN_CMD_SHIMS.has(cmd) && args.some(a => SHELL_UNSAFE_RE.test(a))) {
+    throw new ServerError('Build command args contain shell-unsafe characters', { status: 400, code: 'INVALID_BUILD_COMMAND' });
+  }
+
   console.log(`🔨 Building ${app.name}: ${buildCommand}`);
 
   // Install dependencies before building (root + common subdirs) - skip for non-Node apps
@@ -663,7 +667,7 @@ router.post('/:id/build', loadApp, asyncHandler(async (req, res) => {
         let settled = false;
         const MAX = 64 * 1024;
         const timer = setTimeout(() => {
-          if (!settled) { settled = true; child.kill('SIGTERM'); resolve({ success: false, exitCode: -1, output: `npm install timed out after ${INSTALL_TIMEOUT_MS / 1000}s` }); }
+          if (!settled) { settled = true; killProc(child); resolve({ success: false, exitCode: -1, output: `npm install timed out after ${INSTALL_TIMEOUT_MS / 1000}s` }); }
         }, INSTALL_TIMEOUT_MS);
         child.stdout.on('data', d => { stdout += d; if (stdout.length > MAX) stdout = stdout.slice(-MAX); });
         child.stderr.on('data', d => { stderr += d; if (stderr.length > MAX) stderr = stderr.slice(-MAX); });
@@ -687,7 +691,7 @@ router.post('/:id/build', loadApp, asyncHandler(async (req, res) => {
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
-        child.kill('SIGTERM');
+        killProc(child);
         resolve({ success: false, stderr: `Build timed out after ${BUILD_TIMEOUT_MS / 1000}s`, code: -1 });
       }
     }, BUILD_TIMEOUT_MS);
@@ -778,6 +782,19 @@ const IS_WIN32 = process.platform === 'win32';
 // native binaries (xcodebuild, swift, make, cargo).
 const WIN_CMD_SHIMS = new Set(['npm', 'npx']);
 const needsShell = (cmd) => IS_WIN32 && WIN_CMD_SHIMS.has(cmd);
+// Characters cmd.exe interprets as metacharacters when shell:true is active.
+// Validate args for any command that uses a shell shim (npm/npx) so malicious
+// buildCommand strings like "npm run build&whoami" are rejected at parse time.
+const SHELL_UNSAFE_RE = /[&|<>;`$\\^%!]/;
+// On Windows, SIGTERM kills cmd.exe but orphans its child (npm). Use taskkill
+// /T /F to terminate the whole process tree.
+const killProc = (child) => {
+  if (IS_WIN32 && child.pid) {
+    spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], { stdio: 'ignore' }).unref();
+  } else {
+    child.kill('SIGTERM');
+  }
+};
 const INSTALL_TIMEOUT_MS = 3 * 60 * 1000;
 const BUILD_TIMEOUT_MS = 5 * 60 * 1000;
 
