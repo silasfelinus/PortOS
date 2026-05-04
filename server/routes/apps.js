@@ -692,8 +692,9 @@ router.post('/:id/build', loadApp, asyncHandler(async (req, res) => {
       if (!settled) {
         settled = true;
         killProc(child);
+        const timeoutMsg = `Build timed out after ${BUILD_TIMEOUT_MS / 1000}s`;
         const tail = (stderr.trim() || stdout.trim()).slice(-512);
-        resolve({ success: false, stderr: `Build timed out after ${BUILD_TIMEOUT_MS / 1000}s`, code: -1, output: tail || 'no output captured' });
+        resolve({ success: false, stderr: timeoutMsg, code: -1, output: tail ? `${timeoutMsg} — last output: ${tail}` : timeoutMsg });
       }
     }, BUILD_TIMEOUT_MS);
     child.stdout.on('data', d => {
@@ -708,7 +709,7 @@ router.post('/:id/build', loadApp, asyncHandler(async (req, res) => {
       if (!settled) {
         settled = true;
         clearTimeout(timer);
-        const output = (stderr.trim() || stdout.trim()).slice(0, 1024);
+        const output = (stderr.trim() || stdout.trim()).slice(-1024);
         resolve({ success: code === 0, stdout: stdout.trim(), stderr: stderr.trim(), code, signal, output });
       }
     });
