@@ -139,6 +139,26 @@ describe('uploadSingle multipart parser', () => {
     vi.doUnmock('fs');
   });
 
+  it('rejects a second accepted file part (TOO_MANY_FILES) without leaking the first temp file', async () => {
+    // With multi-fieldname uploads (e.g. videoGen's sourceImage|audioFile),
+    // a malicious or buggy client could send both parts in one request. The
+    // parser used to silently overwrite fileResult with the second file,
+    // leaving the first temp file orphaned in /tmp. The TOO_MANY_FILES
+    // guard rejects the request before the second part is opened, and
+    // calls fail() so the first part's writeStream gets destroyed +
+    // unlinked.
+    const req = makeMultipartReq([
+      { name: 'sourceImage', filename: 'a.png', contentType: 'image/png', body: Buffer.from([0x89, 0x50]) },
+      { name: 'audioFile', filename: 'b.wav', contentType: 'audio/wav', body: Buffer.from([0xde, 0xad]) },
+    ]);
+    let captured = null;
+    const mw = uploadSingle(['sourceImage', 'audioFile'], { limits: { fileSize: 1024 * 1024 } });
+    await new Promise((resolve) => mw(req, {}, (err) => { captured = err; resolve(); }));
+    expect(captured).toBeTruthy();
+    expect(captured.code).toBe('TOO_MANY_FILES');
+    expect(captured.status).toBe(400);
+  });
+
   it('rejects requests without the multipart Content-Type', async () => {
     const stream = Readable.from(['nope']);
     stream.headers = { 'content-type': 'application/json' };

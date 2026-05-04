@@ -151,6 +151,19 @@ function streamMultipart(req, boundary, fileFieldNames, maxSize, fileFilter, nex
       isMatchingFile = fileFieldNames.includes(currentName);
       const mimeMatch = headerStr.match(/Content-Type:\s*([^\r\n]+)/i);
       currentFileMimetype = mimeMatch ? mimeMatch[1].trim() : 'application/octet-stream';
+      // Reject a second accepted file part rather than silently overwriting
+      // fileResult and leaking the prior part's tmp file. This matters more
+      // now that callers can pass multiple accepted field names (videoGen's
+      // sourceImage|audioFile) — without this guard, a client posting both
+      // could fill /tmp on repeated requests since the first temp file was
+      // never unlinked. Limit is per-request (single accepted file in flight),
+      // not per-fieldname.
+      if (isMatchingFile && fileResult) {
+        const err = new Error('Multiple file uploads not allowed — only one of the accepted file fields may be present per request');
+        err.status = 400;
+        err.code = 'TOO_MANY_FILES';
+        return fail(err);
+      }
       if (isMatchingFile) {
         const fileMeta = { fieldname: currentName, originalname: currentFilename, mimetype: currentFileMimetype };
 
