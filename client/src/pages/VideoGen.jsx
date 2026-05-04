@@ -653,7 +653,13 @@ export default function VideoGen() {
     alt,
     advisoryNote,
   }) => {
+    // Clear button shows as soon as the user picks anything (state-only).
+    // Preview gates on `uploadUrl` instead of the raw `upload` File because
+    // the object URL is generated in a useEffect — without this, the render
+    // between "user picked a file" and "useEffect ran" would mount an
+    // <img src={null}> for one frame.
     const hasSelection = !!(file || upload);
+    const canPreview = !!(file || uploadUrl);
     return (
       <div className="border border-port-border/50 rounded-lg p-2 space-y-1.5">
         <div className="flex items-center justify-between">
@@ -662,7 +668,7 @@ export default function VideoGen() {
             <button type="button" onClick={onClear} className="text-[11px] text-port-error hover:underline">Clear</button>
           )}
         </div>
-        {hasSelection ? (
+        {canPreview ? (
           <ImagePreview
             src={file ? `/data/images/${file}` : uploadUrl}
             alt={alt}
