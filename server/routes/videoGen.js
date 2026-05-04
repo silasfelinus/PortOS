@@ -13,7 +13,7 @@ import { randomUUID } from 'crypto';
 import { join, basename, resolve as resolvePath, sep as PATH_SEP, extname } from 'path';
 import { z } from 'zod';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
-import { uploadSingle } from '../lib/multipart.js';
+import { uploadFields } from '../lib/multipart.js';
 import { PATHS, ensureDir } from '../lib/fileUtils.js';
 import { safeUnder } from '../lib/ffmpeg.js';
 import { getSettings } from '../services/settings.js';
@@ -31,17 +31,18 @@ import { enqueueJob, attachSseClient, cancelJob, listJobs } from '../services/me
 
 const router = Router();
 
-// Single uploader handles both sourceImage (image/fflf modes) and audioFile
-// (a2v mode). The UI never sends both in one request; if a malformed client
-// did, the parser now rejects with TOO_MANY_FILES (400) and unlinks the
-// already-staged first part — see uploadSingle() in lib/multipart.js. The
-// route's fileFilter ensures whichever single file survives matches the
-// correct content-type for its claimed fieldname.
-const mediaUpload = uploadSingle(['sourceImage', 'audioFile'], {
+// FFLF accepts up to two image uploads (start and end frame); a2v takes
+// one audio upload (audioFile). 100MB covers audio cases too (LTX-2's a2v
+// expects only seconds of audio in practice). Per-fieldname mime filter
+// rejects mismatched parts up-front so a stray .mp4 drag-drop can't get
+// staged under any of these fields.
+const frameImageUpload = uploadFields(['sourceImage', 'lastImage', 'audioFile'], {
   limits: { fileSize: 100 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    const okImage = file.fieldname === 'sourceImage' && file.mimetype.startsWith('image/');
-    const okAudio = file.fieldname === 'audioFile' && file.mimetype.startsWith('audio/');
+    const isImageField = file.fieldname === 'sourceImage' || file.fieldname === 'lastImage';
+    const isAudioField = file.fieldname === 'audioFile';
+    const okImage = isImageField && file.mimetype.startsWith('image/');
+    const okAudio = isAudioField && file.mimetype.startsWith('audio/');
     cb(null, okImage || okAudio);
   },
 });
@@ -74,10 +75,10 @@ const generateBodySchema = z.object({
   tiling: z.enum(['auto', 'none', 'spatial', 'temporal']).optional(),
   disableAudio: z.union([z.boolean(), z.literal('true'), z.literal('false')]).optional(),
   sourceImageFile: z.string().max(512).optional(),
-  // FFLF mode end-frame target. Gallery-pick only (no upload field) so the
-  // multipart parser stays single-file. Users wanting a fresh end-frame
-  // image can generate or upload it via Image Gen first, then reference
-  // its basename here.
+  // Gallery-pick filename for the FFLF end-frame. The end-frame can also
+  // arrive as a multipart `lastImage` upload (handled below) — when both
+  // are present the upload wins, mirroring the sourceImage/sourceImageFile
+  // precedence on the start-frame side.
   lastImageFile: z.string().max(512).optional(),
   // UI mode hint — backend only uses it for logging/branching; absence
   // falls back to inferring (sourceImage→i2v, no source→t2v).
@@ -133,22 +134,19 @@ const resolveGalleryImage = (name) => {
   }
 };
 
-router.post('/', mediaUpload, asyncHandler(async (req, res) => {
-  // Pre-enqueue cleanup hook: every throw path below MUST drop the multipart
-  // temp upload (parser wrote it before this handler ran). Without this a
-  // configuration/validation error leaks the upload in the OS temp dir.
-  // After the staging step has run, also unlinks the durable copy under
-  // PATHS.uploads — staging happens before the a2v/mode validation guards,
-  // so a rejected request would otherwise leak a video-source-* or
-  // video-audio-* file in data/uploads/ on top of the OS temp file.
-  let stagedUploadPath = null;
-  const cleanupTempUpload = async () => {
-    if (req.file?.path) await unlink(req.file.path).catch(() => {});
-    if (stagedUploadPath) await unlink(stagedUploadPath).catch(() => {});
+router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
+  // Pre-enqueue cleanup hook: every throw path below MUST drop ALL multipart
+  // temp uploads (the parser wrote them before this handler ran). Without
+  // this a configuration/validation error leaks files in the OS temp dir.
+  const uploads = req.files || {};
+  const cleanupTempUploads = async () => {
+    for (const f of Object.values(uploads)) {
+      if (f?.path) await unlink(f.path).catch(() => {});
+    }
   };
   const parsed = generateBodySchema.safeParse(req.body);
   if (!parsed.success) {
-    await cleanupTempUpload();
+    await cleanupTempUploads();
     throw new ServerError(`Validation failed: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', ')}`, { status: 400, code: 'VALIDATION_ERROR' });
   }
   const body = parsed.data;
@@ -159,7 +157,7 @@ router.post('/', mediaUpload, asyncHandler(async (req, res) => {
   // surface the failure asynchronously on SSE — which then pollutes the
   // persisted queue with a doomed entry.
   if (!pythonPath) {
-    await cleanupTempUpload();
+    await cleanupTempUploads();
     throw new ServerError(
       'Local video generation is not configured (settings.imageGen.local.pythonPath is missing).',
       { status: 400, code: 'VIDEO_GEN_NOT_CONFIGURED' },
@@ -171,7 +169,7 @@ router.post('/', mediaUpload, asyncHandler(async (req, res) => {
   if (body.modelId) {
     const known = listVideoModels();
     if (!known.some((m) => m.id === body.modelId)) {
-      await cleanupTempUpload();
+      await cleanupTempUploads();
       throw new ServerError(
         `Unknown modelId: ${body.modelId}`,
         { status: 400, code: 'VIDEO_GEN_UNKNOWN_MODEL' },
@@ -179,76 +177,112 @@ router.post('/', mediaUpload, asyncHandler(async (req, res) => {
     }
   }
 
-  let sourceImagePath = null;
-  let audioFilePath = null;
-  let uploadedTempPath = null;
-  if (req.file) {
-    // Copy the multipart upload into a durable location under data/uploads
-    // before enqueueing. The Multer temp file lives in the OS temp dir —
-    // which gets reaped by macOS on reboot, and might be missing entirely
-    // when the queue replays a persisted `queued` job after a server
-    // restart. Copying here gives the worker a stable path that survives
-    // restarts; the worker unlinks it on completion or cancel.
-    await ensureDir(PATHS.uploads);
-    const ext = extname(req.file.originalname || req.file.path) || '.bin';
-    const isAudio = req.file.fieldname === 'audioFile';
-    const prefix = isAudio ? 'video-audio' : 'video-source';
-    const durablePath = join(PATHS.uploads, `${prefix}-${randomUUID()}${ext}`);
-    // copyFile can throw on disk-full / permission errors. If it does we
-    // need to clean up: drop the multipart temp upload AND the half-written
-    // durablePath (copyFile may have created a zero-byte sentinel before
-    // bailing). Without this, a failed POST leaks files in /tmp + data/uploads.
+  // Track every durable file we've already copied into PATHS.uploads so a
+  // *later* staging failure can roll them back. Without this, staging
+  // sourceImage successfully then failing on lastImage would leave the
+  // sourceImage durable copy orphaned (the job is never enqueued, so the
+  // worker's cleanup never runs).
+  const stagedDurablePaths = [];
+  const cleanupAllStaged = async () => {
+    for (const p of stagedDurablePaths) await unlink(p).catch(() => {});
+    await cleanupTempUploads();
+  };
+
+  // Stage a multipart upload into data/uploads so the queue worker can find
+  // it after a server restart — the OS temp dir gets reaped on reboot, and a
+  // persisted `queued` job may replay long after the original POST. Worker
+  // unlinks the durable file when the job completes or cancels. Throws
+  // ServerError on copy failure (and cleans up every staged file + multipart
+  // temp upload so a mid-flight failure doesn't leak under /tmp + data/uploads).
+  const stageUploadDurable = async (file, kind) => {
+    const ext = extname(file.originalname || file.path) || '.bin';
+    const durablePath = join(PATHS.uploads, `video-${kind}-${randomUUID()}${ext}`);
     try {
-      await copyFile(req.file.path, durablePath);
+      await copyFile(file.path, durablePath);
     } catch (err) {
       await unlink(durablePath).catch(() => {});
-      await cleanupTempUpload();
+      await cleanupAllStaged();
       throw new ServerError(
         `Failed to stage upload to durable location: ${err.message}`,
         { status: 500, code: 'VIDEO_GEN_UPLOAD_STAGE_FAILED' },
       );
     }
-    await unlink(req.file.path).catch(() => {});
-    if (isAudio) {
-      audioFilePath = durablePath;
-    } else {
-      sourceImagePath = durablePath;
+    await unlink(file.path).catch(() => {});
+    stagedDurablePaths.push(durablePath);
+    return durablePath;
+  };
+
+  // Resolution precedence on each frame side: a fresh upload always wins over
+  // a gallery filename so users can override a stale gallery pick by dropping
+  // in a new file without first clearing the picker.
+  //
+  // Cleanup plumbing: `uploadedTempPath` (single, legacy) is RESERVED for the
+  // start-frame upload — that field shape is what already-persisted jobs from
+  // before this route change carry, so keeping its semantics stable means
+  // those replays still clean up correctly. Every additional upload (today:
+  // just `lastImage`) flows through `uploadedTempPaths` as an array. The
+  // worker walks both fields when unlinking on terminal events.
+  let sourceImagePath = null;
+  let lastImagePath = null;
+  let audioFilePath = null;
+  let uploadedTempPath = null;
+  const extraUploadedTempPaths = [];
+  if (uploads.sourceImage || uploads.lastImage || uploads.audioFile) {
+    // Ensure the durable uploads dir exists before staging. Wrapped in
+    // try/catch so a permission/disk failure here still cleans up the
+    // multipart temp uploads instead of leaking them in the OS temp dir.
+    try {
+      await ensureDir(PATHS.uploads);
+    } catch (err) {
+      await cleanupAllStaged();
+      throw new ServerError(
+        `Failed to prepare uploads directory: ${err.message}`,
+        { status: 500, code: 'VIDEO_GEN_UPLOADS_DIR_FAILED' },
+      );
     }
-    uploadedTempPath = durablePath;
-    // Mirror into the closure so cleanupTempUpload() unlinks this if a
-    // post-staging validation guard rejects the request before enqueue.
-    stagedUploadPath = durablePath;
+  }
+  if (uploads.sourceImage) {
+    sourceImagePath = await stageUploadDurable(uploads.sourceImage, 'source');
+    uploadedTempPath = sourceImagePath;
   } else if (body.sourceImageFile) {
     sourceImagePath = resolveGalleryImage(body.sourceImageFile);
+  }
+  if (uploads.lastImage) {
+    lastImagePath = await stageUploadDurable(uploads.lastImage, 'last');
+    extraUploadedTempPaths.push(lastImagePath);
+  } else if (body.lastImageFile) {
+    // Same path-traversal guard as the start frame.
+    lastImagePath = resolveGalleryImage(body.lastImageFile);
+  }
+  if (uploads.audioFile) {
+    // a2v: audio file rides through the same durable-staging path as the
+    // image uploads. Cleanup tracking via extraUploadedTempPaths so the
+    // worker drops it on terminal events the same way it drops lastImage.
+    audioFilePath = await stageUploadDurable(uploads.audioFile, 'audio');
+    extraUploadedTempPaths.push(audioFilePath);
   }
 
   // a2v mode requires an audio upload — fail fast at the route boundary so
   // the UI gets a clear 400 instead of a queued job that fails late on the
   // python helper's "audio_path is required" check.
   if (body.mode === 'a2v' && !audioFilePath) {
-    await cleanupTempUpload();
+    await cleanupAllStaged();
     throw new ServerError(
       'a2v mode requires an audioFile upload (multipart field name: audioFile).',
       { status: 400, code: 'VIDEO_GEN_AUDIO_REQUIRED' },
     );
   }
-  // Inverse guard: if an audio file was uploaded but `mode` is missing or
-  // is anything other than 'a2v', the job would be queued with audioFilePath
-  // set and mode=undefined, and generateVideo() would treat it as plain
-  // text-to-video — silently dropping the audio. Reject so the caller can't
-  // accidentally pay for the wrong generation. (We deliberately do NOT
-  // auto-infer mode='a2v' from the audio upload — explicit-is-better than
-  // magic, and the UI always sets mode when sending audio.)
+  // Inverse guard: an audio upload paired with anything other than a2v would
+  // otherwise be silently dropped (the service ignores audioFilePath unless
+  // mode === 'a2v'), which means the user pays for a t2v render they didn't
+  // ask for. Reject so the caller can fix their request.
   if (audioFilePath && body.mode !== 'a2v') {
-    await cleanupTempUpload();
+    await cleanupAllStaged();
     throw new ServerError(
-      `audioFile upload requires mode: 'a2v' (received mode: ${body.mode || '<none>'}).`,
+      `audioFile upload is only valid with mode='a2v' (got mode='${body.mode || 'unset'}').`,
       { status: 400, code: 'VIDEO_GEN_AUDIO_MODE_MISMATCH' },
     );
   }
-
-  // FFLF end-frame: gallery-pick only. Same path-traversal guard.
-  const lastImagePath = body.lastImageFile ? resolveGalleryImage(body.lastImageFile) : null;
 
   // Native extend (ltx2 runtime): resolve the history id to a video file
   // path under data/videos/ and forward it as extendFromVideoPath. Reject
@@ -259,7 +293,11 @@ router.post('/', mediaUpload, asyncHandler(async (req, res) => {
     const history = await loadHistory();
     const videoEntry = history.find((h) => h.id === body.extendFromVideoId);
     if (!videoEntry) {
-      await cleanupTempUpload();
+      // cleanupAllStaged covers durable copies that may have been written
+      // before this validation point — extend mode and image uploads are
+      // mutually exclusive in the UI but the route doesn't enforce that,
+      // so be defensive.
+      await cleanupAllStaged();
       throw new ServerError(
         `extendFromVideoId not found in history: ${body.extendFromVideoId}`,
         { status: 404, code: 'EXTEND_SOURCE_NOT_FOUND' },
@@ -267,7 +305,7 @@ router.post('/', mediaUpload, asyncHandler(async (req, res) => {
     }
     const candidate = safeUnder(PATHS.videos, videoEntry.filename);
     if (!candidate || !existsSync(candidate)) {
-      await cleanupTempUpload();
+      await cleanupAllStaged();
       throw new ServerError(
         `extendFromVideoId resolved to a missing file: ${videoEntry.filename}`,
         { status: 404, code: 'EXTEND_SOURCE_FILE_MISSING' },
@@ -297,6 +335,7 @@ router.post('/', mediaUpload, asyncHandler(async (req, res) => {
       sourceImagePath,
       audioFilePath,
       uploadedTempPath,
+      uploadedTempPaths: extraUploadedTempPaths,
       lastImagePath,
       extendFromVideoPath,
       mode: body.mode,

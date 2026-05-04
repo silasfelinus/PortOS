@@ -1,12 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Readable } from 'stream';
-import { uploadSingle } from './multipart.js';
-
-// Mock fs/promises.unlink so the TOO_MANY_FILES test can assert that the
-// already-finalized first temp file is unlinked when the parser rejects
-// the second accepted file part. Without this assertion the regression
-// would silently reintroduce the /tmp leak the guard was added to fix.
-vi.mock('fs/promises', () => ({ unlink: vi.fn(async () => {}) }));
+import { uploadSingle, uploadFields } from './multipart.js';
 
 vi.mock('fs', () => ({
   createWriteStream: () => {
@@ -64,7 +58,7 @@ const runMiddleware = (req) => new Promise((resolve, reject) => {
   mw(req, {}, (err) => err ? reject(err) : resolve());
 });
 
-describe('uploadSingle multipart parser', () => {
+describe('multipart parser', () => {
   it('parses text fields into req.body when no file is present', async () => {
     const req = makeMultipartReq([
       { name: 'prompt', body: 'a cat' },
@@ -145,33 +139,36 @@ describe('uploadSingle multipart parser', () => {
     vi.doUnmock('fs');
   });
 
-  it('rejects a second accepted file part (TOO_MANY_FILES) and unlinks the first temp file', async () => {
-    // With multi-fieldname uploads (e.g. videoGen's sourceImage|audioFile),
-    // a malicious or buggy client could send both parts in one request. The
-    // parser used to silently overwrite fileResult with the second file,
-    // leaving the first temp file orphaned in /tmp. The TOO_MANY_FILES
-    // guard rejects the request before the second part is opened, and
-    // fail() unlinks the already-finalized first temp file so /tmp doesn't
-    // leak on every rejected request.
-    const fsPromises = await import('fs/promises');
-    fsPromises.unlink.mockClear();
+  it('uploadFields collects two file parts into req.files keyed by field name', async () => {
     const req = makeMultipartReq([
-      { name: 'sourceImage', filename: 'a.png', contentType: 'image/png', body: Buffer.from([0x89, 0x50]) },
-      { name: 'audioFile', filename: 'b.wav', contentType: 'audio/wav', body: Buffer.from([0xde, 0xad]) },
+      { name: 'prompt', body: 'morph between two scenes' },
+      { name: 'sourceImage', filename: 'first.png', contentType: 'image/png', body: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+      { name: 'lastImage', filename: 'last.png', contentType: 'image/png', body: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
     ]);
-    let captured = null;
-    const mw = uploadSingle(['sourceImage', 'audioFile'], { limits: { fileSize: 1024 * 1024 } });
-    await new Promise((resolve) => mw(req, {}, (err) => { captured = err; resolve(); }));
-    expect(captured).toBeTruthy();
-    expect(captured.code).toBe('TOO_MANY_FILES');
-    expect(captured.status).toBe(400);
-    // The first part's tmp file (already finalized into fileResult.path
-    // before the second part was seen) MUST be unlinked. The path is a
-    // crypto-random `upload-<uuid>.png` under os.tmpdir(); we just assert
-    // unlink was called with something matching that shape.
-    expect(fsPromises.unlink).toHaveBeenCalledWith(
-      expect.stringMatching(/upload-[0-9a-f-]+\.png$/),
-    );
+    await new Promise((resolve, reject) => {
+      const mw = uploadFields(['sourceImage', 'lastImage'], { limits: { fileSize: 1024 * 1024 } });
+      mw(req, {}, (err) => err ? reject(err) : resolve());
+    });
+    expect(req.body.prompt).toBe('morph between two scenes');
+    expect(req.files).toBeDefined();
+    expect(req.files.sourceImage?.originalname).toBe('first.png');
+    expect(req.files.lastImage?.originalname).toBe('last.png');
+    // The single-file back-compat field should not appear when uploadFields is used.
+    expect(req.file).toBeUndefined();
+  });
+
+  it('uploadFields silently drops a file part whose name is not in the accepted set', async () => {
+    const req = makeMultipartReq([
+      { name: 'sourceImage', filename: 'good.png', contentType: 'image/png', body: Buffer.from([0xaa]) },
+      { name: 'unrelated',    filename: 'bad.png',  contentType: 'image/png', body: Buffer.from([0xbb]) },
+    ]);
+    await new Promise((resolve, reject) => {
+      const mw = uploadFields(['sourceImage', 'lastImage']);
+      mw(req, {}, (err) => err ? reject(err) : resolve());
+    });
+    expect(req.files?.sourceImage?.originalname).toBe('good.png');
+    expect(req.files?.unrelated).toBeUndefined();
+    expect(req.files?.lastImage).toBeUndefined();
   });
 
   it('rejects requests without the multipart Content-Type', async () => {

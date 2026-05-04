@@ -8,9 +8,12 @@
  *
  * Returns an Express middleware. Populates:
  *   - req.body[name]  — for text parts (Content-Disposition has no filename)
- *   - req.file = { path, originalname, mimetype, size } — for the matching
- *     file part (Content-Disposition has filename and name === fieldName).
- *     Other file parts (different field names) are silently skipped.
+ *   - req.file        — uploadSingle: { path, originalname, mimetype, size }
+ *                       for the matching file part. Other file parts (different
+ *                       field names) are silently skipped.
+ *   - req.files       — uploadFields: { [fieldName]: { path, ... } } for each
+ *                       accepted file field. Field names not in the accepted
+ *                       set are silently skipped.
  */
 
 import { createWriteStream } from 'fs';
@@ -19,32 +22,54 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 
-// fieldName accepts either a string (single accepted file field) or an array
-// of strings (any one of which is the accepted file field). Mutually-exclusive
-// uploads — e.g. videoGen's `sourceImage` (image mode) vs. `audioFile` (a2v
-// mode) — pass the array form so a single middleware handles both without
-// chaining two parsers (which can't share the streamed request body).
+const parseBoundary = (req) => {
+  const ct = req.headers['content-type'] || '';
+  // Media type is case-insensitive (RFC 2045), but the boundary value is
+  // case-sensitive — match the type prefix on a lowercased copy and parse
+  // the boundary off the original.
+  if (!ct.toLowerCase().startsWith('multipart/form-data')) {
+    const err = new Error('Expected multipart/form-data');
+    err.status = 400; err.code = 'INVALID_CONTENT_TYPE';
+    return { err };
+  }
+  const bm = ct.match(/boundary=([^\s;]+)/i);
+  if (!bm) {
+    const err = new Error('Missing multipart boundary');
+    err.status = 400; err.code = 'INVALID_CONTENT_TYPE';
+    return { err };
+  }
+  return { boundary: bm[1] };
+};
+
 export function uploadSingle(fieldName, { limits = {}, fileFilter } = {}) {
   const maxSize = limits.fileSize ?? Infinity;
-  const fieldNames = Array.isArray(fieldName) ? fieldName : [fieldName];
+  const accepted = new Set([fieldName]);
 
   return (req, res, next) => {
-    const ct = req.headers['content-type'] || '';
-    // Media type is case-insensitive (RFC 2045), but the boundary value is
-    // case-sensitive — match the type prefix on a lowercased copy and parse
-    // the boundary off the original.
-    if (!ct.toLowerCase().startsWith('multipart/form-data')) {
-      const err = new Error('Expected multipart/form-data');
-      err.status = 400; err.code = 'INVALID_CONTENT_TYPE';
-      return next(err);
-    }
-    const bm = ct.match(/boundary=([^\s;]+)/i);
-    if (!bm) {
-      const err = new Error('Missing multipart boundary');
-      err.status = 400; err.code = 'INVALID_CONTENT_TYPE';
-      return next(err);
-    }
-    streamMultipart(req, bm[1], fieldNames, maxSize, fileFilter, next);
+    const { err, boundary } = parseBoundary(req);
+    if (err) return next(err);
+    streamMultipart(req, boundary, accepted, maxSize, fileFilter, (innerErr) => {
+      if (innerErr) return next(innerErr);
+      // Back-compat: surface the matched file as req.file for callers that
+      // predate the multi-file `req.files` shape.
+      if (req.files?.[fieldName]) req.file = req.files[fieldName];
+      next();
+    });
+  };
+}
+
+// Multi-file variant — accepts a list of allowed file field names and
+// populates req.files = { [fieldName]: { path, originalname, mimetype, size } }
+// for each one that arrives. Same semantics as uploadSingle for everything
+// else (text fields → req.body, unknown file fields silently dropped).
+export function uploadFields(fieldNames, { limits = {}, fileFilter } = {}) {
+  const maxSize = limits.fileSize ?? Infinity;
+  const accepted = new Set(fieldNames);
+
+  return (req, res, next) => {
+    const { err, boundary } = parseBoundary(req);
+    if (err) return next(err);
+    streamMultipart(req, boundary, accepted, maxSize, fileFilter, next);
   };
 }
 
@@ -60,7 +85,7 @@ export function optionalUpload(fieldName, opts) {
   };
 }
 
-function streamMultipart(req, boundary, fileFieldNames, maxSize, fileFilter, next) {
+function streamMultipart(req, boundary, acceptedNames, maxSize, fileFilter, next) {
   const PART_DELIM = Buffer.from('\r\n--' + boundary);
   const FIRST_DELIM = Buffer.from('--' + boundary);
   const HEADER_END = Buffer.from('\r\n\r\n');
@@ -78,18 +103,31 @@ function streamMultipart(req, boundary, fileFieldNames, maxSize, fileFilter, nex
   let endSeen = false;        // 'end' event fired but we may still be flushing
   let textCharCount = 0;
   const TEXT_FIELD_TOTAL_CAP = 1024 * 1024; // 1MB cap on aggregate text fields
+  // Cap the bytes we'll silently consume from non-matching file parts.
+  // Without this, a client could keep the connection busy by streaming a huge
+  // file under an unaccepted field name (we just discard the bytes, but the
+  // parser would happily read forever). Tie the cap to the endpoint's own
+  // per-file `maxSize` so an endpoint configured for 1MB uploads doesn't
+  // accept ~50MB of dropped bytes before 413-ing — the effective DoS surface
+  // matches the declared upload limit. Endpoints with no limit (Infinity)
+  // get a safety default so the dropped-bytes path isn't itself unbounded.
+  let droppedFileBytes = 0;
+  const DROPPED_FILE_TOTAL_CAP = Number.isFinite(maxSize) ? maxSize : 50 * 1024 * 1024;
 
   // Per-part state
   let currentName = null;
   let currentFilename = null;
-  let isMatchingFile = false;     // true when current part is the file we want
+  let isMatchingFile = false;     // true when current part is one of acceptedNames
   let writeStream = null;
   let writePath = null;
   let bytesWritten = 0;
   let textBuf = null;             // Buffer when current part is a text field
 
   const body = {};
-  let fileResult = null;
+  // Map of finalized files keyed by field name. Truncated-request cleanup
+  // walks this to unlink everything that was already flushed before the
+  // request died mid-stream.
+  const fileResults = {};
 
   const fail = (err) => {
     if (done) return;
@@ -100,12 +138,11 @@ function streamMultipart(req, boundary, fileFieldNames, maxSize, fileFilter, nex
       // Best-effort cleanup of the partially-written file.
       if (writePath) unlink(writePath).catch(() => {});
     }
-    // Also unlink any already-finalized file. Matters for the TOO_MANY_FILES
-    // path: the first accepted file part has already flushed to disk and is
-    // sitting at fileResult.path before the second part triggers fail().
-    // Without this, every TOO_MANY_FILES rejection leaks the first temp
-    // file in the OS tmp dir.
-    if (fileResult?.path) unlink(fileResult.path).catch(() => {});
+    // Also drop any already-finalized files — a fail mid-request must not
+    // leak completed uploads to the OS temp dir.
+    for (const f of Object.values(fileResults)) {
+      if (f?.path) unlink(f.path).catch(() => {});
+    }
     req.removeAllListeners('data');
     next(err);
   };
@@ -120,9 +157,10 @@ function streamMultipart(req, boundary, fileFieldNames, maxSize, fileFilter, nex
       // Clean up any partially-written file before failing.
       if (writeStream) writeStream.destroy();
       if (writePath) unlink(writePath).catch(() => {});
-      // Also drop the in-progress fileResult if endPart already finalized
-      // a file from a part that was followed by truncated data.
-      if (fileResult?.path) unlink(fileResult.path).catch(() => {});
+      // Also drop any files already finalized before the truncation.
+      for (const f of Object.values(fileResults)) {
+        if (f?.path) unlink(f.path).catch(() => {});
+      }
       done = true;
       const err = new Error('Truncated multipart request — never reached terminal boundary');
       err.code = 'INVALID_MULTIPART';
@@ -132,7 +170,7 @@ function streamMultipart(req, boundary, fileFieldNames, maxSize, fileFilter, nex
     }
     done = true;
     req.body = body;
-    if (fileResult) req.file = fileResult;
+    if (Object.keys(fileResults).length) req.files = fileResults;
     next();
   };
 
@@ -154,24 +192,11 @@ function streamMultipart(req, boundary, fileFieldNames, maxSize, fileFilter, nex
     currentFilename = filenameMatch?.[1];
 
     if (currentFilename != null && currentFilename !== '') {
-      isMatchingFile = fileFieldNames.includes(currentName);
+      isMatchingFile = acceptedNames.has(currentName);
       const mimeMatch = headerStr.match(/Content-Type:\s*([^\r\n]+)/i);
       currentFileMimetype = mimeMatch ? mimeMatch[1].trim() : 'application/octet-stream';
-      // Reject a second accepted file part rather than silently overwriting
-      // fileResult and leaking the prior part's tmp file. This matters more
-      // now that callers can pass multiple accepted field names (videoGen's
-      // sourceImage|audioFile) — without this guard, a client posting both
-      // could fill /tmp on repeated requests since the first temp file was
-      // never unlinked. Limit is per-request (single accepted file in flight),
-      // not per-fieldname.
-      if (isMatchingFile && fileResult) {
-        const err = new Error('Multiple file uploads not allowed — only one of the accepted file fields may be present per request');
-        err.status = 400;
-        err.code = 'TOO_MANY_FILES';
-        return fail(err);
-      }
       if (isMatchingFile) {
-        const fileMeta = { fieldname: currentName, originalname: currentFilename, mimetype: currentFileMimetype };
+        const fileMeta = { originalname: currentFilename, mimetype: currentFileMimetype };
 
         if (fileFilter) {
           // CONTRACT: fileFilter MUST call its `cb` synchronously. We read
@@ -234,8 +259,18 @@ function streamMultipart(req, boundary, fileFieldNames, maxSize, fileFilter, nex
           req.pause();
           writeStream.once('drain', () => req.resume());
         }
+      } else {
+        // Non-matching file: drop bytes, but cap the total so a client
+        // can't tie up the connection by sending an unbounded payload
+        // under an unaccepted field name.
+        droppedFileBytes += chunk.length;
+        if (droppedFileBytes > DROPPED_FILE_TOTAL_CAP) {
+          const err = new Error(`Unaccepted file part too large (max ${DROPPED_FILE_TOTAL_CAP} bytes)`);
+          err.status = 413; err.code = 'PAYLOAD_TOO_LARGE';
+          fail(err);
+          return false;
+        }
       }
-      // Non-matching file: drop bytes silently.
     } else {
       textCharCount += chunk.length;
       if (textCharCount > TEXT_FIELD_TOTAL_CAP) {
@@ -258,12 +293,17 @@ function streamMultipart(req, boundary, fileFieldNames, maxSize, fileFilter, nex
         const size = bytesWritten;
         const filename = currentFilename;
         const mimetype = currentFileMimetype || 'application/octet-stream';
-        const fieldname = currentName;
+        const fieldName = currentName;
         writeStream = null;
         writePath = null;
         pendingFlush += 1;
         ws.end(() => {
-          fileResult = { fieldname, path, originalname: filename, mimetype, size };
+          // Defensive: a malformed/malicious request can include the same
+          // field name twice. Drop the prior temp file before overwriting
+          // so it doesn't leak in os.tmpdir().
+          const prior = fileResults[fieldName];
+          if (prior?.path) unlink(prior.path).catch(() => {});
+          fileResults[fieldName] = { path, originalname: filename, mimetype, size };
           pendingFlush -= 1;
           cb();
           // If 'end' arrived while we were still flushing, finalize now.

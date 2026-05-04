@@ -37,11 +37,12 @@ const setPendingUpload = (file) => { pendingUpload.current = file; };
 
 vi.mock('../lib/multipart.js', () => ({
   // Bypass the streaming parser. If a test set a pending upload via
-  // setPendingUpload(), inject it as req.file so the route exercises the
-  // upload-staging path; otherwise pass through (no-upload path).
-  uploadSingle: () => (req, _res, next) => {
+  // setPendingUpload(), inject it under req.files keyed by fieldname so the
+  // route exercises the upload-staging path; otherwise pass through.
+  uploadFields: () => (req, _res, next) => {
     if (pendingUpload.current) {
-      req.file = pendingUpload.current;
+      const f = pendingUpload.current;
+      req.files = { [f.fieldname]: f };
       pendingUpload.current = null;
     }
     next();
@@ -297,8 +298,12 @@ describe('videoGen routes', () => {
           mode: 'a2v',
           // audio is staged into PATHS.uploads with the video-audio prefix
           audioFilePath: expect.stringMatching(/\/mock\/uploads\/video-audio-.*\.wav$/),
-          // and threaded into uploadedTempPath for worker cleanup
-          uploadedTempPath: expect.stringMatching(/\/mock\/uploads\/video-audio-.*\.wav$/),
+          // and threaded into uploadedTempPaths (array) for worker cleanup —
+          // uploadedTempPath (singular) stays reserved for the start-frame
+          // upload so legacy persisted jobs replay correctly.
+          uploadedTempPaths: expect.arrayContaining([
+            expect.stringMatching(/\/mock\/uploads\/video-audio-.*\.wav$/),
+          ]),
         }),
       }));
     });
