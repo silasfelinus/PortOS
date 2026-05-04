@@ -103,6 +103,12 @@ function streamMultipart(req, boundary, acceptedNames, maxSize, fileFilter, next
   let endSeen = false;        // 'end' event fired but we may still be flushing
   let textCharCount = 0;
   const TEXT_FIELD_TOTAL_CAP = 1024 * 1024; // 1MB cap on aggregate text fields
+  // Cap the bytes we'll silently consume from non-matching file parts. Without
+  // this, a client could keep the connection busy by streaming a huge file
+  // under an unaccepted field name (we just discard the bytes, but the parser
+  // would happily read forever). 50MB matches the typical accepted-file cap.
+  let droppedFileBytes = 0;
+  const DROPPED_FILE_TOTAL_CAP = 50 * 1024 * 1024;
 
   // Per-part state
   let currentName = null;
@@ -249,8 +255,18 @@ function streamMultipart(req, boundary, acceptedNames, maxSize, fileFilter, next
           req.pause();
           writeStream.once('drain', () => req.resume());
         }
+      } else {
+        // Non-matching file: drop bytes, but cap the total so a client
+        // can't tie up the connection by sending an unbounded payload
+        // under an unaccepted field name.
+        droppedFileBytes += chunk.length;
+        if (droppedFileBytes > DROPPED_FILE_TOTAL_CAP) {
+          const err = new Error(`Unaccepted file part too large (max ${DROPPED_FILE_TOTAL_CAP} bytes)`);
+          err.status = 413; err.code = 'PAYLOAD_TOO_LARGE';
+          fail(err);
+          return false;
+        }
       }
-      // Non-matching file: drop bytes silently.
     } else {
       textCharCount += chunk.length;
       if (textCharCount > TEXT_FIELD_TOTAL_CAP) {
@@ -278,6 +294,11 @@ function streamMultipart(req, boundary, acceptedNames, maxSize, fileFilter, next
         writePath = null;
         pendingFlush += 1;
         ws.end(() => {
+          // Defensive: a malformed/malicious request can include the same
+          // field name twice. Drop the prior temp file before overwriting
+          // so it doesn't leak in os.tmpdir().
+          const prior = fileResults[fieldName];
+          if (prior?.path) unlink(prior.path).catch(() => {});
           fileResults[fieldName] = { path, originalname: filename, mimetype, size };
           pendingFlush -= 1;
           cb();

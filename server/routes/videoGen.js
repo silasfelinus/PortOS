@@ -195,28 +195,44 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
   // Resolution precedence on each frame side: a fresh upload always wins over
   // a gallery filename so users can override a stale gallery pick by dropping
   // in a new file without first clearing the picker.
+  //
+  // Cleanup plumbing: `uploadedTempPath` (single, legacy) is RESERVED for the
+  // start-frame upload — that field shape is what already-persisted jobs from
+  // before this route change carry, so keeping its semantics stable means
+  // those replays still clean up correctly. Every additional upload (today:
+  // just `lastImage`) flows through `uploadedTempPaths` as an array. The
+  // worker walks both fields when unlinking on terminal events.
   let sourceImagePath = null;
   let lastImagePath = null;
-  const stagedUploads = [];
-  if (uploads.sourceImage || uploads.lastImage) await ensureDir(PATHS.uploads);
+  let uploadedTempPath = null;
+  const extraUploadedTempPaths = [];
+  if (uploads.sourceImage || uploads.lastImage) {
+    // Ensure the durable uploads dir exists before staging. Wrapped in
+    // try/catch so a permission/disk failure here still cleans up the
+    // multipart temp uploads instead of leaking them in the OS temp dir.
+    try {
+      await ensureDir(PATHS.uploads);
+    } catch (err) {
+      await cleanupTempUploads();
+      throw new ServerError(
+        `Failed to prepare uploads directory: ${err.message}`,
+        { status: 500, code: 'VIDEO_GEN_UPLOADS_DIR_FAILED' },
+      );
+    }
+  }
   if (uploads.sourceImage) {
     sourceImagePath = await stageUploadDurable(uploads.sourceImage, 'source');
-    stagedUploads.push(sourceImagePath);
+    uploadedTempPath = sourceImagePath;
   } else if (body.sourceImageFile) {
     sourceImagePath = resolveGalleryImage(body.sourceImageFile);
   }
   if (uploads.lastImage) {
     lastImagePath = await stageUploadDurable(uploads.lastImage, 'last');
-    stagedUploads.push(lastImagePath);
+    extraUploadedTempPaths.push(lastImagePath);
   } else if (body.lastImageFile) {
     // Same path-traversal guard as the start frame.
     lastImagePath = resolveGalleryImage(body.lastImageFile);
   }
-  // Worker cleans up every staged temp file on terminal events. The legacy
-  // `uploadedTempPath` field stays single (start-frame upload, if any) so
-  // already-persisted jobs from before this route change still replay
-  // cleanly; everything else flows through the array.
-  const [uploadedTempPath = null, ...extraUploadedTempPaths] = stagedUploads;
 
   // Native extend (ltx2 runtime): resolve the history id to a video file
   // path under data/videos/ and forward it as extendFromVideoPath. Reject

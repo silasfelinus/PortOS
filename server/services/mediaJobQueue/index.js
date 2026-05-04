@@ -83,11 +83,17 @@ async function safeUnlinkUpload(path) {
 // Walks both `uploadedTempPath` (single, start-frame upload) and
 // `uploadedTempPaths` (array, additional staged uploads such as the FFLF
 // lastImage) so cleanup paths stay agnostic to which fields contributed.
+// Also handles the corrupted-JSON case where `uploadedTempPaths` arrives as
+// a single string (treats it as a one-entry array) — defense-in-depth so a
+// hand-edited media-jobs.json still gets its staged file unlinked.
 async function safeUnlinkAllUploads(params) {
   if (!params) return;
   await safeUnlinkUpload(params.uploadedTempPath);
-  if (Array.isArray(params.uploadedTempPaths)) {
-    for (const p of params.uploadedTempPaths) await safeUnlinkUpload(p);
+  const paths = params.uploadedTempPaths;
+  if (Array.isArray(paths)) {
+    for (const p of paths) await safeUnlinkUpload(p);
+  } else if (typeof paths === 'string') {
+    await safeUnlinkUpload(paths);
   }
 }
 
