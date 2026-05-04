@@ -14,7 +14,7 @@ import { execFile, spawn } from 'child_process';
 import { existsSync, statSync } from 'fs';
 import { unlink, writeFile, copyFile } from 'fs/promises';
 import { join, basename } from 'path';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { randomUUID } from 'crypto';
 import { promisify } from 'util';
 import { ensureDir, PATHS, readJSONFile, atomicWrite, UUID_RE } from '../../lib/fileUtils.js';
@@ -23,6 +23,14 @@ import { videoGenEvents } from './events.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay, PYTHON_NOISE_RE } from '../../lib/sseUtils.js';
 import { getVideoModels, getDefaultVideoModelId, getTextEncoderRepo } from '../../lib/mediaModels.js';
 import { findFfmpeg, safeUnder, generateThumbnail, optimizeForStreaming, upscaleVideo2x } from '../../lib/ffmpeg.js';
+
+// Path to the dgrauet/ltx-2-mlx venv populated by `INSTALL_LTX2=1
+// scripts/setup-image-video.sh`. Used when a model entry has
+// `runtime: 'ltx2'`. The companion helper at scripts/generate_ltx2.py
+// imports `ltx_pipelines_mlx` from this venv and emits the same SSE
+// progress protocol (STAGE:/STATUS:/DOWNLOAD:) as the mlx_video CLI.
+const LTX2_VENV_PYTHON = join(homedir(), '.portos', 'ltx-2-mlx', '.venv', 'bin', 'python3');
+const LTX2_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_ltx2.py');
 
 const execFileAsync = promisify(execFile);
 
@@ -75,7 +83,90 @@ export const cancel = () => {
 export const loadHistory = () => readJSONFile(HISTORY_FILE, []);
 export const saveHistory = (h) => atomicWrite(HISTORY_FILE, h);
 
+// Build the spawn args for dgrauet's ltx-2-mlx runtime via our Python helper.
+// The helper lives in the ltx-2-mlx venv (so its `import ltx_pipelines_mlx`
+// resolves) but the script file lives in the PortOS repo so updates ship
+// with PortOS releases instead of the user's HF cache.
+const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, lastImagePath, mode, disableAudio, outputPath, textEncoderRepo }) => {
+  if (!existsSync(LTX2_VENV_PYTHON)) {
+    throw new ServerError(
+      `ltx-2-mlx venv not found at ${LTX2_VENV_PYTHON}. Run \`INSTALL_LTX2=1 bash scripts/setup-image-video.sh\` to install.`,
+      { status: 500, code: 'LTX2_VENV_MISSING' },
+    );
+  }
+  // Map PortOS UI modes to the helper's subcommand. Extend isn't reachable
+  // from the current videoGen.generateVideo signature — that mode runs as
+  // a chain of i2v renders today (see generateChainedVideo). Native extend
+  // is a future enhancement; we route 'extend' to 'image' for now since
+  // the chain orchestrator already handed us a frame.
+  const helperMode = mode === 'fflf' ? 'fflf'
+    : mode === 'image' || mode === 'extend' ? 'image'
+    : 'text';
+  if (helperMode === 'fflf' && (!sourceImagePath || !lastImagePath)) {
+    throw new ServerError(
+      'FFLF mode on the ltx2 runtime requires BOTH a start image (sourceImagePath) and an end image (lastImagePath).',
+      { status: 400, code: 'LTX2_FFLF_MISSING_KEYFRAMES' },
+    );
+  }
+  // Stage-2 OOM clamp on the keyframe pipeline.
+  //
+  // The KeyframeInterpolationPipeline runs a 2× spatial upscale + full-res
+  // refinement after stage 1, and memory pressure scales with both
+  // (width × height) AND latent-frame count = 1 + (numFrames - 1) / 8.
+  // Phosphene's panel notes the same path OOMs even on 64 GB Macs at full
+  // resolution and clamps to 768×432 in their UI. We empirically verified
+  // 25 frames @ 704×448 fits 48 GB; 97 frames @ 704×448 OOMs in stage 2.
+  //
+  // Approach: cap the pixel-frame budget (width × height × numFrames) at a
+  // value that fit on the test box, then back-solve numFrames. Round down
+  // to the LTX 8k+1 latent-boundary so the model doesn't silently snap.
+  // FFLF_LTX2_PIXEL_BUDGET env var lets users with more RAM raise the cap.
+  if (helperMode === 'fflf') {
+    const envBudget = Number(process.env.FFLF_LTX2_PIXEL_BUDGET);
+    const pixelBudget = Number.isFinite(envBudget) && envBudget > 0
+      ? envBudget
+      : 704 * 448 * 25; // ≈7.9M pixel-frames, confirmed to fit 48 GB unified RAM
+    const requested = Number(width) * Number(height) * Number(numFrames);
+    if (requested > pixelBudget) {
+      const safeRaw = Math.floor(pixelBudget / (Number(width) * Number(height)));
+      const safeLatent = Math.max(1, Math.floor((safeRaw - 1) / 8));
+      const safeFrames = safeLatent * 8 + 1;
+      console.log(`⚠️  FFLF/ltx2 numFrames clamped ${numFrames} → ${safeFrames} to fit pixel budget ${pixelBudget} (export FFLF_LTX2_PIXEL_BUDGET=<n> to raise)`);
+      numFrames = safeFrames;
+    }
+  }
+  const args = [
+    LTX2_HELPER_SCRIPT,
+    '--mode', helperMode,
+    '--prompt', prompt,
+    '--output', outputPath,
+    '--model', model.repo,
+    '--gemma', textEncoderRepo,
+    '--width', String(width),
+    '--height', String(height),
+    '--num-frames', String(numFrames),
+    '--fps', String(fps),
+    '--seed', String(seed),
+    '--steps', String(steps),
+    '--cfg-scale', String(guidance),
+  ];
+  if (negativePrompt) args.push('--negative-prompt', negativePrompt);
+  if (disableAudio) args.push('--no-audio');
+  if (helperMode === 'image' && sourceImagePath) args.push('--image', sourceImagePath);
+  if (helperMode === 'fflf') {
+    args.push('--image', sourceImagePath);
+    args.push('--last-image', lastImagePath);
+  }
+  return { bin: LTX2_VENV_PYTHON, args };
+};
+
 const buildArgs = ({ pythonPath, modelId, model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, mode, imageStrength, textEncoderRepo, outputPath }) => {
+  // Route to the dgrauet/ltx-2-mlx helper when the model declares the new
+  // runtime. Existing notapalindrome models default to runtime: 'mlx_video'
+  // (or undefined in legacy registries — see backfillRuntime in mediaModels.js).
+  if (model.runtime === 'ltx2') {
+    return buildLtx2Args({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, lastImagePath, mode, disableAudio, outputPath, textEncoderRepo });
+  }
   if (IS_WIN) {
     const scriptPath = join(PATHS.root, 'scripts', 'generate_win.py');
     const args = [scriptPath, '--model', modelId, '--prompt', prompt, '--height', String(height), '--width', String(width), '--num-frames', String(numFrames), '--fps', String(fps), '--steps', String(steps), '--guidance', String(guidance), '--seed', String(seed), '--output', outputPath];
