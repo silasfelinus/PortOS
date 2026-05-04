@@ -58,7 +58,7 @@ const runMiddleware = (req) => new Promise((resolve, reject) => {
   mw(req, {}, (err) => err ? reject(err) : resolve());
 });
 
-describe('uploadSingle multipart parser', () => {
+describe('multipart parser', () => {
   it('parses text fields into req.body when no file is present', async () => {
     const req = makeMultipartReq([
       { name: 'prompt', body: 'a cat' },
