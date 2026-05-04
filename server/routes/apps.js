@@ -675,7 +675,7 @@ router.post('/:id/build', loadApp, asyncHandler(async (req, res) => {
         child.on('error', err => { if (!settled) { settled = true; clearTimeout(timer); resolve({ success: false, exitCode: -1, output: err.message }); } });
       });
       if (!installResult.success) {
-        console.log(`❌ npm install (${label}) exit=${installResult.exitCode}: ${installResult.output.slice(0, 300)}`);
+        console.log(`❌ npm install (${label}) exit=${installResult.exitCode}: ${installResult.output.slice(-300)}`);
         await logAction('build', app.id, app.name, { buildCommand, step: `npm install (${label})` }, false);
         throw new ServerError(`npm install failed (${label}) exit=${installResult.exitCode}: ${installResult.output}`, { status: 500, code: 'INSTALL_FAILED' });
       }
@@ -692,7 +692,8 @@ router.post('/:id/build', loadApp, asyncHandler(async (req, res) => {
       if (!settled) {
         settled = true;
         killProc(child);
-        resolve({ success: false, stderr: `Build timed out after ${BUILD_TIMEOUT_MS / 1000}s`, code: -1 });
+        const tail = (stderr.trim() || stdout.trim()).slice(-512);
+        resolve({ success: false, stderr: `Build timed out after ${BUILD_TIMEOUT_MS / 1000}s`, code: -1, output: tail || 'no output captured' });
       }
     }, BUILD_TIMEOUT_MS);
     child.stdout.on('data', d => {
