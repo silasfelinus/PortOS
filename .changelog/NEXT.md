@@ -3,6 +3,7 @@
 ## Fixed
 
 - `update.sh` no longer hangs after "PortOS restarted" — the browser-open script now exits explicitly instead of waiting for Node's undici connection pool to drain.
+- `update.sh` now kills the PM2 daemon (not just stops apps) before restarting, fixing crashes where a stale daemon cached a `ProcessContainerFork.js` path from a different project's Yarn PnP zip cache.
 - Writers-room storyboard renders queued through Codex now wait their turn instead of erroring with "A Codex generation is already in progress" when you fire a second render before the first finishes. Codex jobs run on their own queue lane, so they don't block (and aren't blocked by) local image or video renders.
 
 ## Added
