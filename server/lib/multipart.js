@@ -103,12 +103,16 @@ function streamMultipart(req, boundary, acceptedNames, maxSize, fileFilter, next
   let endSeen = false;        // 'end' event fired but we may still be flushing
   let textCharCount = 0;
   const TEXT_FIELD_TOTAL_CAP = 1024 * 1024; // 1MB cap on aggregate text fields
-  // Cap the bytes we'll silently consume from non-matching file parts. Without
-  // this, a client could keep the connection busy by streaming a huge file
-  // under an unaccepted field name (we just discard the bytes, but the parser
-  // would happily read forever). 50MB matches the typical accepted-file cap.
+  // Cap the bytes we'll silently consume from non-matching file parts.
+  // Without this, a client could keep the connection busy by streaming a huge
+  // file under an unaccepted field name (we just discard the bytes, but the
+  // parser would happily read forever). Tie the cap to the endpoint's own
+  // per-file `maxSize` so an endpoint configured for 1MB uploads doesn't
+  // accept ~50MB of dropped bytes before 413-ing — the effective DoS surface
+  // matches the declared upload limit. Endpoints with no limit (Infinity)
+  // get a safety default so the dropped-bytes path isn't itself unbounded.
   let droppedFileBytes = 0;
-  const DROPPED_FILE_TOTAL_CAP = 50 * 1024 * 1024;
+  const DROPPED_FILE_TOTAL_CAP = Number.isFinite(maxSize) ? maxSize : 50 * 1024 * 1024;
 
   // Per-part state
   let currentName = null;
