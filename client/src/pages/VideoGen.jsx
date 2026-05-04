@@ -673,6 +673,7 @@ export default function VideoGen() {
             <select
               value=""
               onChange={(e) => onPickGallery(e.target.value || null)}
+              aria-label={`${label} — pick from gallery`}
               className="w-full bg-port-bg border border-port-border rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
             >
               <option value="">Pick from gallery…</option>
