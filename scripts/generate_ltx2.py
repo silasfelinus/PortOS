@@ -87,6 +87,8 @@ def parse_args() -> argparse.Namespace:
                    help="One-stage steps; for fflf this maps to stage1-steps")
     p.add_argument("--stage2-steps", type=int, default=None)
     p.add_argument("--cfg-scale", type=float, default=None)
+    p.add_argument("--image-strength", type=float, default=None,
+                   help="First-frame conditioning strength for image mode (0.0-1.0).")
     p.add_argument("--dev-transformer", default=None,
                    help="Filename of the non-distilled (dev) transformer inside the model repo. "
                         "Required for fflf mode — KeyframeInterpolationPipeline rejects pure-distilled "
@@ -113,11 +115,76 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def bind_output_fps(pipe, fps: float) -> None:
+    """Make pipeline generate_and_save() calls decode at the requested FPS."""
+    decode_and_save = pipe._decode_and_save_video
+
+    def decode_with_fps(video_latent, audio_latent, output_path, fps=fps):
+        return decode_and_save(video_latent, audio_latent, output_path, fps=fps)
+
+    pipe._decode_and_save_video = decode_with_fps
+
+
+def configure_image_strength(image_strength: float | None) -> None:
+    """Thread PortOS' I2V strength into ltx-2-mlx conditioning constructors."""
+    if image_strength is None:
+        return
+    if image_strength < 0.0 or image_strength > 1.0:
+        raise SystemExit("--image-strength must be between 0.0 and 1.0")
+
+    from ltx_core_mlx.conditioning.types.latent_cond import VideoConditionByLatentIndex as BaseCondition
+    from ltx_pipelines_mlx import ti2vid_one_stage
+
+    class PortOSVideoCondition(BaseCondition):
+        def __init__(self, frame_indices, clean_latent, strength=1.0):
+            super().__init__(frame_indices, clean_latent, strength=image_strength)
+
+    ti2vid_one_stage.VideoConditionByLatentIndex = PortOSVideoCondition
+    try:
+        from ltx_pipelines_mlx import ti2vid_two_stages
+        ti2vid_two_stages.VideoConditionByLatentIndex = PortOSVideoCondition
+    except ImportError:
+        pass
+    emit_status(f"Using image strength {image_strength:g}")
+
+
+def run_two_stage(args: argparse.Namespace, image: str | None = None) -> str:
+    """T2V/I2V path that honors CFG via the dgrauet two-stage pipeline."""
+    from ltx_pipelines_mlx import TwoStagePipeline
+    emit_status(f"Loading two-stage pipeline ({args.model})…")
+    emit_stage(1, 0, 1, "Loading model")
+    pipe = TwoStagePipeline(
+        model_dir=args.model,
+        gemma_model_id=args.gemma,
+        dev_transformer=args.dev_transformer or "transformer-dev.safetensors",
+        distilled_lora=args.distilled_lora or "ltx-2.3-22b-distilled-lora-384.safetensors",
+        distilled_lora_strength=args.lora_strength,
+    )
+    bind_output_fps(pipe, args.fps)
+    emit_stage(1, 1, 1, "Loaded")
+    emit_status("Generating with CFG…")
+    return pipe.generate_and_save(
+        prompt=args.prompt,
+        output_path=args.output,
+        image=image,
+        height=args.height,
+        width=args.width,
+        num_frames=args.num_frames,
+        seed=args.seed,
+        stage1_steps=args.steps if args.steps is not None else 30,
+        stage2_steps=args.stage2_steps,
+        cfg_scale=args.cfg_scale if args.cfg_scale is not None else 3.0,
+    )
+
+
 def run_text(args: argparse.Namespace) -> str:
+    if args.cfg_scale is not None:
+        return run_two_stage(args)
     from ltx_pipelines_mlx import TextToVideoPipeline
     emit_status(f"Loading T2V pipeline ({args.model})…")
     emit_stage(1, 0, 1, "Loading model")
     pipe = TextToVideoPipeline(model_dir=args.model, gemma_model_id=args.gemma)
+    bind_output_fps(pipe, args.fps)
     emit_stage(1, 1, 1, "Loaded")
     emit_status("Generating T2V…")
     return pipe.generate_and_save(
@@ -132,12 +199,18 @@ def run_text(args: argparse.Namespace) -> str:
 
 
 def run_image(args: argparse.Namespace) -> str:
+    configure_image_strength(args.image_strength)
+    if args.cfg_scale is not None:
+        if not args.image:
+            raise SystemExit("--image is required for image mode")
+        return run_two_stage(args, image=args.image)
     from ltx_pipelines_mlx import ImageToVideoPipeline
     if not args.image:
         raise SystemExit("--image is required for image mode")
     emit_status(f"Loading I2V pipeline ({args.model})…")
     emit_stage(1, 0, 1, "Loading model")
     pipe = ImageToVideoPipeline(model_dir=args.model, gemma_model_id=args.gemma)
+    bind_output_fps(pipe, args.fps)
     emit_stage(1, 1, 1, "Loaded")
     emit_status("Generating I2V…")
     return pipe.generate_and_save(

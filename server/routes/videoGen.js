@@ -327,6 +327,8 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     extendFromVideoPath = candidate;
   }
 
+  const effectiveChunks = body.mode === 'a2v' ? 1 : (body.chunks ?? 1);
+
   // Enqueue rather than spawn synchronously — the mediaJobQueue worker will
   // run this when no other render is in flight. Caller never sees BUSY.
   const { jobId, position, status } = enqueueJob({
@@ -353,7 +355,7 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
       extendFromVideoPath,
       mode: body.mode,
       imageStrength: body.imageStrength,
-      chunks: body.chunks ?? 1,
+      chunks: effectiveChunks,
     },
   });
   // Match the legacy response shape (jobId, generationId, filename, model,

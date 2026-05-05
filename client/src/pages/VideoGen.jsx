@@ -121,6 +121,7 @@ export default function VideoGen() {
   const [chunks, setChunks] = useState(1);
   const [steps, setSteps] = useState('');
   const [guidanceScale, setGuidanceScale] = useState('');
+  const [imageStrength, setImageStrength] = useState('');
   const [seed, setSeed] = useState('');
   const [tiling, setTiling] = useState('auto');
   const [disableAudio, setDisableAudio] = useState(false);
@@ -358,6 +359,7 @@ export default function VideoGen() {
       // a2v uses uploaded audio so the constraint is meaningless there too.
       setDisableAudio(false);
       setNoMusic(false);
+      setChunks(1);
       // Auto-select the smallest (first) ltx2-runtime model so the user
       // doesn't land on a blocked state. Only fires when the current model
       // can't handle a2v — if they already have a dgrauet model selected
@@ -443,6 +445,7 @@ export default function VideoGen() {
       tiling,
       disableAudio: disableAudio ? 'true' : 'false',
       mode,
+      imageStrength: imageStrength || '',
       // ltx2-extend bypasses the last-frame i2v path: we send the source
       // video's history id directly so the server resolves it to a disk
       // path and routes through ExtendPipeline. Legacy extend (mlx_video)
@@ -458,7 +461,7 @@ export default function VideoGen() {
       // Audio File goes through under the multipart field 'audioFile'. Server
       // routes it to the durable uploads dir and into the a2v helper.
       audioFile: mode === 'a2v' ? (audioFile || '') : '',
-      chunks: chunks > 1 ? chunks : '',
+      chunks: mode !== 'a2v' && chunks > 1 ? chunks : '',
     };
   };
 
@@ -1026,22 +1029,24 @@ export default function VideoGen() {
               )}
             </div>
 
-            <div>
-              <label className="block text-xs font-medium text-gray-400 mb-1" title="Chain N renders end-to-end. Each chunk's last frame seeds the next, then they're stitched into one clip. Wall time scales linearly with chunks.">
-                Chunks
-              </label>
-              <select
-                value={chunks}
-                onChange={(e) => setChunks(Number(e.target.value))}
-                className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
-              >
-                {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
-                  <option key={n} value={n}>
-                    {n === 1 ? '1 (single)' : `${n} (~${((n * numFrames) / fps).toFixed(0)}s total)`}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {mode !== 'a2v' && (
+              <div>
+                <label className="block text-xs font-medium text-gray-400 mb-1" title="Chain N renders end-to-end. Each chunk's last frame seeds the next, then they're stitched into one clip. Wall time scales linearly with chunks.">
+                  Chunks
+                </label>
+                <select
+                  value={chunks}
+                  onChange={(e) => setChunks(Number(e.target.value))}
+                  className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
+                >
+                  {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+                    <option key={n} value={n}>
+                      {n === 1 ? '1 (single)' : `${n} (~${((n * numFrames) / fps).toFixed(0)}s total)`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <div>
               <label className="block text-xs font-medium text-gray-400 mb-1">FPS</label>
@@ -1100,6 +1105,22 @@ export default function VideoGen() {
                 className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
               />
             </div>
+
+            {(mode === 'image' || (mode === 'extend' && currentModel?.runtime !== 'ltx2')) && (
+              <div className="col-span-2 sm:col-span-3">
+                <div className="flex items-center justify-between gap-3 mb-1">
+                  <label className="block text-xs font-medium text-gray-400">Image Strength</label>
+                  <span className="text-[11px] text-gray-500">{imageStrength || '1.0'}</span>
+                </div>
+                <input
+                  type="range" min={0} max={1} step={0.05}
+                  value={imageStrength || 1}
+                  onChange={(e) => setImageStrength(e.target.value)}
+                  className="w-full accent-port-accent"
+                  title="Higher values preserve the source frame more strongly"
+                />
+              </div>
+            )}
 
             <div className="col-span-2 sm:col-span-3">
               <label className="block text-xs font-medium text-gray-400 mb-1">Tiling</label>
@@ -1303,4 +1324,3 @@ export default function VideoGen() {
     </div>
   );
 }
-

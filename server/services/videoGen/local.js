@@ -87,7 +87,7 @@ export const saveHistory = (h) => atomicWrite(HISTORY_FILE, h);
 // The helper lives in the ltx-2-mlx venv (so its `import ltx_pipelines_mlx`
 // resolves) but the script file lives in the PortOS repo so updates ship
 // with PortOS releases instead of the user's HF cache.
-const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, lastImagePath, extendFromVideoPath, audioFilePath, mode, disableAudio, outputPath, textEncoderRepo }) => {
+const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, lastImagePath, extendFromVideoPath, audioFilePath, mode, imageStrength, disableAudio, outputPath, textEncoderRepo }) => {
   if (!existsSync(LTX2_VENV_PYTHON)) {
     throw new ServerError(
       `ltx-2-mlx venv not found at ${LTX2_VENV_PYTHON}. Run \`INSTALL_LTX2=1 bash scripts/setup-image-video.sh\` to install.`,
@@ -171,6 +171,7 @@ const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames
     '--cfg-scale', String(guidance),
   ];
   if (negativePrompt) args.push('--negative-prompt', negativePrompt);
+  if (imageStrength != null) args.push('--image-strength', String(imageStrength));
   if (disableAudio) args.push('--no-audio');
   if (helperMode === 'image' && sourceImagePath) args.push('--image', sourceImagePath);
   if (helperMode === 'fflf') {
@@ -202,7 +203,7 @@ const buildArgs = ({ pythonPath, modelId, model, prompt, negativePrompt, width, 
   // runtime. Existing notapalindrome models default to runtime: 'mlx_video'
   // (or undefined in legacy registries — see backfillRuntime in mediaModels.js).
   if (model.runtime === 'ltx2') {
-    return buildLtx2Args({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, lastImagePath, extendFromVideoPath, audioFilePath, mode, disableAudio, outputPath, textEncoderRepo });
+    return buildLtx2Args({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, lastImagePath, extendFromVideoPath, audioFilePath, mode, imageStrength, disableAudio, outputPath, textEncoderRepo });
   }
   if (mode === 'a2v') {
     throw new ServerError(
@@ -826,6 +827,7 @@ export async function stitchVideos(videoIds, opts = {}) {
       proc.on('close', (code) => code === 0 ? resolve() : reject(new ServerError('Stitch failed', { status: 500, code: 'FFMPEG_FAILED' })));
       proc.on('error', (err) => reject(new ServerError(`ffmpeg failed to spawn: ${err.message}`, { status: 500, code: 'FFMPEG_FAILED' })));
     });
+    await optimizeForStreaming(outPath);
   } finally {
     await unlink(listFile).catch(() => {});
   }

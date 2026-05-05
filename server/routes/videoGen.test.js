@@ -207,6 +207,25 @@ describe('videoGen routes', () => {
       }));
     });
 
+    it('forces audio-to-video submissions to a single chunk', async () => {
+      setPendingUpload({
+        fieldname: 'audioFile',
+        originalname: 'song.wav',
+        mimetype: 'audio/wav',
+        path: '/tmp/song.wav',
+      });
+      const r = await request(app).post('/api/video-gen/').send({
+        prompt: 'sync to the track',
+        mode: 'a2v',
+        chunks: 4,
+      });
+      expect(r.status).toBe(200);
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'video',
+        params: expect.objectContaining({ mode: 'a2v', chunks: 1 }),
+      }));
+    });
+
     it('rejects chunks above the 1..8 cap', async () => {
       const r = await request(app).post('/api/video-gen/').send({
         prompt: 'too long',
