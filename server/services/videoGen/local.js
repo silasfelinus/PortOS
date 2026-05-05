@@ -534,8 +534,14 @@ export async function generateChainedVideo({ chunks, jobId: outerJobId, ...rest 
 
   const chunkIds = [];
   let currentSource = rest.sourceImagePath;
-  // First chunk preserves the user's mode (text or image). Subsequent chunks
-  // are always image-conditioned on the previous chunk's last frame.
+  // For extend mode, track the prior chunk's full video path so ExtendPipeline
+  // can condition on the entire clip (motion + visual content) rather than just
+  // a single last frame.
+  let currentExtendFromVideo = rest.extendFromVideoPath ?? null;
+  // First chunk preserves the user's mode (text, image, or extend). Subsequent
+  // chunks are conditioned differently depending on the original mode:
+  //   - extend: keep mode='extend', pass prior chunk's full video as extendFromVideoPath
+  //   - all others: image-conditioned on the previous chunk's extracted last frame
   const firstMode = rest.mode || (currentSource ? 'image' : 'text');
 
   const runChunk = (i) => new Promise((resolve, reject) => {
@@ -584,20 +590,28 @@ export async function generateChainedVideo({ chunks, jobId: outerJobId, ...rest 
     const chunkSeed = rest.seed != null && rest.seed !== ''
       ? Number(rest.seed) + i
       : undefined;
+
+    const isExtendChain = firstMode === 'extend' && i > 0;
     generateVideo({
       ...rest,
       seed: chunkSeed,
       jobId: innerJobId,
-      sourceImagePath: currentSource,
+      // extend chain: subsequent chunks condition on the prior clip's full
+      // video — ExtendPipeline.extend_from_video needs the entire video, not
+      // just the last frame, to avoid reintroducing seams.
+      // image/text chain: condition on the extracted last frame as before.
+      sourceImagePath: isExtendChain ? null : currentSource,
+      extendFromVideoPath: isExtendChain ? currentExtendFromVideo : (i === 0 ? rest.extendFromVideoPath : null),
       // Only the first chunk consumes the user's uploadedTempPath (durable
       // copy under data/uploads). Later chunks use a frame extracted from a
-      // prior render, which lives under data/images.
+      // prior render (image chain) or the prior chunk's video (extend chain).
       uploadedTempPath: i === 0 ? rest.uploadedTempPath : null,
       uploadedTempPaths: i === 0 ? (rest.uploadedTempPaths || []) : [],
       hidden: true,
-      mode: i === 0 ? firstMode : 'image',
+      mode: isExtendChain ? 'extend' : (i === 0 ? firstMode : 'image'),
       // After the first chunk, drop FFLF-style last image — chained continuation
-      // is single-conditioned on the previous chunk's tail frame.
+      // is single-conditioned on the previous chunk's tail frame (or full video
+      // for extend mode).
       lastImagePath: i === 0 ? rest.lastImagePath : null,
     }).catch((err) => {
       detach();
@@ -635,16 +649,24 @@ export async function generateChainedVideo({ chunks, jobId: outerJobId, ...rest 
         return;
       }
       if (i < totalChunks - 1) {
-        // extractLastFrame caches by id, so re-clicks (e.g. from gallery
-        // "Continue") don't re-spawn ffmpeg.
-        // eslint-disable-next-line no-await-in-loop
-        const frame = await extractLastFrame(chunkIds[chunkIds.length - 1]).catch((err) => ({ error: err.message }));
-        if (frame?.error) {
-          await setHistoryItemsHidden(chunkIds, true);
-          finishFail(`Failed to extract frame between chunks: ${frame.error}`);
-          return;
+        if (firstMode === 'extend') {
+          // For extend chains, subsequent chunks condition on the entire prior
+          // clip via ExtendPipeline.extend_from_video — no frame extraction
+          // needed. The chunk's output file is always <innerJobId>.mp4 under
+          // PATHS.videos (see generateVideo: filename = `${jobId}.mp4`).
+          currentExtendFromVideo = join(PATHS.videos, `${chunkIds[chunkIds.length - 1]}.mp4`);
+        } else {
+          // extractLastFrame caches by id, so re-clicks (e.g. from gallery
+          // "Continue") don't re-spawn ffmpeg.
+          // eslint-disable-next-line no-await-in-loop
+          const frame = await extractLastFrame(chunkIds[chunkIds.length - 1]).catch((err) => ({ error: err.message }));
+          if (frame?.error) {
+            await setHistoryItemsHidden(chunkIds, true);
+            finishFail(`Failed to extract frame between chunks: ${frame.error}`);
+            return;
+          }
+          currentSource = join(PATHS.images, frame.filename);
         }
-        currentSource = join(PATHS.images, frame.filename);
       }
     }
     const stitched = await stitchVideos(chunkIds, {

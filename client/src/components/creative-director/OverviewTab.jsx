@@ -88,7 +88,7 @@ export default function OverviewTab({ project, onProjectUpdate }) {
             </div>
           </div>
         </div>
-        <Field label="Collection" value={<Link to={collectionLink} className="text-port-accent">{project.collectionId}</Link>} />
+        <Field label="Collection" value={project.collectionId ? <Link to={collectionLink} className="text-port-accent">{project.collectionId}</Link> : <span className="text-port-text-muted">—</span>} />
         <Field label="Final video" value={final} />
         {project.timelineProjectId && (
           <Field label="Timeline" value={<Link to={`/media/timeline/${project.timelineProjectId}`} className="text-port-accent">{project.timelineProjectId}</Link>} />

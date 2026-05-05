@@ -5,6 +5,7 @@ import AppContextPicker from '../AppContextPicker';
 import * as api from '../../services/api';
 import { processScreenshotUploads, processAttachmentUploads } from '../../utils/fileUpload';
 import { formatBytes } from '../../utils/formatters';
+import { filterSelectableModels } from '../../utils/providers';
 
 const isCodexProvider = (provider) => {
   if (!provider) return false;
@@ -70,7 +71,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
 
   // Get models for selected provider
   const selectedProvider = providers?.find(p => p.id === newTask.provider);
-  const availableModels = selectedProvider?.models || [];
+  const availableModels = filterSelectableModels(selectedProvider?.models);
   const providerModelNote = selectedProvider
     ? isCodexProvider(selectedProvider)
       ? 'Codex uses the model configured in ~/.codex/config.toml.'

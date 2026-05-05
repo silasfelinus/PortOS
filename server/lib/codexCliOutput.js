@@ -30,12 +30,18 @@ export function createCodexStderrFormatter() {
   let lineBuffer = '';
   let sawRuntimeOutput = false;
   let suppressCommandOutput = false;
+  let crossedPromptBoundary = false;
 
   const processLine = (line) => {
     const trimmed = line.trim();
+    if (/^-{4,}$/.test(trimmed)) {
+      crossedPromptBoundary = true;
+      return null;
+    }
     if (shouldDropCodexLine(trimmed)) return null;
 
-    const isRuntimeSignal = RUNTIME_SIGNAL_RE.test(trimmed) || ERROR_SIGNAL_RE.test(trimmed);
+    const isRuntimeSignal = RUNTIME_SIGNAL_RE.test(trimmed)
+      || (sawRuntimeOutput && ERROR_SIGNAL_RE.test(trimmed));
     if (suppressCommandOutput && !isRuntimeSignal) return null;
     if (!sawRuntimeOutput && !isRuntimeSignal) return null;
     if (isRuntimeSignal) sawRuntimeOutput = true;

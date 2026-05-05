@@ -7,6 +7,7 @@ import CronInput from '../../CronInput';
 import { AGENT_OPTIONS, toggleAppMetadataOverride, agentOptionButtonClass } from '../constants';
 import { isCronExpression, describeCron } from '../../../utils/cronHelpers';
 import ToggleSwitch from '../../ToggleSwitch';
+import { filterSelectableModels } from '../../../utils/providers';
 
 const INTERVAL_LABELS = {
   rotation: 'Rotation',
@@ -353,7 +354,7 @@ function GlobalConfigControls({ taskType, config, onUpdate, onTrigger, onReset, 
   };
 
   const selectedProvider = providers?.find(p => p.id === (selectedProviderId || ''));
-  const availableModels = selectedProvider?.models || [];
+  const availableModels = filterSelectableModels(selectedProvider?.models);
   const status = config.status || {};
 
   return (

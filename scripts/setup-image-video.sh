@@ -82,6 +82,10 @@ if [[ "$INSTALL_LTX2" == "1" ]]; then
   # via `uv sync --all-extras` from a local clone. Lives at
   # ~/.portos/ltx-2-mlx/ (sibling to the FLUX.2 venv pattern).
   #
+  # The runtime is pinned to a known-good commit in PortOS releases for
+  # reproducibility — upstream changes cannot break installs without a
+  # PortOS release. Set LTX2_PIN=main to track HEAD for development.
+  #
   # The notapalindrome `mlx-video-with-audio` install above is unaffected
   # — both pipelines coexist; dispatch is per-model via media-models.json's
   # `runtime` field (`mlx_video` vs `ltx2`).
@@ -94,16 +98,22 @@ if [[ "$INSTALL_LTX2" == "1" ]]; then
     echo "❌ INSTALL_LTX2=1 requires git." >&2
     exit 1
   fi
+  # Pinned to a known-good commit (2026-05-05). To upgrade: bump this SHA
+  # and verify with PortOS's video gen smoke tests. Set LTX2_PIN=main to
+  # bypass the pin and track upstream HEAD for development.
+  LTX2_PIN="${LTX2_PIN:-f8f20c83ab7e2e929f3196f07ec5232ad1660bab}"
   LTX2_DIR="${HOME}/.portos/ltx-2-mlx"
   LTX2_PY="${LTX2_DIR}/.venv/bin/python3"
   mkdir -p "${HOME}/.portos"
   if [[ ! -d "${LTX2_DIR}/.git" ]]; then
-    echo "📦 Cloning dgrauet/ltx-2-mlx into ${LTX2_DIR}..."
-    git clone --depth=1 https://github.com/dgrauet/ltx-2-mlx.git "${LTX2_DIR}"
+    echo "📦 Cloning dgrauet/ltx-2-mlx (pinned to ${LTX2_PIN:0:12})..."
+    git clone https://github.com/dgrauet/ltx-2-mlx.git "${LTX2_DIR}"
   else
-    echo "📦 Updating existing ltx-2-mlx clone at ${LTX2_DIR}..."
-    (cd "${LTX2_DIR}" && git fetch --depth=1 origin main && git checkout -B main FETCH_HEAD)
+    echo "📦 Fetching ltx-2-mlx updates..."
+    (cd "${LTX2_DIR}" && git fetch origin)
   fi
+  echo "📦 Checking out pinned commit ${LTX2_PIN:0:12}..."
+  (cd "${LTX2_DIR}" && git checkout --quiet "${LTX2_PIN}")
   # Force Python 3.11 — ltx-core-mlx pins requires-python>=3.11 and the
   # macOS bundled python3 is sometimes 3.10. uv resolves this for us when
   # the env doesn't already exist.
@@ -195,7 +205,7 @@ echo "   HF cache:  ~/.cache/huggingface (HF default)"
 echo "   LoRAs:     ${PORTOS_DATA}/loras"
 echo "   Videos:    ${PORTOS_DATA}/videos"
 if [[ "$INSTALL_LTX2" == "1" ]]; then
-  echo "   LTX-2.3:   ${HOME}/.portos/ltx-2-mlx/.venv/bin/python3 (separate venv, dgrauet pipeline)"
+  echo "   LTX-2.3:   ${HOME}/.portos/ltx-2-mlx/.venv/bin/python3 (separate venv, dgrauet pipeline @ ${LTX2_PIN:0:12})"
 fi
 if [[ "$INSTALL_FLUX2" == "1" ]]; then
   echo "   FLUX.2:    ${HOME}/.portos/venv-flux2/bin/python3 (separate venv)"

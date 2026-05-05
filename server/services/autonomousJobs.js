@@ -116,7 +116,13 @@ const DATA_DIR = PATHS.cos
 const JOBS_FILE = join(DATA_DIR, 'autonomous-jobs.json')
 const JOBS_SKILLS_DIR = PATHS.promptSkillsJobs
 const withLock = createMutex()
-const DEFAULT_JOB_SYNC_FIELDS = [
+// Fields that are code contracts — always overwrite on restart so runtime
+// stays consistent with the shipped implementation.
+const JOB_STRUCTURAL_FIELDS = ['type', 'scriptHandler']
+
+// Fields that ship with a default but are user-editable via PUT /api/cos/jobs/:id.
+// Only written when the field is absent on the stored job (first-time population).
+const JOB_ADDITIVE_FIELDS = [
   'name',
   'description',
   'category',
@@ -126,8 +132,6 @@ const DEFAULT_JOB_SYNC_FIELDS = [
   'cronExpression',
   'priority',
   'autonomyLevel',
-  'type',
-  'scriptHandler',
   'promptTemplate',
   'command',
   'triggerAction'
@@ -471,16 +475,39 @@ async function syncSkillTemplatesFromSample() {
   const sampleDir = join(PATHS.root, 'data.sample', 'prompts', 'skills', 'jobs')
   if (!existsSync(sampleDir)) return
   await ensureDir(JOBS_SKILLS_DIR)
+  const shippedDir = join(JOBS_SKILLS_DIR, '.shipped')
+  await ensureDir(shippedDir)
   const files = await readdir(sampleDir).catch(() => [])
   for (const file of files) {
     if (!file.endsWith('.md')) continue
     const destPath = join(JOBS_SKILLS_DIR, file)
-    const existingContent = await readFile(destPath, 'utf-8').catch(() => null)
-    if (existingContent) continue
+    const shippedPath = join(shippedDir, file)
     const sampleContent = await readFile(join(sampleDir, file), 'utf-8').catch(() => null)
     if (!sampleContent) continue
-    await writeFile(destPath, sampleContent)
-    console.log(`📝 Seeded missing job skill template: ${file}`)
+    const existingContent = await readFile(destPath, 'utf-8').catch(() => null)
+    if (!existingContent) {
+      // Case a: fresh install — seed file and record shipped snapshot
+      await writeFile(destPath, sampleContent)
+      await writeFile(shippedPath, sampleContent)
+      console.log(`📝 Seeded missing skill template: ${file}`)
+      continue
+    }
+    if (existingContent === sampleContent) {
+      // Case b: file already matches sample — ensure .shipped is current
+      const shippedContent = await readFile(shippedPath, 'utf-8').catch(() => null)
+      if (shippedContent !== sampleContent) await writeFile(shippedPath, sampleContent)
+      continue
+    }
+    const shippedContent = await readFile(shippedPath, 'utf-8').catch(() => null)
+    if (existingContent === shippedContent) {
+      // Case c: file matches last-shipped snapshot but sample has changed — safe to update
+      await writeFile(destPath, sampleContent)
+      await writeFile(shippedPath, sampleContent)
+      console.log(`🔄 Updated unmodified skill template: ${file}`)
+    } else {
+      // Case d: user has customized the file — leave it alone
+      console.log(`ℹ️ Preserving user-modified skill template: ${file}`)
+    }
   }
 }
 
@@ -635,8 +662,16 @@ function mergeWithDefaults(loaded) {
       })
     } else {
       let changed = false
-      for (const field of DEFAULT_JOB_SYNC_FIELDS) {
+      // Structural fields: always sync — these are code contracts, not user prefs
+      for (const field of JOB_STRUCTURAL_FIELDS) {
         if (Object.hasOwn(defaultJob, field) && existing[field] !== defaultJob[field]) {
+          existing[field] = defaultJob[field]
+          changed = true
+        }
+      }
+      // Additive fields: only populate if the field is missing on the stored job
+      for (const field of JOB_ADDITIVE_FIELDS) {
+        if (Object.hasOwn(defaultJob, field) && !Object.hasOwn(existing, field)) {
           existing[field] = defaultJob[field]
           changed = true
         }
@@ -1457,5 +1492,6 @@ export {
   isShellJob,
   executeShellJob,
   getAllowedCommands,
-  validateCommand
+  validateCommand,
+  syncSkillTemplatesFromSample
 }

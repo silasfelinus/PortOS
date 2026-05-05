@@ -34,4 +34,69 @@ ERROR: {"type":"error","status":400,"error":{"type":"invalid_request_error","mes
 
     expect(lines).toEqual(['🔧 npm test']);
   });
+
+  it('does not leak prompt lines containing error keywords before the separator', () => {
+    const formatter = createCodexStderrFormatter();
+
+    const lines = formatter.processChunk(`Reading prompt from stdin...
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /repo
+model: gpt-4o
+provider: openai
+approval: never
+sandbox: workspace-write
+session id: abc
+--------
+user
+Debug why the api key is not working and why the model is not supported.
+`);
+
+    expect(lines).toEqual([]);
+  });
+
+  it('emits a real ERROR: line that arrives after the separator', () => {
+    const formatter = createCodexStderrFormatter();
+
+    const lines = formatter.processChunk(`Reading prompt from stdin...
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /repo
+model: gpt-4o
+provider: openai
+approval: never
+sandbox: workspace-write
+session id: abc
+--------
+user
+Some normal prompt text.
+ERROR: {"type":"error","status":401,"error":{"type":"invalid_request_error","message":"api key not valid"}}
+`);
+
+    expect(lines).toEqual([
+      'ERROR: {"type":"error","status":401,"error":{"type":"invalid_request_error","message":"api key not valid"}}'
+    ]);
+  });
+
+  it('formats exec lines after the separator as tool emoji', () => {
+    const formatter = createCodexStderrFormatter();
+
+    const lines = formatter.processChunk(`Reading prompt from stdin...
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /repo
+model: gpt-4o
+provider: openai
+approval: never
+sandbox: workspace-write
+session id: abc
+--------
+user
+Some prompt.
+exec /bin/bash -lc 'ls -la' in /repo succeeded in 0.5s:
+file output
+`);
+
+    expect(lines).toEqual(['🔧 ls -la']);
+  });
 });

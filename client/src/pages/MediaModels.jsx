@@ -26,28 +26,24 @@ export default function MediaModels() {
 
   const handleDeleteModel = async (id) => {
     setBusy(id);
-    try {
-      await deleteCachedModel(id);
-      toast.success('Model deleted — will re-download on next use');
-      setData((d) => ({ ...d, models: d.models.filter((m) => m.id !== id) }));
-    } catch (err) {
-      toast.error(err.message || 'Delete failed');
-    } finally {
-      setBusy(null);
-    }
+    await deleteCachedModel(id)
+      .then(() => {
+        toast.success('Model deleted — will re-download on next use');
+        setData((d) => ({ ...d, models: d.models.filter((m) => m.id !== id) }));
+      })
+      .catch((err) => toast.error(err.message || 'Delete failed'))
+      .finally(() => setBusy(null));
   };
 
   const handleDeleteLora = async (filename) => {
     setBusy(filename);
-    try {
-      await deleteLora(filename);
-      toast.success('LoRA deleted');
-      setData((d) => ({ ...d, loras: d.loras.filter((l) => l.filename !== filename) }));
-    } catch (err) {
-      toast.error(err.message || 'Delete failed');
-    } finally {
-      setBusy(null);
-    }
+    await deleteLora(filename)
+      .then(() => {
+        toast.success('LoRA deleted');
+        setData((d) => ({ ...d, loras: d.loras.filter((l) => l.filename !== filename) }));
+      })
+      .catch((err) => toast.error(err.message || 'Delete failed'))
+      .finally(() => setBusy(null));
   };
 
   return (

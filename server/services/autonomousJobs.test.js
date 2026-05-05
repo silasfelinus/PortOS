@@ -289,7 +289,7 @@ describe('autonomousJobs', () => {
       expect(jobs.find(j => j.id === 'job-brain-review')).toBeDefined()
     })
 
-    it('existing default jobs receive updated shipped settings without resetting runtime state', async () => {
+    it('user-edited fields on a built-in job are NOT overwritten on restart', async () => {
       readJSONFile.mockResolvedValue({
         version: 1,
         lastUpdated: '2025-01-01T00:00:00.000Z',
@@ -305,7 +305,7 @@ describe('autonomousJobs', () => {
             enabled: true,
             priority: 'LOW',
             autonomyLevel: 'manager',
-            promptTemplate: 'Old Datadog prompt',
+            promptTemplate: 'My custom Datadog prompt',
             lastRun: '2025-01-02T00:00:00.000Z',
             runCount: 7,
             createdAt: '2025-01-01T00:00:00.000Z',
@@ -317,13 +317,82 @@ describe('autonomousJobs', () => {
       const jobs = await getAllJobs()
       const datadog = jobs.find(j => j.id === 'job-datadog-error-monitor')
 
-      expect(datadog.scheduledTime).toBe('08:00')
-      expect(datadog.interval).toBe('daily')
-      expect(datadog.priority).toBe('MEDIUM')
-      expect(datadog.promptTemplate).toContain('/api/datadog/instances/:instanceId/search-errors')
+      // User-edited additive fields must be preserved
+      expect(datadog.scheduledTime).toBe('09:00')
+      expect(datadog.interval).toBe('weekly')
+      expect(datadog.priority).toBe('LOW')
+      expect(datadog.promptTemplate).toBe('My custom Datadog prompt')
+      // Runtime state not touched
       expect(datadog.enabled).toBe(true)
       expect(datadog.lastRun).toBe('2025-01-02T00:00:00.000Z')
       expect(datadog.runCount).toBe(7)
+    })
+
+    it('a new field missing on an existing job IS populated from defaults', async () => {
+      readJSONFile.mockResolvedValue({
+        version: 1,
+        lastUpdated: '2025-01-01T00:00:00.000Z',
+        jobs: [
+          {
+            id: 'job-datadog-error-monitor',
+            name: 'DataDog Error Monitor',
+            // intentionally omit scheduledTime to simulate an older stored record
+            category: 'datadog-error-monitor',
+            interval: 'daily',
+            intervalMs: 86400000,
+            enabled: false,
+            priority: 'MEDIUM',
+            autonomyLevel: 'manager',
+            promptTemplate: 'My custom Datadog prompt',
+            lastRun: null,
+            runCount: 0,
+            createdAt: '2025-01-01T00:00:00.000Z',
+            updatedAt: '2025-01-01T00:00:00.000Z'
+          }
+        ]
+      })
+
+      const jobs = await getAllJobs()
+      const datadog = jobs.find(j => j.id === 'job-datadog-error-monitor')
+
+      // Missing field should be filled in from the default
+      expect(datadog.scheduledTime).toBe('08:00')
+      // Existing user-set fields remain untouched
+      expect(datadog.promptTemplate).toBe('My custom Datadog prompt')
+    })
+
+    it('structural field changes (type/scriptHandler) ARE synced regardless of stored value', async () => {
+      readJSONFile.mockResolvedValue({
+        version: 1,
+        lastUpdated: '2025-01-01T00:00:00.000Z',
+        jobs: [
+          {
+            id: 'job-agent-data-cleanup',
+            name: 'Agent Data Cleanup',
+            description: 'Cleans up old agent data',
+            category: 'maintenance',
+            interval: 'daily',
+            intervalMs: 86400000,
+            enabled: false,
+            priority: 'LOW',
+            autonomyLevel: 'manager',
+            promptTemplate: 'Clean up agent data',
+            type: 'script',
+            scriptHandler: 'STALE_HANDLER', // stale value — should be overwritten
+            lastRun: null,
+            runCount: 0,
+            createdAt: '2025-01-01T00:00:00.000Z',
+            updatedAt: '2025-01-01T00:00:00.000Z'
+          }
+        ]
+      })
+
+      const jobs = await getAllJobs()
+      const cleanup = jobs.find(j => j.id === 'job-agent-data-cleanup')
+
+      // Structural field must be corrected to the shipped value
+      expect(cleanup.scriptHandler).toBe('agent-data-cleanup')
+      expect(cleanup.type).toBe('script')
     })
   })
 
