@@ -22,6 +22,7 @@
 
 ## Changed
 
+- Media Gen Models now opens directly on model storage details without the redundant manual refresh control; cached model data still reloads on page load.
 - **Image Gen and Video Gen layouts tightened for above-the-fold density.** Form and preview now render side-by-side on wider screens instead of stacking, so more of the page is usable without scrolling. Previews are capped so they no longer dominate the viewport, the prompt and negative-prompt fields sit in two columns on medium+ screens, and section headers are more compact. Status text is hoisted into the Generate button row; video Download moved into the preview header for parity with Image Gen.
 - **Worktree policy clarified** in developer documentation: TUI sessions edit the main repo directly; worktrees are reserved for unattended CoS sub-agents.
 - Video Gen frame picker now goes up to 481 frames (~20s at 24fps); options past 241 frames (~10s) show a hint recommending Extend mode for reliable long renders at 48 GB.
@@ -35,6 +36,7 @@
 
 ## Fixed
 
+- CoS service initialization now recognizes Vitest runs and skips eager daemon startup during server unit tests, avoiding circular-import side effects.
 - **Creative Director stuck projects now self-recover** — the orchestrator re-evaluates project state after every task completes, so projects that were started before the treatment/evaluate workflow split no longer get frozen. Manually accepting or failing a scene also immediately triggers the next scene to start.
 - **Creative Director projects auto-resume on server restart.** Previously a server restart mid-render left a project frozen — the scene appeared to be rendering but had no active job behind it, and the orchestrator wouldn't kick off a replacement because of bookkeeping left behind by the dead worker. On boot, any in-progress Creative Director project now detects interrupted scenes, clears the stale bookkeeping, and resumes from exactly where it left off.
 - **Creative Director smoke test** — a "Run smoke test" button on the Creative Director list page creates a deterministic 3-scene project (red ball → blue ball continuation → pure continuity) to verify the full pipeline end-to-end without needing a real story or AI evaluation. The smoke test skips audio generation and auto-accepts every scene so it completes in render time only, making it a fast sanity check after setup or after a model swap.

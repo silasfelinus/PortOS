@@ -8,21 +8,18 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { Trash2, RefreshCw, Image as ImageIcon, Film } from 'lucide-react';
+import { Trash2, Image as ImageIcon, Film } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import { listCachedModels, deleteCachedModel, deleteLora } from '../services/api';
 
 export default function MediaModels() {
   const [data, setData] = useState({ models: [], loras: [], hubDir: '', diskUsage: {} });
-  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(null);
 
   const refresh = useCallback(() => {
-    setLoading(true);
     listCachedModels()
       .then(setData)
-      .catch(() => setData({ models: [], loras: [], hubDir: '', diskUsage: {} }))
-      .finally(() => setLoading(false));
+      .catch(() => setData({ models: [], loras: [], hubDir: '', diskUsage: {} }));
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
@@ -55,17 +52,6 @@ export default function MediaModels() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-end gap-2">
-        <button
-          onClick={refresh}
-          disabled={loading}
-          className="p-2 rounded-lg text-gray-400 hover:text-white hover:bg-port-border/50 disabled:opacity-50 min-h-[40px] min-w-[40px] flex items-center justify-center"
-          title="Refresh"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-        </button>
-      </div>
-
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {Object.entries(data.diskUsage || {}).map(([key, value]) => (
           <div key={key} className="bg-port-card border border-port-border rounded-xl p-4">
