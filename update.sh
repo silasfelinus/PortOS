@@ -60,31 +60,27 @@ safe_install() {
 }
 
 # Pull latest — always switch to main (detached HEAD or feature branch both
-# need to land on main before pulling, or the version won't advance). If the
-# user has uncommitted edits on a non-main branch, stash them first so the
-# checkout doesn't abort or carry edits onto main, then restore on the way back.
+# need to land on main before pulling, or the version won't advance). The
+# rest of the script (install, build, restart) runs on main so the app
+# starts on the freshly-pulled revision. Local edits on the original branch
+# are stashed first so checkout doesn't abort, and we leave them in the
+# stash list afterward — the user can restore with `git stash pop` after
+# the update completes (we don't auto-pop because the rest of the script
+# needs to keep running with main's contents).
 step "git-pull" "running" "Pulling latest changes..."
 current_branch=$(git symbolic-ref -q --short HEAD 2>/dev/null || echo "")
-stashed=0
+stashed_for_branch=""
 if [ "$current_branch" != "main" ]; then
   if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
-    log "⚠️  Stashing local changes from '${current_branch:-detached HEAD}' before switching to main"
+    log "⚠️  Stashing local changes from '${current_branch:-detached HEAD}' so checkout can proceed"
     if run git stash push -u -m "portos-update-$(date +%s)"; then
-      stashed=1
+      stashed_for_branch="${current_branch:-detached HEAD}"
     fi
   fi
   log "⚠️  On branch '${current_branch:-detached HEAD}' — switching to main for update"
   run git checkout main
 fi
 run git pull --rebase --autostash
-if [ "$stashed" = "1" ]; then
-  if [ -n "$current_branch" ]; then
-    log "⚠️  Returning to '$current_branch' and restoring stashed changes"
-    run git checkout "$current_branch" && (run git stash pop || log "⚠️  Could not restore stashed changes — see 'git stash list'")
-  else
-    log "⚠️  Was on detached HEAD; stashed changes preserved in 'git stash' (run 'git stash pop' manually)"
-  fi
-fi
 step "git-pull" "done" "Latest changes pulled"
 log ""
 
@@ -202,3 +198,9 @@ log "==================================="
 log "  ✅ Update Complete!"
 log "==================================="
 log ""
+
+if [ -n "$stashed_for_branch" ]; then
+  log "ℹ️  Your local changes from '$stashed_for_branch' were stashed for the update."
+  log "    To restore them: git checkout '$stashed_for_branch' && git stash pop"
+  log "    The stash entry is at the top of 'git stash list'."
+fi

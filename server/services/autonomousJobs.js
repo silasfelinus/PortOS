@@ -461,10 +461,9 @@ async function initJobs() {
     return initial
   }
 
-  const jobCountBefore = loaded.jobs.length
-  const merged = mergeWithDefaults(loaded)
+  const { data: merged, dirty } = mergeWithDefaults(loaded)
   const migrated = await migrateScriptsState(merged)
-  if (!migrated && merged.jobs.length !== jobCountBefore) {
+  if (migrated || dirty) {
     await saveJobs(merged)
   }
   return merged
@@ -523,7 +522,8 @@ async function loadJobs() {
   await initPromise
   const loaded = await readJSONFile(JOBS_FILE, null)
   if (!loaded) return createDefaultJobsData()
-  return mergeWithDefaults(loaded)
+  const { data } = mergeWithDefaults(loaded)
+  return data
 }
 
 /**
@@ -691,11 +691,15 @@ function applyAdditiveFields(existing, defaultJob) {
 }
 
 /**
- * Merge loaded data with defaults (add any missing default jobs)
+ * Merge loaded data with defaults (add any missing default jobs).
+ * Returns { data, dirty } where dirty is true if any structural or additive change
+ * was made that requires the caller to persist the result.
  */
 function mergeWithDefaults(loaded) {
   // Migration: remove jobs moved to Schedule system
+  const countBefore = loaded.jobs.length
   loaded.jobs = loaded.jobs.filter(j => j.id !== 'job-pr-reviewer' && j.id !== 'job-jira-sprint-manager')
+  let dirty = loaded.jobs.length !== countBefore
 
   const existingById = new Map(loaded.jobs.map(j => [j.id, j]))
   const now = new Date().toISOString()
@@ -713,25 +717,27 @@ function mergeWithDefaults(loaded) {
         createdAt: now,
         updatedAt: now
       })
-    } else {
-      let changed = false
-      // Structural fields: always sync — these are code contracts, not user prefs
-      for (const field of JOB_STRUCTURAL_FIELDS) {
-        if (Object.hasOwn(defaultJob, field) && existing[field] !== defaultJob[field]) {
-          existing[field] = defaultJob[field]
-          changed = true
-        }
+      dirty = true
+      continue
+    }
+    let changed = false
+    // Structural fields: always sync — these are code contracts, not user prefs
+    for (const field of JOB_STRUCTURAL_FIELDS) {
+      if (Object.hasOwn(defaultJob, field) && existing[field] !== defaultJob[field]) {
+        existing[field] = defaultJob[field]
+        changed = true
       }
-      // Additive fields: snapshot-aware merge — propagates updates to untouched fields,
-      // preserves user customizations
-      if (applyAdditiveFields(existing, defaultJob)) changed = true
-      if (changed) {
-        existing.updatedAt = now
-      }
+    }
+    // Additive fields: snapshot-aware merge — propagates updates to untouched fields,
+    // preserves user customizations
+    if (applyAdditiveFields(existing, defaultJob)) changed = true
+    if (changed) {
+      existing.updatedAt = now
+      dirty = true
     }
   }
 
-  return loaded
+  return { data: loaded, dirty }
 }
 
 /**
@@ -1542,5 +1548,6 @@ export {
   executeShellJob,
   getAllowedCommands,
   validateCommand,
-  syncSkillTemplatesFromSample
+  syncSkillTemplatesFromSample,
+  initJobs
 }

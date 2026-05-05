@@ -39,9 +39,10 @@ import {
   getJobStats,
   INTERVAL_OPTIONS,
   isScriptJob,
-  executeScriptJob
+  executeScriptJob,
+  initJobs
 } from './autonomousJobs.js'
-import { readJSONFile } from '../lib/fileUtils.js'
+import { readJSONFile, atomicWrite } from '../lib/fileUtils.js'
 import { cosEvents } from './cosEvents.js'
 import { checkAndPrompt } from './autobiography.js'
 
@@ -539,6 +540,119 @@ describe('autonomousJobs', () => {
       expect(datadog.priority).toBe('MEDIUM')
       // Snapshot is set so future changes can be detected
       expect(datadog._shippedDefaults.priority).toBe('MEDIUM')
+    })
+  })
+
+  describe('initJobs save-gating', () => {
+    it('persists when shipped-default update reaches an untouched built-in job', async () => {
+      // Job has scheduledTime matching snapshot → untouched, default ships new value → dirty
+      readJSONFile.mockResolvedValue({
+        version: 1,
+        lastUpdated: '2025-01-01T00:00:00.000Z',
+        jobs: [
+          {
+            id: 'job-datadog-error-monitor',
+            name: 'DataDog Error Monitor',
+            description: 'Monitors errors',
+            category: 'datadog-error-monitor',
+            interval: 'daily',
+            intervalMs: 86400000,
+            scheduledTime: '06:00',
+            enabled: false,
+            priority: 'MEDIUM',
+            autonomyLevel: 'manager',
+            promptTemplate: 'Default datadog prompt',
+            lastRun: null,
+            runCount: 0,
+            createdAt: '2025-01-01T00:00:00.000Z',
+            updatedAt: '2025-01-01T00:00:00.000Z',
+            _shippedDefaults: { scheduledTime: '06:00' }
+          }
+        ]
+      })
+
+      atomicWrite.mockClear()
+      const data = await initJobs()
+
+      // The in-memory value is updated to the new shipped default
+      const datadog = data.jobs.find(j => j.id === 'job-datadog-error-monitor')
+      expect(datadog.scheduledTime).toBe('08:00')
+      expect(datadog._shippedDefaults.scheduledTime).toBe('08:00')
+
+      // The updated data was persisted to disk
+      expect(atomicWrite).toHaveBeenCalled()
+      const [, savedData] = atomicWrite.mock.calls[0]
+      const savedDatadog = savedData.jobs.find(j => j.id === 'job-datadog-error-monitor')
+      expect(savedDatadog.scheduledTime).toBe('08:00')
+      expect(savedDatadog._shippedDefaults.scheduledTime).toBe('08:00')
+    })
+
+    it('does not persist when no changes are needed', async () => {
+      // Construct a payload that exactly matches all shipped defaults so mergeWithDefaults is a no-op.
+      // Use an unrecognized ID so it gets added as a new job — but then use a second call
+      // to simulate a restart where nothing changed.
+      // Simplest approach: provide a data set where all existing jobs already match defaults exactly.
+      readJSONFile.mockResolvedValue({
+        version: 1,
+        lastUpdated: '2025-01-01T00:00:00.000Z',
+        jobs: [] // no existing jobs; only new ones will be added (dirty = true on first call)
+      })
+
+      // First call seeds defaults → dirty, saves
+      atomicWrite.mockClear()
+      await initJobs()
+      const firstSaveCount = atomicWrite.mock.calls.length
+      expect(firstSaveCount).toBeGreaterThan(0)
+
+      // Second call with the same data that was just "saved" — nothing changed
+      // Simulate the re-read returning the exact same merged data (all snapshots bootstrapped)
+      const savedData = atomicWrite.mock.calls[0][1]
+      readJSONFile.mockResolvedValue(JSON.parse(JSON.stringify(savedData)))
+
+      atomicWrite.mockClear()
+      await initJobs()
+
+      // No further saves needed — data is already up to date
+      expect(atomicWrite).not.toHaveBeenCalled()
+    })
+
+    it('persists when user-edited field leaves snapshot intact on a different field', async () => {
+      // User changed scheduledTime (preserves '09:00'), but priority is missing entirely → dirty
+      readJSONFile.mockResolvedValue({
+        version: 1,
+        lastUpdated: '2025-01-01T00:00:00.000Z',
+        jobs: [
+          {
+            id: 'job-datadog-error-monitor',
+            name: 'DataDog Error Monitor',
+            description: 'Monitors errors',
+            category: 'datadog-error-monitor',
+            interval: 'daily',
+            intervalMs: 86400000,
+            scheduledTime: '09:00',
+            enabled: false,
+            autonomyLevel: 'manager',
+            promptTemplate: 'Default datadog prompt',
+            lastRun: null,
+            runCount: 0,
+            createdAt: '2025-01-01T00:00:00.000Z',
+            updatedAt: '2025-01-01T00:00:00.000Z',
+            _shippedDefaults: { scheduledTime: '06:00' }
+            // No priority — brand-new field → dirty
+          }
+        ]
+      })
+
+      atomicWrite.mockClear()
+      const data = await initJobs()
+
+      // User's scheduledTime must still be '09:00'
+      const datadog = data.jobs.find(j => j.id === 'job-datadog-error-monitor')
+      expect(datadog.scheduledTime).toBe('09:00')
+      // New priority field is populated
+      expect(datadog.priority).toBe('MEDIUM')
+      // Data was persisted because a new field was added
+      expect(atomicWrite).toHaveBeenCalled()
     })
   })
 

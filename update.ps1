@@ -95,13 +95,17 @@ function Safe-Install {
 }
 
 # Pull latest — always switch to main (detached HEAD or feature branch both
-# need to land on main before pulling, or the version won't advance). If the
-# user has uncommitted edits on a non-main branch, stash them first so the
-# checkout doesn't abort or carry edits onto main, then restore on the way back.
+# need to land on main before pulling, or the version won't advance). The
+# rest of the script (install, build, restart) runs on main so the app
+# starts on the freshly-pulled revision. Local edits on the original branch
+# are stashed first so checkout doesn't abort, and we leave them in the
+# stash list afterward — the user can restore with `git stash pop` after
+# the update completes (we don't auto-pop because the rest of the script
+# needs to keep running with main's contents).
 Step "git-pull" "running" "Pulling latest changes..."
 $headRef = git symbolic-ref -q HEAD 2>$null
 $currentBranch = if ($headRef) { $headRef -replace "refs/heads/", "" } else { "" }
-$stashed = $false
+$stashedForBranch = ""
 if ($currentBranch -ne "main") {
     $hasChanges = $false
     git diff --quiet 2>$null
@@ -115,9 +119,10 @@ if ($currentBranch -ne "main") {
         if ($untracked) { $hasChanges = $true }
     }
     if ($hasChanges) {
-        Write-SafeHost "⚠️  Stashing local changes from '$(if ($currentBranch) { $currentBranch } else { 'detached HEAD' })' before switching to main" -ForegroundColor Yellow
+        $branchLabel = if ($currentBranch) { $currentBranch } else { "detached HEAD" }
+        Write-SafeHost "⚠️  Stashing local changes from '$branchLabel' so checkout can proceed" -ForegroundColor Yellow
         Invoke-Logged git stash push -u -m "portos-update-$([int][double]::Parse((Get-Date -UFormat %s)))"
-        if ($LASTEXITCODE -eq 0) { $stashed = $true }
+        if ($LASTEXITCODE -eq 0) { $stashedForBranch = $branchLabel }
     }
     if (-not $currentBranch) {
         $detachedCommit = git rev-parse --short HEAD
@@ -130,18 +135,6 @@ if ($currentBranch -ne "main") {
 }
 Invoke-Logged git pull --rebase --autostash
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-if ($stashed) {
-    if ($currentBranch) {
-        Write-SafeHost "⚠️  Returning to '$currentBranch' and restoring stashed changes" -ForegroundColor Yellow
-        Invoke-Logged git checkout $currentBranch
-        Invoke-Logged git stash pop
-        if ($LASTEXITCODE -ne 0) {
-            Write-SafeHost "⚠️  Could not restore stashed changes — see 'git stash list'" -ForegroundColor Yellow
-        }
-    } else {
-        Write-SafeHost "⚠️  Was on detached HEAD; stashed changes preserved in 'git stash' (run 'git stash pop' manually)" -ForegroundColor Yellow
-    }
-}
 Step "git-pull" "done" "Latest changes pulled"
 Write-SafeHost ""
 
@@ -277,3 +270,9 @@ Write-SafeHost "===================================" -ForegroundColor Green
 Write-SafeHost "  ✅ Update Complete!" -ForegroundColor Green
 Write-SafeHost "===================================" -ForegroundColor Green
 Write-SafeHost ""
+
+if ($stashedForBranch) {
+    Write-SafeHost "ℹ️  Your local changes from '$stashedForBranch' were stashed for the update." -ForegroundColor Cyan
+    Write-SafeHost "    To restore them: git checkout '$stashedForBranch'; git stash pop" -ForegroundColor Cyan
+    Write-SafeHost "    The stash entry is at the top of 'git stash list'." -ForegroundColor Cyan
+}

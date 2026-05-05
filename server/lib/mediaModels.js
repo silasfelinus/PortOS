@@ -159,18 +159,29 @@ const upgradeImageEntries = (list) => {
 
 export const isFlux2 = (model) => model?.runner === 'flux2';
 
-// Append video models whose id is in DEFAULT_REGISTRY but missing from the
-// user's saved list. Lets us roll out new pipelines (e.g. the dgrauet ltx2
-// runtime) to existing installs without forcing users to hand-edit
-// data/media-models.json. Preserves any user customisations for ids they
-// already have (we only ADD new entries; we don't overwrite existing).
-const appendMissingVideoEntries = (userList, defaults) => {
-  if (!Array.isArray(userList)) return defaults;
-  if (!Array.isArray(defaults)) return userList;
-  const haveIds = new Set(userList.map((e) => e?.id).filter((id) => typeof id === 'string'));
-  const missing = defaults.filter((e) => typeof e?.id === 'string' && !haveIds.has(e.id));
-  if (!missing.length) return userList;
-  return [...userList, ...missing];
+// Append video models that are genuinely new in this release (not in
+// _shippedDefaults) to the user's list, while respecting deletions the user
+// already made. Returns both the merged entry list and the newly-added ids so
+// the caller can record them in _shippedDefaults.
+//
+// Semantics:
+//   - id already in userList             → keep as-is (user customisations intact)
+//   - id in shippedIds but not userList  → user explicitly deleted it; skip
+//   - id NOT in shippedIds               → genuinely new built-in; add + record
+const appendNewlyShippedVideoEntries = (userList, defaultList, shippedIds) => {
+  const safeList = Array.isArray(userList) ? userList : [];
+  const safeDefaults = Array.isArray(defaultList) ? defaultList : [];
+  const userIds = new Set(safeList.map((e) => e?.id).filter((id) => typeof id === 'string'));
+  const result = [...safeList];
+  const newlyShipped = [];
+  for (const def of safeDefaults) {
+    if (typeof def?.id !== 'string') continue;
+    if (userIds.has(def.id)) continue;       // already present — keep user copy
+    if (shippedIds.has(def.id)) continue;    // user deleted it; don't re-add
+    result.push(def);
+    newlyShipped.push(def.id);
+  }
+  return { entries: result, newlyShipped };
 };
 
 // Existing installs predate the `runtime` field on video entries — fill it
@@ -188,9 +199,58 @@ const backfillRuntime = (list) => {
   });
 };
 
+// Build the initial shippedIds set for one platform on first encounter
+// (no _shippedDefaults field yet).
+//
+// When the user has an array for this platform we treat the union of their ids
+// and the default ids as "already shipped" — this preserves any deletions they
+// made before _shippedDefaults was introduced, without re-adding removed entries.
+//
+// When the platform key is absent from their registry (e.g. the whole `video`
+// section is missing), we return an empty set so the defaults are treated as
+// genuinely new and get added as on a fresh install.
+const bootstrapShippedIds = (userList, defaultList) => {
+  if (!Array.isArray(userList)) return new Set(); // missing key → treat as fresh
+  const safeDefaults = Array.isArray(defaultList) ? defaultList : [];
+  const ids = new Set();
+  for (const e of userList) if (typeof e?.id === 'string') ids.add(e.id);
+  for (const e of safeDefaults) if (typeof e?.id === 'string') ids.add(e.id);
+  return ids;
+};
+
 const normalizeRegistry = (parsed) => {
   const safe = isPlainObject(parsed) ? parsed : {};
   const safeVideo = isPlainObject(safe.video) ? safe.video : {};
+
+  // _shippedDefaults tracks which built-in video ids have ever been delivered
+  // to this install, so we can distinguish "user deleted it" from "genuinely
+  // new in this release".
+  const shippedVideo = isPlainObject(safe._shippedDefaults?.video) ? safe._shippedDefaults.video : null;
+  const isBootstrap = shippedVideo === null;
+
+  const shippedMacosIds = isBootstrap
+    ? bootstrapShippedIds(safeVideo.macos, DEFAULT_REGISTRY.video.macos)
+    : new Set(arrayOrDefault(shippedVideo.macos, []));
+  const shippedWindowsIds = isBootstrap
+    ? bootstrapShippedIds(safeVideo.windows, DEFAULT_REGISTRY.video.windows)
+    : new Set(arrayOrDefault(shippedVideo.windows, []));
+
+  const macosResult = appendNewlyShippedVideoEntries(
+    safeVideo.macos,
+    DEFAULT_REGISTRY.video.macos,
+    shippedMacosIds,
+  );
+  const windowsResult = appendNewlyShippedVideoEntries(
+    safeVideo.windows,
+    DEFAULT_REGISTRY.video.windows,
+    shippedWindowsIds,
+  );
+
+  const updatedShippedVideo = {
+    macos: [...shippedMacosIds, ...macosResult.newlyShipped],
+    windows: [...shippedWindowsIds, ...windowsResult.newlyShipped],
+  };
+
   return {
     ...DEFAULT_REGISTRY,
     ...safe,
@@ -199,8 +259,12 @@ const normalizeRegistry = (parsed) => {
     video: {
       ...DEFAULT_REGISTRY.video,
       ...safeVideo,
-      macos: backfillRuntime(appendMissingVideoEntries(safeVideo.macos, DEFAULT_REGISTRY.video.macos)),
-      windows: backfillRuntime(appendMissingVideoEntries(safeVideo.windows, DEFAULT_REGISTRY.video.windows)),
+      macos: backfillRuntime(macosResult.entries),
+      windows: backfillRuntime(windowsResult.entries),
+    },
+    _shippedDefaults: {
+      ...(safe._shippedDefaults || {}),
+      video: updatedShippedVideo,
     },
   };
 };
@@ -213,13 +277,32 @@ export const loadMediaModels = () => {
   // here aborts server startup. Permissions, broken symlink, transient I/O
   // all surface from readFileSync; malformed JSON from JSON.parse.
   let parsed = DEFAULT_REGISTRY;
+  let readOk = false;
   try {
     const raw = readFileSync(REGISTRY_FILE, 'utf-8');
     parsed = JSON.parse(raw);
+    readOk = true;
   } catch (err) {
     console.log(`⚠️ Failed to load ${REGISTRY_FILE} (${err.message}) — using built-in defaults`);
   }
   cached = normalizeRegistry(parsed);
+  // Persist _shippedDefaults back to disk whenever it was absent or gained new
+  // ids (bootstrap run or a new built-in model shipped in this release). This
+  // ensures user deletions survive the next server restart.
+  if (readOk) {
+    const parsedShipped = isPlainObject(parsed._shippedDefaults?.video)
+      ? parsed._shippedDefaults.video
+      : null;
+    const normalizedShipped = cached._shippedDefaults.video;
+    const changed =
+      parsedShipped === null ||
+      normalizedShipped.macos.length !== (parsedShipped.macos?.length ?? 0) ||
+      normalizedShipped.windows.length !== (parsedShipped.windows?.length ?? 0);
+    if (changed) {
+      writeFileSync(REGISTRY_FILE, JSON.stringify(cached, null, 2) + '\n');
+      console.log(`📝 Updated media model registry _shippedDefaults: ${REGISTRY_FILE}`);
+    }
+  }
   return cached;
 };
 
