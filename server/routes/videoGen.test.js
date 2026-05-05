@@ -77,7 +77,58 @@ vi.mock('fs/promises', () => ({
 
 import * as videoGenService from '../services/videoGen/local.js';
 import * as mediaJobQueue from '../services/mediaJobQueue/index.js';
-import videoGenRoutes from './videoGen.js';
+import videoGenRoutes, { isAudioMime } from './videoGen.js';
+
+// isAudioMime is the gating function inside the fileFilter callback. The
+// multipart mock in these route tests bypasses fileFilter entirely, so we
+// unit-test the helper directly to cover all the MIME / extension cases.
+describe('isAudioMime', () => {
+  it('accepts standard audio/* types', () => {
+    expect(isAudioMime('audio/wav', 'clip.wav')).toBe(true);
+    expect(isAudioMime('audio/mpeg', 'song.mp3')).toBe(true);
+    expect(isAudioMime('audio/ogg', 'clip.ogg')).toBe(true);
+    expect(isAudioMime('audio/flac', 'clip.flac')).toBe(true);
+  });
+
+  it('accepts audio/mp4 (Chrome/Firefox label for M4A)', () => {
+    expect(isAudioMime('audio/mp4', 'song.m4a')).toBe(true);
+  });
+
+  it('accepts audio/x-m4a', () => {
+    expect(isAudioMime('audio/x-m4a', 'song.m4a')).toBe(true);
+  });
+
+  it('accepts audio/aac', () => {
+    expect(isAudioMime('audio/aac', 'clip.aac')).toBe(true);
+  });
+
+  it('accepts video/mp4 + .m4a extension (Safari label for M4A)', () => {
+    expect(isAudioMime('video/mp4', 'song.m4a')).toBe(true);
+  });
+
+  it('accepts video/mp4 + .aac extension', () => {
+    expect(isAudioMime('video/mp4', 'clip.aac')).toBe(true);
+  });
+
+  it('rejects video/mp4 when extension is .mp4 (genuine video)', () => {
+    expect(isAudioMime('video/mp4', 'movie.mp4')).toBe(false);
+  });
+
+  it('rejects video/mp4 with no filename (no extension to confirm)', () => {
+    expect(isAudioMime('video/mp4', '')).toBe(false);
+    expect(isAudioMime('video/mp4', undefined)).toBe(false);
+  });
+
+  it('rejects image/* and video/* (non-audio) types', () => {
+    expect(isAudioMime('image/jpeg', 'photo.jpg')).toBe(false);
+    expect(isAudioMime('video/webm', 'clip.webm')).toBe(false);
+  });
+
+  it('rejects null/undefined mime', () => {
+    expect(isAudioMime(null, 'clip.wav')).toBe(false);
+    expect(isAudioMime(undefined, 'clip.wav')).toBe(false);
+  });
+});
 
 describe('videoGen routes', () => {
   let app;

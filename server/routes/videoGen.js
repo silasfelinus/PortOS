@@ -31,6 +31,25 @@ import { enqueueJob, attachSseClient, cancelJob, listJobs } from '../services/me
 
 const router = Router();
 
+// M4A files are stored in an MP4 container. Browsers and OS file pickers
+// label them inconsistently: Safari uses `video/mp4`, Chrome/Firefox use
+// `audio/mp4`, and some platforms emit `audio/x-m4a` or `audio/aac`.
+// `audio/*` catches the obvious cases (WAV, MP3, OGG, FLAC…) but misses
+// the MP4-container variants. The extension check is a defense-in-depth
+// fallback so a `.m4a` always passes regardless of what the HTTP client
+// decided to put in Content-Type.
+export const isAudioMime = (mime, filename) => {
+  if (!mime) return false;
+  if (mime.startsWith('audio/')) return true;
+  if (mime === 'video/mp4') {
+    // Only allow video/mp4 when the extension confirms it's audio, not a
+    // genuine video file drag-dropped onto the audio upload field.
+    const ext = (filename || '').match(/\.([^.]+)$/)?.[1]?.toLowerCase();
+    return ext === 'm4a' || ext === 'aac';
+  }
+  return false;
+};
+
 // FFLF accepts up to two image uploads (start and end frame); a2v takes
 // one audio upload (audioFile). 100MB covers audio cases too (LTX-2's a2v
 // expects only seconds of audio in practice). Per-fieldname mime filter
@@ -42,7 +61,7 @@ const frameImageUpload = uploadFields(['sourceImage', 'lastImage', 'audioFile'],
     const isImageField = file.fieldname === 'sourceImage' || file.fieldname === 'lastImage';
     const isAudioField = file.fieldname === 'audioFile';
     const okImage = isImageField && file.mimetype.startsWith('image/');
-    const okAudio = isAudioField && file.mimetype.startsWith('audio/');
+    const okAudio = isAudioField && isAudioMime(file.mimetype, file.originalname);
     cb(null, okImage || okAudio);
   },
 });

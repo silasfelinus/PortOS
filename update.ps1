@@ -100,7 +100,12 @@ Step "git-pull" "running" "Pulling latest changes..."
 $headRef = git symbolic-ref -q HEAD 2>$null
 $currentBranch = if ($headRef) { $headRef -replace "refs/heads/", "" } else { "" }
 if ($currentBranch -ne "main") {
-    Write-SafeHost "⚠️  On branch '$currentBranch' — switching to main for update" -ForegroundColor Yellow
+    if (-not $currentBranch) {
+        $detachedCommit = git rev-parse --short HEAD
+        Write-SafeHost "⚠️  On detached HEAD (commit $detachedCommit) — switching to main for update" -ForegroundColor Yellow
+    } else {
+        Write-SafeHost "⚠️  On branch '$currentBranch' — switching to main for update" -ForegroundColor Yellow
+    }
     Invoke-Logged git checkout main
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }

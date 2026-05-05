@@ -394,6 +394,152 @@ describe('autonomousJobs', () => {
       expect(cleanup.scriptHandler).toBe('agent-data-cleanup')
       expect(cleanup.type).toBe('script')
     })
+
+    it('shipped default update reaches an untouched built-in job', async () => {
+      // Existing job has scheduledTime matching its shipped snapshot → untouched
+      readJSONFile.mockResolvedValue({
+        version: 1,
+        lastUpdated: '2025-01-01T00:00:00.000Z',
+        jobs: [
+          {
+            id: 'job-datadog-error-monitor',
+            name: 'DataDog Error Monitor',
+            description: 'Monitors errors',
+            category: 'datadog-error-monitor',
+            interval: 'daily',
+            intervalMs: 86400000,
+            scheduledTime: '06:00',
+            enabled: false,
+            priority: 'MEDIUM',
+            autonomyLevel: 'manager',
+            promptTemplate: 'Default datadog prompt',
+            lastRun: null,
+            runCount: 0,
+            createdAt: '2025-01-01T00:00:00.000Z',
+            updatedAt: '2025-01-01T00:00:00.000Z',
+            // Snapshot says '06:00' was the previously shipped value
+            _shippedDefaults: { scheduledTime: '06:00' }
+          }
+        ]
+      })
+
+      const jobs = await getAllJobs()
+      const datadog = jobs.find(j => j.id === 'job-datadog-error-monitor')
+
+      // The current DEFAULT_JOBS ships scheduledTime '08:00' for datadog-error-monitor.
+      // Since existing matches snapshot ('06:00' === '06:00') and differs from new default,
+      // the value should be updated to the new shipped default.
+      expect(datadog.scheduledTime).toBe('08:00')
+      expect(datadog._shippedDefaults.scheduledTime).toBe('08:00')
+    })
+
+    it('user customization is preserved when snapshot differs from stored value', async () => {
+      // User changed scheduledTime to '09:00' but snapshot records '06:00' as the shipped value
+      readJSONFile.mockResolvedValue({
+        version: 1,
+        lastUpdated: '2025-01-01T00:00:00.000Z',
+        jobs: [
+          {
+            id: 'job-datadog-error-monitor',
+            name: 'DataDog Error Monitor',
+            description: 'Monitors errors',
+            category: 'datadog-error-monitor',
+            interval: 'daily',
+            intervalMs: 86400000,
+            scheduledTime: '09:00',
+            enabled: false,
+            priority: 'MEDIUM',
+            autonomyLevel: 'manager',
+            promptTemplate: 'Default datadog prompt',
+            lastRun: null,
+            runCount: 0,
+            createdAt: '2025-01-01T00:00:00.000Z',
+            updatedAt: '2025-01-01T00:00:00.000Z',
+            // Snapshot says '06:00' — user edited to '09:00'
+            _shippedDefaults: { scheduledTime: '06:00' }
+          }
+        ]
+      })
+
+      const jobs = await getAllJobs()
+      const datadog = jobs.find(j => j.id === 'job-datadog-error-monitor')
+
+      // User's '09:00' must be preserved; snapshot stays '06:00'
+      expect(datadog.scheduledTime).toBe('09:00')
+      expect(datadog._shippedDefaults.scheduledTime).toBe('06:00')
+    })
+
+    it('pre-snapshot job bootstraps _shippedDefaults but preserves value', async () => {
+      // Existing job has scheduledTime but NO _shippedDefaults at all
+      readJSONFile.mockResolvedValue({
+        version: 1,
+        lastUpdated: '2025-01-01T00:00:00.000Z',
+        jobs: [
+          {
+            id: 'job-datadog-error-monitor',
+            name: 'DataDog Error Monitor',
+            description: 'Monitors errors',
+            category: 'datadog-error-monitor',
+            interval: 'daily',
+            intervalMs: 86400000,
+            scheduledTime: '06:00',
+            enabled: false,
+            priority: 'MEDIUM',
+            autonomyLevel: 'manager',
+            promptTemplate: 'Default datadog prompt',
+            lastRun: null,
+            runCount: 0,
+            createdAt: '2025-01-01T00:00:00.000Z',
+            updatedAt: '2025-01-01T00:00:00.000Z'
+            // No _shippedDefaults — this job predates the mechanism
+          }
+        ]
+      })
+
+      const jobs = await getAllJobs()
+      const datadog = jobs.find(j => j.id === 'job-datadog-error-monitor')
+
+      // Value is preserved (conservative — can't tell if user edited or if it's old shipped)
+      expect(datadog.scheduledTime).toBe('06:00')
+      // Snapshot is bootstrapped to the CURRENT shipped default so next release can compare
+      expect(datadog._shippedDefaults).toBeDefined()
+      expect(datadog._shippedDefaults.scheduledTime).toBe('08:00')
+    })
+
+    it('new additive field on existing job is populated and snapshot set', async () => {
+      // Existing job has no priority field (simulates an old record missing a new field)
+      readJSONFile.mockResolvedValue({
+        version: 1,
+        lastUpdated: '2025-01-01T00:00:00.000Z',
+        jobs: [
+          {
+            id: 'job-datadog-error-monitor',
+            name: 'DataDog Error Monitor',
+            description: 'Monitors errors',
+            category: 'datadog-error-monitor',
+            interval: 'daily',
+            intervalMs: 86400000,
+            enabled: false,
+            autonomyLevel: 'manager',
+            promptTemplate: 'Default datadog prompt',
+            lastRun: null,
+            runCount: 0,
+            createdAt: '2025-01-01T00:00:00.000Z',
+            updatedAt: '2025-01-01T00:00:00.000Z',
+            _shippedDefaults: {}
+            // No priority field — should be added from default
+          }
+        ]
+      })
+
+      const jobs = await getAllJobs()
+      const datadog = jobs.find(j => j.id === 'job-datadog-error-monitor')
+
+      // Missing field gets populated from default
+      expect(datadog.priority).toBe('MEDIUM')
+      // Snapshot is set so future changes can be detected
+      expect(datadog._shippedDefaults.priority).toBe('MEDIUM')
+    })
   })
 
   describe('getAllJobs', () => {

@@ -23,11 +23,16 @@ export default function DatadogTab({ app }) {
   const configured = dd?.enabled && dd?.instanceId && dd?.serviceName && dd?.environment;
 
   useEffect(() => {
+    // Always reset on instance change so the previous app's site doesn't linger.
+    setDdSite(null);
     if (!dd?.instanceId) return;
+    let cancelled = false;
     api.getDatadogInstances().then(res => {
+      if (cancelled) return;
       const inst = (res.instances || {})[dd.instanceId];
       if (inst?.site) setDdSite(inst.site);
     }).catch(() => {});
+    return () => { cancelled = true; };
   }, [dd?.instanceId]);
 
   const fetchErrors = useCallback(async () => {

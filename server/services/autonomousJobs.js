@@ -636,10 +636,58 @@ function createDefaultJobsData() {
     lastUpdated: now,
     jobs: DEFAULT_JOBS.map(j => ({
       ...j,
+      _shippedDefaults: Object.fromEntries(
+        JOB_ADDITIVE_FIELDS
+          .filter(f => Object.hasOwn(j, f))
+          .map(f => [f, j[f]])
+      ),
       createdAt: now,
       updatedAt: now
     }))
   }
+}
+
+/**
+ * Apply additive fields from a default job onto an existing persisted job using a
+ * shipped-defaults snapshot so that un-customized fields receive future updates
+ * while user customizations are always preserved.
+ *
+ * Returns true if any field (including _shippedDefaults) changed.
+ */
+function applyAdditiveFields(existing, defaultJob) {
+  if (!existing._shippedDefaults) existing._shippedDefaults = {}
+  let changed = false
+
+  for (const field of JOB_ADDITIVE_FIELDS) {
+    if (!Object.hasOwn(defaultJob, field)) continue
+
+    if (!Object.hasOwn(existing, field)) {
+      // Brand-new field — set value and snapshot
+      existing[field] = defaultJob[field]
+      existing._shippedDefaults[field] = defaultJob[field]
+      changed = true
+      continue
+    }
+
+    const snapshot = existing._shippedDefaults[field]
+    if (snapshot === undefined) {
+      // Pre-snapshot job: bootstrap snapshot to the current shipped default.
+      // Value is preserved (we can't distinguish user-edit from old shipped value).
+      // On the NEXT release the snapshot will exist and comparisons will work correctly.
+      existing._shippedDefaults[field] = defaultJob[field]
+      changed = true
+      continue
+    }
+
+    if (existing[field] === snapshot && existing[field] !== defaultJob[field]) {
+      // User hasn't touched this field — propagate the new shipped default
+      existing[field] = defaultJob[field]
+      existing._shippedDefaults[field] = defaultJob[field]
+      changed = true
+    }
+    // else: value already matches new default (no-op), or user customized (preserve)
+  }
+  return changed
 }
 
 /**
@@ -657,6 +705,11 @@ function mergeWithDefaults(loaded) {
     if (!existing) {
       loaded.jobs.push({
         ...defaultJob,
+        _shippedDefaults: Object.fromEntries(
+          JOB_ADDITIVE_FIELDS
+            .filter(f => Object.hasOwn(defaultJob, f))
+            .map(f => [f, defaultJob[f]])
+        ),
         createdAt: now,
         updatedAt: now
       })
@@ -669,13 +722,9 @@ function mergeWithDefaults(loaded) {
           changed = true
         }
       }
-      // Additive fields: only populate if the field is missing on the stored job
-      for (const field of JOB_ADDITIVE_FIELDS) {
-        if (Object.hasOwn(defaultJob, field) && !Object.hasOwn(existing, field)) {
-          existing[field] = defaultJob[field]
-          changed = true
-        }
-      }
+      // Additive fields: snapshot-aware merge — propagates updates to untouched fields,
+      // preserves user customizations
+      if (applyAdditiveFields(existing, defaultJob)) changed = true
       if (changed) {
         existing.updatedAt = now
       }
