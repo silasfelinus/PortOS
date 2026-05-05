@@ -26,7 +26,14 @@ function formatCodexRuntimeLine(trimmed) {
   return trimmed;
 }
 
-export function createCodexStderrFormatter() {
+export function createCodexStderrFormatter(userPrompt = '') {
+  // Normalize prompt lines for fast lookup. Trim each line and skip blanks —
+  // Codex echoes the prompt verbatim line-by-line, so trimmed equality is
+  // sufficient to detect echoed prompt content.
+  const promptLineSet = new Set(
+    String(userPrompt || '').split('\n').map(l => l.trim()).filter(Boolean)
+  );
+
   let lineBuffer = '';
   let sawRuntimeOutput = false;
   let suppressCommandOutput = false;
@@ -40,8 +47,17 @@ export function createCodexStderrFormatter() {
     }
     if (shouldDropCodexLine(trimmed)) return null;
 
+    // While in the prompt-echo zone, drop lines that match the user prompt
+    // verbatim. This prevents prompt content like "Debug the api key" from
+    // triggering ERROR_SIGNAL_RE below.
+    if (!sawRuntimeOutput && promptLineSet.has(trimmed)) return null;
+
+    // ERROR_SIGNAL_RE is only safe to evaluate after we've crossed the
+    // metadata block. Once enabled, it lets plain-text auth/billing
+    // failures (e.g. "not logged in", "unauthorized") become the
+    // first-emitted runtime line even without an ERROR: prefix.
     const isRuntimeSignal = RUNTIME_SIGNAL_RE.test(trimmed)
-      || (sawRuntimeOutput && ERROR_SIGNAL_RE.test(trimmed));
+      || (crossedPromptBoundary && ERROR_SIGNAL_RE.test(trimmed));
     if (suppressCommandOutput && !isRuntimeSignal) return null;
     if (!sawRuntimeOutput && !isRuntimeSignal) return null;
     if (isRuntimeSignal) sawRuntimeOutput = true;

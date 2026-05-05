@@ -20,7 +20,7 @@ export default function DatadogTab({ app }) {
   const abortRef = useRef(null);
 
   const dd = app?.datadog;
-  const configured = dd?.enabled && dd?.instanceId && dd?.serviceName;
+  const configured = dd?.enabled && dd?.instanceId && dd?.serviceName && dd?.environment;
 
   useEffect(() => {
     if (!dd?.instanceId) return;
@@ -31,7 +31,7 @@ export default function DatadogTab({ app }) {
   }, [dd?.instanceId]);
 
   const fetchErrors = useCallback(async () => {
-    if (!dd?.enabled || !dd?.instanceId || !dd?.serviceName) { setLoading(false); return; }
+    if (!dd?.enabled || !dd?.instanceId || !dd?.serviceName || !dd?.environment) { setLoading(false); return; }
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -39,7 +39,7 @@ export default function DatadogTab({ app }) {
     setFetchFailed(false);
     const range = TIME_RANGES.find(r => r.value === timeRange);
     const fromTime = new Date(Date.now() - range.ms).toISOString();
-    const result = await api.searchDatadogErrors(dd.instanceId, dd.serviceName, dd.environment || 'production', fromTime, { signal: controller.signal, silent: true }).catch(err => {
+    const result = await api.searchDatadogErrors(dd.instanceId, dd.serviceName, dd.environment, fromTime, { signal: controller.signal, silent: true }).catch(err => {
       if (err.name === 'AbortError') return 'aborted';
       return null;
     });
@@ -77,7 +77,7 @@ export default function DatadogTab({ app }) {
           <h2 className="text-lg font-semibold text-white">DataDog Errors</h2>
           <p className="text-sm text-gray-400">
             Service: <span className="text-gray-300">{dd.serviceName}</span>
-            {' '}&middot; Env: <span className="text-gray-300">{dd.environment || 'production'}</span>
+            {' '}&middot; Env: <span className="text-gray-300">{dd.environment}</span>
           </p>
         </div>
         <div className="flex items-center gap-2">

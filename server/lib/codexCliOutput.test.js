@@ -36,7 +36,8 @@ ERROR: {"type":"error","status":400,"error":{"type":"invalid_request_error","mes
   });
 
   it('does not leak prompt lines containing error keywords before the separator', () => {
-    const formatter = createCodexStderrFormatter();
+    const userPrompt = 'Debug why the api key is not working and why the model is not supported.';
+    const formatter = createCodexStderrFormatter(userPrompt);
 
     const lines = formatter.processChunk(`Reading prompt from stdin...
 OpenAI Codex v0.125.0 (research preview)
@@ -98,5 +99,69 @@ file output
 `);
 
     expect(lines).toEqual(['🔧 ls -la']);
+  });
+
+  it('emits plain-text "not logged in" as the first post-boundary runtime line', () => {
+    const formatter = createCodexStderrFormatter();
+
+    const lines = formatter.processChunk(`Reading prompt from stdin...
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /repo
+model: gpt-4o
+provider: openai
+approval: never
+sandbox: workspace-write
+session id: abc
+--------
+user
+Some normal prompt text.
+not logged in
+`);
+
+    expect(lines).toEqual(['not logged in']);
+  });
+
+  it('emits plain-text "quota exceeded" as the first post-boundary runtime line', () => {
+    const formatter = createCodexStderrFormatter();
+
+    const lines = formatter.processChunk(`Reading prompt from stdin...
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /repo
+model: gpt-4o
+provider: openai
+approval: never
+sandbox: workspace-write
+session id: abc
+--------
+user
+Some normal prompt text.
+quota exceeded
+`);
+
+    expect(lines).toEqual(['quota exceeded']);
+  });
+
+  it('drops echoed prompt lines matching userPrompt but still emits first plain runtime error', () => {
+    const userPrompt = 'Debug why the api key is not working and why the model is not supported.';
+    const formatter = createCodexStderrFormatter(userPrompt);
+
+    const lines = formatter.processChunk(`Reading prompt from stdin...
+OpenAI Codex v0.125.0 (research preview)
+--------
+workdir: /repo
+model: gpt-4o
+provider: openai
+approval: never
+sandbox: workspace-write
+session id: abc
+--------
+user
+Debug why the api key is not working and why the model is not supported.
+not logged in
+`);
+
+    expect(lines).toEqual(['not logged in']);
   });
 });

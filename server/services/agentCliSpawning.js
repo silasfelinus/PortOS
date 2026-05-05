@@ -373,7 +373,7 @@ export async function spawnDirectly(agentId, task, prompt, workspacePath, model,
   const outputFile = join(agentDir, 'output.txt');
   const isStreamJson = cliConfig.streamFormat === 'stream-json';
   const streamParser = isStreamJson ? createStreamJsonParser() : null;
-  const codexStderrFormatter = provider.id === 'codex' ? createCodexStderrFormatter() : null;
+  const codexStderrFormatter = provider.id === 'codex' ? createCodexStderrFormatter(prompt) : null;
 
   // If no output after 3 seconds, transition from initializing to working to show progress
   const initializationTimeout = setTimeout(async () => {

@@ -473,7 +473,7 @@ app.post('/spawn', async (req, res) => {
   const isStreamJson = spawnArgs.includes('stream-json');
   const streamParser = isStreamJson ? createStreamJsonParser() : null;
   const isCodexCli = basename(command).replace(/\.exe$/i, '') === 'codex';
-  const codexStderrFormatter = isCodexCli ? createCodexStderrFormatter() : null;
+  const codexStderrFormatter = isCodexCli ? createCodexStderrFormatter(prompt) : null;
 
   // Store in memory
   activeAgents.set(agentId, {
