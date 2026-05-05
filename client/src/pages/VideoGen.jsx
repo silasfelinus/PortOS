@@ -87,6 +87,13 @@ const newQueueId = () =>
     ? crypto.randomUUID()
     : `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+const videoModelMemoryGb = (model) => {
+  const explicit = Number(model?.memoryGb);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const match = String(model?.name || '').match(/~\s*(\d+(?:\.\d+)?)\s*GB/i);
+  return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
+};
+
 const ImagePreview = ({ src, alt, label }) => (
   <div className="space-y-1">
     <img src={src} alt={alt} className="w-full max-h-48 object-contain rounded border border-port-border bg-port-bg" />
@@ -360,12 +367,14 @@ export default function VideoGen() {
       setDisableAudio(false);
       setNoMusic(false);
       setChunks(1);
-      // Auto-select the smallest (first) ltx2-runtime model so the user
+      // Auto-select the lowest-memory ltx2-runtime model so the user
       // doesn't land on a blocked state. Only fires when the current model
       // can't handle a2v — if they already have a dgrauet model selected
       // we leave it alone.
       if (currentModel?.runtime !== 'ltx2') {
-        const ltx2Model = models.find((m) => m.runtime === 'ltx2');
+        const ltx2Model = models
+          .filter((m) => m.runtime === 'ltx2')
+          .sort((a, b) => videoModelMemoryGb(a) - videoModelMemoryGb(b))[0];
         if (ltx2Model) setModelId(ltx2Model.id);
       }
     }

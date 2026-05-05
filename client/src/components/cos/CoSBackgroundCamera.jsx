@@ -10,14 +10,14 @@ export default function CoSBackgroundCamera({ enabled = false, x = 0, y = 0, z =
   useEffect(() => {
     if (!enabled) return;
 
-    const oldFrameHeight = window.innerWidth >= 1024
+    const oldFrameHeight = size.width >= 1024
       ? DESKTOP_FRAME_HEIGHT
       : COMPACT_FRAME_HEIGHT;
     const distanceScale = Math.max(1, size.height / oldFrameHeight);
 
     camera.position.set(x, y, z * distanceScale);
     camera.updateProjectionMatrix();
-  }, [camera, enabled, size.height, x, y, z]);
+  }, [camera, enabled, size.height, size.width, x, y, z]);
 
   return null;
 }

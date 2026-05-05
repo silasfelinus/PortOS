@@ -164,6 +164,21 @@ describe('Image Gen Routes', () => {
       expect(imageGen.generateImage).not.toHaveBeenCalled();
     });
 
+    it('local mode maps cfgScale to guidance before enqueueing', async () => {
+      getSettings.mockResolvedValueOnce({ imageGen: { mode: 'local', local: { pythonPath: '/usr/bin/python3' } } });
+      mediaJobQueue.enqueueJob.mockReturnValueOnce({ jobId: 'queued-job-cfg', position: 1, status: 'queued' });
+
+      const response = await request(app)
+        .post('/api/image-gen/generate')
+        .send({ prompt: 'a fox in a forest', cfgScale: 6.5 });
+
+      expect(response.status).toBe(200);
+      expect(mediaJobQueue.enqueueJob).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'image',
+        params: expect.objectContaining({ cfgScale: 6.5, guidance: 6.5 }),
+      }));
+    });
+
     // The per-request `mode` override flips into queue mode even when the
     // saved default is external — protects against future regressions where
     // someone hard-codes settings.imageGen.mode as the only mode source.

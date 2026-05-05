@@ -6,6 +6,13 @@ import * as api from '../../services/api';
 import { processScreenshotUploads, processAttachmentUploads } from '../../utils/fileUpload';
 import { formatBytes } from '../../utils/formatters';
 
+const isCodexProvider = (provider) => {
+  if (!provider) return false;
+  if (provider.id === 'codex') return true;
+  const commandName = String(provider.command || '').split(/[\\/]/).pop().replace(/\.(exe|cmd|bat)$/i, '');
+  return commandName === 'codex';
+};
+
 export default function TaskAddForm({ providers, apps, onTaskAdded, compact = false, defaultExpanded = false, defaultApp = '' }) {
   const [newTask, setNewTask] = useState({ description: '', model: '', provider: '', app: defaultApp });
   const [addToTop, setAddToTop] = useState(false);
@@ -65,7 +72,7 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   const selectedProvider = providers?.find(p => p.id === newTask.provider);
   const availableModels = selectedProvider?.models || [];
   const providerModelNote = selectedProvider
-    ? selectedProvider.command === 'codex'
+    ? isCodexProvider(selectedProvider)
       ? 'Codex uses the model configured in ~/.codex/config.toml.'
       : selectedProvider.type === 'cli'
         ? `${selectedProvider.name} uses its CLI configured default model.`

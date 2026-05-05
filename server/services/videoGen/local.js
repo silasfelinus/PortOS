@@ -263,7 +263,7 @@ const buildArgs = ({ pythonPath, modelId, model, prompt, negativePrompt, width, 
   return { bin: pythonPath, args };
 };
 
-export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = 768, height = 512, numFrames = 121, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, extendFromVideoPath = null, audioFilePath = null, mode = null, imageStrength = null, jobId: providedJobId = null }) {
+export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = 768, height = 512, numFrames = 121, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, extendFromVideoPath = null, audioFilePath = null, mode = null, imageStrength = null, hidden = false, jobId: providedJobId = null }) {
   uploadedTempPaths = Array.isArray(uploadedTempPaths) ? uploadedTempPaths : [];
   if (!pythonPath) throw new ServerError('Python path not configured — set it in Settings > Image Gen', { status: 400, code: 'VIDEO_GEN_NOT_CONFIGURED' });
   if (!prompt?.trim()) throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
@@ -335,7 +335,21 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     ? await resizeImage(lastImagePath, 'last')
     : { resolved: lastImagePath, tempPath: null };
 
-  const meta = { id: jobId, prompt, negativePrompt, modelId, seed: actualSeed, width: w, height: h, numFrames: parsedNumFrames, fps: parsedFps, filename, createdAt: new Date().toISOString(), mode: mode || (sourceImagePath ? 'image' : 'text') };
+  const meta = {
+    id: jobId,
+    prompt,
+    negativePrompt,
+    modelId,
+    seed: actualSeed,
+    width: w,
+    height: h,
+    numFrames: parsedNumFrames,
+    fps: parsedFps,
+    filename,
+    createdAt: new Date().toISOString(),
+    mode: mode || (sourceImagePath ? 'image' : 'text'),
+    ...(hidden ? { hidden: true } : {}),
+  };
   const job = { ...meta, clients: [], status: 'running' };
   jobs.set(jobId, job);
 
@@ -580,6 +594,7 @@ export async function generateChainedVideo({ chunks, jobId: outerJobId, ...rest 
       // prior render, which lives under data/images.
       uploadedTempPath: i === 0 ? rest.uploadedTempPath : null,
       uploadedTempPaths: i === 0 ? (rest.uploadedTempPaths || []) : [],
+      hidden: true,
       mode: i === 0 ? firstMode : 'image',
       // After the first chunk, drop FFLF-style last image — chained continuation
       // is single-conditioned on the previous chunk's tail frame.

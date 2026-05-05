@@ -152,6 +152,9 @@ router.post('/generate', initImageUpload, asyncHandler(async (req, res) => {
   // Strip the route-only `initImageFile` field — providers expect `initImagePath`.
   delete data.initImageFile;
   if (initImagePath) data.initImagePath = initImagePath;
+  if (data.guidance == null && data.cfgScale != null) {
+    data.guidance = data.cfgScale;
+  }
 
   // Multer's tmp upload is no longer needed once we've copied it into
   // PATHS.images. Use res.on('close') so the temp file is cleaned up whether
