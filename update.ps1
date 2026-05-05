@@ -116,9 +116,16 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Step "submodules" "done" "Submodules updated"
 Write-SafeHost ""
 
-# Stop PM2 apps to release file locks before updating
+# Kill PM2 daemon entirely — pm2 stop/restart only signal app processes but
+# leave the daemon alive. If the daemon was originally launched from a different
+# project, it can cache a stale ProcessContainerFork.js path and crash future
+# fork() calls with MODULE_NOT_FOUND. Killing the daemon mirrors update.sh and
+# forces a fresh launch from this checkout on restart.
 Step "pm2-stop" "running" "Stopping PortOS apps..."
-Invoke-Logged npm run pm2:stop
+Invoke-Logged node ./node_modules/pm2/bin/pm2 kill
+if ($LASTEXITCODE -ne 0) {
+    Write-SafeHost "⚠️  PM2 daemon was not running or could not be killed; continuing update" -ForegroundColor Yellow
+}
 Step "pm2-stop" "done" "Apps stopped"
 Write-SafeHost ""
 

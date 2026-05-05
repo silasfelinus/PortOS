@@ -101,7 +101,8 @@ if [[ "$INSTALL_LTX2" == "1" ]]; then
     echo "📦 Cloning dgrauet/ltx-2-mlx into ${LTX2_DIR}..."
     git clone --depth=1 https://github.com/dgrauet/ltx-2-mlx.git "${LTX2_DIR}"
   else
-    echo "ℹ️  ltx-2-mlx clone exists at ${LTX2_DIR}; skipping clone."
+    echo "📦 Updating existing ltx-2-mlx clone at ${LTX2_DIR}..."
+    (cd "${LTX2_DIR}" && git fetch --depth=1 origin main && git checkout -B main FETCH_HEAD)
   fi
   # Force Python 3.11 — ltx-core-mlx pins requires-python>=3.11 and the
   # macOS bundled python3 is sometimes 3.10. uv resolves this for us when

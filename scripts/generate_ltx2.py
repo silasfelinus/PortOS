@@ -52,6 +52,24 @@ def emit_download(msg: str) -> None:
     print(f"DOWNLOAD:{msg}", file=sys.stderr, flush=True)
 
 
+def configure_negative_prompt(negative_prompt: str) -> None:
+    """Thread PortOS' negative prompt into ltx-2-mlx's CFG encoder.
+
+    The current dgrauet pipeline APIs don't expose `negative_prompt` on every
+    public generate method. Internally, though, all the text/video/audio
+    pipelines share `TextToVideoPipeline._encode_text_with_negative()`, which
+    reads `ti2vid_one_stage.DEFAULT_NEGATIVE_PROMPT` at call time. This helper
+    updates that module-level default for this short-lived bridge process so
+    text, image, fflf, extend, and a2v modes all honor the prompt consistently.
+    """
+    if not negative_prompt:
+        return
+    from ltx_pipelines_mlx import ti2vid_one_stage
+
+    ti2vid_one_stage.DEFAULT_NEGATIVE_PROMPT = negative_prompt
+    emit_status("Using custom negative prompt")
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="PortOS ltx-2-mlx bridge")
     p.add_argument("--mode", required=True, choices=["text", "image", "fflf", "extend", "a2v"])
@@ -289,6 +307,7 @@ def maybe_strip_audio(output_path: str) -> None:
 def main() -> int:
     args = parse_args()
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    configure_negative_prompt(args.negative_prompt)
 
     runners = {
         "text": run_text,
