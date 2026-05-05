@@ -23,6 +23,7 @@ import { processAgentCompletion } from './agentCompletion.js';
 import { persistSimplifySummaries } from './agentLifecycle.js';
 import { activeAgents, userTerminatedAgents } from './agentState.js';
 import { safeJSONParse, PATHS } from '../lib/fileUtils.js';
+import { createCodexStderrFormatter } from '../lib/codexCliOutput.js';
 
 const AGENTS_DIR = PATHS.cosAgents;
 
@@ -371,6 +372,7 @@ export async function spawnDirectly(agentId, task, prompt, workspacePath, model,
   const outputFile = join(agentDir, 'output.txt');
   const isStreamJson = cliConfig.streamFormat === 'stream-json';
   const streamParser = isStreamJson ? createStreamJsonParser() : null;
+  const codexStderrFormatter = provider.id === 'codex' ? createCodexStderrFormatter() : null;
 
   // If no output after 3 seconds, transition from initializing to working to show progress
   const initializationTimeout = setTimeout(async () => {
@@ -413,26 +415,10 @@ export async function spawnDirectly(agentId, task, prompt, workspacePath, model,
   claudeProcess.stderr.on('data', async (data) => {
     const text = data.toString();
     // Codex stderr: show thinking + tool names, skip config dump and command output
-    if (provider.id === 'codex') {
-      for (const line of text.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        if (trimmed.startsWith('Reading prompt from stdin')) continue;
-        if (trimmed.startsWith('OpenAI Codex v')) continue;
-        if (trimmed.startsWith('succeeded in')) continue;
-        // Tool calls: show just the command, strip output after "succeeded"
-        if (trimmed.startsWith('exec ')) {
-          const match = trimmed.match(/^exec\s+\S+\s+-lc\s+(['"])(.*?)\1/);
-          const cmd = match ? match[2] : trimmed.split(' in /')[0];
-          const display = `🔧 ${cmd}`;
-          outputBuffer += display + '\n';
-          await appendAgentOutput(agentId, display);
-          continue;
-        }
-        // Skip long lines (command output like file contents, directory listings)
-        if (trimmed.length > 300) continue;
-        outputBuffer += trimmed + '\n';
-        await appendAgentOutput(agentId, trimmed);
+    if (codexStderrFormatter) {
+      for (const line of codexStderrFormatter.processChunk(text)) {
+        outputBuffer += line + '\n';
+        await appendAgentOutput(agentId, line);
       }
       await writeFile(outputFile, outputBuffer).catch(() => {});
       return;
@@ -494,6 +480,12 @@ export async function spawnDirectly(agentId, task, prompt, workspacePath, model,
       const finalResult = streamParser.getFinalResult();
       if (finalResult) {
         outputBuffer = finalResult;
+      }
+    }
+    if (codexStderrFormatter) {
+      for (const line of codexStderrFormatter.flush()) {
+        outputBuffer += line + '\n';
+        await appendAgentOutput(agentId, line);
       }
     }
 
