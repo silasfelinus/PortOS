@@ -60,14 +60,31 @@ safe_install() {
 }
 
 # Pull latest — always switch to main (detached HEAD or feature branch both
-# need to land on main before pulling, or the version won't advance)
+# need to land on main before pulling, or the version won't advance). If the
+# user has uncommitted edits on a non-main branch, stash them first so the
+# checkout doesn't abort or carry edits onto main, then restore on the way back.
 step "git-pull" "running" "Pulling latest changes..."
 current_branch=$(git symbolic-ref -q --short HEAD 2>/dev/null || echo "")
+stashed=0
 if [ "$current_branch" != "main" ]; then
+  if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+    log "⚠️  Stashing local changes from '${current_branch:-detached HEAD}' before switching to main"
+    if run git stash push -u -m "portos-update-$(date +%s)"; then
+      stashed=1
+    fi
+  fi
   log "⚠️  On branch '${current_branch:-detached HEAD}' — switching to main for update"
   run git checkout main
 fi
 run git pull --rebase --autostash
+if [ "$stashed" = "1" ]; then
+  if [ -n "$current_branch" ]; then
+    log "⚠️  Returning to '$current_branch' and restoring stashed changes"
+    run git checkout "$current_branch" && (run git stash pop || log "⚠️  Could not restore stashed changes — see 'git stash list'")
+  else
+    log "⚠️  Was on detached HEAD; stashed changes preserved in 'git stash' (run 'git stash pop' manually)"
+  fi
+fi
 step "git-pull" "done" "Latest changes pulled"
 log ""
 

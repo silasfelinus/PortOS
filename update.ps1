@@ -95,11 +95,30 @@ function Safe-Install {
 }
 
 # Pull latest — always switch to main (detached HEAD or feature branch both
-# need to land on main before pulling, or the version won't advance)
+# need to land on main before pulling, or the version won't advance). If the
+# user has uncommitted edits on a non-main branch, stash them first so the
+# checkout doesn't abort or carry edits onto main, then restore on the way back.
 Step "git-pull" "running" "Pulling latest changes..."
 $headRef = git symbolic-ref -q HEAD 2>$null
 $currentBranch = if ($headRef) { $headRef -replace "refs/heads/", "" } else { "" }
+$stashed = $false
 if ($currentBranch -ne "main") {
+    $hasChanges = $false
+    git diff --quiet 2>$null
+    if ($LASTEXITCODE -ne 0) { $hasChanges = $true }
+    if (-not $hasChanges) {
+        git diff --cached --quiet 2>$null
+        if ($LASTEXITCODE -ne 0) { $hasChanges = $true }
+    }
+    if (-not $hasChanges) {
+        $untracked = git ls-files --others --exclude-standard
+        if ($untracked) { $hasChanges = $true }
+    }
+    if ($hasChanges) {
+        Write-SafeHost "⚠️  Stashing local changes from '$(if ($currentBranch) { $currentBranch } else { 'detached HEAD' })' before switching to main" -ForegroundColor Yellow
+        Invoke-Logged git stash push -u -m "portos-update-$([int][double]::Parse((Get-Date -UFormat %s)))"
+        if ($LASTEXITCODE -eq 0) { $stashed = $true }
+    }
     if (-not $currentBranch) {
         $detachedCommit = git rev-parse --short HEAD
         Write-SafeHost "⚠️  On detached HEAD (commit $detachedCommit) — switching to main for update" -ForegroundColor Yellow
@@ -111,6 +130,18 @@ if ($currentBranch -ne "main") {
 }
 Invoke-Logged git pull --rebase --autostash
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($stashed) {
+    if ($currentBranch) {
+        Write-SafeHost "⚠️  Returning to '$currentBranch' and restoring stashed changes" -ForegroundColor Yellow
+        Invoke-Logged git checkout $currentBranch
+        Invoke-Logged git stash pop
+        if ($LASTEXITCODE -ne 0) {
+            Write-SafeHost "⚠️  Could not restore stashed changes — see 'git stash list'" -ForegroundColor Yellow
+        }
+    } else {
+        Write-SafeHost "⚠️  Was on detached HEAD; stashed changes preserved in 'git stash' (run 'git stash pop' manually)" -ForegroundColor Yellow
+    }
+}
 Step "git-pull" "done" "Latest changes pulled"
 Write-SafeHost ""
 
