@@ -29,15 +29,17 @@ vi.mock('../../lib/fileUtils.js', async () => {
 // directly from each test.
 const stubs = {
   generateVideo: vi.fn(async () => ({ jobId: 'whatever' })),
+  generateChainedVideo: vi.fn(async () => ({ jobId: 'whatever' })),
   generateImage: vi.fn(async () => ({ jobId: 'whatever' })),
-  generateCodexImage: vi.fn(async () => ({ jobId: 'whatever' })),
+  generateImageCodex: vi.fn(async () => ({ jobId: 'whatever' })),
   cancelVideo: vi.fn(),
   cancelImage: vi.fn(),
-  cancelCodexImage: vi.fn(),
+  cancelImageCodex: vi.fn(),
 };
 
 vi.mock('../videoGen/local.js', () => ({
   generateVideo: (...args) => stubs.generateVideo(...args),
+  generateChainedVideo: (...args) => stubs.generateChainedVideo(...args),
   cancel: (...args) => stubs.cancelVideo(...args),
 }));
 
@@ -47,8 +49,8 @@ vi.mock('../imageGen/local.js', () => ({
 }));
 
 vi.mock('../imageGen/codex.js', () => ({
-  generateImage: (...args) => stubs.generateCodexImage(...args),
-  cancel: (...args) => stubs.cancelCodexImage(...args),
+  generateImage: (...args) => stubs.generateImageCodex(...args),
+  cancel: (...args) => stubs.cancelImageCodex(...args),
 }));
 
 // Import the queue + the gen-event emitters AFTER the mocks above are
@@ -70,10 +72,14 @@ const flush = () => new Promise((r) => setTimeout(r, 250));
 beforeEach(async () => {
   tempDataDir = mkdtempSync(join(tmpdir(), 'mediaJobQueue-test-'));
   Object.values(stubs).forEach((fn) => fn.mockReset());
+  // Default codex stub: hang (matches video/local defaults so tests that
+  // don't care about codex don't accidentally complete too fast).
+  stubs.generateImageCodex.mockImplementation(() => new Promise(() => {}));
   await importFresh();
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await flush();
   if (tempDataDir && existsSync(tempDataDir)) {
     rmSync(tempDataDir, { recursive: true, force: true });
   }
@@ -255,23 +261,6 @@ describe('mediaJobQueue', () => {
     await waitFor(() => mediaJobQueue.getJob(job.jobId).status === 'completed');
   });
 
-  it('pre-gen sanitizer nulls audioFilePath that resolves outside PATHS.uploads', async () => {
-    // a2v: audioFilePath flows directly into the python helper as --audio.
-    // A hand-edited persisted job pointing it at /etc/secrets would otherwise
-    // make the worker open arbitrary local files; the same uploads-root
-    // guard applied to uploadedTempPath must apply here too.
-    const job = mediaJobQueue.enqueueJob({
-      kind: 'video',
-      params: { prompt: 'beats', mode: 'a2v', audioFilePath: '/etc/passwd' },
-    });
-    await waitFor(() => stubs.generateVideo.mock.calls.length === 1);
-    const callArgs = stubs.generateVideo.mock.calls[0][0];
-    expect(callArgs.audioFilePath).toBeNull();
-
-    videoGenEvents.emit('completed', { generationId: job.jobId, filename: `${job.jobId}.mp4` });
-    await waitFor(() => mediaJobQueue.getJob(job.jobId).status === 'completed');
-  });
-
   it('watchdog fires and marks the job failed when gen never emits a terminal event', async () => {
     // Use a very short watchdog for this test by overriding the env var before
     // the module is loaded. Re-import the module with MEDIA_JOB_WATCHDOG_VIDEO_MS=50.
@@ -422,89 +411,6 @@ describe('mediaJobQueue', () => {
     await waitFor(() => mediaJobQueue.getJob(jobId)?.status === 'completed');
   });
 
-  // Lane separation: codex image jobs run on their own lane so they
-  // don't sit behind GPU-bound video / local-image renders. Without this,
-  // the writers-room storyboard's burst of codex calls would be serialized
-  // behind whatever GPU work is in flight, defeating the point of routing
-  // them through the queue.
-  it('codex image jobs run concurrently with GPU jobs (separate lane)', async () => {
-    // Pin video on the GPU lane forever so any cross-lane blocking would
-    // strand the codex job.
-    stubs.generateVideo.mockImplementation(() => new Promise(() => {}));
-    stubs.generateCodexImage.mockImplementation(() => new Promise(() => {}));
-
-    mediaJobQueue.enqueueJob({ kind: 'video', params: { prompt: 'gpu-job' } });
-    mediaJobQueue.enqueueJob({
-      kind: 'image',
-      params: { mode: 'codex', prompt: 'codex-job' },
-    });
-
-    // Both gen modules should have been invoked — one on each lane —
-    // despite the video stub never resolving.
-    await waitFor(() => stubs.generateVideo.mock.calls.length === 1
-      && stubs.generateCodexImage.mock.calls.length === 1);
-    expect(mediaJobQueue.listJobs({ status: 'running' })).toHaveLength(2);
-  });
-
-  // Multiple codex jobs in a row queue against EACH OTHER (single codex
-  // lane) so codex.activeProcess never gets clobbered. This is the case
-  // that previously surfaced 409 IMAGE_GEN_BUSY.
-  it('back-to-back codex image jobs serialize on the codex lane', async () => {
-    stubs.generateCodexImage.mockImplementation(() => new Promise(() => {}));
-    const first = mediaJobQueue.enqueueJob({
-      kind: 'image',
-      params: { mode: 'codex', prompt: 'first' },
-    });
-    const second = mediaJobQueue.enqueueJob({
-      kind: 'image',
-      params: { mode: 'codex', prompt: 'second' },
-    });
-
-    await waitFor(() => stubs.generateCodexImage.mock.calls.length === 1);
-    // First is running on the codex lane; second sits queued behind it.
-    expect(mediaJobQueue.getJob(first.jobId).status).toBe('running');
-    expect(mediaJobQueue.getJob(second.jobId).status).toBe('queued');
-    // Same-lane position counts only same-lane jobs — the codex queue's
-    // second slot is "behind one running codex job", regardless of any
-    // GPU jobs in flight.
-    expect(mediaJobQueue.getJob(second.jobId).position).toBe(2);
-  });
-
-  // The runJob dispatcher routes by params.mode — codex image jobs hit the
-  // codex provider, not the local one. Without this dispatch, the queue
-  // would call mflux for a codex job and silently break the storyboard.
-  it('runJob dispatches codex image jobs to the codex provider', async () => {
-    stubs.generateCodexImage.mockImplementation(() => new Promise(() => {}));
-    mediaJobQueue.enqueueJob({
-      kind: 'image',
-      params: { mode: 'codex', codexPath: '/usr/local/bin/codex', prompt: 'a fox' },
-    });
-
-    await waitFor(() => stubs.generateCodexImage.mock.calls.length === 1);
-    expect(stubs.generateImage).not.toHaveBeenCalled();
-    const callArgs = stubs.generateCodexImage.mock.calls[0][0];
-    expect(callArgs.codexPath).toBe('/usr/local/bin/codex');
-    expect(callArgs.prompt).toBe('a fox');
-    expect(callArgs.jobId).toMatch(/^[0-9a-f-]{36}$/);
-  });
-
-  // Cancel of a running codex job must SIGTERM the codex provider, not
-  // the local one. Without per-job dispatch in cancelJob, cancelImage
-  // would be called against the wrong provider and the codex child
-  // would orphan.
-  it('cancelJob targets the codex provider for running codex jobs', async () => {
-    stubs.generateCodexImage.mockImplementation(() => new Promise(() => {}));
-    const job = mediaJobQueue.enqueueJob({
-      kind: 'image',
-      params: { mode: 'codex', prompt: 'cancel-me' },
-    });
-    await waitFor(() => stubs.generateCodexImage.mock.calls.length === 1);
-
-    await mediaJobQueue.cancelJob(job.jobId);
-    expect(stubs.cancelCodexImage).toHaveBeenCalled();
-    expect(stubs.cancelImage).not.toHaveBeenCalled();
-  });
-
   it('watchdog falls back to default when env var is non-numeric (does not fire immediately)', async () => {
     // setTimeout(NaN) effectively fires synchronously, which would fail every
     // job at boot. Confirm the parser rejects non-numeric strings and falls
@@ -522,6 +428,176 @@ describe('mediaJobQueue', () => {
     expect(mediaJobQueue.getJob(job.jobId)?.status).toBe('running');
 
     delete process.env.MEDIA_JOB_WATCHDOG_VIDEO_MS;
+  });
+});
+
+describe('Codex lane', () => {
+  it('dispatches a Codex job to imageGen/codex.js#generateImage, not local', async () => {
+    // Allow the codex job to resolve immediately so the worker can settle.
+    stubs.generateImageCodex.mockResolvedValue({ jobId: 'whatever' });
+
+    const job = mediaJobQueue.enqueueJob({
+      kind: 'image',
+      params: { prompt: 'codex test', mode: 'codex' },
+    });
+    await waitFor(() => stubs.generateImageCodex.mock.calls.length === 1);
+
+    expect(stubs.generateImageCodex).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: job.jobId, prompt: 'codex test', mode: 'codex' }),
+    );
+    // The GPU local image gen must NOT have been called.
+    expect(stubs.generateImage).not.toHaveBeenCalled();
+
+    imageGenEvents.emit('completed', { generationId: job.jobId, filename: `${job.jobId}.png` });
+    await waitFor(() => mediaJobQueue.getJob(job.jobId).status === 'completed');
+  });
+
+  it('Codex job and a GPU video job run concurrently — both dispatch functions are called', async () => {
+    // Both stubs hang indefinitely so neither completes before we assert.
+    stubs.generateVideo.mockImplementation(() => new Promise(() => {}));
+    stubs.generateImageCodex.mockImplementation(() => new Promise(() => {}));
+
+    const videoJob = mediaJobQueue.enqueueJob({ kind: 'video', params: { prompt: 'video' } });
+    const codexJob = mediaJobQueue.enqueueJob({
+      kind: 'image',
+      params: { prompt: 'codex concurrent', mode: 'codex' },
+    });
+
+    // Both dispatch functions should be called without either blocking the other.
+    await waitFor(
+      () => stubs.generateVideo.mock.calls.length === 1 && stubs.generateImageCodex.mock.calls.length === 1,
+    );
+
+    expect(stubs.generateVideo).toHaveBeenCalledWith(expect.objectContaining({ jobId: videoJob.jobId }));
+    expect(stubs.generateImageCodex).toHaveBeenCalledWith(expect.objectContaining({ jobId: codexJob.jobId }));
+
+    // Clean up: emit failures so the worker can settle.
+    videoGenEvents.emit('failed', { generationId: videoJob.jobId, error: 'cleanup' });
+    imageGenEvents.emit('failed', { generationId: codexJob.jobId, error: 'cleanup' });
+    await waitFor(
+      () =>
+        mediaJobQueue.getJob(videoJob.jobId).status !== 'running' &&
+        mediaJobQueue.getJob(codexJob.jobId).status !== 'running',
+    );
+  });
+
+  it('queued Codex job reports position within the Codex lane (not counting GPU jobs)', async () => {
+    // GPU job hangs so the GPU slot is occupied but separate from the Codex lane.
+    stubs.generateVideo.mockImplementation(() => new Promise(() => {}));
+    // First Codex job hangs so a second Codex job lands in the queue.
+    stubs.generateImageCodex.mockImplementation(() => new Promise(() => {}));
+
+    // Enqueue one GPU video job (occupies the GPU lane, should not affect Codex positions).
+    const videoJob = mediaJobQueue.enqueueJob({ kind: 'video', params: { prompt: 'video blocker' } });
+
+    // First Codex job: worker picks it up immediately (codexRunning slot).
+    const codex1 = mediaJobQueue.enqueueJob({
+      kind: 'image',
+      params: { prompt: 'codex first', mode: 'codex' },
+    });
+
+    // Wait until the first Codex job is actually running so codexRunning is set.
+    await waitFor(() => stubs.generateImageCodex.mock.calls.length === 1);
+
+    // Second Codex job: lands in queue behind the running Codex job (position 2 in Codex lane).
+    const codex2 = mediaJobQueue.enqueueJob({
+      kind: 'image',
+      params: { prompt: 'codex second', mode: 'codex' },
+    });
+
+    // The second Codex job's position should be 2 (1 running Codex + 1 queue slot),
+    // not inflated by the GPU video job also being in flight.
+    expect(codex2.position).toBe(2);
+    expect(mediaJobQueue.getJob(codex2.jobId).position).toBe(2);
+
+    // Clean up.
+    videoGenEvents.emit('failed', { generationId: videoJob.jobId, error: 'cleanup' });
+    imageGenEvents.emit('failed', { generationId: codex1.jobId, error: 'cleanup' });
+    imageGenEvents.emit('failed', { generationId: codex2.jobId, error: 'cleanup' });
+    await flush();
+  });
+});
+
+describe('audioFilePath sanitization', () => {
+  it('pre-gen sanitizer nulls audioFilePath that resolves outside PATHS.uploads', async () => {
+    // audioFilePath must be treated identically to uploadedTempPath: if it
+    // doesn't resolve under PATHS.uploads, the gen module must never see it.
+    const job = mediaJobQueue.enqueueJob({
+      kind: 'video',
+      params: { prompt: 'x', audioFilePath: '/etc/shadow' },
+    });
+    await waitFor(() => stubs.generateVideo.mock.calls.length === 1);
+    const callArgs = stubs.generateVideo.mock.calls[0][0];
+    expect(callArgs.audioFilePath).toBeNull();
+
+    videoGenEvents.emit('completed', { generationId: job.jobId, filename: `${job.jobId}.mp4` });
+    await waitFor(() => mediaJobQueue.getJob(job.jobId).status === 'completed');
+  });
+});
+
+describe('chunks dispatch', () => {
+  it('video job with chunks > 1 calls generateChainedVideo instead of generateVideo', async () => {
+    const job = mediaJobQueue.enqueueJob({
+      kind: 'video',
+      params: { prompt: 'chained', chunks: 3 },
+    });
+    await waitFor(() => stubs.generateChainedVideo.mock.calls.length === 1);
+
+    expect(stubs.generateChainedVideo).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: job.jobId, prompt: 'chained', chunks: 3 }),
+    );
+    // The single-chunk path must NOT have been called.
+    expect(stubs.generateVideo).not.toHaveBeenCalled();
+
+    videoGenEvents.emit('completed', { generationId: job.jobId, filename: `${job.jobId}.mp4` });
+    await waitFor(() => mediaJobQueue.getJob(job.jobId).status === 'completed');
+  });
+
+  it('video job with chunks === 1 calls generateVideo (not generateChainedVideo)', async () => {
+    const job = mediaJobQueue.enqueueJob({
+      kind: 'video',
+      params: { prompt: 'single', chunks: 1 },
+    });
+    await waitFor(() => stubs.generateVideo.mock.calls.length === 1);
+
+    expect(stubs.generateVideo).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: job.jobId, prompt: 'single', chunks: 1 }),
+    );
+    expect(stubs.generateChainedVideo).not.toHaveBeenCalled();
+
+    videoGenEvents.emit('completed', { generationId: job.jobId, filename: `${job.jobId}.mp4` });
+    await waitFor(() => mediaJobQueue.getJob(job.jobId).status === 'completed');
+  });
+});
+
+describe('cancelJob running-Codex branch', () => {
+  it('canceling a running Codex job calls imageGen/codex.js#cancel, not the local cancel', async () => {
+    // Codex job hangs indefinitely so it stays in 'running' for the cancel.
+    stubs.generateImageCodex.mockImplementation(() => new Promise(() => {}));
+
+    const job = mediaJobQueue.enqueueJob({
+      kind: 'image',
+      params: { prompt: 'codex running cancel', mode: 'codex' },
+    });
+
+    // Wait until the Codex job is actually running (worker picked it up).
+    await waitFor(() => stubs.generateImageCodex.mock.calls.length === 1);
+    expect(mediaJobQueue.getJob(job.jobId).status).toBe('running');
+
+    const result = await mediaJobQueue.cancelJob(job.jobId);
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('canceling');
+
+    // Codex cancel must have fired.
+    expect(stubs.cancelImageCodex).toHaveBeenCalled();
+    // The GPU/local image cancel must NOT have fired.
+    expect(stubs.cancelImage).not.toHaveBeenCalled();
+    expect(stubs.cancelVideo).not.toHaveBeenCalled();
+
+    // Simulate the codex gen acknowledging the cancel with a failure event
+    // so the worker settles cleanly.
+    imageGenEvents.emit('failed', { generationId: job.jobId, error: 'canceled' });
+    await waitFor(() => mediaJobQueue.getJob(job.jobId).status !== 'running');
   });
 });
 

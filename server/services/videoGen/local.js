@@ -22,7 +22,7 @@ import { ServerError } from '../../lib/errorHandler.js';
 import { videoGenEvents } from './events.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay, PYTHON_NOISE_RE } from '../../lib/sseUtils.js';
 import { getVideoModels, getDefaultVideoModelId, getTextEncoderRepo } from '../../lib/mediaModels.js';
-import { findFfmpeg, safeUnder, generateThumbnail, optimizeForStreaming, upscaleVideo2x } from '../../lib/ffmpeg.js';
+import { findFfmpeg, safeUnder, generateThumbnail, optimizeForStreaming, upscaleVideo2x, extractEvaluationFrames } from '../../lib/ffmpeg.js';
 
 // Path to the dgrauet/ltx-2-mlx venv populated by `INSTALL_LTX2=1
 // scripts/setup-image-video.sh`. Used when a model entry has
@@ -263,6 +263,7 @@ const buildArgs = ({ pythonPath, modelId, model, prompt, negativePrompt, width, 
 };
 
 export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = 768, height = 512, numFrames = 121, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, extendFromVideoPath = null, audioFilePath = null, mode = null, imageStrength = null, jobId: providedJobId = null }) {
+  uploadedTempPaths = Array.isArray(uploadedTempPaths) ? uploadedTempPaths : [];
   if (!pythonPath) throw new ServerError('Python path not configured — set it in Settings > Image Gen', { status: 400, code: 'VIDEO_GEN_NOT_CONFIGURED' });
   if (!prompt?.trim()) throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
   // Single-flight is now enforced by the mediaJobQueue worker upstream — only
@@ -756,6 +757,19 @@ export async function extractLastFrame(historyId) {
   });
 }
 
+// Sample N evenly-spaced frames from a video for multi-frame LLM evaluation.
+// Thin wrapper around the canonical lib/ffmpeg.js helper `extractEvaluationFrames`
+// that derives the video path from the jobId so call-sites don't need to know
+// the storage layout. Returns [] on any failure — callers fall back to the
+// single-thumbnail prompt path.
+export async function sampleEvaluationFrames(jobId, count = 5) {
+  const videoPath = join(PATHS.videos, `${jobId}.mp4`);
+  if (!existsSync(videoPath)) return [];
+  const filenames = await extractEvaluationFrames(videoPath, jobId, count);
+  if (filenames.length) console.log(`🎞️ CD sampled ${filenames.length} evaluation frames for ${jobId.slice(0, 8)}`);
+  return filenames;
+}
+
 // Concat selected videos (preserving order) into a single MP4. Uses ffmpeg's
 // concat demuxer which is stream-copy, so it's fast and lossless — but the
 // inputs must share codec/resolution. The Media History page already only
@@ -925,6 +939,13 @@ export async function deleteHistoryItem(id) {
   if (item.thumbnail) {
     const thumbFile = safeUnder(PATHS.videoThumbnails, item.thumbnail);
     if (thumbFile) await unlink(thumbFile).catch(() => {});
+  }
+  // Delete evaluation frame thumbnails written by sampleEvaluationFrames:
+  // `${jobId}-f1.jpg` … `${jobId}-f9.jpg` (max count in sampleEvaluationFrames is 5,
+  // but 9 is a safe upper bound to catch any future increase).
+  for (let i = 1; i <= 9; i++) {
+    const frameFile = safeUnder(PATHS.videoThumbnails, `${id}-f${i}.jpg`);
+    if (frameFile) await unlink(frameFile).catch(() => {});
   }
   await saveHistory(history.filter((h) => h.id !== id));
   console.log(`🗑️ Deleted video: ${item.filename}`);

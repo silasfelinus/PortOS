@@ -293,7 +293,18 @@ router.post('/cancel', asyncHandler(async (req, res) => {
     if (target) return res.json(await cancelJob(target.id));
     // jobId not in our queue — fall through (could be a codex job).
   } else if (cancellable.length) {
-    return res.json(await cancelJob(cancellable[cancellable.length - 1].id));
+    // "Most recent submit" — explicitly sort by queuedAt DESC instead of
+    // relying on listJobs() ordering (which puts gpuRunning before
+    // codexRunning, then queue, then archive). queuedAt is the user's
+    // actual submit timestamp; startedAt would mis-order an older queued
+    // job that just dequeued ahead of a more-recently-submitted job
+    // still waiting in queue.
+    const latestSubmitFirst = [...cancellable].sort((a, b) => {
+      const ta = new Date(a.queuedAt || 0).getTime();
+      const tb = new Date(b.queuedAt || 0).getTime();
+      return tb - ta;
+    });
+    return res.json(await cancelJob(latestSubmitFirst[0].id));
   }
   const cancelled = imageGen.cancel();
   res.json({ ok: cancelled });
