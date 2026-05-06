@@ -19,3 +19,4 @@ A page-level run dock now slides up from the bottom of the Writers Room while im
 - The "Rendering N scenes…" inline banner inside the Boards tab has been removed; the new run dock subsumes it and is visible from any tab.
 - `STORYBOARD_TAB` enum now includes `OBJECTS` between `WORLD` and `SCENES`.
 - `ANALYSIS_KINDS` server enum now includes `'objects'`.
+- App selectors throughout the UI (task add form, OpenClaw) now list apps alphabetically by name via the shared `AppContextPicker`, instead of preserving the underlying storage order.
