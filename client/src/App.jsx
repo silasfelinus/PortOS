@@ -6,18 +6,14 @@ import BrailleSpinner from './components/BrailleSpinner';
 import Dashboard from './pages/Dashboard';
 import Apps from './pages/Apps';
 import Ambient from './pages/Ambient';
+import { isStaleChunkError, reloadOnceForStaleChunk } from './utils/staleChunkReload';
 
-// Auto-reload on stale chunk errors (e.g., after a rebuild changes chunk hashes)
-// Uses sessionStorage to prevent infinite reload loops (max 1 reload per session)
+// Auto-reload on stale chunk errors (e.g., after a rebuild changes chunk hashes).
+// Detection covers Chrome / Firefox / Safari variants — see staleChunkReload.js.
 const lazyWithReload = (importFn) => lazy(() =>
   importFn().catch(err => {
-    if (err.message?.includes('MIME type') || err.message?.includes('Failed to fetch dynamically imported module')) {
-      const key = 'lazyReloadAttempted';
-      if (!sessionStorage.getItem(key)) {
-        sessionStorage.setItem(key, '1');
-        window.location.reload();
-        return new Promise(() => {}); // hang until reload completes
-      }
+    if (isStaleChunkError(err) && reloadOnceForStaleChunk()) {
+      return new Promise(() => {}); // hang until reload completes
     }
     throw err;
   })

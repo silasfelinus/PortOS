@@ -20,3 +20,8 @@ A page-level run dock now slides up from the bottom of the Writers Room while im
 - `STORYBOARD_TAB` enum now includes `OBJECTS` between `WORLD` and `SCENES`.
 - `ANALYSIS_KINDS` server enum now includes `'objects'`.
 - App selectors throughout the UI (task add form, OpenClaw) now list apps alphabetically by name via the shared `AppContextPicker`, instead of preserving the underlying storage order.
+
+## Fixed
+
+- Stale-chunk auto-reload now covers Safari ("Importing a module script failed") and Firefox ("error loading dynamically imported module") in addition to Chrome — previously iOS Safari users hit a "Something went wrong" error after a rebuild and had to tap Refresh manually. Detection is shared between `lazyWithReload` (the primary path) and `ErrorBoundary` (safety net), with a one-reload-per-session guard against infinite loops.
+- `ErrorBoundary` now uses theme-aware `text-port-text` / `text-port-text-muted` / `text-port-on-accent` instead of hardcoded `text-white` / `text-gray-400`, so the fallback UI is readable on light themes (Lumen Glass, etc).
