@@ -183,7 +183,7 @@ export default function AppIcon({ icon, appId, hasAppIcon, size = 24, className 
       <img
         src={getAppIconUrl(appId)}
         alt={ariaLabel || ''}
-        className={`w-full h-full rounded object-cover ${className}`}
+        className={`w-full h-full rounded-[22%] object-cover ${className}`}
         onError={() => setImgError(true)}
       />
     );
