@@ -101,7 +101,7 @@ export default function AddToCollectionMenu({ item }) {
   };
 
   return (
-    <div ref={wrapperRef} className="relative">
+    <div ref={wrapperRef} className="relative shrink-0">
       <button
         type="button"
         onClick={handleToggleOpen}
