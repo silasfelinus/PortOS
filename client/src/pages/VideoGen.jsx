@@ -234,7 +234,7 @@ export default function VideoGen() {
   const handleUpscaleHistory = async (item) => {
     if (upscalingId) return;
     setUpscalingId(item.id);
-    toast.info?.('Upscaling 2× — typically 10-30s…');
+    toast.loading('Upscaling 2× — typically 10-30s…');
     const result = await upscaleVideo(item.id).catch((err) => {
       toast.error(err.message || 'Upscale failed');
       return null;
@@ -546,7 +546,7 @@ export default function VideoGen() {
           setGenerating(false);
           setStatusMsg(msg.reason || 'Canceled');
           es.close();
-          toast.info?.(msg.reason || 'Render canceled');
+          toast(msg.reason || 'Render canceled');
           settleReject(new Error(msg.reason || 'Canceled'));
         }
       };

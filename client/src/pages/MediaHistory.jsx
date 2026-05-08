@@ -120,7 +120,7 @@ export default function MediaHistory() {
   const handleUpscale = async (item) => {
     if (upscalingId) return;
     setUpscalingId(item.id);
-    toast.info?.('Upscaling 2× — typically 10-30s…');
+    toast.loading('Upscaling 2× — typically 10-30s…');
     const result = await upscaleVideo(item.id).catch((err) => {
       toast.error(err.message || 'Upscale failed');
       return null;
