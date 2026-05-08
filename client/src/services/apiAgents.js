@@ -116,6 +116,16 @@ export const getCosLearningSummary = (options) => request('/cos/learning/summary
 export const getCosLearningConfidence = () => request('/cos/learning/confidence');
 export const backfillCosLearning = () => request('/cos/learning/backfill', { method: 'POST' });
 export const resetCosTaskTypeLearning = (taskType) => request(`/cos/learning/reset/${encodeURIComponent(taskType)}`, { method: 'POST' });
+export const getDismissedCosRecommendations = () => request('/cos/learning/recommendations/dismissed');
+export const dismissCosRecommendation = (id, snapshot) => request('/cos/learning/recommendations/dismiss', {
+  method: 'POST',
+  body: JSON.stringify({ id, snapshot })
+});
+export const restoreCosRecommendation = (id) => request('/cos/learning/recommendations/restore', {
+  method: 'POST',
+  body: JSON.stringify({ id })
+});
+export const clearDismissedCosRecommendations = () => request('/cos/learning/recommendations/clear-dismissed', { method: 'POST' });
 
 // CoS Quick Task Templates
 export const getCosTaskTemplates = () => request('/cos/templates');
