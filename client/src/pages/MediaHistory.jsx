@@ -104,12 +104,15 @@ export default function MediaHistory() {
 
   const handleRemix = (item) => {
     const params = new URLSearchParams();
-    if (item.prompt) params.set('prompt', item.prompt);
+    if (item.prompt && item.prompt !== '(no prompt)') params.set('prompt', item.prompt);
+    if (item.negativePrompt) params.set('negativePrompt', item.negativePrompt);
     if (item.modelId) params.set('modelId', item.modelId);
     if (item.width) params.set('width', String(item.width));
     if (item.height) params.set('height', String(item.height));
     if (item.seed != null) params.set('seed', String(item.seed));
     if (item.steps) params.set('steps', String(item.steps));
+    if (item.guidance != null) params.set('guidance', String(item.guidance));
+    if (item.quantize) params.set('quantize', String(item.quantize));
     navigate(`/media/image?${params}`);
   };
 
