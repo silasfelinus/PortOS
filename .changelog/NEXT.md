@@ -39,8 +39,11 @@ A page-level run dock now slides up from the bottom of the Writers Room while im
 - `STORYBOARD_TAB` enum now includes `OBJECTS` between `WORLD` and `SCENES`.
 - `ANALYSIS_KINDS` server enum now includes `'objects'`.
 - App selectors throughout the UI (task add form, OpenClaw) now list apps alphabetically by name via the shared `AppContextPicker`, instead of preserving the underlying storage order.
+- Image, video, and SD-API prompt/negative-prompt max length bumped from 2,000 → 8,000 chars across `imageGen`, `videoGen`, `sdapi`, and the Creative Director scene schemas. Long Writers Room scene prompts (extracted setting + character + object detail + camera/lighting direction) were hitting the 2k ceiling and getting rejected at the validation layer before reaching the dispatcher.
 
 ## Fixed
+
+- HF token resolution now falls back to `~/.cache/huggingface/token` (written by `hf auth login`) after settings and env vars come up empty, so users who already authenticated through the Hugging Face CLI no longer see the "FLUX.2 access requires Hugging Face token" banner. Resolution order is unchanged otherwise: Settings → `HF_TOKEN` / `HUGGINGFACE_HUB_TOKEN` / `HUGGINGFACEHUB_API_TOKEN` → CLI cache.
 
 - Media Gen cards no longer overflow their action button row at narrow widths (6-column `lg:` grid in Image/Video Gen recent-renders). The button strip now uses `flex-wrap` so excess icon buttons spill cleanly onto a second row instead of bleeding past the card border, and the Remix/Continue label truncates instead of forcing the row wider.
 - Media Gen "Add to collection" popover is now portalled into `<body>` with viewport-aware fixed positioning, so it stacks above the sidebar and is no longer clipped by the gallery grid's `overflow-auto` parent (previously the menu was getting visually cut off and ducking under the nav). Once a user has 6+ collections, a search filter appears at the top of the menu so big collection lists are addressable by typing instead of scrolling.

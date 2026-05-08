@@ -89,8 +89,8 @@ const optionalInt = (min, max, label) => z.preprocess(
   z.number().int().refine((n) => n >= min && n <= max, `${label} ${min}..${max}`).optional(),
 );
 const generateBodySchema = z.object({
-  prompt: z.string().min(1).max(2000),
-  negativePrompt: z.string().max(2000).optional(),
+  prompt: z.string().min(1).max(8000),
+  negativePrompt: z.string().max(8000).optional(),
   modelId: z.string().max(64).optional(),
   width: optionalNum(64, 2048, 'width'),
   height: optionalNum(64, 2048, 'height'),
