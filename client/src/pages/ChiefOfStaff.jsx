@@ -611,12 +611,12 @@ export default function ChiefOfStaff() {
             )}
 
             {/* Avatar UI overlays the full-width canvas stage for 3D styles. */}
-            <div className={`${hasCanvasAvatar ? 'absolute inset-y-0 left-0 w-[46%] lg:relative lg:inset-auto lg:w-full lg:flex-none p-2 sm:p-3 lg:p-8' : 'relative flex-1 min-w-0 lg:flex-none p-2 lg:p-8'} min-w-0 flex flex-col items-center z-10`}>
+            <div className={`${hasCanvasAvatar ? 'absolute inset-y-0 left-0 w-[46%] lg:relative lg:inset-auto lg:w-full lg:flex-none lg:h-full p-2 sm:p-3 lg:px-4 lg:py-6' : 'relative flex-1 min-w-0 lg:flex-none lg:h-full p-2 lg:px-4 lg:py-6'} min-w-0 flex flex-col items-center z-10`}>
               <div className="hidden lg:block text-sm font-semibold tracking-widest uppercase text-slate-400 mb-1 font-mono">
                 Digital Assistant
               </div>
               <h1
-                className="hidden lg:block text-lg sm:text-xl lg:text-3xl font-bold mb-2 lg:mb-8"
+                className="hidden lg:block text-lg sm:text-xl lg:text-2xl xl:text-3xl font-bold mb-2 lg:mb-4"
                 style={{
                   background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #06b6d4)',
                   WebkitBackgroundClip: 'text',
@@ -635,12 +635,14 @@ export default function ChiefOfStaff() {
               <div className={`${hasCanvasAvatar ? 'sm:-mt-4 md:-mt-6 lg:mt-0' : ''} hidden sm:block`}>
                 <StatusBubble message={statusMessage} countdown={evalCountdown} />
               </div>
-              <div className="hidden lg:block">
-                {status?.running && <EventLog logs={eventLogs} />}
-              </div>
+              {status?.running && (
+                <div className="hidden lg:flex flex-1 min-h-0 w-full flex-col">
+                  <EventLog logs={eventLogs} />
+                </div>
+              )}
 
               {/* Control Buttons */}
-              <div className={`${hasCanvasAvatar ? 'hidden lg:flex lg:mt-6' : 'flex mt-2 lg:mt-6'} items-center gap-1.5 sm:gap-3`}>
+              <div className={`${hasCanvasAvatar ? 'hidden lg:flex lg:mt-auto lg:pt-4' : 'flex mt-2 lg:mt-auto lg:pt-4'} items-center gap-1.5 sm:gap-3`}>
                 {status?.running ? (
                   <button
                     onClick={handleStop}

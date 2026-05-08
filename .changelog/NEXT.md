@@ -33,6 +33,7 @@ A page-level run dock now slides up from the bottom of the Writers Room while im
 
 ## Changed
 
+- Chief of Staff left rail uses desktop space better: the avatar UI section now uses tighter horizontal padding (`lg:px-4` instead of `lg:p-8`), the Event Log expands to fill remaining vertical space (up to 32rem) and shows up to 25 events instead of 5, and the Start/Stop control row is pinned to the bottom of the panel via `mt-auto`. Mobile layout unchanged.
 - The "Rendering N scenes…" inline banner inside the Boards tab has been removed; the new run dock subsumes it and is visible from any tab.
 - `STORYBOARD_TAB` enum now includes `OBJECTS` between `WORLD` and `SCENES`.
 - `ANALYSIS_KINDS` server enum now includes `'objects'`.
