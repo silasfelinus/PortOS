@@ -6,6 +6,7 @@
 
 ## Fixed
 
+- **Toast notifications and the eye-exam form no longer overflow on mobile.** The agent-feedback toast had a hard `w-[480px]` when expanded that overflowed past the right edge of a 375px viewport, and the global toast container's `max-w-[520px]` could similarly extend past the screen on narrow viewports. Both now cap at `calc(100vw - 2rem)` on mobile and switch to their full width at the `sm:` breakpoint (640px+). The eye-exam editor on MeatSpace → Body was also unusable on mobile — its `grid-cols-7` layout squeezed seven number inputs into ~42px each at 375px wide; it now reflows to two columns on mobile (with the date field full-width), four on tablet, seven on desktop.
 - **Image preview lightbox readable in glass-style day themes.** The MediaLightbox panel (used by Image Gen and Video Gen) inherited `--port-card-alpha: 0.6` from glass themes like Lumen Glass Day, rendering as muddy translucent grey over the modal's `bg-black/90` overlay. Combined with the existing tinted action buttons (`bg-port-accent/20 text-port-accent`), the Remix and Send to Video buttons became nearly invisible. The panel now pins `--port-card-alpha` and `--port-border-alpha` to 1 within the lightbox scope so it renders solid in any theme, and the action buttons switched from translucent-tint to solid-fill (`bg-port-accent text-white`, `bg-port-success text-white`) for high contrast across all day and night themes.
 
 ## Changed
