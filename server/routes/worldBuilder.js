@@ -96,6 +96,7 @@ const renderSchema = z.object({
   steps: z.number().int().min(1).max(150).optional(),
   cfgScale: z.number().min(0).max(30).optional(),
   guidance: z.number().min(0).max(30).optional(),
+  quantize: z.enum(['3', '4', '5', '6', '8']).optional(),
   // Per-variation render count and per-category subset.
   batchPerVariation: z.number().int().min(1).max(20).optional().default(1),
   selection: selectionSchema.optional(),
@@ -213,6 +214,7 @@ router.post('/:id/render', asyncHandler(async (req, res) => {
     steps: body.steps,
     cfgScale: body.cfgScale,
     guidance,
+    quantize: body.quantize,
   };
 
   for (const item of compiled) {

@@ -19,9 +19,10 @@ import BackendChipStrip from '../components/media/BackendChipStrip';
 import { normalizeImage } from '../components/media/normalize';
 import Flux2InstallModal from '../components/imageGen/Flux2InstallModal';
 import Flux2TokenBanner from '../components/imageGen/Flux2TokenBanner';
+import ImageGenControls from '../components/imageGen/ImageGenControls';
 import {
   Image as ImageIcon, Sparkles, Download, RefreshCw, Settings as SettingsIcon,
-  Dice5, AlertTriangle, X, Film,
+  AlertTriangle, X, Film,
 } from 'lucide-react';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt';
 import { deriveAvailableBackends, IMAGE_GEN_MODE } from '../lib/imageGenBackends';
@@ -33,19 +34,7 @@ import {
   cancelImageGen, deleteImage, setImageHidden, cleanGalleryImage, getActiveImageJob, getSettings,
   buildFormData, listMediaJobs,
 } from '../services/api';
-import { randomSeed, safeParseJSON } from '../lib/genUtils';
-
-const RESOLUTIONS = [
-  { label: '512×512', w: 512, h: 512 },
-  { label: '768×512', w: 768, h: 512 },
-  { label: '512×768', w: 512, h: 768 },
-  { label: '768×768', w: 768, h: 768 },
-  { label: '1024×1024', w: 1024, h: 1024 },
-  { label: '832×1216 (Flux portrait)', w: 832, h: 1216 },
-  { label: '1216×832 (Flux landscape)', w: 1216, h: 832 },
-  { label: '1024×576 (16:9)', w: 1024, h: 576 },
-  { label: '576×1024 (9:16)', w: 576, h: 1024 },
-];
+import { safeParseJSON } from '../lib/genUtils';
 
 const DEFAULT_NEGATIVE = 'blurry, low quality, distorted, deformed, ugly, watermark, text, signature';
 
@@ -334,8 +323,6 @@ export default function ImageGen() {
   }, [settingsOpen, reloadBackends]);
 
   const currentModel = models.find((m) => m.id === modelId);
-  const matchedResolution = RESOLUTIONS.find((r) => r.w === width && r.h === height);
-  const resolutionLabel = matchedResolution?.label || `${width}×${height}`;
   const isFlux2Model = currentModel?.runner === 'flux2';
 
   const refreshFlux2Status = useCallback((signal) => {
@@ -404,13 +391,6 @@ export default function ImageGen() {
     visibleGallery: gallery.filter((img) => !img.hidden),
     hiddenGallery: gallery.filter((img) => img.hidden),
   }), [gallery]);
-
-  const handleResolutionChange = (e) => {
-    const r = RESOLUTIONS.find((r) => r.label === e.target.value);
-    if (r) { setWidth(r.w); setHeight(r.h); }
-  };
-
-  const handleRandomSeed = () => setSeed(randomSeed());
 
   // Snapshots current form state into a server payload + POSTs it to the
   // mediaJobQueue. Returns the queue's response ({ jobId, position, ... }).
@@ -770,120 +750,24 @@ export default function ImageGen() {
             />
           )}
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {isLocalMode && models.length > 0 && (
-              <div>
-                <label className="block text-xs font-medium text-gray-400 mb-1">Model</label>
-                <select
-                  value={modelId}
-                  onChange={(e) => { setModelId(e.target.value); setSteps(''); setGuidance(''); }}
-                  disabled={statusLoading}
-                  className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
-                >
-                  {models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                </select>
-              </div>
-            )}
-
-            <div>
-              <label className="block text-xs font-medium text-gray-400 mb-1">Resolution</label>
-              <select
-                value={resolutionLabel}
-                onChange={handleResolutionChange}
-                disabled={statusLoading}
-                className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
-              >
-                {RESOLUTIONS.map((r) => <option key={r.label} value={r.label}>{r.label}</option>)}
-                {!matchedResolution && <option value={resolutionLabel}>{resolutionLabel} (custom)</option>}
-              </select>
-            </div>
-
-            {/* Codex's built-in image_gen tool ignores seed/steps/guidance —
-                only the prompt + (optional) resolution hint matter. Hide
-                irrelevant knobs in that mode. */}
-            {!isCodexMode && (
-              <div>
-                <label className="block text-xs font-medium text-gray-400 mb-1">Seed</label>
-                <div className="flex items-center gap-1">
-                  <input
-                    type="number"
-                    value={seed}
-                    onChange={(e) => setSeed(e.target.value)}
-                    disabled={statusLoading}
-                    placeholder="Random"
-                    className="flex-1 bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleRandomSeed}
-                    disabled={statusLoading}
-                    className="p-2 text-gray-400 hover:text-white border border-port-border rounded-lg hover:bg-port-border/50 disabled:opacity-50 min-h-[40px] min-w-[40px] flex items-center justify-center"
-                    title="Randomize seed"
-                  >
-                    <Dice5 className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {!isCodexMode && (
-              <div>
-                <label className="block text-xs font-medium text-gray-400 mb-1">
-                  Steps {currentModel?.steps && `(default: ${currentModel.steps})`}
-                </label>
-                <input
-                  type="number" min={1} max={150}
-                  value={steps}
-                  onChange={(e) => setSteps(e.target.value)}
-                  placeholder={String(currentModel?.steps || 25)}
-                  disabled={statusLoading}
-                  className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
-                />
-              </div>
-            )}
-
-            {!isCodexMode && (isLocalMode ? (
-              <>
-                <div>
-                  <label className="block text-xs font-medium text-gray-400 mb-1">
-                    Guidance {currentModel?.guidance != null && `(default: ${currentModel.guidance})`}
-                  </label>
-                  <input
-                    type="number" min={0} max={20} step={0.5}
-                    value={guidance}
-                    onChange={(e) => setGuidance(e.target.value)}
-                    placeholder={String(currentModel?.guidance ?? '')}
-                    disabled={statusLoading}
-                    className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
-                  />
-                </div>
-                {!isFlux2Model && (
-                  <div>
-                    <label className="block text-xs font-medium text-gray-400 mb-1">Quantize (bits)</label>
-                    <select
-                      value={quantize}
-                      onChange={(e) => setQuantize(e.target.value)}
-                      disabled={statusLoading}
-                      className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
-                    >
-                      {['3', '4', '5', '6', '8'].map((q) => <option key={q} value={q}>{q}-bit{q === '8' ? ' (default)' : q === '4' ? ' (fast)' : ''}</option>)}
-                    </select>
-                  </div>
-                )}
-              </>
-            ) : (
-              <div>
-                <label className="block text-xs font-medium text-gray-400 mb-1">CFG Scale ({cfgScale})</label>
-                <input
-                  type="range" min={1} max={20} step={0.5}
-                  value={cfgScale}
-                  disabled={statusLoading}
-                  onChange={(e) => setCfgScale(Number(e.target.value))}
-                  className="w-full accent-port-accent"
-                />
-              </div>
-            ))}
-          </div>
+          <ImageGenControls
+            mode={effectiveMode}
+            models={models}
+            modelId={modelId}
+            // Reset steps + guidance when switching models so the placeholder
+            // (model defaults) takes effect instead of leaking the previous
+            // model's tuned values onto the new one.
+            onModelChange={(id) => { setModelId(id); setSteps(''); setGuidance(''); }}
+            width={width} height={height}
+            onResolutionChange={(w, h) => { setWidth(w); setHeight(h); }}
+            steps={steps} onStepsChange={setSteps}
+            guidance={guidance} onGuidanceChange={setGuidance}
+            cfgScale={cfgScale} onCfgScaleChange={setCfgScale}
+            quantize={quantize} onQuantizeChange={setQuantize}
+            seed={seed} onSeedChange={setSeed}
+            showSeed
+            disabled={statusLoading}
+          />
 
           {isLocalMode && !isFlux2Model && availableLoras.length > 0 && (
             <div>

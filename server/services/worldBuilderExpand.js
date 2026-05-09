@@ -51,6 +51,8 @@ const isCliProvider = (provider) => provider?.type === 'cli';
 // Awaiting createRun separately keeps the Promise executor synchronous —
 // an `async` executor body silently swallows rejected awaits, leaving the
 // caller's Promise hanging forever if createRun throws.
+// Returns { text, runId } — runId is logged so a user debugging an empty
+// expansion can find the raw stdout at data/runs/<runId>/output.txt.
 async function callLLM(provider, model, prompt) {
   const { runId } = await createRun({
     providerId: provider.id,
@@ -76,7 +78,7 @@ async function callLLM(provider, model, prompt) {
           if (result?.error || result?.success === false) {
             reject(new Error(result?.error || 'CLI execution failed'));
           } else {
-            resolve(text);
+            resolve({ text, runId });
           }
         },
         provider.timeout ?? 300000,
@@ -92,31 +94,32 @@ async function callLLM(provider, model, prompt) {
         (data) => { text += typeof data === 'string' ? data : (data?.text || ''); },
         (result) => {
           if (result?.error) reject(new Error(result.error));
-          else resolve(text);
+          else resolve({ text, runId });
         },
       ).catch(reject);
     }
   });
 }
 
-const extractJson = (raw) => {
-  if (!raw || typeof raw !== 'string') throw new Error('Empty LLM response');
-  let s = raw.trim();
-  // Strip ```json fences if present.
-  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fence) s = fence[1].trim();
-  // Extract the first complete brace-balanced { … } block — guards against
-  // preamble ("Here is…") and trailing junk after the JSON object. The scan
-  // is string-aware so braces inside JSON string values (e.g. a prompt that
-  // contains "{" or "}") don't unbalance the depth counter.
-  const start = s.indexOf('{');
-  if (start !== -1) {
+// Walk the string and return every top-level brace-balanced { … } block, in
+// order. String-aware so braces inside JSON string values don't throw off the
+// depth counter. Used by extractJson — Codex CLI echoes the user prompt back
+// to stdout before the model response, and the prompt itself contains a
+// JSON-shaped *schema example* (e.g. `{ "label": string (max 80 chars), … }`)
+// whose braces balance but whose contents are not valid JSON. Returning every
+// block lets the caller try each in turn instead of giving up on the first.
+const findBalancedBlocks = (s) => {
+  const blocks = [];
+  let i = 0;
+  while (i < s.length) {
+    const start = s.indexOf('{', i);
+    if (start === -1) break;
     let depth = 0;
     let inString = false;
     let escaped = false;
     let end = -1;
-    for (let i = start; i < s.length; i += 1) {
-      const ch = s[i];
+    for (let j = start; j < s.length; j += 1) {
+      const ch = s[j];
       if (inString) {
         if (escaped) escaped = false;
         else if (ch === '\\') escaped = true;
@@ -127,28 +130,87 @@ const extractJson = (raw) => {
       if (ch === '{') depth += 1;
       else if (ch === '}') {
         depth -= 1;
-        if (depth === 0) { end = i; break; }
+        if (depth === 0) { end = j; break; }
       }
     }
-    if (end !== -1) s = s.slice(start, end + 1);
+    if (end === -1) break; // unbalanced — no later block can balance either
+    blocks.push(s.slice(start, end + 1));
+    i = end + 1;
   }
-  // Recovery: some LLMs (notably Codex CLI) echo the prompt's `[...]`
-  // schema-notation back as a literal value. Replace such empty-placeholder
-  // arrays with `[]` so the rest of the parse can succeed; normalizeCategories
-  // will see them as empty and report 0 variations rather than 500-ing.
-  s = s.replace(/\[\s*\.\.\.\s*\]/g, '[]');
-  try {
-    return JSON.parse(s);
-  } catch (err) {
-    throw new ServerError(
-      'LLM returned invalid JSON for world expansion. Try a different model or rerun.',
-      {
-        status: 502,
-        code: 'LLM_INVALID_JSON',
-        context: { details: { reason: err.message, preview: s.slice(0, 200) } },
-      },
-    );
+  return blocks;
+};
+
+// Try JSON.parse on a candidate block; if it fails, attempt a few cheap
+// repairs that handle observed LLM corruption patterns:
+//   - Codex CLI sometimes emits an EXTRA `}` between a variation's close-brace
+//     and its enclosing array's `]` (`}}]}}}` instead of `}]}}}`). Brace
+//     balance still works because the extra `{` was hallucinated upstream.
+//   - Trailing comma before `]` or `}`.
+// We try removing/normalizing one suspicious char at a time, capped at a few
+// attempts so a genuinely broken block still bubbles a parse error.
+const tryParseWithRepair = (block) => {
+  try { return { value: JSON.parse(block) }; } catch (initialErr) {
+    // Remove trailing commas before `}` or `]` (common LLM mistake).
+    let candidate = block.replace(/,(\s*[}\]])/g, '$1');
+    if (candidate !== block) {
+      try { return { value: JSON.parse(candidate) }; } catch { /* keep trying */ }
+    }
+    // Fix Codex's `}}]` → `}]}` pattern: the variation object closes
+    // correctly, then an orphan `}` lands BEFORE the array's `]` instead of
+    // after it. Swapping (not dropping) keeps the brace count correct so the
+    // outer container still closes — dropping the brace would leave a
+    // dangling object open further out.
+    candidate = candidate.replace(/}\s*}\s*]/g, '}]}');
+    try { return { value: JSON.parse(candidate) }; } catch (err) {
+      return { error: err };
+    }
   }
+};
+
+const extractJson = (raw) => {
+  if (!raw || typeof raw !== 'string') throw new Error('Empty LLM response');
+  let s = raw.trim();
+  // Strip ```json fences if present.
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fence) s = fence[1].trim();
+  // Try each brace-balanced block in order. This skips preamble ("Here is…"),
+  // prompt echoes (Codex CLI), and pseudo-JSON schema examples in the prompt.
+  // We prefer a block that *looks like* a world-expansion response (has any of
+  // stylePrompt / negativePrompt / categories at the top level) — the prompt
+  // template includes small JSON examples like
+  //   { "label": "Crystalline canyon basin", "prompt": "…" }
+  // which parse cleanly but aren't the response. Without the shape preference
+  // we'd return that first valid-but-wrong object and end up with 0 variations.
+  const candidates = findBalancedBlocks(s);
+  if (!candidates.length) candidates.push(s);
+  const isExpansionShape = (o) => o && typeof o === 'object'
+    && (typeof o.stylePrompt === 'string' || typeof o.negativePrompt === 'string' || (o.categories && typeof o.categories === 'object'));
+  let firstParsed;
+  let lastErr;
+  let lastPreview = s;
+  for (const block of candidates) {
+    // Recovery: some LLMs (notably Codex CLI) echo the prompt's `[...]`
+    // schema-notation back as a literal value. Replace such empty-placeholder
+    // arrays with `[]` so the rest of the parse can succeed.
+    const cleaned = block.replace(/\[\s*\.\.\.\s*\]/g, '[]');
+    const { value: parsed, error } = tryParseWithRepair(cleaned);
+    if (parsed !== undefined) {
+      if (isExpansionShape(parsed)) return parsed;
+      if (firstParsed === undefined) firstParsed = parsed;
+    } else {
+      lastErr = error;
+      lastPreview = cleaned;
+    }
+  }
+  if (firstParsed !== undefined) return firstParsed;
+  throw new ServerError(
+    'LLM returned invalid JSON for world expansion. Try a different model or rerun.',
+    {
+      status: 502,
+      code: 'LLM_INVALID_JSON',
+      context: { details: { reason: lastErr?.message || 'no JSON object found', preview: lastPreview.slice(0, 200) } },
+    },
+  );
 };
 
 const normalizeCategories = (raw) => {
@@ -203,16 +265,25 @@ export async function expandWorldTemplate({ starterPrompt, providerId, model } =
   const fullPrompt = EXPANSION_PROMPT.replace('{starterPrompt}', starterPrompt.trim());
   console.log(`🌍 World Builder expanding via ${provider.name}/${selectedModel || 'default'}`);
 
-  const raw = await callLLM(provider, selectedModel, fullPrompt);
+  const { text: raw, runId } = await callLLM(provider, selectedModel, fullPrompt);
+  // Log raw response shape so a "0 variations" outcome is debuggable from
+  // the server console alone — the runId points at data/runs/<id>/output.txt
+  // for the full transcript.
+  console.log(`🌍 World Builder raw response — runId=${runId} length=${raw?.length || 0}`);
   const parsed = extractJson(raw);
+  console.log(`🌍 World Builder parsed JSON — keys=[${Object.keys(parsed || {}).join(',')}] categoryKeys=[${Object.keys(parsed?.categories || {}).join(',')}]`);
 
   const stylePrompt = typeof parsed.stylePrompt === 'string'
     ? parsed.stylePrompt.trim().slice(0, PROMPT_FRAGMENT_MAX) : '';
   const negativePrompt = typeof parsed.negativePrompt === 'string'
     ? parsed.negativePrompt.trim().slice(0, PROMPT_FRAGMENT_MAX) : '';
   const categories = normalizeCategories(parsed.categories || {});
+  const perCat = WORLD_CATEGORIES.map((k) => `${k}=${categories[k]?.variations?.length || 0}`).join(' ');
   const totalVariations = WORLD_CATEGORIES.reduce((n, k) => n + (categories[k]?.variations?.length || 0), 0);
-  console.log(`🌍 World Builder expansion complete — ${totalVariations} variations across ${WORLD_CATEGORIES.length} categories`);
+  console.log(`🌍 World Builder expansion complete — runId=${runId} ${totalVariations} variations (${perCat})`);
+  if (totalVariations === 0) {
+    console.warn(`⚠️ World Builder expansion produced 0 variations — inspect data/runs/${runId}/output.txt for the raw LLM response`);
+  }
 
   return {
     stylePrompt,

@@ -17,7 +17,11 @@ import toast from '../components/ui/Toast';
 import {
   listWorlds, getWorld, createWorld, updateWorld, deleteWorld, expandWorld,
   renderWorld, listWorldRuns, getProviders, WORLD_CATEGORIES,
+  listImageModels, getSettings,
 } from '../services/api';
+import BackendChipStrip from '../components/media/BackendChipStrip';
+import ImageGenControls from '../components/imageGen/ImageGenControls';
+import { deriveAvailableBackends, IMAGE_GEN_MODE } from '../lib/imageGenBackends';
 
 const CATEGORY_LABELS = {
   landscapes: 'Landscapes',
@@ -32,7 +36,11 @@ const DEFAULT_RENDER_OPTS = {
   width: 1024,
   height: 1024,
   steps: 30,
+  guidance: '',
   cfgScale: 7,
+  quantize: '8',
+  modelId: '',
+  mode: '',
   batchPerVariation: 1,
 };
 
@@ -54,6 +62,10 @@ export default function WorldBuilder() {
   const [rendering, setRendering] = useState(false);
   const [providers, setProviders] = useState([]);
   const [activeProviderId, setActiveProviderId] = useState(null);
+  // Image-gen plumbing for the batch-render form (reused from Image Gen).
+  const [imageModels, setImageModels] = useState([]);
+  const [availableBackends, setAvailableBackends] = useState([]);
+  const [defaultMode, setDefaultMode] = useState(null);
 
   // The draft is the editable copy of the currently-selected world. New
   // worlds start as a draft with no id; saving creates the persisted record.
@@ -81,13 +93,23 @@ export default function WorldBuilder() {
 
   const refresh = async () => {
     setLoading(true);
-    const [list, provData] = await Promise.all([
+    const [list, provData, models, settings] = await Promise.all([
       listWorlds().catch(() => []),
       getProviders().catch(() => ({ providers: [] })),
+      listImageModels().catch(() => []),
+      getSettings().catch(() => ({})),
     ]);
     setWorlds(list);
     setProviders(provData.providers || []);
     setActiveProviderId(provData.activeProvider || null);
+    setImageModels(models || []);
+    // Batch render rejects external (would block the request for the whole
+    // batch), so hide that chip even if it's configured.
+    const backends = deriveAvailableBackends(settings, { excludeExternal: true });
+    setAvailableBackends(backends);
+    const saved = settings?.imageGen?.mode;
+    const fallback = backends.find((b) => b.id === saved)?.id || backends[0]?.id || IMAGE_GEN_MODE.LOCAL;
+    setDefaultMode(fallback);
     setLoading(false);
   };
 
@@ -185,14 +207,37 @@ export default function WorldBuilder() {
     }).catch((e) => { toast.error(`Expansion failed: ${e.message}`); return null; });
     setExpanding(false);
     if (!result) return;
-    setDraft((d) => ({
-      ...d,
-      stylePrompt: result.stylePrompt || d.stylePrompt,
-      negativePrompt: result.negativePrompt || d.negativePrompt,
+    const expandedDraft = {
+      ...draft,
+      stylePrompt: result.stylePrompt || draft.stylePrompt,
+      negativePrompt: result.negativePrompt || draft.negativePrompt,
       categories: Object.fromEntries(WORLD_CATEGORIES.map((c) => [c, result.categories?.[c] || { variations: [] }])),
-      llm: result.llm || d.llm,
-    }));
+      llm: result.llm || draft.llm,
+    };
+    setDraft(expandedDraft);
     const total = WORLD_CATEGORIES.reduce((n, k) => n + (result.categories?.[k]?.variations?.length || 0), 0);
+    // Auto-persist expansion if the world is already saved — otherwise the
+    // user clicks Render and hits "No prompts to render" because the disk
+    // copy still has empty categories. New (unsaved) drafts still need a
+    // manual Save since they have no name yet.
+    if (selectedId && expandedDraft.name?.trim()) {
+      const updated = await updateWorld(selectedId, {
+        name: expandedDraft.name.trim(),
+        starterPrompt: expandedDraft.starterPrompt || '',
+        stylePrompt: expandedDraft.stylePrompt || '',
+        negativePrompt: expandedDraft.negativePrompt || '',
+        categories: expandedDraft.categories,
+        llm: expandedDraft.llm || {},
+      }).catch((e) => { toast.error(`Auto-save after expand failed: ${e.message}`); return null; });
+      if (updated) {
+        setWorlds((prev) => {
+          const without = prev.filter((w) => w.id !== updated.id);
+          return [updated, ...without];
+        });
+        toast.success(`Expanded into ${total} variations — saved`);
+        return;
+      }
+    }
     toast.success(`Expanded into ${total} variations — review then Save`);
   };
 
@@ -206,14 +251,22 @@ export default function WorldBuilder() {
       toast.error('No variations — expand the template first');
       return;
     }
+    const effectiveMode = renderOpts.mode || defaultMode || undefined;
+    const numericOrUndef = (v) => {
+      if (v === '' || v == null) return undefined;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : undefined;
+    };
     setRendering(true);
     const result = await renderWorld(selectedId, {
-      mode: renderOpts.mode || undefined,
+      mode: effectiveMode,
       modelId: renderOpts.modelId || undefined,
       width: renderOpts.width,
       height: renderOpts.height,
-      steps: renderOpts.steps,
-      cfgScale: renderOpts.cfgScale,
+      steps: numericOrUndef(renderOpts.steps),
+      guidance: numericOrUndef(renderOpts.guidance),
+      cfgScale: numericOrUndef(renderOpts.cfgScale),
+      quantize: renderOpts.quantize || undefined,
       batchPerVariation: renderOpts.batchPerVariation,
     }).catch((e) => { toast.error(`Render failed: ${e.message}`); return null; });
     setRendering(false);
@@ -416,31 +469,63 @@ export default function WorldBuilder() {
           ))}
         </section>
 
-        {/* Render controls */}
+        {/* Render controls — reuses Image Gen's backend chip + knob grid so
+            the model picker, resolution presets, etc. stay in lockstep. */}
         <section className="bg-port-card border border-port-border rounded p-4 flex flex-col gap-3">
-          <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-            <FolderOpen size={16} className="text-port-accent" /> Batch render
-          </h2>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-            <NumberField label="Width" value={renderOpts.width} min={64} max={2048} onChange={(v) => setRenderOpts({ ...renderOpts, width: v })} />
-            <NumberField label="Height" value={renderOpts.height} min={64} max={2048} onChange={(v) => setRenderOpts({ ...renderOpts, height: v })} />
-            <NumberField label="Steps" value={renderOpts.steps} min={1} max={150} onChange={(v) => setRenderOpts({ ...renderOpts, steps: v })} />
-            <NumberField label="CFG" value={renderOpts.cfgScale} min={0} max={30} step={0.5} onChange={(v) => setRenderOpts({ ...renderOpts, cfgScale: v })} />
-            <NumberField label="Per-variation" value={renderOpts.batchPerVariation} min={1} max={20} onChange={(v) => setRenderOpts({ ...renderOpts, batchPerVariation: v })} />
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+              <FolderOpen size={16} className="text-port-accent" /> Batch render
+            </h2>
+            {availableBackends.length > 1 && (
+              <BackendChipStrip
+                availableBackends={availableBackends}
+                value={renderOpts.mode || defaultMode}
+                onChange={(id) => setRenderOpts((r) => ({ ...r, mode: id }))}
+                titlePrefix="Render via"
+              />
+            )}
+          </div>
+          {availableBackends.length === 0 && (
+            <p className="text-xs text-port-warning">
+              Configure a local mflux Python path or enable Codex Imagegen in Settings → Image Gen
+              to enable batch render.
+            </p>
+          )}
+          <ImageGenControls
+            mode={renderOpts.mode || defaultMode || 'local'}
+            models={imageModels}
+            modelId={renderOpts.modelId}
+            onModelChange={(id) => setRenderOpts((r) => ({ ...r, modelId: id, steps: '', guidance: '' }))}
+            width={renderOpts.width}
+            height={renderOpts.height}
+            onResolutionChange={(w, h) => setRenderOpts((r) => ({ ...r, width: w, height: h }))}
+            steps={renderOpts.steps}
+            onStepsChange={(v) => setRenderOpts((r) => ({ ...r, steps: v }))}
+            guidance={renderOpts.guidance}
+            onGuidanceChange={(v) => setRenderOpts((r) => ({ ...r, guidance: v }))}
+            cfgScale={renderOpts.cfgScale}
+            onCfgScaleChange={(v) => setRenderOpts((r) => ({ ...r, cfgScale: v }))}
+            quantize={renderOpts.quantize}
+            onQuantizeChange={(v) => setRenderOpts((r) => ({ ...r, quantize: v }))}
+          />
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">Renders per variation</label>
+              <input
+                type="number" min={1} max={20}
+                value={renderOpts.batchPerVariation ?? 1}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  setRenderOpts((r) => ({ ...r, batchPerVariation: Number.isFinite(n) && n > 0 ? n : 1 }));
+                }}
+                className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
+              />
+            </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <select
-              value={renderOpts.mode || ''}
-              onChange={(e) => setRenderOpts({ ...renderOpts, mode: e.target.value || undefined })}
-              className="bg-port-bg border border-port-border rounded px-2 py-2 text-white text-sm min-h-[40px]"
-            >
-              <option value="">Default backend</option>
-              <option value="local">Local (mflux)</option>
-              <option value="codex">Codex</option>
-            </select>
             <button
               onClick={handleRender}
-              disabled={rendering || !selectedId || totalVariations === 0}
+              disabled={rendering || !selectedId || totalVariations === 0 || availableBackends.length === 0}
               className="px-4 py-2 bg-port-accent hover:bg-port-accent/90 disabled:opacity-50 text-white rounded flex items-center gap-2 min-h-[40px]"
             >
               {rendering ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
@@ -628,24 +713,3 @@ function CategoryEditor({ category, variations, onChange }) {
   );
 }
 
-function NumberField({ label, value, min, max, step = 1, onChange }) {
-  return (
-    <label className="flex flex-col">
-      <span className="text-xs text-gray-400 mb-1">{label}</span>
-      <input
-        type="number"
-        value={value ?? ''}
-        min={min}
-        max={max}
-        step={step}
-        onChange={(e) => {
-          const raw = e.target.value;
-          if (raw === '') { onChange(undefined); return; }
-          const n = Number(raw);
-          if (Number.isFinite(n)) onChange(n);
-        }}
-        className="bg-port-bg border border-port-border rounded px-2 py-1.5 text-white text-sm focus:outline-none focus:border-port-accent min-h-[40px]"
-      />
-    </label>
-  );
-}

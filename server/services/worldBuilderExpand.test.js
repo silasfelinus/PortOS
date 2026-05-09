@@ -43,6 +43,64 @@ describe('worldBuilderExpand.extractJson', () => {
     expect(out.categories.vehicles.variations).toEqual([]);
   });
 
+  it('skips a pseudo-JSON schema example in echoed prompt and parses the real response (Codex CLI)', () => {
+    // Codex CLI echoes the user prompt back to stdout before printing the model's
+    // response. The prompt contains a JSON-shaped schema example using bare
+    // identifiers as placeholder values — its braces balance but its contents
+    // are not valid JSON. Earlier extractJson grabbed the first balanced block
+    // and crashed; it should now fall through to the next block.
+    const raw = [
+      'OpenAI Codex v0.128.0 (research preview)',
+      '--------',
+      'workdir: /tmp',
+      '--------',
+      'user',
+      'Each variation has the shape { "label": string (max 80 chars), "prompt": string (max 400 chars, comma-separated tokens describing ONE specific subject) }.',
+      'codex',
+      '{"stylePrompt":"x","negativePrompt":"y","categories":{"vehicles":{"variations":[{"label":"a","prompt":"b"}]}}}',
+      'tokens used',
+      '2,787',
+    ].join('\n');
+    const out = extractJson(raw);
+    expect(out.stylePrompt).toBe('x');
+    expect(out.negativePrompt).toBe('y');
+    expect(out.categories.vehicles.variations).toEqual([{ label: 'a', prompt: 'b' }]);
+  });
+
+  it('repairs Codex CLI orphan-brace corruption (`}}]` → `}]`) inside the response', () => {
+    // Real-world: Codex produced `{"label":"...","prompt":"…blister"}}]}}}`
+    // — an extra `}` snuck in between the variation's close-brace and the
+    // array's `]`. extractJson must recover that to a parsed expansion shape.
+    const badJson = '{"stylePrompt":"x","categories":{"vehicles":{"variations":[{"label":"a","prompt":"…blister"}}]}}}';
+    const out = extractJson(badJson);
+    expect(out.stylePrompt).toBe('x');
+    expect(out.categories.vehicles.variations).toEqual([{ label: 'a', prompt: '…blister' }]);
+  });
+
+  it('strips a trailing comma before `]` (common LLM mistake)', () => {
+    const raw = '{"stylePrompt":"x","categories":{"landscapes":{"variations":[{"label":"a","prompt":"b"},]}}}';
+    const out = extractJson(raw);
+    expect(out.categories.landscapes.variations).toEqual([{ label: 'a', prompt: 'b' }]);
+  });
+
+  it('prefers a world-expansion-shaped object over an in-prompt JSON example', () => {
+    // The actual prompt template includes literal JSON example variations:
+    //   { "label": "Crystalline canyon basin", "prompt": "…" }
+    // These are valid JSON and brace-balance cleanly, but they aren't the
+    // response. extractJson must skip them and return the larger object that
+    // has the world-expansion top-level keys.
+    const raw = [
+      'codex',
+      '{ "label": "Crystalline canyon basin", "prompt": "vast crystalline canyon, salt flats" }',
+      '{ "label": "Scrap-iron dune sea", "prompt": "rolling dunes of rusted scrap" }',
+      'codex',
+      '{"stylePrompt":"painterly","categories":{"landscapes":{"variations":[{"label":"Real","prompt":"real prompt"}]}}}',
+    ].join('\n');
+    const out = extractJson(raw);
+    expect(out.stylePrompt).toBe('painterly');
+    expect(out.categories.landscapes.variations).toEqual([{ label: 'Real', prompt: 'real prompt' }]);
+  });
+
   it('wraps a JSON.parse failure in a 502 LLM_INVALID_JSON ServerError (no raw 500)', () => {
     let thrown;
     try { extractJson('{ "stylePrompt": "x", "broken'); } catch (e) { thrown = e; }
