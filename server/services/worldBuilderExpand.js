@@ -14,6 +14,7 @@
 import { executeApiRun, executeCliRun, createRun } from './runner.js';
 import { getActiveProvider, getProviderById } from './providers.js';
 import { WORLD_CATEGORIES, PROMPT_FRAGMENT_MAX, VARIATIONS_PER_CATEGORY_MAX } from './worldBuilder.js';
+import { ServerError } from '../lib/errorHandler.js';
 
 const LABEL_MAX = 80;
 
@@ -30,8 +31,12 @@ Return a SINGLE JSON object. NO markdown, NO commentary. The object MUST have th
 - categories: object with these EXACT keys:
 ${WORLD_CATEGORIES.map((c) => `    - ${c}`).join('\n')}
 
-Each category value is an object: { "variations": [...] }
-Each variation is { "label": string (max 80 chars), "prompt": string (max 400 chars, comma-separated tokens describing ONE specific subject in this category) }
+Each category value is an object containing a "variations" array. Each variation has the shape { "label": string (max 80 chars), "prompt": string (max 400 chars, comma-separated tokens describing ONE specific subject in this category) }. Concrete example for one category:
+    "landscapes": { "variations": [
+      { "label": "Crystalline canyon basin", "prompt": "vast crystalline canyon, salt flats, low horizon" },
+      { "label": "Scrap-iron dune sea", "prompt": "rolling dunes of rusted scrap, half-buried machinery" }
+    ] }
+Do NOT use \`[...]\`, \`…\`, or any other placeholder/elision tokens — every array MUST contain real variation objects.
 
 # Rules
 - Generate 6-10 variations per category. They must be visually distinct from each other but stylistically consistent with the world.
@@ -127,7 +132,23 @@ const extractJson = (raw) => {
     }
     if (end !== -1) s = s.slice(start, end + 1);
   }
-  return JSON.parse(s);
+  // Recovery: some LLMs (notably Codex CLI) echo the prompt's `[...]`
+  // schema-notation back as a literal value. Replace such empty-placeholder
+  // arrays with `[]` so the rest of the parse can succeed; normalizeCategories
+  // will see them as empty and report 0 variations rather than 500-ing.
+  s = s.replace(/\[\s*\.\.\.\s*\]/g, '[]');
+  try {
+    return JSON.parse(s);
+  } catch (err) {
+    throw new ServerError(
+      'LLM returned invalid JSON for world expansion. Try a different model or rerun.',
+      {
+        status: 502,
+        code: 'LLM_INVALID_JSON',
+        context: { details: { reason: err.message, preview: s.slice(0, 200) } },
+      },
+    );
+  }
 };
 
 const normalizeCategories = (raw) => {

@@ -35,6 +35,22 @@ describe('worldBuilderExpand.extractJson', () => {
     expect(() => extractJson('totally bogus output, no braces')).toThrow();
     expect(() => extractJson('{ this is not valid json')).toThrow();
   });
+
+  it('replaces literal [...] placeholders with empty arrays so the rest parses', () => {
+    const raw = '{"stylePrompt":"x","categories":{"vehicles":{"variations":[...]}}}';
+    const out = extractJson(raw);
+    expect(out.stylePrompt).toBe('x');
+    expect(out.categories.vehicles.variations).toEqual([]);
+  });
+
+  it('wraps a JSON.parse failure in a 502 LLM_INVALID_JSON ServerError (no raw 500)', () => {
+    let thrown;
+    try { extractJson('{ "stylePrompt": "x", "broken'); } catch (e) { thrown = e; }
+    expect(thrown).toBeDefined();
+    expect(thrown.status).toBe(502);
+    expect(thrown.code).toBe('LLM_INVALID_JSON');
+    expect(thrown.context?.details?.preview).toContain('broken');
+  });
 });
 
 describe('worldBuilderExpand.normalizeCategories', () => {
