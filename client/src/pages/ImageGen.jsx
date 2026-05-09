@@ -30,7 +30,7 @@ import BrailleSpinner from '../components/BrailleSpinner';
 import { useImageGenProgress } from '../hooks/useImageGenProgress';
 import {
   getImageGenStatus, generateImage, listImageModels, listLoras, listImageGallery,
-  cancelImageGen, deleteImage, setImageHidden, getActiveImageJob, getSettings,
+  cancelImageGen, deleteImage, setImageHidden, cleanGalleryImage, getActiveImageJob, getSettings,
   buildFormData, listMediaJobs,
 } from '../services/api';
 import { randomSeed, safeParseJSON } from '../lib/genUtils';
@@ -609,6 +609,16 @@ export default function ImageGen() {
     if (result) toast.success(nextHidden ? 'Image hidden' : 'Image unhidden');
   };
 
+  const handleClean = async (img, level) => {
+    if (!img?.filename) throw new Error('Missing filename');
+    const cleaned = await cleanGalleryImage(img.filename, level).catch((err) => {
+      toast.error(err.message || 'Failed to clean image');
+      throw err;
+    });
+    setGallery((g) => [cleaned, ...g.filter((x) => x.filename !== cleaned.filename)]);
+    toast.success(`Cleaned (${level}) → ${cleaned.filename}`);
+  };
+
   const sendToVideo = (img) => {
     if (!img?.filename) return;
     const params = new URLSearchParams({ sourceImageFile: img.filename });
@@ -1144,6 +1154,7 @@ export default function ImageGen() {
         // preview.filename access.
         onRemix={() => preview && handleRemix(preview)}
         onSendToVideo={() => preview?.filename && sendToVideo(preview)}
+        onClean={(_item, level) => handleClean(preview, level)}
       />
 
 

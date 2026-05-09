@@ -1,12 +1,15 @@
-import { useEffect } from 'react';
-import { X, Copy, Sparkles, Film, Image as ImageIcon, Download } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { X, Copy, Sparkles, Film, Image as ImageIcon, Download, Eraser } from 'lucide-react';
 import toast from '../ui/Toast';
 
-// Full-screen preview for a normalized media item (image or video). Shows the
-// media on the left, all generation settings on the right with copy buttons
-// for the prompts, plus contextual actions (Remix, Send to Video, Continue
-// from last frame). Esc + backdrop click close. Caller wires action handlers.
-export default function MediaLightbox({ item, onClose, onRemix, onSendToVideo, onContinue }) {
+// Mirror of CLEAN_LEVELS in server/routes/imageClean.js. If the server adds a
+// new level, drop a label here and the pill renders automatically.
+const CLEAN_LEVEL_LABELS = { light: 'Light', aggressive: 'Aggressive' };
+
+// onClean(item, level) — optional. Returning a rejected promise keeps the
+// lightbox open (e.g. on error) so the user can retry.
+export default function MediaLightbox({ item, onClose, onRemix, onSendToVideo, onContinue, onClean }) {
+  const [cleaning, setCleaning] = useState(null);
   useEffect(() => {
     if (!item) return;
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -143,6 +146,41 @@ export default function MediaLightbox({ item, onClose, onRemix, onSendToVideo, o
               >
                 <Film className="w-3.5 h-3.5" /> Send to Video
               </button>
+            )}
+            {!isVideo && onClean && (
+              <div
+                className="flex items-stretch rounded overflow-hidden border border-port-border"
+                role="group"
+                aria-label="Clean image"
+              >
+                <span className="flex items-center gap-1 px-2 py-1.5 text-xs bg-port-border/40 text-gray-300">
+                  <Eraser className="w-3.5 h-3.5" /> Clean
+                </span>
+                {Object.entries(CLEAN_LEVEL_LABELS).map(([level, label]) => (
+                  <button
+                    key={level}
+                    type="button"
+                    disabled={cleaning != null}
+                    onClick={async () => {
+                      if (cleaning) return;
+                      setCleaning(level);
+                      let ok = false;
+                      try {
+                        await onClean(item, level);
+                        ok = true;
+                      } catch {
+                        // Caller toasts its own error; stay open so the user can retry.
+                      } finally {
+                        setCleaning(null);
+                      }
+                      if (ok) onClose();
+                    }}
+                    className={`px-2 py-1.5 text-xs border-l border-port-border text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed ${level === 'aggressive' ? 'bg-port-warning/80' : 'bg-port-border/70'}`}
+                  >
+                    {cleaning === level ? '…' : label}
+                  </button>
+                ))}
+              </div>
             )}
             {isVideo && onContinue && (
               <button

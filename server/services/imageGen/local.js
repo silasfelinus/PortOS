@@ -428,6 +428,30 @@ export async function generateImage({ pythonPath, prompt, negativePrompt = '', m
   return { jobId, filename, path: `/data/images/${filename}`, generationId: jobId, mode: 'local', model: modelId, seed: actualSeed };
 }
 
+// Validate a gallery filename: PNG-only, basename only, no path separators.
+// `.endsWith('.png')` already rejects `.` and `..` so substring-`..` matching
+// would over-reject legitimate names like `my..render.png`. Throws a 400 so
+// callers don't have to repeat the check.
+export function assertGalleryFilename(filename) {
+  if (!filename || !filename.endsWith('.png')
+      || filename.includes('/') || filename.includes('\\')) {
+    throw new ServerError('Invalid filename', { status: 400, code: 'VALIDATION_ERROR' });
+  }
+}
+
+// Returns `{ path, metadata }`. `path` is the resolved sidecar location, or
+// the preferred Portos location on miss — callers writing back land at the
+// canonical path automatically.
+export async function readImageSidecar(filename) {
+  const portosSidecar = join(PATHS.images, filename.replace('.png', '.metadata.json'));
+  const altSidecar = join(PATHS.images, `${filename}.metadata.json`);
+  for (const path of [portosSidecar, altSidecar]) {
+    const raw = await readFile(path, 'utf-8').catch(() => null);
+    if (raw != null) return { path, metadata: safeJSONParse(raw, {}) };
+  }
+  return { path: portosSidecar, metadata: {} };
+}
+
 export async function listGallery() {
   if (!existsSync(PATHS.images)) return [];
   const files = await readdir(PATHS.images);
@@ -436,15 +460,7 @@ export async function listGallery() {
     const fullPath = join(PATHS.images, f);
     const s = await stat(fullPath).catch(() => null);
     if (!s) return null;
-    // Try our sidecar first, fall back to mflux's own .metadata.json shape.
-    const portosSidecar = join(PATHS.images, f.replace('.png', '.metadata.json'));
-    const altSidecar = join(PATHS.images, `${f}.metadata.json`);
-    const path = existsSync(portosSidecar) ? portosSidecar : (existsSync(altSidecar) ? altSidecar : null);
-    let metadata = {};
-    if (path) {
-      const raw = await readFile(path, 'utf-8').catch(() => null);
-      if (raw) metadata = safeJSONParse(raw, {});
-    }
+    const { metadata } = await readImageSidecar(f);
     return {
       filename: f,
       path: `/data/images/${f}`,
@@ -456,9 +472,7 @@ export async function listGallery() {
 }
 
 export async function deleteImage(filename) {
-  if (!filename.endsWith('.png') || filename.includes('/') || filename.includes('\\') || filename.includes('..')) {
-    throw new ServerError('Invalid filename', { status: 400, code: 'VALIDATION_ERROR' });
-  }
+  assertGalleryFilename(filename);
   await unlink(join(PATHS.images, filename)).catch(() => {});
   await unlink(join(PATHS.images, filename.replace('.png', '.metadata.json'))).catch(() => {});
   await unlink(join(PATHS.images, `${filename}.metadata.json`)).catch(() => {});
@@ -467,17 +481,11 @@ export async function deleteImage(filename) {
 }
 
 export async function setImageHidden(filename, hidden) {
-  if (!filename.endsWith('.png') || filename.includes('/') || filename.includes('\\') || filename.includes('..')) {
-    throw new ServerError('Invalid filename', { status: 400, code: 'VALIDATION_ERROR' });
-  }
-  const portosSidecar = join(PATHS.images, filename.replace('.png', '.metadata.json'));
-  const altSidecar = join(PATHS.images, `${filename}.metadata.json`);
-  const sidecarPath = existsSync(portosSidecar) ? portosSidecar : (existsSync(altSidecar) ? altSidecar : portosSidecar);
-  const raw = await readFile(sidecarPath, 'utf-8').catch(() => null);
-  const meta = raw ? safeJSONParse(raw, {}) : {};
-  meta.hidden = !!hidden;
-  await writeFile(sidecarPath, JSON.stringify(meta, null, 2));
-  return { ok: true, hidden: meta.hidden };
+  assertGalleryFilename(filename);
+  const { path: sidecarPath, metadata } = await readImageSidecar(filename);
+  metadata.hidden = !!hidden;
+  await writeFile(sidecarPath, JSON.stringify(metadata, null, 2));
+  return { ok: true, hidden: metadata.hidden };
 }
 
 // Returns just `{ filename, name }` — clients send `filename` back in the
