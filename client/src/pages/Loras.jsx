@@ -441,6 +441,15 @@ function CivitaiAuthModal({ pendingUrl, message, auth, onClose, onSaved, onRetry
   const [saving, setSaving] = useState(false);
   const [clearing, setClearing] = useState(false);
 
+  // a11y: close on Escape so keyboard-only users can dismiss without
+  // tabbing to the X. Listen at document level (capture phase not
+  // required — modal is the only open dialog).
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   const handleSave = async (e) => {
     e?.preventDefault?.();
     if (!apiKey.trim() || saving) return;
@@ -475,13 +484,16 @@ function CivitaiAuthModal({ pendingUrl, message, auth, onClose, onSaved, onRetry
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={onClose}>
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="civitai-auth-title"
         className="bg-port-card border border-port-border rounded-lg p-5 w-full max-w-md space-y-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-2">
             <KeyRound size={18} className="text-port-accent" />
-            <h2 className="text-base font-semibold text-white">Civitai API key</h2>
+            <h2 id="civitai-auth-title" className="text-base font-semibold text-white">Civitai API key</h2>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-200" aria-label="Close">
             <X size={16} />

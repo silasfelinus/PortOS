@@ -11,8 +11,10 @@
  * thing is one POST; progress is reported through the existing image-gen
  * SSE channel (TBD — for v1 the client polls).
  *
- * No try/catch — errors bubble. Network errors during download leave a
- * partial file on disk; the cleanup happens via a finalizer below.
+ * No try/catch — errors bubble. Stream-failure cleanup is handled inline by
+ * downloadToFile's pipeline().catch (the .partial gets unlinked on network
+ * drops, disk full, etc.); only a process crash or power loss can leave a
+ * .partial behind, and listLoras() filters those out by extension.
  */
 
 import { existsSync } from 'fs';

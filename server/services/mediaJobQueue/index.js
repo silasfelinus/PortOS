@@ -615,6 +615,26 @@ export function enqueueJob({ kind, params, owner = null }) {
   return { jobId: id, position: job.position, status: 'queued' };
 }
 
+// Bulk-cancel every queued job (optionally filtered by kind: 'image' | 'video').
+// Running jobs are left alone — they have to be canceled individually with
+// cancelJob(id) so the SIGTERM path runs. Returns the count of jobs that were
+// dropped from the queue.
+export async function cancelQueuedJobs({ kind } = {}) {
+  // Snapshot the IDs before cancel — cancelJob mutates the queue array, and
+  // we don't want our iteration to skip entries when prior splices shift
+  // indexes. The cancelJob path already handles upload cleanup, archive
+  // push, position recompute, and SSE broadcast, so reuse it.
+  const ids = queue
+    .filter((j) => !kind || j.kind === kind)
+    .map((j) => j.id);
+  let canceled = 0;
+  for (const id of ids) {
+    const r = await cancelJob(id);
+    if (r?.ok) canceled += 1;
+  }
+  return { canceled };
+}
+
 // Cancel: drops a queued job, or sends SIGTERM to a running gen process.
 export async function cancelJob(jobId) {
   const queueIdx = queue.findIndex((j) => j.id === jobId);

@@ -23,6 +23,13 @@ export function normalizeImage(i) {
     ? i.loraPaths.map((p) => (typeof p === 'string' ? p.split(/[\\/]/).pop() : ''))
     : [];
   const loraNames = (fromFilenames.length ? fromFilenames : fromPaths).filter(Boolean);
+  // modelId display falls back through several sidecar shapes:
+  //   1. modelId — local-runner sidecars (mflux/flux2/z-image/ernie)
+  //   2. model   — codex sidecars (older path), and future Gemini etc.
+  //   3. mode    — pre-model-field codex sidecars saved before the default
+  //                was added; surface the provider tag so the card still
+  //                shows where the image came from.
+  const modelId = i.modelId || i.model || (i.mode && i.mode !== 'local' ? i.mode : null);
   return {
     kind: 'image',
     key: `image:${i.filename}`,
@@ -31,7 +38,7 @@ export function normalizeImage(i) {
     downloadUrl: i.path || `/data/images/${i.filename}`,
     prompt: i.prompt || i.metadata?.prompt || '(no prompt)',
     negativePrompt: i.negativePrompt || i.negative_prompt || null,
-    modelId: i.modelId || i.model || null,
+    modelId,
     width: i.width,
     height: i.height,
     steps: i.steps,

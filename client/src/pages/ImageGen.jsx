@@ -40,16 +40,20 @@ import { safeParseJSON } from '../lib/genUtils';
 const DEFAULT_NEGATIVE = 'blurry, low quality, distorted, deformed, ugly, watermark, text, signature';
 
 // Append LoRA trigger words to a prompt comma-separated, skipping any
-// already present (case-insensitive substring match — Civitai triggers are
-// often phrases, so we don't tokenize). Returns the updated prompt or the
-// original if every trigger is already in.
+// already present. Compares against comma-separated prompt segments rather
+// than raw substrings so a short trigger like "cat" doesn't false-match
+// inside "concatenate". Civitai triggers are often phrases that themselves
+// contain spaces, so the match is whole-segment, case-insensitive.
 const appendTriggerWords = (prompt, words) => {
   const list = (Array.isArray(words) ? words : [])
     .filter((w) => typeof w === 'string' && w.trim())
     .map((w) => w.trim());
   if (!list.length) return prompt;
-  const haystack = String(prompt || '').toLowerCase();
-  const fresh = list.filter((w) => !haystack.includes(w.toLowerCase()));
+  const segments = String(prompt || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const fresh = list.filter((w) => !segments.includes(w.toLowerCase()));
   if (!fresh.length) return prompt;
   const trimmed = String(prompt || '').trim();
   const sep = !trimmed ? '' : trimmed.endsWith(',') ? ' ' : ', ';

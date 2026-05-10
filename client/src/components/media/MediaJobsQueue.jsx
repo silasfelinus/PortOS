@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
-import { ListOrdered, Image as ImageIcon, Film, X, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
+import { ListOrdered, Image as ImageIcon, Film, X, RefreshCw, ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
 import toast from '../ui/Toast';
-import { listMediaJobs, cancelMediaJob } from '../../services/apiMediaJobs.js';
+import { listMediaJobs, cancelMediaJob, cancelQueuedMediaJobs } from '../../services/apiMediaJobs.js';
 
 const STATUS_BADGE = {
   queued: 'bg-port-border text-port-text-muted',
@@ -54,7 +54,20 @@ export default function MediaJobsQueue({ kind, recentLimit = 5, className = '' }
 
   const live = jobs.filter((j) => j.status === 'queued' || j.status === 'running');
   const recent = jobs.filter((j) => j.status !== 'queued' && j.status !== 'running').slice(0, recentLimit);
+  const queuedCount = live.filter((j) => j.status === 'queued').length;
   const headerLabel = kind ? `${kind === 'image' ? 'Image' : 'Video'} Render Queue` : 'Render Queue';
+
+  const handleClearQueued = () => {
+    if (!queuedCount) return;
+    cancelQueuedMediaJobs(kind ? { kind } : {})
+      .then(({ canceled }) => {
+        // Optimistic flip: queued → canceled (running jobs stay untouched).
+        // The next 3s poll will reconcile if anything raced through.
+        setJobs((prev) => prev.map((j) => (j.status === 'queued' ? { ...j, status: 'canceled' } : j)));
+        toast.success(`Cleared ${canceled} queued job${canceled === 1 ? '' : 's'}`);
+      })
+      .catch((err) => toast.error(err?.message || 'Clear failed'));
+  };
 
   return (
     <div className={`bg-port-card border border-port-border rounded-xl p-4 space-y-2 ${className}`}>
@@ -66,13 +79,25 @@ export default function MediaJobsQueue({ kind, recentLimit = 5, className = '' }
             {live.length} active{recent.length > 0 ? ` • ${recent.length} recent` : ''}
           </span>
         </div>
-        <button
-          onClick={fetchJobs}
-          className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-port-border/50"
-          title="Refresh"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-        </button>
+        <div className="flex items-center gap-1 shrink-0">
+          {queuedCount > 0 && (
+            <button
+              onClick={handleClearQueued}
+              className="flex items-center gap-1 px-2 py-1 rounded text-xs text-gray-300 hover:text-port-error hover:bg-port-error/10 border border-port-border hover:border-port-error/40"
+              title={`Cancel all ${queuedCount} queued job${queuedCount === 1 ? '' : 's'} (running jobs are not affected)`}
+            >
+              <Trash2 className="w-3 h-3" />
+              <span>Clear queued ({queuedCount})</span>
+            </button>
+          )}
+          <button
+            onClick={fetchJobs}
+            className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-port-border/50"
+            title="Refresh"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
 
       {loading ? (
