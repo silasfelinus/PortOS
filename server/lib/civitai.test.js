@@ -5,6 +5,7 @@ import {
   buildAuthHeaders,
   buildSidecar,
   fetchCivitaiModel,
+  normalizeCivitaiImageUrl,
   parseCivitaiUrl,
   pickPrimaryFile,
   pickPreviewImage,
@@ -150,6 +151,39 @@ describe('buildAuthHeaders / applyDownloadToken', () => {
   it('passes through when no key', () => {
     expect(applyDownloadToken('https://x', '')).toBe('https://x');
     expect(applyDownloadToken('https://x', null)).toBe('https://x');
+  });
+});
+
+describe('normalizeCivitaiImageUrl', () => {
+  it('rewrites the original=true transform to a width-bounded variant', () => {
+    const original = 'https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/1f686daa-ff68-4830-ae94-c318e8f9ee30/original=true/129269017.jpeg';
+    const out = normalizeCivitaiImageUrl(original);
+    expect(out).toBe('https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/1f686daa-ff68-4830-ae94-c318e8f9ee30/width=512/129269017.jpeg');
+  });
+  it('rewrites existing width= transforms to the requested size', () => {
+    expect(normalizeCivitaiImageUrl('https://image.civitai.com/abc/uuid/width=200/file.jpeg', 800))
+      .toBe('https://image.civitai.com/abc/uuid/width=800/file.jpeg');
+  });
+  it('rewrites compound transforms (fit=crop,width=N,height=N)', () => {
+    expect(normalizeCivitaiImageUrl('https://image.civitai.com/h/u/fit=crop,width=300,height=300/x.jpeg'))
+      .toBe('https://image.civitai.com/h/u/width=512/x.jpeg');
+  });
+  it('preserves a query string if present', () => {
+    expect(normalizeCivitaiImageUrl('https://image.civitai.com/h/u/original=true/x.jpeg?v=2'))
+      .toBe('https://image.civitai.com/h/u/width=512/x.jpeg?v=2');
+  });
+  it('passes through non-Civitai URLs unchanged', () => {
+    const url = 'https://huggingface.co/datasets/x/resolve/main/preview.png';
+    expect(normalizeCivitaiImageUrl(url)).toBe(url);
+  });
+  it('passes through URLs with no transform segment', () => {
+    const url = 'https://image.civitai.com/foo.jpeg';
+    expect(normalizeCivitaiImageUrl(url)).toBe(url);
+  });
+  it('handles null / non-string inputs without throwing', () => {
+    expect(normalizeCivitaiImageUrl(null)).toBe(null);
+    expect(normalizeCivitaiImageUrl(undefined)).toBe(undefined);
+    expect(normalizeCivitaiImageUrl('')).toBe('');
   });
 });
 

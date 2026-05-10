@@ -12,6 +12,7 @@
 import {
   baseModelToRunner,
   fetchCivitaiModel,
+  normalizeCivitaiImageUrl,
   pickPreviewImage,
   pickVersion,
   searchCivitaiLoras,
@@ -64,7 +65,7 @@ const buildCard = (model) => {
     runnerFamily: baseModelToRunner(baseModel),
     triggerWords: Array.isArray(version.trainedWords) ? version.trainedWords : [],
     samplePrompt: extractSamplePrompt(version),
-    previewImageUrl: previewImage?.url || null,
+    previewImageUrl: normalizeCivitaiImageUrl(previewImage?.url) || null,
     downloads: model.stats?.downloadCount ?? null,
     rating: model.stats?.rating ?? null,
     nsfw: !!model.nsfw,

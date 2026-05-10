@@ -28,6 +28,7 @@ import {
   applyDownloadToken,
   buildSidecar,
   fetchCivitaiModel,
+  normalizeCivitaiImageUrl,
   parseCivitaiUrl,
   pickPrimaryFile,
   pickVersion,
@@ -103,7 +104,9 @@ export const listLoras = async () => {
       // Coerce non-finite values (NaN, Infinity, missing/malformed sidecar
       // fields) to the default — `?? 1.0` alone wouldn't catch NaN.
       recommendedScale: Number.isFinite(sidecar?.recommendedScale) ? sidecar.recommendedScale : 1.0,
-      previewImageUrl: sidecar?.previewImageUrl || null,
+      // Normalize on read so already-installed LoRAs (sidecars written
+      // before the URL-normalize fix) also benefit without a reinstall.
+      previewImageUrl: normalizeCivitaiImageUrl(sidecar?.previewImageUrl) || null,
       description: sidecar?.description || '',
     };
   }));

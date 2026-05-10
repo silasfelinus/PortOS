@@ -296,7 +296,7 @@ function SuggestionCard({ card, installed, installing, onInstall }) {
   return (
     <div className="bg-port-card border border-port-border rounded-lg overflow-hidden flex flex-col">
       {card.previewImageUrl ? (
-        <img src={card.previewImageUrl} alt="" className="w-full h-56 object-cover bg-port-bg" loading="lazy" />
+        <img src={card.previewImageUrl} alt="" className="w-full h-56 object-cover bg-port-bg" loading="lazy" referrerPolicy="no-referrer" />
       ) : (
         <div className="w-full h-56 bg-port-bg flex items-center justify-center text-gray-700">
           <Sparkles size={32} />
@@ -503,6 +503,7 @@ function LoraCard({ lora, onDelete, deleting }) {
           alt=""
           className="w-full h-48 object-cover bg-port-bg"
           loading="lazy"
+          referrerPolicy="no-referrer"
         />
       ) : (
         <div className="w-full h-48 bg-port-bg flex items-center justify-center text-gray-700">

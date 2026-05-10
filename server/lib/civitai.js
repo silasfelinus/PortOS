@@ -151,6 +151,28 @@ export const pickPreviewImage = (version) => {
   return sorted[0] || null;
 };
 
+// Normalize a Civitai CDN image URL so it's bounded-width and reliably
+// served. Civitai's CDN encodes its image transform as a path segment:
+//   https://image.civitai.com/<hash>/<uuid>/<transform>/<filename>.<ext>
+// Common transforms are `original=true`, `width=450`, `fit=crop,width=...`.
+// The `original=true` variant occasionally returns 401/403 (auth-gated for
+// NSFW or simply blocked by hotlink protection) where smaller width-bounded
+// variants are public. Replacing the transform with `width=512` gives a
+// snappier, more-likely-to-render thumbnail. Non-Civitai URLs and URLs
+// without a recognizable transform segment pass through unchanged.
+export const normalizeCivitaiImageUrl = (url, width = 512) => {
+  if (typeof url !== 'string' || !url) return url;
+  if (!/^https?:\/\/(image\.civitai\.com|civitai\.com)\//i.test(url)) return url;
+  // Find the path segment immediately before the trailing /<filename>.<ext>
+  // and replace it with `width=N` if it looks like a transform spec
+  // (contains `=`). Doesn't touch the filename or query string.
+  const match = url.match(/^(.*\/)([^/]+)(\/[^/]+\.(?:jpeg|jpg|png|webp|gif|avif))(\?.*)?$/i);
+  if (!match) return url;
+  const [, prefix, transform, file, query = ''] = match;
+  if (!transform.includes('=')) return url; // not a Civitai transform segment
+  return `${prefix}width=${width}${file}${query}`;
+};
+
 // Build the auth header for HTTP requests when an API key is set.
 // Civitai's API also accepts the token as a `?token=` query param on
 // download URLs, but Authorization: Bearer is documented for /api/v1 calls.
@@ -223,7 +245,7 @@ export const buildSidecar = ({ model, version, file, filename }) => {
       hashes: file?.hashes || {},
       downloadUrl: file?.downloadUrl || null,
     },
-    previewImageUrl: previewImage?.url || null,
+    previewImageUrl: normalizeCivitaiImageUrl(previewImage?.url) || null,
     installedAt: new Date().toISOString(),
   };
 };
