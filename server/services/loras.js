@@ -20,7 +20,7 @@ import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'fs/promis
 import { createWriteStream } from 'fs';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
-import { join, basename } from 'path';
+import { join } from 'path';
 import { ServerError } from '../lib/errorHandler.js';
 import { PATHS } from '../lib/fileUtils.js';
 import {
@@ -56,7 +56,7 @@ export const readSidecar = async (filename) => {
     console.log(`⚠️ LoRA sidecar malformed JSON [${filename}]: ${err?.message || err}`);
     return null;
   }
-  return parsed && typeof parsed === 'object' ? parsed : null;
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
 };
 
 // Validate a basename so it can't escape PATHS.loras. The `.safetensors`
