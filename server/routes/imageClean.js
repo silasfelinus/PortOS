@@ -105,6 +105,12 @@ function applyEncoder(pipeline, format) {
 // Throws ServerError (400) on invalid input so callers get a consistent
 // status instead of a sharp stack trace surfacing as a 500.
 export async function cleanImageBuffer(buffer, level = 'light') {
+  if (!CLEAN_LEVELS.includes(level)) {
+    throw new ServerError(`Invalid clean level "${level}" (expected one of: ${CLEAN_LEVELS.join(', ')})`, {
+      status: 400,
+      code: 'VALIDATION_ERROR',
+    });
+  }
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
     throw new ServerError('Decoded payload is empty', { status: 400, code: 'VALIDATION_ERROR' });
   }
