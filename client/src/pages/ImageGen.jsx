@@ -700,7 +700,11 @@ export default function ImageGen() {
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2 text-xs">
         <div className="flex items-center gap-2 flex-wrap">
-          {status ? (
+          {statusLoading ? (
+            <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full border border-port-border bg-port-card text-gray-400">
+              <RefreshCw className="w-3 h-3 animate-spin" /> Checking {effectiveMode}…
+            </span>
+          ) : status ? (
             <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full border ${
               status.connected
                 ? 'border-port-success/40 bg-port-success/10 text-port-success'
@@ -725,6 +729,7 @@ export default function ImageGen() {
               value={effectiveMode}
               onChange={setSelectedMode}
               disabled={statusLoading}
+              loadingId={statusLoading ? effectiveMode : null}
               titlePrefix="Use"
             />
           )}
