@@ -63,6 +63,15 @@ export async function createWorktree(agentId, sourceWorkspace, taskId, options =
     if (localExists) {
       await execGit(['worktree', 'add', worktreePath, branchName], sourceWorkspace);
     } else {
+      // No local copy — we need a remote ref. If `git fetch` failed AND the
+      // remote ref isn't available, fail loudly rather than emit a confusing
+      // "couldn't find branch" git error.
+      const remoteExists = await execGit(['rev-parse', '--verify', `origin/${branchName}`], sourceWorkspace, { ignoreExitCode: true })
+        .then((r) => r.exitCode === 0)
+        .catch(() => false);
+      if (!remoteExists) {
+        throw new Error(`Cannot attach worktree to ${branchName}: branch missing locally and origin/${branchName} unavailable${fetchSucceeded ? '' : ' (fetch failed)'}`);
+      }
       // Use -B (force-create) so we don't fail if a stale local ref exists; track origin
       await execGit(['worktree', 'add', '-B', branchName, worktreePath, `origin/${branchName}`], sourceWorkspace);
     }
