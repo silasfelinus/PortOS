@@ -212,6 +212,7 @@ export default function App() {
           <Route path="wiki" element={<Navigate to="/wiki/overview" replace />} />
           <Route path="wiki/:tab" element={<Wiki />} />
           <Route path="rapid-reader" element={<RapidReaderPage />} />
+          <Route path="world-builder" element={<WorldBuilder />} />
           <Route path="writers-room" element={<WritersRoom />} />
           <Route path="writers-room/works/:workId" element={<WritersRoom />} />
           <Route path="agents" element={<Agents />} />

@@ -193,6 +193,7 @@ const navItems = [
     defaultTo: '/media',
     children: [
       { to: '/media', label: 'Media Gen', icon: Layers },
+      { to: '/world-builder', label: 'World Builder', icon: Globe },
       { to: '/writers-room', label: 'Writers Room', icon: NotebookPen }
     ]
   },

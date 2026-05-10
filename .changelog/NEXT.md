@@ -9,6 +9,7 @@
 
 ## Changed
 
+- World Builder is now a standalone Create page at `/world-builder` with its own sidebar entry, instead of being buried under Media Gen's tab strip. The old path `/media/world-builder` still renders the same component so existing bookmarks and `⌘K` / voice references keep working. Sets the stage for the upcoming Pipeline page, which will deep-link to World Builder without having to traverse the Media nav.
 - Image Gen resolution dropdown now filters by the selected backend. Flux-bucketed sizes (832×1216 / 1216×832) only appear for Flux 1/2 and external; the new 1536 hi-res tier only appears for codex and Flux 2. Z-Image-Turbo and ERNIE (trained at 1024²) now hide both groups to prevent users from picking sizes the model can't handle. A stale incompatible selection falls through to a `(custom)` option so the value stays visible until the user picks a supported one.
 
 ## Fixed
