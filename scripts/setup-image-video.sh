@@ -44,13 +44,15 @@ INSTALL_VIDEO="${INSTALL_VIDEO:-$(is_macos && echo 1 || echo 0)}"
 # reinstall flushes the file tree without re-resolving torch/mlx and friends.
 echo "📦 Installing image generation packages (mflux + deps)..."
 "$PYTHON_BIN" -m pip install --upgrade --user --force-reinstall --no-deps mflux
-"$PYTHON_BIN" -m pip install --upgrade --user \
-  "transformers<5" \
-  safetensors \
-  huggingface_hub \
-  numpy \
-  opencv-python \
-  tqdm
+# mflux above is installed with --no-deps to flush its file tree without
+# re-resolving torch/mlx — but that means we must explicitly install mflux's
+# own runtime deps here (notably `mlx` on macOS, which it imports at startup).
+# Without this, INSTALL_VIDEO=0 leaves mflux unable to import.
+MFLUX_DEPS=("transformers<5" safetensors huggingface_hub numpy opencv-python tqdm)
+if is_macos; then
+  MFLUX_DEPS+=(mlx)
+fi
+"$PYTHON_BIN" -m pip install --upgrade --user "${MFLUX_DEPS[@]}"
 
 if [[ "$INSTALL_VIDEO" == "1" ]]; then
   if is_macos; then
