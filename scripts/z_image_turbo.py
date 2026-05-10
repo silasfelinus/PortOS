@@ -1,23 +1,16 @@
 #!/usr/bin/env python3
 """
-PortOS FLUX.2-klein runner.
+PortOS Z-Image-Turbo runner.
 
 Spawned by `server/services/imageGen/local.js` when the active model has
-`runner: 'flux2'` in `data/media-models.json`. Mirrors `mflux-generate`'s
-CLI surface so the dispatcher only needs to swap the binary path; all the
-progress / metadata / stepwise / cancel plumbing on the JS side stays the
+`runner: 'z-image'` in `data/media-models.json`. Mirrors the CLI surface of
+`flux2_macos.py` so the dispatcher only needs to swap the binary path; all
+the SSE / stage-marker / stepwise / cancel plumbing on the JS side stays the
 same.
 
-Quantization branches:
-  - `sdnq`: Disty0/FLUX.2-klein-{4B,9B}-SDNQ-4bit-dynamic*. Tokenizer is
-    pulled from the gated `black-forest-labs/...` base repo because the
-    SDNQ packages ship without vocab files.
-  - `int8`: aydin99/FLUX.2-klein-4B-int8 — uses the QuantizedFlux2Transformer
-    shim from flux2_quantized.py to rehydrate optimum-quanto weights, then
-    stitches them into a Flux2KleinPipeline that draws VAE/scheduler from
-    the gated base repo.
-
-Both branches need an HF_TOKEN with the FLUX.2-klein license accepted.
+Z-Image-Turbo (Tongyi/Alibaba) is Apache 2.0 — no HF token / license probe
+needed. Runs on MPS (Apple Silicon) or CUDA via diffusers. Reuses the FLUX.2
+venv at ~/.portos/venv-flux2 (already has diffusers from git HEAD + torch).
 """
 
 import argparse
@@ -29,8 +22,6 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-# Must precede `import torch` — enables the fast-math kernel path on MPS,
-# matches the upstream reference implementation.
 os.environ.setdefault("PYTORCH_MPS_FAST_MATH", "1")
 
 import torch
@@ -87,124 +78,41 @@ def make_generator(device: str, seed: int) -> torch.Generator:
     return torch.Generator().manual_seed(int(seed))
 
 
-def probe_hf_auth(repo: str) -> None:
-    """Fail early with a clear message when HF_TOKEN is missing or the
-    license hasn't been accepted. Without this probe, the user sees a vague
-    HTTP 401 stack trace mid-pipeline-load."""
-    from huggingface_hub import HfApi
-    from huggingface_hub.utils import GatedRepoError, HfHubHTTPError, RepositoryNotFoundError
-    try:
-        HfApi().model_info(repo)
-    except GatedRepoError:
-        print(
-            f"❌ HF gated repo: accept license at https://huggingface.co/{repo} "
-            f"and set HF_TOKEN before generating.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    except RepositoryNotFoundError:
-        print(f"❌ HF repo not found: {repo}", file=sys.stderr)
-        sys.exit(2)
-    except HfHubHTTPError as err:
-        if getattr(err.response, "status_code", None) == 401:
-            print(
-                f"❌ HF auth required for {repo}. Set HF_TOKEN (and accept the "
-                f"license at https://huggingface.co/{repo}).",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-        # Network blip / HF down — let the pipeline call retry.
-        print(f"⚠️ HF probe non-fatal error: {err}", file=sys.stderr)
+def load_pipeline(repo: str, device: str, dtype, pipeline_class: str = ""):
+    # When the registry pins a pipeline class (e.g. ErnieImagePipeline,
+    # which isn't yet in AutoPipelineForText2Image's registry) load it
+    # directly. Falls back to AutoPipelineForText2Image so Z-Image-Turbo
+    # and any future registered model continues to work without a flag.
+    import diffusers
 
-
-def load_pipeline_sdnq(repo: str, tokenizer_repo: str, device: str, dtype):
-    # `sdnq` registers a custom config type at import-time. The Flux2KleinPipeline
-    # `from_pretrained` call below pulls a config that references it, so the
-    # import has to happen first. Keep it inside the function so the runner
-    # also works for the int8 branch on systems without sdnq installed.
-    import sdnq  # noqa: F401  (registration side-effect)
-    from diffusers import Flux2KleinPipeline
-    from transformers import AutoTokenizer
-
-    # STAGE markers are parsed by server/services/imageGen/local.js#handleLine
-    # and emitted as `stage` SSE events so the UI can show "Downloading model
-    # weights (~8 GB on first run)" instead of a misleading "step 0/8". The
-    # tokenizer is small (a few MB), the pipeline + transformer is the big
-    # ~8 GB SDNQ-quantized weights download — flagged as `download-pipeline`.
-    print(f"STAGE:download-tokenizer:{tokenizer_repo}", file=sys.stderr, flush=True)
-    print(f"🔧 sdnq: tokenizer ← {tokenizer_repo}", file=sys.stderr)
-    with heartbeat("loading-tokenizer"):
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_repo, subfolder="tokenizer", use_fast=False)
     print(f"STAGE:download-pipeline:{repo}", file=sys.stderr, flush=True)
-    print(f"🔧 sdnq: pipeline ← {repo}", file=sys.stderr)
+    print(f"🔧 diffusers runner: pipeline ← {repo} (class={pipeline_class or 'auto'})", file=sys.stderr)
     with heartbeat("loading-pipeline"):
-        pipe = Flux2KleinPipeline.from_pretrained(
-            repo,
-            tokenizer=tokenizer,
-            torch_dtype=dtype,
-            low_cpu_mem_usage=True,
-        )
+        if pipeline_class:
+            cls = getattr(diffusers, pipeline_class, None)
+            if cls is None:
+                print(f"❌ Unknown diffusers pipeline class: {pipeline_class}", file=sys.stderr)
+                sys.exit(2)
+            pipe = cls.from_pretrained(repo, torch_dtype=dtype, low_cpu_mem_usage=True)
+        else:
+            from diffusers import AutoPipelineForText2Image
+            pipe = AutoPipelineForText2Image.from_pretrained(
+                repo,
+                torch_dtype=dtype,
+                low_cpu_mem_usage=True,
+            )
     print("STAGE:move-to-device", file=sys.stderr, flush=True)
     with heartbeat("move-to-device"):
         pipe.to(device)
     return pipe
 
 
-def load_pipeline_int8(repo: str, base_repo: str, device: str, dtype):
-    from accelerate import init_empty_weights
-    from diffusers import Flux2KleinPipeline
-    from huggingface_hub import snapshot_download
-    from optimum.quanto import requantize
-    from safetensors.torch import load_file
-    from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
-
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from flux2_quantized import QuantizedFlux2Transformer2DModel
-
-    print(f"STAGE:download-int8-snapshot:{repo}", file=sys.stderr, flush=True)
-    print(f"🔧 int8: snapshot ← {repo}", file=sys.stderr)
-    with heartbeat("downloading-snapshot"):
-        model_path = snapshot_download(repo)
-
-    print("STAGE:load-transformer", file=sys.stderr, flush=True)
-    print("🔧 int8: transformer …", file=sys.stderr)
-    with heartbeat("loading-transformer"):
-        qtransformer = QuantizedFlux2Transformer2DModel.from_pretrained(model_path)
-        qtransformer.to(device=device, dtype=dtype)
-
-    print("STAGE:load-text-encoder", file=sys.stderr, flush=True)
-    print("🔧 int8: text encoder …", file=sys.stderr)
-    # AutoModelForCausalLM picks the right class from the config
-    # (Qwen3ForCausalLM here). transformers>=4.51 ships Qwen3 in-tree so we
-    # don't need trust_remote_code; passing it would let a maliciously edited
-    # model registry point at a repo that executes arbitrary Python at load.
-    with heartbeat("loading-text-encoder"):
-        config = AutoConfig.from_pretrained(f"{model_path}/text_encoder")
-        with init_empty_weights():
-            text_encoder = AutoModelForCausalLM.from_config(config)
-        with open(f"{model_path}/text_encoder/quanto_qmap.json", "r") as f:
-            te_qmap = json.load(f)
-        te_state = load_file(f"{model_path}/text_encoder/model.safetensors")
-        requantize(text_encoder, state_dict=te_state, quantization_map=te_qmap)
-        text_encoder.eval()
-        text_encoder.to(device, dtype=dtype)
-
-        tokenizer = AutoTokenizer.from_pretrained(f"{model_path}/tokenizer")
-
-    print(f"🔧 int8: VAE/scheduler ← {base_repo}", file=sys.stderr)
-    with heartbeat("loading-vae-scheduler"):
-        pipe = Flux2KleinPipeline.from_pretrained(
-            base_repo,
-            transformer=None,
-            text_encoder=None,
-            tokenizer=None,
-            torch_dtype=dtype,
-        )
-        pipe.transformer = qtransformer._wrapped
-        pipe.text_encoder = text_encoder
-        pipe.tokenizer = tokenizer
-        pipe.to(device)
-    return pipe
+def to_i2i_pipeline(pipe):
+    # AutoPipelineForImage2Image.from_pipe reuses the loaded weights — no
+    # second download. If the loaded pipeline class has no registered i2i
+    # sibling, this raises and we fall back to txt2img.
+    from diffusers import AutoPipelineForImage2Image
+    return AutoPipelineForImage2Image.from_pipe(pipe)
 
 
 def apply_memory_optimizations(pipe) -> None:
@@ -219,49 +127,28 @@ def apply_memory_optimizations(pipe) -> None:
         vae.enable_tiling()
 
 
-def _unpack_flux2_latents(latents, height: int, width: int, vae_scale: int = 8, patch: int = 2):
-    """Convert Flux2 transformer-packed latents `(B, num_patches, C*P*P)` back
-    to the VAE-friendly `(B, C, H_lat, W_lat)` layout.
-
-    For 1024×576 with vae_scale=8 patch=2: `(1, 2304, 128)` → `(1, 16, 72, 128)`
-    (2304 = 36×64 patches, 128 = 16 channels × 2×2 patch). diffusers' own
-    `_unpack_latents_with_ids` requires an `x_ids` tensor not exposed to the
-    callback, so we do the math ourselves.
-    """
-    bsz, num_patches, ch_packed = latents.shape
-    h = height // vae_scale // patch
-    w = width // vae_scale // patch
-    c = ch_packed // (patch * patch)
-    if h * w != num_patches or c * patch * patch != ch_packed:
-        raise ValueError(
-            f"unpack mismatch: latents={tuple(latents.shape)} expected "
-            f"num_patches={h*w} channels_packed={c*patch*patch} for {height}x{width}"
-        )
-    latents = latents.view(bsz, h, w, c, patch, patch)
-    latents = latents.permute(0, 3, 1, 4, 2, 5)
-    return latents.reshape(bsz, c, h * patch, w * patch)
-
-
 def make_stepwise_callback(stepwise_dir: str, pipe, height: int, width: int):
     """Return a `callback_on_step_end` that decodes the running latent into a
     small preview PNG. local.js's `processLatestFrame` watches this dir and
-    streams the freshest frame to the SSE client."""
+    streams the freshest frame to the SSE client.
 
+    Z-Image latents come back in the standard `(B, C, H_lat, W_lat)` layout
+    (unlike FLUX.2's packed transformer latents) so the decode path is a
+    plain VAE call — no unpack helper needed.
+    """
     if not stepwise_dir:
         return None
     out = Path(stepwise_dir)
     out.mkdir(parents=True, exist_ok=True)
     vae = pipe.vae
-    scaling = getattr(vae.config, "scaling_factor", None)
-    if scaling is None:
-        scaling = 1.0
-    shift = getattr(vae.config, "shift_factor", None)
-    if shift is None:
-        shift = 0.0
-    # Capture VAE weight dtype + device so the callback can align the scaled
-    # latents before decode — pipelines sometimes keep latents in float32
-    # while the VAE is bfloat16 (which errors with "Input type (float) and
-    # bias type (c10::BFloat16) should be the same").
+    scaling = getattr(vae.config, "scaling_factor", 1.0) or 1.0
+    shift = getattr(vae.config, "shift_factor", 0.0) or 0.0
+    # ERNIE keeps latents in float32 even when the pipeline was loaded with
+    # torch_dtype=bfloat16, so `vae.decode(latents / scaling + shift)` feeds
+    # float32 into a bfloat16 VAE and errors with "Input type (float) and
+    # bias type (c10::BFloat16) should be the same". Capture the VAE's actual
+    # weight dtype + device once so the callback can align the scaled latents
+    # before decode.
     try:
         vae_param = next(vae.parameters())
         vae_dtype, vae_device = vae_param.dtype, vae_param.device
@@ -280,13 +167,11 @@ def make_stepwise_callback(stepwise_dir: str, pipe, height: int, width: int):
             return callback_kwargs
         if step_index == 0:
             print(f"🖼️  stepwise: callback live, latents.shape={tuple(latents.shape)}", file=sys.stderr)
-        # Best-effort decode. Errors here must not abort generation — the
-        # final image is still produced after the last step.
         try:
-            # Flux2 latents arrive packed (B, num_patches, C*p*p). VAE expects
-            # (B, C, H, W). Skip unpack if it's already 4-D (future-proof).
-            if latents.dim() == 3:
-                latents = _unpack_flux2_latents(latents, height, width)
+            if latents.dim() != 4:
+                # Some pipelines return packed latents. Skip preview rather
+                # than guess the unpack shape — the final image still saves.
+                return callback_kwargs
             scaled = latents / scaling + shift
             if vae_dtype is not None and (scaled.dtype != vae_dtype or scaled.device != vae_device):
                 scaled = scaled.to(device=vae_device, dtype=vae_dtype)
@@ -311,18 +196,15 @@ def write_sidecar(output: str, payload: dict) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="PortOS FLUX.2-klein runner")
-    p.add_argument("--model", required=True, help="model id (e.g. flux2-klein-4b)")
-    p.add_argument("--quantization", required=True, choices=["sdnq", "int8"])
-    p.add_argument("--repo", required=True, help="HF repo for the quantized weights")
-    p.add_argument("--tokenizer-repo", default=None, help="HF repo for tokenizer (sdnq variants)")
-    p.add_argument("--base-pipeline-repo", default=None, help="HF repo for VAE/scheduler (int8 variant)")
+    p = argparse.ArgumentParser(description="PortOS Z-Image-Turbo runner")
+    p.add_argument("--model", required=True, help="model id (e.g. z-image-turbo-bf16)")
+    p.add_argument("--repo", required=True, help="HF repo for the pipeline weights")
     p.add_argument("--prompt", required=True)
     p.add_argument("--negative-prompt", default="")
     p.add_argument("--width", type=int, default=1024)
     p.add_argument("--height", type=int, default=1024)
     p.add_argument("--steps", type=int, default=8)
-    p.add_argument("--guidance", type=float, default=3.5)
+    p.add_argument("--guidance", type=float, default=1.0)
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--output", required=True)
     p.add_argument("--metadata", action="store_true", help="write <output>.metadata.json sidecar")
@@ -332,6 +214,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", default="auto", choices=["auto", "mps", "cuda", "cpu"])
     p.add_argument("--lora-paths", nargs="*", default=[], help="absolute paths to LoRA .safetensors files")
     p.add_argument("--lora-scales", nargs="*", default=[], help="scale per LoRA, parallel to --lora-paths")
+    p.add_argument("--pipeline-class", default="", help="optional explicit diffusers pipeline class (e.g. ErnieImagePipeline)")
+    p.add_argument("--use-pe", action="store_true", help="enable the prompt enhancer (ERNIE-Image's use_pe kwarg)")
     return p.parse_args()
 
 
@@ -341,21 +225,25 @@ def main() -> None:
     device = pick_device(args.device)
     dtype = torch.bfloat16 if device in ("mps", "cuda") else torch.float32
 
-    if args.quantization == "sdnq":
-        if not args.tokenizer_repo:
-            print("❌ --tokenizer-repo is required for sdnq variants", file=sys.stderr)
-            sys.exit(64)
-        probe_hf_auth(args.tokenizer_repo)
-        pipe = load_pipeline_sdnq(args.repo, args.tokenizer_repo, device, dtype)
-    elif args.quantization == "int8":
-        if not args.base_pipeline_repo:
-            print("❌ --base-pipeline-repo is required for int8 variants", file=sys.stderr)
-            sys.exit(64)
-        probe_hf_auth(args.base_pipeline_repo)
-        pipe = load_pipeline_int8(args.repo, args.base_pipeline_repo, device, dtype)
-    else:
-        print(f"❌ unknown quantization: {args.quantization}", file=sys.stderr)
-        sys.exit(64)
+    pipe = load_pipeline(args.repo, device, dtype, pipeline_class=args.pipeline_class)
+
+    init_image = None
+    if args.image_path:
+        init_image = Image.open(args.image_path).convert("RGB").resize(
+            (int(args.width), int(args.height)), Image.LANCZOS
+        )
+        # Promote the txt2img pipe to its i2i sibling. If the model family
+        # doesn't expose an i2i variant, fall through to txt2img with a warning
+        # — better than failing the request outright.
+        try:
+            pipe = to_i2i_pipeline(pipe)
+        except Exception as err:
+            print(
+                f"⚠️ z-image: i2i sibling unavailable ({type(err).__name__}: {err}); "
+                f"falling back to txt2img and ignoring init image",
+                file=sys.stderr,
+            )
+            init_image = None
 
     apply_memory_optimizations(pipe)
     apply_loras(pipe, args.lora_paths or [], args.lora_scales or [])
@@ -363,16 +251,8 @@ def main() -> None:
     seed = args.seed if args.seed is not None else int(torch.randint(0, 2**31 - 1, (1,)).item())
     generator = make_generator(device, seed)
 
-    init_image = None
-    if args.image_path:
-        init_image = Image.open(args.image_path).convert("RGB").resize(
-            (int(args.width), int(args.height)), Image.LANCZOS
-        )
-
     callback = make_stepwise_callback(args.stepwise_image_output_dir, pipe, int(args.height), int(args.width))
-    # Flux2KleinPipeline.__call__ doesn't always accept negative_prompt or
-    # strength — passing an unsupported kwarg raises TypeError. Filter to
-    # what the live signature actually accepts.
+
     accepted = set(inspect.signature(pipe.__call__).parameters.keys())
     pipe_kwargs = dict(
         prompt=args.prompt,
@@ -386,23 +266,26 @@ def main() -> None:
         pipe_kwargs["negative_prompt"] = args.negative_prompt
     if callback is not None and "callback_on_step_end" in accepted:
         pipe_kwargs["callback_on_step_end"] = callback
-        # Some pipelines accept the callback but not the explicit input list;
-        # only set when supported.
         if "callback_on_step_end_tensor_inputs" in accepted:
             pipe_kwargs["callback_on_step_end_tensor_inputs"] = ["latents"]
     if init_image is not None and "image" in accepted:
         pipe_kwargs["image"] = init_image
         # Disable VAE tiling for i2i — tiled encode of a small image
-        # produces seams on the output (matches the reference impl).
+        # produces seams on the output (matches flux2 reference).
         vae = getattr(pipe, "vae", None)
         if vae is not None and hasattr(vae, "disable_tiling"):
             vae.disable_tiling()
         if args.image_strength is not None and "strength" in accepted:
             pipe_kwargs["strength"] = float(args.image_strength)
+    # ERNIE-Image's prompt enhancer — only pass when the loaded pipeline
+    # exposes the kwarg (signature filter keeps Z-Image and other models
+    # unaffected).
+    if args.use_pe and "use_pe" in accepted:
+        pipe_kwargs["use_pe"] = True
 
     print("STAGE:inference", file=sys.stderr, flush=True)
     print(
-        f"🎨 flux2 generate seed={seed} {args.width}x{args.height} steps={args.steps} "
+        f"🎨 z-image generate seed={seed} {args.width}x{args.height} steps={args.steps} "
         f"guidance={args.guidance} device={device}",
         file=sys.stderr,
     )
@@ -429,16 +312,12 @@ def main() -> None:
                 "height": int(args.height),
                 "steps": int(args.steps),
                 "guidance": float(args.guidance),
-                "quantization": args.quantization,
                 "filename": Path(args.output).name,
                 "initImageFilename": Path(args.image_path).name if args.image_path else None,
                 "initImageStrength": float(args.image_strength) if args.image_strength is not None else None,
             },
         )
 
-    # Free VRAM eagerly so a back-to-back generation in the same process
-    # doesn't OOM. The PortOS runner respawns per request right now, so this
-    # is mostly belt-and-suspenders.
     if torch.backends.mps.is_available():
         torch.mps.empty_cache()
         torch.mps.synchronize()
@@ -446,14 +325,10 @@ def main() -> None:
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
 
-    print(f"✅ flux2 saved {args.output} (seed={seed})", file=sys.stderr)
+    print(f"✅ z-image saved {args.output} (seed={seed})", file=sys.stderr)
 
 
 def _emit_user_error(kind: str, message: str, repo: str = "") -> None:
-    """Emit a structured single-line error the server's stderr parser picks up
-    for the SSE error event. `kind` is a stable identifier the UI maps to a
-    friendly heading; `message` is the human prose; `repo` (optional) is the
-    HF repo to deep-link the user to so they can request access / check token."""
     line = f"USER_ERROR:{kind}"
     if repo:
         line += f":{repo}"
@@ -469,23 +344,16 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except Exception as err:
-        # Top-level safety net — every error type we recognise gets a friendly
-        # USER_ERROR: line so the UI can surface "request access at <link>"
-        # instead of bare "Exit code 1". Anything we don't recognise still
-        # falls through to a printed traceback above + a generic USER_ERROR
-        # below, so the user sees *something* actionable.
+        # Friendly USER_ERROR markers for common HF failure modes so the UI
+        # surfaces actionable text instead of raw "Exit code 1".
         from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError, HfHubHTTPError
-        # Walk the cause chain — diffusers wraps HF errors in OSError, so the
-        # innermost exception is what tells us the real story.
         chain = []
         cur = err
         while cur is not None:
             chain.append(cur)
             cur = cur.__cause__ or cur.__context__
+
         def _repo_from_hf_error(hf_err):
-            """huggingface_hub doesn't always populate `repo_id` on the error.
-            Fall back to parsing the failing URL — `/<owner>/<repo>/resolve/...`
-            for file downloads or `/api/models/<owner>/<repo>` for API hits."""
             repo = getattr(hf_err, "repo_id", None) or ""
             if repo:
                 return repo
@@ -526,7 +394,5 @@ if __name__ == "__main__":
             repo = _repo_from_hf_error(notfound)
             _emit_user_error("repo_not_found", f"HF repo not found: {repo or '(unknown)'}", repo)
             sys.exit(2)
-        # Unknown failure — emit the original traceback (already printed above)
-        # plus a generic structured marker so the UI shows something useful.
         _emit_user_error("unknown", f"{type(err).__name__}: {err}")
         raise

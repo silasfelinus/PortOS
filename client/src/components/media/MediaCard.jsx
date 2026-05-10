@@ -1,5 +1,6 @@
-import { Trash2, Download, Film, Image as ImageIcon, Sparkles, Eye, EyeOff, Maximize2 } from 'lucide-react';
+import { Trash2, Download, Film, Image as ImageIcon, Sparkles, Eye, EyeOff, Maximize2, Wand2 } from 'lucide-react';
 import AddToCollectionMenu from './AddToCollectionMenu';
+import { loraDisplayName } from './normalize';
 
 // Single card used everywhere a generated image/video appears in a grid:
 // the Image Gen page's recent gallery, the Video Gen page's recent renders,
@@ -66,6 +67,19 @@ export default function MediaCard({
           {item.fps && <span className="px-1.5 py-0.5 bg-port-border text-gray-400 rounded">{item.fps}fps</span>}
           {item.seed != null && <span className="px-1.5 py-0.5 bg-port-border text-gray-400 rounded">seed {item.seed}</span>}
         </div>
+        {Array.isArray(item.loraNames) && item.loraNames.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 text-[9px]" title={item.loraNames.map(loraDisplayName).join(', ')}>
+            <Wand2 className="w-2.5 h-2.5 text-purple-300 shrink-0" />
+            {item.loraNames.slice(0, 2).map((fn) => (
+              <span key={fn} className="px-1.5 py-0.5 bg-purple-600/20 text-purple-300 rounded truncate max-w-[120px]">
+                {loraDisplayName(fn)}
+              </span>
+            ))}
+            {item.loraNames.length > 2 && (
+              <span className="px-1.5 py-0.5 bg-purple-600/20 text-purple-300 rounded">+{item.loraNames.length - 2}</span>
+            )}
+          </div>
+        )}
         {!hideActions && (
           <div className="flex flex-wrap gap-1">
             {!isVideo && onRemix && (

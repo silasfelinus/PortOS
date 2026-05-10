@@ -36,9 +36,15 @@ INSTALL_VIDEO="${INSTALL_VIDEO:-$(is_macos && echo 1 || echo 0)}"
 # Install via pip --user so we don't pollute the system or require a venv.
 # mflux comes with the mflux-generate CLI which the local image backend
 # spawns directly. transformers<5 is required for MLX compatibility.
+#
+# `--force-reinstall --no-deps` on mflux only — earlier setup runs could
+# leave the user-site copy at the right version number but with stale file
+# layout (we hit this in 0.12.1, where `mflux/models/flux/cli/` was missing
+# from a partial reinstall, breaking the entry-point shim). Forcing the
+# reinstall flushes the file tree without re-resolving torch/mlx and friends.
 echo "📦 Installing image generation packages (mflux + deps)..."
+"$PYTHON_BIN" -m pip install --upgrade --user --force-reinstall --no-deps mflux
 "$PYTHON_BIN" -m pip install --upgrade --user \
-  mflux \
   "transformers<5" \
   safetensors \
   huggingface_hub \
@@ -209,6 +215,8 @@ if [[ "$INSTALL_LTX2" == "1" ]]; then
 fi
 if [[ "$INSTALL_FLUX2" == "1" ]]; then
   echo "   FLUX.2:    ${HOME}/.portos/venv-flux2/bin/python3 (separate venv)"
+  echo "   Z-Image:   reuses the FLUX.2 venv (Apache 2.0, no HF login needed)"
+  echo "   ERNIE:     reuses the FLUX.2 venv (Apache 2.0, no HF login needed)"
   echo ""
   echo "⚠️  FLUX.2-klein needs HF auth: accept the license at"
   echo "    https://huggingface.co/black-forest-labs/FLUX.2-klein-4B"

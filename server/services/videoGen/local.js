@@ -542,6 +542,8 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     const line = raw.trim();
     if (!line) return true;
     if (PYTHON_NOISE_RE.test(line)) return true;
+    // Heartbeat for the queue's idle watchdog (see imageGen/local.js).
+    videoGenEvents.emit('activity', { generationId: jobId });
     if (line.startsWith('STATUS:')) {
       broadcastSse(job, { type: 'status', message: line.slice(7) });
       return true;

@@ -20,6 +20,7 @@ import { normalizeImage } from '../components/media/normalize';
 import Flux2InstallModal from '../components/imageGen/Flux2InstallModal';
 import Flux2TokenBanner from '../components/imageGen/Flux2TokenBanner';
 import ImageGenControls from '../components/imageGen/ImageGenControls';
+import MediaJobsQueue from '../components/media/MediaJobsQueue';
 import {
   Image as ImageIcon, Sparkles, Download, RefreshCw, Settings as SettingsIcon,
   AlertTriangle, X, Film,
@@ -30,13 +31,34 @@ import toast from '../components/ui/Toast';
 import BrailleSpinner from '../components/BrailleSpinner';
 import { useImageGenProgress } from '../hooks/useImageGenProgress';
 import {
-  getImageGenStatus, generateImage, listImageModels, listLoras, listImageGallery,
+  getImageGenStatus, generateImage, listImageModels, listLorasFull, listImageGallery,
   cancelImageGen, deleteImage, setImageHidden, cleanGalleryImage, getActiveImageJob, getSettings,
   buildFormData, listMediaJobs,
 } from '../services/api';
 import { safeParseJSON } from '../lib/genUtils';
 
 const DEFAULT_NEGATIVE = 'blurry, low quality, distorted, deformed, ugly, watermark, text, signature';
+
+// Append LoRA trigger words to a prompt comma-separated, skipping any
+// already present. Compares against comma-separated prompt segments rather
+// than raw substrings so a short trigger like "cat" doesn't false-match
+// inside "concatenate". Civitai triggers are often phrases that themselves
+// contain spaces, so the match is whole-segment, case-insensitive.
+const appendTriggerWords = (prompt, words) => {
+  const list = (Array.isArray(words) ? words : [])
+    .filter((w) => typeof w === 'string' && w.trim())
+    .map((w) => w.trim());
+  if (!list.length) return prompt;
+  const segments = String(prompt || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const fresh = list.filter((w) => !segments.includes(w.toLowerCase()));
+  if (!fresh.length) return prompt;
+  const trimmed = String(prompt || '').trim();
+  const sep = !trimmed ? '' : trimmed.endsWith(',') ? ' ' : ', ';
+  return `${trimmed}${sep}${fresh.join(', ')}`;
+};
 
 // User-facing labels for STAGE markers emitted by FLUX.2 (and any future
 // runner). The keys match what `flux2_macos.py` prints; unknown stages fall
@@ -193,7 +215,9 @@ export default function ImageGen() {
       setModels(m);
       if (m.length && !modelId) setModelId(m[0].id);
     }).catch(() => {});
-    listLoras().then(setAvailableLoras).catch(() => {});
+    // Use the richer /api/loras surface so the picker can show trigger
+    // words + recommended scale + Civitai-derived runnerFamily.
+    listLorasFull().then(setAvailableLoras).catch(() => {});
     refreshGallery();
     reloadBackends();
     // Resume an in-flight job so the user can navigate away mid-render and
@@ -247,6 +271,30 @@ export default function ImageGen() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
+
+  // ?lora=<filename> preselects a LoRA when the user clicks "Test" on the
+  // /media/loras manager page. Defers until availableLoras has loaded so the
+  // metadata (recommendedScale, name, triggerWords) is available; once applied,
+  // strip the param so a refresh doesn't keep re-adding the LoRA. Also
+  // auto-appends the LoRA's trigger words to the prompt — the user came from
+  // "Test this" so the intent is "show me what this LoRA does," and most
+  // LoRAs only fire correctly when their trigger words are in the prompt.
+  useEffect(() => {
+    const fromUrl = searchParams.get('lora');
+    if (!fromUrl || !availableLoras.length) return;
+    const match = availableLoras.find((l) => l.filename === fromUrl);
+    if (!match) return;
+    setSelectedLoras((prev) => prev.find((s) => s.filename === fromUrl) ? prev : [...prev, {
+      filename: match.filename,
+      name: match.name,
+      scale: typeof match.recommendedScale === 'number' ? match.recommendedScale : 1.0,
+    }]);
+    if (match.triggerWords?.length) {
+      setPrompt((p) => appendTriggerWords(p, match.triggerWords));
+    }
+    setSearchParams((prev) => { const next = new URLSearchParams(prev); next.delete('lora'); return next; }, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, availableLoras]);
 
   // Remix payload from Media History (?prompt=…&modelId=…&seed=…). Populate
   // form state once on mount, then strip the params so a hot-reload or back-
@@ -324,6 +372,13 @@ export default function ImageGen() {
 
   const currentModel = models.find((m) => m.id === modelId);
   const isFlux2Model = currentModel?.runner === 'flux2';
+  // mflux is the default runner for entries with no explicit `runner` field.
+  // Used to filter the LoRA picker so users only see compatible weights for
+  // the selected model. LoRAs with `runnerFamily === null` (legacy / unknown
+  // base) are shown too with a warning indicator — the runner may still
+  // accept them, or surface a clear error.
+  const currentRunnerFamily = currentModel?.runner || 'mflux';
+  const compatibleLoras = availableLoras.filter((l) => !l.runnerFamily || l.runnerFamily === currentRunnerFamily);
 
   const refreshFlux2Status = useCallback((signal) => {
     return fetch('/api/image-gen/setup/flux2-status', { signal })
@@ -769,46 +824,78 @@ export default function ImageGen() {
             disabled={statusLoading}
           />
 
-          {isLocalMode && !isFlux2Model && availableLoras.length > 0 && (
+          {isLocalMode && availableLoras.length > 0 && (
             <div>
-              <label className="block text-xs font-medium text-gray-400 mb-1">LoRAs</label>
-              <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1">
-                {availableLoras.map((lora) => {
-                  const selected = selectedLoras.find((s) => s.filename === lora.filename);
-                  return (
-                    <div key={lora.filename} className="flex items-center gap-2">
-                      <label className="flex items-center gap-2 cursor-pointer flex-1 min-w-0">
-                        <input
-                          type="checkbox"
-                          checked={!!selected}
-                          disabled={statusLoading}
-                          onChange={(e) => {
-                            if (e.target.checked) setSelectedLoras((p) => [...p, { filename: lora.filename, name: lora.name, scale: 1.0 }]);
-                            else setSelectedLoras((p) => p.filter((s) => s.filename !== lora.filename));
-                          }}
-                          className="rounded"
-                        />
-                        <span className="text-xs text-gray-300 truncate">{lora.name}</span>
-                      </label>
-                      {selected && (
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-gray-500">Scale</span>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-medium text-gray-400">
+                  LoRAs <span className="text-gray-600 font-normal">({compatibleLoras.length}/{availableLoras.length} compatible)</span>
+                </label>
+                <Link to="/media/loras" className="text-[11px] text-port-accent hover:underline">Manage →</Link>
+              </div>
+              {compatibleLoras.length === 0 ? (
+                <p className="text-xs text-gray-500 italic">No LoRAs match this model's runner. Install one matching <code>{currentRunnerFamily}</code> on the LoRAs page.</p>
+              ) : (
+                <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                  {compatibleLoras.map((lora) => {
+                    const selected = selectedLoras.find((s) => s.filename === lora.filename);
+                    const recommended = typeof lora.recommendedScale === 'number' ? lora.recommendedScale : 1.0;
+                    return (
+                      <div key={lora.filename} className="flex items-center gap-2">
+                        <label className="flex items-center gap-2 cursor-pointer flex-1 min-w-0">
                           <input
-                            type="number" min={0} max={2} step={0.1}
-                            value={selected.scale}
+                            type="checkbox"
+                            checked={!!selected}
                             disabled={statusLoading}
                             onChange={(e) => {
-                              const scale = parseFloat(e.target.value) || 0;
-                              setSelectedLoras((p) => p.map((s) => s.filename === lora.filename ? { ...s, scale } : s));
+                              if (e.target.checked) setSelectedLoras((p) => [...p, { filename: lora.filename, name: lora.name, scale: recommended }]);
+                              else setSelectedLoras((p) => p.filter((s) => s.filename !== lora.filename));
                             }}
-                            className="w-20 bg-port-bg border border-port-border rounded px-2 py-1 text-sm text-gray-200"
+                            className="rounded"
                           />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+                          <span className="text-xs text-gray-300 truncate flex-1" title={(lora.triggerWords || []).length ? `Trigger words: ${lora.triggerWords.join(', ')}` : lora.name}>
+                            {lora.name}
+                            {/* baseModel suffix disambiguates multiple installed
+                                versions of the same model (e.g. ZImageBase vs
+                                ZImageTurbo, both mapping to 'z-image' family). */}
+                            {lora.civitai?.baseModel && (
+                              <span className="ml-1.5 text-[10px] text-gray-600 font-mono">[{lora.civitai.baseModel}]</span>
+                            )}
+                            {(lora.triggerWords || []).length > 0 && (
+                              <span className="ml-2 text-[10px] text-gray-500 font-mono">{lora.triggerWords.slice(0, 2).join(', ')}{lora.triggerWords.length > 2 ? '…' : ''}</span>
+                            )}
+                          </span>
+                        </label>
+                        {selected && (
+                          <div className="flex items-center gap-2">
+                            {(lora.triggerWords || []).length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setPrompt((p) => appendTriggerWords(p, lora.triggerWords))}
+                                disabled={statusLoading}
+                                title={`Append to prompt: ${lora.triggerWords.join(', ')}`}
+                                className="text-[11px] px-2 py-1 rounded bg-port-accent/10 text-port-accent border border-port-accent/30 hover:bg-port-accent/20 disabled:opacity-50 whitespace-nowrap"
+                              >
+                                + trigger
+                              </button>
+                            )}
+                            <span className="text-xs text-gray-500" title={`Recommended: ${recommended.toFixed(2)}`}>Scale</span>
+                            <input
+                              type="number" min={0} max={2} step={0.1}
+                              value={selected.scale}
+                              disabled={statusLoading}
+                              onChange={(e) => {
+                                const scale = parseFloat(e.target.value) || 0;
+                                setSelectedLoras((p) => p.map((s) => s.filename === lora.filename ? { ...s, scale } : s));
+                              }}
+                              className="w-20 bg-port-bg border border-port-border rounded px-2 py-1 text-sm text-gray-200"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 
@@ -972,16 +1059,18 @@ export default function ImageGen() {
         </div>
       </form>
 
+      <MediaJobsQueue kind="image" />
+
       {visibleGallery.length > 0 && (
         <div className="bg-port-card border border-port-border rounded-xl p-4 space-y-2">
           <div className="flex items-center justify-between">
-            <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wide">Recent renders ({Math.min(visibleGallery.length, 6)} of {visibleGallery.length})</h2>
-            {visibleGallery.length > 6 && (
+            <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wide">Recent renders ({Math.min(visibleGallery.length, 5)} of {visibleGallery.length})</h2>
+            {visibleGallery.length > 5 && (
               <Link to="/media/history" className="text-xs text-port-accent hover:underline">View all →</Link>
             )}
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-            {visibleGallery.slice(0, 6).map((img) => {
+            {visibleGallery.slice(0, 5).map((img) => {
               const item = normalizeImage(img);
               return (
                 <MediaCard

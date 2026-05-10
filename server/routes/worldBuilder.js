@@ -21,7 +21,7 @@ import { expandWorldTemplate } from '../services/worldBuilderExpand.js';
 import { enqueueJob } from '../services/mediaJobQueue/index.js';
 import { getSettings } from '../services/settings.js';
 import { createCollection, NAME_MAX_LENGTH as COLLECTION_NAME_MAX } from '../services/mediaCollections.js';
-import { getImageModels, isFlux2 } from '../lib/mediaModels.js';
+import { getImageModels, isFlux2, isZImage, isErnie } from '../lib/mediaModels.js';
 
 const router = Router();
 
@@ -183,7 +183,7 @@ router.post('/:id/render', asyncHandler(async (req, res) => {
     const selectedModel = allModels.find((m) => m.id === body.modelId)
       ?? allModels.find((m) => m.id === 'dev')
       ?? allModels[0];
-    if (selectedModel && !isFlux2(selectedModel) && !py) {
+    if (selectedModel && !isFlux2(selectedModel) && !isZImage(selectedModel) && !isErnie(selectedModel) && !py) {
       throw new ServerError(
         'Local image generation is not configured (settings.imageGen.local.pythonPath is missing).',
         { status: 400, code: 'IMAGE_GEN_NOT_CONFIGURED' },
