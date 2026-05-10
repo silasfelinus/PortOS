@@ -52,18 +52,21 @@ function sanitizeJob(job) {
 
 router.get('/', asyncHandler(async (req, res) => {
   const filters = validateRequest(listQuerySchema, req.query);
-  // Most-recent activity first across all statuses. Live (queued/running)
-  // jobs land at the top by virtue of having the freshest `startedAt` /
-  // `queuedAt`. The fallback chain is `startedAt → completedAt → queuedAt`
-  // so terminal jobs that never started (queued→canceled, or failed by
-  // boot recovery) sort by their cancel/finish time, not the original
-  // enqueue time.
-  const sorted = [...listJobs(filters)].sort((a, b) => {
-    const ta = new Date(a.startedAt || a.completedAt || a.queuedAt || 0).getTime();
-    const tb = new Date(b.startedAt || b.completedAt || b.queuedAt || 0).getTime();
+  // Live jobs preserve `listJobs` order — [running, codexRunning, ...queue] —
+  // so the UI reads top-to-bottom as "currently rendering, then next in line"
+  // (FIFO). A single timestamp DESC sort puts later-queued jobs ahead of an
+  // earlier-started running job and confuses the user.
+  // Terminal jobs sort by most-recent finish so the "recent" reel surfaces
+  // newest-first; the fallback chain handles canceled-while-queued jobs.
+  const jobs = listJobs(filters);
+  const live = jobs.filter((j) => j.status === 'queued' || j.status === 'running');
+  const terminal = jobs.filter((j) => j.status !== 'queued' && j.status !== 'running');
+  terminal.sort((a, b) => {
+    const ta = new Date(a.completedAt || a.startedAt || a.queuedAt || 0).getTime();
+    const tb = new Date(b.completedAt || b.startedAt || b.queuedAt || 0).getTime();
     return tb - ta;
   });
-  res.json(sorted.map(sanitizeJob));
+  res.json([...live, ...terminal].map(sanitizeJob));
 }));
 
 router.get('/:id', asyncHandler(async (req, res) => {
