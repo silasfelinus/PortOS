@@ -296,10 +296,10 @@ function SuggestionCard({ card, installed, installing, onInstall }) {
   return (
     <div className="bg-port-card border border-port-border rounded-lg overflow-hidden flex flex-col">
       {card.previewImageUrl ? (
-        <img src={card.previewImageUrl} alt="" className="w-full h-32 object-cover bg-port-bg" loading="lazy" />
+        <img src={card.previewImageUrl} alt="" className="w-full h-56 object-cover bg-port-bg" loading="lazy" />
       ) : (
-        <div className="w-full h-32 bg-port-bg flex items-center justify-center text-gray-700">
-          <Sparkles size={24} />
+        <div className="w-full h-56 bg-port-bg flex items-center justify-center text-gray-700">
+          <Sparkles size={32} />
         </div>
       )}
       <div className="p-3 flex-1 flex flex-col gap-2">

@@ -32,6 +32,7 @@ const CURATED_SUGGESTIONS = [
   { modelId: 832858, note: 'Stylized anime-art rendering.' },
   { modelId: 1349631, note: 'Dark Ghibli-fairytale aesthetic — moody storybook scenes.' },
   { modelId: 551903, note: 'Ars Midjourney watercolor — soft, painterly fills with bleeding edges.' },
+  { modelId: 816857, note: 'Neon Retrowave by ChronoKnight — Flux 2 Klein 9B + Flux + Illustrious versions.' },
 ];
 
 // runnerFamily -> { fetchedAt: number, items: SuggestionCard[] }

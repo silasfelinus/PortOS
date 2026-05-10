@@ -39,6 +39,21 @@ import { safeParseJSON } from '../lib/genUtils';
 
 const DEFAULT_NEGATIVE = 'blurry, low quality, distorted, deformed, ugly, watermark, text, signature';
 
+// Append LoRA trigger words to a prompt comma-separated, skipping any
+// already present (case-insensitive substring match — Civitai triggers are
+// often phrases, so we don't tokenize). Returns the updated prompt or the
+// original if every trigger is already in.
+const appendTriggerWords = (prompt, words) => {
+  const list = (Array.isArray(words) ? words : []).filter((w) => typeof w === 'string' && w.trim());
+  if (!list.length) return prompt;
+  const haystack = String(prompt || '').toLowerCase();
+  const fresh = list.filter((w) => !haystack.includes(w.toLowerCase()));
+  if (!fresh.length) return prompt;
+  const trimmed = String(prompt || '').trim();
+  const sep = !trimmed ? '' : trimmed.endsWith(',') ? ' ' : ', ';
+  return `${trimmed}${sep}${fresh.join(', ')}`;
+};
+
 // User-facing labels for STAGE markers emitted by FLUX.2 (and any future
 // runner). The keys match what `flux2_macos.py` prints; unknown stages fall
 // through to the prettified id so adding a new STAGE in Python doesn't
@@ -253,8 +268,11 @@ export default function ImageGen() {
 
   // ?lora=<filename> preselects a LoRA when the user clicks "Test" on the
   // /media/loras manager page. Defers until availableLoras has loaded so the
-  // metadata (recommendedScale, name) is available; once applied, strip the
-  // param so a refresh doesn't keep re-adding the LoRA.
+  // metadata (recommendedScale, name, triggerWords) is available; once applied,
+  // strip the param so a refresh doesn't keep re-adding the LoRA. Also
+  // auto-appends the LoRA's trigger words to the prompt — the user came from
+  // "Test this" so the intent is "show me what this LoRA does," and most
+  // LoRAs only fire correctly when their trigger words are in the prompt.
   useEffect(() => {
     const fromUrl = searchParams.get('lora');
     if (!fromUrl || !availableLoras.length) return;
@@ -265,6 +283,9 @@ export default function ImageGen() {
       name: match.name,
       scale: typeof match.recommendedScale === 'number' ? match.recommendedScale : 1.0,
     }]);
+    if (match.triggerWords?.length) {
+      setPrompt((p) => appendTriggerWords(p, match.triggerWords));
+    }
     setSearchParams((prev) => { const next = new URLSearchParams(prev); next.delete('lora'); return next; }, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, availableLoras]);
@@ -834,6 +855,17 @@ export default function ImageGen() {
                         </label>
                         {selected && (
                           <div className="flex items-center gap-2">
+                            {(lora.triggerWords || []).length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setPrompt((p) => appendTriggerWords(p, lora.triggerWords))}
+                                disabled={statusLoading}
+                                title={`Append to prompt: ${lora.triggerWords.join(', ')}`}
+                                className="text-[11px] px-2 py-1 rounded bg-port-accent/10 text-port-accent border border-port-accent/30 hover:bg-port-accent/20 disabled:opacity-50 whitespace-nowrap"
+                              >
+                                + trigger
+                              </button>
+                            )}
                             <span className="text-xs text-gray-500" title={`Recommended: ${recommended.toFixed(2)}`}>Scale</span>
                             <input
                               type="number" min={0} max={2} step={0.1}
