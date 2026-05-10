@@ -297,9 +297,17 @@ export async function generateImage({ pythonPath, prompt, negativePrompt = '', m
 
   const proc = spawn(bin, args, { env: { ...process.env, ...(await hfTokenEnv()) }, stdio: ['ignore', 'pipe', 'pipe'] });
   activeProcess = proc;
-  // Without an 'error' handler, a missing/non-executable pythonPath would
-  // crash the server with an unhandled error event.
+  // Spawn ENOENT (missing/non-executable pythonPath) fires BOTH 'error' and
+  // 'close' on Node — without this guard, a typo'd pythonPath emits two
+  // 'failed' events to imageGenEvents and two SSE error frames to the
+  // client. The mediaJobQueue's terminate() is idempotent on the first, but
+  // the duplicate noise still confuses anything else listening. Track
+  // whether we've finalized so the close handler can detect "already
+  // handled" and skip the second emit.
+  let finalized = false;
   proc.on('error', (err) => {
+    if (finalized) return;
+    finalized = true;
     job.status = 'error';
     const reason = `Failed to spawn ${bin}: ${err.message}`;
     console.log(`❌ Image generation spawn error [${jobId.slice(0, 8)}]: ${reason}`);
@@ -429,6 +437,12 @@ export async function generateImage({ pythonPath, prompt, negativePrompt = '', m
   });
 
   proc.on('close', async (code, signal) => {
+    // Guard against the spawn-ENOENT path where 'error' already finalized
+    // the job. Node fires 'error' THEN 'close' (with code -2/null signal)
+    // for a missing binary, and re-running the failure path here would
+    // emit a second 'failed' event + second SSE error frame.
+    if (finalized) return;
+    finalized = true;
     activeProcess = null;
     activeJob = null;
     if (watcher) { try { watcher.close(); } catch { /* ignore */ } }
