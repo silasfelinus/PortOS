@@ -128,6 +128,10 @@ export default function ImageGen() {
   const [initImage, setInitImage] = useState({ source: null, file: null, name: null, previewUrl: null });
   const [initImageStrength, setInitImageStrength] = useState(0.4);
 
+  // Batch size: how many renders this submit kicks off. Only meaningful for
+  // async modes (local + codex); external is synchronous and runs N=1.
+  const [batchCount, setBatchCount] = useState(1);
+
   const [generating, setGenerating] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
   const [errorMeta, setErrorMeta] = useState(null); // { kind, repo } for typed-error guidance
@@ -559,27 +563,30 @@ export default function ImageGen() {
     });
   };
 
-  // Queue a render without taking over the active SSE/preview. Used when the
+  // Queue N renders without taking over the active SSE/preview. Used when the
   // user submits while one is already rendering — they get to keep watching
-  // the in-flight render, and the new payload lands in mediaJobQueue (server
+  // the in-flight render, and the new payloads land in mediaJobQueue (server
   // FIFO). When the active render finishes, refreshGallery() pulls all
   // completed images so the queued ones become visible as they land.
-  const handleQueueAdditional = async () => {
-    if (!prompt.trim()) return;
-    const { data } = await submitGenerationPayload().catch((err) => {
-      toast.error(err.message || 'Failed to queue render');
-      return {};
-    });
-    if (!data) return;
-    setPendingQueued((n) => n + 1);
-    const pos = typeof data.position === 'number' ? data.position : null;
-    toast.success(pos ? `Queued (${pos} ahead in queue)` : 'Queued');
+  // Async-mode only; external is synchronous so submitting N would block N×.
+  const queueAdditional = async (count = 1) => {
+    if (!prompt.trim() || count < 1) return;
+    const submissions = Array.from({ length: count }, () =>
+      submitGenerationPayload().then(({ data }) => data).catch((err) => err),
+    );
+    const results = await Promise.all(submissions);
+    const queued = results.filter((r) => r && !(r instanceof Error)).length;
+    const failed = results.length - queued;
+    if (queued > 0) setPendingQueued((n) => n + queued);
+    if (queued > 0) toast.success(count === 1 ? 'Queued' : `Queued ${queued}`);
+    if (failed > 0) toast.error(`${failed} job(s) failed to queue`);
   };
 
   const handleGenerate = async (e) => {
     e?.preventDefault?.();
     if (!prompt.trim()) return;
-    if (generating) return handleQueueAdditional();
+    const batchN = isAsyncMode ? Math.max(1, batchCount) : 1;
+    if (generating) return queueAdditional(batchN);
     setGenerating(true);
     setStatusMsg('Starting...');
     setError(null);
@@ -593,7 +600,12 @@ export default function ImageGen() {
 
     try {
       if (isAsyncMode) {
+        // Fire batch extras in parallel with the SSE-tracked first job so the
+        // queue positions surface immediately; await both before showing the
+        // success toast so the "+N queued" badge is in sync.
+        const extras = batchN > 1 ? queueAdditional(batchN - 1) : Promise.resolve();
         await startLocalGeneration();
+        await extras;
       } else {
         const composed = composeStyledPrompt(prompt, negativePrompt, stylePreset);
         const payload = {
@@ -966,7 +978,21 @@ export default function ImageGen() {
               className="flex items-center gap-2 px-4 py-2 bg-port-accent hover:bg-port-accent/80 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg min-h-[40px]"
             >
               <Sparkles className="w-4 h-4" /> {generating ? 'Queue' : 'Generate'}
+              {isAsyncMode && batchCount > 1 && <span className="text-xs opacity-80">× {batchCount}</span>}
             </button>
+            {isAsyncMode && (
+              <label className="flex items-center gap-1.5 text-xs text-gray-400" title="Batch size: number of renders to queue per submit">
+                <span className="select-none">×</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={batchCount}
+                  onChange={(e) => setBatchCount(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
+                  className="w-14 bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
+                />
+              </label>
+            )}
             {generating && (
               <button
                 type="button"
