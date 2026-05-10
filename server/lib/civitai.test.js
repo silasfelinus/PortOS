@@ -1,0 +1,224 @@
+import { describe, it, expect } from 'vitest';
+import {
+  applyDownloadToken,
+  baseModelToRunner,
+  buildAuthHeaders,
+  buildSidecar,
+  fetchCivitaiModel,
+  parseCivitaiUrl,
+  pickPrimaryFile,
+  pickPreviewImage,
+  pickVersion,
+  slugifyForFilename,
+} from './civitai.js';
+
+describe('parseCivitaiUrl', () => {
+  it('parses canonical /models/<id> URLs', () => {
+    expect(parseCivitaiUrl('https://civitai.com/models/2600698')).toEqual({ modelId: '2600698', versionId: null });
+  });
+  it('strips slug segments', () => {
+    expect(parseCivitaiUrl('https://civitai.com/models/2600698/realstagram')).toEqual({ modelId: '2600698', versionId: null });
+  });
+  it('honors the civitai.red mirror', () => {
+    expect(parseCivitaiUrl('https://civitai.red/models/2600698/realstagram')).toEqual({ modelId: '2600698', versionId: null });
+  });
+  it('extracts modelVersionId when present', () => {
+    expect(parseCivitaiUrl('https://civitai.com/models/2600698?modelVersionId=999')).toEqual({ modelId: '2600698', versionId: '999' });
+  });
+  it('accepts bare model ids', () => {
+    expect(parseCivitaiUrl('2600698')).toEqual({ modelId: '2600698', versionId: null });
+    expect(parseCivitaiUrl('civitai:2600698')).toEqual({ modelId: '2600698', versionId: null });
+  });
+  it('rejects non-civitai hosts', () => {
+    expect(() => parseCivitaiUrl('https://huggingface.co/models/2600698')).toThrow(/Not a Civitai URL/);
+  });
+  it('rejects garbage', () => {
+    expect(() => parseCivitaiUrl('')).toThrow();
+    expect(() => parseCivitaiUrl('not a url')).toThrow();
+    expect(() => parseCivitaiUrl('https://civitai.com/users/123')).toThrow(/must point at \/models/);
+    expect(() => parseCivitaiUrl('https://civitai.com/models/')).toThrow();
+    expect(() => parseCivitaiUrl('https://civitai.com/models/abc')).toThrow();
+  });
+  it('rejects non-numeric modelVersionId', () => {
+    expect(() => parseCivitaiUrl('https://civitai.com/models/123?modelVersionId=abc')).toThrow(/numeric/);
+  });
+});
+
+describe('baseModelToRunner', () => {
+  it('maps Flux.1 variants to mflux', () => {
+    expect(baseModelToRunner('Flux.1 D')).toBe('mflux');
+    expect(baseModelToRunner('Flux.1 S')).toBe('mflux');
+    expect(baseModelToRunner('flux 1')).toBe('mflux');
+  });
+  it('maps Flux.2 variants to flux2', () => {
+    expect(baseModelToRunner('Flux.2 Klein')).toBe('flux2');
+    expect(baseModelToRunner('flux 2')).toBe('flux2');
+  });
+  it('maps Z-Image variants to z-image', () => {
+    expect(baseModelToRunner('Z-Image Turbo')).toBe('z-image');
+    expect(baseModelToRunner('zimage')).toBe('z-image');
+  });
+  it('returns null for unsupported families', () => {
+    expect(baseModelToRunner('SDXL 1.0')).toBe(null);
+    expect(baseModelToRunner('SD 1.5')).toBe(null);
+    expect(baseModelToRunner('Pony')).toBe(null);
+    expect(baseModelToRunner('')).toBe(null);
+    expect(baseModelToRunner(null)).toBe(null);
+  });
+});
+
+describe('pickVersion', () => {
+  const model = {
+    id: 1,
+    name: 'M',
+    modelVersions: [
+      { id: 100, baseModel: 'Flux.1 D' },
+      { id: 99, baseModel: 'Flux.1 D' },
+    ],
+  };
+  it('returns the first version when no id is given', () => {
+    expect(pickVersion(model, null).id).toBe(100);
+  });
+  it('finds an explicit version id', () => {
+    expect(pickVersion(model, '99').id).toBe(99);
+  });
+  it('throws when the requested version is missing', () => {
+    expect(() => pickVersion(model, '404')).toThrow(/version 404 not found/);
+  });
+  it('throws when the model has no versions', () => {
+    expect(() => pickVersion({ modelVersions: [] }, null)).toThrow(/no published versions/);
+    expect(() => pickVersion({}, null)).toThrow(/no published versions/);
+  });
+});
+
+describe('pickPrimaryFile', () => {
+  it('prefers files marked primary', () => {
+    const v = { files: [
+      { name: 'old.safetensors', primary: false },
+      { name: 'new.safetensors', primary: true },
+    ] };
+    expect(pickPrimaryFile(v).name).toBe('new.safetensors');
+  });
+  it('falls back to first .safetensors when none flagged', () => {
+    const v = { files: [
+      { name: 'cover.png' },
+      { name: 'first.safetensors' },
+      { name: 'second.safetensors' },
+    ] };
+    expect(pickPrimaryFile(v).name).toBe('first.safetensors');
+  });
+  it('throws when no .safetensors is present', () => {
+    expect(() => pickPrimaryFile({ files: [{ name: 'cover.png' }] })).toThrow(/no .safetensors file/);
+    expect(() => pickPrimaryFile({})).toThrow(/no .safetensors file/);
+  });
+});
+
+describe('pickPreviewImage', () => {
+  it('returns the lowest-NSFW image', () => {
+    const v = { images: [
+      { url: 'spicy.jpg', nsfwLevel: 8 },
+      { url: 'mild.jpg', nsfwLevel: 1 },
+      { url: 'mid.jpg', nsfwLevel: 4 },
+    ] };
+    expect(pickPreviewImage(v).url).toBe('mild.jpg');
+  });
+  it('returns null for an empty list', () => {
+    expect(pickPreviewImage({ images: [] })).toBe(null);
+    expect(pickPreviewImage({})).toBe(null);
+  });
+});
+
+describe('buildAuthHeaders / applyDownloadToken', () => {
+  it('returns empty headers for empty key', () => {
+    expect(buildAuthHeaders('')).toEqual({});
+    expect(buildAuthHeaders(null)).toEqual({});
+  });
+  it('builds a Bearer header', () => {
+    expect(buildAuthHeaders('xyz')).toEqual({ Authorization: 'Bearer xyz' });
+    expect(buildAuthHeaders('  k  ')).toEqual({ Authorization: 'Bearer k' });
+  });
+  it('appends ?token=... to download URLs', () => {
+    expect(applyDownloadToken('https://civitai.com/api/download/models/1', 'k')).toBe('https://civitai.com/api/download/models/1?token=k');
+    expect(applyDownloadToken('https://civitai.com/api/download/models/1?foo=bar', 'k')).toBe('https://civitai.com/api/download/models/1?foo=bar&token=k');
+  });
+  it('passes through when no key', () => {
+    expect(applyDownloadToken('https://x', '')).toBe('https://x');
+    expect(applyDownloadToken('https://x', null)).toBe('https://x');
+  });
+});
+
+describe('slugifyForFilename', () => {
+  it('strips path-unsafe chars', () => {
+    expect(slugifyForFilename('Real / Stagram')).toBe('Real-Stagram');
+    expect(slugifyForFilename('Foo!@#Bar')).toBe('Foo-Bar');
+  });
+  it('caps length at 80 chars', () => {
+    const long = 'a'.repeat(200);
+    expect(slugifyForFilename(long).length).toBeLessThanOrEqual(80);
+  });
+  it('falls back to "lora" for empty / pure-junk names', () => {
+    expect(slugifyForFilename('')).toBe('lora');
+    expect(slugifyForFilename('!!!')).toBe('lora');
+    expect(slugifyForFilename(null)).toBe('lora');
+  });
+});
+
+describe('fetchCivitaiModel', () => {
+  it('hits the canonical metadata endpoint', async () => {
+    let calledUrl = null;
+    const fetchImpl = async (url, opts) => {
+      calledUrl = url;
+      expect(opts.headers.Accept).toBe('application/json');
+      expect(opts.headers.Authorization).toBe('Bearer k');
+      return { ok: true, status: 200, json: async () => ({ id: 1, name: 'X' }) };
+    };
+    const out = await fetchCivitaiModel('123', { apiKey: 'k', fetchImpl });
+    expect(calledUrl).toBe('https://civitai.com/api/v1/models/123');
+    expect(out.name).toBe('X');
+  });
+  it('throws CIVITAI_NOT_FOUND on 404', async () => {
+    const fetchImpl = async () => ({ ok: false, status: 404 });
+    await expect(fetchCivitaiModel('123', { fetchImpl })).rejects.toThrow(/not found/);
+  });
+  it('throws CIVITAI_AUTH on 401/403', async () => {
+    const fetchImpl = async () => ({ ok: false, status: 401 });
+    await expect(fetchCivitaiModel('123', { fetchImpl })).rejects.toThrow(/Civitai rejected/);
+  });
+  it('rejects non-numeric modelId without hitting the network', async () => {
+    let called = false;
+    const fetchImpl = async () => { called = true; return { ok: true, status: 200, json: async () => ({}) }; };
+    await expect(fetchCivitaiModel('abc', { fetchImpl })).rejects.toThrow(/Invalid Civitai model id/);
+    expect(called).toBe(false);
+  });
+});
+
+describe('buildSidecar', () => {
+  it('compiles all the pieces into a stable shape', () => {
+    const model = { id: 42, name: 'RealStagram', description: 'photoreal', type: 'LORA', tags: ['photo'], creator: { username: 'someone' }, nsfw: false };
+    const version = { id: 7, baseModel: 'Flux.1 D', trainedWords: ['rstgrm'], settings: { strength: 0.85 }, images: [{ url: 'p.jpg', nsfwLevel: 1 }] };
+    const file = { sizeKB: 102400, hashes: { SHA256: 'abc' }, downloadUrl: 'https://civitai.com/api/download/models/7' };
+    const sc = buildSidecar({ model, version, file, filename: 'lora-realstagram-v7.safetensors' });
+    expect(sc.filename).toBe('lora-realstagram-v7.safetensors');
+    expect(sc.civitai.modelId).toBe(42);
+    expect(sc.civitai.versionId).toBe(7);
+    expect(sc.civitai.url).toBe('https://civitai.com/models/42?modelVersionId=7');
+    expect(sc.runnerFamily).toBe('mflux');
+    expect(sc.triggerWords).toEqual(['rstgrm']);
+    expect(sc.recommendedScale).toBe(0.85);
+    expect(sc.previewImageUrl).toBe('p.jpg');
+    expect(sc.file.sizeKB).toBe(102400);
+    expect(typeof sc.installedAt).toBe('string');
+  });
+  it('falls back when version has no settings/preview/trainedWords', () => {
+    const sc = buildSidecar({
+      model: { id: 1, name: 'Lite' },
+      version: { id: 2, baseModel: 'SDXL 1.0' },
+      file: {},
+      filename: 'lora-lite-v2.safetensors',
+    });
+    expect(sc.runnerFamily).toBe(null);
+    expect(sc.recommendedScale).toBe(1.0);
+    expect(sc.triggerWords).toEqual([]);
+    expect(sc.previewImageUrl).toBe(null);
+  });
+});

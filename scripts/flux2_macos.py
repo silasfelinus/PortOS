@@ -34,6 +34,9 @@ os.environ.setdefault("PYTORCH_MPS_FAST_MATH", "1")
 import torch
 from PIL import Image
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lora_utils import apply_loras  # noqa: E402
+
 
 def pick_device(requested: str) -> str:
     if requested == "auto":
@@ -281,6 +284,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--image-strength", type=float, default=None, help="0..1 i2i denoise strength")
     p.add_argument("--stepwise-image-output-dir", default=None)
     p.add_argument("--device", default="auto", choices=["auto", "mps", "cuda", "cpu"])
+    p.add_argument("--lora-paths", nargs="*", default=[], help="absolute paths to LoRA .safetensors files")
+    p.add_argument("--lora-scales", nargs="*", default=[], help="scale per LoRA, parallel to --lora-paths")
     return p.parse_args()
 
 
@@ -307,6 +312,7 @@ def main() -> None:
         sys.exit(64)
 
     apply_memory_optimizations(pipe)
+    apply_loras(pipe, args.lora_paths or [], args.lora_scales or [])
 
     seed = args.seed if args.seed is not None else int(torch.randint(0, 2**31 - 1, (1,)).item())
     generator = make_generator(device, seed)

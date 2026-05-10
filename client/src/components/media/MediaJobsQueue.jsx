@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
-import { ListOrdered, Image as ImageIcon, Film, X, RefreshCw } from 'lucide-react';
-import toast from '../components/ui/Toast';
-import { listMediaJobs, cancelMediaJob } from '../services/apiMediaJobs.js';
+import { ListOrdered, Image as ImageIcon, Film, X, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
+import toast from '../ui/Toast';
+import { listMediaJobs, cancelMediaJob } from '../../services/apiMediaJobs.js';
 
 const STATUS_BADGE = {
   queued: 'bg-port-border text-port-text-muted',
@@ -11,20 +11,25 @@ const STATUS_BADGE = {
   canceled: 'bg-port-warning/30 text-port-warning',
 };
 
-const KIND_ICON = {
-  video: Film,
-  image: ImageIcon,
-};
+const KIND_ICON = { video: Film, image: ImageIcon };
 
-export default function RenderQueue() {
+// Embeds the live render queue inline on the Image / Video gen pages so the
+// user can watch in-flight jobs (and cancel them) without leaving the page.
+//
+// Props:
+//   kind        — 'image' | 'video' | undefined (no filter; shows both)
+//   recentLimit — how many recent rows to show (default 5)
+//   className   — extra classes on the outer card
+export default function MediaJobsQueue({ kind, recentLimit = 5, className = '' }) {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showRecent, setShowRecent] = useState(false);
 
   const fetchJobs = useCallback(() => {
-    listMediaJobs()
+    listMediaJobs(kind ? { kind } : {})
       .then((data) => { setJobs(data || []); setLoading(false); })
       .catch(() => setLoading(false));
-  }, []);
+  }, [kind]);
 
   useEffect(() => {
     fetchJobs();
@@ -35,14 +40,10 @@ export default function RenderQueue() {
   const handleCancel = async (id) => {
     try {
       await cancelMediaJob(id);
-      // Optimistic update: queued jobs flip straight to 'canceled' (the worker
-      // never picks them up so the next poll will show the same). For running
-      // jobs we leave the server status as-is and track a UI-only
-      // `cancelRequested` flag so the badge stays valid (the server status
-      // model only knows queued|running|completed|failed|canceled — using a
-      // synthetic 'canceling' here would render an unstyled badge until the
-      // next poll). The next /jobs poll resolves the row to 'canceled' once
-      // the worker observes the cancellation.
+      // Optimistic update: queued jobs flip to 'canceled' immediately (the
+      // worker won't pick them up). For running jobs leave the server status
+      // alone and track a UI-only `cancelRequested` flag — the next poll
+      // resolves to 'canceled' once the worker observes it.
       setJobs((prev) => prev.map((j) => {
         if (j.id !== id) return j;
         if (j.status === 'queued') return { ...j, status: 'canceled', cancelRequested: false };
@@ -54,42 +55,49 @@ export default function RenderQueue() {
     }
   };
 
-  if (loading) return <div className="text-port-text-muted text-sm">Loading…</div>;
-
   const live = jobs.filter((j) => j.status === 'queued' || j.status === 'running');
-  const recent = jobs.filter((j) => j.status !== 'queued' && j.status !== 'running').slice(0, 30);
+  const recent = jobs.filter((j) => j.status !== 'queued' && j.status !== 'running').slice(0, recentLimit);
+  const headerLabel = kind ? `${kind === 'image' ? 'Image' : 'Video'} Render Queue` : 'Render Queue';
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <ListOrdered className="w-5 h-5 text-port-accent" />
-          <h2 className="text-lg font-semibold">Render Queue</h2>
+    <div className={`bg-port-card border border-port-border rounded-xl p-4 space-y-2 ${className}`}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <ListOrdered className="w-4 h-4 text-port-accent shrink-0" />
+          <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wide truncate">{headerLabel}</h2>
           <span className="text-xs text-port-text-muted">
-            {live.length} active • {recent.length} recent
+            {live.length} active{recent.length > 0 ? ` • ${recent.length} recent` : ''}
           </span>
         </div>
-        <button onClick={fetchJobs} className="flex items-center gap-1 px-2 py-1 bg-port-card border border-port-border rounded text-xs">
-          <RefreshCw className="w-3 h-3" /> Refresh
+        <button
+          onClick={fetchJobs}
+          className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-port-border/50"
+          title="Refresh"
+        >
+          <RefreshCw className="w-3.5 h-3.5" />
         </button>
       </div>
 
-      {live.length === 0 && (
-        <div className="text-port-text-muted text-sm">No image or video renders in flight.</div>
-      )}
-
-      {live.length > 0 && (
-        <section className="space-y-2">
-          <h3 className="text-xs font-semibold text-port-text-muted uppercase tracking-wide">Active</h3>
+      {loading ? (
+        <div className="text-port-text-muted text-xs">Loading…</div>
+      ) : live.length === 0 && recent.length === 0 ? (
+        <div className="text-port-text-muted text-xs">No {kind || 'media'} renders queued.</div>
+      ) : (
+        <div className="space-y-2">
           {live.map((j) => <JobRow key={j.id} job={j} onCancel={handleCancel} />)}
-        </section>
-      )}
 
-      {recent.length > 0 && (
-        <section className="space-y-2">
-          <h3 className="text-xs font-semibold text-port-text-muted uppercase tracking-wide">Recent (last 24h)</h3>
-          {recent.map((j) => <JobRow key={j.id} job={j} onCancel={handleCancel} />)}
-        </section>
+          {recent.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowRecent((s) => !s)}
+              className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 pt-1"
+            >
+              {showRecent ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+              {showRecent ? 'Hide' : 'Show'} recent ({recent.length})
+            </button>
+          )}
+          {showRecent && recent.map((j) => <JobRow key={j.id} job={j} onCancel={handleCancel} />)}
+        </div>
       )}
     </div>
   );
@@ -99,7 +107,7 @@ function JobRow({ job, onCancel }) {
   const Icon = KIND_ICON[job.kind] || Film;
   const canCancel = job.status === 'queued' || job.status === 'running';
   return (
-    <div className="bg-port-card border border-port-border rounded p-3">
+    <div className="bg-port-bg border border-port-border rounded p-2.5">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 min-w-0">
           <Icon className="w-4 h-4 text-port-accent shrink-0" />

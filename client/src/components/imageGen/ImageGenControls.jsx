@@ -125,7 +125,11 @@ export default function ImageGenControls({
         </div>
       )}
 
-      {!isCodex && isLocal && (
+      {/* Step-wise distilled models (Flux Schnell, FLUX.2 Klein, Z-Image-Turbo)
+          have classifier-free guidance baked in — the diffusers runner ignores
+          any guidance scale we pass and prints a warning. Hide the input for
+          those models so the user doesn't waste a knob-turn on a no-op. */}
+      {!isCodex && isLocal && !currentModel?.cfgDisabled && (
         <div>
           <label className="block text-xs font-medium text-gray-400 mb-1">
             Guidance {currentModel?.guidance != null && `(default: ${currentModel.guidance})`}

@@ -1,0 +1,222 @@
+/**
+ * LoRA service — install/list/delete + sidecar metadata management.
+ *
+ * Files live in `data/loras/<filename>.safetensors`; metadata lives next to
+ * them in `<filename>.metadata.json`. The sidecar is the source of truth for
+ * Civitai-derived info (trigger words, base model, recommended weight,
+ * preview image URL) — the .safetensors file alone has no such surface.
+ *
+ * Install flow: parse Civitai URL → fetch model metadata → pick version +
+ * primary .safetensors → stream-download to disk → write sidecar. The whole
+ * thing is one POST; progress is reported through the existing image-gen
+ * SSE channel (TBD — for v1 the client polls).
+ *
+ * No try/catch — errors bubble. Network errors during download leave a
+ * partial file on disk; the cleanup happens via a finalizer below.
+ */
+
+import { existsSync } from 'fs';
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'fs/promises';
+import { createWriteStream } from 'fs';
+import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
+import { join, basename } from 'path';
+import { ServerError } from '../lib/errorHandler.js';
+import { PATHS } from '../lib/fileUtils.js';
+import {
+  applyDownloadToken,
+  buildAuthHeaders,
+  buildSidecar,
+  fetchCivitaiModel,
+  parseCivitaiUrl,
+  pickPrimaryFile,
+  pickVersion,
+  slugifyForFilename,
+} from '../lib/civitai.js';
+import { getSettings } from './settings.js';
+
+const SIDECAR_SUFFIX = '.metadata.json';
+
+const sidecarPath = (loraFilename) => join(PATHS.loras, `${loraFilename}${SIDECAR_SUFFIX}`);
+
+// Reads the sidecar JSON next to a LoRA file. Returns `null` when the
+// sidecar is absent or unparseable — calling code can fall back to filename
+// inference for legacy LoRAs the user dropped in manually pre-Civitai.
+export const readSidecar = async (filename) => {
+  const raw = await readFile(sidecarPath(filename), 'utf-8').catch(() => null);
+  if (raw == null) return null;
+  // JSON.parse can throw on malformed sidecars — treat them as absent
+  // rather than crashing the list endpoint.
+  let parsed = null;
+  try { parsed = JSON.parse(raw); } catch { return null; }
+  return parsed && typeof parsed === 'object' ? parsed : null;
+};
+
+// Validate a basename so it can't escape PATHS.loras. The `.safetensors`
+// extension check also blocks dotfiles and traversal because `..` doesn't
+// end in `.safetensors`.
+export const assertSafeLoraFilename = (filename) => {
+  if (!filename || typeof filename !== 'string') {
+    throw new ServerError('Filename required', { status: 400, code: 'VALIDATION_ERROR' });
+  }
+  if (!filename.endsWith('.safetensors') || filename.includes('/') || filename.includes('\\') || filename.includes('..')) {
+    throw new ServerError('Invalid LoRA filename', { status: 400, code: 'VALIDATION_ERROR' });
+  }
+};
+
+// LoRAs without sidecars get a minimal "legacy" entry with sensible defaults
+// so the manager UI can still render LoRAs the user dropped in pre-Civitai.
+export const listLoras = async () => {
+  if (!existsSync(PATHS.loras)) return [];
+  const files = await readdir(PATHS.loras);
+  const safetensors = files.filter((f) => f.endsWith('.safetensors'));
+  const out = await Promise.all(safetensors.map(async (filename) => {
+    const fullPath = join(PATHS.loras, filename);
+    const s = await stat(fullPath).catch(() => null);
+    if (!s) return null;
+    const sidecar = await readSidecar(filename);
+    const fallbackName = filename.replace(/^lora-/, '').replace(/\.safetensors$/, '');
+    return {
+      filename,
+      name: sidecar?.name || fallbackName,
+      sizeBytes: s.size,
+      installedAt: sidecar?.installedAt || s.birthtime?.toISOString?.() || null,
+      // sidecar fields surfaced for the picker / manager UI:
+      civitai: sidecar?.civitai || null,
+      runnerFamily: sidecar?.runnerFamily || null,
+      triggerWords: sidecar?.triggerWords || [],
+      recommendedScale: sidecar?.recommendedScale ?? 1.0,
+      previewImageUrl: sidecar?.previewImageUrl || null,
+      description: sidecar?.description || '',
+    };
+  }));
+  return out.filter(Boolean).sort((a, b) => (b.installedAt || '').localeCompare(a.installedAt || ''));
+};
+
+export const getLora = async (filename) => {
+  assertSafeLoraFilename(filename);
+  const fullPath = join(PATHS.loras, filename);
+  if (!existsSync(fullPath)) {
+    throw new ServerError(`LoRA not found: ${filename}`, { status: 404, code: 'NOT_FOUND' });
+  }
+  const list = await listLoras();
+  return list.find((l) => l.filename === filename) || null;
+};
+
+export const deleteLora = async (filename) => {
+  assertSafeLoraFilename(filename);
+  const filePath = join(PATHS.loras, filename);
+  if (!existsSync(filePath)) {
+    throw new ServerError(`LoRA not found: ${filename}`, { status: 404, code: 'NOT_FOUND' });
+  }
+  await rm(filePath, { force: true });
+  await rm(sidecarPath(filename), { force: true });
+  console.log(`🗑️ Deleted LoRA: ${filename}`);
+  return { ok: true, filename };
+};
+
+// Patch the sidecar with user-editable fields (name, recommendedScale, notes).
+// Civitai-derived fields are passed through but the route layer scopes the
+// patch so callers can't trample those.
+export const patchLoraSidecar = async (filename, patch) => {
+  assertSafeLoraFilename(filename);
+  if (!existsSync(join(PATHS.loras, filename))) {
+    throw new ServerError(`LoRA not found: ${filename}`, { status: 404, code: 'NOT_FOUND' });
+  }
+  const current = (await readSidecar(filename)) || { filename };
+  const next = { ...current, ...patch, filename };
+  await writeFile(sidecarPath(filename), JSON.stringify(next, null, 2) + '\n');
+  return next;
+};
+
+// Resolve the active Civitai API key — either from settings (`civitai.apiKey`)
+// or the CIVITAI_API_KEY env var. Settings wins so a user can override the
+// env without restarting. Returns empty string for "no key", which the
+// downstream helpers treat as anonymous.
+export const resolveCivitaiKey = async () => {
+  const env = (process.env.CIVITAI_API_KEY || '').trim();
+  // getSettings reads the JSON every call; cheap and avoids stale-cache bugs.
+  const s = await getSettings();
+  const fromSettings = (s?.civitai?.apiKey || '').trim();
+  return fromSettings || env || '';
+};
+
+// Stream-download a URL to a temp file in PATHS.loras then rename into place.
+// The temp suffix prevents the listLoras endpoint from picking up a
+// half-downloaded file. fetchImpl is injectable for tests.
+const downloadToFile = async (url, destPath, { fetchImpl = fetch, headers = {} } = {}) => {
+  const tmpPath = `${destPath}.partial`;
+  const res = await fetchImpl(url, { headers, redirect: 'follow' });
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      throw new ServerError(
+        `Civitai download rejected (${res.status}) — this LoRA may require an API key. Set CIVITAI_API_KEY in Settings and retry.`,
+        { status: res.status, code: 'CIVITAI_AUTH' },
+      );
+    }
+    throw new ServerError(`Civitai download failed: ${res.status} ${res.statusText}`, { status: 502, code: 'CIVITAI_DOWNLOAD_FAILED' });
+  }
+  if (!res.body) {
+    throw new ServerError('Civitai download returned no body', { status: 502, code: 'CIVITAI_DOWNLOAD_FAILED' });
+  }
+  // Node 18+ fetch returns a web ReadableStream; pipeline accepts it directly
+  // when wrapped in Readable.fromWeb (also handles backpressure correctly).
+  // On stream failure (network drop, disk full) the .partial would otherwise
+  // accumulate in PATHS.loras across retries.
+  const writer = createWriteStream(tmpPath);
+  await pipeline(Readable.fromWeb(res.body), writer).catch(async (err) => {
+    await rm(tmpPath, { force: true }).catch(() => {});
+    throw err;
+  });
+  await rename(tmpPath, destPath);
+};
+
+// Install a LoRA from a Civitai URL. Returns the new sidecar JSON so the
+// client can render it immediately without a second list round-trip.
+export const installFromCivitai = async (input, { fetchImpl = fetch } = {}) => {
+  const { modelId, versionId } = parseCivitaiUrl(input?.url);
+  const apiKey = (typeof input?.apiKey === 'string' && input.apiKey.trim()) || (await resolveCivitaiKey());
+  const model = await fetchCivitaiModel(modelId, { apiKey, fetchImpl });
+  const version = pickVersion(model, versionId);
+  const file = pickPrimaryFile(version);
+  if (!file?.downloadUrl) {
+    throw new ServerError(
+      `Civitai version ${version?.id} has no downloadUrl — try selecting a different version`,
+      { status: 422, code: 'CIVITAI_NO_DOWNLOAD' },
+    );
+  }
+  if (model?.type && model.type !== 'LORA' && model.type !== 'LoCon' && model.type !== 'LyCORIS') {
+    throw new ServerError(
+      `Civitai model "${model.name}" is type "${model.type}", not a LoRA — refusing to install`,
+      { status: 400, code: 'CIVITAI_NOT_A_LORA' },
+    );
+  }
+
+  // Build a stable filename: `lora-<slug>-<versionId>.safetensors`. The
+  // versionId suffix prevents collisions if a user installs two versions of
+  // the same model. The `lora-` prefix keeps it distinguishable from base
+  // model weights if they ever coexist in the same dir.
+  const slug = slugifyForFilename(model.name || file.name?.replace(/\.safetensors$/i, ''));
+  const filename = `lora-${slug}-v${version.id}.safetensors`;
+  const destPath = join(PATHS.loras, filename);
+  if (existsSync(destPath)) {
+    throw new ServerError(
+      `Already installed: ${filename}. Delete it first or pick a different version.`,
+      { status: 409, code: 'CIVITAI_ALREADY_INSTALLED' },
+    );
+  }
+
+  await mkdir(PATHS.loras, { recursive: true });
+
+  console.log(`📥 Installing Civitai LoRA: ${model.name} v${version.id} → ${filename} (${file.sizeKB ? Math.round(file.sizeKB / 1024) + ' MB' : 'size unknown'})`);
+  const tokenized = applyDownloadToken(file.downloadUrl, apiKey);
+  await downloadToFile(tokenized, destPath, {
+    fetchImpl,
+    headers: { 'User-Agent': 'PortOS/civitai-installer', ...buildAuthHeaders(apiKey) },
+  });
+
+  const sidecar = buildSidecar({ model, version, file, filename });
+  await writeFile(sidecarPath(filename), JSON.stringify(sidecar, null, 2) + '\n');
+  console.log(`✅ Installed Civitai LoRA: ${filename}`);
+  return sidecar;
+};

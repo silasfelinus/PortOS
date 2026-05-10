@@ -27,7 +27,7 @@ import { hfTokenEnv } from '../../lib/hfToken.js';
 
 const IS_WIN = process.platform === 'win32';
 
-import { getImageModels, isFlux2 } from '../../lib/mediaModels.js';
+import { getImageModels, isFlux2, isZImage } from '../../lib/mediaModels.js';
 
 export const IMAGE_MODELS = Object.fromEntries(getImageModels().map((m) => [m.id, m]));
 
@@ -67,6 +67,44 @@ export const cancel = () => {
 
 export const buildArgs = ({ pythonPath, model, prompt, negativePrompt, width, height, steps, guidance, seed, quantize, outputPath, loraPaths, loraScales, stepwiseDir, initImagePath, initImageStrength }) => {
   const modelId = model?.id;
+  if (isZImage(model)) {
+    if (!model.repo) {
+      throw new ServerError(
+        `Z-Image model "${modelId}" is missing the 'repo' field in data/media-models.json`,
+        { status: 500, code: 'IMAGE_GEN_Z_IMAGE_MISCONFIGURED' },
+      );
+    }
+    // Z-Image reuses the FLUX.2 venv — same diffusers/torch stack, no extra
+    // setup step. Same not-installed error code as flux2 so the UI's existing
+    // "run setup" CTA fires for both runners.
+    const zImagePython = resolveFlux2Python();
+    if (!zImagePython) {
+      throw new ServerError(
+        `Image-gen torch venv not found. Run \`INSTALL_FLUX2=1 bash scripts/setup-image-video.sh\` to bootstrap it (expected at ${FLUX2_VENV_DEFAULT}). Z-Image and FLUX.2 share this venv.`,
+        { status: 400, code: 'IMAGE_GEN_FLUX2_NOT_INSTALLED' },
+      );
+    }
+    const scriptPath = join(PATHS.root, 'scripts', 'z_image_turbo.py');
+    const args = [
+      scriptPath,
+      '--model', modelId,
+      '--repo', model.repo,
+      '--prompt', prompt,
+      '--height', String(height),
+      '--width', String(width),
+      '--steps', String(steps),
+      '--guidance', String(guidance ?? 1.0),
+      '--seed', String(seed),
+      '--output', outputPath,
+    ];
+    if (negativePrompt) args.push('--negative-prompt', negativePrompt);
+    if (initImagePath) args.push('--image-path', initImagePath);
+    if (initImagePath && initImageStrength != null) args.push('--image-strength', String(initImageStrength));
+    if (stepwiseDir) args.push('--stepwise-image-output-dir', stepwiseDir);
+    if (loraPaths?.length) args.push('--lora-paths', ...loraPaths);
+    if (loraScales?.length) args.push('--lora-scales', ...loraScales.map(String));
+    return { bin: zImagePython, args };
+  }
   if (isFlux2(model)) {
     if (!model.repo) {
       throw new ServerError(
@@ -124,6 +162,8 @@ export const buildArgs = ({ pythonPath, model, prompt, negativePrompt, width, he
     if (initImagePath) args.push('--image-path', initImagePath);
     if (initImagePath && initImageStrength != null) args.push('--image-strength', String(initImageStrength));
     if (stepwiseDir) args.push('--stepwise-image-output-dir', stepwiseDir);
+    if (loraPaths?.length) args.push('--lora-paths', ...loraPaths);
+    if (loraScales?.length) args.push('--lora-scales', ...loraScales.map(String));
     return { bin: flux2Python, args };
   }
 
@@ -172,18 +212,18 @@ export async function generateImage({ pythonPath, prompt, negativePrompt = '', m
   // entries broken on the OTHER platform (e.g. 'windows' on a macOS box).
   const model = getImageModels().find((m) => m.id === modelId);
   if (!model) throw new ServerError(`Unknown or unsupported model: ${modelId}`, { status: 400, code: 'VALIDATION_ERROR' });
-  if (!isFlux2(model) && !pythonPath) {
+  // Both flux2 and z-image runners resolve their own Python via the FLUX.2
+  // venv — only the legacy mflux/imagine_win path needs the user-configured
+  // Settings > Image Gen pythonPath.
+  if (!isFlux2(model) && !isZImage(model) && !pythonPath) {
     throw new ServerError('Python path not configured — set it in Settings > Image Gen', { status: 400, code: 'IMAGE_GEN_NOT_CONFIGURED' });
   }
-  // FLUX.2 runner doesn't apply LoRAs yet — reject up-front so the user
-  // doesn't end up with a metadata sidecar that records LoRAs the renderer
-  // silently dropped.
-  if (isFlux2(model) && (loraFilenames.length > 0 || loraPaths.length > 0)) {
-    throw new ServerError(
-      'LoRAs are not supported for FLUX.2 models yet — clear the LoRA selection or pick a Flux 1 model.',
-      { status: 400, code: 'IMAGE_GEN_FLUX2_LORA_UNSUPPORTED' },
-    );
-  }
+  // FLUX.2 and Z-Image runners now load LoRAs via diffusers'
+  // pipe.load_lora_weights — but only LoRAs trained against the matching
+  // base model will produce sensible output. The LoRA picker UI uses the
+  // sidecar's `runnerFamily` field to filter; we don't enforce here so a
+  // user can deliberately experiment with off-family weights and see what
+  // happens (the runner will surface a shape-mismatch error from diffusers).
 
   await ensureDir(PATHS.images);
   await ensureDir(PATHS.loras);
@@ -193,7 +233,13 @@ export async function generateImage({ pythonPath, prompt, negativePrompt = '', m
   const outputPath = join(PATHS.images, filename);
   const actualSeed = seed != null && seed !== '' ? Number(seed) : Math.floor(Math.random() * 2147483647);
   const actualSteps = steps ? Number(steps) : model.steps;
-  const actualGuidance = guidance != null && guidance !== '' ? Number(guidance) : model.guidance;
+  // Step-wise distilled models (Schnell / FLUX.2 Klein / Z-Image-Turbo) ignore
+  // any guidance scale > 1.0 internally; passing a real value just produces a
+  // "Guidance scale X is ignored for step-wise distilled models." warning on
+  // every render. Pin to 1.0 for those so the runner's diffusers call stays
+  // quiet and the sidecar metadata reflects what the model actually used.
+  const requestedGuidance = guidance != null && guidance !== '' ? Number(guidance) : model.guidance;
+  const actualGuidance = model.cfgDisabled ? 1.0 : requestedGuidance;
   // The new client-side surface sends `loraFilenames` (basenames only); the
   // server resolves them against PATHS.loras. `loraPaths` is kept as a
   // back-compat input for old gallery sidecars that stored absolute paths

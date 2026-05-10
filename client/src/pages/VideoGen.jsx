@@ -40,6 +40,7 @@ import {
 import toast from '../components/ui/Toast';
 import BrailleSpinner from '../components/BrailleSpinner';
 import BatchQueuePanel from '../components/media/BatchQueuePanel';
+import MediaJobsQueue from '../components/media/MediaJobsQueue';
 import {
   getVideoGenStatus, generateVideo, cancelVideoGen,
   listVideoHistory, deleteVideoHistoryItem, setVideoHidden, extractLastFrame,
@@ -1262,6 +1263,8 @@ export default function VideoGen() {
           </>
         )}
       />
+
+      <MediaJobsQueue kind="video" compact />
 
       {visibleHistory.length > 0 && (
         <div className="bg-port-card border border-port-border rounded-xl p-4 space-y-2">
