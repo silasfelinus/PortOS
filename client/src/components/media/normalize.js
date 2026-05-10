@@ -48,6 +48,8 @@ export function normalizeImage(i) {
     loraNames,
     createdAt: i.createdAt,
     hidden: !!i.hidden,
+    extractedFromVideoId: i.extractedFromVideoId || null,
+    extractedFromVideoFilename: i.extractedFromVideoFilename || null,
     raw: i,
   };
 }

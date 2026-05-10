@@ -50,12 +50,13 @@ export default function MediaCard({
             {selectionLabel}
           </div>
         )}
-        {item.stitchedFrom && (
-          <span className="absolute top-1.5 right-1.5 text-[9px] px-1 py-0.5 bg-port-success/80 text-white rounded">stitched</span>
-        )}
-        {item.upscaledFrom && (
-          <span className="absolute top-1.5 right-1.5 text-[9px] px-1 py-0.5 bg-port-accent/80 text-white rounded">2×</span>
-        )}
+        {[
+          item.stitchedFrom && { label: 'stitched', cls: 'bg-port-success/80 text-white' },
+          item.upscaledFrom && { label: '2×', cls: 'bg-port-accent/80 text-white' },
+          item.extractedFromVideoId && { label: 'frame', cls: 'bg-port-warning/80 text-black', title: 'Extracted from video' },
+        ].filter(Boolean).map((b) => (
+          <span key={b.label} title={b.title} className={`absolute top-1.5 right-1.5 text-[9px] px-1 py-0.5 rounded ${b.cls}`}>{b.label}</span>
+        ))}
       </button>
       <div className="p-2 space-y-1.5">
         <p className="text-[11px] text-gray-300 line-clamp-2" title={prompt}>{prompt}</p>

@@ -6,7 +6,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Combine, Image as ImageIcon, Film } from 'lucide-react';
+import { Combine, Image as ImageIcon, Film, Search, X } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import MediaCard from '../components/media/MediaCard';
 import MediaLightbox from '../components/media/MediaLightbox';
@@ -28,6 +28,7 @@ export default function MediaHistory() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
+  const [query, setQuery] = useState('');
   const [stitchMode, setStitchMode] = useState(false);
   const [selected, setSelected] = useState([]); // video ids
   const [stitching, setStitching] = useState(false);
@@ -49,15 +50,47 @@ export default function MediaHistory() {
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  const filtered = useMemo(
-    () => filter === 'all' ? items : items.filter(i => i.kind === filter),
-    [items, filter]
+  // Precompute the searchable haystack per item once per items list — keystrokes
+  // then only re-run token .includes() against a cached string instead of
+  // rebuilding the array + join + lowercase per item per keystroke.
+  const haystacks = useMemo(() => items.map((item) => [
+    item.prompt,
+    item.negativePrompt,
+    item.modelId,
+    item.filename,
+    item.kind,
+    item.seed != null ? `seed ${item.seed}` : '',
+    item.width && item.height ? `${item.width}x${item.height}` : '',
+    ...(Array.isArray(item.loraNames) ? item.loraNames : []),
+    item.extractedFromVideoId ? 'extracted frame' : '',
+    item.stitchedFrom ? 'stitched' : '',
+    item.upscaledFrom ? 'upscaled 2x' : '',
+  ].filter(Boolean).join(' ').toLowerCase()), [items]);
+
+  // AND semantics across whitespace tokens — "sunset flux2 1024" matches items
+  // whose haystack contains all three substrings, in any order.
+  const tokens = useMemo(
+    () => query.trim().toLowerCase().split(/\s+/).filter(Boolean),
+    [query]
   );
-  const counts = useMemo(() => ({
-    all: items.length,
-    image: items.filter(i => i.kind === 'image').length,
-    video: items.filter(i => i.kind === 'video').length,
-  }), [items]);
+
+  const searched = useMemo(
+    () => tokens.length === 0 ? items : items.filter((_, idx) => tokens.every((t) => haystacks[idx].includes(t))),
+    [items, haystacks, tokens]
+  );
+  const filtered = useMemo(
+    () => filter === 'all' ? searched : searched.filter(i => i.kind === filter),
+    [searched, filter]
+  );
+  const counts = useMemo(() => {
+    const c = { all: 0, image: 0, video: 0 };
+    for (const i of searched) {
+      c.all++;
+      if (i.kind === 'image') c.image++;
+      else if (i.kind === 'video') c.video++;
+    }
+    return c;
+  }, [searched]);
 
   const toggleSelect = (videoId) => {
     setSelected((s) => s.includes(videoId) ? s.filter((x) => x !== videoId) : [...s, videoId]);
@@ -143,6 +176,28 @@ export default function MediaHistory() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+          <div className="relative flex-1 max-w-md">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500 pointer-events-none" />
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search prompt, model, seed, lora…"
+              className="w-full pl-7 pr-7 py-1 bg-port-bg border border-port-border rounded text-xs text-white placeholder-gray-500 focus:outline-none focus:border-port-accent"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery('')}
+                className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 text-gray-500 hover:text-white"
+                title="Clear search"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
         <div className="flex items-center gap-1 text-xs">
           {FILTERS.map((f) => (
             <button
@@ -194,11 +249,13 @@ export default function MediaHistory() {
         <div className="text-gray-500 text-sm">Loading…</div>
       ) : filtered.length === 0 ? (
         <div className="bg-port-card border border-port-border rounded-xl p-8 text-center text-gray-500 text-sm">
-          {filter === 'video'
-            ? <>No videos yet. <Link to="/media/video" className="text-port-accent hover:underline">Generate one →</Link></>
-            : filter === 'image'
-              ? <>No images yet. <Link to="/media/image" className="text-port-accent hover:underline">Generate one →</Link></>
-              : <>Nothing here yet. Try <Link to="/media/image" className="text-port-accent hover:underline">Image</Link> or <Link to="/media/video" className="text-port-accent hover:underline">Video</Link>.</>}
+          {query.trim()
+            ? <>No matches for <span className="text-gray-300">"{query}"</span>. <button type="button" onClick={() => setQuery('')} className="text-port-accent hover:underline">Clear search</button></>
+            : filter === 'video'
+              ? <>No videos yet. <Link to="/media/video" className="text-port-accent hover:underline">Generate one →</Link></>
+              : filter === 'image'
+                ? <>No images yet. <Link to="/media/image" className="text-port-accent hover:underline">Generate one →</Link></>
+                : <>Nothing here yet. Try <Link to="/media/image" className="text-port-accent hover:underline">Image</Link> or <Link to="/media/video" className="text-port-accent hover:underline">Video</Link>.</>}
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
