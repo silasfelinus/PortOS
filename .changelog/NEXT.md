@@ -4,6 +4,7 @@
 
 - Codex image gen: hi-res resolution presets (1024×1536, 1536×1024, 1536×1536) — gpt-image-1's native hi-res tier. Picking any ≥1536 size automatically appends a `(high quality)` hint to the codex prompt so the model renders at full fidelity instead of its 1024 default.
 - Image Gen batch mode: a `× N` count input next to the Generate button (async modes only — local + codex) queues N renders of the same prompt+resolution in a single submit. The first job streams its progress live; the remaining N-1 land in the server queue and surface as `+N queued`. Each job gets a fresh random seed by default so the batch produces variations, not duplicates.
+- Media Lightbox full-screen mode (`F` key or top-right toggle): drops the modal's rounding and padding and lets the image fill the viewport. Swipe left/right (or arrow keys) navigates between gallery items; tap reveals the settings as a slide-in drawer. Layered Escape closes drawer → exits full-screen → closes the lightbox. The Seed row in the settings pane is now copyable for easy reuse in a remix.
 
 ## Changed
 
