@@ -18,9 +18,10 @@
 import { existsSync } from 'fs';
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'fs/promises';
 import { createWriteStream } from 'fs';
+import { randomBytes } from 'crypto';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { ServerError } from '../lib/errorHandler.js';
 import { PATHS } from '../lib/fileUtils.js';
 import {
@@ -59,14 +60,18 @@ export const readSidecar = async (filename) => {
   return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
 };
 
-// Validate a basename so it can't escape PATHS.loras. The `.safetensors`
-// extension check also blocks dotfiles and traversal because `..` doesn't
-// end in `.safetensors`.
+// Validate a basename so it can't escape PATHS.loras. We require the input
+// equals its own basename (no path separators, no parent traversal) and ends
+// in `.safetensors`. Substring `..` is allowed because slugifyForFilename can
+// produce names like `foo..bar` from non-ASCII input.
 export const assertSafeLoraFilename = (filename) => {
   if (!filename || typeof filename !== 'string') {
     throw new ServerError('Filename required', { status: 400, code: 'VALIDATION_ERROR' });
   }
-  if (!filename.endsWith('.safetensors') || filename.includes('/') || filename.includes('\\') || filename.includes('..')) {
+  const isExactTraversal = filename === '.' || filename === '..';
+  const hasSeparator = filename.includes('/') || filename.includes('\\');
+  const isPureBasename = basename(filename) === filename;
+  if (!filename.endsWith('.safetensors') || hasSeparator || isExactTraversal || !isPureBasename) {
     throw new ServerError('Invalid LoRA filename', { status: 400, code: 'VALIDATION_ERROR' });
   }
 };
@@ -80,7 +85,10 @@ export const listLoras = async () => {
   const out = await Promise.all(safetensors.map(async (filename) => {
     const fullPath = join(PATHS.loras, filename);
     const s = await stat(fullPath).catch(() => null);
-    if (!s) return null;
+    // Skip directories or other non-regular entries that happen to end in
+    // `.safetensors` — otherwise listLoras would surface them and deleteLora
+    // would later fail with EISDIR.
+    if (!s || !s.isFile()) return null;
     const sidecar = await readSidecar(filename);
     const fallbackName = filename.replace(/^lora-/, '').replace(/\.safetensors$/, '');
     return {
@@ -92,7 +100,9 @@ export const listLoras = async () => {
       civitai: sidecar?.civitai || null,
       runnerFamily: sidecar?.runnerFamily || null,
       triggerWords: sidecar?.triggerWords || [],
-      recommendedScale: sidecar?.recommendedScale ?? 1.0,
+      // Coerce non-finite values (NaN, Infinity, missing/malformed sidecar
+      // fields) to the default — `?? 1.0` alone wouldn't catch NaN.
+      recommendedScale: Number.isFinite(sidecar?.recommendedScale) ? sidecar.recommendedScale : 1.0,
       previewImageUrl: sidecar?.previewImageUrl || null,
       description: sidecar?.description || '',
     };
@@ -150,9 +160,12 @@ export const resolveCivitaiKey = async () => {
 
 // Stream-download a URL to a temp file in PATHS.loras then rename into place.
 // The temp suffix prevents the listLoras endpoint from picking up a
-// half-downloaded file. fetchImpl is injectable for tests.
+// half-downloaded file. The random suffix avoids clobbering a leftover
+// `.partial` from a previous crashed install (and prevents two concurrent
+// installs of the same target from racing on the same temp path).
+// fetchImpl is injectable for tests.
 const downloadToFile = async (url, destPath, { fetchImpl = fetch, headers = {} } = {}) => {
-  const tmpPath = `${destPath}.partial`;
+  const tmpPath = `${destPath}.${randomBytes(6).toString('hex')}.partial`;
   const res = await fetchImpl(url, { headers, redirect: 'follow' });
   if (!res.ok) {
     if (res.status === 401 || res.status === 403) {
