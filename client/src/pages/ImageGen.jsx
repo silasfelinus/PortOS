@@ -44,7 +44,9 @@ const DEFAULT_NEGATIVE = 'blurry, low quality, distorted, deformed, ugly, waterm
 // often phrases, so we don't tokenize). Returns the updated prompt or the
 // original if every trigger is already in.
 const appendTriggerWords = (prompt, words) => {
-  const list = (Array.isArray(words) ? words : []).filter((w) => typeof w === 'string' && w.trim());
+  const list = (Array.isArray(words) ? words : [])
+    .filter((w) => typeof w === 'string' && w.trim())
+    .map((w) => w.trim());
   if (!list.length) return prompt;
   const haystack = String(prompt || '').toLowerCase();
   const fresh = list.filter((w) => !haystack.includes(w.toLowerCase()));
@@ -1053,7 +1055,7 @@ export default function ImageGen() {
         </div>
       </form>
 
-      <MediaJobsQueue kind="image" compact />
+      <MediaJobsQueue kind="image" />
 
       {visibleGallery.length > 0 && (
         <div className="bg-port-card border border-port-border rounded-xl p-4 space-y-2">

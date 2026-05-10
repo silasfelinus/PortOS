@@ -54,6 +54,8 @@ vi.mock('../services/mediaCollections.js', () => ({
 vi.mock('../lib/mediaModels.js', () => ({
   getImageModels: () => [{ id: 'dev', label: 'mflux dev' }],
   isFlux2: () => false,
+  isZImage: () => false,
+  isErnie: () => false,
 }));
 
 const worldBuilderRoutes = (await import('./worldBuilder.js')).default;

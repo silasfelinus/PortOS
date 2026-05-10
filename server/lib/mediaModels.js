@@ -266,9 +266,6 @@ const appendNewlyShippedEntries = (userList, defaultList, shippedIds) => {
   }
   return { entries: result, newlyShipped };
 };
-// Back-compat alias — kept so any external imports of the old name keep working.
-const appendNewlyShippedVideoEntries = appendNewlyShippedEntries;
-
 // Existing installs predate the `runtime` field on video entries — fill it
 // with 'mlx_video' (the legacy default) for known-legacy ids so the
 // dispatch in videoGen/local.js routes them through `python -m

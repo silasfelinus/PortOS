@@ -447,9 +447,9 @@ async function runJob(job) {
   let watchdogTimer;
   function terminate(state, apply) {
     if (job.status !== 'running') return;
-    // setInterval now (was setTimeout) — clearInterval is the right call.
-    // clearTimeout would silently no-op on an interval handle and the
-    // watchdog would keep ticking after the job terminated.
+    // setInterval now (was setTimeout) — using clearInterval to match the new
+    // API. (Node accepts either clearTimeout or clearInterval on the same
+    // Timeout handle, so this is purely stylistic.)
     clearInterval(watchdogTimer);
     emitter.off?.('activity', onActivity);
     emitter.off?.('progress', onActivity);

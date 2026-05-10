@@ -1264,7 +1264,7 @@ export default function VideoGen() {
         )}
       />
 
-      <MediaJobsQueue kind="video" compact />
+      <MediaJobsQueue kind="video" />
 
       {visibleHistory.length > 0 && (
         <div className="bg-port-card border border-port-border rounded-xl p-4 space-y-2">

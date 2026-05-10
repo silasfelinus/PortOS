@@ -148,7 +148,12 @@ const getCurated = async ({ fetchImpl, force = false }) => {
   return items;
 };
 
-const fetchSuggestionsFor = async (runnerFamily, { fetchImpl, limit, force = false } = {}) => {
+// Always fetch at MAX_SUGGESTIONS so any sub-slice request is served from
+// the same cache entry without a re-fetch. The caller slices to its own
+// `limit` after this returns.
+const MAX_SUGGESTIONS = 24;
+
+const fetchSuggestionsFor = async (runnerFamily, { fetchImpl, force = false } = {}) => {
   const cached = cache.get(runnerFamily);
   if (!force && cached && now() - cached.fetchedAt < TTL_MS) return cached.items;
   const apiKey = await resolveCivitaiKey();
@@ -156,7 +161,7 @@ const fetchSuggestionsFor = async (runnerFamily, { fetchImpl, limit, force = fal
   // configured key gets cleaner ranking and avoids anonymous rate limits.
   const items = await searchCivitaiLoras({
     runnerFamily,
-    limit,
+    limit: MAX_SUGGESTIONS,
     apiKey,
     fetchImpl,
   });
@@ -174,12 +179,12 @@ export const getSuggestions = async ({ fetchImpl, limit = 4, force = false } = {
   const [curated, runnerEntries] = await Promise.all([
     getCurated({ fetchImpl, force }),
     Promise.all(RUNNER_FAMILIES.map(async (family) => {
-      const cards = await fetchSuggestionsFor(family, { fetchImpl, limit, force })
+      const cards = await fetchSuggestionsFor(family, { fetchImpl, force })
         .catch((err) => {
           console.log(`⚠️ Civitai suggestion fetch failed for ${family}: ${err?.message || err}`);
           return cache.get(family)?.items || [];
         });
-      return [family, cards];
+      return [family, cards.slice(0, limit)];
     })),
   ]);
   return {

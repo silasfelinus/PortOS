@@ -85,11 +85,8 @@ export default function Loras() {
     await installLoraFromCivitai({ url, silent: true })
       .then((sidecar) => {
         toast.success(`Installed ${sidecar.name}`);
-        setLoras((prev) => [
-          { ...sidecar, sizeBytes: sidecar.file?.sizeKB ? sidecar.file.sizeKB * 1024 : null },
-          ...prev.filter((l) => l.filename !== sidecar.filename),
-        ]);
         setInstallUrl('');
+        refresh();
       })
       .catch((err) => {
         // Early-access content is gated by Civitai membership, not by API
@@ -320,7 +317,7 @@ function SuggestionCard({ card, installedFilenames, installingSuggestionKey, onI
       ? card.runnerFamilies
       : (card.runnerFamily ? [card.runnerFamily] : []));
   const isInstalled = (versionId) => versionId != null
-    && [...installedFilenames].some((f) => f.includes(`-v${versionId}.safetensors`));
+    && [...installedFilenames].some((f) => f.endsWith(`-v${versionId}.safetensors`));
   const isInstalling = (versionId) => installingSuggestionKey === `${card.modelId}-${versionId}`;
   return (
     <div className="bg-port-card border border-port-border rounded-lg overflow-hidden flex flex-col">

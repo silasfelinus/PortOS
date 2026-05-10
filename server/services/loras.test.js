@@ -69,6 +69,14 @@ describe('listLoras', () => {
     expect(legacy.recommendedScale).toBe(1.0);
   });
 
+  it('returns [] when PATHS.loras is a file, not a directory', async () => {
+    const fs = await import('fs/promises');
+    // Write a plain file at the loras path — stat will show isDirectory()=false.
+    await fs.mkdir(tmpRoot, { recursive: true });
+    await fs.writeFile(tmpLoras, 'not-a-directory');
+    expect(await lorasService.listLoras()).toEqual([]);
+  });
+
   it('survives an unparseable sidecar', async () => {
     const fs = await import('fs/promises');
     await fs.mkdir(tmpLoras, { recursive: true });
@@ -137,6 +145,36 @@ describe('deleteLora', () => {
   });
   it('404s for missing files', async () => {
     await expect(lorasService.deleteLora('lora-missing.safetensors')).rejects.toThrow(/not found/);
+  });
+  it('400s with INVALID_LORA_FILE when path is a directory, not a regular file', async () => {
+    const fs = await import('fs/promises');
+    // Create a directory whose name ends in .safetensors — exotic but possible.
+    await fs.mkdir(join(tmpLoras, 'lora-dir.safetensors'), { recursive: true });
+    const err = await lorasService.deleteLora('lora-dir.safetensors').catch((e) => e);
+    expect(err.status).toBe(400);
+    expect(err.code).toBe('INVALID_LORA_FILE');
+  });
+});
+
+describe('getLora', () => {
+  it('404s when file does not exist', async () => {
+    await expect(lorasService.getLora('lora-missing.safetensors')).rejects.toThrow(/not found/i);
+  });
+  it('404s when file exists but is not a regular .safetensors file (e.g. directory)', async () => {
+    const fs = await import('fs/promises');
+    // listLoras filters out non-file entries, so getLora must surface a 404
+    // rather than returning null.
+    await fs.mkdir(join(tmpLoras, 'lora-dir.safetensors'), { recursive: true });
+    const err = await lorasService.getLora('lora-dir.safetensors').catch((e) => e);
+    expect(err.status).toBe(404);
+    expect(err.code).toBe('NOT_FOUND');
+  });
+  it('returns a full lora entry when the file is valid', async () => {
+    const fs = await import('fs/promises');
+    await fs.mkdir(tmpLoras, { recursive: true });
+    await fs.writeFile(join(tmpLoras, 'lora-x.safetensors'), 'w');
+    const lora = await lorasService.getLora('lora-x.safetensors');
+    expect(lora.filename).toBe('lora-x.safetensors');
   });
 });
 
@@ -245,13 +283,59 @@ describe('installFromCivitai', () => {
     ).rejects.toThrow(/Already installed/);
   });
 
-  it('surfaces a friendly auth error when download is gated', async () => {
+  it('surfaces a friendly auth error when download is gated (no key)', async () => {
     const fetchImpl = async (url) => {
       if (url.startsWith('https://civitai.com/api/v1/models/')) return { ok: true, status: 200, json: async () => FAKE_MODEL };
       return { ok: false, status: 401, statusText: 'Unauthorized' };
     };
     await expect(
       lorasService.installFromCivitai({ url: 'https://civitai.com/models/2600698' }, { fetchImpl }),
-    ).rejects.toThrow(/may require an API key/);
+    ).rejects.toThrow(/Configure a Civitai API key in PortOS Settings/);
+  });
+
+  it('surfaces a different auth error message when a key was provided but download still fails', async () => {
+    const fetchImpl = async (url) => {
+      if (url.startsWith('https://civitai.com/api/v1/models/')) return { ok: true, status: 200, json: async () => FAKE_MODEL };
+      return { ok: false, status: 403, statusText: 'Forbidden' };
+    };
+    // Provide apiKey inline so hasApiKey=true
+    await expect(
+      lorasService.installFromCivitai({ url: 'https://civitai.com/models/2600698', apiKey: 'my-key' }, { fetchImpl }),
+    ).rejects.toThrow(/even with your saved API key/);
+  });
+
+  it('atomic no-clobber: CIVITAI_ALREADY_INSTALLED when concurrent install wins the link race', async () => {
+    // Simulate a concurrent install winning by pre-creating the dest file
+    // AFTER the existsSync precheck passes but BEFORE link() runs. We do this
+    // by planting the dest file before the download — since our fetchImpl
+    // creates it synchronously (no real I/O delay) and the precheck is in
+    // installFromCivitai (before mkdir+download), we plant it inside the
+    // download body stream start to mimic the timing. The simplest way: make
+    // the download fetchImpl write the dest file first before returning.
+    const fs = await import('fs/promises');
+    await fs.mkdir(tmpLoras, { recursive: true });
+    const destFilename = 'lora-realstagram-v7.safetensors';
+
+    const fetchImpl = async (url) => {
+      if (url.startsWith('https://civitai.com/api/v1/models/')) return { ok: true, status: 200, json: async () => FAKE_MODEL };
+      if (url.startsWith('https://civitai.com/api/download/models/7')) {
+        // Plant the dest file to simulate a concurrent install winning before
+        // our link() call — this is what makes link() return EEXIST.
+        await fs.writeFile(join(tmpLoras, destFilename), 'other-install-won');
+        const stream = new ReadableStream({
+          start(c) { c.enqueue(new Uint8Array(Buffer.from('race-loser'))); c.close(); },
+        });
+        return { ok: true, status: 200, body: stream };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    };
+
+    const err = await lorasService.installFromCivitai({ url: 'https://civitai.com/models/2600698' }, { fetchImpl }).catch((e) => e);
+    expect(err.code).toBe('CIVITAI_ALREADY_INSTALLED');
+    // The original file written by the "winning" install must be preserved.
+    expect(existsSync(join(tmpLoras, destFilename))).toBe(true);
+    // The tmp .partial file must be cleaned up.
+    const tmpFiles = await fs.readdir(tmpLoras);
+    expect(tmpFiles.some((f) => f.endsWith('.partial'))).toBe(false);
   });
 });

@@ -16,7 +16,7 @@
  */
 
 import { existsSync } from 'fs';
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'fs/promises';
+import { link, mkdir, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'fs/promises';
 import { createWriteStream } from 'fs';
 import { randomBytes } from 'crypto';
 import { Readable } from 'stream';
@@ -83,6 +83,11 @@ export const assertSafeLoraFilename = (filename) => {
 // so the manager UI can still render LoRAs the user dropped in pre-Civitai.
 export const listLoras = async () => {
   if (!existsSync(PATHS.loras)) return [];
+  const lorasStat = await stat(PATHS.loras).catch(() => null);
+  if (!lorasStat || !lorasStat.isDirectory()) {
+    console.log(`⚠️ PATHS.loras exists but is not a directory: ${PATHS.loras}`);
+    return [];
+  }
   const files = await readdir(PATHS.loras);
   const safetensors = files.filter((f) => f.endsWith('.safetensors'));
   const out = await Promise.all(safetensors.map(async (filename) => {
@@ -131,7 +136,16 @@ export const getLora = async (filename) => {
     throw new ServerError(`LoRA not found: ${filename}`, { status: 404, code: 'NOT_FOUND' });
   }
   const list = await listLoras();
-  return list.find((l) => l.filename === filename) || null;
+  const lora = list.find((l) => l.filename === filename);
+  if (!lora) {
+    // File exists on disk but listLoras filtered it out — most likely because
+    // it's not a regular .safetensors file (directory, symlink, etc.).
+    throw new ServerError(
+      `LoRA "${filename}" exists but is not a valid regular .safetensors file`,
+      { status: 404, code: 'NOT_FOUND' },
+    );
+  }
+  return lora;
 };
 
 export const deleteLora = async (filename) => {
@@ -139,6 +153,13 @@ export const deleteLora = async (filename) => {
   const filePath = join(PATHS.loras, filename);
   if (!existsSync(filePath)) {
     throw new ServerError(`LoRA not found: ${filename}`, { status: 404, code: 'NOT_FOUND' });
+  }
+  const s = await stat(filePath).catch(() => null);
+  if (!s || !s.isFile()) {
+    throw new ServerError(
+      `Cannot delete "${filename}": not a regular file`,
+      { status: 400, code: 'INVALID_LORA_FILE' },
+    );
   }
   await rm(filePath, { force: true });
   await rm(sidecarPath(filename), { force: true });
@@ -189,7 +210,7 @@ const downloadToFile = async (url, destPath, { fetchImpl = fetch, headers = {} ,
       // already set; surface both possibilities instead.
       const message = hasApiKey
         ? `Civitai rejected the download (${res.status}) even with your saved API key. The LoRA is likely in early-access (Civitai supporters only) or your key has expired/been revoked.`
-        : `Civitai download rejected (${res.status}) — this LoRA may require an API key. Set CIVITAI_API_KEY in Settings and retry.`;
+        : `Civitai download rejected (${res.status}) — this LoRA may require an API key. Configure a Civitai API key in PortOS Settings (or set the CIVITAI_API_KEY env var) and retry.`;
       throw new ServerError(message, { status: res.status, code: 'CIVITAI_AUTH' });
     }
     throw new ServerError(`Civitai download failed: ${res.status} ${res.statusText}`, { status: 502, code: 'CIVITAI_DOWNLOAD_FAILED' });
@@ -206,8 +227,26 @@ const downloadToFile = async (url, destPath, { fetchImpl = fetch, headers = {} ,
     await rm(tmpPath, { force: true }).catch(() => {});
     throw err;
   });
-  // rename can also fail (cross-device, locked dest, AV scan, low disk) —
-  // wrap separately so the .partial doesn't leak in any failure mode.
+  // Atomic no-clobber finalize: `link` is POSIX-atomic and fails with EEXIST
+  // when destPath already exists (concurrent install that snuck past our
+  // pre-check). On success we unlink the tmp; on EEXIST we clean up and
+  // throw CIVITAI_ALREADY_INSTALLED. For other link errors (cross-device
+  // EXDEV, read-only fs, etc.) fall back to rename, which is the only
+  // portable option on those platforms.
+  const linkErr = await link(tmpPath, destPath).catch((e) => e);
+  if (!linkErr) {
+    await unlink(tmpPath).catch(() => {});
+    return;
+  }
+  if (linkErr.code === 'EEXIST') {
+    await rm(tmpPath, { force: true }).catch(() => {});
+    const basename_ = destPath.split('/').pop();
+    throw new ServerError(
+      `Already installed: ${basename_}. Delete it first or pick a different version.`,
+      { status: 409, code: 'CIVITAI_ALREADY_INSTALLED' },
+    );
+  }
+  // EXDEV or similar — fall back to rename (best-effort, not atomic).
   await rename(tmpPath, destPath).catch(async (err) => {
     await rm(tmpPath, { force: true }).catch(() => {});
     throw err;

@@ -308,6 +308,35 @@ describe('buildSidecar', () => {
     expect(sc.triggerWords).toEqual([]);
     expect(sc.previewImageUrl).toBe(null);
   });
+  it('truncates description to 2000 chars when the model description is long', () => {
+    const longDesc = 'x'.repeat(5000);
+    const sc = buildSidecar({
+      model: { id: 1, name: 'Verbose', description: longDesc },
+      version: { id: 2, baseModel: 'Flux.1 D' },
+      file: {},
+      filename: 'lora-verbose-v2.safetensors',
+    });
+    expect(sc.description.length).toBe(2000);
+    expect(sc.description).toBe(longDesc.slice(0, 2000));
+  });
+  it('preserves description as-is when it is within the 2000-char limit', () => {
+    const sc = buildSidecar({
+      model: { id: 1, name: 'Short', description: 'A brief description.' },
+      version: { id: 2, baseModel: 'Flux.1 D' },
+      file: {},
+      filename: 'lora-short-v2.safetensors',
+    });
+    expect(sc.description).toBe('A brief description.');
+  });
+  it('defaults description to empty string when absent or non-string', () => {
+    const sc = buildSidecar({
+      model: { id: 1, name: 'No Desc' },
+      version: { id: 2, baseModel: 'Flux.1 D' },
+      file: {},
+      filename: 'lora-nodesc-v2.safetensors',
+    });
+    expect(sc.description).toBe('');
+  });
   it('rejects NaN as a recommended scale (Number.isFinite guard)', () => {
     // `typeof NaN === 'number'` would silently pass, persisting NaN into
     // the sidecar; downstream multiplies by NaN producing black images.

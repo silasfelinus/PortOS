@@ -22,7 +22,7 @@ import { local, IMAGE_GEN_MODES } from '../services/imageGen/index.js';
 import { enqueueJob, attachSseClient as attachQueueSseClient, cancelJob, listJobs } from '../services/mediaJobQueue/index.js';
 import { getSettings, saveSettings } from '../services/settings.js';
 import { getHfToken, HF_TOKEN_REGEX } from '../lib/hfToken.js';
-import { getImageModels, isFlux2 } from '../lib/mediaModels.js';
+import { getImageModels, isFlux2, isZImage, isErnie } from '../lib/mediaModels.js';
 import {
   REQUIRED_PACKAGES, detectPython, checkPackages, installPackages,
   isExternallyManaged, createVenv, isAllowedPython, pipNameFor,
@@ -213,7 +213,7 @@ router.post('/generate', initImageUpload, asyncHandler(async (req, res) => {
     const selectedModel = allModels.find((m) => m.id === data.modelId)
       ?? allModels.find((m) => m.id === 'dev')
       ?? allModels[0];
-    if (selectedModel && !isFlux2(selectedModel) && !py) {
+    if (selectedModel && !isFlux2(selectedModel) && !isZImage(selectedModel) && !isErnie(selectedModel) && !py) {
       throw new ServerError(
         'Local image generation is not configured (settings.imageGen.local.pythonPath is missing).',
         { status: 400, code: 'IMAGE_GEN_NOT_CONFIGURED' },

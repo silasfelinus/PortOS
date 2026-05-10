@@ -86,6 +86,56 @@ describe('getSuggestions', () => {
     expect(calls).toBe(callsAfterFirst);
   });
 
+  it('first call with small limit does not starve a later larger-limit call (always fetches at max)', async () => {
+    const makeItems = (count) =>
+      Array.from({ length: count }, (_, i) => buildModel(200 + i, `Lora-${i}`, 'Flux.1 D'));
+
+    let fetchCalls = 0;
+    const fetchImpl = async (url) => {
+      const m = url.match(/api\/v1\/models\/(\d+)$/);
+      if (m) return { ok: true, status: 200, json: async () => buildModel(Number(m[1]), `Curated`, 'Flux.1 D') };
+      fetchCalls += 1;
+      return { ok: true, status: 200, json: async () => ({ items: makeItems(24) }) };
+    };
+
+    // First call uses limit=4 — cache is populated at MAX (24 entries).
+    const first = await svc.getSuggestions({ fetchImpl, limit: 4 });
+    expect(first.runners.mflux.length).toBe(4);
+
+    // Second call asks for limit=20 — must come from the same cache entry (no re-fetch).
+    const callsAfterFirst = fetchCalls;
+    const second = await svc.getSuggestions({ fetchImpl, limit: 20 });
+    expect(fetchCalls).toBe(callsAfterFirst); // cache hit — no new HTTP
+    expect(second.runners.mflux.length).toBe(20);
+  });
+
+  it('cache hit at limit < cached size returns the requested slice without re-fetching', async () => {
+    // Build 24 distinct models so we can confirm slicing works end-to-end.
+    const makeItems = (count) =>
+      Array.from({ length: count }, (_, i) => buildModel(100 + i, `Lora-${i}`, 'Flux.1 D'));
+
+    let fetchCalls = 0;
+    const fetchImpl = async (url) => {
+      const m = url.match(/api\/v1\/models\/(\d+)$/);
+      if (m) return { ok: true, status: 200, json: async () => buildModel(Number(m[1]), `Curated`, 'Flux.1 D') };
+      fetchCalls += 1;
+      return { ok: true, status: 200, json: async () => ({ items: makeItems(24) }) };
+    };
+
+    // First call: limit=24 — populates cache with 24 cards.
+    const first = await svc.getSuggestions({ fetchImpl, limit: 24 });
+    const fetchCallsAfterFirst = fetchCalls;
+    expect(first.runners.mflux.length).toBe(24);
+
+    // Second call: limit=8 — should hit the cache and return 8, not re-fetch.
+    const second = await svc.getSuggestions({ fetchImpl, limit: 8 });
+    expect(fetchCalls).toBe(fetchCallsAfterFirst); // no additional HTTP calls
+    expect(second.runners.mflux.length).toBe(8);
+    // The 8 returned entries should be the first 8 from the original 24.
+    expect(second.runners.mflux[0].modelId).toBe(first.runners.mflux[0].modelId);
+    expect(second.runners.mflux[7].modelId).toBe(first.runners.mflux[7].modelId);
+  });
+
   it('force=true busts the cache', async () => {
     let calls = 0;
     const fetchImpl = async (url) => {

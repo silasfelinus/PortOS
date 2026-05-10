@@ -256,13 +256,22 @@ export const detectEarlyAccess = (version) => {
 // `<filename>.metadata.json`. Decoupled from fetchCivitaiModel so callers can
 // build it from a known model+version pair without a second API hit (the
 // install path already has both in hand).
+// Maximum characters to persist for model description. Civitai descriptions
+// can be several KB of markdown/HTML — truncating keeps sidecars lean without
+// losing the first-glance summary text that the manager UI shows.
+const DESCRIPTION_MAX_CHARS = 2000;
+
 export const buildSidecar = ({ model, version, file, filename }) => {
   const previewImage = pickPreviewImage(version);
   const baseModel = version?.baseModel || null;
+  const rawDesc = typeof model?.description === 'string' ? model.description : '';
+  const description = rawDesc.length > DESCRIPTION_MAX_CHARS
+    ? rawDesc.slice(0, DESCRIPTION_MAX_CHARS)
+    : rawDesc;
   return {
     filename,
     name: model?.name || filename,
-    description: model?.description || '',
+    description,
     civitai: {
       modelId: model?.id ?? null,
       versionId: version?.id ?? null,

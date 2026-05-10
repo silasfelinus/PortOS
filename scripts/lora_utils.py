@@ -23,27 +23,28 @@ def apply_loras(pipe, lora_paths, lora_scales) -> None:
             file=sys.stderr,
         )
         return
-    adapter_names = []
+    # Track (adapter_name, scale) together so a failed load at index i doesn't
+    # shift the scale of every subsequent successfully-loaded LoRA.
+    loaded = []
     for i, path in enumerate(lora_paths):
         adapter = f"lora_{i}"
         print(f"🎚️  loading LoRA: {Path(path).name} (adapter={adapter})", file=sys.stderr, flush=True)
         try:
             pipe.load_lora_weights(path, adapter_name=adapter)
-            adapter_names.append(adapter)
+            raw = lora_scales[i] if i < len(lora_scales) else "1.0"
+            try:
+                scale = float(raw)
+            except (TypeError, ValueError):
+                scale = 1.0
+            loaded.append((adapter, scale))
         except Exception as err:
             print(
                 f"⚠️ LoRA load failed for {Path(path).name}: {type(err).__name__}: {err}",
                 file=sys.stderr,
             )
-    if not adapter_names:
+    if not loaded:
         return
-    scales = []
-    for i, _ in enumerate(adapter_names):
-        raw = lora_scales[i] if i < len(lora_scales) else "1.0"
-        try:
-            scales.append(float(raw))
-        except (TypeError, ValueError):
-            scales.append(1.0)
+    adapter_names, scales = zip(*loaded)
     if hasattr(pipe, "set_adapters"):
         try:
             pipe.set_adapters(adapter_names, adapter_weights=scales)
