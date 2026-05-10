@@ -540,15 +540,29 @@ async function runJob(job) {
   // where a runner emits structured progress without going through
   // handleLine (e.g. a future direct emit).
   emitter.on('progress', onActivity);
+  // setInterval with an async tick can overlap if the await
+  // (getGenModuleForJob → dynamic import) takes longer than the interval.
+  // Without this guard, two ticks could both pass the post-await
+  // status check and both call mod.cancel() + handlers.failed(). The
+  // terminal sink in terminate() is idempotent, but mod.cancel() being
+  // called twice racing with the SIGKILL escalation is messy. Track an
+  // inFlight flag so only one tick is ever past the await at a time.
+  let watchdogInFlight = false;
   watchdogTimer = setInterval(async () => {
+    if (watchdogInFlight) return;
     if (job.status !== 'running') return;
     const idleFor = Date.now() - lastActivityAt;
     if (idleFor < idleTimeoutMs) return;
-    const mod = await getGenModuleForJob(job);
-    if (job.status !== 'running') return;
-    console.log(`⏱️ media-job [${job.id.slice(0, 8)}] watchdog fired after ${idleFor}ms idle (limit ${idleTimeoutMs}ms) — marking failed`);
-    if (mod?.cancel) mod.cancel();
-    handlers.failed({ error: `watchdog timeout: no runner output for ${Math.round(idleFor / 1000)}s (limit ${Math.round(idleTimeoutMs / 1000)}s)` });
+    watchdogInFlight = true;
+    try {
+      const mod = await getGenModuleForJob(job);
+      if (job.status !== 'running') return;
+      console.log(`⏱️ media-job [${job.id.slice(0, 8)}] watchdog fired after ${idleFor}ms idle (limit ${idleTimeoutMs}ms) — marking failed`);
+      if (mod?.cancel) mod.cancel();
+      handlers.failed({ error: `watchdog timeout: no runner output for ${Math.round(idleFor / 1000)}s (limit ${Math.round(idleTimeoutMs / 1000)}s)` });
+    } finally {
+      watchdogInFlight = false;
+    }
   }, Math.min(30_000, Math.max(25, Math.floor(idleTimeoutMs / 4))));
   watchdogTimer.unref?.();
 

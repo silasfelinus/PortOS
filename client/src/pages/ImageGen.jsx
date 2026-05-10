@@ -830,7 +830,7 @@ export default function ImageGen() {
                 <label className="block text-xs font-medium text-gray-400">
                   LoRAs <span className="text-gray-600 font-normal">({compatibleLoras.length}/{availableLoras.length} compatible)</span>
                 </label>
-                <a href="/media/loras" className="text-[11px] text-port-accent hover:underline">Manage →</a>
+                <Link to="/media/loras" className="text-[11px] text-port-accent hover:underline">Manage →</Link>
               </div>
               {compatibleLoras.length === 0 ? (
                 <p className="text-xs text-gray-500 italic">No LoRAs match this model's runner. Install one matching <code>{currentRunnerFamily}</code> on the LoRAs page.</p>
