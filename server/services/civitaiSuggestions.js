@@ -14,7 +14,6 @@ import {
   fetchCivitaiModel,
   normalizeCivitaiImageUrl,
   pickPreviewImage,
-  pickVersion,
   searchCivitaiLoras,
   extractSamplePrompt,
 } from '../lib/civitai.js';
@@ -41,9 +40,19 @@ const cache = new Map();
 
 // Shape one Civitai model into the lightweight suggestion-card payload the
 // /media/loras UI consumes. Defensive: any field can be missing on Civitai.
+// Returns null on any malformed input (no published versions, no installable
+// file, etc.) — the suggestion panel is best-effort, so a single bad entry
+// must not poison the whole list.
 const buildCard = (model) => {
   if (!model || typeof model !== 'object') return null;
-  const version = pickVersion(model, null);
+  // pickVersion throws (ServerError) when modelVersions[] is empty — that's
+  // appropriate for the install path, but here we're building a suggestion
+  // card for a model the user hasn't asked to install yet. A single Civitai
+  // entry that's been unpublished by the creator would otherwise crash the
+  // whole Promise.all in fetchCurated.
+  const versions = Array.isArray(model.modelVersions) ? model.modelVersions : [];
+  if (!versions.length) return null;
+  const version = versions[0];
   if (!version) return null;
   const file = (() => {
     // pickPrimaryFile throws when no .safetensors — for a suggestion card we
