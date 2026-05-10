@@ -197,7 +197,7 @@ export const fetchCivitaiModel = async (modelId, { apiKey, fetchImpl = fetch } =
     }
     if (res.status === 401 || res.status === 403) {
       throw new ServerError(
-        `Civitai rejected the request (${res.status}) — set CIVITAI_API_KEY in PortOS Settings if this model is gated`,
+        `Civitai rejected the request (${res.status}) — add a Civitai API key in PortOS Settings (or set the CIVITAI_API_KEY env var) if this model is gated`,
         { status: res.status, code: 'CIVITAI_AUTH' },
       );
     }
