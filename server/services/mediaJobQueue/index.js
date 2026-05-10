@@ -447,7 +447,12 @@ async function runJob(job) {
   let watchdogTimer;
   function terminate(state, apply) {
     if (job.status !== 'running') return;
-    clearTimeout(watchdogTimer);
+    // setInterval now (was setTimeout) — clearInterval is the right call.
+    // clearTimeout would silently no-op on an interval handle and the
+    // watchdog would keep ticking after the job terminated.
+    clearInterval(watchdogTimer);
+    emitter.off?.('activity', onActivity);
+    emitter.off?.('progress', onActivity);
     apply(job);
     job.status = state;
     job.completedAt = new Date().toISOString();
@@ -515,37 +520,36 @@ async function runJob(job) {
   const dispatcher = makeGenDispatcher(emitter, job, handlers);
   dispatcher.attach();
 
-  // Thread #2: per-job watchdog — fires if the gen never emits a terminal
-  // event (hung child process or emitter regression). On trigger it marks
-  // the job failed via the normal handlers path (SSE + mediaJobEvents +
-  // persistence all fire) and best-effort cancels the underlying process
-  // so the queue can make forward progress.
-  // Renamed from `watchdogMs` to avoid shadowing the top-level
-  // `watchdogMs(envValue, defaultMs)` helper that parses the env-var
-  // overrides. Both lived as `watchdogMs` previously and made the call
-  // site easy to misread.
-  const watchdogTimeoutMs = job.kind === 'video'
+  // Thread #2: per-job idle watchdog — fires when the gen has been silent
+  // for the configured window. Switched from "max wall time" to "max idle"
+  // because first-run downloads of multi-GB models (Z-Image-Turbo ~13 GB,
+  // ERNIE-Image ~16 GB) routinely exceed any sensible total-time bound,
+  // but the runner emits stderr lines (tqdm / STAGE markers / status
+  // prose) regularly while it's actually working. Any non-noise line in
+  // imageGen/videoGen/local.js#handleLine emits 'activity' which resets
+  // lastActivityAt; only true hangs (process wedged, no output) trip it.
+  const idleTimeoutMs = job.kind === 'video'
     ? WATCHDOG_VIDEO_MS * Math.max(1, Number(safeParams.chunks) || 1)
     : WATCHDOG_IMAGE_MS;
-  watchdogTimer = setTimeout(async () => {
-    // Two-stage status guard: first check stops us if the gen settled
-    // before the timer fired. The await on the dynamic import below opens
-    // a window during which a natural completion / failure could land —
-    // re-check after the await so we don't fire `handlers.failed` and
-    // SIGTERM the *next* job's child (cancel() targets the gen module's
-    // current activeProcess; once handlers.failed marks this job
-    // terminal, runJob's await exits and the worker advances).
+  let lastActivityAt = Date.now();
+  const onActivity = (e) => {
+    if (e?.generationId === job.id) lastActivityAt = Date.now();
+  };
+  emitter.on('activity', onActivity);
+  // Treat real progress events as activity too — covers the (rare) case
+  // where a runner emits structured progress without going through
+  // handleLine (e.g. a future direct emit).
+  emitter.on('progress', onActivity);
+  watchdogTimer = setInterval(async () => {
     if (job.status !== 'running') return;
+    const idleFor = Date.now() - lastActivityAt;
+    if (idleFor < idleTimeoutMs) return;
     const mod = await getGenModuleForJob(job);
     if (job.status !== 'running') return;
-    console.log(`⏱️ media-job [${job.id.slice(0, 8)}] watchdog fired after ${watchdogTimeoutMs}ms — marking failed`);
-    // Cancel BEFORE marking failed — that ordering keeps the SIGTERM
-    // pointed at *this* job's child. The gen module will then emit its
-    // own 'failed' event, but the terminate() guard makes it a no-op.
+    console.log(`⏱️ media-job [${job.id.slice(0, 8)}] watchdog fired after ${idleFor}ms idle (limit ${idleTimeoutMs}ms) — marking failed`);
     if (mod?.cancel) mod.cancel();
-    handlers.failed({ error: `watchdog timeout: job exceeded ${watchdogTimeoutMs}ms` });
-  }, watchdogTimeoutMs);
-  // Ensure the timer doesn't keep Node alive after the job settles.
+    handlers.failed({ error: `watchdog timeout: no runner output for ${Math.round(idleFor / 1000)}s (limit ${Math.round(idleTimeoutMs / 1000)}s)` });
+  }, Math.min(30_000, Math.max(25, Math.floor(idleTimeoutMs / 4))));
   watchdogTimer.unref?.();
 
   try {

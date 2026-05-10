@@ -368,6 +368,10 @@ export async function generateImage({ pythonPath, prompt, negativePrompt = '', m
   const handleLine = (line) => {
     const trimmed = line.trim();
     if (!trimmed || PYTHON_NOISE_RE.test(trimmed)) return true;
+    // Heartbeat — any non-noise line resets the queue's idle watchdog so
+    // first-run multi-GB HF downloads don't trip the timeout when
+    // tqdm is slow to update during connection-establishment.
+    imageGenEvents.emit('activity', { generationId: jobId });
 
     if (trimmed.startsWith('STAGE:')) {
       const rest = trimmed.slice(6); // strip 'STAGE:'
