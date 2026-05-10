@@ -45,6 +45,11 @@ export function normalizeImage(i) {
     guidance: i.guidance,
     quantize: i.quantize,
     seed: i.seed,
+    // Codex (gpt-image-2) doesn't expose a seed — `codexSessionId` is the
+    // run-identifier from the codex CLI banner, surfaced in the lightbox so
+    // each codex image has a unique trace even though it isn't reproducible.
+    codexSessionId: i.codexSessionId,
+    mode: i.mode,
     loraNames,
     createdAt: i.createdAt,
     hidden: !!i.hidden,

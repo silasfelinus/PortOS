@@ -4,7 +4,7 @@
 //
 // Entries without a `compatible` field are universal. The non-universal
 // ones reflect real model constraints, not just style — Z-Image-Turbo and
-// ERNIE were trained at 1024² and degrade past ~1280, and gpt-image-1's
+// ERNIE were trained at 1024² and degrade past ~1280, and gpt-image-2's
 // native sizes are 1024² / 1024×1536 / 1536×1024.
 export const RESOLUTIONS = [
   { label: '512×512', w: 512, h: 512 },

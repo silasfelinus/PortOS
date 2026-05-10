@@ -82,6 +82,7 @@ export default function MediaLightbox({
     );
   };
 
+  const isCodex = item.mode === 'codex';
   const meta = [
     ['Model', item.modelId],
     ['Resolution', item.width && item.height ? `${item.width}×${item.height}` : null],
@@ -89,7 +90,11 @@ export default function MediaLightbox({
     ['Guidance', item.guidance],
     ['CFG', item.raw?.cfgScale ?? item.raw?.cfg_scale],
     ['Quantize', item.quantize],
-    ['Seed', item.seed],
+    // Codex doesn't expose a seed; show "n/a" rather than hiding the row so
+    // it's clear why — and surface the codex session-id below as the closest
+    // unique-run identifier.
+    ['Seed', item.seed ?? (isCodex ? 'n/a (gpt-image-2)' : null)],
+    ['Codex session', item.codexSessionId],
     ['Frames', item.numFrames],
     ['FPS', item.fps],
     ['Created', item.createdAt && new Date(item.createdAt).toLocaleString()],
@@ -270,24 +275,27 @@ function SettingsPane({
 
         {meta.length > 0 && (
           <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1">
-            {meta.map(([k, v]) => (
-              <div key={k} className="contents">
-                <dt className="text-gray-500">{k}</dt>
-                <dd className="text-gray-200 break-all flex items-center gap-1.5">
-                  <span>{String(v)}</span>
-                  {k === 'Seed' && (
-                    <button
-                      type="button"
-                      onClick={() => copy(String(v), 'Seed')}
-                      className="p-0.5 rounded text-gray-400 hover:text-white hover:bg-port-border/50"
-                      title="Copy seed"
-                    >
-                      <Copy className="w-3 h-3" />
-                    </button>
-                  )}
-                </dd>
-              </div>
-            ))}
+            {meta.map(([k, v]) => {
+              const copyable = (k === 'Seed' && item.seed != null) || k === 'Codex session';
+              return (
+                <div key={k} className="contents">
+                  <dt className="text-gray-500">{k}</dt>
+                  <dd className="text-gray-200 break-all flex items-center gap-1.5">
+                    <span>{String(v)}</span>
+                    {copyable && (
+                      <button
+                        type="button"
+                        onClick={() => copy(String(v), k)}
+                        className="p-0.5 rounded text-gray-400 hover:text-white hover:bg-port-border/50"
+                        title={`Copy ${k.toLowerCase()}`}
+                      >
+                        <Copy className="w-3 h-3" />
+                      </button>
+                    )}
+                  </dd>
+                </div>
+              );
+            })}
           </dl>
         )}
       </div>

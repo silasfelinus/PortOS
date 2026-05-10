@@ -105,7 +105,7 @@ export async function generateImage({ codexPath, model, prompt, width, height, n
   // Width/height/negative aren't first-class args for Codex's built-in
   // image_gen tool — pass them as natural-language hints inside the prompt.
   // Codex's imagegen skill is prompt-driven; the model decides resolution.
-  // gpt-image-1 honors a quality hint to escape its 1024 default and render
+  // gpt-image-2 honors a quality hint to escape its 1024 default and render
   // at native hi-res (1024×1536 / 1536×1024 / 1536×1536).
   const sizeHint = (width && height) ? ` (${width}x${height})` : '';
   const qualityHint = (width >= 1536 || height >= 1536) ? ' (high quality)' : '';
@@ -233,9 +233,12 @@ async function runCodex(job, jobId, bin, args, outputPath, filename, meta) {
         );
       }
       await copyFile(harvested, outputPath);
-      // Sidecar metadata so the gallery can recover prompt/seed/etc.
+      // Sidecar metadata so the gallery can recover prompt/seed/etc. The
+      // codex sessionId is the closest analogue to a seed for gpt-image-2
+      // (which doesn't expose one) — uniquely identifies the run and is
+      // useful for traceability even though it doesn't reproduce the output.
       const sidecar = join(PATHS.images, `${jobId}.metadata.json`);
-      await writeFile(sidecar, JSON.stringify(meta, null, 2)).catch(() => {});
+      await writeFile(sidecar, JSON.stringify({ ...meta, codexSessionId: sessionId }, null, 2)).catch(() => {});
       job.status = 'complete';
       // Only clear if still ours — a userland cancel that started a
       // newer job could have replaced these references while our
