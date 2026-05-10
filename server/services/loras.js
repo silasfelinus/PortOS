@@ -246,7 +246,19 @@ const downloadToFile = async (url, destPath, { fetchImpl = fetch, headers = {} ,
       { status: 409, code: 'CIVITAI_ALREADY_INSTALLED' },
     );
   }
-  // EXDEV or similar — fall back to rename (best-effort, not atomic).
+  // EXDEV or similar — fall back to rename. Re-check destPath right before
+  // the rename so a concurrent install that landed between our link attempt
+  // and now can't be silently clobbered (POSIX rename overwrites). Treat
+  // late-arriving dest as CIVITAI_ALREADY_INSTALLED, matching the EEXIST
+  // path above.
+  if (existsSync(destPath)) {
+    await rm(tmpPath, { force: true }).catch(() => {});
+    const basename_ = destPath.split('/').pop();
+    throw new ServerError(
+      `Already installed: ${basename_}. Delete it first or pick a different version.`,
+      { status: 409, code: 'CIVITAI_ALREADY_INSTALLED' },
+    );
+  }
   await rename(tmpPath, destPath).catch(async (err) => {
     await rm(tmpPath, { force: true }).catch(() => {});
     throw err;

@@ -1269,13 +1269,13 @@ export default function VideoGen() {
       {visibleHistory.length > 0 && (
         <div className="bg-port-card border border-port-border rounded-xl p-4 space-y-2">
           <div className="flex items-center justify-between">
-            <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wide">Recent renders ({Math.min(visibleHistory.length, 6)} of {visibleHistory.length})</h2>
-            {visibleHistory.length > 6 && (
+            <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wide">Recent renders ({Math.min(visibleHistory.length, 5)} of {visibleHistory.length})</h2>
+            {visibleHistory.length > 5 && (
               <Link to="/media/history" className="text-xs text-port-accent hover:underline">View all →</Link>
             )}
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-            {visibleHistory.slice(0, 6).map((v) => {
+            {visibleHistory.slice(0, 5).map((v) => {
               const item = normalizeVideo(v);
               return (
                 <MediaCard

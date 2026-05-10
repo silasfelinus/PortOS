@@ -238,10 +238,15 @@ export async function generateImage({ pythonPath, prompt, negativePrompt = '', m
   // Step-wise distilled models (Schnell / FLUX.2 Klein / Z-Image-Turbo) ignore
   // any guidance scale > 1.0 internally; passing a real value just produces a
   // "Guidance scale X is ignored for step-wise distilled models." warning on
-  // every render. Pin to 1.0 for those so the runner's diffusers call stays
-  // quiet and the sidecar metadata reflects what the model actually used.
+  // every render. Clamp to ≤1.0 (rather than hard-pin to 1.0) so registry
+  // entries that intentionally use 0.0 — e.g. Flux.1 Schnell, where the mflux
+  // runner historically *omits* --guidance entirely on 0 — keep their existing
+  // behavior. The clamp keeps FLUX.2 / Z-Image / ERNIE quiet while leaving
+  // sub-1.0 values (including 0.0) untouched.
   const requestedGuidance = guidance != null && guidance !== '' ? Number(guidance) : model.guidance;
-  const actualGuidance = model.cfgDisabled ? 1.0 : requestedGuidance;
+  const actualGuidance = model.cfgDisabled
+    ? Math.min(1.0, Number.isFinite(requestedGuidance) ? requestedGuidance : 1.0)
+    : requestedGuidance;
   // The new client-side surface sends `loraFilenames` (basenames only); the
   // server resolves them against PATHS.loras. `loraPaths` is kept as a
   // back-compat input for old gallery sidecars that stored absolute paths
