@@ -554,12 +554,25 @@ async function runJob(job) {
     const idleFor = Date.now() - lastActivityAt;
     if (idleFor < idleTimeoutMs) return;
     watchdogInFlight = true;
+    // try/catch is mandatory here: this body is the listener for an
+    // EventEmitter-like setInterval — a rejected await inside an async
+    // callback escapes as an unhandled promise rejection (process-killing
+    // on Node ≥15). getGenModuleForJob does a dynamic import and can
+    // realistically reject under disk pressure / hot-reload / a stale
+    // module cache. Route any failure through handlers.failed so the
+    // queue still settles, and reset inFlight in finally.
     try {
       const mod = await getGenModuleForJob(job);
       if (job.status !== 'running') return;
       console.log(`⏱️ media-job [${job.id.slice(0, 8)}] watchdog fired after ${idleFor}ms idle (limit ${idleTimeoutMs}ms) — marking failed`);
       if (mod?.cancel) mod.cancel();
       handlers.failed({ error: `watchdog timeout: no runner output for ${Math.round(idleFor / 1000)}s (limit ${Math.round(idleTimeoutMs / 1000)}s)` });
+    } catch (err) {
+      // Don't take down the server over a watchdog tick that couldn't
+      // resolve the gen module. Log and let the next tick retry — if
+      // job.status is still 'running', the next idle check will fire
+      // again (and may succeed once the import cache stabilizes).
+      console.log(`⚠️ media-job [${job.id.slice(0, 8)}] watchdog tick errored: ${err?.message || err}`);
     } finally {
       watchdogInFlight = false;
     }
