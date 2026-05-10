@@ -17,12 +17,21 @@ import {
   listLoras,
   patchLoraSidecar,
 } from '../services/loras.js';
+import { getSuggestions } from '../services/civitaiSuggestions.js';
 import { getSettings, saveSettings } from '../services/settings.js';
 
 const router = Router();
 
 router.get('/', asyncHandler(async (_req, res) => {
   res.json(await listLoras());
+}));
+
+// Civitai LoRA suggestions per runner family (mflux / flux2 / z-image).
+// Cached server-side for 1h. `?force=1` busts the cache for a manual refresh.
+router.get('/suggestions', asyncHandler(async (req, res) => {
+  const force = req.query.force === '1' || req.query.force === 'true';
+  const limit = Math.max(1, Math.min(24, Number(req.query.limit) || 12));
+  res.json(await getSuggestions({ force, limit }));
 }));
 
 // Civitai auth status — returns just whether a key is configured (the key

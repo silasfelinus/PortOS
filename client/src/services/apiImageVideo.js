@@ -134,6 +134,11 @@ export const installLoraFromCivitai = ({ url, silent = false } = {}) => request(
   silent,
 });
 
+// Civitai LoRA suggestions per runner family. Cached server-side for 1h.
+// Pass `force: true` to bust the cache and re-fetch from Civitai.
+export const getCivitaiSuggestions = ({ force = false } = {}) =>
+  request(`/loras/suggestions${force ? '?force=1' : ''}`);
+
 // Civitai auth — read/save/clear the API key. The key never round-trips back
 // to the client; the GET only returns `{ hasKey, source }`.
 export const getCivitaiAuth = () => request('/loras/auth/civitai');

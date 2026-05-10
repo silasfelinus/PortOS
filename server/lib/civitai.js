@@ -228,6 +228,72 @@ export const buildSidecar = ({ model, version, file, filename }) => {
   };
 };
 
+// Map a PortOS runner family back to the `baseModels` query param values
+// Civitai's search endpoint expects. Civitai uses %20-encoded display names
+// (`Flux.1 D`, `Flux.1 S`, `Flux.2`, etc.). The Z-Image ecosystem on Civitai
+// is nascent — searches there often return zero; the UI handles that.
+const RUNNER_TO_BASE_MODELS = {
+  mflux: ['Flux.1 D', 'Flux.1 S'],
+  flux2: ['Flux.2'],
+  'z-image': ['Z-Image'],
+};
+
+// Search Civitai for LoRA-family models targeting the given runner family.
+// Returns the raw `items` array from `/api/v1/models` (each entry has its
+// own `modelVersions[]` etc — let the suggestion service shape them).
+// fetchImpl is injectable for tests.
+export const searchCivitaiLoras = async ({ runnerFamily, limit = 12, sort = 'Most Downloaded', nsfw = false, apiKey, fetchImpl = fetch } = {}) => {
+  const baseModels = RUNNER_TO_BASE_MODELS[runnerFamily];
+  if (!baseModels) {
+    throw new ServerError(`Unknown runner family for Civitai search: ${runnerFamily}`, { status: 400, code: 'CIVITAI_BAD_RUNNER' });
+  }
+  // Civitai accepts repeated `baseModels` query params for OR semantics.
+  // URLSearchParams handles the repeated-key + display-name URL-encoding.
+  const params = new URLSearchParams();
+  params.set('types', 'LORA');
+  params.set('limit', String(Math.max(1, Math.min(100, limit))));
+  params.set('sort', sort);
+  params.set('nsfw', String(!!nsfw));
+  for (const bm of baseModels) params.append('baseModels', bm);
+  const url = `${CIVITAI_API}/models?${params.toString()}`;
+  const res = await fetchImpl(url, { headers: { Accept: 'application/json', ...buildAuthHeaders(apiKey) } });
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      throw new ServerError(
+        `Civitai search rejected (${res.status}) — set CIVITAI_API_KEY in PortOS Settings if NSFW content is enabled`,
+        { status: res.status, code: 'CIVITAI_AUTH' },
+      );
+    }
+    throw new ServerError(`Civitai search failed: ${res.status}`, { status: 502, code: 'CIVITAI_SEARCH_FAILED' });
+  }
+  const body = await res.json();
+  return Array.isArray(body?.items) ? body.items : [];
+};
+
+// Pull a sample prompt from Civitai's preview image metadata. The `meta`
+// field's shape varies wildly — sometimes `{ prompt: '...' }`, sometimes a
+// stringified JSON, sometimes absent. Returns the first usable prompt or
+// null. Skips images flagged at NSFW level > 1 to keep suggestions safe.
+export const extractSamplePrompt = (version) => {
+  const images = Array.isArray(version?.images) ? version.images : [];
+  for (const img of images) {
+    if ((img?.nsfwLevel ?? 0) > 1) continue;
+    const meta = img?.meta;
+    if (meta && typeof meta === 'object' && typeof meta.prompt === 'string' && meta.prompt.trim()) {
+      return meta.prompt.trim();
+    }
+    if (typeof meta === 'string') {
+      // Some entries serialize meta as a JSON string. Defensive parse.
+      let parsed = null;
+      try { parsed = JSON.parse(meta); } catch { /* ignore */ }
+      if (parsed && typeof parsed === 'object' && typeof parsed.prompt === 'string' && parsed.prompt.trim()) {
+        return parsed.prompt.trim();
+      }
+    }
+  }
+  return null;
+};
+
 // Sanitize a model name into a safe filename slug. Civitai model names can
 // contain `/`, `\`, weird unicode, mixed case, etc. — we want a portable
 // filename that also keeps the .safetensors extension predictable. Limits

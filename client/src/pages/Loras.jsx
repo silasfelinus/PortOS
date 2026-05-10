@@ -9,7 +9,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Trash2, Download, ExternalLink, Sparkles, AlertTriangle, KeyRound, Check, X } from 'lucide-react';
+import { Trash2, Download, ExternalLink, Sparkles, AlertTriangle, KeyRound, Check, X, RefreshCw, Wand2 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import { formatBytes } from '../utils/formatters';
 import {
@@ -19,6 +19,7 @@ import {
   getCivitaiAuth,
   setCivitaiAuth,
   clearCivitaiAuth,
+  getCivitaiSuggestions,
 } from '../services/api';
 
 const RUNNER_LABEL = {
@@ -45,6 +46,10 @@ export default function Loras() {
   // so users don't have to remember what they were installing.
   const [auth, setAuth] = useState({ hasKey: false, source: 'none' });
   const [authPrompt, setAuthPrompt] = useState(null);
+  // suggestions: { runners: { mflux: [...], flux2: [...], 'z-image': [...] }, fetchedAt }
+  const [suggestions, setSuggestions] = useState(null);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(true);
+  const [installingSuggestion, setInstallingSuggestion] = useState(null);
 
   const refresh = useCallback(() => {
     setError(null);
@@ -55,10 +60,19 @@ export default function Loras() {
       .finally(() => setLoading(false));
   }, []);
 
+  const refreshSuggestions = useCallback(({ force = false } = {}) => {
+    setLoadingSuggestions(true);
+    getCivitaiSuggestions({ force })
+      .then(setSuggestions)
+      .catch((err) => toast.error(err?.message || 'Failed to load suggestions'))
+      .finally(() => setLoadingSuggestions(false));
+  }, []);
+
   useEffect(() => {
     refresh();
     getCivitaiAuth().then(setAuth).catch(() => {});
-  }, [refresh]);
+    refreshSuggestions();
+  }, [refresh, refreshSuggestions]);
 
   // silent:true so the auth-error path goes through the modal instead of a
   // one-shot toast the user can't act on. Shared by the initial install
@@ -164,26 +178,179 @@ export default function Loras() {
         />
       )}
 
-      {loading && <div className="text-sm text-gray-500">Loading…</div>}
-      {error && (
-        <div className="bg-port-error/10 border border-port-error/30 rounded p-3 text-sm text-port-error flex items-center gap-2">
-          <AlertTriangle size={16} />
-          {error}
-        </div>
-      )}
-      {!loading && !error && loras.length === 0 && (
-        <div className="text-sm text-gray-500 italic">
-          No LoRAs installed yet. Try <code className="bg-port-card px-1 rounded">https://civitai.com/models/2600698/realstagram</code>.
-        </div>
-      )}
+      <SuggestionsPanel
+        suggestions={suggestions}
+        loading={loadingSuggestions}
+        installedFilenames={new Set(loras.map((l) => l.filename))}
+        installingSuggestionKey={installingSuggestion}
+        onRefresh={() => refreshSuggestions({ force: true })}
+        onInstall={async (card) => {
+          const key = `${card.modelId}-${card.versionId}`;
+          setInstallingSuggestion(key);
+          await performInstall(card.installUrl);
+          setInstallingSuggestion(null);
+        }}
+      />
 
-      {loras.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {loras.map((lora) => (
-            <LoraCard key={lora.filename} lora={lora} onDelete={() => handleDelete(lora.filename)} deleting={deleting === lora.filename} />
-          ))}
+      <div>
+        <h2 className="text-lg font-semibold text-white mb-3">Installed</h2>
+        {loading && <div className="text-sm text-gray-500">Loading…</div>}
+        {error && (
+          <div className="bg-port-error/10 border border-port-error/30 rounded p-3 text-sm text-port-error flex items-center gap-2">
+            <AlertTriangle size={16} />
+            {error}
+          </div>
+        )}
+        {!loading && !error && loras.length === 0 && (
+          <div className="text-sm text-gray-500 italic">
+            No LoRAs installed yet — pick one from the suggestions above, or paste a Civitai URL.
+          </div>
+        )}
+        {loras.length > 0 && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {loras.map((lora) => (
+              <LoraCard key={lora.filename} lora={lora} onDelete={() => handleDelete(lora.filename)} deleting={deleting === lora.filename} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SuggestionsPanel({ suggestions, loading, installedFilenames, installingSuggestionKey, onRefresh, onInstall }) {
+  const curated = suggestions?.curated || [];
+  const runners = suggestions?.runners || {};
+  const sections = [
+    { key: 'curated', label: 'Curated picks', cards: curated, hint: 'Hand-picked LoRAs that work across multiple base models.' },
+    { key: 'mflux', label: 'Top for Flux 1', cards: runners.mflux || [], hint: 'Most-downloaded LoRAs trained against Flux.1 D / Flux.1 S.' },
+    { key: 'flux2', label: 'Top for Flux 2', cards: runners.flux2 || [], hint: 'Most-downloaded LoRAs trained against Flux.2 Klein.' },
+    { key: 'z-image', label: 'Top for Z-Image', cards: runners['z-image'] || [], hint: 'Z-Image LoRAs are still rare on Civitai — expect a sparse list.' },
+  ];
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+          <Wand2 size={18} className="text-port-accent" />
+          Suggested LoRAs
+        </h2>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={loading}
+          className="text-xs text-gray-400 hover:text-gray-200 flex items-center gap-1 disabled:opacity-50"
+          title="Re-fetch from Civitai (busts the 1-hour cache)"
+        >
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+          Refresh
+        </button>
+      </div>
+      {loading && !suggestions && (
+        <div className="text-sm text-gray-500">Loading suggestions…</div>
+      )}
+      {sections.map((section) => (
+        <SuggestionsSection
+          key={section.key}
+          label={section.label}
+          hint={section.hint}
+          cards={section.cards}
+          installedFilenames={installedFilenames}
+          installingSuggestionKey={installingSuggestionKey}
+          onInstall={onInstall}
+        />
+      ))}
+    </div>
+  );
+}
+
+function SuggestionsSection({ label, hint, cards, installedFilenames, installingSuggestionKey, onInstall }) {
+  if (!cards || cards.length === 0) return null;
+  return (
+    <div>
+      <div className="flex items-baseline gap-3 mb-2">
+        <h3 className="text-sm font-medium text-gray-300">{label}</h3>
+        <span className="text-xs text-gray-600">{cards.length}</span>
+      </div>
+      {hint && <p className="text-xs text-gray-500 mb-2">{hint}</p>}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {cards.map((card) => (
+          <SuggestionCard
+            key={`${card.modelId}-${card.versionId}`}
+            card={card}
+            installed={[...installedFilenames].some((f) => f.includes(`-v${card.versionId}.safetensors`))}
+            installing={installingSuggestionKey === `${card.modelId}-${card.versionId}`}
+            onInstall={() => onInstall(card)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const RUNNER_LABELS_SHORT = { mflux: 'Flux 1', flux2: 'Flux 2', 'z-image': 'Z-Image' };
+
+function SuggestionCard({ card, installed, installing, onInstall }) {
+  const families = Array.isArray(card.runnerFamilies) && card.runnerFamilies.length
+    ? card.runnerFamilies
+    : (card.runnerFamily ? [card.runnerFamily] : []);
+  return (
+    <div className="bg-port-card border border-port-border rounded-lg overflow-hidden flex flex-col">
+      {card.previewImageUrl ? (
+        <img src={card.previewImageUrl} alt="" className="w-full h-32 object-cover bg-port-bg" loading="lazy" />
+      ) : (
+        <div className="w-full h-32 bg-port-bg flex items-center justify-center text-gray-700">
+          <Sparkles size={24} />
         </div>
       )}
+      <div className="p-3 flex-1 flex flex-col gap-2">
+        <div className="flex items-start justify-between gap-2">
+          <h4 className="font-semibold text-white text-sm truncate flex-1" title={card.name}>{card.name}</h4>
+          {card.curated && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-port-warning/20 text-port-warning border border-port-warning/30 whitespace-nowrap">curated</span>
+          )}
+        </div>
+        {families.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {families.map((f) => (
+              <span key={f} className={`text-[10px] px-1.5 py-0.5 rounded border whitespace-nowrap ${RUNNER_BADGE_CLASS[f] || 'bg-gray-600/20 text-gray-300 border-gray-500/30'}`}>
+                {RUNNER_LABELS_SHORT[f] || f}
+              </span>
+            ))}
+          </div>
+        )}
+        {card.note && <p className="text-[11px] text-gray-400 italic line-clamp-2">{card.note}</p>}
+        {card.samplePrompt && (
+          <details className="text-[11px] text-gray-500">
+            <summary className="cursor-pointer hover:text-gray-300">Sample prompt</summary>
+            <p className="mt-1 font-mono text-[10px] leading-snug bg-port-bg p-1.5 rounded border border-port-border line-clamp-4">{card.samplePrompt}</p>
+          </details>
+        )}
+        <div className="text-[10px] text-gray-600 flex items-center gap-3 mt-auto">
+          {card.creator && <span className="truncate" title={card.creator}>by {card.creator}</span>}
+          {typeof card.downloads === 'number' && <span>↓ {card.downloads.toLocaleString()}</span>}
+        </div>
+        <div className="flex items-center gap-2">
+          {installed ? (
+            <button disabled className="flex-1 bg-port-success/20 text-port-success border border-port-success/30 px-3 py-1.5 rounded text-xs font-medium flex items-center justify-center gap-1">
+              <Check size={12} /> Installed
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onInstall}
+              disabled={installing}
+              className="flex-1 bg-port-accent text-white px-3 py-1.5 rounded text-xs font-medium hover:bg-port-accent/90 disabled:opacity-50"
+            >
+              {installing ? 'Installing…' : 'Quick install'}
+            </button>
+          )}
+          {card.civitaiUrl && (
+            <a href={card.civitaiUrl} target="_blank" rel="noopener noreferrer" className="text-gray-400 hover:text-gray-200 p-1.5 rounded hover:bg-port-bg" title="Open on Civitai">
+              <ExternalLink size={12} />
+            </a>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
