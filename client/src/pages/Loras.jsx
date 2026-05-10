@@ -92,7 +92,13 @@ export default function Loras() {
         setInstallUrl('');
       })
       .catch((err) => {
-        if (err?.code === 'CIVITAI_AUTH') {
+        // Early-access content is gated by Civitai membership, not by API
+        // key — routing into the key-prompt modal would be misleading
+        // because the user's key (saved or env) can't unlock it. Surface
+        // the message (which already includes hours-remaining) as a toast.
+        if (err?.code === 'CIVITAI_EARLY_ACCESS') {
+          toast.error(err.message || 'LoRA is in Civitai early-access');
+        } else if (err?.code === 'CIVITAI_AUTH') {
           setAuthPrompt({ url, message: err.message || 'This LoRA needs an API key.' });
         } else {
           toast.error(err?.message || 'Install failed');
@@ -486,8 +492,8 @@ function CivitaiAuthModal({ pendingUrl, message, auth, onClose, onSaved, onRetry
         </div>
 
         {message && (
-          <div className="text-xs bg-port-warning/10 border border-port-warning/30 rounded px-3 py-2 text-port-warning flex items-start gap-2">
-            <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+          <div className="text-xs bg-port-warning/10 border border-port-warning/30 rounded px-3 py-2 text-amber-100 flex items-start gap-2">
+            <AlertTriangle size={14} className="shrink-0 mt-0.5 text-port-warning" />
             <span>{message}</span>
           </div>
         )}

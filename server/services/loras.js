@@ -28,6 +28,7 @@ import {
   applyDownloadToken,
   baseModelToRunner,
   buildSidecar,
+  detectEarlyAccess,
   fetchCivitaiModel,
   normalizeCivitaiImageUrl,
   parseCivitaiUrl,
@@ -177,15 +178,19 @@ export const resolveCivitaiKey = async () => {
 // `.partial` from a previous crashed install (and prevents two concurrent
 // installs of the same target from racing on the same temp path).
 // fetchImpl is injectable for tests.
-const downloadToFile = async (url, destPath, { fetchImpl = fetch, headers = {} } = {}) => {
+const downloadToFile = async (url, destPath, { fetchImpl = fetch, headers = {} , hasApiKey = false } = {}) => {
   const tmpPath = `${destPath}.${randomBytes(6).toString('hex')}.partial`;
   const res = await fetchImpl(url, { headers, redirect: 'follow' });
   if (!res.ok) {
     if (res.status === 401 || res.status === 403) {
-      throw new ServerError(
-        `Civitai download rejected (${res.status}) — this LoRA may require an API key. Set CIVITAI_API_KEY in Settings and retry.`,
-        { status: res.status, code: 'CIVITAI_AUTH' },
-      );
+      // When a key was supplied and Civitai still rejects, the cause is
+      // almost always early-access content or a deactivated/scoped key —
+      // not a missing key. Don't tell the user to set a key they've
+      // already set; surface both possibilities instead.
+      const message = hasApiKey
+        ? `Civitai rejected the download (${res.status}) even with your saved API key. The LoRA is likely in early-access (Civitai supporters only) or your key has expired/been revoked.`
+        : `Civitai download rejected (${res.status}) — this LoRA may require an API key. Set CIVITAI_API_KEY in Settings and retry.`;
+      throw new ServerError(message, { status: res.status, code: 'CIVITAI_AUTH' });
     }
     throw new ServerError(`Civitai download failed: ${res.status} ${res.statusText}`, { status: 502, code: 'CIVITAI_DOWNLOAD_FAILED' });
   }
@@ -216,6 +221,22 @@ export const installFromCivitai = async (input, { fetchImpl = fetch } = {}) => {
   const apiKey = (typeof input?.apiKey === 'string' && input.apiKey.trim()) || (await resolveCivitaiKey());
   const model = await fetchCivitaiModel(modelId, { apiKey, fetchImpl });
   const version = pickVersion(model, versionId);
+  // Refuse early-access versions up front. The download endpoint would
+  // 401 even with a valid API key (only Civitai supporters can download
+  // during the early-access window), and routing the user into the
+  // "set API key" modal is misleading because their key isn't the issue.
+  const ea = detectEarlyAccess(version);
+  if (ea.early) {
+    const when = ea.hoursRemaining != null
+      ? (ea.hoursRemaining < 24
+        ? `~${ea.hoursRemaining}h`
+        : `~${Math.round(ea.hoursRemaining / 24)}d`)
+      : 'soon';
+    throw new ServerError(
+      `"${model.name}" v${version.id} is in Civitai early-access — only Civitai supporters can download it for ${when} more${ea.endsAt ? ` (until ${ea.endsAt})` : ''}. Try again once it goes public.`,
+      { status: 403, code: 'CIVITAI_EARLY_ACCESS' },
+    );
+  }
   const file = pickPrimaryFile(version);
   if (!file?.downloadUrl) {
     throw new ServerError(
@@ -259,6 +280,7 @@ export const installFromCivitai = async (input, { fetchImpl = fetch } = {}) => {
   await downloadToFile(tokenized, destPath, {
     fetchImpl,
     headers: { 'User-Agent': 'PortOS/civitai-installer' },
+    hasApiKey: !!apiKey,
   });
 
   const sidecar = buildSidecar({ model, version, file, filename });

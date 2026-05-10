@@ -4,6 +4,7 @@ import {
   baseModelToRunner,
   buildAuthHeaders,
   buildSidecar,
+  detectEarlyAccess,
   fetchCivitaiModel,
   normalizeCivitaiImageUrl,
   parseCivitaiUrl,
@@ -156,6 +157,47 @@ describe('buildAuthHeaders / applyDownloadToken', () => {
   it('passes through when no key', () => {
     expect(applyDownloadToken('https://x', '')).toBe('https://x');
     expect(applyDownloadToken('https://x', null)).toBe('https://x');
+  });
+});
+
+describe('detectEarlyAccess', () => {
+  it('reports public versions as not-early', () => {
+    expect(detectEarlyAccess({ availability: 'Public' })).toEqual({ early: false });
+    expect(detectEarlyAccess({})).toEqual({ early: false });
+    expect(detectEarlyAccess(null)).toEqual({ early: false });
+  });
+  it('flags EarlyAccess and surfaces endsAt directly', () => {
+    const future = new Date(Date.now() + 13 * 3600_000).toISOString();
+    const out = detectEarlyAccess({ availability: 'EarlyAccess', earlyAccessConfig: { endsAt: future } });
+    expect(out.early).toBe(true);
+    expect(out.endsAt).toBe(future);
+    expect(out.hoursRemaining).toBeGreaterThanOrEqual(12);
+    expect(out.hoursRemaining).toBeLessThanOrEqual(14);
+  });
+  it('computes endsAt from publishedAt + period when only the period is given', () => {
+    const publishedAt = new Date(Date.now() - 1 * 24 * 3600_000).toISOString();
+    const out = detectEarlyAccess({
+      availability: 'EarlyAccess',
+      publishedAt,
+      earlyAccessConfig: { period: 7 },
+    });
+    expect(out.early).toBe(true);
+    // Roughly 6 days * 24h remaining (allow ±2h drift for test execution time)
+    expect(out.hoursRemaining).toBeGreaterThanOrEqual(6 * 24 - 2);
+    expect(out.hoursRemaining).toBeLessThanOrEqual(6 * 24 + 2);
+  });
+  it('flags via earlyAccessConfig.period even when availability is missing', () => {
+    expect(detectEarlyAccess({ earlyAccessConfig: { period: 3, endsAt: '2099-01-01T00:00:00Z' } })).toMatchObject({
+      early: true,
+      endsAt: '2099-01-01T00:00:00Z',
+    });
+  });
+  it('handles flagged early-access with no resolvable end date', () => {
+    expect(detectEarlyAccess({ availability: 'EarlyAccess' })).toEqual({
+      early: true,
+      endsAt: null,
+      hoursRemaining: null,
+    });
   });
 });
 

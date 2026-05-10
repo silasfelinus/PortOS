@@ -217,6 +217,41 @@ export const applyDownloadToken = (downloadUrl, apiKey) => {
   return `${downloadUrl}${sep}token=${encodeURIComponent(apiKey.trim())}`;
 };
 
+// Detect early-access status from a Civitai modelVersion. New uploads on
+// Civitai can be flagged as "Early Access" — only paid Civitai supporters
+// can download them for a window (typically 1-14 days). The download
+// endpoint returns 401 in this case even with a valid API key, which would
+// otherwise route the user into the "set CIVITAI_API_KEY" modal where their
+// key is already saved. Detect ahead of the download attempt and surface a
+// distinct error so the UI can explain it without prompting for a key.
+//
+// Returns { early: false } for public versions, or
+// { early: true, endsAt: ISO|null, hoursRemaining: number|null } when
+// early-access. Field shapes vary across Civitai API versions, so we check
+// both `earlyAccessConfig.endsAt` and a `publishedAt + period` fallback.
+export const detectEarlyAccess = (version) => {
+  const availability = String(version?.availability || '').toLowerCase();
+  const config = version?.earlyAccessConfig;
+  const flagged = availability === 'earlyaccess' || (config && (config.period > 0 || config.endsAt));
+  if (!flagged) return { early: false };
+
+  let endsAt = null;
+  if (typeof config?.endsAt === 'string') {
+    endsAt = config.endsAt;
+  } else if (typeof version?.earlyAccessEndsAt === 'string') {
+    endsAt = version.earlyAccessEndsAt;
+  } else if (typeof version?.publishedAt === 'string' && Number.isFinite(config?.period)) {
+    const t = Date.parse(version.publishedAt);
+    if (Number.isFinite(t)) endsAt = new Date(t + config.period * 24 * 3600 * 1000).toISOString();
+  }
+  let hoursRemaining = null;
+  if (endsAt) {
+    const t = Date.parse(endsAt);
+    if (Number.isFinite(t)) hoursRemaining = Math.max(0, Math.round((t - Date.now()) / 3600_000));
+  }
+  return { early: true, endsAt, hoursRemaining };
+};
+
 // Build the canonical sidecar shape. Stored next to the .safetensors file as
 // `<filename>.metadata.json`. Decoupled from fetchCivitaiModel so callers can
 // build it from a known model+version pair without a second API hit (the
