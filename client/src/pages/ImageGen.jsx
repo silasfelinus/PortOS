@@ -848,6 +848,12 @@ export default function ImageGen() {
                           />
                           <span className="text-xs text-gray-300 truncate flex-1" title={(lora.triggerWords || []).length ? `Trigger words: ${lora.triggerWords.join(', ')}` : lora.name}>
                             {lora.name}
+                            {/* baseModel suffix disambiguates multiple installed
+                                versions of the same model (e.g. ZImageBase vs
+                                ZImageTurbo, both mapping to 'z-image' family). */}
+                            {lora.civitai?.baseModel && (
+                              <span className="ml-1.5 text-[10px] text-gray-600 font-mono">[{lora.civitai.baseModel}]</span>
+                            )}
                             {(lora.triggerWords || []).length > 0 && (
                               <span className="ml-2 text-[10px] text-gray-500 font-mono">{lora.triggerWords.slice(0, 2).join(', ')}{lora.triggerWords.length > 2 ? '…' : ''}</span>
                             )}
