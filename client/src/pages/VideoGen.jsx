@@ -1021,7 +1021,12 @@ export default function VideoGen() {
                   onChange={(e) => { setModelId(e.target.value); setSteps(''); setGuidanceScale(''); }}
                   className="w-full bg-port-bg border border-port-border rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-port-accent disabled:opacity-50"
                 >
-                  {models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  {models.filter((m) => !m.deprecated).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  {models.some((m) => m.deprecated) && (
+                    <optgroup label="Legacy">
+                      {models.filter((m) => m.deprecated).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                    </optgroup>
+                  )}
                 </select>
               </div>
             )}

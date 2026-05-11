@@ -34,9 +34,9 @@ const DEFAULT_REGISTRY = {
     macos: [
       // notapalindrome's mlx-video-with-audio runtime — single PyPI package,
       // T2V/I2V only, FFLF degrades to last-frame conditioning (one --image arg).
-      { id: 'ltx2_unified',       name: 'LTX-2 Unified (~42 GB)',          repo: 'notapalindrome/ltx2-mlx-av',     runtime: 'mlx_video', steps: 30, guidance: 3.0 },
-      { id: 'ltx23_unified',      name: 'LTX-2.3 Unified Beta (~48 GB)',   repo: 'notapalindrome/ltx23-mlx-av',    runtime: 'mlx_video', steps: 25, guidance: 3.0 },
-      { id: 'ltx23_distilled_q4', name: 'LTX-2.3 Distilled Q4 (~22 GB)',   repo: 'notapalindrome/ltx23-mlx-av-q4', runtime: 'mlx_video', steps: 25, guidance: 3.0 },
+      { id: 'ltx2_unified',       name: 'LTX-2 Unified (~42 GB)',          repo: 'notapalindrome/ltx2-mlx-av',     runtime: 'mlx_video', steps: 30, guidance: 3.0, deprecated: true },
+      { id: 'ltx23_unified',      name: 'LTX-2.3 Unified Beta (~48 GB)',   repo: 'notapalindrome/ltx23-mlx-av',    runtime: 'mlx_video', steps: 25, guidance: 3.0, deprecated: true },
+      { id: 'ltx23_distilled_q4', name: 'LTX-2.3 Distilled Q4 (~22 GB)',   repo: 'notapalindrome/ltx23-mlx-av-q4', runtime: 'mlx_video', steps: 25, guidance: 3.0, deprecated: true },
       // dgrauet's ltx-2-mlx runtime — true KeyframeInterpolationPipeline,
       // native video Extend, audio→video. Requires a separate venv synced
       // via `INSTALL_LTX2=1 bash scripts/setup-image-video.sh`.
