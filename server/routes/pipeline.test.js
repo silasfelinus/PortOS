@@ -34,6 +34,20 @@ vi.mock('../services/pipeline/textStages.js', async () => {
   };
 });
 
+// Stub the arc-planner LLM calls so route tests don't hit a provider.
+let arcGenerateSpy;
+let seasonEpisodesSpy;
+let arcVerifySpy;
+vi.mock('../services/pipeline/arcPlanner.js', async () => {
+  const actual = await vi.importActual('../services/pipeline/arcPlanner.js');
+  return {
+    ...actual,
+    generateArcOverview: vi.fn((...args) => arcGenerateSpy(...args)),
+    generateSeasonEpisodes: vi.fn((...args) => seasonEpisodesSpy(...args)),
+    verifyArc: vi.fn((...args) => arcVerifySpy(...args)),
+  };
+});
+
 // Stub the auto-runner so the test doesn't have to wait for real SSE traffic.
 vi.mock('../services/pipeline/autoRunner.js', () => ({
   startAutoRunTextStages: vi.fn(async () => ({ runId: 'auto-run-1', alreadyRunning: false })),
@@ -584,5 +598,127 @@ describe('pipeline routes', () => {
       themes: ['legacy', 'betrayal'],
       status: 'draft',
     });
+  });
+
+  // -----------------------
+  // Arc planning routes (Phase 3 of Story Arc Planning)
+  // -----------------------
+
+  it('POST /series/:id/arc/generate returns preview without committing by default', async () => {
+    const app = makeApp();
+    const ser = await request(app).post('/api/pipeline/series').send({ name: 'Salt Run' });
+    arcGenerateSpy = vi.fn(async () => ({
+      arc: { logline: 'Whole-arc pitch', summary: 'sum', themes: ['legacy'], protagonistArc: 'P', status: 'draft' },
+      seasons: [{ id: 'sea-1', number: 1, title: 'Pilot' }],
+      runId: 'run-1',
+      providerId: 'claude',
+      model: 'opus-4',
+    }));
+    const r = await request(app).post(`/api/pipeline/series/${ser.body.id}/arc/generate`).send({});
+    expect(r.status).toBe(200);
+    expect(r.body.arc.logline).toBe('Whole-arc pitch');
+    expect(r.body.seasons).toHaveLength(1);
+    expect(r.body.committed).toBe(false);
+    expect(r.body.series).toBe(null);
+
+    // Confirm the series wasn't actually mutated.
+    const reloaded = await request(app).get(`/api/pipeline/series/${ser.body.id}`);
+    expect(reloaded.body.arc).toBe(null);
+    expect(reloaded.body.seasons).toEqual([]);
+  });
+
+  it('POST /series/:id/arc/generate with commit:true persists arc + seasons', async () => {
+    const app = makeApp();
+    const ser = await request(app).post('/api/pipeline/series').send({ name: 'Salt Run' });
+    arcGenerateSpy = vi.fn(async () => ({
+      arc: { logline: 'Pitch', summary: 'sum', themes: [], protagonistArc: '', status: 'draft' },
+      seasons: [
+        { id: 'sea-1', number: 1, title: 'Pilot', createdAt: '2026-05-10T00:00:00.000Z', updatedAt: '2026-05-10T00:00:00.000Z' },
+      ],
+      runId: 'run-1', providerId: 'claude', model: 'opus-4',
+    }));
+    const r = await request(app).post(`/api/pipeline/series/${ser.body.id}/arc/generate`).send({ commit: true });
+    expect(r.status).toBe(200);
+    expect(r.body.committed).toBe(true);
+    expect(r.body.series.arc.logline).toBe('Pitch');
+    expect(r.body.series.seasons).toHaveLength(1);
+
+    // Confirm the persisted series reads back the same way.
+    const reloaded = await request(app).get(`/api/pipeline/series/${ser.body.id}`);
+    expect(reloaded.body.arc.logline).toBe('Pitch');
+    expect(reloaded.body.seasons[0].title).toBe('Pilot');
+  });
+
+  it('POST /series/:id/seasons/:seasonId/episodes/generate returns preview without committing', async () => {
+    const app = makeApp();
+    const ser = await request(app).post('/api/pipeline/series').send({ name: 'S' });
+    const sea = await request(app).post(`/api/pipeline/series/${ser.body.id}/seasons`).send({
+      title: 'Pilot', synopsis: 'season synopsis',
+    });
+    seasonEpisodesSpy = vi.fn(async () => ({
+      season: sea.body,
+      episodes: [
+        { number: 1, title: 'Ep 1', logline: 'L', synopsis: 'S', primaryCharacters: ['LINA'], arcRole: 'pilot' },
+        { number: 2, title: 'Ep 2', logline: 'L2', synopsis: 'S2', primaryCharacters: ['LINA'], arcRole: 'complication' },
+      ],
+      runId: 'run-1', providerId: 'p', model: 'm',
+    }));
+    const r = await request(app)
+      .post(`/api/pipeline/series/${ser.body.id}/seasons/${sea.body.id}/episodes/generate`)
+      .send({});
+    expect(r.status).toBe(200);
+    expect(r.body.episodes).toHaveLength(2);
+    expect(r.body.committed).toBe(false);
+    expect(r.body.createdIssues).toEqual([]);
+
+    // No issues actually created.
+    const issues = await request(app).get(`/api/pipeline/series/${ser.body.id}/issues`);
+    expect(issues.body).toEqual([]);
+  });
+
+  it('POST /series/:id/seasons/:seasonId/episodes/generate with commit:true creates one issue per episode', async () => {
+    const app = makeApp();
+    const ser = await request(app).post('/api/pipeline/series').send({ name: 'S' });
+    const sea = await request(app).post(`/api/pipeline/series/${ser.body.id}/seasons`).send({
+      title: 'Pilot', synopsis: 'season synopsis',
+    });
+    seasonEpisodesSpy = vi.fn(async () => ({
+      season: sea.body,
+      episodes: [
+        { number: 1, title: 'Ep 1', logline: 'L1', synopsis: 'Pilot synopsis', primaryCharacters: ['LINA'], arcRole: 'pilot' },
+        { number: 2, title: 'Ep 2', logline: 'L2', synopsis: 'Comp synopsis', primaryCharacters: ['LINA'], arcRole: 'complication' },
+      ],
+      runId: 'run-2', providerId: 'p', model: 'm',
+    }));
+    const r = await request(app)
+      .post(`/api/pipeline/series/${ser.body.id}/seasons/${sea.body.id}/episodes/generate`)
+      .send({ commit: true });
+    expect(r.status).toBe(200);
+    expect(r.body.committed).toBe(true);
+    expect(r.body.createdIssues).toHaveLength(2);
+    expect(r.body.createdIssues[0].seasonId).toBe(sea.body.id);
+    expect(r.body.createdIssues[0].arcPosition).toBe(1);
+    expect(r.body.createdIssues[0].title).toBe('Ep 1');
+    // Synopsis lands in stages.idea.input so auto-run-text has a seed.
+    expect(r.body.createdIssues[0].stages.idea.input).toContain('Pilot synopsis');
+    expect(r.body.createdIssues[1].arcPosition).toBe(2);
+
+    const issues = await request(app).get(`/api/pipeline/series/${ser.body.id}/issues`);
+    expect(issues.body.map((i) => i.title)).toEqual(['Ep 1', 'Ep 2']);
+  });
+
+  it('POST /series/:id/arc/verify forwards to the planner and returns issues', async () => {
+    const app = makeApp();
+    const ser = await request(app).post('/api/pipeline/series').send({ name: 'S' });
+    arcVerifySpy = vi.fn(async () => ({
+      issues: [
+        { severity: 'high', location: 'season:2/episode:5', problem: 'character is dead in S1', suggestion: 'remove from S2' },
+      ],
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+    const r = await request(app).post(`/api/pipeline/series/${ser.body.id}/arc/verify`).send({});
+    expect(r.status).toBe(200);
+    expect(r.body.issues).toHaveLength(1);
+    expect(r.body.issues[0].severity).toBe('high');
   });
 });

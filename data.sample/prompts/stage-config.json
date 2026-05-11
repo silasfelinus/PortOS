@@ -220,6 +220,27 @@
       "model": "default",
       "returnsJson": true,
       "variables": []
+    },
+    "pipeline-arc-overview": {
+      "name": "Pipeline — Series Arc Overview",
+      "description": "Plan the top-level multi-season story spine for a series from its bible: a series-level logline, summary, themes, protagonist arc, and a 2–5 season breakdown with per-season loglines, ending hooks, and episode-count targets. Runs at `heavy` tier — most expensive single call in the pipeline.",
+      "model": "heavy",
+      "returnsJson": true,
+      "variables": []
+    },
+    "pipeline-season-episodes": {
+      "name": "Pipeline — Season Episode Breakdown",
+      "description": "Plan the episode-by-episode breakdown for one season of a multi-season series. Slots N episodes between the season's pickup state and ending hook, respecting prior seasons' continuity, the protagonist's whole-series arc, and a balanced mix of pilot / complication / midpoint / b-plot / all-is-lost / finale arc roles.",
+      "model": "default",
+      "returnsJson": true,
+      "variables": []
+    },
+    "pipeline-arc-verify": {
+      "name": "Pipeline — Arc Verification",
+      "description": "Cross-season continuity pass over an authored arc: catches character contradictions, dropped subplots, episode-count vs arc-weight mismatch, unresolved finale hooks, arc-role imbalance, and theme drift. Returns actionable { severity, location, problem, suggestion } issues — empty list means clean.",
+      "model": "heavy",
+      "returnsJson": true,
+      "variables": []
     }
   }
 }

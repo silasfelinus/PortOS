@@ -179,6 +179,10 @@ export async function createIssue(input = {}) {
     number: input.number || nextIssueNumber(state.issues, seriesId),
     title,
     status: 'draft',
+    // Phase 2: optional arc pointers passed by the season-episodes generator
+    // (and any future caller wiring an issue to a season at create time).
+    seasonId: 'seasonId' in input ? input.seasonId : null,
+    arcPosition: 'arcPosition' in input ? input.arcPosition : null,
     stages: input.stages || {},
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

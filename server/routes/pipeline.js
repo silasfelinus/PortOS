@@ -34,6 +34,7 @@ import {
 import * as seriesSvc from '../services/pipeline/series.js';
 import * as issuesSvc from '../services/pipeline/issues.js';
 import * as seasonsSvc from '../services/pipeline/seasons.js';
+import * as arcPlanner from '../services/pipeline/arcPlanner.js';
 import { generateStage } from '../services/pipeline/textStages.js';
 import * as autoRunner from '../services/pipeline/autoRunner.js';
 import { enqueueVisualImage } from '../services/pipeline/visualStages.js';
@@ -53,6 +54,7 @@ const SERVICE_ERROR_STATUS = {
   [seasonsSvc.ERR_NOT_FOUND]: 404,
   [seasonsSvc.ERR_VALIDATION]: 400,
   [seasonsSvc.ERR_REASSIGN_TARGET]: 400,
+  [arcPlanner.ERR_VALIDATION]: 400,
   [ERR_NO_STORYBOARDS]: 400,
 };
 
@@ -261,6 +263,30 @@ const extractBibleSchema = z.object({
   parallel: z.boolean().optional(),
 }).refine((p) => p.issueId || p.corpus, { message: 'extract requires either `issueId` or `corpus`' });
 
+// Arc / season-episodes / verify — Phase 3 of Story Arc Planning. All three
+// LLM calls share a tiny schema: provider override + model override. The
+// service layer pulls everything else from the persisted series record.
+const arcGenerateSchema = z.object({
+  providerOverride: z.string().trim().max(80).optional(),
+  modelOverride: z.string().trim().max(200).optional(),
+  // commit:true persists the LLM output to the series record in one shot
+  // (arc + seasons). Default false returns a preview the UI can confirm
+  // before writing — matches the storyboards-extract two-click pattern.
+  commit: z.boolean().optional(),
+});
+
+const seasonEpisodesGenerateSchema = z.object({
+  providerOverride: z.string().trim().max(80).optional(),
+  modelOverride: z.string().trim().max(200).optional(),
+  // commit:true creates one issue per episode under this season.
+  commit: z.boolean().optional(),
+});
+
+const arcVerifySchema = z.object({
+  providerOverride: z.string().trim().max(80).optional(),
+  modelOverride: z.string().trim().max(200).optional(),
+});
+
 const autoRunSchema = z.object({
   providerId: z.string().trim().max(80).optional(),
   model: z.string().trim().max(200).optional(),
@@ -383,6 +409,92 @@ router.delete('/series/:id/seasons/:seasonId', asyncHandler(async (req, res) => 
   const result = await seasonsSvc.deleteSeason(req.params.id, req.params.seasonId, {
     reassignTo: body.reassignTo ?? null,
   }).catch((err) => { throw mapServiceError(err); });
+  res.json(result);
+}));
+
+// =====================
+// Arc planning routes — Phase 3 of Story Arc Planning. Three LLM-driven
+// passes that propose (and optionally commit) arc-level metadata + season
+// outlines + per-episode breakdowns.
+// =====================
+
+// Top-of-arc generation: proposes `series.arc` + `series.seasons[]` from the
+// series bible. With `commit: true` persists the result in one shot; default
+// returns a preview the UI can confirm before writing.
+router.post('/series/:id/arc/generate', asyncHandler(async (req, res) => {
+  await seriesSvc.getSeries(req.params.id).catch((err) => { throw mapServiceError(err); });
+  const body = validateRequest(arcGenerateSchema, req.body ?? {});
+  const result = await arcPlanner.generateArcOverview(req.params.id, body)
+    .catch((err) => { throw mapServiceError(err); });
+  let series = null;
+  if (body.commit) {
+    series = await seriesSvc.updateSeries(req.params.id, {
+      arc: result.arc,
+      seasons: result.seasons,
+    }).catch((err) => { throw mapServiceError(err); });
+  }
+  res.json({
+    arc: result.arc,
+    seasons: result.seasons,
+    runId: result.runId,
+    providerId: result.providerId,
+    model: result.model,
+    committed: !!body.commit,
+    series,
+  });
+}));
+
+// Per-season episode generation. Proposes (and optionally commits) the
+// per-episode breakdown for one season. With `commit: true`, creates one
+// issue per episode with the season pointer + arcPosition pre-filled.
+router.post('/series/:id/seasons/:seasonId/episodes/generate', asyncHandler(async (req, res) => {
+  const body = validateRequest(seasonEpisodesGenerateSchema, req.body ?? {});
+  const result = await arcPlanner.generateSeasonEpisodes(req.params.id, req.params.seasonId, body)
+    .catch((err) => { throw mapServiceError(err); });
+
+  const createdIssues = [];
+  if (body.commit) {
+    // Create one issue per episode under this season. The issue sanitizer
+    // already accepts `seasonId` + `arcPosition`, so we forward them in the
+    // create payload. The episode's `synopsis` lands in `stages.idea.input`
+    // so the downstream auto-run-text chain has a seed to expand against.
+    for (const ep of result.episodes) {
+      const created = await issuesSvc.createIssue({
+        seriesId: req.params.id,
+        title: ep.title,
+        // Issue `number` is series-scoped (the existing canonical counter);
+        // `arcPosition` is the season-scoped ordinal the LLM gave us. We let
+        // `createIssue` pick the series number so existing issues' numbers
+        // don't collide.
+        seasonId: req.params.seasonId,
+        arcPosition: ep.number,
+        stages: {
+          idea: {
+            status: ep.synopsis ? 'edited' : 'empty',
+            input: [ep.logline, ep.synopsis].filter(Boolean).join('\n\n'),
+          },
+        },
+      });
+      createdIssues.push(created);
+    }
+  }
+
+  res.json({
+    season: result.season,
+    episodes: result.episodes,
+    runId: result.runId,
+    providerId: result.providerId,
+    model: result.model,
+    committed: !!body.commit,
+    createdIssues,
+  });
+}));
+
+router.post('/series/:id/arc/verify', asyncHandler(async (req, res) => {
+  await seriesSvc.getSeries(req.params.id).catch((err) => { throw mapServiceError(err); });
+  const body = validateRequest(arcVerifySchema, req.body ?? {});
+  const result = await arcPlanner.verifyArc(req.params.id, body)
+    .catch((err) => { throw mapServiceError(err); });
   res.json(result);
 }));
 
