@@ -263,29 +263,16 @@ const extractBibleSchema = z.object({
   parallel: z.boolean().optional(),
 }).refine((p) => p.issueId || p.corpus, { message: 'extract requires either `issueId` or `corpus`' });
 
-// Arc / season-episodes / verify — Phase 3 of Story Arc Planning. All three
-// LLM calls share a tiny schema: provider override + model override. The
-// service layer pulls everything else from the persisted series record.
-const arcGenerateSchema = z.object({
+// Arc / season-episodes / verify — Phase 3 of Story Arc Planning. The three
+// LLM calls share a provider/model override shape; the first two also accept
+// `commit: true` to persist the LLM output (skipping the preview/confirm step).
+const providerOverrideShape = {
   providerOverride: z.string().trim().max(80).optional(),
   modelOverride: z.string().trim().max(200).optional(),
-  // commit:true persists the LLM output to the series record in one shot
-  // (arc + seasons). Default false returns a preview the UI can confirm
-  // before writing — matches the storyboards-extract two-click pattern.
-  commit: z.boolean().optional(),
-});
-
-const seasonEpisodesGenerateSchema = z.object({
-  providerOverride: z.string().trim().max(80).optional(),
-  modelOverride: z.string().trim().max(200).optional(),
-  // commit:true creates one issue per episode under this season.
-  commit: z.boolean().optional(),
-});
-
-const arcVerifySchema = z.object({
-  providerOverride: z.string().trim().max(80).optional(),
-  modelOverride: z.string().trim().max(200).optional(),
-});
+};
+const arcGenerateSchema = z.object({ ...providerOverrideShape, commit: z.boolean().optional() });
+const seasonEpisodesGenerateSchema = z.object({ ...providerOverrideShape, commit: z.boolean().optional() });
+const arcVerifySchema = z.object(providerOverrideShape);
 
 const autoRunSchema = z.object({
   providerId: z.string().trim().max(80).optional(),

@@ -31,11 +31,12 @@ import {
 } from 'lucide-react';
 import toast from '../ui/Toast';
 import { timeAgo } from '../../utils/formatters';
+import { useArmedAction } from '../../hooks/useArmedAction';
 import {
   createPipelineIssue, deletePipelineIssue, updatePipelineIssue,
   createPipelineSeason, updatePipelineSeason, deletePipelineSeason,
   generatePipelineArcOverview, generatePipelineSeasonEpisodes, verifyPipelineArc,
-  listPipelineIssues,
+  listPipelineIssues, updatePipelineSeries,
 } from '../../services/api';
 
 const ISSUE_STATUS_COLORS = {
@@ -103,7 +104,6 @@ export default function ArcCanvas({ series, issues, onSeriesUpdate, onIssuesUpda
 function ArcHeader({ series, onSeriesUpdate }) {
   const arc = series.arc;
   const [running, setRunning] = useState(null); // 'generate' | 'verify' | null
-  const [armReplace, setArmReplace] = useState(false);
   const [verifyIssues, setVerifyIssues] = useState(null);
 
   const runGenerate = async () => {
@@ -113,22 +113,14 @@ function ArcHeader({ series, onSeriesUpdate }) {
       return null;
     });
     setRunning(null);
-    setArmReplace(false);
     if (!result) return;
     onSeriesUpdate(result.series);
     toast.success('Arc generated and saved');
   };
-
-  const tryGenerate = () => {
-    // Two-click-arm pattern — same primitive as the storyboards extractor
-    // — so a wandering click can't clobber an authored arc.
-    if (arc && !armReplace) {
-      setArmReplace(true);
-      setTimeout(() => setArmReplace(false), 5000);
-      return;
-    }
-    runGenerate();
-  };
+  // Two-click-arm pattern only applies when there's already an arc to clobber
+  // — first-time generation skips the confirm.
+  const [armReplace, armedGenerate] = useArmedAction(runGenerate);
+  const tryGenerate = () => (arc ? armedGenerate() : runGenerate());
 
   const runVerify = async () => {
     setRunning('verify');
@@ -215,12 +207,10 @@ function ArcContent({ series, onSeriesUpdate }) {
 
   const save = async () => {
     setSaving(true);
-    const updated = await import('../../services/api').then(({ updatePipelineSeries }) =>
-      updatePipelineSeries(series.id, { arc: draft }).catch((err) => {
-        toast.error(err.message || 'Save failed');
-        return null;
-      }),
-    );
+    const updated = await updatePipelineSeries(series.id, { arc: draft }).catch((err) => {
+      toast.error(err.message || 'Save failed');
+      return null;
+    });
     setSaving(false);
     if (!updated) return;
     onSeriesUpdate(updated);
@@ -354,7 +344,6 @@ function VerifyResults({ issues, onDismiss }) {
 function SeasonRow({ series, season, seasons, issues, onSeriesUpdate, onIssuesUpdate }) {
   const [collapsed, setCollapsed] = useState(false);
   const [generatingEpisodes, setGeneratingEpisodes] = useState(false);
-  const [armDelete, setArmDelete] = useState(false);
   const [editing, setEditing] = useState(false);
 
   const runGenerateEpisodes = async () => {
@@ -376,20 +365,13 @@ function SeasonRow({ series, season, seasons, issues, onSeriesUpdate, onIssuesUp
     toast.success(`Generated ${result.createdIssues?.length || 0} episode${result.createdIssues?.length === 1 ? '' : 's'}`);
   };
 
-  const deleteSeason = async () => {
-    if (!armDelete) {
-      setArmDelete(true);
-      setTimeout(() => setArmDelete(false), 5000);
-      return;
-    }
-    setArmDelete(false);
+  const runDeleteSeason = async () => {
     const result = await deletePipelineSeason(series.id, season.id, { reassignTo: null }).catch((err) => {
       toast.error(err.message || 'Delete failed');
       return null;
     });
     if (!result) return;
     onSeriesUpdate({ ...series, seasons: seasons.filter((s) => s.id !== season.id) });
-    // Re-fetch issues so any reassignment (here: null) is reflected.
     const refreshed = await listPipelineIssues(series.id).catch(() => null);
     if (refreshed) onIssuesUpdate(refreshed);
     if (result.reassignedIssueCount > 0) {
@@ -398,6 +380,7 @@ function SeasonRow({ series, season, seasons, issues, onSeriesUpdate, onIssuesUp
       toast.success('Season deleted');
     }
   };
+  const [armDelete, deleteSeason] = useArmedAction(runDeleteSeason);
 
   return (
     <li className="bg-port-card border border-port-border rounded-lg">
@@ -664,25 +647,21 @@ function SeasonActions({ series, season, hasEpisodes, generatingEpisodes, onGene
 }
 
 function IssueRow({ issue, seasons, onIssuesUpdate }) {
-  const [armDelete, setArmDelete] = useState(false);
   const [reassigning, setReassigning] = useState(false);
 
-  const handleDelete = async (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!armDelete) {
-      setArmDelete(true);
-      setTimeout(() => setArmDelete(false), 5000);
-      return;
-    }
-    setArmDelete(false);
+  const runDelete = async () => {
     const ok = await deletePipelineIssue(issue.id).catch((err) => {
       toast.error(err.message || 'Delete failed');
       return null;
     });
     if (ok == null) return;
-    // Patch local state directly per project convention (no refetch needed).
     onIssuesUpdate((prev) => prev.filter((i) => i.id !== issue.id));
+  };
+  const [armDelete, armedDelete] = useArmedAction(runDelete);
+  const handleDelete = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    armedDelete();
   };
 
   const handleReassign = async (newSeasonId) => {

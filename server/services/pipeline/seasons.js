@@ -12,6 +12,7 @@
  */
 
 import { ARC_LIMITS, buildSeason, sanitizeSeason } from '../../lib/storyArc.js';
+import { isStr } from '../../lib/storyBible.js';
 import * as seriesSvc from './series.js';
 import * as issuesSvc from './issues.js';
 
@@ -19,8 +20,6 @@ export const ERR_NOT_FOUND = 'PIPELINE_SEASON_NOT_FOUND';
 export const ERR_VALIDATION = 'PIPELINE_SEASON_VALIDATION';
 export const ERR_REASSIGN_TARGET = 'PIPELINE_SEASON_REASSIGN_TARGET_INVALID';
 const makeErr = (message, code) => Object.assign(new Error(message), { code });
-
-const isStr = (v) => typeof v === 'string';
 
 export async function listSeasons(seriesId) {
   const series = await seriesSvc.getSeries(seriesId);
