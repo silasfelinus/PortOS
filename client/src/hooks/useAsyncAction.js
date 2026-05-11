@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState } from 'react';
 import toast from '../components/ui/Toast';
 
 /**
@@ -18,15 +18,15 @@ import toast from '../components/ui/Toast';
  */
 export function useAsyncAction(fn, { errorMessage } = {}) {
   const [running, setRunning] = useState(false);
-  const run = useCallback(async (...args) => {
+  const run = async (...args) => {
     setRunning(true);
-    const result = await Promise.resolve(fn(...args)).catch((err) => {
+    const result = await fn(...args).catch((err) => {
       toast.error(err?.message || errorMessage || 'Action failed');
       return null;
     });
     setRunning(false);
     return result;
-  }, [fn, errorMessage]);
+  };
   return [run, running];
 }
 

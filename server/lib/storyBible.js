@@ -380,25 +380,13 @@ export function mergeExtractedBible(existing, incoming, kind, { idPrefix = DEFAU
 /**
  * createBibleStore — per-work CRUD + merge factory. Collapses the three
  * writers-room domain files (characters/settings/objects) onto one
- * implementation parameterized by `opts`:
- *
- *   kind, idPrefix, idRegex, fileName, listKey
- *   dedupKey(entry) → string — normalize an entry to its dedup key
- *   primaryFields — fields that participate in the dedup key (['name'] for
- *     char/obj, ['slugline', 'name'] for settings)
- *   editableFields — patchable fields that DON'T go through the dedup-aware
- *     path; capped/cleaned by the kind's sanitizer
- *   requireOnCreate(patch) → string|undefined — message if required field
- *     missing (lets char/obj require `name`, settings require name-or-slugline)
- *   validateAfterUpdate(next) — optional; throw if invalid (settings use
- *     this for "both name and slugline blank → reject")
- *   conflictMessage(value), notFoundLabel, invalidIdMessage — error strings
- *
- * Returns { list, get, create, update, remove, mergeExtracted }. `remove`
- * (not `delete`) because the latter is a JS keyword.
+ * implementation. `remove` (not `delete`) because the latter is a JS keyword.
  */
 
 const WORK_ID_RE = /^wr-work-[0-9a-f-]+$/i;
+const ID_SUFFIX_RE = /^[0-9a-f-]+$/i;
+const FILE_NAME = Object.freeze({ character: 'characters.json', setting: 'settings.json', object: 'objects.json' });
+const LIST_KEY = Object.freeze({ character: 'characters', setting: 'settings', object: 'objects' });
 const badReq = (message) => new ServerError(message, { status: 400, code: 'VALIDATION_ERROR' });
 const notFoundErr = (what) => new ServerError(`${what} not found`, { status: 404, code: 'NOT_FOUND' });
 const wrDir = (workId) => {
@@ -408,15 +396,21 @@ const wrDir = (workId) => {
 
 export function createBibleStore(opts) {
   const {
-    kind, idPrefix, idRegex, fileName, listKey, dedupKey, primaryFields,
+    kind, idPrefix, dedupKey, primaryFields,
     editableFields, requireOnCreate, validateAfterUpdate, conflictMessage,
     notFoundLabel, invalidIdMessage,
   } = opts;
   const sanitizer = SANITIZERS[kind];
-  if (!sanitizer) throw new Error(`createBibleStore: unknown kind "${kind}"`);
+  const fileName = FILE_NAME[kind];
+  const listKey = LIST_KEY[kind];
+  if (!sanitizer || !fileName) throw new Error(`createBibleStore: unknown kind "${kind}"`);
   const sortKeyFn = sortKey(kind);
   const filePath = (workId) => join(wrDir(workId), fileName);
-  const assertId = (id) => { if (!idRegex.test(id)) throw badReq(invalidIdMessage); };
+  const assertId = (id) => {
+    if (typeof id !== 'string' || !id.startsWith(idPrefix) || !ID_SUFFIX_RE.test(id.slice(idPrefix.length))) {
+      throw badReq(invalidIdMessage);
+    }
+  };
 
   async function load(workId) {
     const fallback = { [listKey]: [], updatedAt: null };

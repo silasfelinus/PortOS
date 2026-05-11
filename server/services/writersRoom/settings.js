@@ -27,9 +27,6 @@ export const {
 } = createBibleStore({
   kind: BIBLE_KIND.SETTING,
   idPrefix: 'wr-setting-',
-  idRegex: /^wr-setting-[0-9a-f-]+$/i,
-  fileName: 'settings.json',
-  listKey: 'settings',
   dedupKey,
   primaryFields: ['slugline', 'name'],
   editableFields: ['description', 'palette', 'era', 'weather', 'recurringDetails', 'notes'],

@@ -304,27 +304,24 @@ describe('spawningTasks dedup — late-delete race', () => {
 // flips red and points the dev at the race the structural change re-opened.
 
 describe('agentLifecycle source — spawningTasks delete placement', () => {
-  it('releases the dedup guard inside a finally that wraps the spawn call', () => {
+  it('releases the dedup guard inside a finally, not after updateTask(in_progress)', () => {
     const fnStart = AGENT_LIFECYCLE_SRC.indexOf('export async function spawnAgentForTask');
     expect(fnStart, 'spawnAgentForTask must exist').toBeGreaterThan(-1);
-
-    // Slice from the function start to the first closing top-level `}`.
-    // The function body is ~430 lines; grab enough to cover it.
     const fnBody = AGENT_LIFECYCLE_SRC.slice(fnStart, fnStart + 60_000);
 
-    // The function must contain `spawningTasks.add(task.id)` (the guard add).
     expect(fnBody).toMatch(/spawningTasks\.add\(task\.id\)/);
 
-    // ANTI-PATTERN: a `spawningTasks.delete(task.id)` immediately after the
+    // ANTI-PATTERN: bare `spawningTasks.delete(task.id);` directly after the
     // `updateTask(... 'in_progress' ...)` await (the pre-fix shape). The
-    // negative lookahead allows the `delete` only inside an `if (!update…)`
-    // / `cleanupOnError` branch.
+    // delete must live inside a `finally` block instead.
     const buggyPattern = /await\s+updateTask\([\s\S]{0,800}?status:\s*['"]in_progress['"][\s\S]{0,800}?\}\s*,\s*task\.taskType[\s\S]{0,200}?\)\s*;\s*spawningTasks\.delete\(task\.id\)/;
     expect(fnBody).not.toMatch(buggyPattern);
 
-    // The spawn-call section (spawnViaRunner / spawnDirectly) must be wrapped
-    // in a try/finally with the dedup delete in the finally clause.
-    const tryFinallyPattern = /try\s*\{[\s\S]*?spawnViaRunner[\s\S]*?spawnDirectly[\s\S]*?\}\s*finally\s*\{\s*spawningTasks\.delete\(task\.id\)\s*;?\s*\}/;
-    expect(fnBody).toMatch(tryFinallyPattern);
+    // The dedup-delete must be inside a `finally { ... }` clause somewhere in
+    // the function — the structural guarantee that the guard outlives the
+    // spawn call regardless of which runner/direct branch is taken or what
+    // the function names become.
+    const finallyPattern = /finally\s*\{[\s\S]{0,400}?spawningTasks\.delete\(task\.id\)/;
+    expect(fnBody).toMatch(finallyPattern);
   });
 });

@@ -18,9 +18,6 @@ export const {
 } = createBibleStore({
   kind: BIBLE_KIND.CHARACTER,
   idPrefix: 'wr-char-',
-  idRegex: /^wr-char-[0-9a-f-]+$/i,
-  fileName: 'characters.json',
-  listKey: 'characters',
   dedupKey: (entry) => normalizeBibleName(entry?.name),
   primaryFields: ['name'],
   editableFields: ['aliases', 'role', 'physicalDescription', 'personality', 'background', 'notes'],

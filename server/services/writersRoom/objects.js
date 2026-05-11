@@ -18,9 +18,6 @@ export const {
 } = createBibleStore({
   kind: BIBLE_KIND.OBJECT,
   idPrefix: 'wr-object-',
-  idRegex: /^wr-object-[0-9a-f-]+$/i,
-  fileName: 'objects.json',
-  listKey: 'objects',
   dedupKey: (entry) => normalizeBibleName(entry?.name),
   primaryFields: ['name'],
   editableFields: ['aliases', 'description', 'significance', 'notes'],
