@@ -25,7 +25,12 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
-import { validateRequest } from '../lib/validation.js';
+import {
+  validateRequest,
+  characterBibleCreateSchema,
+  settingBibleCreateSchema,
+  objectBibleCreateSchema,
+} from '../lib/validation.js';
 import * as seriesSvc from '../services/pipeline/series.js';
 import * as issuesSvc from '../services/pipeline/issues.js';
 import { generateStage } from '../services/pipeline/textStages.js';
@@ -54,26 +59,33 @@ const mapServiceError = (err) => {
 
 // ---- Series schemas ----
 
-// Bible entries are sanitized server-side via the canonical shape in
-// `server/lib/storyBible.js`; the route schema is intentionally permissive
-// (max length only) so additive fields don't require a schema migration.
-const bibleEntrySchema = z.record(z.string(), z.any());
-
-const characterSchema = z.object({
+// Bible entry shape is owned by the canonical schemas in `server/lib/validation.js`
+// (re-exports of the Writers Room character/setting/object create-schemas). The
+// Pipeline extends them here with its own back-compat fields and uses
+// `.passthrough()` so canonical sanitizer-emitted fields (`evidence`,
+// `firstAppearance`, `source`, `createdAt`, `updatedAt`, `missingFromProse`)
+// round-trip cleanly when the client re-saves an existing series. Final
+// enforcement lives in the sanitizer in `server/lib/storyBible.js`.
+const characterSchema = characterBibleCreateSchema.extend({
   id: z.string().trim().max(80).optional(),
-  name: z.string().trim().min(1).max(seriesSvc.CHARACTER_NAME_MAX),
   // Back-compat: pre-DRY shape used `description`. Both fields are accepted
   // and the canonical sanitizer normalizes them to `physicalDescription`.
   description: z.string().trim().max(seriesSvc.CHARACTER_DESCRIPTION_MAX).optional(),
-  physicalDescription: z.string().trim().max(seriesSvc.CHARACTER_DESCRIPTION_MAX).optional(),
-  aliases: z.array(z.string().trim().min(1).max(100)).max(12).optional(),
-  role: z.string().trim().max(200).optional(),
-  personality: z.string().trim().max(2000).optional(),
-  background: z.string().trim().max(2000).optional(),
-  notes: z.string().trim().max(4000).optional(),
+  // Pipeline-only image refs (not present on the writers-room shape).
   imageRefs: z.array(z.string().trim().min(1).max(seriesSvc.IMAGE_REF_MAX))
     .max(seriesSvc.IMAGE_REFS_PER_CHARACTER_MAX).optional(),
-});
+  // Pipeline preserves a looser `notes` cap (4000) than the writers-room
+  // base (2000) — overriding here so user-facing limits don't tighten.
+  notes: z.string().trim().max(4000).optional(),
+}).passthrough();
+
+const settingSchema = settingBibleCreateSchema.extend({
+  id: z.string().trim().max(80).optional(),
+}).passthrough();
+
+const objectSchema = objectBibleCreateSchema.extend({
+  id: z.string().trim().max(80).optional(),
+}).passthrough();
 
 const seriesCreateSchema = z.object({
   name: z.string().trim().min(1).max(seriesSvc.NAME_MAX),
@@ -82,8 +94,8 @@ const seriesCreateSchema = z.object({
   worldId: z.string().trim().max(seriesSvc.WORLD_ID_MAX).nullable().optional(),
   writersRoomWorkId: z.string().trim().max(seriesSvc.WRITERS_ROOM_WORK_ID_MAX).nullable().optional(),
   characters: z.array(characterSchema).max(seriesSvc.BIBLE_ENTRIES_PER_SERIES_MAX).optional(),
-  settings: z.array(bibleEntrySchema).max(seriesSvc.BIBLE_ENTRIES_PER_SERIES_MAX).optional(),
-  objects: z.array(bibleEntrySchema).max(seriesSvc.BIBLE_ENTRIES_PER_SERIES_MAX).optional(),
+  settings: z.array(settingSchema).max(seriesSvc.BIBLE_ENTRIES_PER_SERIES_MAX).optional(),
+  objects: z.array(objectSchema).max(seriesSvc.BIBLE_ENTRIES_PER_SERIES_MAX).optional(),
   styleNotes: z.string().trim().max(seriesSvc.STYLE_NOTES_MAX).optional().default(''),
   targetFormat: z.enum(seriesSvc.TARGET_FORMATS).optional(),
   issueCountTarget: z.number().int().min(0).max(seriesSvc.ISSUE_COUNT_TARGET_MAX).optional(),
@@ -96,8 +108,8 @@ const seriesPatchSchema = z.object({
   worldId: z.string().trim().max(seriesSvc.WORLD_ID_MAX).nullable().optional(),
   writersRoomWorkId: z.string().trim().max(seriesSvc.WRITERS_ROOM_WORK_ID_MAX).nullable().optional(),
   characters: z.array(characterSchema).max(seriesSvc.BIBLE_ENTRIES_PER_SERIES_MAX).optional(),
-  settings: z.array(bibleEntrySchema).max(seriesSvc.BIBLE_ENTRIES_PER_SERIES_MAX).optional(),
-  objects: z.array(bibleEntrySchema).max(seriesSvc.BIBLE_ENTRIES_PER_SERIES_MAX).optional(),
+  settings: z.array(settingSchema).max(seriesSvc.BIBLE_ENTRIES_PER_SERIES_MAX).optional(),
+  objects: z.array(objectSchema).max(seriesSvc.BIBLE_ENTRIES_PER_SERIES_MAX).optional(),
   styleNotes: z.string().trim().max(seriesSvc.STYLE_NOTES_MAX).optional(),
   targetFormat: z.enum(seriesSvc.TARGET_FORMATS).optional(),
   issueCountTarget: z.number().int().min(0).max(seriesSvc.ISSUE_COUNT_TARGET_MAX).optional(),
