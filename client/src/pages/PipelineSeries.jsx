@@ -17,20 +17,13 @@ import {
   PanelLeftClose, PanelLeftOpen,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
-import { timeAgo } from '../utils/formatters';
+import ArcCanvas from '../components/pipeline/ArcCanvas';
 import {
   getPipelineSeries, updatePipelineSeries,
-  listPipelineIssues, createPipelineIssue, deletePipelineIssue,
+  listPipelineIssues,
   listWorlds,
   PIPELINE_TARGET_FORMATS,
 } from '../services/api';
-
-const STATUS_COLORS = {
-  draft: 'text-gray-400 bg-gray-700/30',
-  running: 'text-port-accent bg-port-accent/10',
-  'needs-review': 'text-port-warning bg-port-warning/10',
-  shipped: 'text-port-success bg-port-success/10',
-};
 
 const PIPELINE_SIDEBAR_KEY = 'portos-pipeline-series-sidebar-collapsed';
 
@@ -42,8 +35,6 @@ export default function PipelineSeries() {
   const [worlds, setWorlds] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [newIssueTitle, setNewIssueTitle] = useState('');
-  const [armedIssueId, setArmedIssueId] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     return localStorage.getItem(PIPELINE_SIDEBAR_KEY) === 'true';
   });
@@ -115,32 +106,15 @@ export default function PipelineSeries() {
     patchSeries({ characters: series.characters.filter((_, j) => j !== i) });
   };
 
-  const handleCreateIssue = async (e) => {
-    e?.preventDefault();
-    const title = newIssueTitle.trim();
-    if (!title) return;
-    const created = await createPipelineIssue(seriesId, { title }).catch((err) => {
-      toast.error(err.message || 'Failed to create issue');
-      return null;
-    });
-    if (!created) return;
-    setIssues((prev) => [...prev, created]);
-    setNewIssueTitle('');
-    toast.success(`Created "${created.title}"`);
-    navigate(`/pipeline/issues/${created.id}/idea`);
-  };
-
-  const handleDeleteIssue = async (iss) => {
-    if (armedIssueId !== iss.id) {
-      setArmedIssueId(iss.id);
-      return;
-    }
-    setArmedIssueId(null);
-    const prior = issues;
-    setIssues((prev) => prev.filter((i) => i.id !== iss.id));
-    await deletePipelineIssue(iss.id).catch((err) => {
-      toast.error(err.message || 'Delete failed');
-      setIssues(prior);
+  // ArcCanvas mutates issues via a setter-style update (`setState(fn)`-shaped)
+  // so child components can do prev-aware patches without parent intervention.
+  // Plain array updates also work — flatten through `Array.isArray` to keep
+  // both shapes supported.
+  const handleIssuesUpdate = (update) => {
+    setIssues((prev) => {
+      if (typeof update === 'function') return update(prev);
+      if (Array.isArray(update)) return update;
+      return prev;
     });
   };
 
@@ -209,41 +183,12 @@ export default function PipelineSeries() {
         </aside>
 
         <main className="min-w-0">
-          <section>
-            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-              <h2 className="text-sm font-semibold text-white">Issues / Episodes</h2>
-              <form onSubmit={handleCreateIssue} className="flex items-center gap-2">
-                <input
-                  value={newIssueTitle}
-                  onChange={(e) => setNewIssueTitle(e.target.value)}
-                  placeholder="Issue title…"
-                  className="w-56 px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm"
-                  maxLength={300}
-                />
-                <button
-                  type="submit"
-                  disabled={!newIssueTitle.trim()}
-                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-40"
-                >
-                  <Plus size={14} /> New issue
-                </button>
-              </form>
-            </div>
-            {issues.length === 0 ? (
-              <p className="text-xs text-gray-600 italic">No issues yet. Create the first one to start the pipeline.</p>
-            ) : (
-              <ul className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
-                {issues.map((iss) => (
-                  <IssueCard
-                    key={iss.id}
-                    issue={iss}
-                    armed={armedIssueId === iss.id}
-                    onDelete={() => handleDeleteIssue(iss)}
-                  />
-                ))}
-              </ul>
-            )}
-          </section>
+          <ArcCanvas
+            series={series}
+            issues={issues}
+            onSeriesUpdate={setSeries}
+            onIssuesUpdate={handleIssuesUpdate}
+          />
         </main>
       </div>
     </div>
@@ -392,42 +337,6 @@ function BibleSidebar({ series, worlds, patchSeries, onAddCharacter, onUpdateCha
         )}
       </div>
     </section>
-  );
-}
-
-function IssueCard({ issue, armed, onDelete }) {
-  return (
-    <li className="relative group bg-port-card border border-port-border rounded-lg hover:border-port-accent/40 transition-colors">
-      <Link
-        to={`/pipeline/issues/${issue.id}/idea`}
-        className="block p-3 space-y-2"
-      >
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-xs text-gray-500 font-mono">#{issue.number}</span>
-          <span className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded ${STATUS_COLORS[issue.status] || STATUS_COLORS.draft}`}>
-            {issue.status}
-          </span>
-        </div>
-        <div className="text-sm text-white line-clamp-2 leading-snug min-h-[2.5rem]">
-          {issue.title || 'Untitled'}
-        </div>
-        <div className="text-[10px] text-gray-500">
-          updated {timeAgo(issue.updatedAt)}
-        </div>
-      </Link>
-      <button
-        type="button"
-        onClick={onDelete}
-        className={`absolute top-2 right-2 p-1.5 rounded transition-opacity ${armed
-          ? 'text-port-error opacity-100 bg-port-bg/80'
-          : 'text-gray-500 hover:text-port-error opacity-0 group-hover:opacity-100 focus:opacity-100'
-        }`}
-        aria-label={armed ? `Confirm delete issue ${issue.title}` : `Delete issue ${issue.title}`}
-        title={armed ? 'Click again to confirm' : 'Delete issue'}
-      >
-        <Trash2 size={12} />
-      </button>
-    </li>
   );
 }
 

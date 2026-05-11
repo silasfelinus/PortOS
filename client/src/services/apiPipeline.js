@@ -88,6 +88,54 @@ export const extractPipelineStoryboardScenes = (issueId, { from, providerOverrid
     body: JSON.stringify({ from, providerOverride, force }),
   });
 
+// ---- Seasons (Phase 2 of Story Arc Planning) ----
+export const listPipelineSeasons = (seriesId) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/seasons`);
+
+export const createPipelineSeason = (seriesId, data) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/seasons`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+
+export const updatePipelineSeason = (seriesId, seasonId, patch) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/seasons/${encodeURIComponent(seasonId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+
+// Body: { reassignTo: <seasonId> | null }. Omitting reassignTo un-groups
+// every child issue.
+export const deletePipelineSeason = (seriesId, seasonId, { reassignTo } = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/seasons/${encodeURIComponent(seasonId)}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ reassignTo: reassignTo ?? null }),
+  });
+
+// ---- Arc planning (Phase 3) ----
+// Returns { arc, seasons, runId, providerId, model, committed, series }.
+// commit:true persists arc + seasons to the series in one shot.
+export const generatePipelineArcOverview = (seriesId, { providerOverride, modelOverride, commit } = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/arc/generate`, {
+    method: 'POST',
+    body: JSON.stringify({ providerOverride, modelOverride, commit }),
+  });
+
+// Returns { season, episodes, runId, providerId, model, committed, createdIssues }.
+// commit:true creates one issue per episode with seasonId + arcPosition set.
+export const generatePipelineSeasonEpisodes = (seriesId, seasonId, { providerOverride, modelOverride, commit } = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/seasons/${encodeURIComponent(seasonId)}/episodes/generate`, {
+    method: 'POST',
+    body: JSON.stringify({ providerOverride, modelOverride, commit }),
+  });
+
+// Returns { issues, runId, providerId, model }. Empty issues[] = clean.
+export const verifyPipelineArc = (seriesId, { providerOverride, modelOverride } = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/arc/verify`, {
+    method: 'POST',
+    body: JSON.stringify({ providerOverride, modelOverride }),
+  });
+
 // ---- Auto-run text chain ----
 export const startPipelineAutoRunText = (issueId, opts = {}) =>
   request(`/pipeline/issues/${encodeURIComponent(issueId)}/auto-run-text`, {
