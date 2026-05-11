@@ -6,6 +6,7 @@ import { generatePipelineVisualImage } from '../../../services/api';
 import { getCreativeDirectorProject } from '../../../services/apiCreativeDirector';
 import { getSceneStatusBadge, PROJECT_STATUS_LABEL } from '../../creative-director/sceneStatus';
 import ScenePreview from '../../creative-director/ScenePreview';
+import { useAsyncAction } from '../../../hooks/useAsyncAction';
 
 const POLL_INTERVAL_MS = 4000;
 
@@ -28,7 +29,6 @@ export default function EpisodeVideoStage({ issue, onStageUpdate }) {
   const usableScenes = storyboardScenes.filter((s) => (s?.description || '').trim().length > 0);
 
   const [cdProject, setCdProject] = useState(null);
-  const [submitting, setSubmitting] = useState(false);
   const [confirmRestart, setConfirmRestart] = useState(false);
   // Initialize from the persisted stage values so a page reload (or a fresh
   // tab) doesn't lose the user's previous picks. Falls through to defaults
@@ -75,20 +75,26 @@ export default function EpisodeVideoStage({ issue, onStageUpdate }) {
     };
   }, [cdProjectId]);
 
+  const [runSubmit, submitting] = useAsyncAction(
+    async ({ force }) => {
+      const payload = { aspectRatio, quality };
+      if (force) payload.force = true;
+      return generatePipelineVisualImage(issue.id, 'episodeVideo', payload).catch((err) => {
+        // Re-throw with a force-aware fallback so useAsyncAction's toaster
+        // surfaces the right verb (start vs restart) if the server didn't
+        // include a message.
+        throw new Error(err.message || (force ? 'Failed to restart episode render' : 'Failed to start episode render'));
+      });
+    },
+  );
+
   const submit = async ({ force }) => {
     if (!force && !usableScenes.length) {
       toast.error('Add storyboard scenes with descriptions first');
       return;
     }
     setConfirmRestart(false);
-    setSubmitting(true);
-    const payload = { aspectRatio, quality };
-    if (force) payload.force = true;
-    const result = await generatePipelineVisualImage(issue.id, 'episodeVideo', payload).catch((err) => {
-      toast.error(err.message || (force ? 'Failed to restart episode render' : 'Failed to start episode render'));
-      return null;
-    });
-    setSubmitting(false);
+    const result = await runSubmit({ force });
     if (!result) return;
     if (force) {
       // Only clear the prior project view AFTER the restart kickoff succeeds.

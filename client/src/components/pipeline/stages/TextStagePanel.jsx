@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react';
 import { Loader2, Sparkles, Save } from 'lucide-react';
 import toast from '../../ui/Toast';
 import { generatePipelineStage, updatePipelineIssue, PIPELINE_STAGE_LABELS } from '../../../services/api';
+import { useAsyncAction } from '../../../hooks/useAsyncAction';
 
 const STATUS_LABEL = {
   empty: 'Not started',
@@ -40,24 +41,27 @@ export default function TextStagePanel({
   const stage = issue.stages?.[stageId] || { status: 'empty', input: '', output: '' };
   const [draftOutput, setDraftOutput] = useState(stage.output || '');
   const [draftInput, setDraftInput] = useState(stage.input || '');
-  const [generating, setGenerating] = useState(stage.status === 'generating');
-  const [saving, setSaving] = useState(false);
+  // Server-pushed in-flight state — separate from the hook's local-action
+  // running flag so an auto-run kicked off elsewhere still keeps the
+  // Generate button locked.
+  const [serverGenerating, setServerGenerating] = useState(stage.status === 'generating');
 
   // Reset local edits when the stage record changes from the parent (e.g.
   // auto-run pushed a new output).
   useEffect(() => {
     setDraftOutput(stage.output || '');
     setDraftInput(stage.input || '');
-    setGenerating(stage.status === 'generating');
+    setServerGenerating(stage.status === 'generating');
   }, [stage.output, stage.input, stage.status, stage.lastRunId]);
 
+  const [runGenerate, localGenerating] = useAsyncAction(
+    () => generatePipelineStage(issue.id, stageId, { seedInput: draftInput }),
+    { errorMessage: `Failed to generate ${stageId}` },
+  );
+  const generating = localGenerating || serverGenerating;
+
   const handleGenerate = async () => {
-    setGenerating(true);
-    const result = await generatePipelineStage(issue.id, stageId, { seedInput: draftInput }).catch((err) => {
-      toast.error(err.message || `Failed to generate ${stageId}`);
-      return null;
-    });
-    setGenerating(false);
+    const result = await runGenerate();
     if (!result) return;
     onStageUpdate?.(stageId, result.stage);
     toast.success(`${PIPELINE_STAGE_LABELS[stageId]} generated`);
@@ -65,9 +69,8 @@ export default function TextStagePanel({
 
   const dirty = draftOutput !== (stage.output || '') || draftInput !== (stage.input || '');
 
-  const handleSave = async () => {
-    setSaving(true);
-    const patch = {
+  const [runSave, saving] = useAsyncAction(
+    () => updatePipelineIssue(issue.id, {
       stages: {
         [stageId]: {
           status: 'edited',
@@ -75,12 +78,12 @@ export default function TextStagePanel({
           output: draftOutput,
         },
       },
-    };
-    const updated = await updatePipelineIssue(issue.id, patch).catch((err) => {
-      toast.error(err.message || 'Save failed');
-      return null;
-    });
-    setSaving(false);
+    }),
+    { errorMessage: 'Save failed' },
+  );
+
+  const handleSave = async () => {
+    const updated = await runSave();
     if (!updated) return;
     onStageUpdate?.(stageId, updated.stages[stageId], updated);
     toast.success(`${PIPELINE_STAGE_LABELS[stageId]} saved`);

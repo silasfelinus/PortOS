@@ -1,21 +1,20 @@
-import { useState } from 'react';
 import { Library, Loader2 } from 'lucide-react';
 import toast from '../../ui/Toast';
 import { extractPipelineBibles } from '../../../services/api';
+import { useAsyncAction } from '../../../hooks/useAsyncAction';
 import TextStagePanel from './TextStagePanel';
 
 export default function ProseStage({ issue, series, onStageUpdate, onSeriesUpdate }) {
-  const [extracting, setExtracting] = useState(false);
   const proseReady = (issue.stages?.prose?.output || '').trim().length > 0;
+
+  const [runExtract, extracting] = useAsyncAction(
+    () => extractPipelineBibles(series.id, { issueId: issue.id }),
+    { errorMessage: 'Extraction failed' },
+  );
 
   const handleExtract = async () => {
     if (!series) return;
-    setExtracting(true);
-    const result = await extractPipelineBibles(series.id, { issueId: issue.id }).catch((err) => {
-      toast.error(err.message || 'Extraction failed');
-      return null;
-    });
-    setExtracting(false);
+    const result = await runExtract();
     if (!result) return;
     onSeriesUpdate?.(result.series);
     const counts = ['characters', 'settings', 'objects'].map(
