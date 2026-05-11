@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { validateRequest } from '../lib/validation.js';
 import { listJobs, getJob, cancelJob, cancelQueuedJobs, enqueueJob, removeArchivedJob, runJobNow, JOB_KINDS, JOB_STATUSES } from '../services/mediaJobQueue/index.js';
+import { refineMediaPrompt } from '../services/mediaPromptRefiner.js';
 
 const router = Router();
 
@@ -17,6 +18,47 @@ const listQuerySchema = z.object({
   status: z.enum(JOB_STATUSES).optional(),
   kind: z.enum(JOB_KINDS).optional(),
   owner: z.string().max(256).optional(),
+});
+
+// renderConfig is inlined into the LLM prompt via JSON.stringify, so an
+// unbounded object would inflate token cost / latency. Cap the serialized
+// payload at 4 KB — that's well above any legitimate render-config (which
+// is typically <500 bytes) but stops a malicious or buggy caller from
+// shipping arbitrarily nested objects through the refiner.
+const RENDER_CONFIG_MAX_BYTES = 4096;
+const refinePromptSchema = z.object({
+  kind: z.enum(JOB_KINDS),
+  // Trim before length check — without trim, "   " would slip past min(1)
+  // and arrive at the refiner where it'd be cleaned to an empty string, then
+  // surface as a confusing "LLM returned an empty prompt" error.
+  prompt: z.string().trim().min(1).max(8000),
+  negativePrompt: z.string().trim().max(8000).optional(),
+  feedback: z.string().trim().min(1).max(3000),
+  providerId: z.string().trim().min(1).max(128),
+  // Empty/whitespace model → undefined so the refiner's defaultModel /
+  // models[0] fallback chain kicks in, instead of a whitespace string
+  // bypassing the MODEL_REQUIRED guard and reaching the provider.
+  model: z.string().max(256).optional().transform((s) => {
+    const v = (s ?? '').trim();
+    return v.length > 0 ? v : undefined;
+  }),
+  renderConfig: z.record(z.any())
+    .refine((obj) => {
+      // JSON.stringify throws on BigInt / circular refs. z.record(z.any())
+      // doesn't reject those at parse time, so wrap the size check so a
+      // bad payload surfaces as VALIDATION_ERROR (400), not a 500.
+      // Measure with the same pretty-printed format the refiner inlines
+      // into the LLM prompt (`JSON.stringify(obj, null, 2)`); minified
+      // measurement would under-count, letting an indented blob slip past
+      // the cap and still inflate the prompt.
+      let size;
+      try { size = Buffer.byteLength(JSON.stringify(obj, null, 2), 'utf8'); }
+      catch { return false; }
+      return size <= RENDER_CONFIG_MAX_BYTES;
+    }, {
+      message: `renderConfig must be JSON-serializable and ≤ ${RENDER_CONFIG_MAX_BYTES} bytes`,
+    })
+    .optional(),
 });
 
 // Sanitize a job before serialization. The internal job record carries
@@ -72,6 +114,11 @@ router.get('/', asyncHandler(async (req, res) => {
     return tb - ta;
   });
   res.json([...live, ...terminal].map(sanitizeJob));
+}));
+
+router.post('/refine-prompt', asyncHandler(async (req, res) => {
+  const data = validateRequest(refinePromptSchema, req.body);
+  res.json(await refineMediaPrompt(data));
 }));
 
 router.get('/:id', asyncHandler(async (req, res) => {
