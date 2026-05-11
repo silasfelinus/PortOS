@@ -2,13 +2,20 @@
  * Canonical story-bible shapes (Character / Setting / Object) shared by the
  * Writers Room (per-work bibles) and the Pipeline (per-series bibles).
  *
- * Both surfaces persist their own JSON; this module just owns the shape +
- * sanitization + the merge-extracted-entries algorithm. Per-domain concerns
- * (id prefix, file path, route exposure) stay with the caller.
+ * Owns the shape + sanitization + merge-extracted-entries algorithm AND the
+ * `createBibleStore(...)` factory the writers-room domain files build on for
+ * their CRUD + file I/O. Route exposure stays with the caller.
  */
 
 import { randomUUID } from 'crypto';
+import { join } from 'path';
 import { normalizeSlugline } from './scenePrompt.js';
+import { PATHS, atomicWrite, ensureDir, readJSONFile } from './fileUtils.js';
+import { ServerError } from './errorHandler.js';
+
+// Re-export so callers (writers-room domain files) can import a single
+// canonical normalizer when they need to match settings by slugline.
+export { normalizeSlugline };
 
 export const BIBLE_LIMITS = Object.freeze({
   NAME_MAX: 200,
@@ -368,4 +375,150 @@ export function mergeExtractedBible(existing, incoming, kind, { idPrefix = DEFAU
   }
 
   return existing.sort((a, b) => keyOf(a).localeCompare(keyOf(b)));
+}
+
+/**
+ * createBibleStore — per-work CRUD + merge factory. Collapses the three
+ * writers-room domain files (characters/settings/objects) onto one
+ * implementation parameterized by `opts`:
+ *
+ *   kind, idPrefix, idRegex, fileName, listKey
+ *   dedupKey(entry) → string — normalize an entry to its dedup key
+ *   primaryFields — fields that participate in the dedup key (['name'] for
+ *     char/obj, ['slugline', 'name'] for settings)
+ *   editableFields — patchable fields that DON'T go through the dedup-aware
+ *     path; capped/cleaned by the kind's sanitizer
+ *   requireOnCreate(patch) → string|undefined — message if required field
+ *     missing (lets char/obj require `name`, settings require name-or-slugline)
+ *   validateAfterUpdate(next) — optional; throw if invalid (settings use
+ *     this for "both name and slugline blank → reject")
+ *   conflictMessage(value), notFoundLabel, invalidIdMessage — error strings
+ *
+ * Returns { list, get, create, update, remove, mergeExtracted }. `remove`
+ * (not `delete`) because the latter is a JS keyword.
+ */
+
+const WORK_ID_RE = /^wr-work-[0-9a-f-]+$/i;
+const badReq = (message) => new ServerError(message, { status: 400, code: 'VALIDATION_ERROR' });
+const notFoundErr = (what) => new ServerError(`${what} not found`, { status: 404, code: 'NOT_FOUND' });
+const wrDir = (workId) => {
+  if (typeof workId !== 'string' || !WORK_ID_RE.test(workId)) throw badReq('Invalid work id');
+  return join(PATHS.data, 'writers-room', 'works', workId);
+};
+
+export function createBibleStore(opts) {
+  const {
+    kind, idPrefix, idRegex, fileName, listKey, dedupKey, primaryFields,
+    editableFields, requireOnCreate, validateAfterUpdate, conflictMessage,
+    notFoundLabel, invalidIdMessage,
+  } = opts;
+  const sanitizer = SANITIZERS[kind];
+  if (!sanitizer) throw new Error(`createBibleStore: unknown kind "${kind}"`);
+  const sortKeyFn = sortKey(kind);
+  const filePath = (workId) => join(wrDir(workId), fileName);
+  const assertId = (id) => { if (!idRegex.test(id)) throw badReq(invalidIdMessage); };
+
+  async function load(workId) {
+    const fallback = { [listKey]: [], updatedAt: null };
+    const parsed = await readJSONFile(filePath(workId), fallback);
+    if (!parsed || !Array.isArray(parsed[listKey])) return fallback;
+    return { ...parsed, [listKey]: sanitizeBibleList(parsed[listKey], kind, { idPrefix }) };
+  }
+
+  async function save(workId, state) {
+    await ensureDir(wrDir(workId));
+    await atomicWrite(filePath(workId), { ...state, updatedAt: nowIso() });
+  }
+
+  async function list(workId) {
+    const state = await load(workId);
+    return state[listKey].sort((a, b) => sortKeyFn(a).localeCompare(sortKeyFn(b)));
+  }
+
+  async function get(workId, entryId) {
+    assertId(entryId);
+    const state = await load(workId);
+    const found = state[listKey].find((e) => e.id === entryId);
+    if (!found) throw notFoundErr(notFoundLabel);
+    return found;
+  }
+
+  async function create(workId, patch = {}) {
+    const requireErr = requireOnCreate(patch);
+    if (requireErr) throw badReq(requireErr);
+    const state = await load(workId);
+    const keyOfPatch = dedupKey(patch);
+    if (keyOfPatch && state[listKey].some((e) => dedupKey(e) === keyOfPatch)) {
+      throw badReq(conflictMessage(patch));
+    }
+    const draft = { id: `${idPrefix}${randomUUID()}`, source: 'user' };
+    for (const field of primaryFields) {
+      if (patch[field] !== undefined) draft[field] = String(patch[field] || '').trim();
+    }
+    for (const field of editableFields) {
+      if (patch[field] !== undefined) draft[field] = patch[field];
+    }
+    // Settings: if both name and slugline are primary, missing name + present
+    // slugline → mirror slugline → name (preserves old createSetting behavior).
+    if (primaryFields.includes('name') && primaryFields.includes('slugline') && !draft.name && draft.slugline) {
+      draft.name = draft.slugline;
+    }
+    const profile = sanitizer(draft, { idPrefix, preserveTimestamps: false });
+    state[listKey].push(profile);
+    await save(workId, state);
+    return profile;
+  }
+
+  async function update(workId, entryId, patch = {}) {
+    assertId(entryId);
+    const state = await load(workId);
+    const idx = state[listKey].findIndex((e) => e.id === entryId);
+    if (idx < 0) throw notFoundErr(notFoundLabel);
+    const next = { ...state[listKey][idx] };
+    // Primary fields: single-primary kinds reject blank; multi-primary
+    // settings allow blanks here and rely on validateAfterUpdate for the
+    // combined-blank invariant.
+    for (const field of primaryFields) {
+      if (patch[field] === undefined) continue;
+      const newVal = String(patch[field] || '').trim();
+      if (primaryFields.length === 1 && !newVal) {
+        throw badReq(`${notFoundLabel} ${field} cannot be blank`);
+      }
+      if (newVal) {
+        const newKey = dedupKey({ ...next, [field]: newVal });
+        if (newKey && state[listKey].some((e) => e.id !== entryId && dedupKey(e) === newKey)) {
+          throw badReq(conflictMessage({ [field]: newVal }));
+        }
+      }
+      next[field] = newVal;
+    }
+    for (const field of editableFields) {
+      if (patch[field] !== undefined) next[field] = patch[field];
+    }
+    if (validateAfterUpdate) validateAfterUpdate(next);
+    next.source = 'user';
+    state[listKey][idx] = sanitizer({ ...next, updatedAt: nowIso() }, { idPrefix, preserveTimestamps: true });
+    await save(workId, state);
+    return state[listKey][idx];
+  }
+
+  async function remove(workId, entryId) {
+    assertId(entryId);
+    const state = await load(workId);
+    const before = state[listKey].length;
+    state[listKey] = state[listKey].filter((e) => e.id !== entryId);
+    if (state[listKey].length === before) throw notFoundErr(notFoundLabel);
+    await save(workId, state);
+    return { ok: true };
+  }
+
+  async function mergeExtracted(workId, extracted) {
+    if (!Array.isArray(extracted)) return list(workId);
+    const state = await load(workId);
+    state[listKey] = mergeExtractedBible(state[listKey], extracted, kind, { idPrefix });
+    await save(workId, state);
+    return state[listKey];
+  }
+
+  return { list, get, create, update, remove, mergeExtracted };
 }

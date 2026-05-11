@@ -1,5 +1,24 @@
-import { describe, it, expect } from 'vitest';
-import {
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, existsSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+let tempRoot;
+
+// Mock PATHS.data so the factory writes into a temp dir per test. Mirrors
+// the pattern used by writers-room CRUD tests.
+vi.mock('./fileUtils.js', async () => {
+  const actual = await vi.importActual('./fileUtils.js');
+  return new Proxy(actual, {
+    get(target, prop) {
+      if (prop === 'PATHS') return { ...actual.PATHS, data: tempRoot };
+      return target[prop];
+    },
+  });
+});
+
+const storyBible = await import('./storyBible.js');
+const {
   sanitizeCharacter,
   sanitizeSetting,
   sanitizeObject,
@@ -7,8 +26,13 @@ import {
   mergeExtractedBible,
   isBlank,
   normalizeBibleName,
+  normalizeSlugline,
   BIBLE_LIMITS,
-} from './storyBible.js';
+  BIBLE_KIND,
+  createBibleStore,
+} = storyBible;
+
+const WORK_ID = 'wr-work-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
 describe('storyBible — sanitizeCharacter', () => {
   it('returns null when name is blank or input is not an object', () => {
@@ -277,5 +301,178 @@ describe('storyBible — helpers', () => {
   it('normalizeBibleName lowercases + trims', () => {
     expect(normalizeBibleName('  Aria Reyes  ')).toBe('aria reyes');
     expect(normalizeBibleName(null)).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createBibleStore — factory exercised through the three real per-kind
+// configs (so we cover both the single-primary-field path and the multi-
+// primary settings path). Each subgroup gets a fresh temp dir.
+// ---------------------------------------------------------------------------
+
+function characterStore() {
+  return createBibleStore({
+    kind: BIBLE_KIND.CHARACTER,
+    idPrefix: 'wr-char-',
+    idRegex: /^wr-char-[0-9a-f-]+$/i,
+    fileName: 'characters.json',
+    listKey: 'characters',
+    dedupKey: (entry) => normalizeBibleName(entry?.name),
+    primaryFields: ['name'],
+    editableFields: ['aliases', 'role', 'physicalDescription'],
+    requireOnCreate: (patch) => (String(patch?.name || '').trim() ? null : 'Character name required'),
+    conflictMessage: ({ name }) => `A character named "${name}" already exists`,
+    notFoundLabel: 'Character',
+    invalidIdMessage: 'Invalid character id',
+  });
+}
+
+function settingStore() {
+  return createBibleStore({
+    kind: BIBLE_KIND.SETTING,
+    idPrefix: 'wr-setting-',
+    idRegex: /^wr-setting-[0-9a-f-]+$/i,
+    fileName: 'settings.json',
+    listKey: 'settings',
+    dedupKey: (entry) => normalizeSlugline(entry?.slugline || entry?.name || ''),
+    primaryFields: ['slugline', 'name'],
+    editableFields: ['description', 'palette'],
+    requireOnCreate: (patch) => {
+      const sl = String(patch?.slugline || '').trim();
+      const nm = String(patch?.name || '').trim();
+      return sl || nm ? null : 'Setting requires either a slugline or a name';
+    },
+    validateAfterUpdate: (next) => {
+      if (!next.slugline && !next.name) {
+        const err = new Error('Setting needs slugline or name');
+        err.status = 400;
+        throw err;
+      }
+    },
+    conflictMessage: ({ slugline, name }) => `A setting matching "${slugline || name}" already exists`,
+    notFoundLabel: 'Setting',
+    invalidIdMessage: 'Invalid setting id',
+  });
+}
+
+describe('storyBible — createBibleStore (single-primary-field kind)', () => {
+  beforeEach(() => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'bible-factory-test-'));
+  });
+  afterEach(() => {
+    if (tempRoot && existsSync(tempRoot)) rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('creates, lists, gets, updates, deletes', async () => {
+    const store = characterStore();
+    expect(await store.list(WORK_ID)).toEqual([]);
+
+    const created = await store.create(WORK_ID, { name: 'Aria', role: 'protagonist' });
+    expect(created.id).toMatch(/^wr-char-/);
+    expect(created.name).toBe('Aria');
+    expect(created.source).toBe('user');
+
+    const listed = await store.list(WORK_ID);
+    expect(listed).toHaveLength(1);
+
+    const fetched = await store.get(WORK_ID, created.id);
+    expect(fetched.id).toBe(created.id);
+
+    const updated = await store.update(WORK_ID, created.id, { role: 'antagonist' });
+    expect(updated.role).toBe('antagonist');
+
+    const removed = await store.remove(WORK_ID, created.id);
+    expect(removed).toEqual({ ok: true });
+    expect(await store.list(WORK_ID)).toEqual([]);
+  });
+
+  it('rejects creation without the required identifier', async () => {
+    const store = characterStore();
+    await expect(store.create(WORK_ID, { name: '   ' })).rejects.toThrow(/name required/i);
+  });
+
+  it('rejects duplicate dedup keys at create time (case-insensitive)', async () => {
+    const store = characterStore();
+    await store.create(WORK_ID, { name: 'Aria' });
+    await expect(store.create(WORK_ID, { name: 'aria' })).rejects.toThrow(/already exists/i);
+  });
+
+  it('rejects path-traversal-shaped work ids before any filesystem access', async () => {
+    const store = characterStore();
+    await expect(store.list('../../etc')).rejects.toThrow(/work id/i);
+    await expect(store.create('../../etc', { name: 'X' })).rejects.toThrow(/work id/i);
+    await expect(store.mergeExtracted('../../etc', [{ name: 'X' }])).rejects.toThrow(/work id/i);
+  });
+
+  it('rejects malformed entry ids on get/update/remove', async () => {
+    const store = characterStore();
+    await expect(store.get(WORK_ID, 'nope')).rejects.toThrow(/invalid character id/i);
+    await expect(store.update(WORK_ID, 'nope', {})).rejects.toThrow(/invalid character id/i);
+    await expect(store.remove(WORK_ID, 'nope')).rejects.toThrow(/invalid character id/i);
+  });
+
+  it('rejects blanking the primary identifier on update', async () => {
+    const store = characterStore();
+    const c = await store.create(WORK_ID, { name: 'Aria' });
+    await expect(store.update(WORK_ID, c.id, { name: '' })).rejects.toThrow(/cannot be blank/i);
+  });
+
+  it('mergeExtracted inserts new entries and skips duplicates', async () => {
+    const store = characterStore();
+    const merged = await store.mergeExtracted(WORK_ID, [
+      { name: 'Aria', role: 'protagonist' },
+      { name: 'Voss', role: 'antagonist' },
+    ]);
+    expect(merged).toHaveLength(2);
+    expect(merged.every((e) => e.source === 'ai')).toBe(true);
+  });
+});
+
+describe('storyBible — createBibleStore (multi-primary-field kind / settings)', () => {
+  beforeEach(() => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'bible-factory-settings-test-'));
+  });
+  afterEach(() => {
+    if (tempRoot && existsSync(tempRoot)) rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('accepts either slugline or name as the primary identifier at create', async () => {
+    const store = settingStore();
+    const a = await store.create(WORK_ID, { slugline: 'INT. KITCHEN — NIGHT', description: 'cozy' });
+    expect(a.slugline).toBe('INT. KITCHEN — NIGHT');
+    // Auto-fills name from slugline when name omitted.
+    expect(a.name).toBe('INT. KITCHEN — NIGHT');
+
+    const b = await store.create(WORK_ID, { name: 'The Atrium' });
+    expect(b.name).toBe('The Atrium');
+    expect(b.slugline).toBe('');
+  });
+
+  it('rejects creation when both slugline and name are blank', async () => {
+    const store = settingStore();
+    await expect(store.create(WORK_ID, {})).rejects.toThrow(/slugline or a name/i);
+  });
+
+  it('rejects an update that blanks both name and slugline (validateAfterUpdate)', async () => {
+    const store = settingStore();
+    const s = await store.create(WORK_ID, { name: 'The Atrium' });
+    await expect(store.update(WORK_ID, s.id, { name: '' })).rejects.toThrow(/slugline or name/i);
+  });
+
+  it('rejects duplicate-slugline create after normalization', async () => {
+    const store = settingStore();
+    await store.create(WORK_ID, { slugline: 'INT. KITCHEN — NIGHT' });
+    await expect(
+      store.create(WORK_ID, { slugline: 'int. kitchen - night' }),
+    ).rejects.toThrow(/already exists/i);
+  });
+
+  it('rejects an update that would collide with another entry on dedup key', async () => {
+    const store = settingStore();
+    const a = await store.create(WORK_ID, { slugline: 'INT. KITCHEN — NIGHT' });
+    await store.create(WORK_ID, { slugline: 'EXT. ROOFTOP — DAWN' });
+    await expect(
+      store.update(WORK_ID, a.id, { slugline: 'EXT. ROOFTOP — DAWN' }),
+    ).rejects.toThrow(/already exists/i);
   });
 });
