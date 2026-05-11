@@ -722,6 +722,7 @@ export default function VideoGen() {
     onClear,
     alt,
     advisoryNote,
+    hint,
   }) => {
     // Clear button shows as soon as the user picks anything (state-only).
     // Preview gates on `uploadUrl` instead of the raw `upload` File because
@@ -772,6 +773,11 @@ export default function VideoGen() {
         {advisoryNote && (
           <p className="text-[10px] text-gray-500 leading-snug" title={advisoryNote.title}>
             {advisoryNote.text}
+          </p>
+        )}
+        {hint && (
+          <p className="text-[10px] text-port-accent/80 leading-snug" title={hint.title}>
+            {hint.text}
           </p>
         )}
       </div>
@@ -926,6 +932,10 @@ export default function VideoGen() {
                 advisoryNote: {
                   text: 'Experimental — last frame is advisory.',
                   title: 'FFLF backend support is experimental — LTX/mlx_video uses the start frame and treats the last frame as advisory.',
+                },
+                hint: {
+                  text: 'Tip: use keyframes that share scene geometry — same camera, same subject. The model interpolates between them; unrelated images produce a visual cut.',
+                  title: 'FFLF works best when the two frames depict the same scene with continuous geometry. Both runtimes (notapalindrome and dgrauet) benefit from this.',
                 },
               })}
             </div>
