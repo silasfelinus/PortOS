@@ -246,7 +246,7 @@ export default function AddToCollectionMenu({ item, size = 'sm' }) {
                   role="menuitemcheckbox"
                   aria-checked={inIt}
                 >
-                  <span className="truncate">{c.name}</span>
+                  <span className="break-words min-w-0 flex-1">{c.name}</span>
                   {inIt && <Check className="w-3.5 h-3.5 text-port-success shrink-0" />}
                 </button>
               );

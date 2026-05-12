@@ -205,7 +205,6 @@ export default function MediaCollectionDetail() {
                   onSendToVideo={item.kind === 'image' ? handleSendToVideo : undefined}
                   onContinue={item.kind === 'video' ? handleContinue : undefined}
                   onDelete={handleRemove}
-                  showCollectionMenu={false}
                   starred={!!annotations[key]?.starred}
                   hasNote={!!annotations[key]?.note}
                   onToggleStar={toggleStar}
