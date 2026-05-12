@@ -5,8 +5,14 @@ node_modules/
 dist/
 build/
 
-# Runtime data (contains app registry, history, runs)
-data/
+# Runtime data (app registry, history, runs). Override the directory-level
+# `data/` rule from the global ~/.gitignore so git descends into data/ and
+# evaluates the negations below; then re-exclude everything inside, and
+# re-include the source-controlled migration scripts.
+!data/
+data/*
+!data/migrations/
+data/migrations/.applied.json
 
 # Environment files
 .env

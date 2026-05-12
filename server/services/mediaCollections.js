@@ -136,6 +136,35 @@ export async function createCollection({ name, description = '' }) {
   return next;
 }
 
+// Find an existing collection by case-insensitive trimmed name, else create
+// a fresh one. Lets repeat-render callers (World Builder) append into a
+// single per-world bucket without growing a new collection on every run.
+export async function findOrCreateCollectionByName({ name, description = '' }) {
+  const trimmed = typeof name === 'string' ? name.trim() : '';
+  if (!trimmed || trimmed.length > NAME_MAX_LENGTH) {
+    throw makeErr('Collection name is required (1..' + NAME_MAX_LENGTH + ' chars)', ERR_VALIDATION);
+  }
+  const trimmedDescription = typeof description === 'string'
+    ? description.trim().slice(0, DESCRIPTION_MAX_LENGTH)
+    : '';
+  const all = await listCollections();
+  const needle = trimmed.toLowerCase();
+  const existing = all.find((c) => c.name.toLowerCase() === needle);
+  if (existing) return existing;
+  const now = new Date().toISOString();
+  const next = {
+    id: randomUUID(),
+    name: trimmed,
+    description: trimmedDescription,
+    coverKey: null,
+    items: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+  await writeAll([...all, next]);
+  return next;
+}
+
 export async function updateCollection(id, patch) {
   const all = await listCollections();
   const idx = all.findIndex((c) => c.id === id);

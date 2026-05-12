@@ -21,7 +21,7 @@ import { expandWorldTemplate } from '../services/worldBuilderExpand.js';
 import { refineWorldPrompts } from '../services/worldBuilderRefine.js';
 import { enqueueJob } from '../services/mediaJobQueue/index.js';
 import { getSettings } from '../services/settings.js';
-import { createCollection, NAME_MAX_LENGTH as COLLECTION_NAME_MAX } from '../services/mediaCollections.js';
+import { findOrCreateCollectionByName, NAME_MAX_LENGTH as COLLECTION_NAME_MAX } from '../services/mediaCollections.js';
 import { getImageModels, isFlux2, isZImage, isErnie } from '../lib/mediaModels.js';
 
 const router = Router();
@@ -234,12 +234,15 @@ router.post('/:id/render', asyncHandler(async (req, res) => {
 
   // Provision the collection up front so renders can be tagged as they
   // complete. The completion hook (worldBuilderCollectionHook) will add
-  // each finished image's filename to this collection.
+  // each finished image's filename to this collection. Repeat renders of
+  // the same world reuse the existing `World: <name>` bucket so per-world
+  // output accumulates in one place instead of fragmenting into a fresh
+  // date-suffixed collection per run.
   const collectionName = body.collectionName?.trim()
-    || `World: ${world.name} — ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
-  const collection = await createCollection({
+    || `World: ${world.name}`;
+  const collection = await findOrCreateCollectionByName({
     name: collectionName.slice(0, COLLECTION_NAME_MAX),
-    description: `World Builder run for "${world.name}" (${compiled.length} prompts)`,
+    description: `World Builder renders for "${world.name}"`,
   });
 
   const runId = randomUUID();

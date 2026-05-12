@@ -16,7 +16,7 @@ import { getMediaNavProps } from '../lib/mediaNavigation';
 import {
   listVideoHistory, deleteVideoHistoryItem, extractLastFrame, stitchVideos,
   upscaleVideo,
-  listImageGallery, deleteImage,
+  listImageGallery, deleteImage, cleanGalleryImage,
 } from '../services/api';
 
 const FILTERS = [
@@ -140,6 +140,17 @@ export default function MediaHistory() {
     } catch (err) {
       toast.error(err.message || 'Failed to extract last frame');
     }
+  };
+
+  const handleClean = async (img, level) => {
+    if (!img?.filename) throw new Error('Missing filename');
+    const cleaned = await cleanGalleryImage(img.filename, level).catch((err) => {
+      toast.error(err.message || 'Failed to clean image');
+      throw err;
+    });
+    const normalized = normalizeImage(cleaned);
+    setItems((prev) => [normalized, ...prev.filter((x) => x.key !== normalized.key)]);
+    toast.success(`Cleaned (${level}) → ${cleaned.filename}`);
   };
 
   const handleRemix = (item) => {
@@ -296,6 +307,7 @@ export default function MediaHistory() {
         onRemix={handleRemix}
         onSendToVideo={handleSendToVideo}
         onContinue={handleContinue}
+        onClean={(item, level) => handleClean(item?.raw, level)}
         {...previewNavProps}
       />
     </div>

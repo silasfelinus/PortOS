@@ -7,8 +7,9 @@ import MediaLightbox from '../components/media/MediaLightbox';
 import { normalizeImage, normalizeVideo } from '../components/media/normalize';
 import {
   getMediaCollection, updateMediaCollection,
-  removeMediaCollectionItem, listImageGallery, listVideoHistory,
-  extractLastFrame,
+  addMediaCollectionItem, removeMediaCollectionItem,
+  listImageGallery, listVideoHistory,
+  extractLastFrame, cleanGalleryImage,
 } from '../services/api';
 
 // Hydrate a collection's "<kind>:<ref>" pointer list into the same
@@ -115,6 +116,27 @@ export default function MediaCollectionDetail() {
     if (item.height) params.set('h', String(item.height));
     navigate(`/media/video?${params.toString()}`);
   };
+  const handleClean = async (img, level) => {
+    if (!img?.filename) throw new Error('Missing filename');
+    const cleaned = await cleanGalleryImage(img.filename, level).catch((err) => {
+      toast.error(err.message || 'Failed to clean image');
+      throw err;
+    });
+    const updated = await addMediaCollectionItem(collection.id, {
+      kind: 'image',
+      ref: cleaned.filename,
+    }).catch(() => null);
+    if (updated) setCollection(updated);
+    // Seed imagesByName so hydrate() can render the cleaned file immediately
+    // — without this the next render misses it until refresh() reruns.
+    setImagesByName((m) => {
+      const next = new Map(m);
+      next.set(cleaned.filename, cleaned);
+      return next;
+    });
+    toast.success(`Cleaned (${level}) → ${cleaned.filename}`);
+  };
+
   const handleContinue = async (item) => {
     const { filename } = await extractLastFrame(item.id).catch((err) => {
       toast.error(err.message || 'Failed to extract last frame');
@@ -208,6 +230,7 @@ export default function MediaCollectionDetail() {
           onRemix={preview.kind === 'image' ? (i) => handleRemix(i) : undefined}
           onSendToVideo={preview.kind === 'image' ? (i) => handleSendToVideo(i) : undefined}
           onContinue={preview.kind === 'video' ? (i) => handleContinue(i.raw || i) : undefined}
+          onClean={preview.kind === 'image' ? (i, level) => handleClean(i?.raw || i, level) : undefined}
         />
       )}
     </div>
