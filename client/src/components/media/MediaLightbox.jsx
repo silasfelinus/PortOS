@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import toast from '../ui/Toast';
 import PromptRefineModal from './PromptRefineModal';
+import AddToCollectionMenu from './AddToCollectionMenu';
 
 const NOTE_MAX = 2000;
 const NOTE_DEBOUNCE_MS = 500;
@@ -447,6 +448,7 @@ function SettingsPane({
             <ImageIcon className="w-3.5 h-3.5" /> Continue
           </button>
         )}
+        <AddToCollectionMenu item={item} size="md" />
         <a
           href={item.downloadUrl}
           download

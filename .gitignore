@@ -57,6 +57,9 @@ BTW.md
 # Browser service node_modules (code is committed)
 browser/node_modules/
 
+# Browser service runtime data (CDP profiles, cache, downloads)
+browser/data/
+
 # Sub-package lock files. Root package.json does NOT declare these as
 # workspaces; `npm run setup` runs `npm install --prefix <pkg>` for each,
 # generating their own lockfiles locally. The root package-lock.json only

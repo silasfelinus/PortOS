@@ -20,7 +20,13 @@ const VIEWPORT_PADDING = 8;
 // Show search affordance only when the list could meaningfully scroll.
 const SEARCH_THRESHOLD = 6;
 
-export default function AddToCollectionMenu({ item }) {
+// Only the trigger button varies by size — popover styling is fixed.
+const SIZES = {
+  sm: { button: 'px-1.5 py-1 text-[10px]', icon: 'w-3 h-3' },
+  md: { button: 'px-2 py-1.5 text-xs', icon: 'w-3.5 h-3.5' },
+};
+
+export default function AddToCollectionMenu({ item, size = 'sm' }) {
   const [open, setOpen] = useState(false);
   const [collections, setCollections] = useState(null); // null = not loaded
   const [creating, setCreating] = useState(false);
@@ -175,6 +181,7 @@ export default function AddToCollectionMenu({ item }) {
 
   const showSearch = (collections?.length || 0) >= SEARCH_THRESHOLD;
   const list = filtered ?? collections;
+  const sizeCls = SIZES[size] || SIZES.sm;
 
   return (
     <>
@@ -182,12 +189,12 @@ export default function AddToCollectionMenu({ item }) {
         ref={triggerRef}
         type="button"
         onClick={handleToggleOpen}
-        className="shrink-0 px-1.5 py-1 bg-port-border hover:bg-port-border/70 text-white text-[10px] rounded flex items-center justify-center"
+        className={`shrink-0 ${sizeCls.button} bg-port-border hover:bg-port-border/70 text-white rounded flex items-center justify-center`}
         title="Add to collection"
         aria-haspopup="menu"
         aria-expanded={open}
       >
-        <FolderPlus className="w-3 h-3" />
+        <FolderPlus className={sizeCls.icon} />
       </button>
       {open && createPortal(
         <div
