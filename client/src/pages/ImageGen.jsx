@@ -13,7 +13,7 @@ import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import Drawer from '../components/Drawer';
 import { ImageGenTab } from '../components/settings/ImageGenTab';
 import MediaCard from '../components/media/MediaCard';
-import MediaLightbox from '../components/media/MediaLightbox';
+import MediaPreview from '../components/media/MediaPreview';
 import FavoritesFilterChip from '../components/media/FavoritesFilterChip';
 import StylePresetPicker from '../components/media/StylePresetPicker';
 import BackendChipStrip from '../components/media/BackendChipStrip';
@@ -31,7 +31,6 @@ import {
 } from 'lucide-react';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt';
 import { deriveAvailableBackends, IMAGE_GEN_MODE } from '../lib/imageGenBackends';
-import { getMediaNavProps } from '../lib/mediaNavigation';
 import toast from '../components/ui/Toast';
 import BrailleSpinner from '../components/BrailleSpinner';
 import { useImageGenProgress } from '../hooks/useImageGenProgress';
@@ -467,7 +466,6 @@ export default function ImageGen() {
     ...visibleGallery.map(normalizeImage),
     ...(showHidden ? hiddenGallery.map(normalizeImage) : []),
   ], [visibleGallery, hiddenGallery, showHidden]);
-  const previewNavProps = getMediaNavProps(previewItems, preview, setPreview);
 
   // Snapshots current form state into a server payload + POSTs it to the
   // mediaJobQueue. Returns the queue's response ({ jobId, position, ... }).
@@ -1181,15 +1179,15 @@ export default function ImageGen() {
         </div>
       )}
 
-      <MediaLightbox
-        item={preview}
-        onClose={() => setPreview(null)}
+      <MediaPreview
+        preview={preview}
+        setPreview={setPreview}
+        items={previewItems}
+        annotations={annotations}
+        updateAnnotation={updateAnnotation}
         onRemix={(item) => item?.raw && handleRemix(item.raw)}
         onSendToVideo={(item) => item?.raw?.filename && sendToVideo(item.raw)}
         onClean={(item, level) => handleClean(item?.raw, level)}
-        annotation={preview ? annotations[preview.key] ?? null : null}
-        onAnnotationChange={preview ? (patch) => updateAnnotation(preview.key, patch) : undefined}
-        {...previewNavProps}
       />
 
 

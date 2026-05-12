@@ -9,12 +9,11 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Combine, Image as ImageIcon, Film, Search, X } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import MediaCard from '../components/media/MediaCard';
-import MediaLightbox from '../components/media/MediaLightbox';
+import MediaPreview from '../components/media/MediaPreview';
 import FavoritesFilterChip from '../components/media/FavoritesFilterChip';
 import { normalizeImage, normalizeVideo } from '../components/media/normalize';
 import { useMediaCompletionRefresh } from '../hooks/useMediaCompletionRefresh';
 import { useMediaAnnotations } from '../hooks/useMediaAnnotations';
-import { getMediaNavProps } from '../lib/mediaNavigation';
 import {
   listVideoHistory, deleteVideoHistoryItem, extractLastFrame, stitchVideos,
   upscaleVideo,
@@ -96,7 +95,6 @@ export default function MediaHistory() {
     () => favoritesOnly ? kindFiltered.filter((i) => annotations[i.key]?.starred) : kindFiltered,
     [kindFiltered, favoritesOnly, annotations]
   );
-  const previewNavProps = getMediaNavProps(filtered, preview, setPreview);
   const counts = useMemo(() => {
     const c = { all: 0, image: 0, video: 0 };
     for (const i of searched) {
@@ -313,16 +311,16 @@ export default function MediaHistory() {
         </div>
       )}
 
-      <MediaLightbox
-        item={preview}
-        onClose={() => setPreview(null)}
+      <MediaPreview
+        preview={preview}
+        setPreview={setPreview}
+        items={filtered}
+        annotations={annotations}
+        updateAnnotation={updateAnnotation}
         onRemix={handleRemix}
         onSendToVideo={handleSendToVideo}
         onContinue={handleContinue}
         onClean={(item, level) => handleClean(item?.raw, level)}
-        annotation={preview ? annotations[preview.key] ?? null : null}
-        onAnnotationChange={preview ? (patch) => updateAnnotation(preview.key, patch) : undefined}
-        {...previewNavProps}
       />
     </div>
   );

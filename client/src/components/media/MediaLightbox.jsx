@@ -21,9 +21,9 @@ const NOTE_DEBOUNCE_MS = 500;
 // new level, drop a label here and the pill renders automatically.
 const CLEAN_LEVEL_LABELS = { light: 'Light', aggressive: 'Aggressive' };
 
-// Touch swipe thresholds. The horizontal-dominant guard (dx > dy×1.5) keeps a
-// diagonal scroll on the iOS gallery from being read as a nav swipe.
-const SWIPE_MIN_PX = 60;
+// Touch thresholds. dx > dy×1.2 keeps a diagonal scroll from being read as a
+// nav swipe but stays forgiving for a real thumb swipe.
+const SWIPE_MIN_PX = 50;
 const TAP_MAX_PX = 10;
 
 // onClean(item, level) — optional. Returning a rejected promise keeps the
@@ -98,6 +98,9 @@ export default function MediaLightbox({
   // Reset drawer when item changes (swipe forwards w/ settings open shouldn't
   // carry the open state to the next image — feels jumpy).
   useEffect(() => { setDrawerOpen(false); setRefineOpen(false); }, [item?.key]);
+  // The tap-toggle only fires in fullscreen, so drawerOpen under !fullScreen is
+  // always stale — clear it so a re-enter into fullscreen starts clean.
+  useEffect(() => { if (!fullScreen) setDrawerOpen(false); }, [fullScreen]);
 
   if (!item) return null;
   const isVideo = item.kind === 'video';
@@ -129,18 +132,24 @@ export default function MediaLightbox({
     ['Created', item.createdAt && new Date(item.createdAt).toLocaleString()],
   ].filter(([, v]) => v != null && v !== '');
 
+  // Ignore touches that originate on inline buttons (max/min toggle).
+  // Without this, their tap bubbles to onTouchEnd here and is read as a
+  // tap-on-image → drawer toggles alongside the button's own action.
+  const isButtonTouch = (e) => !!e.target.closest('button');
   const onTouchStart = (e) => {
+    if (isButtonTouch(e)) { touchStart.current = { x: null, y: null }; return; }
     const t = e.touches[0];
     touchStart.current = { x: t.clientX, y: t.clientY };
   };
   const onTouchEnd = (e) => {
     const start = touchStart.current;
     if (start.x == null) return;
+    if (isButtonTouch(e)) { touchStart.current = { x: null, y: null }; return; }
     const end = e.changedTouches[0];
     const dx = end.clientX - start.x;
     const dy = end.clientY - start.y;
     touchStart.current = { x: null, y: null };
-    if (Math.abs(dx) >= SWIPE_MIN_PX && Math.abs(dx) > Math.abs(dy) * 1.5) {
+    if (Math.abs(dx) >= SWIPE_MIN_PX && Math.abs(dx) > Math.abs(dy) * 1.2) {
       if (dx > 0 && hasPrevious) onPrevious?.();
       else if (dx < 0 && hasNext) onNext?.();
       return;
@@ -155,6 +164,17 @@ export default function MediaLightbox({
     : 'relative bg-port-card border border-port-border rounded-xl overflow-hidden max-w-6xl w-full max-h-[92vh] flex flex-col md:flex-row';
   const overlayPad = fullScreen ? 'p-0' : 'p-4';
   const imgMax = fullScreen ? 'max-w-[100vw] max-h-[100vh]' : 'max-w-full max-h-[92vh]';
+  // Anchor low in fullscreen so the chevrons land in the letterbox bar of a
+  // landscape image instead of covering it. Non-fullscreen keeps them centered
+  // — bottom-anchoring would bury them in the SettingsPane underneath.
+  let chevronPositionClass;
+  if (fullScreen && drawerOpen) {
+    chevronPositionClass = 'hidden sm:flex bottom-4';
+  } else if (fullScreen) {
+    chevronPositionClass = 'bottom-4';
+  } else {
+    chevronPositionClass = 'top-1/2 -translate-y-1/2';
+  }
 
   return (
     <div
@@ -167,7 +187,7 @@ export default function MediaLightbox({
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); onPrevious?.(); }}
-          className="absolute left-3 md:left-5 top-1/2 -translate-y-1/2 z-10 p-2.5 text-white/40 hover:text-white focus:outline-none focus:ring-2 focus:ring-port-accent rounded-full"
+          className={`absolute left-3 md:left-5 ${chevronPositionClass} z-30 p-2.5 text-white/80 hover:text-white bg-black/40 hover:bg-black/60 backdrop-blur-sm focus:outline-none focus:ring-2 focus:ring-port-accent rounded-full`}
           aria-label="Previous media"
           title="Previous"
         >
@@ -178,7 +198,7 @@ export default function MediaLightbox({
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); onNext?.(); }}
-          className="absolute right-3 md:right-5 top-1/2 -translate-y-1/2 z-10 p-2.5 text-white/40 hover:text-white focus:outline-none focus:ring-2 focus:ring-port-accent rounded-full"
+          className={`absolute right-3 md:right-5 ${chevronPositionClass} z-30 p-2.5 text-white/80 hover:text-white bg-black/40 hover:bg-black/60 backdrop-blur-sm focus:outline-none focus:ring-2 focus:ring-port-accent rounded-full`}
           aria-label="Next media"
           title="Next"
         >
@@ -217,8 +237,8 @@ export default function MediaLightbox({
             {fullScreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
           </button>
           {fullScreen && !drawerOpen && (
-            <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-[10px] uppercase tracking-wide text-white/40 select-none pointer-events-none">
-              tap for settings
+            <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-[10px] uppercase tracking-wide text-white/50 select-none pointer-events-none">
+              tap for settings{(hasPrevious || hasNext) ? ' · swipe to navigate' : ''}
             </div>
           )}
         </div>
@@ -255,8 +275,10 @@ function SettingsPane({
   cleaning, setCleaning, copy, onRefine,
   annotation, onAnnotationChange,
 }) {
+  // Fullscreen: bottom sheet (max 55vh) on mobile so the image + chevrons
+  // stay reachable above it; side drawer (w-96) on desktop.
   const asideClasses = fullScreen
-    ? 'absolute top-0 right-0 bottom-0 w-full sm:w-96 z-20 bg-port-card border-l border-port-border flex flex-col shadow-2xl'
+    ? 'absolute left-0 right-0 bottom-0 max-h-[55vh] sm:left-auto sm:top-0 sm:bottom-0 sm:max-h-none sm:w-96 z-20 bg-port-card border-t sm:border-t-0 sm:border-l border-port-border flex flex-col shadow-2xl'
     : 'md:w-80 lg:w-96 shrink-0 flex flex-col border-t md:border-t-0 md:border-l border-port-border max-h-[40vh] md:max-h-[92vh]';
   const starred = !!annotation?.starred;
   // Local draft state debounces saves so each keystroke doesn't PATCH.

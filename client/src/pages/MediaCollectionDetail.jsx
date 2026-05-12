@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import { ArrowLeft, CheckSquare, Copy, FolderInput, Inbox, Pencil, Star, StarOff, Trash2, X } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import MediaCard from '../components/media/MediaCard';
-import MediaLightbox from '../components/media/MediaLightbox';
+import MediaPreview from '../components/media/MediaPreview';
 import BulkTargetPicker from '../components/media/BulkTargetPicker';
 import { normalizeImage, normalizeVideo } from '../components/media/normalize';
 import { useMediaAnnotations } from '../hooks/useMediaAnnotations';
@@ -484,18 +484,17 @@ export default function MediaCollectionDetail() {
         </div>
       )}
 
-      {preview && (
-        <MediaLightbox
-          item={preview}
-          onClose={() => setPreview(null)}
-          onRemix={preview.kind === 'image' ? (i) => handleRemix(i) : undefined}
-          onSendToVideo={preview.kind === 'image' ? (i) => handleSendToVideo(i) : undefined}
-          onContinue={preview.kind === 'video' ? (i) => handleContinue(i.raw || i) : undefined}
-          onClean={preview.kind === 'image' ? (i, level) => handleClean(i?.raw || i, level) : undefined}
-          annotation={annotations[preview.key] ?? null}
-          onAnnotationChange={(patch) => updateAnnotation(preview.key, patch)}
-        />
-      )}
+      <MediaPreview
+        preview={preview}
+        setPreview={setPreview}
+        items={items}
+        annotations={annotations}
+        updateAnnotation={updateAnnotation}
+        onRemix={handleRemix}
+        onSendToVideo={handleSendToVideo}
+        onContinue={(i) => handleContinue(i.raw || i)}
+        onClean={(i, level) => handleClean(i?.raw || i, level)}
+      />
     </div>
   );
 }

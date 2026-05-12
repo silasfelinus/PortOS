@@ -29,7 +29,7 @@ import { useSearchParams, useNavigate, Link } from 'react-router-dom';
 import Drawer from '../components/Drawer';
 import { ImageGenTab } from '../components/settings/ImageGenTab';
 import MediaCard from '../components/media/MediaCard';
-import MediaLightbox from '../components/media/MediaLightbox';
+import MediaPreview from '../components/media/MediaPreview';
 import StylePresetPicker from '../components/media/StylePresetPicker';
 import { normalizeVideo } from '../components/media/normalize';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt';
@@ -51,7 +51,6 @@ import {
   listImageGallery,
 } from '../services/api';
 import { randomSeed, safeParseJSON } from '../lib/genUtils';
-import { getMediaNavProps } from '../lib/mediaNavigation';
 
 const RESOLUTIONS = [
   { label: '512×320 (16:10)', w: 512, h: 320 },
@@ -233,7 +232,6 @@ export default function VideoGen() {
     ...galleryVisible.map(normalizeVideo),
     ...(showHidden ? galleryHidden.map(normalizeVideo) : []),
   ], [galleryVisible, galleryHidden, showHidden]);
-  const previewNavProps = getMediaNavProps(previewItems, preview, setPreview);
 
   const handleDeleteHistory = async (item) => {
     await deleteVideoHistoryItem(item.id).catch((err) => toast.error(err.message || 'Delete failed'));
@@ -1374,13 +1372,13 @@ export default function VideoGen() {
         </div>
       )}
 
-      <MediaLightbox
-        item={preview}
-        onClose={() => setPreview(null)}
+      <MediaPreview
+        preview={preview}
+        setPreview={setPreview}
+        items={previewItems}
+        annotations={annotations}
+        updateAnnotation={updateAnnotation}
         onContinue={(item) => handleContinueHistory(item.raw)}
-        annotation={preview ? annotations[preview.key] ?? null : null}
-        onAnnotationChange={preview ? (patch) => updateAnnotation(preview.key, patch) : undefined}
-        {...previewNavProps}
       />
 
       <Drawer open={settingsOpen} onClose={closeSettings} title="Media Generation Settings">
