@@ -1,6 +1,6 @@
 import { ServerError } from '../lib/errorHandler.js';
 import { getProviderById } from './providers.js';
-import { createRun, executeApiRun, executeCliRun } from './runner.js';
+import { createRun, executeApiRun, executeCliRun, hasModelFlag, extractBakedModel } from './runner.js';
 
 const MAX_PROMPT_LEN = 8000;
 const MAX_REASON_LEN = 1200;
@@ -134,14 +134,12 @@ async function runRefinePrompt(provider, model, prompt) {
       }
     };
     if (provider.type === 'cli') {
-      // `runner.js#buildCliArgs` only translates `provider.defaultModel` into
-      // a `--model` flag for `codex` today; `claude-code` and `gemini-cli`
-      // ignore it and run with whatever model is baked into provider.args.
-      // Override defaultModel only when it'll actually take effect — otherwise
-      // we'd lie to the caller about which model ran. (PLAN.md tracks the
-      // shared-infra fix to extend buildCliArgs to all CLI providers.)
-      const canOverrideModel = provider.id === 'codex';
-      const providerForCli = canOverrideModel && model && model !== provider.defaultModel
+      // `runner.js#buildCliArgs` honors `provider.defaultModel` for every
+      // supported CLI provider (codex / claude-code / gemini-cli) — it
+      // injects `--model` / `-m` whenever the user hasn't already baked a
+      // model flag into provider.args. So cloning with an overridden
+      // defaultModel is safe for all CLI types.
+      const providerForCli = model && model !== provider.defaultModel
         ? { ...provider, defaultModel: model }
         : provider;
       executeCliRun(runId, providerForCli, prompt, process.cwd(), onData, onComplete, provider.timeout ?? 300000).catch(reject);
@@ -175,18 +173,20 @@ export async function refineMediaPrompt({
     );
   }
 
-  // Resolve the model that'll actually run. For API + Codex CLI, the runner
-  // honors the per-call `model` override. For other CLI providers (claude-code,
-  // gemini-cli), `runner.js#buildCliArgs` ignores per-call model and runs
-  // whatever's baked into provider.args / provider.defaultModel — so reporting
-  // the user-requested model in the response/run-record would lie about which
-  // model produced the output. Fall back through defaultModel → models[0] for
-  // those providers so the returned `model` reflects reality. (PLAN.md tracks
-  // extending buildCliArgs to honor per-call model for all CLI providers.)
-  const honorsModelOverride = provider.type === 'api' || provider.id === 'codex';
+  // Resolve the model that'll actually run. API providers honor the per-call
+  // `model` override directly; for CLI providers, `runner.js#buildCliArgs`
+  // injects `--model`/`-m` from `provider.defaultModel` for every supported
+  // CLI (codex / claude-code / gemini-cli) UNLESS the user has already baked
+  // a model flag into provider.args. In the "baked flag" case the override
+  // is silently dropped and the model from args wins — so we surface that
+  // exact id (extracted from args) on the run record instead of guessing
+  // from defaultModel, which can diverge.
+  const cliHasBakedModelFlag = provider.type === 'cli' && hasModelFlag(provider.args);
+  const honorsModelOverride = provider.type === 'api' || (provider.type === 'cli' && !cliHasBakedModelFlag);
+  const bakedModel = cliHasBakedModelFlag ? extractBakedModel(provider.args) : null;
   const selectedModel = honorsModelOverride
     ? (model || provider.defaultModel || provider.models?.[0] || '')
-    : (provider.defaultModel || provider.models?.[0] || '');
+    : (bakedModel || provider.defaultModel || provider.models?.[0] || '');
   if (!selectedModel && provider.type === 'api') {
     throw new ServerError('Model is required for prompt refinement', { status: 400, code: 'MODEL_REQUIRED' });
   }
