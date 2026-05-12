@@ -116,6 +116,18 @@ export const removeMediaCollectionItem = (id, key) => request(`/media/collection
   method: 'DELETE',
 });
 
+// Media annotations — per-item star + free-text note, keyed by "<kind>:<ref>"
+// (same shape as collections + the client-side `item.key` from normalize.js).
+// Decoupled from generation pipeline data so favorites survive job pruning.
+// GET returns `{ annotations: { [key]: { starred, note, updatedAt } } }`.
+// PATCH partial-merges; the entry is removed entirely when both fields end
+// up empty — `entry` in the response is `null` to signal that.
+export const listMediaAnnotations = () => request('/media/annotations');
+export const setMediaAnnotation = (key, patch) => request(`/media/annotations/${encodeURIComponent(key)}`, {
+  method: 'PATCH',
+  body: JSON.stringify(patch),
+});
+
 // Models management (HF cache + LoRAs)
 export const listCachedModels = () => request('/image-video/models');
 export const deleteCachedModel = (dirName) => request(`/image-video/models/hf/${encodeURIComponent(dirName)}`, { method: 'DELETE' });

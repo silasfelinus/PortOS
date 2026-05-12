@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   X, Copy, Sparkles, Film, Image as ImageIcon, Download, Eraser,
-  ChevronLeft, ChevronRight, Maximize2, Minimize2,
+  ChevronLeft, ChevronRight, Maximize2, Minimize2, Star,
 } from 'lucide-react';
 import toast from '../ui/Toast';
 import PromptRefineModal from './PromptRefineModal';
+
+const NOTE_MAX = 2000;
+const NOTE_DEBOUNCE_MS = 500;
 
 // Mirror of CLEAN_LEVELS in server/routes/imageClean.js. If the server adds a
 // new level, drop a label here and the pill renders automatically.
@@ -28,21 +31,25 @@ export default function MediaLightbox({
   onNext,
   hasPrevious = false,
   hasNext = false,
+  annotation = null,
+  onAnnotationChange,
 }) {
   const [cleaning, setCleaning] = useState(null);
   const [fullScreen, setFullScreen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [refineOpen, setRefineOpen] = useState(false);
   const touchStart = useRef({ x: null, y: null });
-  // Read callbacks from refs so the keydown listener doesn't re-subscribe on
-  // every parent render (callers pass inline arrows; the lightbox parent re-
-  // renders constantly while media-gen events stream in).
-  const callbacksRef = useRef({ onClose, onPrevious, onNext });
-  useEffect(() => { callbacksRef.current = { onClose, onPrevious, onNext }; });
+  // Read callbacks + frequently-changing values from refs so the keydown
+  // listener and the note-save debounce don't tear down on every parent
+  // render. Callers pass inline arrows for onAnnotationChange, and the
+  // parent re-renders constantly while media-gen events stream in.
+  const starred = !!annotation?.starred;
+  const refs = useRef({ onClose, onPrevious, onNext, onAnnotationChange, starred });
+  useEffect(() => { refs.current = { onClose, onPrevious, onNext, onAnnotationChange, starred }; });
   useEffect(() => {
     if (!item) return;
     const onKey = (e) => {
-      const cb = callbacksRef.current;
+      const cb = refs.current;
       if (e.key === 'Escape') {
         if (refineOpen) { setRefineOpen(false); return; }
         if (fullScreen && drawerOpen) { setDrawerOpen(false); return; }
@@ -53,6 +60,17 @@ export default function MediaLightbox({
       if (e.key === 'f' || e.key === 'F') {
         setFullScreen((v) => !v);
         return;
+      }
+      // `s` toggles favorite — but only when focus is on the body, not while
+      // typing in the note textarea (which would eat every literal "s").
+      if ((e.key === 's' || e.key === 'S') && cb.onAnnotationChange) {
+        const t = e.target;
+        const inEditable = t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.isContentEditable);
+        if (!inEditable) {
+          e.preventDefault();
+          cb.onAnnotationChange({ starred: !cb.starred });
+          return;
+        }
       }
       if (e.key === 'ArrowLeft' && hasPrevious && cb.onPrevious) {
         e.preventDefault();
@@ -213,6 +231,8 @@ export default function MediaLightbox({
             setCleaning={setCleaning}
             copy={copy}
             onRefine={() => setRefineOpen(true)}
+            annotation={annotation}
+            onAnnotationChange={onAnnotationChange}
           />
         )}
       </div>
@@ -225,22 +245,55 @@ function SettingsPane({
   item, meta, isVideo, fullScreen,
   onClose, onPrimaryClose, onRemix, onSendToVideo, onContinue, onClean,
   cleaning, setCleaning, copy, onRefine,
+  annotation, onAnnotationChange,
 }) {
   const asideClasses = fullScreen
     ? 'absolute top-0 right-0 bottom-0 w-full sm:w-96 z-20 bg-port-card border-l border-port-border flex flex-col shadow-2xl'
     : 'md:w-80 lg:w-96 shrink-0 flex flex-col border-t md:border-t-0 md:border-l border-port-border max-h-[40vh] md:max-h-[92vh]';
+  const starred = !!annotation?.starred;
+  // Local draft state debounces saves so each keystroke doesn't PATCH.
+  // onSaveRef keeps the debounce effect off the parent's render churn —
+  // page components pass inline-arrow onAnnotationChange callbacks, which
+  // would otherwise restart the timer every time a media-gen event arrived.
+  const [noteDraft, setNoteDraft] = useState(annotation?.note ?? '');
+  const onSaveRef = useRef(onAnnotationChange);
+  useEffect(() => { onSaveRef.current = onAnnotationChange; });
+  useEffect(() => {
+    setNoteDraft(annotation?.note ?? '');
+  }, [item?.key, annotation?.note]);
+  useEffect(() => {
+    if (!onSaveRef.current) return undefined;
+    if (noteDraft === (annotation?.note ?? '')) return undefined;
+    const handle = setTimeout(() => {
+      onSaveRef.current?.({ note: noteDraft });
+    }, NOTE_DEBOUNCE_MS);
+    return () => clearTimeout(handle);
+  }, [noteDraft, annotation?.note]);
   return (
     <aside className={asideClasses} onClick={(e) => e.stopPropagation()}>
       <header className="flex items-center justify-between p-3 border-b border-port-border">
         <span className="text-xs uppercase tracking-wide text-gray-400">{isVideo ? 'Video' : 'Image'} settings</span>
-        <button
-          type="button"
-          onClick={onClose}
-          className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-port-border/50"
-          aria-label={fullScreen ? 'Hide settings' : 'Close'}
-        >
-          <X className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1">
+          {onAnnotationChange && (
+            <button
+              type="button"
+              onClick={() => onAnnotationChange({ starred: !starred })}
+              className={`p-1.5 rounded ${starred ? 'bg-port-warning/90 text-black' : 'text-gray-400 hover:text-white hover:bg-port-border/50'}`}
+              aria-label={starred ? 'Unfavorite' : 'Favorite'}
+              title={starred ? 'Unfavorite (s)' : 'Favorite (s)'}
+            >
+              <Star className={`w-4 h-4 ${starred ? 'fill-current' : ''}`} />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-port-border/50"
+            aria-label={fullScreen ? 'Hide settings' : 'Close'}
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto p-3 space-y-3 text-xs">
@@ -258,6 +311,23 @@ function SettingsPane({
               </button>
             </div>
             <p className="text-gray-200 whitespace-pre-wrap">{item.prompt}</p>
+          </div>
+        )}
+
+        {onAnnotationChange && (
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-gray-500 uppercase tracking-wide">Notes</span>
+              <span className="text-[10px] text-gray-500">{noteDraft.length}/{NOTE_MAX}</span>
+            </div>
+            <textarea
+              value={noteDraft}
+              onChange={(e) => setNoteDraft(e.target.value.slice(0, NOTE_MAX))}
+              placeholder="Add a note — use this for cover, reshoot at 24fps, etc."
+              rows={3}
+              maxLength={NOTE_MAX}
+              className="w-full bg-port-bg border border-port-border rounded p-2 text-xs text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-port-accent resize-y"
+            />
           </div>
         )}
 

@@ -41,7 +41,9 @@ import toast from '../components/ui/Toast';
 import BrailleSpinner from '../components/BrailleSpinner';
 import BatchQueuePanel from '../components/media/BatchQueuePanel';
 import MediaJobsQueue from '../components/media/MediaJobsQueue';
+import FavoritesFilterChip from '../components/media/FavoritesFilterChip';
 import { useMediaCompletionRefresh } from '../hooks/useMediaCompletionRefresh';
+import { useMediaAnnotations } from '../hooks/useMediaAnnotations';
 import {
   getVideoGenStatus, generateVideo, cancelVideoGen,
   listVideoHistory, deleteVideoHistoryItem, setVideoHidden, extractLastFrame,
@@ -214,10 +216,23 @@ export default function VideoGen() {
     visibleHistory: history.filter((v) => !v.hidden),
     hiddenHistory: history.filter((v) => v.hidden),
   }), [history]);
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const { annotations, toggleStar, updateAnnotation } = useMediaAnnotations();
+  // Gallery sections respect the favorites filter; the extend-mode dropdown
+  // (which reads visibleHistory directly) intentionally does not, since
+  // hiding non-favorites from the "pick a previous video" picker would
+  // surprise the user.
+  const { galleryVisible, galleryHidden } = useMemo(() => {
+    if (!favoritesOnly) return { galleryVisible: visibleHistory, galleryHidden: hiddenHistory };
+    // Normalize to derive the canonical item.key rather than hand-building
+    // `video:${v.id}` — the kind/ref convention lives in normalize.js.
+    const isStarred = (v) => !!annotations[normalizeVideo(v).key]?.starred;
+    return { galleryVisible: visibleHistory.filter(isStarred), galleryHidden: hiddenHistory.filter(isStarred) };
+  }, [visibleHistory, hiddenHistory, favoritesOnly, annotations]);
   const previewItems = useMemo(() => [
-    ...visibleHistory.map(normalizeVideo),
-    ...(showHidden ? hiddenHistory.map(normalizeVideo) : []),
-  ], [visibleHistory, hiddenHistory, showHidden]);
+    ...galleryVisible.map(normalizeVideo),
+    ...(showHidden ? galleryHidden.map(normalizeVideo) : []),
+  ], [galleryVisible, galleryHidden, showHidden]);
   const previewNavProps = getMediaNavProps(previewItems, preview, setPreview);
 
   const handleDeleteHistory = async (item) => {
@@ -1289,46 +1304,56 @@ export default function VideoGen() {
 
       <MediaJobsQueue kind="video" />
 
-      {visibleHistory.length > 0 && (
+      {(galleryVisible.length > 0 || favoritesOnly) && (
         <div className="bg-port-card border border-port-border rounded-xl p-4 space-y-2">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wide">Recent renders ({Math.min(visibleHistory.length, 5)} of {visibleHistory.length})</h2>
-            {visibleHistory.length > 5 && (
-              <Link to="/media/history" className="text-xs text-port-accent hover:underline">View all →</Link>
-            )}
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wide">Recent renders ({Math.min(galleryVisible.length, 5)} of {galleryVisible.length})</h2>
+            <div className="flex items-center gap-2">
+              <FavoritesFilterChip active={favoritesOnly} onToggle={() => setFavoritesOnly((v) => !v)} />
+              {galleryVisible.length > 5 && (
+                <Link to="/media/history" className="text-xs text-port-accent hover:underline">View all →</Link>
+              )}
+            </div>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-            {visibleHistory.slice(0, 5).map((v) => {
-              const item = normalizeVideo(v);
-              return (
-                <MediaCard
-                  key={item.key}
-                  item={item}
-                  onPreview={() => setPreview(item)}
-                  onContinue={() => handleContinueHistory(v)}
-                  onUpscale={() => handleUpscaleHistory(v)}
-                  onDelete={() => handleDeleteHistory(v)}
-                  onToggleHidden={() => handleToggleHistoryHidden(v)}
-                />
-              );
-            })}
-          </div>
+          {galleryVisible.length === 0 ? (
+            <div className="text-xs text-gray-500 py-3">No favorited videos yet.</div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+              {galleryVisible.slice(0, 5).map((v) => {
+                const item = normalizeVideo(v);
+                return (
+                  <MediaCard
+                    key={item.key}
+                    item={item}
+                    onPreview={() => setPreview(item)}
+                    onContinue={() => handleContinueHistory(v)}
+                    onUpscale={() => handleUpscaleHistory(v)}
+                    onDelete={() => handleDeleteHistory(v)}
+                    onToggleHidden={() => handleToggleHistoryHidden(v)}
+                    starred={!!annotations[item.key]?.starred}
+                    hasNote={!!annotations[item.key]?.note}
+                    onToggleStar={toggleStar}
+                  />
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
-      {hiddenHistory.length > 0 && (
+      {galleryHidden.length > 0 && (
         <div className="bg-port-card border border-port-border rounded-xl p-4 space-y-2">
           <button
             type="button"
             onClick={() => setShowHidden((s) => !s)}
             className="flex items-center justify-between w-full text-xs font-medium text-gray-400 uppercase tracking-wide hover:text-white"
           >
-            <span>{showHidden ? 'Hide' : 'Show'} hidden ({hiddenHistory.length})</span>
+            <span>{showHidden ? 'Hide' : 'Show'} hidden ({galleryHidden.length})</span>
             <span className="text-xs text-gray-500">{showHidden ? '▾' : '▸'}</span>
           </button>
           {showHidden && (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-              {hiddenHistory.map((v) => {
+              {galleryHidden.map((v) => {
                 const item = normalizeVideo(v);
                 return (
                   <MediaCard
@@ -1338,6 +1363,9 @@ export default function VideoGen() {
                     onContinue={() => handleContinueHistory(v)}
                     onDelete={() => handleDeleteHistory(v)}
                     onToggleHidden={() => handleToggleHistoryHidden(v)}
+                    starred={!!annotations[item.key]?.starred}
+                    hasNote={!!annotations[item.key]?.note}
+                    onToggleStar={toggleStar}
                   />
                 );
               })}
@@ -1350,6 +1378,8 @@ export default function VideoGen() {
         item={preview}
         onClose={() => setPreview(null)}
         onContinue={(item) => handleContinueHistory(item.raw)}
+        annotation={preview ? annotations[preview.key] ?? null : null}
+        onAnnotationChange={preview ? (patch) => updateAnnotation(preview.key, patch) : undefined}
         {...previewNavProps}
       />
 

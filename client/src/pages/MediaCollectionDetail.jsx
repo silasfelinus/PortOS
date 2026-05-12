@@ -5,6 +5,7 @@ import toast from '../components/ui/Toast';
 import MediaCard from '../components/media/MediaCard';
 import MediaLightbox from '../components/media/MediaLightbox';
 import { normalizeImage, normalizeVideo } from '../components/media/normalize';
+import { useMediaAnnotations } from '../hooks/useMediaAnnotations';
 import {
   getMediaCollection, updateMediaCollection,
   addMediaCollectionItem, removeMediaCollectionItem,
@@ -43,6 +44,7 @@ export default function MediaCollectionDetail() {
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
   const [preview, setPreview] = useState(null);
+  const { annotations, toggleStar, updateAnnotation } = useMediaAnnotations();
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -204,6 +206,9 @@ export default function MediaCollectionDetail() {
                   onContinue={item.kind === 'video' ? handleContinue : undefined}
                   onDelete={handleRemove}
                   showCollectionMenu={false}
+                  starred={!!annotations[key]?.starred}
+                  hasNote={!!annotations[key]?.note}
+                  onToggleStar={toggleStar}
                 />
                 <button
                   type="button"
@@ -231,6 +236,8 @@ export default function MediaCollectionDetail() {
           onSendToVideo={preview.kind === 'image' ? (i) => handleSendToVideo(i) : undefined}
           onContinue={preview.kind === 'video' ? (i) => handleContinue(i.raw || i) : undefined}
           onClean={preview.kind === 'image' ? (i, level) => handleClean(i?.raw || i, level) : undefined}
+          annotation={annotations[preview.key] ?? null}
+          onAnnotationChange={(patch) => updateAnnotation(preview.key, patch)}
         />
       )}
     </div>

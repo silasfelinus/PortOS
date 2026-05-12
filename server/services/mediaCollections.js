@@ -13,6 +13,7 @@
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { PATHS, atomicWrite, readJSONFile, ensureDir } from '../lib/fileUtils.js';
+import { ITEM_KIND, REF_MAX_LENGTH, itemKey } from '../lib/mediaItemKey.js';
 
 const STATE_PATH = join(PATHS.data, 'media-collections.json');
 
@@ -23,12 +24,9 @@ const makeErr = (message, code) => Object.assign(new Error(message), { code });
 
 export const NAME_MAX_LENGTH = 80;
 export const DESCRIPTION_MAX_LENGTH = 500;
-export const REF_MAX_LENGTH = 256;
 export const ITEMS_MAX = 5000;
 
-const ITEM_KIND = new Set(['image', 'video']);
-
-export const itemKey = (it) => `${it.kind}:${it.ref}`;
+export { REF_MAX_LENGTH, itemKey };
 
 const DEFAULT_STATE = { collections: [] };
 

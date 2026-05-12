@@ -10,8 +10,10 @@ import { Combine, Image as ImageIcon, Film, Search, X } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import MediaCard from '../components/media/MediaCard';
 import MediaLightbox from '../components/media/MediaLightbox';
+import FavoritesFilterChip from '../components/media/FavoritesFilterChip';
 import { normalizeImage, normalizeVideo } from '../components/media/normalize';
 import { useMediaCompletionRefresh } from '../hooks/useMediaCompletionRefresh';
+import { useMediaAnnotations } from '../hooks/useMediaAnnotations';
 import { getMediaNavProps } from '../lib/mediaNavigation';
 import {
   listVideoHistory, deleteVideoHistoryItem, extractLastFrame, stitchVideos,
@@ -35,6 +37,8 @@ export default function MediaHistory() {
   const [selected, setSelected] = useState([]); // video ids
   const [stitching, setStitching] = useState(false);
   const [preview, setPreview] = useState(null);
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const { annotations, toggleStar, updateAnnotation } = useMediaAnnotations();
 
   const refresh = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setLoading(true);
@@ -84,9 +88,13 @@ export default function MediaHistory() {
     () => tokens.length === 0 ? items : items.filter((_, idx) => tokens.every((t) => haystacks[idx].includes(t))),
     [items, haystacks, tokens]
   );
-  const filtered = useMemo(
+  const kindFiltered = useMemo(
     () => filter === 'all' ? searched : searched.filter(i => i.kind === filter),
     [searched, filter]
+  );
+  const filtered = useMemo(
+    () => favoritesOnly ? kindFiltered.filter((i) => annotations[i.key]?.starred) : kindFiltered,
+    [kindFiltered, favoritesOnly, annotations]
   );
   const previewNavProps = getMediaNavProps(filtered, preview, setPreview);
   const counts = useMemo(() => {
@@ -231,6 +239,7 @@ export default function MediaHistory() {
               {f.label} <span className="opacity-60">{counts[f.id]}</span>
             </button>
           ))}
+          <FavoritesFilterChip active={favoritesOnly} onToggle={() => setFavoritesOnly((v) => !v)} size="md" />
         </div>
         <div className="flex items-center gap-1">
           <Link to="/media/image" className="flex items-center gap-1.5 px-2 py-1 text-xs text-gray-300 hover:text-white border border-port-border rounded hover:bg-port-border/50">
@@ -295,6 +304,9 @@ export default function MediaHistory() {
                 selected={idx !== -1}
                 disabled={stitchMode && it.kind !== 'video'}
                 hideActions={stitchMode}
+                starred={!!annotations[it.key]?.starred}
+                hasNote={!!annotations[it.key]?.note}
+                onToggleStar={!stitchMode ? toggleStar : undefined}
               />
             );
           })}
@@ -308,6 +320,8 @@ export default function MediaHistory() {
         onSendToVideo={handleSendToVideo}
         onContinue={handleContinue}
         onClean={(item, level) => handleClean(item?.raw, level)}
+        annotation={preview ? annotations[preview.key] ?? null : null}
+        onAnnotationChange={preview ? (patch) => updateAnnotation(preview.key, patch) : undefined}
         {...previewNavProps}
       />
     </div>

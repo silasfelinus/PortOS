@@ -14,6 +14,7 @@ import Drawer from '../components/Drawer';
 import { ImageGenTab } from '../components/settings/ImageGenTab';
 import MediaCard from '../components/media/MediaCard';
 import MediaLightbox from '../components/media/MediaLightbox';
+import FavoritesFilterChip from '../components/media/FavoritesFilterChip';
 import StylePresetPicker from '../components/media/StylePresetPicker';
 import BackendChipStrip from '../components/media/BackendChipStrip';
 import { normalizeImage } from '../components/media/normalize';
@@ -22,6 +23,7 @@ import Flux2TokenBanner from '../components/imageGen/Flux2TokenBanner';
 import ImageGenControls from '../components/imageGen/ImageGenControls';
 import MediaJobsQueue from '../components/media/MediaJobsQueue';
 import { useMediaCompletionRefresh } from '../hooks/useMediaCompletionRefresh';
+import { useMediaAnnotations } from '../hooks/useMediaAnnotations';
 import {
   Image as ImageIcon, Sparkles, Download, RefreshCw, Settings as SettingsIcon,
   AlertTriangle, X, Film,
@@ -100,6 +102,8 @@ export default function ImageGen() {
   const [gallery, setGallery] = useState([]);
   const [preview, setPreview] = useState(null);
   const [showHidden, setShowHidden] = useState(false);
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const { annotations, toggleStar, updateAnnotation } = useMediaAnnotations();
   // FLUX.2 readiness — drives the gating banner. Lazy-fetched on the first
   // selection of a flux2 model so we don't make an extra request when the
   // user is only using mflux/external/codex.
@@ -449,10 +453,15 @@ export default function ImageGen() {
   const flux2Issue = isFlux2Model && flux2Status
     ? (!flux2Status.venvInstalled ? 'venv' : !flux2Status.hfTokenPresent ? 'token' : null)
     : null;
-  const { visibleGallery, hiddenGallery } = useMemo(() => ({
-    visibleGallery: gallery.filter((img) => !img.hidden),
-    hiddenGallery: gallery.filter((img) => img.hidden),
-  }), [gallery]);
+  const { visibleGallery, hiddenGallery } = useMemo(() => {
+    const visible = gallery.filter((img) => !img.hidden);
+    const hidden = gallery.filter((img) => img.hidden);
+    if (!favoritesOnly) return { visibleGallery: visible, hiddenGallery: hidden };
+    // Normalize to derive the canonical item.key rather than hand-building
+    // `image:${img.filename}` — the kind/ref convention lives in normalize.js.
+    const isStarred = (img) => !!annotations[normalizeImage(img).key]?.starred;
+    return { visibleGallery: visible.filter(isStarred), hiddenGallery: hidden.filter(isStarred) };
+  }, [gallery, favoritesOnly, annotations]);
   const previewItems = useMemo(() => [
     ...visibleGallery.map(normalizeImage),
     ...(showHidden ? hiddenGallery.map(normalizeImage) : []),
@@ -1100,30 +1109,40 @@ export default function ImageGen() {
 
       <MediaJobsQueue kind="image" />
 
-      {visibleGallery.length > 0 && (
+      {(visibleGallery.length > 0 || favoritesOnly) && (
         <div className="bg-port-card border border-port-border rounded-xl p-4 space-y-2">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
             <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wide">Recent renders ({Math.min(visibleGallery.length, 5)} of {visibleGallery.length})</h2>
-            {visibleGallery.length > 5 && (
-              <Link to="/media/history" className="text-xs text-port-accent hover:underline">View all →</Link>
-            )}
+            <div className="flex items-center gap-2">
+              <FavoritesFilterChip active={favoritesOnly} onToggle={() => setFavoritesOnly((v) => !v)} />
+              {visibleGallery.length > 5 && (
+                <Link to="/media/history" className="text-xs text-port-accent hover:underline">View all →</Link>
+              )}
+            </div>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-            {visibleGallery.slice(0, 5).map((img) => {
-              const item = normalizeImage(img);
-              return (
-                <MediaCard
-                  key={item.key}
-                  item={item}
-                  onPreview={() => setPreview(item)}
-                  onRemix={() => handleRemix(img)}
-                  onSendToVideo={() => sendToVideo(img)}
-                  onDelete={() => handleDelete(img.filename)}
-                  onToggleHidden={() => handleToggleHidden(item)}
-                />
-              );
-            })}
-          </div>
+          {visibleGallery.length === 0 ? (
+            <div className="text-xs text-gray-500 py-3">No favorited images yet.</div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+              {visibleGallery.slice(0, 5).map((img) => {
+                const item = normalizeImage(img);
+                return (
+                  <MediaCard
+                    key={item.key}
+                    item={item}
+                    onPreview={() => setPreview(item)}
+                    onRemix={() => handleRemix(img)}
+                    onSendToVideo={() => sendToVideo(img)}
+                    onDelete={() => handleDelete(img.filename)}
+                    onToggleHidden={() => handleToggleHidden(item)}
+                    starred={!!annotations[item.key]?.starred}
+                    hasNote={!!annotations[item.key]?.note}
+                    onToggleStar={toggleStar}
+                  />
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -1150,6 +1169,9 @@ export default function ImageGen() {
                     onSendToVideo={() => sendToVideo(img)}
                     onDelete={() => handleDelete(img.filename)}
                     onToggleHidden={() => handleToggleHidden(item)}
+                    starred={!!annotations[item.key]?.starred}
+                    hasNote={!!annotations[item.key]?.note}
+                    onToggleStar={toggleStar}
                   />
                 );
               })}
@@ -1164,6 +1186,8 @@ export default function ImageGen() {
         onRemix={(item) => item?.raw && handleRemix(item.raw)}
         onSendToVideo={(item) => item?.raw?.filename && sendToVideo(item.raw)}
         onClean={(item, level) => handleClean(item?.raw, level)}
+        annotation={preview ? annotations[preview.key] ?? null : null}
+        onAnnotationChange={preview ? (patch) => updateAnnotation(preview.key, patch) : undefined}
         {...previewNavProps}
       />
 
