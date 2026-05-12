@@ -26,6 +26,13 @@ export const expandWorld = ({ starterPrompt, providerId, model } = {}) => reques
   body: JSON.stringify({ starterPrompt, providerId, model }),
 });
 
+export const refineWorldPrompts = ({
+  starterPrompt, stylePrompt, negativePrompt, feedback, providerId, model,
+} = {}) => request('/world-builder/refine-prompts', {
+  method: 'POST',
+  body: JSON.stringify({ starterPrompt, stylePrompt, negativePrompt, feedback, providerId, model }),
+});
+
 export const renderWorld = (id, options) => request(`/world-builder/${encodeURIComponent(id)}/render`, {
   method: 'POST',
   body: JSON.stringify(options || {}),

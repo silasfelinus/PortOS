@@ -18,6 +18,7 @@ import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { validateRequest } from '../lib/validation.js';
 import * as svc from '../services/worldBuilder.js';
 import { expandWorldTemplate } from '../services/worldBuilderExpand.js';
+import { refineWorldPrompts } from '../services/worldBuilderRefine.js';
 import { enqueueJob } from '../services/mediaJobQueue/index.js';
 import { getSettings } from '../services/settings.js';
 import { createCollection, NAME_MAX_LENGTH as COLLECTION_NAME_MAX } from '../services/mediaCollections.js';
@@ -87,6 +88,21 @@ const expandSchema = z.object({
   model: z.string().trim().max(200).optional(),
 });
 
+const refinePromptsSchema = z.object({
+  starterPrompt: z.string().trim().min(1).max(svc.STARTER_PROMPT_MAX),
+  stylePrompt: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional().default(''),
+  negativePrompt: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional().default(''),
+  feedback: z.string().trim().min(1).max(3000),
+  providerId: z.string().trim().max(80).optional(),
+  // Whitespace-only model → undefined so the refiner's defaultModel /
+  // models[0] fallback kicks in instead of a blank string reaching the
+  // provider. Mirrors how /api/media-jobs/refine-prompt handles it.
+  model: z.string().max(200).optional().transform((s) => {
+    const v = (s ?? '').trim();
+    return v.length > 0 ? v : undefined;
+  }),
+});
+
 // `selection` per category: 'all' or array of variation labels.
 const selectionValueSchema = z.union([z.literal('all'), z.array(z.string().trim().min(1).max(svc.VARIATION_LABEL_MAX)).max(svc.VARIATIONS_PER_CATEGORY_MAX)]);
 const selectionSchema = z.record(
@@ -132,6 +148,14 @@ router.post('/expand', asyncHandler(async (req, res) => {
   const body = validateRequest(expandSchema, req.body ?? {});
   const result = await expandWorldTemplate(body);
   res.json(result);
+}));
+
+// Refines the 3 top-level prompts (starter / style / negative) based on
+// user feedback. Stateless — the caller decides whether to write the
+// result back to a saved world. Keep ahead of `/:id`.
+router.post('/refine-prompts', asyncHandler(async (req, res) => {
+  const body = validateRequest(refinePromptsSchema, req.body ?? {});
+  res.json(await refineWorldPrompts(body));
 }));
 
 router.get('/:id', asyncHandler(async (req, res) => {
