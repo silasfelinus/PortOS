@@ -18,7 +18,6 @@ import { resolveEffectiveModel } from "../lib/promptRunner.js";
 import {
   COMPOSITE_PROMPT_MAX,
   COMPOSITE_SHEETS_MAX,
-  COMPOSITE_SHEET_KINDS,
   LOCKABLE_FIELDS,
   LOCKABLE_FIELD_LABELS,
   LOGLINE_MAX,
@@ -308,9 +307,13 @@ const mergeCategoriesWithLocks = (originalCategories, llmCategories) => {
   const fresh = (llmCategories && typeof llmCategories === "object") ? llmCategories : {};
   const merged = {};
 
-  for (const [rawKey, origCat] of Object.entries(orig)) {
-    const key = normalizeCategoryKey(rawKey) || rawKey;
-    const origVars = Array.isArray(origCat?.variations) ? origCat.variations : [];
+  const allKeys = new Set([
+    ...Object.keys(orig).map((k) => normalizeCategoryKey(k) || k),
+    ...Object.keys(fresh).map((k) => normalizeCategoryKey(k) || k),
+  ]);
+
+  for (const key of allKeys) {
+    const origVars = Array.isArray(orig?.[key]?.variations) ? orig[key].variations : [];
     const llmVars = Array.isArray(fresh?.[key]?.variations) ? fresh[key].variations : [];
     const lockedOrig = origVars.filter((v) => v?.locked === true);
     const lockedLabels = new Set(lockedOrig.map((v) => normalizeLabelKey(v.label)));
@@ -323,13 +326,6 @@ const mergeCategoriesWithLocks = (originalCategories, llmCategories) => {
       out.push({ label, prompt: typeof v.prompt === "string" ? v.prompt : "" });
     }
     merged[key] = { variations: out };
-  }
-
-  for (const [rawKey, cat] of Object.entries(fresh)) {
-    const key = normalizeCategoryKey(rawKey) || rawKey;
-    if (merged[key]) continue;
-    if (!cat || typeof cat !== "object") continue;
-    merged[key] = { variations: Array.isArray(cat.variations) ? cat.variations : [] };
   }
 
   return sanitizeCategories(merged);
@@ -346,11 +342,7 @@ const mergeCompositesWithLocks = (originalSheets, llmSheets) => {
     if (!s || typeof s !== "object") continue;
     const label = typeof s.label === "string" ? s.label.trim() : "";
     if (!label || lockedLabels.has(normalizeLabelKey(label))) continue;
-    merged.push({
-      kind: COMPOSITE_SHEET_KINDS.includes(s.kind) ? s.kind : "reference_sheet",
-      label,
-      prompt: typeof s.prompt === "string" ? s.prompt : "",
-    });
+    merged.push({ kind: s.kind, label, prompt: s.prompt });
   }
   return sanitizeCompositeSheets(merged);
 };

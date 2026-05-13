@@ -474,26 +474,28 @@ function diffItems(orig, fresh) {
   return rows;
 }
 
+const DIFF_ACCENTS = {
+  added: 'border-port-success/40 bg-port-success/5',
+  removed: 'border-port-error/40 bg-port-error/5',
+  changed: 'border-port-accent/40 bg-port-accent/5',
+  locked: 'border-port-accent/20 bg-port-bg',
+  unchanged: 'border-port-border bg-port-bg',
+};
+
+const DIFF_BADGES = {
+  added: <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-port-success"><Plus className="w-3 h-3" /> Added</span>,
+  removed: <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-port-error"><Minus className="w-3 h-3" /> Removed</span>,
+  changed: <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-port-accent">Changed</span>,
+  locked: <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-port-accent"><Lock className="w-3 h-3" /> Locked</span>,
+  unchanged: <span className="text-[10px] uppercase tracking-wide text-gray-500">Unchanged</span>,
+};
+
 function DiffRow({ status, current, previous }) {
-  const accents = {
-    added: 'border-port-success/40 bg-port-success/5',
-    removed: 'border-port-error/40 bg-port-error/5',
-    changed: 'border-port-accent/40 bg-port-accent/5',
-    locked: 'border-port-accent/20 bg-port-bg',
-    unchanged: 'border-port-border bg-port-bg',
-  };
-  const badges = {
-    added: <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-port-success"><Plus className="w-3 h-3" /> Added</span>,
-    removed: <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-port-error"><Minus className="w-3 h-3" /> Removed</span>,
-    changed: <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-port-accent">Changed</span>,
-    locked: <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-port-accent"><Lock className="w-3 h-3" /> Locked</span>,
-    unchanged: <span className="text-[10px] uppercase tracking-wide text-gray-500">Unchanged</span>,
-  };
   return (
-    <div className={`border rounded p-2 ${accents[status]}`}>
+    <div className={`border rounded p-2 ${DIFF_ACCENTS[status]}`}>
       <div className="flex items-center justify-between gap-2 mb-1">
         <div className="text-xs font-medium text-white truncate">{current.label}</div>
-        {badges[status]}
+        {DIFF_BADGES[status]}
       </div>
       {status === 'changed' && (
         <div className="text-[11px] text-gray-500 whitespace-pre-wrap line-clamp-2 line-through">
