@@ -85,9 +85,14 @@ export default function WorldPromptRefineModal({
     compositeSheets: Array.isArray(compositeSheets) ? compositeSheets : [],
   }), [starterPrompt, stylePrompt, negativePrompt, logline, premise, styleNotes, influences, categories, compositeSheets]);
 
+  // Pre-Expand drafts have starter category buckets in `originals.categories`
+  // (the WorldBuilder seeds them as empty objects so the UI can render the
+  // category editor), so checking `Object.keys.length > 0` would always be
+  // true and force the structure-aware path before the user has generated
+  // any actual variations. Count real variations instead.
   const hasStructure = useMemo(() => (
-    Object.keys(originals.categories).length > 0 ||
-    originals.compositeSheets.length > 0
+    Object.values(originals.categories).some((cat) => (cat?.variations || []).length > 0)
+    || originals.compositeSheets.length > 0
   ), [originals.categories, originals.compositeSheets]);
 
   const [feedback, setFeedback] = useState('');
@@ -123,12 +128,9 @@ export default function WorldPromptRefineModal({
   const allTopLocked = WORLD_LOCKABLE_FIELDS.every((k) => locked[k]);
   // The button stays enabled when there's *any* category variation or composite
   // sheet present — the holistic refine flow can still tune unlocked structure
-  // items even if every top-level bible field is locked.
-  const hasRefinableStructure = (
-    (categories && Object.values(categories).some((cat) => (cat?.variations || []).length > 0))
-    || (Array.isArray(compositeSheets) && compositeSheets.length > 0)
-  );
-  const allLocked = allTopLocked && !hasRefinableStructure;
+  // items even if every top-level bible field is locked. Reuse the memoized
+  // hasStructure (counts real variations, not just category-key presence).
+  const allLocked = allTopLocked && !hasStructure;
   const hasResult = Object.keys(refined).length > 0 || rationale !== '';
   const canRefine = feedback.trim() && starterPrompt.trim() && selectedProviderId && !refining && !allLocked;
   const canApply = hasResult && (refined.starterPrompt || '').trim();

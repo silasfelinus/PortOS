@@ -355,8 +355,13 @@ export async function expandWorldTemplate({
     `🌍 World Builder parsed JSON — keys=[${Object.keys(parsed || {}).join(",")}] categoryKeys=[${Object.keys(parsed?.categories || {}).join(",")}] compositeSheets=${Array.isArray(parsed?.compositeSheets) ? parsed.compositeSheets.length : 0}`,
   );
 
+  // Distinguish "LLM omitted this key" (return null → client keeps draft)
+  // from "LLM returned ''" (return "" → client applies the clear). The
+  // client's pick helper in handleExpand treats null/undefined as absent
+  // and "" as an intentional value; emitting "" for both cases would
+  // clobber existing draft state on every response that misses a field.
   const trimField = (value, max) =>
-    typeof value === "string" ? value.trim().slice(0, max) : "";
+    typeof value === "string" ? value.trim().slice(0, max) : null;
   const stylePrompt = trimField(parsed.stylePrompt, PROMPT_FRAGMENT_MAX);
   const negativePrompt = trimField(parsed.negativePrompt, PROMPT_FRAGMENT_MAX);
   const logline = trimField(parsed.logline, LOGLINE_MAX);

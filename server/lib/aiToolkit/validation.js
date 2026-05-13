@@ -25,7 +25,9 @@ export const providerSchema = z.object({
 });
 
 export const runSchema = z.object({
-  type: z.enum(['ai', 'command']),
+  // `type` defaults to 'ai' so the common case (AI run via /api/runs from
+  // RunnerPage / AIProviders / etc.) doesn't have to send it explicitly.
+  type: z.enum(['ai', 'command']).optional().default('ai'),
   providerId: z.string().optional(),
   model: z.string().optional(),
   workspacePath: z.string().optional(),
