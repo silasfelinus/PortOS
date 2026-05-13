@@ -9,7 +9,12 @@ export const providerSchema = z.object({
   type: z.enum(['cli', 'api']),
   command: z.string().optional(),
   args: z.array(z.string()).optional(),
-  endpoint: z.string().url().optional(),
+  // CLI providers send `endpoint: ''` from the form; coerce empty/null to
+  // undefined so the URL check only runs for actual values (API providers).
+  endpoint: z.preprocess(
+    (v) => (v === '' || v === null ? undefined : v),
+    z.string().url().optional()
+  ),
   apiKey: z.string().optional(),
   models: z.array(z.string()).optional(),
   defaultModel: z.string().nullable().optional(),
