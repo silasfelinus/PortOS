@@ -134,12 +134,22 @@ export function createPortOSProviderRoutes(aiToolkit) {
     res.json(sanitizeProvider(provider));
   }));
 
-  // PUT /:id — intercept to preserve redacted secrets before passing to toolkit
+  // PUT /:id — intercept to (a) validate the body via a partial provider
+  // schema (PUT can be a partial update; only the fields the client sent are
+  // re-validated), and (b) preserve redacted secrets before passing to the
+  // toolkit. Without partial validation, an `updateProvider` call could
+  // still persist invalid types (timeout: "abc", non-object envVars) the
+  // POST path now blocks.
   router.put('/:id', asyncHandler(async (req, res) => {
     const existing = await providerService.getProviderById(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Provider not found' });
 
-    const updates = { ...req.body };
+    const validation = validate(providerSchema.partial(), req.body);
+    if (!validation.success) {
+      return res.status(400).json({ error: 'Invalid provider data', details: validation.errors });
+    }
+
+    const updates = { ...validation.data };
 
     // Preserve existing apiKey if client didn't send a new one
     if (!('apiKey' in updates)) {

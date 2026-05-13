@@ -307,14 +307,23 @@ const mergeCategoriesWithLocks = (originalCategories, llmCategories) => {
   const fresh = (llmCategories && typeof llmCategories === "object") ? llmCategories : {};
   const merged = {};
 
-  const allKeys = new Set([
-    ...Object.keys(orig).map((k) => normalizeCategoryKey(k) || k),
-    ...Object.keys(fresh).map((k) => normalizeCategoryKey(k) || k),
-  ]);
+  // Build normalized-key lookups so the merge can find a fresh entry whose
+  // raw key is e.g. "Secret Rituals" via the normalized form "secret_rituals"
+  // (the LLM may not echo back the exact snake_case the schema uses).
+  const buildLookup = (obj) => {
+    const out = {};
+    for (const [rawKey, value] of Object.entries(obj)) {
+      out[normalizeCategoryKey(rawKey) || rawKey] = value;
+    }
+    return out;
+  };
+  const origByNorm = buildLookup(orig);
+  const freshByNorm = buildLookup(fresh);
+  const allKeys = new Set([...Object.keys(origByNorm), ...Object.keys(freshByNorm)]);
 
   for (const key of allKeys) {
-    const origVars = Array.isArray(orig?.[key]?.variations) ? orig[key].variations : [];
-    const llmVars = Array.isArray(fresh?.[key]?.variations) ? fresh[key].variations : [];
+    const origVars = Array.isArray(origByNorm[key]?.variations) ? origByNorm[key].variations : [];
+    const llmVars = Array.isArray(freshByNorm[key]?.variations) ? freshByNorm[key].variations : [];
     const lockedOrig = origVars.filter((v) => v?.locked === true);
     const lockedLabels = new Set(lockedOrig.map((v) => normalizeLabelKey(v.label)));
 

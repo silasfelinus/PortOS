@@ -234,10 +234,10 @@ try {
 // invocation conventions, not for security.
 import { executeCliRun as executeCliRunFixed } from './services/runner.js';
 aiToolkit.services.runner.executeCliRun = executeCliRunFixed;
-// Also patch stopRun so it can terminate child processes started by the
-// PortOS variant — those are tracked in `_portosActiveRuns`, not the
-// toolkit's internal `activeRuns` map, so the stock stopRun returns false
-// for live CLI runs.
+// Also patch stopRun + isRunActive so they consult `_portosActiveRuns`
+// (where the PortOS CLI variant tracks child processes), not just the
+// toolkit's internal `activeRuns` map. Without this, the runs router
+// would report live CLI runs as inactive and refuse to stop them.
 const originalStopRun = aiToolkit.services.runner.stopRun.bind(aiToolkit.services.runner);
 aiToolkit.services.runner.stopRun = async (runId) => {
   const portosActive = aiToolkit.services.runner._portosActiveRuns?.get(runId);
@@ -248,7 +248,12 @@ aiToolkit.services.runner.stopRun = async (runId) => {
   }
   return originalStopRun(runId);
 };
-console.log('🔧 Patched aiToolkit runner.executeCliRun + stopRun with PortOS CLI variants');
+const originalIsRunActive = aiToolkit.services.runner.isRunActive.bind(aiToolkit.services.runner);
+aiToolkit.services.runner.isRunActive = (runId) => {
+  if (aiToolkit.services.runner._portosActiveRuns?.has(runId)) return true;
+  return originalIsRunActive(runId);
+};
+console.log('🔧 Patched aiToolkit runner.executeCliRun + stopRun + isRunActive with PortOS CLI variants');
 
 // Note: prompts service is initialized automatically by createAIToolkit()
 
