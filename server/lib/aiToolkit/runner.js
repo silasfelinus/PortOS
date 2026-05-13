@@ -54,8 +54,12 @@ export function createRunnerService(config = {}) {
       return fallback;
     }
 
-    const parsed = JSON.parse(str);
-    return parsed ?? fallback;
+    try {
+      const parsed = JSON.parse(str);
+      return parsed ?? fallback;
+    } catch {
+      return fallback;
+    }
   }
 
   async function handleProviderError(providerId, errorAnalysis, output) {

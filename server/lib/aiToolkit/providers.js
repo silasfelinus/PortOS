@@ -2,13 +2,13 @@ import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SAMPLE_PATH = join(__dirname, 'defaults/providers.sample.json');
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 const CODEX_CONFIGURED_DEFAULT = 'codex-configured-default';
 const CODEX_MODEL_KEYS = ['defaultModel', 'lightModel', 'mediumModel', 'heavyModel'];
@@ -197,18 +197,25 @@ export function createProviderService(config = {}) {
       }
 
       if (provider.type === 'cli') {
-        const { stdout } = await execAsync(`which ${provider.command}`).catch(() => ({ stdout: '', stderr: 'not found' }));
+        // Use execFile (no shell) so user-configured `provider.command` cannot
+        // inject extra shell commands via metacharacters.
+        const { stdout } = await execFileAsync('which', [provider.command])
+          .catch(() => ({ stdout: '', stderr: 'not found' }));
 
         if (!stdout.trim()) {
           return { success: false, error: `Command '${provider.command}' not found in PATH` };
         }
 
-        const { stdout: versionOut } = await execAsync(`${provider.command} --version 2>/dev/null || ${provider.command} -v 2>/dev/null || echo "available"`).catch(() => ({ stdout: 'available' }));
+        const tryVersion = async (flag) => {
+          const out = await execFileAsync(provider.command, [flag]).catch(() => null);
+          return out?.stdout?.trim() || null;
+        };
+        const versionOut = (await tryVersion('--version')) || (await tryVersion('-v')) || 'available';
 
         return {
           success: true,
           path: stdout.trim(),
-          version: versionOut.trim()
+          version: versionOut
         };
       }
 

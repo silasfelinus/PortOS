@@ -120,7 +120,15 @@ export default function WorldPromptRefineModal({
 
   if (!open) return null;
 
-  const allLocked = WORLD_LOCKABLE_FIELDS.every((k) => locked[k]);
+  const allTopLocked = WORLD_LOCKABLE_FIELDS.every((k) => locked[k]);
+  // The button stays enabled when there's *any* category variation or composite
+  // sheet present — the holistic refine flow can still tune unlocked structure
+  // items even if every top-level bible field is locked.
+  const hasRefinableStructure = (
+    (categories && Object.values(categories).some((cat) => (cat?.variations || []).length > 0))
+    || (Array.isArray(compositeSheets) && compositeSheets.length > 0)
+  );
+  const allLocked = allTopLocked && !hasRefinableStructure;
   const hasResult = Object.keys(refined).length > 0 || rationale !== '';
   const canRefine = feedback.trim() && starterPrompt.trim() && selectedProviderId && !refining && !allLocked;
   const canApply = hasResult && (refined.starterPrompt || '').trim();
@@ -176,13 +184,19 @@ export default function WorldPromptRefineModal({
     }
     const refinedInf = ensureInfluences(refined.influences);
     const origInf = originals.influences;
-    // Influences in refine mode are append-only when locked, so the server's
-    // returned list is always safe to apply directly (locked tokens are
-    // preserved in order, new tokens appended).
-    patch.influences = {
-      embrace: refinedInf.embrace.length ? refinedInf.embrace : origInf.embrace,
-      avoid: refinedInf.avoid.length ? refinedInf.avoid : origInf.avoid,
-    };
+    // Locked lists are append-only server-side (returned list always contains
+    // locked tokens in order). Unlocked lists may be cleared by the LLM in
+    // response to feedback like "drop all influences" — apply the empty list
+    // when it's an explicit decision rather than an omission. `refined` only
+    // carries `influences` when the server actually returned one, so a missing
+    // key here means "no change" and falls back to the originals.
+    const refinedHasInfluences = Object.prototype.hasOwnProperty.call(refined, 'influences');
+    if (refinedHasInfluences) {
+      patch.influences = {
+        embrace: locked.influencesEmbrace && refinedInf.embrace.length === 0 ? origInf.embrace : refinedInf.embrace,
+        avoid: locked.influencesAvoid && refinedInf.avoid.length === 0 ? origInf.avoid : refinedInf.avoid,
+      };
+    }
     // Server already enforced per-item locks before returning these.
     if (refined.categories) patch.categories = refined.categories;
     if (refined.compositeSheets) patch.compositeSheets = refined.compositeSheets;

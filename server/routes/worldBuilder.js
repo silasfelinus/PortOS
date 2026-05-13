@@ -69,10 +69,14 @@ const llmSchema = z.object({
 
 // `locked` is a sparse map of `{ field: true }` for the LOCKABLE_FIELDS list.
 // `false` is treated the same as omitted — only `true` records a lock so the
-// stored shape stays minimal and additive.
-const lockedSchema = z.object(
-  Object.fromEntries(svc.LOCKABLE_FIELDS.map((k) => [k, z.boolean().optional()])),
-).strict();
+// stored shape stays minimal and additive. Accept legacy `influences` key as
+// an alias for both `influencesEmbrace` and `influencesAvoid` so older clients
+// PATCHing a previously saved lock map still pass validation (sanitizeLocked
+// rewrites it on read into the per-list keys).
+const lockedSchema = z.object({
+  ...Object.fromEntries(svc.LOCKABLE_FIELDS.map((k) => [k, z.boolean().optional()])),
+  influences: z.boolean().optional(),
+}).strict();
 
 const influenceEntrySchema = z.string().trim().min(1).max(svc.INFLUENCE_ENTRY_MAX);
 const influencesSchema = z.object({

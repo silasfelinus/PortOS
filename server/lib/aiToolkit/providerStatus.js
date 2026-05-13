@@ -116,12 +116,28 @@ export function createProviderStatusService(config = {}) {
     },
 
     getStatus(providerId) {
-      return statusCache.providers[providerId] || {
-        available: true,
-        reason: 'ok',
-        message: 'Provider available',
-        lastChecked: new Date().toISOString()
-      };
+      const status = statusCache.providers[providerId];
+      if (!status) {
+        return {
+          available: true,
+          reason: 'ok',
+          message: 'Provider available',
+          lastChecked: new Date().toISOString()
+        };
+      }
+      // Auto-recover when the estimatedRecovery deadline has passed — without
+      // this check a provider remains marked unavailable until the next
+      // service restart (or an explicit markAvailable call) even after its
+      // wait window has elapsed, so fallback selection keeps skipping it.
+      if (status.estimatedRecovery && Date.now() > new Date(status.estimatedRecovery).getTime()) {
+        return {
+          available: true,
+          reason: 'ok',
+          message: 'Provider available',
+          lastChecked: new Date().toISOString()
+        };
+      }
+      return status;
     },
 
     getAllStatuses() {
