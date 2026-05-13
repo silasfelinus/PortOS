@@ -217,11 +217,15 @@ setProvidersToolkit(aiToolkit);
 setRunnerToolkit(aiToolkit, { dataDir: DATA_DIR, hooks: aiToolkitHooks });
 setPromptsToolkit(aiToolkit);
 
-// Warm the providers file at startup so the codex-sentinel migration lands
-// before any inbound request can race a concurrent write.
-aiToolkit.services.providers.getAllProviders().catch(err => {
+// Warm the providers file at startup so the codex-sentinel migration runs
+// before any inbound request can hit the providers cache. Awaited so the
+// migration write completes deterministically before request handlers
+// start consulting providers state.
+try {
+  await aiToolkit.services.providers.getAllProviders();
+} catch (err) {
   console.error(`❌ Failed to load providers at startup: ${err.message}`);
-});
+}
 
 // Swap the toolkit's generic executeCliRun for PortOS's variant that adds
 // CLI-provider-specific args building (Codex `exec -`, Gemini stdin piping,
@@ -230,7 +234,21 @@ aiToolkit.services.providers.getAllProviders().catch(err => {
 // invocation conventions, not for security.
 import { executeCliRun as executeCliRunFixed } from './services/runner.js';
 aiToolkit.services.runner.executeCliRun = executeCliRunFixed;
-console.log('🔧 Patched aiToolkit runner.executeCliRun with PortOS CLI variants');
+// Also patch stopRun so it can terminate child processes started by the
+// PortOS variant — those are tracked in `_portosActiveRuns`, not the
+// toolkit's internal `activeRuns` map, so the stock stopRun returns false
+// for live CLI runs.
+const originalStopRun = aiToolkit.services.runner.stopRun.bind(aiToolkit.services.runner);
+aiToolkit.services.runner.stopRun = async (runId) => {
+  const portosActive = aiToolkit.services.runner._portosActiveRuns?.get(runId);
+  if (portosActive) {
+    if (portosActive.kill) portosActive.kill('SIGTERM');
+    aiToolkit.services.runner._portosActiveRuns.delete(runId);
+    return true;
+  }
+  return originalStopRun(runId);
+};
+console.log('🔧 Patched aiToolkit runner.executeCliRun + stopRun with PortOS CLI variants');
 
 // Note: prompts service is initialized automatically by createAIToolkit()
 

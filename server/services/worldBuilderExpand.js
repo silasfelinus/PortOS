@@ -367,14 +367,18 @@ export async function expandWorldTemplate({
     parsed.compositeSheets || [],
   );
   // sanitizeInfluences enforces the same per-entry cap, list cap, and
-  // case-insensitive dedupe used everywhere else; falls back to the input
-  // influences when the LLM omits them so the user's pinned references
-  // don't silently disappear on the first expansion that misses the field.
-  const llmInfluences = sanitizeInfluences(parsed.influences);
-  const influencesOut =
-    llmInfluences.embrace.length || llmInfluences.avoid.length
-      ? llmInfluences
-      : safeInfluences;
+  // case-insensitive dedupe used everywhere else. Distinguish "LLM omitted
+  // influences entirely" (preserve the user's pinned references) from "LLM
+  // returned an explicit {embrace:[],avoid:[]}" (apply — user asked to clear
+  // them) by checking the raw input shape before sanitization.
+  const llmInfluencesRaw = parsed.influences;
+  const llmInfluences = sanitizeInfluences(llmInfluencesRaw);
+  const influencesOut = (llmInfluencesRaw && typeof llmInfluencesRaw === "object")
+    ? {
+        embrace: Array.isArray(llmInfluencesRaw.embrace) ? llmInfluences.embrace : safeInfluences.embrace,
+        avoid: Array.isArray(llmInfluencesRaw.avoid) ? llmInfluences.avoid : safeInfluences.avoid,
+      }
+    : safeInfluences;
   const perCat = Object.keys(categories)
     .map((k) => `${k}=${categories[k]?.variations?.length || 0}`)
     .join(" ");

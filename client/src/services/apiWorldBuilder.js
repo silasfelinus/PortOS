@@ -112,19 +112,21 @@ export const isInfluenceLockField = (key) => WORLD_INFLUENCE_LOCK_FIELDS.include
 // Build a refined influences object that honors per-list locks. Locked lists
 // take their value from `fallback` (the user's current draft / originals);
 // unlocked lists take from `fresh` (the LLM output), falling back to
-// `fallback` when the LLM omitted that list. Used by handleExpand merge AND
-// the server-side refine merge (mirrored). The refine modal's apply path
-// uses different semantics (no fallback-on-empty) and inlines its own build.
+// `fallback` only when the LLM omitted that list (key absent). An explicit
+// `[]` is applied so the user can intentionally clear an unlocked list.
+// Mirrors the server-side mergeInfluencesWithLocks in worldBuilder.js.
 export const mergeInfluencesWithLocks = (locked, fresh, fallback) => {
   const freshSafe = ensureInfluences(fresh);
   const fallbackSafe = ensureInfluences(fallback);
+  const freshHasEmbrace = Array.isArray(fresh?.embrace);
+  const freshHasAvoid = Array.isArray(fresh?.avoid);
   return {
     embrace: locked?.influencesEmbrace
       ? fallbackSafe.embrace
-      : (freshSafe.embrace.length ? freshSafe.embrace : fallbackSafe.embrace),
+      : (freshHasEmbrace ? freshSafe.embrace : fallbackSafe.embrace),
     avoid: locked?.influencesAvoid
       ? fallbackSafe.avoid
-      : (freshSafe.avoid.length ? freshSafe.avoid : fallbackSafe.avoid),
+      : (freshHasAvoid ? freshSafe.avoid : fallbackSafe.avoid),
   };
 };
 
