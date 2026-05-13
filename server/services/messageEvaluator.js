@@ -85,10 +85,7 @@ function parseEvalResponse(text, messageIds) {
   // callers benefit from also apply here. Without it, a Codex banner before
   // the JSON or a stray trailing comma throws SyntaxError instead of
   // surfacing the cleaner "Failed to parse AI evaluation response" upstream.
-  const { value: parsed } = extractJson(text, {
-    blockType: 'array',
-    shapePredicate: Array.isArray,
-  });
+  const { value: parsed } = extractJson(text, { blockType: 'array' });
   if (!Array.isArray(parsed)) return null;
 
   // Index by message ID, only keep valid entries
