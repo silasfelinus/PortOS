@@ -5,6 +5,7 @@ import { getProviderById, getAllProviders } from './providers.js';
 import { buildRulesPromptSection } from './messageTriageRules.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { runPromptThroughProvider } from '../lib/promptRunner.js';
+import { extractJson } from '../lib/jsonExtract.js';
 
 const EVAL_PROMPT = `You are an email triage assistant. For each email below, recommend ONE action and a brief reason.
 
@@ -79,11 +80,15 @@ async function runPrompt(provider, model, prompt, source) {
 }
 
 function parseEvalResponse(text, messageIds) {
-  // Extract JSON array from response (may have markdown fences)
-  const jsonMatch = text.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) return null;
-
-  const parsed = JSON.parse(jsonMatch[0]);
+  // Route through the shared extractor so banner-stripping, trailing-comma
+  // repair, and the `[...]` placeholder elision the rest of PortOS's LLM
+  // callers benefit from also apply here. Without it, a Codex banner before
+  // the JSON or a stray trailing comma throws SyntaxError instead of
+  // surfacing the cleaner "Failed to parse AI evaluation response" upstream.
+  const { value: parsed } = extractJson(text, {
+    blockType: 'array',
+    shapePredicate: Array.isArray,
+  });
   if (!Array.isArray(parsed)) return null;
 
   // Index by message ID, only keep valid entries

@@ -26,10 +26,19 @@
 
 const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 
+// Prototype-pollution guard: skip keys that would mutate Object.prototype
+// when assigned through normal property access. Every current call site
+// gates input through a Zod schema (which strips unknown keys), but the
+// helper is shared across three routes and a future caller could hand it
+// `req.body` directly or an LLM tool-call payload — defense in depth is
+// cheap. Reflects no behavioral change for valid input.
+const POLLUTING_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 export const deepMerge = (base, patch) => {
   if (!isPlainObject(patch)) return patch === undefined ? base : patch;
   const out = { ...(isPlainObject(base) ? base : {}) };
   for (const [k, v] of Object.entries(patch)) {
+    if (POLLUTING_KEYS.has(k)) continue;
     out[k] = isPlainObject(base?.[k]) && isPlainObject(v) ? deepMerge(base[k], v) : v;
   }
   return out;

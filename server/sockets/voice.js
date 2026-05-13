@@ -8,6 +8,7 @@
 
 import { runTurn } from '../services/voice/pipeline.js';
 import { getVoiceConfig } from '../services/voice/config.js';
+import { registerEchoBuffer, unregisterEchoBuffer } from '../services/voice/echo.js';
 import { isIsoDate } from '../services/brainJournal.js';
 
 // Cap by messages (each user utterance + assistant reply is ~2). 24 → ~12 turns.
@@ -64,9 +65,13 @@ export const registerVoiceHandlers = (socket) => {
     uiWaiters: [],
     // Ring of recently-spoken TTS sentences (with cached trigrams). The
     // pipeline uses this to detect the bot's own voice being echoed back
-    // through the user's mic when laptop speakers are in play.
+    // through the user's mic when laptop speakers are in play. The buffer is
+    // also registered in the module-scope echo registry so server-broadcast
+    // proactive speech can remember itself across every connected socket
+    // without needing a per-socket context.
     recentTts: [],
   };
+  registerEchoBuffer(state.recentTts);
 
   const pushHistory = (role, content) => {
     if (!content) return;
@@ -253,5 +258,6 @@ export const registerVoiceHandlers = (socket) => {
     const waiters = state.uiWaiters;
     state.uiWaiters = [];
     waiters.forEach((resolve) => resolve(null));
+    unregisterEchoBuffer(state.recentTts);
   });
 };

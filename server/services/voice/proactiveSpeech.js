@@ -17,6 +17,7 @@
 
 import { synthesize } from './tts.js';
 import { getVoiceConfig } from './config.js';
+import { rememberTtsForAllSockets } from './echo.js';
 import { getUserTimezone, getLocalParts } from '../../lib/timezone.js';
 
 // 24-hour HH:MM regex shared with the route-level Zod schema in
@@ -116,6 +117,13 @@ export const speakProactive = async ({ io, text, priority = 'normal', source = '
   }
 
   const { wav, latencyMs } = await synthesize(trimmed);
+  // Register this proactive line in every connected socket's echo buffer so
+  // the next user turn picks it up as TTS echo if the laptop mic catches the
+  // playback — without this, the bot's own voice would round-trip back into
+  // the LLM as user input. Per-turn TTS already does the equivalent via
+  // `state.recentTts`; proactive speech has no socket context, so it goes
+  // through the module-scope registry instead.
+  rememberTtsForAllSockets(trimmed);
   // `voice:speak` is the proactive-speech channel — distinct from per-turn
   // `voice:tts:audio` so the client can render a different visual cue
   // (subtle pill instead of full conversation entry) and skip recording

@@ -175,6 +175,27 @@ describe('speakProactive', () => {
     expect(payload.source).toBe('cos');
   });
 
+  it('registers the spoken sentence in every registered echo buffer', async () => {
+    // Proactive lines play through laptop speakers and can bleed back into
+    // the mic. Without registering in the per-socket echo buffers, the next
+    // user turn would forward the bot's own utterance to the LLM as input.
+    const { registerEchoBuffer, unregisterEchoBuffer, isEchoOfRecentTts } = await import('./echo.js');
+    const recent = [];
+    registerEchoBuffer(recent);
+    try {
+      const { io } = makeIo();
+      const sentence = 'The meeting starts at three pm in the conference room';
+      const r = await speakProactive({ io, text: sentence });
+      expect(r.ok).toBe(true);
+      expect(recent).toHaveLength(1);
+      // And the buffer is wired into the echo detector — a transcript that
+      // looks like the proactive line would be flagged as echo.
+      expect(isEchoOfRecentTts('the meeting starts at three pm', recent)).toBe(true);
+    } finally {
+      unregisterEchoBuffer(recent);
+    }
+  });
+
   it('suppresses when proactive disabled', async () => {
     const { getVoiceConfig } = await import('./config.js');
     getVoiceConfig.mockResolvedValueOnce({
