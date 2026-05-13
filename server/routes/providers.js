@@ -158,7 +158,21 @@ export function createPortOSProviderRoutes(aiToolkit) {
     res.json(sanitizeProvider(provider));
   }));
 
-  // Mount base toolkit routes last (GET/PUT /:id are now shadowed by sanitized versions above)
+  // POST / — intercept to sanitize the created provider before responding so
+  // apiKey and secret envVar values don't echo back to the client (the
+  // toolkit's POST returns the raw provider object).
+  router.post('/', asyncHandler(async (req, res) => {
+    const { name, type } = req.body;
+    if (!name) return res.status(400).json({ error: 'Name is required' });
+    if (!type || !['cli', 'api'].includes(type)) {
+      return res.status(400).json({ error: 'Type must be "cli" or "api"' });
+    }
+    const provider = await providerService.createProvider(req.body);
+    res.status(201).json(sanitizeProvider(provider));
+  }));
+
+  // Mount base toolkit routes last (GET/PUT /:id and POST / are now shadowed
+  // by sanitized versions above)
   router.use('/', aiToolkit.routes.providers);
 
   return router;

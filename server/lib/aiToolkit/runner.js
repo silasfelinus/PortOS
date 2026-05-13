@@ -185,14 +185,22 @@ export function createRunnerService(config = {}) {
       const startTime = Date.now();
       let output = '';
 
-      const args = [...(provider.args || []), prompt];
-      console.log(`🚀 Executing CLI: ${provider.command} ${provider.args?.join(' ') || ''}`);
+      // Pass the prompt via stdin (not argv) and run without a shell so that
+      // user-configurable `provider.command` cannot inject extra commands via
+      // shell metacharacters, and so the full prompt isn't visible in
+      // process listings as a single command-line argument.
+      const args = [...(provider.args || [])];
+      console.log(`🚀 Executing CLI: ${provider.command} ${args.join(' ')} (${prompt.length} chars via stdin)`);
 
       const childProcess = spawn(provider.command, args, {
         cwd: workspacePath,
         env: { ...process.env, ...provider.envVars },
-        shell: true
+        windowsHide: true
       });
+      if (childProcess.stdin) {
+        childProcess.stdin.write(prompt);
+        childProcess.stdin.end();
+      }
 
       activeRuns.set(runId, childProcess);
       hooks.onRunStarted?.({ runId, provider: provider.name, model: provider.defaultModel });

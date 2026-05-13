@@ -223,11 +223,14 @@ aiToolkit.services.providers.getAllProviders().catch(err => {
   console.error(`❌ Failed to load providers at startup: ${err.message}`);
 });
 
-// Patch toolkit's runner to fix shell security issue (DEP0190)
-// Override executeCliRun to remove 'shell: true' which causes security warnings
+// Swap the toolkit's generic executeCliRun for PortOS's variant that adds
+// CLI-provider-specific args building (Codex `exec -`, Gemini stdin piping,
+// Claude Code `-p -`). The toolkit's in-tree implementation is also safe
+// (no shell, prompt via stdin) — the PortOS variant exists for the per-CLI
+// invocation conventions, not for security.
 import { executeCliRun as executeCliRunFixed } from './services/runner.js';
 aiToolkit.services.runner.executeCliRun = executeCliRunFixed;
-console.log('🔧 Patched aiToolkit runner.executeCliRun to fix shell security issue');
+console.log('🔧 Patched aiToolkit runner.executeCliRun with PortOS CLI variants');
 
 // Note: prompts service is initialized automatically by createAIToolkit()
 
