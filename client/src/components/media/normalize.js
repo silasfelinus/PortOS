@@ -15,14 +15,7 @@ export function loraDisplayName(filename) {
 // Normalizes raw image-gallery / video-history records into a single shape
 // consumed by <MediaCard>. Lets the same card render in any history grid.
 export function normalizeImage(i) {
-  // Sidecar field shapes: new gen records use loraFilenames (basenames);
-  // legacy records pre-refactor used loraPaths (absolute paths). Reduce both
-  // to a list of basenames so the card can render the same chip regardless.
-  const fromFilenames = Array.isArray(i.loraFilenames) ? i.loraFilenames : [];
-  const fromPaths = Array.isArray(i.loraPaths)
-    ? i.loraPaths.map((p) => (typeof p === 'string' ? p.split(/[\\/]/).pop() : ''))
-    : [];
-  const loraNames = (fromFilenames.length ? fromFilenames : fromPaths).filter(Boolean);
+  const loraNames = (pickLoraFilenames(i) || []).filter(Boolean);
   // modelId display falls back through several sidecar shapes:
   //   1. modelId — local-runner sidecars (mflux/flux2/z-image/ernie)
   //   2. model   — codex sidecars (older path), and future Gemini etc.
@@ -60,11 +53,7 @@ export function normalizeImage(i) {
 }
 
 export function normalizeVideo(v) {
-  const fromFilenames = Array.isArray(v.loraFilenames) ? v.loraFilenames : [];
-  const fromPaths = Array.isArray(v.loraPaths)
-    ? v.loraPaths.map((p) => (typeof p === 'string' ? p.split(/[\\/]/).pop() : ''))
-    : [];
-  const loraNames = (fromFilenames.length ? fromFilenames : fromPaths).filter(Boolean);
+  const loraNames = (pickLoraFilenames(v) || []).filter(Boolean);
   return {
     kind: 'video',
     key: `video:${v.id}`,

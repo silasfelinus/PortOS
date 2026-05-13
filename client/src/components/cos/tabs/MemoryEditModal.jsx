@@ -110,9 +110,10 @@ export default function MemoryEditModal({ memory, apps, onSave, onClose }) {
           <h2 id="memory-edit-title" className="text-lg sm:text-xl font-bold text-white">Edit Memory</h2>
           <button
             onClick={onClose}
+            aria-label="Close edit memory"
             className="p-2 min-h-[40px] min-w-[40px] flex items-center justify-center text-gray-500 hover:text-white transition-colors rounded-lg"
           >
-            <X size={22} />
+            <X size={22} aria-hidden="true" />
           </button>
         </div>
 

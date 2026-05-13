@@ -85,11 +85,13 @@ export default function KeyboardHelp() {
     <Modal
       open={open}
       onClose={close}
-      // Modal's bubble-phase window Esc dispatcher closes us as the top-most
-      // layer. useKeyboardHelp listens on `document` (also bubble) — both
-      // fire on Esc, but they both ultimately call setOpen(false) so the
-      // double-handler is harmless. Modal's `stopImmediatePropagation` only
-      // blocks other window-level listeners, not document-level ones.
+      // Modal installs bubble-phase keydown listeners on BOTH `document`
+      // and `window`. Its document listener is registered at module load
+      // (before useKeyboardHelp's mount-time effect), so it fires first as
+      // the top-most-modal dispatch and calls our `close`. The
+      // `stopImmediatePropagation` then blocks useKeyboardHelp's later-
+      // registered document listener — but the result is identical
+      // (`setOpen(false)`), so the redundancy is harmless.
       size="md"
       align="top"
       usePortal

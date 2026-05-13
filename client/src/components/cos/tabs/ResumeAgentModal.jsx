@@ -99,9 +99,10 @@ export default function ResumeAgentModal({ agent, taskType = 'user', providers, 
           </h2>
           <button
             onClick={onClose}
+            aria-label="Close resume agent modal"
             className="text-gray-500 hover:text-white transition-colors"
           >
-            <X size={20} />
+            <X size={20} aria-hidden="true" />
           </button>
         </div>
 

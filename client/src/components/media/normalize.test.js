@@ -115,6 +115,40 @@ describe('getRenderConfigForItem - image', () => {
   });
 });
 
+describe('normalize loraNames - snake_case sidecar coverage', () => {
+  // MediaCard chips/search read `item.loraNames`; these must surface for
+  // sidecars written in any of the four supported field shapes so the UI
+  // doesn't silently drop LoRA badges for legacy / Python-written records.
+
+  it('image: surfaces snake_case lora_filenames in loraNames', () => {
+    const image = normalizeImage({
+      filename: 'a.png',
+      prompt: '',
+      lora_filenames: ['lora-snake.safetensors'],
+    });
+    expect(image.loraNames).toEqual(['lora-snake.safetensors']);
+  });
+
+  it('image: surfaces snake_case lora_paths in loraNames as basenames', () => {
+    const image = normalizeImage({
+      filename: 'b.png',
+      prompt: '',
+      lora_paths: ['/abs/path/oldStyle.safetensors'],
+    });
+    expect(image.loraNames).toEqual(['oldStyle.safetensors']);
+  });
+
+  it('video: surfaces snake_case lora_filenames in loraNames', () => {
+    const video = normalizeVideo({
+      id: 'v1',
+      filename: 'a.mp4',
+      prompt: '',
+      lora_filenames: ['lora-cinematic.safetensors'],
+    });
+    expect(video.loraNames).toEqual(['lora-cinematic.safetensors']);
+  });
+});
+
 describe('getRenderConfigForItem - video', () => {
   it('reads camelCase sidecar fields directly', () => {
     const video = normalizeVideo({
