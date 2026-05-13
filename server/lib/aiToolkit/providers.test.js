@@ -188,4 +188,181 @@ describe('Provider Service', () => {
       expect(existing).toBeUndefined();
     });
   });
+
+  describe('Codex provider auto-migration', () => {
+    const CODEX_SENTINEL = 'codex-configured-default';
+
+    const writeProvidersFile = async (data) => {
+      await writeFile(
+        join(TEST_DATA_DIR, 'providers.json'),
+        JSON.stringify(data, null, 2)
+      );
+    };
+
+    const readProvidersFile = async () => {
+      const { readFile } = await import('fs/promises');
+      const raw = await readFile(join(TEST_DATA_DIR, 'providers.json'), 'utf-8');
+      return JSON.parse(raw);
+    };
+
+    it('rewrites legacy codex models/defaultModel to the sentinel on first read', async () => {
+      await writeProvidersFile({
+        activeProvider: 'codex',
+        providers: {
+          codex: {
+            id: 'codex',
+            name: 'Codex CLI',
+            type: 'cli',
+            command: 'codex',
+            args: ['exec', '--full-auto'],
+            models: ['gpt-5.2', 'gpt-5-codex'],
+            defaultModel: 'gpt-5.2',
+            lightModel: 'gpt-5',
+            mediumModel: 'gpt-5.2',
+            heavyModel: 'gpt-5.2'
+          }
+        }
+      });
+
+      const codex = await providerService.getProviderById('codex');
+      expect(codex.models).toEqual([CODEX_SENTINEL]);
+      expect(codex.defaultModel).toBe(CODEX_SENTINEL);
+      expect(codex.lightModel).toBe(CODEX_SENTINEL);
+      expect(codex.mediumModel).toBe(CODEX_SENTINEL);
+      expect(codex.heavyModel).toBe(CODEX_SENTINEL);
+
+      const onDisk = await readProvidersFile();
+      expect(onDisk.providers.codex.defaultModel).toBe(CODEX_SENTINEL);
+      expect(onDisk.providers.codex.models).toEqual([CODEX_SENTINEL]);
+    });
+
+    it('is idempotent — already-migrated codex configs are not rewritten', async () => {
+      await writeProvidersFile({
+        activeProvider: 'codex',
+        providers: {
+          codex: {
+            id: 'codex',
+            name: 'Codex CLI',
+            type: 'cli',
+            command: 'codex',
+            args: ['exec'],
+            models: [CODEX_SENTINEL],
+            defaultModel: CODEX_SENTINEL,
+            lightModel: CODEX_SENTINEL,
+            mediumModel: CODEX_SENTINEL,
+            heavyModel: CODEX_SENTINEL
+          }
+        }
+      });
+
+      const { statSync } = await import('fs');
+      const path = join(TEST_DATA_DIR, 'providers.json');
+      const mtimeBefore = statSync(path).mtimeMs;
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      await providerService.getProviderById('codex');
+      const mtimeAfter = statSync(path).mtimeMs;
+      expect(mtimeAfter).toBe(mtimeBefore);
+    });
+
+    it('does not touch non-codex providers', async () => {
+      await writeProvidersFile({
+        activeProvider: 'claude-code',
+        providers: {
+          'claude-code': {
+            id: 'claude-code',
+            name: 'Claude Code',
+            type: 'cli',
+            command: 'claude',
+            models: ['claude-opus-4-7', 'claude-sonnet-4-6'],
+            defaultModel: 'claude-opus-4-7'
+          },
+          'openai-api': {
+            id: 'openai-api',
+            name: 'OpenAI',
+            type: 'api',
+            apiKey: 'sk-test',
+            models: ['gpt-5.2', 'gpt-5'],
+            defaultModel: 'gpt-5.2'
+          }
+        }
+      });
+
+      const claude = await providerService.getProviderById('claude-code');
+      const openai = await providerService.getProviderById('openai-api');
+      expect(claude.defaultModel).toBe('claude-opus-4-7');
+      expect(claude.models).toEqual(['claude-opus-4-7', 'claude-sonnet-4-6']);
+      expect(openai.defaultModel).toBe('gpt-5.2');
+      expect(openai.models).toEqual(['gpt-5.2', 'gpt-5']);
+    });
+
+    it('does not touch a codex entry that is type:"api" (only type:"cli" matches)', async () => {
+      await writeProvidersFile({
+        activeProvider: 'codex',
+        providers: {
+          codex: {
+            id: 'codex',
+            name: 'Codex API',
+            type: 'api',
+            apiKey: 'sk-test',
+            models: ['gpt-5.2'],
+            defaultModel: 'gpt-5.2'
+          }
+        }
+      });
+
+      const codex = await providerService.getProviderById('codex');
+      expect(codex.defaultModel).toBe('gpt-5.2');
+      expect(codex.models).toEqual(['gpt-5.2']);
+    });
+
+    it('preserves other codex fields (command, args, enabled, envVars)', async () => {
+      await writeProvidersFile({
+        activeProvider: 'codex',
+        providers: {
+          codex: {
+            id: 'codex',
+            name: 'Codex CLI',
+            type: 'cli',
+            command: 'codex',
+            args: ['exec', '--full-auto', '--dangerously-bypass-approvals-and-sandbox'],
+            enabled: true,
+            envVars: { OPENAI_BASE_URL: 'https://example.com' },
+            models: ['gpt-5.2'],
+            defaultModel: 'gpt-5.2'
+          }
+        }
+      });
+
+      const codex = await providerService.getProviderById('codex');
+      expect(codex.command).toBe('codex');
+      expect(codex.args).toEqual([
+        'exec',
+        '--full-auto',
+        '--dangerously-bypass-approvals-and-sandbox'
+      ]);
+      expect(codex.enabled).toBe(true);
+      expect(codex.envVars).toEqual({ OPENAI_BASE_URL: 'https://example.com' });
+    });
+
+    it('handles partial migration (only defaultModel pinned, models[] already sentinel)', async () => {
+      await writeProvidersFile({
+        activeProvider: 'codex',
+        providers: {
+          codex: {
+            id: 'codex',
+            type: 'cli',
+            command: 'codex',
+            models: [CODEX_SENTINEL],
+            defaultModel: 'gpt-5.2'
+          }
+        }
+      });
+
+      const codex = await providerService.getProviderById('codex');
+      expect(codex.models).toEqual([CODEX_SENTINEL]);
+      expect(codex.defaultModel).toBe(CODEX_SENTINEL);
+    });
+  });
 });
