@@ -55,6 +55,27 @@ export const COMPOSITE_SHEET_KINDS = Object.freeze([
 export const WORLD_CATEGORY_KEY_MAX = 64;
 export const WORLD_CATEGORY_COUNT_MAX = 30;
 
+// Influences — structured reference lists that deterministically inform
+// stylePrompt (embrace) and negativePrompt (avoid) at render-compile time.
+// They are the canonical record of the world's direction so re-expansions
+// inherit it; the LLM still authors the prose stylePrompt around them.
+export const INFLUENCE_ENTRY_MAX = 120;
+export const INFLUENCES_PER_LIST_MAX = 30;
+
+// Top-level fields the user can lock against AI-driven changes (refine /
+// expand). When a field is locked, both the refiner and the expansion-merge
+// must preserve the user's value verbatim. Categories + composite sheets are
+// not lockable yet — start with the bible/prompt scalars the user owns.
+export const LOCKABLE_FIELDS = Object.freeze([
+  'starterPrompt',
+  'stylePrompt',
+  'negativePrompt',
+  'logline',
+  'premise',
+  'styleNotes',
+  'influences',
+]);
+
 // Starter buckets the UI surfaces for a fresh world. They remain for
 // compatibility, but saved templates may carry any additional sanitized
 // category keys the LLM or user creates.
@@ -88,7 +109,12 @@ const sanitizeVariation = (raw) => {
   const label = trimTo(raw.label, VARIATION_LABEL_MAX);
   const prompt = trimTo(raw.prompt, PROMPT_FRAGMENT_MAX);
   if (!label || !prompt) return null;
-  return { label, prompt };
+  // Per-item lock — when true, expand merges preserve this entry instead of
+  // letting the LLM regenerate it. Only `true` is recorded; missing/false
+  // collapses to undefined so the on-disk shape stays minimal.
+  const out = { label, prompt };
+  if (raw.locked === true) out.locked = true;
+  return out;
 };
 
 const sanitizeCompositeSheet = (raw) => {
@@ -97,7 +123,9 @@ const sanitizeCompositeSheet = (raw) => {
   const prompt = trimTo(raw.prompt, COMPOSITE_PROMPT_MAX);
   if (!label || !prompt) return null;
   const kind = COMPOSITE_SHEET_KINDS.includes(raw.kind) ? raw.kind : 'reference_sheet';
-  return { kind, label, prompt };
+  const out = { kind, label, prompt };
+  if (raw.locked === true) out.locked = true;
+  return out;
 };
 
 const sanitizeCategory = (raw) => {
@@ -153,6 +181,44 @@ export const getWorldCategoryKeys = (categories = {}) => {
   return keys;
 };
 
+// Sanitize one influence list (embrace OR avoid):
+// - drop non-strings, trim, slice to per-entry cap
+// - drop empties + case-insensitive duplicates within the list
+// - cap list length
+const sanitizeInfluenceList = (raw) => {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const v of raw) {
+    if (!isStr(v)) continue;
+    const trimmed = v.trim().slice(0, INFLUENCE_ENTRY_MAX);
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+    if (out.length >= INFLUENCES_PER_LIST_MAX) break;
+  }
+  return out;
+};
+
+export const sanitizeInfluences = (raw = {}) => {
+  if (!raw || typeof raw !== 'object') return { embrace: [], avoid: [] };
+  return {
+    embrace: sanitizeInfluenceList(raw.embrace),
+    avoid: sanitizeInfluenceList(raw.avoid),
+  };
+};
+
+export const sanitizeLocked = (raw = {}) => {
+  if (!raw || typeof raw !== 'object') return {};
+  const out = {};
+  for (const key of LOCKABLE_FIELDS) {
+    if (raw[key] === true) out[key] = true;
+  }
+  return out;
+};
+
 export const sanitizeCompositeSheets = (raw = []) => {
   if (!Array.isArray(raw)) return [];
   const sheets = [];
@@ -178,6 +244,8 @@ const sanitizeTemplate = (raw) => {
   const styleNotes = trimTo(raw.styleNotes, STYLE_NOTES_MAX);
   const categories = sanitizeCategories(raw.categories || {});
   const compositeSheets = sanitizeCompositeSheets(raw.compositeSheets || []);
+  const influences = sanitizeInfluences(raw.influences);
+  const locked = sanitizeLocked(raw.locked);
   const llm = raw.llm && typeof raw.llm === 'object'
     ? {
       provider: trimTo(raw.llm.provider, 80) || null,
@@ -197,6 +265,8 @@ const sanitizeTemplate = (raw) => {
     styleNotes,
     categories,
     compositeSheets,
+    influences,
+    locked,
     llm,
     createdAt,
     updatedAt,
@@ -258,6 +328,8 @@ export async function createWorld(input = {}) {
     styleNotes: input.styleNotes || '',
     categories: input.categories || {},
     compositeSheets: input.compositeSheets || [],
+    influences: input.influences || {},
+    locked: input.locked || {},
     llm: input.llm || {},
     createdAt: now,
     updatedAt: now,
@@ -286,9 +358,19 @@ export async function updateWorld(id, patch = {}) {
     ? { ...(cur.llm || {}), ...(patch.llm || {}) }
     : cur.llm;
 
+  // `locked` replaces wholesale when the patch sends it (so unticking a lock
+  // actually unlocks). Skipped when the patch omits it.
+  const mergedLocked = 'locked' in patch ? (patch.locked || {}) : (cur.locked || {});
+
+  // `influences` also replaces wholesale (each list is the user's full
+  // intended state — partial merging would leave stale entries the user
+  // thought they removed).
+  const mergedInfluences = 'influences' in patch ? (patch.influences || {}) : (cur.influences || {});
+
   // Scalar fields: only apply what the patch actually carries, so a partial
   // PATCH never clobbers a field the caller didn't send. `categories` + `llm`
-  // are handled above (they need per-key merging, not replacement).
+  // + `locked` are handled above (they need per-key merging or wholesale
+  // replacement, not the simple scalar copy).
   const PATCHABLE_SCALARS = [
     'name', 'starterPrompt', 'stylePrompt', 'negativePrompt',
     'logline', 'premise', 'styleNotes', 'compositeSheets',
@@ -301,6 +383,8 @@ export async function updateWorld(id, patch = {}) {
     ...cur,
     ...scalarPatch,
     categories: mergedCategories,
+    influences: mergedInfluences,
+    locked: mergedLocked,
     llm: mergedLlm,
     updatedAt: new Date().toISOString(),
   });
@@ -339,6 +423,31 @@ export async function listRuns(worldId = null) {
 }
 
 /**
+ * Compose a token string by prepending an influence list (embrace or avoid)
+ * to a free-form comma-separated prose tokens string, with case-insensitive
+ * dedupe so the LLM-authored prompt never repeats an entry the user already
+ * pinned. Used by compilePrompts so structured influences ALWAYS land in the
+ * rendered prompt regardless of whether the LLM remembered them.
+ */
+export function composeInfluenceTokens(structured = [], prose = '') {
+  const all = [];
+  if (Array.isArray(structured)) all.push(...structured);
+  if (typeof prose === 'string' && prose.trim()) {
+    all.push(...prose.split(',').map((s) => s.trim()).filter(Boolean));
+  }
+  const seen = new Set();
+  const out = [];
+  for (const token of all) {
+    if (!token) continue;
+    const key = token.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(token);
+  }
+  return out.join(', ');
+}
+
+/**
  * Compile the world template into an ordered list of full image-gen
  * prompts. Each entry combines the world's style prompt with one
  * variation from a chosen category.
@@ -366,8 +475,8 @@ export function compilePrompts(world, options = {}) {
   const batchPerVariation = Math.max(1, Math.min(20, Number(options.batchPerVariation) || 1));
 
   const stylePreset = {
-    prompt: world.stylePrompt?.trim() || '',
-    negativePrompt: world.negativePrompt?.trim() || '',
+    prompt: composeInfluenceTokens(world.influences?.embrace, world.stylePrompt),
+    negativePrompt: composeInfluenceTokens(world.influences?.avoid, world.negativePrompt),
   };
   const compiled = [];
 

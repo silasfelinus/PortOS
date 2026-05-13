@@ -11,37 +11,46 @@
  * overwrite the draft, so the LLM never silently mutates a saved world.
  */
 
-import { ServerError } from '../lib/errorHandler.js';
-import { getActiveProvider, getProviderById } from './providers.js';
-import { createRun, executeApiRun, executeCliRun } from './runner.js';
-import { resolveEffectiveModel } from '../lib/promptRunner.js';
+import { ServerError } from "../lib/errorHandler.js";
+import { getActiveProvider, getProviderById } from "./providers.js";
+import { createRun, executeApiRun, executeCliRun } from "./runner.js";
+import { resolveEffectiveModel } from "../lib/promptRunner.js";
 import {
+  LOCKABLE_FIELDS,
+  LOGLINE_MAX,
+  PREMISE_MAX,
   PROMPT_FRAGMENT_MAX,
   STARTER_PROMPT_MAX,
-} from './worldBuilder.js';
+  STYLE_NOTES_MAX,
+  sanitizeInfluences,
+  sanitizeLocked,
+} from "./worldBuilder.js";
 
 const MAX_FEEDBACK = 3000;
 const MAX_RATIONALE = 1200;
 const MAX_CHANGES = 8;
 
 const trimTo = (value, max) =>
-  typeof value === 'string' ? value.trim().slice(0, max) : '';
+  typeof value === "string" ? value.trim().slice(0, max) : "";
 
-const cleanChanges = (changes) => (
+const cleanChanges = (changes) =>
   Array.isArray(changes)
-    ? changes.map((c) => trimTo(c, 240)).filter(Boolean).slice(0, MAX_CHANGES)
-    : []
-);
+    ? changes
+        .map((c) => trimTo(c, 240))
+        .filter(Boolean)
+        .slice(0, MAX_CHANGES)
+    : [];
 
 // Same brace-walker as mediaPromptRefiner: Codex CLI echoes the prompt to
 // stdout before the model response, and the prompt itself contains a JSON
 // schema example whose braces balance but whose contents are placeholder
 // text. Walk every brace-balanced block in order and return the first that
 // looks like a refinement payload (object with a `starterPrompt` string).
-const isPlaceholder = (s) => typeof s === 'string' && /^\s*<.+>\s*$/.test(s);
+const isPlaceholder = (s) => typeof s === "string" && /^\s*<.+>\s*$/.test(s);
 
 function extractRefinementJson(raw) {
-  if (typeof raw !== 'string' || !raw.trim()) throw new Error('Empty AI response');
+  if (typeof raw !== "string" || !raw.trim())
+    throw new Error("Empty AI response");
   let s = raw.trim();
   const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fence) s = fence[1].trim();
@@ -50,7 +59,7 @@ function extractRefinementJson(raw) {
   let lastErr;
   let placeholderSeen = false;
   while (i < s.length) {
-    const start = s.indexOf('{', i);
+    const start = s.indexOf("{", i);
     if (start === -1) break;
     let depth = 0;
     let inString = false;
@@ -60,66 +69,166 @@ function extractRefinementJson(raw) {
       const ch = s[j];
       if (inString) {
         if (escaped) escaped = false;
-        else if (ch === '\\') escaped = true;
+        else if (ch === "\\") escaped = true;
         else if (ch === '"') inString = false;
         continue;
       }
-      if (ch === '"') { inString = true; continue; }
-      if (ch === '{') depth += 1;
-      else if (ch === '}') {
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+      if (ch === "{") depth += 1;
+      else if (ch === "}") {
         depth -= 1;
-        if (depth === 0) { end = j; break; }
+        if (depth === 0) {
+          end = j;
+          break;
+        }
       }
     }
     if (end === -1) break;
     const block = s.slice(start, end + 1);
     try {
       const value = JSON.parse(block);
-      if (value && typeof value === 'object' && typeof value.starterPrompt === 'string') {
-        if (isPlaceholder(value.starterPrompt)) { placeholderSeen = true; }
-        else return value;
+      if (
+        value &&
+        typeof value === "object" &&
+        typeof value.starterPrompt === "string"
+      ) {
+        if (isPlaceholder(value.starterPrompt)) {
+          placeholderSeen = true;
+        } else return value;
       }
-    } catch (e) { lastErr = e; }
+    } catch (e) {
+      lastErr = e;
+    }
     i = end + 1;
   }
   if (placeholderSeen) {
-    throw new Error('AI returned the schema placeholder instead of a real refinement — try a stronger model or rerun');
+    throw new Error(
+      "AI returned the schema placeholder instead of a real refinement — try a stronger model or rerun",
+    );
   }
-  throw new Error(`Invalid JSON in AI response${lastErr ? `: ${lastErr.message}` : ''}`);
+  throw new Error(
+    `Invalid JSON in AI response${lastErr ? `: ${lastErr.message}` : ""}`,
+  );
 }
 
-export function buildWorldRefinePrompt({ starterPrompt, stylePrompt, negativePrompt, feedback }) {
-  return `You are a senior world-building prompt editor for a Stable-Diffusion-style image-generation pipeline.
+// Field labels surfaced to the LLM so the "DO NOT MODIFY" list reads naturally.
+const FIELD_LABELS = {
+  starterPrompt: "starter idea",
+  stylePrompt: "style prompt",
+  negativePrompt: "negative prompt",
+  logline: "logline",
+  premise: "premise",
+  styleNotes: "style notes",
+  influences: "influences (embrace + avoid)",
+};
 
-The user has three top-level prompts that define a "world": a STARTER IDEA (the high-concept seed), a STYLE PROMPT (visual style fragment prepended to every render — palette, lighting, render quality, artist references), and a NEGATIVE PROMPT (tokens to avoid). They have given feedback about the story concept, mood, style, design, or any aspect of the world they want refined.
+const lockedList = (locked) =>
+  LOCKABLE_FIELDS.filter((k) => locked && locked[k] === true).map(
+    (k) => `- ${FIELD_LABELS[k]} ("${k}")`,
+  );
 
-Rewrite all three prompts so they more faithfully express the user's intention. Output the COMPLETE rewritten text for each — not a placeholder, not a summary, not a diff.
+/**
+ * Collapse multiple `Style direction:` blocks within the starter prompt into
+ * one — keep the LAST occurrence (the latest refinement). We instruct the LLM
+ * to maintain a single trailing block, but defense-in-depth here ensures the
+ * starter never grows unboundedly across repeated refinements.
+ *
+ * Matches a heading-style line beginning with "Style direction:" (any case),
+ * including the body text that follows up to the next heading or end of input.
+ */
+export function collapseStyleDirectionDupes(starter) {
+  if (typeof starter !== "string" || !starter) return "";
+  const re =
+    /(?:^|\n)\s*Style direction:[\s\S]*?(?=(?:\n\s*Style direction:)|$)/gi;
+  const matches = starter.match(re);
+  if (!matches || matches.length <= 1) return starter;
+  const stripped = starter.replace(re, "").trim();
+  const last = matches[matches.length - 1].trim();
+  return `${stripped}\n\n${last}`.trim();
+}
 
-Return ONLY valid JSON in this schema (replace every <…> with real content; do NOT output the literal angle-bracket text):
+export function buildWorldRefinePrompt({
+  starterPrompt,
+  stylePrompt,
+  negativePrompt,
+  logline = "",
+  premise = "",
+  styleNotes = "",
+  influences = { embrace: [], avoid: [] },
+  locked = {},
+  feedback,
+}) {
+  const lockedRules = lockedList(locked);
+  const lockedSection = lockedRules.length
+    ? `LOCKED FIELDS — DO NOT MODIFY (the user has pinned these; echo them back UNCHANGED in the JSON output, do not rewrite a single word):
+${lockedRules.join("\n")}
+
+`
+    : "";
+
+  const embrace = Array.isArray(influences?.embrace) ? influences.embrace : [];
+  const avoid = Array.isArray(influences?.avoid) ? influences.avoid : [];
+
+  return `You are a senior world-building editor for a Stable-Diffusion-style image-generation pipeline AND a story-bible drafter for a comic/TV production pipeline.
+
+The user has seven top-level fields that define a "world":
+- STARTER IDEA — the high-concept seed the world expander fans out into categories.
+- STYLE PROMPT — comma-separated visual style tokens prepended to every render (palette, lighting, render quality, artist references).
+- NEGATIVE PROMPT — comma-separated tokens to avoid in renders.
+- LOGLINE — one-sentence narrative hook.
+- PREMISE — 1-3 paragraph elevator pitch (setting, conflict, stakes, tone).
+- STYLE NOTES — narrative-side prose about references, mood, palette, pacing, voice.
+- INFLUENCES — structured { embrace: [string], avoid: [string] } reference list. The renderer prepends embrace verbatim to the style prompt and avoid verbatim to the negative prompt, so this is the canonical record of "what direction is this world pointing." Each entry is a short prompt-token-style label (e.g. "Moebius", "cel-shading", "Ghibli painterly"). Max 30 entries per list, max 120 chars each.
+
+The user has given feedback about the story, mood, style, or design they want refined. Rewrite ALL seven fields so they more faithfully express the user's intention and stay internally consistent. Output the COMPLETE rewritten text/values for each — not a placeholder, not a summary, not a diff.
+
+${lockedSection}Return ONLY valid JSON in this schema (replace every <…> with real content; do NOT output the literal angle-bracket text):
 {
-  "starterPrompt": "<full rewritten high-concept starter idea, 1-3 sentences, ready to feed back into the world expander>",
-  "stylePrompt": "<full rewritten style fragment, comma-separated tokens, no subject nouns — palette, lighting, render quality, artist references>",
-  "negativePrompt": "<full rewritten negative prompt, comma-separated tokens to avoid; empty string if none>",
+  "starterPrompt": "<full rewritten high-concept starter idea, 1-3 sentences. Stays a clean seed — do NOT append style direction prose here, that belongs in influences + styleNotes>",
+  "stylePrompt": "<full rewritten style fragment, comma-separated tokens, no subject nouns — palette, lighting, render quality, artist references; should echo the embrace influences>",
+  "negativePrompt": "<full rewritten negative prompt, comma-separated tokens to avoid; empty string if none; should echo the avoid influences>",
+  "logline": "<full rewritten one-sentence narrative hook>",
+  "premise": "<full rewritten 1-3 paragraph elevator pitch>",
+  "styleNotes": "<full rewritten narrative-style prose about references, mood, palette, pacing, voice>",
+  "influences": { "embrace": ["<short reference label>", "..."], "avoid": ["<short reference label>", "..."] },
   "rationale": "<one concise sentence explaining the overall edit>",
   "changes": ["<short bullet of what changed and why>"]
 }
 
 Rules:
 - Preserve story/character/world DNA from the originals unless the user's feedback explicitly contradicts it.
-- The "starterPrompt" should remain a seed — the high-concept hook the world expander will fan out into categories. Do not list category content (landscapes, factions, etc.) here.
-- The "stylePrompt" must be comma-separated visual-style tokens only. No subject nouns. No camera/aspect tokens. Under 400 characters.
-- The "negativePrompt" must be comma-separated tokens. If the world relies on text/typography (e.g. pitch posters), avoid putting "text" in negatives — prefer "watermark, logo, unreadable tiny text, text artifacts".
-- Apply the user's feedback decisively. If they ask for a different style/mood/era, move toward it in the style prompt AND name the things to avoid in the negative prompt.
-- The "starterPrompt" field must NEVER equal the schema placeholder text — it must be the actual rewritten seed.
-
+- The "starterPrompt" stays a clean high-concept seed — no category content (landscapes, factions, etc.) and no style-direction prose. The structured "influences" field carries that direction so re-expansions inherit it deterministically.
+- The "stylePrompt" must be comma-separated visual-style tokens only. No subject nouns. No camera/aspect tokens. Under 400 characters. It SHOULD echo every "embrace" influence so the prompt is self-contained even before the structured prepend kicks in.
+- The "negativePrompt" must be comma-separated tokens. It SHOULD echo every "avoid" influence. If the world relies on text/typography (e.g. pitch posters), avoid putting "text" in negatives — prefer "watermark, logo, unreadable tiny text, text artifacts".
+- The "influences" lists are the canonical reference set. Add what the user's feedback embraces, drop what's no longer relevant, and add explicit avoids for things they're moving away from. Keep entries short (a name, a movement, a palette descriptor) — they're prepended verbatim to the renderer prompt.
+- The "logline", "premise", and "styleNotes" must stay narratively coherent with the refined influences and style prompts.
+- Apply the user's feedback decisively. If they ask for a different style/mood/era, move toward it in influences + style prompt + styleNotes, and name the things to avoid in negativePrompt + influences.avoid.
+- No field may equal the schema placeholder text — output real rewritten content for every key.
+${lockedRules.length ? "- Any field listed under LOCKED FIELDS above must be returned EXACTLY as the original — do not reword, expand, or trim it. The server will discard any change to a locked field, but echoing the original keeps the JSON consistent.\n" : ""}
 ORIGINAL STARTER IDEA:
-${starterPrompt || '(empty)'}
+${starterPrompt || "(empty)"}
 
 ORIGINAL STYLE PROMPT:
-${stylePrompt || '(empty)'}
+${stylePrompt || "(empty)"}
 
 ORIGINAL NEGATIVE PROMPT:
-${negativePrompt || '(empty)'}
+${negativePrompt || "(empty)"}
+
+ORIGINAL LOGLINE:
+${logline || "(empty)"}
+
+ORIGINAL PREMISE:
+${premise || "(empty)"}
+
+ORIGINAL STYLE NOTES:
+${styleNotes || "(empty)"}
+
+ORIGINAL INFLUENCES:
+Embrace: ${embrace.length ? embrace.join(", ") : "(none)"}
+Avoid: ${avoid.length ? avoid.join(", ") : "(none)"}
 
 USER FEEDBACK:
 ${feedback}`;
@@ -134,69 +243,124 @@ async function runRefine(provider, model, prompt) {
     providerId: provider.id,
     model,
     prompt,
-    source: 'world-builder-refine',
+    source: "world-builder-refine",
   });
 
-  let text = '';
+  let text = "";
   return new Promise((resolve, reject) => {
-    const onData = (chunk) => { text += typeof chunk === 'string' ? chunk : (chunk?.text || ''); };
+    const onData = (chunk) => {
+      text += typeof chunk === "string" ? chunk : chunk?.text || "";
+    };
     const onComplete = (result) => {
       if (result?.error || result?.success === false) {
-        reject(new ServerError(result?.error || 'World refinement failed', { status: 502, code: 'WORLD_REFINE_FAILED' }));
+        reject(
+          new ServerError(result?.error || "World refinement failed", {
+            status: 502,
+            code: "WORLD_REFINE_FAILED",
+          }),
+        );
       } else {
         resolve({ text, runId });
       }
     };
-    if (provider.type === 'cli') {
+    if (provider.type === "cli") {
       // Mirror the media refiner: `buildCliArgs` now honors a per-call model
       // override (via `provider.defaultModel`) for codex / claude-code /
       // gemini-cli. Clone the provider with the overridden defaultModel
       // whenever the caller picked something other than the saved default.
-      const providerForCli = model && model !== provider.defaultModel
-        ? { ...provider, defaultModel: model }
-        : provider;
-      executeCliRun(runId, providerForCli, prompt, process.cwd(), onData, onComplete, provider.timeout ?? 300000).catch(reject);
+      const providerForCli =
+        model && model !== provider.defaultModel
+          ? { ...provider, defaultModel: model }
+          : provider;
+      executeCliRun(
+        runId,
+        providerForCli,
+        prompt,
+        process.cwd(),
+        onData,
+        onComplete,
+        provider.timeout ?? 300000,
+      ).catch(reject);
     } else {
-      executeApiRun(runId, provider, model, prompt, process.cwd(), [], onData, onComplete).catch(reject);
+      executeApiRun(
+        runId,
+        provider,
+        model,
+        prompt,
+        process.cwd(),
+        [],
+        onData,
+        onComplete,
+      ).catch(reject);
     }
   });
 }
 
 /**
- * Refine the 3 top-level world prompts.
+ * Refine the 6 top-level world fields (starter, style, negative + bible).
  *
  * @param {object} args
  * @param {string} args.starterPrompt   — original
  * @param {string} [args.stylePrompt]   — original (may be empty)
  * @param {string} [args.negativePrompt] — original (may be empty)
+ * @param {string} [args.logline]        — original bible logline (may be empty)
+ * @param {string} [args.premise]        — original bible premise (may be empty)
+ * @param {string} [args.styleNotes]     — original bible style notes (may be empty)
+ * @param {object} [args.locked]         — { field: true } for fields the user has pinned; locked fields are echoed back unchanged
  * @param {string} args.feedback        — required user feedback
  * @param {string} [args.providerId]    — overrides the active provider
  * @param {string} [args.model]         — overrides the provider's default model
  */
 export async function refineWorldPrompts({
   starterPrompt,
-  stylePrompt = '',
-  negativePrompt = '',
+  stylePrompt = "",
+  negativePrompt = "",
+  logline = "",
+  premise = "",
+  styleNotes = "",
+  influences,
+  locked = {},
   feedback,
   providerId,
   model,
 } = {}) {
   if (!feedback || !feedback.trim()) {
-    throw new ServerError('Feedback is required', { status: 400, code: 'FEEDBACK_REQUIRED' });
+    throw new ServerError("Feedback is required", {
+      status: 400,
+      code: "FEEDBACK_REQUIRED",
+    });
   }
   if (!starterPrompt || !starterPrompt.trim()) {
-    throw new ServerError('Starter prompt is required to refine', { status: 400, code: 'STARTER_REQUIRED' });
+    throw new ServerError("Starter prompt is required to refine", {
+      status: 400,
+      code: "STARTER_REQUIRED",
+    });
+  }
+  const safeLocked = sanitizeLocked(locked);
+  // Refusing the run if everything is locked spares the user a confusing
+  // "nothing changed" outcome (the LLM would echo every field, then the
+  // server would overwrite with originals, then the modal would show no diff).
+  if (LOCKABLE_FIELDS.every((k) => safeLocked[k])) {
+    throw new ServerError(
+      "All fields are locked — unlock at least one before refining",
+      { status: 400, code: "ALL_FIELDS_LOCKED" },
+    );
   }
 
-  let provider = providerId ? await getProviderById(providerId).catch(() => null) : null;
+  let provider = providerId
+    ? await getProviderById(providerId).catch(() => null)
+    : null;
   if (!provider) provider = await getActiveProvider();
   if (!provider) {
-    throw new ServerError('No AI provider available for world refinement', { status: 400, code: 'NO_PROVIDER' });
+    throw new ServerError("No AI provider available for world refinement", {
+      status: 400,
+      code: "NO_PROVIDER",
+    });
   }
   if (provider.enabled === false) {
     throw new ServerError(
       `Provider "${provider.name || provider.id}" is disabled — enable it in Settings → Providers first`,
-      { status: 400, code: 'PROVIDER_DISABLED' },
+      { status: 400, code: "PROVIDER_DISABLED" },
     );
   }
 
@@ -204,15 +368,29 @@ export async function refineWorldPrompts({
   // run record / log line match the args-pinned id when a CLI provider's
   // args have a baked --model/-m flag. Shared helper documents the
   // decision table.
-  const selectedModel = resolveEffectiveModel(provider, model) || '';
-  if (!selectedModel && provider.type === 'api') {
-    throw new ServerError('Model is required for world refinement', { status: 400, code: 'MODEL_REQUIRED' });
+  const selectedModel = resolveEffectiveModel(provider, model) || "";
+  if (!selectedModel && provider.type === "api") {
+    throw new ServerError("Model is required for world refinement", {
+      status: 400,
+      code: "MODEL_REQUIRED",
+    });
   }
 
-  const llmPrompt = buildWorldRefinePrompt({
+  // Trim originals up front so we can pass them to both the LLM AND use them
+  // verbatim as the lock fallback below.
+  const originals = {
     starterPrompt: trimTo(starterPrompt, STARTER_PROMPT_MAX),
     stylePrompt: trimTo(stylePrompt, PROMPT_FRAGMENT_MAX),
     negativePrompt: trimTo(negativePrompt, PROMPT_FRAGMENT_MAX),
+    logline: trimTo(logline, LOGLINE_MAX),
+    premise: trimTo(premise, PREMISE_MAX),
+    styleNotes: trimTo(styleNotes, STYLE_NOTES_MAX),
+    influences: sanitizeInfluences(influences),
+  };
+
+  const llmPrompt = buildWorldRefinePrompt({
+    ...originals,
+    locked: safeLocked,
     feedback: trimTo(feedback, MAX_FEEDBACK),
   });
 
@@ -220,21 +398,73 @@ export async function refineWorldPrompts({
 
   let parsed;
   try {
-    parsed = extractRefinementJson(text || '');
+    parsed = extractRefinementJson(text || "");
   } catch (e) {
-    console.warn(`⚠️ world-refine [${provider.id}/${selectedModel || 'default'} runId=${runId}] parse failed: ${e.message} (response size: ${(text || '').length} chars)`);
-    throw new ServerError(e.message, { status: 502, code: 'WORLD_REFINE_BAD_JSON' });
+    console.warn(
+      `⚠️ world-refine [${provider.id}/${selectedModel || "default"} runId=${runId}] parse failed: ${e.message} (response size: ${(text || "").length} chars)`,
+    );
+    throw new ServerError(e.message, {
+      status: 502,
+      code: "WORLD_REFINE_BAD_JSON",
+    });
   }
 
-  const refinedStarter = trimTo(parsed.starterPrompt, STARTER_PROMPT_MAX);
-  if (!refinedStarter) {
-    throw new ServerError('LLM returned an empty starter prompt', { status: 502, code: 'WORLD_REFINE_EMPTY_STARTER' });
+  const FIELD_CAPS = {
+    starterPrompt: STARTER_PROMPT_MAX,
+    stylePrompt: PROMPT_FRAGMENT_MAX,
+    negativePrompt: PROMPT_FRAGMENT_MAX,
+    logline: LOGLINE_MAX,
+    premise: PREMISE_MAX,
+    styleNotes: STYLE_NOTES_MAX,
+  };
+
+  // For each lockable field: if locked, echo the original; otherwise take
+  // the LLM's value (or fall back to original when missing/empty so the
+  // modal never receives a blank where the user had content). Influences is
+  // an object — handle it after the scalar loop.
+  const refined = {};
+  for (const key of LOCKABLE_FIELDS) {
+    if (key === "influences") continue;
+    if (safeLocked[key]) {
+      refined[key] = originals[key];
+      continue;
+    }
+    const llmValue = trimTo(parsed[key], FIELD_CAPS[key]);
+    refined[key] = llmValue || originals[key];
+  }
+
+  // Influences: locked → echo originals; unlocked → take the LLM's lists
+  // (sanitized for caps + dedupe). When the LLM omits it entirely we keep
+  // the originals rather than wiping them.
+  if (safeLocked.influences) {
+    refined.influences = originals.influences;
+  } else {
+    const llmInfluences = sanitizeInfluences(parsed.influences);
+    refined.influences =
+      llmInfluences.embrace.length || llmInfluences.avoid.length
+        ? llmInfluences
+        : originals.influences;
+  }
+
+  // Legacy cleanup: prior refinements may have stuffed a "Style direction:"
+  // paragraph into the starter. Now that influences carries the direction
+  // structurally, collapse any leftover duplicates so the starter doesn't
+  // keep growing across iterations. The new refine prompt no longer asks
+  // for the clause, but the cleanup is cheap.
+  if (!safeLocked.starterPrompt) {
+    refined.starterPrompt = collapseStyleDirectionDupes(refined.starterPrompt);
+  }
+
+  if (!refined.starterPrompt) {
+    throw new ServerError("LLM returned an empty starter prompt", {
+      status: 502,
+      code: "WORLD_REFINE_EMPTY_STARTER",
+    });
   }
 
   return {
-    starterPrompt: refinedStarter,
-    stylePrompt: trimTo(parsed.stylePrompt, PROMPT_FRAGMENT_MAX),
-    negativePrompt: trimTo(parsed.negativePrompt, PROMPT_FRAGMENT_MAX),
+    ...refined,
+    locked: safeLocked,
     rationale: trimTo(parsed.rationale, MAX_RATIONALE),
     changes: cleanChanges(parsed.changes),
     providerId: provider.id,
@@ -242,4 +472,8 @@ export async function refineWorldPrompts({
   };
 }
 
-export const __testing = { extractRefinementJson, buildWorldRefinePrompt };
+export const __testing = {
+  extractRefinementJson,
+  buildWorldRefinePrompt,
+  collapseStyleDirectionDupes,
+};

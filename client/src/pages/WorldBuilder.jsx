@@ -8,18 +8,22 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   Globe2, Plus, Trash2, Sparkles, Wand2, Loader2, Save, FolderOpen,
-  Edit3, X, MessageSquarePlus, Play,
+  Edit3, X, MessageSquarePlus, Play, Lock, Unlock,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import {
   listWorlds, getWorld, createWorld, updateWorld, deleteWorld, expandWorld,
   renderWorld, listWorldRuns, getProviders, WORLD_CATEGORIES,
   WORLD_CATEGORY_KEY_MAX, COMPOSITE_PROMPT_MAX, WORLD_LOGLINE_MAX,
-  WORLD_PREMISE_MAX, WORLD_STYLE_NOTES_MAX, listImageModels, getSettings,
+  WORLD_PREMISE_MAX, WORLD_STYLE_NOTES_MAX, WORLD_LOCKABLE_FIELDS,
+  WORLD_INFLUENCE_ENTRY_MAX, WORLD_INFLUENCES_PER_LIST_MAX,
+  ensureInfluences,
+  listImageModels, getSettings,
 } from '../services/api';
+import InfluenceChipsInput from '../components/worldBuilder/InfluenceChipsInput';
 import BackendChipStrip from '../components/media/BackendChipStrip';
 import ImageGenControls from '../components/imageGen/ImageGenControls';
 import { deriveAvailableBackends, IMAGE_GEN_MODE } from '../lib/imageGenBackends';
@@ -95,12 +99,101 @@ const emptyTemplate = () => ({
   styleNotes: '',
   categories: ensureDraftCategories(),
   compositeSheets: [],
+  influences: { embrace: [], avoid: [] },
+  locked: {},
   llm: { provider: null, model: null },
 });
 
+
+// Renders a small lock-toggle button to the right of a field label. The user
+// clicks it to pin a field against AI refinement/expansion. The icon flips
+// between locked (filled) and unlocked (outline) to make state obvious.
+function LockButton({ field, locked, onToggle, label }) {
+  const isLocked = !!locked?.[field];
+  const Icon = isLocked ? Lock : Unlock;
+  return (
+    <button
+      type="button"
+      onClick={() => onToggle(field)}
+      className={`p-1 rounded -mr-1 ${
+        isLocked
+          ? 'text-port-accent hover:bg-port-accent/20'
+          : 'text-gray-500 hover:text-gray-300 hover:bg-port-border/40'
+      }`}
+      title={isLocked ? `${label} locked — AI refine/expand will skip it` : `Lock ${label} against AI refine/expand`}
+      aria-label={isLocked ? `Unlock ${label}` : `Lock ${label}`}
+      aria-pressed={isLocked}
+    >
+      <Icon size={13} />
+    </button>
+  );
+}
+
+// Render a label row with the field name + lock toggle. Used by every
+// lockable bible/prompt field so the lock UI stays consistent.
+function FieldLabel({ htmlFor, children, field, locked, onToggleLock }) {
+  return (
+    <div className="flex items-center justify-between gap-2 mb-1">
+      <label htmlFor={htmlFor} className="text-xs text-gray-400">{children}</label>
+      <LockButton field={field} locked={locked} onToggle={onToggleLock} label={typeof children === 'string' ? children : field} />
+    </div>
+  );
+}
+
+// Two-column embrace + avoid editor with a single shared lock toggle.
+// Sits in the Story bible section so the writers + creative directors can
+// pin canonical references that the renderer then prepends deterministically
+// to stylePrompt / negativePrompt.
+function InfluencesEditor({ influences, onChange, locked, onToggleLock }) {
+  const safe = ensureInfluences(influences);
+  const isLocked = !!locked?.influences;
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <label className="text-xs text-gray-400">
+          Influences <span className="text-gray-600">— prepended to render prompts deterministically</span>
+        </label>
+        <LockButton field="influences" locked={locked} onToggle={onToggleLock} label="Influences" />
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-port-success/80 mb-1">Embrace</div>
+          <InfluenceChipsInput
+            tokens={safe.embrace}
+            onChange={(next) => onChange({ ...safe, embrace: next })}
+            placeholder="Moebius, cel-shading…"
+            tone="success"
+            readOnly={isLocked}
+          />
+        </div>
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-port-error/80 mb-1">Avoid</div>
+          <InfluenceChipsInput
+            tokens={safe.avoid}
+            onChange={(next) => onChange({ ...safe, avoid: next })}
+            placeholder="Ghibli painterly, neon cyberpunk…"
+            tone="error"
+            readOnly={isLocked}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function WorldBuilder() {
+  // The selected world id lives in the URL so deep-linking + back/forward
+  // work. The page is mounted at /world-builder, /world-builder/:worldId,
+  // and /media/world-builder(/:worldId) — strip any trailing /<id> off the
+  // current pathname to derive the base for navigation back to the list.
+  const params = useParams();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const selectedId = params.worldId || null;
+  const basePath = location.pathname.replace(/\/world-builder(?:\/.*)?$/, '/world-builder');
+  const goToWorld = (id) => navigate(id ? `${basePath}/${encodeURIComponent(id)}` : basePath);
+
   const [worlds, setWorlds] = useState([]);
-  const [selectedId, setSelectedId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [expanding, setExpanding] = useState(false);
@@ -188,6 +281,8 @@ export default function WorldBuilder() {
           logline: w.logline || '',
           premise: w.premise || '',
           styleNotes: w.styleNotes || '',
+          influences: ensureInfluences(w.influences),
+          locked: w.locked || {},
           llm: w.llm || { provider: null, model: null },
         });
       }
@@ -197,7 +292,7 @@ export default function WorldBuilder() {
   }, [selectedId]);
 
   const handleNew = () => {
-    setSelectedId(null);
+    goToWorld(null);
     setDraft(emptyTemplate());
     setRuns([]);
   };
@@ -218,6 +313,8 @@ export default function WorldBuilder() {
       styleNotes: draft.styleNotes || '',
       categories: draft.categories,
       compositeSheets: draft.compositeSheets || [],
+      influences: ensureInfluences(draft.influences),
+      locked: draft.locked || {},
       llm: draft.llm || {},
     };
     const result = selectedId
@@ -230,7 +327,10 @@ export default function WorldBuilder() {
         const without = prev.filter((w) => w.id !== result.id);
         return [result, ...without];
       });
-      setSelectedId(result.id);
+      // After Create: jump to the new id's URL so back-button / refresh
+      // returns to the same world. After Update: id is unchanged, but
+      // navigating is harmless (replace-style).
+      if (result.id !== selectedId) goToWorld(result.id);
     }
   };
 
@@ -251,7 +351,7 @@ export default function WorldBuilder() {
       .catch((e) => { toast.error(`Delete failed: ${e.message}`); return false; });
     if (!ok) return;
     setWorlds((prev) => prev.filter((w) => w.id !== id));
-    setSelectedId(null);
+    goToWorld(null);
     setDraft(emptyTemplate());
     setPendingDeleteId(null);
     toast.success('World deleted');
@@ -262,29 +362,112 @@ export default function WorldBuilder() {
       toast.error('Add a starter prompt to expand');
       return;
     }
+    // Extract per-item locks so the server can include them in the LLM
+    // prompt (avoid duplicate generation) AND we can merge them back in
+    // after the result returns. Only LOCKED entries are forwarded — the
+    // unlocked items get fully replaced.
+    const preservedVariations = {};
+    for (const [cat, bucket] of Object.entries(draft.categories || {})) {
+      const locked = (bucket?.variations || []).filter((v) => v?.locked === true);
+      if (locked.length) preservedVariations[cat] = locked;
+    }
+    const preservedCompositeSheets = (draft.compositeSheets || []).filter((s) => s?.locked === true);
+
     setExpanding(true);
     const result = await expandWorld({
       starterPrompt: draft.starterPrompt,
+      // Pass current influences so re-expansions stay on-direction —
+      // without this, the LLM regenerates from the bare starter idea and
+      // any prior refinement is lost.
+      influences: ensureInfluences(draft.influences),
+      preservedVariations,
+      preservedCompositeSheets,
       providerId: draft.llm?.provider || undefined,
       model: draft.llm?.model || undefined,
     }).catch((e) => { toast.error(`Expansion failed: ${e.message}`); return null; });
     setExpanding(false);
     if (!result) return;
+    // For each lockable field: pick the LLM's value when unlocked (falling
+    // back to the draft if the LLM produced empty); pick the draft's value
+    // verbatim when locked. Categories + compositeSheets aren't lockable
+    // (the lock UI scopes to the bible/prompt scalars), so they always
+    // come from the LLM. `starterPrompt` is normally untouched by expand
+    // (the LLM doesn't return one), but if it ever did, lock honoring
+    // protects the user's edits.
+    const locks = draft.locked || {};
+    // Distinguish "LLM omitted the field" (null/undefined → keep draft) from
+    // "LLM returned empty string" (negativePrompt is a legitimate "" — the
+    // user's `||` would silently restore a stale value they wanted gone).
+    const pick = (key, llmValue) => {
+      if (locks[key]) return draft[key];
+      return llmValue == null ? draft[key] : llmValue;
+    };
+    // Influences: preserve the draft's lists when locked OR when the LLM
+    // returned empty (defensive — sanitizeInfluences server-side already
+    // falls back, but the client's own lock state must dominate too).
+    const llmInf = ensureInfluences(result.influences);
+    const refinedInfluences = locks.influences
+      ? ensureInfluences(draft.influences)
+      : ((llmInf.embrace.length || llmInf.avoid.length) ? llmInf : ensureInfluences(draft.influences));
+    // Per-item lock merge: for each category, locked items survive at the
+    // top of the list; LLM-generated items follow, deduped case-insensitively
+    // by label so the LLM can't accidentally regenerate a pinned label.
+    // Categories that exist in the draft but not in the LLM result are
+    // preserved when they still hold locked variations.
+    const mergeVariations = (locked, fresh) => {
+      const seen = new Set(locked.map((v) => v.label.toLowerCase()));
+      const merged = [...locked];
+      for (const v of fresh || []) {
+        const key = v.label?.toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        merged.push(v);
+      }
+      return merged;
+    };
+    const llmCategories = result.categories || {};
+    const mergedCategories = {};
+    const allCatKeys = new Set([
+      ...Object.keys(preservedVariations),
+      ...Object.keys(llmCategories),
+    ]);
+    for (const cat of allCatKeys) {
+      const locked = preservedVariations[cat] || [];
+      const fresh = (llmCategories[cat]?.variations || []);
+      mergedCategories[cat] = { variations: mergeVariations(locked, fresh) };
+    }
+    // Composite sheets merge follows the same locked-first + dedupe pattern.
+    const mergedSheets = (() => {
+      const llmSheets = result.compositeSheets || [];
+      const seen = new Set(preservedCompositeSheets.map((s) => s.label.toLowerCase()));
+      const out = [...preservedCompositeSheets];
+      for (const s of llmSheets) {
+        const key = s.label?.toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push(s);
+      }
+      return out;
+    })();
+
     const expandedDraft = {
       ...draft,
-      stylePrompt: result.stylePrompt || draft.stylePrompt,
-      negativePrompt: result.negativePrompt || draft.negativePrompt,
-      // Only overwrite the narrative bible fields when the LLM actually
-      // produced one — preserves any prose the user has already hand-edited
-      // when they re-run /expand to refresh just the image categories.
-      logline: result.logline || draft.logline,
-      premise: result.premise || draft.premise,
-      styleNotes: result.styleNotes || draft.styleNotes,
-      categories: ensureDraftCategories(result.categories),
-      compositeSheets: result.compositeSheets || draft.compositeSheets || [],
+      starterPrompt: pick('starterPrompt', result.starterPrompt),
+      stylePrompt: pick('stylePrompt', result.stylePrompt),
+      negativePrompt: pick('negativePrompt', result.negativePrompt),
+      logline: pick('logline', result.logline),
+      premise: pick('premise', result.premise),
+      styleNotes: pick('styleNotes', result.styleNotes),
+      influences: refinedInfluences,
+      categories: ensureDraftCategories(mergedCategories),
+      compositeSheets: mergedSheets,
       llm: result.llm || draft.llm,
     };
     setDraft(expandedDraft);
+    const lockedKeys = Object.keys(locks).filter((k) => locks[k]);
+    if (lockedKeys.length) {
+      console.log(`🔒 World Builder expand preserved ${lockedKeys.length} locked field(s): ${lockedKeys.join(', ')}`);
+    }
     const total = totalVariationCount(expandedDraft);
     if (expandedDraft.compositeSheets?.length) {
       setRenderOpts((r) => ({ ...r, promptMode: 'sheets' }));
@@ -304,6 +487,8 @@ export default function WorldBuilder() {
         styleNotes: expandedDraft.styleNotes || '',
         categories: expandedDraft.categories,
         compositeSheets: expandedDraft.compositeSheets || [],
+        influences: ensureInfluences(expandedDraft.influences),
+        locked: expandedDraft.locked || {},
         llm: expandedDraft.llm || {},
       }).catch((e) => { toast.error(`Auto-save after expand failed: ${e.message}`); return null; });
       if (updated) {
@@ -318,16 +503,18 @@ export default function WorldBuilder() {
     toast.success(`Expanded into ${total} variations and ${expandedDraft.compositeSheets?.length || 0} boards — review then Save`);
   };
 
-  // Writes the LLM-refined starter/style/negative back to the draft. Mirrors
-  // handleExpand's auto-save: if the world is already persisted, persist the
-  // refinement immediately so subsequent renders/expansions see it on disk.
-  const applyRefinement = async ({ starterPrompt, stylePrompt, negativePrompt }) => {
-    const next = {
-      ...draft,
-      starterPrompt: starterPrompt ?? draft.starterPrompt,
-      stylePrompt: stylePrompt ?? draft.stylePrompt,
-      negativePrompt: negativePrompt ?? draft.negativePrompt,
-    };
+  // Writes the LLM-refined fields back to the draft. The modal only emits
+  // unlocked fields (server enforces this too), so we apply every key that
+  // shows up in the patch and leave everything else on the draft as-is.
+  // Mirrors handleExpand's auto-save: if the world is already persisted,
+  // persist the refinement immediately so subsequent renders/expansions see
+  // it on disk.
+  const applyRefinement = async (patch = {}) => {
+    const next = { ...draft };
+    for (const key of WORLD_LOCKABLE_FIELDS) {
+      if (!(key in patch) || patch[key] == null) continue;
+      next[key] = key === 'influences' ? ensureInfluences(patch[key]) : patch[key];
+    }
     setDraft(next);
     if (selectedId && next.name?.trim()) {
       const updated = await updateWorld(selectedId, {
@@ -340,6 +527,8 @@ export default function WorldBuilder() {
         styleNotes: next.styleNotes || '',
         categories: next.categories,
         compositeSheets: next.compositeSheets || [],
+        influences: ensureInfluences(next.influences),
+        locked: next.locked || {},
         llm: next.llm || {},
       }).catch((e) => { toast.error(`Auto-save after refine failed: ${e.message}`); return null; });
       if (updated) {
@@ -404,6 +593,26 @@ export default function WorldBuilder() {
   const canRender = !!selectedId && availableBackends.length > 0 && !rendering;
 
   const updateDraft = (patch) => setDraft((d) => ({ ...d, ...patch }));
+  // Toggle a single field's lock state and (when the world is already saved)
+  // persist immediately — locks are part of the world template, so a stale
+  // disk copy would let a later refine/expand silently overwrite a "locked"
+  // field after a refresh.
+  const toggleLock = (field) => {
+    if (!WORLD_LOCKABLE_FIELDS.includes(field)) return;
+    setDraft((d) => {
+      const nextLocked = { ...(d.locked || {}) };
+      if (nextLocked[field]) delete nextLocked[field];
+      else nextLocked[field] = true;
+      const next = { ...d, locked: nextLocked };
+      if (selectedId && next.name?.trim()) {
+        // Fire-and-forget — the in-memory state already reflects the toggle;
+        // on failure we toast and the next manual Save still recovers.
+        updateWorld(selectedId, { locked: nextLocked })
+          .catch((e) => toast.error(`Lock save failed: ${e.message}`));
+      }
+      return next;
+    });
+  };
   const updateCategory = (cat, variations) => setDraft((d) => ({
     ...d,
     categories: { ...d.categories, [cat]: { variations } },
@@ -469,7 +678,7 @@ export default function WorldBuilder() {
               return (
                 <li key={w.id}>
                   <button
-                    onClick={() => setSelectedId(w.id)}
+                    onClick={() => goToWorld(w.id)}
                     className={`w-full text-left px-2 py-2 rounded text-sm transition-colors min-h-[40px] ${
                       active
                         ? 'bg-port-accent/15 text-port-accent border border-port-accent/40'
@@ -524,7 +733,9 @@ export default function WorldBuilder() {
           {/* Starter prompt + LLM picker */}
           <div className="grid grid-cols-1 md:grid-cols-[1fr_220px] gap-3">
             <div>
-              <label className="text-xs text-gray-400 mb-1 block">Starter idea</label>
+              <FieldLabel field="starterPrompt" locked={draft.locked} onToggleLock={toggleLock}>
+                Starter idea
+              </FieldLabel>
               <textarea
                 value={draft.starterPrompt}
                 onChange={(e) => updateDraft({ starterPrompt: e.target.value })}
@@ -573,7 +784,7 @@ export default function WorldBuilder() {
               className="px-3 py-2 bg-purple-600/30 hover:bg-purple-600/50 disabled:opacity-50 text-purple-200 border border-purple-600/40 rounded flex items-center gap-2 min-h-[40px]"
             >
               {expanding ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />}
-              Expand starter → variations
+              Generate From Idea
             </button>
             <button
               onClick={() => setRefineOpen(true)}
@@ -597,6 +808,11 @@ export default function WorldBuilder() {
           starterPrompt={draft.starterPrompt || ''}
           stylePrompt={draft.stylePrompt || ''}
           negativePrompt={draft.negativePrompt || ''}
+          logline={draft.logline || ''}
+          premise={draft.premise || ''}
+          styleNotes={draft.styleNotes || ''}
+          influences={ensureInfluences(draft.influences)}
+          locked={draft.locked || {}}
           defaultProviderId={draft.llm?.provider || activeProviderId || null}
           defaultModel={draft.llm?.model || null}
         />
@@ -609,7 +825,9 @@ export default function WorldBuilder() {
             </p>
           </div>
           <div>
-            <label htmlFor="world-logline" className="text-xs text-gray-400 mb-1 block">Logline</label>
+            <FieldLabel htmlFor="world-logline" field="logline" locked={draft.locked} onToggleLock={toggleLock}>
+              Logline
+            </FieldLabel>
             <input
               id="world-logline"
               type="text"
@@ -622,7 +840,9 @@ export default function WorldBuilder() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
-              <label htmlFor="world-premise" className="text-xs text-gray-400 mb-1 block">Premise</label>
+              <FieldLabel htmlFor="world-premise" field="premise" locked={draft.locked} onToggleLock={toggleLock}>
+                Premise
+              </FieldLabel>
               <textarea
                 id="world-premise"
                 value={draft.premise || ''}
@@ -634,7 +854,9 @@ export default function WorldBuilder() {
               />
             </div>
             <div>
-              <label htmlFor="world-style-notes" className="text-xs text-gray-400 mb-1 block">Style notes</label>
+              <FieldLabel htmlFor="world-style-notes" field="styleNotes" locked={draft.locked} onToggleLock={toggleLock}>
+                Style notes
+              </FieldLabel>
               <textarea
                 id="world-style-notes"
                 value={draft.styleNotes || ''}
@@ -646,14 +868,23 @@ export default function WorldBuilder() {
               />
             </div>
           </div>
+          <InfluencesEditor
+            influences={draft.influences}
+            onChange={(next) => updateDraft({ influences: next })}
+            locked={draft.locked}
+            onToggleLock={toggleLock}
+          />
         </section>
 
         {/* Style template */}
         <section className="bg-port-card border border-port-border rounded p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
           <div>
-            <label className="text-xs text-gray-400 mb-1 block flex items-center gap-1">
-              <Sparkles size={12} /> Style prompt (prepended to every variation)
-            </label>
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <label className="text-xs text-gray-400 flex items-center gap-1">
+                <Sparkles size={12} /> Style prompt (prepended to every variation)
+              </label>
+              <LockButton field="stylePrompt" locked={draft.locked} onToggle={toggleLock} label="Style prompt" />
+            </div>
             <textarea
               value={draft.stylePrompt}
               onChange={(e) => updateDraft({ stylePrompt: e.target.value })}
@@ -664,7 +895,9 @@ export default function WorldBuilder() {
             />
           </div>
           <div>
-            <label className="text-xs text-gray-400 mb-1 block">Negative prompt</label>
+            <FieldLabel field="negativePrompt" locked={draft.locked} onToggleLock={toggleLock}>
+              Negative prompt
+            </FieldLabel>
             <textarea
               value={draft.negativePrompt}
               onChange={(e) => updateDraft({ negativePrompt: e.target.value })}
@@ -891,6 +1124,14 @@ function CompositeSheetsEditor({ sheets, onChange, canRender = false, onRender =
 
   const removeAt = (idx) => onChange(sheets.filter((_, i) => i !== idx));
 
+  const toggleLockAt = (idx) => onChange(sheets.map((s, i) => {
+    if (i !== idx) return s;
+    const next = { ...s };
+    if (next.locked) delete next.locked;
+    else next.locked = true;
+    return next;
+  }));
+
   const startEdit = (idx, sheet) => {
     setEditIdx(idx);
     setEditKind(sheet.kind || 'reference_sheet');
@@ -977,7 +1218,7 @@ function CompositeSheetsEditor({ sheets, onChange, canRender = false, onRender =
       ) : (
         <ul className="flex flex-col gap-1.5 max-h-96 overflow-y-auto">
           {sheets.map((sheet, idx) => (
-            <li key={`${sheet.label}-${idx}`} className="bg-port-bg border border-port-border rounded p-2 text-sm">
+            <li key={`${sheet.label}-${idx}`} className={`bg-port-bg border rounded p-2 text-sm ${sheet.locked ? 'border-port-accent/50' : 'border-port-border'}`}>
               {editIdx === idx ? (
                 <div className="flex flex-col gap-1">
                   <select
@@ -1030,6 +1271,14 @@ function CompositeSheetsEditor({ sheets, onChange, canRender = false, onRender =
                       </button>
                     )}
                     <button
+                      onClick={() => toggleLockAt(idx)}
+                      className={`p-1 rounded ${sheet.locked ? 'text-port-accent hover:bg-port-accent/20' : 'text-gray-500 hover:text-gray-300'}`}
+                      title={sheet.locked ? 'Locked — AI expand will preserve this board' : 'Lock this board against AI expand'}
+                      aria-pressed={!!sheet.locked}
+                    >
+                      {sheet.locked ? <Lock size={14} /> : <Unlock size={14} />}
+                    </button>
+                    <button
                       onClick={() => startEdit(idx, sheet)}
                       className="p-1 text-gray-400 hover:text-port-accent rounded"
                       title="Edit"
@@ -1076,6 +1325,14 @@ function CategoryEditor({
   };
 
   const removeAt = (idx) => onChange(variations.filter((_, i) => i !== idx));
+
+  const toggleLockAt = (idx) => onChange(variations.map((v, i) => {
+    if (i !== idx) return v;
+    const next = { ...v };
+    if (next.locked) delete next.locked;
+    else next.locked = true;
+    return next;
+  }));
 
   const startEdit = (idx, v) => {
     setEditIdx(idx);
@@ -1170,7 +1427,7 @@ function CategoryEditor({
       ) : (
         <ul className="flex flex-col gap-1.5 max-h-72 overflow-y-auto">
           {variations.map((v, idx) => (
-            <li key={`${v.label}-${idx}`} className="bg-port-bg border border-port-border rounded p-2 text-sm">
+            <li key={`${v.label}-${idx}`} className={`bg-port-bg border rounded p-2 text-sm ${v.locked ? 'border-port-accent/50' : 'border-port-border'}`}>
               {editIdx === idx ? (
                 <div className="flex flex-col gap-1">
                   <input
@@ -1208,6 +1465,14 @@ function CategoryEditor({
                         <Play size={14} />
                       </button>
                     )}
+                    <button
+                      onClick={() => toggleLockAt(idx)}
+                      className={`p-1 rounded ${v.locked ? 'text-port-accent hover:bg-port-accent/20' : 'text-gray-500 hover:text-gray-300'}`}
+                      title={v.locked ? 'Locked — AI expand will preserve this variation' : 'Lock this variation against AI expand'}
+                      aria-pressed={!!v.locked}
+                    >
+                      {v.locked ? <Lock size={14} /> : <Unlock size={14} />}
+                    </button>
                     <button
                       onClick={() => startEdit(idx, v)}
                       className="p-1 text-gray-400 hover:text-port-accent rounded"

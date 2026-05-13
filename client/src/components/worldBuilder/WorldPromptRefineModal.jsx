@@ -1,20 +1,47 @@
 import { useEffect, useState } from 'react';
-import { Check, Sparkles, Wand2, X } from 'lucide-react';
+import { Check, Lock, Sparkles, Wand2, X } from 'lucide-react';
 import ProviderModelSelector from '../ProviderModelSelector';
 import toast from '../ui/Toast';
 import useProviderModels from '../../hooks/useProviderModels';
-import { refineWorldPrompts } from '../../services/api';
+import { refineWorldPrompts, WORLD_LOCKABLE_FIELDS, ensureInfluences } from '../../services/api';
+import InfluenceChipsInput from './InfluenceChipsInput';
 
 /**
- * Refines the three top-level world prompts (Starter Idea, Style Prompt,
- * Negative Prompt) based on user feedback. Mirrors PromptRefineModal's
- * shape — feedback box, provider/model selector, refined-fields review,
- * then apply.
+ * Refines all six top-level world fields (Starter Idea, Style Prompt, Negative
+ * Prompt, Logline, Premise, Style Notes) based on user feedback. Mirrors
+ * PromptRefineModal's shape — feedback box, provider/model selector,
+ * refined-fields review, then apply.
  *
- * The modal is stateless from the server's perspective: applying the
- * refinement writes back to the page-level draft, and saving the world
- * is the user's choice (matches existing expansion-flow behavior).
+ * Locked fields (passed via the `locked` prop) are read-only in both the
+ * originals preview and the refined section, and are NEVER applied back to
+ * the parent draft — defense-in-depth on top of the server-side lock honoring.
  */
+
+const FIELD_LABELS = {
+  starterPrompt: 'Starter idea',
+  stylePrompt: 'Style prompt',
+  negativePrompt: 'Negative prompt',
+  logline: 'Logline',
+  premise: 'Premise',
+  styleNotes: 'Style notes',
+  influences: 'Influences',
+};
+
+// Single-line fields render as text inputs; multi-line as textareas with
+// per-field row counts so the modal scales sensibly without scroll-traps.
+// `influences` is handled by a dedicated chips renderer, not the textarea
+// path, so it has no row count entry.
+const FIELD_ROWS = {
+  starterPrompt: 4,
+  stylePrompt: 4,
+  negativePrompt: 3,
+  logline: 0,
+  premise: 6,
+  styleNotes: 6,
+};
+
+const emptyInfluences = () => ({ embrace: [], avoid: [] });
+
 export default function WorldPromptRefineModal({
   open,
   onClose,
@@ -22,6 +49,11 @@ export default function WorldPromptRefineModal({
   starterPrompt = '',
   stylePrompt = '',
   negativePrompt = '',
+  logline = '',
+  premise = '',
+  styleNotes = '',
+  influences = emptyInfluences(),
+  locked = {},
   // Optional pre-selected provider/model — when a world already pins an LLM
   // for expansion, default the refiner to the same combo so the user doesn't
   // have to re-pick.
@@ -38,10 +70,13 @@ export default function WorldPromptRefineModal({
     loading: providersLoading,
   } = useProviderModels();
 
+  const originals = {
+    starterPrompt, stylePrompt, negativePrompt, logline, premise, styleNotes,
+    influences: ensureInfluences(influences),
+  };
+
   const [feedback, setFeedback] = useState('');
-  const [refinedStarter, setRefinedStarter] = useState('');
-  const [refinedStyle, setRefinedStyle] = useState('');
-  const [refinedNegative, setRefinedNegative] = useState('');
+  const [refined, setRefined] = useState({});
   const [rationale, setRationale] = useState('');
   const [changes, setChanges] = useState([]);
   const [refining, setRefining] = useState(false);
@@ -51,9 +86,7 @@ export default function WorldPromptRefineModal({
   useEffect(() => {
     if (!open) return;
     setFeedback('');
-    setRefinedStarter('');
-    setRefinedStyle('');
-    setRefinedNegative('');
+    setRefined({});
     setRationale('');
     setChanges([]);
   }, [open]);
@@ -72,43 +105,51 @@ export default function WorldPromptRefineModal({
 
   if (!open) return null;
 
-  const hasResult = refinedStarter !== '' || rationale !== '';
-  const canRefine = feedback.trim() && starterPrompt.trim() && selectedProviderId && !refining;
-  const canApply = hasResult && refinedStarter.trim();
+  const allLocked = WORLD_LOCKABLE_FIELDS.every((k) => locked[k]);
+  const hasResult = Object.keys(refined).length > 0 || rationale !== '';
+  const canRefine = feedback.trim() && starterPrompt.trim() && selectedProviderId && !refining && !allLocked;
+  const canApply = hasResult && (refined.starterPrompt || '').trim();
 
   const runRefine = async () => {
     if (!canRefine) return;
     setRefining(true);
-    setRefinedStarter('');
-    setRefinedStyle('');
-    setRefinedNegative('');
+    setRefined({});
     setRationale('');
     setChanges([]);
     const result = await refineWorldPrompts({
-      starterPrompt,
-      stylePrompt,
-      negativePrompt,
+      ...originals,
+      locked,
       feedback: feedback.trim(),
       providerId: selectedProviderId,
       model: selectedModel || undefined,
     }).catch(() => null); // services/apiCore#request already toasts on errors.
     setRefining(false);
     if (!result) return;
-    setRefinedStarter(result.starterPrompt || '');
-    setRefinedStyle(result.stylePrompt || '');
-    setRefinedNegative(result.negativePrompt || '');
+    const next = {};
+    for (const key of WORLD_LOCKABLE_FIELDS) {
+      if (key === 'influences') next[key] = ensureInfluences(result[key]);
+      else next[key] = result[key] ?? '';
+    }
+    setRefined(next);
     setRationale(result.rationale || '');
     setChanges(Array.isArray(result.changes) ? result.changes : []);
   };
 
+  const setRefinedField = (key, value) => setRefined((prev) => ({ ...prev, [key]: value }));
+
   const handleApply = () => {
     if (!canApply) return;
-    onApply({
-      starterPrompt: refinedStarter.trim(),
-      stylePrompt: refinedStyle.trim(),
-      negativePrompt: refinedNegative.trim(),
-    });
-    toast.success('Refined prompts applied');
+    // Only emit unlocked fields — the server already enforces this, but
+    // belt-and-suspenders prevents a stale lock-toggle race from clobbering
+    // a pinned value.
+    const patch = {};
+    for (const key of WORLD_LOCKABLE_FIELDS) {
+      if (locked[key]) continue;
+      if (key === 'influences') patch[key] = ensureInfluences(refined[key]);
+      else patch[key] = (refined[key] ?? '').trim();
+    }
+    onApply(patch);
+    toast.success('Refined fields applied');
     onClose();
   };
 
@@ -145,17 +186,33 @@ export default function WorldPromptRefineModal({
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           <p className="text-xs text-gray-400">
             Describe what you want the world to feel like — story tone, era, art-direction
-            references, what to avoid. The LLM rewrites your Starter Idea, Style Prompt, and
-            Negative Prompt to match. Review the result before applying.
+            references, what to avoid. The LLM rewrites your starter, prompts, and bible
+            fields to match. Locked fields stay untouched. Review the result before applying.
           </p>
 
-          {/* Originals — collapsed-ish read-only preview so the user remembers
-              what's about to change. */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
-            <ReadOnlyField label="Starter idea" value={starterPrompt} />
-            <ReadOnlyField label="Style prompt" value={stylePrompt} />
-            <ReadOnlyField label="Negative prompt" value={negativePrompt} />
+          {/* Originals — read-only preview so the user remembers what's about
+              to change. Lock indicator surfaces which fields the LLM will skip. */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+            {WORLD_LOCKABLE_FIELDS.filter((k) => k !== 'influences').map((key) => (
+              <ReadOnlyField
+                key={key}
+                label={FIELD_LABELS[key]}
+                value={originals[key]}
+                locked={!!locked[key]}
+              />
+            ))}
+            <ReadOnlyInfluences
+              label={FIELD_LABELS.influences}
+              value={originals.influences}
+              locked={!!locked.influences}
+            />
           </div>
+
+          {allLocked && (
+            <p className="text-xs text-port-warning">
+              All fields are locked — unlock at least one to enable refinement.
+            </p>
+          )}
 
           <div>
             <label htmlFor="world-refine-feedback" className="block text-[11px] uppercase tracking-wide text-gray-500 mb-1">
@@ -218,23 +275,21 @@ export default function WorldPromptRefineModal({
                 </ul>
               )}
 
-              <RefinedTextarea
-                label="New starter idea"
-                value={refinedStarter}
-                onChange={setRefinedStarter}
-                rows={3}
-              />
-              <RefinedTextarea
-                label="New style prompt"
-                value={refinedStyle}
-                onChange={setRefinedStyle}
-                rows={4}
-              />
-              <RefinedTextarea
-                label="New negative prompt"
-                value={refinedNegative}
-                onChange={setRefinedNegative}
-                rows={3}
+              {WORLD_LOCKABLE_FIELDS.filter((k) => k !== 'influences').map((key) => (
+                <RefinedField
+                  key={key}
+                  label={`New ${FIELD_LABELS[key].toLowerCase()}`}
+                  value={refined[key] ?? ''}
+                  onChange={(v) => setRefinedField(key, v)}
+                  rows={FIELD_ROWS[key]}
+                  locked={!!locked[key]}
+                />
+              ))}
+              <RefinedInfluences
+                label={`New ${FIELD_LABELS.influences.toLowerCase()}`}
+                value={ensureInfluences(refined.influences)}
+                onChange={(v) => setRefinedField('influences', v)}
+                locked={!!locked.influences}
               />
             </div>
           )}
@@ -263,10 +318,17 @@ export default function WorldPromptRefineModal({
   );
 }
 
-function ReadOnlyField({ label, value }) {
+function ReadOnlyField({ label, value, locked }) {
   return (
-    <div className="bg-port-bg border border-port-border rounded p-2">
-      <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-1">{label}</div>
+    <div className={`bg-port-bg border rounded p-2 ${locked ? 'border-port-accent/40' : 'border-port-border'}`}>
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <div className="text-[10px] uppercase tracking-wide text-gray-500">{label}</div>
+        {locked && (
+          <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-port-accent">
+            <Lock className="w-3 h-3" /> Locked
+          </span>
+        )}
+      </div>
       <div className="text-[11px] text-gray-300 line-clamp-4 whitespace-pre-wrap">
         {value?.trim() ? value : <span className="text-gray-600">(empty)</span>}
       </div>
@@ -274,7 +336,108 @@ function ReadOnlyField({ label, value }) {
   );
 }
 
-function RefinedTextarea({ label, value, onChange, rows }) {
+function ReadOnlyInfluences({ label, value, locked }) {
+  const hasAny = value.embrace.length || value.avoid.length;
+  return (
+    <div className={`bg-port-bg border rounded p-2 sm:col-span-2 ${locked ? 'border-port-accent/40' : 'border-port-border'}`}>
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <div className="text-[10px] uppercase tracking-wide text-gray-500">{label}</div>
+        {locked && (
+          <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-port-accent">
+            <Lock className="w-3 h-3" /> Locked
+          </span>
+        )}
+      </div>
+      {hasAny ? (
+        <div className="grid grid-cols-2 gap-2">
+          <InfluenceChipsInput tokens={value.embrace} onChange={() => {}} tone="success" readOnly />
+          <InfluenceChipsInput tokens={value.avoid} onChange={() => {}} tone="error" readOnly />
+        </div>
+      ) : (
+        <div className="text-[11px] text-gray-600">(empty)</div>
+      )}
+    </div>
+  );
+}
+
+function RefinedInfluences({ label, value, onChange, locked }) {
+  if (locked) {
+    return (
+      <div>
+        <div className="flex items-center justify-between gap-2 mb-1">
+          <label className="block text-[11px] uppercase tracking-wide text-gray-500">{label}</label>
+          <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-port-accent">
+            <Lock className="w-3 h-3" /> Locked — kept as-is
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <InfluenceChipsInput tokens={value.embrace} onChange={() => {}} tone="success" readOnly />
+          <InfluenceChipsInput tokens={value.avoid} onChange={() => {}} tone="error" readOnly />
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <label className="block text-[11px] uppercase tracking-wide text-gray-500 mb-1">{label}</label>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-port-success/80 mb-1">Embrace</div>
+          <InfluenceChipsInput
+            tokens={value.embrace}
+            onChange={(next) => onChange({ ...value, embrace: next })}
+            tone="success"
+          />
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-port-error/80 mb-1">Avoid</div>
+          <InfluenceChipsInput
+            tokens={value.avoid}
+            onChange={(next) => onChange({ ...value, avoid: next })}
+            tone="error"
+            placeholder="Add avoid token, press Enter"
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RefinedField({ label, value, onChange, rows, locked }) {
+  // Locked fields render as a disabled read-only preview — a visible reminder
+  // that the LLM was told to skip them and the value the user pinned is
+  // intact. We hide them when there's no value rather than showing "(empty)"
+  // because there's nothing to confirm.
+  if (locked) {
+    return (
+      <div>
+        <div className="flex items-center justify-between gap-2 mb-1">
+          <label className="block text-[11px] uppercase tracking-wide text-gray-500">{label}</label>
+          <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-port-accent">
+            <Lock className="w-3 h-3" /> Locked — kept as-is
+          </span>
+        </div>
+        <div className="w-full bg-port-bg/60 border border-port-accent/40 rounded-lg p-3 text-sm text-gray-400 whitespace-pre-wrap">
+          {value?.trim() ? value : <span className="text-gray-600">(empty)</span>}
+        </div>
+      </div>
+    );
+  }
+  // Single-line fields (rows = 0) render as inputs so logline doesn't get a
+  // multi-line textarea for one sentence.
+  if (!rows || rows < 2) {
+    return (
+      <div>
+        <label className="block text-[11px] uppercase tracking-wide text-gray-500 mb-1">{label}</label>
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full bg-port-bg border border-port-border rounded-lg p-3 text-sm text-white focus:outline-none focus:border-port-accent"
+        />
+      </div>
+    );
+  }
   return (
     <div>
       <label className="block text-[11px] uppercase tracking-wide text-gray-500 mb-1">{label}</label>
