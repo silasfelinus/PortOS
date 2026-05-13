@@ -12,6 +12,7 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   Globe2, Plus, Trash2, Sparkles, Wand2, Loader2, Save, FolderOpen,
   Edit3, X, MessageSquarePlus, Play, Lock, Unlock,
+  PanelLeftClose, PanelLeftOpen,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import {
@@ -20,7 +21,7 @@ import {
   WORLD_CATEGORY_KEY_MAX, COMPOSITE_PROMPT_MAX, WORLD_LOGLINE_MAX,
   WORLD_PREMISE_MAX, WORLD_STYLE_NOTES_MAX, WORLD_LOCKABLE_FIELDS,
   WORLD_INFLUENCE_ENTRY_MAX, WORLD_INFLUENCES_PER_LIST_MAX,
-  ensureInfluences,
+  ensureInfluences, isInfluenceLockField, mergeInfluencesWithLocks,
   listImageModels, getSettings,
 } from '../services/api';
 import InfluenceChipsInput from '../components/worldBuilder/InfluenceChipsInput';
@@ -146,34 +147,38 @@ function FieldLabel({ htmlFor, children, field, locked, onToggleLock }) {
 // to stylePrompt / negativePrompt.
 function InfluencesEditor({ influences, onChange, locked, onToggleLock }) {
   const safe = ensureInfluences(influences);
-  const isLocked = !!locked?.influences;
   return (
     <div>
-      <div className="flex items-center justify-between gap-2 mb-1">
+      <div className="mb-1">
         <label className="text-xs text-gray-400">
-          Influences <span className="text-gray-600">— prepended to render prompts deterministically</span>
+          Influences <span className="text-gray-600">— prepended to render prompts deterministically; embrace + avoid lock independently</span>
         </label>
-        <LockButton field="influences" locked={locked} onToggle={onToggleLock} label="Influences" />
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
-          <div className="text-[11px] uppercase tracking-wide text-port-success/80 mb-1">Embrace</div>
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <div className="text-[11px] uppercase tracking-wide text-port-success/80">Embrace</div>
+            <LockButton field="influencesEmbrace" locked={locked} onToggle={onToggleLock} label="Embrace influences" />
+          </div>
           <InfluenceChipsInput
             tokens={safe.embrace}
             onChange={(next) => onChange({ ...safe, embrace: next })}
             placeholder="Moebius, cel-shading…"
             tone="success"
-            readOnly={isLocked}
+            readOnly={!!locked?.influencesEmbrace}
           />
         </div>
         <div>
-          <div className="text-[11px] uppercase tracking-wide text-port-error/80 mb-1">Avoid</div>
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <div className="text-[11px] uppercase tracking-wide text-port-error/80">Avoid</div>
+            <LockButton field="influencesAvoid" locked={locked} onToggle={onToggleLock} label="Avoid influences" />
+          </div>
           <InfluenceChipsInput
             tokens={safe.avoid}
             onChange={(next) => onChange({ ...safe, avoid: next })}
             placeholder="Ghibli painterly, neon cyberpunk…"
             tone="error"
-            readOnly={isLocked}
+            readOnly={!!locked?.influencesAvoid}
           />
         </div>
       </div>
@@ -231,6 +236,20 @@ export default function WorldBuilder() {
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
 
   const [refineOpen, setRefineOpen] = useState(false);
+
+  // Worlds list collapsed state — desktop only (mobile stacks the sidebar
+  // above the editor and there's no horizontal-space tradeoff to make).
+  // Persists across visits so users who prefer a maximized editor stay there.
+  const [worldsCollapsed, setWorldsCollapsed] = useState(() => {
+    try { return localStorage.getItem('worldBuilder.worldsCollapsed') === '1'; } catch { return false; }
+  });
+  const toggleWorldsCollapsed = () => {
+    setWorldsCollapsed((prev) => {
+      const next = !prev;
+      try { localStorage.setItem('worldBuilder.worldsCollapsed', next ? '1' : '0'); } catch { /* sandboxed */ }
+      return next;
+    });
+  };
 
   const refresh = async () => {
     setLoading(true);
@@ -376,10 +395,15 @@ export default function WorldBuilder() {
     setExpanding(true);
     const result = await expandWorld({
       starterPrompt: draft.starterPrompt,
-      // Pass current influences so re-expansions stay on-direction —
-      // without this, the LLM regenerates from the bare starter idea and
-      // any prior refinement is lost.
+      // Full prior state + locks ride along so the LLM can keep its output
+      // consistent with refined/pinned bible fields (see expand prompt builder).
       influences: ensureInfluences(draft.influences),
+      logline: draft.logline || '',
+      premise: draft.premise || '',
+      styleNotes: draft.styleNotes || '',
+      stylePrompt: draft.stylePrompt || '',
+      negativePrompt: draft.negativePrompt || '',
+      locked: draft.locked || {},
       preservedVariations,
       preservedCompositeSheets,
       providerId: draft.llm?.provider || undefined,
@@ -402,13 +426,7 @@ export default function WorldBuilder() {
       if (locks[key]) return draft[key];
       return llmValue == null ? draft[key] : llmValue;
     };
-    // Influences: preserve the draft's lists when locked OR when the LLM
-    // returned empty (defensive — sanitizeInfluences server-side already
-    // falls back, but the client's own lock state must dominate too).
-    const llmInf = ensureInfluences(result.influences);
-    const refinedInfluences = locks.influences
-      ? ensureInfluences(draft.influences)
-      : ((llmInf.embrace.length || llmInf.avoid.length) ? llmInf : ensureInfluences(draft.influences));
+    const refinedInfluences = mergeInfluencesWithLocks(locks, result.influences, draft.influences);
     // Per-item lock merge: for each category, locked items survive at the
     // top of the list; LLM-generated items follow, deduped case-insensitively
     // by label so the LLM can't accidentally regenerate a pinned label.
@@ -512,9 +530,13 @@ export default function WorldBuilder() {
   const applyRefinement = async (patch = {}) => {
     const next = { ...draft };
     for (const key of WORLD_LOCKABLE_FIELDS) {
+      // Influences live under one top-level `influences` object (not as
+      // `influencesEmbrace`/`influencesAvoid` keys on the world); handle below.
+      if (isInfluenceLockField(key)) continue;
       if (!(key in patch) || patch[key] == null) continue;
-      next[key] = key === 'influences' ? ensureInfluences(patch[key]) : patch[key];
+      next[key] = patch[key];
     }
+    if (patch.influences != null) next.influences = ensureInfluences(patch.influences);
     setDraft(next);
     if (selectedId && next.name?.trim()) {
       const updated = await updateWorld(selectedId, {
@@ -651,52 +673,90 @@ export default function WorldBuilder() {
   const totalSheets = draft.compositeSheets?.length || 0;
   const renderTotal = renderPromptCount(draft, renderOpts.promptMode);
 
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-4">
-      {/* Sidebar — world list */}
-      <aside className="bg-port-card border border-port-border rounded p-3 flex flex-col gap-2 min-h-[60vh]">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-            <Globe2 size={16} className="text-port-accent" /> Worlds
-          </h2>
-          <button
-            onClick={handleNew}
-            className="text-xs px-2 py-1 bg-port-accent/15 hover:bg-port-accent/25 text-port-accent rounded flex items-center gap-1 min-h-[40px] sm:min-h-0"
-            title="New world"
-          >
-            <Plus size={14} /> New
-          </button>
-        </div>
-        {loading ? (
-          <p className="text-xs text-gray-500">Loading…</p>
-        ) : worlds.length === 0 ? (
-          <p className="text-xs text-gray-500">No worlds yet — click <span className="text-port-accent">New</span> to start.</p>
-        ) : (
-          <ul className="flex flex-col gap-1 overflow-y-auto">
-            {worlds.map((w) => {
-              const active = w.id === selectedId;
-              return (
-                <li key={w.id}>
-                  <button
-                    onClick={() => goToWorld(w.id)}
-                    className={`w-full text-left px-2 py-2 rounded text-sm transition-colors min-h-[40px] ${
-                      active
-                        ? 'bg-port-accent/15 text-port-accent border border-port-accent/40'
-                        : 'text-gray-300 hover:bg-port-bg border border-transparent'
-                    }`}
-                  >
-                    <div className="font-medium truncate">{w.name}</div>
-                    <div className="text-[11px] text-gray-500 truncate">{w.starterPrompt || 'No starter prompt'}</div>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </aside>
+  // Mobile = flex column (grid template ignored); lg+ = grid where the inline
+  // `gridTemplateColumns` swap between collapsed/expanded widths takes effect.
+  // Flipping `display` at the breakpoint (rather than overriding grid-cols-1
+  // with an inline style) keeps the mobile stack working.
+  const desktopGridCols = worldsCollapsed ? '32px minmax(0, 1fr)' : '260px minmax(0, 1fr)';
 
-      {/* Editor */}
-      <section className="flex flex-col gap-4">
+  return (
+    <div className="flex flex-col h-full">
+      <div
+        className="flex-1 flex flex-col lg:grid min-h-0"
+        style={{ gridTemplateColumns: desktopGridCols }}
+      >
+      {/* Sidebar — world list. Collapses to a thin rail with just an open
+          button on desktop; mobile keeps the full sidebar inline (the page
+          stacks vertically below `lg`, so collapsing doesn't help there).
+          Border-r + tinted bg matches WritersRoom's tight integrated look —
+          the editor area flows directly off the sidebar without a card gap. */}
+      {worldsCollapsed ? (
+        <aside className="hidden lg:flex border-r border-port-border bg-port-card/40 items-start justify-center pt-3">
+          <button
+            onClick={toggleWorldsCollapsed}
+            className="p-1.5 text-gray-500 hover:text-white"
+            title="Show worlds"
+            aria-label="Show worlds"
+          >
+            <PanelLeftOpen size={14} />
+          </button>
+        </aside>
+      ) : (
+        <aside className="border-b lg:border-b-0 lg:border-r border-port-border bg-port-card/40 px-3 py-3 flex flex-col gap-2 lg:overflow-y-auto">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+              <Globe2 size={16} className="text-port-accent" /> Worlds
+            </h2>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={handleNew}
+                className="text-xs px-2 py-1 bg-port-accent/15 hover:bg-port-accent/25 text-port-accent rounded flex items-center gap-1 min-h-[40px] sm:min-h-0"
+                title="New world"
+              >
+                <Plus size={14} /> New
+              </button>
+              <button
+                onClick={toggleWorldsCollapsed}
+                className="hidden lg:inline-flex p-1.5 text-gray-500 hover:text-white"
+                title="Collapse worlds"
+                aria-label="Collapse worlds"
+              >
+                <PanelLeftClose size={14} />
+              </button>
+            </div>
+          </div>
+          {loading ? (
+            <p className="text-xs text-gray-500">Loading…</p>
+          ) : worlds.length === 0 ? (
+            <p className="text-xs text-gray-500">No worlds yet — click <span className="text-port-accent">New</span> to start.</p>
+          ) : (
+            <ul className="flex flex-col gap-1 overflow-y-auto">
+              {worlds.map((w) => {
+                const active = w.id === selectedId;
+                return (
+                  <li key={w.id}>
+                    <button
+                      onClick={() => goToWorld(w.id)}
+                      className={`w-full text-left px-2 py-2 rounded text-sm transition-colors min-h-[40px] ${
+                        active
+                          ? 'bg-port-accent/15 text-port-accent border border-port-accent/40'
+                          : 'text-gray-300 hover:bg-port-bg border border-transparent'
+                      }`}
+                    >
+                      <div className="font-medium truncate">{w.name}</div>
+                      <div className="text-[11px] text-gray-500 truncate">{w.starterPrompt || 'No starter prompt'}</div>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </aside>
+      )}
+
+      {/* Editor — owns its own scroll inside the full-width main so the
+          sidebar can stay pinned while the long card stack scrolls. */}
+      <section className="flex flex-col gap-4 p-4 min-h-0 lg:overflow-y-auto">
         <header className="bg-port-card border border-port-border rounded p-4 flex flex-col gap-3">
           <div className="flex items-center gap-2 flex-wrap">
             <input
@@ -1063,6 +1123,7 @@ export default function WorldBuilder() {
           </section>
         )}
       </section>
+      </div>
     </div>
   );
 }

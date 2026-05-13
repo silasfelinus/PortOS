@@ -34,12 +34,16 @@ export const deleteWorld = (id) => request(`/world-builder/${encodeURIComponent(
 export const expandWorld = ({
   starterPrompt, influences,
   preservedVariations, preservedCompositeSheets,
+  logline, premise, styleNotes, stylePrompt, negativePrompt,
+  locked,
   providerId, model,
 } = {}) => request('/world-builder/expand', {
   method: 'POST',
   body: JSON.stringify({
     starterPrompt, influences,
     preservedVariations, preservedCompositeSheets,
+    logline, premise, styleNotes, stylePrompt, negativePrompt,
+    locked,
     providerId, model,
   }),
 });
@@ -70,17 +74,48 @@ export const WORLD_LOCKABLE_FIELDS = [
   'logline',
   'premise',
   'styleNotes',
-  'influences',
+  'influencesEmbrace',
+  'influencesAvoid',
 ];
 
 // Coerce whatever shape the server / draft / patch hands us into a strict
 // `{ embrace: [], avoid: [] }` so consumers never have to guard undefined.
-// The server has its own sanitizer (sanitizeInfluences) — this one just
-// normalizes shape on the client side.
-export const ensureInfluences = (raw) => ({
-  embrace: Array.isArray(raw?.embrace) ? raw.embrace : [],
-  avoid: Array.isArray(raw?.avoid) ? raw.avoid : [],
-});
+// Fast-path: if the input is already shape-correct, return it unchanged so
+// downstream React refs stay stable (avoids per-render object churn that
+// would invalidate memoized children).
+export const ensureInfluences = (raw) => {
+  if (raw && Array.isArray(raw.embrace) && Array.isArray(raw.avoid)) return raw;
+  return {
+    embrace: Array.isArray(raw?.embrace) ? raw.embrace : [],
+    avoid: Array.isArray(raw?.avoid) ? raw.avoid : [],
+  };
+};
+
+// Lockable lock-map keys that target one of the two influence sub-lists
+// (embrace + avoid). Use this instead of `.startsWith('influences')` so a
+// future LOCKABLE_FIELDS entry like `influencesPriority` doesn't get silently
+// swept into per-list handling.
+export const WORLD_INFLUENCE_LOCK_FIELDS = ['influencesEmbrace', 'influencesAvoid'];
+export const isInfluenceLockField = (key) => WORLD_INFLUENCE_LOCK_FIELDS.includes(key);
+
+// Build a refined influences object that honors per-list locks. Locked lists
+// take their value from `fallback` (the user's current draft / originals);
+// unlocked lists take from `fresh` (the LLM output), falling back to
+// `fallback` when the LLM omitted that list. Used by handleExpand merge AND
+// the server-side refine merge (mirrored). The refine modal's apply path
+// uses different semantics (no fallback-on-empty) and inlines its own build.
+export const mergeInfluencesWithLocks = (locked, fresh, fallback) => {
+  const freshSafe = ensureInfluences(fresh);
+  const fallbackSafe = ensureInfluences(fallback);
+  return {
+    embrace: locked?.influencesEmbrace
+      ? fallbackSafe.embrace
+      : (freshSafe.embrace.length ? freshSafe.embrace : fallbackSafe.embrace),
+    avoid: locked?.influencesAvoid
+      ? fallbackSafe.avoid
+      : (freshSafe.avoid.length ? freshSafe.avoid : fallbackSafe.avoid),
+  };
+};
 
 export const renderWorld = (id, options) => request(`/world-builder/${encodeURIComponent(id)}/render`, {
   method: 'POST',

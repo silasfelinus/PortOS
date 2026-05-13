@@ -325,4 +325,74 @@ describe("worldBuilderExpand.EXPANSION_PROMPT", () => {
     expect(out).toContain("Embrace: Moebius, cel-shading");
     expect(out).toContain("Avoid: Ghibli painterly");
   });
+
+  it("omits the Current world state section when no bible/prompt fields are provided", () => {
+    const out = buildExpansionPrompt({ starterPrompt: "seed" });
+    expect(out).not.toContain("# Current world state");
+  });
+
+  it("includes provided bible + prompt fields as Current world state context", () => {
+    const out = buildExpansionPrompt({
+      starterPrompt: "seed",
+      priorLogline: "A foundry city goes silent.",
+      priorPremise: "Three families inherit the silence.",
+      priorStyleNotes: "Tarkovsky pacing, Moebius palette.",
+      priorStylePrompt: "moebius linework, dust palette",
+      priorNegativePrompt: "blurry, lowres",
+    });
+    expect(out).toContain("# Current world state");
+    expect(out).toContain("LOGLINE: A foundry city goes silent.");
+    expect(out).toContain("PREMISE: Three families inherit the silence.");
+    expect(out).toContain("STYLE NOTES: Tarkovsky pacing, Moebius palette.");
+    expect(out).toContain("STYLE PROMPT: moebius linework, dust palette");
+    expect(out).toContain("NEGATIVE PROMPT: blurry, lowres");
+  });
+
+  it("flags locked fields with [LOCKED] and adds the must-preserve instruction", () => {
+    const out = buildExpansionPrompt({
+      starterPrompt: "seed",
+      priorLogline: "Locked logline.",
+      priorPremise: "Loose premise.",
+      locked: { logline: true },
+    });
+    expect(out).toContain("LOGLINE [LOCKED]: Locked logline.");
+    expect(out).toContain("PREMISE: Loose premise.");
+    expect(out).not.toContain("PREMISE [LOCKED]");
+    expect(out).toContain("Fields marked [LOCKED] MUST be echoed unchanged");
+  });
+
+  it("flags locked embrace influences with [LOCKED] on the Embrace line", () => {
+    const out = buildExpansionPrompt({
+      starterPrompt: "seed",
+      influences: { embrace: ["Moebius"], avoid: ["Ghibli"] },
+      locked: { influencesEmbrace: true },
+    });
+    expect(out).toMatch(/Embrace \[LOCKED\]: Moebius/);
+    // Avoid is untagged when not locked.
+    expect(out).toMatch(/Avoid: Ghibli/);
+    expect(out).not.toMatch(/Avoid \[LOCKED\]/);
+  });
+
+  it("flags locked avoid influences independently of embrace", () => {
+    const out = buildExpansionPrompt({
+      starterPrompt: "seed",
+      influences: { embrace: ["Moebius"], avoid: ["Ghibli"] },
+      locked: { influencesAvoid: true },
+    });
+    expect(out).toMatch(/Embrace: Moebius/);
+    expect(out).not.toMatch(/Embrace \[LOCKED\]/);
+    expect(out).toMatch(/Avoid \[LOCKED\]: Ghibli/);
+  });
+
+  it("skips empty bible/prompt fields from Current world state", () => {
+    const out = buildExpansionPrompt({
+      starterPrompt: "seed",
+      priorLogline: "Just a logline.",
+      priorPremise: "",
+      priorStyleNotes: "   ",
+    });
+    expect(out).toContain("LOGLINE: Just a logline.");
+    expect(out).not.toContain("PREMISE:");
+    expect(out).not.toContain("STYLE NOTES:");
+  });
 });

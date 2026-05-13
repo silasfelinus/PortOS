@@ -73,8 +73,31 @@ export const LOCKABLE_FIELDS = Object.freeze([
   'logline',
   'premise',
   'styleNotes',
-  'influences',
+  'influencesEmbrace',
+  'influencesAvoid',
 ]);
+
+// Human-readable labels for lockable fields. Single source of truth for the
+// LLM prompt builders (refine emits "starter idea", expand emits "STARTER IDEA"
+// — both derive from this map). Adding a new lockable field only requires
+// extending LOCKABLE_FIELDS + this map; the prompts pick it up automatically.
+export const LOCKABLE_FIELD_LABELS = Object.freeze({
+  starterPrompt: 'starter idea',
+  stylePrompt: 'style prompt',
+  negativePrompt: 'negative prompt',
+  logline: 'logline',
+  premise: 'premise',
+  styleNotes: 'style notes',
+  influencesEmbrace: 'embrace influences',
+  influencesAvoid: 'avoid influences',
+});
+
+// Lockable lock-map keys that target one of the two influence sub-lists.
+// Use `isInfluenceLockField` instead of `.startsWith('influences')` so a
+// future LOCKABLE_FIELDS entry like `influencesPriority` doesn't accidentally
+// get swept into per-list handling.
+export const INFLUENCE_LOCK_FIELDS = Object.freeze(['influencesEmbrace', 'influencesAvoid']);
+export const isInfluenceLockField = (key) => INFLUENCE_LOCK_FIELDS.includes(key);
 
 // Starter buckets the UI surfaces for a fresh world. They remain for
 // compatibility, but saved templates may carry any additional sanitized
@@ -210,11 +233,35 @@ export const sanitizeInfluences = (raw = {}) => {
   };
 };
 
+// Build a refined influences object that honors per-list locks. Locked lists
+// take their value from `fallback` (originals); unlocked lists take from
+// `fresh` (the LLM output), falling back to `fallback` when the LLM omitted
+// that list. Mirrors `mergeInfluencesWithLocks` in client/services/apiWorldBuilder.js.
+export const mergeInfluencesWithLocks = (locked, fresh, fallback) => {
+  const freshSafe = sanitizeInfluences(fresh);
+  const fallbackSafe = sanitizeInfluences(fallback);
+  return {
+    embrace: locked?.influencesEmbrace
+      ? fallbackSafe.embrace
+      : (freshSafe.embrace.length ? freshSafe.embrace : fallbackSafe.embrace),
+    avoid: locked?.influencesAvoid
+      ? fallbackSafe.avoid
+      : (freshSafe.avoid.length ? freshSafe.avoid : fallbackSafe.avoid),
+  };
+};
+
 export const sanitizeLocked = (raw = {}) => {
   if (!raw || typeof raw !== 'object') return {};
   const out = {};
   for (const key of LOCKABLE_FIELDS) {
     if (raw[key] === true) out[key] = true;
+  }
+  // Migration: prior schema had a single `influences` lock covering both
+  // embrace + avoid. Expand into the two per-list locks so existing worlds
+  // keep working without a data migration step.
+  if (raw.influences === true) {
+    out.influencesEmbrace = true;
+    out.influencesAvoid = true;
   }
   return out;
 };

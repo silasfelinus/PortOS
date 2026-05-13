@@ -548,9 +548,9 @@ describe("worldBuilder service", () => {
   describe("locked", () => {
     it("round-trips a sparse lock map and replaces wholesale on patch", async () => {
       const w = await seedWorld({
-        locked: { logline: true, influences: true },
+        locked: { logline: true, influencesEmbrace: true },
       });
-      expect(w.locked).toEqual({ logline: true, influences: true });
+      expect(w.locked).toEqual({ logline: true, influencesEmbrace: true });
       const patched = await svc.updateWorld(w.id, {
         locked: { styleNotes: true },
       });
@@ -562,6 +562,18 @@ describe("worldBuilder service", () => {
         locked: { logline: false, bogus: true, premise: true },
       });
       expect(w.locked).toEqual({ premise: true });
+    });
+
+    it("migrates legacy `locked.influences: true` into per-list locks", async () => {
+      // Prior schema combined embrace + avoid into one `influences` lock. The
+      // sanitizer now splits it into two so existing on-disk worlds keep working
+      // without a data migration step.
+      const w = await seedWorld({ locked: { influences: true, premise: true } });
+      expect(w.locked).toEqual({
+        premise: true,
+        influencesEmbrace: true,
+        influencesAvoid: true,
+      });
     });
   });
 

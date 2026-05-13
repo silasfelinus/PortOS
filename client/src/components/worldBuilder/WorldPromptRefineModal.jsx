@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Check, Lock, Sparkles, Wand2, X } from 'lucide-react';
 import ProviderModelSelector from '../ProviderModelSelector';
 import toast from '../ui/Toast';
 import useProviderModels from '../../hooks/useProviderModels';
-import { refineWorldPrompts, WORLD_LOCKABLE_FIELDS, ensureInfluences } from '../../services/api';
+import {
+  refineWorldPrompts, WORLD_LOCKABLE_FIELDS, ensureInfluences, isInfluenceLockField,
+} from '../../services/api';
 import InfluenceChipsInput from './InfluenceChipsInput';
 
 /**
@@ -24,13 +26,10 @@ const FIELD_LABELS = {
   logline: 'Logline',
   premise: 'Premise',
   styleNotes: 'Style notes',
-  influences: 'Influences',
 };
 
-// Single-line fields render as text inputs; multi-line as textareas with
-// per-field row counts so the modal scales sensibly without scroll-traps.
-// `influences` is handled by a dedicated chips renderer, not the textarea
-// path, so it has no row count entry.
+// Multi-line fields use a textarea with per-field row counts (logline gets a
+// single-line input via rows=0). Influences uses its own chip renderer.
 const FIELD_ROWS = {
   starterPrompt: 4,
   stylePrompt: 4,
@@ -70,10 +69,13 @@ export default function WorldPromptRefineModal({
     loading: providersLoading,
   } = useProviderModels();
 
-  const originals = {
+  // Memoized so child components receive a stable ref across renders. Without
+  // this, every keystroke in the feedback box rebuilt `originals.influences`
+  // and forced ReadOnlyInfluences / RefinedInfluences to re-render unnecessarily.
+  const originals = useMemo(() => ({
     starterPrompt, stylePrompt, negativePrompt, logline, premise, styleNotes,
     influences: ensureInfluences(influences),
-  };
+  }), [starterPrompt, stylePrompt, negativePrompt, logline, premise, styleNotes, influences]);
 
   const [feedback, setFeedback] = useState('');
   const [refined, setRefined] = useState({});
@@ -127,9 +129,10 @@ export default function WorldPromptRefineModal({
     if (!result) return;
     const next = {};
     for (const key of WORLD_LOCKABLE_FIELDS) {
-      if (key === 'influences') next[key] = ensureInfluences(result[key]);
-      else next[key] = result[key] ?? '';
+      if (isInfluenceLockField(key)) continue;
+      next[key] = result[key] ?? '';
     }
+    next.influences = ensureInfluences(result.influences);
     setRefined(next);
     setRationale(result.rationale || '');
     setChanges(Array.isArray(result.changes) ? result.changes : []);
@@ -141,13 +144,20 @@ export default function WorldPromptRefineModal({
     if (!canApply) return;
     // Only emit unlocked fields — the server already enforces this, but
     // belt-and-suspenders prevents a stale lock-toggle race from clobbering
-    // a pinned value.
+    // a pinned value. Influences uses per-list locks: build the new object
+    // by picking originals for locked lists and refined for unlocked.
     const patch = {};
     for (const key of WORLD_LOCKABLE_FIELDS) {
+      if (isInfluenceLockField(key)) continue;
       if (locked[key]) continue;
-      if (key === 'influences') patch[key] = ensureInfluences(refined[key]);
-      else patch[key] = (refined[key] ?? '').trim();
+      patch[key] = (refined[key] ?? '').trim();
     }
+    const refinedInf = ensureInfluences(refined.influences);
+    const origInf = originals.influences;
+    patch.influences = {
+      embrace: locked.influencesEmbrace ? origInf.embrace : refinedInf.embrace,
+      avoid: locked.influencesAvoid ? origInf.avoid : refinedInf.avoid,
+    };
     onApply(patch);
     toast.success('Refined fields applied');
     onClose();
@@ -193,7 +203,7 @@ export default function WorldPromptRefineModal({
           {/* Originals — read-only preview so the user remembers what's about
               to change. Lock indicator surfaces which fields the LLM will skip. */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-            {WORLD_LOCKABLE_FIELDS.filter((k) => k !== 'influences').map((key) => (
+            {WORLD_LOCKABLE_FIELDS.filter((k) => !isInfluenceLockField(k)).map((key) => (
               <ReadOnlyField
                 key={key}
                 label={FIELD_LABELS[key]}
@@ -202,9 +212,10 @@ export default function WorldPromptRefineModal({
               />
             ))}
             <ReadOnlyInfluences
-              label={FIELD_LABELS.influences}
+              label="Influences"
               value={originals.influences}
-              locked={!!locked.influences}
+              lockedEmbrace={!!locked.influencesEmbrace}
+              lockedAvoid={!!locked.influencesAvoid}
             />
           </div>
 
@@ -275,7 +286,7 @@ export default function WorldPromptRefineModal({
                 </ul>
               )}
 
-              {WORLD_LOCKABLE_FIELDS.filter((k) => k !== 'influences').map((key) => (
+              {WORLD_LOCKABLE_FIELDS.filter((k) => !isInfluenceLockField(k)).map((key) => (
                 <RefinedField
                   key={key}
                   label={`New ${FIELD_LABELS[key].toLowerCase()}`}
@@ -286,10 +297,11 @@ export default function WorldPromptRefineModal({
                 />
               ))}
               <RefinedInfluences
-                label={`New ${FIELD_LABELS.influences.toLowerCase()}`}
+                label="New influences"
                 value={ensureInfluences(refined.influences)}
                 onChange={(v) => setRefinedField('influences', v)}
-                locked={!!locked.influences}
+                lockedEmbrace={!!locked.influencesEmbrace}
+                lockedAvoid={!!locked.influencesAvoid}
               />
             </div>
           )}
@@ -336,17 +348,17 @@ function ReadOnlyField({ label, value, locked }) {
   );
 }
 
-function ReadOnlyInfluences({ label, value, locked }) {
+function ReadOnlyInfluences({ label, value, lockedEmbrace, lockedAvoid }) {
   const hasAny = value.embrace.length || value.avoid.length;
+  const anyLocked = lockedEmbrace || lockedAvoid;
   return (
-    <div className={`bg-port-bg border rounded p-2 sm:col-span-2 ${locked ? 'border-port-accent/40' : 'border-port-border'}`}>
+    <div className={`bg-port-bg border rounded p-2 sm:col-span-2 ${anyLocked ? 'border-port-accent/40' : 'border-port-border'}`}>
       <div className="flex items-center justify-between gap-2 mb-1">
         <div className="text-[10px] uppercase tracking-wide text-gray-500">{label}</div>
-        {locked && (
-          <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-port-accent">
-            <Lock className="w-3 h-3" /> Locked
-          </span>
-        )}
+        <div className="flex items-center gap-2 text-[10px] uppercase tracking-wide text-port-accent">
+          {lockedEmbrace && <span className="inline-flex items-center gap-1"><Lock className="w-3 h-3" /> Embrace</span>}
+          {lockedAvoid && <span className="inline-flex items-center gap-1"><Lock className="w-3 h-3" /> Avoid</span>}
+        </div>
       </div>
       {hasAny ? (
         <div className="grid grid-cols-2 gap-2">
@@ -360,42 +372,39 @@ function ReadOnlyInfluences({ label, value, locked }) {
   );
 }
 
-function RefinedInfluences({ label, value, onChange, locked }) {
-  if (locked) {
-    return (
-      <div>
-        <div className="flex items-center justify-between gap-2 mb-1">
-          <label className="block text-[11px] uppercase tracking-wide text-gray-500">{label}</label>
-          <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-port-accent">
-            <Lock className="w-3 h-3" /> Locked — kept as-is
-          </span>
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <InfluenceChipsInput tokens={value.embrace} onChange={() => {}} tone="success" readOnly />
-          <InfluenceChipsInput tokens={value.avoid} onChange={() => {}} tone="error" readOnly />
-        </div>
-      </div>
-    );
-  }
+function RefinedInfluences({ label, value, onChange, lockedEmbrace, lockedAvoid }) {
+  const lockBadge = (
+    <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-port-accent">
+      <Lock className="w-3 h-3" /> Kept as-is
+    </span>
+  );
   return (
     <div>
       <label className="block text-[11px] uppercase tracking-wide text-gray-500 mb-1">{label}</label>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
         <div>
-          <div className="text-[10px] uppercase tracking-wide text-port-success/80 mb-1">Embrace</div>
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <div className="text-[10px] uppercase tracking-wide text-port-success/80">Embrace</div>
+            {lockedEmbrace && lockBadge}
+          </div>
           <InfluenceChipsInput
             tokens={value.embrace}
             onChange={(next) => onChange({ ...value, embrace: next })}
             tone="success"
+            readOnly={lockedEmbrace}
           />
         </div>
         <div>
-          <div className="text-[10px] uppercase tracking-wide text-port-error/80 mb-1">Avoid</div>
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <div className="text-[10px] uppercase tracking-wide text-port-error/80">Avoid</div>
+            {lockedAvoid && lockBadge}
+          </div>
           <InfluenceChipsInput
             tokens={value.avoid}
             onChange={(next) => onChange({ ...value, avoid: next })}
             tone="error"
             placeholder="Add avoid token, press Enter"
+            readOnly={lockedAvoid}
           />
         </div>
       </div>

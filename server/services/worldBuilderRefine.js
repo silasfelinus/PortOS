@@ -17,11 +17,14 @@ import { createRun, executeApiRun, executeCliRun } from "./runner.js";
 import { resolveEffectiveModel } from "../lib/promptRunner.js";
 import {
   LOCKABLE_FIELDS,
+  LOCKABLE_FIELD_LABELS,
   LOGLINE_MAX,
   PREMISE_MAX,
   PROMPT_FRAGMENT_MAX,
   STARTER_PROMPT_MAX,
   STYLE_NOTES_MAX,
+  isInfluenceLockField,
+  mergeInfluencesWithLocks,
   sanitizeInfluences,
   sanitizeLocked,
 } from "./worldBuilder.js";
@@ -114,20 +117,9 @@ function extractRefinementJson(raw) {
   );
 }
 
-// Field labels surfaced to the LLM so the "DO NOT MODIFY" list reads naturally.
-const FIELD_LABELS = {
-  starterPrompt: "starter idea",
-  stylePrompt: "style prompt",
-  negativePrompt: "negative prompt",
-  logline: "logline",
-  premise: "premise",
-  styleNotes: "style notes",
-  influences: "influences (embrace + avoid)",
-};
-
 const lockedList = (locked) =>
   LOCKABLE_FIELDS.filter((k) => locked && locked[k] === true).map(
-    (k) => `- ${FIELD_LABELS[k]} ("${k}")`,
+    (k) => `- ${LOCKABLE_FIELD_LABELS[k]} ("${k}")`,
   );
 
 /**
@@ -418,13 +410,13 @@ export async function refineWorldPrompts({
     styleNotes: STYLE_NOTES_MAX,
   };
 
-  // For each lockable field: if locked, echo the original; otherwise take
-  // the LLM's value (or fall back to original when missing/empty so the
-  // modal never receives a blank where the user had content). Influences is
-  // an object — handle it after the scalar loop.
+  // Scalar fields: if locked, echo the original; otherwise take the LLM's
+  // value (or fall back to original when missing/empty so the modal never
+  // receives a blank where the user had content). Influences is an object
+  // with per-list locks — handled separately below.
   const refined = {};
   for (const key of LOCKABLE_FIELDS) {
-    if (key === "influences") continue;
+    if (isInfluenceLockField(key)) continue;
     if (safeLocked[key]) {
       refined[key] = originals[key];
       continue;
@@ -432,19 +424,7 @@ export async function refineWorldPrompts({
     const llmValue = trimTo(parsed[key], FIELD_CAPS[key]);
     refined[key] = llmValue || originals[key];
   }
-
-  // Influences: locked → echo originals; unlocked → take the LLM's lists
-  // (sanitized for caps + dedupe). When the LLM omits it entirely we keep
-  // the originals rather than wiping them.
-  if (safeLocked.influences) {
-    refined.influences = originals.influences;
-  } else {
-    const llmInfluences = sanitizeInfluences(parsed.influences);
-    refined.influences =
-      llmInfluences.embrace.length || llmInfluences.avoid.length
-        ? llmInfluences
-        : originals.influences;
-  }
+  refined.influences = mergeInfluencesWithLocks(safeLocked, parsed.influences, originals.influences);
 
   // Legacy cleanup: prior refinements may have stuffed a "Style direction:"
   // paragraph into the starter. Now that influences carries the direction

@@ -1,5 +1,21 @@
 import { useState } from 'react';
-import { X } from 'lucide-react';
+import { X, GripVertical } from 'lucide-react';
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  arrayMove,
+  rectSortingStrategy,
+  sortableKeyboardCoordinates,
+  useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { WORLD_INFLUENCE_ENTRY_MAX, WORLD_INFLUENCES_PER_LIST_MAX } from '../../services/api';
 
 const TONE_CLASS = {
@@ -12,10 +28,14 @@ const TONE_CLASS = {
  * Chip input for an influence list (embrace or avoid). Used by both the
  * inline World Builder editor and the Refine modal — extracting one
  * implementation keeps Enter/comma/paste/Backspace behavior, dedupe rules,
- * and per-entry caps in lockstep across both surfaces.
+ * per-entry caps, and drag-to-reorder in lockstep across both surfaces.
+ *
+ * Order is meaningful: the renderer prepends embrace + avoid to
+ * stylePrompt/negativePrompt verbatim, so dragging a chip toward the front
+ * gives it priority in the rendered prompt.
  *
  * `readOnly` collapses the editor to a plain chip preview (no input, no X
- * buttons) so locked influences render with the same chrome.
+ * buttons, no drag handles) so locked influences render with the same chrome.
  */
 export default function InfluenceChipsInput({
   tokens,
@@ -28,6 +48,15 @@ export default function InfluenceChipsInput({
   const [input, setInput] = useState('');
   const safe = Array.isArray(tokens) ? tokens : [];
   const toneClass = TONE_CLASS[tone] || TONE_CLASS.accent;
+
+  // 8px activation distance keeps single clicks on the X button (remove) and
+  // the trailing input from accidentally triggering a drag — drag has to be
+  // a deliberate gesture. Keyboard sensor enables accessible reordering via
+  // space/enter to grab + arrow keys.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
 
   if (readOnly && safe.length === 0) {
     return <div className="text-[11px] text-gray-600">{emptyLabel}</div>;
@@ -55,27 +84,48 @@ export default function InfluenceChipsInput({
 
   const removeAt = (idx) => onChange(safe.filter((_, i) => i !== idx));
 
+  const handleDragEnd = (event) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIdx = safe.findIndex((t) => t === active.id);
+    const newIdx = safe.findIndex((t) => t === over.id);
+    if (oldIdx === -1 || newIdx === -1) return;
+    onChange(arrayMove(safe, oldIdx, newIdx));
+  };
+
+  const containerCls = `flex flex-wrap items-center gap-1.5 p-2 bg-port-bg border border-port-border rounded ${readOnly ? 'opacity-70' : ''}`;
+
+  // Read-only path: no DnD wrapper, no input, no remove buttons — just chips.
+  if (readOnly) {
+    return (
+      <div className={containerCls}>
+        {safe.map((v, idx) => (
+          <span
+            key={`${v}-${idx}`}
+            className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full border ${toneClass}`}
+          >
+            {v}
+          </span>
+        ))}
+      </div>
+    );
+  }
+
   return (
-    <div className={`flex flex-wrap items-center gap-1.5 p-2 bg-port-bg border border-port-border rounded ${readOnly ? 'opacity-70' : ''}`}>
-      {safe.map((v, idx) => (
-        <span
-          key={`${v}-${idx}`}
-          className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full border ${toneClass}`}
-        >
-          {v}
-          {!readOnly && (
-            <button
-              type="button"
-              onClick={() => removeAt(idx)}
-              className="text-current/70 hover:text-current"
-              aria-label={`Remove ${v}`}
-            >
-              <X size={11} />
-            </button>
-          )}
-        </span>
-      ))}
-      {!readOnly && safe.length < WORLD_INFLUENCES_PER_LIST_MAX && (
+    <div className={containerCls}>
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <SortableContext items={safe} strategy={rectSortingStrategy}>
+          {safe.map((v, idx) => (
+            <SortableChip
+              key={v}
+              token={v}
+              toneClass={toneClass}
+              onRemove={() => removeAt(idx)}
+            />
+          ))}
+        </SortableContext>
+      </DndContext>
+      {safe.length < WORLD_INFLUENCES_PER_LIST_MAX && (
         <input
           type="text"
           value={input}
@@ -101,9 +151,47 @@ export default function InfluenceChipsInput({
           className="flex-1 min-w-[120px] bg-transparent text-sm text-white placeholder-gray-500 focus:outline-none"
         />
       )}
-      {!readOnly && safe.length >= WORLD_INFLUENCES_PER_LIST_MAX && (
+      {safe.length >= WORLD_INFLUENCES_PER_LIST_MAX && (
         <span className="text-[11px] text-gray-500">Max {WORLD_INFLUENCES_PER_LIST_MAX} reached</span>
       )}
     </div>
+  );
+}
+
+function SortableChip({ token, toneClass, onRemove }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: token });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    zIndex: isDragging ? 10 : 'auto',
+  };
+  return (
+    <span
+      ref={setNodeRef}
+      style={style}
+      className={`inline-flex items-center gap-1 pl-1 pr-2 py-0.5 text-xs rounded-full border ${toneClass} ${isDragging ? 'cursor-grabbing' : ''}`}
+    >
+      <button
+        type="button"
+        {...attributes}
+        {...listeners}
+        className="cursor-grab active:cursor-grabbing text-current/60 hover:text-current focus:outline-none"
+        aria-label={`Drag ${token} to reorder`}
+        title="Drag to reorder"
+      >
+        <GripVertical size={11} />
+      </button>
+      {token}
+      <button
+        type="button"
+        onClick={onRemove}
+        onPointerDown={(e) => e.stopPropagation()}
+        className="text-current/70 hover:text-current"
+        aria-label={`Remove ${token}`}
+      >
+        <X size={11} />
+      </button>
+    </span>
   );
 }

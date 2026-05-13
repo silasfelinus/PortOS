@@ -124,6 +124,14 @@ const expandSchema = z.object({
     z.array(variationSchema).max(svc.VARIATIONS_PER_CATEGORY_MAX),
   ).optional(),
   preservedCompositeSheets: z.array(compositeSheetSchema).max(svc.COMPOSITE_SHEETS_MAX).optional(),
+  // Current bible/prompt state — locked entries are echoed verbatim, others
+  // are starting points the LLM can refine while staying consistent.
+  logline: z.string().trim().max(svc.LOGLINE_MAX).optional(),
+  premise: z.string().trim().max(svc.PREMISE_MAX).optional(),
+  styleNotes: z.string().trim().max(svc.STYLE_NOTES_MAX).optional(),
+  stylePrompt: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional(),
+  negativePrompt: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional(),
+  locked: lockedSchema.optional(),
   providerId: z.string().trim().max(80).optional(),
   model: z.string().trim().max(200).optional(),
 });

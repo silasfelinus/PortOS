@@ -14,12 +14,15 @@
 import { getActiveProvider, getProviderById } from "./providers.js";
 import {
   WORLD_CATEGORIES,
+  LOCKABLE_FIELDS,
+  LOCKABLE_FIELD_LABELS,
   PROMPT_FRAGMENT_MAX,
   COMPOSITE_PROMPT_MAX,
   VARIATIONS_PER_CATEGORY_MAX,
   LOGLINE_MAX,
   PREMISE_MAX,
   STYLE_NOTES_MAX,
+  isInfluenceLockField,
   sanitizeCategories,
   sanitizeCompositeSheets,
   sanitizeInfluences,
@@ -33,11 +36,28 @@ import {
 
 const LABEL_MAX = 80;
 
+// Bible/prompt fields the LLM sees as "current world state" so re-expansion
+// stays consistent with prior refinements. Derived from LOCKABLE_FIELDS so a
+// new lockable field automatically reaches this prompt; excludes starterPrompt
+// (already shown above as the seed) and influences (rendered in its own
+// section).
+const CURRENT_STATE_FIELDS = LOCKABLE_FIELDS
+  .filter((k) => k !== 'starterPrompt' && !isInfluenceLockField(k))
+  .map((k) => [k, LOCKABLE_FIELD_LABELS[k].toUpperCase()]);
+
 function buildExpansionPrompt({
   starterPrompt,
   influences,
   preservedVariations,
   preservedCompositeSheets,
+  // Prior bible/prompt state — locked entries echo back unchanged; unlocked
+  // entries seed the LLM. Empty/missing fields are skipped.
+  priorLogline = '',
+  priorPremise = '',
+  priorStyleNotes = '',
+  priorStylePrompt = '',
+  priorNegativePrompt = '',
+  locked = {},
 }) {
   const embrace = Array.isArray(influences?.embrace)
     ? influences.embrace.filter(Boolean)
@@ -45,10 +65,32 @@ function buildExpansionPrompt({
   const avoid = Array.isArray(influences?.avoid)
     ? influences.avoid.filter(Boolean)
     : [];
+  const embraceTag = locked?.influencesEmbrace ? ' [LOCKED]' : '';
+  const avoidTag = locked?.influencesAvoid ? ' [LOCKED]' : '';
   const influencesSection =
     embrace.length || avoid.length
-      ? `\n# Influences (canonical reference list — these MUST inform stylePrompt + styleNotes for embraces and negativePrompt for avoids)\nEmbrace: ${embrace.join(", ") || "(none)"}\nAvoid: ${avoid.join(", ") || "(none)"}\n`
+      ? `\n# Influences (canonical reference list — these MUST inform stylePrompt + styleNotes for embraces and negativePrompt for avoids)\nEmbrace${embraceTag}: ${embrace.join(", ") || "(none)"}\nAvoid${avoidTag}: ${avoid.join(", ") || "(none)"}\n`
       : "";
+
+  // Locked entries are flagged and MUST be echoed verbatim; unlocked entries
+  // are starting points the LLM can refine. Consistency goal: an LLM-generated
+  // premise should align with a locked logline, not be written in isolation.
+  const priorValues = {
+    logline: priorLogline,
+    premise: priorPremise,
+    styleNotes: priorStyleNotes,
+    stylePrompt: priorStylePrompt,
+    negativePrompt: priorNegativePrompt,
+  };
+  const stateLines = CURRENT_STATE_FIELDS
+    .filter(([key]) => typeof priorValues[key] === 'string' && priorValues[key].trim())
+    .map(([key, label]) => `${label}${locked?.[key] ? ' [LOCKED]' : ''}: ${priorValues[key].trim()}`);
+  const anyLocked = stateLines.length
+    && Object.keys(locked || {}).some((k) => locked[k] === true);
+  const currentStateSection = stateLines.length
+    ? `\n# Current world state — established context for this expansion${anyLocked ? '. Fields marked [LOCKED] MUST be echoed unchanged in your output' : ''}.
+${stateLines.join('\n\n')}\n`
+    : '';
 
   // Preserved items: the client extracted user-pinned variations and
   // composite boards. List them by category + label so the LLM can avoid
@@ -80,7 +122,7 @@ ${preservedVariationLines.length ? `Pinned variations:\n${preservedVariationLine
 
 # Starter idea
 ${starterPrompt}
-${influencesSection}${preservedSection}
+${influencesSection}${currentStateSection}${preservedSection}
 # Output contract
 Return a SINGLE JSON object. NO markdown, NO commentary. The object MUST have these top-level keys:
 
@@ -120,6 +162,7 @@ Concrete compositeSheets examples:
 - Reference-sheet prompts must include a clear board structure: title/subject, 4-6 figure lineup roles when relevant, materials swatches, fasteners/accessories icons, color palette strip, background hint, and simplicity constraints such as minimal readable layout, fewer tiny objects, clean silhouettes, not baroque, not hyper-detailed.
 - World pitch poster prompts must include a clear editorial poster structure: world title/subtitle/logline area, dominant hero panorama, inset environment/culture/creature images, visual-language strip, color palette, materials/textures, light/atmosphere, themes/icons, and concise labeled blocks for world, feel, aesthetic, environments, cultures, and tone. Mention that body copy should be short, clean, and readable; avoid dense tiny text.
 - If the world needs pitch posters, do not put "text" in the negativePrompt. Prefer "watermark, logo, unreadable tiny text, text artifacts" so title/section typography remains possible.
+- When "Current world state" is provided above: treat it as the established world. Fields marked [LOCKED] MUST be echoed in your output exactly as given — do not reword, expand, or trim them. Unlocked current-state fields are starting points; you may refine them, but stay consistent with locked fields, the starter idea, and influences.
 - Output JUST the JSON object. No prose before or after.`;
 }
 
@@ -237,6 +280,15 @@ export async function expandWorldTemplate({
   influences,
   preservedVariations = {},
   preservedCompositeSheets = [],
+  // Prior bible/prompt state — locked entries echo back unchanged, unlocked
+  // entries seed the LLM. Renamed to `prior*` so the parsed-LLM-output locals
+  // below can keep their canonical names.
+  logline: priorLogline = '',
+  premise: priorPremise = '',
+  styleNotes: priorStyleNotes = '',
+  stylePrompt: priorStylePrompt = '',
+  negativePrompt: priorNegativePrompt = '',
+  locked = {},
   providerId,
   model,
 } = {}) {
@@ -265,6 +317,12 @@ export async function expandWorldTemplate({
     influences: safeInfluences,
     preservedVariations,
     preservedCompositeSheets,
+    priorLogline,
+    priorPremise,
+    priorStyleNotes,
+    priorStylePrompt,
+    priorNegativePrompt,
+    locked,
   });
   const totalIn = safeInfluences.embrace.length + safeInfluences.avoid.length;
   const preservedVarCount = Object.values(preservedVariations || {}).reduce(
