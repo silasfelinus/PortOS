@@ -32,6 +32,7 @@ import { ServerError } from '../../lib/errorHandler.js';
 import {
   buildScenePrompt, buildSettingByKey, matchSceneSetting,
   buildCharByKey, matchSceneCharacters, matchCharactersInText,
+  matchSettingsInText, matchObjectsInText,
 } from '../../lib/scenePrompt.js';
 import { composeStyledPrompt } from '../../lib/composeStyledPrompt.js';
 import { getDefaultVideoModelId, getVideoModels } from '../../lib/mediaModels.js';
@@ -83,6 +84,8 @@ const enqueueImageJob = ({ prompt, world, settings, options, mode, owner, logLin
     steps: options.steps,
     guidance: options.guidance ?? options.cfgScale,
     cfgScale: options.cfgScale,
+    // Honored by local mflux + diffusers runners; codex picks its own.
+    ...(Number.isFinite(options.seed) ? { seed: options.seed } : {}),
   };
   const params = mode === 'codex'
     ? { mode: 'codex', codexPath: settings.imageGen?.codex?.codexPath, model: settings.imageGen?.codex?.model, ...baseParams }
@@ -104,7 +107,10 @@ export function composeVisualPrompt({ series, description, slugline = '', extraS
   return applyWorldStyle(scenePrompt, world);
 }
 
-export function composeComicPagePrompt({ series, world, page, pageNumber, extraStyle = '', matchedCharacters = [] }) {
+export function composeComicPagePrompt({
+  series, world, page, pageNumber, extraStyle = '',
+  matchedCharacters = [], matchedSettings = [], matchedObjects = [],
+}) {
   const panels = Array.isArray(page?.panels) ? page.panels : [];
   if (panels.length === 0) return '';
 
@@ -114,6 +120,30 @@ export function composeComicPagePrompt({ series, world, page, pageNumber, extraS
     .map((c) => ({ name: c.name, desc: (c.physicalDescription || c.description || '').trim() }))
     .filter((c) => c.name && c.desc)
     .map((c) => `${c.name}: ${c.desc}`)
+    .join('; ');
+
+  // Setting baseline: pull description + palette + recurringDetails per matched
+  // setting. Same pattern as buildScenePrompt's settingFrags, but multi-setting
+  // (a single comic page can span more than one location).
+  const settingsClause = (matchedSettings || [])
+    .map((s) => {
+      const parts = [s.name && `${s.name}:`, (s.description || '').trim()].filter(Boolean);
+      const head = parts.join(' ');
+      const tail = [
+        s.palette ? `palette: ${s.palette.trim()}` : '',
+        (s.recurringDetails || '').trim(),
+      ].filter(Boolean).join('; ');
+      return [head, tail].filter(Boolean).join('. ');
+    })
+    .filter(Boolean)
+    .join(' | ');
+
+  // Notable objects/props/vehicles cited in the prose. Keeps signature props
+  // (e.g. "the brass key", "Wren's sloop") visually canonical across pages.
+  const notable = (matchedObjects || [])
+    .map((o) => ({ name: o.name, desc: (o.description || '').trim() }))
+    .filter((o) => o.name && o.desc)
+    .map((o) => `${o.name}: ${o.desc}`)
     .join('; ');
 
   // Append a sentence-terminator unless the source text already ends in one —
@@ -152,8 +182,10 @@ export function composeComicPagePrompt({ series, world, page, pageNumber, extraS
 
   const layout = `A single full printable comic book page${seriesClause}, page ${pageNumber}. Render a balanced multi-panel comic page layout with ${panels.length} clearly bordered panel${panels.length === 1 ? '' : 's'} arranged for left-to-right, top-to-bottom reading. Include lettered speech balloons for dialogue, rectangular narration captions, and stylized SFX where indicated. Each panel must be visually distinct, with consistent character designs across panels.${styleClause}`;
   const featuringClause = featuring ? `\n\nFeaturing — ${featuring}` : '';
+  const settingClause = settingsClause ? `\n\nSetting — ${settingsClause}` : '';
+  const notableClause = notable ? `\n\nNotable — ${notable}` : '';
 
-  return applyWorldStyle(`${layout}${featuringClause}\n\n${panelLines.join('\n\n')}`, world);
+  return applyWorldStyle(`${layout}${featuringClause}${settingClause}${notableClause}\n\n${panelLines.join('\n\n')}`, world);
 }
 
 /**
@@ -186,19 +218,43 @@ export async function enqueueVisualComicPage(issueId, options = {}) {
   }
 
   const mode = resolveMode(options, settings);
-  // Dialogue carries structured CAPS names, so match via charByKey rather than
-  // scanning panel description prose (cheaper and more reliable).
-  const charByKey = buildCharByKey(series.characters || []);
+
+  // Build a free-text haystack from every panel's prose (description +
+  // caption + sfx). Dialogue lines feed character matching via CAPS names
+  // separately because the parser already structures them.
+  const proseHaystack = page.panels
+    .flatMap((p) => [p.description, p.caption, p.sfx])
+    .filter(Boolean)
+    .join('\n');
   const dialogueNames = page.panels.flatMap((p) =>
     (p.dialogue || []).map((d) => d.character).filter(Boolean),
   );
-  const matchedCharacters = matchSceneCharacters(dialogueNames, charByKey);
+
+  // Characters: union of (a) dialogue CAPS speakers and (b) anyone named in
+  // panel prose. Deduplicates on id/name inside the matchers.
+  const charByKey = buildCharByKey(series.characters || []);
+  const fromDialogue = matchSceneCharacters(dialogueNames, charByKey);
+  const fromProse = matchCharactersInText(proseHaystack, series.characters || []);
+  const seenCharKeys = new Set();
+  const matchedCharacters = [...fromDialogue, ...fromProse].filter((c) => {
+    const k = c.id || c.name;
+    if (seenCharKeys.has(k)) return false;
+    seenCharKeys.add(k);
+    return true;
+  });
+
+  // Settings + objects: text-match against the panel prose. Codex can't take
+  // reference images, so rich text descriptions in the prompt are how we
+  // keep environments and signature props visually consistent page-to-page.
+  const matchedSettings = matchSettingsInText(proseHaystack, series.settings || []);
+  const matchedObjects = matchObjectsInText(proseHaystack, series.objects || []);
+
   // composeComicPagePrompt only returns '' when panels.length === 0, which is
   // already rejected above. The "(continuation of previous beat)" placeholder
   // covers panels with no description, so the prompt is non-empty by here.
   const prompt = composeComicPagePrompt({
     series, world, page, pageNumber: pageIndex + 1, extraStyle: options.extraStyle,
-    matchedCharacters,
+    matchedCharacters, matchedSettings, matchedObjects,
   });
 
   const jobId = enqueueImageJob({

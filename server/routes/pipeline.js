@@ -237,6 +237,7 @@ const visualGenerateSchema = z.object({
   steps: z.number().int().min(1).max(150).optional(),
   cfgScale: z.number().min(0).max(30).optional(),
   guidance: z.number().min(0).max(30).optional(),
+  seed: z.number().int().min(0).optional(),
 });
 
 // Full-comic-page render: same knobs as panel render minus `description` /
@@ -252,6 +253,7 @@ const comicPageRenderSchema = z.object({
   steps: z.number().int().min(1).max(150).optional(),
   cfgScale: z.number().min(0).max(30).optional(),
   guidance: z.number().min(0).max(30).optional(),
+  seed: z.number().int().min(0).optional(),
 });
 
 const episodeVideoSchema = z.object({

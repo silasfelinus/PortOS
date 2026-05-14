@@ -49,25 +49,7 @@ export function matchSceneCharacters(sceneCharacterNames = [], charByKey) {
  * grounded in bible-canonical descriptions for everyone the LLM named.
  */
 export function matchCharactersInText(text, allCharacters) {
-  if (!text || !Array.isArray(allCharacters) || !allCharacters.length) return [];
-  const haystack = String(text);
-  const matched = [];
-  const seen = new Set();
-  const wordBoundary = (needle) => {
-    if (!needle) return false;
-    const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`\\b${escaped}\\b`, 'i').test(haystack);
-  };
-  for (const profile of allCharacters) {
-    const key = profile.id || profile.name;
-    if (!key || seen.has(key)) continue;
-    const candidates = [profile.name, ...(profile.aliases || [])].filter(Boolean);
-    if (candidates.some(wordBoundary)) {
-      matched.push(profile);
-      seen.add(key);
-    }
-  }
-  return matched;
+  return matchEntriesByCandidates(text, allCharacters, (c) => [c.name, ...(c.aliases || [])]);
 }
 
 export function buildSettingByKey(allSettings) {
@@ -83,6 +65,44 @@ export function buildSettingByKey(allSettings) {
 export function matchSceneSetting(sceneSlugline, settingByKey) {
   if (!sceneSlugline) return null;
   return settingByKey?.get(normalizeSlugline(sceneSlugline)) || null;
+}
+
+// Shared word-boundary scanner used by the *-InText helpers below. Returns
+// the entries whose `candidates(entry)` strings appear in the haystack.
+function matchEntriesByCandidates(text, entries, candidatesFn) {
+  if (!text || !Array.isArray(entries) || !entries.length) return [];
+  const haystack = String(text);
+  const matched = [];
+  const seen = new Set();
+  const wordBoundary = (needle) => {
+    if (!needle) return false;
+    const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`\\b${escaped}\\b`, 'i').test(haystack);
+  };
+  for (const entry of entries) {
+    const key = entry.id || entry.name;
+    if (!key || seen.has(key)) continue;
+    const candidates = candidatesFn(entry).filter(Boolean);
+    if (candidates.some(wordBoundary)) {
+      matched.push(entry);
+      seen.add(key);
+    }
+  }
+  return matched;
+}
+
+// Scan free-form prose for bible-canonical settings. Mirrors
+// `matchCharactersInText` but tests against `name` (settings have no aliases
+// in the canonical schema — slugline is for screenplay matching, not prose).
+export function matchSettingsInText(text, allSettings) {
+  return matchEntriesByCandidates(text, allSettings, (s) => [s.name]);
+}
+
+// Scan free-form prose for bible-canonical objects. Mirrors
+// `matchCharactersInText` — objects carry `name` + `aliases[]` per
+// `server/lib/storyBible.js:PROMPT_FIELDS`.
+export function matchObjectsInText(text, allObjects) {
+  return matchEntriesByCandidates(text, allObjects, (o) => [o.name, ...(o.aliases || [])]);
 }
 
 /**

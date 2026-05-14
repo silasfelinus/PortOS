@@ -10,7 +10,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Sparkles, Loader2, X, Lightbulb, BookOpen, FileText, Film as FilmIcon,
-  LayoutGrid, Image as ImageIcon, Clapperboard,
+  LayoutGrid, Image as ImageIcon, Clapperboard, Users,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import {
@@ -21,6 +21,7 @@ import {
 import { usePipelineAutoRunProgress } from '../hooks/usePipelineAutoRunProgress';
 import IdeaStage from '../components/pipeline/stages/IdeaStage';
 import ProseStage from '../components/pipeline/stages/ProseStage';
+import NounsStage from '../components/pipeline/stages/NounsStage';
 import ComicScriptStage from '../components/pipeline/stages/ComicScriptStage';
 import TVScriptStage from '../components/pipeline/stages/TVScriptStage';
 import ComicPagesStage from '../components/pipeline/stages/ComicPagesStage';
@@ -31,6 +32,7 @@ import SeriesLlmPicker from '../components/pipeline/SeriesLlmPicker';
 const STAGE_ICONS = {
   idea: Lightbulb,
   prose: BookOpen,
+  nouns: Users,
   comicScript: FileText,
   tvScript: FilmIcon,
   comicPages: LayoutGrid,
@@ -41,6 +43,7 @@ const STAGE_ICONS = {
 const STAGE_COMPONENTS = {
   idea: IdeaStage,
   prose: ProseStage,
+  nouns: NounsStage,
   comicScript: ComicScriptStage,
   tvScript: TVScriptStage,
   comicPages: ComicPagesStage,

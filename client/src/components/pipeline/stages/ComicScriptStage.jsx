@@ -7,8 +7,9 @@
  * render prompt stays high-quality, but they're never shown.
  */
 
-import { useEffect, useMemo, useState } from 'react';
-import { Loader2, Sparkles, ImageIcon, Save, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { Loader2, Sparkles, ImageIcon, Save, Trash2, ChevronDown, ChevronRight, Settings as SettingsIcon } from 'lucide-react';
 import toast from '../../ui/Toast';
 import {
   generatePipelineStage,
@@ -20,7 +21,17 @@ import {
   PIPELINE_STAGE_STATUS_LABEL as STATUS_LABEL,
   PIPELINE_STAGE_STATUS_COLOR as STATUS_COLOR,
 } from '../../../services/api';
+import { getSettings, updateSettings } from '../../../services/apiSystem';
+import { listImageModels } from '../../../services/apiImageVideo';
 import MediaJobThumb from '../MediaJobThumb';
+import Drawer from '../../Drawer';
+import ImageGenSettingsForm from '../../imageGen/ImageGenSettingsForm';
+import { deriveAvailableBackends } from '../../../lib/imageGenBackends';
+import {
+  PIPELINE_IMAGE_DEFAULTS,
+  readPipelineImageSettings,
+  pipelineImageCfgToRenderOpts,
+} from '../../../lib/pipelineImageDefaults';
 
 // Reconstructs a page's markdown from its parsed `panels[]`. Used as a
 // fallback for pages persisted BEFORE the parser started preserving rawText —
@@ -58,6 +69,62 @@ export default function ComicScriptStage({ issue, series, onStageUpdate }) {
   const generating = localGenerating || serverGenerating;
   const [extracting, setExtracting] = useState(false);
   const [showSource, setShowSource] = useState(false);
+
+  // Per-render image-gen config. Defaults pick Codex if it's enabled
+  // system-wide; the user can override via the right-side Drawer and we
+  // persist their choice to settings.pipeline.imageGen so it sticks across
+  // page reloads.
+  const [imageCfg, setImageCfg] = useState(PIPELINE_IMAGE_DEFAULTS);
+  const [imageModels, setImageModels] = useState([]);
+  const [sysSettings, setSysSettings] = useState(null);
+  const availableBackends = useMemo(
+    () => deriveAvailableBackends(sysSettings, { excludeExternal: true }),
+    [sysSettings],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      getSettings().catch(() => ({})),
+      listImageModels().catch(() => []),
+    ]).then(([s, modelList]) => {
+      if (cancelled) return;
+      setSysSettings(s);
+      setImageCfg(readPipelineImageSettings(s));
+      setImageModels(Array.isArray(modelList) ? modelList : []);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const persistImageCfg = useCallback(async (next) => {
+    setImageCfg(next);
+    const current = await getSettings().catch(() => ({}));
+    await updateSettings({
+      ...current,
+      pipeline: { ...(current.pipeline || {}), imageGen: next },
+    }).catch((err) => toast.error(`Settings save failed: ${err.message}`));
+  }, []);
+
+  // URL-driven drawer state — mirrors StoryboardPanel so the settings panel
+  // is deep-linkable per project convention.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const settingsOpen = searchParams.get('settings') === 'comic-image';
+  const openImageSettings = useCallback(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('settings', 'comic-image');
+      return next;
+    });
+  }, [setSearchParams]);
+  const closeImageSettings = useCallback(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete('settings');
+      return next;
+    });
+  }, [setSearchParams]);
+
+  const renderOpts = useMemo(() => pipelineImageCfgToRenderOpts(imageCfg), [imageCfg]);
 
   const overrides = {
     providerId: series?.llm?.provider || undefined,
@@ -106,6 +173,14 @@ export default function ComicScriptStage({ issue, series, onStageUpdate }) {
           ) : null}
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={openImageSettings}
+            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg bg-port-card border border-port-border text-gray-300 text-xs hover:border-port-accent/50 hover:text-white"
+            title={`Image gen settings — backend: ${imageCfg.mode}`}
+          >
+            <SettingsIcon size={12} /> Image gen
+          </button>
           {hasScript && pages.length === 0 ? (
             <button
               type="button"
@@ -149,6 +224,7 @@ export default function ComicScriptStage({ issue, series, onStageUpdate }) {
             issue={issue}
             pageIndex={pi}
             page={page}
+            renderOpts={renderOpts}
             onStageUpdate={onStageUpdate}
           />
         ))}
@@ -169,11 +245,20 @@ export default function ComicScriptStage({ issue, series, onStageUpdate }) {
           </pre>
         </details>
       ) : null}
+
+      <Drawer open={settingsOpen} onClose={closeImageSettings} title="Comic page image gen">
+        <ImageGenSettingsForm
+          value={imageCfg}
+          onChange={persistImageCfg}
+          models={imageModels}
+          availableBackends={availableBackends}
+        />
+      </Drawer>
     </div>
   );
 }
 
-function PageRow({ issue, pageIndex, page, onStageUpdate }) {
+function PageRow({ issue, pageIndex, page, renderOpts = {}, onStageUpdate }) {
   const rawText = useMemo(
     () => page.rawText || panelsToMarkdown(page.panels, pageIndex + 1),
     [page.rawText, page.panels, pageIndex],
@@ -198,12 +283,12 @@ function PageRow({ issue, pageIndex, page, onStageUpdate }) {
 
   const handleRender = async () => {
     setRendering(true);
-    const res = await generatePipelineComicPage(issue.id, pageIndex, {})
+    const res = await generatePipelineComicPage(issue.id, pageIndex, renderOpts)
       .catch((err) => { toast.error(err.message || 'Render failed'); return null; });
     setRendering(false);
     if (res) {
       onStageUpdate?.('comicPages', res.stage);
-      toast.success(`Page ${pageIndex + 1} render queued`);
+      toast.success(`Page ${pageIndex + 1} render queued (${res.mode || renderOpts.mode || 'local'})`);
     }
   };
 

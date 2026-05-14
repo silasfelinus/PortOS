@@ -109,7 +109,61 @@
   premise, etc.) to the server so the LLM runs against the on-screen state
   rather than the last manually-saved snapshot.
 
+- **Pipeline — Nouns stage between Prose and Comic.** New UI-only tab that
+  surfaces, per-issue, the characters / settings / objects appearing in the
+  prose. Each entry shows its canonical description and an `imageRefs[]`
+  thumbnail strip with a *Render reference* button that fires a styled image
+  gen and pins the resulting filename onto the series bible — so the
+  comic-page renderer (which now cites those rich descriptions in its prompt)
+  keeps characters and settings visually consistent across pages without
+  having to pass actual reference images (which Codex's `$imagegen` doesn't
+  accept). Extract from prose lives here now too; removed from the Prose tab.
+  Reference renders inherit the linked world's `stylePrompt` + `negativePrompt`
+  via `composeStyledPrompt`, so the aesthetic stays consistent with comic pages.
+  The card defers the series PATCH until the job's `useMediaJobProgress`
+  reports `completed`, so the UI never tries to load a not-yet-written
+  `/data/images/<jobId>.png`.
+
+- **Comic page renderer — cite settings + objects in the prompt, not just
+  characters.** `enqueueVisualComicPage` now builds the matched bible set
+  from the union of dialogue CAPS speakers and panel description / caption /
+  SFX prose. `composeComicPagePrompt` emits new `Setting — <name>: …, palette,
+  recurring details` and `Notable — <name>: <description>` clauses alongside
+  the existing `Featuring —` clause. Fixes the case where a panel like
+  "Wren pins the navy woman's wrist against the pavement" rendered with the
+  model re-improvising both subjects every time because dialogue-only
+  matching never saw them. New `matchSettingsInText` + `matchObjectsInText`
+  mirror the character matcher; all three share a private
+  `matchEntriesByCandidates` helper.
+
+- **Pipeline image-gen — DRY settings form + codex-by-default for comic
+  pages.** New `ImageGenSettingsForm` component bundles the backend chip
+  strip + per-model controls + style textareas behind a single
+  `{value, onChange}` contract; reused by the Comic Pages tab and the new
+  Nouns tab. Settings persist to `settings.pipeline.imageGen` and default to
+  Codex whenever the system has `imageGen.codex.enabled === true`, matching
+  the recommendation that cloud models render comic pages dramatically
+  better than local diffusion. Default resolution is now `1024×1536`
+  (2:3 portrait, the closest preset to a real comic-book trim) instead of
+  `1024×1024`. Right-side `Drawer` opened via a header gear button.
+
+- **Pipeline image-gen — seed support for comic page + scene renders.**
+  `comicPageRenderSchema` and `visualGenerateSchema` (server) now accept
+  `seed`, and `enqueueImageJob` threads it into the queued job params.
+  Client form exposes a seed input + random-dice button. Local mflux and
+  diffusers runners honor it; codex still picks its own.
+
+- **Series bible — `imageRefs[]` on settings and objects.** Previously
+  characters-only; the Nouns stage's *Render reference* button writes to all
+  three. Pipeline route schemas already use `.passthrough()`, so the client
+  PATCH round-trips cleanly through the canonical sanitizer with no other
+  schema changes.
+
 ## Changed
+
+- **Pipeline nav — shorter tab labels.** *Comic Pages* → *Comic*,
+  *Episode Video* → *Video*. The full names were redundant inside the
+  Pipeline page where every tab is obviously a pipeline stage.
 
 - **Pipeline Series — Regenerate arc button no longer requires two clicks.**
   Dropped the `useArmedAction` two-click-arm pattern from the regenerate
