@@ -34,6 +34,7 @@ import { readFile, writeFile } from 'fs/promises';
 import { STYLE_PRESETS } from '../lib/writersRoomStylePresets.js';
 import { cleanImageBuffer, CLEAN_LEVELS } from './imageClean.js';
 import { purgeImageRefFromAllSeries } from '../services/pipeline/series.js';
+import { purgeImageRefFromAllUniverses } from '../services/universeCanon.js';
 
 const router = Router();
 
@@ -318,18 +319,26 @@ router.post('/cancel', asyncHandler(async (req, res) => {
 
 router.delete('/:filename', asyncHandler(async (req, res) => {
   const result = await local.deleteImage(req.params.filename);
-  // Sync pipeline-series noun imageRefs[] so a deleted gallery image stops
-  // showing as a stale thumbnail on the Nouns stage. Best-effort: a series
-  // read/write failure must not block the gallery delete from succeeding.
-  const purge = await purgeImageRefFromAllSeries(req.params.filename)
-    .catch((err) => {
+  // Sync both stores: pipeline series.characters/.settings/.objects[].imageRefs
+  // AND universe.characters/.settings/.objects[].imageRefs. Both are scanned
+  // because Phase A canon entities live on the universe; Phase B will collapse
+  // these into one source. Best-effort: a purge failure must not block the
+  // gallery delete itself.
+  const [seriesPurge, universePurge] = await Promise.all([
+    purgeImageRefFromAllSeries(req.params.filename).catch((err) => {
       console.warn(`⚠️ Pipeline ref purge failed for ${req.params.filename}: ${err?.message || err}`);
       return { removed: 0 };
-    });
-  if (purge.removed > 0) {
-    console.log(`🧹 Purged ${purge.removed} pipeline noun ref(s) for ${req.params.filename}`);
+    }),
+    purgeImageRefFromAllUniverses(req.params.filename).catch((err) => {
+      console.warn(`⚠️ Universe canon purge failed for ${req.params.filename}: ${err?.message || err}`);
+      return { removed: 0 };
+    }),
+  ]);
+  const totalRemoved = seriesPurge.removed + universePurge.removed;
+  if (totalRemoved > 0) {
+    console.log(`🧹 Purged ${totalRemoved} canon ref(s) for ${req.params.filename} (series=${seriesPurge.removed}, universe=${universePurge.removed})`);
   }
-  res.json({ ...result, pipelineRefsRemoved: purge.removed });
+  res.json({ ...result, canonRefsRemoved: totalRemoved });
 }));
 
 router.post('/:filename/visibility', asyncHandler(async (req, res) => {

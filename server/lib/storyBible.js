@@ -60,6 +60,11 @@ export const BIBLE_FIELD = Object.freeze({
   [BIBLE_KIND.OBJECT]: 'objects',
 });
 
+// Ordered list of the persisted record's bible-array keys — used by
+// store-walkers (e.g. imageRef purge across all kinds) so a future kind
+// added here flows through without touching every walker.
+export const BIBLE_KEYS = Object.freeze(Object.values(BIBLE_FIELD));
+
 // Fields the bible-extraction prompt cares about. Routed both into the
 // `existing<X>Json` prompt variable (bibleExtractor) and into the script
 // stage's bibles context (evaluator). Excludes ids/timestamps/source/notes.

@@ -2,6 +2,32 @@
 
 ## Added
 
+- **Universe canon — characters, places, and objects on the universe.** Phase A
+  of the Universe-as-canon refactor. `universe.characters[]`/`settings[]`/
+  `objects[]` arrays now live on the universe record alongside the existing
+  prompt-template categories (additive — existing universes load with empty
+  canon arrays). New routes:
+  - `POST /api/universe-builder/:id/extract-canon` — pulls characters/places/
+    objects from a prose body and merges into canon. Mirrors the series-side
+    bible extractor.
+  - `POST /api/universe-builder/:id/characters/:entryId/refine` — single-
+    character rewrite (same prompt as the series-side refine).
+  - `POST /api/universe-builder/:id/characters/differentiate-cast` — one LLM
+    call rewrites every character's `physicalDescription` to push the entire
+    cast apart on ethnicity/age/build/hair/wardrobe so no two characters
+    render visually interchangeable. New prompt template
+    `pipeline-character-differentiate-cast.md`.
+
+  A new **Canon** page (`/universe-builder/:universeId/canon`) accessed via
+  the Library button on the Universe Builder header surfaces all three
+  operations + per-entity reference renders + click-to-preview thumbnails.
+  Shared `CanonCard` component used by both the Universe Canon page and the
+  per-series Nouns page (the per-series view stays alive until Phase B
+  migrates series.cast → universe references).
+
+  Image-delete now purges canon refs from both the series store AND the
+  universe store, so deleting a reference image from the gallery cleans both.
+
 - **Pipeline Issue — merged Comic Pages tab.** Comic Script + Comic Pages are
   now one tab labeled *Comic Pages*. Each row is a per-page editable markdown
   textarea on the left and the rendered full-page comic image on the right.

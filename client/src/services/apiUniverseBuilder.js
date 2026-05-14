@@ -136,3 +136,28 @@ export const renderWorld = (id, options) => request(`/universe-builder/${encodeU
 });
 
 export const listWorldRuns = (id) => request(`/universe-builder/${encodeURIComponent(id)}/runs`);
+
+// ---- Canon (Phase A) ----
+
+// Extract characters/settings/objects from a prose corpus into the universe's
+// canon arrays. The corpus is usually an issue's prose stage output but can
+// be anything text-shaped.
+export const extractUniverseCanon = (universeId, { corpus, kinds, parallel, providerOverride } = {}) =>
+  request(`/universe-builder/${encodeURIComponent(universeId)}/extract-canon`, {
+    method: 'POST',
+    body: JSON.stringify({ corpus, kinds, parallel, providerOverride }),
+  });
+
+export const refineUniverseCharacter = (universeId, entryId, { providerId, model } = {}) =>
+  request(`/universe-builder/${encodeURIComponent(universeId)}/characters/${encodeURIComponent(entryId)}/refine`, {
+    method: 'POST',
+    body: JSON.stringify({ providerId, model }),
+  });
+
+// Cast-wide differentiate — single LLM call rewrites every character so the
+// whole cast has no visually-colliding pairs.
+export const differentiateUniverseCast = (universeId, { providerId, model } = {}) =>
+  request(`/universe-builder/${encodeURIComponent(universeId)}/characters/differentiate-cast`, {
+    method: 'POST',
+    body: JSON.stringify({ providerId, model }),
+  });

@@ -15,7 +15,7 @@ import { randomUUID } from 'crypto';
 import { PATHS, atomicWrite, readJSONFile, ensureDir } from '../../lib/fileUtils.js';
 import {
   sanitizeBibleList, mergeExtractedBible,
-  BIBLE_LIMITS, BIBLE_KIND, BIBLE_FIELD,
+  BIBLE_LIMITS, BIBLE_KIND, BIBLE_FIELD, BIBLE_KEYS,
   isStr, trimTo,
 } from '../../lib/storyBible.js';
 import { sanitizeArc, sanitizeSeasonList } from '../../lib/storyArc.js';
@@ -183,7 +183,6 @@ export async function updateSeries(id, patch = {}) {
  * Skips the write when nothing matched, so a delete of a non-noun image
  * (the common case) is a cheap no-op read.
  */
-const BIBLE_KEYS = ['characters', 'settings', 'objects'];
 export async function purgeImageRefFromAllSeries(filename) {
   if (!filename || typeof filename !== 'string') return { removed: 0 };
   const state = await readState();

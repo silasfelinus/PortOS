@@ -52,6 +52,7 @@ const MediaCollectionDetail = lazyWithReload(() => import('./pages/MediaCollecti
 const MediaModels = lazyWithReload(() => import('./pages/MediaModels'));
 const Loras = lazyWithReload(() => import('./pages/Loras'));
 const UniverseBuilder = lazyWithReload(() => import('./pages/UniverseBuilder'));
+const UniverseCanon = lazyWithReload(() => import('./pages/UniverseCanon'));
 const VideoTimeline = lazyWithReload(() => import('./pages/VideoTimeline'));
 const VideoTimelineEditor = lazyWithReload(() => import('./pages/VideoTimelineEditor'));
 const CreativeDirector = lazyWithReload(() => import('./pages/CreativeDirector'));
@@ -208,6 +209,7 @@ export default function App() {
             <Route path="loras" element={<Loras />} />
             <Route path="universe-builder" element={<UniverseBuilder />} />
             <Route path="universe-builder/:universeId" element={<UniverseBuilder />} />
+            <Route path="universe-builder/:universeId/canon" element={<UniverseCanon />} />
           </Route>
           <Route path="image-gen" element={<RedirectWithSearch to="/media/image" />} />
           <Route path="video-gen" element={<RedirectWithSearch to="/media/video" />} />
@@ -218,6 +220,7 @@ export default function App() {
           <Route path="rapid-reader" element={<RapidReaderPage />} />
           <Route path="universe-builder" element={<UniverseBuilder />} />
           <Route path="universe-builder/:universeId" element={<UniverseBuilder />} />
+          <Route path="universe-builder/:universeId/canon" element={<UniverseCanon />} />
           <Route path="writers-room" element={<WritersRoom />} />
           <Route path="pipeline" element={<Pipeline />} />
           <Route path="pipeline/series/:seriesId" element={<PipelineSeries />} />

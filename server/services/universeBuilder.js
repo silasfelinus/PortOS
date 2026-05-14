@@ -26,6 +26,7 @@ import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { PATHS, atomicWrite, readJSONFile, ensureDir } from '../lib/fileUtils.js';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt.js';
+import { sanitizeBibleList, BIBLE_KIND } from '../lib/storyBible.js';
 
 const STATE_PATH = join(PATHS.data, 'universe-builder.json');
 
@@ -338,6 +339,13 @@ const sanitizeTemplate = (raw) => {
   const compositeSheets = sanitizeCompositeSheets(raw.compositeSheets || []);
   const influences = sanitizeInfluences(raw.influences);
   const locked = sanitizeLocked(raw.locked);
+  // Canon entity registries — structured records (vs categories[].variations[]
+  // which is the freeform prompt-template library). A series's cast/places/
+  // objects will eventually reference these by id (Phase B). Existing
+  // universes load with empty arrays until extraction populates them.
+  const characters = sanitizeBibleList(raw.characters, BIBLE_KIND.CHARACTER);
+  const settings = sanitizeBibleList(raw.settings, BIBLE_KIND.SETTING);
+  const objects = sanitizeBibleList(raw.objects, BIBLE_KIND.OBJECT);
   const llm = raw.llm && typeof raw.llm === 'object'
     ? {
       provider: trimTo(raw.llm.provider, 80) || null,
@@ -359,6 +367,9 @@ const sanitizeTemplate = (raw) => {
     compositeSheets,
     influences,
     locked,
+    characters,
+    settings,
+    objects,
     llm,
     createdAt,
     updatedAt,
@@ -466,6 +477,9 @@ export async function updateUniverse(id, patch = {}) {
   const PATCHABLE_SCALARS = [
     'name', 'starterPrompt', 'stylePrompt', 'negativePrompt',
     'logline', 'premise', 'styleNotes', 'compositeSheets',
+    // Canon entity arrays — patched wholesale (the sanitizer reruns
+    // sanitizeBibleList so per-entry shape is enforced on every save).
+    'characters', 'settings', 'objects',
   ];
   const scalarPatch = Object.fromEntries(
     PATCHABLE_SCALARS.filter((k) => k in patch).map((k) => [k, patch[k]]),

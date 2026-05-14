@@ -17,6 +17,7 @@ import { randomUUID } from 'crypto';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { validateRequest } from '../lib/validation.js';
 import * as svc from '../services/universeBuilder.js';
+import * as canonSvc from '../services/universeCanon.js';
 import { expandWorldTemplate } from '../services/universeBuilderExpand.js';
 import { refineWorldPrompts } from '../services/universeBuilderRefine.js';
 import { enqueueJob } from '../services/mediaJobQueue/index.js';
@@ -383,6 +384,47 @@ router.post('/:id/render', asyncHandler(async (req, res) => {
     jobIds,
     mode,
   });
+}));
+
+// ---- Canon (Phase A of Universe-as-canon refactor) ----
+
+const extractCanonSchema = z.object({
+  corpus: z.string().trim().min(1).max(200_000),
+  kinds: z.array(z.string().trim().min(1)).optional(),
+  parallel: z.boolean().optional(),
+  providerOverride: z.string().trim().max(64).optional(),
+});
+
+// Extract characters/places/objects from a prose body into the universe's
+// canon arrays. Same LLM path as the series-side extract — just targeting a
+// universe so multiple series can share the cast.
+router.post('/:id/extract-canon', asyncHandler(async (req, res) => {
+  const body = validateRequest(extractCanonSchema, req.body ?? {});
+  const result = await canonSvc.extractCanonFromProse(req.params.id, body)
+    .catch((err) => { throw mapServiceError(err); });
+  res.json(result);
+}));
+
+const refineCharSchema = z.object({
+  providerId: z.string().trim().max(64).optional(),
+  model: z.string().trim().max(128).optional(),
+});
+
+router.post('/:id/characters/:entryId/refine', asyncHandler(async (req, res) => {
+  const body = validateRequest(refineCharSchema, req.body ?? {});
+  const result = await canonSvc.refineUniverseCharacter(req.params.id, req.params.entryId, body)
+    .catch((err) => { throw mapServiceError(err); });
+  res.json(result);
+}));
+
+// Cast-wide differentiate — one LLM call rewrites every character so the
+// cast as a whole has no visually-colliding pairs. Returns counts + the
+// updated universe.
+router.post('/:id/characters/differentiate-cast', asyncHandler(async (req, res) => {
+  const body = validateRequest(refineCharSchema, req.body ?? {});
+  const result = await canonSvc.differentiateUniverseCast(req.params.id, body)
+    .catch((err) => { throw mapServiceError(err); });
+  res.json(result);
 }));
 
 export default router;

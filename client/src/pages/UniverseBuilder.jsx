@@ -11,7 +11,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   Globe2, Plus, Trash2, Sparkles, Wand2, Loader2, Save, FolderOpen,
-  Edit3, X, MessageSquarePlus, Play, Lock, Unlock,
+  Edit3, X, MessageSquarePlus, Play, Lock, Unlock, Library,
   PanelLeftClose, PanelLeftOpen,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
@@ -858,17 +858,26 @@ export default function UniverseBuilder() {
               {selectedId ? 'Save' : 'Create'}
             </button>
             {selectedId && (
-              <button
-                onClick={handleDelete}
-                className={`px-3 py-2 rounded flex items-center gap-2 min-h-[40px] ${
-                  pendingDeleteId === selectedId
-                    ? 'bg-red-700 hover:bg-red-600 text-white'
-                    : 'bg-red-900/30 hover:bg-red-900/50 text-red-300'
-                }`}
-                title="Delete world"
-              >
-                <Trash2 size={16} /> {pendingDeleteId === selectedId ? 'Confirm delete' : 'Delete'}
-              </button>
+              <>
+                <Link
+                  to={`/universe-builder/${encodeURIComponent(selectedId)}/canon`}
+                  className="px-3 py-2 rounded flex items-center gap-2 min-h-[40px] bg-port-card border border-port-border text-gray-300 hover:border-port-accent/50 hover:text-white text-sm"
+                  title="Manage canon: characters, places, and objects that exist in this universe"
+                >
+                  <Library size={16} /> Canon
+                </Link>
+                <button
+                  onClick={handleDelete}
+                  className={`px-3 py-2 rounded flex items-center gap-2 min-h-[40px] ${
+                    pendingDeleteId === selectedId
+                      ? 'bg-red-700 hover:bg-red-600 text-white'
+                      : 'bg-red-900/30 hover:bg-red-900/50 text-red-300'
+                  }`}
+                  title="Delete world"
+                >
+                  <Trash2 size={16} /> {pendingDeleteId === selectedId ? 'Confirm delete' : 'Delete'}
+                </button>
+              </>
             )}
           </div>
 
