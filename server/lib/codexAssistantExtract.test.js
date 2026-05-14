@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractCodexAssistant } from './codexAssistantExtract.js';
+import { extractCodexAssistant, extractCodexAssistantTail } from './codexAssistantExtract.js';
 
 describe('extractCodexAssistant', () => {
   it('returns text unchanged when there is no Codex banner', () => {
@@ -66,5 +66,47 @@ prompt body`;
     expect(extractCodexAssistant('')).toBe('');
     expect(extractCodexAssistant(null)).toBe(null);
     expect(extractCodexAssistant(undefined)).toBe(undefined);
+  });
+});
+
+describe('extractCodexAssistantTail', () => {
+  it('returns the message that follows the last "tokens used" footer', () => {
+    const output = [
+      'exec',
+      'apply patch',
+      'diff --git a/foo b/foo',
+      '+something',
+      'tokens used',
+      '285,345',
+      'Final assistant summary.',
+      '- bullet one',
+    ].join('\n');
+    expect(extractCodexAssistantTail(output)).toBe('Final assistant summary.\n- bullet one');
+  });
+
+  it('handles inline "tokens used: <n>" with the summary on the next line', () => {
+    const output = [
+      'apply patch',
+      '+added',
+      'tokens used: 12345',
+      'Inline-format reply.',
+    ].join('\n');
+    expect(extractCodexAssistantTail(output)).toBe('Inline-format reply.');
+  });
+
+  it('returns null when the output is not Codex (no markers)', () => {
+    const output = 'Some Claude-style narration.\n🔧 Using Read...\nFinal note.';
+    expect(extractCodexAssistantTail(output)).toBeNull();
+  });
+
+  it('returns null for empty or non-string input', () => {
+    expect(extractCodexAssistantTail('')).toBeNull();
+    expect(extractCodexAssistantTail(null)).toBeNull();
+    expect(extractCodexAssistantTail(undefined)).toBeNull();
+  });
+
+  it('returns null when Codex markers exist but no tail follows the last "tokens used"', () => {
+    const output = 'apply patch\npatch: completed\ndiff --git a/x b/x\ntokens used\n123\n';
+    expect(extractCodexAssistantTail(output)).toBeNull();
   });
 });

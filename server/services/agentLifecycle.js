@@ -30,6 +30,7 @@ import { analyzeAgentFailure, resolveFailedTaskUpdate } from './agentErrorAnalys
 import { createAgentRun, completeAgentRun, checkForTaskCommit } from './agentRunTracking.js';
 import { buildAgentPrompt, getAppWorkspace, getAppDataForTask, createJiraTicketForTask } from './agentPromptBuilder.js';
 import { buildCliSpawnConfig, isClaudeCliProvider, getClaudeSettingsEnv, spawnDirectly } from './agentCliSpawning.js';
+import { extractCodexAssistantTail } from '../lib/codexAssistantExtract.js';
 import { selectModelForTask } from './agentModelSelection.js';
 import { processAgentCompletion } from './agentCompletion.js';
 import { activeAgents, runnerAgents, spawningTasks, useRunner, isTruthyMeta, isFalsyMeta } from './agentState.js';
@@ -641,6 +642,9 @@ export async function spawnViaRunner(agentId, task, opts) {
 export function extractFinalSummary(outputBuffer) {
   if (!outputBuffer) return null;
 
+  const codexTail = extractCodexAssistantTail(outputBuffer);
+  if (codexTail) return codexTail;
+
   const lines = outputBuffer.split('\n');
   const contentLines = [];
   let foundContent = false;
@@ -666,6 +670,12 @@ const RE_SIMPLIFY_ACTION = /\b(run|running|launch|now)\b/i;
 
 export function extractSimplifySummaries(outputBuffer) {
   if (!outputBuffer) return null;
+
+  // Codex CLI cannot execute slash commands like /simplify, so any match
+  // inside its output is from a diff/grep dump that quotes source code.
+  // Treat the assistant tail as the task summary and skip the simplify split.
+  const codexTail = extractCodexAssistantTail(outputBuffer);
+  if (codexTail) return { taskSummary: codexTail, simplifySummary: null };
 
   const lines = outputBuffer.split('\n');
   let simplifyIdx = -1;

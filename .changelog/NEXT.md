@@ -356,6 +356,21 @@
   show the full prompt on hover (the visible cell is still truncated to
   80 chars).
 
+- **CoS agent summary — Codex output now extracts the actual final message.**
+  When a CoS task ran on the Codex provider, the persisted `taskSummary`
+  ballooned to multi-megabyte dumps containing every diff, grep result, and
+  `apply_patch` payload Codex streamed during the run. `extractFinalSummary`'s
+  tool-marker heuristic (`🔧`, `→`, `↳`) does not match any of Codex's section
+  markers (`exec` / `apply patch` / `codex` / `tokens used`), so the
+  backwards walk swept through the whole transcript. The simplify-summary
+  splitter also false-positived on diff lines that quoted source code
+  containing `/simplify` and a `run` verb. Adds an `extractCodexAssistantTail`
+  helper next to `extractCodexAssistant` that carves out just the message
+  following the last `tokens used\n<count>` (or inline `tokens used: <n>`)
+  footer; both `extractFinalSummary` and `extractSimplifySummaries` short-
+  circuit on Codex output so the agent card shows the real summary instead of
+  a transcript dump.
+
 - **Codex image gen — "Codex returned no session id" false negative.** With
   long pipeline prompts (multi-KB comic-script payloads), codex emits the
   banner + echoed prompt in a single stderr chunk that exceeds the
