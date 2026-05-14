@@ -206,6 +206,16 @@
   it) — the post-merge length comparison was always equal. Now clones the
   universe-side array before passing.
 
+- **Per-issue Nouns page reads + writes universe canon (Phase B.2).** When
+  the series is linked to a universe, the Nouns page now points all canon
+  reads (preview thumbnails, "in this issue" filtering) and all mutations
+  (extract from prose, AI: differentiate per character, render reference
+  → imageRefs persistence) at the universe rather than the per-series
+  bible arrays. Adds + edits propagate to every series sharing that
+  universe. For orphan series with no `universeId`, the legacy series-side
+  flow continues to work unchanged so the page never breaks.
+  Header copy + page comments reflect the new flow.
+
 - **Pipeline render paths read canon from the linked universe (Phase B).**
   Comic-page, panel, storyboard, and arc-planner LLM contexts now resolve
   characters/places/objects via `getSeriesCanon(series)` — preferring the

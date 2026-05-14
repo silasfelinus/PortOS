@@ -1,18 +1,15 @@
 /**
  * Nouns stage — per-issue canonical-noun curation.
  *
- * UI-only pseudo-stage between Prose and Comic Pages. No server stage record;
- * data lives on the series bible (`series.characters / .settings / .objects`).
- * Two operations:
- *   1. Extract bibles from this issue's prose (wraps the existing
- *      /pipeline/series/:id/extract-bible endpoint).
- *   2. Render a canonical reference image per noun and pin the resulting
- *      filename onto the entry's `imageRefs[]` via a series PATCH.
+ * Phase B.2: canon lives on the LINKED UNIVERSE (`series.universeId`) so a
+ * cast can be shared across crossover series. This page is the per-issue
+ * filtered view over universe canon — entries that "appear in this issue"
+ * are prose-matched from `issue.stages.prose.output`. All mutations
+ * (extract / refine / render-reference) target the universe directly.
  *
- * The renderer (server/services/pipeline/visualStages.js) reads these bibles
- * and cites the rich descriptions in every comic-page prompt — that's the
- * mechanism that keeps "Wren" and "the navy woman" looking consistent across
- * pages, since Codex can't accept reference images directly.
+ * Legacy fallback: if a series has no `universeId`, the page still reads
+ * and writes via the series-side bible arrays so orphan series keep
+ * working until the user links them to a universe.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -23,14 +20,16 @@ import {
 } from 'lucide-react';
 import toast from '../../ui/Toast';
 import { extractPipelineBibles, updatePipelineSeries, refinePipelineCharacter } from '../../../services/api';
-import { getUniverse } from '../../../services/apiUniverseBuilder';
+import {
+  getUniverse, updateUniverse,
+  extractUniverseCanon, refineUniverseCharacter,
+} from '../../../services/apiUniverseBuilder';
 import { getSettings, updateSettings, generateImage } from '../../../services/apiSystem';
 import { listImageModels } from '../../../services/apiImageVideo';
 import {
   matchCharactersInText, matchSettingsInText, matchObjectsInText,
 } from '../../../lib/scenePrompt';
 import { composeStyledPrompt } from '../../../lib/composeStyledPrompt';
-import { useAsyncAction } from '../../../hooks/useAsyncAction';
 import useMounted from '../../../hooks/useMounted';
 import CanonCard from '../CanonCard';
 import MediaPreview from '../../media/MediaPreview';
@@ -84,12 +83,20 @@ export default function NounsStage({ issue, series, onSeriesUpdate }) {
   const [renderingJobs, setRenderingJobs] = useState({});
   // Shared lightbox state — a flat items list across every kind's imageRefs
   // powers prev/next nav so the user can page through every reference image
-  // in the series without closing/reopening.
+  // without closing/reopening.
   const [preview, setPreview] = useState(null);
+
+  // Canon source: prefer the linked universe (Phase B.2); fall back to the
+  // series's own arrays for orphan series (no universeId). All readers and
+  // mutation targets below branch on `canonStore` so the page works
+  // unchanged in both states.
+  const canonStore = universe ? 'universe' : 'series';
+  const canonRecord = canonStore === 'universe' ? universe : series;
   const previewItems = useMemo(() => {
     const items = [];
+    if (!canonRecord) return items;
     for (const kind of KINDS) {
-      const list = Array.isArray(series?.[kind.key]) ? series[kind.key] : [];
+      const list = Array.isArray(canonRecord[kind.key]) ? canonRecord[kind.key] : [];
       for (const entry of list) {
         const refs = Array.isArray(entry.imageRefs) ? entry.imageRefs : [];
         for (const filename of refs) {
@@ -105,7 +112,7 @@ export default function NounsStage({ issue, series, onSeriesUpdate }) {
       }
     }
     return items;
-  }, [series]);
+  }, [canonRecord]);
   const openPreview = useCallback((filename) => {
     if (!filename) return;
     const match = previewItems.find((i) => i.filename === filename);
@@ -171,10 +178,7 @@ export default function NounsStage({ issue, series, onSeriesUpdate }) {
     });
   }, [setSearchParams]);
 
-  const [runExtract, extracting] = useAsyncAction(
-    () => extractPipelineBibles(series.id, { issueId: issue.id }),
-    { errorMessage: 'Extraction failed' },
-  );
+  const [extracting, setExtracting] = useState(false);
 
   // Per-character in-flight refine. Tracking by id (not a single bool) so
   // the user can fire refines in serial without the spinner jumping cards.
@@ -184,22 +188,37 @@ export default function NounsStage({ issue, series, onSeriesUpdate }) {
     setRefiningCharacterId(entryId);
     const providerId = series.llm?.provider || undefined;
     const model = series.llm?.model || undefined;
-    const result = await refinePipelineCharacter(series.id, entryId, { providerId, model })
-      .catch((err) => { toast.error(err.message || 'Refine failed'); return null; });
+    const result = canonStore === 'universe'
+      ? await refineUniverseCharacter(series.universeId, entryId, { providerId, model })
+          .catch((err) => { toast.error(err.message || 'Refine failed'); return null; })
+      : await refinePipelineCharacter(series.id, entryId, { providerId, model })
+          .catch((err) => { toast.error(err.message || 'Refine failed'); return null; });
     if (mountedRef.current) setRefiningCharacterId(null);
     if (!result || !mountedRef.current) return;
-    onSeriesUpdate?.(result.series);
+    if (canonStore === 'universe' && result.universe) setUniverse(result.universe);
+    if (canonStore === 'series' && result.series) onSeriesUpdate?.(result.series);
     const summary = result.rationale || (result.changes?.[0] ? result.changes[0] : 'description rewritten');
     toast.success(`Refined description — ${summary.slice(0, 140)}`);
-  }, [series, refiningCharacterId, onSeriesUpdate, mountedRef]);
+  }, [series, canonStore, refiningCharacterId, onSeriesUpdate, mountedRef]);
 
   const handleExtract = async () => {
     if (!series || !proseReady) return;
-    const result = await runExtract();
+    setExtracting(true);
+    let result;
+    if (canonStore === 'universe') {
+      result = await extractUniverseCanon(series.universeId, { corpus: prose })
+        .catch((err) => { toast.error(err.message || 'Extraction failed'); return null; });
+    } else {
+      result = await extractPipelineBibles(series.id, { issueId: issue.id })
+        .catch((err) => { toast.error(err.message || 'Extraction failed'); return null; });
+    }
+    if (mountedRef.current) setExtracting(false);
     if (!result || !mountedRef.current) return;
-    onSeriesUpdate?.(result.series);
+    if (canonStore === 'universe' && result.universe) setUniverse(result.universe);
+    if (canonStore === 'series' && result.series) onSeriesUpdate?.(result.series);
+    const record = canonStore === 'universe' ? result.universe : result.series;
     const counts = KINDS
-      .map((k) => `${result.series[k.key]?.length ?? 0} ${k.key}`)
+      .map((k) => `${record?.[k.key]?.length ?? 0} ${k.key}`)
       .join(', ');
     toast.success(`Bibles updated — ${counts}`);
   };
@@ -237,26 +256,34 @@ export default function NounsStage({ issue, series, onSeriesUpdate }) {
     toast.success(`Rendering reference for ${entry.name}`);
   };
 
-  // Pin a freshly-completed render onto the series bible. Server replaces the
-  // full bible array on PATCH, so we send the kind's full list with this
-  // entry mutated. Single-user app — no race here.
+  // Pin a freshly-completed render onto the canon record's imageRefs[].
+  // Server replaces the full kind list on PATCH, so we send the entire
+  // kind array with this entry mutated. Routes through the universe (Phase
+  // B.2) when the series is linked, else falls back to the series-side
+  // PATCH for orphan series. Single-user app — no race.
   const handleRefCompleted = useCallback(async (kindKey, entryId, filename) => {
-    if (!filename) return;
+    if (!filename || !canonRecord) return;
     setRenderingJobs((prev) => {
       if (!prev[entryId]) return prev;
       const next = { ...prev };
       delete next[entryId];
       return next;
     });
-    const list = (series[kindKey] || []).map((e) =>
+    const list = (canonRecord[kindKey] || []).map((e) =>
       e.id === entryId
         ? { ...e, imageRefs: [...(e.imageRefs || []), filename] }
         : e,
     );
-    const updated = await updatePipelineSeries(series.id, { [kindKey]: list })
-      .catch((err) => { toast.error(`Save failed: ${err.message}`); return null; });
-    if (updated && mountedRef.current) onSeriesUpdate?.(updated);
-  }, [series, onSeriesUpdate, mountedRef]);
+    if (canonStore === 'universe') {
+      const updated = await updateUniverse(series.universeId, { [kindKey]: list })
+        .catch((err) => { toast.error(`Save failed: ${err.message}`); return null; });
+      if (updated && mountedRef.current) setUniverse(updated);
+    } else {
+      const updated = await updatePipelineSeries(series.id, { [kindKey]: list })
+        .catch((err) => { toast.error(`Save failed: ${err.message}`); return null; });
+      if (updated && mountedRef.current) onSeriesUpdate?.(updated);
+    }
+  }, [canonRecord, canonStore, series, onSeriesUpdate, mountedRef]);
 
   const handleRefFailed = useCallback((entryId, errMsg) => {
     setRenderingJobs((prev) => {
@@ -278,9 +305,9 @@ export default function NounsStage({ issue, series, onSeriesUpdate }) {
         <div>
           <h2 className="text-lg font-semibold text-white">Nouns</h2>
           <p className="text-xs text-gray-500 mt-0.5">
-            Canonical references for the people, places, and things in this issue.
-            The comic-page renderer cites these descriptions to keep characters and
-            settings visually consistent page-to-page.
+            People, places, and things that appear in this issue. {canonStore === 'universe'
+              ? 'Canon lives on the linked universe — extracts and edits here propagate to every series in that universe.'
+              : 'Canon is stored on this series. Link the series to a universe to share canon across crossovers.'}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -315,7 +342,7 @@ export default function NounsStage({ issue, series, onSeriesUpdate }) {
         <KindSection
           key={kind.key}
           kind={kind}
-          all={series[kind.key] || []}
+          all={canonRecord?.[kind.key] || []}
           prose={prose}
           renderingJobs={renderingJobs}
           onRender={(entry) => handleRenderRef(kind, entry)}
