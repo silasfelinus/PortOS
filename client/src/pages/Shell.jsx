@@ -440,15 +440,21 @@ export default function Shell() {
     };
   }, [socket, startSession, attachToSession, activateSession, clearActiveSession]);
 
-  // React to URL changes after init (browser back/forward, manual URL paste).
-  // If the URL points at a known session that isn't currently displayed, switch to it.
+  // React to URL changes after init (browser back/forward, manual URL paste, sidebar click).
   // fromUrl: true keeps the next activateSession in 'replace' mode — the browser already
   // owns this history entry, so we don't want to double-push.
   useEffect(() => {
     if (!hasInitializedRef.current) return;
-    if (!urlSessionId) return;
-    if (!sessionsRef.current.some(s => s.sessionId === urlSessionId)) return;
-    switchToSession(urlSessionId, { fromUrl: true });
+    // URL points at a known live session — switch the display if it isn't already there.
+    if (urlSessionId && sessionsRef.current.some(s => s.sessionId === urlSessionId)) {
+      switchToSession(urlSessionId, { fromUrl: true });
+      return;
+    }
+    // URL is bare /shell or names a dead/unknown session, but we have an active session
+    // displayed — re-mirror the URL back so reload still restores the displayed shell.
+    if (sessionIdRef.current) {
+      navigateRef.current(`/shell/${sessionIdRef.current}`, { replace: true });
+    }
   }, [urlSessionId, switchToSession]);
 
   return (
