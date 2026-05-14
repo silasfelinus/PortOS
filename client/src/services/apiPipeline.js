@@ -85,11 +85,6 @@ export const extractPipelineBibles = (seriesId, { issueId, corpus, kinds, provid
 export const listPipelineIssues = (seriesId) =>
   request(`/pipeline/series/${encodeURIComponent(seriesId)}/issues`);
 
-// Recently-updated issues across all series. Used by the sidebar to surface
-// in-flight pipeline work without forcing the user to drill in.
-export const listRecentPipelineIssues = (limit = 10) =>
-  request(`/pipeline/issues/recent?limit=${encodeURIComponent(limit)}`);
-
 export const createPipelineIssue = (seriesId, data) =>
   request(`/pipeline/series/${encodeURIComponent(seriesId)}/issues`, {
     method: 'POST',

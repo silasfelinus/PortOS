@@ -107,6 +107,51 @@ export function composeVisualPrompt({ series, description, slugline = '', extraS
   return applyWorldStyle(scenePrompt, world);
 }
 
+// Marvel/DC scripts attach parentheticals to speakers — `ETTA (EARPIECE):`,
+// `KESSA (WHISPERED):`, `LINA (THOUGHT):`. These tell a human artist HOW to
+// draw the balloon (jagged for transmitted voices, dashed for whispers,
+// cloud-outline for thoughts), but a diffusion model treats them as more text
+// to letter. Map them to visual balloon-style hints so the artist still gets
+// the cue without the label leaking into the lettering.
+const BALLOON_STYLE_HINTS = [
+  { test: /\b(EARPIECE|RADIO|COMM|TRANSMISSION|PHONE|HOLO|HOLOGRAM|INTERCOM|SPEAKER|TV|MONITOR|VIDEO)\b/, hint: 'jagged electronic/transmission balloon with bolt-shaped tail' },
+  { test: /\b(WHISPER(?:ED|S|ING)?|SOTTO|HUSHED|QUIET)\b/, hint: 'dashed-outline whisper balloon' },
+  { test: /\b(SHOUT(?:ED|S|ING)?|YELL(?:ED|S|ING)?|SCREAM(?:ED|S|ING)?|ANGRY|BURST)\b/, hint: 'spiked/burst-shaped balloon' },
+  { test: /\b(THOUGHT|THINKING|INTERNAL)\b/, hint: 'cloud-outline thought balloon with chain-of-bubbles tail' },
+  { test: /\b(SING(?:S|ING)?|SONG|MUSICAL)\b/, hint: 'wavy musical balloon with musical-note flourish' },
+  { test: /\b(OFF[\- ]?PANEL|OFF[\- ]?SCREEN|O\.?S\.?|O\.?P\.?)\b/, hint: 'off-panel balloon with tail pointing past the panel border' },
+  { test: /\b(NARRATION|VOICE[\- ]?OVER|V\.?O\.?)\b/, hint: 'rectangular narration caption rather than a speech balloon' },
+];
+
+/**
+ * Build one balloon attribution string: `Speech balloon reads: "<text>" (spoken
+ * by NAME[, <style hint>]).` Leads with the lettered text so the diffusion
+ * model anchors on the balloon's contents; parses any parenthetical modifier
+ * on the speaker into a visual styling hint (radio, whisper, thought, etc.).
+ * Returns null if `line` is blank — the caller filters those out.
+ */
+function formatBalloon(character, line) {
+  const text = (line || '').trim();
+  if (!text) return null;
+  const raw = (character || '').trim() || 'CHAR';
+  // Split `NAME (MODIFIER)` → speaker base + modifier text. Tolerate stacked
+  // parens (`NAME (EARPIECE, WHISPERED)`) by treating the whole inner-paren
+  // blob as one modifier string for hint detection.
+  const m = raw.match(/^([^(]+?)\s*\(([^)]*)\)\s*$/);
+  const speaker = (m ? m[1] : raw).trim() || 'CHAR';
+  const modifier = m ? m[2].trim() : '';
+  const cleanText = text.replace(/^"+|"+$/g, '').trim();
+  const styleHint = modifier
+    ? BALLOON_STYLE_HINTS.find((h) => h.test.test(modifier.toUpperCase()))?.hint
+    : null;
+  const attribution = styleHint
+    ? `(spoken by ${speaker}; ${styleHint})`
+    : `(spoken by ${speaker})`;
+  // Terminator handled here so endPunct() at the call site doesn't have to
+  // navigate the closing paren — we always end with `).`.
+  return `Speech balloon reads: "${cleanText}" ${attribution}.`;
+}
+
 export function composeComicPagePrompt({
   series, world, page, pageNumber, extraStyle = '',
   matchedCharacters = [], matchedSettings = [], matchedObjects = [],
@@ -157,22 +202,26 @@ export function composeComicPagePrompt({
     const idx = i + 1;
     const desc = (p.description || '').trim() || 'continuation of previous beat';
     const parts = [`Panel ${idx}: ${endPunct(desc)}`];
-    if (p.caption && p.caption.trim()) parts.push(`Caption: "${endPunct(p.caption.trim())}"`);
+    if (p.caption && p.caption.trim()) parts.push(`Narration caption box reads: "${endPunct(p.caption.trim())}"`);
     if (Array.isArray(p.dialogue) && p.dialogue.length > 0) {
-      // Trim first so whitespace-only character / line fields don't pass the
-      // truthy guard and emit malformed `: ""` entries. Drop dialogue rows
-      // whose line is empty — they have nothing for the artist to render.
+      // Format each dialogue line as `Speech balloon reads: "<text>" (spoken
+      // by NAME[, balloon style: <hint>])`. Lettered content (the quoted
+      // text) leads so the diffusion model anchors on it; speaker + style
+      // hints trail as attribution. The previous `NAME (MODIFIER): "text"`
+      // shape (Marvel/DC script convention) was being lettered verbatim
+      // INTO balloons by the image model — including the speaker name and
+      // parentheticals like "(EARPIECE)". Dropping speaker into the
+      // attribution slot and translating common parentheticals to balloon
+      // styling hints (jagged for radio/earpiece, dashed for whisper, cloud
+      // for thought) preserves the artistic intent without leaking labels
+      // into the lettered text.
       const dlg = p.dialogue
-        .map((d) => {
-          const character = (d.character || '').trim() || 'CHAR';
-          const line = (d.line || '').trim();
-          return line ? `${character}: "${line}"` : null;
-        })
+        .map((d) => formatBalloon(d.character, d.line))
         .filter(Boolean)
-        .join(' / ');
-      if (dlg) parts.push(`Dialogue: ${endPunct(dlg)}`);
+        .join(' ');
+      if (dlg) parts.push(dlg);
     }
-    if (p.sfx && p.sfx.trim()) parts.push(`SFX: ${endPunct(p.sfx.trim())}`);
+    if (p.sfx && p.sfx.trim()) parts.push(`SFX lettering: ${endPunct(p.sfx.trim())}`);
     return parts.join(' ');
   });
 
@@ -180,7 +229,7 @@ export function composeComicPagePrompt({
   const styleClause = styleStack ? ` Art style: ${styleStack}.` : '';
   const seriesClause = series?.name ? ` from the series "${series.name}"` : '';
 
-  const layout = `A single full printable comic book page${seriesClause}, page ${pageNumber}. Render a balanced multi-panel comic page layout with ${panels.length} clearly bordered panel${panels.length === 1 ? '' : 's'} arranged for left-to-right, top-to-bottom reading. Include lettered speech balloons for dialogue, rectangular narration captions, and stylized SFX where indicated. Each panel must be visually distinct, with consistent character designs across panels.${styleClause}`;
+  const layout = `A single full printable comic book page${seriesClause}, page ${pageNumber}. Render a balanced multi-panel comic page layout with ${panels.length} clearly bordered panel${panels.length === 1 ? '' : 's'} arranged for left-to-right, top-to-bottom reading. Include lettered speech balloons for dialogue, rectangular narration boxes for captions, and stylized SFX where indicated. **Balloon lettering rule: each speech balloon contains ONLY the quoted text shown after "Speech balloon reads:". NEVER letter the speaker's name, role, or any parenthetical attribution (e.g. "(EARPIECE)", "(WHISPERED)", "(OFF-PANEL)") inside the balloon — those are tail-direction and balloon-styling cues for the artist, not lettered content.** Each panel must be visually distinct, with consistent character designs across panels.${styleClause}`;
   const featuringClause = featuring ? `\n\nFeaturing — ${featuring}` : '';
   const settingClause = settingsClause ? `\n\nSetting — ${settingsClause}` : '';
   const notableClause = notable ? `\n\nNotable — ${notable}` : '';

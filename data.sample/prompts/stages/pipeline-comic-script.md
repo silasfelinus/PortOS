@@ -47,10 +47,11 @@ Return a markdown document with this exact structure:
 
 ## Rules
 
-- Plan **5–7 panels per page**, with rare 1-panel splash pages for big reveals. A typical 22-page issue lands at 100–140 panels — but for a single-issue script driven by an ~800-word prose draft, target **8–12 pages** unless the prose is exceptionally action-heavy.
+- Target a standard **22-page** comic issue (100–140 panels total). Plan **5–7 panels per page**, with rare 1-panel splash pages for big reveals. If the prose draft is short, expand the action — pace beats across more panels, add reaction shots, environmental establishing panels, and visual transitions — rather than cutting page count. Only deviate from 22 pages if the issue genuinely demands it (e.g. a designated double-sized special).
 - Panel descriptions stay in **present tense** and describe only what's on the page.
 - Dialogue is short — comic balloons hold about 25 words max. Break long speeches across panels.
 - Use **CAPS for character names** in dialogue attributions (`LINA:`), and call out **emphasis** with bold.
+- **Balloon contents = quoted text only.** The CAPS speaker name and any parenthetical modifier (`(EARPIECE)`, `(WHISPERED)`, `(THOUGHT)`, `(OFF-PANEL)`, etc.) are *attribution* — they tell the artist whose mouth/earpiece the balloon points to and what shape to draw (jagged for radio, dashed for whisper, cloud for thought). **Never repeat the speaker name or modifier inside the quoted line** (write `ETTA (EARPIECE): "Stall forty-one is the buy."`, NOT `ETTA (EARPIECE): "ETTA (EARPIECE): Stall forty-one is the buy."` — and never inline speaker tags like `"— Etta"` inside the quoted text either). Downstream image-gen leaks any text it sees into the lettered balloon.
 - Captions for time/place jumps (`CAPTION: THREE HOURS LATER`) or interiority that can't be drawn.
 - SFX sparingly — only when they add to the page's energy.
 - Never re-describe a character's permanent appearance once introduced; just name them.

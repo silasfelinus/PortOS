@@ -193,7 +193,7 @@ const navItems = [
     defaultTo: '/media',
     children: [
       { to: '/media', label: 'Media Gen', icon: Layers },
-      { to: '/pipeline', label: 'Pipeline', icon: WorkflowIcon, dynamic: 'pipelineRecent' },
+      { to: '/pipeline', label: 'Pipeline', icon: WorkflowIcon, dynamic: 'pipelineSeries' },
       { to: '/world-builder', label: 'World Builder', icon: Globe },
       { to: '/writers-room', label: 'Writers Room', icon: NotebookPen }
     ]
@@ -383,38 +383,31 @@ export default function Layout() {
     return () => socket.off('apps:changed', fetchApps);
   }, []);
 
-  // Fetch recent pipeline issues for the Create > Pipeline grandchildren.
-  // Refresh on focus so freshly-created/updated issues show up without a
-  // full reload — but debounced: alt-tabbing back after 2s shouldn't refetch.
-  // Signature guard on setState avoids re-rendering the whole sidebar tree
-  // when the items haven't actually changed.
-  const [recentPipelineIssues, setRecentPipelineIssues] = useState([]);
+  // Fetch all pipeline series for the Create > Pipeline grandchildren.
+  // Refresh on focus (debounced 30s) so freshly-created or renamed series
+  // surface without a reload. Signature guard avoids re-rendering the whole
+  // sidebar tree when nothing changed.
+  const [pipelineSeries, setPipelineSeries] = useState([]);
   useEffect(() => {
-    // Track successful fetches only — a failed fetch shouldn't lock out the
-    // next focus retry for 30 seconds.
     let lastSuccessAt = 0;
-    // Include EVERY rendered field — id/updatedAt alone misses cases like
-    // a series rename (which doesn't bump the issue's updatedAt) where the
-    // sidebar label would stay stale because `sigOf(prev) === sigOf(next)`
-    // suppresses the state update.
-    const sigOf = (items) => items
-      .map((i) => `${i.id}@${i.updatedAt}|${i.number}|${i.title}|${i.seriesName}`)
-      .join('||');
-    const loadRecent = () => {
-      api.listRecentPipelineIssues(10)
+    const sigOf = (items) => items.map((s) => `${s.id}|${s.name}`).join('||');
+    const loadSeries = () => {
+      api.listPipelineSeries()
         .then((items) => {
           lastSuccessAt = Date.now();
-          const next = Array.isArray(items) ? items : [];
-          setRecentPipelineIssues((prev) => sigOf(prev) === sigOf(next) ? prev : next);
+          const next = (Array.isArray(items) ? items : []).slice().sort((a, b) =>
+            (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }),
+          );
+          setPipelineSeries((prev) => sigOf(prev) === sigOf(next) ? prev : next);
         })
         .catch((err) => {
-          console.warn(`⚠️ Sidebar pipeline-recent fetch failed: ${err?.message || err}`);
+          console.warn(`⚠️ Sidebar pipeline-series fetch failed: ${err?.message || err}`);
         });
     };
-    loadRecent();
+    loadSeries();
     const onFocus = () => {
       if (Date.now() - lastSuccessAt < 30_000) return;
-      loadRecent();
+      loadSeries();
     };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
@@ -424,23 +417,24 @@ export default function Layout() {
     localStorage.setItem(SIDEBAR_KEY, String(collapsed));
   }, [collapsed]);
 
-  // Build dynamic nav items with app children + recent pipeline issues.
+  // Build dynamic nav items with app children + pipeline series.
   // `decoratePipelineChild` is defined inside the memo so its closure over
-  // `recentPipelineIssues` doesn't require an eslint-disable, and so it
-  // isn't reallocated on every render.
+  // `pipelineSeries` doesn't require an eslint-disable, and so it isn't
+  // reallocated on every render.
   const resolvedNavItems = useMemo(() => {
     const decoratePipelineChild = (child) => {
-      if (child.dynamic !== 'pipelineRecent') return child;
+      if (child.dynamic !== 'pipelineSeries') return child;
       return {
         ...child,
-        grandChildren: recentPipelineIssues.map((iss) => ({
-          to: `/pipeline/issues/${iss.id}/idea`,
-          label: `#${iss.number} ${iss.title}`.slice(0, 60),
-          title: `${iss.seriesName} — #${iss.number} ${iss.title}`,
-          // Active-detection prefix — the actual to-link points at /idea
-          // for a clean default, but the sidebar should highlight when the
-          // user is on ANY stage of this issue.
-          activePathPrefix: `/pipeline/issues/${iss.id}`,
+        grandChildren: pipelineSeries.map((s) => ({
+          to: `/pipeline/series/${s.id}`,
+          label: s.name || '(untitled series)',
+          title: s.name || '(untitled series)',
+          // Active-detection prefix — highlight while on the series page
+          // OR any issue belonging to that series. The issue page itself
+          // doesn't carry seriesId in its URL, so per-issue highlighting
+          // stays handled inside PipelineIssue's own breadcrumb.
+          activePathPrefix: `/pipeline/series/${s.id}`,
         })),
       };
     };
@@ -464,7 +458,7 @@ export default function Layout() {
       }
       return item;
     });
-  }, [sidebarApps, recentPipelineIssues]);
+  }, [sidebarApps, pipelineSeries]);
 
   // Auto-expand sections when on a child page
   useEffect(() => {

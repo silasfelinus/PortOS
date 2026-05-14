@@ -115,9 +115,45 @@ describe('composeComicPagePrompt', () => {
     expect(prompt).toMatch(/Art style: gritty ink-wash/);
     expect(prompt).toMatch(/Panel 1: Wide establishing shot/);
     expect(prompt).toMatch(/Panel 2: Tight close-up/);
-    expect(prompt).toMatch(/Caption: "The titan died/);
-    expect(prompt).toMatch(/Dialogue: KESSA: "If you had any sense/);
-    expect(prompt).toMatch(/SFX: fmp/);
+    expect(prompt).toMatch(/Narration caption box reads: "The titan died/);
+    expect(prompt).toMatch(/Speech balloon reads: "If you had any sense, you'd stow away\." \(spoken by KESSA\)\./);
+    expect(prompt).toMatch(/SFX lettering: fmp/);
+  });
+
+  it('lifts parenthetical speaker modifiers into balloon-style hints without leaking them into the lettered text', () => {
+    const page = {
+      panels: [{
+        description: 'Lina ducks behind a market stall, hand to her ear.',
+        dialogue: [
+          { character: 'ETTA (EARPIECE)', line: 'Stall forty-one is the buy.' },
+          { character: 'LINA (WHISPERED)', line: "Don't get clever." },
+          { character: 'LINA (THOUGHT)', line: 'He always gets clever.' },
+        ],
+      }],
+    };
+    const prompt = composeComicPagePrompt({ series: SERIES, page, pageNumber: 1 });
+    // The lettered text is exactly the quoted line — no speaker label, no parenthetical.
+    expect(prompt).toMatch(/Speech balloon reads: "Stall forty-one is the buy\." \(spoken by ETTA; jagged electronic\/transmission balloon[^)]*\)\./);
+    expect(prompt).toMatch(/Speech balloon reads: "Don't get clever\." \(spoken by LINA; dashed-outline whisper balloon\)\./);
+    expect(prompt).toMatch(/Speech balloon reads: "He always gets clever\." \(spoken by LINA; cloud-outline thought balloon[^)]*\)\./);
+    // Defensive: the raw "(EARPIECE)" / "(WHISPERED)" / "(THOUGHT)" labels must
+    // never appear inside the lettered balloon text. Scope the check to the
+    // `Speech balloon reads: "..."` segments only — the layout instruction
+    // itself legitimately cites these labels in quotes as a forbid-list.
+    const balloonTexts = [...prompt.matchAll(/Speech balloon reads: "([^"]+)"/g)].map((m) => m[1]);
+    expect(balloonTexts).toHaveLength(3);
+    for (const text of balloonTexts) {
+      expect(text).not.toMatch(/\(EARPIECE\)/);
+      expect(text).not.toMatch(/\(WHISPERED\)/);
+      expect(text).not.toMatch(/\(THOUGHT\)/);
+      expect(text).not.toMatch(/^[A-Z]+:/); // no `NAME:` prefix inside balloon
+    }
+  });
+
+  it('forbids speaker labels inside balloon lettering via the layout instruction', () => {
+    const prompt = composeComicPagePrompt({ series: SERIES, page: PAGE, pageNumber: 1 });
+    expect(prompt).toMatch(/balloon contains ONLY the quoted text/i);
+    expect(prompt).toMatch(/NEVER letter the speaker's name/i);
   });
 
   it('uses singular "panel" wording for a one-panel splash page', () => {
@@ -183,7 +219,7 @@ describe('composeComicPagePrompt', () => {
     const page = { panels: [{ description: 'A solitary frame', sfx: 'fmp' }] };
     const prompt = composeComicPagePrompt({ series: SERIES, page, pageNumber: 1 });
     expect(prompt).toMatch(/Panel 1: A solitary frame\./);
-    expect(prompt).toMatch(/SFX: fmp\./);
+    expect(prompt).toMatch(/SFX lettering: fmp\./);
   });
 });
 

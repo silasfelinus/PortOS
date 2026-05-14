@@ -161,6 +161,32 @@
 
 ## Changed
 
+- **Sidebar Pipeline submenu — all series, not 10 recent issues.** The
+  Create → Pipeline grandchildren now list every series alphabetically
+  (links to `/pipeline/series/:id`) instead of the 10 most recently updated
+  issues. Series-level entries stay coherent across many series — individual
+  issues live under their series page. Sort happens in the fetch effect so
+  the memoized nav tree doesn't re-sort when unrelated `sidebarApps` state
+  changes.
+
+- **Comic-page image prompts — balloon lettering rule.** `composeComicPagePrompt`
+  in `server/services/pipeline/visualStages.js` now formats each dialogue
+  line as `Speech balloon reads: "<text>" (spoken by NAME[, balloon style: <hint>])`
+  and translates `(EARPIECE)` / `(WHISPERED)` / `(THOUGHT)` parentheticals
+  into visual styling hints. The page-layout clause explicitly tells the
+  diffusion model to letter ONLY the quoted text — speaker names and
+  parentheticals were previously being lettered verbatim inside balloons.
+
+- **Prose stage — present tense, non-negotiable.** `data.sample/prompts/stages/pipeline-prose.md`
+  now demands present tense throughout so the upstream draft matches the
+  downstream comic and TV-script adaptations, keeping visual beats
+  translatable across formats.
+
+- **Comic-script stage — target a standard 22-page issue.** The comic-script
+  prompt now anchors on the industry-standard 22-page count (100–140 panels)
+  and tells the LLM to expand action across more panels when the prose draft
+  is short rather than cutting page count.
+
 - **Pipeline nav — shorter tab labels.** *Comic Pages* → *Comic*,
   *Episode Video* → *Video*. The full names were redundant inside the
   Pipeline page where every tab is obviously a pipeline stage.
@@ -201,6 +227,11 @@
 
 ## Fixed
 
+- **Media Jobs Queue — empty prompt tooltip.** Job rows without a prompt
+  no longer render an empty `title=""` tooltip. Rows with a prompt now
+  show the full prompt on hover (the visible cell is still truncated to
+  80 chars).
+
 - **Codex image gen — "Codex returned no session id" false negative.** With
   long pipeline prompts (multi-KB comic-script payloads), codex emits the
   banner + echoed prompt in a single stderr chunk that exceeds the
@@ -211,3 +242,7 @@
   the session-id line either. Adds regression tests for both paths.
 
 ## Removed
+
+- **Dead `listRecentPipelineIssues` client API.** Sidebar no longer fetches
+  recent issues, so the corresponding `apiPipeline.js` wrapper is removed.
+  The server route + tests stay for now in case future surfaces want it.
