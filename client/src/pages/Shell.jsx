@@ -309,9 +309,12 @@ export default function Shell() {
 
   const switchToSession = useCallback((sessionId, { fromUrl = false } = {}) => {
     if (sessionId === sessionIdRef.current) return;
-    clearActiveSession();
+    // Don't pre-clear — keep the previously displayed session in sessionIdRef until
+    // shell:attached lands (handleShellAttached → activateSession swaps atomically).
+    // If shell:error fires instead, handleShellError can restore URL/terminal to the
+    // session we were already showing rather than leaving the UI stranded on a dead URL.
     attachToSession(sessionId, { intent: fromUrl ? undefined : 'push' });
-  }, [attachToSession, clearActiveSession]);
+  }, [attachToSession]);
 
   // User clicked "New" button — push intent so back/forward can return to the prior session.
   const startNewSession = useCallback(() => {
@@ -425,13 +428,54 @@ export default function Shell() {
       }
     };
 
-    const handleShellError = ({ error }) => {
+    const handleShellDetached = ({ sessionId: sid, reason }) => {
+      // Server notified us this session was taken over by another socket
+      // (typically the same user opening the deep link in another tab). The PTY
+      // stream now goes there; locally we drop the dead view rather than appear
+      // "Connected" forever with no output.
+      if (sid !== sessionIdRef.current) return;
+      clearActiveSession();
+      if (termInstanceRef.current) {
+        const note = reason === 'attached-elsewhere'
+          ? 'Session attached in another tab — disconnected here'
+          : 'Session detached';
+        termInstanceRef.current.writeln(`\r\n\x1b[33m[${note}]\x1b[0m`);
+      }
+      navigateRef.current('/shell', { replace: true });
+    };
+
+    const handleShellError = ({ error, sessionId: errSid }) => {
       // Server rejected start/attach (e.g., session limit, session not found).
       // No activateSession will fire to consume the intent, so reset here.
       pendingNavIntentRef.current = 'replace';
       if (termInstanceRef.current) {
         termInstanceRef.current.writeln(`\r\n\x1b[31m[Error: ${error}]\x1b[0m`);
       }
+      // Passive errors (shell:input / shell:stop on a missing session) carry a sessionId
+      // in the payload — no terminal state to recover.
+      if (errSid) return;
+      // Start/attach failure recovery. switchToSession leaves sessionIdRef pointing at
+      // the previously-displayed session, but attachToSession already cleared the
+      // terminal. Re-mirror the URL to the displayed session and re-attach to repaint;
+      // if the displayed session is also gone, fall back to a survivor.
+      const active = sessionIdRef.current;
+      if (!active) return;
+      const live = sessionsRef.current;
+      if (!live.some(s => s.sessionId === active)) {
+        clearActiveSession();
+        if (live.length > 0) {
+          const latest = live[live.length - 1];
+          navigateRef.current(`/shell/${latest.sessionId}`, { replace: true });
+          setTimeout(() => attachToSession(latest.sessionId), 100);
+        } else {
+          navigateRef.current('/shell', { replace: true });
+        }
+        return;
+      }
+      if (urlSessionIdRef.current && urlSessionIdRef.current !== active) {
+        navigateRef.current(`/shell/${active}`, { replace: true });
+      }
+      setTimeout(() => attachToSession(active), 100);
     };
 
     socket.on('connect', handleConnect);
@@ -441,6 +485,7 @@ export default function Shell() {
     socket.on('shell:attached', handleShellAttached);
     socket.on('shell:output', handleShellOutput);
     socket.on('shell:exit', handleShellExit);
+    socket.on('shell:detached', handleShellDetached);
     socket.on('shell:error', handleShellError);
 
     if (socket.connected) {
@@ -455,6 +500,7 @@ export default function Shell() {
       socket.off('shell:attached', handleShellAttached);
       socket.off('shell:output', handleShellOutput);
       socket.off('shell:exit', handleShellExit);
+      socket.off('shell:detached', handleShellDetached);
       socket.off('shell:error', handleShellError);
       // Don't kill session on unmount — it persists server-side
       sessionIdRef.current = null;

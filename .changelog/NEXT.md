@@ -11,6 +11,16 @@
   sessions) clears the URL back to `/shell`. The pre-existing `?session=<uuid>`
   query-param (one-shot "attach to this session") still works alongside the
   new path param.
+  - **Attach-failure recovery.** Switching sessions no longer pre-clears the
+    displayed session — `sessionIdRef` only swaps on `shell:attached`. If the
+    target session dies between list read and attach (race), `shell:error`
+    restores the URL + terminal to the previously displayed session (or falls
+    back to a live survivor) instead of stranding the UI on a dead URL.
+  - **Multi-tab handoff notification.** Opening the same `/shell/:sessionId`
+    in a second tab takes over the PTY socket (single-subscriber by design).
+    The server now emits `shell:detached` to the previous socket so the
+    original tab clears its disconnected view + navigates back to `/shell`
+    instead of sitting "Connected" with no output.
 
 - **Universe Canon page — lock toggle, tag chips, and "from series" badge on every card.**
   Phase 2a of the Universe-as-Canon UI. Each `CanonCard` (used on both the

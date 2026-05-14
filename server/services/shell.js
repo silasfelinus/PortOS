@@ -150,11 +150,20 @@ export function createShellSession(socket, options = {}) {
 
 /**
  * Attach an existing session to a new socket
+ *
+ * A shell session has a single attached socket — PTY output is fanned to that one
+ * socket only (see ptyProcess.onData). When a deep link is opened in a second tab,
+ * the new socket takes over and the previous tab would otherwise sit "Connected"
+ * with no output. Emit shell:detached on the prior socket so it can clear its
+ * local state instead of silently losing the stream.
  */
 export function attachSession(sessionId, socket) {
   const session = shellSessions.get(sessionId);
   if (!session) return null;
-  // Detach from old socket
+  const prevSocket = session.socket;
+  if (prevSocket && prevSocket !== socket) {
+    prevSocket.emit('shell:detached', { sessionId, reason: 'attached-elsewhere' });
+  }
   session.socket = socket;
   console.log(`🐚 Attached session ${sessionId.slice(0, 8)} to socket ${socket.id}`);
   return {
