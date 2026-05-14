@@ -187,6 +187,30 @@
 
 ## Changed
 
+- **Pipeline render paths read canon from the linked universe (Phase B).**
+  Comic-page, panel, storyboard, and arc-planner LLM contexts now resolve
+  characters/places/objects via `getSeriesCanon(series)` — preferring the
+  series's linked universe canon and falling back to the series's own arrays
+  only when the universe isn't migrated yet. Switching the source of truth
+  to the universe is the prerequisite for crossover series sharing a cast.
+
+  Migration utility: `node server/services/pipeline/migrateSeriesCanon.js`
+  (optional `--dry-run`) copies each series's
+  `series.{characters,settings,objects}[]` into its linked universe via
+  `mergeExtractedBible` (dedup by name). Idempotent. Auto-creates a
+  universe for orphan series. Does NOT clear the series arrays — they stay
+  as a pre-migration fallback until Phase B.2 drops the schema fields.
+
+  Fallback is **all-or-nothing per series**: if a series has any kind
+  populated locally that the universe hasn't received yet, we read the
+  whole series-side canon (rather than mixing universe characters with
+  series settings and producing silent hybrid stale data).
+
+  Phase B.2 (next): point the per-issue Nouns page directly at universe
+  canon, remove series-side bible arrays from the schema, drop the
+  legacy `extractAndMergeIntoSeries` + `refineCharacterDescription`
+  functions.
+
 - **BREAKING — World Builder is now Universe Builder.** A universe can contain
   many worlds, and stories within the same universe can share canon (characters,
   places, things) across multiple series — Marvel-style crossovers. This is a

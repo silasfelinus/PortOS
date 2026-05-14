@@ -38,6 +38,7 @@ import { composeStyledPrompt } from '../../lib/composeStyledPrompt.js';
 import { getDefaultVideoModelId, getVideoModels } from '../../lib/mediaModels.js';
 import { runStagedLLM } from '../../lib/stageRunner.js';
 import { runPromptRefine } from './refineHelpers.js';
+import { resolveSeriesCanonSync } from './seriesCanon.js';
 import { ASPECT_PRESETS } from '../../lib/creativeDirectorPresets.js';
 
 const SUPPORTED_MODES = new Set(['local', 'codex']);
@@ -61,7 +62,10 @@ const loadBibleContext = async (issueId) => {
     const issue = await getIssue(issueId);
     const series = await getSeries(issue.seriesId);
     const world = series.universeId ? await getUniverse(series.universeId).catch(() => null) : null;
-    return { issue, series, world };
+    // Canon prefers the linked universe (Phase B) and falls back to the
+    // series's own arrays so pre-migration data still renders correctly.
+    const canon = resolveSeriesCanonSync(series, world);
+    return { issue, series, world, canon };
   })();
   const [chain, settings] = await Promise.all([issueChain, getSettings()]);
   return { ...chain, settings };
@@ -253,7 +257,7 @@ export async function enqueueVisualComicPage(issueId, options = {}) {
       status: 400, code: 'PIPELINE_COMIC_PAGE_BAD_INDEX',
     });
   }
-  const { issue, settings, series, world } = await loadBibleContext(issueId);
+  const { issue, settings, series, world, canon } = await loadBibleContext(issueId);
   const pages = Array.isArray(issue.stages?.comicPages?.pages) ? issue.stages.comicPages.pages : [];
   const page = pages[pageIndex];
   if (!page) {
@@ -281,10 +285,12 @@ export async function enqueueVisualComicPage(issueId, options = {}) {
   );
 
   // Characters: union of (a) dialogue CAPS speakers and (b) anyone named in
-  // panel prose. Deduplicates on id/name inside the matchers.
-  const charByKey = buildCharByKey(series.characters || []);
+  // panel prose. Deduplicates on id/name inside the matchers. Canon is read
+  // from `canon` (Phase B helper) which prefers the linked universe and
+  // falls back to series arrays for pre-migration data.
+  const charByKey = buildCharByKey(canon.characters);
   const fromDialogue = matchSceneCharacters(dialogueNames, charByKey);
-  const fromProse = matchCharactersInText(proseHaystack, series.characters || []);
+  const fromProse = matchCharactersInText(proseHaystack, canon.characters);
   const seenCharKeys = new Set();
   const matchedCharacters = [...fromDialogue, ...fromProse].filter((c) => {
     const k = c.id || c.name;
@@ -296,8 +302,8 @@ export async function enqueueVisualComicPage(issueId, options = {}) {
   // Settings + objects: text-match against the panel prose. Codex can't take
   // reference images, so rich text descriptions in the prompt are how we
   // keep environments and signature props visually consistent page-to-page.
-  const matchedSettings = matchSettingsInText(proseHaystack, series.settings || []);
-  const matchedObjects = matchObjectsInText(proseHaystack, series.objects || []);
+  const matchedSettings = matchSettingsInText(proseHaystack, canon.settings);
+  const matchedObjects = matchObjectsInText(proseHaystack, canon.objects);
 
   // composeComicPagePrompt only returns '' when panels.length === 0, which is
   // already rejected above. The "(continuation of previous beat)" placeholder
@@ -328,9 +334,9 @@ export async function enqueueVisualImage(issueId, stageId, options = {}) {
       status: 400, code: 'PIPELINE_VISUAL_BAD_STAGE',
     });
   }
-  const { settings, series, world } = await loadBibleContext(issueId);
+  const { settings, series, world, canon } = await loadBibleContext(issueId);
   const mode = resolveMode(options, settings);
-  const matchedCharacters = matchCharactersInText(options.description || '', series.characters || []);
+  const matchedCharacters = matchCharactersInText(options.description || '', canon.characters);
   const prompt = composeVisualPrompt({
     series,
     description: options.description,
@@ -371,7 +377,7 @@ export async function enqueueStoryboardSceneVideo(issueId, sceneIndex, options =
       status: 400, code: 'PIPELINE_SCENE_BAD_INDEX',
     });
   }
-  const { issue, settings, series, world } = await loadBibleContext(issueId);
+  const { issue, settings, series, world, canon } = await loadBibleContext(issueId);
   const pythonPath = settings.imageGen?.local?.pythonPath || null;
   if (!pythonPath) {
     throw new ServerError(
@@ -396,7 +402,7 @@ export async function enqueueStoryboardSceneVideo(issueId, sceneIndex, options =
 
   const matchedCharacters = matchCharactersInText(
     `${scene.description || ''} ${scene.slugline || ''}`,
-    series.characters || [],
+    canon.characters,
   );
   const prompt = composeVisualPrompt({
     series,

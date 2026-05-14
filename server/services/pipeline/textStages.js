@@ -17,6 +17,7 @@
 import { runStagedLLM } from '../../lib/stageRunner.js';
 import { getSeries, extractAndMergeIntoSeries } from './series.js';
 import { getIssue, updateStage, TEXT_STAGE_IDS } from './issues.js';
+import { getSeriesCanon } from './seriesCanon.js';
 
 const STAGE_TO_TEMPLATE = Object.freeze({
   idea: 'pipeline-idea-expansion',
@@ -30,7 +31,7 @@ const STAGE_TO_TEMPLATE = Object.freeze({
  * bible (`series.*`) and every *prior* text stage's content (`stages.*`).
  * Visual stages aren't included — text templates don't need rendered images.
  */
-function buildStageContext({ series, issue, stageId, seedInput }) {
+function buildStageContext({ series, canon, issue, stageId, seedInput }) {
   const stages = {};
   for (const id of TEXT_STAGE_IDS) {
     if (id === stageId) break; // only include stages BEFORE the current one
@@ -49,7 +50,7 @@ function buildStageContext({ series, issue, stageId, seedInput }) {
       premise: series.premise,
       styleNotes: series.styleNotes,
       universeId: series.universeId || '',
-      characters: series.characters || [],
+      characters: canon?.characters || series.characters || [],
     },
     issue: {
       number: issue.number,
@@ -79,10 +80,11 @@ export async function generateStage(issueId, stageId, options = {}) {
   const template = STAGE_TO_TEMPLATE[stageId];
   const issue = await getIssue(issueId);
   const series = await getSeries(issue.seriesId);
+  const canon = await getSeriesCanon(series);
 
   await updateStage(issueId, stageId, { status: 'generating', errorMessage: '' });
 
-  const ctx = buildStageContext({ series, issue, stageId, seedInput: options.seedInput });
+  const ctx = buildStageContext({ series, canon, issue, stageId, seedInput: options.seedInput });
 
   // Catch only at this boundary so the stage record persists the failure
   // before the error bubbles to the caller — without this, an LLM throw

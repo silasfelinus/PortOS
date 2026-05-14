@@ -399,7 +399,13 @@ router.post('/series/:id/extract-bible', asyncHandler(async (req, res) => {
   }
 
   // Delegate the extract → merge → patch chain to the service layer so
-  // mergeExtractedBible stays a service-internal concern.
+  // mergeExtractedBible stays a service-internal concern. (Phase B note:
+  // this still writes into series.characters; the per-issue Nouns page
+  // reads from there. Render paths prefer universe canon via
+  // getSeriesCanon — so once the user runs migrateSeriesCanon and starts
+  // managing canon on the Universe Canon page, this legacy series-write
+  // becomes dead-end data. Removed in Phase B.2 when the Nouns page
+  // points at universe directly.)
   const result = await seriesSvc.extractAndMergeIntoSeries(series.id, {
     kinds: body.kinds,
     corpus,

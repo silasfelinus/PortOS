@@ -26,6 +26,7 @@ import { listIssues } from './issues.js';
 import { sanitizeArc, sanitizeSeasonList, sanitizeSeason, buildSeason } from '../../lib/storyArc.js';
 import { recommendStructure, describeStructure } from '../../lib/seasonStructure.js';
 import { getUniverse } from '../universeBuilder.js';
+import { getSeriesCanon } from './seriesCanon.js';
 import { renderCategoriesForPrompt, renderCompositesForPrompt } from '../../lib/universePromptRenderers.js';
 
 export const ERR_VALIDATION = 'PIPELINE_ARC_VALIDATION';
@@ -102,6 +103,7 @@ async function resolveWorldContext(series, preloaded) {
 async function buildArcOverviewContext(series, preloadedWorld) {
   const structure = recommendStructure(series.issueCountTarget);
   const world = await resolveWorldContext(series, preloadedWorld);
+  const canon = await getSeriesCanon(series);
   return {
     series: {
       name: series.name,
@@ -116,9 +118,9 @@ async function buildArcOverviewContext(series, preloadedWorld) {
       : '(no target episode count set — propose 1–3 volumes based on premise weight)',
     recommendedSeasonCount: structure ? structure.seasons : '',
     recommendedPerSeasonJson: structure ? JSON.stringify(structure.perSeason) : '[]',
-    existingCharactersJson: JSON.stringify(series.characters || [], null, 2),
-    existingSettingsJson: JSON.stringify(series.settings || [], null, 2),
-    existingObjectsJson: JSON.stringify(series.objects || [], null, 2),
+    existingCharactersJson: JSON.stringify(canon.characters, null, 2),
+    existingSettingsJson: JSON.stringify(canon.settings, null, 2),
+    existingObjectsJson: JSON.stringify(canon.objects, null, 2),
   };
 }
 
@@ -190,6 +192,7 @@ async function buildSeasonEpisodesContext(series, season, priorSeasons, priorIss
     ? '(this is the first season — no prior context)'
     : priorSeasons.map((s) => renderPriorSeason(s, priorIssues)).join('\n\n');
   const world = await resolveWorldContext(series, preloadedWorld);
+  const canon = await getSeriesCanon(series);
   return {
     series: {
       name: series.name,
@@ -212,9 +215,9 @@ async function buildSeasonEpisodesContext(series, season, priorSeasons, priorIss
       endingHook: season.endingHook,
       episodeCountTarget: season.episodeCountTarget,
     },
-    existingCharactersJson: JSON.stringify(series.characters || [], null, 2),
-    existingSettingsJson: JSON.stringify(series.settings || [], null, 2),
-    existingObjectsJson: JSON.stringify(series.objects || [], null, 2),
+    existingCharactersJson: JSON.stringify(canon.characters, null, 2),
+    existingSettingsJson: JSON.stringify(canon.settings, null, 2),
+    existingObjectsJson: JSON.stringify(canon.objects, null, 2),
   };
 }
 
@@ -356,6 +359,7 @@ async function buildVerifyContext(series, preloadedWorld) {
   }
   const arc = series.arc || {};
   const world = await resolveWorldContext(series, preloadedWorld);
+  const canon = await getSeriesCanon(series);
   return {
     series: {
       name: series.name,
@@ -370,9 +374,9 @@ async function buildVerifyContext(series, preloadedWorld) {
       themesCsv: Array.isArray(arc.themes) ? arc.themes.join(', ') : '',
     },
     seasonsTreeJson: JSON.stringify(tree, null, 2),
-    existingCharactersJson: JSON.stringify(series.characters || [], null, 2),
-    existingSettingsJson: JSON.stringify(series.settings || [], null, 2),
-    existingObjectsJson: JSON.stringify(series.objects || [], null, 2),
+    existingCharactersJson: JSON.stringify(canon.characters, null, 2),
+    existingSettingsJson: JSON.stringify(canon.settings, null, 2),
+    existingObjectsJson: JSON.stringify(canon.objects, null, 2),
   };
 }
 
