@@ -187,21 +187,28 @@ export function unsubscribeSessionList(socket) {
 }
 
 function broadcastSessionList() {
-  const list = listAllSessions();
+  // Each subscriber gets a recipient-relative list so `attached` reflects "attached
+  // to a different tab" from that subscriber's POV. See listAllSessions().
   for (const sock of sessionListSubscribers) {
-    sock.emit('shell:sessions', list);
+    sock.emit('shell:sessions', listAllSessions(sock));
   }
 }
 
 /**
  * List all active sessions with metadata
  *
- * `attached` reflects whether the session currently has a live socket bound to it.
- * Clients use this to avoid auto-attaching to a session that's already driving
- * another tab — pairing the shell:detached takeover with one-tab-per-session as
- * the auto-pick semantics (manual attach still steals as before).
+ * When `forSocket` is provided, `attached` is recipient-relative: TRUE only if the
+ * session is bound to a DIFFERENT socket than the recipient. Sessions bound to the
+ * recipient's own socket — or unbound — report `attached: false`. This lets clients
+ * use `attached` as a "don't auto-pick this, it belongs to someone else" signal
+ * without accidentally filtering out their own live sessions when they return to
+ * the page (the SocketProvider singleton keeps the socket alive across navigations,
+ * so sessions opened earlier in this tab stay bound to it).
+ *
+ * Omitting `forSocket` returns the globally-attached view (used only by callers
+ * that don't have a recipient context — currently none in PortOS).
  */
-export function listAllSessions() {
+export function listAllSessions(forSocket = null) {
   const sessions = [];
   for (const [sessionId, session] of shellSessions.entries()) {
     sessions.push({
@@ -212,7 +219,9 @@ export function listAllSessions() {
       kind: session.kind,
       agentId: session.agentId,
       command: session.command,
-      attached: !!session.socket
+      attached: forSocket
+        ? (!!session.socket && session.socket !== forSocket)
+        : !!session.socket
     });
   }
   return sessions;

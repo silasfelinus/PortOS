@@ -482,6 +482,7 @@ export default function Shell() {
       // Server rejected start/attach (e.g., session limit, session not found).
       // No activateSession will fire to consume the intent, so reset here.
       pendingNavIntentRef.current = 'replace';
+      const pendingTarget = pendingAttachRef.current;
       pendingAttachRef.current = null;
       if (termInstanceRef.current) {
         termInstanceRef.current.writeln(`\r\n\x1b[31m[Error: ${error}]\x1b[0m`);
@@ -506,13 +507,21 @@ export default function Shell() {
         }
         return;
       }
-      // Active session is still alive. Only recover when the URL diverged from it —
-      // that's the switch-failure path (user tried to navigate to a now-dead session,
-      // sessionIdRef stayed on the old one; restore URL + repaint terminal). For a
-      // start-failure with URL already matching (e.g. hit session limit), leave the
-      // terminal alone so the error message stays readable.
-      if (urlSessionIdRef.current && urlSessionIdRef.current !== active) {
-        navigateRef.current(`/shell/${active}`, { replace: true });
+      // Active session is still alive. Distinguish a switch failure (re-attach so the
+      // terminal that attachToSession just cleared gets repainted) from a start
+      // failure with an existing session (leave the terminal as-is so the error
+      // message stays readable). Two switch-failure paths:
+      //   • Tab-click switch: pendingAttachRef pointed at a different session id
+      //     than `active` when the error landed. URL didn't move because
+      //     activateSession never fired.
+      //   • URL-nav switch: urlSessionIdRef diverged from active. The new path
+      //     points at a now-dead session.
+      const switchAttempt = pendingTarget && pendingTarget !== 'new' && pendingTarget !== active;
+      const urlDiverged = urlSessionIdRef.current && urlSessionIdRef.current !== active;
+      if (switchAttempt || urlDiverged) {
+        if (urlDiverged) {
+          navigateRef.current(`/shell/${active}`, { replace: true });
+        }
         setTimeout(() => attachToSession(active), 100);
       }
     };

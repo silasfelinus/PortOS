@@ -461,7 +461,7 @@ export function initSocket(io) {
 
     socket.on('shell:list', () => {
       shellService.subscribeSessionList(socket);
-      socket.emit('shell:sessions', shellService.listAllSessions());
+      socket.emit('shell:sessions', shellService.listAllSessions(socket));
     });
 
     socket.on('shell:input', (rawData) => {

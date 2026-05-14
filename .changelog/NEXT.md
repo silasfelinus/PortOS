@@ -28,6 +28,14 @@
     driving another tab. Manual tab clicks and deep-link URL navigation
     still take over (intent is explicit). Prevents tab B from booting
     tab A off its shell when tab B's session is killed externally.
+  - **`attached` is recipient-relative.** `listAllSessions` and
+    `broadcastSessionList` now personalize each subscriber's payload so
+    `attached` only reports `true` when the session is bound to a
+    *different* socket. Sessions bound to the recipient's own singleton
+    socket (e.g. sessions opened earlier in this tab that stayed bound
+    when the user navigated away and back) report `attached: false`, so
+    the client's auto-pick path adopts them on return instead of leaving
+    bare `/shell` disconnected.
   - **Pending-attach gate.** A new `pendingAttachRef` tracks the in-flight
     start/attach target. While set, keystrokes and quick commands are
     dropped (so input doesn't land in the previous session during the
@@ -39,8 +47,12 @@
     from a start attempt while an existing session is still alive (e.g.
     session limit hit), `handleShellError` no longer re-attaches and
     repaints the terminal — the error stays readable. Re-attach recovery
-    now only triggers when the URL diverged from the active session
-    (switch-failure path) or when the active session is itself gone.
+    now triggers when the URL diverged from the active session (URL-nav
+    switch failure) OR when `pendingAttachRef` was for a different session
+    at the time of error (tab-click switch failure — URL never moved
+    because `activateSession` never fired). The start-failure path
+    (`pendingAttachRef === 'new'`) leaves the terminal untouched so the
+    error message survives.
   - **Layout full-width includes deep links.** `Layout.jsx` matches both
     `/shell` and `/shell/<id>` for full-height/overflow-hidden styling so
     deep-linked terminals render edge-to-edge like the bare route.
