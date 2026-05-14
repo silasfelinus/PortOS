@@ -187,6 +187,25 @@
 
 ## Changed
 
+- **Data migration scripts for bringing old machines forward.** Two new
+  scripts under `server/scripts/`:
+  - `migrateWorldToUniverse.js` — renames `data/world-builder.json` →
+    `data/universe-builder.json`, the top-level `worlds[]` → `universes[]`
+    key, every `"worldId":` → `"universeId":` in `pipeline-series.json`,
+    and every `"worldRun":` → `"universeRun":` in `media-jobs.json`. Safe
+    to re-run (idempotent).
+  - `migrateAll.js` — chains world→universe naming (above) and then
+    series-canon → universe-canon in the correct order. The single
+    command other machines need to catch up to the current schema.
+
+  Run with `node server/scripts/migrateAll.js --dry-run` first to preview;
+  drop `--dry-run` to apply.
+
+  Also fixed a bug in `migrateSeriesCanon.js` where the migration was a
+  no-op because `mergeExtractedBible` mutates its first arg (pushes into
+  it) — the post-merge length comparison was always equal. Now clones the
+  universe-side array before passing.
+
 - **Pipeline render paths read canon from the linked universe (Phase B).**
   Comic-page, panel, storyboard, and arc-planner LLM contexts now resolve
   characters/places/objects via `getSeriesCanon(series)` — preferring the

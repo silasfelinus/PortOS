@@ -65,9 +65,13 @@ export async function migrateSeriesCanon({ dryRun = false, log = console.log } =
     for (const [field, kind] of Object.entries(KIND_BY_FIELD)) {
       const incoming = Array.isArray(s[field]) ? s[field] : [];
       if (incoming.length === 0) continue;
-      const merged = mergeExtractedBible(universe[field] || [], incoming, kind);
-      // Skip the write when merge produced no new entries (idempotency).
-      if (merged.length > (universe[field] || []).length || JSON.stringify(merged) !== JSON.stringify(universe[field] || [])) {
+      // mergeExtractedBible mutates its first arg (pushes new entries into
+      // the array, then sorts in place). Snapshot the universe side BEFORE
+      // the call so the diff check below sees the pre-merge length, and
+      // pass a clone so the live universe object isn't mutated mid-loop.
+      const before = Array.isArray(universe[field]) ? universe[field] : [];
+      const merged = mergeExtractedBible([...before], incoming, kind);
+      if (merged.length > before.length || JSON.stringify(merged) !== JSON.stringify(before)) {
         patch[field] = merged;
         summary.perKind[field] += incoming.length;
       }
