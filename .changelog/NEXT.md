@@ -2,7 +2,6 @@
 
 ## Added
 
-<<<<<<< HEAD
 - **Universe-as-Canon lock semantics — series-extracted canon arrives auto-locked.**
   Every canon entry on a universe (characters/settings/objects) can now carry a
   `locked: true` flag, plus `prompt`, `tags`, `source`, and `sourceSeriesId`
