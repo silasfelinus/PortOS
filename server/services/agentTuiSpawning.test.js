@@ -38,4 +38,24 @@ describe('agent TUI spawning', () => {
     expect(config.promptDelayMs).toBe(1000);
     expect(config.idleTimeoutMs).toBe(30000);
   });
+
+  it('falls back to the default command via id heuristic when command is omitted', () => {
+    const codexConfig = buildTuiSpawnConfig({ id: 'my-codex-instance', type: 'tui' }, null);
+    expect(codexConfig.command).toBe('codex');
+
+    const claudeConfig = buildTuiSpawnConfig({ id: 'whatever', type: 'tui' }, null);
+    expect(claudeConfig.command).toBe('claude');
+  });
+
+  it('applies default prompt-delay and idle-timeout when the provider omits them', () => {
+    const config = buildTuiSpawnConfig({ id: 'codex-tui', command: 'codex', type: 'tui' }, null);
+    expect(config.promptDelayMs).toBe(2500);
+    expect(config.idleTimeoutMs).toBe(180000);
+  });
+
+  it('omits the --model flag when model is null/empty', () => {
+    const config = buildTuiSpawnConfig({ id: 'codex-tui', command: 'codex', type: 'tui', args: [] }, null);
+    expect(config.args).toEqual([]);
+    expect(config.commandLine).toBe('codex');
+  });
 });

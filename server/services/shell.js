@@ -7,6 +7,14 @@ const shellSessions = new Map();
 
 const MAX_TOTAL_SESSIONS = 5;
 
+function runHook(label, sessionId, fn, arg) {
+  if (!fn) return;
+  const result = fn(arg);
+  if (result && typeof result.then === 'function') {
+    result.catch(err => console.error(`🐚 ${label} handler error in ${sessionId.slice(0, 8)}: ${err.message}`));
+  }
+}
+
 // Allowlist of safe environment variable prefixes to pass to PTY sessions
 // Prevents leaking secrets (API keys, tokens) to the shell
 const SAFE_ENV_PREFIXES = [
@@ -107,7 +115,7 @@ export function createShellSession(socket, options = {}) {
     }
     const session = shellSessions.get(sessionId);
     session?.socket?.emit('shell:output', { sessionId, data });
-    session?.onData?.(data);
+    runHook('onData', sessionId, session?.onData, data);
   });
 
   // Handle pty exit
@@ -116,8 +124,7 @@ export function createShellSession(socket, options = {}) {
     const session = shellSessions.get(sessionId);
     shellSessions.delete(sessionId);
     session?.socket?.emit('shell:exit', { sessionId, code: exitCode });
-    session?.onExit?.({ exitCode });
-    // Notify all sockets about session list change
+    runHook('onExit', sessionId, session?.onExit, { exitCode });
     broadcastSessionList();
   });
 
@@ -221,7 +228,7 @@ export function killSession(sessionId) {
     console.log(`🐚 Killing shell session ${sessionId.slice(0, 8)}`);
     session.pty.kill();
     shellSessions.delete(sessionId);
-    session.onExit?.({ exitCode: null, killed: true });
+    runHook('onExit', sessionId, session.onExit, { exitCode: null, killed: true });
     broadcastSessionList();
     return true;
   }

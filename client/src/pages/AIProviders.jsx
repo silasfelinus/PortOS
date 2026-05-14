@@ -603,14 +603,18 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [] }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
+    const tuiPromptDelay = parseInt(formData.tuiPromptDelayMs, 10);
+    const tuiIdleTimeout = parseInt(formData.tuiIdleTimeoutMs, 10);
     const data = {
       ...formData,
       args: formData.args ? formData.args.split(' ').filter(Boolean) : [],
       headlessArgs: formData.headlessArgs ? formData.headlessArgs.split(' ').filter(Boolean) : [],
-      timeout: parseInt(formData.timeout, 10),
-      tuiPromptDelayMs: parseInt(formData.tuiPromptDelayMs, 10),
-      tuiIdleTimeoutMs: parseInt(formData.tuiIdleTimeoutMs, 10)
+      timeout: parseInt(formData.timeout, 10)
     };
+    if (Number.isFinite(tuiPromptDelay)) data.tuiPromptDelayMs = tuiPromptDelay;
+    else delete data.tuiPromptDelayMs;
+    if (Number.isFinite(tuiIdleTimeout)) data.tuiIdleTimeoutMs = tuiIdleTimeout;
+    else delete data.tuiIdleTimeoutMs;
 
     // Only send apiKey if user entered a new value (avoid overwriting existing key with empty string)
     if (!data.apiKey && provider) {
