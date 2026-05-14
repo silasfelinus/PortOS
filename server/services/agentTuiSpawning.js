@@ -7,7 +7,7 @@
  */
 
 import { join } from 'path';
-import { writeFile, appendFile, rm } from 'fs/promises';
+import { appendFile, rm } from 'fs/promises';
 import * as shellService from './shell.js';
 import { emitLog } from './cosEvents.js';
 import { appendAgentOutputLines, updateAgent, completeAgent } from './cosAgents.js';
@@ -165,7 +165,10 @@ export async function spawnTuiAgent(agentId, task, prompt, workspacePath, model,
       }
     }
 
-    await writeFile(outputFile, outputBuffer).catch(() => {});
+    // output.txt has already been incrementally appended via flushPendingLines;
+    // do NOT writeFile() it from outputBuffer at finalize — outputBuffer is
+    // capped at OUTPUT_BUFFER_CAP and would silently truncate the on-disk
+    // record for long runs. The append-only stream is the authoritative copy.
 
     const analysisBuffer = rawBuffer || outputBuffer;
     const errorAnalysis = finalSuccess ? null : analyzeAgentFailure(analysisBuffer, task, model);

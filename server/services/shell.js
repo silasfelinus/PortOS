@@ -143,7 +143,7 @@ export function createShellSession(socket, options = {}) {
 
   broadcastSessionList();
   if (options.initialCommand) {
-    setTimeout(() => writeToSession(sessionId, `${options.initialCommand}\n`), options.initialCommandDelayMs || 200);
+    setTimeout(() => writeToSession(sessionId, `${options.initialCommand}\n`), options.initialCommandDelayMs ?? 200);
   }
   return sessionId;
 }
