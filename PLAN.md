@@ -6,6 +6,31 @@ For project goals, see [GOALS.md](./GOALS.md). For completed work, see [DONE.md]
 
 ## Next Up
 
+### Universe-as-Canon refactor — Phase B.4 cleanup + follow-ups
+
+The world model is now a Marvel-style **universe** carrying canonical entities (characters, places, objects) that multiple series can share for crossovers + cameos. Shipped 2026-05-14 across Phase 0 (world→universe rename), Phase A (canon arrays + Universe Canon page + cast-wide differentiate + image-delete purge sync), Phase B (render paths read via `getSeriesCanon`), Phase B.2 (Nouns page reads/writes universe canon), Phase B.3a (legacy series-side canon helpers redirect to universe when linked), Phase B.3b (Nouns page drops the orphan series fallback), and the "Appears in" cross-reference footer on every Canon card. Migration scripts: `server/scripts/migrateAll.js` (chains `migrateWorldToUniverse.js` + `migrateSeriesCanon.js`).
+
+**Phase B.4 — schema teardown (hygiene, no functional gap).** After B.3, `series.{characters,settings,objects}` are dormant — render paths read from universe, the Nouns page writes to universe, and the legacy server functions redirect to universe-side. The series arrays linger only to satisfy tests + the writers-room promotion flow.
+
+- [ ] Drop `series.{characters,settings,objects}` from `sanitizeSeries` + `createSeries`/`updateSeries` + `seriesCreateSchema`/`seriesPatchSchema` Zod (in `server/routes/pipeline.js`). Tests that put canon on series in fixtures need updating: `series.test.js`, `textStages.test.js`, `visualStages.test.js`, `arcPlanner.test.js`, `pipeline.test.js`, `promoteToPipeline.test.js`, and `sceneExtractor.test.js`.
+- [ ] Refactor `services/writersRoom/promoteToPipeline` to create a universe alongside the series (or pick an existing universe), then merge writers-room canon into the universe instead of writing to `series.characters`. Currently the only path that legitimately writes series-side canon. Update `promoteToPipeline.test.js` accordingly.
+- [ ] Delete `extractAndMergeIntoSeries`, `refineCharacterDescription` (and the `nounRefine.js` file), `purgeImageRefFromAllSeries`, and the routes `POST /pipeline/series/:id/extract-bible` + `POST /pipeline/series/:id/characters/:entryId/refine`. Remove the corresponding test blocks. Update `routes/imageGen.js` to drop the series-side purge (universe-side covers everything once canon is universe-only).
+- [ ] Simplify `services/pipeline/seriesCanon.js` — once series arrays are gone, the all-or-nothing fallback becomes "return universe-or-empty"; drop `pickAllOrNothing` and the `resolveSeriesCanonSync` sync variant (only one caller; inline it).
+
+**Settings → Places kind rename (Phase 0b — deferred during the Universe rename).**
+
+- [ ] Rename `BIBLE_KIND.SETTING` → `BIBLE_KIND.PLACE` and `BIBLE_FIELD[SETTING]: 'settings'` → `'places'`. Touches ~20 files: data (`series.places[]` / `universe.places[]`), sanitizer + Zod schemas, the `writers-room-settings.md` prompt (already renamed file; prompt body still refers to "settings"), `matchSettingsInText` → `matchPlacesInText`, `existingSettingsJson` LLM template var, the `writersRoom/settings.js` bible-handler module + its per-work data files, NounsStage's `KIND.label === 'Settings'`. Stick the rename to bible context — app settings (`services/settings.js`, settings drawer/UI, `imageGen.settings`, `pipeline.settings`) stays as "settings".
+
+**Universe-Canon UX follow-ups (small, contained).**
+
+- [ ] Sort the per-entry "Appears in" usage list by `issueCount` descending so the most-used series leads. Today renders in encounter order — fine with one series, useful when 2+ link. Touch site: `server/services/canonUsage.js` (the `shape` builder near the bottom).
+- [ ] Filter the Universe Canon page by "in series X" — when one universe holds multiple shows, the user wants to see only canon that's relevant to the show they're working on. New URL param `?series=<id>` + a series picker dropdown in the header. Reuses the existing `canonUsage` to derive the per-series subset.
+- [ ] Per-series `stylePrompt` override — let one series in a universe deviate slightly without forking the whole universe (e.g., noir spin-off). Wire `series.stylePromptOverride` into `composeStyledPrompt` ahead of the universe's stylePrompt; UI on the series page.
+
+**Universe-Canon image-anchor follow-up (bigger).**
+
+- [ ] Use rendered reference images as image-to-image anchors in downstream comic-page renders for models that support it. Codex can't accept image references; for SDXL / Flux pipelines, the per-character rendered ref could anchor every panel render. Touch: `composeComicPagePrompt` + the image-gen dispatcher. Related: existing PLAN item "Solidify characters before visual render" below (under Pipeline continuity gaps) — the universe-canon work already provides the storage; the "solidify" pass is the LLM step that merges accumulated evidence into one canonical description, and the new "AI: differentiate cast" button is its sibling (push apart vs. distill).
+
 ### Pipeline continuity gaps — deferred from arc-planning rollout
 
 Captured 2026-05-13 while landing layer-1 (prior episodes in season prompt), layer-2 (post-episode-generate extraction), prose-extraction, verify episode-synopsis context, and character descriptions in visual composers. These are the remaining audit gaps from `pipeline/arcPlanner.js` + `pipeline/visualStages.js` + `pipeline/textStages.js`:
