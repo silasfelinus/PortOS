@@ -18,7 +18,7 @@ export function BackupTab() {
   const [newExclude, setNewExclude] = useState('');
 
   useEffect(() => {
-    Promise.all([getSettings(), getBackupStatus().catch(() => null)])
+    Promise.all([getSettings(), getBackupStatus({ silent: true }).catch(() => null)])
       .then(([settings, status]) => {
         const backup = settings?.backup || {};
         const saved = backup.destPath || '';
@@ -50,7 +50,7 @@ export function BackupTab() {
   };
 
   const [handleRunNow, running] = useAsyncAction(async () => {
-    const result = await triggerBackup();
+    const result = await triggerBackup({ silent: true });
     if (result?.skipped) {
       toast('Backup already running');
     } else {
@@ -77,13 +77,13 @@ export function BackupTab() {
   const excludesDirty = excludePaths.length !== savedExcludePaths.length
     || excludePaths.some((p, i) => p !== savedExcludePaths[i]);
   const dirty = destPath !== savedDestPath || excludesDirty;
-  const canRun = !!savedDestPath && !running && !saving;
+  const canRun = !!savedDestPath && !running && !saving && !dirty;
   const runTitle = !savedDestPath
     ? 'Configure and save a destination path first'
     : saving
       ? 'Waiting for save to finish…'
       : dirty
-        ? 'Unsaved changes — backup will use the last saved settings. Save first to apply your edits.'
+        ? 'Save your changes before running — the backup uses saved settings.'
         : 'Run a backup snapshot now using saved settings';
 
   return (

@@ -26,7 +26,8 @@ const STATE_PATH = join(PATHS.data, 'backup', 'state.json');
 // throwaway agent checkouts of the main repo.
 export const DEFAULT_EXCLUDES = [
   { path: 'browser-profile/', reason: 'Browser CDP profile — cache/cookies, can be several GB' },
-  { path: 'cos/worktrees/', reason: 'Ephemeral agent git worktrees — recreated on demand' }
+  { path: 'cos/worktrees/', reason: 'Ephemeral agent git worktrees — recreated on demand' },
+  { path: 'cos/feature-agents/*/worktree/', reason: 'Per-feature-agent git worktrees — recreated on demand' }
 ];
 
 const DEFAULT_EXCLUDE_PATHS = DEFAULT_EXCLUDES.map(e => e.path);
