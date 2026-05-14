@@ -206,6 +206,18 @@
   it) — the post-merge length comparison was always equal. Now clones the
   universe-side array before passing.
 
+- **Nouns page is universe-only — orphan fallback removed (Phase B.3b).**
+  The per-issue Nouns page no longer falls back to series-side canon for
+  unlinked series. A series with no `universeId` now renders a clear gate
+  banner ("Link this series to a universe") in place of the noun cards;
+  every active series in this install has a universe link, so the
+  dual-path branching was just complexity tax. Drops the unused legacy
+  imports (`extractPipelineBibles`, `updatePipelineSeries`,
+  `refinePipelineCharacter`), the `onSeriesUpdate` prop, and the
+  `canonStore` / `canonRecord` ternaries. The server-side legacy services
+  still redirect to universe-side (Phase B.3a) for any caller that
+  bypasses the UI.
+
 - **Legacy series-side canon helpers redirect to universe (Phase B.3a).**
   `extractAndMergeIntoSeries` and `refineCharacterDescription` now early-
   return into their universe-side equivalents when `series.universeId` is

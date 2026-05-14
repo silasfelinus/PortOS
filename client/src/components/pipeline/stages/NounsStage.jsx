@@ -1,15 +1,19 @@
 /**
  * Nouns stage — per-issue canonical-noun curation.
  *
- * Phase B.2: canon lives on the LINKED UNIVERSE (`series.universeId`) so a
- * cast can be shared across crossover series. This page is the per-issue
- * filtered view over universe canon — entries that "appear in this issue"
- * are prose-matched from `issue.stages.prose.output`. All mutations
- * (extract / refine / render-reference) target the universe directly.
+ * Canon lives on the LINKED UNIVERSE (`series.universeId`) so a cast can be
+ * shared across crossover series. This page is the per-issue filtered view
+ * over universe canon — entries that "appear in this issue" are
+ * prose-matched from `issue.stages.prose.output`. All mutations (extract /
+ * refine / render-reference) target the universe directly.
  *
- * Legacy fallback: if a series has no `universeId`, the page still reads
- * and writes via the series-side bible arrays so orphan series keep
- * working until the user links them to a universe.
+ * A series with no `universeId` gets a gate banner directing the user to
+ * link a universe — the orphan-series legacy flow was removed in Phase B.3b
+ * since every active series in this install was migrated, and keeping the
+ * dual-path branching just added complexity. Server-side legacy paths
+ * remain for now (`extractAndMergeIntoSeries` etc.), but no UI exercises
+ * them — they're scheduled for a future cleanup once the schema fields
+ * (`series.{characters,settings,objects}`) get dropped too.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -19,7 +23,6 @@ import {
   Settings as SettingsIcon, ChevronDown, ChevronRight,
 } from 'lucide-react';
 import toast from '../../ui/Toast';
-import { extractPipelineBibles, updatePipelineSeries, refinePipelineCharacter } from '../../../services/api';
 import {
   getUniverse, updateUniverse,
   extractUniverseCanon, refineUniverseCharacter,
@@ -67,7 +70,7 @@ const KINDS = [
   },
 ];
 
-export default function NounsStage({ issue, series, onSeriesUpdate }) {
+export default function NounsStage({ issue, series }) {
   const mountedRef = useMounted();
   const prose = (issue.stages?.prose?.output || '').trim();
   const proseReady = prose.length > 0;
@@ -86,17 +89,14 @@ export default function NounsStage({ issue, series, onSeriesUpdate }) {
   // without closing/reopening.
   const [preview, setPreview] = useState(null);
 
-  // Canon source: prefer the linked universe (Phase B.2); fall back to the
-  // series's own arrays for orphan series (no universeId). All readers and
-  // mutation targets below branch on `canonStore` so the page works
-  // unchanged in both states.
-  const canonStore = universe ? 'universe' : 'series';
-  const canonRecord = canonStore === 'universe' ? universe : series;
+  // Canon lives on the linked universe. An orphan series (no universeId)
+  // renders the link-required gate instead of this body, so by the time
+  // we get here `universe` is loaded and authoritative.
   const previewItems = useMemo(() => {
     const items = [];
-    if (!canonRecord) return items;
+    if (!universe) return items;
     for (const kind of KINDS) {
-      const list = Array.isArray(canonRecord[kind.key]) ? canonRecord[kind.key] : [];
+      const list = Array.isArray(universe[kind.key]) ? universe[kind.key] : [];
       for (const entry of list) {
         const refs = Array.isArray(entry.imageRefs) ? entry.imageRefs : [];
         for (const filename of refs) {
@@ -112,7 +112,7 @@ export default function NounsStage({ issue, series, onSeriesUpdate }) {
       }
     }
     return items;
-  }, [canonRecord]);
+  }, [universe]);
   const openPreview = useCallback((filename) => {
     if (!filename) return;
     const match = previewItems.find((i) => i.filename === filename);
@@ -184,41 +184,29 @@ export default function NounsStage({ issue, series, onSeriesUpdate }) {
   // the user can fire refines in serial without the spinner jumping cards.
   const [refiningCharacterId, setRefiningCharacterId] = useState(null);
   const handleRefineCharacter = useCallback(async (entryId) => {
-    if (!series || refiningCharacterId) return;
+    if (!universe || refiningCharacterId) return;
     setRefiningCharacterId(entryId);
     const providerId = series.llm?.provider || undefined;
     const model = series.llm?.model || undefined;
-    const result = canonStore === 'universe'
-      ? await refineUniverseCharacter(series.universeId, entryId, { providerId, model })
-          .catch((err) => { toast.error(err.message || 'Refine failed'); return null; })
-      : await refinePipelineCharacter(series.id, entryId, { providerId, model })
-          .catch((err) => { toast.error(err.message || 'Refine failed'); return null; });
+    const result = await refineUniverseCharacter(universe.id, entryId, { providerId, model })
+      .catch((err) => { toast.error(err.message || 'Refine failed'); return null; });
     if (mountedRef.current) setRefiningCharacterId(null);
     if (!result || !mountedRef.current) return;
-    if (canonStore === 'universe' && result.universe) setUniverse(result.universe);
-    if (canonStore === 'series' && result.series) onSeriesUpdate?.(result.series);
+    if (result.universe) setUniverse(result.universe);
     const summary = result.rationale || (result.changes?.[0] ? result.changes[0] : 'description rewritten');
     toast.success(`Refined description — ${summary.slice(0, 140)}`);
-  }, [series, canonStore, refiningCharacterId, onSeriesUpdate, mountedRef]);
+  }, [universe, series, refiningCharacterId, mountedRef]);
 
   const handleExtract = async () => {
-    if (!series || !proseReady) return;
+    if (!universe || !proseReady) return;
     setExtracting(true);
-    let result;
-    if (canonStore === 'universe') {
-      result = await extractUniverseCanon(series.universeId, { corpus: prose })
-        .catch((err) => { toast.error(err.message || 'Extraction failed'); return null; });
-    } else {
-      result = await extractPipelineBibles(series.id, { issueId: issue.id })
-        .catch((err) => { toast.error(err.message || 'Extraction failed'); return null; });
-    }
+    const result = await extractUniverseCanon(universe.id, { corpus: prose })
+      .catch((err) => { toast.error(err.message || 'Extraction failed'); return null; });
     if (mountedRef.current) setExtracting(false);
     if (!result || !mountedRef.current) return;
-    if (canonStore === 'universe' && result.universe) setUniverse(result.universe);
-    if (canonStore === 'series' && result.series) onSeriesUpdate?.(result.series);
-    const record = canonStore === 'universe' ? result.universe : result.series;
+    if (result.universe) setUniverse(result.universe);
     const counts = KINDS
-      .map((k) => `${record?.[k.key]?.length ?? 0} ${k.key}`)
+      .map((k) => `${result.universe?.[k.key]?.length ?? 0} ${k.key}`)
       .join(', ');
     toast.success(`Bibles updated — ${counts}`);
   };
@@ -256,34 +244,26 @@ export default function NounsStage({ issue, series, onSeriesUpdate }) {
     toast.success(`Rendering reference for ${entry.name}`);
   };
 
-  // Pin a freshly-completed render onto the canon record's imageRefs[].
-  // Server replaces the full kind list on PATCH, so we send the entire
-  // kind array with this entry mutated. Routes through the universe (Phase
-  // B.2) when the series is linked, else falls back to the series-side
-  // PATCH for orphan series. Single-user app — no race.
+  // Pin a freshly-completed render onto the universe's imageRefs[]. Server
+  // replaces the full kind list on PATCH, so we send the entire kind array
+  // with this entry mutated. Single-user app — no race.
   const handleRefCompleted = useCallback(async (kindKey, entryId, filename) => {
-    if (!filename || !canonRecord) return;
+    if (!filename || !universe) return;
     setRenderingJobs((prev) => {
       if (!prev[entryId]) return prev;
       const next = { ...prev };
       delete next[entryId];
       return next;
     });
-    const list = (canonRecord[kindKey] || []).map((e) =>
+    const list = (universe[kindKey] || []).map((e) =>
       e.id === entryId
         ? { ...e, imageRefs: [...(e.imageRefs || []), filename] }
         : e,
     );
-    if (canonStore === 'universe') {
-      const updated = await updateUniverse(series.universeId, { [kindKey]: list })
-        .catch((err) => { toast.error(`Save failed: ${err.message}`); return null; });
-      if (updated && mountedRef.current) setUniverse(updated);
-    } else {
-      const updated = await updatePipelineSeries(series.id, { [kindKey]: list })
-        .catch((err) => { toast.error(`Save failed: ${err.message}`); return null; });
-      if (updated && mountedRef.current) onSeriesUpdate?.(updated);
-    }
-  }, [canonRecord, canonStore, series, onSeriesUpdate, mountedRef]);
+    const updated = await updateUniverse(universe.id, { [kindKey]: list })
+      .catch((err) => { toast.error(`Save failed: ${err.message}`); return null; });
+    if (updated && mountedRef.current) setUniverse(updated);
+  }, [universe, mountedRef]);
 
   const handleRefFailed = useCallback((entryId, errMsg) => {
     setRenderingJobs((prev) => {
@@ -298,6 +278,18 @@ export default function NounsStage({ issue, series, onSeriesUpdate }) {
   if (!series) {
     return <p className="text-sm text-gray-500 italic">Loading series…</p>;
   }
+  if (!series.universeId) {
+    return (
+      <div className="rounded-lg border border-port-warning/40 bg-port-warning/5 p-4 space-y-2">
+        <h2 className="text-base font-semibold text-white">Link this series to a universe</h2>
+        <p className="text-xs text-gray-400">
+          Canon (characters, places, objects) lives on the linked universe so it can be
+          shared across crossover series. This series isn't linked yet — open the series
+          page and pick or create a universe to populate canon from this issue's prose.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">
@@ -305,9 +297,9 @@ export default function NounsStage({ issue, series, onSeriesUpdate }) {
         <div>
           <h2 className="text-lg font-semibold text-white">Nouns</h2>
           <p className="text-xs text-gray-500 mt-0.5">
-            People, places, and things that appear in this issue. {canonStore === 'universe'
-              ? 'Canon lives on the linked universe — extracts and edits here propagate to every series in that universe.'
-              : 'Canon is stored on this series. Link the series to a universe to share canon across crossovers.'}
+            People, places, and things that appear in this issue. Canon lives on the
+            linked universe — extracts and edits here propagate to every series in
+            that universe.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -342,7 +334,7 @@ export default function NounsStage({ issue, series, onSeriesUpdate }) {
         <KindSection
           key={kind.key}
           kind={kind}
-          all={canonRecord?.[kind.key] || []}
+          all={universe[kind.key] || []}
           prose={prose}
           renderingJobs={renderingJobs}
           onRender={(entry) => handleRenderRef(kind, entry)}
