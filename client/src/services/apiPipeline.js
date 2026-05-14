@@ -5,10 +5,19 @@ export const PIPELINE_TEXT_STAGES = Object.freeze(['idea', 'prose', 'comicScript
 export const PIPELINE_VISUAL_STAGES = Object.freeze(['comicPages', 'storyboards', 'episodeVideo']);
 export const PIPELINE_STAGES = Object.freeze([...PIPELINE_TEXT_STAGES, ...PIPELINE_VISUAL_STAGES]);
 
+// Stages that appear as their own tab. `comicPages` is folded into the Comic
+// Script tab (one merged page-by-page editor) — the data still flows through
+// the comicPages routes, the tab is just hidden.
+export const PIPELINE_TAB_STAGES = Object.freeze(
+  PIPELINE_STAGES.filter((id) => id !== 'comicPages'),
+);
+
 export const PIPELINE_STAGE_LABELS = Object.freeze({
   idea: 'Idea',
   prose: 'Prose',
-  comicScript: 'Comic Script',
+  // `comicScript` stage now owns the merged Comic Pages editor — the
+  // standalone Comic Pages tab is hidden via PIPELINE_TAB_STAGES below.
+  comicScript: 'Comic Pages',
   tvScript: 'TV Script',
   comicPages: 'Comic Pages',
   storyboards: 'Storyboards',
@@ -16,6 +25,24 @@ export const PIPELINE_STAGE_LABELS = Object.freeze({
 });
 
 export const PIPELINE_TARGET_FORMATS = Object.freeze(['comic', 'tv', 'comic+tv']);
+
+export const PIPELINE_STAGE_STATUS_LABEL = Object.freeze({
+  empty: 'Not started',
+  generating: 'Generating…',
+  ready: 'Ready',
+  edited: 'Edited',
+  'needs-review': 'Needs review',
+  error: 'Error',
+});
+
+export const PIPELINE_STAGE_STATUS_COLOR = Object.freeze({
+  empty: 'text-gray-500',
+  generating: 'text-port-accent',
+  ready: 'text-port-success',
+  edited: 'text-port-warning',
+  'needs-review': 'text-port-warning',
+  error: 'text-port-error',
+});
 
 // ---- Series ----
 export const listPipelineSeries = () => request('/pipeline/series');
@@ -110,6 +137,15 @@ export const generatePipelineComicPage = (issueId, pageIndex, opts = {}) =>
   request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/comicPages/pages/${encodeURIComponent(pageIndex)}/render`, {
     method: 'POST',
     body: JSON.stringify(opts),
+  });
+
+// Patch one comic page's raw markdown — the server re-parses panels from the
+// edited rawText so subsequent renders still get a structured prompt.
+// Returns { issue, stage, page }.
+export const updatePipelineComicPage = (issueId, pageIndex, { rawText } = {}) =>
+  request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/comicPages/pages/${encodeURIComponent(pageIndex)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ rawText }),
   });
 
 // Render a single storyboard scene as a video clip (one t2v call against

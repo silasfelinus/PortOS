@@ -30,7 +30,7 @@ ${block}`;
 }
 
 export default function IdeaStage(props) {
-  const { issue, onStageUpdate } = props;
+  const { issue, series, onStageUpdate } = props;
   const output = issue.stages?.idea?.output || '';
   const seedInput = issue.stages?.idea?.input || '';
   const questions = useMemo(() => parseOpenQuestions(output), [output]);
@@ -41,11 +41,14 @@ export default function IdeaStage(props) {
     setRefining(true);
     const qa = questions.map((q, i) => ({ q, a: (answers[i] || '').trim() }));
     const augmented = buildRefinementSeed(seedInput, qa);
-    const result = await generatePipelineStage(issue.id, 'idea', { seedInput: augmented })
-      .catch((err) => {
-        toast.error(err.message || 'Refinement failed');
-        return null;
-      });
+    const result = await generatePipelineStage(issue.id, 'idea', {
+      seedInput: augmented,
+      providerId: series?.llm?.provider || undefined,
+      model: series?.llm?.model || undefined,
+    }).catch((err) => {
+      toast.error(err.message || 'Refinement failed');
+      return null;
+    });
     setRefining(false);
     if (!result) return;
     onStageUpdate?.('idea', result.stage);

@@ -294,6 +294,10 @@ const extractComicPagesSchema = z.object({
   force: z.boolean().optional(),
 });
 
+const comicPagePatchSchema = z.object({
+  rawText: z.string().max(40000),
+});
+
 // Source: `issueId` (pulls `stages.prose.output`) OR explicit `corpus` text.
 // `parallel: true` runs the three bible kinds concurrently (~3× wall-clock
 // speedup on HTTP-API providers like OpenAI/Anthropic/LM Studio HTTP).
@@ -746,6 +750,43 @@ router.post('/issues/:id/stages/comicPages/extract-pages', asyncHandler(async (r
     pageCount: pages.length,
     panelCount,
   });
+}));
+
+// Per-page rawText patch — re-parses panels from the edited markdown so a
+// subsequent render still gets a structured prompt. Page's `imageJobId` is
+// preserved so the user doesn't lose an in-flight render after a save.
+router.patch('/issues/:id/stages/comicPages/pages/:pageIndex', asyncHandler(async (req, res) => {
+  const pageIndex = Number(req.params.pageIndex);
+  if (!Number.isInteger(pageIndex) || pageIndex < 0) {
+    throw new ServerError('pageIndex must be a non-negative integer', {
+      status: 400, code: 'PIPELINE_COMIC_PAGE_BAD_INDEX',
+    });
+  }
+  const body = validateRequest(comicPagePatchSchema, req.body ?? {});
+  const issue = await issuesSvc.getIssue(req.params.id).catch((err) => { throw mapServiceError(err); });
+  const pages = Array.isArray(issue.stages?.comicPages?.pages) ? [...issue.stages.comicPages.pages] : [];
+  if (!pages[pageIndex]) {
+    throw new ServerError(
+      `pageIndex ${pageIndex} out of range — comicPages has ${pages.length} page${pages.length === 1 ? '' : 's'}`,
+      { status: 404, code: 'PIPELINE_COMIC_PAGE_NOT_FOUND' },
+    );
+  }
+  const { pages: reparsed } = parseComicScript(body.rawText);
+  const fresh = reparsed[0] || { panels: [], rawText: body.rawText };
+  pages[pageIndex] = {
+    ...pages[pageIndex],
+    rawText: fresh.rawText || body.rawText,
+    panels: fresh.panels.map((p, i) => ({
+      ...p,
+      // Preserve in-flight per-panel jobIds when the panel survived the re-parse.
+      imageJobId: pages[pageIndex].panels?.[i]?.imageJobId ?? p.imageJobId ?? null,
+    })),
+  };
+  const { issue: updatedIssue, stage } = await issuesSvc.updateStage(req.params.id, 'comicPages', {
+    status: 'edited',
+    pages,
+  });
+  res.json({ issue: updatedIssue, stage, page: pages[pageIndex] });
 }));
 
 // Render a full comic page (multi-panel layout in one image) — the

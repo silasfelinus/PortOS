@@ -91,27 +91,26 @@ function parsePanelBody(lines) {
 
 /**
  * @param {string} script  markdown body from stages.comicScript.output
- * @returns {{ pages: Array<{ panels: Array<{ description, caption, dialogue, sfx }> }> }}
+ * @returns {{ pages: Array<{ rawText, panels: Array<{ description, caption, dialogue, sfx }> }> }}
+ *
+ * `rawText` carries the markdown slice from the page's `## Page N` header to
+ * (not including) the next page header. The merged Comic tab uses this for
+ * per-page editing while panels remain the source for the image prompt.
  */
 export function parseComicScript(script) {
   if (typeof script !== 'string' || !script.trim()) return { pages: [] };
 
   const lines = script.split(/\r?\n/);
   const pages = [];
-  // Two-pointer cursor: when we hit a Page or Panel header, flush the current
-  // panel buffer (if any) into its page, then start a new buffer.
   let currentPage = null;
+  let currentRawLines = null;
   let currentPanelLines = null;
   let inAnyPanel = false;
 
   const flushPanel = () => {
     if (!inAnyPanel || !currentPage || !currentPanelLines) return;
     const panel = parsePanelBody(currentPanelLines);
-    // Drop panels with no description — image-gen has nothing to render
-    // from them and they'd just add empty rows in the UI.
     if (panel.description) {
-      // Wire-shape expected by ComicPagesStage.jsx: each panel needs
-      // imageJobId for the per-panel render slot.
       currentPage.panels.push({ ...panel, imageJobId: null });
     }
     currentPanelLines = null;
@@ -121,22 +120,22 @@ export function parseComicScript(script) {
   for (const line of lines) {
     if (PAGE_RE.test(line)) {
       flushPanel();
+      if (currentPage && currentRawLines) currentPage.rawText = currentRawLines.join('\n').trim();
       if (pages.length >= PANEL_LIMITS.PAGES_MAX) break;
-      currentPage = { panels: [] };
+      currentPage = { panels: [], rawText: '' };
+      currentRawLines = [line];
       pages.push(currentPage);
       continue;
     }
+    if (currentRawLines) currentRawLines.push(line);
     if (PANEL_RE.test(line)) {
       flushPanel();
-      // A panel header before any Page header is malformed; coerce into an
-      // implicit "Page 1" so the parser doesn't silently drop content.
       if (!currentPage) {
-        currentPage = { panels: [] };
+        currentPage = { panels: [], rawText: '' };
+        currentRawLines = [line];
         pages.push(currentPage);
       }
       if (currentPage.panels.length >= PANEL_LIMITS.PANELS_PER_PAGE_MAX) {
-        // Skip this panel — over the per-page cap — but keep scanning so a
-        // following page header is still respected.
         currentPanelLines = null;
         inAnyPanel = false;
         continue;
@@ -150,8 +149,8 @@ export function parseComicScript(script) {
     }
   }
   flushPanel();
+  if (currentPage && currentRawLines) currentPage.rawText = currentRawLines.join('\n').trim();
 
-  // Drop pages that ended up empty (e.g. headers with no panels after them).
   const filtered = pages.filter((p) => p.panels.length > 0);
   return { pages: filtered };
 }

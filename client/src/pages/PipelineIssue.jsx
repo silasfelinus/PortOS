@@ -16,7 +16,7 @@ import toast from '../components/ui/Toast';
 import {
   getPipelineIssue, getPipelineSeries,
   startPipelineAutoRunText, cancelPipelineAutoRunText,
-  PIPELINE_STAGES, PIPELINE_STAGE_LABELS,
+  PIPELINE_STAGES, PIPELINE_TAB_STAGES, PIPELINE_STAGE_LABELS,
 } from '../services/api';
 import { usePipelineAutoRunProgress } from '../hooks/usePipelineAutoRunProgress';
 import IdeaStage from '../components/pipeline/stages/IdeaStage';
@@ -26,6 +26,7 @@ import TVScriptStage from '../components/pipeline/stages/TVScriptStage';
 import ComicPagesStage from '../components/pipeline/stages/ComicPagesStage';
 import StoryboardsStage from '../components/pipeline/stages/StoryboardsStage';
 import EpisodeVideoStage from '../components/pipeline/stages/EpisodeVideoStage';
+import SeriesLlmPicker from '../components/pipeline/SeriesLlmPicker';
 
 const STAGE_ICONS = {
   idea: Lightbulb,
@@ -59,7 +60,10 @@ const STATUS_DOT = {
 export default function PipelineIssue() {
   const { issueId, stage: stageParam } = useParams();
   const navigate = useNavigate();
-  const stageId = PIPELINE_STAGES.includes(stageParam) ? stageParam : 'idea';
+  // `comicPages` URL still routes (folded into the Comic Script tab below);
+  // we redirect those to `comicScript` since the merged editor lives there.
+  const requested = PIPELINE_STAGES.includes(stageParam) ? stageParam : 'idea';
+  const stageId = requested === 'comicPages' ? 'comicScript' : requested;
 
   const [issue, setIssue] = useState(null);
   const [series, setSeries] = useState(null);
@@ -101,7 +105,11 @@ export default function PipelineIssue() {
 
   const handleAutoRun = async (opts = {}) => {
     setAutoRunStarting(true);
-    const res = await startPipelineAutoRunText(issueId, opts).catch((err) => {
+    const res = await startPipelineAutoRunText(issueId, {
+      providerId: series?.llm?.provider || undefined,
+      model: series?.llm?.model || undefined,
+      ...opts,
+    }).catch((err) => {
       toast.error(err.message || 'Failed to start auto-run');
       return null;
     });
@@ -130,7 +138,7 @@ export default function PipelineIssue() {
     }) : prev);
   };
 
-  const stageTabs = useMemo(() => PIPELINE_STAGES.map((id) => ({
+  const stageTabs = useMemo(() => PIPELINE_TAB_STAGES.map((id) => ({
     id,
     label: PIPELINE_STAGE_LABELS[id],
     Icon: STAGE_ICONS[id],
@@ -164,7 +172,14 @@ export default function PipelineIssue() {
 
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h1 className="text-xl font-bold text-white truncate">#{issue.number} — {issue.title}</h1>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {series ? (
+              <SeriesLlmPicker
+                series={series}
+                onSeriesUpdate={setSeries}
+                disabled={autoRunStarting || autoRunActive}
+              />
+            ) : null}
             {autoRunActive && (
               <button
                 type="button"

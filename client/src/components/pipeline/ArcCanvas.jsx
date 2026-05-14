@@ -23,7 +23,7 @@
  * responsive without a refetch.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Plus, Trash2, Loader2, Sparkles, ShieldCheck, ChevronRight, ChevronDown,
@@ -38,8 +38,8 @@ import {
   generatePipelineArcOverview, generatePipelineSeasonEpisodes, verifyPipelineArc,
   resolvePipelineArcIssues,
   listPipelineIssues, updatePipelineSeries,
-  getProviders,
 } from '../../services/api';
+import SeriesLlmPicker from './SeriesLlmPicker';
 
 const ISSUE_STATUS_COLORS = {
   draft: 'text-gray-400 bg-gray-700/30',
@@ -115,17 +115,6 @@ function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
   // Which finding indexes have an in-flight per-finding resolve. Lets the row
   // show its own spinner without blocking the rest of the page.
   const [resolvingIdx, setResolvingIdx] = useState(new Set());
-  const [providers, setProviders] = useState([]);
-  const [activeProviderId, setActiveProviderId] = useState(null);
-
-  useEffect(() => {
-    getProviders()
-      .then((data) => {
-        setProviders(data?.providers || []);
-        setActiveProviderId(data?.activeProvider || null);
-      })
-      .catch(() => { /* dropdowns just show "Active provider" fallback */ });
-  }, []);
 
   const llmOverride = useMemo(() => ({
     providerOverride: series.llm?.provider || undefined,
@@ -221,58 +210,16 @@ function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
 
   const generateBtnLabel = arc ? 'Regenerate arc' : 'Generate arc';
 
-  const providerLabel = (id) => providers.find((p) => p.id === id)?.name || id || '—';
-  const providerModels = useMemo(() => {
-    const p = providers.find((x) => x.id === series.llm?.provider)
-      || providers.find((x) => x.id === activeProviderId);
-    return p?.models || [];
-  }, [providers, activeProviderId, series.llm?.provider]);
-
-  // Save on change rather than waiting for a "Save" button — verify / resolve /
-  // episode-gen all read series.llm at request time, so a delayed save would
-  // run a generation against a stale choice.
-  const saveLlm = async (next) => {
-    const updated = await updatePipelineSeries(series.id, { llm: next }).catch((err) => {
-      toast.error(err.message || 'Failed to save provider choice');
-      return null;
-    });
-    if (updated) onSeriesUpdate(updated);
-  };
-
   return (
     <section className="bg-port-card border border-port-border rounded-lg p-4 space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h2 className="text-xs uppercase tracking-wider text-gray-500">Series arc</h2>
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Bind to `?? ''` (NOT `|| activeProviderId || ''`) — unset must
-              select the "Active provider" empty option, otherwise the dropdown
-              would silently pin the active provider as if the user had chosen it. */}
-          <select
-            value={series.llm?.provider ?? ''}
-            onChange={(e) => saveLlm({ provider: e.target.value || null, model: null })}
+          <SeriesLlmPicker
+            series={series}
+            onSeriesUpdate={onSeriesUpdate}
             disabled={!!running}
-            title="AI provider for arc generate / verify / resolve / episode generation"
-            className="bg-port-bg border border-port-border rounded px-2 py-1.5 text-white text-xs disabled:opacity-40"
-          >
-            <option value="">Active provider ({providerLabel(activeProviderId)})</option>
-            {providers.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </select>
-          <select
-            value={series.llm?.model || ''}
-            onChange={(e) => saveLlm({ ...(series.llm || {}), model: e.target.value || null })}
-            disabled={!!running || providerModels.length === 0}
-            title="Model for arc operations"
-            className="bg-port-bg border border-port-border rounded px-2 py-1.5 text-white text-xs disabled:opacity-40 max-w-[180px]"
-          >
-            <option value="">Default model</option>
-            {providerModels.map((m) => {
-              const id = typeof m === 'string' ? m : m.id;
-              const label = typeof m === 'string' ? m : (m.name || m.id);
-              return <option key={id} value={id}>{label}</option>;
-            })}
-          </select>
+          />
           <button
             type="button"
             onClick={runGenerate}

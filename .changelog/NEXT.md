@@ -2,6 +2,34 @@
 
 ## Added
 
+- **Pipeline Issue — merged Comic Pages tab.** Comic Script + Comic Pages are
+  now one tab labeled *Comic Pages*. Each row is a per-page editable markdown
+  textarea on the left and the rendered full-page comic image on the right.
+  Generating from prose auto-splits the script into pages. Panels are still
+  parsed internally so the image prompt stays high-quality, but the
+  panel-level UI is gone — the user only sees pages. A new
+  `PATCH /pipeline/issues/:id/stages/comicPages/pages/:pageIndex` endpoint
+  accepts an edited `rawText` and re-parses panels. The comic-script parser
+  now emits a per-page `rawText` slice; legacy pages without one fall back to
+  reconstructing markdown from their structured panels, so existing series
+  don't lose data.
+
+- **LLM provider+model picker on issue pages.** The `SeriesLlmPicker` from
+  the arc header is now also rendered at the top of every issue stage page
+  (idea / prose / comic / TV script / etc.), bound to the same `series.llm`
+  field. Idea generation, prose generation, comic-script generation, and
+  auto-run-text all thread the choice into their `providerId` / `model`
+  payloads. Changing the provider on one page updates it everywhere.
+
+- **Codex CLI assistant-reply extractor.** New `server/lib/codexAssistantExtract.js`
+  carves out just the assistant reply from Codex's full session transcript
+  (banner + metadata + echoed prompt + `codex\n<reply>` + `tokens used: ...`
+  footer). Applied unconditionally in `stageRunner.js` — idempotent for
+  non-Codex providers. Text stages no longer ship the whole transcript in
+  their output; JSON stages get a cleaner walker input as a side benefit.
+  Fixes prior runs where comicScript / prose / idea outputs captured the
+  banner + echoed prompt alongside the real response.
+
 - **Pipeline Issue — answer-and-refine flow for beat-sheet open questions.**
   The idea stage prompt now tells the LLM to commit to decisive choices
   rather than hedging — `## Open questions` is OPTIONAL and only used when
