@@ -257,8 +257,11 @@ export default function Shell() {
     }
   }, []);
 
-  const startSession = useCallback(() => {
+  // intent: 'push' arms the next activateSession to push a history entry. Only set AFTER the
+  // socket-connected guard so a disconnected call doesn't leak the intent into a later auto-activation.
+  const startSession = useCallback(({ intent } = {}) => {
     if (!socket?.connected) return;
+    if (intent === 'push') pendingNavIntentRef.current = 'push';
     if (termInstanceRef.current) {
       termInstanceRef.current.clear();
       termInstanceRef.current.writeln('\x1b[36mStarting shell session...\x1b[0m');
@@ -271,8 +274,9 @@ export default function Shell() {
     socket.emit('shell:start', Object.keys(startOpts).length > 0 ? startOpts : undefined);
   }, [socket]);
 
-  const attachToSession = useCallback((sessionId) => {
+  const attachToSession = useCallback((sessionId, { intent } = {}) => {
     if (!socket?.connected) return;
+    if (intent === 'push') pendingNavIntentRef.current = 'push';
     if (termInstanceRef.current) {
       termInstanceRef.current.clear();
       termInstanceRef.current.writeln('\x1b[36mAttaching to session...\x1b[0m');
@@ -305,15 +309,13 @@ export default function Shell() {
 
   const switchToSession = useCallback((sessionId, { fromUrl = false } = {}) => {
     if (sessionId === sessionIdRef.current) return;
-    if (!fromUrl) pendingNavIntentRef.current = 'push';
     clearActiveSession();
-    attachToSession(sessionId);
+    attachToSession(sessionId, { intent: fromUrl ? undefined : 'push' });
   }, [attachToSession, clearActiveSession]);
 
-  // User clicked "New" button — set push intent so back/forward can return to the prior session.
+  // User clicked "New" button — push intent so back/forward can return to the prior session.
   const startNewSession = useCallback(() => {
-    pendingNavIntentRef.current = 'push';
-    startSession();
+    startSession({ intent: 'push' });
   }, [startSession]);
 
   // Handle socket connection and shell session events
@@ -354,6 +356,22 @@ export default function Shell() {
           attachToSession(latest.sessionId);
         } else if (sessionList.length === 0) {
           startSession();
+        }
+        return;
+      }
+      // Post-init: the session we're displaying may have been killed externally (another tab,
+      // direct server kill). Server sends a fresh sessions list without a shell:exit to this
+      // socket if it wasn't the attached one. Reconcile by auto-attaching to a survivor.
+      const displayed = sessionIdRef.current;
+      if (displayed && !sessionList.some(s => s.sessionId === displayed)) {
+        clearActiveSession();
+        if (termInstanceRef.current) {
+          termInstanceRef.current.writeln('\r\n\x1b[33m[Session removed externally]\x1b[0m');
+        }
+        if (sessionList.length > 0) {
+          attachToSession(sessionList[sessionList.length - 1].sessionId);
+        } else {
+          navigateRef.current('/shell', { replace: true });
         }
       }
     };
@@ -408,6 +426,9 @@ export default function Shell() {
     };
 
     const handleShellError = ({ error }) => {
+      // Server rejected start/attach (e.g., session limit, session not found).
+      // No activateSession will fire to consume the intent, so reset here.
+      pendingNavIntentRef.current = 'replace';
       if (termInstanceRef.current) {
         termInstanceRef.current.writeln(`\r\n\x1b[31m[Error: ${error}]\x1b[0m`);
       }
