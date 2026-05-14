@@ -13,6 +13,7 @@ export function BackupTab() {
   const [enabled, setEnabled] = useState(false);
   const [cronExpression, setCronExpression] = useState('0 2 * * *');
   const [excludePaths, setExcludePaths] = useState([]);
+  const [savedExcludePaths, setSavedExcludePaths] = useState([]);
   const [defaultExcludes, setDefaultExcludes] = useState([]);
   const [newExclude, setNewExclude] = useState('');
 
@@ -21,11 +22,13 @@ export function BackupTab() {
       .then(([settings, status]) => {
         const backup = settings?.backup || {};
         const saved = backup.destPath || '';
+        const savedExcludes = backup.excludePaths || [];
         setDestPath(saved);
         setSavedDestPath(saved);
         setEnabled(backup.enabled ?? false);
         setCronExpression(backup.cronExpression || '0 2 * * *');
-        setExcludePaths(backup.excludePaths || []);
+        setExcludePaths(savedExcludes);
+        setSavedExcludePaths(savedExcludes);
         setDefaultExcludes(status?.defaultExcludes || []);
       })
       .catch(() => toast.error('Failed to load settings'))
@@ -37,6 +40,7 @@ export function BackupTab() {
     try {
       await updateSettings({ backup: { destPath, enabled, cronExpression, excludePaths } });
       setSavedDestPath(destPath);
+      setSavedExcludePaths(excludePaths);
       toast.success('Settings saved');
     } catch (err) {
       toast.error(err.message || 'Failed to save settings');
@@ -70,13 +74,17 @@ export function BackupTab() {
     return <BrailleSpinner text="Loading backup settings" />;
   }
 
-  const dirty = destPath !== savedDestPath;
-  const canRun = !!savedDestPath && !running;
+  const excludesDirty = excludePaths.length !== savedExcludePaths.length
+    || excludePaths.some((p, i) => p !== savedExcludePaths[i]);
+  const dirty = destPath !== savedDestPath || excludesDirty;
+  const canRun = !!savedDestPath && !running && !saving;
   const runTitle = !savedDestPath
     ? 'Configure and save a destination path first'
-    : dirty
-      ? `Will run against saved path (${savedDestPath}). Save first to use the new value.`
-      : 'Run a backup snapshot now using saved settings';
+    : saving
+      ? 'Waiting for save to finish…'
+      : dirty
+        ? 'Unsaved changes — backup will use the last saved settings. Save first to apply your edits.'
+        : 'Run a backup snapshot now using saved settings';
 
   return (
     <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-5">
