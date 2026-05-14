@@ -23,7 +23,11 @@ const STATE_PATH = join(PATHS.data, 'backup', 'state.json');
 
 // Paths under data/ that are always skipped on top of user-configured excludes.
 // Browser profile is a CDP cache that can grow to several GB; worktrees are
-// throwaway agent checkouts of the main repo.
+// throwaway agent checkouts of the main repo. When adding a new entry, ensure
+// the path glob covers *every* on-disk location for that class of data —
+// e.g. agent worktrees live under both cos/worktrees/ and
+// cos/feature-agents/*/worktree/; cross-reference worktreeManager.js and
+// agentLifecycle.js if introducing new worktree paths.
 export const DEFAULT_EXCLUDES = [
   { path: 'browser-profile/', reason: 'Browser CDP profile — cache/cookies, can be several GB' },
   { path: 'cos/worktrees/', reason: 'Ephemeral agent git worktrees — recreated on demand' },
