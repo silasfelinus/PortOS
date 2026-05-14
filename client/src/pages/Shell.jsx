@@ -68,6 +68,12 @@ export default function Shell() {
   // "Attaching…" terminal, and (c) ignore stale shell:attached responses when the user has
   // rapid-fire-clicked through multiple tabs. The sentinel 'new' covers shell:start (id unknown).
   const pendingAttachRef = useRef(null);
+  // True when the user explicitly cleared the active session (Stop button or X on the
+  // active tab) and is intentionally sitting at /shell. The passive-idle adoption branch
+  // in handleSessions must skip while this is set, otherwise the next broadcast would
+  // immediately attach a free survivor and undo the user's explicit "leave at /shell".
+  // Cleared by any user-initiated start/attach action.
+  const userIdleRef = useRef(false);
   const socket = useSocket();
   const [connected, setConnected] = useState(false);
   const [sessions, setSessions] = useState([]);
@@ -273,6 +279,7 @@ export default function Shell() {
     if (!socket?.connected) return;
     if (intent === 'push') pendingNavIntentRef.current = 'push';
     pendingAttachRef.current = 'new';
+    userIdleRef.current = false;
     if (termInstanceRef.current) {
       termInstanceRef.current.clear();
       termInstanceRef.current.writeln('\x1b[36mStarting shell session...\x1b[0m');
@@ -289,6 +296,7 @@ export default function Shell() {
     if (!socket?.connected) return;
     if (intent === 'push') pendingNavIntentRef.current = 'push';
     pendingAttachRef.current = sessionId;
+    userIdleRef.current = false;
     if (termInstanceRef.current) {
       termInstanceRef.current.clear();
       termInstanceRef.current.writeln('\x1b[36mAttaching to session...\x1b[0m');
@@ -300,6 +308,7 @@ export default function Shell() {
     if (socket && sessionIdRef.current) {
       socket.emit('shell:stop', { sessionId: sessionIdRef.current });
       clearActiveSession();
+      userIdleRef.current = true;
       if (termInstanceRef.current) {
         termInstanceRef.current.writeln('\r\n\x1b[33m[Session killed]\x1b[0m');
       }
@@ -312,6 +321,7 @@ export default function Shell() {
     socket.emit('shell:stop', { sessionId });
     if (sessionId === sessionIdRef.current) {
       clearActiveSession();
+      userIdleRef.current = true;
       if (termInstanceRef.current) {
         termInstanceRef.current.writeln('\r\n\x1b[33m[Session killed]\x1b[0m');
       }
@@ -414,9 +424,10 @@ export default function Shell() {
       // Tab is sitting on bare /shell with no displayed session (e.g. arrived when
       // every live session was already attached elsewhere). If another tab later
       // disconnects and frees one of those sessions, adopt it so the user doesn't have
-      // to manually click to recover. Gated on no in-flight start/attach so we don't
-      // race a request the user just initiated.
-      if (!displayed && !pendingAttachRef.current) {
+      // to manually click to recover. Gated on (1) no in-flight start/attach so we
+      // don't race a user-initiated request, and (2) `!userIdleRef.current` so we
+      // don't undo an explicit Stop/kill-active: the user just chose to be at /shell.
+      if (!displayed && !pendingAttachRef.current && !userIdleRef.current) {
         const survivor = pickUnattachedSurvivor(sessionList);
         if (survivor) attachToSession(survivor.sessionId);
       }
