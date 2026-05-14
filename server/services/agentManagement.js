@@ -374,6 +374,19 @@ export async function handleOrphanedTask(taskId, agentId, getTaskByIdFn) {
     return;
   }
 
+  // If a prior orphan in this sweep already routed the task through this handler
+  // (max-retries → investigation task created, or orphan-cooldown → blocked until later),
+  // skip — otherwise each additional orphaned agent for the same task spawns a
+  // duplicate investigation task and inflates orphanRetryCount past its ceiling.
+  if (task.status === 'blocked' &&
+      (task.metadata?.blockedCategory === 'max-retries' ||
+       task.metadata?.blockedCategory === 'orphan-cooldown')) {
+    emitLog('info', `⏭️ Skipping orphaned task ${taskId} — already handled (${task.metadata.blockedCategory})`, {
+      taskId, agentId, blockedCategory: task.metadata.blockedCategory
+    });
+    return;
+  }
+
   // Skip tasks already completed
   if (task.status === 'completed') {
     emitLog('debug', `⏭️ Skipping orphaned task ${taskId} — already completed`, { taskId, agentId });

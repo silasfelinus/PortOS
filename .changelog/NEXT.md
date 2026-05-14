@@ -373,6 +373,19 @@
 
 ## Fixed
 
+- **CoS orphan handler — no more duplicate `[Auto-Fix]` investigation tasks.**
+  When `cleanupOrphanedAgents` swept up two stale "running" agents that shared a
+  taskId, `handleOrphanedTask` ran once per agent. The first call blocked the
+  task with `blockedCategory='max-retries'` and spawned an investigation task;
+  the second call fell through the existing guard (which only short-circuits on
+  `'user-terminated'`), incremented `orphanRetryCount` past its ceiling, and
+  spawned a SECOND investigation task with the same `[Auto-Fix] Investigate
+  repeated agent orphaning for task <id>` headline (the `addTask` dedup at
+  `cos.js:2194` missed it because the description body embeds the per-agent
+  `retryCount`/`agentId`). The handler now also early-returns when the task is
+  already blocked with `'max-retries'` or `'orphan-cooldown'`. Adds
+  `agentManagement.test.js` covering all four short-circuit branches.
+
 - **Media Jobs Queue — empty prompt tooltip.** Job rows without a prompt
   no longer render an empty `title=""` tooltip. Rows with a prompt now
   show the full prompt on hover (the visible cell is still truncated to
