@@ -391,6 +391,18 @@
   show the full prompt on hover (the visible cell is still truncated to
   80 chars).
 
+- **CoS agent summary — historical Codex agents now auto-repair on read.**
+  The previous fix (above) corrected the extractor for *new* Codex agents, but
+  agents that completed before the patch landed already had their
+  multi-megabyte transcript dumps persisted into `metadata.json` (e.g.
+  agent-5f6951e3: 5.2MB metadata, 737KB `taskSummary`, 4.4MB `simplifySummary`).
+  Adds `server/services/codexSummaryRepair.js`: when `getAgent` or
+  `getAgentsByDate` loads a completed agent whose `taskSummary` or
+  `simplifySummary` is ≥20KB, it re-reads `output.txt`, re-extracts the
+  assistant tail via `extractCodexAssistantTail`, clears the false
+  `simplifySummary` (Codex CLI cannot execute `/simplify`), and rewrites
+  metadata.json in place. One-time per agent, idempotent thereafter.
+
 - **CoS agent summary — Codex output now extracts the actual final message.**
   When a CoS task ran on the Codex provider, the persisted `taskSummary`
   ballooned to multi-megabyte dumps containing every diff, grep result, and

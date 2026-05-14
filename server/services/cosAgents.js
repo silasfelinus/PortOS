@@ -12,6 +12,7 @@ import { join } from 'path';
 import { cosEvents, emitLog } from './cosEvents.js';
 import { loadState, saveState, withStateLock, AGENTS_DIR } from './cosState.js';
 import { ensureDir, safeJSONParse } from '../lib/fileUtils.js';
+import { repairCodexTaskSummary } from './codexSummaryRepair.js';
 
 const INDEX_FILE = join(AGENTS_DIR, 'index.json');
 
@@ -402,7 +403,10 @@ export async function getAgentsByDate(date) {
       if (!raw) return;
       const id = raw.id || raw.agentId || entry.name;
       const { output, ...rest } = raw;
-      agents.push({ ...rest, id, status: raw.status || 'completed' });
+      const agent = { ...rest, id, status: raw.status || 'completed' };
+      const repaired = await repairCodexTaskSummary(join(dateDir, entry.name), agent);
+      if (repaired) agent.metadata = { ...agent.metadata, taskSummary: repaired };
+      agents.push(agent);
     });
     await Promise.allSettled(reads);
   }
@@ -437,6 +441,8 @@ export async function getAgent(agentId) {
   if (agent.status === 'completed') {
     const dateStr = agent.completedAt?.slice(0, 10);
     const agentDir = dateStr ? getAgentDir(agentId, dateStr) : getAgentDir(agentId);
+    const repaired = await repairCodexTaskSummary(agentDir, agent);
+    if (repaired) agent = { ...agent, metadata: { ...agent.metadata, taskSummary: repaired } };
     const outputFile = join(agentDir, 'output.txt');
     if (existsSync(outputFile)) {
       const fullOutput = await readFile(outputFile, 'utf-8');
