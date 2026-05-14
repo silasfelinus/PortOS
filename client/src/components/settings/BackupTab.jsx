@@ -9,6 +9,7 @@ export function BackupTab() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [destPath, setDestPath] = useState('');
+  const [savedDestPath, setSavedDestPath] = useState('');
   const [enabled, setEnabled] = useState(false);
   const [cronExpression, setCronExpression] = useState('0 2 * * *');
   const [excludePaths, setExcludePaths] = useState([]);
@@ -19,7 +20,9 @@ export function BackupTab() {
     Promise.all([getSettings(), getBackupStatus().catch(() => null)])
       .then(([settings, status]) => {
         const backup = settings?.backup || {};
-        setDestPath(backup.destPath || '');
+        const saved = backup.destPath || '';
+        setDestPath(saved);
+        setSavedDestPath(saved);
         setEnabled(backup.enabled ?? false);
         setCronExpression(backup.cronExpression || '0 2 * * *');
         setExcludePaths(backup.excludePaths || []);
@@ -33,6 +36,7 @@ export function BackupTab() {
     setSaving(true);
     try {
       await updateSettings({ backup: { destPath, enabled, cronExpression, excludePaths } });
+      setSavedDestPath(destPath);
       toast.success('Settings saved');
     } catch (err) {
       toast.error(err.message || 'Failed to save settings');
@@ -66,7 +70,13 @@ export function BackupTab() {
     return <BrailleSpinner text="Loading backup settings" />;
   }
 
-  const canRun = !!destPath && !running;
+  const dirty = destPath !== savedDestPath;
+  const canRun = !!savedDestPath && !running;
+  const runTitle = !savedDestPath
+    ? 'Configure and save a destination path first'
+    : dirty
+      ? `Will run against saved path (${savedDestPath}). Save first to use the new value.`
+      : 'Run a backup snapshot now using saved settings';
 
   return (
     <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-5">
@@ -168,7 +178,7 @@ export function BackupTab() {
         <button
           onClick={handleRunNow}
           disabled={!canRun}
-          title={destPath ? 'Run a backup snapshot now using saved settings' : 'Configure a destination path first'}
+          title={runTitle}
           className="inline-flex items-center justify-center gap-2 min-h-[40px] px-4 py-2 bg-port-border hover:bg-port-border/70 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {running ? <BrailleSpinner /> : <Play size={16} />}
