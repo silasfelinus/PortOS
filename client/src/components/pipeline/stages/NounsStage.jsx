@@ -290,6 +290,13 @@ export default function NounsStage({ issue, series }) {
       </div>
     );
   }
+  if (!universe) {
+    return (
+      <p className="text-sm text-gray-500 italic inline-flex items-center gap-2">
+        <Loader2 size={14} className="animate-spin" /> Loading universe canon…
+      </p>
+    );
+  }
 
   return (
     <div className="space-y-5">
