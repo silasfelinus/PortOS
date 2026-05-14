@@ -2,6 +2,16 @@
 
 ## Added
 
+- **Shell — UUID-based URLs for each sub-shell session.** The shell page now
+  mounts at `/shell/:sessionId` in addition to `/shell`, and mirrors the active
+  session id into the URL whenever a session is started, attached, or switched.
+  Reload preserves the active shell, the URL is shareable as a deep link, and
+  browser back/forward + manual URL paste switch between live sessions.
+  Stopping or killing the active session (or its PTY exiting with no remaining
+  sessions) clears the URL back to `/shell`. The pre-existing `?session=<uuid>`
+  query-param (one-shot "attach to this session") still works alongside the
+  new path param.
+
 - **Universe Canon page — lock toggle, tag chips, and "from series" badge on every card.**
   Phase 2a of the Universe-as-Canon UI. Each `CanonCard` (used on both the
   Universe Canon page and the per-series Nouns page) now renders:

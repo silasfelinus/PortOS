@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useParams, useNavigate } from 'react-router-dom';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -44,12 +44,17 @@ const shortId = (id) => id?.slice(0, 6) ?? '';
 
 export default function Shell() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const { sessionId: urlSessionId } = useParams();
+  const navigate = useNavigate();
   const terminalRef = useRef(null);
   const termInstanceRef = useRef(null);
   const fitAddonRef = useRef(null);
   const sessionIdRef = useRef(null);
   const initialOptsRef = useRef(null);
   const hasInitializedRef = useRef(false);
+  // Mirror urlSessionId into a ref so callbacks (activateSession, handleSessions) can read the
+  // latest URL without forcing the heavy socket-listener effect to re-bind on every URL change.
+  const urlSessionIdRef = useRef(urlSessionId);
   const socket = useSocket();
   const [connected, setConnected] = useState(false);
   const [sessions, setSessions] = useState([]);
@@ -60,6 +65,8 @@ export default function Shell() {
   const pasteInputRef = useRef(null);
   const dropdownRef = useRef(null);
   const sessionsRef = useRef([]);
+
+  useEffect(() => { urlSessionIdRef.current = urlSessionId; }, [urlSessionId]);
 
   // Read query params once on mount for initial session options
   useEffect(() => {
@@ -225,11 +232,20 @@ export default function Shell() {
     return () => disposable.dispose();
   }, [socket]);
 
+  const clearActiveSession = useCallback(() => {
+    sessionIdRef.current = null;
+    setActiveSessionId(null);
+    setConnected(false);
+  }, []);
+
   const activateSession = useCallback((sessionId) => {
     sessionIdRef.current = sessionId;
     setActiveSessionId(sessionId);
     setConnected(true);
-  }, []);
+    if (urlSessionIdRef.current !== sessionId) {
+      navigate(`/shell/${sessionId}`, { replace: true });
+    }
+  }, [navigate]);
 
   const startSession = useCallback(() => {
     if (!socket?.connected) return;
@@ -257,37 +273,31 @@ export default function Shell() {
   const stopSession = useCallback(() => {
     if (socket && sessionIdRef.current) {
       socket.emit('shell:stop', { sessionId: sessionIdRef.current });
-      sessionIdRef.current = null;
-      setActiveSessionId(null);
-      setConnected(false);
+      clearActiveSession();
       if (termInstanceRef.current) {
         termInstanceRef.current.writeln('\r\n\x1b[33m[Session killed]\x1b[0m');
       }
+      navigate('/shell', { replace: true });
     }
-  }, [socket]);
+  }, [socket, navigate, clearActiveSession]);
 
   const killOtherSession = useCallback((sessionId) => {
     if (!socket) return;
     socket.emit('shell:stop', { sessionId });
-    // If killing the active session via tab X, clean up local state too
     if (sessionId === sessionIdRef.current) {
-      sessionIdRef.current = null;
-      setActiveSessionId(null);
-      setConnected(false);
+      clearActiveSession();
       if (termInstanceRef.current) {
         termInstanceRef.current.writeln('\r\n\x1b[33m[Session killed]\x1b[0m');
       }
+      navigate('/shell', { replace: true });
     }
-  }, [socket]);
+  }, [socket, navigate, clearActiveSession]);
 
   const switchToSession = useCallback((sessionId) => {
     if (sessionId === sessionIdRef.current) return;
-    // Detach current display (don't kill)
-    sessionIdRef.current = null;
-    setActiveSessionId(null);
-    setConnected(false);
+    clearActiveSession();
     attachToSession(sessionId);
-  }, [attachToSession]);
+  }, [attachToSession, clearActiveSession]);
 
   // Handle socket connection and shell session events
   useEffect(() => {
@@ -301,9 +311,7 @@ export default function Shell() {
 
     const handleDisconnect = () => {
       // Clear session state so reconnect auto-reattaches
-      sessionIdRef.current = null;
-      setActiveSessionId(null);
-      setConnected(false);
+      clearActiveSession();
     };
 
     const handleSessions = (sessionList) => {
@@ -313,12 +321,16 @@ export default function Shell() {
       if (!hasInitializedRef.current) {
         hasInitializedRef.current = true;
         const opts = initialOptsRef.current || {};
+        const urlSid = urlSessionIdRef.current;
         // If we have initial opts (cwd/cmd), always create a new session
         if (opts.session && sessionList.some(s => s.sessionId === opts.session)) {
           attachToSession(opts.session);
           initialOptsRef.current = {};
         } else if (opts.cwd || opts.cmd) {
           startSession();
+        } else if (urlSid && sessionList.some(s => s.sessionId === urlSid)) {
+          // URL points at a live session — attach to that one
+          attachToSession(urlSid);
         } else if (sessionList.length > 0 && !sessionIdRef.current) {
           // Attach to most recent existing session
           const latest = sessionList[sessionList.length - 1];
@@ -364,9 +376,7 @@ export default function Shell() {
 
     const handleShellExit = ({ sessionId: sid, code }) => {
       if (sid === sessionIdRef.current) {
-        setConnected(false);
-        sessionIdRef.current = null;
-        setActiveSessionId(null);
+        clearActiveSession();
         if (termInstanceRef.current) {
           termInstanceRef.current.writeln(`\r\n\x1b[33m[Shell exited with code ${code}]\x1b[0m`);
         }
@@ -374,6 +384,8 @@ export default function Shell() {
         const remaining = sessionsRef.current.filter(s => s.sessionId !== sid);
         if (remaining.length > 0) {
           setTimeout(() => attachToSession(remaining[remaining.length - 1].sessionId), 100);
+        } else {
+          navigate('/shell', { replace: true });
         }
       }
     };
@@ -409,7 +421,16 @@ export default function Shell() {
       // Don't kill session on unmount — it persists server-side
       sessionIdRef.current = null;
     };
-  }, [socket, startSession, attachToSession, activateSession]);
+  }, [socket, startSession, attachToSession, activateSession, navigate, clearActiveSession]);
+
+  // React to URL changes after init (browser back/forward, manual URL paste).
+  // If the URL points at a known session that isn't currently displayed, switch to it.
+  useEffect(() => {
+    if (!hasInitializedRef.current) return;
+    if (!urlSessionId) return;
+    if (!sessionsRef.current.some(s => s.sessionId === urlSessionId)) return;
+    switchToSession(urlSessionId);
+  }, [urlSessionId, switchToSession]);
 
   return (
     <div className="h-full flex flex-col p-4 md:p-6">
