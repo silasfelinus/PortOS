@@ -134,7 +134,7 @@ When working **directly in the Claude Code TUI** with the user driving, edit the
 
 ## Code Conventions
 
-- **No try/catch** - errors bubble to centralized middleware
+- **No try/catch** - errors bubble to centralized middleware. **Exception:** PTY/child-process/`setTimeout`/`setInterval` callbacks and any code that runs *outside* the Express request lifecycle. An uncaught throw there crashes the Node process (there is no `next(err)` to bubble to). At those boundaries, wrap hook invocation in try/catch and log via the emoji-prefixed `console.error` style. Async event handlers that mutate shared module-level state (e.g. the TUI spawner's `handleData`) must also be serialized — chain them onto a per-session/per-actor `Promise.resolve()` queue rather than firing concurrently, otherwise interleaved awaits race on shared buffers.
 - **No window.alert/confirm** - use inline confirmations or toast notifications
 - **Linkable routes for all views** - tabbed pages use URL params, not local state (e.g., `/devtools/history` not `/devtools` with tab state)
 - **Functional programming** - no classes, use hooks in React
@@ -157,6 +157,7 @@ When working **directly in the Claude Code TUI** with the user driving, edit the
   - Arrays/objects: gate on `Array.isArray(parsed?.field)` / `typeof parsed?.field === 'object'` before deciding to fall back to the original.
   - Keep server-side merges and the client's `pick` helpers mirrored — a one-sided change breaks the round-trip.
 - **Schema parity when adding fields.** When you add a field to a sanitizer, `createXxx`, or a payload shape, update the corresponding Zod schema (`server/lib/aiToolkit/validation.js` for toolkit shapes, `server/lib/validation.js` for PortOS routes) in the same change. Wire validation into POST and PUT (PUT can use `schema.partial()`); the PortOS convention is *all* inputs validated. Tolerate UI sentinels (`endpoint: ''` for CLI providers) with `z.preprocess(v => v === '' ? undefined : v, …)`. When a service migrates legacy keys on read, the schema must still accept the legacy shape so older clients don't 400 before the migration runs.
+- **High-frequency state writes must batch.** Per-line state mutations that round-trip through `withStateLock → loadState → saveState` (e.g. `appendAgentOutput` in `cosAgents.js`) are fine for human-pace events but catastrophic when called from a hot loop — PTY output streams, AI tool-call streams, or any producer that can emit dozens of events per second. When wiring a new streaming producer, add a batched variant that takes an array (see `appendAgentOutputLines` for the pattern) and flush from the caller on a ~250ms debounce. Always drain the pending buffer in the producer's `finish`/`cleanup` path before the final state write so completion events don't beat the last output batch to disk.
 
 ## Tailwind Design Tokens
 
