@@ -1,26 +1,35 @@
 import { useState, useEffect } from 'react';
-import { Save, Plus, X } from 'lucide-react';
+import { Save, Plus, X, Play, ShieldOff } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
-import { getSettings, updateSettings } from '../../services/api';
+import useAsyncAction from '../../hooks/useAsyncAction';
+import { getSettings, updateSettings, getBackupStatus, triggerBackup } from '../../services/api';
 
 export function BackupTab() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [destPath, setDestPath] = useState('');
+  const [savedDestPath, setSavedDestPath] = useState('');
   const [enabled, setEnabled] = useState(false);
   const [cronExpression, setCronExpression] = useState('0 2 * * *');
   const [excludePaths, setExcludePaths] = useState([]);
+  const [savedExcludePaths, setSavedExcludePaths] = useState([]);
+  const [defaultExcludes, setDefaultExcludes] = useState([]);
   const [newExclude, setNewExclude] = useState('');
 
   useEffect(() => {
-    getSettings()
-      .then(settings => {
+    Promise.all([getSettings(), getBackupStatus({ silent: true }).catch(() => null)])
+      .then(([settings, status]) => {
         const backup = settings?.backup || {};
-        setDestPath(backup.destPath || '');
+        const saved = backup.destPath || '';
+        const savedExcludes = backup.excludePaths || [];
+        setDestPath(saved);
+        setSavedDestPath(saved);
         setEnabled(backup.enabled ?? false);
         setCronExpression(backup.cronExpression || '0 2 * * *');
-        setExcludePaths(backup.excludePaths || []);
+        setExcludePaths(savedExcludes);
+        setSavedExcludePaths(savedExcludes);
+        setDefaultExcludes(status?.defaultExcludes || []);
       })
       .catch(() => toast.error('Failed to load settings'))
       .finally(() => setLoading(false));
@@ -30,6 +39,8 @@ export function BackupTab() {
     setSaving(true);
     try {
       await updateSettings({ backup: { destPath, enabled, cronExpression, excludePaths } });
+      setSavedDestPath(destPath);
+      setSavedExcludePaths(excludePaths);
       toast.success('Settings saved');
     } catch (err) {
       toast.error(err.message || 'Failed to save settings');
@@ -37,6 +48,16 @@ export function BackupTab() {
       setSaving(false);
     }
   };
+
+  const [handleRunNow, running] = useAsyncAction(async () => {
+    const result = await triggerBackup({ silent: true });
+    if (result?.skipped) {
+      toast('Backup already running');
+    } else {
+      toast.success(`Backup complete — ${result?.filesChanged ?? 0} files changed`, { icon: '💾' });
+    }
+    return result;
+  }, { errorMessage: 'Backup failed' });
 
   const addExclude = () => {
     const trimmed = newExclude.trim();
@@ -52,6 +73,18 @@ export function BackupTab() {
   if (loading) {
     return <BrailleSpinner text="Loading backup settings" />;
   }
+
+  const excludesDirty = excludePaths.length !== savedExcludePaths.length
+    || excludePaths.some((p, i) => p !== savedExcludePaths[i]);
+  const dirty = destPath !== savedDestPath || excludesDirty;
+  const canRun = !!savedDestPath && !running && !saving && !dirty;
+  const runTitle = !savedDestPath
+    ? 'Configure and save a destination path first'
+    : saving
+      ? 'Waiting for save to finish…'
+      : dirty
+        ? 'Save your changes before running — the backup uses saved settings.'
+        : 'Run a backup snapshot now using saved settings';
 
   return (
     <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-5">
@@ -88,9 +121,27 @@ export function BackupTab() {
         <p className="text-xs text-gray-500">Default: 2:00 AM daily</p>
       </div>
 
+      {defaultExcludes.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <ShieldOff size={14} className="text-gray-500" />
+            <label className="block text-sm text-gray-400">Default Exclusions (always skipped)</label>
+          </div>
+          <p className="text-xs text-gray-500">Built-in paths that are never backed up — they hold large or ephemeral data that would bloat snapshots.</p>
+          <ul className="space-y-1 mt-1">
+            {defaultExcludes.map((d, i) => (
+              <li key={i} className="flex items-start gap-2 text-xs">
+                <code className="px-1.5 py-0.5 bg-port-bg border border-port-border rounded text-gray-300 shrink-0">{d.path}</code>
+                <span className="text-gray-500">{d.reason}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="space-y-2">
-        <label className="block text-sm text-gray-400">Exclude Paths</label>
-        <p className="text-xs text-gray-500">Directories/patterns to skip during backup (relative to data/)</p>
+        <label className="block text-sm text-gray-400">Additional Exclude Paths</label>
+        <p className="text-xs text-gray-500">Custom directories/patterns to skip during backup (relative to data/)</p>
         <div className="flex gap-2">
           <input
             type="text"
@@ -123,14 +174,25 @@ export function BackupTab() {
         )}
       </div>
 
-      <button
-        onClick={handleSave}
-        disabled={saving}
-        className="inline-flex items-center justify-center gap-2 min-h-[40px] px-4 py-2 bg-port-accent hover:bg-port-accent/80 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50"
-      >
-        {saving ? <BrailleSpinner /> : <Save size={16} />}
-        Save
-      </button>
+      <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-port-border">
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="inline-flex items-center justify-center gap-2 min-h-[40px] px-4 py-2 bg-port-accent hover:bg-port-accent/80 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50"
+        >
+          {saving ? <BrailleSpinner /> : <Save size={16} />}
+          Save
+        </button>
+        <button
+          onClick={handleRunNow}
+          disabled={!canRun}
+          title={runTitle}
+          className="inline-flex items-center justify-center gap-2 min-h-[40px] px-4 py-2 bg-port-border hover:bg-port-border/70 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {running ? <BrailleSpinner /> : <Play size={16} />}
+          {running ? 'Running…' : 'Run Backup Now'}
+        </button>
+      </div>
     </div>
   );
 }

@@ -35,7 +35,7 @@ export const resetUsage = () => request('/usage', { method: 'DELETE' });
 
 // Backup
 export const getBackupStatus = (options) => request('/backup/status', options);
-export const triggerBackup = () => request('/backup/run', { method: 'POST' });
+export const triggerBackup = (options) => request('/backup/run', { method: 'POST', ...options });
 export const getBackupSnapshots = (options) => request('/backup/snapshots', options);
 export const restoreBackup = (data) => request('/backup/restore', { method: 'POST', body: JSON.stringify(data) });
 
