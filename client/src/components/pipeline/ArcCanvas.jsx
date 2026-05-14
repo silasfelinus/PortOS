@@ -36,6 +36,7 @@ import {
   createPipelineIssue, deletePipelineIssue, updatePipelineIssue,
   createPipelineSeason, updatePipelineSeason, deletePipelineSeason,
   generatePipelineArcOverview, generatePipelineSeasonEpisodes, verifyPipelineArc,
+  resolvePipelineArcIssues,
   listPipelineIssues, updatePipelineSeries,
 } from '../../services/api';
 
@@ -52,7 +53,7 @@ const SEVERITY_COLORS = {
   low: 'text-gray-400 border-gray-500/30 bg-gray-700/20',
 };
 
-export default function ArcCanvas({ series, issues, onSeriesUpdate, onIssuesUpdate }) {
+export default function ArcCanvas({ series, issues, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
   const seasons = series.seasons || [];
   // Group issues by seasonId for the tree; ungrouped issues land under null.
   const issuesBySeason = new Map();
@@ -68,7 +69,12 @@ export default function ArcCanvas({ series, issues, onSeriesUpdate, onIssuesUpda
 
   return (
     <div className="space-y-4">
-      <ArcHeader series={series} onSeriesUpdate={onSeriesUpdate} />
+      <ArcHeader
+        series={series}
+        onSeriesUpdate={onSeriesUpdate}
+        onIssuesUpdate={onIssuesUpdate}
+        onFlushPending={onFlushPending}
+      />
 
       {seasons.length > 0 ? (
         <ul className="space-y-3">
@@ -101,17 +107,30 @@ export default function ArcCanvas({ series, issues, onSeriesUpdate, onIssuesUpda
 
 // ---- Arc header (logline, themes, action buttons) ----
 
-function ArcHeader({ series, onSeriesUpdate }) {
+function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
   const arc = series.arc;
-  const [running, setRunning] = useState(null); // 'generate' | 'verify' | null
+  const [running, setRunning] = useState(null); // 'generate' | 'verify' | 'resolve' | null
   const [verifyIssues, setVerifyIssues] = useState(null);
+  // Which finding indexes have an in-flight per-finding resolve. Lets the row
+  // show its own spinner without blocking the rest of the page.
+  const [resolvingIdx, setResolvingIdx] = useState(new Set());
+
+  // Persist any pending bible edits BEFORE the LLM call reads from the server.
+  // Without this, typing "32" into the issue count and clicking Regenerate
+  // would run against the previously-saved value.
+  const withFlush = async (fn) => {
+    if (onFlushPending) await onFlushPending();
+    return fn();
+  };
 
   const runGenerate = async () => {
     setRunning('generate');
-    const result = await generatePipelineArcOverview(series.id, { commit: true }).catch((err) => {
-      toast.error(err.message || 'Failed to generate arc');
-      return null;
-    });
+    const result = await withFlush(() =>
+      generatePipelineArcOverview(series.id, { commit: true }).catch((err) => {
+        toast.error(err.message || 'Failed to generate arc');
+        return null;
+      }),
+    );
     setRunning(null);
     if (!result) return;
     onSeriesUpdate(result.series);
@@ -124,10 +143,12 @@ function ArcHeader({ series, onSeriesUpdate }) {
 
   const runVerify = async () => {
     setRunning('verify');
-    const result = await verifyPipelineArc(series.id).catch((err) => {
-      toast.error(err.message || 'Failed to verify arc');
-      return null;
-    });
+    const result = await withFlush(() =>
+      verifyPipelineArc(series.id).catch((err) => {
+        toast.error(err.message || 'Failed to verify arc');
+        return null;
+      }),
+    );
     setRunning(null);
     if (!result) return;
     setVerifyIssues(result.issues || []);
@@ -135,6 +156,53 @@ function ArcHeader({ series, onSeriesUpdate }) {
       toast.success('Arc verified — no issues found');
     } else {
       toast.error(`Arc verification surfaced ${result.issues.length} issue${result.issues.length === 1 ? '' : 's'}`);
+    }
+  };
+
+  // Auto-resolve. `findings` undefined = resolve all currently-displayed
+  // findings (server re-verifies first if findings comes through empty).
+  const runResolve = async (findingsSubset) => {
+    setRunning('resolve');
+    const result = await withFlush(() =>
+      resolvePipelineArcIssues(series.id, {
+        findings: findingsSubset,
+      }).catch((err) => {
+        toast.error(err.message || 'Auto-resolve failed');
+        return null;
+      }),
+    );
+    setRunning(null);
+    if (!result) return null;
+    if (result.series) onSeriesUpdate(result.series);
+    if (onIssuesUpdate) {
+      // Server doesn't touch issues during resolve, but season reassignments
+      // can shift counts — refresh so the UI tree stays in sync.
+      const refreshed = await listPipelineIssues(series.id).catch(() => null);
+      if (refreshed) onIssuesUpdate(refreshed);
+    }
+    if (result.applied) {
+      toast.success('Arc updated to resolve findings — re-verify when ready');
+    } else {
+      toast.success(result.notes || 'Nothing to resolve');
+    }
+    return result;
+  };
+
+  const resolveAll = async () => {
+    const result = await runResolve(verifyIssues || []);
+    if (result?.applied) setVerifyIssues(null);
+  };
+
+  const resolveOne = async (idx, finding) => {
+    setResolvingIdx((prev) => new Set(prev).add(idx));
+    const result = await runResolve([finding]);
+    setResolvingIdx((prev) => {
+      const next = new Set(prev);
+      next.delete(idx);
+      return next;
+    });
+    if (result?.applied) {
+      setVerifyIssues((prev) => (prev || []).filter((_, i) => i !== idx));
     }
   };
 
@@ -178,12 +246,19 @@ function ArcHeader({ series, onSeriesUpdate }) {
         <ArcContent series={series} onSeriesUpdate={onSeriesUpdate} />
       ) : (
         <p className="text-xs text-gray-500 italic">
-          No arc yet — describe the series in the bible, then click <em>Generate arc</em> to have an LLM propose a multi-season spine + season breakdown.
+          No arc yet — describe the series in the bible, then click <em>Generate arc</em> to have an LLM propose a multi-volume spine + volume breakdown.
         </p>
       )}
 
       {verifyIssues && verifyIssues.length > 0 ? (
-        <VerifyResults issues={verifyIssues} onDismiss={() => setVerifyIssues(null)} />
+        <VerifyResults
+          issues={verifyIssues}
+          onDismiss={() => setVerifyIssues(null)}
+          onResolveAll={resolveAll}
+          onResolveOne={resolveOne}
+          resolvingAll={running === 'resolve' && resolvingIdx.size === 0}
+          resolvingIdx={resolvingIdx}
+        />
       ) : null}
     </section>
   );
@@ -232,7 +307,7 @@ function ArcContent({ series, onSeriesUpdate }) {
         <textarea
           value={draft.summary || ''}
           onChange={(e) => setDraft({ ...draft, summary: e.target.value })}
-          placeholder="Multi-season summary (~500 words)"
+          placeholder="Multi-volume / multi-season summary (~500 words)"
           rows={6}
           className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm"
           maxLength={8000}
@@ -240,7 +315,7 @@ function ArcContent({ series, onSeriesUpdate }) {
         <textarea
           value={draft.protagonistArc || ''}
           onChange={(e) => setDraft({ ...draft, protagonistArc: e.target.value })}
-          placeholder="Protagonist arc across all seasons"
+          placeholder="Protagonist arc across all volumes / seasons"
           rows={3}
           className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm"
           maxLength={4000}
@@ -309,31 +384,62 @@ function ArcContent({ series, onSeriesUpdate }) {
   );
 }
 
-function VerifyResults({ issues, onDismiss }) {
+function VerifyResults({ issues, onDismiss, onResolveAll, onResolveOne, resolvingAll, resolvingIdx }) {
+  const busy = resolvingAll || (resolvingIdx && resolvingIdx.size > 0);
   return (
     <div className="border border-port-border rounded p-3 bg-port-bg/50 space-y-2">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <h3 className="text-xs uppercase tracking-wider text-gray-500">Verification — {issues.length} issue{issues.length === 1 ? '' : 's'}</h3>
-        <button
-          type="button"
-          onClick={onDismiss}
-          className="text-xs text-gray-400 hover:text-white"
-        >
-          Dismiss
-        </button>
+        <div className="flex items-center gap-2">
+          {onResolveAll ? (
+            <button
+              type="button"
+              onClick={onResolveAll}
+              disabled={busy}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium border bg-port-accent/10 text-port-accent border-port-accent/40 hover:bg-port-accent/20 disabled:opacity-40"
+              title="Run an LLM pass that rewrites the arc to resolve every finding"
+            >
+              {resolvingAll ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
+              Resolve all
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={onDismiss}
+            disabled={busy}
+            className="text-xs text-gray-400 hover:text-white disabled:opacity-40"
+          >
+            Dismiss
+          </button>
+        </div>
       </div>
       <ul className="space-y-2">
-        {issues.map((iss, i) => (
-          <li key={i} className={`text-xs p-2 rounded border ${SEVERITY_COLORS[iss.severity] || SEVERITY_COLORS.medium}`}>
-            <div className="flex items-center gap-2 mb-1">
-              <AlertCircle size={12} />
-              <span className="uppercase tracking-wider font-semibold">{iss.severity}</span>
-              {iss.location ? <span className="text-gray-500">— {iss.location}</span> : null}
-            </div>
-            <p className="text-gray-200">{iss.problem}</p>
-            {iss.suggestion ? <p className="mt-1 text-gray-400 italic">→ {iss.suggestion}</p> : null}
-          </li>
-        ))}
+        {issues.map((iss, i) => {
+          const resolvingThis = resolvingIdx && resolvingIdx.has(i);
+          return (
+            <li key={i} className={`text-xs p-2 rounded border ${SEVERITY_COLORS[iss.severity] || SEVERITY_COLORS.medium}`}>
+              <div className="flex items-center gap-2 mb-1">
+                <AlertCircle size={12} />
+                <span className="uppercase tracking-wider font-semibold">{iss.severity}</span>
+                {iss.location ? <span className="text-gray-500">— {iss.location}</span> : null}
+                {onResolveOne ? (
+                  <button
+                    type="button"
+                    onClick={() => onResolveOne(i, iss)}
+                    disabled={busy}
+                    className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] uppercase tracking-wider border border-port-border bg-port-bg text-gray-300 hover:text-white hover:border-port-accent/40 disabled:opacity-40"
+                    title="Run an LLM pass that rewrites the arc to resolve only this finding"
+                  >
+                    {resolvingThis ? <Loader2 size={10} className="animate-spin" /> : <Wand2 size={10} />}
+                    Resolve
+                  </button>
+                ) : null}
+              </div>
+              <p className="text-gray-200">{iss.problem}</p>
+              {iss.suggestion ? <p className="mt-1 text-gray-400 italic">→ {iss.suggestion}</p> : null}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -348,21 +454,22 @@ function SeasonRow({ series, season, seasons, issues, onSeriesUpdate, onIssuesUp
 
   const runGenerateEpisodes = async () => {
     if (issues.length > 0) {
-      toast.error('Season already has episodes — clear them first or use the per-episode regenerate flow');
+      toast.error('Volume already has issues / episodes — clear them first or use the per-issue regenerate flow');
       return;
     }
     setGeneratingEpisodes(true);
     const result = await generatePipelineSeasonEpisodes(series.id, season.id, { commit: true })
       .catch((err) => {
-        toast.error(err.message || 'Failed to generate episodes');
+        toast.error(err.message || 'Failed to generate issues / episodes');
         return null;
       });
     setGeneratingEpisodes(false);
     if (!result) return;
-    // Refresh the issues list so the new ones appear under this season.
+    // Refresh the issues list so the new ones land under this volume.
     const refreshed = await listPipelineIssues(series.id).catch(() => null);
     if (refreshed) onIssuesUpdate(refreshed);
-    toast.success(`Generated ${result.createdIssues?.length || 0} episode${result.createdIssues?.length === 1 ? '' : 's'}`);
+    const n = result.createdIssues?.length || 0;
+    toast.success(`Generated ${n} issue${n === 1 ? '' : 's'} / episode${n === 1 ? '' : 's'}`);
   };
 
   const runDeleteSeason = async () => {
@@ -375,9 +482,10 @@ function SeasonRow({ series, season, seasons, issues, onSeriesUpdate, onIssuesUp
     const refreshed = await listPipelineIssues(series.id).catch(() => null);
     if (refreshed) onIssuesUpdate(refreshed);
     if (result.reassignedIssueCount > 0) {
-      toast.success(`Season deleted; ${result.reassignedIssueCount} episode${result.reassignedIssueCount === 1 ? '' : 's'} un-grouped`);
+      const n = result.reassignedIssueCount;
+      toast.success(`Volume deleted; ${n} issue${n === 1 ? '' : 's'} / episode${n === 1 ? '' : 's'} un-grouped`);
     } else {
-      toast.success('Season deleted');
+      toast.success('Volume / season deleted');
     }
   };
   const [armDelete, deleteSeason] = useArmedAction(runDeleteSeason);
@@ -389,14 +497,14 @@ function SeasonRow({ series, season, seasons, issues, onSeriesUpdate, onIssuesUp
           type="button"
           onClick={() => setCollapsed(!collapsed)}
           className="text-gray-500 hover:text-white p-0.5"
-          aria-label={collapsed ? 'Expand season' : 'Collapse season'}
+          aria-label={collapsed ? 'Expand volume / season' : 'Collapse volume / season'}
         >
           {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
         </button>
-        <span className="text-xs text-gray-500 font-mono">S{season.number}</span>
+        <span className="text-xs text-gray-500 font-mono" title="Volume / Season">V{season.number}</span>
         <span className="text-sm text-white font-medium truncate">{season.title || '(untitled)'}</span>
-        <span className="text-[10px] uppercase tracking-wider text-gray-500">
-          {issues.length} / {season.episodeCountTarget || '?'} episodes
+        <span className="text-[10px] uppercase tracking-wider text-gray-500" title="Issues / Episodes">
+          {issues.length} / {season.episodeCountTarget || '?'} issues
         </span>
         <button
           type="button"
@@ -409,8 +517,8 @@ function SeasonRow({ series, season, seasons, issues, onSeriesUpdate, onIssuesUp
           type="button"
           onClick={deleteSeason}
           className={`p-1.5 ${armDelete ? 'text-port-error' : 'text-gray-500 hover:text-port-error'}`}
-          aria-label={armDelete ? `Confirm delete season ${season.title}` : `Delete season ${season.title}`}
-          title={armDelete ? 'Click again to confirm' : 'Delete season'}
+          aria-label={armDelete ? `Confirm delete volume / season ${season.title}` : `Delete volume / season ${season.title}`}
+          title={armDelete ? 'Click again to confirm' : 'Delete volume / season'}
         >
           <Trash2 size={12} />
         </button>
@@ -481,7 +589,7 @@ function SeasonEditor({ series, season, seasons, onSeriesUpdate }) {
       ...series,
       seasons: seasons.map((s) => s.id === season.id ? updated : s).sort((a, b) => (a.number || 0) - (b.number || 0)),
     });
-    toast.success('Season saved');
+    toast.success('Volume / season saved');
   };
 
   return (
@@ -531,7 +639,8 @@ function SeasonEditor({ series, season, seasons, onSeriesUpdate }) {
           type="number"
           value={draft.episodeCountTarget || 0}
           onChange={(e) => setDraft({ ...draft, episodeCountTarget: parseInt(e.target.value, 10) || 0 })}
-          placeholder="Episode target"
+          placeholder="Issue / episode target"
+          title="Issue / episode count target for this volume / season"
           className="px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
           min={0}
         />
@@ -585,7 +694,7 @@ function SeasonActions({ series, season, hasEpisodes, generatingEpisodes, onGene
     if (refreshed) onIssuesUpdate(refreshed);
     setNewTitle('');
     setAdding(false);
-    toast.success(`Episode "${created.title}" added`);
+    toast.success(`Issue / Episode "${created.title}" added`);
   };
 
   return (
@@ -595,7 +704,7 @@ function SeasonActions({ series, season, hasEpisodes, generatingEpisodes, onGene
           <input
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
-            placeholder="Episode title…"
+            placeholder="Issue / Episode title…"
             className="flex-1 px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
             autoFocus
             maxLength={300}
@@ -622,7 +731,7 @@ function SeasonActions({ series, season, hasEpisodes, generatingEpisodes, onGene
             onClick={() => setAdding(true)}
             className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-gray-300 hover:text-white border border-port-border bg-port-bg"
           >
-            <Plus size={12} /> Add episode
+            <Plus size={12} /> Add issue / episode
           </button>
           <button
             type="button"
@@ -630,15 +739,15 @@ function SeasonActions({ series, season, hasEpisodes, generatingEpisodes, onGene
             disabled={generatingEpisodes || hasEpisodes || !seasonHasContext}
             title={
               hasEpisodes
-                ? 'Season already has episodes'
+                ? 'Volume already has issues / episodes'
                 : !seasonHasContext
-                  ? 'Add a season logline or synopsis first'
-                  : 'Have an LLM plan the per-episode breakdown'
+                  ? 'Add a volume logline or synopsis first'
+                  : 'Have an LLM plan the per-issue / per-episode breakdown'
             }
             className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-port-accent hover:text-white border border-port-border bg-port-bg hover:border-port-accent/40 disabled:opacity-40 disabled:hover:text-port-accent"
           >
             {generatingEpisodes ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
-            Generate episodes (LLM)
+            Generate issues / episodes (LLM)
           </button>
         </>
       )}
@@ -702,7 +811,7 @@ function IssueRow({ issue, seasons, onIssuesUpdate }) {
       >
         <option value="">— ungrouped —</option>
         {seasons.map((s) => (
-          <option key={s.id} value={s.id}>S{s.number}: {s.title}</option>
+          <option key={s.id} value={s.id}>V{s.number}: {s.title}</option>
         ))}
       </select>
       <button
@@ -710,7 +819,7 @@ function IssueRow({ issue, seasons, onIssuesUpdate }) {
         onClick={handleDelete}
         className={`p-1 ${armDelete ? 'text-port-error opacity-100' : 'text-gray-500 hover:text-port-error opacity-0 group-hover:opacity-100 focus:opacity-100'}`}
         aria-label={armDelete ? `Confirm delete ${issue.title}` : `Delete ${issue.title}`}
-        title={armDelete ? 'Click again to confirm' : 'Delete episode'}
+        title={armDelete ? 'Click again to confirm' : 'Delete issue / episode'}
       >
         <Trash2 size={12} />
       </button>
@@ -724,7 +833,7 @@ function UngroupedIssues({ issues, seasons, onIssuesUpdate }) {
       <div className="flex items-center gap-2 p-3 border-b border-port-border">
         <ChevronsUpDown size={16} className="text-gray-500" />
         <h3 className="text-xs uppercase tracking-wider text-gray-500">
-          Un-grouped episodes ({issues.length})
+          Un-grouped issues / episodes ({issues.length})
         </h3>
       </div>
       <ul className="px-3 py-2 space-y-1.5">
@@ -752,7 +861,7 @@ function AddSeasonRow({ series, onSeriesUpdate }) {
     if (!t) return;
     setSaving(true);
     const created = await createPipelineSeason(series.id, { title: t }).catch((err) => {
-      toast.error(err.message || 'Failed to create season');
+      toast.error(err.message || 'Failed to create volume / season');
       return null;
     });
     setSaving(false);
@@ -763,7 +872,7 @@ function AddSeasonRow({ series, onSeriesUpdate }) {
     });
     setTitle('');
     setAdding(false);
-    toast.success(`Season ${created.number}: ${created.title} added`);
+    toast.success(`Volume / Season ${created.number}: ${created.title} added`);
   };
 
   if (!adding) {
@@ -773,7 +882,7 @@ function AddSeasonRow({ series, onSeriesUpdate }) {
         onClick={() => setAdding(true)}
         className="inline-flex items-center gap-1 px-3 py-2 rounded border border-dashed border-port-border bg-port-bg text-sm text-gray-400 hover:text-white hover:border-port-accent/40"
       >
-        <Plus size={14} /> Add season
+        <Plus size={14} /> Add volume / season
       </button>
     );
   }
@@ -782,7 +891,7 @@ function AddSeasonRow({ series, onSeriesUpdate }) {
       <input
         value={title}
         onChange={(e) => setTitle(e.target.value)}
-        placeholder="Season title…"
+        placeholder="Volume / Season title…"
         className="w-72 px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm"
         autoFocus
         maxLength={200}
@@ -793,7 +902,7 @@ function AddSeasonRow({ series, onSeriesUpdate }) {
         className="inline-flex items-center gap-1 px-3 py-2 rounded bg-port-accent text-white text-sm font-medium disabled:opacity-40"
       >
         {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-        Add season
+        Add volume / season
       </button>
       <button
         type="button"

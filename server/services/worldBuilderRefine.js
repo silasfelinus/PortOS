@@ -16,6 +16,10 @@ import { getActiveProvider, getProviderById } from "./providers.js";
 import { createRun, executeApiRun, executeCliRun } from "./runner.js";
 import { resolveEffectiveModel } from "../lib/promptRunner.js";
 import {
+  renderCategoriesForPrompt as renderCategoriesShared,
+  renderCompositesForPrompt as renderCompositesShared,
+} from "../lib/worldPromptRenderers.js";
+import {
   COMPOSITE_PROMPT_MAX,
   COMPOSITE_SHEETS_MAX,
   LOCKABLE_FIELDS,
@@ -151,31 +155,11 @@ export function collapseStyleDirectionDupes(starter) {
   return `${stripped}\n\n${last}`.trim();
 }
 
-const renderCategoriesForPrompt = (categories) => {
-  const entries = Object.entries(categories || {});
-  if (!entries.length) return "";
-  return entries
-    .map(([key, cat]) => {
-      const variations = (cat?.variations || [])
-        .map((v) => {
-          const flag = v.locked ? " [LOCKED]" : "";
-          return `    - "${v.label}"${flag}: ${v.prompt}`;
-        })
-        .join("\n");
-      return `  ${key}:\n${variations || "    (no variations yet)"}`;
-    })
-    .join("\n");
-};
+const renderCategoriesForPrompt = (categories) =>
+  renderCategoriesShared(categories, { showLocked: true });
 
-const renderCompositesForPrompt = (composites) => {
-  if (!composites?.length) return "";
-  return composites
-    .map((c) => {
-      const flag = c.locked ? " [LOCKED]" : "";
-      return `  - (${c.kind || "reference_sheet"}) "${c.label}"${flag}: ${c.prompt}`;
-    })
-    .join("\n");
-};
+const renderCompositesForPrompt = (composites) =>
+  renderCompositesShared(composites, { showLocked: true });
 
 export function buildWorldRefinePrompt({
   starterPrompt,
@@ -212,6 +196,11 @@ STRUCTURE RULES (the world has been expanded — categories and composite sheets
 - Each composite sheet is a multi-subject board (kind "reference_sheet" or "world_pitch_poster") with { "label", "prompt" }, also [LOCKED]-flaggable.
 - Variations / composites flagged [LOCKED] must be returned with their EXACT original label + prompt — do not rephrase, expand, trim, or "lightly clean up" them. The server discards changes to locked items.
 - Unlocked variations / composites may be rewritten, replaced (same label, new prompt), or REMOVED if the user's feedback warrants it. Removing an item means omitting it from the response.
+- EXPLICIT REMOVAL IS A DIRECT ORDER. If the user names a specific variation, composite, faction, character, location, or other entity to remove ("drop X", "remove X", "delete X", "get rid of X", "no more X"), you MUST:
+  (a) OMIT any variation whose label matches X from the response entirely (do not return it under a renamed label either).
+  (b) OMIT any composite sheet whose primary subject IS X — even if a sibling subject remains. For example, if the user removes "Faction A" and a sheet is titled "Faction A vs Faction B branding sheet", omit the whole sheet; replace it with a single-subject sheet for Faction B only if the world still warrants it.
+  (c) SCRUB every textual reference to X from the prompts of any remaining unlocked composites and variations (faction lists, inset panels, comparison columns, callouts, etc.). Rewrite those prompts so X is not mentioned. If a remaining unlocked composite's prompt becomes incoherent once X is scrubbed, remove that composite too.
+  (d) References to X inside LOCKED items (locked variations, locked composites, locked narrative fields) cannot be edited — leave them, but do not let them tempt you into re-adding X under a new label. The server will not re-add X just because a locked field still mentions it.
 - You MAY ADD new variations to any existing category, propose ENTIRELY NEW categories, and ADD new composite sheets when the feedback motivates it. Use snake_case keys for new category names (e.g. "secret_rituals").
 - Keep category counts manageable: at most ${WORLD_CATEGORY_COUNT_MAX} total categories, ${VARIATIONS_PER_CATEGORY_MAX} variations per category, ${COMPOSITE_SHEETS_MAX} composite sheets.
 - Variation prompts ≤${PROMPT_FRAGMENT_MAX} chars; composite prompts ≤${COMPOSITE_PROMPT_MAX} chars; labels ≤${VARIATION_LABEL_MAX} chars.

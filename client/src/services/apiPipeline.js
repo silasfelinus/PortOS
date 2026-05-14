@@ -191,6 +191,16 @@ export const verifyPipelineArc = (seriesId, { providerOverride, modelOverride } 
     body: JSON.stringify({ providerOverride, modelOverride }),
   });
 
+// Auto-resolve verification findings — server runs an LLM pass that rewrites
+// the arc + volume/season outlines to address every finding, then persists.
+// Pass `findings: [...]` to resolve only that subset; omit to re-verify and
+// resolve everything. Returns { series, applied, notes, findings, runId, ... }.
+export const resolvePipelineArcIssues = (seriesId, { findings, providerOverride, modelOverride } = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/arc/resolve-issues`, {
+    method: 'POST',
+    body: JSON.stringify({ findings, providerOverride, modelOverride }),
+  });
+
 // ---- Auto-run text chain ----
 export const startPipelineAutoRunText = (issueId, opts = {}) =>
   request(`/pipeline/issues/${encodeURIComponent(issueId)}/auto-run-text`, {

@@ -21,9 +21,12 @@
 
 import { runStagedLLM } from '../../lib/stageRunner.js';
 import { ServerError } from '../../lib/errorHandler.js';
-import { getSeries } from './series.js';
+import { getSeries, updateSeries } from './series.js';
 import { listIssues } from './issues.js';
 import { sanitizeArc, sanitizeSeasonList, sanitizeSeason, buildSeason } from '../../lib/storyArc.js';
+import { recommendStructure, describeStructure } from '../../lib/seasonStructure.js';
+import { getWorld } from '../worldBuilder.js';
+import { renderCategoriesForPrompt, renderCompositesForPrompt } from '../../lib/worldPromptRenderers.js';
 
 export const ERR_VALIDATION = 'PIPELINE_ARC_VALIDATION';
 const makeErr = (message, code) => Object.assign(new Error(message), { code });
@@ -31,20 +34,71 @@ const makeErr = (message, code) => Object.assign(new Error(message), { code });
 const VERIFY_SEVERITIES = new Set(['high', 'medium', 'low']);
 const ARC_ROLES = new Set(['pilot', 'complication', 'midpoint', 'b-plot', 'all-is-lost', 'finale']);
 
-/**
- * Pull only the fields the arc-overview prompt cares about from the series
- * bible, so a verbose series record doesn't blow the prompt budget.
- */
-function buildArcOverviewContext(series) {
+// The world is the canonical source for factions, characters, environments,
+// etc. — without this, the arc planner would only see the series' own
+// characters/settings/objects which are usually empty pre-prose.
+async function loadWorldContext(worldId) {
+  if (!worldId) return null;
+  const world = await getWorld(worldId).catch(() => null);
+  if (!world) return null;
+
+  const embrace = Array.isArray(world.influences?.embrace) ? world.influences.embrace : [];
+  const avoid = Array.isArray(world.influences?.avoid) ? world.influences.avoid : [];
+
+  return {
+    worldName: world.name || '',
+    worldStarter: world.starterPrompt || '',
+    worldLogline: world.logline || '',
+    worldPremise: world.premise || '',
+    worldStyleNotes: world.styleNotes || '',
+    worldInfluencesEmbrace: embrace.length ? embrace.join(', ') : '(none)',
+    worldInfluencesAvoid: avoid.length ? avoid.join(', ') : '(none)',
+    worldCategoriesText: renderCategoriesForPrompt(world.categories) || '(none)',
+    worldCompositesText: renderCompositesForPrompt(world.compositeSheets) || '(none)',
+  };
+}
+
+// Fallback when series has no linked world — prompt partials still expect
+// these variables to be defined.
+const EMPTY_WORLD_CONTEXT = {
+  worldName: '(no linked world)',
+  worldStarter: '',
+  worldLogline: '',
+  worldPremise: '',
+  worldStyleNotes: '',
+  worldInfluencesEmbrace: '(none)',
+  worldInfluencesAvoid: '(none)',
+  worldCategoriesText: '(none — series has no linked World Builder world)',
+  worldCompositesText: '(none)',
+};
+
+// Resolve world context, accepting an optional preloaded value so callers
+// that chain (verify → resolve) don't reload the same world twice.
+async function resolveWorldContext(series, preloaded) {
+  if (preloaded) return preloaded;
+  return (await loadWorldContext(series.worldId)) || EMPTY_WORLD_CONTEXT;
+}
+
+// The `recommendedStructure` field encodes comic-as-TV norms (6–10 per
+// season, single season ≤ 12, 3-season arc around 18–30) so the LLM stops
+// defaulting to 3 seasons regardless of total count.
+async function buildArcOverviewContext(series, preloadedWorld) {
+  const structure = recommendStructure(series.issueCountTarget);
+  const world = await resolveWorldContext(series, preloadedWorld);
   return {
     series: {
       name: series.name,
       logline: series.logline,
       premise: series.premise,
       styleNotes: series.styleNotes,
-      targetFormat: series.targetFormat,
       issueCountTarget: series.issueCountTarget,
     },
+    ...world,
+    recommendedStructure: structure
+      ? describeStructure(structure)
+      : '(no target episode count set — propose 1–3 volumes based on premise weight)',
+    recommendedSeasonCount: structure ? structure.seasons : '',
+    recommendedPerSeasonJson: structure ? JSON.stringify(structure.perSeason) : '[]',
     existingCharactersJson: JSON.stringify(series.characters || [], null, 2),
     existingSettingsJson: JSON.stringify(series.settings || [], null, 2),
     existingObjectsJson: JSON.stringify(series.objects || [], null, 2),
@@ -75,7 +129,7 @@ function shapeSeasonOutlines(rawOutlines) {
 
 export async function generateArcOverview(seriesId, options = {}) {
   const series = await getSeries(seriesId);
-  const ctx = buildArcOverviewContext(series);
+  const ctx = await buildArcOverviewContext(series);
   const { content, runId, providerId, model } = await runStagedLLM(
     'pipeline-arc-overview',
     ctx,
@@ -112,7 +166,7 @@ export async function generateArcOverview(seriesId, options = {}) {
  * is a textual summary of the seasons BEFORE this one (synopsis + logline),
  * so the LLM has continuity to work against without re-reading every season.
  */
-function buildSeasonEpisodesContext(series, season, priorSeasons) {
+async function buildSeasonEpisodesContext(series, season, priorSeasons, preloadedWorld) {
   const arc = series.arc || {};
   const themesCsv = Array.isArray(arc.themes) ? arc.themes.join(', ') : '';
   const priorSeasonsContext = priorSeasons.length === 0
@@ -120,6 +174,7 @@ function buildSeasonEpisodesContext(series, season, priorSeasons) {
     : priorSeasons
       .map((s) => `### Season ${s.number} — ${s.title}\n\n${s.logline}\n\n${s.synopsis || '(no synopsis)'}`)
       .join('\n\n');
+  const world = await resolveWorldContext(series, preloadedWorld);
   return {
     series: {
       name: series.name,
@@ -127,6 +182,7 @@ function buildSeasonEpisodesContext(series, season, priorSeasons) {
       premise: series.premise,
       styleNotes: series.styleNotes,
     },
+    ...world,
     arc: {
       logline: arc.logline || '',
       protagonistArc: arc.protagonistArc || '',
@@ -205,7 +261,7 @@ export async function generateSeasonEpisodes(seriesId, seasonId, options = {}) {
   // sanitizer; this matches what the user is editing on screen.
   const priorSeasons = seasons.filter((s) => (s.number || 0) < (season.number || 0));
 
-  const ctx = buildSeasonEpisodesContext(series, season, priorSeasons);
+  const ctx = await buildSeasonEpisodesContext(series, season, priorSeasons);
   const { content, runId, providerId, model } = await runStagedLLM(
     'pipeline-season-episodes',
     ctx,
@@ -233,7 +289,7 @@ export async function generateSeasonEpisodes(seriesId, seasonId, options = {}) {
  * looked up via `listIssues` so the verify pass sees the *current* set, not
  * a stale snapshot.
  */
-async function buildVerifyContext(series) {
+async function buildVerifyContext(series, preloadedWorld) {
   const seasons = sanitizeSeasonList(series.seasons || []);
   const issues = await listIssues({ seriesId: series.id });
   // Group issues by seasonId so the tree's leaf order matches the seasons'
@@ -273,13 +329,14 @@ async function buildVerifyContext(series) {
     });
   }
   const arc = series.arc || {};
+  const world = await resolveWorldContext(series, preloadedWorld);
   return {
     series: {
       name: series.name,
       logline: series.logline,
       premise: series.premise,
-      targetFormat: series.targetFormat,
     },
+    ...world,
     arc: {
       logline: arc.logline || '',
       summary: arc.summary || '',
@@ -322,7 +379,7 @@ export async function verifyArc(seriesId, options = {}) {
       { status: 400, code: 'PIPELINE_NO_ARC' },
     );
   }
-  const ctx = await buildVerifyContext(series);
+  const ctx = await buildVerifyContext(series, options.preloadedWorld);
   const { content, runId, providerId, model } = await runStagedLLM(
     'pipeline-arc-verify',
     ctx,
@@ -337,12 +394,143 @@ export async function verifyArc(seriesId, options = {}) {
   return { issues, raw: content, runId, providerId, model };
 }
 
+async function buildResolveContext(series, findings, preloadedWorld) {
+  const ctx = await buildVerifyContext(series, preloadedWorld);
+  const structure = recommendStructure(series.issueCountTarget);
+  return {
+    ...ctx,
+    findingsJson: JSON.stringify(findings, null, 2),
+    recommendedStructure: structure
+      ? describeStructure(structure)
+      : '(no target episode count set)',
+    recommendedSeasonCount: structure ? structure.seasons : '',
+    recommendedPerSeasonJson: structure ? JSON.stringify(structure.perSeason) : '[]',
+  };
+}
+
+const RESOLVE_FINDING_MAX = 50;
+
+function shapeFindings(rawFindings) {
+  if (!Array.isArray(rawFindings)) return [];
+  const out = [];
+  for (const f of rawFindings) {
+    const problem = typeof f?.problem === 'string' ? f.problem.trim() : '';
+    if (!problem) continue;
+    out.push({
+      severity: VERIFY_SEVERITIES.has(f?.severity) ? f.severity : 'medium',
+      location: typeof f?.location === 'string' ? f.location.trim().slice(0, 200) : '',
+      problem: problem.slice(0, 2000),
+      suggestion: typeof f?.suggestion === 'string' ? f.suggestion.trim().slice(0, 2000) : '',
+    });
+    if (out.length >= RESOLVE_FINDING_MAX) break;
+  }
+  return out;
+}
+
+// Per-episode (issue) records are NOT touched — those are user-owned scripts
+// and shouldn't get clobbered by a structural fix. If a finding's only
+// actionable resolution would require deleting issues, the LLM is told to
+// flag that in the response's `notes` field rather than executing it.
+// `options.findings` empty / omitted = re-run verify first and resolve
+// everything it returns.
+export async function resolveVerifyIssues(seriesId, options = {}) {
+  const series = await getSeries(seriesId);
+  if (!series.arc) {
+    throw new ServerError(
+      'Series has no arc to resolve — run /arc/generate first',
+      { status: 400, code: 'PIPELINE_NO_ARC' },
+    );
+  }
+
+  // Load the world once and thread it through verify + resolve so the
+  // refresh-then-resolve path doesn't hit the filesystem twice for the same
+  // world.
+  const world = await resolveWorldContext(series);
+
+  let findings = shapeFindings(options.findings);
+  if (!findings.length) {
+    const fresh = await verifyArc(seriesId, { ...options, preloadedWorld: world });
+    findings = fresh.issues || [];
+    if (!findings.length) {
+      return { series, applied: false, notes: 'No findings to resolve', findings: [] };
+    }
+  }
+
+  const ctx = await buildResolveContext(series, findings, world);
+  const { content, runId, providerId, model } = await runStagedLLM(
+    'pipeline-arc-resolve',
+    ctx,
+    {
+      providerOverride: options.providerOverride,
+      modelOverride: options.modelOverride,
+      returnsJson: true,
+      source: 'pipeline-arc-resolve',
+    },
+  );
+
+  const arc = sanitizeArc({
+    logline: content?.arc?.logline || series.arc.logline || '',
+    summary: content?.arc?.summary || series.arc.summary || '',
+    themes: content?.arc?.themes ?? series.arc.themes,
+    protagonistArc: content?.arc?.protagonistArc ?? series.arc.protagonistArc ?? '',
+    status: 'draft',
+  });
+
+  // Round-trip the LLM's seasons through `buildSeason` if they include a
+  // brand-new entry (no `id`), otherwise preserve the existing `id` so child
+  // issues still join their season cleanly. The sanitizer enforces the
+  // canonical shape regardless.
+  const existingById = new Map((series.seasons || []).map((s) => [s.id, s]));
+  const proposedSeasons = Array.isArray(content?.seasons) ? content.seasons : [];
+  const merged = proposedSeasons.map((raw) => {
+    const existing = raw?.id ? existingById.get(raw.id) : null;
+    if (existing) {
+      return sanitizeSeason({
+        ...existing,
+        title: typeof raw.title === 'string' ? raw.title : existing.title,
+        number: Number.isFinite(raw.number) ? raw.number : existing.number,
+        logline: typeof raw.logline === 'string' ? raw.logline : existing.logline,
+        synopsis: typeof raw.synopsis === 'string' ? raw.synopsis : existing.synopsis,
+        endingHook: typeof raw.endingHook === 'string' ? raw.endingHook : existing.endingHook,
+        episodeCountTarget: Number.isFinite(raw.episodeCountTarget)
+          ? raw.episodeCountTarget
+          : existing.episodeCountTarget,
+        themes: Array.isArray(raw.themes) ? raw.themes : existing.themes,
+      });
+    }
+    return buildSeason({
+      number: raw?.number,
+      title: raw?.title,
+      logline: raw?.logline,
+      synopsis: raw?.synopsis,
+      endingHook: raw?.endingHook,
+      episodeCountTarget: raw?.episodeCountTarget,
+    });
+  }).filter(Boolean);
+
+  const seasons = sanitizeSeasonList(merged);
+  const updated = await updateSeries(seriesId, { arc, seasons });
+
+  const notes = typeof content?.notes === 'string' ? content.notes.trim().slice(0, 2000) : '';
+  return {
+    series: updated,
+    applied: true,
+    notes,
+    findings,
+    runId,
+    providerId,
+    model,
+  };
+}
+
 // Export internals for tests.
 export const __testing = {
   buildArcOverviewContext,
   buildSeasonEpisodesContext,
   buildVerifyContext,
+  buildResolveContext,
   shapeSeasonOutlines,
   shapeEpisodes,
   shapeVerifyIssues,
+  shapeFindings,
 };

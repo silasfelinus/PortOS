@@ -10,7 +10,7 @@
  * Mobile (< lg): single column, sidebar reflows above canvas.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Plus, Save, Trash2, Loader2, Workflow as WorkflowIcon, Globe, NotebookPen,
@@ -22,8 +22,8 @@ import {
   getPipelineSeries, updatePipelineSeries,
   listPipelineIssues,
   listWorlds,
-  PIPELINE_TARGET_FORMATS,
 } from '../services/api';
+import { recommendStructure, describeStructure } from '../lib/seasonStructure';
 
 const PIPELINE_SIDEBAR_KEY = 'portos-pipeline-series-sidebar-collapsed';
 
@@ -69,29 +69,57 @@ export default function PipelineSeries() {
     });
   };
 
+  // Track the last server-persisted snapshot so `flushPending` knows whether
+  // the local draft has diverged. Ref instead of state — we don't want
+  // re-renders, just up-to-date comparison data for the async LLM hooks below.
+  const lastSavedRef = useRef(null);
+  useEffect(() => { if (series && !lastSavedRef.current) lastSavedRef.current = series; }, [series]);
+
   const patchSeries = (patch) => setSeries((prev) => ({ ...prev, ...patch }));
 
-  const handleSave = async () => {
-    if (!series) return;
-    setSaving(true);
+  // Wrapped setter that ArcCanvas (and other LLM-flow children) use when the
+  // server has just confirmed a save. Keeps the dirty-check ref aligned so a
+  // subsequent flushPending() doesn't re-PATCH the same state.
+  const updateSeriesFromServer = (next) => {
+    setSeries(next);
+    lastSavedRef.current = next;
+  };
+
+  // If local bible fields diverged from the last server snapshot, PATCH so
+  // generate / verify / resolve work against the on-screen state. Returns
+  // `true` if a save occurred so the caller can decide whether to surface a
+  // confirmation toast.
+  const flushPending = async () => {
+    if (!series) return false;
+    const saved = lastSavedRef.current || series;
+    const fields = ['name', 'logline', 'premise', 'styleNotes', 'issueCountTarget', 'worldId'];
+    const dirty = fields.some((k) => (series[k] ?? '') !== (saved[k] ?? ''))
+      || JSON.stringify(series.characters || []) !== JSON.stringify(saved.characters || []);
+    if (!dirty) return false;
     const updated = await updatePipelineSeries(series.id, {
       name: series.name,
       logline: series.logline,
       premise: series.premise,
       worldId: series.worldId || null,
       styleNotes: series.styleNotes,
-      targetFormat: series.targetFormat,
       issueCountTarget: series.issueCountTarget,
       characters: series.characters,
     }).catch((err) => {
-      toast.error(err.message || 'Save failed');
+      toast.error(`Pre-flush save failed: ${err.message}`);
       return null;
     });
+    if (!updated) return false;
+    setSeries(updated);
+    lastSavedRef.current = updated;
+    return true;
+  };
+
+  const handleSave = async () => {
+    if (!series) return;
+    setSaving(true);
+    const didSave = await flushPending();
     setSaving(false);
-    if (updated) {
-      setSeries(updated);
-      toast.success('Series saved');
-    }
+    if (didSave) toast.success('Series saved');
   };
 
   const handleAddCharacter = () => {
@@ -126,55 +154,32 @@ export default function PipelineSeries() {
   if (loading) return <div className="p-6 text-gray-500 text-sm">Loading series…</div>;
   if (!series) return null;
 
-  // Tailwind doesn't accept arbitrary classes via interpolation, so the grid
-  // template flips between collapsed-rail (48px) and expanded (360px) via two
-  // explicit class strings. `minmax(0,1fr)` is required on the canvas column
-  // so long titles in cards don't push the layout horizontally.
-  const gridCls = sidebarCollapsed
-    ? 'grid grid-cols-1 lg:grid-cols-[48px_minmax(0,1fr)] gap-4 lg:gap-6'
-    : 'grid grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)] gap-4 lg:gap-6';
+  // Mobile = flex column (grid template ignored); lg+ = grid where the inline
+  // `gridTemplateColumns` swap between collapsed/expanded widths takes effect.
+  // Mirrors the WorldBuilder full-bleed layout so the bible rail sits flush
+  // against the main app sidebar instead of floating inside Layout padding.
+  const desktopGridCols = sidebarCollapsed ? '32px minmax(0, 1fr)' : '360px minmax(0, 1fr)';
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-3 flex-wrap">
-        <Link to="/pipeline" className="inline-flex items-center gap-1 text-sm text-gray-400 hover:text-white">
-          <ArrowLeft size={14} /> All Series
-        </Link>
-        <WorkflowIcon className="w-5 h-5 text-port-accent ml-2" />
-        <h1 className="text-xl font-bold text-white truncate">{series.name || 'Untitled series'}</h1>
-        {series.writersRoomWorkId ? (
-          <Link
-            to={`/writers-room/works/${encodeURIComponent(series.writersRoomWorkId)}`}
-            className="ml-2 inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-gray-400 hover:text-white border border-port-border bg-port-card"
-            title="Open the Writers Room draft this series was promoted from"
-          >
-            <NotebookPen size={12} /> Writers Room
-          </Link>
-        ) : null}
-        <button
-          type="button"
-          onClick={handleSave}
-          disabled={saving}
-          className="ml-auto inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
-        >
-          {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-          Save series
-        </button>
-      </div>
-
-      <div className={gridCls}>
-        <aside className="lg:sticky lg:top-4 lg:self-start lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
-          {sidebarCollapsed ? (
+    <div className="flex flex-col h-full">
+      <div
+        className="flex-1 flex flex-col lg:grid min-h-0"
+        style={{ gridTemplateColumns: desktopGridCols }}
+      >
+        {sidebarCollapsed ? (
+          <aside className="hidden lg:flex border-r border-port-border bg-port-card/40 items-start justify-center pt-3">
             <button
               type="button"
               onClick={toggleSidebar}
-              className="hidden lg:flex w-12 h-12 items-center justify-center rounded-lg border border-port-border bg-port-card text-gray-400 hover:text-white hover:border-port-accent/40"
+              className="p-1.5 text-gray-500 hover:text-white"
               title="Show series bible"
               aria-label="Expand series bible sidebar"
             >
-              <PanelLeftOpen size={16} />
+              <PanelLeftOpen size={14} />
             </button>
-          ) : (
+          </aside>
+        ) : (
+          <aside className="border-b lg:border-b-0 lg:border-r border-port-border bg-port-card/40 lg:overflow-y-auto">
             <BibleSidebar
               series={series}
               worlds={worlds}
@@ -184,17 +189,44 @@ export default function PipelineSeries() {
               onRemoveCharacter={handleRemoveCharacter}
               onCollapse={toggleSidebar}
             />
-          )}
-        </aside>
+          </aside>
+        )}
 
-        <main className="min-w-0">
+        <section className="flex flex-col gap-4 p-4 min-h-0 lg:overflow-y-auto">
+          <header className="flex items-center gap-3 flex-wrap">
+            <Link to="/pipeline" className="inline-flex items-center gap-1 text-sm text-gray-400 hover:text-white">
+              <ArrowLeft size={14} /> All Series
+            </Link>
+            <WorkflowIcon className="w-5 h-5 text-port-accent ml-2" />
+            <h1 className="text-xl font-bold text-white truncate">{series.name || 'Untitled series'}</h1>
+            {series.writersRoomWorkId ? (
+              <Link
+                to={`/writers-room/works/${encodeURIComponent(series.writersRoomWorkId)}`}
+                className="ml-2 inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-gray-400 hover:text-white border border-port-border bg-port-card"
+                title="Open the Writers Room draft this series was promoted from"
+              >
+                <NotebookPen size={12} /> Writers Room
+              </Link>
+            ) : null}
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving}
+              className="ml-auto inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
+            >
+              {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+              Save series
+            </button>
+          </header>
+
           <ArcCanvas
             series={series}
             issues={issues}
-            onSeriesUpdate={setSeries}
+            onSeriesUpdate={updateSeriesFromServer}
             onIssuesUpdate={handleIssuesUpdate}
+            onFlushPending={flushPending}
           />
-        </main>
+        </section>
       </div>
     </div>
   );
@@ -202,7 +234,7 @@ export default function PipelineSeries() {
 
 function BibleSidebar({ series, worlds, patchSeries, onAddCharacter, onUpdateCharacter, onRemoveCharacter, onCollapse }) {
   return (
-    <section className="p-4 bg-port-card border border-port-border rounded-lg space-y-4">
+    <section className="px-3 py-3 space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-xs uppercase tracking-wider text-gray-500">Bible</h2>
         <button
@@ -224,15 +256,6 @@ function BibleSidebar({ series, worlds, patchSeries, onAddCharacter, onUpdateCha
           maxLength={200}
         />
       </Field>
-      <Field label="Target format">
-        <select
-          value={series.targetFormat || 'comic+tv'}
-          onChange={(e) => patchSeries({ targetFormat: e.target.value })}
-          className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white"
-        >
-          {PIPELINE_TARGET_FORMATS.map((tf) => <option key={tf} value={tf}>{tf}</option>)}
-        </select>
-      </Field>
       <Field label="Logline">
         <input
           value={series.logline || ''}
@@ -242,15 +265,18 @@ function BibleSidebar({ series, worlds, patchSeries, onAddCharacter, onUpdateCha
           maxLength={500}
         />
       </Field>
-      <Field label="Target issue count">
-        <input
-          type="number"
-          min={0}
-          max={999}
-          value={series.issueCountTarget || 0}
-          onChange={(e) => patchSeries({ issueCountTarget: parseInt(e.target.value, 10) || 0 })}
-          className="w-32 px-3 py-2 bg-port-bg border border-port-border rounded text-white"
-        />
+      <Field label="Target issues / episodes">
+        <div className="flex items-center gap-3 flex-wrap">
+          <input
+            type="number"
+            min={0}
+            max={999}
+            value={series.issueCountTarget || 0}
+            onChange={(e) => patchSeries({ issueCountTarget: parseInt(e.target.value, 10) || 0 })}
+            className="w-32 px-3 py-2 bg-port-bg border border-port-border rounded text-white"
+          />
+          <StructureHint total={series.issueCountTarget || 0} />
+        </div>
       </Field>
 
       <Field label="Premise (the bible — fed into every stage's prompt context)">
@@ -375,5 +401,21 @@ function Field({ label, children }) {
       <span className="block text-xs uppercase tracking-wider text-gray-500 mb-1">{label}</span>
       {children}
     </label>
+  );
+}
+
+function StructureHint({ total }) {
+  const structure = recommendStructure(total);
+  if (!structure) {
+    return (
+      <span className="text-xs text-gray-500 italic">
+        Enter total issues — we'll suggest a volume/season split (norm: 6–10 per volume).
+      </span>
+    );
+  }
+  return (
+    <span className="text-xs text-gray-400">
+      Suggested: <span className="text-port-accent">{describeStructure(structure)}</span>
+    </span>
   );
 }

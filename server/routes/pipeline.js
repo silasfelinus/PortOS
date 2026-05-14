@@ -317,6 +317,20 @@ const arcGenerateSchema = z.object({ ...providerOverrideShape, commit: z.boolean
 const seasonEpisodesGenerateSchema = z.object({ ...providerOverrideShape, commit: z.boolean().optional() });
 const arcVerifySchema = z.object(providerOverrideShape);
 
+// Auto-resolve verification findings. `findings` empty/omitted = re-verify
+// first then resolve everything; otherwise the LLM only addresses the
+// caller-supplied subset (per-finding "Resolve" buttons).
+const verifyFindingSchema = z.object({
+  severity: z.enum(['high', 'medium', 'low']).optional(),
+  location: z.string().trim().max(200).optional(),
+  problem: z.string().trim().min(1).max(2000),
+  suggestion: z.string().trim().max(2000).optional(),
+});
+const arcResolveSchema = z.object({
+  ...providerOverrideShape,
+  findings: z.array(verifyFindingSchema).max(50).optional(),
+});
+
 const autoRunSchema = z.object({
   providerId: z.string().trim().max(80).optional(),
   model: z.string().trim().max(200).optional(),
@@ -524,6 +538,16 @@ router.post('/series/:id/arc/verify', asyncHandler(async (req, res) => {
   await seriesSvc.getSeries(req.params.id).catch((err) => { throw mapServiceError(err); });
   const body = validateRequest(arcVerifySchema, req.body ?? {});
   const result = await arcPlanner.verifyArc(req.params.id, body)
+    .catch((err) => { throw mapServiceError(err); });
+  res.json(result);
+}));
+
+// Auto-resolve verification findings. Persists the LLM's patched arc + season
+// outlines in one call. Per-episode issue records are not touched.
+router.post('/series/:id/arc/resolve-issues', asyncHandler(async (req, res) => {
+  await seriesSvc.getSeries(req.params.id).catch((err) => { throw mapServiceError(err); });
+  const body = validateRequest(arcResolveSchema, req.body ?? {});
+  const result = await arcPlanner.resolveVerifyIssues(req.params.id, body)
     .catch((err) => { throw mapServiceError(err); });
   res.json(result);
 }));

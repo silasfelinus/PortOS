@@ -15,7 +15,6 @@ import {
   listPipelineSeries,
   createPipelineSeries,
   deletePipelineSeries,
-  PIPELINE_TARGET_FORMATS,
   listWorlds,
   WORLD_LOGLINE_MAX,
   WORLD_PREMISE_MAX,
@@ -28,7 +27,6 @@ const emptyForm = () => ({
   logline: '',
   premise: '',
   styleNotes: '',
-  targetFormat: 'comic+tv',
 });
 
 export default function Pipeline() {
@@ -92,7 +90,6 @@ export default function Pipeline() {
       premise: form.premise.trim(),
       styleNotes: form.styleNotes.trim(),
       worldId: form.worldId || undefined,
-      targetFormat: form.targetFormat,
     }).catch((err) => {
       toast.error(err.message || 'Failed to create series');
       return null;
@@ -233,21 +230,6 @@ export default function Pipeline() {
               />
             </div>
           </div>
-          <div>
-            <label htmlFor="series-format" className="block text-xs uppercase tracking-wider text-gray-500 mb-1">
-              Target format
-            </label>
-            <select
-              id="series-format"
-              value={form.targetFormat}
-              onChange={(e) => setForm((f) => ({ ...f, targetFormat: e.target.value }))}
-              className="px-3 py-2 bg-port-bg border border-port-border rounded text-white"
-            >
-              {PIPELINE_TARGET_FORMATS.map((tf) => (
-                <option key={tf} value={tf}>{tf}</option>
-              ))}
-            </select>
-          </div>
           <div className="flex gap-2">
             <button
               type="submit"
@@ -283,9 +265,11 @@ export default function Pipeline() {
                 ) : (
                   <div className="text-xs text-gray-600 italic">No logline yet</div>
                 )}
-                <div className="text-xs text-gray-600 mt-1">
-                  {s.targetFormat} {s.issueCountTarget ? `• target ${s.issueCountTarget} issues` : ''}
-                </div>
+                {s.issueCountTarget ? (
+                  <div className="text-xs text-gray-600 mt-1">
+                    Target {s.issueCountTarget} issues / episodes
+                  </div>
+                ) : null}
               </Link>
               <button
                 type="button"

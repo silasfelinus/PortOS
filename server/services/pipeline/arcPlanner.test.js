@@ -26,6 +26,7 @@ vi.mock('../../lib/stageRunner.js', () => ({
 const seriesSvc = await import('./series.js');
 const issuesSvc = await import('./issues.js');
 const seasonsSvc = await import('./seasons.js');
+const worldSvc = await import('../worldBuilder.js');
 const planner = await import('./arcPlanner.js');
 
 async function setupSeries(overrides = {}) {
@@ -113,6 +114,61 @@ describe('arcPlanner — generateArcOverview', () => {
     const out = await planner.generateArcOverview(s.id);
     expect(out.arc).toBe(null);
     expect(out.seasons).toEqual([]);
+  });
+
+  it('feeds the linked world\'s categories + composite sheets into the prompt context', async () => {
+    // Create a world with factions + a composite sheet, then a series linked to it.
+    const world = await worldSvc.createWorld({
+      name: 'Clandestiny',
+      starterPrompt: 'paranormal investigators in a candy-bright city',
+      logline: 'World logline',
+      premise: 'World premise',
+      styleNotes: 'cel-shaded, pastels',
+      influences: { embrace: ['Moebius', 'Saga'], avoid: ['gritty'] },
+      categories: {
+        factions: { variations: [
+          { label: 'The Lollipop Bureau', prompt: 'pastel public-facing agency' },
+          { label: 'The Velvet Null', prompt: 'minimalist rival' },
+        ] },
+        characters: { variations: [
+          { label: 'Mira Holt', prompt: 'field detective' },
+        ] },
+      },
+      compositeSheets: [
+        { kind: 'reference_sheet', label: 'Rival agencies branding', prompt: 'comparison sheet' },
+      ],
+    });
+    const s = await setupSeries({ worldId: world.id });
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        logline: 'L', summary: 'S', themes: [], protagonistArc: 'A',
+        seasonOutlines: [{ number: 1, title: 'Pilot' }],
+      },
+      runId: 'r1', providerId: 'p', model: 'm',
+    }));
+    await planner.generateArcOverview(s.id);
+
+    const ctx = stageRunnerSpy.mock.calls[0][1];
+    expect(ctx.worldName).toBe('Clandestiny');
+    expect(ctx.worldCategoriesText).toContain('factions');
+    expect(ctx.worldCategoriesText).toContain('The Lollipop Bureau');
+    expect(ctx.worldCategoriesText).toContain('Mira Holt');
+    expect(ctx.worldCompositesText).toContain('Rival agencies branding');
+    expect(ctx.worldInfluencesEmbrace).toContain('Moebius');
+    expect(ctx.worldInfluencesAvoid).toContain('gritty');
+  });
+
+  it('renders an "(no linked world)" placeholder when the series has no worldId', async () => {
+    const s = await setupSeries({ worldId: null });
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { logline: 'L', summary: 'S', themes: [], protagonistArc: 'A', seasonOutlines: [] },
+      runId: 'r1', providerId: 'p', model: 'm',
+    }));
+    await planner.generateArcOverview(s.id);
+    const ctx = stageRunnerSpy.mock.calls[0][1];
+    expect(ctx.worldName).toMatch(/no linked world/i);
+    expect(ctx.worldCategoriesText).toMatch(/none/i);
   });
 });
 
@@ -254,5 +310,83 @@ describe('arcPlanner — verifyArc', () => {
     expect(out.issues.map((i) => i.problem)).toEqual(['real one', 'no severity', 'invalid severity']);
     expect(out.issues[1].severity).toBe('medium');
     expect(out.issues[2].severity).toBe('medium');
+  });
+});
+
+describe('arcPlanner — resolveVerifyIssues', () => {
+  beforeEach(() => {
+    fileStore.clear();
+    uuidCounter = 0;
+    stageRunnerSpy = undefined;
+  });
+
+  it('throws 400 NO_ARC if the series has no arc to resolve', async () => {
+    const s = await setupSeries();
+    await expect(planner.resolveVerifyIssues(s.id, { findings: [{ problem: 'X' }] }))
+      .rejects.toMatchObject({ status: 400, code: 'PIPELINE_NO_ARC' });
+  });
+
+  it('persists the LLM-patched arc + seasons and preserves existing season ids', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'old logline', summary: 'old summary' } });
+    const existingSeason = await seasonsSvc.createSeason(s.id, {
+      title: 'Season 1',
+      logline: 'old s1 logline',
+      synopsis: 'old s1 synopsis',
+      episodeCountTarget: 4,
+    });
+
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        arc: { logline: 'new logline', summary: 'new summary', themes: ['legacy'], protagonistArc: 'arc' },
+        seasons: [
+          {
+            id: existingSeason.id,
+            number: 1,
+            title: 'Season 1',
+            logline: 'new s1 logline',
+            synopsis: 'new s1 synopsis',
+            endingHook: 'hook',
+            episodeCountTarget: 12,
+          },
+        ],
+        notes: '',
+      },
+      runId: 'r1', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.resolveVerifyIssues(s.id, {
+      findings: [{ severity: 'medium', problem: 'count vs weight', suggestion: 'raise count' }],
+    });
+
+    expect(out.applied).toBe(true);
+    expect(out.series.arc.logline).toBe('new logline');
+    expect(out.series.seasons).toHaveLength(1);
+    expect(out.series.seasons[0].id).toBe(existingSeason.id); // id preserved
+    expect(out.series.seasons[0].episodeCountTarget).toBe(12);
+    expect(out.series.seasons[0].logline).toBe('new s1 logline');
+
+    const call = stageRunnerSpy.mock.calls[0];
+    expect(call[0]).toBe('pipeline-arc-resolve');
+    expect(call[1]).toMatchObject({
+      findingsJson: expect.stringContaining('count vs weight'),
+      recommendedStructure: expect.any(String),
+    });
+  });
+
+  it('re-runs verify when no findings are supplied and short-circuits on a clean arc', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { arc: { logline: 'L' } });
+    // First call (from verify) returns no issues — resolve should short-circuit
+    // without making a second LLM call.
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { issues: [] },
+      runId: 'verify-r', providerId: 'p', model: 'm',
+    }));
+    const out = await planner.resolveVerifyIssues(s.id, {});
+    expect(out.applied).toBe(false);
+    expect(out.notes).toMatch(/no findings/i);
+    expect(stageRunnerSpy).toHaveBeenCalledTimes(1);
+    expect(stageRunnerSpy.mock.calls[0][0]).toBe('pipeline-arc-verify');
   });
 });
