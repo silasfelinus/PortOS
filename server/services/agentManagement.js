@@ -213,6 +213,12 @@ function parseTasklistCsvRow(line) {
 export async function getAgentProcessStats(agentId) {
   const agent = activeAgents.get(agentId);
   if (agent) {
+    // TUI agents may have a null pid until the PTY child is fully attached;
+    // ps/tasklist with a non-numeric pid produces misleading "dead" output.
+    if (!Number.isFinite(agent.pid)) {
+      return { active: true, agentId, pid: null, cpu: 0, memoryKb: 0, memoryMb: 0, state: 'unknown' };
+    }
+
     const { exec } = await import('child_process');
     const { promisify } = await import('util');
     const execAsync = promisify(exec);

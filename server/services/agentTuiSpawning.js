@@ -58,8 +58,15 @@ function appendModelArgs(args, model) {
   return effectiveModel ? [...args, '--model', effectiveModel] : args;
 }
 
+function inferTuiCommand(id) {
+  if (!id) return 'claude';
+  if (id.includes('codex')) return 'codex';
+  if (id.includes('gemini')) return 'gemini';
+  return 'claude';
+}
+
 export function buildTuiSpawnConfig(provider, model) {
-  const command = provider?.command || (provider?.id?.includes('codex') ? 'codex' : 'claude');
+  const command = provider?.command || inferTuiCommand(provider?.id);
   const baseArgs = [...(provider?.args || [])];
   const args = appendModelArgs(baseArgs, model);
 
