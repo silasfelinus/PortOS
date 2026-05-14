@@ -453,6 +453,26 @@
 
 ## Fixed
 
+- **CoS-spawned PRs — concise title + no double "Summary" heading.** Two
+  related bugs in the PR-creation path:
+  - The PR title was the raw user task description (e.g. "on the
+    settings/backup page, we should have a button to run the backup. Also,
+    we should show default…"), truncated at 100 chars. New helper
+    `git.suggestPRTitle()` picks the oldest commit subject on the branch as
+    the title (the agent already wrote a conventional `feat:`/`fix:` commit
+    message that summarizes the change far better than the prompt), falling
+    back to the description's first line when no commits are found. Used in
+    both the worktree-PR path and the JIRA-ticket PR path (where the
+    `${jiraTicketId}: ` prefix is preserved).
+  - The PR body rendered "Summary" twice — `generatePRDescription` wraps the
+    extracted agent summary in `## Summary`, but agents often write their own
+    `## Summary` heading at the top of their final message. `extractAgentSummary`
+    now strips a leading `Summary` / `## Summary` / `Summary:` heading before
+    returning, so the wrapping section is the only one in the rendered PR.
+  - Tests: 2 new `extractAgentSummary` cases for the heading-strip behavior;
+    `cleanupAgentWorktree.test.js` mock updated to stub `suggestPRTitle`.
+    Full server suite (4,549 tests) green.
+
 - **CoS orphan handler — no more duplicate `[Auto-Fix]` investigation tasks.**
   When `cleanupOrphanedAgents` swept up two stale "running" agents that shared a
   taskId, `handleOrphanedTask` ran once per agent. The first call blocked the
