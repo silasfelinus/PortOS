@@ -147,4 +147,13 @@
 
 ## Fixed
 
+- **Codex image gen — "Codex returned no session id" false negative.** With
+  long pipeline prompts (multi-KB comic-script payloads), codex emits the
+  banner + echoed prompt in a single stderr chunk that exceeds the
+  banner-scan buffer. The old `captureSession()` sliced the buffer's tail
+  before running the regex, chopping the `session id:` line off the front
+  and failing every render. Now matches before slicing, and stops feeding
+  stdout into the banner buffer so an interleaved stdout chunk can't split
+  the session-id line either. Adds regression tests for both paths.
+
 ## Removed
