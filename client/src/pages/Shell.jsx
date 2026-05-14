@@ -62,6 +62,12 @@ export default function Shell() {
   // Set to 'push' before any user-initiated switch (tab click, "New" button) so the next
   // activateSession pushes a history entry; auto/URL-driven switches keep the 'replace' default.
   const pendingNavIntentRef = useRef('replace');
+  // Target of an in-flight start/attach. Held until shell:started/shell:attached/shell:error
+  // resolves. Used to (a) gate keystrokes + quick commands so they don't fire into the previous
+  // session, (b) suppress old-session output that would otherwise paint into the cleared
+  // "Attaching…" terminal, and (c) ignore stale shell:attached responses when the user has
+  // rapid-fire-clicked through multiple tabs. The sentinel 'new' covers shell:start (id unknown).
+  const pendingAttachRef = useRef(null);
   const socket = useSocket();
   const [connected, setConnected] = useState(false);
   const [sessions, setSessions] = useState([]);
@@ -115,6 +121,8 @@ export default function Shell() {
 
   const emitShellInput = useCallback((data) => {
     if (!socket || !sessionIdRef.current) return;
+    // Don't fire quick-commands into the prior session while a switch/start is mid-flight.
+    if (pendingAttachRef.current) return;
     socket.emit('shell:input', { sessionId: sessionIdRef.current, data });
     termInstanceRef.current?.focus();
   }, [socket]);
@@ -232,7 +240,9 @@ export default function Shell() {
     if (!termInstanceRef.current || !socket) return;
 
     const disposable = termInstanceRef.current.onData((data) => {
-      if (sessionIdRef.current) {
+      // Drop keystrokes during a pending start/attach so they don't land in the previous
+      // session — the terminal has already been cleared and "Attaching…" is showing.
+      if (sessionIdRef.current && !pendingAttachRef.current) {
         socket.emit('shell:input', { sessionId: sessionIdRef.current, data });
       }
     });
@@ -262,6 +272,7 @@ export default function Shell() {
   const startSession = useCallback(({ intent } = {}) => {
     if (!socket?.connected) return;
     if (intent === 'push') pendingNavIntentRef.current = 'push';
+    pendingAttachRef.current = 'new';
     if (termInstanceRef.current) {
       termInstanceRef.current.clear();
       termInstanceRef.current.writeln('\x1b[36mStarting shell session...\x1b[0m');
@@ -277,6 +288,7 @@ export default function Shell() {
   const attachToSession = useCallback((sessionId, { intent } = {}) => {
     if (!socket?.connected) return;
     if (intent === 'push') pendingNavIntentRef.current = 'push';
+    pendingAttachRef.current = sessionId;
     if (termInstanceRef.current) {
       termInstanceRef.current.clear();
       termInstanceRef.current.writeln('\x1b[36mAttaching to session...\x1b[0m');
@@ -339,6 +351,12 @@ export default function Shell() {
     const handleSessions = (sessionList) => {
       sessionsRef.current = sessionList;
       setSessions(sessionList);
+      // Auto-pick helper: skip sessions already attached to another socket so we don't
+      // steal them via the shell:detached takeover. Manual tab clicks bypass this.
+      const pickUnattachedSurvivor = (list) => {
+        const free = list.filter(s => !s.attached);
+        return free.length > 0 ? free[free.length - 1] : null;
+      };
       // On first load, auto-attach to existing session or create new
       if (!hasInitializedRef.current) {
         hasInitializedRef.current = true;
@@ -351,12 +369,18 @@ export default function Shell() {
         } else if (opts.cwd || opts.cmd) {
           startSession();
         } else if (urlSid && sessionList.some(s => s.sessionId === urlSid)) {
-          // URL points at a live session — attach to that one
+          // URL points at a live session — attach to that one (deep-link intent
+          // overrides the "don't steal" guard; the prior tab gets shell:detached).
           attachToSession(urlSid);
         } else if (sessionList.length > 0 && !sessionIdRef.current) {
-          // Attach to most recent existing session
-          const latest = sessionList[sessionList.length - 1];
-          attachToSession(latest.sessionId);
+          // Attach to most recent existing session that isn't already driving another tab
+          const survivor = pickUnattachedSurvivor(sessionList);
+          if (survivor) {
+            attachToSession(survivor.sessionId);
+          } else {
+            // Every live session is attached elsewhere — leave at /shell, user can tab-click
+            navigateRef.current('/shell', { replace: true });
+          }
         } else if (sessionList.length === 0) {
           startSession();
         }
@@ -364,15 +388,17 @@ export default function Shell() {
       }
       // Post-init: the session we're displaying may have been killed externally (another tab,
       // direct server kill). Server sends a fresh sessions list without a shell:exit to this
-      // socket if it wasn't the attached one. Reconcile by auto-attaching to a survivor.
+      // socket if it wasn't the attached one. Reconcile by auto-attaching to a survivor that
+      // isn't already attached elsewhere (otherwise we'd boot the other tab via shell:detached).
       const displayed = sessionIdRef.current;
       if (displayed && !sessionList.some(s => s.sessionId === displayed)) {
         clearActiveSession();
         if (termInstanceRef.current) {
           termInstanceRef.current.writeln('\r\n\x1b[33m[Session removed externally]\x1b[0m');
         }
-        if (sessionList.length > 0) {
-          attachToSession(sessionList[sessionList.length - 1].sessionId);
+        const survivor = pickUnattachedSurvivor(sessionList);
+        if (survivor) {
+          attachToSession(survivor.sessionId);
         } else {
           navigateRef.current('/shell', { replace: true });
         }
@@ -380,6 +406,7 @@ export default function Shell() {
     };
 
     const handleShellStarted = ({ sessionId: sid }) => {
+      pendingAttachRef.current = null;
       activateSession(sid);
       if (termInstanceRef.current) {
         socket.emit('shell:resize', {
@@ -391,6 +418,10 @@ export default function Shell() {
     };
 
     const handleShellAttached = ({ sessionId: sid, bufferedOutput }) => {
+      // Stale response: a later switchToSession overwrote pendingAttachRef before this
+      // one's shell:attached came back. Ignore so the older target doesn't win.
+      if (pendingAttachRef.current && pendingAttachRef.current !== sid) return;
+      pendingAttachRef.current = null;
       activateSession(sid);
       if (termInstanceRef.current) {
         termInstanceRef.current.clear();
@@ -406,7 +437,10 @@ export default function Shell() {
     };
 
     const handleShellOutput = ({ sessionId: sid, data }) => {
-      // Only render output for the currently viewed session
+      // Suppress old-session output during a pending switch — the terminal has been
+      // cleared and is waiting for the new session's buffer; bleeding old output here
+      // produces confusing partial paint.
+      if (pendingAttachRef.current) return;
       if (sid === sessionIdRef.current && termInstanceRef.current) {
         termInstanceRef.current.write(data);
       }
@@ -418,10 +452,10 @@ export default function Shell() {
         if (termInstanceRef.current) {
           termInstanceRef.current.writeln(`\r\n\x1b[33m[Shell exited with code ${code}]\x1b[0m`);
         }
-        // Auto-attach to next available session if any remain
-        const remaining = sessionsRef.current.filter(s => s.sessionId !== sid);
-        if (remaining.length > 0) {
-          setTimeout(() => attachToSession(remaining[remaining.length - 1].sessionId), 100);
+        // Auto-attach to a survivor not already driving another tab (don't steal).
+        const free = sessionsRef.current.filter(s => s.sessionId !== sid && !s.attached);
+        if (free.length > 0) {
+          setTimeout(() => attachToSession(free[free.length - 1].sessionId), 100);
         } else {
           navigateRef.current('/shell', { replace: true });
         }
@@ -448,23 +482,23 @@ export default function Shell() {
       // Server rejected start/attach (e.g., session limit, session not found).
       // No activateSession will fire to consume the intent, so reset here.
       pendingNavIntentRef.current = 'replace';
+      pendingAttachRef.current = null;
       if (termInstanceRef.current) {
         termInstanceRef.current.writeln(`\r\n\x1b[31m[Error: ${error}]\x1b[0m`);
       }
       // Passive errors (shell:input / shell:stop on a missing session) carry a sessionId
       // in the payload — no terminal state to recover.
       if (errSid) return;
-      // Start/attach failure recovery. switchToSession leaves sessionIdRef pointing at
-      // the previously-displayed session, but attachToSession already cleared the
-      // terminal. Re-mirror the URL to the displayed session and re-attach to repaint;
-      // if the displayed session is also gone, fall back to a survivor.
       const active = sessionIdRef.current;
       if (!active) return;
       const live = sessionsRef.current;
       if (!live.some(s => s.sessionId === active)) {
+        // The session we were displaying is also gone. Fall back to a survivor that
+        // isn't already attached elsewhere (avoid stealing via shell:detached).
         clearActiveSession();
-        if (live.length > 0) {
-          const latest = live[live.length - 1];
+        const free = live.filter(s => !s.attached);
+        if (free.length > 0) {
+          const latest = free[free.length - 1];
           navigateRef.current(`/shell/${latest.sessionId}`, { replace: true });
           setTimeout(() => attachToSession(latest.sessionId), 100);
         } else {
@@ -472,10 +506,15 @@ export default function Shell() {
         }
         return;
       }
+      // Active session is still alive. Only recover when the URL diverged from it —
+      // that's the switch-failure path (user tried to navigate to a now-dead session,
+      // sessionIdRef stayed on the old one; restore URL + repaint terminal). For a
+      // start-failure with URL already matching (e.g. hit session limit), leave the
+      // terminal alone so the error message stays readable.
       if (urlSessionIdRef.current && urlSessionIdRef.current !== active) {
         navigateRef.current(`/shell/${active}`, { replace: true });
+        setTimeout(() => attachToSession(active), 100);
       }
-      setTimeout(() => attachToSession(active), 100);
     };
 
     socket.on('connect', handleConnect);

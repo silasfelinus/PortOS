@@ -166,6 +166,9 @@ export function attachSession(sessionId, socket) {
   }
   session.socket = socket;
   console.log(`🐚 Attached session ${sessionId.slice(0, 8)} to socket ${socket.id}`);
+  // Broadcast so other clients pick up the new `attached: true` state and skip
+  // this session in their auto-pick flow.
+  broadcastSessionList();
   return {
     sessionId,
     bufferedOutput: session.outputBuffer.join('')
@@ -192,6 +195,11 @@ function broadcastSessionList() {
 
 /**
  * List all active sessions with metadata
+ *
+ * `attached` reflects whether the session currently has a live socket bound to it.
+ * Clients use this to avoid auto-attaching to a session that's already driving
+ * another tab — pairing the shell:detached takeover with one-tab-per-session as
+ * the auto-pick semantics (manual attach still steals as before).
  */
 export function listAllSessions() {
   const sessions = [];
@@ -203,7 +211,8 @@ export function listAllSessions() {
       label: session.label,
       kind: session.kind,
       agentId: session.agentId,
-      command: session.command
+      command: session.command,
+      attached: !!session.socket
     });
   }
   return sessions;
@@ -269,6 +278,9 @@ export function detachSocketSessions(socket) {
     }
   }
   unsubscribeSessionList(socket);
+  // Broadcast so other tabs see the freed `attached: false` state and can adopt
+  // these orphaned sessions in their auto-pick flow.
+  if (count > 0) broadcastSessionList();
   return count;
 }
 

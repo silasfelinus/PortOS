@@ -21,6 +21,29 @@
     The server now emits `shell:detached` to the previous socket so the
     original tab clears its disconnected view + navigates back to `/shell`
     instead of sitting "Connected" with no output.
+  - **Auto-pick won't steal an attached session.** Session list entries now
+    carry `attached: boolean` from the server. Every auto-pick path on the
+    client (initial load, external-kill fallback, shell:exit fallback,
+    shell:error recovery) filters survivors to ones that aren't already
+    driving another tab. Manual tab clicks and deep-link URL navigation
+    still take over (intent is explicit). Prevents tab B from booting
+    tab A off its shell when tab B's session is killed externally.
+  - **Pending-attach gate.** A new `pendingAttachRef` tracks the in-flight
+    start/attach target. While set, keystrokes and quick commands are
+    dropped (so input doesn't land in the previous session during the
+    "Attaching…" window), incoming `shell:output` is suppressed (so the
+    old session's stream doesn't paint into the cleared terminal), and
+    stale `shell:attached` responses for an older target are ignored when
+    the user rapid-fire-clicks tabs.
+  - **Start-failure error message preserved.** When `shell:error` fires
+    from a start attempt while an existing session is still alive (e.g.
+    session limit hit), `handleShellError` no longer re-attaches and
+    repaints the terminal — the error stays readable. Re-attach recovery
+    now only triggers when the URL diverged from the active session
+    (switch-failure path) or when the active session is itself gone.
+  - **Layout full-width includes deep links.** `Layout.jsx` matches both
+    `/shell` and `/shell/<id>` for full-height/overflow-hidden styling so
+    deep-linked terminals render edge-to-edge like the bare route.
 
 - **Universe Canon page — lock toggle, tag chips, and "from series" badge on every card.**
   Phase 2a of the Universe-as-Canon UI. Each `CanonCard` (used on both the

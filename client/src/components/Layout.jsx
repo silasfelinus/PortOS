@@ -982,7 +982,7 @@ export default function Layout() {
             location.pathname.startsWith('/universe-builder') ||
             location.pathname.startsWith('/writers-room') ||
             location.pathname.startsWith('/agents') ||
-            location.pathname === '/shell' ||
+            location.pathname === '/shell' || location.pathname.startsWith('/shell/') ||
             location.pathname.startsWith('/city') ||
             /^\/apps\/[^/]+/.test(location.pathname);
           return (
