@@ -1048,8 +1048,11 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
       const jiraPrBody = await git.generatePRDescription(workspace, targetBranch, jiraBranch, outputBuffer);
       const jiraPrBodyWithRef = `Resolves ${jiraTicketRef}\n\n${jiraPrBody}`;
 
+      const baseTitle = await git.suggestPRTitle(workspace, targetBranch, jiraBranch, task.description);
+      const jiraPrTitle = `${jiraTicketId}: ${baseTitle}`.substring(0, 100);
+
       const prResult = await git.createPR(workspace, {
-        title: `${jiraTicketId}: ${(task.description || 'CoS automated task').substring(0, 100)}`,
+        title: jiraPrTitle,
         body: jiraPrBodyWithRef,
         base: targetBranch,
         head: jiraBranch
@@ -1217,9 +1220,7 @@ export async function cleanupAgentWorktree(agentId, success, { openPR = false, r
       if (!targetBranch) {
         targetBranch = await git.getDefaultBranch(sourceWorkspace, { allowRemote: false }).catch(() => null) || 'main';
       }
-      const taskDesc = description || 'CoS automated task';
-      const firstLine = taskDesc.split(/[\r\n]/).find(l => l.trim()) || taskDesc;
-      const prTitle = firstLine.trim().substring(0, 100) || 'CoS automated task';
+      const prTitle = await git.suggestPRTitle(worktreePath, targetBranch, worktreeBranch, description);
 
       const prBody = await git.generatePRDescription(worktreePath, targetBranch, worktreeBranch, agentOutput);
 
