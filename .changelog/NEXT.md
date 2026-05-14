@@ -2,6 +2,16 @@
 
 ## Added
 
+- **Pipeline Issue — answer-and-refine flow for beat-sheet open questions.**
+  The idea stage prompt now tells the LLM to commit to decisive choices
+  rather than hedging — `## Open questions` is OPTIONAL and only used when
+  something fundamentally needs user input the LLM can't infer from the
+  bible. When the section does appear, the idea page renders a panel below
+  the output with one input per question and a *Refine with answers* button
+  that re-runs the stage with the answers folded into the seed and
+  instructions to drop the open-questions section in the revision. Blank
+  answers tell the LLM to commit to its own best guess on that item.
+
 - **Pipeline Series — configurable per-series AI provider + model.** The arc
   header now has provider + model dropdowns (mirroring the World Builder
   expansion picker) bound to a new `series.llm = { provider, model }` field.
