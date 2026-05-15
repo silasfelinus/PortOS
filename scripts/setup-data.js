@@ -132,14 +132,14 @@ const PIPELINE_LENGTH_OLD_MD5 = {
   'pipeline-idea-expansion.md': 'aee25112b2c596f643b17c559b772c22',
   'pipeline-prose.md':          'bfea5aeeb471aae9749baee765b473a7',
   'pipeline-comic-script.md':   '40e5fdc1a1e68a7419b7dad936366c1a',
-  'pipeline-tv-script.md':      '3f6fecc25573ed054b47db392250034a',
+  'pipeline-teleplay.md':      '3f6fecc25573ed054b47db392250034a',
   'pipeline-season-episodes.md':'6e349ad26bed8a0ccb042571f03f03eb',
 };
 const PIPELINE_LENGTH_NEW_MD5 = {
   'pipeline-idea-expansion.md': '41facefbc0c0549d456bef9111f95ab9',
   'pipeline-prose.md':          '30ac30ec2b9d3e2a9eb869c181732cc6',
   'pipeline-comic-script.md':   'beab031951859ca13579cdb9c4dbe769',
-  'pipeline-tv-script.md':      '376f779f4687b598f1c92ca4e770fd5a',
+  'pipeline-teleplay.md':      '376f779f4687b598f1c92ca4e770fd5a',
   'pipeline-season-episodes.md':'c4928e2a5f833358116b29d2d669888d',
 };
 const PIPELINE_LENGTH_PROMPTS = Object.keys(PIPELINE_LENGTH_OLD_MD5);

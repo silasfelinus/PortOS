@@ -468,7 +468,7 @@ describe('pipeline routes', () => {
     const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
     const r = await request(app)
       .post(`/api/pipeline/issues/${iss.body.id}/stages/storyboards/extract-scenes`)
-      .send({ from: 'tvScript' });
+      .send({ from: 'teleplay' });
     expect(r.status).toBe(400);
     expect(r.body.error || r.body.message).toMatch(/empty/i);
   });
@@ -479,13 +479,13 @@ describe('pipeline routes', () => {
     const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
     await request(app).patch(`/api/pipeline/issues/${iss.body.id}`).send({
       stages: {
-        tvScript: { status: 'ready', output: '## TEASER\n\n**INT. ROOM — NIGHT**\n\nAction.' },
+        teleplay: { status: 'ready', output: '## TEASER\n\n**INT. ROOM — NIGHT**\n\nAction.' },
         storyboards: { scenes: [{ slugline: 'EXT. CITY', description: 'pre-existing' }] },
       },
     });
     const r = await request(app)
       .post(`/api/pipeline/issues/${iss.body.id}/stages/storyboards/extract-scenes`)
-      .send({ from: 'tvScript' });
+      .send({ from: 'teleplay' });
     expect(r.status).toBe(409);
     expect(r.body.error || r.body.message).toMatch(/force/i);
   });
@@ -509,17 +509,17 @@ describe('pipeline routes', () => {
     });
     const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
     await request(app).patch(`/api/pipeline/issues/${iss.body.id}`).send({
-      stages: { tvScript: { status: 'ready', output: '## TEASER\n\n**INT. VAULT — NIGHT**\n\nThey break in.' } },
+      stages: { teleplay: { status: 'ready', output: '## TEASER\n\n**INT. VAULT — NIGHT**\n\nThey break in.' } },
     });
 
     const r = await request(app)
       .post(`/api/pipeline/issues/${iss.body.id}/stages/storyboards/extract-scenes`)
-      .send({ from: 'tvScript' });
+      .send({ from: 'teleplay' });
 
     expect(r.status).toBe(200);
     expect(r.body.sceneCount).toBe(2);
     expect(r.body.runId).toBe('run-scenes-1');
-    expect(r.body.sourceKind).toBe('tvScript');
+    expect(r.body.sourceKind).toBe('teleplay');
     // visualPrompt → description aliasing for UI compat
     expect(r.body.stage.scenes[0].description).toBe('a high-tech vault, two figures in tactical gear, dim red emergency light');
     expect(r.body.stage.scenes[0].slugline).toBe('INT. VAULT — NIGHT');
@@ -533,7 +533,7 @@ describe('pipeline routes', () => {
     // Series characters were forwarded to the extractor for bible deference
     const firstCall = spy.mock.calls[0][0];
     expect(firstCall.characters[0].name).toBe('Alice');
-    expect(firstCall.sourceKind).toBe('tvScript');
+    expect(firstCall.sourceKind).toBe('teleplay');
     expect(firstCall.series).toEqual({ name: 'S', styleNotes: '' });
     spy.mockRestore();
   });
@@ -577,13 +577,13 @@ describe('pipeline routes', () => {
     const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
     await request(app).patch(`/api/pipeline/issues/${iss.body.id}`).send({
       stages: {
-        tvScript: { status: 'ready', output: '## TEASER\n\n**INT. ROOM — NIGHT**' },
+        teleplay: { status: 'ready', output: '## TEASER\n\n**INT. ROOM — NIGHT**' },
         storyboards: { scenes: [{ slugline: 'OLD', description: 'will be replaced' }] },
       },
     });
     const r = await request(app)
       .post(`/api/pipeline/issues/${iss.body.id}/stages/storyboards/extract-scenes`)
-      .send({ from: 'tvScript', force: true });
+      .send({ from: 'teleplay', force: true });
 
     expect(r.status).toBe(200);
     expect(r.body.sceneCount).toBe(1);

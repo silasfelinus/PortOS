@@ -207,7 +207,7 @@
       "returnsJson": false,
       "variables": []
     },
-    "pipeline-tv-script": {
+    "pipeline-teleplay": {
       "name": "Pipeline — TV Teleplay",
       "description": "Adapt the prose draft into a single-episode TV teleplay with sluglines, present-tense action, dialogue, and act breaks. One of two parallel script stages, both downstream of prose.",
       "model": "default",

@@ -1,6 +1,6 @@
 /**
  * Issue length profiles — per-issue size targets fed into every text stage
- * prompt (idea / prose / comicScript / tvScript) so the LLM scales the beat
+ * prompt (idea / prose / comicScript / teleplay) so the LLM scales the beat
  * sheet, prose word count, comic page count, and TV runtime to match.
  *
  * Each issue stores a profile name; the lookup here materializes that into

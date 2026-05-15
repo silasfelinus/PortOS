@@ -229,7 +229,7 @@ export default function ComicPagesStage({ issue, onStageUpdate, actionsGated = f
                   </button>
                   {page.imageJobId ? (
                     <div className="flex items-center gap-2">
-                      <MediaJobThumb jobId={page.imageJobId} label={`Page ${pi + 1}`} size="md" />
+                      <MediaJobThumb jobId={page.imageJobId} label={`Page ${pi + 1}`} size="md" fallbackFilename={page.filename || null} />
                       <span className="text-[10px] text-gray-500 font-mono break-all" title="Last page render job">
                         {page.imageJobId.slice(0, 8)}
                       </span>

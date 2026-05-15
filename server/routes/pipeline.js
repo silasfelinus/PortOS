@@ -335,13 +335,13 @@ const promptRefineSchema = z.object({
 });
 
 // Source for scene extraction: which text stage to read from (`prose` →
-// granular paragraph-grain breakdown via `writers-room-script`; `tvScript`
+// granular paragraph-grain breakdown via `writers-room-script`; `teleplay`
 // → slugline-grain parse via `pipeline-extract-scenes`). `force` overrides
 // the "you have N hand-curated scenes already" guard.
 // Enum values match `SOURCE_KIND` verbatim so the route forwards `body.from`
 // straight through — same string also names the issue's text stage.
 const extractScenesSchema = z.object({
-  from: z.enum([SOURCE_KIND.PROSE, SOURCE_KIND.TV_SCRIPT]).optional().default(SOURCE_KIND.TV_SCRIPT),
+  from: z.enum([SOURCE_KIND.PROSE, SOURCE_KIND.TELEPLAY]).optional().default(SOURCE_KIND.TELEPLAY),
   providerOverride: z.string().trim().max(80).optional(),
   force: z.boolean().optional(),
 });
@@ -730,7 +730,7 @@ router.post('/issues/:id/stages/:stageId/generate', asyncHandler(async (req, res
 }));
 
 // Auto-fill stages.storyboards.scenes[] from a text stage. Reads the issue's
-// prose (paragraph-grain) or tvScript (slugline-grain) output, runs the
+// prose (paragraph-grain) or teleplay (slugline-grain) output, runs the
 // shared scene extractor, and replaces stages.storyboards.scenes with the
 // result mapped to the storyboards UI shape (visualPrompt → description).
 router.post('/issues/:id/stages/storyboards/extract-scenes', asyncHandler(async (req, res) => {
@@ -921,6 +921,10 @@ router.post('/issues/:id/stages/comicPages/cover/render', asyncHandler(async (re
     script: result.coverScript || '',
     imageJobId: result.jobId,
     prompt: result.prompt,
+    // Clear the prior render's filename so the UI doesn't show the stale
+    // image while the new job is in flight. The comic-pages filename hook
+    // re-stamps it on completion.
+    filename: null,
   };
   const { issue: updatedIssue, stage } = await issuesSvc.updateStage(req.params.id, 'comicPages', {
     cover: nextCover,
@@ -984,6 +988,9 @@ router.post('/issues/:id/stages/comicPages/pages/:pageIndex/render', asyncHandle
         ...currentPages[pageIndex],
         imageJobId: result.jobId,
         prompt: result.prompt,
+        // Clear the prior render's filename so the UI doesn't show the stale
+        // image while the new job is in flight. The hook re-stamps on completion.
+        filename: null,
       };
       return { status: 'edited', pages: nextPages };
     },

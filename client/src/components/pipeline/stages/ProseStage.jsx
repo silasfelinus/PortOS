@@ -9,7 +9,7 @@ export default function ProseStage({ issue, onStageUpdate }) {
       stageId="prose"
       onStageUpdate={onStageUpdate}
       generateLabel="Draft prose"
-      outputPlaceholder="An 800–1500 word short-story draft for this issue. Will be lightly structured with `## Scene N — Slugline` H2 markers so the comic and TV script stages have stable anchors."
+      outputPlaceholder="An 800–1500 word short-story draft for this issue. Will be lightly structured with `## Scene N — Slugline` H2 markers so the comic and teleplay stages have stable anchors."
     />
   );
 }

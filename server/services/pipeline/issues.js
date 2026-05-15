@@ -7,7 +7,7 @@
  *   stages.idea         — beat sheet from the rough human seed
  *   stages.prose        — short-story draft
  *   stages.comicScript  — page/panel script (one of two parallel script stages)
- *   stages.tvScript     — scene-by-scene teleplay (the other parallel script stage)
+ *   stages.teleplay     — scene-by-scene teleplay (the other parallel script stage)
  *   stages.comicPages   — image-gen output for each comic page's panels
  *   stages.storyboards  — image-gen + per-scene video output via CD scene runner
  *   stages.episodeVideo — final stitched episode video via CD
@@ -77,7 +77,7 @@ export const ISSUES_PER_RESPONSE_MAX = 1000;
 // auto-run text-chain order (idea → prose → scripts in parallel). Comic
 // pages / storyboards / episode video stages are visual and stay manual
 // in MVP.
-export const TEXT_STAGE_IDS = Object.freeze(['idea', 'prose', 'comicScript', 'tvScript']);
+export const TEXT_STAGE_IDS = Object.freeze(['idea', 'prose', 'comicScript', 'teleplay']);
 export const VISUAL_STAGE_IDS = Object.freeze(['comicPages', 'storyboards', 'episodeVideo']);
 export const STAGE_IDS = Object.freeze([...TEXT_STAGE_IDS, ...VISUAL_STAGE_IDS]);
 export const STAGE_STATUSES = Object.freeze(['empty', 'generating', 'ready', 'edited', 'needs-review', 'error']);
@@ -145,8 +145,12 @@ const sanitizeCover = (raw) => {
   const script = trimTo(raw.script, COVER_SCRIPT_MAX);
   const imageJobId = isStr(raw.imageJobId) && raw.imageJobId ? raw.imageJobId : null;
   const prompt = trimTo(raw.prompt, COVER_PROMPT_MAX);
-  if (!script && !imageJobId && !prompt) return null;
-  return { script, imageJobId, prompt: prompt || null };
+  // `filename` is stamped by the comic-pages filename hook on image-gen
+  // completion. It survives the 24h media-job archive TTL so the UI can
+  // still render the cover after the job record expires.
+  const filename = isStr(raw.filename) && raw.filename ? raw.filename : null;
+  if (!script && !imageJobId && !prompt && !filename) return null;
+  return { script, imageJobId, prompt: prompt || null, filename };
 };
 
 const sanitizeVisualStage = (raw, stageId = null) => {
@@ -481,6 +485,13 @@ export function updateStageWithLatest(issueId, stageId, computeFn) {
   const isVisual = VISUAL_STAGE_IDS.includes(stageId);
   const currentStage = cur.stages[stageId];
   const patch = computeFn(currentStage);
+  // Empty-patch fast path: a computeFn that returns `{}` is a "decided not
+  // to write" signal (e.g. stale media-job completion against a re-rendered
+  // page). Skip the disk write + emitRecordUpdated so it doesn't trigger
+  // a re-export storm in share subscriptions for late no-op events.
+  if (patch && typeof patch === 'object' && !Array.isArray(patch) && Object.keys(patch).length === 0) {
+    return { issue: cur, stage: currentStage };
+  }
   const merged = {
     ...currentStage,
     ...patch,

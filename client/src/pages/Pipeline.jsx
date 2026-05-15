@@ -128,7 +128,7 @@ export default function Pipeline() {
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div className="flex items-center gap-3">
           <WorkflowIcon className="w-6 h-6 text-port-accent" />
-          <h1 className="text-2xl font-bold text-white">Pipeline</h1>
+          <h1 className="text-2xl font-bold text-white">Series</h1>
         </div>
         <button
           type="button"
@@ -143,7 +143,7 @@ export default function Pipeline() {
       <p className="text-sm text-gray-400 mb-6">
         Each series carries a shared bible — logline, premise, characters, style, optional World — that
         every issue/episode below inherits into its stage prompts. Pipeline runs an idea seed through prose →
-        comic script + TV script (text), and hands off to image gen / Creative Director for the visual stages.
+        comic script + teleplay (text), and hands off to image gen / Creative Director for the visual stages.
       </p>
 
       {showForm && (

@@ -1,5 +1,5 @@
 /**
- * Storyboards stage — one storyboard image per TV-script scene, plus
+ * Storyboards stage — one storyboard image per teleplay scene, plus
  * single-scene video preview and AI-driven prompt refinement.
  *
  * Each scene row exposes four actions:
@@ -12,7 +12,7 @@
  *     stitch in `episodeVideo.js`.
  *   - **Trash** — removes the scene from the list.
  *
- * Auto-fill: "From TV script" / "From prose" buttons run the scene
+ * Auto-fill: "From teleplay" / "From prose" buttons run the scene
  * extractor against the corresponding text stage and replace the list.
  */
 
@@ -46,7 +46,7 @@ export default function StoryboardsStage({ issue, onStageUpdate, actionsGated = 
     if (armTimerRef.current) clearTimeout(armTimerRef.current);
   }, []);
 
-  const tvScriptReady = !!(issue.stages?.tvScript?.output || '').trim();
+  const teleplayReady = !!(issue.stages?.teleplay?.output || '').trim();
   const proseReady = !!(issue.stages?.prose?.output || '').trim();
   // Any non-null, non-arm value means an extract POST is in flight — both
   // buttons must lock out concurrent submits so racing requests can't
@@ -190,21 +190,21 @@ export default function StoryboardsStage({ issue, onStageUpdate, actionsGated = 
         <div>
           <h2 className="text-lg font-semibold text-white">Storyboards</h2>
           <p className="text-xs text-gray-500 mt-1">
-            One image per scene, fed by the TV script. Use sluglines to keep parity with the teleplay. Stitch the final episode in the Episode Video stage once the storyboards are ready.
+            One image per scene, fed by the Teleplay. Use sluglines to keep parity with the Teleplay. Stitch the final episode in the Episode Video stage once the storyboards are ready.
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
-            onClick={() => onExtractClick('tvScript')}
-            disabled={!tvScriptReady || extractInFlight}
-            title={tvScriptReady ? 'Parse the teleplay sluglines into structured scenes' : 'Generate the TV script first'}
+            onClick={() => onExtractClick('teleplay')}
+            disabled={!teleplayReady || extractInFlight}
+            title={teleplayReady ? 'Parse the Teleplay sluglines into structured scenes' : 'Generate the Teleplay first'}
             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-card border border-port-border text-white text-sm hover:border-port-accent/50 disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {extractingFrom === 'tvScript'
+            {extractingFrom === 'teleplay'
               ? <Loader2 size={14} className="animate-spin" />
               : <Wand2 size={14} />}
-            {extractingFrom === 'arm:tvScript' ? 'Click again to replace' : 'From TV script'}
+            {extractingFrom === 'arm:teleplay' ? 'Click again to replace' : 'From Teleplay'}
           </button>
           <button
             type="button"

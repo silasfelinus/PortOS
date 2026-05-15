@@ -30,7 +30,7 @@ function corpusForIssue(issue) {
     stages.idea?.output,
     stages.idea?.input,
     stages.comicScript?.output,
-    stages.tvScript?.output,
+    stages.teleplay?.output,
   ];
   return parts.filter(Boolean).join('\n\n');
 }

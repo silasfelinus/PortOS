@@ -335,7 +335,7 @@ export default function ComicScriptStage({ issue, series, onStageUpdate, actions
             </button>
             {cover.imageJobId ? (
               <div className="flex items-center gap-2">
-                <MediaJobThumb jobId={cover.imageJobId} label="Cover" size="md" onStatus={setCoverJobStatus} />
+                <MediaJobThumb jobId={cover.imageJobId} label="Cover" size="md" onStatus={setCoverJobStatus} fallbackFilename={cover.filename || null} />
                 <span className="text-[10px] text-gray-500 font-mono break-all" title="Last cover render job">
                   {cover.imageJobId.slice(0, 8)}
                 </span>
@@ -520,6 +520,7 @@ function PageRow({ issue, pageIndex, page, renderOpts = {}, onStageUpdate, onPre
               onPreview={(filename) => onPreview?.(pageIndex, filename, page)}
               onStatus={setJobStatus}
               onFilename={onJobFilename}
+              fallbackFilename={page.filename || null}
             />
           ) : (
             <span className="text-xs text-gray-500 italic">No render yet — click <em>Render</em>.</span>

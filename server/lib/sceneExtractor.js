@@ -13,7 +13,7 @@
  *
  *   - `prose`   → uses the existing `writers-room-script` stage prompt
  *                 (prose-paragraph granularity, sluglines invented).
- *   - `tvScript`→ uses the new `pipeline-extract-scenes` stage prompt
+ *   - `teleplay`→ uses the new `pipeline-extract-scenes` stage prompt
  *                 (sluglines already present in the teleplay markdown,
  *                  parse them rather than invent).
  */
@@ -21,11 +21,11 @@
 import { runStagedLLM } from './stageRunner.js';
 import { BIBLE_KIND, pickPromptFields, isStr, trimTo } from './storyBible.js';
 
-export const SOURCE_KIND = Object.freeze({ PROSE: 'prose', TV_SCRIPT: 'tvScript' });
+export const SOURCE_KIND = Object.freeze({ PROSE: 'prose', TELEPLAY: 'teleplay' });
 
 const STAGE_FOR_SOURCE = Object.freeze({
   [SOURCE_KIND.PROSE]: 'writers-room-script',
-  [SOURCE_KIND.TV_SCRIPT]: 'pipeline-extract-scenes',
+  [SOURCE_KIND.TELEPLAY]: 'pipeline-extract-scenes',
 });
 
 // Per-field caps. Match the BIBLE_LIMITS pattern: bound every LLM-sourced
@@ -99,7 +99,7 @@ export function sanitizeSceneList(raw, { maxScenes = 200 } = {}) {
 /**
  * @param {object} args
  * @param {string} args.source          prose body OR teleplay markdown
- * @param {string} args.sourceKind      'prose' | 'tvScript'
+ * @param {string} args.sourceKind      'prose' | 'teleplay'
  * @param {Array}  [args.characters]    bible entries (for deference)
  * @param {Array}  [args.settings]      bible entries (for deference)
  * @param {Array}  [args.objects]       bible entries (for deference)

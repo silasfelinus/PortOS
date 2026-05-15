@@ -26,7 +26,7 @@ const PIPELINE_STAGE_LABELS = {
   idea: 'Idea',
   prose: 'Prose',
   comicScript: 'Comic Script',
-  tvScript: 'TV Script',
+  teleplay: 'Teleplay',
   comicPages: 'Comic Pages',
   storyboards: 'Storyboards',
   episodeVideo: 'Episode Video',
@@ -37,7 +37,7 @@ const PIPELINE_STAGE_ALIASES = {
   idea: 'idea',
   prose: 'prose', story: 'prose',
   'comic script': 'comicScript', comicscript: 'comicScript', comics: 'comicScript',
-  'tv script': 'tvScript', tvscript: 'tvScript', teleplay: 'tvScript',
+  'tv script': 'teleplay', tvscript: 'teleplay', teleplay: 'teleplay',
   'comic pages': 'comicPages', 'comic page': 'comicPages', comicpages: 'comicPages', pages: 'comicPages', page: 'comicPages',
   storyboards: 'storyboards', storyboard: 'storyboards', scenes: 'storyboards',
   'episode video': 'episodeVideo', episodevideo: 'episodeVideo', episode: 'episodeVideo', video: 'episodeVideo',
@@ -66,7 +66,7 @@ const navigateToPipelineStage = (issueId, stage, ctx) => {
 const PIPELINE_STAGE_TOOLS = [
   {
     name: 'pipeline_next_stage',
-    description: 'Advance to the next stage of the current pipeline issue (Idea → Prose → Comic Script → TV Script → Comic Pages → Storyboards → Episode Video). Only works on a /pipeline/issues/... page.',
+    description: 'Advance to the next stage of the current pipeline issue (Idea → Prose → Comic Script → Teleplay → Comic Pages → Storyboards → Episode Video). Only works on a /pipeline/issues/... page.',
     parameters: { type: 'object', properties: {} },
     execute: async (_args, ctx = {}) => {
       const cur = parsePipelineIssuePath(ctx.state?.ui?.path);

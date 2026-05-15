@@ -19,20 +19,34 @@ import useMediaJobProgress from '../../hooks/useMediaJobProgress';
 export default function MediaJobThumb({
   jobId, label = 'Render', size = 'sm', kind = 'image',
   onPreview = null, onStatus = null, onFilename = null,
+  // Saved filename on the parent record (e.g. comicPages page.filename).
+  // When the parent already has the rendered filename, the job is done
+  // by definition (the comic-pages filename hook only stamps on completion)
+  // — skip the live media-job lookup and subscription entirely.
+  fallbackFilename = null,
 }) {
+  // Short-circuit live progress when the parent has the final filename.
+  // Re-renders clear `filename` server-side, so a truthy fallbackFilename
+  // is an authoritative "this render is complete" signal. Pass null jobId
+  // to the hook so it skips the fetch + socket subscriptions; the hook
+  // tolerates null cleanly. Image-only — video fallback would also need
+  // a poster, so keep the live subscription path for video.
+  const hasStaticFallback = !!fallbackFilename && kind === 'image';
+  const liveJobId = hasStaticFallback ? null : jobId;
   const { status, progress, step, totalSteps, currentImage, filename, error } =
-    useMediaJobProgress(jobId, { kind });
-  // Local missing-media state. Reset when jobId changes so a fresh render
-  // doesn't inherit the prior render's failure flag.
+    useMediaJobProgress(liveJobId, { kind });
   const [missing, setMissing] = useState(false);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => { setMissing(false); setAttempt(0); }, [jobId]);
 
+  const effectiveStatus = hasStaticFallback ? 'completed' : status;
+  const effectiveFilename = hasStaticFallback ? fallbackFilename : filename;
+
   // Forward subscription state to the parent so callers (e.g. PageRow's
   // disable-while-rendering logic, lightbox nav builders) don't need a
   // duplicate useMediaJobProgress subscription on the same jobId.
-  useEffect(() => { if (onStatus) onStatus(status); }, [status, onStatus]);
-  useEffect(() => { if (onFilename && filename) onFilename(filename); }, [filename, onFilename]);
+  useEffect(() => { if (onStatus) onStatus(effectiveStatus); }, [effectiveStatus, onStatus]);
+  useEffect(() => { if (onFilename && effectiveFilename) onFilename(effectiveFilename); }, [effectiveFilename, onFilename]);
 
   if (!jobId) return null;
 
@@ -67,7 +81,7 @@ export default function MediaJobThumb({
 
   const cacheBust = attempt > 0 ? `?retry=${attempt}` : '';
 
-  if (status === 'completed' && kind === 'video') {
+  if (effectiveStatus === 'completed' && kind === 'video') {
     return (
       <video
         key={attempt}
@@ -84,11 +98,11 @@ export default function MediaJobThumb({
       />
     );
   }
-  if (status === 'completed' && filename) {
+  if (effectiveStatus === 'completed' && effectiveFilename) {
     const imgEl = (
       <img
         key={attempt}
-        src={`/data/images/${filename}${cacheBust}`}
+        src={`/data/images/${effectiveFilename}${cacheBust}`}
         alt={label}
         onError={() => setMissing(true)}
         className={imgFit}
@@ -100,7 +114,7 @@ export default function MediaJobThumb({
       return (
         <button
           type="button"
-          onClick={() => onPreview(filename)}
+          onClick={() => onPreview(effectiveFilename)}
           title="Open preview"
           className={`${wrapperClass} cursor-zoom-in p-0`}
         >
@@ -110,7 +124,7 @@ export default function MediaJobThumb({
     }
     return (
       <a
-        href={`/data/images/${filename}${cacheBust}`}
+        href={`/data/images/${effectiveFilename}${cacheBust}`}
         target="_blank"
         rel="noopener noreferrer"
         title="Open full image in a new tab"

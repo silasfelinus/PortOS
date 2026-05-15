@@ -159,7 +159,7 @@ describe('extractScenes', () => {
     expect(result.model).toBe('gpt-oss-120b');
   });
 
-  it('routes tvScript source through the pipeline-extract-scenes stage with series + issue context', async () => {
+  it('routes teleplay source through the pipeline-extract-scenes stage with series + issue context', async () => {
     runStagedLLM.mockResolvedValue({
       content: { title: 'X', logline: 'L', scenes: [{ slugline: 'INT. ROOM' }] },
       runId: 'run-2', providerId: 'lmstudio', model: 'gpt-oss-120b',
@@ -167,7 +167,7 @@ describe('extractScenes', () => {
 
     await extractScenes({
       source: '## TEASER\n\n### Scene 1\n\n**INT. ROOM — NIGHT**\n\nAction.',
-      sourceKind: SOURCE_KIND.TV_SCRIPT,
+      sourceKind: SOURCE_KIND.TELEPLAY,
       series: { name: 'Show', styleNotes: 'noir' },
       issue: { number: 3, title: 'The Pilot' },
     });
@@ -176,7 +176,7 @@ describe('extractScenes', () => {
     expect(stage).toBe('pipeline-extract-scenes');
     expect(vars.series).toEqual({ name: 'Show', styleNotes: 'noir' });
     expect(vars.issue).toEqual({ number: 3, title: 'The Pilot' });
-    expect(opts.source).toBe('scene-extract-tvScript');
+    expect(opts.source).toBe('scene-extract-teleplay');
   });
 
   it('forwards providerOverride + custom run-tracking tag', async () => {

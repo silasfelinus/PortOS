@@ -27,6 +27,7 @@ import { enqueueJob } from '../mediaJobQueue/index.js';
 import { getSettings } from '../settings.js';
 import { getSeries } from './series.js';
 import { getIssue, updateStage, VISUAL_STAGE_IDS } from './issues.js';
+import { buildComicPagesOwner } from './owners.js';
 import { getUniverse } from '../universeBuilder.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import {
@@ -235,7 +236,7 @@ export async function enqueueComicCover(issueId, options = {}) {
   });
   const jobId = enqueueImageJob({
     prompt, world, settings, options, mode,
-    owner: `pipeline:${issueId}:comicPages:cover`,
+    owner: buildComicPagesOwner({ issueId, target: 'cover' }),
     logLine: `🎨 Pipeline comic cover — issue=${issueId.slice(0, 8)} number=${issue.number || 1}`,
   });
   return { jobId, mode, prompt, coverScript };
@@ -399,7 +400,7 @@ export async function enqueueVisualComicPage(issueId, options = {}) {
 
   const jobId = enqueueImageJob({
     prompt, world, settings, options, mode,
-    owner: `pipeline:${issueId}:comicPages:page${pageIndex}`,
+    owner: buildComicPagesOwner({ issueId, target: 'page', pageIndex }),
     logLine: `📄 Pipeline comic page — issue=${issueId.slice(0, 8)} page=${pageIndex + 1} panels=${page.panels.length}`,
   });
   return { jobId, mode, prompt, pageIndex };

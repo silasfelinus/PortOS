@@ -35,7 +35,7 @@ vi.mock('./issues.js', () => ({
   getIssue: (...a) => getIssueMock(...a),
   updateStage: (...a) => updateStageMock(...a),
   VISUAL_STAGE_IDS: ['comicPages', 'storyboards', 'episodeVideo'],
-  STAGE_IDS: ['idea', 'prose', 'comicScript', 'tvScript', 'comicPages', 'storyboards', 'episodeVideo'],
+  STAGE_IDS: ['idea', 'prose', 'comicScript', 'teleplay', 'comicPages', 'storyboards', 'episodeVideo'],
 }));
 
 vi.mock('./series.js', () => ({

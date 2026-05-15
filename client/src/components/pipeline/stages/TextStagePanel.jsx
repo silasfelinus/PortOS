@@ -1,5 +1,5 @@
 /**
- * Shared editor for the four text stages (idea, prose, comicScript, tvScript).
+ * Shared editor for the four text stages (idea, prose, comicScript, teleplay).
  * Each per-stage component wraps this with stage-specific labels + placeholders
  * — the underlying mechanic is identical: textarea for the user's edits +
  * generate button that calls the server's text-stage runner.

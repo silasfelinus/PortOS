@@ -1,7 +1,7 @@
 /**
  * Pipeline — Auto-runner for the text-stage chain
  *
- * Runs idea → prose → (comicScript + tvScript in parallel) for one issue and
+ * Runs idea → prose → (comicScript + teleplay in parallel) for one issue and
  * streams progress to attached SSE clients. Visual stages (comicPages,
  * storyboards, episodeVideo) stay manual — burning GPU minutes on
  * un-reviewed content is too expensive for the MVP.
@@ -68,7 +68,7 @@ export async function startAutoRunTextStages(issueId, options = {}) {
   // process. See ~/.claude skill `nodejs-async-event-listener-unhandled-rejection`.
   (async () => {
     await updateIssue(issueId, { status: 'running' }).catch(() => null);
-    broadcast(issueId, { type: 'start', runId, stages: ['idea', 'prose', 'comicScript', 'tvScript'] });
+    broadcast(issueId, { type: 'start', runId, stages: ['idea', 'prose', 'comicScript', 'teleplay'] });
 
     try {
       // Stage 1: idea — skip if already ready/edited and not force-rerun
@@ -79,11 +79,11 @@ export async function startAutoRunTextStages(issueId, options = {}) {
       if (!record.cancelRequested) {
         await runStageIfNeeded(issueId, 'prose', options);
       }
-      // Stage 3: comicScript + tvScript in parallel — both depend only on prose
+      // Stage 3: comicScript + teleplay in parallel — both depend only on prose
       if (!record.cancelRequested) {
         await Promise.all([
           runStageIfNeeded(issueId, 'comicScript', options),
-          runStageIfNeeded(issueId, 'tvScript', options),
+          runStageIfNeeded(issueId, 'teleplay', options),
         ]);
       }
 

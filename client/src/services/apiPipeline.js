@@ -6,7 +6,7 @@ import { request } from './apiCore.js';
 // generic image gen API). It appears in PIPELINE_TAB_STAGES so it gets a tab
 // between Prose and Comic Pages, but it's NOT in server TEXT_STAGE_IDS — so
 // auto-run text chain skips it and POST /stages/nouns/generate would 400.
-export const PIPELINE_TEXT_STAGES = Object.freeze(['idea', 'prose', 'comicScript', 'tvScript']);
+export const PIPELINE_TEXT_STAGES = Object.freeze(['idea', 'prose', 'comicScript', 'teleplay']);
 export const PIPELINE_VISUAL_STAGES = Object.freeze(['comicPages', 'storyboards', 'episodeVideo']);
 export const PIPELINE_UI_STAGES = Object.freeze(['nouns']);
 export const PIPELINE_STAGES = Object.freeze([...PIPELINE_TEXT_STAGES, ...PIPELINE_VISUAL_STAGES, ...PIPELINE_UI_STAGES]);
@@ -15,9 +15,9 @@ export const PIPELINE_STAGES = Object.freeze([...PIPELINE_TEXT_STAGES, ...PIPELI
 // folded into the Comic Script tab (one merged page-by-page editor) — the
 // data still flows through the comicPages routes, the tab is just hidden.
 // `nouns` is inserted between Prose and Comic Pages so the workflow reads
-// Idea → Prose → Nouns → Comic → TV Script → Storyboards → Episode Video.
+// Idea → Prose → Nouns → Comic → Teleplay → Storyboards → Episode Video.
 export const PIPELINE_TAB_STAGES = Object.freeze([
-  'idea', 'prose', 'nouns', 'comicScript', 'tvScript', 'storyboards', 'episodeVideo',
+  'idea', 'prose', 'nouns', 'comicScript', 'teleplay', 'storyboards', 'episodeVideo',
 ]);
 
 export const PIPELINE_STAGE_LABELS = Object.freeze({
@@ -27,7 +27,7 @@ export const PIPELINE_STAGE_LABELS = Object.freeze({
   // `comicScript` stage now owns the merged Comic Pages editor — the
   // standalone Comic Pages tab is hidden via PIPELINE_TAB_STAGES below.
   comicScript: 'Comic',
-  tvScript: 'TV Script',
+  teleplay: 'Teleplay',
   comicPages: 'Comic',
   storyboards: 'Storyboards',
   episodeVideo: 'Video',
@@ -124,7 +124,7 @@ export const generatePipelineVisualImage = (issueId, stageId, opts) =>
   });
 
 // Auto-fill the storyboards stage's scenes[] from the issue's prose or
-// tvScript text stage. `from` defaults server-side to 'tvScript'. Pass
+// teleplay text stage. `from` defaults server-side to 'teleplay'. Pass
 // `force: true` to replace existing hand-curated scenes.
 export const extractPipelineStoryboardScenes = (issueId, { from, providerOverride, force } = {}) =>
   request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/storyboards/extract-scenes`, {

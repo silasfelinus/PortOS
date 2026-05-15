@@ -2,7 +2,28 @@
 
 ## Added
 
-- **Sharing v1.4 — universe shares include the collection + new peer images flow in.**
+- **Comic Pages — rendered filename persisted on the record (survives queue TTL).**
+  Comic-page records previously stored only `imageJobId`. After the
+  mediaJobQueue's 24-hour archive TTL, the UI could no longer resolve
+  a filename to render — even though the PNG was still on disk — and
+  `MediaJobThumb` showed a spinner forever. New
+  `server/services/pipeline/comicPagesFilenameHook.js` subscribes to
+  `mediaJobEvents('completed')` and stamps `filename` onto
+  `stages.comicPages.cover` / `.pages[i]` at completion time
+  (gated on a still-matching `imageJobId` so a re-render between
+  enqueue and completion doesn't overwrite the newer filename with the
+  older one). New shared owner builder/parser
+  (`server/services/pipeline/owners.js`) replaces inline owner-string
+  templates in `visualStages.js` and the hook's regex so producers
+  and consumers can't drift. `MediaJobThumb` short-circuits on
+  `fallbackFilename`: when the parent has the saved filename, the
+  component skips the live `getMediaJob` fetch and socket subscription
+  entirely (no more 404s on completed-and-pruned jobs). Re-render
+  routes (`comicPages/cover/render`, `comicPages/pages/:i/render`)
+  clear `filename: null` alongside setting the new `imageJobId` so
+  the stale image doesn't flash while a fresh render is in flight.
+
+
   Sharing a universe now bundles the linked media collection ("Universe:
   <name>" — the bucket of images the user generated via Universe Builder),
   so recipients see those images alongside the universe instead of an
@@ -636,7 +657,33 @@
 
 ## Changed
 
-- **Data migration scripts for bringing old machines forward.** Two new
+- **Pipeline stage `tvScript` renamed to `teleplay` end-to-end.** Full
+  rename of the internal stage id, not just the visible label. Touches
+  server schemas (`TEXT_STAGE_IDS`, `STAGE_IDS`), routes
+  (`stages/teleplay/generate`, `SOURCE_KIND.TELEPLAY`), the auto-runner
+  fan-out, scene extractor source kinds, client services
+  (`PIPELINE_TEXT_STAGES`, stage labels, page imports), the
+  `TeleplayStage.jsx` component (renamed from `TVScriptStage.jsx`), and
+  the prompt file
+  (`data.sample/prompts/stages/pipeline-teleplay.md`,
+  installed copy renamed too; hash table keys in `setup-data.js`
+  updated; `stage-config.json` key renamed). All 32 existing pipeline
+  issues had their `stages.tvScript` records renamed to
+  `stages.teleplay` in `data/pipeline-issues.json` — single-instance
+  app, no migration path needed. Voice agent keeps both spoken aliases
+  (`tv script`, `teleplay`) but both now resolve to the `teleplay`
+  stage id. Historical references in `DONE.md`, prior changelog
+  versions, `data/migrations/003-*.js`, and `data/runs/*/metadata.json`
+  left as-is (record of past work, not current state).
+
+- **Sidebar nav: "Pipeline" → "Series".** Label change only — URLs,
+  files, server routes, and API endpoints all retain the `pipeline`
+  namespace because the inner Series record already owns the word
+  "Series" and `/series/series/:id` would be ugly. Updates the visible
+  sidebar entry (`Layout.jsx`), nav-manifest label (also adds `series`
+  as an alias for ⌘K + voice), and the Series-index page H1.
+
+
   scripts under `server/scripts/`:
   - `migrateWorldToUniverse.js` — renames `data/world-builder.json` →
     `data/universe-builder.json`, the top-level `worlds[]` → `universes[]`
@@ -822,7 +869,27 @@
 
 ## Fixed
 
-- **Pipeline stage prompts — length profile variables reach existing installs.**
+- **`updateStageWithLatest` short-circuits on empty-patch returns.** A
+  computeFn returning `{}` (the "I decided not to write" signal — e.g.
+  a stale media-job completion landing against a re-rendered page) no
+  longer writes the issue file or fires `emitRecordUpdated('series',
+  ...)`. Previously every such no-op merged `updatedAt` and triggered
+  the share-bucket subscription's debounced re-export of the entire
+  series — multiplied by every duplicate image-gen `completed` event
+  that arrived for an old jobId after the user re-ran a render. Fix
+  benefits every other caller that adopts the empty-patch convention.
+
+- **`severity: 'warning'` server errors stop surfacing as console errors.**
+  Routes can flag expected high-volume 404s (e.g. speculative
+  `GET /api/media-jobs/:id` lookups for jobs past the queue's 24h
+  archive TTL) with `severity: 'warning'` — the original intent per
+  `mediaJobs.js`'s comment. Now honored on both ends: client
+  `useErrorNotifications.handleError` returns early for warnings
+  (no toast, no `console.error`), and the server `asyncHandler`'s
+  log branch suppresses the `❌ Route error: ...` line for the same.
+  The network-tab 404 is the only remaining signal.
+
+
   Running `npm run migrations` now auto-updates the five pipeline stage prompt
   templates (`pipeline-idea-expansion.md`, `pipeline-prose.md`,
   `pipeline-comic-script.md`, `pipeline-tv-script.md`,

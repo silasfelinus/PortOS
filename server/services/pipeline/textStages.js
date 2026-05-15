@@ -1,7 +1,7 @@
 /**
  * Pipeline — Text Stage Execution
  *
- * Runs a single text stage (idea / prose / comicScript / tvScript) against the
+ * Runs a single text stage (idea / prose / comicScript / teleplay) against the
  * active LLM provider. Builds the prompt via promptService.buildPrompt — each
  * stage has its own template in data.sample/prompts/stages/pipeline-*.md and
  * is registered in data.sample/prompts/stage-config.json.
@@ -24,7 +24,7 @@ const STAGE_TO_TEMPLATE = Object.freeze({
   idea: 'pipeline-idea-expansion',
   prose: 'pipeline-prose',
   comicScript: 'pipeline-comic-script',
-  tvScript: 'pipeline-tv-script',
+  teleplay: 'pipeline-teleplay',
 });
 
 /**

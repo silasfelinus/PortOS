@@ -89,16 +89,16 @@ describe('pipeline text stage generator', () => {
   it('stage prompt context includes only PRIOR stages', async () => {
     const { issue } = await seed();
     // Fill idea + prose, then run comicScript. Context should include both
-    // earlier stages but NOT tvScript (parallel) and NOT comicScript itself.
+    // earlier stages but NOT teleplay (parallel) and NOT comicScript itself.
     await issuesSvc.updateStage(issue.id, 'idea', { status: 'ready', output: 'BEATS' });
     await issuesSvc.updateStage(issue.id, 'prose', { status: 'ready', output: 'PROSE' });
-    await issuesSvc.updateStage(issue.id, 'tvScript', { status: 'ready', output: 'TVS' });
+    await issuesSvc.updateStage(issue.id, 'teleplay', { status: 'ready', output: 'TVS' });
     await textStages.generateStage(issue.id, 'comicScript');
     const promptArg = llmCalls[0].prompt;
     expect(promptArg).toContain('idea');
     expect(promptArg).toContain('prose');
     // Context only carries stages BEFORE comicScript in TEXT_STAGE_IDS order;
-    // tvScript comes AFTER comicScript and must not appear.
+    // teleplay comes AFTER comicScript and must not appear.
     expect(promptArg).not.toContain('TVS');
   });
 

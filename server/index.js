@@ -89,6 +89,7 @@ import creativeDirectorRoutes from './routes/creativeDirector.js';
 import writersRoomRoutes from './routes/writersRoom.js';
 import universeBuilderRoutes from './routes/universeBuilder.js';
 import { initUniverseBuilderCollectionHook } from './services/universeBuilderCollectionHook.js';
+import { initComicPagesFilenameHook } from './services/pipeline/comicPagesFilenameHook.js';
 import pipelineRoutes from './routes/pipeline.js';
 import { initMediaJobQueue } from './services/mediaJobQueue/index.js';
 import { recoverInFlightProjects } from './services/creativeDirector/recovery.js';
@@ -508,6 +509,10 @@ ensureSelf()
     // Universe Builder needs the media job queue running before it can listen
     // for `completed` events — so initialize the hook here.
     initUniverseBuilderCollectionHook();
+    // Pipeline comic-pages filename hook also subscribes to media-job
+    // completion — stamps `filename` onto cover/page records so the UI can
+    // still render them after the 24h media-job archive TTL elapses.
+    initComicPagesFilenameHook();
   })
   .then(() => {
     // Sharing: attach chokidar watchers to every registered share bucket so

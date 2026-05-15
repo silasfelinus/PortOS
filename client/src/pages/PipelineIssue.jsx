@@ -3,7 +3,7 @@
  *
  * Tab-driven stage navigation per /pipeline/issues/:issueId/:stage. Top action
  * bar exposes the auto-run-text button which kicks off idea→prose→(comicScript
- * + tvScript) and streams progress via SSE.
+ * + teleplay) and streams progress via SSE.
  */
 
 import { useEffect, useState, useMemo } from 'react';
@@ -24,7 +24,7 @@ import IdeaStage from '../components/pipeline/stages/IdeaStage';
 import ProseStage from '../components/pipeline/stages/ProseStage';
 import NounsStage from '../components/pipeline/stages/NounsStage';
 import ComicScriptStage from '../components/pipeline/stages/ComicScriptStage';
-import TVScriptStage from '../components/pipeline/stages/TVScriptStage';
+import TeleplayStage from '../components/pipeline/stages/TeleplayStage';
 import ComicPagesStage from '../components/pipeline/stages/ComicPagesStage';
 import StoryboardsStage from '../components/pipeline/stages/StoryboardsStage';
 import EpisodeVideoStage from '../components/pipeline/stages/EpisodeVideoStage';
@@ -44,7 +44,7 @@ const STAGE_ICONS = {
   prose: BookOpen,
   nouns: Users,
   comicScript: FileText,
-  tvScript: FilmIcon,
+  teleplay: FilmIcon,
   comicPages: LayoutGrid,
   storyboards: ImageIcon,
   episodeVideo: Clapperboard,
@@ -55,7 +55,7 @@ const STAGE_COMPONENTS = {
   prose: ProseStage,
   nouns: NounsStage,
   comicScript: ComicScriptStage,
-  tvScript: TVScriptStage,
+  teleplay: TeleplayStage,
   comicPages: ComicPagesStage,
   storyboards: StoryboardsStage,
   episodeVideo: EpisodeVideoStage,
@@ -244,7 +244,7 @@ export default function PipelineIssue() {
               onClick={() => handleAutoRun({})}
               disabled={autoRunStarting || autoRunActive || lengthProfileSaving || genConfigSaving}
               className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
-              title={lengthProfileSaving ? 'Saving length profile…' : genConfigSaving ? 'Saving visual settings…' : 'Run idea → prose → (comic script + TV script) end to end'}
+              title={lengthProfileSaving ? 'Saving length profile…' : genConfigSaving ? 'Saving visual settings…' : 'Run idea → prose → (comic script + teleplay) end to end'}
             >
               {autoRunStarting || autoRunActive ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
               Auto-run text
