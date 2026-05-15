@@ -715,4 +715,34 @@ describe("universeBuilder service", () => {
       expect(list[0].categories.landscapes.variations[0].label).toBe("Good");
     });
   });
+
+  describe("insertUniverseWithId", () => {
+    it("preserves the caller-supplied id", async () => {
+      const u = await svc.insertUniverseWithId({
+        id: "550e8400-e29b-41d4-a716-446655440000",
+        name: "Imported Universe",
+      });
+      expect(u.id).toBe("550e8400-e29b-41d4-a716-446655440000");
+      expect(u.name).toBe("Imported Universe");
+    });
+
+    it("rejects malformed id", async () => {
+      await expect(svc.insertUniverseWithId({ id: "bad id with spaces", name: "X" }))
+        .rejects.toMatchObject({ code: svc.ERR_VALIDATION });
+      await expect(svc.insertUniverseWithId({ name: "X" }))
+        .rejects.toMatchObject({ code: svc.ERR_VALIDATION });
+    });
+
+    it("rejects duplicate id", async () => {
+      const id = "550e8400-e29b-41d4-a716-446655440001";
+      await svc.insertUniverseWithId({ id, name: "First" });
+      await expect(svc.insertUniverseWithId({ id, name: "Second" }))
+        .rejects.toMatchObject({ code: svc.ERR_DUPLICATE });
+    });
+
+    it("requires a name", async () => {
+      await expect(svc.insertUniverseWithId({ id: "550e8400-e29b-41d4-a716-446655440002" }))
+        .rejects.toMatchObject({ code: svc.ERR_VALIDATION });
+    });
+  });
 });

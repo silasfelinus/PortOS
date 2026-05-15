@@ -98,4 +98,37 @@ describe('pipeline series service', () => {
     const s = await svc.createSeries({ name: 'X', characters: many });
     expect(s.characters).toHaveLength(svc.CHARACTERS_PER_SERIES_MAX);
   });
+
+  describe('insertSeriesWithId', () => {
+    it('preserves the caller-supplied id', async () => {
+      const s = await svc.insertSeriesWithId({ id: 'ser-fixed-abc', name: 'Imported' });
+      expect(s.id).toBe('ser-fixed-abc');
+      expect(s.name).toBe('Imported');
+    });
+
+    it('preserves createdAt/updatedAt when provided', async () => {
+      const ts = '2026-01-01T00:00:00.000Z';
+      const s = await svc.insertSeriesWithId({ id: 'ser-stamped', name: 'X', createdAt: ts, updatedAt: ts });
+      expect(s.createdAt).toBe(ts);
+      expect(s.updatedAt).toBe(ts);
+    });
+
+    it('rejects malformed id', async () => {
+      await expect(svc.insertSeriesWithId({ id: 'not-a-series-id', name: 'X' }))
+        .rejects.toMatchObject({ code: svc.ERR_VALIDATION });
+      await expect(svc.insertSeriesWithId({ name: 'X' }))
+        .rejects.toMatchObject({ code: svc.ERR_VALIDATION });
+    });
+
+    it('rejects duplicate id', async () => {
+      await svc.insertSeriesWithId({ id: 'ser-dup', name: 'First' });
+      await expect(svc.insertSeriesWithId({ id: 'ser-dup', name: 'Second' }))
+        .rejects.toMatchObject({ code: svc.ERR_DUPLICATE });
+    });
+
+    it('requires a name', async () => {
+      await expect(svc.insertSeriesWithId({ id: 'ser-noname' }))
+        .rejects.toMatchObject({ code: svc.ERR_VALIDATION });
+    });
+  });
 });

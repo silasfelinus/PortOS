@@ -40,7 +40,13 @@ const STATE_PATH = join(PATHS.data, 'universe-builder.json');
 
 export const ERR_NOT_FOUND = 'NOT_FOUND';
 export const ERR_VALIDATION = 'VALIDATION_ERROR';
+export const ERR_DUPLICATE = 'DUPLICATE';
 const makeErr = (message, code) => Object.assign(new Error(message), { code });
+
+// Universe ids are bare UUIDs (no prefix). Accept any reasonable alphanumeric
+// id 8–80 chars so future id-scheme changes upstream still round-trip; the
+// importer is the only caller, and it gets ids from manifests it controls.
+const UNIVERSE_ID_RE = /^[A-Za-z0-9-]{8,80}$/;
 
 export const NAME_MAX_LENGTH = 100;
 // A render can enqueue up to 5 categories × 50 variations × 20 batchPerVariation
@@ -533,6 +539,28 @@ export async function createUniverse(input = {}) {
     createdAt: now,
     updatedAt: now,
   });
+  state.universes.push(next);
+  await writeState(state);
+  return next;
+}
+
+/**
+ * Insert a universe with a caller-supplied id (used by the share-bucket
+ * importer so re-imports of the same universe LWW-merge onto the same local
+ * row). Throws ERR_DUPLICATE / ERR_VALIDATION on contract violations.
+ */
+export async function insertUniverseWithId(input = {}) {
+  if (!isStr(input.id) || !UNIVERSE_ID_RE.test(input.id)) {
+    throw makeErr(`insertUniverseWithId: invalid id "${input.id}"`, ERR_VALIDATION);
+  }
+  const name = trimTo(input.name, NAME_MAX_LENGTH);
+  if (!name) throw makeErr(`Universe name is required (1..${NAME_MAX_LENGTH} chars)`, ERR_VALIDATION);
+  const state = await readState();
+  if (state.universes.some((u) => u.id === input.id)) {
+    throw makeErr(`Universe id already exists: ${input.id}`, ERR_DUPLICATE);
+  }
+  const next = sanitizeTemplate({ ...input, name });
+  if (!next) throw makeErr('Invalid universe payload', ERR_VALIDATION);
   state.universes.push(next);
   await writeState(state);
   return next;

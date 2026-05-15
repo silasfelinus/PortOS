@@ -56,7 +56,10 @@ function queueIssueWrite(_issueId, fn) {
 
 export const ERR_NOT_FOUND = 'PIPELINE_ISSUE_NOT_FOUND';
 export const ERR_VALIDATION = 'PIPELINE_ISSUE_VALIDATION';
+export const ERR_DUPLICATE = 'PIPELINE_ISSUE_DUPLICATE';
 const makeErr = (message, code) => Object.assign(new Error(message), { code });
+
+const ISSUE_ID_RE = /^iss-[A-Za-z0-9-]+$/;
 
 export const TITLE_MAX = 300;
 export const SERIES_ID_MAX = 64;
@@ -316,6 +319,32 @@ function nextIssueNumber(issues, seriesId) {
   const peers = issues.filter((i) => i.seriesId === seriesId);
   if (peers.length === 0) return 1;
   return Math.max(...peers.map((i) => i.number || 0)) + 1;
+}
+
+/**
+ * Insert an issue with a caller-supplied id (used by the share-bucket importer
+ * so re-imports of the same issue LWW-merge onto the same local row).
+ * Throws ERR_DUPLICATE / ERR_VALIDATION on contract violations.
+ */
+export function insertIssueWithId(input = {}) {
+  if (!isStr(input.id) || !ISSUE_ID_RE.test(input.id)) {
+    return Promise.reject(makeErr(`insertIssueWithId: invalid id "${input.id}" (expected iss-<uuid>)`, ERR_VALIDATION));
+  }
+  const seriesId = trimTo(input.seriesId, SERIES_ID_MAX);
+  if (!seriesId) return Promise.reject(makeErr('seriesId is required', ERR_VALIDATION));
+  const title = trimTo(input.title, TITLE_MAX);
+  if (!title) return Promise.reject(makeErr(`title is required (1..${TITLE_MAX} chars)`, ERR_VALIDATION));
+  return queueIssueWrite(input.id, async () => {
+    const state = await readState();
+    if (state.issues.some((i) => i.id === input.id)) {
+      throw makeErr(`Issue id already exists: ${input.id}`, ERR_DUPLICATE);
+    }
+    const next = sanitizeIssue({ ...input, seriesId, title });
+    if (!next) throw makeErr('Invalid issue payload', ERR_VALIDATION);
+    state.issues.push(next);
+    await writeState(state);
+    return next;
+  });
 }
 
 export function updateIssue(id, patch = {}) {

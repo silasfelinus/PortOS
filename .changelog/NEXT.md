@@ -2,6 +2,23 @@
 
 ## Added
 
+- **Sharing v1.1 — id-preserving auto-merge + override notifications.**
+  Round-trip refinements on top of the v1 share-buckets feature:
+  - Imports now insert under the manifest's original record id (new
+    `insertSeriesWithId` / `insertIssueWithId` / `insertUniverseWithId`
+    helpers). A subsequent re-share of the same series LWW-merges onto
+    the same local row instead of accumulating a duplicate. Issue
+    `seriesId` references stay valid across peers without rewiring.
+  - `applyAutoMerge` now returns an `overridden[]` list naming the local
+    records LWW-overwrote by an incoming share. A new global
+    `useSharingNotifications` hook (mounted in `Layout.jsx`) listens to
+    the `sharing:manifest-processed` socket event and toasts the user —
+    suppressed when they're already viewing `/sharing`. Suffices for
+    "your work just got changed by peer X" awareness without modal noise.
+  - Integration tests at `server/services/sharing/integration.test.js`
+    exercise the full export → manifest → import round-trip in both
+    `inbox` and `auto-merge` modes, plus cursor-dedup on replay.
+
 - **Cross-network sharing via cloud-synced folders (share buckets).**
   Pipeline series (with all issues + linked universe), universes, and
   individual media can now be shared with peers on **different Tailscale

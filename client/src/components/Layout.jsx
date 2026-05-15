@@ -87,6 +87,7 @@ import Logo from './Logo';
 import { useErrorNotifications } from '../hooks/useErrorNotifications';
 import { useNotifications } from '../hooks/useNotifications';
 import { useAgentFeedbackToast } from '../hooks/useAgentFeedbackToast';
+import { useSharingNotifications } from '../hooks/useSharingNotifications';
 import { useUpdateChecker } from '../hooks/useUpdateChecker';
 import { useAIStatusNotifications } from '../hooks/useAIStatusNotifications';
 import { useThemeContext } from './ThemeContext';
@@ -352,6 +353,8 @@ export default function Layout() {
 
   // Subscribe to server error notifications
   useErrorNotifications();
+  // Toast when an auto-merge bucket overwrites a local record
+  useSharingNotifications();
 
   // Subscribe to agent completion feedback toasts
   useAgentFeedbackToast();

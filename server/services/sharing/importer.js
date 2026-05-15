@@ -24,9 +24,9 @@ import { EventEmitter } from 'events';
 import { PATHS, ensureDir, atomicWrite, readJSONFile } from '../../lib/fileUtils.js';
 import { getBucket } from './buckets.js';
 import { readManifest, markProcessed, readCursor, hasBeenProcessed } from './manifest.js';
-import { listSeries, createSeries, updateSeries, getSeries } from '../pipeline/series.js';
-import { listIssues, createIssue, updateIssue, getIssue } from '../pipeline/issues.js';
-import { listUniverses, createUniverse, updateUniverse, getUniverse } from '../universeBuilder.js';
+import { insertSeriesWithId, updateSeries, getSeries } from '../pipeline/series.js';
+import { insertIssueWithId, updateIssue, getIssue } from '../pipeline/issues.js';
+import { insertUniverseWithId, updateUniverse, getUniverse } from '../universeBuilder.js';
 
 const isStr = (v) => typeof v === 'string';
 
@@ -130,79 +130,60 @@ async function readReferencedRecords(bucketPath, manifest) {
 
 /**
  * Auto-merge mode: apply records into live state.
- * LWW: if a record already exists locally with a newer updatedAt, skip;
- * otherwise insert (via createSeries) or patch (via updateSeries).
+ *
+ * Each record either inserts under its manifest id (via insertWithId) on
+ * first arrival, or LWW-overwrites the existing local record when the
+ * remote updatedAt is newer. Ids are preserved across peers so a subsequent
+ * re-share of the same record merges onto the same local row instead of
+ * accumulating duplicates.
+ *
+ * `overridden` counts records whose local copy was newer-than-zero-but-older
+ * than remote and got replaced — surfaced via the socket event so the user
+ * is notified when auto-merge clobbers local edits.
  */
 async function applyAutoMerge(bucket, manifest, records) {
   let applied = 0;
+  const overridden = [];
+
+  const mergeOne = async ({ kind, record, getFn, insertFn, updateFn, label }) => {
+    const existing = await getFn(record.id).catch(() => null);
+    if (!existing) {
+      await insertFn(record).catch((err) => {
+        // Duplicate id is benign — a parallel manifest already inserted it.
+        if (err?.code?.endsWith('_DUPLICATE')) return null;
+        console.log(`⚠️ sharing.importer: insertWithId(${kind}=${record.id}) failed: ${err.message}`);
+      });
+      applied++;
+      return;
+    }
+    if (remoteWins(existing.updatedAt, record.updatedAt)) {
+      await updateFn(existing.id, record);
+      overridden.push({ kind, id: record.id, label });
+      applied++;
+    }
+  };
 
   // Universes first — series may reference them via universeId.
   for (const uni of records.universes) {
-    const existing = await getUniverse(uni.id).catch(() => null);
-    if (!existing) {
-      // No createUniverseWithId() — universeBuilder.createUniverse assigns a
-      // fresh UUID. Workaround: write directly through updateUniverse paired
-      // with a seed insert via the readState/writeState pair would require
-      // exporting an internal helper. For now, fall back to the merge being
-      // additive: if we can't recreate, we put it in inbox-equivalent state.
-      // The pragmatic v1 path: write the universe with createUniverse and
-      // accept that the id changes. We then keep the bucket-id mapping for
-      // series.universeId rewiring below.
-      const created = await createUniverse(uni).catch(() => null);
-      if (created) {
-        // Remap series.universeId references in this same manifest.
-        for (const s of records.series) {
-          if (s.universeId === uni.id) s.universeId = created.id;
-        }
-        applied++;
-      }
-      continue;
-    }
-    if (remoteWins(existing.updatedAt, uni.updatedAt)) {
-      await updateUniverse(existing.id, uni);
-      applied++;
-    }
+    await mergeOne({
+      kind: 'universe', record: uni, label: uni.name,
+      getFn: getUniverse, insertFn: insertUniverseWithId, updateFn: updateUniverse,
+    });
   }
-
-  // Series.
   for (const s of records.series) {
-    const existing = await getSeries(s.id).catch(() => null);
-    if (!existing) {
-      // createSeries assigns a fresh id — to preserve the manifest's series.id
-      // (so subsequent imports of the same series LWW-merge correctly), we
-      // need to insert directly. For v1, accept that auto-merge new arrivals
-      // get a fresh local id; the origin field still attributes the record.
-      const created = await createSeries(s).catch(() => null);
-      if (created) {
-        // Rewrite issue.seriesId references for this manifest's issues.
-        for (const iss of records.issues) {
-          if (iss.seriesId === s.id) iss.seriesId = created.id;
-        }
-        applied++;
-      }
-      continue;
-    }
-    if (remoteWins(existing.updatedAt, s.updatedAt)) {
-      await updateSeries(existing.id, s);
-      applied++;
-    }
+    await mergeOne({
+      kind: 'series', record: s, label: s.name,
+      getFn: getSeries, insertFn: insertSeriesWithId, updateFn: updateSeries,
+    });
   }
-
-  // Issues.
   for (const iss of records.issues) {
-    const existing = await getIssue(iss.id).catch(() => null);
-    if (!existing) {
-      await createIssue(iss).catch(() => null);
-      applied++;
-      continue;
-    }
-    if (remoteWins(existing.updatedAt, iss.updatedAt)) {
-      await updateIssue(existing.id, iss);
-      applied++;
-    }
+    await mergeOne({
+      kind: 'issue', record: iss, label: iss.title,
+      getFn: getIssue, insertFn: insertIssueWithId, updateFn: updateIssue,
+    });
   }
 
-  return { applied };
+  return { applied, overridden };
 }
 
 const INBOX_MAX = 1000;

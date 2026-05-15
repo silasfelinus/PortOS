@@ -305,4 +305,30 @@ describe('pipeline issues service', () => {
     await svc.deleteIssue(i.id);
     await expect(svc.deleteIssue(i.id)).rejects.toMatchObject({ code: svc.ERR_NOT_FOUND });
   });
+
+  describe('insertIssueWithId', () => {
+    it('preserves the caller-supplied id', async () => {
+      const i = await svc.insertIssueWithId({ id: 'iss-fixed-xyz', seriesId: 'ser-1', title: 'Imported' });
+      expect(i.id).toBe('iss-fixed-xyz');
+      expect(i.seriesId).toBe('ser-1');
+    });
+
+    it('rejects malformed id', async () => {
+      await expect(svc.insertIssueWithId({ id: 'wrong-prefix', seriesId: 'ser-1', title: 'X' }))
+        .rejects.toMatchObject({ code: svc.ERR_VALIDATION });
+    });
+
+    it('rejects duplicate id', async () => {
+      await svc.insertIssueWithId({ id: 'iss-dup', seriesId: 'ser-1', title: 'First' });
+      await expect(svc.insertIssueWithId({ id: 'iss-dup', seriesId: 'ser-1', title: 'Second' }))
+        .rejects.toMatchObject({ code: svc.ERR_DUPLICATE });
+    });
+
+    it('requires seriesId and title', async () => {
+      await expect(svc.insertIssueWithId({ id: 'iss-no-series', title: 'X' }))
+        .rejects.toMatchObject({ code: svc.ERR_VALIDATION });
+      await expect(svc.insertIssueWithId({ id: 'iss-no-title', seriesId: 'ser-1' }))
+        .rejects.toMatchObject({ code: svc.ERR_VALIDATION });
+    });
+  });
 });

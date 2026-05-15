@@ -28,7 +28,10 @@ const statePath = () => join(PATHS.data, 'pipeline-series.json');
 
 export const ERR_NOT_FOUND = 'PIPELINE_SERIES_NOT_FOUND';
 export const ERR_VALIDATION = 'PIPELINE_SERIES_VALIDATION';
+export const ERR_DUPLICATE = 'PIPELINE_SERIES_DUPLICATE';
 const makeErr = (message, code) => Object.assign(new Error(message), { code });
+
+const SERIES_ID_RE = /^ser-[A-Za-z0-9-]+$/;
 
 export const NAME_MAX = 200;
 export const LOGLINE_MAX = 500;
@@ -139,6 +142,30 @@ export async function createSeries(input = {}) {
     createdAt: now,
     updatedAt: now,
   });
+  state.series.push(next);
+  await writeState(state);
+  return next;
+}
+
+/**
+ * Insert a series with a caller-supplied id (used by the share-bucket importer
+ * so re-imports of the same series LWW-merge onto the same local row instead
+ * of accumulating duplicates). Throws ERR_DUPLICATE if the id is already
+ * present, ERR_VALIDATION if the id is malformed. Preserves createdAt /
+ * updatedAt verbatim so LWW comparisons against subsequent re-shares work.
+ */
+export async function insertSeriesWithId(input = {}) {
+  if (!isStr(input.id) || !SERIES_ID_RE.test(input.id)) {
+    throw makeErr(`insertSeriesWithId: invalid id "${input.id}" (expected ser-<uuid>)`, ERR_VALIDATION);
+  }
+  const name = trimTo(input.name, NAME_MAX);
+  if (!name) throw makeErr(`Series name is required (1..${NAME_MAX} chars)`, ERR_VALIDATION);
+  const state = await readState();
+  if (state.series.some((s) => s.id === input.id)) {
+    throw makeErr(`Series id already exists: ${input.id}`, ERR_DUPLICATE);
+  }
+  const next = sanitizeSeries({ ...input, name });
+  if (!next) throw makeErr('Invalid series payload', ERR_VALIDATION);
   state.series.push(next);
   await writeState(state);
   return next;
