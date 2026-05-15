@@ -12,6 +12,7 @@ import {
   Share2, Plus, Trash2, Folder, Inbox, History, Save, Loader2, Check, X, Users, AlertCircle,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
+import FolderPicker from '../components/FolderPicker';
 import socket from '../services/socket';
 import {
   listShareBuckets, createShareBucket, updateShareBucket, deleteShareBucket,
@@ -292,13 +293,19 @@ export default function Sharing() {
             <label className="block text-xs uppercase tracking-wider text-gray-500 mb-1">
               Folder path
             </label>
-            <input
-              type="text"
-              value={form.path}
-              onChange={(e) => setForm((f) => ({ ...f, path: e.target.value }))}
-              placeholder="/Users/you/Library/CloudStorage/GoogleDrive-…/PortOS Shares/creative-circle"
-              className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm font-mono"
-            />
+            <div className="flex gap-2 items-stretch">
+              <input
+                type="text"
+                value={form.path}
+                onChange={(e) => setForm((f) => ({ ...f, path: e.target.value }))}
+                placeholder="/Users/you/Library/CloudStorage/GoogleDrive-…/PortOS Shares/creative-circle"
+                className="flex-1 min-w-0 px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm font-mono"
+              />
+              <FolderPicker
+                value={form.path}
+                onChange={(path) => setForm((f) => ({ ...f, path }))}
+              />
+            </div>
             <p className="text-[11px] text-gray-500 mt-1">
               Pick a folder that's synced by your cloud-storage app. PortOS will create <code>manifests/</code>, <code>records/</code>, and <code>assets/</code> inside it.
             </p>

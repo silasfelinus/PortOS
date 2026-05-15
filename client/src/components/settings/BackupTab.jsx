@@ -3,6 +3,7 @@ import { Save, Plus, X, Play, ShieldOff } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
 import ToggleSwitch from '../ToggleSwitch';
+import FolderPicker from '../FolderPicker';
 import useAsyncAction from '../../hooks/useAsyncAction';
 import { getSettings, updateSettings, getBackupStatus, triggerBackup } from '../../services/api';
 
@@ -147,13 +148,16 @@ export function BackupTab() {
     <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-5">
       <div className="space-y-1">
         <label className="block text-sm text-gray-400">Destination Path</label>
-        <input
-          type="text"
-          value={destPath}
-          onChange={e => setDestPath(e.target.value)}
-          className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
-          placeholder="/path/to/backups"
-        />
+        <div className="flex gap-2 items-stretch">
+          <input
+            type="text"
+            value={destPath}
+            onChange={e => setDestPath(e.target.value)}
+            className="flex-1 min-w-0 bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
+            placeholder="/path/to/backups"
+          />
+          <FolderPicker value={destPath} onChange={setDestPath} />
+        </div>
       </div>
 
       <div className="flex items-center gap-3">

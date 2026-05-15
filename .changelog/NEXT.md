@@ -2,6 +2,17 @@
 
 ## Added
 
+- **Universal folder-picker UX — Sharing + Backup + Templates.**
+  Three places that ask the user for a server-side folder path now all
+  use the same `FolderPicker` component (a folder-icon button that opens
+  a modal directory browser backed by `GET /api/scaffold/directories`).
+  Wired into the Sharing page's add-bucket form and the Backup settings
+  tab so the user no longer has to hand-type a path. Migrated
+  `Templates.jsx` off its inline-dropdown `DirectoryPicker` so the
+  codebase converges on a single picker primitive; `DirectoryPicker.jsx`
+  removed. The picker's existing UX (modal overlay, Windows drive
+  selector, Home shortcut, click-outside/Escape) is preserved.
+
 - **Sharing v1.2 — schema versioning + producedBy attribution.**
   Defensive plumbing so PortOS version drift between peers fails loudly
   instead of silently corrupting shares. Every outgoing artifact (manifests
