@@ -36,11 +36,9 @@ PortOS is a monorepo with Express.js server (always user-facing on `:5555`, HTTP
 
 ### Port Allocation
 
-PortOS uses ports 5553-5561. In native mode, PostgreSQL uses the system pg on port 5432; in Docker mode, port 5561.
+PortOS uses ports 5553–5561 (system PostgreSQL on 5432, Docker PostgreSQL on 5561). The user-facing port is always **`:5555`** — scheme flips between HTTP and HTTPS depending on whether a TLS cert is provisioned (`npm run setup:cert`); when HTTPS is on, a loopback-only HTTP mirror spawns on `:5553` so local curl/scripts skip the cert warning. `:5554` is the Vite dev server (only `npm run dev`).
 
-The user-facing port is always **`:5555`** — its scheme flips between HTTP and HTTPS based on whether a TLS cert is provisioned (`npm run setup:cert`), but the port number does not. When HTTPS is on, a loopback-only HTTP mirror also spawns on `:5553` so local curl/scripts don't have to deal with cert warnings. `:5554` is the Vite dev server, used only in `npm run dev`.
-
-Define all ports in the top-level `PORTS` object in `ecosystem.config.cjs` (see `server/lib/ports.js` for the canonical re-export). See `docs/PORTS.md` for the full port allocation guide and a diagram of how `:5555`, `:5553`, and `:5554` relate.
+Define ports in the top-level `PORTS` object in `ecosystem.config.cjs` (canonical re-export at `server/lib/ports.js`). See `docs/PORTS.md` for the full guide and diagram.
 
 ### Server (`server/`)
 - **Routes**: HTTP handlers with Zod validation
@@ -68,7 +66,10 @@ The AI provider/runner/prompt toolkit is vendored in-tree at `server/lib/aiToolk
 - When adding new provider fields (e.g., `fallbackProvider`, `lightModel`), update `createProvider()` in `server/lib/aiToolkit/providers.js`
 - `updateProvider()` uses spread so existing providers preserve custom fields, but `createProvider()` has an explicit field list
 
-**Override consistency.** PortOS replaces `aiToolkit.services.runner.executeCliRun` in `server/index.js` with a stdin-based variant that knows the per-CLI argv conventions (Codex `exec -`, Gemini stdin piping, Claude Code `-p -`). The PortOS variant tracks live child processes in `_portosActiveRuns`, not the toolkit's internal `activeRuns` map. **Every sibling method that reads or writes the runner's process map must be patched together** — `stopRun` and `isRunActive` are already overridden alongside `executeCliRun`; if you add a new method that touches active runs (e.g. `pauseRun`, `getActiveRunCount`), add a matching override or the runs router will report inconsistent state. The same principle applies to time-based state transitions: `providerStatus.init()` clears expired `estimatedRecovery` entries, so every reader (`getStatus`, `getAllStatuses`, `isAvailable`) must re-apply the same recovery check on read — otherwise providers stay "unavailable" past their recovery deadline until the next process restart.
+**Override consistency.** PortOS replaces `aiToolkit.services.runner.executeCliRun` in `server/index.js` with a stdin-based variant that knows the per-CLI argv conventions (Codex `exec -`, Gemini stdin piping, Claude Code `-p -`). Two patches follow from this:
+
+- The PortOS variant tracks live child processes in `_portosActiveRuns`, not the toolkit's internal `activeRuns`. **Every sibling method that reads or writes the runner's process map must be patched together** — `stopRun` and `isRunActive` are already overridden alongside `executeCliRun`; if you add a new method (e.g. `pauseRun`, `getActiveRunCount`), add a matching override or the runs router will report inconsistent state.
+- Time-based state transitions need read-side mirrors. `providerStatus.init()` clears expired `estimatedRecovery` entries; every reader (`getStatus`, `getAllStatuses`, `isAvailable`) must re-apply the same recovery check on read — otherwise providers stay "unavailable" past their recovery deadline until the next process restart.
 
 ### Command Palette & Voice Nav — shared backbone (`server/lib/navManifest.js`)
 
@@ -110,6 +111,17 @@ Dashboard widgets are registered in `client/src/components/dashboard/widgetRegis
 5. Users can toggle widgets on/off per layout via the Dashboard's layout picker → Edit, and arrange/resize them via the "Arrange" button.
 
 Switching layouts is also wired into the `⌘K` palette — it synthesizes a `Dashboard: <name>` command per layout at palette-open time, so any layout the user creates is instantly keyboard-reachable without further registration.
+
+### Backup Service (`server/services/backup.js`)
+
+`DEFAULT_EXCLUDES` is **rsync filter syntax** — every path must be anchored with a leading `/` (rsync's "relative to the transfer root"). Without the anchor, `loras/*.safetensors` also matches any `loras/` directory nested anywhere under `data/`, silently dropping unrelated user data (e.g. `brain/.../loras/`). Each entry carries an `overridable` flag:
+
+- `false` — ephemeral/cache data that must never be backed up. A hand-edited `settings.json` listing the path in `disabledDefaultExcludes` is silently dropped server-side.
+- `true` — re-downloadable assets the user can opt back in via the Backup tab toggle. The toggle UI uses a `shadowsDefault()` helper that also catches broader custom patterns (`loras/`, `loras/**`, `/cos/`) so the "included" state never lies about rsync's actual behavior.
+
+The pure `computeEffectiveExcludes()` helper enforces both rules (overridable allow-list + `Array.isArray` guards for hand-edited settings) and is unit-tested in `backup.test.js`.
+
+The scheduled-cron handler in `backupScheduler.js` re-reads settings on every invocation — `destPath`, `excludePaths`, `disabledDefaultExcludes`, and `enabled` all take effect on the next run without a server restart. Only the cron expression itself is captured at registration.
 
 ### Slashdo Commands (`lib/slashdo`)
 
@@ -156,7 +168,7 @@ When working **directly in the Claude Code TUI** with the user driving, edit the
   - Strings: treat `null`/`undefined` as absent, `""` as a clear. Server helpers like `universeBuilderExpand.trimField` should return `null` for non-strings, not `""`.
   - Arrays/objects: gate on `Array.isArray(parsed?.field)` / `typeof parsed?.field === 'object'` before deciding to fall back to the original.
   - Keep server-side merges and the client's `pick` helpers mirrored — a one-sided change breaks the round-trip.
-- **Schema parity when adding fields.** When you add a field to a sanitizer, `createXxx`, or a payload shape, update the corresponding Zod schema (`server/lib/aiToolkit/validation.js` for toolkit shapes, `server/lib/validation.js` for PortOS routes) in the same change. Wire validation into POST and PUT (PUT can use `schema.partial()`); the PortOS convention is *all* inputs validated. Tolerate UI sentinels (`endpoint: ''` for CLI providers) with `z.preprocess(v => v === '' ? undefined : v, …)`. When a service migrates legacy keys on read, the schema must still accept the legacy shape so older clients don't 400 before the migration runs.
+- **Schema parity when adding fields.** When you add a field to a sanitizer, `createXxx`, or a payload shape, update the corresponding Zod schema (`server/lib/aiToolkit/validation.js` for toolkit shapes, `server/lib/validation.js` for PortOS routes) in the same change. Wire validation into POST and PUT (PUT can use `schema.partial()`); the PortOS convention is *all* inputs validated — an exported-but-unwired sub-schema creates false confidence. For polymorphic stores like `PUT /api/settings` that accept any sub-object, validate the relevant slice with `schema.partial()` when its key is present in the request body (see `server/routes/settings.js` for the `backupConfigSchema.partial()` pattern). Tolerate UI sentinels (`endpoint: ''` for CLI providers) with `z.preprocess(v => v === '' ? undefined : v, …)`. When a service migrates legacy keys on read, the schema must still accept the legacy shape so older clients don't 400 before the migration runs.
 - **Silent vs. toasting API requests.** The `request()` helper in `client/src/services/apiCore.js` toasts errors by default. When a caller already owns its own error UI — either via `useAsyncAction` (which toasts on throw) or a `.catch(() => fallback)` that intentionally swallows the failure — pass `{ silent: true }` to the API helper so the toast only fires from one layer. Add an `options` parameter to new API wrappers so callers can opt into silent mode.
 - **"Run Now" actions must gate on saved state, not the form input.** When a settings page has a companion "Run this now" button that triggers a server action reading server-side settings (not the local form values), the button must be gated on the *saved* value, not the in-memory input. Track a parallel `saved*` state for each setting the action depends on, update it on successful save, and use it for the action's enabled gate. Disable the action while the form is dirty *or* a save is in flight — a tooltip-only warning is missed on touch and produces surprising "I edited X and ran, but X didn't apply" bugs.
 - **In-flight saves must gate dependent actions, not just the form.** When a field's PATCH is async and a button triggers server-side work that reads that field (auto-run, regenerate, etc.), the button must disable while the PATCH is in flight — not just while the input is "dirty." Otherwise the user picks a new value, the input clears, and they click the action before the server has the new value persisted. Track a `<field>Saving` boolean alongside the action's other disable predicates, set it before the PATCH and clear it in `.finally()`. See `PipelineIssue.jsx` `lengthProfileSaving` for the canonical example.
