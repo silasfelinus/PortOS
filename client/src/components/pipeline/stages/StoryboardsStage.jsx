@@ -29,7 +29,7 @@ import {
 import MediaJobThumb from '../MediaJobThumb';
 import { genConfigToImageOptions, genConfigToRefineOptions } from './VisualGenSettings';
 
-export default function StoryboardsStage({ issue, onStageUpdate }) {
+export default function StoryboardsStage({ issue, onStageUpdate, actionsGated = false }) {
   const stage = issue.stages?.storyboards || { status: 'empty', scenes: [] };
   const [scenes, setScenes] = useState(stage.scenes || []);
   // Per-stage gen config — edited from the page-level settings modal.
@@ -266,8 +266,8 @@ export default function StoryboardsStage({ issue, onStageUpdate }) {
                   <button
                     type="button"
                     onClick={() => handleRefinePrompt(i)}
-                    disabled={refiningIdx !== null}
-                    title="Elaborate this description into a richer image-gen prompt (LLM call — replaces the current text)"
+                    disabled={refiningIdx !== null || actionsGated}
+                    title={actionsGated ? 'Saving settings…' : 'Elaborate this description into a richer image-gen prompt (LLM call — replaces the current text)'}
                     className="inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded bg-port-card border border-port-border text-white text-xs hover:border-port-accent/50 disabled:opacity-50"
                   >
                     {refiningIdx === i ? <Loader2 size={12} className="animate-spin" /> : <WandSparkles size={12} />}
@@ -276,7 +276,8 @@ export default function StoryboardsStage({ issue, onStageUpdate }) {
                   <button
                     type="button"
                     onClick={() => handleGenerate(i)}
-                    disabled={savingIdx === i}
+                    disabled={savingIdx === i || actionsGated}
+                    title={actionsGated ? 'Saving settings…' : undefined}
                     className="inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded bg-port-accent text-white text-xs disabled:opacity-50"
                   >
                     {savingIdx === i ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
@@ -285,8 +286,8 @@ export default function StoryboardsStage({ issue, onStageUpdate }) {
                   <button
                     type="button"
                     onClick={() => handleGenerateVideo(i)}
-                    disabled={renderingVideoIdx !== null}
-                    title="Render this scene as a video clip (independent of the full episode-video stitch)"
+                    disabled={renderingVideoIdx !== null || actionsGated}
+                    title={actionsGated ? 'Saving settings…' : 'Render this scene as a video clip (independent of the full episode-video stitch)'}
                     className="inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded bg-port-card border border-port-border text-white text-xs hover:border-port-accent/50 disabled:opacity-50"
                   >
                     {renderingVideoIdx === i ? <Loader2 size={12} className="animate-spin" /> : <Film size={12} />}

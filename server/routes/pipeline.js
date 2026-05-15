@@ -823,18 +823,27 @@ router.post('/issues/:id/stages/comicPages/extract-pages', asyncHandler(async (r
   // clear any prior imageJobId / prompt — they were rendered against the old
   // (likely placeholder / fallback) script, so leaving them would show a
   // rendered cover image that doesn't match the new concept text.
-  const existingCover = issue.stages?.comicPages?.cover || null;
-  const existingCoverScript = existingCover?.script || '';
-  const nextCover = coverConcept && !existingCoverScript
-    ? { script: coverConcept, imageJobId: null, prompt: null }
-    : existingCover;
-
-  const { issue: updatedIssue, stage } = await issuesSvc.updateStage(issue.id, 'comicPages', {
-    status: pages.length ? 'ready' : 'empty',
-    pages,
-    cover: nextCover,
-    errorMessage: '',
-  });
+  //
+  // The decision is made inside updateStageWithLatest so it reads the freshest
+  // persisted cover, not the stale snapshot from the getIssue read above. A
+  // concurrent cover/render call that writes imageJobId between the two awaits
+  // would otherwise be silently overwritten.
+  const { issue: updatedIssue, stage } = await issuesSvc.updateStageWithLatest(
+    issue.id,
+    'comicPages',
+    (currentStage) => {
+      const currentCoverScript = currentStage?.cover?.script || '';
+      const nextCover = coverConcept && !currentCoverScript
+        ? { script: coverConcept, imageJobId: null, prompt: null }
+        : currentStage?.cover ?? null;
+      return {
+        status: pages.length ? 'ready' : 'empty',
+        pages,
+        cover: nextCover,
+        errorMessage: '',
+      };
+    },
+  );
 
   const panelCount = pages.reduce((n, p) => n + (p.panels?.length || 0), 0);
   res.json({

@@ -19,7 +19,7 @@ import { genConfigToImageOptions, genConfigToRefineOptions } from './VisualGenSe
 // pure per-panel editor so a future view that lands directly here still
 // works.
 
-export default function ComicPagesStage({ issue, onStageUpdate }) {
+export default function ComicPagesStage({ issue, onStageUpdate, actionsGated = false }) {
   const stage = issue.stages?.comicPages || { status: 'empty', pages: [] };
   const [pages, setPages] = useState(stage.pages || []);
   const genConfig = stage.genConfig || null;
@@ -218,8 +218,8 @@ export default function ComicPagesStage({ issue, onStageUpdate }) {
                   <button
                     type="button"
                     onClick={() => handleGeneratePage(pi)}
-                    disabled={renderingPages.has(pi) || !(page.panels?.length > 0)}
-                    title="Render the entire page as one image — recommended for Codex / cloud image models. Local models will produce draft-quality results."
+                    disabled={renderingPages.has(pi) || !(page.panels?.length > 0) || actionsGated}
+                    title={actionsGated ? 'Saving settings…' : 'Render the entire page as one image — recommended for Codex / cloud image models. Local models will produce draft-quality results.'}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-port-accent text-white text-xs font-medium hover:bg-port-accent/90 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     {renderingPages.has(pi)
@@ -262,8 +262,8 @@ export default function ComicPagesStage({ issue, onStageUpdate }) {
                       <button
                         type="button"
                         onClick={() => handleRefinePanel(pi, ni)}
-                        disabled={refiningKey !== null}
-                        title="Elaborate this panel description into a richer image-gen prompt (LLM call — replaces the current text)"
+                        disabled={refiningKey !== null || actionsGated}
+                        title={actionsGated ? 'Saving settings…' : 'Elaborate this panel description into a richer image-gen prompt (LLM call — replaces the current text)'}
                         className="inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded bg-port-card border border-port-border text-white text-xs hover:border-port-accent/50 disabled:opacity-50"
                       >
                         {refiningKey === `${pi}:${ni}` ? <Loader2 size={12} className="animate-spin" /> : <WandSparkles size={12} />}
@@ -272,7 +272,8 @@ export default function ComicPagesStage({ issue, onStageUpdate }) {
                       <button
                         type="button"
                         onClick={() => handleGeneratePanel(pi, ni)}
-                        disabled={savingIdx === `${pi}:${ni}`}
+                        disabled={savingIdx === `${pi}:${ni}` || actionsGated}
+                        title={actionsGated ? 'Saving settings…' : undefined}
                         className="inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded bg-port-accent text-white text-xs disabled:opacity-50"
                       >
                         {savingIdx === `${pi}:${ni}` ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}

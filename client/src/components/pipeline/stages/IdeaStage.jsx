@@ -30,7 +30,7 @@ ${block}`;
 }
 
 export default function IdeaStage(props) {
-  const { issue, series, onStageUpdate } = props;
+  const { issue, series, onStageUpdate, actionsGated = false } = props;
   const output = issue.stages?.idea?.output || '';
   const seedInput = issue.stages?.idea?.input || '';
   const questions = useMemo(() => parseOpenQuestions(output), [output]);
@@ -64,6 +64,7 @@ export default function IdeaStage(props) {
         generateLabel="Generate beat sheet"
         seedPlaceholder="A rough idea for this issue — a single sentence is fine. The LLM expands it into a beat sheet."
         outputPlaceholder="The generated beat sheet will appear here. You can edit it freely; downstream stages use this content verbatim as upstream context."
+        actionsGated={actionsGated}
       />
 
       {questions.length > 0 ? (
@@ -75,9 +76,9 @@ export default function IdeaStage(props) {
             <button
               type="button"
               onClick={handleRefine}
-              disabled={refining}
+              disabled={refining || actionsGated}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium border bg-port-bg text-port-warning border-port-warning/40 hover:bg-port-warning/10 disabled:opacity-40"
-              title="Re-run the beat sheet, folding your answers in and dropping the open-questions section"
+              title={actionsGated ? 'Saving settings…' : 'Re-run the beat sheet, folding your answers in and dropping the open-questions section'}
             >
               {refining ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
               Refine with answers

@@ -25,6 +25,7 @@ export default function TextStagePanel({
   outputPlaceholder,
   generateLabel = 'Generate',
   extraActions = null,
+  actionsGated = false,
 }) {
   const stage = issue.stages?.[stageId] || { status: 'empty', input: '', output: '' };
   const [draftOutput, setDraftOutput] = useState(stage.output || '');
@@ -107,7 +108,8 @@ export default function TextStagePanel({
           <button
             type="button"
             onClick={handleGenerate}
-            disabled={generating}
+            disabled={generating || actionsGated}
+            title={actionsGated ? 'Saving settings…' : undefined}
             className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
           >
             {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}

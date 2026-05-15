@@ -156,10 +156,11 @@ export const generatePipelineComicPage = (issueId, pageIndex, opts = {}) =>
 // the next reload reflects what was rendered). Server folds in series
 // name, issue number, issue title, and style notes — caller only owns the
 // cover-concept text. Returns { jobId, mode, prompt, cover, issue, stage }.
-export const generatePipelineComicCover = (issueId, opts = {}) =>
+export const generatePipelineComicCover = (issueId, opts = {}, options = {}) =>
   request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/comicPages/cover/render`, {
     method: 'POST',
     body: JSON.stringify(opts),
+    ...options,
   });
 
 // Patch one comic page's raw markdown — the server re-parses panels from the

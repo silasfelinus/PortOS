@@ -278,11 +278,12 @@ export async function getIssue(id) {
   return found;
 }
 
-export async function createIssue(input = {}) {
+export function createIssue(input = {}) {
   const seriesId = trimTo(input.seriesId, SERIES_ID_MAX);
-  if (!seriesId) throw makeErr('seriesId is required', ERR_VALIDATION);
+  if (!seriesId) return Promise.reject(makeErr('seriesId is required', ERR_VALIDATION));
   const title = trimTo(input.title, TITLE_MAX);
-  if (!title) throw makeErr(`title is required (1..${TITLE_MAX} chars)`, ERR_VALIDATION);
+  if (!title) return Promise.reject(makeErr(`title is required (1..${TITLE_MAX} chars)`, ERR_VALIDATION));
+  return queueIssueWrite(null, async () => {
   const state = await readState();
   const next = sanitizeIssue({
     id: `iss-${randomUUID()}`,
@@ -305,6 +306,7 @@ export async function createIssue(input = {}) {
   state.issues.push(next);
   await writeState(state);
   return next;
+  }); // end queueIssueWrite
 }
 
 function nextIssueNumber(issues, seriesId) {
@@ -393,8 +395,38 @@ export function updateIssue(id, patch = {}) {
  * a stage write doesn't have to load the full issue, mutate, and re-validate.
  * Patch keys: status, input, output, lastRunId, errorMessage, and (for
  * visual stages) pages/scenes/cdProjectId/videoPath.
+ *
+ * When the patch depends on the current stage value (e.g. cover preservation),
+ * use `updateStageWithLatest` instead so the decision is made against the
+ * freshest persisted record inside the serialized write region.
  */
 export function updateStage(issueId, stageId, patch = {}) {
+  return updateStageWithLatest(issueId, stageId, () => patch);
+}
+
+export function deleteIssue(id) {
+  return queueIssueWrite(id, async () => {
+  const state = await readState();
+  const before = state.issues.length;
+  state.issues = state.issues.filter((i) => i.id !== id);
+  if (state.issues.length === before) throw makeErr(`Issue not found: ${id}`, ERR_NOT_FOUND);
+  await writeState(state);
+  return { id };
+  }); // end queueIssueWrite
+}
+
+/**
+ * Like `updateStage`, but the patch is computed from the *latest* persisted
+ * stage inside the serialized write region. Use this when the patch value
+ * depends on the current stage state (e.g. cover preservation) so a concurrent
+ * write that lands between the outer `getIssue` read and this call is not
+ * silently overwritten.
+ *
+ * `computeFn(currentStage) → patch` — called with the freshest stage record
+ * inside the queue; its return value is shallow-merged over the stage exactly
+ * as `updateStage` merges a static patch.
+ */
+export function updateStageWithLatest(issueId, stageId, computeFn) {
   if (!STAGE_IDS.includes(stageId)) {
     // Validate before queueing so the caller gets an immediate rejection
     // rather than waiting in line for an error it already knows about.
@@ -406,8 +438,10 @@ export function updateStage(issueId, stageId, patch = {}) {
   if (idx < 0) throw makeErr(`Issue not found: ${issueId}`, ERR_NOT_FOUND);
   const cur = state.issues[idx];
   const isVisual = VISUAL_STAGE_IDS.includes(stageId);
+  const currentStage = cur.stages[stageId];
+  const patch = computeFn(currentStage);
   const merged = {
-    ...cur.stages[stageId],
+    ...currentStage,
     ...patch,
     updatedAt: new Date().toISOString(),
   };
@@ -421,13 +455,4 @@ export function updateStage(issueId, stageId, patch = {}) {
   await writeState(state);
   return { issue: mergedIssue, stage: mergedIssue.stages[stageId] };
   }); // end queueIssueWrite
-}
-
-export async function deleteIssue(id) {
-  const state = await readState();
-  const before = state.issues.length;
-  state.issues = state.issues.filter((i) => i.id !== id);
-  if (state.issues.length === before) throw makeErr(`Issue not found: ${id}`, ERR_NOT_FOUND);
-  await writeState(state);
-  return { id };
 }

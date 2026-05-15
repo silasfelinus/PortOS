@@ -85,6 +85,7 @@ export default function PipelineIssue() {
   const [autoRunActive, setAutoRunActive] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [lengthProfileSaving, setLengthProfileSaving] = useState(false);
+  const [genConfigSaving, setGenConfigSaving] = useState(false);
   // Close the settings modal whenever the active stage changes so it doesn't
   // reopen unexpectedly when the user returns to a previously-visited stage.
   useEffect(() => { setSettingsOpen(false); }, [stageId]);
@@ -160,12 +161,13 @@ export default function PipelineIssue() {
   // visual stage owns the config record (we keep per-stage genConfig so a
   // user can pin "codex" for comicPages but "local" for storyboards).
   const handleGenConfigChange = async (next) => {
+    setGenConfigSaving(true);
     const updated = await updatePipelineIssue(issueId, {
       stages: { [stageId]: { genConfig: next } },
     }).catch((err) => {
       toast.error(err.message || 'Save failed');
       return null;
-    });
+    }).finally(() => setGenConfigSaving(false));
     if (updated) setIssue(updated);
   };
 
@@ -240,9 +242,9 @@ export default function PipelineIssue() {
             <button
               type="button"
               onClick={() => handleAutoRun({})}
-              disabled={autoRunStarting || autoRunActive || lengthProfileSaving}
+              disabled={autoRunStarting || autoRunActive || lengthProfileSaving || genConfigSaving}
               className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
-              title={lengthProfileSaving ? 'Saving length profile…' : 'Run idea → prose → (comic script + TV script) end to end'}
+              title={lengthProfileSaving ? 'Saving length profile…' : genConfigSaving ? 'Saving visual settings…' : 'Run idea → prose → (comic script + TV script) end to end'}
             >
               {autoRunStarting || autoRunActive ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
               Auto-run text
@@ -250,9 +252,9 @@ export default function PipelineIssue() {
             <button
               type="button"
               onClick={() => handleAutoRun({ includeVideo: true })}
-              disabled={autoRunStarting || autoRunActive || lengthProfileSaving}
+              disabled={autoRunStarting || autoRunActive || lengthProfileSaving || genConfigSaving}
               className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-card border border-port-accent/40 text-white text-sm font-medium disabled:opacity-50 hover:bg-port-accent/10"
-              title={lengthProfileSaving ? 'Saving length profile…' : 'Run text stages and then kick off episode video via Creative Director (burns GPU)'}
+              title={lengthProfileSaving ? 'Saving length profile…' : genConfigSaving ? 'Saving visual settings…' : 'Run text stages and then kick off episode video via Creative Director (burns GPU)'}
             >
               {autoRunStarting || autoRunActive ? <Loader2 size={14} className="animate-spin" /> : <Clapperboard size={14} />}
               Run everything (incl. video)
@@ -310,7 +312,13 @@ export default function PipelineIssue() {
       {/* Active stage panel */}
       <div className="flex-1 overflow-auto p-4 md:p-6">
         {StageComponent ? (
-          <StageComponent issue={issue} series={series} onStageUpdate={handleStageUpdate} onSeriesUpdate={setSeries} />
+          <StageComponent
+            issue={issue}
+            series={series}
+            onStageUpdate={handleStageUpdate}
+            onSeriesUpdate={setSeries}
+            actionsGated={lengthProfileSaving || genConfigSaving}
+          />
         ) : (
           <div className="text-gray-500 text-sm">Unknown stage.</div>
         )}

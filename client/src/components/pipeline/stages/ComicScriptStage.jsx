@@ -58,7 +58,7 @@ function panelsToMarkdown(panels, pageNumber) {
   return lines.join('\n').trim();
 }
 
-export default function ComicScriptStage({ issue, series, onStageUpdate }) {
+export default function ComicScriptStage({ issue, series, onStageUpdate, actionsGated = false }) {
   const script = issue.stages?.comicScript || { status: 'empty', output: '' };
   const comicPages = issue.stages?.comicPages || { status: 'empty', pages: [] };
   const pages = Array.isArray(comicPages.pages) ? comicPages.pages : [];
@@ -212,7 +212,7 @@ export default function ComicScriptStage({ issue, series, onStageUpdate }) {
     const result = await generatePipelineComicCover(issue.id, {
       coverScript: draftCoverScript || '',
       ...renderOpts,
-    }).catch((err) => {
+    }, { silent: true }).catch((err) => {
       toast.error(err.message || 'Failed to render cover');
       return null;
     });
@@ -293,9 +293,9 @@ export default function ComicScriptStage({ issue, series, onStageUpdate }) {
           <button
             type="button"
             onClick={handleGenerate}
-            disabled={generating || extracting}
+            disabled={generating || extracting || actionsGated}
             className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
-            title="Re-adapt the prose into a fresh comic script and split it into pages"
+            title={actionsGated ? 'Saving settings…' : 'Re-adapt the prose into a fresh comic script and split it into pages'}
           >
             {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
             {hasScript ? 'Re-generate pages' : 'Generate pages'}
@@ -322,10 +322,12 @@ export default function ComicScriptStage({ issue, series, onStageUpdate }) {
             <button
               type="button"
               onClick={handleRenderCover}
-              disabled={renderingCover || coverJobInFlight}
-              title={coverJobInFlight
-                ? 'Cover render in progress…'
-                : 'Render the issue\'s front cover — series masthead + issue number tag + your cover concept.'}
+              disabled={renderingCover || coverJobInFlight || actionsGated}
+              title={actionsGated
+                ? 'Saving settings…'
+                : coverJobInFlight
+                  ? 'Cover render in progress…'
+                  : 'Render the issue\'s front cover — series masthead + issue number tag + your cover concept.'}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-port-accent text-white text-xs font-medium hover:bg-port-accent/90 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {(renderingCover || coverJobInFlight) ? <Loader2 size={12} className="animate-spin" /> : <ImageIcon size={12} />}
