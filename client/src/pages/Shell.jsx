@@ -72,6 +72,11 @@ export default function Shell() {
   // after a cancel is rejected (matches !== null only when both sides hold the same id).
   // The sentinel 'new' covers shell:start (id unknown until shell:started arrives).
   const pendingAttachRef = useRef({ target: null, generation: 0 });
+  // Flipped on unmount so deferred work (setTimeout-scheduled recovery attaches)
+  // can short-circuit instead of firing shell:attach from a teardown component —
+  // which would claim a session with no listener left to render it.
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
   // useCallback for stable identity so consumers can list these in dep arrays without
   // causing useEffect re-binds on every render. They only touch a ref, so empty deps is correct.
   const setPendingAttach = useCallback((target) => {
@@ -328,6 +333,10 @@ export default function Shell() {
       socket.emit('shell:stop', { sessionId: sessionIdRef.current });
       clearActiveSession();
       cancelPendingAttach();
+      // Disarm the nav intent — if the cancelled request was a user-initiated tab
+      // click that had set 'push', a later automatic activation must not push a
+      // history entry the user no longer wanted.
+      pendingNavIntentRef.current = 'replace';
       userIdleRef.current = true;
       if (termInstanceRef.current) {
         termInstanceRef.current.writeln('\r\n\x1b[33m[Session killed]\x1b[0m');
@@ -342,6 +351,7 @@ export default function Shell() {
     if (sessionId === sessionIdRef.current) {
       clearActiveSession();
       cancelPendingAttach();
+      pendingNavIntentRef.current = 'replace';
       userIdleRef.current = true;
       if (termInstanceRef.current) {
         termInstanceRef.current.writeln('\r\n\x1b[33m[Session killed]\x1b[0m');
@@ -417,8 +427,13 @@ export default function Shell() {
           const survivor = pickUnattachedSurvivor(sessionList);
           if (survivor) {
             attachToSession(survivor.sessionId, { claim: true });
+          } else if (sessionList.length < MAX_SESSIONS) {
+            // Every live session is attached elsewhere but we have capacity. The user
+            // landed here (probably via a now-dead deep link) intending to get a
+            // shell — start a fresh one rather than leaving them at bare /shell.
+            startSession();
           } else {
-            // Every live session is attached elsewhere — leave at /shell, user can tab-click
+            // At session cap with all attached elsewhere — nothing safe to do here.
             navigateRef.current('/shell', { replace: true });
           }
         } else if (sessionList.length === 0 && !userIdleRef.current) {
@@ -534,6 +549,7 @@ export default function Shell() {
           setPendingAttach(target);
           const gen = pendingAttachRef.current.generation;
           setTimeout(() => {
+            if (!mountedRef.current) return;
             if (pendingAttachRef.current.generation !== gen) return;
             attachToSession(target, { claim: true });
           }, 100);
@@ -564,22 +580,31 @@ export default function Shell() {
     };
 
     const handleShellError = ({ error, sessionId: errSid }) => {
-      // Always show the error.
-      if (termInstanceRef.current) {
-        termInstanceRef.current.writeln(`\r\n\x1b[31m[Error: ${error}]\x1b[0m`);
-      }
-      // Correlate this error to our current pending request. Three accept cases:
-      //   1) start failure: server-side errSid omitted, our pending is 'new'.
-      //   2) attach failure (server-correlated): errSid present and matches pending.
+      // Correlate this error to our current pending request before deciding whether
+      // to display it. Four cases:
+      //   1) start failure: server-side errSid omitted, our pending is 'new'. Show + recover.
+      //   2) attach failure (server-correlated): errSid present and matches pending. Show + recover.
       //   3) legacy attach failure (older server emit without errSid): pending is a
-      //      session id (not 'new', not null). Tolerated for back-compat.
-      // Everything else is either a passive error (input/stop on a missing session)
-      // or a stale error from a request the user has already moved past — don't
-      // mutate our in-flight pending state on either.
+      //      session id (not 'new', not null). Tolerated for back-compat. Show + recover.
+      //   4) passive error on the currently displayed session (e.g. shell:input to a
+      //      session that died): errSid matches sessionIdRef. Show, but don't mutate
+      //      pending state — the user's switch (if any) is unrelated.
+      // Everything else — stale errors from requests the user has moved past, or
+      // expected claim:true race rejections from auto-pick — drop silently to avoid
+      // flashing red noise in the terminal for requests the UI no longer cares about.
       const pending = pendingAttachRef.current.target;
       const isStartFailure = !errSid && pending === 'new';
       const isAttachFailure = pending && pending !== 'new' && (!errSid || errSid === pending);
-      if (!isStartFailure && !isAttachFailure) return;
+      const isPassiveOnActive = errSid && !isAttachFailure && errSid === sessionIdRef.current;
+      if (!isStartFailure && !isAttachFailure && !isPassiveOnActive) return;
+
+      if (termInstanceRef.current) {
+        termInstanceRef.current.writeln(`\r\n\x1b[31m[Error: ${error}]\x1b[0m`);
+      }
+      if (isPassiveOnActive && !isStartFailure && !isAttachFailure) {
+        // Passive error displayed; do not touch pending state.
+        return;
+      }
 
       // This error corresponds to our current request — reset pending state and run recovery.
       pendingNavIntentRef.current = 'replace';
@@ -631,6 +656,7 @@ export default function Shell() {
         setPendingAttach(active);
         const gen = pendingAttachRef.current.generation;
         setTimeout(() => {
+          if (!mountedRef.current) return;
           if (pendingAttachRef.current.generation !== gen) return;
           // The setPendingAttach we just did is consumed here — clear and emit.
           cancelPendingAttach();
@@ -678,10 +704,19 @@ export default function Shell() {
       switchToSession(urlSessionId, { fromUrl: true });
       return;
     }
-    // URL is bare /shell or names a dead/unknown session, but we have an active session
-    // displayed — re-mirror the URL back so reload still restores the displayed shell.
+    // URL points at bare /shell or a dead/unknown session.
     if (sessionIdRef.current) {
+      // Have an active session — mirror its id back into the URL so reload restores it.
       navigateRef.current(`/shell/${sessionIdRef.current}`, { replace: true });
+      return;
+    }
+    // No active session, no live target for the URL. Clear the stale id from the
+    // address bar — but only when there's nothing in flight (a pending attach will
+    // navigate via activateSession on success) and the user isn't intentionally idle
+    // (then bare /shell is what they want). handleSessions handles survivor adoption
+    // and the deep-link new-session fallback when initial-load runs.
+    if (urlSessionId && !pendingAttachRef.current.target && !userIdleRef.current) {
+      navigateRef.current('/shell', { replace: true });
     }
   }, [urlSessionId, switchToSession]);
 

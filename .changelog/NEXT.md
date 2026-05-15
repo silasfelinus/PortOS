@@ -78,8 +78,8 @@
     failures now carries the requested `sessionId`. The client matches it
     against `pendingAttachRef.current.target` to recover the correct
     request and ignores stale errors from earlier rapid clicks. Passive
-    errors (input/stop on missing session) carry sessionId too but never
-    match a pending request, so they don't mutate pending state.
+    errors (`shell:input` to a missing session) carry sessionId too but
+    don't match a pending request, so they don't mutate pending state.
   - **Intentional vs passive idle preserved across reconnect.** Initial-
     load auto-attach (which also runs on every reconnect because
     `handleConnect` resets `hasInitializedRef`) gates on `!userIdleRef`,
