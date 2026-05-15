@@ -31,6 +31,7 @@ import {
   shellInputSchema,
   shellResizeSchema,
   shellSessionIdSchema,
+  shellAttachSchema,
   shellStopSchema,
   appUpdateSchema,
   appStandardizeSchema,
@@ -449,10 +450,12 @@ export function initSocket(io) {
     });
 
     socket.on('shell:attach', (rawData) => {
-      const validated = validateSocketData(shellSessionIdSchema, rawData, socket, 'shell:attach');
+      const validated = validateSocketData(shellAttachSchema, rawData, socket, 'shell:attach');
       if (!validated) return;
-      const result = shellService.attachSession(validated.sessionId, socket);
-      if (result) {
+      const result = shellService.attachSession(validated.sessionId, socket, { claim: validated.claim });
+      if (result?.claimRejected) {
+        socket.emit('shell:error', { error: 'Session attached to another client' });
+      } else if (result) {
         socket.emit('shell:attached', result);
       } else {
         socket.emit('shell:error', { error: 'Session not found' });

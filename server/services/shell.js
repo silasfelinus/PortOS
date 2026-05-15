@@ -156,11 +156,22 @@ export function createShellSession(socket, options = {}) {
  * the new socket takes over and the previous tab would otherwise sit "Connected"
  * with no output. Emit shell:detached on the prior socket so it can clear its
  * local state instead of silently losing the stream.
+ *
+ * `claim` — when true, the attach refuses to displace a different socket. Used by
+ * client-side auto-pick paths so concurrent broadcasts to two idle tabs don't
+ * end up with both tabs racing to attach the same survivor (and one tab's win
+ * displacing the other via shell:detached). User-initiated attaches default to
+ * claim=false (takeover semantics — explicit intent wins).
  */
-export function attachSession(sessionId, socket) {
+export function attachSession(sessionId, socket, { claim = false } = {}) {
   const session = shellSessions.get(sessionId);
   if (!session) return null;
   const prevSocket = session.socket;
+  if (claim && prevSocket && prevSocket !== socket) {
+    // Auto-pick lost the race to a different socket. Caller can fall back to
+    // another survivor or give up and stay at /shell.
+    return { claimRejected: true };
+  }
   if (prevSocket && prevSocket !== socket) {
     prevSocket.emit('shell:detached', { sessionId, reason: 'attached-elsewhere' });
   }

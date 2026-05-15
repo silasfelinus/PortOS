@@ -260,6 +260,12 @@ export default function Shell() {
     sessionIdRef.current = null;
     setActiveSessionId(null);
     setConnected(false);
+    // Invalidate any in-flight start/attach so the late response is treated as stale
+    // by handleShellAttached/handleShellStarted (which gate on pendingAttachRef ===
+    // their session id / 'new'). Without this, hitting Stop while an attach was in
+    // flight would let the response activate the session and navigate back to /shell/<id>,
+    // undoing the user's clear.
+    pendingAttachRef.current = null;
   }, []);
 
   const activateSession = useCallback((sessionId) => {
@@ -292,7 +298,7 @@ export default function Shell() {
     socket.emit('shell:start', Object.keys(startOpts).length > 0 ? startOpts : undefined);
   }, [socket]);
 
-  const attachToSession = useCallback((sessionId, { intent } = {}) => {
+  const attachToSession = useCallback((sessionId, { intent, claim = false } = {}) => {
     if (!socket?.connected) return;
     if (intent === 'push') pendingNavIntentRef.current = 'push';
     pendingAttachRef.current = sessionId;
@@ -301,7 +307,10 @@ export default function Shell() {
       termInstanceRef.current.clear();
       termInstanceRef.current.writeln('\x1b[36mAttaching to session...\x1b[0m');
     }
-    socket.emit('shell:attach', { sessionId });
+    // claim:true → server refuses to displace a different socket. Used by auto-pick
+    // paths so multi-tab broadcast races don't cause one tab's auto-adopt to boot
+    // another tab via shell:detached. User intent paths default to claim:false.
+    socket.emit('shell:attach', claim ? { sessionId, claim: true } : { sessionId });
   }, [socket]);
 
   const stopSession = useCallback(() => {
@@ -389,11 +398,14 @@ export default function Shell() {
           // URL points at a live session — attach to that one (deep-link intent
           // overrides the "don't steal" guard; the prior tab gets shell:detached).
           attachToSession(urlSid);
-        } else if (sessionList.length > 0 && !sessionIdRef.current) {
-          // Attach to most recent existing session that isn't already driving another tab
+        } else if (sessionList.length > 0 && !sessionIdRef.current && !userIdleRef.current) {
+          // Attach to most recent existing session that isn't already driving another tab.
+          // Skipped when the user is intentionally idle — handleConnect resets
+          // hasInitializedRef so this branch runs on every reconnect, and a transient
+          // disconnect shouldn't re-adopt a session the user explicitly stopped.
           const survivor = pickUnattachedSurvivor(sessionList);
           if (survivor) {
-            attachToSession(survivor.sessionId);
+            attachToSession(survivor.sessionId, { claim: true });
           } else {
             // Every live session is attached elsewhere — leave at /shell, user can tab-click
             navigateRef.current('/shell', { replace: true });
@@ -415,7 +427,7 @@ export default function Shell() {
         }
         const survivor = pickUnattachedSurvivor(sessionList);
         if (survivor) {
-          attachToSession(survivor.sessionId);
+          attachToSession(survivor.sessionId, { claim: true });
         } else {
           navigateRef.current('/shell', { replace: true });
         }
@@ -429,11 +441,18 @@ export default function Shell() {
       // don't undo an explicit Stop/kill-active: the user just chose to be at /shell.
       if (!displayed && !pendingAttachRef.current && !userIdleRef.current) {
         const survivor = pickUnattachedSurvivor(sessionList);
-        if (survivor) attachToSession(survivor.sessionId);
+        if (survivor) attachToSession(survivor.sessionId, { claim: true });
       }
     };
 
     const handleShellStarted = ({ sessionId: sid }) => {
+      // Only consume the response when we're still waiting on a start. If the user
+      // initiated an attach after the start emit, pendingAttachRef now holds that
+      // attach target — this stale start response must not steal the activation
+      // away from the in-flight attach. (The just-spawned session stays alive
+      // server-side; it'll show up in the next shell:sessions broadcast and the
+      // user can switch to it manually.)
+      if (pendingAttachRef.current !== 'new') return;
       pendingAttachRef.current = null;
       activateSession(sid);
       if (termInstanceRef.current) {
@@ -483,7 +502,13 @@ export default function Shell() {
         // Auto-attach to a survivor not already driving another tab (don't steal).
         const free = sessionsRef.current.filter(s => s.sessionId !== sid && !s.attached);
         if (free.length > 0) {
-          setTimeout(() => attachToSession(free[free.length - 1].sessionId), 100);
+          // Claim pending immediately so the shell:sessions broadcast that follows
+          // shell:exit doesn't race the timeout — the bare-/shell adoption branch
+          // sees pendingAttachRef set and skips. claim:true keeps another tab's
+          // own auto-pick from displacing us if we both race for the same survivor.
+          const target = free[free.length - 1].sessionId;
+          pendingAttachRef.current = target;
+          setTimeout(() => attachToSession(target, { claim: true }), 100);
         } else {
           navigateRef.current('/shell', { replace: true });
         }
@@ -520,15 +545,18 @@ export default function Shell() {
       if (errSid) return;
       const live = sessionsRef.current;
       const active = sessionIdRef.current;
+      // Exclude the just-failed target from fallback survivor pools — sessionsRef
+      // hasn't been refreshed yet by the post-failure broadcast, so it may still
+      // contain the dead session. Picking it again would loop right back into the
+      // same failure.
+      const failedTarget = pendingTarget && pendingTarget !== 'new' ? pendingTarget : null;
       if (!active) {
         // No previously-displayed session to restore (e.g. initial deep-link attach
         // failed before any session was active). Fall back to a free survivor so the
         // user isn't stranded on /shell/<dead-id> with only the error message visible.
-        const free = live.filter(s => !s.attached);
+        const free = live.filter(s => !s.attached && s.sessionId !== failedTarget);
         if (free.length > 0) {
-          // Just navigate; the URL-change useEffect will issue the attach via
-          // switchToSession(fromUrl: true). Scheduling an attach here too would race.
-          navigateRef.current(`/shell/${free[free.length - 1].sessionId}`, { replace: true });
+          attachToSession(free[free.length - 1].sessionId, { claim: true });
         } else if (urlSessionIdRef.current) {
           navigateRef.current('/shell', { replace: true });
         }
@@ -536,13 +564,12 @@ export default function Shell() {
       }
       if (!live.some(s => s.sessionId === active)) {
         // The session we were displaying is also gone. Fall back to a survivor that
-        // isn't already attached elsewhere (avoid stealing via shell:detached). The
-        // URL-change useEffect adopts the new path on its own — don't also schedule
-        // an attach here, that produces two shell:attach requests for the same target.
+        // isn't already attached elsewhere; claim:true protects against multi-tab
+        // adopt races. activateSession will update the URL on success.
         clearActiveSession();
-        const free = live.filter(s => !s.attached);
+        const free = live.filter(s => !s.attached && s.sessionId !== failedTarget);
         if (free.length > 0) {
-          navigateRef.current(`/shell/${free[free.length - 1].sessionId}`, { replace: true });
+          attachToSession(free[free.length - 1].sessionId, { claim: true });
         } else {
           navigateRef.current('/shell', { replace: true });
         }

@@ -49,6 +49,7 @@ vi.mock('../lib/socketValidation.js', () => ({
   shellInputSchema: {},
   shellResizeSchema: {},
   shellSessionIdSchema: {},
+  shellAttachSchema: {},
   shellStopSchema: {},
   appUpdateSchema: {},
   appStandardizeSchema: {},
