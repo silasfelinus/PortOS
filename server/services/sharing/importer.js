@@ -23,7 +23,7 @@ import { existsSync } from 'fs';
 import { EventEmitter } from 'events';
 import { PATHS, ensureDir, atomicWrite, readJSONFile } from '../../lib/fileUtils.js';
 import { getBucket } from './buckets.js';
-import { readManifest, markProcessed, readCursor, hasBeenProcessed } from './manifest.js';
+import { readManifest, markProcessed, readCursor, hasBeenProcessed, forgetProcessed } from './manifest.js';
 import { SHARING_SCHEMA_VERSION, isManifestCompatible } from './version.js';
 import { insertSeriesWithId, updateSeries, getSeries } from '../pipeline/series.js';
 import { insertIssueWithId, updateIssue, getIssue } from '../pipeline/issues.js';
@@ -189,18 +189,30 @@ async function applyAutoMerge(bucket, manifest, records) {
 
 const INBOX_MAX = 1000;
 
-/** Inbox mode: write the manifest + record refs to the bucket's inbox for review. */
+/**
+ * Inbox mode: write the manifest + record refs to the bucket's inbox for review.
+ *
+ * For subscription manifests we replace any prior inbox entry for the same
+ * (recordKind, recordId) so a sender's repeated edits don't pile up as N
+ * inbox items — the user always sees the latest snapshot. One-shot manifests
+ * dedup by manifest id.
+ */
 async function applyInbox(bucket, manifest, manifestFilename, records) {
   const inbox = await readInbox(bucket.id);
   inbox.items = Array.isArray(inbox.items) ? inbox.items : [];
-  // Dedup by manifest id.
-  if (inbox.items.some((it) => it.manifestId === manifest.id)) {
+  const sub = manifest.subscription;
+  if (sub?.recordKind && sub?.recordId) {
+    inbox.items = inbox.items.filter((it) => !(it.subscription
+      && it.subscription.recordKind === sub.recordKind
+      && it.subscription.recordId === sub.recordId));
+  } else if (inbox.items.some((it) => it.manifestId === manifest.id)) {
     return { queued: false, reason: 'already-in-inbox' };
   }
   inbox.items.push({
     manifestId: manifest.id,
     manifestFilename,
     kind: manifest.kind,
+    subscription: sub || null,
     source: manifest.source,
     sourceBio: manifest.sourceBio,
     producedByVersion: manifest.producedByVersion || null,
@@ -212,8 +224,6 @@ async function applyInbox(bucket, manifest, manifestFilename, records) {
     note: manifest.note,
     summary: summarizeRecords(records),
   });
-  // Cap to prevent unbounded growth — a peer dropping thousands of manifests
-  // shouldn't blow up the inbox file. Drop the oldest entries.
   if (inbox.items.length > INBOX_MAX) inbox.items = inbox.items.slice(-INBOX_MAX);
   await writeInbox(bucket.id, inbox);
   return { queued: true };
@@ -235,13 +245,15 @@ function summarizeRecords(records) {
  */
 export async function processManifest(bucketId, manifestFilename) {
   const bucket = await getBucket(bucketId);
-  const cursor = await readCursor(bucketId);
-  if (hasBeenProcessed(cursor, manifestFilename)) {
-    return { skipped: true, reason: 'already-processed' };
-  }
   const manifest = await readManifest(bucket.path, manifestFilename);
   if (!manifest || !manifest.id) {
     return { skipped: true, reason: 'invalid-manifest' };
+  }
+  const cursor = await readCursor(bucketId);
+  // Content-aware dedup: subscription manifests reuse the same filename
+  // across updates and a fresh manifestId means the contents changed.
+  if (hasBeenProcessed(cursor, manifestFilename, manifest.id)) {
+    return { skipped: true, reason: 'already-processed' };
   }
   // Read schemaVersion (also accepts the descriptive alias sharingSchemaVersion).
   const remoteVersion = Number.isFinite(manifest.sharingSchemaVersion)
@@ -251,7 +263,7 @@ export async function processManifest(bucketId, manifestFilename) {
     // Mark processed so the watcher doesn't replay it on every file event,
     // but emit a clear signal to the UI so the user knows a peer is on a
     // newer protocol and they should upgrade PortOS to consume their shares.
-    await markProcessed(bucketId, manifestFilename);
+    await markProcessed(bucketId, manifestFilename, manifest.id);
     sharingEvents.emit('incompatible-manifest', {
       bucketId, manifestId: manifest.id, manifestFilename,
       remoteVersion, localVersion: SHARING_SCHEMA_VERSION,
@@ -274,7 +286,7 @@ export async function processManifest(bucketId, manifestFilename) {
   } else {
     outcome = { mode: 'inbox', ...(await applyInbox(bucket, manifest, manifestFilename, records)) };
   }
-  await markProcessed(bucketId, manifestFilename);
+  await markProcessed(bucketId, manifestFilename, manifest.id);
 
   sharingEvents.emit('manifest-processed', { bucketId, manifestId: manifest.id, manifestFilename, outcome });
   console.log(`📥 sharing: bucket=${bucket.name} manifest=${manifest.id} kind=${manifest.kind} mode=${bucket.mode} ${outcome.applied !== undefined ? `applied=${outcome.applied}` : `queued=${outcome.queued}`}`);
@@ -320,6 +332,33 @@ export async function promoteInboxItem(bucketId, manifestId) {
   await writeInbox(bucketId, inbox);
   sharingEvents.emit('inbox-updated', { bucketId });
   return { promoted: true, outcome };
+}
+
+/**
+ * A subscription file disappeared from the bucket — the upstream peer
+ * unsubscribed. We clear the cursor entry so a future re-share of the same
+ * record imports cleanly, drop any pending inbox entry for that subscription,
+ * and emit a socket signal. We DO NOT delete the local imported record:
+ * the recipient keeps whatever they already received.
+ */
+export async function handleUnshare(bucketId, manifestFilename) {
+  const cursor = await readCursor(bucketId);
+  const wasTracked = manifestFilename in (cursor.processedById || {})
+    || (Array.isArray(cursor.processed) && cursor.processed.includes(manifestFilename));
+  await forgetProcessed(bucketId, manifestFilename);
+
+  // Drop matching inbox entry by manifest filename (subscriptions have stable
+  // filenames; one-shot manifests do too, just timestamped — both work).
+  const inbox = await readInbox(bucketId);
+  const before = (inbox.items || []).length;
+  inbox.items = (inbox.items || []).filter((it) => it.manifestFilename !== manifestFilename);
+  if (inbox.items.length !== before) await writeInbox(bucketId, inbox);
+
+  sharingEvents.emit('unshared', { bucketId, manifestFilename });
+  if (wasTracked) {
+    console.log(`📤 sharing: bucket=${bucketId} manifest=${manifestFilename} unshared by peer`);
+  }
+  return { handled: true, wasTracked };
 }
 
 export async function dismissInboxItem(bucketId, manifestId) {

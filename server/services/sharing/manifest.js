@@ -29,9 +29,29 @@ const isStr = (v) => typeof v === 'string';
 
 const cursorPath = (bucketId) => join(PATHS.data, 'sharing', 'cursors', `${bucketId}.json`);
 
+/**
+ * Cursor shape:
+ *   {
+ *     processedById: { '<filename>': '<lastSeenManifestId>' },
+ *     processed: ['<filename>', ...],            // legacy: pre-content-aware cursor entries
+ *     lastProcessedAt: ISO
+ *   }
+ *
+ * The `processedById` map is the content-aware path used for subscription
+ * manifests: a fresh `manifestId` inside the same filename means the file's
+ * contents changed (the subscription re-exported) and we need to re-import.
+ * Legacy `processed[]` entries from buckets created on v1.0..v1.2 still
+ * suppress re-import — those were one-shot manifests with random filenames,
+ * so they're never going to be re-processed by content anyway.
+ */
 export async function readCursor(bucketId) {
   await ensureDir(join(PATHS.data, 'sharing', 'cursors'));
-  return readJSONFile(cursorPath(bucketId), { processed: [] }, { logError: false });
+  const raw = await readJSONFile(cursorPath(bucketId), { processedById: {}, processed: [] }, { logError: false });
+  return {
+    processedById: (raw.processedById && typeof raw.processedById === 'object') ? raw.processedById : {},
+    processed: Array.isArray(raw.processed) ? raw.processed : [],
+    lastProcessedAt: raw.lastProcessedAt || null,
+  };
 }
 
 export async function writeCursor(bucketId, cursor) {
@@ -40,24 +60,56 @@ export async function writeCursor(bucketId, cursor) {
 }
 
 /**
- * Mark a manifest filename as processed. Keeps the last 5000 entries — the
- * cursor file would otherwise grow unbounded if a single bucket lives for
- * years. 5000 is well past any sensible "is this duplicate?" lookback window
- * for a single user's collaborator group.
+ * Mark a manifest filename as processed at the given manifestId. Caps the
+ * cursor at 5000 entries so a runaway peer can't grow the file unbounded.
  */
-export async function markProcessed(bucketId, manifestFilename) {
+export async function markProcessed(bucketId, manifestFilename, manifestId = null) {
   const cursor = await readCursor(bucketId);
-  if (cursor.processed.includes(manifestFilename)) return cursor;
-  cursor.processed.push(manifestFilename);
-  if (cursor.processed.length > 5000) {
-    cursor.processed = cursor.processed.slice(-5000);
+  cursor.processedById[manifestFilename] = manifestId || cursor.processedById[manifestFilename] || '';
+  // Drop legacy entry if it was tracked there; the map is now authoritative.
+  if (cursor.processed.includes(manifestFilename)) {
+    cursor.processed = cursor.processed.filter((f) => f !== manifestFilename);
+  }
+  const keys = Object.keys(cursor.processedById);
+  if (keys.length > 5000) {
+    // Drop the lexicographically-smallest 1000 — for timestamp-prefixed
+    // one-shot manifests this is the oldest entries. Subscription filenames
+    // (sub-…) sort after timestamp-prefixed ones, so they survive a prune
+    // even when the cursor is full of legacy one-shot history.
+    const drop = new Set(keys.sort().slice(0, keys.length - 5000));
+    for (const k of drop) delete cursor.processedById[k];
   }
   cursor.lastProcessedAt = new Date().toISOString();
   await writeCursor(bucketId, cursor);
   return cursor;
 }
 
-export function hasBeenProcessed(cursor, manifestFilename) {
+/**
+ * Remove a filename from the cursor entirely (used on `unlink` so a future
+ * re-share of the same record under the same filename re-imports cleanly).
+ */
+export async function forgetProcessed(bucketId, manifestFilename) {
+  const cursor = await readCursor(bucketId);
+  if (cursor.processedById[manifestFilename] !== undefined) {
+    delete cursor.processedById[manifestFilename];
+  }
+  cursor.processed = cursor.processed.filter((f) => f !== manifestFilename);
+  await writeCursor(bucketId, cursor);
+  return cursor;
+}
+
+/**
+ * Returns true when we've already imported THIS specific version of the
+ * manifest. For subscription manifests, content-aware: a new manifestId on
+ * the same filename re-processes. For legacy entries (processed[] array),
+ * any subsequent reference to that filename is suppressed.
+ */
+export function hasBeenProcessed(cursor, manifestFilename, manifestId = null) {
+  if (cursor?.processedById && manifestFilename in cursor.processedById) {
+    const stored = cursor.processedById[manifestFilename];
+    if (!stored) return true; // unknown id → trust filename match (idempotent)
+    return manifestId ? stored === manifestId : true;
+  }
   return Array.isArray(cursor?.processed) && cursor.processed.includes(manifestFilename);
 }
 
@@ -70,10 +122,17 @@ export function hasBeenProcessed(cursor, manifestFilename) {
  * `schemaVersion` is the wire-protocol version (the only one importer compat
  * is gated on). `sharingSchemaVersion` is its more descriptive alias kept for
  * forward-compat readability — both carry the same value.
+ *
+ * `subscription`, when provided as `{ recordKind, recordId }`, marks this
+ * manifest as a persistent subscription rather than a one-shot share. The
+ * filename is then deterministic per (recordKind, recordId), so re-exports
+ * overwrite in place and recipients see updates via chokidar `change`
+ * events. Importer cursor keys on the manifest id (fresh per export) so
+ * content-changes re-process correctly.
  */
 export function buildManifest({
   kind, senderInstanceId, source, sourceBio, recordIds, assetRefs,
-  bucketId, bucketName, note, producedByVersion,
+  bucketId, bucketName, note, producedByVersion, subscription,
 }) {
   if (!MANIFEST_KIND.includes(kind)) throw new Error(`buildManifest: invalid kind '${kind}'`);
   return {
@@ -83,6 +142,9 @@ export function buildManifest({
     producedByVersion: producedByVersion || 'unknown',
     createdAt: new Date().toISOString(),
     kind,                              // 'series' | 'universe' | 'media'
+    subscription: subscription && subscription.recordKind && subscription.recordId
+      ? { recordKind: subscription.recordKind, recordId: subscription.recordId }
+      : null,
     senderInstanceId: senderInstanceId || 'unknown',
     source: source || 'unknown',        // human display name
     sourceBio: sourceBio || null,
@@ -94,7 +156,20 @@ export function buildManifest({
   };
 }
 
+/**
+ * Filename a manifest lives under inside `<bucket>/manifests/`.
+ *
+ * For subscription manifests we use a deterministic name keyed on the
+ * (recordKind, recordId, bucketId) tuple so re-exports overwrite the same
+ * file — bucket recipients see updates via chokidar `change` events, not as
+ * accumulating new files. For one-shot manifests we use the legacy
+ * `<iso-ts>-<source>-<uuid>.json` naming so the watcher's add-order remains
+ * lexicographically deterministic.
+ */
 export function manifestFilename(manifest) {
+  if (manifest.subscription?.recordKind && manifest.subscription?.recordId) {
+    return `sub-${manifest.subscription.recordKind}-${manifest.subscription.recordId}.json`;
+  }
   const ts = manifest.createdAt.replace(/[:.]/g, '-');
   const senderSlug = (manifest.source || manifest.senderInstanceId || 'unknown')
     .toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)

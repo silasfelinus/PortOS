@@ -45,3 +45,26 @@ export const dismissShareInboxItem = (bucketId, manifestId, options) => request(
 
 // ---- Activity ----
 export const listShareActivity = (bucketId, options) => request(`/sharing/buckets/${encodeURIComponent(bucketId)}/activity`, options);
+
+// ---- Subscriptions (persistent, kind=series|universe) ----
+export const listShareSubscriptions = (filter = {}, options) => {
+  const qs = new URLSearchParams();
+  if (filter.bucketId) qs.set('bucketId', filter.bucketId);
+  if (filter.recordKind) qs.set('recordKind', filter.recordKind);
+  if (filter.recordId) qs.set('recordId', filter.recordId);
+  const query = qs.toString();
+  return request(`/sharing/subscriptions${query ? `?${query}` : ''}`, options);
+};
+
+export const subscribeToShareBucket = ({ bucketId, recordKind, recordId }, options) =>
+  request('/sharing/subscriptions', {
+    method: 'POST',
+    body: JSON.stringify({ bucketId, recordKind, recordId }),
+    ...options,
+  });
+
+export const unsubscribeFromShareBucket = (subscriptionId, options) =>
+  request(`/sharing/subscriptions/${encodeURIComponent(subscriptionId)}`, {
+    method: 'DELETE',
+    ...options,
+  });

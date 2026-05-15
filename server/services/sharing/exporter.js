@@ -179,8 +179,15 @@ function stampOrigin(record, { bucket, source, sourceBio, manifestId }) {
   };
 }
 
-/** Export a full series (with its issues + linked universe + every asset). */
-export async function exportSeries(seriesId, bucketId) {
+/**
+ * Export a full series (with its issues + linked universe + every asset).
+ *
+ * `opts.subscription` (optional): when set to `{ recordKind, recordId }` the
+ * manifest is marked as a subscription — bucket-side filename becomes
+ * deterministic (`sub-series-<id>.json`) so re-exports overwrite in place
+ * instead of accumulating. Omit for one-shot legacy shares.
+ */
+export async function exportSeries(seriesId, bucketId, opts = {}) {
   const bucket = await getBucket(bucketId);
   await ensureBucketLayout(bucket);
   const series = await getSeries(seriesId);
@@ -203,6 +210,7 @@ export async function exportSeries(seriesId, bucketId) {
     senderInstanceId,
     source, sourceBio,
     producedByVersion,
+    subscription: opts.subscription || null,
     bucketId: bucket.id,
     bucketName: bucket.name,
     recordIds: [],
@@ -252,8 +260,8 @@ export async function exportSeries(seriesId, bucketId) {
   return { manifestId, filename, recordCount: recordIds.length, assetCount: assetRefs.length };
 }
 
-/** Export a universe on its own (no series attached). */
-export async function exportUniverse(universeId, bucketId) {
+/** Export a universe on its own (no series attached). See exportSeries for opts. */
+export async function exportUniverse(universeId, bucketId, opts = {}) {
   const bucket = await getBucket(bucketId);
   await ensureBucketLayout(bucket);
   const universe = await getUniverse(universeId);
@@ -270,6 +278,7 @@ export async function exportUniverse(universeId, bucketId) {
     senderInstanceId,
     source, sourceBio,
     producedByVersion,
+    subscription: opts.subscription || null,
     bucketId: bucket.id,
     bucketName: bucket.name,
     recordIds: [],

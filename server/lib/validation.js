@@ -873,6 +873,15 @@ export const sharingSettingsPatchSchema = z.object({
   sharingBio: z.string().trim().max(2000).optional(),
 }).strict();
 
+// Subscription creation: persistent (bucket, record) tuple. Series + universe
+// are the subscribable kinds (records that change over time and benefit from
+// auto-re-export). Media is one-shot via /buckets/:id/export.
+export const subscriptionCreateSchema = z.object({
+  bucketId: z.string().trim().min(1).max(120),
+  recordKind: z.enum(['series', 'universe']),
+  recordId: z.string().trim().min(1).max(120),
+}).strict();
+
 // =============================================================================
 // CREATIVE DIRECTOR SCHEMAS
 // =============================================================================

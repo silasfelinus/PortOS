@@ -2,6 +2,53 @@
 
 ## Added
 
+- **Sharing v1.3 — subscriptions: toggle on/off, updates auto-flow.**
+  Rewrote the share-bucket model from one-shot manifests to persistent
+  subscriptions, addressing two real UX gaps:
+  1. The ShareToButton's always-on gray check icon made every bucket look
+     "already checked" with no way to tell what was actually shared. The
+     icon is now a real state indicator — filled CheckCircle on subscribed
+     buckets, empty Circle otherwise.
+  2. Every click previously wrote a fresh timestamped manifest, so picking
+     the same bucket twice produced two manifests. Now each (bucket,
+     record) pair is a single subscription whose manifest lives at a
+     deterministic filename in the bucket; re-exports overwrite in place.
+  - **Subscription model.** A subscription is a `(bucketId, recordKind,
+     recordId)` tuple persisted in `data/sharing/subscriptions.json`. The
+     subscribable kinds are `series` and `universe` (records that mutate
+     over time). Media stays one-shot — items don't change after creation.
+  - **Auto-re-export on edit.** A small `recordEvents` EventEmitter is
+     fired by `updateSeries`, `updateIssue` (re-emits its parent series),
+     and `updateUniverse` after each successful persist. The subscriptions
+     service listens with a per-subscription 3-second debounce and re-exports
+     the affected record into every bucket it's subscribed to. Recipients
+     see the change via chokidar's `change` event.
+  - **Content-aware cursor.** The bucket cursor now stores `{filename:
+     manifestId}` so a re-import of the same subscription filename with a
+     fresh manifestId processes the update, while legacy `processed[]`
+     entries from v1.0–v1.2 still suppress re-imports of one-shot manifests.
+  - **Unshare propagation.** Clicking a subscribed bucket again unsubscribes:
+     the registry row is removed and the bucket-side file is deleted.
+     Recipients' watchers fire `unlink`, which clears the cursor entry,
+     drops any pending inbox row for that subscription, and emits a
+     `sharing:unshared` socket event. The recipient's already-imported
+     local record is NOT reverted — they keep what they have, just stop
+     receiving updates.
+  - **Inbox collapse.** Subscription manifests in inbox mode replace any
+     prior inbox entry for the same `(recordKind, recordId)` so the user
+     always sees the latest snapshot, not a pile of revisions.
+
+  **Endpoints:** new `GET /api/sharing/subscriptions[?filter]`,
+  `POST /api/sharing/subscriptions`, `DELETE /api/sharing/subscriptions/:id`.
+  **Files:** new `server/services/sharing/{recordEvents,subscriptions}.js`,
+  changes to `manifest.js` (cursor + filename), `exporter.js` (subscription
+  opt-in), `importer.js` (content-aware dedup + `handleUnshare`),
+  `watcher.js` (`unlink` handler), `pipeline/{series,issues}.js` +
+  `universeBuilder.js` (emit on update), `routes/sharing.js`, and
+  `client/src/components/sharing/ShareToButton.jsx`. Tests: 11 new (7 unit
+  for the subscriptions service, 4 covering the new cursor and
+  deterministic-filename behavior, plus an integration round-trip).
+
 - **Universal folder-picker UX — Sharing + Backup + Templates.**
   Three places that ask the user for a server-side folder path now all
   use the same `FolderPicker` component (a folder-icon button that opens

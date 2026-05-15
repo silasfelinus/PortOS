@@ -13,7 +13,7 @@
 
 import { watch } from 'chokidar';
 import { join, basename } from 'path';
-import { processManifest, processBacklog, sharingEvents } from './importer.js';
+import { processManifest, processBacklog, handleUnshare, sharingEvents } from './importer.js';
 import { getBucket, listBuckets, ensureBucketLayout } from './buckets.js';
 
 const watchers = new Map(); // bucketId → chokidar instance
@@ -54,6 +54,15 @@ export async function attachWatcher(bucketId) {
       await processManifest(bucketId, file);
     } catch (err) {
       console.error(`❌ sharing.watcher: processManifest threw on change ${file}: ${err?.message || err}`);
+    }
+  });
+  w.on('unlink', async (path) => {
+    const file = basename(path);
+    if (!file.endsWith('.json')) return;
+    try {
+      await handleUnshare(bucketId, file);
+    } catch (err) {
+      console.error(`❌ sharing.watcher: handleUnshare threw for ${file}: ${err?.message || err}`);
     }
   });
   w.on('error', (err) => {

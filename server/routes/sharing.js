@@ -16,7 +16,7 @@ import { Router } from 'express';
 import { asyncHandler } from '../lib/errorHandler.js';
 import { validateRequest } from '../lib/validation.js';
 import {
-  bucketCreateSchema, bucketUpdateSchema, sharingExportSchema,
+  bucketCreateSchema, bucketUpdateSchema, sharingExportSchema, subscriptionCreateSchema,
 } from '../lib/validation.js';
 import {
   listBuckets, getBucket, createBucket, updateBucket, deleteBucket, readBucketJson,
@@ -27,6 +27,9 @@ import { exportByKind } from '../services/sharing/exporter.js';
 import {
   listInbox, promoteInboxItem, dismissInboxItem,
 } from '../services/sharing/importer.js';
+import {
+  listSubscriptions, subscribe, unsubscribe,
+} from '../services/sharing/subscriptions.js';
 import { listManifestFilenames, readManifest } from '../services/sharing/manifest.js';
 
 const router = Router();
@@ -95,6 +98,31 @@ router.post('/buckets/:id/inbox/:manifestId/promote', asyncHandler(async (req, r
 
 router.post('/buckets/:id/inbox/:manifestId/dismiss', asyncHandler(async (req, res) => {
   const result = await dismissInboxItem(req.params.id, req.params.manifestId);
+  res.json(result);
+}));
+
+/**
+ * Subscriptions — persistent (bucket, record) tuples for series + universe.
+ * Subscribing kicks off the initial export; updates auto-re-export on
+ * record change (debounced ~3s); unsubscribing removes the bucket-side file.
+ */
+router.get('/subscriptions', asyncHandler(async (req, res) => {
+  const filter = {};
+  if (req.query.bucketId) filter.bucketId = String(req.query.bucketId);
+  if (req.query.recordKind) filter.recordKind = String(req.query.recordKind);
+  if (req.query.recordId) filter.recordId = String(req.query.recordId);
+  const subscriptions = await listSubscriptions(filter);
+  res.json({ subscriptions });
+}));
+
+router.post('/subscriptions', asyncHandler(async (req, res) => {
+  const input = validateRequest(subscriptionCreateSchema, req.body || {});
+  const sub = await subscribe(input);
+  res.status(201).json({ subscription: sub });
+}));
+
+router.delete('/subscriptions/:id', asyncHandler(async (req, res) => {
+  const result = await unsubscribe(req.params.id);
   res.json(result);
 }));
 

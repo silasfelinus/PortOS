@@ -26,6 +26,7 @@ import {
   CUSTOM_PAGE_MIN, CUSTOM_PAGE_MAX, CUSTOM_MINUTE_MIN, CUSTOM_MINUTE_MAX,
 } from '../../lib/issueLength.js';
 import { sanitizeOrigin } from '../../lib/sharingOrigin.js';
+import { emitRecordUpdated } from '../sharing/recordEvents.js';
 
 // Lazy resolution — see series.js for context.
 const statePath = () => join(PATHS.data, 'pipeline-issues.json');
@@ -419,6 +420,9 @@ export function updateIssue(id, patch = {}) {
   if (!merged) throw makeErr('Invalid issue payload', ERR_VALIDATION);
   state.issues[idx] = merged;
   await writeState(state);
+  // Issues are exported as part of their parent series — re-export the
+  // series so any active subscription picks up the issue change.
+  emitRecordUpdated('series', merged.seriesId);
   return merged;
   }); // end queueIssueWrite
 }
@@ -486,6 +490,7 @@ export function updateStageWithLatest(issueId, stageId, computeFn) {
   });
   state.issues[idx] = mergedIssue;
   await writeState(state);
+  emitRecordUpdated('series', mergedIssue.seriesId);
   return { issue: mergedIssue, stage: mergedIssue.stages[stageId] };
   }); // end queueIssueWrite
 }

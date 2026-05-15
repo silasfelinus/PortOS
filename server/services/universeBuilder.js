@@ -31,6 +31,7 @@ import {
   normalizeBibleName,
 } from '../lib/storyBible.js';
 import { sanitizeOrigin } from '../lib/sharingOrigin.js';
+import { emitRecordUpdated } from './sharing/recordEvents.js';
 
 // Bumped when a sanitizer-time backfill changes how on-disk universes are
 // shaped, so future migrations can gate on the prior version.
@@ -623,6 +624,7 @@ export async function updateUniverse(id, patch = {}) {
   if (!merged) throw makeErr('Invalid universe payload', ERR_VALIDATION);
   state.universes[idx] = merged;
   await writeState(state);
+  emitRecordUpdated('universe', merged.id);
   return merged;
 }
 

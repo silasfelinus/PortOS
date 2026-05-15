@@ -11,6 +11,7 @@ import { ensureDir, PATHS } from '../../lib/fileUtils.js';
 import { join } from 'path';
 import { attachAllWatchers, attachWatcher, detachWatcher, shutdownAllWatchers, listAttachedWatchers } from './watcher.js';
 import { sharingEvents } from './importer.js';
+import { installSubscriptionListener } from './subscriptions.js';
 
 export { sharingEvents } from './importer.js';
 export { attachWatcher, detachWatcher, listAttachedWatchers };
@@ -46,8 +47,12 @@ export async function initSharing({ io: socketIo } = {}) {
     sharingEvents.on('incompatible-manifest', (payload) => {
       io.emit('sharing:incompatible-manifest', payload);
     });
+    sharingEvents.on('unshared', (payload) => {
+      io.emit('sharing:unshared', payload);
+    });
   }
 
+  installSubscriptionListener();
   const result = await attachAllWatchers();
   console.log(`📡 sharing: initialized, watchers attached for ${result.attached} bucket(s)`);
   return result;

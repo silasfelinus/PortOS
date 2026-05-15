@@ -21,6 +21,7 @@ import {
 import { sanitizeArc, sanitizeSeasonList } from '../../lib/storyArc.js';
 import { extractBible } from '../../lib/bibleExtractor.js';
 import { sanitizeOrigin } from '../../lib/sharingOrigin.js';
+import { emitRecordUpdated } from '../sharing/recordEvents.js';
 
 // Lazy resolution — PATHS.data may not be available at module-load time
 // (e.g. tests that swap it through a Proxy mock).
@@ -202,6 +203,7 @@ export async function updateSeries(id, patch = {}) {
   if (!merged) throw makeErr('Invalid series payload', ERR_VALIDATION);
   state.series[idx] = merged;
   await writeState(state);
+  emitRecordUpdated('series', merged.id);
   return merged;
 }
 

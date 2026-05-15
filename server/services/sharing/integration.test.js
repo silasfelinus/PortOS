@@ -185,6 +185,56 @@ describe('sharing round-trip', () => {
     expect(r2.reason).toBe('already-processed');
   });
 
+  it('subscription round-trip: subscribe → mutate → re-export onto same filename → unsubscribe → unshared event', async () => {
+    const { subscribe, unsubscribe, subscriptionFilename, __resetForTests } = await import('./subscriptions.js');
+    const { sharingEvents } = await import('./importer.js');
+    __resetForTests();
+    const bucket = await buckets.createBucket({ name: 'SubBucket', path: tempBucket, mode: 'auto-merge' });
+    const universeBuilder = await import('../universeBuilder.js');
+    const u = await universeBuilder.createUniverse({ name: 'Sub Universe' });
+
+    // Subscribe — first export writes a deterministic-named file.
+    const sub = await subscribe({ bucketId: bucket.id, recordKind: 'universe', recordId: u.id });
+    const filename = subscriptionFilename(sub);
+    const filePath = join(tempBucket, 'manifests', filename);
+    const fs = await import('fs');
+    expect(fs.existsSync(filePath)).toBe(true);
+    const first = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    expect(first.subscription).toMatchObject({ recordKind: 'universe', recordId: u.id });
+    const firstManifestId = first.id;
+
+    // Mutate the universe — emit fires recordEvents which schedules a re-export.
+    // For the test, bypass the 3s debounce by calling subscribe again (idempotent).
+    await universeBuilder.updateUniverse(u.id, { starterPrompt: 'updated prompt' });
+    await subscribe({ bucketId: bucket.id, recordKind: 'universe', recordId: u.id }); // forces immediate re-export
+    const second = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    expect(second.id).not.toBe(firstManifestId);
+    // Importer's cursor logic dedups by manifest id, so a re-import of the
+    // updated file is recognized as new content.
+    const r1 = await importer.processManifest(bucket.id, filename);
+    expect(r1.processed || r1.skipped).toBeTruthy();
+
+    // Unsubscribe — deletes the file. Watcher's `unlink` calls handleUnshare
+    // (here we invoke it directly since chokidar is not running in tests).
+    const events = [];
+    const onUnshared = (p) => events.push(p);
+    sharingEvents.on('unshared', onUnshared);
+
+    await unsubscribe(sub.id);
+    expect(fs.existsSync(filePath)).toBe(false);
+
+    await importer.handleUnshare(bucket.id, filename);
+    sharingEvents.off('unshared', onUnshared);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ bucketId: bucket.id, manifestFilename: filename });
+
+    // Local imported universe should NOT have been removed — unshare doesn't
+    // reverse the import on the recipient. The universe still exists locally.
+    const stillThere = await universeBuilder.getUniverse(u.id);
+    expect(stillThere.id).toBe(u.id);
+  });
+
   it('refuses a manifest with a sharingSchemaVersion newer than local + emits incompatible event', async () => {
     const { SHARING_SCHEMA_VERSION } = await import('./version.js');
     const { sharingEvents } = await import('./importer.js');
