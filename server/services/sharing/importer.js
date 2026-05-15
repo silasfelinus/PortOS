@@ -24,6 +24,7 @@ import { EventEmitter } from 'events';
 import { PATHS, ensureDir, atomicWrite, readJSONFile } from '../../lib/fileUtils.js';
 import { getBucket } from './buckets.js';
 import { readManifest, markProcessed, readCursor, hasBeenProcessed } from './manifest.js';
+import { SHARING_SCHEMA_VERSION, isManifestCompatible } from './version.js';
 import { insertSeriesWithId, updateSeries, getSeries } from '../pipeline/series.js';
 import { insertIssueWithId, updateIssue, getIssue } from '../pipeline/issues.js';
 import { insertUniverseWithId, updateUniverse, getUniverse } from '../universeBuilder.js';
@@ -202,6 +203,8 @@ async function applyInbox(bucket, manifest, manifestFilename, records) {
     kind: manifest.kind,
     source: manifest.source,
     sourceBio: manifest.sourceBio,
+    producedByVersion: manifest.producedByVersion || null,
+    sharingSchemaVersion: manifest.sharingSchemaVersion ?? manifest.schemaVersion ?? null,
     createdAt: manifest.createdAt,
     receivedAt: new Date().toISOString(),
     recordIds: manifest.recordIds,
@@ -227,7 +230,8 @@ function summarizeRecords(records) {
 
 /**
  * Process one manifest file. Idempotent: a second call for the same manifest
- * is a no-op (cursor + inbox dedup).
+ * is a no-op (cursor + inbox dedup). Refuses incompatible (future) versions
+ * with a clear reason + socket event so the UI can prompt for upgrade.
  */
 export async function processManifest(bucketId, manifestFilename) {
   const bucket = await getBucket(bucketId);
@@ -238,6 +242,24 @@ export async function processManifest(bucketId, manifestFilename) {
   const manifest = await readManifest(bucket.path, manifestFilename);
   if (!manifest || !manifest.id) {
     return { skipped: true, reason: 'invalid-manifest' };
+  }
+  // Read schemaVersion (also accepts the descriptive alias sharingSchemaVersion).
+  const remoteVersion = Number.isFinite(manifest.sharingSchemaVersion)
+    ? manifest.sharingSchemaVersion
+    : (Number.isFinite(manifest.schemaVersion) ? manifest.schemaVersion : null);
+  if (remoteVersion !== null && !isManifestCompatible(remoteVersion)) {
+    // Mark processed so the watcher doesn't replay it on every file event,
+    // but emit a clear signal to the UI so the user knows a peer is on a
+    // newer protocol and they should upgrade PortOS to consume their shares.
+    await markProcessed(bucketId, manifestFilename);
+    sharingEvents.emit('incompatible-manifest', {
+      bucketId, manifestId: manifest.id, manifestFilename,
+      remoteVersion, localVersion: SHARING_SCHEMA_VERSION,
+      producedByVersion: manifest.producedByVersion || 'unknown',
+      source: manifest.source || 'unknown',
+    });
+    console.log(`⚠️ sharing: bucket=${bucket.name} manifest=${manifest.id} schemaVersion=${remoteVersion} > local=${SHARING_SCHEMA_VERSION} — refusing import (peer producedBy=${manifest.producedByVersion || 'unknown'})`);
+    return { skipped: true, reason: 'incompatible-version', remoteVersion, localVersion: SHARING_SCHEMA_VERSION };
   }
   const records = await readReferencedRecords(bucket.path, manifest);
 

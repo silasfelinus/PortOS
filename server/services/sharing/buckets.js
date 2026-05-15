@@ -15,6 +15,7 @@ import { join } from 'path';
 import { access, constants, stat } from 'fs/promises';
 import { PATHS, atomicWrite, readJSONFile, ensureDir } from '../../lib/fileUtils.js';
 import { isStr, trimTo } from '../../lib/storyBible.js';
+import { SHARING_SCHEMA_VERSION } from './version.js';
 
 const REGISTRY_PATH = () => join(PATHS.data, 'sharing', 'buckets.json');
 
@@ -88,21 +89,26 @@ export async function ensureBucketLayout(bucket) {
   await ensureDir(join(base, 'assets', 'videos'));
   const bucketJsonPath = join(base, 'bucket.json');
   const existing = await readJSONFile(bucketJsonPath, null, { logError: false });
-  if (!existing || existing.id !== bucket.id) {
-    // Bucket.json carries the *shared* identity. If a peer registered the
-    // same folder first, keep their id — otherwise stamp ours. A mismatched
-    // id with the registry happens when two peers initially register the
-    // same folder; we still operate on whatever the on-disk bucket.json says
-    // is the canonical id (importer keys on that).
-    if (!existing) {
-      await atomicWrite(bucketJsonPath, {
-        id: bucket.id,
-        name: bucket.name,
-        schemaVersion: 1,
-        createdAt: bucket.createdAt,
-      });
-    }
+  if (!existing) {
+    // bucket.json is the shared identity. Stamp the schema version at
+    // creation time so peers can tell at a glance which protocol the bucket
+    // is operating under. We do NOT bump an existing peer's bucket.json
+    // unprompted — if it's there, leave it (the peer's writer follows its
+    // local SHARING_SCHEMA_VERSION; the importer compares per-manifest).
+    await atomicWrite(bucketJsonPath, {
+      id: bucket.id,
+      name: bucket.name,
+      schemaVersion: SHARING_SCHEMA_VERSION,
+      sharingSchemaVersion: SHARING_SCHEMA_VERSION,
+      createdAt: bucket.createdAt,
+    });
   }
+}
+
+/** Read the on-disk bucket.json so routes/UI can report producedBy + schema info. */
+export async function readBucketJson(bucket) {
+  const bucketJsonPath = join(bucket.path, 'bucket.json');
+  return readJSONFile(bucketJsonPath, null, { logError: false });
 }
 
 export async function listBuckets() {
@@ -178,8 +184,3 @@ export async function deleteBucket(id) {
   return { id };
 }
 
-/** Convenience: read bucket.json from disk if present. */
-export async function readBucketManifestRoot(bucket) {
-  const bucketJsonPath = join(bucket.path, 'bucket.json');
-  return readJSONFile(bucketJsonPath, null, { logError: false });
-}

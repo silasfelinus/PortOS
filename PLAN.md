@@ -6,17 +6,15 @@ For project goals, see [GOALS.md](./GOALS.md). For completed work, see [DONE.md]
 
 ## Next Up
 
-### Cross-network sharing via cloud-synced folders ("Share Buckets") — v1.1 shipped
+### Cross-network sharing via cloud-synced folders ("Share Buckets") — v1.2 shipped
 
-V1 landed: buckets, ShareToButton on Pipeline + UniverseBuilder + MediaCollection, OriginBadge, exporter with full gen-metadata fidelity, importer with `auto-merge` + `inbox` modes, chokidar watcher, configurable `sharingDisplayName` source attribution, nav-manifest registration. V1.1: id-preserving inserts (`insertSeriesWithId` / `insertIssueWithId` / `insertUniverseWithId`) so re-shares LWW-merge instead of duplicating; `overridden[]` outcome surfaced via socket → global `useSharingNotifications` toast; round-trip integration tests. See `~/.claude/plans/new-high-priority-task-valiant-wall.md` for design. Remaining follow-ups:
+V1 landed: buckets, ShareToButton on Pipeline + UniverseBuilder + MediaCollection, OriginBadge, exporter with full gen-metadata fidelity, importer with `auto-merge` + `inbox` modes, chokidar watcher, configurable `sharingDisplayName` source attribution, nav-manifest registration. V1.1: id-preserving inserts (`insertSeriesWithId` / `insertIssueWithId` / `insertUniverseWithId`) so re-shares LWW-merge instead of duplicating; `overridden[]` outcome surfaced via socket → global `useSharingNotifications` toast; round-trip integration tests. V1.2: schema versioning — `SHARING_SCHEMA_VERSION` stamped on every manifest + bucket.json, `producedByVersion` (PortOS app version) on every manifest, importer refuses future-version manifests with a clear toast + cursor-mark, bucket cards warn when remote schema > local. See `~/.claude/plans/new-high-priority-task-valiant-wall.md` for design. Remaining follow-ups:
 
 - [ ] **Per-instance display-name fallback inside the Sharing page.** Settings save flow currently lives on the Sharing page top strip; mirror it into the existing Settings tab structure (`client/src/components/settings/`) so the field is discoverable from both surfaces.
 - [ ] **Manifest archive pruning.** A bucket lived long enough accumulates thousands of manifests under `<bucket>/manifests/`. Add a per-bucket retention policy (e.g. keep last 500 manifests, archive the rest into `manifests/.archive/` or drop entirely once cursor advances past them).
 - [ ] **Route-level tests for `server/routes/sharing.js`.** Bucket CRUD + export + inbox actions are exercised through the service layer in integration.test.js, but the HTTP surface (Zod rejection, error mapping) is uncovered. Add a `server/routes/sharing.test.js` to lock the JSON contract.
-- [ ] **Native Google Drive / Dropbox API integration.** Mount-the-folder transport ships v1; a future iteration could integrate Drive API directly so users don't have to mount the drive themselves.
 - [ ] **Content-addressed asset dedup.** Today asset copies skip-if-filename-exists. Hash-based dedup would let multiple manifests share the same blob even when filenames differ.
 - [ ] **Extend `syncOrchestrator` to cover pipeline/universe over Tailscale.** Separate ticket from buckets — same-network peers on Tailscale should be able to sync these categories without going through a bucket.
-- [ ] **End-to-end encryption inside the bucket.** Plaintext today (privacy note in the UI). Add age/PGP-based encryption per-bucket so the cloud provider can't read shared content.
 - [ ] **Multi-hop provenance chains.** Re-share authors a fresh `origin` block; chain[] would preserve full attribution. Defer until users ask.
 
 ### Universe-as-Canon refactor — Phase B.4 cleanup + follow-ups

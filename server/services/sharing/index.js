@@ -43,6 +43,9 @@ export async function initSharing({ io: socketIo } = {}) {
     sharingEvents.on('watcher-detached', (payload) => {
       io.emit('sharing:watcher-detached', payload);
     });
+    sharingEvents.on('incompatible-manifest', (payload) => {
+      io.emit('sharing:incompatible-manifest', payload);
+    });
   }
 
   const result = await attachAllWatchers();

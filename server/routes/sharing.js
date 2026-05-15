@@ -19,8 +19,9 @@ import {
   bucketCreateSchema, bucketUpdateSchema, sharingExportSchema,
 } from '../lib/validation.js';
 import {
-  listBuckets, getBucket, createBucket, updateBucket, deleteBucket,
+  listBuckets, getBucket, createBucket, updateBucket, deleteBucket, readBucketJson,
 } from '../services/sharing/buckets.js';
+import { SHARING_SCHEMA_VERSION } from '../services/sharing/version.js';
 import { attachWatcher, detachWatcher } from '../services/sharing/watcher.js';
 import { exportByKind } from '../services/sharing/exporter.js';
 import {
@@ -30,27 +31,44 @@ import { listManifestFilenames, readManifest } from '../services/sharing/manifes
 
 const router = Router();
 
+/** Hydrate a bucket with its on-disk bucket.json so the UI sees the bucket's
+ *  protocol version (which may differ from the local SHARING_SCHEMA_VERSION
+ *  when bumps roll out across peers).
+ */
+async function hydrateBucket(bucket) {
+  const bucketJson = await readBucketJson(bucket).catch(() => null);
+  const remoteSchema = bucketJson?.sharingSchemaVersion ?? bucketJson?.schemaVersion ?? null;
+  return {
+    ...bucket,
+    bucketJson,
+    bucketSchemaVersion: remoteSchema,
+    localSchemaVersion: SHARING_SCHEMA_VERSION,
+    schemaCompatible: remoteSchema === null || remoteSchema <= SHARING_SCHEMA_VERSION,
+  };
+}
+
 router.get('/buckets', asyncHandler(async (req, res) => {
   const buckets = await listBuckets();
-  res.json({ buckets });
+  const hydrated = await Promise.all(buckets.map(hydrateBucket));
+  res.json({ buckets: hydrated, localSchemaVersion: SHARING_SCHEMA_VERSION });
 }));
 
 router.get('/buckets/:id', asyncHandler(async (req, res) => {
   const bucket = await getBucket(req.params.id);
-  res.json({ bucket });
+  res.json({ bucket: await hydrateBucket(bucket), localSchemaVersion: SHARING_SCHEMA_VERSION });
 }));
 
 router.post('/buckets', asyncHandler(async (req, res) => {
   const input = validateRequest(bucketCreateSchema, req.body || {});
   const bucket = await createBucket(input);
   await attachWatcher(bucket.id);
-  res.status(201).json({ bucket });
+  res.status(201).json({ bucket: await hydrateBucket(bucket) });
 }));
 
 router.put('/buckets/:id', asyncHandler(async (req, res) => {
   const patch = validateRequest(bucketUpdateSchema, req.body || {});
   const bucket = await updateBucket(req.params.id, patch);
-  res.json({ bucket });
+  res.json({ bucket: await hydrateBucket(bucket) });
 }));
 
 router.delete('/buckets/:id', asyncHandler(async (req, res) => {

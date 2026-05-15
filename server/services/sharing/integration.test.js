@@ -184,4 +184,56 @@ describe('sharing round-trip', () => {
     expect(r2.skipped).toBe(true);
     expect(r2.reason).toBe('already-processed');
   });
+
+  it('refuses a manifest with a sharingSchemaVersion newer than local + emits incompatible event', async () => {
+    const { SHARING_SCHEMA_VERSION } = await import('./version.js');
+    const { sharingEvents } = await import('./importer.js');
+    const bucket = await buckets.createBucket({ name: 'Compat', path: tempBucket, mode: 'auto-merge' });
+
+    // Hand-craft a future-version manifest directly into the bucket.
+    const manifestsDir = join(tempBucket, 'manifests');
+    const futureManifest = {
+      id: 'mfst-future',
+      schemaVersion: SHARING_SCHEMA_VERSION + 1,
+      sharingSchemaVersion: SHARING_SCHEMA_VERSION + 1,
+      producedByVersion: '9.99.0',
+      createdAt: new Date().toISOString(),
+      kind: 'series',
+      senderInstanceId: 'peer-on-newer',
+      source: 'Future Peer',
+      sourceBio: null,
+      bucketId: bucket.id,
+      bucketName: bucket.name,
+      recordIds: [],
+      assetRefs: [],
+      note: null,
+    };
+    const filename = `2099-01-01T00-00-00-000Z-future-peer-${futureManifest.id}.json`;
+    writeFileSync(join(manifestsDir, filename), JSON.stringify(futureManifest));
+
+    const events = [];
+    const onIncompat = (p) => events.push(p);
+    sharingEvents.on('incompatible-manifest', onIncompat);
+
+    const result = await importer.processManifest(bucket.id, filename);
+    sharingEvents.off('incompatible-manifest', onIncompat);
+
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toBe('incompatible-version');
+    expect(result.remoteVersion).toBe(SHARING_SCHEMA_VERSION + 1);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      bucketId: bucket.id,
+      remoteVersion: SHARING_SCHEMA_VERSION + 1,
+      localVersion: SHARING_SCHEMA_VERSION,
+      source: 'Future Peer',
+      producedByVersion: '9.99.0',
+    });
+
+    // A second process is dedup'd via the cursor (we marked it processed to
+    // prevent the watcher replay loop).
+    const replay = await importer.processManifest(bucket.id, filename);
+    expect(replay.skipped).toBe(true);
+    expect(replay.reason).toBe('already-processed');
+  });
 });

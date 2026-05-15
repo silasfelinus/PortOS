@@ -2,6 +2,29 @@
 
 ## Added
 
+- **Sharing v1.2 — schema versioning + producedBy attribution.**
+  Defensive plumbing so PortOS version drift between peers fails loudly
+  instead of silently corrupting shares. Every outgoing artifact (manifests
+  and bucket.json) is stamped with `SHARING_SCHEMA_VERSION` (the on-the-
+  wire protocol version) and `producedByVersion` (the PortOS app version
+  read from package.json).
+  - **Importer compatibility gate.** `processManifest` reads the manifest's
+    `sharingSchemaVersion` and refuses anything newer than what the local
+    PortOS understands. The cursor still records the filename so the
+    chokidar watcher doesn't replay it on every event, and a new
+    `sharing:incompatible-manifest` socket event surfaces a clear error
+    toast ("Can't import share from <peer> (PortOS X.Y.Z) — protocol vN
+    requires upgrading PortOS"). Older versions still merge cleanly.
+  - **UI surfacing.** Each bucket card now shows its schema version with a
+    warning indicator when the remote bucket's version exceeds the local
+    PortOS. Inbox + activity entries display the producing peer's PortOS
+    version next to the source name so the user knows who's running what.
+  - New `server/services/sharing/version.js` is the single source of
+    truth — `SHARING_SCHEMA_VERSION`, `isManifestCompatible`,
+    `getProducedByVersion()`. The `updateChecker.getCurrentVersion`
+    import is dynamic so the eager-PATHS chain doesn't leak into modules
+    that other tests lazy-mock.
+
 - **Sharing v1.1 — id-preserving auto-merge + override notifications.**
   Round-trip refinements on top of the v1 share-buckets feature:
   - Imports now insert under the manifest's original record id (new

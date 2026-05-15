@@ -23,6 +23,7 @@ const emptyForm = () => ({ name: '', path: '', mode: 'inbox', displayNameOverrid
 
 export default function Sharing() {
   const [buckets, setBuckets] = useState([]);
+  const [localSchemaVersion, setLocalSchemaVersion] = useState(null);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -50,6 +51,7 @@ export default function Sharing() {
     ]).then(([bResp, settings]) => {
       const list = bResp?.buckets || [];
       setBuckets(list);
+      setLocalSchemaVersion(bResp?.localSchemaVersion ?? null);
       if (list.length > 0) setSelectedId(list[0].id);
       const display = settings?.sharingDisplayName || '';
       const bio = settings?.sharingBio || '';
@@ -359,6 +361,7 @@ export default function Sharing() {
               {buckets.map((b) => {
                 const inboxCount = (inboxByBucket[b.id] || []).length;
                 const isSelected = selectedId === b.id;
+                const incompatible = b.schemaCompatible === false;
                 return (
                   <li key={b.id}>
                     <button
@@ -367,7 +370,10 @@ export default function Sharing() {
                       className={`w-full text-left p-3 rounded-lg border ${isSelected ? 'bg-port-card border-port-accent/40' : 'bg-port-card border-port-border'} hover:border-port-accent/30 transition-colors`}
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-white text-sm font-medium truncate">{b.name}</span>
+                        <span className="text-white text-sm font-medium truncate flex items-center gap-1">
+                          {incompatible ? <AlertCircle size={12} className="text-port-error shrink-0" /> : null}
+                          <span className="truncate">{b.name}</span>
+                        </span>
                         {inboxCount > 0 && (
                           <span className="inline-flex items-center justify-center min-w-[18px] px-1.5 py-0.5 rounded-full bg-port-accent text-[10px] text-white">
                             {inboxCount}
@@ -378,8 +384,13 @@ export default function Sharing() {
                         <Folder size={10} />
                         {b.path}
                       </div>
-                      <div className="text-[10px] text-gray-600 mt-1">
-                        {b.mode === 'auto-merge' ? 'auto-merge' : 'inbox'}
+                      <div className="text-[10px] text-gray-600 mt-1 flex items-center gap-2 flex-wrap">
+                        <span>{b.mode === 'auto-merge' ? 'auto-merge' : 'inbox'}</span>
+                        {b.bucketSchemaVersion != null && (
+                          <span className={incompatible ? 'text-port-error' : ''} title={incompatible ? `Bucket protocol v${b.bucketSchemaVersion} > your PortOS (v${b.localSchemaVersion}). Upgrade required to read incoming shares.` : `Protocol v${b.bucketSchemaVersion}`}>
+                            schema v{b.bucketSchemaVersion}
+                          </span>
+                        )}
                       </div>
                     </button>
                   </li>
@@ -469,6 +480,9 @@ function Inboxlist({ bucket, items, onPromote, onDismiss }) {
             <div className="flex-1 min-w-0">
               <div className="text-sm text-white">
                 <span className="text-port-accent">{item.source}</span>
+                {item.producedByVersion && item.producedByVersion !== 'unknown' && (
+                  <span className="text-gray-500 text-[11px]"> (PortOS {item.producedByVersion})</span>
+                )}
                 <span className="text-gray-600"> · {item.kind}</span>
                 <span className="text-gray-600"> · {new Date(item.receivedAt || item.createdAt).toLocaleString()}</span>
               </div>
@@ -518,9 +532,12 @@ function ActivityList({ manifests }) {
   return (
     <ul className="space-y-1.5">
       {manifests.map((m) => (
-        <li key={m.id} className="p-2 bg-port-card border border-port-border rounded text-xs flex items-center gap-2">
+        <li key={m.id} className="p-2 bg-port-card border border-port-border rounded text-xs flex items-center gap-2 flex-wrap">
           <span className="text-gray-500">{new Date(m.createdAt).toLocaleString()}</span>
           <span className="text-port-accent">{m.source}</span>
+          {m.producedByVersion && m.producedByVersion !== 'unknown' && (
+            <span className="text-gray-500 text-[10px]">v{m.producedByVersion}</span>
+          )}
           <span className="text-gray-600">·</span>
           <span className="text-gray-300">{m.kind}</span>
           <span className="text-gray-600">·</span>

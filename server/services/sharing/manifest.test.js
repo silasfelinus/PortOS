@@ -43,6 +43,24 @@ describe('sharing/manifest', () => {
     expect(m.recordIds).toEqual(['ser-1', 'iss-2']);
     expect(m.assetRefs).toEqual([{ kind: 'image', ref: 'abc.png' }]);
     expect(m.schemaVersion).toBe(manifest.MANIFEST_SCHEMA_VERSION);
+    expect(m.sharingSchemaVersion).toBe(manifest.MANIFEST_SCHEMA_VERSION);
+  });
+
+  it('buildManifest stamps producedByVersion from the caller', () => {
+    const m = manifest.buildManifest({
+      kind: 'series', source: 'me', bucketId: 'b1', bucketName: 'c',
+      recordIds: [], assetRefs: [],
+      producedByVersion: '1.54.0',
+    });
+    expect(m.producedByVersion).toBe('1.54.0');
+  });
+
+  it("buildManifest defaults producedByVersion to 'unknown' when omitted", () => {
+    const m = manifest.buildManifest({
+      kind: 'series', source: 'me', bucketId: 'b1', bucketName: 'c',
+      recordIds: [], assetRefs: [],
+    });
+    expect(m.producedByVersion).toBe('unknown');
   });
 
   it('buildManifest rejects invalid kind', () => {

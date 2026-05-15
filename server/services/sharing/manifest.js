@@ -18,9 +18,12 @@ import { randomUUID } from 'crypto';
 import { join } from 'path';
 import { readdir } from 'fs/promises';
 import { PATHS, atomicWrite, readJSONFile, ensureDir } from '../../lib/fileUtils.js';
+import { SHARING_SCHEMA_VERSION, getProducedByVersion } from './version.js';
 
 export const MANIFEST_KIND = Object.freeze(['series', 'universe', 'media']);
-export const MANIFEST_SCHEMA_VERSION = 1;
+
+/** @deprecated Use SHARING_SCHEMA_VERSION from ./version.js. Kept exported for back-compat. */
+export const MANIFEST_SCHEMA_VERSION = SHARING_SCHEMA_VERSION;
 
 const isStr = (v) => typeof v === 'string';
 
@@ -58,12 +61,26 @@ export function hasBeenProcessed(cursor, manifestFilename) {
   return Array.isArray(cursor?.processed) && cursor.processed.includes(manifestFilename);
 }
 
-/** Build a fresh manifest. Caller writes it after every record + asset is in place. */
-export function buildManifest({ kind, senderInstanceId, source, sourceBio, recordIds, assetRefs, bucketId, bucketName, note }) {
+/**
+ * Build a fresh manifest. Caller writes it after every record + asset is in
+ * place. `producedByVersion` is the PortOS app version; resolve via
+ * `getProducedByVersion()` (from ./version.js) and pass in — kept as a
+ * parameter so this stays pure + synchronous.
+ *
+ * `schemaVersion` is the wire-protocol version (the only one importer compat
+ * is gated on). `sharingSchemaVersion` is its more descriptive alias kept for
+ * forward-compat readability — both carry the same value.
+ */
+export function buildManifest({
+  kind, senderInstanceId, source, sourceBio, recordIds, assetRefs,
+  bucketId, bucketName, note, producedByVersion,
+}) {
   if (!MANIFEST_KIND.includes(kind)) throw new Error(`buildManifest: invalid kind '${kind}'`);
   return {
     id: randomUUID(),
-    schemaVersion: MANIFEST_SCHEMA_VERSION,
+    schemaVersion: SHARING_SCHEMA_VERSION,
+    sharingSchemaVersion: SHARING_SCHEMA_VERSION,
+    producedByVersion: producedByVersion || 'unknown',
     createdAt: new Date().toISOString(),
     kind,                              // 'series' | 'universe' | 'media'
     senderInstanceId: senderInstanceId || 'unknown',

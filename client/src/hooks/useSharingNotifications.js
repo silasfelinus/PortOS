@@ -26,9 +26,22 @@ export function useSharingNotifications() {
         duration: 8000,
       });
     };
+    const onIncompatibleManifest = (payload) => {
+      if (!payload) return;
+      const source = payload.source || 'a peer';
+      const producedBy = payload.producedByVersion && payload.producedByVersion !== 'unknown'
+        ? ` (PortOS ${payload.producedByVersion})`
+        : '';
+      toast.error(
+        `Can't import share from ${source}${producedBy} — protocol v${payload.remoteVersion} requires upgrading PortOS (local v${payload.localVersion}).`,
+        { duration: 12000 },
+      );
+    };
     socket.on('sharing:manifest-processed', onManifestProcessed);
+    socket.on('sharing:incompatible-manifest', onIncompatibleManifest);
     return () => {
       socket.off('sharing:manifest-processed', onManifestProcessed);
+      socket.off('sharing:incompatible-manifest', onIncompatibleManifest);
     };
   }, []);
 }

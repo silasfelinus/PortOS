@@ -25,6 +25,7 @@ import { getUniverse } from '../universeBuilder.js';
 import { getJob } from '../mediaJobQueue/index.js';
 import { getInstanceId } from '../instances.js';
 import { getSettings } from '../settings.js';
+import { getProducedByVersion } from './version.js';
 import * as os from 'os';
 
 const isStr = (v) => typeof v === 'string';
@@ -189,15 +190,19 @@ export async function exportSeries(seriesId, bucketId) {
     universe = await getUniverse(series.universeId).catch(() => null);
   }
 
-  const source = await resolveSourceName(bucket);
-  const sourceBio = await resolveSourceBio(bucket);
-  const senderInstanceId = await getInstanceId().catch(() => null);
+  const [source, sourceBio, senderInstanceId, producedByVersion] = await Promise.all([
+    resolveSourceName(bucket),
+    resolveSourceBio(bucket),
+    getInstanceId().catch(() => null),
+    getProducedByVersion(),
+  ]);
 
   // Pre-build manifest id so we can stamp it onto every record's origin.
   const manifestStub = buildManifest({
     kind: 'series',
     senderInstanceId,
     source, sourceBio,
+    producedByVersion,
     bucketId: bucket.id,
     bucketName: bucket.name,
     recordIds: [],
@@ -253,14 +258,18 @@ export async function exportUniverse(universeId, bucketId) {
   await ensureBucketLayout(bucket);
   const universe = await getUniverse(universeId);
 
-  const source = await resolveSourceName(bucket);
-  const sourceBio = await resolveSourceBio(bucket);
-  const senderInstanceId = await getInstanceId().catch(() => null);
+  const [source, sourceBio, senderInstanceId, producedByVersion] = await Promise.all([
+    resolveSourceName(bucket),
+    resolveSourceBio(bucket),
+    getInstanceId().catch(() => null),
+    getProducedByVersion(),
+  ]);
 
   const manifestStub = buildManifest({
     kind: 'universe',
     senderInstanceId,
     source, sourceBio,
+    producedByVersion,
     bucketId: bucket.id,
     bucketName: bucket.name,
     recordIds: [],
@@ -293,14 +302,18 @@ export async function exportUniverse(universeId, bucketId) {
 export async function exportMedia(items, bucketId) {
   const bucket = await getBucket(bucketId);
   await ensureBucketLayout(bucket);
-  const source = await resolveSourceName(bucket);
-  const sourceBio = await resolveSourceBio(bucket);
-  const senderInstanceId = await getInstanceId().catch(() => null);
+  const [source, sourceBio, senderInstanceId, producedByVersion] = await Promise.all([
+    resolveSourceName(bucket),
+    resolveSourceBio(bucket),
+    getInstanceId().catch(() => null),
+    getProducedByVersion(),
+  ]);
 
   const manifestStub = buildManifest({
     kind: 'media',
     senderInstanceId,
     source, sourceBio,
+    producedByVersion,
     bucketId: bucket.id,
     bucketName: bucket.name,
     recordIds: [],
