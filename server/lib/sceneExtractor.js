@@ -120,6 +120,7 @@ export async function extractScenes({
   series,
   issue,
   providerOverride,
+  modelOverride,
   tag,
 }) {
   const stage = STAGE_FOR_SOURCE[sourceKind];
@@ -151,6 +152,7 @@ export async function extractScenes({
 
   const result = await runStagedLLM(stage, variables, {
     providerOverride,
+    modelOverride,
     returnsJson: true,
     source: tag || `scene-extract-${sourceKind}`,
   });

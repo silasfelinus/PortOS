@@ -126,10 +126,10 @@ export const generatePipelineVisualImage = (issueId, stageId, opts) =>
 // Auto-fill the storyboards stage's scenes[] from the issue's prose or
 // teleplay text stage. `from` defaults server-side to 'teleplay'. Pass
 // `force: true` to replace existing hand-curated scenes.
-export const extractPipelineStoryboardScenes = (issueId, { from, providerOverride, force } = {}) =>
+export const extractPipelineStoryboardScenes = (issueId, { from, providerOverride, modelOverride, force } = {}) =>
   request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/storyboards/extract-scenes`, {
     method: 'POST',
-    body: JSON.stringify({ from, providerOverride, force }),
+    body: JSON.stringify({ from, providerOverride, modelOverride, force }),
   });
 
 // Auto-fill the comicPages stage's pages[] by deterministically parsing the

@@ -343,6 +343,7 @@ const promptRefineSchema = z.object({
 const extractScenesSchema = z.object({
   from: z.enum([SOURCE_KIND.PROSE, SOURCE_KIND.TELEPLAY]).optional().default(SOURCE_KIND.TELEPLAY),
   providerOverride: z.string().trim().max(80).optional(),
+  modelOverride: z.string().trim().max(128).optional(),
   force: z.boolean().optional(),
 });
 
@@ -755,6 +756,9 @@ router.post('/issues/:id/stages/storyboards/extract-scenes', asyncHandler(async 
     );
   }
 
+  // Fall back to the series' configured LLM when the client doesn't pass an
+  // explicit override — every Pipeline LLM action should honor the
+  // provider/model picked in the issue header (which mirrors series.llm).
   const result = await extractScenes({
     source,
     sourceKind,
@@ -764,7 +768,8 @@ router.post('/issues/:id/stages/storyboards/extract-scenes', asyncHandler(async 
     work: { title: issue.title, kind: 'tv-episode' },
     series: { name: series.name, styleNotes: series.styleNotes },
     issue: { number: issue.number, title: issue.title },
-    providerOverride: body.providerOverride,
+    providerOverride: body.providerOverride || series.llm?.provider || undefined,
+    modelOverride: body.modelOverride || series.llm?.model || undefined,
     tag: `pipeline-storyboards-extract-${sourceKind}`,
   });
 

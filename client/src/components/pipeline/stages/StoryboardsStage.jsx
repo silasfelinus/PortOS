@@ -29,7 +29,7 @@ import {
 import MediaJobThumb from '../MediaJobThumb';
 import { genConfigToImageOptions, genConfigToRefineOptions } from './VisualGenSettings';
 
-export default function StoryboardsStage({ issue, onStageUpdate, actionsGated = false }) {
+export default function StoryboardsStage({ issue, series, onStageUpdate, actionsGated = false }) {
   const stage = issue.stages?.storyboards || { status: 'empty', scenes: [] };
   const [scenes, setScenes] = useState(stage.scenes || []);
   // Per-stage gen config — edited from the page-level settings modal.
@@ -97,7 +97,12 @@ export default function StoryboardsStage({ issue, onStageUpdate, actionsGated = 
     }
 
     setExtractingFrom(from);
-    const result = await extractPipelineStoryboardScenes(issue.id, { from, force: true }).catch((err) => {
+    const result = await extractPipelineStoryboardScenes(issue.id, {
+      from,
+      force: true,
+      providerOverride: series?.llm?.provider || undefined,
+      modelOverride: series?.llm?.model || undefined,
+    }).catch((err) => {
       toast.error(err.message || 'Scene extraction failed');
       return null;
     });

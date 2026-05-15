@@ -869,6 +869,22 @@
 
 ## Fixed
 
+- **Storyboards scene extraction now uses the per-series configured LLM.**
+  Clicking "From Teleplay" / "From Prose" on the Storyboards stage was
+  calling Claude Code (the system default) regardless of the
+  provider/model set in the issue header — leading to surprise
+  5-minute timeouts when the user had Codex configured. Fix has three
+  parts: the `extract-scenes` route now accepts `modelOverride` and
+  falls back to `series.llm.provider` / `series.llm.model` when no
+  override is passed; `extractScenes` in `lib/sceneExtractor.js`
+  threads `modelOverride` through to `runStagedLLM`; the
+  `StoryboardsStage` component reads `series.llm.{provider,model}`
+  and passes both explicitly (defense in depth so even older client
+  builds against the new server still pick up the right provider).
+  Text-stage generates + auto-run already honored this; visual-refine
+  endpoints (`refine-prompt`) are intentionally exempt because they
+  use the per-issue `genConfig.refineProvider` setting.
+
 - **`updateStageWithLatest` short-circuits on empty-patch returns.** A
   computeFn returning `{}` (the "I decided not to write" signal — e.g.
   a stale media-job completion landing against a re-rendered page) no
