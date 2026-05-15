@@ -10,10 +10,19 @@ import {
   extractPipelineComicPages,
 } from '../../../services/api';
 import MediaJobThumb from '../MediaJobThumb';
+import { genConfigToImageOptions, genConfigToRefineOptions } from './VisualGenSettings';
+
+// NOTE: `ComicPagesStage` is currently unreachable in the running app —
+// `PipelineIssue.jsx` redirects /comicPages URLs to /comicScript, where
+// `ComicScriptStage` owns the merged page editor. The cover UI for this
+// stage lives in ComicScriptStage. This component stays in the tree as a
+// pure per-panel editor so a future view that lands directly here still
+// works.
 
 export default function ComicPagesStage({ issue, onStageUpdate }) {
   const stage = issue.stages?.comicPages || { status: 'empty', pages: [] };
   const [pages, setPages] = useState(stage.pages || []);
+  const genConfig = stage.genConfig || null;
   const [savingIdx, setSavingIdx] = useState(null);
   const [refiningKey, setRefiningKey] = useState(null);
   // Per-page in-flight state. Codex can render multiple pages in parallel, so
@@ -100,7 +109,7 @@ export default function ComicPagesStage({ issue, onStageUpdate }) {
       return;
     }
     markRendering(pi, true);
-    const result = await generatePipelineComicPage(issue.id, pi).catch((err) => {
+    const result = await generatePipelineComicPage(issue.id, pi, genConfigToImageOptions(genConfig)).catch((err) => {
       toast.error(err.message || 'Failed to enqueue page render');
       return null;
     });
@@ -128,7 +137,7 @@ export default function ComicPagesStage({ issue, onStageUpdate }) {
     }
     const key = `${pi}:${ni}`;
     setRefiningKey(key);
-    const result = await refinePipelineComicPanelPrompt(issue.id, pi, ni, {})
+    const result = await refinePipelineComicPanelPrompt(issue.id, pi, ni, genConfigToRefineOptions(genConfig))
       .catch((err) => {
         toast.error(err.message || 'Refine failed');
         return null;
@@ -152,6 +161,7 @@ export default function ComicPagesStage({ issue, onStageUpdate }) {
     setSavingIdx(`${pi}:${ni}`);
     const result = await generatePipelineVisualImage(issue.id, 'comicPages', {
       description: panel.description,
+      ...genConfigToImageOptions(genConfig),
     }).catch((err) => {
       toast.error(err.message || 'Failed to enqueue image');
       return null;

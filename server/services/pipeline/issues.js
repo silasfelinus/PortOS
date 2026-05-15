@@ -21,9 +21,37 @@
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { PATHS, atomicWrite, readJSONFile, ensureDir } from '../../lib/fileUtils.js';
+import {
+  LENGTH_PROFILE_NAMES, DEFAULT_LENGTH_PROFILE,
+  CUSTOM_PAGE_MIN, CUSTOM_PAGE_MAX, CUSTOM_MINUTE_MIN, CUSTOM_MINUTE_MAX,
+} from '../../lib/issueLength.js';
 
 // Lazy resolution — see series.js for context.
 const statePath = () => join(PATHS.data, 'pipeline-issues.json');
+
+// File-level write lock: serializes concurrent updateIssue / updateStage calls
+// against the shared pipeline-issues.json state file so a blur-save PATCH can
+// never clobber an in-flight cover-render PATCH (and vice-versa, across any
+// pair of issues — not just two writes to the same issue id). Each enqueue
+// awaits the previous write to settle before reading state, so it always
+// merges against the freshest persisted record. CLAUDE.md: "simple
+// re-entrancy guards… are fine and expected."
+let issueWriteTail = Promise.resolve();
+
+function queueIssueWrite(_issueId, fn) {
+  const next = issueWriteTail.then(fn, fn); // run fn even when prev rejects
+  // Track the silenced tail so a rejection doesn't poison subsequent waiters,
+  // but only as long as this write is the tail — if another write enqueues
+  // after us, it becomes the tail and we drop our reference so the chain
+  // doesn't retain settled promises (and their resolved payloads) for the
+  // life of the process.
+  const silenced = next.catch(() => {});
+  issueWriteTail = silenced;
+  silenced.finally(() => {
+    if (issueWriteTail === silenced) issueWriteTail = Promise.resolve();
+  });
+  return next; // callers still see the real resolve/reject
+}
 
 export const ERR_NOT_FOUND = 'PIPELINE_ISSUE_NOT_FOUND';
 export const ERR_VALIDATION = 'PIPELINE_ISSUE_VALIDATION';
@@ -83,7 +111,40 @@ const sanitizeStage = (raw) => {
 const ASPECT_RATIO_VALUES = new Set(['16:9', '9:16', '1:1']);
 const QUALITY_VALUES = new Set(['draft', 'standard', 'high']);
 
-const sanitizeVisualStage = (raw) => {
+// `imageMode: 'auto'` defers to the server resolver (codex when enabled,
+// local otherwise). Returns null when nothing was set so the persisted
+// JSON stays clean for issues that never opened the panel.
+const IMAGE_MODE_VALUES = new Set(['auto', 'local', 'codex']);
+const GEN_CONFIG_STR_MAX = 200;
+const sanitizeGenConfig = (raw) => {
+  if (!raw || typeof raw !== 'object') return null;
+  const imageMode = IMAGE_MODE_VALUES.has(raw.imageMode) ? raw.imageMode : 'auto';
+  // imageModelId is only meaningful for local diffusion — clear it for other
+  // modes so a previously-pinned model doesn't silently persist in the config
+  // and mislead the UI or any future reader that doesn't filter by mode.
+  const imageModelId = imageMode === 'local'
+    ? (trimTo(raw.imageModelId, GEN_CONFIG_STR_MAX) || null)
+    : null;
+  const refineProvider = trimTo(raw.refineProvider, GEN_CONFIG_STR_MAX) || null;
+  const refineModel = trimTo(raw.refineModel, GEN_CONFIG_STR_MAX) || null;
+  if (imageMode === 'auto' && !imageModelId && !refineProvider && !refineModel) {
+    return null;
+  }
+  return { imageMode, imageModelId, refineProvider, refineModel };
+};
+
+const COVER_SCRIPT_MAX = 8000;
+const COVER_PROMPT_MAX = 16_000;
+const sanitizeCover = (raw) => {
+  if (!raw || typeof raw !== 'object') return null;
+  const script = trimTo(raw.script, COVER_SCRIPT_MAX);
+  const imageJobId = isStr(raw.imageJobId) && raw.imageJobId ? raw.imageJobId : null;
+  const prompt = trimTo(raw.prompt, COVER_PROMPT_MAX);
+  if (!script && !imageJobId && !prompt) return null;
+  return { script, imageJobId, prompt: prompt || null };
+};
+
+const sanitizeVisualStage = (raw, stageId = null) => {
   // Visual stages keep arbitrary structured artifact lists. Sanitize the
   // wrapper but pass through known shapes.
   const base = sanitizeStage(raw);
@@ -95,13 +156,24 @@ const sanitizeVisualStage = (raw) => {
     videoPath: isStr(raw?.videoPath) && raw.videoPath ? raw.videoPath : null,
     aspectRatio: ASPECT_RATIO_VALUES.has(raw?.aspectRatio) ? raw.aspectRatio : null,
     quality: QUALITY_VALUES.has(raw?.quality) ? raw.quality : null,
+    // genConfig is read by comicPages/storyboards; pass-through is a no-op on
+    // episodeVideo, which never looks at it.
+    genConfig: sanitizeGenConfig(raw?.genConfig),
+    // `cover` is meaningful only on comicPages — it carries the front-cover
+    // concept + render job. Dropping it on storyboards / episodeVideo makes
+    // the contract explicit (matches the comment in pipeline.js's visual
+    // stage schema). When stageId is omitted (legacy callers / stage-shape
+    // sanitize at issue load time without per-stage context), keep the
+    // field — `sanitizeStages` below threads the stageId through so the
+    // canonical persistence path enforces the rule.
+    cover: stageId === null || stageId === 'comicPages' ? sanitizeCover(raw?.cover) : null,
   };
 };
 
 const sanitizeStages = (raw = {}) => {
   const out = {};
   for (const id of TEXT_STAGE_IDS) out[id] = sanitizeStage(raw[id]);
-  for (const id of VISUAL_STAGE_IDS) out[id] = sanitizeVisualStage(raw[id]);
+  for (const id of VISUAL_STAGE_IDS) out[id] = sanitizeVisualStage(raw[id], id);
   return out;
 };
 
@@ -124,6 +196,21 @@ const sanitizeIssue = (raw) => {
   const arcPosition = Number.isFinite(raw.arcPosition)
     ? Math.max(0, Math.min(ARC_POSITION_MAX, Math.floor(raw.arcPosition)))
     : null;
+  // Defaults to 'standard' so pre-field issues keep the prior 22pg/24min sizing.
+  // pageTarget/minutesTarget are only consumed when lengthProfile==='custom',
+  // but we persist them on every profile so the picker can remember a previous
+  // custom value if the user toggles back. Bounds mirror the values
+  // `computeIssueTargets` clamps to at render time — otherwise the persisted
+  // record could disagree with the prompt-rendered length.
+  const lengthProfile = LENGTH_PROFILE_NAMES.includes(raw.lengthProfile)
+    ? raw.lengthProfile
+    : DEFAULT_LENGTH_PROFILE;
+  const pageTarget = Number.isFinite(raw.pageTarget)
+    ? Math.max(CUSTOM_PAGE_MIN, Math.min(CUSTOM_PAGE_MAX, Math.round(raw.pageTarget)))
+    : null;
+  const minutesTarget = Number.isFinite(raw.minutesTarget)
+    ? Math.max(CUSTOM_MINUTE_MIN, Math.min(CUSTOM_MINUTE_MAX, Math.round(raw.minutesTarget)))
+    : null;
   return {
     id: raw.id,
     seriesId: trimTo(raw.seriesId, SERIES_ID_MAX),
@@ -132,6 +219,9 @@ const sanitizeIssue = (raw) => {
     status,
     seasonId,
     arcPosition,
+    lengthProfile,
+    pageTarget,
+    minutesTarget,
     stages: sanitizeStages(raw.stages || {}),
     createdAt,
     updatedAt,
@@ -204,6 +294,9 @@ export async function createIssue(input = {}) {
     // (and any future caller wiring an issue to a season at create time).
     seasonId: 'seasonId' in input ? input.seasonId : null,
     arcPosition: 'arcPosition' in input ? input.arcPosition : null,
+    lengthProfile: 'lengthProfile' in input ? input.lengthProfile : undefined,
+    pageTarget: 'pageTarget' in input ? input.pageTarget : null,
+    minutesTarget: 'minutesTarget' in input ? input.minutesTarget : null,
     stages: input.stages || {},
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -220,15 +313,60 @@ function nextIssueNumber(issues, seriesId) {
   return Math.max(...peers.map((i) => i.number || 0)) + 1;
 }
 
-export async function updateIssue(id, patch = {}) {
+export function updateIssue(id, patch = {}) {
+  return queueIssueWrite(id, async () => {
   const state = await readState();
   const idx = state.issues.findIndex((i) => i.id === id);
   if (idx < 0) throw makeErr(`Issue not found: ${id}`, ERR_NOT_FOUND);
   const cur = state.issues[idx];
 
-  const mergedStages = 'stages' in patch
-    ? { ...cur.stages, ...(patch.stages || {}) }
-    : cur.stages;
+  // Per-stage merge: a stage patch carries only the fields the caller is
+  // changing (e.g. `{ genConfig }` or `{ cover }`). Without this, the top-level
+  // spread would replace the entire stage object and silently drop sibling
+  // fields like `scenes` / `pages` / `genConfig`. Sanitization then defaults
+  // those back to empty arrays/null, erasing work the user (or LLM) just did.
+  // Callers that need stage-level changes without touching issue-level fields
+  // should use `updateStage`, which does a shallow merge of the patch over the
+  // existing stage (`{ ...cur.stages[stageId], ...patch }`) before sanitizing.
+  // Note: `updateStage` still merges — omitted sibling stage fields are
+  // preserved. To clear a field explicitly, pass it as `null` or `""` in the
+  // patch.
+  //
+  // `cover` and `genConfig` are treated as deep-merge sub-objects: a partial
+  // `{ cover: { script } }` patch from a textarea-blur save must not wipe the
+  // sibling `imageJobId` / `prompt` that a parallel "Render cover" mutation
+  // just persisted. Passing `null` explicitly still clears the sub-object
+  // (intentional-clear semantics).
+  const NESTED_DEEP_MERGE_KEYS = ['cover', 'genConfig'];
+  let mergedStages = cur.stages;
+  if ('stages' in patch && patch.stages && typeof patch.stages === 'object') {
+    mergedStages = { ...cur.stages };
+    for (const [stageId, stagePatch] of Object.entries(patch.stages)) {
+      const prev = cur.stages?.[stageId];
+      if (prev && stagePatch && typeof prev === 'object' && typeof stagePatch === 'object') {
+        const merged = { ...prev, ...stagePatch };
+        for (const key of NESTED_DEEP_MERGE_KEYS) {
+          if (key in stagePatch
+              && stagePatch[key] && typeof stagePatch[key] === 'object'
+              && prev[key] && typeof prev[key] === 'object') {
+            merged[key] = { ...prev[key], ...stagePatch[key] };
+          }
+        }
+        // Clear transient error fields when a content/status change implies
+        // the previous failure is no longer the active state. Mirrors the
+        // pre-per-stage-merge behavior, where a `{ status, input, output }`
+        // patch replaced the whole stage and implicitly wiped errorMessage.
+        if ('status' in stagePatch && stagePatch.status !== 'error'
+            && stagePatch.status !== 'generating'
+            && !('errorMessage' in stagePatch)) {
+          merged.errorMessage = '';
+        }
+        mergedStages[stageId] = merged;
+      } else {
+        mergedStages[stageId] = stagePatch;
+      }
+    }
+  }
 
   const merged = sanitizeIssue({
     ...cur,
@@ -237,6 +375,9 @@ export async function updateIssue(id, patch = {}) {
     ...('status' in patch ? { status: patch.status } : {}),
     ...('seasonId' in patch ? { seasonId: patch.seasonId } : {}),
     ...('arcPosition' in patch ? { arcPosition: patch.arcPosition } : {}),
+    ...('lengthProfile' in patch ? { lengthProfile: patch.lengthProfile } : {}),
+    ...('pageTarget' in patch ? { pageTarget: patch.pageTarget } : {}),
+    ...('minutesTarget' in patch ? { minutesTarget: patch.minutesTarget } : {}),
     stages: mergedStages,
     updatedAt: new Date().toISOString(),
   });
@@ -244,6 +385,7 @@ export async function updateIssue(id, patch = {}) {
   state.issues[idx] = merged;
   await writeState(state);
   return merged;
+  }); // end queueIssueWrite
 }
 
 /**
@@ -252,21 +394,24 @@ export async function updateIssue(id, patch = {}) {
  * Patch keys: status, input, output, lastRunId, errorMessage, and (for
  * visual stages) pages/scenes/cdProjectId/videoPath.
  */
-export async function updateStage(issueId, stageId, patch = {}) {
+export function updateStage(issueId, stageId, patch = {}) {
   if (!STAGE_IDS.includes(stageId)) {
-    throw makeErr(`Unknown stage: ${stageId}`, ERR_VALIDATION);
+    // Validate before queueing so the caller gets an immediate rejection
+    // rather than waiting in line for an error it already knows about.
+    return Promise.reject(makeErr(`Unknown stage: ${stageId}`, ERR_VALIDATION));
   }
+  return queueIssueWrite(issueId, async () => {
   const state = await readState();
   const idx = state.issues.findIndex((i) => i.id === issueId);
   if (idx < 0) throw makeErr(`Issue not found: ${issueId}`, ERR_NOT_FOUND);
   const cur = state.issues[idx];
   const isVisual = VISUAL_STAGE_IDS.includes(stageId);
-  const sanitize = isVisual ? sanitizeVisualStage : sanitizeStage;
-  const next = sanitize({
+  const merged = {
     ...cur.stages[stageId],
     ...patch,
     updatedAt: new Date().toISOString(),
-  });
+  };
+  const next = isVisual ? sanitizeVisualStage(merged, stageId) : sanitizeStage(merged);
   const mergedIssue = sanitizeIssue({
     ...cur,
     stages: { ...cur.stages, [stageId]: next },
@@ -275,6 +420,7 @@ export async function updateStage(issueId, stageId, patch = {}) {
   state.issues[idx] = mergedIssue;
   await writeState(state);
   return { issue: mergedIssue, stage: mergedIssue.stages[stageId] };
+  }); // end queueIssueWrite
 }
 
 export async function deleteIssue(id) {

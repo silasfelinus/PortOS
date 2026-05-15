@@ -40,6 +40,7 @@ import * as autoRunner from '../services/pipeline/autoRunner.js';
 import {
   enqueueVisualImage,
   enqueueVisualComicPage,
+  enqueueComicCover,
   enqueueStoryboardSceneVideo,
   refineComicPanelPrompt,
   refineStoryboardScenePrompt,
@@ -49,6 +50,10 @@ import { startEpisodeVideoForIssue, ERR_NO_STORYBOARDS } from '../services/pipel
 import { ASPECT_RATIOS, QUALITIES } from '../lib/creativeDirectorPresets.js';
 import { extractScenes, SOURCE_KIND } from '../lib/sceneExtractor.js';
 import { parseComicScript } from '../lib/comicScriptParser.js';
+import {
+  LENGTH_PROFILE_NAMES,
+  CUSTOM_PAGE_MIN, CUSTOM_PAGE_MAX, CUSTOM_MINUTE_MIN, CUSTOM_MINUTE_MAX,
+} from '../lib/issueLength.js';
 import { llmSchema } from './universeBuilder.js';
 import { BIBLE_KIND } from '../lib/storyBible.js';
 import { ARC_LIMITS, ARC_STATUSES, SEASON_STATUSES } from '../lib/storyArc.js';
@@ -181,6 +186,12 @@ const seasonDeleteSchema = z.object({
 const issueCreateSchema = z.object({
   title: z.string().trim().min(1).max(issuesSvc.TITLE_MAX),
   number: z.number().int().min(1).max(9999).optional(),
+  // Per-issue length profile — can be set at create time so a user creating
+  // a standalone oversized issue (e.g. an annual) doesn't have to open the
+  // picker after the fact. Defaults server-side to 'standard'.
+  lengthProfile: z.enum(LENGTH_PROFILE_NAMES).optional(),
+  pageTarget: z.number().int().min(CUSTOM_PAGE_MIN).max(CUSTOM_PAGE_MAX).nullable().optional(),
+  minutesTarget: z.number().int().min(CUSTOM_MINUTE_MIN).max(CUSTOM_MINUTE_MAX).nullable().optional(),
 });
 
 const stageInputSchema = z.object({
@@ -201,6 +212,22 @@ const visualStageInputSchema = stageInputSchema.extend({
   videoPath: z.string().trim().max(1000).nullable().optional(),
   aspectRatio: z.enum(ASPECT_RATIOS).nullable().optional(),
   quality: z.enum(QUALITIES).nullable().optional(),
+  // Per-stage gen config — image mode + optional pinned model + optional
+  // refine-LLM override. Sanitizer drops the field entirely when nothing
+  // is set, so a `null` here clears it.
+  genConfig: z.object({
+    imageMode: z.enum(['auto', 'local', 'codex']).optional(),
+    imageModelId: z.string().trim().max(200).nullable().optional(),
+    refineProvider: z.string().trim().max(200).nullable().optional(),
+    refineModel: z.string().trim().max(200).nullable().optional(),
+  }).nullable().optional(),
+  // Comic-issue front cover. Only meaningful on the comicPages stage; the
+  // service-side sanitizer drops the field on other visual stages.
+  cover: z.object({
+    script: z.string().max(8000).optional(),
+    imageJobId: z.string().trim().max(200).nullable().optional(),
+    prompt: z.string().max(16_000).nullable().optional(),
+  }).nullable().optional(),
 });
 
 const issuePatchSchema = z.object({
@@ -211,6 +238,12 @@ const issuePatchSchema = z.object({
   // ordinal within that season. `null` clears the assignment.
   seasonId: z.string().trim().min(1).max(issuesSvc.SEASON_ID_MAX).nullable().optional(),
   arcPosition: z.number().int().min(0).max(issuesSvc.ARC_POSITION_MAX).nullable().optional(),
+  // Per-issue length profile. Drives the prompt-template size targets
+  // (beats / prose words / page count / minute count). pageTarget +
+  // minutesTarget are only meaningful when lengthProfile === 'custom'.
+  lengthProfile: z.enum(LENGTH_PROFILE_NAMES).optional(),
+  pageTarget: z.number().int().min(CUSTOM_PAGE_MIN).max(CUSTOM_PAGE_MAX).nullable().optional(),
+  minutesTarget: z.number().int().min(CUSTOM_MINUTE_MIN).max(CUSTOM_MINUTE_MAX).nullable().optional(),
   // Use visualStageInputSchema as the union arm so visual-stage payloads keep
   // their `scenes` / `pages` / `cdProjectId` / `videoPath` fields. The schema
   // is a superset of stageInputSchema (those four are optional additions), so
@@ -229,6 +262,26 @@ const visualGenerateSchema = z.object({
   description: z.string().trim().min(1).max(8000),
   // Matched against the series settings bible when present.
   slugline: z.string().trim().max(200).optional(),
+  negativePrompt: z.string().trim().max(2000).optional(),
+  extraStyle: z.string().trim().max(2000).optional(),
+  mode: z.enum(['local', 'codex']).optional(),
+  modelId: z.string().trim().max(64).optional(),
+  width: z.number().int().min(64).max(2048).optional(),
+  height: z.number().int().min(64).max(2048).optional(),
+  steps: z.number().int().min(1).max(150).optional(),
+  cfgScale: z.number().min(0).max(30).optional(),
+  guidance: z.number().min(0).max(30).optional(),
+  seed: z.number().int().min(0).optional(),
+});
+
+// Comic-issue front cover render. Accepts an optional `coverScript`
+// override (otherwise the route reads it from stages.comicPages.cover.script);
+// the rest of the prompt is built server-side from series + issue metadata.
+// `seed` mirrors the page/panel render schemas so the shared image-gen drawer
+// flows the same render settings into the cover — enqueueImageJob honors it
+// via options.seed.
+const comicCoverRenderSchema = z.object({
+  coverScript: z.string().max(8000).optional(),
   negativePrompt: z.string().trim().max(2000).optional(),
   extraStyle: z.string().trim().max(2000).optional(),
   mode: z.enum(['local', 'codex']).optional(),
@@ -544,6 +597,9 @@ router.post('/series/:id/seasons/:seasonId/episodes/generate', asyncHandler(asyn
         // don't collide.
         seasonId: req.params.seasonId,
         arcPosition: ep.number,
+        // Episode-level length sizing from the season-episodes LLM pass.
+        // Defaults to 'standard' inside the issue sanitizer when missing.
+        lengthProfile: ep.lengthProfile,
         stages: {
           idea: {
             status: ep.synopsis ? 'edited' : 'empty',
@@ -759,11 +815,24 @@ router.post('/issues/:id/stages/comicPages/extract-pages', asyncHandler(async (r
     );
   }
 
-  const { pages } = parseComicScript(source);
+  const { pages, coverConcept } = parseComicScript(source);
+
+  // Preserve a user-edited cover script if one is already set — only seed
+  // from the parsed concept when the cover is currently blank. Otherwise an
+  // extract re-run would clobber a hand-curated cover. When we DO seed, also
+  // clear any prior imageJobId / prompt — they were rendered against the old
+  // (likely placeholder / fallback) script, so leaving them would show a
+  // rendered cover image that doesn't match the new concept text.
+  const existingCover = issue.stages?.comicPages?.cover || null;
+  const existingCoverScript = existingCover?.script || '';
+  const nextCover = coverConcept && !existingCoverScript
+    ? { script: coverConcept, imageJobId: null, prompt: null }
+    : existingCover;
 
   const { issue: updatedIssue, stage } = await issuesSvc.updateStage(issue.id, 'comicPages', {
     status: pages.length ? 'ready' : 'empty',
     pages,
+    cover: nextCover,
     errorMessage: '',
   });
 
@@ -811,6 +880,33 @@ router.patch('/issues/:id/stages/comicPages/pages/:pageIndex', asyncHandler(asyn
     pages,
   });
   res.json({ issue: updatedIssue, stage, page: pages[pageIndex] });
+}));
+
+// Render the comic-issue front cover. Builds a cover-art prompt (series
+// masthead + issue-number tag + the user's cover concept) and persists the
+// returned jobId on stages.comicPages.cover.imageJobId. Pass `coverScript`
+// in the body to override or update the persisted cover concept in the
+// same call. Returns { jobId, mode, prompt, cover, issue, stage }.
+router.post('/issues/:id/stages/comicPages/cover/render', asyncHandler(async (req, res) => {
+  const body = validateRequest(comicCoverRenderSchema, req.body ?? {});
+  // Make sure the issue exists up front — defense in depth + clean 404
+  // before we spend the bible-context load.
+  await issuesSvc.getIssue(req.params.id).catch((err) => { throw mapServiceError(err); });
+
+  const result = await enqueueComicCover(req.params.id, body)
+    .catch((err) => { throw mapServiceError(err); });
+
+  // Persist coverScript + jobId + prompt back onto the issue so the UI
+  // shows the in-flight render on reload, even if the user navigates away.
+  const nextCover = {
+    script: result.coverScript || '',
+    imageJobId: result.jobId,
+    prompt: result.prompt,
+  };
+  const { issue: updatedIssue, stage } = await issuesSvc.updateStage(req.params.id, 'comicPages', {
+    cover: nextCover,
+  });
+  res.json({ ...result, cover: stage.cover, issue: updatedIssue, stage });
 }));
 
 // Render a full comic page (multi-panel layout in one image) — the

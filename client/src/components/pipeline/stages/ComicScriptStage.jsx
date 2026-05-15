@@ -15,6 +15,7 @@ import {
   generatePipelineStage,
   extractPipelineComicPages,
   generatePipelineComicPage,
+  generatePipelineComicCover,
   updatePipelineComicPage,
   updatePipelineIssue,
   PIPELINE_STAGE_LABELS,
@@ -159,6 +160,70 @@ export default function ComicScriptStage({ issue, series, onStageUpdate }) {
 
   const renderOpts = useMemo(() => pipelineImageCfgToRenderOpts(imageCfg), [imageCfg]);
 
+  // Front cover lives on stages.comicPages.cover so it persists alongside the
+  // page renders. The textarea owns a draft string separate from the persisted
+  // value so keystrokes don't round-trip until blur.
+  const cover = comicPages.cover || { script: '', imageJobId: null, prompt: null };
+  const [draftCoverScript, setDraftCoverScript] = useState(cover.script || '');
+  useEffect(() => { setDraftCoverScript(cover.script || ''); }, [cover.script]);
+  const [renderingCover, setRenderingCover] = useState(false);
+  // Mirror PageRow's job-status pattern: start 'unknown' so we treat any
+  // existing jobId as in-flight until MediaJobThumb reports back.
+  const [coverJobStatus, setCoverJobStatus] = useState('unknown');
+  // `unknown` means the GET /media-jobs/:id is still in-flight OR the job
+  // archive has expired (404). After a short grace period, stop treating an
+  // unresolved `unknown` as in-flight so a stale imageJobId (job archived,
+  // page reloaded) doesn't permanently disable "Render cover". The 5-second
+  // window comfortably outlasts any LAN round-trip while being short enough
+  // that an actual expired-archive case doesn't frustrate the user.
+  const [coverUnknownExpired, setCoverUnknownExpired] = useState(false);
+  // Reset both whenever the jobId changes so a freshly-queued job gets a
+  // clean slate and is immediately treated as in-flight.
+  useEffect(() => {
+    setCoverJobStatus('unknown');
+    setCoverUnknownExpired(false);
+    if (!cover.imageJobId) return undefined;
+    const t = setTimeout(() => setCoverUnknownExpired(true), 5000);
+    return () => clearTimeout(t);
+  }, [cover.imageJobId]);
+  const coverJobInFlight = !!cover.imageJobId
+    && coverJobStatus !== 'completed'
+    && coverJobStatus !== 'failed'
+    && coverJobStatus !== 'canceled'
+    && !(coverJobStatus === 'unknown' && coverUnknownExpired);
+
+  const persistCoverScript = async (nextScript) => {
+    // Only send the script text. Never clear imageJobId/prompt from the blur
+    // handler — doing so races with the render route's PATCH (which persists the
+    // new jobId) and whoever lands last wins. The render button is already
+    // disabled while a job is in-flight, so stale renders can only linger after
+    // a completed/failed job; the user re-renders explicitly to replace them.
+    const updated = await updatePipelineIssue(issue.id, {
+      stages: { comicPages: { cover: { script: nextScript } } },
+    }).catch((err) => {
+      toast.error(err.message || 'Save failed');
+      return null;
+    });
+    if (updated) onStageUpdate?.('comicPages', updated.stages.comicPages, updated);
+  };
+
+  const handleRenderCover = async () => {
+    setRenderingCover(true);
+    const result = await generatePipelineComicCover(issue.id, {
+      coverScript: draftCoverScript || '',
+      ...renderOpts,
+    }).catch((err) => {
+      toast.error(err.message || 'Failed to render cover');
+      return null;
+    });
+    setRenderingCover(false);
+    if (!result) return;
+    if (result.issue) {
+      onStageUpdate?.('comicPages', result.issue.stages.comicPages, result.issue);
+    }
+    toast.success(`Queued ${result.mode} cover render (${result.jobId.slice(0, 8)})`);
+  };
+
   const overrides = {
     providerId: series?.llm?.provider || undefined,
     model: series?.llm?.model || undefined,
@@ -249,6 +314,45 @@ export default function ComicScriptStage({ issue, series, onStageUpdate }) {
           Script generated but no pages parsed. Click <em>Split into pages</em> above.
         </p>
       ) : null}
+
+      <div className="p-3 bg-port-card border border-port-border rounded-lg">
+        <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+          <span className="text-xs uppercase tracking-wider text-gray-500">Cover</span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleRenderCover}
+              disabled={renderingCover || coverJobInFlight}
+              title={coverJobInFlight
+                ? 'Cover render in progress…'
+                : 'Render the issue\'s front cover — series masthead + issue number tag + your cover concept.'}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-port-accent text-white text-xs font-medium hover:bg-port-accent/90 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {(renderingCover || coverJobInFlight) ? <Loader2 size={12} className="animate-spin" /> : <ImageIcon size={12} />}
+              Render cover
+            </button>
+            {cover.imageJobId ? (
+              <div className="flex items-center gap-2">
+                <MediaJobThumb jobId={cover.imageJobId} label="Cover" size="md" onStatus={setCoverJobStatus} />
+                <span className="text-[10px] text-gray-500 font-mono break-all" title="Last cover render job">
+                  {cover.imageJobId.slice(0, 8)}
+                </span>
+              </div>
+            ) : null}
+          </div>
+        </div>
+        <textarea
+          value={draftCoverScript}
+          onChange={(e) => setDraftCoverScript(e.target.value)}
+          onBlur={() => {
+            if ((cover.script || '') !== draftCoverScript) persistCoverScript(draftCoverScript);
+          }}
+          placeholder="Cover concept — describe the hero image, mood, lighting, framing. Series masthead and issue-number tag included in the prompt automatically."
+          rows={3}
+          className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
+          maxLength={8000}
+        />
+      </div>
 
       <ul className="space-y-4">
         {pages.map((page, pi) => (

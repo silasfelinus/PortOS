@@ -2,6 +2,44 @@
 
 ## Added
 
+- **Pipeline — per-issue length profile, per-stage gen config, comic front cover.**
+  Three additive pipeline-UX features rescued from a pre-crash recovery branch
+  and cherry-picked into main:
+  - **Length profile picker** in the pipeline issue header. Sets
+    `issue.lengthProfile` (`teaser` / `standard` / `extended` / `finale` /
+    `custom`) plus optional `pageTarget` + `minutesTarget`. New
+    `server/lib/issueLength.js` materializes the profile into prompt-template
+    variables (`{{lengthTargets.profile}}`, `pageTarget`, `minutesTarget`,
+    `proseWordsMin/Max`, `beatsMin/Max`) that the idea, prose, comic-script,
+    TV-script prompts now consume — beat counts, prose word ranges, and page
+    counts scale with the picked profile instead of being hardcoded to 22
+    pages / 24 minutes. The season-episodes generator emits a `lengthProfile`
+    per episode so a finale auto-scales without manual tweaking.
+  - **Per-stage generation settings.** New gear-icon modal in the issue
+    header on the **Storyboards** tab exposes `imageMode` (`auto` / `local` /
+    `codex`), pinned local image model, and a refine-LLM override. Persisted
+    on `stages.<stageId>.genConfig` so reloads keep the user's choice; the
+    Comic editor (`comicScript` tab) keeps its existing image-gen drawer so
+    the gear stays off that tab to avoid duplicate controls. The same
+    `genConfig` shape persists on `stages.comicPages.genConfig` as well —
+    threaded through `generatePipelineComicPage`,
+    `generatePipelineVisualImage`, and the two refine-prompt endpoints —
+    so a future header-gear extension to the Comic tab can opt in without
+    a schema change. Visual stages' server resolver now defaults to codex
+    when `imageGen.codex.enabled` (still falls back to local diffusion
+    otherwise).
+  - **Comic-issue front cover.** Optional cover concept per issue persisted
+    on `stages.comicPages.cover` (`script` + `imageJobId` + `prompt`). New
+    `POST /pipeline/issues/:id/stages/comicPages/cover/render` route builds
+    the cover prompt server-side (series masthead + issue-number tag + the
+    user's concept) and enqueues an image-gen job; the cover card sits
+    above the page list in the Comic tab (the merged Comic editor).
+  - **Comic-script parser** now recognizes an optional `## Cover concept`
+    section and the simpler `Panel N` / `Field:` plain-line format the
+    updated prompts emit, alongside the legacy `### Panel N` /
+    `**Field:**` form. `parseComicScript` returns
+    `{ coverConcept, pages: [{ rawText, panels }] }`.
+
 - **Shell — UUID-based URLs for each sub-shell session.** The shell page now
   mounts at `/shell/:sessionId` in addition to `/shell`, and mirrors the active
   session id into the URL whenever a session is started, attached, or switched.
@@ -544,6 +582,17 @@
   to scrub stray references from sibling unlocked composites' prompts.
 
 ## Fixed
+
+- **Pipeline stage prompts — length profile variables reach existing installs.**
+  Running `npm run migrations` now auto-updates the five pipeline stage prompt
+  templates (`pipeline-idea-expansion.md`, `pipeline-prose.md`,
+  `pipeline-comic-script.md`, `pipeline-tv-script.md`,
+  `pipeline-season-episodes.md`) on machines that were set up before the
+  length-profile feature landed. Migration `003` compares each file's MD5 to
+  the pre-feature shipped hash: unmodified files are overwritten with the new
+  template; customized files are skipped with a diff hint. `setup-data.js` also
+  emits a one-line warning at install time when any stage prompt has drifted,
+  pointing at the migration command.
 
 - **CoS-spawned PRs — concise title + no double "Summary" heading.** Two
   related bugs in the PR-creation path:

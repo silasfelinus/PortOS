@@ -138,6 +138,168 @@ describe('pipeline issues service', () => {
     expect(updated.stages.idea.output).toBe('Beats here');
   });
 
+  it('updateIssue stage patch merges per-stage fields instead of replacing', async () => {
+    // A partial stage patch from the client (e.g. saving genConfig from a
+    // settings drawer) must not erase the rest of that stage. The header
+    // gen-config save in particular was deleting `scenes` and `cover` until
+    // updateIssue was taught to per-stage-merge.
+    const i = await svc.createIssue({ seriesId: 'ser-1', title: 'Merge me' });
+    await svc.updateStage(i.id, 'storyboards', {
+      status: 'edited',
+      scenes: [{ slugline: 'INT. LAB', description: 'a scene' }],
+    });
+    await svc.updateStage(i.id, 'comicPages', {
+      status: 'edited',
+      pages: [{ panels: [{ description: 'panel one' }] }],
+      cover: { script: 'cover concept', imageJobId: null, prompt: null },
+    });
+
+    // Patch only genConfig on storyboards — scenes must survive.
+    const afterStoryboards = await svc.updateIssue(i.id, {
+      stages: { storyboards: { genConfig: { imageMode: 'codex' } } },
+    });
+    expect(afterStoryboards.stages.storyboards.scenes).toHaveLength(1);
+    expect(afterStoryboards.stages.storyboards.scenes[0].slugline).toBe('INT. LAB');
+    expect(afterStoryboards.stages.storyboards.genConfig).toEqual({
+      imageMode: 'codex', imageModelId: null, refineProvider: null, refineModel: null,
+    });
+
+    // Patch only cover on comicPages — pages must survive.
+    const afterCover = await svc.updateIssue(i.id, {
+      stages: { comicPages: { cover: { script: 'new concept' } } },
+    });
+    expect(afterCover.stages.comicPages.pages).toHaveLength(1);
+    expect(afterCover.stages.comicPages.cover.script).toBe('new concept');
+  });
+
+  it('deep-merges cover sub-fields so a partial `{ cover: { script } }` patch preserves imageJobId/prompt', async () => {
+    // Race regression: ComicScriptStage's textarea blur fires after a
+    // "Render cover" mutation has persisted imageJobId. A naive shallow merge
+    // would overwrite the imageJobId back to null. The deep-merge of `cover`
+    // sub-fields keeps the freshly-queued render visible.
+    const i = await svc.createIssue({ seriesId: 'ser-1', title: 'Deep merge' });
+    await svc.updateStage(i.id, 'comicPages', {
+      status: 'edited',
+      cover: { script: 'old', imageJobId: 'job-abc12345', prompt: 'p1' },
+    });
+    const updated = await svc.updateIssue(i.id, {
+      stages: { comicPages: { cover: { script: 'new' } } },
+    });
+    expect(updated.stages.comicPages.cover).toMatchObject({
+      script: 'new',
+      imageJobId: 'job-abc12345',
+      prompt: 'p1',
+    });
+  });
+
+  it('deep-merges genConfig sub-fields so a partial `{ genConfig: { imageMode } }` patch preserves the rest', async () => {
+    const i = await svc.createIssue({ seriesId: 'ser-1', title: 'Gen merge' });
+    // Start with local mode + a pinned model — imageModelId is valid for local mode.
+    await svc.updateStage(i.id, 'storyboards', {
+      status: 'edited',
+      genConfig: { imageMode: 'local', imageModelId: 'flux-1', refineProvider: null, refineModel: null },
+    });
+    // Partial patch only changes imageMode — imageModelId should survive the deep merge.
+    const updated = await svc.updateIssue(i.id, {
+      stages: { storyboards: { genConfig: { imageMode: 'local' } } },
+    });
+    expect(updated.stages.storyboards.genConfig).toMatchObject({
+      imageMode: 'local',
+      imageModelId: 'flux-1',
+    });
+  });
+
+  it('sanitizeGenConfig clears imageModelId when imageMode is not local', async () => {
+    const i = await svc.createIssue({ seriesId: 'ser-1', title: 'Gen mode clear' });
+    // A codex-mode config with an imageModelId (stale client state) must not
+    // persist the model id — it is meaningless for codex/auto and would mislead
+    // the UI into showing a "pinned" model that generation ignores.
+    await svc.updateStage(i.id, 'storyboards', {
+      status: 'edited',
+      genConfig: { imageMode: 'codex', imageModelId: 'flux-1', refineProvider: null, refineModel: null },
+    });
+    const issue = await svc.getIssue(i.id);
+    expect(issue.stages.storyboards.genConfig.imageModelId).toBeNull();
+  });
+
+  it('treats `cover: null` as an explicit clear, not a deep merge', async () => {
+    const i = await svc.createIssue({ seriesId: 'ser-1', title: 'Clear cover' });
+    await svc.updateStage(i.id, 'comicPages', {
+      status: 'edited',
+      cover: { script: 'concept', imageJobId: null, prompt: null },
+    });
+    const updated = await svc.updateIssue(i.id, {
+      stages: { comicPages: { cover: null } },
+    });
+    expect(updated.stages.comicPages.cover).toBeNull();
+  });
+
+  it('clears errorMessage when a stage patch transitions out of error state', async () => {
+    // Regression: per-stage merge previously preserved `errorMessage` across
+    // a `{ status: 'edited', input, output }` save. The pre-merge replace-
+    // behavior implicitly wiped error state, and users expect that. Patches
+    // that target `error`/`generating` keep the message (still active).
+    const i = await svc.createIssue({ seriesId: 'ser-1', title: 'Error clear' });
+    await svc.updateStage(i.id, 'idea', {
+      status: 'error',
+      errorMessage: 'previous run failed',
+    });
+    expect((await svc.getIssue(i.id)).stages.idea.errorMessage).toBe('previous run failed');
+    // Manual edit that flips status away from `error` — error message must clear.
+    const edited = await svc.updateIssue(i.id, {
+      stages: { idea: { status: 'edited', input: 'manual seed' } },
+    });
+    expect(edited.stages.idea.errorMessage).toBe('');
+    expect(edited.stages.idea.input).toBe('manual seed');
+  });
+
+  it('preserves errorMessage when a patch leaves stage in error/generating state', async () => {
+    const i = await svc.createIssue({ seriesId: 'ser-1', title: 'Error keep' });
+    await svc.updateStage(i.id, 'idea', {
+      status: 'error',
+      errorMessage: 'still failing',
+    });
+    // Subsequent retry sets status back to generating — error should remain
+    // visible until the retry transitions to ready or edited.
+    const retry = await svc.updateIssue(i.id, {
+      stages: { idea: { status: 'generating' } },
+    });
+    expect(retry.stages.idea.errorMessage).toBe('still failing');
+  });
+
+  it('drops cover field from non-comicPages visual stages on persist', async () => {
+    // Contract: `cover` is only meaningful on comicPages — the route schema
+    // documents this and the sanitizer enforces it. A misrouted patch should
+    // not silently leave a phantom cover on storyboards / episodeVideo.
+    const i = await svc.createIssue({ seriesId: 'ser-1', title: 'Cover gate' });
+    const patched = await svc.updateIssue(i.id, {
+      stages: {
+        comicPages: { cover: { script: 'should stay', imageJobId: null, prompt: null } },
+        storyboards: { cover: { script: 'should be dropped', imageJobId: null, prompt: null } },
+        episodeVideo: { cover: { script: 'should be dropped too', imageJobId: null, prompt: null } },
+      },
+    });
+    expect(patched.stages.comicPages.cover).toMatchObject({ script: 'should stay' });
+    expect(patched.stages.storyboards.cover).toBeNull();
+    expect(patched.stages.episodeVideo.cover).toBeNull();
+  });
+
+  it('sanitizer rounds fractional pageTarget/minutesTarget to match computeIssueTargets', async () => {
+    // Regression: sanitizer was using Math.floor while computeIssueTargets uses
+    // Math.round (via clampInt), so persisted values could disagree with the
+    // prompt-rendered targets. e.g. pageTarget: 22.7 → stored as 22 but
+    // rendered as 23. Both must agree on 23.
+    const i = await svc.createIssue({
+      seriesId: 'ser-1',
+      title: 'Rounding regression',
+      lengthProfile: 'custom',
+      pageTarget: 22.7,
+      minutesTarget: 23.5,
+    });
+    expect(i.pageTarget).toBe(23);
+    expect(i.minutesTarget).toBe(24);
+  });
+
   it('deleteIssue 404s on second call', async () => {
     const i = await svc.createIssue({ seriesId: 'ser-1', title: 'First' });
     await svc.deleteIssue(i.id);

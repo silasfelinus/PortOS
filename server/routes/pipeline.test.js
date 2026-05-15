@@ -69,6 +69,14 @@ vi.mock('../services/pipeline/visualStages.js', () => ({
     prompt: `comic-page prompt for page ${opts.pageIndex + 1}`,
     pageIndex: opts.pageIndex,
   })),
+  // Front cover render. Returns shape the route merges with the persisted cover:
+  // { jobId, mode, prompt, coverScript }.
+  enqueueComicCover: vi.fn(async (_issueId, body) => ({
+    jobId: `cover-job-${++uuidCounter}`,
+    mode: 'local',
+    prompt: 'cover art prompt',
+    coverScript: body?.coverScript ?? 'default cover concept',
+  })),
   // Single-scene video render. Returns the shape the route forwards verbatim
   // to clients: { jobId, prompt, sceneIndex, issue, stage }.
   enqueueStoryboardSceneVideo: vi.fn(async (issueId, sceneIndex) => ({
@@ -680,6 +688,69 @@ describe('pipeline routes', () => {
     expect(r.body.stage.pages[0].panels[0].description).toBe('Fresh.');
   });
 
+  it('POST /issues/:id/stages/comicPages/extract-pages seeds blank cover.script from parsed coverConcept', async () => {
+    const app = makeApp();
+    const ser = await request(app).post('/api/pipeline/series').send({ name: 'S' });
+    const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
+    const script = [
+      '## Cover concept',
+      'A lone figure stands on a crumbling bridge.',
+      '',
+      '## Page 1',
+      '',
+      'Panel 1',
+      '**Description:** The bridge at dusk.',
+      '**Caption:** (none)',
+      '**Dialogue:** (none)',
+      '**SFX:** (none)',
+    ].join('\n');
+    await request(app).patch(`/api/pipeline/issues/${iss.body.id}`).send({
+      stages: { comicScript: { status: 'ready', output: script } },
+    });
+    const r = await request(app)
+      .post(`/api/pipeline/issues/${iss.body.id}/stages/comicPages/extract-pages`)
+      .send({});
+    expect(r.status).toBe(200);
+    // Response reflects the seeded cover
+    expect(r.body.stage.cover.script).toBe('A lone figure stands on a crumbling bridge.');
+    expect(r.body.stage.cover.imageJobId).toBeNull();
+    expect(r.body.stage.cover.prompt).toBeNull();
+    // Persisted issue also carries the seeded cover
+    expect(r.body.issue.stages.comicPages.cover.script).toBe('A lone figure stands on a crumbling bridge.');
+  });
+
+  it('POST /issues/:id/stages/comicPages/extract-pages does not clobber an existing cover.script', async () => {
+    const app = makeApp();
+    const ser = await request(app).post('/api/pipeline/series').send({ name: 'S' });
+    const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
+    const script = [
+      '## Cover concept',
+      'A brand-new concept from the re-run.',
+      '',
+      '## Page 1',
+      '',
+      'Panel 1',
+      '**Description:** The bridge at dawn.',
+      '**Caption:** (none)',
+      '**Dialogue:** (none)',
+      '**SFX:** (none)',
+    ].join('\n');
+    // Pre-seed the issue with an existing user-edited cover script
+    await request(app).patch(`/api/pipeline/issues/${iss.body.id}`).send({
+      stages: {
+        comicScript: { status: 'ready', output: script },
+        comicPages: { cover: { script: 'user edit', imageJobId: 'old-job', prompt: 'old prompt' } },
+      },
+    });
+    const r = await request(app)
+      .post(`/api/pipeline/issues/${iss.body.id}/stages/comicPages/extract-pages`)
+      .send({});
+    expect(r.status).toBe(200);
+    // The existing cover must be preserved exactly — no clobber
+    expect(r.body.stage.cover.script).toBe('user edit');
+    expect(r.body.issue.stages.comicPages.cover.script).toBe('user edit');
+  });
+
   // ---- comicPages/pages/:pageIndex/render ----
 
   it('POST /issues/:id/stages/comicPages/pages/:pageIndex/render 400s for a non-integer pageIndex', async () => {
@@ -739,6 +810,46 @@ describe('pipeline routes', () => {
     expect(r.body.code || r.body.error).toMatch(/PIPELINE_COMIC_PAGE_NOT_FOUND|out of range/i);
     // Enqueue is never reached when the page doesn't exist.
     expect(visualStages.enqueueVisualComicPage).not.toHaveBeenCalled();
+  });
+
+  // ---- comicPages/cover/render ----
+
+  it('POST /issues/:id/stages/comicPages/cover/render returns jobId + prompt and persists cover on the issue', async () => {
+    const app = makeApp();
+    const ser = await request(app).post('/api/pipeline/series').send({ name: 'S' });
+    const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
+    const r = await request(app)
+      .post(`/api/pipeline/issues/${iss.body.id}/stages/comicPages/cover/render`)
+      .send({ coverScript: 'Hero stands atop the foundry, smoke rising' });
+    expect(r.status).toBe(200);
+    expect(r.body.jobId).toMatch(/^cover-job-/);
+    expect(r.body.prompt).toBe('cover art prompt');
+    // Persistence: stages.comicPages.cover must carry script, imageJobId, prompt.
+    expect(r.body.cover.script).toBe('Hero stands atop the foundry, smoke rising');
+    expect(r.body.cover.imageJobId).toBe(r.body.jobId);
+    expect(r.body.cover.prompt).toBe(r.body.prompt);
+    // Top-level issue + stage are also returned.
+    expect(r.body.issue.id).toBe(iss.body.id);
+    expect(r.body.stage.cover.imageJobId).toBe(r.body.jobId);
+  });
+
+  it('POST /issues/:id/stages/comicPages/cover/render 404s for an unknown issue', async () => {
+    const app = makeApp();
+    const r = await request(app)
+      .post('/api/pipeline/issues/iss-nope/stages/comicPages/cover/render')
+      .send({});
+    expect(r.status).toBe(404);
+  });
+
+  it('POST /issues/:id/stages/comicPages/cover/render 400s when the body fails schema validation', async () => {
+    const app = makeApp();
+    const ser = await request(app).post('/api/pipeline/series').send({ name: 'S' });
+    const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
+    // `width` must be an integer; sending a string triggers Zod validation failure.
+    const r = await request(app)
+      .post(`/api/pipeline/issues/${iss.body.id}/stages/comicPages/cover/render`)
+      .send({ width: 'not-a-number' });
+    expect(r.status).toBe(400);
   });
 
   // -----------------------
@@ -951,7 +1062,7 @@ describe('pipeline routes', () => {
     seasonEpisodesSpy = vi.fn(async () => ({
       season: sea.body,
       episodes: [
-        { number: 1, title: 'Ep 1', logline: 'L1', synopsis: 'Pilot synopsis', primaryCharacters: ['LINA'], arcRole: 'pilot' },
+        { number: 1, title: 'Ep 1', logline: 'L1', synopsis: 'Pilot synopsis', primaryCharacters: ['LINA'], arcRole: 'pilot', lengthProfile: 'extended' },
         { number: 2, title: 'Ep 2', logline: 'L2', synopsis: 'Comp synopsis', primaryCharacters: ['LINA'], arcRole: 'complication' },
       ],
       runId: 'run-2', providerId: 'p', model: 'm',
@@ -967,6 +1078,8 @@ describe('pipeline routes', () => {
     expect(r.body.createdIssues[0].title).toBe('Ep 1');
     // Synopsis lands in stages.idea.input so auto-run-text has a seed.
     expect(r.body.createdIssues[0].stages.idea.input).toContain('Pilot synopsis');
+    // Non-default lengthProfile must be forwarded from the episode into the created issue.
+    expect(r.body.createdIssues[0].lengthProfile).toBe('extended');
     expect(r.body.createdIssues[1].arcPosition).toBe(2);
 
     const issues = await request(app).get(`/api/pipeline/series/${ser.body.id}/issues`);
