@@ -2,6 +2,44 @@
 
 ## Added
 
+- **Sharing v1.4 — universe shares include the collection + new peer images flow in.**
+  Sharing a universe now bundles the linked media collection ("Universe:
+  <name>" — the bucket of images the user generated via Universe Builder),
+  so recipients see those images alongside the universe instead of an
+  empty canon. Two pieces:
+  - **Explicit `universeId` field on `mediaCollections`.** The universe-
+    builder route now stamps the link at create time
+    (`findOrCreateCollectionByName({ ..., universeId })`); legacy
+    "Universe: <name>" collections get lazy-backfilled when the route
+    re-uses them. Replaces the prior name-only convention so subsequent
+    universe renames don't break the link.
+  - **Exporter bundles the collection.** `exportUniverse` (and
+    `exportSeries` when its series links a universe) finds the linked
+    collection, includes a `manifest.collection` payload
+    `{ name, universeId, items }`, and walks every item's asset
+    filename + associated media-job record into the bucket. Recipients'
+    importer find-or-creates a local collection by `universeId` and
+    unions the items in (existing `ERR_DUPLICATE` semantics dedup so
+    repeated processing is a no-op).
+  - **Mutation triggers re-export.** `mediaCollections.addItem` /
+    `removeItem` now emit `recordEvents('updated', 'universe',
+    universeId)` when the collection carries a `universeId`. The
+    subscription listener picks this up with the same 3-second debounce
+    as record edits, so new images generated locally for a subscribed
+    universe auto-flow to the bucket without the user re-clicking
+    Share.
+  - **Inbox UI shows the count.** Inbox entries now display
+    "+ N collection items (Universe: <name>)" alongside the asset
+    count so the user knows what they're accepting on promote.
+
+  **Files:** `mediaCollections.js` (universeId field + emits on
+  add/remove), `routes/universeBuilder.js` (pass universeId on create),
+  `sharing/exporter.js` (linked-collection lookup + bundle helper),
+  `sharing/manifest.js` (manifest.collection field), `sharing/importer.js`
+  (mergeCollectionPayload + inbox surfacing), `Sharing.jsx` (inbox UI).
+  Test: new integration round-trip covers export → delete locally →
+  import → collection + items + assets all restored.
+
 - **Sharing v1.3 — subscriptions: toggle on/off, updates auto-flow.**
   Rewrote the share-bucket model from one-shot manifests to persistent
   subscriptions, addressing two real UX gaps:

@@ -22,6 +22,7 @@ import { buildManifest, writeManifest } from './manifest.js';
 import { listSeries, getSeries } from '../pipeline/series.js';
 import { listIssues } from '../pipeline/issues.js';
 import { getUniverse } from '../universeBuilder.js';
+import { listCollections } from '../mediaCollections.js';
 import { getJob } from '../mediaJobQueue/index.js';
 import { getInstanceId } from '../instances.js';
 import { getSettings } from '../settings.js';
@@ -164,6 +165,48 @@ function collectAssetReferences(record) {
   };
 }
 
+/**
+ * Find the media collection linked to a universe. Prefers the explicit
+ * `universeId` field on the collection (added by the universe-builder
+ * route); falls back to matching the conventional `Universe: <name>`
+ * name. Returns null when nothing's linked.
+ */
+async function findCollectionForUniverse(universe) {
+  if (!universe?.id) return null;
+  const all = await listCollections().catch(() => []);
+  const direct = all.find((c) => c.universeId === universe.id);
+  if (direct) return direct;
+  const conventional = `universe: ${(universe.name || '').toLowerCase()}`;
+  return all.find((c) => (c.name || '').toLowerCase() === conventional) || null;
+}
+
+/**
+ * Walk a collection's items and return:
+ *   - assetFilenames: every {kind, ref} pair to copy into the bucket
+ *   - jobIds: every media-job record the items resolve to (for re-render
+ *     metadata fidelity on the recipient side — same logic as imageJobId
+ *     resolution on canon entries)
+ *
+ * The serialized `collection` payload in the manifest carries the raw
+ * items + the linked universeId + the canonical name; the recipient's
+ * importer reuses these to find-or-create a local collection of the
+ * same name and add the items.
+ */
+function collectCollectionAssets(collection) {
+  const assetFilenames = [];
+  const jobIds = new Set();
+  if (!collection) return { assetFilenames, jobIds: [] };
+  for (const it of collection.items || []) {
+    if (!it?.ref || typeof it.ref !== 'string') continue;
+    assetFilenames.push({ kind: it.kind, ref: it.ref });
+    // Strip extension to recover the media-job id (matches the convention
+    // used in exportMedia's lookup path: filenames are `<jobId>.<ext>`).
+    const baseId = it.ref.replace(/\.[a-z0-9]+$/i, '');
+    if (baseId && baseId !== it.ref) jobIds.add(baseId);
+  }
+  return { assetFilenames, jobIds: [...jobIds] };
+}
+
 /** Stamp the outgoing record with origin metadata. */
 function stampOrigin(record, { bucket, source, sourceBio, manifestId }) {
   return {
@@ -193,8 +236,10 @@ export async function exportSeries(seriesId, bucketId, opts = {}) {
   const series = await getSeries(seriesId);
   const issues = await listIssues({ seriesId });
   let universe = null;
+  let linkedCollection = null;
   if (series.universeId) {
     universe = await getUniverse(series.universeId).catch(() => null);
+    if (universe) linkedCollection = await findCollectionForUniverse(universe);
   }
 
   const [source, sourceBio, senderInstanceId, producedByVersion] = await Promise.all([
@@ -211,6 +256,7 @@ export async function exportSeries(seriesId, bucketId, opts = {}) {
     source, sourceBio,
     producedByVersion,
     subscription: opts.subscription || null,
+    collection: linkedCollection,
     bucketId: bucket.id,
     bucketName: bucket.name,
     recordIds: [],
@@ -235,7 +281,9 @@ export async function exportSeries(seriesId, bucketId, opts = {}) {
     await atomicWrite(join(bucket.path, 'records', 'universes', `${universe.id}.json`), stampedUni);
   }
 
-  // Gather asset refs across every record.
+  // Gather asset refs across every record, plus the universe's linked
+  // collection items (if any) so universe-render output ships alongside
+  // the series.
   const allJobIds = new Set();
   const allImageFiles = new Set();
   const allVideoFiles = new Set();
@@ -244,6 +292,13 @@ export async function exportSeries(seriesId, bucketId, opts = {}) {
     refs.jobIds.forEach((j) => allJobIds.add(j));
     refs.directImageFilenames.forEach((f) => allImageFiles.add(f));
     refs.directVideoFilenames.forEach((f) => allVideoFiles.add(f));
+  }
+  if (linkedCollection) {
+    const collAssets = collectCollectionAssets(linkedCollection);
+    collAssets.jobIds.forEach((j) => allJobIds.add(j));
+    for (const a of collAssets.assetFilenames) {
+      if (a.kind === 'video') allVideoFiles.add(a.ref); else allImageFiles.add(a.ref);
+    }
   }
 
   // Copy media-job records + their assets — run all three groups in parallel.
@@ -265,6 +320,7 @@ export async function exportUniverse(universeId, bucketId, opts = {}) {
   const bucket = await getBucket(bucketId);
   await ensureBucketLayout(bucket);
   const universe = await getUniverse(universeId);
+  const linkedCollection = await findCollectionForUniverse(universe);
 
   const [source, sourceBio, senderInstanceId, producedByVersion] = await Promise.all([
     resolveSourceName(bucket),
@@ -279,6 +335,7 @@ export async function exportUniverse(universeId, bucketId, opts = {}) {
     source, sourceBio,
     producedByVersion,
     subscription: opts.subscription || null,
+    collection: linkedCollection,
     bucketId: bucket.id,
     bucketName: bucket.name,
     recordIds: [],
@@ -289,13 +346,26 @@ export async function exportUniverse(universeId, bucketId, opts = {}) {
   const stamped = stampOrigin(universe, { bucket, source, sourceBio, manifestId });
   await atomicWrite(join(bucket.path, 'records', 'universes', `${universe.id}.json`), stamped);
 
-  const refs = collectAssetReferences(universe);
-  const mediaRecordsDir = join(bucket.path, 'records', 'media');
-  const [jobRefGroups, imageRefs] = await Promise.all([
-    Promise.all(refs.jobIds.map((jobId) => exportMediaJobAndAsset(jobId, bucket.path, mediaRecordsDir))),
-    Promise.all(refs.directImageFilenames.map((f) => copyAssetIfPresent(f, 'image', bucket.path))),
+  // Combine universe-record asset refs with the linked collection's assets
+  // so a single export pass pulls everything the universe needs.
+  const universeRefs = collectAssetReferences(universe);
+  const collectionAssets = collectCollectionAssets(linkedCollection);
+  const allJobIds = new Set([...universeRefs.jobIds, ...collectionAssets.jobIds]);
+  const allImageFiles = new Set([
+    ...universeRefs.directImageFilenames,
+    ...collectionAssets.assetFilenames.filter((a) => a.kind === 'image').map((a) => a.ref),
   ]);
-  const assetRefs = [...jobRefGroups.flat(), ...imageRefs.filter(Boolean)];
+  const allVideoFiles = new Set(
+    collectionAssets.assetFilenames.filter((a) => a.kind === 'video').map((a) => a.ref),
+  );
+
+  const mediaRecordsDir = join(bucket.path, 'records', 'media');
+  const [jobRefGroups, imageRefs, videoRefs] = await Promise.all([
+    Promise.all([...allJobIds].map((jobId) => exportMediaJobAndAsset(jobId, bucket.path, mediaRecordsDir))),
+    Promise.all([...allImageFiles].map((f) => copyAssetIfPresent(f, 'image', bucket.path))),
+    Promise.all([...allVideoFiles].map((f) => copyAssetIfPresent(f, 'video', bucket.path))),
+  ]);
+  const assetRefs = [...jobRefGroups.flat(), ...imageRefs.filter(Boolean), ...videoRefs.filter(Boolean)];
 
   const manifest = { ...manifestStub, recordIds: [universe.id], assetRefs };
   const filename = await writeManifest(bucket.path, manifest);

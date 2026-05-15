@@ -315,6 +315,7 @@ router.post('/:id/render', asyncHandler(async (req, res) => {
   const collection = await findOrCreateCollectionByName({
     name: collectionName.slice(0, COLLECTION_NAME_MAX),
     description: `Universe Builder renders for "${universe.name}"`,
+    universeId: universe.id,
   });
 
   const runId = randomUUID();

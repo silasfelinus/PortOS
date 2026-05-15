@@ -185,6 +185,52 @@ describe('sharing round-trip', () => {
     expect(r2.reason).toBe('already-processed');
   });
 
+  it('universe export bundles the linked collection — recipient gains the items', async () => {
+    const bucket = await buckets.createBucket({ name: 'CollabBucket', path: tempBucket, mode: 'auto-merge' });
+    const universeBuilder = await import('../universeBuilder.js');
+    const mediaCollections = await import('../mediaCollections.js');
+    const u = await universeBuilder.createUniverse({ name: 'Linked Universe' });
+
+    // Pretend universe-builder rendered two images and filed them into a
+    // collection. Each item.ref points at a real file in tempData/images
+    // (we seeded 'fakeasset.png' in beforeEach, but for variety, add another).
+    const fs = await import('fs');
+    fs.writeFileSync(join(tempData, 'images', 'second.png'), 'PNG2');
+    const collection = await mediaCollections.findOrCreateCollectionByName({
+      name: `Universe: ${u.name}`, description: 'Linked', universeId: u.id,
+    });
+    await mediaCollections.addItem(collection.id, { kind: 'image', ref: 'fakeasset.png' });
+    await mediaCollections.addItem(collection.id, { kind: 'image', ref: 'second.png' });
+
+    // Export the universe — manifest should carry the collection payload
+    // and assets should land in the bucket.
+    const exp = await exporter.exportUniverse(u.id, bucket.id);
+    expect(exp.assetCount).toBeGreaterThanOrEqual(2);
+    const manifestFile = exp.filename;
+    const manifest = JSON.parse(fs.readFileSync(join(tempBucket, 'manifests', manifestFile), 'utf-8'));
+    expect(manifest.collection).toMatchObject({ universeId: u.id });
+    expect(manifest.collection.items).toHaveLength(2);
+    expect(fs.existsSync(join(tempBucket, 'assets', 'images', 'second.png'))).toBe(true);
+
+    // Drop the local collection + universe, then re-process: the importer
+    // should recreate both, find-or-create the local collection by
+    // universeId, and merge the items in.
+    await mediaCollections.deleteCollection(collection.id);
+    await universeBuilder.deleteUniverse(u.id);
+    expect((await mediaCollections.listCollections()).find((c) => c.universeId === u.id)).toBeUndefined();
+
+    const r = await importer.processManifest(bucket.id, manifestFile);
+    expect(r.processed).toBe(true);
+    expect(r.outcome.collectionItemsAdded).toBe(2);
+
+    const localCollections = await mediaCollections.listCollections();
+    const restoredCollection = localCollections.find((c) => c.universeId === u.id);
+    expect(restoredCollection).toBeTruthy();
+    expect(restoredCollection.items.map((i) => i.ref).sort()).toEqual(['fakeasset.png', 'second.png']);
+    // Asset blobs are back in the local data/images pool.
+    expect(fs.existsSync(join(tempData, 'images', 'second.png'))).toBe(true);
+  });
+
   it('subscription round-trip: subscribe → mutate → re-export onto same filename → unsubscribe → unshared event', async () => {
     const { subscribe, unsubscribe, subscriptionFilename, __resetForTests } = await import('./subscriptions.js');
     const { sharingEvents } = await import('./importer.js');

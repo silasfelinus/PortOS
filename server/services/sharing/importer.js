@@ -28,6 +28,7 @@ import { SHARING_SCHEMA_VERSION, isManifestCompatible } from './version.js';
 import { insertSeriesWithId, updateSeries, getSeries } from '../pipeline/series.js';
 import { insertIssueWithId, updateIssue, getIssue } from '../pipeline/issues.js';
 import { insertUniverseWithId, updateUniverse, getUniverse } from '../universeBuilder.js';
+import { findOrCreateCollectionByName, addItem as addCollectionItem, ERR_DUPLICATE as COLLECTION_ERR_DUPLICATE } from '../mediaCollections.js';
 
 const isStr = (v) => typeof v === 'string';
 
@@ -48,6 +49,41 @@ async function writeInbox(bucketId, inbox) {
 /** Newer of two ISO timestamps wins (LWW). Equal → keep local. */
 function remoteWins(localTs, remoteTs) {
   return (remoteTs || '') > (localTs || '');
+}
+
+/**
+ * Merge a manifest's `collection` payload into local state. Find-or-create
+ * the collection by `universeId` (with name as a fallback), then add each
+ * remote item via `addItem` — `ERR_DUPLICATE` errors are expected and
+ * swallowed (the item already exists locally; nothing to do).
+ *
+ * The asset blobs are NOT copied here — `copyAssetsLocally` (called in
+ * `processManifest`) already pulled every `assetRefs[]` entry, which
+ * includes the collection items. This function only persists the local
+ * collection record so the items show up in the user's UI.
+ */
+async function mergeCollectionPayload(payload) {
+  if (!payload?.universeId || !Array.isArray(payload.items)) return { itemsAdded: 0 };
+  const collection = await findOrCreateCollectionByName({
+    name: payload.name || `Universe: ${payload.universeId}`,
+    description: payload.description || '',
+    universeId: payload.universeId,
+  }).catch((err) => {
+    console.log(`⚠️ sharing.importer: findOrCreateCollectionByName failed: ${err.message}`);
+    return null;
+  });
+  if (!collection) return { itemsAdded: 0 };
+  let added = 0;
+  for (const item of payload.items) {
+    if (!item?.kind || !item?.ref) continue;
+    const result = await addCollectionItem(collection.id, item).catch((err) => {
+      if (err?.code === COLLECTION_ERR_DUPLICATE) return null;
+      console.log(`⚠️ sharing.importer: addCollectionItem failed for ${item.ref}: ${err.message}`);
+      return null;
+    });
+    if (result) added += 1;
+  }
+  return { itemsAdded: added };
 }
 
 /** Copy bundled assets from the bucket into local data dirs. Runs in parallel. */
@@ -184,7 +220,17 @@ async function applyAutoMerge(bucket, manifest, records) {
     });
   }
 
-  return { applied, overridden };
+  // Universe shares can carry a linked media collection payload. Items
+  // are unioned into a local "Universe: <name>" collection so peer-
+  // generated images appear alongside the universe in the recipient's UI.
+  let itemsAdded = 0;
+  if (manifest.collection) {
+    const r = await mergeCollectionPayload(manifest.collection);
+    itemsAdded = r.itemsAdded;
+    if (itemsAdded > 0) applied += itemsAdded;
+  }
+
+  return { applied, overridden, collectionItemsAdded: itemsAdded };
 }
 
 const INBOX_MAX = 1000;
@@ -221,6 +267,8 @@ async function applyInbox(bucket, manifest, manifestFilename, records) {
     receivedAt: new Date().toISOString(),
     recordIds: manifest.recordIds,
     assetCount: (manifest.assetRefs || []).length,
+    collectionItemCount: manifest.collection?.items?.length || 0,
+    collectionName: manifest.collection?.name || null,
     note: manifest.note,
     summary: summarizeRecords(records),
   });

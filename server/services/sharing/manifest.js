@@ -135,7 +135,7 @@ export function hasBeenProcessed(cursor, manifestFilename, manifestId = null) {
  */
 export function buildManifest({
   kind, senderInstanceId, source, sourceBio, recordIds, assetRefs,
-  bucketId, bucketName, note, producedByVersion, subscription,
+  bucketId, bucketName, note, producedByVersion, subscription, collection,
 }) {
   if (!MANIFEST_KIND.includes(kind)) throw new Error(`buildManifest: invalid kind '${kind}'`);
   return {
@@ -155,6 +155,17 @@ export function buildManifest({
     bucketName: bucketName || bucketId,
     recordIds: Array.isArray(recordIds) ? recordIds : [],
     assetRefs: Array.isArray(assetRefs) ? assetRefs : [],
+    // Optional payload for universe shares — the linked media collection so
+    // recipients gain the same set of generated images and the link is
+    // restored on their side.
+    collection: collection && collection.universeId && Array.isArray(collection.items)
+      ? {
+        name: collection.name || `Universe: ${collection.universeId}`,
+        universeId: collection.universeId,
+        description: collection.description || '',
+        items: collection.items.map((it) => ({ kind: it.kind, ref: it.ref, addedAt: it.addedAt || null })),
+      }
+      : null,
     note: isStr(note) ? note.slice(0, 1000) : null,
   };
 }

@@ -503,7 +503,12 @@ function Inboxlist({ bucket, items, onPromote, onDismiss }) {
                   ))}
                 </ul>
               ) : null}
-              {item.assetCount ? <div className="text-[11px] text-gray-500 mt-1">{item.assetCount} asset{item.assetCount === 1 ? '' : 's'}</div> : null}
+              <div className="text-[11px] text-gray-500 mt-1 flex flex-wrap gap-3">
+                {item.assetCount ? <span>{item.assetCount} asset{item.assetCount === 1 ? '' : 's'}</span> : null}
+                {item.collectionItemCount ? (
+                  <span>+ {item.collectionItemCount} collection item{item.collectionItemCount === 1 ? '' : 's'}{item.collectionName ? ` (${item.collectionName})` : ''}</span>
+                ) : null}
+              </div>
             </div>
             <div className="flex flex-col gap-1">
               <button

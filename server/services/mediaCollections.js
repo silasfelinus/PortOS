@@ -15,6 +15,7 @@ import { randomUUID } from 'crypto';
 import { PATHS, atomicWrite, readJSONFile, ensureDir } from '../lib/fileUtils.js';
 import { ITEM_KIND, REF_MAX_LENGTH, itemKey } from '../lib/mediaItemKey.js';
 import { sanitizeOrigin } from '../lib/sharingOrigin.js';
+import { emitRecordUpdated } from './sharing/recordEvents.js';
 
 const STATE_PATH = join(PATHS.data, 'media-collections.json');
 
@@ -52,6 +53,8 @@ const sanitizeItem = (raw) => {
   return out;
 };
 
+const UNIVERSE_ID_MAX = 80;
+
 const sanitizeCollection = (raw) => {
   if (!raw || typeof raw !== 'object') return null;
   if (typeof raw.id !== 'string' || !raw.id) return null;
@@ -80,9 +83,15 @@ const sanitizeCollection = (raw) => {
   const coverKey = typeof raw.coverKey === 'string' && seen.has(raw.coverKey)
     ? raw.coverKey
     : null;
+  // Optional link to a universe — used by share-bucket subscriptions to
+  // know which universe-record's subscription should re-export when this
+  // collection's items change.
+  const universeId = typeof raw.universeId === 'string' && raw.universeId
+    ? raw.universeId.slice(0, UNIVERSE_ID_MAX)
+    : null;
   const createdAt = typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString();
   const updatedAt = typeof raw.updatedAt === 'string' ? raw.updatedAt : createdAt;
-  return { id: raw.id, name, description, coverKey, items, createdAt, updatedAt };
+  return { id: raw.id, name, description, coverKey, universeId, items, createdAt, updatedAt };
 };
 
 export async function listCollections() {
@@ -141,7 +150,12 @@ export async function createCollection({ name, description = '' }) {
 // Find an existing collection by case-insensitive trimmed name, else create
 // a fresh one. Lets repeat-render callers (Universe Builder) append into a
 // single per-world bucket without growing a new collection on every run.
-export async function findOrCreateCollectionByName({ name, description = '' }) {
+//
+// `universeId`, when provided, stamps the collection so share-bucket
+// subscriptions know which universe-record to notify when items change.
+// If the matched existing collection lacks `universeId`, it's backfilled
+// from the caller's value so the link is established on next access.
+export async function findOrCreateCollectionByName({ name, description = '', universeId = null }) {
   const trimmed = typeof name === 'string' ? name.trim() : '';
   if (!trimmed || trimmed.length > NAME_MAX_LENGTH) {
     throw makeErr('Collection name is required (1..' + NAME_MAX_LENGTH + ' chars)', ERR_VALIDATION);
@@ -152,13 +166,24 @@ export async function findOrCreateCollectionByName({ name, description = '' }) {
   const all = await listCollections();
   const needle = trimmed.toLowerCase();
   const existing = all.find((c) => c.name.toLowerCase() === needle);
-  if (existing) return existing;
+  if (existing) {
+    if (universeId && !existing.universeId) {
+      // Lazy backfill so legacy "Universe: <name>" collections gain the
+      // link the first time a universe-builder render references them.
+      const idx = all.findIndex((c) => c.id === existing.id);
+      all[idx] = { ...existing, universeId, updatedAt: new Date().toISOString() };
+      await writeAll(all);
+      return all[idx];
+    }
+    return existing;
+  }
   const now = new Date().toISOString();
   const next = {
     id: randomUUID(),
     name: trimmed,
     description: trimmedDescription,
     coverKey: null,
+    universeId: universeId || null,
     items: [],
     createdAt: now,
     updatedAt: now,
@@ -227,6 +252,7 @@ export async function addItem(id, item) {
   const next = [...all];
   next[idx] = merged;
   await writeAll(next);
+  if (merged.universeId) emitRecordUpdated('universe', merged.universeId);
   return merged;
 }
 
@@ -250,5 +276,6 @@ export async function removeItem(id, key) {
   const next = [...all];
   next[idx] = merged;
   await writeAll(next);
+  if (merged.universeId) emitRecordUpdated('universe', merged.universeId);
   return merged;
 }
