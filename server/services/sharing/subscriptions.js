@@ -26,6 +26,11 @@ import { isStr } from '../../lib/storyBible.js';
 import { getBucket } from './buckets.js';
 import { exportSeries, exportUniverse } from './exporter.js';
 import { recordEvents } from './recordEvents.js';
+import { subscriptionFilename } from './manifest.js';
+
+// Re-export from the canonical source so other modules can import the
+// filename helper from either side without forcing a manifest.js import.
+export { subscriptionFilename };
 
 export const SUBSCRIBABLE_KINDS = Object.freeze(['series', 'universe']);
 
@@ -38,11 +43,6 @@ const STATE_PATH = () => join(PATHS.data, 'sharing', 'subscriptions.json');
 
 function subId({ bucketId, recordKind, recordId }) {
   return `sub-${recordKind}-${recordId}-${bucketId}`;
-}
-
-/** Deterministic file name in `<bucket>/manifests/` for a subscription. */
-export function subscriptionFilename({ recordKind, recordId }) {
-  return `sub-${recordKind}-${recordId}.json`;
 }
 
 async function readState() {
@@ -126,6 +126,16 @@ export async function unsubscribe(id) {
   if (idx < 0) throw makeErr(`Subscription not found: ${id}`, ERR_NOT_FOUND);
   const sub = state.subscriptions[idx];
 
+  // Cancel any pending debounced re-export — otherwise the timer fires ~3s
+  // later, the sub is gone, and reexportNow no-ops, but the timer + the
+  // reference to its closure linger in the pendingTimers Map until the
+  // setTimeout callback runs.
+  const pending = pendingTimers.get(sub.id);
+  if (pending) {
+    clearTimeout(pending);
+    pendingTimers.delete(sub.id);
+  }
+
   // Delete the deterministic file from the bucket. Best-effort: the bucket
   // path may be unmounted; the subscription record removal still wins so the
   // user's "I want to stop sharing" intent is honored regardless. Importers
@@ -144,6 +154,24 @@ export async function unsubscribe(id) {
   state.subscriptions.splice(idx, 1);
   await writeState(state);
   return { id, removed: true };
+}
+
+/**
+ * Drop every subscription that targets a given (recordKind, recordId). Used
+ * by the `deleted` recordEvents listener so deleting a series/universe
+ * automatically tears down its outgoing subscriptions instead of leaving
+ * orphaned entries that fail every re-export.
+ */
+export async function unsubscribeAllForRecord(recordKind, recordId) {
+  const matching = await listSubscriptions({ recordKind, recordId });
+  const removed = [];
+  for (const sub of matching) {
+    await unsubscribe(sub.id).catch((err) => {
+      console.log(`⚠️ sharing.subscriptions: auto-unsubscribe failed for ${sub.id}: ${err.message}`);
+    });
+    removed.push(sub.id);
+  }
+  return { removed };
 }
 
 /**
@@ -184,23 +212,35 @@ export async function reexportSubscribedRecord(recordKind, recordId) {
   }
 }
 
-let listenerInstalled = false;
+// Track the listener handles we install so __resetForTests can remove just
+// ours — `removeAllListeners('updated')` would also kill listeners installed
+// by neighboring test files that share the recordEvents bus.
+let onUpdated = null;
+let onDeleted = null;
 
-/** Attach the recordEvents listener — call once during sharing init. */
+/** Attach the recordEvents listeners — call once during sharing init. */
 export function installSubscriptionListener() {
-  if (listenerInstalled) return;
-  listenerInstalled = true;
-  recordEvents.on('updated', ({ recordKind, recordId }) => {
+  if (onUpdated || onDeleted) return;
+  onUpdated = ({ recordKind, recordId }) => {
     reexportSubscribedRecord(recordKind, recordId).catch((err) => {
       console.log(`⚠️ sharing.subscriptions: listener error for ${recordKind}/${recordId}: ${err.message}`);
     });
-  });
+  };
+  onDeleted = ({ recordKind, recordId }) => {
+    unsubscribeAllForRecord(recordKind, recordId).catch((err) => {
+      console.log(`⚠️ sharing.subscriptions: delete-listener error for ${recordKind}/${recordId}: ${err.message}`);
+    });
+  };
+  recordEvents.on('updated', onUpdated);
+  recordEvents.on('deleted', onDeleted);
 }
 
-/** Test-only: clear pending debounces and detach the listener so suites can isolate. */
+/** Test-only: clear pending debounces and detach our own listeners. */
 export function __resetForTests() {
   for (const t of pendingTimers.values()) clearTimeout(t);
   pendingTimers.clear();
-  recordEvents.removeAllListeners('updated');
-  listenerInstalled = false;
+  if (onUpdated) recordEvents.off('updated', onUpdated);
+  if (onDeleted) recordEvents.off('deleted', onDeleted);
+  onUpdated = null;
+  onDeleted = null;
 }

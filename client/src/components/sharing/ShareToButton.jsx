@@ -35,6 +35,14 @@ import {
 
 const SUBSCRIBABLE_KINDS = new Set(['series', 'universe']);
 
+function renderRowIcon({ busy, subscribable, subscribed }) {
+  if (busy) return <Loader2 size={14} className="animate-spin text-port-accent" />;
+  if (!subscribable) return <Check size={14} className="text-gray-600" />;
+  return subscribed
+    ? <CheckCircle2 size={14} className="text-port-success" />
+    : <Circle size={14} className="text-gray-600" />;
+}
+
 export default function ShareToButton({ kind, ids, items, label = 'Share', compact = false, className = '' }) {
   const [open, setOpen] = useState(false);
   const [buckets, setBuckets] = useState([]);
@@ -179,15 +187,7 @@ export default function ShareToButton({ kind, ids, items, label = 'Share', compa
                       className="w-full text-left px-3 py-2 hover:bg-port-bg disabled:opacity-50 flex items-start gap-2"
                     >
                       <span className="mt-0.5 shrink-0">
-                        {busy ? (
-                          <Loader2 size={14} className="animate-spin text-port-accent" />
-                        ) : isSubscribable ? (
-                          subscribed
-                            ? <CheckCircle2 size={14} className="text-port-success" />
-                            : <Circle size={14} className="text-gray-600" />
-                        ) : (
-                          <Check size={14} className="text-gray-600" />
-                        )}
+                        {renderRowIcon({ busy, subscribable: isSubscribable, subscribed })}
                       </span>
                       <div className="flex-1 min-w-0">
                         <div className="text-sm text-white truncate">{b.name}</div>

@@ -118,4 +118,33 @@ describe('sharing/subscriptions', () => {
     const bucket = await buckets.createBucket({ name: 'B', path: tempBucket });
     expect(await subs.findSubscription(bucket.id, 'universe', 'no-such-id')).toBeNull();
   });
+
+  it('unsubscribeAllForRecord drops every matching subscription', async () => {
+    const bucket1 = await buckets.createBucket({ name: 'A', path: tempBucket });
+    const bucket2Path = mkdtempSync(join(tmpdir(), 'portos-subs-b2-'));
+    const bucket2 = await buckets.createBucket({ name: 'B', path: bucket2Path });
+    const u = await universeBuilder.createUniverse({ name: 'shared-uni' });
+    await subs.subscribe({ bucketId: bucket1.id, recordKind: 'universe', recordId: u.id });
+    await subs.subscribe({ bucketId: bucket2.id, recordKind: 'universe', recordId: u.id });
+    expect(await subs.listSubscriptions({ recordId: u.id })).toHaveLength(2);
+
+    const result = await subs.unsubscribeAllForRecord('universe', u.id);
+    expect(result.removed).toHaveLength(2);
+    expect(await subs.listSubscriptions({ recordId: u.id })).toEqual([]);
+    rmSync(bucket2Path, { recursive: true, force: true });
+  });
+
+  it('deleting the local record auto-unsubscribes via the deleted recordEvent', async () => {
+    subs.installSubscriptionListener();
+    const bucket = await buckets.createBucket({ name: 'D', path: tempBucket });
+    const u = await universeBuilder.createUniverse({ name: 'to-delete' });
+    await subs.subscribe({ bucketId: bucket.id, recordKind: 'universe', recordId: u.id });
+    expect((await subs.listSubscriptions({ recordId: u.id }))).toHaveLength(1);
+
+    await universeBuilder.deleteUniverse(u.id);
+    // Listener fans out async (readState → unsubscribe → unlink → writeState);
+    // wait one event-loop tick + a small slack for the I/O chain to settle.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await subs.listSubscriptions({ recordId: u.id })).toEqual([]);
+  });
 });

@@ -21,7 +21,7 @@ import {
 import { sanitizeArc, sanitizeSeasonList } from '../../lib/storyArc.js';
 import { extractBible } from '../../lib/bibleExtractor.js';
 import { sanitizeOrigin } from '../../lib/sharingOrigin.js';
-import { emitRecordUpdated } from '../sharing/recordEvents.js';
+import { emitRecordUpdated, emitRecordDeleted } from '../sharing/recordEvents.js';
 
 // Lazy resolution — PATHS.data may not be available at module-load time
 // (e.g. tests that swap it through a Proxy mock).
@@ -220,6 +220,7 @@ export async function purgeImageRefFromAllSeries(filename) {
   if (!filename || typeof filename !== 'string') return { removed: 0 };
   const state = await readState();
   let removed = 0;
+  const touchedIds = [];
   const nextSeries = state.series.map((s) => {
     let touched = false;
     const patched = { ...s };
@@ -236,9 +237,15 @@ export async function purgeImageRefFromAllSeries(filename) {
       });
       if (touched) patched[key] = nextList;
     }
+    if (touched) touchedIds.push(s.id);
     return touched ? { ...patched, updatedAt: new Date().toISOString() } : s;
   });
-  if (removed > 0) await writeState({ series: nextSeries });
+  if (removed > 0) {
+    await writeState({ series: nextSeries });
+    // Each touched series is a mutation any active subscription should
+    // propagate to its bucket; otherwise recipients keep stale imageRefs.
+    for (const id of touchedIds) emitRecordUpdated('series', id);
+  }
   return { removed };
 }
 
@@ -322,5 +329,8 @@ export async function deleteSeries(id) {
   state.series = state.series.filter((s) => s.id !== id);
   if (state.series.length === before) throw makeErr(`Series not found: ${id}`, ERR_NOT_FOUND);
   await writeState(state);
+  // Any live share-bucket subscription for this series tears itself down via
+  // the recordEvents listener instead of orphaning.
+  emitRecordDeleted('series', id);
   return { id };
 }

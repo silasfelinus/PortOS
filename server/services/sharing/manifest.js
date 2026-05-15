@@ -87,13 +87,16 @@ export async function markProcessed(bucketId, manifestFilename, manifestId = nul
 /**
  * Remove a filename from the cursor entirely (used on `unlink` so a future
  * re-share of the same record under the same filename re-imports cleanly).
+ * No-op short-circuit when the filename isn't tracked — chokidar fires
+ * `unlink` for arbitrary files in the watched dir, not just our manifests.
  */
 export async function forgetProcessed(bucketId, manifestFilename) {
   const cursor = await readCursor(bucketId);
-  if (cursor.processedById[manifestFilename] !== undefined) {
-    delete cursor.processedById[manifestFilename];
-  }
-  cursor.processed = cursor.processed.filter((f) => f !== manifestFilename);
+  const inMap = cursor.processedById && manifestFilename in cursor.processedById;
+  const inLegacy = cursor.processed.includes(manifestFilename);
+  if (!inMap && !inLegacy) return cursor;
+  if (inMap) delete cursor.processedById[manifestFilename];
+  if (inLegacy) cursor.processed = cursor.processed.filter((f) => f !== manifestFilename);
   await writeCursor(bucketId, cursor);
   return cursor;
 }
@@ -166,9 +169,16 @@ export function buildManifest({
  * `<iso-ts>-<source>-<uuid>.json` naming so the watcher's add-order remains
  * lexicographically deterministic.
  */
+/** Filename for a subscription manifest. Used by both the writer (exporter)
+ *  and the reader (subscriptions service, watcher) so the formula stays in
+ *  one place. */
+export function subscriptionFilename({ recordKind, recordId }) {
+  return `sub-${recordKind}-${recordId}.json`;
+}
+
 export function manifestFilename(manifest) {
   if (manifest.subscription?.recordKind && manifest.subscription?.recordId) {
-    return `sub-${manifest.subscription.recordKind}-${manifest.subscription.recordId}.json`;
+    return subscriptionFilename(manifest.subscription);
   }
   const ts = manifest.createdAt.replace(/[:.]/g, '-');
   const senderSlug = (manifest.source || manifest.senderInstanceId || 'unknown')

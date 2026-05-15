@@ -31,7 +31,7 @@ import {
   normalizeBibleName,
 } from '../lib/storyBible.js';
 import { sanitizeOrigin } from '../lib/sharingOrigin.js';
-import { emitRecordUpdated } from './sharing/recordEvents.js';
+import { emitRecordUpdated, emitRecordDeleted } from './sharing/recordEvents.js';
 
 // Bumped when a sanitizer-time backfill changes how on-disk universes are
 // shaped, so future migrations can gate on the prior version.
@@ -636,6 +636,7 @@ export async function deleteUniverse(id) {
   // Drop runs referencing the deleted universe — they're useless without it.
   state.runs = state.runs.filter((r) => r.universeId !== id);
   await writeState(state);
+  emitRecordDeleted('universe', id);
   return { id };
 }
 

@@ -345,19 +345,20 @@ export async function handleUnshare(bucketId, manifestFilename) {
   const cursor = await readCursor(bucketId);
   const wasTracked = manifestFilename in (cursor.processedById || {})
     || (Array.isArray(cursor.processed) && cursor.processed.includes(manifestFilename));
-  await forgetProcessed(bucketId, manifestFilename);
-
-  // Drop matching inbox entry by manifest filename (subscriptions have stable
-  // filenames; one-shot manifests do too, just timestamped — both work).
   const inbox = await readInbox(bucketId);
-  const before = (inbox.items || []).length;
-  inbox.items = (inbox.items || []).filter((it) => it.manifestFilename !== manifestFilename);
-  if (inbox.items.length !== before) await writeInbox(bucketId, inbox);
+  const inboxHit = (inbox.items || []).some((it) => it.manifestFilename === manifestFilename);
+  // chokidar fires `unlink` for any file under the watched dir. If we never
+  // saw the filename as a manifest, treat the unlink as noise — no cursor
+  // write, no inbox write, no socket emit.
+  if (!wasTracked && !inboxHit) return { handled: true, wasTracked: false };
 
-  sharingEvents.emit('unshared', { bucketId, manifestFilename });
-  if (wasTracked) {
-    console.log(`📤 sharing: bucket=${bucketId} manifest=${manifestFilename} unshared by peer`);
+  await forgetProcessed(bucketId, manifestFilename);
+  if (inboxHit) {
+    inbox.items = inbox.items.filter((it) => it.manifestFilename !== manifestFilename);
+    await writeInbox(bucketId, inbox);
   }
+  sharingEvents.emit('unshared', { bucketId, manifestFilename });
+  console.log(`📤 sharing: bucket=${bucketId} manifest=${manifestFilename} unshared by peer`);
   return { handled: true, wasTracked };
 }
 

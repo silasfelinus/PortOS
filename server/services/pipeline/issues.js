@@ -444,10 +444,14 @@ export function updateStage(issueId, stageId, patch = {}) {
 export function deleteIssue(id) {
   return queueIssueWrite(id, async () => {
   const state = await readState();
-  const before = state.issues.length;
-  state.issues = state.issues.filter((i) => i.id !== id);
-  if (state.issues.length === before) throw makeErr(`Issue not found: ${id}`, ERR_NOT_FOUND);
+  const idx = state.issues.findIndex((i) => i.id === id);
+  if (idx < 0) throw makeErr(`Issue not found: ${id}`, ERR_NOT_FOUND);
+  const seriesId = state.issues[idx].seriesId;
+  state.issues.splice(idx, 1);
   await writeState(state);
+  // Series export bundles every issue, so a deletion is an update on the
+  // parent series for any active share-bucket subscription.
+  emitRecordUpdated('series', seriesId);
   return { id };
   }); // end queueIssueWrite
 }

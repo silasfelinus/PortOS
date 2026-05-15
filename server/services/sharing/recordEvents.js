@@ -21,3 +21,9 @@ export function emitRecordUpdated(recordKind, recordId) {
   if (!recordKind || !recordId) return;
   recordEvents.emit('updated', { recordKind, recordId });
 }
+
+/** Local deletion of a subscribed record auto-unsubscribes via the listener. */
+export function emitRecordDeleted(recordKind, recordId) {
+  if (!recordKind || !recordId) return;
+  recordEvents.emit('deleted', { recordKind, recordId });
+}
