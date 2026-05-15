@@ -482,6 +482,62 @@
   PATCH round-trips cleanly through the canonical sanitizer with no other
   schema changes.
 
+- **Backup defaults — skip large re-downloadable assets, with per-default override.**
+  `loras/*.safetensors`, `repos/`, `cos/reference-repos/`, and `browser-downloads/`
+  are now in the built-in `DEFAULT_EXCLUDES` for scheduled and manual backups,
+  so the default snapshot no longer balloons by tens of GB of LoRA weights,
+  cloned upstream repos, and browser download cache when the user just wants
+  their data backed up to iCloud or an external drive. Each new entry is
+  tagged `overridable: true`; the Backup settings page renders a toggle per
+  overridable default so users can opt to back them up by adding the path
+  to a new `backup.disabledDefaultExcludes` array. The pre-existing
+  `browser-profile/` + `cos/worktrees/` + `cos/feature-agents/*/worktree/`
+  entries stay `overridable: false` (cache/ephemeral data with no
+  irreplaceable user content) and continue to be skipped unconditionally.
+  Plumbed through `runBackup()`, the route, the scheduler, and
+  `backupConfigSchema`; tests updated.
+
+  **Notes on review feedback:**
+  - All `DEFAULT_EXCLUDES` paths are anchored with a leading `/` (rsync
+    filter syntax for "relative to the transfer root"). Without the anchor
+    a pattern like `loras/*.safetensors` would match any `loras/` directory
+    anywhere under data/ — including user-managed collections under e.g.
+    `brain/.../loras/` — and silently exclude unrelated user data.
+  - The LoRA exclude is `/loras/*.safetensors`, not `/loras/`. The
+    `.metadata.json` sidecars next to each `.safetensors` file (Civitai
+    metadata + user-editable name / recommendedScale / notes) are the
+    source of truth for that user data and ARE backed up.
+  - The cron handler in `backupScheduler.js` re-reads settings on each
+    invocation, so toggling a default exclude in the UI takes effect on the
+    next scheduled run without a server restart. The handler also re-checks
+    `backup.enabled` and `backup.destPath`, so disabling backups or clearing
+    the destination after startup short-circuits the run. (Only the cron
+    expression itself is captured at registration.)
+  - `runBackup()` guards `excludePaths` and `disabledDefaultExcludes` with
+    `Array.isArray` before filtering, so a hand-edited settings.json with
+    the wrong shape doesn't abort the backup. Exclude-computation extracted
+    into `computeEffectiveExcludes()` (pure, unit-tested).
+  - The Backup tab `<isExcluded>` state now accounts for paths also listed
+    in Additional Exclude Paths via a `shadowsDefault()` helper that
+    catches exact matches AND broader rsync patterns (`loras/`, `loras/**`,
+    `/cos/` covering `/cos/reference-repos/`). Toggling a default to
+    "included" strips every shadowing custom entry, and `addExclude`
+    refuses to add a pattern that would shadow any default. The warning
+    chip names the offending custom entry so the user knows which one to
+    delete.
+  - `backupConfigSchema` is now wired into the settings PUT route (used as
+    `.partial()` so an unrelated settings save doesn't require a full
+    backup config). The schema's `destPath` was loosened to
+    `z.string().nullable().optional()` to match the route's existing
+    "empty / missing destPath = not configured" semantics — saving an
+    empty input no longer 400s.
+  - Client-side `asArray()` normalizer wraps `settings.backup.excludePaths`
+    and `disabledDefaultExcludes` (and the `defaultExcludes` returned from
+    `/api/backup/status`) before they reach React state — settings.json is
+    hand-editable and the GET endpoint is unvalidated, so an incoming
+    non-array shape no longer crashes downstream `.some` / `.includes` /
+    `.filter` calls in the Backup tab.
+
 ## Changed
 
 - **Data migration scripts for bringing old machines forward.** Two new

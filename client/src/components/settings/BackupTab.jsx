@@ -2,8 +2,36 @@ import { useState, useEffect } from 'react';
 import { Save, Plus, X, Play, ShieldOff } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
+import ToggleSwitch from '../ToggleSwitch';
 import useAsyncAction from '../../hooks/useAsyncAction';
 import { getSettings, updateSettings, getBackupStatus, triggerBackup } from '../../services/api';
+
+// Set equality — rsync --exclude flags are order-independent, so reordering
+// is NOT a dirty state; only membership changes (added/removed entries) are.
+const sameSet = (a, b) => a.length === b.length && a.every(x => b.includes(x));
+
+// settings.json is hand-editable and the GET /settings endpoint is unvalidated,
+// so an incoming `excludePaths`/`disabledDefaultExcludes` value can be a string,
+// null, or any other shape. Normalize before it reaches React state — otherwise
+// downstream `.some` / `.includes` / `.filter` calls crash the Backup tab.
+const asArray = (v) => Array.isArray(v) ? v : [];
+
+// Whether a user-supplied custom rsync exclude pattern covers (shadows) a default
+// exclude path — broader than a bare `===` check so the UI doesn't mark a default
+// as "included" while a custom entry like `loras/`, `loras/**`, or `/cos/` is
+// still effectively excluding it via rsync. Strips leading `/`, trailing `/`, and
+// a trailing `**`/`*` glob from both sides, then compares directory prefixes:
+// the custom path shadows the default when the default's normalized form equals
+// the custom's OR lives inside the custom's subtree.
+const normalizePattern = (p) =>
+  String(p ?? '').replace(/^\/+/, '').replace(/\/+\*+$/, '').replace(/\*+$/, '').replace(/\/+$/, '');
+const shadowsDefault = (customPath, defaultPath) => {
+  if (customPath === defaultPath) return true;
+  const c = normalizePattern(customPath);
+  const d = normalizePattern(defaultPath);
+  if (!c || !d) return false;
+  return d === c || d.startsWith(c + '/');
+};
 
 export function BackupTab() {
   const [loading, setLoading] = useState(true);
@@ -14,6 +42,8 @@ export function BackupTab() {
   const [cronExpression, setCronExpression] = useState('0 2 * * *');
   const [excludePaths, setExcludePaths] = useState([]);
   const [savedExcludePaths, setSavedExcludePaths] = useState([]);
+  const [disabledDefaultExcludes, setDisabledDefaultExcludes] = useState([]);
+  const [savedDisabledDefaultExcludes, setSavedDisabledDefaultExcludes] = useState([]);
   const [defaultExcludes, setDefaultExcludes] = useState([]);
   const [newExclude, setNewExclude] = useState('');
 
@@ -22,14 +52,17 @@ export function BackupTab() {
       .then(([settings, status]) => {
         const backup = settings?.backup || {};
         const saved = backup.destPath || '';
-        const savedExcludes = backup.excludePaths || [];
+        const savedExcludes = asArray(backup.excludePaths);
+        const savedDisabled = asArray(backup.disabledDefaultExcludes);
         setDestPath(saved);
         setSavedDestPath(saved);
         setEnabled(backup.enabled ?? false);
         setCronExpression(backup.cronExpression || '0 2 * * *');
         setExcludePaths(savedExcludes);
         setSavedExcludePaths(savedExcludes);
-        setDefaultExcludes(status?.defaultExcludes || []);
+        setDisabledDefaultExcludes(savedDisabled);
+        setSavedDisabledDefaultExcludes(savedDisabled);
+        setDefaultExcludes(asArray(status?.defaultExcludes));
       })
       .catch(() => toast.error('Failed to load settings'))
       .finally(() => setLoading(false));
@@ -38,14 +71,30 @@ export function BackupTab() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await updateSettings({ backup: { destPath, enabled, cronExpression, excludePaths } });
+      await updateSettings({ backup: { destPath, enabled, cronExpression, excludePaths, disabledDefaultExcludes } });
       setSavedDestPath(destPath);
       setSavedExcludePaths(excludePaths);
+      setSavedDisabledDefaultExcludes(disabledDefaultExcludes);
       toast.success('Settings saved');
     } catch (err) {
       toast.error(err.message || 'Failed to save settings');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const toggleDefaultExclude = (path) => {
+    const currentlyDisabled = disabledDefaultExcludes.includes(path);
+    if (currentlyDisabled) {
+      // Re-enabling the default exclude — path goes back to being excluded.
+      setDisabledDefaultExcludes(prev => prev.filter(p => p !== path));
+    } else {
+      // Disabling the default — the user is opting this path back IN to backups.
+      // Strip every shadowing custom entry (exact match AND broader patterns
+      // like `loras/`, `loras/**`); otherwise rsync would still exclude it and
+      // the toggle would lie about the actual behavior.
+      setDisabledDefaultExcludes(prev => [...prev, path]);
+      setExcludePaths(prev => prev.filter(p => !shadowsDefault(p, path)));
     }
   };
 
@@ -62,6 +111,14 @@ export function BackupTab() {
   const addExclude = () => {
     const trimmed = newExclude.trim();
     if (!trimmed || excludePaths.includes(trimmed)) return;
+    // A custom exclude that shadows a default would lie about toggle state
+    // (toggle "included" but rsync still excludes via the custom entry).
+    // Catches exact matches AND broader patterns like `loras/` or `loras/**`.
+    const shadowed = defaultExcludes.find(d => shadowsDefault(trimmed, d.path));
+    if (shadowed) {
+      toast.error(`"${trimmed}" shadows the default exclusion "${shadowed.path}" — use the toggle above instead`);
+      return;
+    }
     setExcludePaths([...excludePaths, trimmed]);
     setNewExclude('');
   };
@@ -74,9 +131,9 @@ export function BackupTab() {
     return <BrailleSpinner text="Loading backup settings" />;
   }
 
-  const excludesDirty = excludePaths.length !== savedExcludePaths.length
-    || excludePaths.some((p, i) => p !== savedExcludePaths[i]);
-  const dirty = destPath !== savedDestPath || excludesDirty;
+  const dirty = destPath !== savedDestPath
+    || !sameSet(excludePaths, savedExcludePaths)
+    || !sameSet(disabledDefaultExcludes, savedDisabledDefaultExcludes);
   const canRun = !!savedDestPath && !running && !saving && !dirty;
   const runTitle = !savedDestPath
     ? 'Configure and save a destination path first'
@@ -125,16 +182,44 @@ export function BackupTab() {
         <div className="space-y-2">
           <div className="flex items-center gap-2">
             <ShieldOff size={14} className="text-gray-500" />
-            <label className="block text-sm text-gray-400">Default Exclusions (always skipped)</label>
+            <label className="block text-sm text-gray-400">Default Exclusions</label>
           </div>
-          <p className="text-xs text-gray-500">Built-in paths that are never backed up — they hold large or ephemeral data that would bloat snapshots.</p>
-          <ul className="space-y-1 mt-1">
-            {defaultExcludes.map((d, i) => (
-              <li key={i} className="flex items-start gap-2 text-xs">
-                <code className="px-1.5 py-0.5 bg-port-bg border border-port-border rounded text-gray-300 shrink-0">{d.path}</code>
-                <span className="text-gray-500">{d.reason}</span>
-              </li>
-            ))}
+          <p className="text-xs text-gray-500">Built-in paths skipped by default to keep snapshots small. Overridable entries (large re-downloadable assets) can be re-enabled below; fixed entries hold ephemeral data and stay off.</p>
+          <ul className="space-y-1.5 mt-1">
+            {defaultExcludes.map((d, i) => {
+              const isDisabled = disabledDefaultExcludes.includes(d.path);
+              // Custom excludes can shadow a default via exact match (`loras/...`)
+              // OR a broader pattern (`loras/`, `loras/**`, `/cos/`). The broader
+              // check is necessary because rsync still applies the custom pattern
+              // even when the default toggle says "included".
+              const shadowingCustom = excludePaths.find(p => shadowsDefault(p, d.path));
+              const defaultActive = !(d.overridable && isDisabled);
+              const isExcluded = defaultActive || !!shadowingCustom;
+              const shadowedByCustom = !defaultActive && !!shadowingCustom;
+              return (
+                <li key={i} className="flex items-start gap-2 text-xs">
+                  {d.overridable ? (
+                    <ToggleSwitch
+                      enabled={!isExcluded}
+                      onChange={() => toggleDefaultExclude(d.path)}
+                      size="sm"
+                      ariaLabel={isExcluded ? `Include ${d.path} in backups` : `Exclude ${d.path} from backups`}
+                      className="mt-0.5"
+                    />
+                  ) : (
+                    <span className="inline-flex items-center justify-center w-12 h-7 shrink-0 text-gray-600" title="Always excluded — cannot be backed up">
+                      <ShieldOff size={14} />
+                    </span>
+                  )}
+                  <code className={`px-1.5 py-0.5 bg-port-bg border rounded shrink-0 ${isExcluded ? 'text-gray-300 border-port-border' : 'text-port-success border-port-success/30'}`}>{d.path}</code>
+                  <span className="text-gray-500">
+                    {d.reason}
+                    {!isExcluded && <span className="text-port-success/80 ml-1">(included)</span>}
+                    {shadowedByCustom && <span className="text-port-warning ml-1">(still excluded via Additional Exclude Paths — remove <code>{shadowingCustom}</code> below)</span>}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
