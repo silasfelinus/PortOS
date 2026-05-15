@@ -30,7 +30,6 @@ import {
   errorRecoverSchema,
   shellInputSchema,
   shellResizeSchema,
-  shellSessionIdSchema,
   shellAttachSchema,
   shellStopSchema,
   appUpdateSchema,
@@ -454,11 +453,13 @@ export function initSocket(io) {
       if (!validated) return;
       const result = shellService.attachSession(validated.sessionId, socket, { claim: validated.claim });
       if (result?.claimRejected) {
-        socket.emit('shell:error', { error: 'Session attached to another client' });
+        // sessionId in payload lets the client correlate this error to its pending
+        // request and ignore stale errors from earlier rapid clicks.
+        socket.emit('shell:error', { error: 'Session attached to another client', sessionId: validated.sessionId });
       } else if (result) {
         socket.emit('shell:attached', result);
       } else {
-        socket.emit('shell:error', { error: 'Session not found' });
+        socket.emit('shell:error', { error: 'Session not found', sessionId: validated.sessionId });
       }
     });
 
