@@ -1133,6 +1133,37 @@
 
 ## Changed
 
+- **CoS agent prompts: Claude Code CLI owns push + PR; Phase 3b opens a
+  clarification PR.** Two coupled changes to the planned-work CoS templates
+  (`feature-ideas`, `plan-task`) and the runtime CLI completion block:
+  (1) When the provider is Claude Code (`claude-code` / `claude-code-bedrock`)
+  and the task uses a worktree with `openPR`, the runtime "## Completion"
+  section now instructs the agent to run `/simplify` (when enabled) and then
+  `/do:pr` itself instead of "commit and let PortOS push" — and
+  `cleanupAgentWorktree` is gated to skip its post-exit `git push` + `gh pr
+  create` for those runs (mirrors the existing TUI cleanup contract) so the
+  agent and PortOS don't both try to create the PR. Codex / Gemini and other
+  CLI providers keep the previous "commit only, PortOS handles push+PR" block
+  because they don't have slashdo commands available. (2) Phase 3b
+  ("Request Clarification") no longer ends with "Do NOT open a PR — stop
+  here" — that was orphaning the worktree on every `<!-- NEEDS_INPUT -->`
+  flag. The agent now moves the flagged item to the bottom of PLAN.md
+  (so subsequent runs pick up a different actionable item), commits the
+  `.plan-questions.md` file + the PLAN.md move with `chore: flag PLAN.md
+  item needing user input`, and proceeds to the Completion section so a
+  clarification PR is opened for review. `PROMPT_VERSIONS` bumped
+  (`feature-ideas` 6→7, `plan-task` 1→2) to auto-upgrade non-customized
+  configs. `buildAgentPrompt` / `buildLightContextPrompt` now take a
+  `providerId` option; covered by four new tests in
+  `server/services/agentPromptBuilder.test.js` (slashdo Completion with
+  `/simplify` enabled/disabled, `/do:push` fallback when `openPR` is false,
+  unchanged behavior for non-Claude CLI providers). Touches:
+  `server/services/agentPromptBuilder.js`,
+  `server/services/agentPromptBuilder.test.js`,
+  `server/services/agentLifecycle.js`,
+  `server/services/agentCliSpawning.js`,
+  `server/services/taskSchedule.js`.
+
 - **CoS agent prompts: light vs full context split.** Codex / Claude Code /
   Gemini agents (`provider.type` ∈ {`tui`, `cli`}) now receive a minimal
   runtime-built prompt — just task description, attached context, screenshot
