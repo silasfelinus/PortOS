@@ -134,10 +134,10 @@ function LockButton({ field, locked, onToggle, label }) {
     <button
       type="button"
       onClick={() => onToggle(field)}
-      className={`p-1 rounded -mr-1 ${
+      className={`p-1 rounded -mr-1 transition-colors ${
         isLocked
-          ? 'text-port-accent hover:bg-port-accent/20'
-          : 'text-gray-500 hover:text-gray-300 hover:bg-port-border/40'
+          ? 'bg-port-accent/20 text-port-accent ring-1 ring-port-accent/50 hover:bg-port-accent/30'
+          : 'text-gray-600 hover:text-gray-300 hover:bg-white/5'
       }`}
       title={isLocked ? `${label} locked — AI refine/expand will skip it` : `Lock ${label} against AI refine/expand`}
       aria-label={isLocked ? `Unlock ${label}` : `Lock ${label}`}
