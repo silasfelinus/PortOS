@@ -413,10 +413,167 @@ export async function expandWorldTemplate({
   };
 }
 
+function buildCategoryGeneratePrompt({
+  category,
+  count,
+  existingLabels,
+  influences,
+  logline,
+  premise,
+  styleNotes,
+  stylePrompt,
+  negativePrompt,
+}) {
+  const embrace = Array.isArray(influences?.embrace) ? influences.embrace.filter(Boolean) : [];
+  const avoid = Array.isArray(influences?.avoid) ? influences.avoid.filter(Boolean) : [];
+  const influencesSection = embrace.length || avoid.length
+    ? `\n# Influences\nEmbrace: ${embrace.join(", ") || "(none)"}\nAvoid: ${avoid.join(", ") || "(none)"}\n`
+    : "";
+
+  const stateLines = [
+    logline && `LOGLINE: ${logline}`,
+    premise && `PREMISE: ${premise}`,
+    styleNotes && `STYLE NOTES: ${styleNotes}`,
+    stylePrompt && `STYLE PROMPT: ${stylePrompt}`,
+    negativePrompt && `NEGATIVE PROMPT: ${negativePrompt}`,
+  ].filter(Boolean);
+  const stateSection = stateLines.length
+    ? `\n# Universe context — keep new variations consistent with this established setting\n${stateLines.join('\n\n')}\n`
+    : "";
+
+  const existingSection = existingLabels.length
+    ? `\n# Existing "${category}" variations — DO NOT regenerate these labels or close paraphrases\n${existingLabels.map((l) => `- "${l}"`).join('\n')}\n`
+    : "";
+
+  return `You are a universe-building prompt engineer for a Stable-Diffusion-style image generation pipeline. The user has an existing universe and wants ${count} MORE variations added to the "${category}" category.
+${stateSection}${influencesSection}${existingSection}
+# Output contract
+Return a SINGLE JSON object with one key: "variations" — an array of EXACTLY ${count} objects. Each object has the shape:
+  { "label": string (max ${LABEL_MAX} chars), "prompt": string (max ${PROMPT_FRAGMENT_MAX} chars, comma-separated tokens describing ONE specific subject in this category) }
+
+# Rules
+- Generate ${count} variations — no more, no less.
+- Each variation must be visually distinct from the others AND from the existing labels listed above.
+- "label" is a short human-recognizable name (e.g. "Crystalline canyon basin", "Scavenger walker mech").
+- "prompt" describes the SUBJECT only — the universe's stylePrompt is automatically prepended at render time, so do NOT repeat style tokens.
+- Do not include camera/aspect tokens; the renderer adds those.
+- Stay consistent with the universe context and influences. Lean into the embrace list; avoid the avoid list.
+- Output JUST the JSON object. NO markdown, NO commentary.`;
+}
+
+const isVariationsShape = (o) =>
+  o && typeof o === "object" && Array.isArray(o.variations);
+
+const extractVariationsJson = (raw) => {
+  if (!raw || typeof raw !== "string") throw new Error("Empty LLM response");
+  const { value, lastError, lastPreview } = extractJsonShared(raw, {
+    shapePredicate: isVariationsShape,
+  });
+  if (value !== undefined) return value;
+  throw new ServerError(
+    "LLM returned invalid JSON for variation generation. Try a different model or rerun.",
+    {
+      status: 502,
+      code: "LLM_INVALID_JSON",
+      context: {
+        details: {
+          reason: lastError?.message || "no JSON object with variations found",
+          preview: lastPreview || "",
+        },
+      },
+    },
+  );
+};
+
+/**
+ * Generate N additional variations for one category. Returns
+ * `{ variations: [{label, prompt}], llm: { provider, model } }`. Caller is
+ * responsible for merging the result into the universe (dedupe + append).
+ */
+export async function generateCategoryVariations({
+  category,
+  count,
+  existingLabels = [],
+  influences,
+  logline = '',
+  premise = '',
+  styleNotes = '',
+  stylePrompt = '',
+  negativePrompt = '',
+  providerId,
+  model,
+} = {}) {
+  const n = Math.max(1, Math.min(VARIATIONS_PER_CATEGORY_MAX, Number(count) || 0));
+
+  const safeInfluences = sanitizeInfluences(influences);
+  const safeExisting = Array.isArray(existingLabels)
+    ? existingLabels.filter((l) => typeof l === "string" && l.trim()).map((l) => l.trim())
+    : [];
+
+  let provider = providerId ? await getProviderById(providerId).catch(() => null) : null;
+  if (!provider) provider = await getActiveProvider();
+  if (!provider) throw new Error("No AI provider available for variation generation");
+  const selectedModel = resolveEffectiveModel(provider, model);
+
+  const fullPrompt = buildCategoryGeneratePrompt({
+    category: category.trim(),
+    count: n,
+    existingLabels: safeExisting,
+    influences: safeInfluences,
+    logline,
+    premise,
+    styleNotes,
+    stylePrompt,
+    negativePrompt,
+  });
+
+  console.log(
+    `🌍 Universe Builder generating ${n} variations for "${category}" via ${provider.name}/${selectedModel || "default"} — skip-list size=${safeExisting.length}`,
+  );
+
+  const { text: raw, runId } = await runPromptThroughProvider({
+    provider,
+    model: selectedModel,
+    prompt: fullPrompt,
+    source: "universe-builder-generate-variations",
+  });
+  console.log(
+    `🌍 Universe Builder generate raw response — runId=${runId} length=${raw?.length || 0}`,
+  );
+  const parsed = extractVariationsJson(raw);
+
+  const normalized = normalizeCategories({ [category]: { variations: parsed.variations } });
+  const variations = normalized[category]?.variations || [];
+
+  const seen = new Set(safeExisting.map((l) => l.toLowerCase()));
+  const deduped = variations.filter((v) => {
+    const key = v.label.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  console.log(
+    `🌍 Universe Builder generate complete — runId=${runId} requested=${n} returned=${variations.length} kept-after-dedupe=${deduped.length}`,
+  );
+  if (deduped.length === 0) {
+    console.warn(
+      `⚠️ Universe Builder generate produced 0 new variations — inspect data/runs/${runId}/output.txt`,
+    );
+  }
+
+  return {
+    variations: deduped,
+    llm: { provider: provider.id, model: selectedModel || null },
+  };
+}
+
 // Export for tests.
 export const __testing = {
   extractJson,
+  extractVariationsJson,
   normalizeCategories,
   normalizeCompositeSheets,
   buildExpansionPrompt,
+  buildCategoryGeneratePrompt,
 };

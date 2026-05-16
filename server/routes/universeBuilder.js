@@ -20,7 +20,7 @@ import * as svc from '../services/universeBuilder.js';
 import * as canonSvc from '../services/universeCanon.js';
 import { BIBLE_KINDS } from '../lib/storyBible.js';
 import { getUniverseCanonUsage } from '../services/canonUsage.js';
-import { expandWorldTemplate } from '../services/universeBuilderExpand.js';
+import { expandWorldTemplate, generateCategoryVariations } from '../services/universeBuilderExpand.js';
 import { refineWorldPrompts } from '../services/universeBuilderRefine.js';
 import { enqueueJob } from '../services/mediaJobQueue/index.js';
 import { getSettings } from '../services/settings.js';
@@ -164,6 +164,21 @@ const expandSchema = z.object({
   model: z.string().trim().max(200).optional(),
 });
 
+const generateVariationsSchema = z.object({
+  category: z.string().trim().min(1).max(svc.WORLD_CATEGORY_KEY_MAX),
+  count: z.number().int().min(1).max(svc.VARIATIONS_PER_CATEGORY_MAX),
+  existingLabels: z.array(z.string().trim().min(1).max(svc.VARIATION_LABEL_MAX))
+    .max(svc.VARIATIONS_PER_CATEGORY_MAX).optional().default([]),
+  influences: influencesSchema.optional(),
+  logline: z.string().trim().max(svc.LOGLINE_MAX).optional().default(''),
+  premise: z.string().trim().max(svc.PREMISE_MAX).optional().default(''),
+  styleNotes: z.string().trim().max(svc.STYLE_NOTES_MAX).optional().default(''),
+  stylePrompt: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional().default(''),
+  negativePrompt: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional().default(''),
+  providerId: z.string().trim().max(80).optional(),
+  model: z.string().trim().max(200).optional(),
+});
+
 const refinePromptsSchema = z.object({
   starterPrompt: z.string().trim().min(1).max(svc.STARTER_PROMPT_MAX),
   stylePrompt: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional().default(''),
@@ -240,6 +255,12 @@ router.post('/', asyncHandler(async (req, res) => {
 router.post('/expand', asyncHandler(async (req, res) => {
   const body = validateRequest(expandSchema, req.body ?? {});
   const result = await expandWorldTemplate(body);
+  res.json(result);
+}));
+
+router.post('/generate-variations', asyncHandler(async (req, res) => {
+  const body = validateRequest(generateVariationsSchema, req.body ?? {});
+  const result = await generateCategoryVariations(body);
   res.json(result);
 }));
 

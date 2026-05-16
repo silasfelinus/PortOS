@@ -48,6 +48,24 @@ export const expandUniverse = ({
   }),
 });
 
+// Caller should dedupe the returned variations against its local list before
+// appending — the local list may have changed during the request.
+export const generateCategoryVariations = ({
+  category, count, existingLabels,
+  influences,
+  logline, premise, styleNotes, stylePrompt, negativePrompt,
+  providerId, model,
+} = {}, options = {}) => request('/universe-builder/generate-variations', {
+  method: 'POST',
+  body: JSON.stringify({
+    category, count, existingLabels,
+    influences,
+    logline, premise, styleNotes, stylePrompt, negativePrompt,
+    providerId, model,
+  }),
+  ...options,
+});
+
 export const refineWorldPrompts = ({
   starterPrompt, stylePrompt, negativePrompt,
   logline, premise, styleNotes,
