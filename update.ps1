@@ -215,8 +215,10 @@ Step "migrations" "done" "Migrations complete"
 # Install/update slash-do commands. Replaces the previous interactive prompt
 # with an always-on `npx slash-do@latest` call so the user-global command
 # pool stays current across updates. Failures are non-fatal.
+# Pipe "a" so slash-do's "multiple environments detected" prompt auto-selects
+# all detected envs instead of hanging on readline (update.ps1 has no TTY).
 Step "slash-do" "running" "Installing/updating slash-do commands..."
-Invoke-Logged npx --yes slash-do@latest
+"a" | & npx --yes slash-do@latest >> $UpdateLog 2>&1
 if ($LASTEXITCODE -ne 0) {
     Write-SafeHost "⚠️  slash-do install/update failed. Continuing (re-run later: npx slash-do@latest)." -ForegroundColor Yellow
     $global:LASTEXITCODE = 0

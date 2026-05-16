@@ -149,8 +149,10 @@ step "migrations" "done" "Migrations complete"
 # pool stays current across updates without user intervention. Failures are
 # non-fatal — the PR Reviewer schedule task is the only consumer and it
 # fails gracefully if the binary is missing.
+# Pipe "a" so slash-do's "multiple environments detected" prompt auto-selects
+# all detected envs instead of hanging on readline (update.sh has no TTY).
 step "slash-do" "running" "Installing/updating slash-do commands..."
-if ! run npx --yes slash-do@latest; then
+if ! echo a | run npx --yes slash-do@latest; then
   log "⚠️  slash-do install/update failed. Continuing without it (re-run later: npx slash-do@latest)."
 fi
 step "slash-do" "done" "slash-do commands installed/updated"

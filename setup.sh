@@ -44,7 +44,9 @@ echo ""
 # user-global command pool current. Failures are non-fatal: PortOS still works
 # without the global slash commands.
 echo "Installing/updating slash-do commands (npx slash-do@latest)..."
-if ! npx --yes slash-do@latest; then
+# Pipe "a" so slash-do's "multiple environments detected" prompt auto-selects
+# all detected envs instead of hanging on readline when stdin is not a TTY.
+if ! echo a | npx --yes slash-do@latest; then
     echo "⚠️  slash-do install failed — skipping (you can re-run later: npx slash-do@latest)"
 fi
 echo ""

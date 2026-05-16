@@ -1530,6 +1530,21 @@
 
 ## Fixed
 
+- **`update.sh` / `setup.sh` (+ PowerShell siblings) no longer hang on
+  slash-do install when multiple AI environments are detected.** The
+  `npx --yes slash-do@latest` call inside the four install/update scripts
+  invokes `slash-do`'s CLI, which calls `readline.createInterface` to prompt
+  "select environments" whenever `detectInstalled()` finds more than one
+  recognized env on the box (any combination of `~/.claude`,
+  `~/.config/opencode`, `~/.gemini`, `~/.codex`). Because the scripts run
+  non-interactively (no TTY on stdin under the PortOS update executor),
+  readline waited forever and the update stalled at
+  `STEP:slash-do:running:Installing/updating slash-do commands...`. All four
+  scripts now pipe `a` (the CLI's "All of the above" answer) into stdin so
+  the prompt auto-selects every detected env; when 0 or 1 envs are
+  detected the prompt is skipped entirely and the piped `a` is harmlessly
+  ignored. Touches `update.sh`, `setup.sh`, `update.ps1`, `setup.ps1`.
+
 - **Black ICE Terminal: active day/night toggle no longer renders a white moon
   on bright green.** The settings theme picker uses `bg-port-accent
   text-port-on-accent` to flag the active mode, but `--color-port-on-accent`

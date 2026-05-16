@@ -85,7 +85,9 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # user-global command pool.
 Write-Host ""
 Write-Host "Installing/updating slash-do commands (npx slash-do@latest)..." -ForegroundColor Yellow
-npx --yes slash-do@latest
+# Pipe "a" so slash-do's "multiple environments detected" prompt auto-selects
+# all detected envs instead of hanging on readline when stdin is not a TTY.
+"a" | & npx --yes slash-do@latest
 if ($LASTEXITCODE -ne 0) {
     Write-Host "⚠️  slash-do install failed — skipping (you can re-run later: npx slash-do@latest)" -ForegroundColor Yellow
     $global:LASTEXITCODE = 0
