@@ -1,5 +1,5 @@
 {
-  "activeProvider": "claude-code",
+  "activeProvider": "claude-code-tui",
   "providers": {
     "claude-code": {
       "id": "claude-code",
@@ -84,7 +84,7 @@
       "mediumModel": "claude-sonnet-4-6",
       "heavyModel": "claude-opus-4-7",
       "timeout": 600000,
-      "enabled": false,
+      "enabled": true,
       "envVars": {},
       "secretEnvVars": [],
       "tuiPromptDelayMs": 2500,

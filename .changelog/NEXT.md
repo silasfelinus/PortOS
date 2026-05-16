@@ -932,6 +932,19 @@
 
 ## Changed
 
+- **Claude Code TUI is now the default enabled provider in the base PortOS
+  config.** Fresh installs get `activeProvider: "claude-code-tui"` with
+  `claude-code-tui.enabled: true` out of the seed JSON. The headless
+  `claude-code` CLI provider stays available (and enabled) as a fallback
+  for non-interactive flows, but CoS agents launch into the TUI by default
+  — the TUI owns its own commit/push/PR sequence via slashdo, handles
+  live BTW paste-through, and avoids the headless CLI's stale-prompt edge
+  cases. A new migration `008-default-to-claude-code-tui.js` flips
+  existing installs IFF they're still on the pre-flip default
+  (`activeProvider === "claude-code"` and `claude-code-tui.enabled !==
+  true`); users who deliberately picked a different active provider or
+  already enabled the TUI on their own are left untouched.
+
 - **BTW ("by the way") messages are now Claude-Code-TUI-only and paste live
   into the running session.** The old flow wrote a `BTW.md` file in the
   workspace and relied on a prompt instruction telling the agent to poll
