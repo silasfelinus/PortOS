@@ -981,6 +981,42 @@
   annotations on failure lines so the PR view links straight to the
   offending assertion. Local `npm test` is unchanged.
 
+- **AgentCard adds a "Prompt" button that opens the exact prompt the agent
+  was given at spawn.** Useful for iterating on prompt content: the user
+  can read what was pasted into the TUI / sent to the CLI, decide what's
+  redundant, and trim the prompt template. New endpoint
+  `GET /api/cos/agents/:id/prompt` reads the agent's saved `prompt.txt`
+  (running agents from the flat dir, completed agents via the
+  date-bucket index). The modal includes a "Copy" button so the prompt
+  can be pasted into another tool for editing.
+
+- **Lifecycle markers (📟 / 💡 / ✅) render as their own lines in the agent
+  output panel.** Previously they collapsed onto a single line because
+  `OutputBlocks` joined consecutive non-tool lines with `\n` and markdown
+  collapses single newlines into spaces. Lifecycle marker lines now
+  flush the current markdown block and render as standalone `<div>`s,
+  mirroring the existing tool-line carve-out.
+
+- **TUI paste→Enter handshake now waits for Claude Code's
+  `[Pasted text #N]` marker instead of a fixed 400 ms delay.** Large
+  prompts (seen on an 87-line paste) raced the fixed timer: Claude Code
+  was still committing the paste buffer when the Enter fired, so the
+  Enter was silently dropped and the user had to press Return manually.
+  The spawner now polls `rawBuffer` for Claude Code's paste-commit
+  marker, waits an additional 200 ms, then submits. A 3.5 s fallback
+  timer fires the Enter unconditionally for prompts too small to
+  trigger the marker.
+
+- **Bad "the system will push" lines purged from the prompt for TUI
+  agents.** Several spots in the prompt template still told TUI agents
+  "the system will push your branch and open a pull request — do NOT
+  push or open a PR yourself" even though the TUI path delegates the
+  whole sequence to the agent via `/do:pr`. The Instructions step 4,
+  the worktree+openPR Guideline bullet, and the Git Hygiene
+  push-or-not bullet now branch on `isTui` and tell the agent to run
+  the Completion Workflow's `tuiCompletionCommand` (`/do:pr` or
+  `/do:push`) itself.
+
 - **TUI agents now write a markdown task summary into `.agent-done` and
   PortOS ingests it as the agent's `outputBuffer`.** With per-line PTY
   capture off, the agent card's "Show output" panel only showed

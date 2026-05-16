@@ -46,7 +46,15 @@ const OUTPUT_FLUSH_INTERVAL_MS = 250;
 // silent provider still gets the prompt eventually.
 const READY_POLL_INTERVAL_MS = 300;
 const READY_IDLE_THRESHOLD_MS = 1200;
-const PASTE_TO_ENTER_DELAY_MS = 400;
+// Wait for Claude Code's `[Pasted text #N +M lines]` marker to appear before
+// sending `\r`. A fixed 400 ms timer was too short for large prompts (87+
+// line pastes) — Claude Code was still committing the paste buffer when the
+// Enter arrived, so the Enter got swallowed. The marker is emitted as soon
+// as the paste is committed and the input cursor is ready for submit.
+const PASTE_MARKER_POLL_MS = 150;
+const PASTE_MARKER_PATTERN = /\[Pasted text #\d+/;
+const PASTE_TO_ENTER_MIN_DELAY_MS = 200;
+const PASTE_TO_ENTER_FALLBACK_MS = 3500;
 const PASTE_DEADLINE_MS = 10000;
 // Sentinel-file polling. TUI agents write `.agent-done` in their workspace
 // when they've finished /simplify + /do:pr (or /do:push) — we poll for it
@@ -188,7 +196,7 @@ export async function spawnTuiAgent(agentId, task, prompt, workspacePath, model,
     if (agentData?.idleTimer) clearInterval(agentData.idleTimer);
     if (agentData?.promptTimer) clearInterval(agentData.promptTimer);
     if (agentData?.doneSentinelTimer) clearInterval(agentData.doneSentinelTimer);
-    if (pasteEnterTimer) { clearTimeout(pasteEnterTimer); pasteEnterTimer = null; }
+    if (pasteEnterTimer) { clearInterval(pasteEnterTimer); pasteEnterTimer = null; }
 
     // Drain pending parsed lines before the final state writes so completion
     // events don't beat the last output batch to disk.
@@ -365,20 +373,46 @@ export async function spawnTuiAgent(agentId, task, prompt, workspacePath, model,
   // Send the bracketed-paste prompt only after the TUI has finished its initial
   // repaint and gone quiet — pasting during the banner/loading screen is the
   // failure mode that left the input empty. The `\r` is split from the paste
-  // write so Claude Code has time to commit the paste buffer before Enter
-  // fires; its handle is tracked so finish() can cancel a still-pending Enter
-  // if the agent ends in that window.
+  // write because a fixed delay races Claude Code's paste-commit on large
+  // prompts; instead we poll Claude Code's raw output for its
+  // `[Pasted text #N +M lines]` marker, then wait an extra
+  // PASTE_TO_ENTER_MIN_DELAY_MS before submitting. A fallback timer fires
+  // the Enter unconditionally if the marker never appears (very small
+  // prompts won't trigger the marker). All timers are tracked so finish()
+  // can cancel pending writes if the agent ends mid-handshake.
   const startedAt = Date.now();
   const sendPrompt = (reason) => {
     if (finalized || promptSentAt) return;
     promptSentAt = Date.now();
+    const rawBufferLenBeforePaste = rawBuffer.length;
     shellService.writeToSession(sessionId, `\x1b[200~${prompt}\x1b[201~`);
-    pasteEnterTimer = setTimeout(() => {
-      pasteEnterTimer = null;
+    appendLine(`📟 Prompt pasted into TUI session ${sessionId.slice(0, 8)} (${reason})`);
+
+    const submitEnter = () => {
       if (finalized) return;
       shellService.writeToSession(sessionId, '\r');
-    }, PASTE_TO_ENTER_DELAY_MS);
-    appendLine(`📟 Prompt pasted into TUI session ${sessionId.slice(0, 8)} (${reason})`);
+    };
+
+    const pasteSentAt = Date.now();
+    pasteEnterTimer = setInterval(() => {
+      if (finalized) {
+        clearInterval(pasteEnterTimer);
+        pasteEnterTimer = null;
+        return;
+      }
+      const elapsed = Date.now() - pasteSentAt;
+      const postPasteOutput = rawBuffer.slice(rawBufferLenBeforePaste);
+      const markerSeen = PASTE_MARKER_PATTERN.test(postPasteOutput);
+      // Submit when EITHER the paste-commit marker appears (preferred) or
+      // the fallback window elapses (covers small prompts that don't render
+      // the marker).
+      if ((markerSeen && elapsed >= PASTE_TO_ENTER_MIN_DELAY_MS)
+        || elapsed >= PASTE_TO_ENTER_FALLBACK_MS) {
+        clearInterval(pasteEnterTimer);
+        pasteEnterTimer = null;
+        submitEnter();
+      }
+    }, PASTE_MARKER_POLL_MS);
   };
 
   const promptTimer = setInterval(() => {

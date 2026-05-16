@@ -421,9 +421,11 @@ ${skillSection ? `## Task-Type Skill Guidelines\n\n${skillSection}\n` : ''}${too
 1. Analyze the task requirements carefully
 2. Make necessary changes to complete the task
 3. Test your changes when possible
-4. ${worktreeInfo && willOpenPR
-  ? 'Commit your changes (see Git Hygiene below) — do NOT push, the system handles that on exit'
-  : 'Commit and push your changes (see Git Hygiene below)'}
+4. ${isTui
+  ? `Commit, push, and ${willOpenPR ? 'open the PR (see Completion Workflow above)' : 'push the branch (see Completion Workflow above)'}`
+  : worktreeInfo && willOpenPR
+    ? 'Commit your changes (see Git Hygiene below) — do NOT push, the system handles that on exit'
+    : 'Commit and push your changes (see Git Hygiene below)'}
 5. Provide a summary of what was done
 
 ## Guidelines
@@ -433,15 +435,17 @@ ${skillSection ? `## Task-Type Skill Guidelines\n\n${skillSection}\n` : ''}${too
 - Do not make unrelated changes
 - If blocked, explain clearly why
 - Never update the PortOS changelog (\`.changelog/\`) for work on managed apps — the PortOS changelog tracks PortOS core changes only
-${isTruthyMetaFn(task.metadata?.readOnly) ? `- **This is a read-only task.** Do NOT commit, push, or modify any files in the repository. Only read data and generate reports.` : worktreeInfo && willOpenPR ? `- On successful completion, the system will push your branch and open a pull request — do NOT open a PR manually. (If the task fails, no PR is opened; the worktree is then cleaned up unless a safety check preserves it for manual recovery.)${willReviewLoop ? ' For GitHub PRs, a Copilot code review will also be requested automatically (skipped on GitLab and other non-GitHub forges) — do NOT run \`/do:rpr\` or attempt to address review comments yourself; you will have already exited.' : ''}` : worktreeInfo ? `- Your worktree branch will be automatically merged back to the source branch when your task completes — do NOT open a PR.` : ``}
+${isTruthyMetaFn(task.metadata?.readOnly) ? `- **This is a read-only task.** Do NOT commit, push, or modify any files in the repository. Only read data and generate reports.` : isTui ? `- On successful completion, YOU run the Completion Workflow above (\`${tuiCompletionCommand}\`, write the sentinel, \`/quit\`). PortOS will NOT push or open a PR on your behalf.` : worktreeInfo && willOpenPR ? `- On successful completion, the system will push your branch and open a pull request — do NOT open a PR manually. (If the task fails, no PR is opened; the worktree is then cleaned up unless a safety check preserves it for manual recovery.)${willReviewLoop ? ' For GitHub PRs, a Copilot code review will also be requested automatically (skipped on GitLab and other non-GitHub forges) — do NOT run \`/do:rpr\` or attempt to address review comments yourself; you will have already exited.' : ''}` : worktreeInfo ? `- Your worktree branch will be automatically merged back to the source branch when your task completes — do NOT open a PR.` : ``}
 
 ## Git Hygiene (CRITICAL)
 - **Before starting work**, run \`git status\` to verify a clean working tree. Do NOT stash or discard uncommitted changes — other agents may be working concurrently and expecting those changes to be present. If the tree is dirty, only commit files YOU changed for this task.
 - **NEVER use \`git stash\`** in any form (\`git stash push\`, \`git stash pop\`, etc.). This is a multi-agent system — stashing can silently destroy or corrupt another agent's or the user's in-progress work. Work around uncommitted changes instead. (Note: the backend may use \`--autostash\` in user-triggered pull operations — that is safe because those are single-user UI actions, not concurrent agent operations.)
 - **Only commit files YOU changed** for this task. Never use \`git add -A\` or \`git add .\` — always stage specific files by name.
-${worktreeInfo && willOpenPR
-  ? `- **Commit only — do NOT push.** Stage specific files, use \`feat:\`/\`fix:\`/\`breaking:\` prefix in the commit message, no Co-Authored-By annotations. The system will push your branch and open the PR after you exit, so do NOT run \`git push\` or \`/do:push\` yourself.`
-  : `- **Commit and push using \`/do:push\`** — this handles changelog updates, staging specific files, writing a conventional commit message, and pushing safely. If \`/do:push\` is unavailable, follow its conventions manually: stage specific files, use \`feat:\`/\`fix:\`/\`breaking:\` prefix, no Co-Authored-By annotations, and push with \`git pull --rebase && git push\`.`}
+${isTui
+  ? `- **Use \`${tuiCompletionCommand}\` to ${willOpenPR ? 'commit, push, and open the PR' : 'commit and push the branch'}** — see the Completion Workflow section above. Stage specific files (no \`git add -A\`), use \`feat:\`/\`fix:\`/\`breaking:\` prefix in the commit message, no Co-Authored-By annotations.`
+  : worktreeInfo && willOpenPR
+    ? `- **Commit only — do NOT push.** Stage specific files, use \`feat:\`/\`fix:\`/\`breaking:\` prefix in the commit message, no Co-Authored-By annotations. The system will push your branch and open the PR after you exit, so do NOT run \`git push\` or \`/do:push\` yourself.`
+    : `- **Commit and push using \`/do:push\`** — this handles changelog updates, staging specific files, writing a conventional commit message, and pushing safely. If \`/do:push\` is unavailable, follow its conventions manually: stage specific files, use \`feat:\`/\`fix:\`/\`breaking:\` prefix, no Co-Authored-By annotations, and push with \`git pull --rebase && git push\`.`}
 ${worktreeInfo ? `- **Your PR should contain only your task's commits.** If you see unrelated commits in your branch history, something is wrong — do not open a PR with other agents' work.` : `- **Commit directly to the current branch.** Do NOT create feature branches or PRs unless explicitly instructed.`}
 
 ## Working Directory

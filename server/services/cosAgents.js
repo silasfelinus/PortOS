@@ -486,6 +486,20 @@ export async function getAgent(agentId) {
   return agent;
 }
 
+// Read the prompt that was sent to an agent at spawn time.
+// Used by the AgentCard UI to let the user inspect what was pasted into the
+// TUI / sent to the CLI so the prompt can be iterated on.
+export async function getAgentPrompt(agentId) {
+  const state = await loadState();
+  const agent = state.agents[agentId];
+  if (!agent) return { error: 'Agent not found' };
+  const agentDir = getAgentDir(agentId, agent.archiveDate);
+  const promptPath = join(agentDir, 'prompt.txt');
+  if (!existsSync(promptPath)) return { error: 'Prompt file not found' };
+  const prompt = await readFile(promptPath, 'utf8');
+  return { prompt, bytes: prompt.length };
+}
+
 // Terminate an agent (will be handled by spawner)
 export async function terminateAgent(agentId) {
   // Emit event to kill the process FIRST
