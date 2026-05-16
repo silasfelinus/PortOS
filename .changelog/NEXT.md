@@ -2,6 +2,37 @@
 
 ## Added
 
+- **Arc-stage approval lock on the Pipeline Arc Canvas.** The series-arc
+  workflow now distinguishes "I'm still iterating" from "I've approved this
+  — don't let anything overwrite it." Two changes work together: (1) a
+  `Lock arc` / `Locked` toggle pill sits next to the Regenerate / Verify
+  buttons on the Arc Canvas (`client/src/components/pipeline/ArcCanvas.jsx`);
+  (2) clicking **Regenerate arc** now opens an inline confirmation row
+  explaining that the action overwrites the arc logline, summary,
+  protagonist arc, themes, and every volume / season outline, and pointing
+  at the lock as the way to preserve the approved version. When `locked.arc`
+  is true the Regenerate button is disabled outright and the auto-resolve
+  affordances in the verify-findings panel hide themselves with a lock-icon
+  note ("Arc is locked — unlock above to enable auto-resolve") so the user
+  knows why the buttons are gone. Persisted as `series.locked.arc = true`
+  in `pipeline-series.json`; defaults to `{}` so existing series migrate
+  forward without a writer pass. Server-side enforcement parity:
+  `arcPlanner.generateArcOverview` and `arcPlanner.resolveVerifyIssues`
+  both throw `ERR_VALIDATION` before any LLM call when the arc is locked,
+  so a stale tab or scripted client can't bypass the UI gate. The shape is
+  open (`LOCKABLE_STAGES` array + `.passthrough()` on the route schema) so
+  iteration 2's per-season + per-field locks land without a schema bump.
+  Mirrors the universe-builder `locked` pattern. Touches:
+  `server/services/pipeline/series.js`,
+  `server/services/pipeline/arcPlanner.js`,
+  `server/routes/pipeline.js`,
+  `client/src/components/pipeline/ArcCanvas.jsx`,
+  `server/services/pipeline/series.test.js` (+5 cases),
+  `server/services/pipeline/arcPlanner.test.js` (+1 case).
+  The broader step-by-step approval UX pass across the Universe + Series
+  pipeline (per-season locks, per-field arc locks, stage-progress strip,
+  "Approve this stage" buttons) is captured as deferred work in PLAN.md.
+
 - **Clean-plate render mode for settings (Cluster A — A4).** Setting canon
   cards get a "Clean plate" button next to the existing "Render reference"
   affordance. Clicking it builds a no-people prompt variant — prefixed with
@@ -40,6 +71,15 @@
   overlay).
 
 ## Fixed
+
+- **Visual Style Preset dropdown bleed-through on Pipeline Series.** The
+  open dropdown on the series-bible right pane was rendering under the
+  sticky bible sidebar (`<aside class="bg-port-card/40 ...">`), so the
+  sidebar's character names and "Linked World" content visibly bled
+  through the dropdown's panel with a 40%-opacity wash. Bumped the
+  picker's panel z-index from `z-30` to `z-50`, matching the convention
+  used by `NotificationDropdown` and `IconPicker`. Touches:
+  `client/src/components/pipeline/VisualStylePicker.jsx`.
 
 - **Series shares now deliver issues, scripts, and renders to collaborators.**
   When the manifest reached a peer ahead of its 30+ issue record JSONs

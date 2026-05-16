@@ -131,4 +131,44 @@ describe('pipeline series service', () => {
         .rejects.toMatchObject({ code: svc.ERR_VALIDATION });
     });
   });
+
+  describe('locked field (stage approval)', () => {
+    it('defaults to empty object on a fresh series', async () => {
+      const s = await svc.createSeries({ name: 'X' });
+      expect(s.locked).toEqual({});
+    });
+
+    it('persists locked.arc=true through round-trip', async () => {
+      const s = await svc.createSeries({ name: 'X' });
+      const updated = await svc.updateSeries(s.id, { locked: { arc: true } });
+      expect(updated.locked).toEqual({ arc: true });
+      // Survives a re-read (sanitizer + atomic write).
+      const fresh = await svc.getSeries(s.id);
+      expect(fresh.locked).toEqual({ arc: true });
+    });
+
+    it('toggling locked.arc back off clears the key', async () => {
+      const s = await svc.createSeries({ name: 'X' });
+      await svc.updateSeries(s.id, { locked: { arc: true } });
+      const cleared = await svc.updateSeries(s.id, { locked: { arc: false } });
+      // Only `true` is recorded — false collapses to absent so the on-disk
+      // shape stays minimal (matches universeBuilder.sanitizeLocked).
+      expect(cleared.locked).toEqual({});
+    });
+
+    it('ignores unknown lock keys', async () => {
+      const s = await svc.createSeries({
+        name: 'X',
+        locked: { arc: true, bogus: true, premise: true },
+      });
+      expect(s.locked).toEqual({ arc: true });
+    });
+
+    it('omitting locked from patch preserves existing locks', async () => {
+      const s = await svc.createSeries({ name: 'X', locked: { arc: true } });
+      const updated = await svc.updateSeries(s.id, { logline: 'new logline' });
+      expect(updated.locked).toEqual({ arc: true });
+      expect(updated.logline).toBe('new logline');
+    });
+  });
 });

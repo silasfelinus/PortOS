@@ -107,7 +107,7 @@ export default function VisualStylePicker({
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-1 w-80 max-h-[70vh] overflow-y-auto bg-port-card border border-port-border rounded-lg shadow-lg z-30 p-1">
+        <div className="absolute right-0 mt-1 w-80 max-h-[70vh] overflow-y-auto bg-port-card border border-port-border rounded-lg shadow-lg z-50 p-1">
           {hasValue && (
             <button
               type="button"

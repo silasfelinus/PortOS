@@ -50,6 +50,17 @@ export const WRITERS_ROOM_WORK_ID_MAX = 64;
 export const TARGET_FORMATS = Object.freeze(['comic', 'tv', 'comic+tv']);
 export const ISSUE_COUNT_TARGET_MAX = 999;
 
+export const LOCKABLE_STAGES = Object.freeze(['arc']);
+
+const sanitizeSeriesLocked = (raw = {}) => {
+  if (!raw || typeof raw !== 'object') return {};
+  const out = {};
+  for (const key of LOCKABLE_STAGES) {
+    if (raw[key] === true) out[key] = true;
+  }
+  return out;
+};
+
 const DEFAULT_STATE = { series: [] };
 
 const sanitizeSeries = (raw) => {
@@ -86,6 +97,7 @@ const sanitizeSeries = (raw) => {
     // files migrate forward without a writer pass — first save backfills.
     arc: sanitizeArc(raw.arc),
     seasons: sanitizeSeasonList(raw.seasons),
+    locked: sanitizeSeriesLocked(raw.locked),
     styleNotes: trimTo(raw.styleNotes, STYLE_NOTES_MAX),
     // Series-level default visual style (catalog id + optional custom prompt).
     // `null` when the user hasn't picked one — stage-level fallbacks in
@@ -142,6 +154,7 @@ export async function createSeries(input = {}) {
     objects: input.objects || [],
     arc: input.arc || null,
     seasons: input.seasons || [],
+    locked: input.locked || {},
     styleNotes: input.styleNotes || '',
     targetFormat: input.targetFormat || 'comic+tv',
     issueCountTarget: input.issueCountTarget || 0,
@@ -199,6 +212,8 @@ export async function updateSeries(id, patch = {}) {
     ...('objects' in patch ? { objects: patch.objects } : {}),
     ...('arc' in patch ? { arc: patch.arc } : {}),
     ...('seasons' in patch ? { seasons: patch.seasons } : {}),
+    // Wholesale replace — `locked: {}` clears every lock; omission preserves.
+    ...('locked' in patch ? { locked: patch.locked } : {}),
     ...('styleNotes' in patch ? { styleNotes: patch.styleNotes } : {}),
     ...('visualStyleDefault' in patch ? { visualStyleDefault: patch.visualStyleDefault } : {}),
     ...('targetFormat' in patch ? { targetFormat: patch.targetFormat } : {}),

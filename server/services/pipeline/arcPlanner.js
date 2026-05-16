@@ -214,6 +214,12 @@ function shapeSeasonOutlines(rawOutlines) {
 
 export async function generateArcOverview(seriesId, options = {}) {
   const series = await getSeries(seriesId);
+  if (series.locked?.arc === true) {
+    throw makeErr(
+      'Arc is locked — unlock it on the Arc Canvas before regenerating',
+      ERR_VALIDATION,
+    );
+  }
   const ctx = await buildArcOverviewContext(series);
   const { content, runId, providerId, model } = await runStagedLLM(
     'pipeline-arc-overview',
@@ -654,6 +660,14 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
     throw new ServerError(
       'Series has no arc to resolve — run /arc/generate first',
       { status: 400, code: 'PIPELINE_NO_ARC' },
+    );
+  }
+  // Resolve rewrites arc + seasons in place, so the lock gates this too.
+  // Verify (read-only) stays enabled — the user can act on findings manually.
+  if (series.locked?.arc === true) {
+    throw new ServerError(
+      'Arc is locked — unlock it before auto-resolving findings',
+      { status: 400, code: ERR_VALIDATION },
     );
   }
 

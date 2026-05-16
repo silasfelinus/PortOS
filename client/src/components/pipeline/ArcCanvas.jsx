@@ -27,7 +27,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Plus, Trash2, Loader2, Sparkles, ShieldCheck, ChevronRight, ChevronDown,
-  ChevronsUpDown, AlertCircle, Wand2, Info, ListChecks, X,
+  ChevronsUpDown, AlertCircle, Wand2, Info, ListChecks, X, Lock, Unlock,
 } from 'lucide-react';
 import toast from '../ui/Toast';
 import { timeAgo } from '../../utils/formatters';
@@ -162,11 +162,14 @@ export default function ArcCanvas({ series, issues, onSeriesUpdate, onIssuesUpda
 
 function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
   const arc = series.arc;
+  const arcLocked = !!series.locked?.arc;
   const [running, setRunning] = useState(null); // 'generate' | 'verify' | 'resolve' | null
   const [verifyIssues, setVerifyIssues] = useState(null);
   // Which finding indexes have an in-flight per-finding resolve. Lets the row
   // show its own spinner without blocking the rest of the page.
   const [resolvingIdx, setResolvingIdx] = useState(new Set());
+  const [confirmingRegen, setConfirmingRegen] = useState(false);
+  const [lockBusy, setLockBusy] = useState(false);
 
   const llmOverride = useMemo(() => ({
     providerOverride: series.llm?.provider || undefined,
@@ -182,6 +185,7 @@ function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
   };
 
   const runGenerate = async () => {
+    setConfirmingRegen(false);
     setRunning('generate');
     const result = await withFlush(() =>
       generatePipelineArcOverview(series.id, { commit: true, ...llmOverride }).catch((err) => {
@@ -193,6 +197,24 @@ function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
     if (!result) return;
     onSeriesUpdate(result.series);
     toast.success('Arc generated and saved');
+  };
+
+  const toggleArcLock = async () => {
+    const next = !arcLocked;
+    setLockBusy(true);
+    const updated = await updatePipelineSeries(series.id, {
+      locked: { ...(series.locked || {}), arc: next },
+    }).catch((err) => {
+      toast.error(err.message || 'Failed to update lock');
+      return null;
+    });
+    setLockBusy(false);
+    if (!updated) return;
+    onSeriesUpdate(updated);
+    if (next) setConfirmingRegen(false);
+    toast.success(next
+      ? 'Arc locked — regeneration and auto-resolve are now blocked'
+      : 'Arc unlocked');
   };
   const runVerify = async () => {
     setRunning('verify');
@@ -269,6 +291,12 @@ function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
     arc && (arc.logline || arc.summary || arc.protagonistArc || arc.themes?.length)
   );
   const generateBtnLabel = hasGeneratedArc ? 'Regenerate arc' : 'Generate arc';
+  // First-time Generate has nothing to overwrite, so skip the confirm prompt.
+  const handleGenerateClick = () => {
+    if (arcLocked) return;
+    if (hasGeneratedArc) setConfirmingRegen(true);
+    else runGenerate();
+  };
 
   return (
     <section className="bg-port-card border border-port-border rounded-lg p-4 space-y-3">
@@ -280,10 +308,31 @@ function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
             onSeriesUpdate={onSeriesUpdate}
             disabled={!!running}
           />
+          {hasGeneratedArc ? (
+            <button
+              type="button"
+              onClick={toggleArcLock}
+              disabled={lockBusy || !!running}
+              title={arcLocked
+                ? 'Arc is locked — click to unlock and allow regeneration'
+                : 'Lock the arc to prevent regeneration and auto-resolve from overwriting it'}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-sm font-medium border transition-colors disabled:opacity-40 ${
+                arcLocked
+                  ? 'bg-port-warning/10 text-port-warning border-port-warning/40 hover:bg-port-warning/20'
+                  : 'bg-port-bg text-gray-400 border-port-border hover:text-white hover:border-port-accent/40'
+              }`}
+            >
+              {lockBusy
+                ? <Loader2 size={14} className="animate-spin" />
+                : (arcLocked ? <Lock size={14} /> : <Unlock size={14} />)}
+              {arcLocked ? 'Locked' : 'Lock arc'}
+            </button>
+          ) : null}
           <button
             type="button"
-            onClick={runGenerate}
-            disabled={!!running}
+            onClick={handleGenerateClick}
+            disabled={!!running || arcLocked || confirmingRegen}
+            title={arcLocked ? 'Arc is locked — unlock to regenerate' : undefined}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-sm font-medium border transition-colors bg-port-bg text-port-accent border-port-border hover:border-port-accent/40 disabled:opacity-40"
           >
             {running === 'generate' ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
@@ -304,6 +353,35 @@ function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
         </div>
       </div>
 
+      {confirmingRegen ? (
+        <div className="bg-port-bg border border-port-warning/30 rounded-lg p-3 space-y-2">
+          <p className="text-sm text-white">Regenerate the entire arc?</p>
+          <p className="text-xs text-gray-400">
+            This overwrites the arc logline, summary, protagonist arc, themes, and every volume / season outline.
+            Click <em>Lock arc</em> above first to preserve your approved version — once locked, regeneration and auto-resolve are blocked until you unlock.
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={runGenerate}
+              disabled={!!running}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-sm font-medium bg-port-warning/20 text-port-warning border border-port-warning/40 hover:bg-port-warning/30 disabled:opacity-40"
+            >
+              {running === 'generate' ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+              Confirm regenerate
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmingRegen(false)}
+              disabled={!!running}
+              className="px-3 py-1.5 rounded text-sm text-gray-400 hover:text-white"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {hasGeneratedArc ? <VerifyScopeHint scope={VERIFY_ARC_SCOPE} /> : null}
 
       {arc ? (
@@ -318,10 +396,11 @@ function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
         <VerifyResults
           issues={verifyIssues}
           onDismiss={() => setVerifyIssues(null)}
-          onResolveAll={resolveAll}
-          onResolveOne={resolveOne}
+          onResolveAll={arcLocked ? null : resolveAll}
+          onResolveOne={arcLocked ? null : resolveOne}
           resolvingAll={running === 'resolve' && resolvingIdx.size === 0}
           resolvingIdx={resolvingIdx}
+          lockedNote={arcLocked ? 'Arc is locked — unlock above to enable auto-resolve.' : null}
         />
       ) : null}
     </section>
@@ -464,10 +543,15 @@ function ArcContent({ series, onSeriesUpdate }) {
   );
 }
 
-function VerifyResults({ issues, onDismiss, onResolveAll, onResolveOne, resolvingAll, resolvingIdx, title = 'Verification' }) {
+function VerifyResults({ issues, onDismiss, onResolveAll, onResolveOne, resolvingAll, resolvingIdx, title = 'Verification', lockedNote = null }) {
   const busy = resolvingAll || (resolvingIdx && resolvingIdx.size > 0);
   return (
     <div className="border border-port-border rounded p-3 bg-port-bg/50 space-y-2">
+      {lockedNote ? (
+        <p className="text-[11px] text-port-warning italic flex items-center gap-1.5">
+          <Lock size={11} /> {lockedNote}
+        </p>
+      ) : null}
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <h3 className="text-xs uppercase tracking-wider text-gray-500">{title} — {issues.length} issue{issues.length === 1 ? '' : 's'}</h3>
         <div className="flex items-center gap-2">

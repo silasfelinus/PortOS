@@ -166,6 +166,12 @@ const seasonSchema = z.object({
   status: z.enum(SEASON_STATUSES).optional(),
 }).passthrough();
 
+// `.passthrough` keeps the door open for future per-season / per-field locks
+// without a schema bump — the series sanitizer is the source of truth.
+const seriesLockedSchema = z.object(
+  Object.fromEntries(seriesSvc.LOCKABLE_STAGES.map((k) => [k, z.boolean().optional()])),
+).passthrough();
+
 const seriesCreateSchema = z.object({
   name: z.string().trim().min(1).max(seriesSvc.NAME_MAX),
   logline: z.string().trim().max(seriesSvc.LOGLINE_MAX).optional().default(''),
@@ -177,6 +183,7 @@ const seriesCreateSchema = z.object({
   objects: z.array(objectSchema).max(seriesSvc.BIBLE_ENTRIES_PER_SERIES_MAX).optional(),
   arc: arcSchema.nullable().optional(),
   seasons: z.array(seasonSchema).max(ARC_LIMITS.SEASONS_PER_SERIES_MAX).optional(),
+  locked: seriesLockedSchema.optional(),
   styleNotes: z.string().trim().max(seriesSvc.STYLE_NOTES_MAX).optional().default(''),
   visualStyleDefault: visualStyleRefSchema.optional(),
   targetFormat: z.enum(seriesSvc.TARGET_FORMATS).optional(),
@@ -195,6 +202,7 @@ const seriesPatchSchema = z.object({
   objects: z.array(objectSchema).max(seriesSvc.BIBLE_ENTRIES_PER_SERIES_MAX).optional(),
   arc: arcSchema.nullable().optional(),
   seasons: z.array(seasonSchema).max(ARC_LIMITS.SEASONS_PER_SERIES_MAX).optional(),
+  locked: seriesLockedSchema.optional(),
   styleNotes: z.string().trim().max(seriesSvc.STYLE_NOTES_MAX).optional(),
   visualStyleDefault: visualStyleRefSchema.optional(),
   targetFormat: z.enum(seriesSvc.TARGET_FORMATS).optional(),

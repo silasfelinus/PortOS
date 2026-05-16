@@ -209,6 +209,15 @@ describe('arcPlanner — generateArcOverview', () => {
     expect(ctx.worldName).toMatch(/no linked world/i);
     expect(ctx.worldCategoriesText).toMatch(/none/i);
   });
+
+  it('throws ERR_VALIDATION + skips the LLM call when arc is locked', async () => {
+    const s = await setupSeries();
+    await seriesSvc.updateSeries(s.id, { locked: { arc: true } });
+    stageRunnerSpy = vi.fn();
+    await expect(planner.generateArcOverview(s.id))
+      .rejects.toMatchObject({ code: planner.ERR_VALIDATION });
+    expect(stageRunnerSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe('arcPlanner — generateSeasonEpisodes', () => {
