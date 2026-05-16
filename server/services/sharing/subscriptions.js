@@ -106,7 +106,6 @@ export async function adoptImportedSubscription({ bucketId, recordKind, recordId
   } else {
     sub.updatedAt = now;
     sub.lastManifestId = lastManifestId || sub.lastManifestId || null;
-    sub.adoptedFromImport = sub.adoptedFromImport ?? true;
   }
   await writeState(state);
   return sub;

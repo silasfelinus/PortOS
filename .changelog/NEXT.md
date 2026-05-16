@@ -41,6 +41,16 @@
 
 ## Fixed
 
+- **`adoptImportedSubscription` no longer mislabels deliberately-subscribed
+  records as imported.** On the update branch, `sub.adoptedFromImport ?? true`
+  flipped `undefined` (a deliberate `subscribe()` result) to `true` the next
+  time an inbound manifest arrived for the same record, falsely marking it as
+  adopted-from-import. The flag is now set only on creation and left
+  untouched on subsequent inbound manifests, so user-initiated subscriptions
+  retain their `undefined`/`false` state across re-adoption. Addresses
+  Copilot review on PR #241; regression test in
+  `server/services/sharing/subscriptions.test.js`.
+
 - **Scheduled cron tasks (e.g. `plan-task` at 9 AM) silently never fired.**
   Four overlapping bugs in the CoS scheduler combined to make user-pinned
   cron schedules guaranteed misses: (1) `shouldRunTask` had no catch-up

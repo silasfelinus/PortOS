@@ -134,6 +134,20 @@ describe('sharing/subscriptions', () => {
     rmSync(bucket2Path, { recursive: true, force: true });
   });
 
+  it('adoptImportedSubscription does not flip a deliberately-subscribed record to adoptedFromImport on re-adopt', async () => {
+    const bucket = await buckets.createBucket({ name: 'B', path: tempBucket });
+    const u = await universeBuilder.createUniverse({ name: 'U-adopt' });
+    const original = await subs.subscribe({ bucketId: bucket.id, recordKind: 'universe', recordId: u.id });
+    expect(original.adoptedFromImport).toBeUndefined();
+
+    const adopted = await subs.adoptImportedSubscription({
+      bucketId: bucket.id, recordKind: 'universe', recordId: u.id, lastManifestId: 'inbound-1',
+    });
+    expect(adopted.id).toBe(original.id);
+    expect(adopted.adoptedFromImport).toBeUndefined();
+    expect(adopted.lastManifestId).toBe('inbound-1');
+  });
+
   it('deleting the local record auto-unsubscribes via the deleted recordEvent', async () => {
     subs.installSubscriptionListener();
     const bucket = await buckets.createBucket({ name: 'D', path: tempBucket });
