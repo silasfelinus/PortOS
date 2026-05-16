@@ -31,6 +31,7 @@ import { insertSeriesWithId, updateSeries, getSeries } from '../pipeline/series.
 import { insertIssueWithId, updateIssue, getIssue } from '../pipeline/issues.js';
 import { insertUniverseWithId, updateUniverse, getUniverse } from '../universeBuilder.js';
 import { findOrCreateCollectionByName, addItem as addCollectionItem, ERR_DUPLICATE as COLLECTION_ERR_DUPLICATE } from '../mediaCollections.js';
+import { adoptImportedSubscription, withReexportSuppressed } from './subscriptions.js';
 
 const isStr = (v) => typeof v === 'string';
 
@@ -215,6 +216,14 @@ async function readReferencedRecords(bucketPath, manifest) {
 async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = null } = {}) {
   let applied = 0;
   const overridden = [];
+  const inboundSub = manifest.subscription?.recordKind && manifest.subscription?.recordId
+    ? { bucketId: bucket.id, recordKind: manifest.subscription.recordKind, recordId: manifest.subscription.recordId }
+    : null;
+  const inboundRecordsForKind = (recordKind) => {
+    if (recordKind === 'series') return records.series;
+    if (recordKind === 'universe') return records.universes;
+    return [];
+  };
 
   const mergeOne = async ({ kind, record, getFn, insertFn, updateFn, label }) => {
     const existing = await getFn(record.id).catch(() => null);
@@ -228,7 +237,9 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
       return;
     }
     if (remoteWins(existing.updatedAt, record.updatedAt)) {
-      await updateFn(existing.id, record);
+      const suppressKind = kind === 'issue' ? 'series' : kind;
+      const suppressId = kind === 'issue' ? record.seriesId : record.id;
+      await withReexportSuppressed(suppressKind, suppressId, () => updateFn(existing.id, record));
       overridden.push({ kind, id: record.id, label });
       applied++;
     }
@@ -260,13 +271,33 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
   let itemsAdded = 0;
   let itemsDeferred = 0;
   if (manifest.collection) {
-    const r = await mergeCollectionPayload(manifest.collection, availableAssetKeys);
+    const r = await withReexportSuppressed('universe', manifest.collection.universeId, () =>
+      mergeCollectionPayload(manifest.collection, availableAssetKeys));
     itemsAdded = r.itemsAdded;
     itemsDeferred = r.itemsDeferred || 0;
     if (itemsAdded > 0) applied += itemsAdded;
   }
 
-  return { applied, overridden, collectionItemsAdded: itemsAdded, collectionItemsDeferred: itemsDeferred };
+  let adoptedSubscription = null;
+  if (inboundSub && inboundRecordsForKind(inboundSub.recordKind).some((record) => record.id === inboundSub.recordId)) {
+    adoptedSubscription = await adoptImportedSubscription({
+      ...inboundSub,
+      lastManifestId: manifest.id,
+    }).catch((err) => {
+      console.log(`⚠️ sharing.importer: adopt subscription failed for ${inboundSub.recordKind}/${inboundSub.recordId}: ${err.message}`);
+      return null;
+    });
+  }
+
+  return {
+    applied,
+    overridden,
+    collectionItemsAdded: itemsAdded,
+    collectionItemsDeferred: itemsDeferred,
+    adoptedSubscription: adoptedSubscription
+      ? { id: adoptedSubscription.id, bucketId: adoptedSubscription.bucketId, recordKind: adoptedSubscription.recordKind, recordId: adoptedSubscription.recordId }
+      : null,
+  };
 }
 
 const INBOX_MAX = 1000;
