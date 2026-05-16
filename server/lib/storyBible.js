@@ -46,6 +46,10 @@ export const BIBLE_LIMITS = Object.freeze({
   TAG_MAX: 60,
   TAGS_PER_ENTRY_MAX: 12,
   SOURCE_SERIES_ID_MAX: 64,
+  // Voice id namespace: `engine:voiceName` (e.g. `kokoro:af_heart`,
+  // `piper:en_GB-northern_english_male`). Caps generously since 3rd-party
+  // providers (ElevenLabs) use uuid-shaped voice ids.
+  VOICE_ID_MAX: 200,
 });
 
 // Canonical provenance vocabulary. `BIBLE_SOURCE.SERIES_EXTRACT` is the
@@ -90,7 +94,7 @@ export const BIBLE_KINDS = Object.freeze(Object.values(BIBLE_KIND));
 // `existing<X>Json` prompt variable (bibleExtractor) and into the script
 // stage's bibles context (evaluator). Excludes ids/timestamps/source/notes.
 export const PROMPT_FIELDS = Object.freeze({
-  [BIBLE_KIND.CHARACTER]: ['name', 'aliases', 'role', 'physicalDescription', 'personality', 'background', 'prompt', 'tags'],
+  [BIBLE_KIND.CHARACTER]: ['name', 'aliases', 'role', 'physicalDescription', 'personality', 'background', 'voiceId', 'prompt', 'tags'],
   [BIBLE_KIND.SETTING]: ['name', 'slugline', 'description', 'palette', 'era', 'weather', 'recurringDetails', 'prompt', 'tags'],
   [BIBLE_KIND.OBJECT]: ['name', 'aliases', 'description', 'significance', 'prompt', 'tags'],
 });
@@ -189,6 +193,9 @@ export function sanitizeCharacter(raw, { idPrefix = DEFAULT_ID_PREFIX.character,
     personality: trimTo(raw.personality, BIBLE_LIMITS.PERSONALITY_MAX),
     background: trimTo(raw.background, BIBLE_LIMITS.BACKGROUND_MAX),
     notes: trimTo(raw.notes, BIBLE_LIMITS.NOTES_MAX),
+    // Voice binding for VO synthesis (kokoro/piper local OSS, ElevenLabs
+    // when configured). null = use the project default at synth time.
+    voiceId: trimTo(raw.voiceId, BIBLE_LIMITS.VOICE_ID_MAX) || null,
     imageRefs: cleanStringArray(raw.imageRefs, BIBLE_LIMITS.IMAGE_REF_MAX, BIBLE_LIMITS.IMAGE_REFS_PER_ENTRY_MAX),
     firstAppearance: ensureFirstAppearance(raw.firstAppearance),
     evidence: cleanStringArray(raw.evidence, BIBLE_LIMITS.EVIDENCE_ITEM_MAX, BIBLE_LIMITS.EVIDENCE_PER_ENTRY_MAX),

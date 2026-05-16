@@ -614,6 +614,10 @@ export const writersRoomAnalysisCreateSchema = z.object({
 // other text fields tolerate '' so the writer can deliberately blank a field
 // out and have the next analysis re-fill it.
 const wrCharTextField = z.string().max(2000);
+// Voice id namespace shared by writers-room + pipeline character routes:
+// `engine:voiceName` (e.g. `kokoro:af_heart`). Nullable so a UI clear path
+// can null it explicitly.
+const wrVoiceIdField = z.string().trim().max(200).nullable();
 export const writersRoomCharacterCreateSchema = z.object({
   name: z.string().trim().min(1).max(200),
   aliases: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
@@ -622,6 +626,7 @@ export const writersRoomCharacterCreateSchema = z.object({
   personality: wrCharTextField.optional(),
   background: wrCharTextField.optional(),
   notes: wrCharTextField.optional(),
+  voiceId: wrVoiceIdField.optional(),
 }).strict();
 export const writersRoomCharacterUpdateSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),
@@ -631,6 +636,7 @@ export const writersRoomCharacterUpdateSchema = z.object({
   personality: wrCharTextField.optional(),
   background: wrCharTextField.optional(),
   notes: wrCharTextField.optional(),
+  voiceId: wrVoiceIdField.optional(),
 }).strict();
 
 const wrSettingTextField = z.string().max(2000);

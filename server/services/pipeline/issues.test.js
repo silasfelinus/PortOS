@@ -331,4 +331,78 @@ describe('pipeline issues service', () => {
         .rejects.toMatchObject({ code: svc.ERR_VALIDATION });
     });
   });
+
+  describe('audio stage sanitizer', () => {
+    const makeIssue = (audio) => svc.createIssue({
+      seriesId: 'ser-1',
+      title: 'Pilot',
+      stages: { audio },
+    });
+
+    it('seeds an empty audio stage by default', async () => {
+      const i = await svc.createIssue({ seriesId: 'ser-1', title: 'P' });
+      expect(i.stages.audio).toEqual({
+        status: 'empty', input: '', output: '', lastRunId: null,
+        errorMessage: '', updatedAt: null, lines: [], music: null,
+      });
+    });
+
+    it('round-trips lines[] with auto-assigned ids when omitted', async () => {
+      const i = await makeIssue({
+        status: 'edited',
+        lines: [
+          { text: 'Hello there.' },
+          { id: 'line-custom', text: 'Goodbye.', characterId: 'chr-1' },
+        ],
+      });
+      expect(i.stages.audio.lines).toHaveLength(2);
+      expect(i.stages.audio.lines[0].id).toBe('line-001');
+      expect(i.stages.audio.lines[1].id).toBe('line-custom');
+      expect(i.stages.audio.lines[1].characterId).toBe('chr-1');
+    });
+
+    it('drops lines without text (empty / whitespace / missing)', async () => {
+      const i = await makeIssue({
+        lines: [
+          { text: 'kept' },
+          { text: '   ' },
+          { text: '' },
+          { /* missing entirely */ },
+          null,
+          'not-an-object',
+          { text: 'also kept' },
+        ],
+      });
+      expect(i.stages.audio.lines.map((l) => l.text)).toEqual(['kept', 'also kept']);
+    });
+
+    it('caps lines[] at 1000', async () => {
+      const huge = Array.from({ length: 1500 }, (_, n) => ({ text: `line ${n}` }));
+      const i = await makeIssue({ lines: huge });
+      expect(i.stages.audio.lines).toHaveLength(1000);
+    });
+
+    it('sanitizes music: drops unknown source, keeps allowed values', async () => {
+      const ok = await makeIssue({ music: { source: 'upload', trackFilename: 'bg.mp3', label: 'My track' } });
+      expect(ok.stages.audio.music).toEqual({
+        source: 'upload', trackFilename: 'bg.mp3', label: 'My track',
+      });
+
+      const bogus = await makeIssue({ music: { source: 'made-up' } });
+      // source allow-list dropped → only label/trackFilename matter; with both
+      // empty and source nulled, music falls to null entirely.
+      expect(bogus.stages.audio.music).toBe(null);
+    });
+
+    it('updateStage round-trips audio lines through the audio branch', async () => {
+      const i = await svc.createIssue({ seriesId: 'ser-1', title: 'P' });
+      const { stage } = await svc.updateStage(i.id, 'audio', {
+        status: 'edited',
+        lines: [{ id: 'line-001', text: 'fresh text', characterId: 'chr-9' }],
+      });
+      expect(stage.lines).toHaveLength(1);
+      expect(stage.lines[0].text).toBe('fresh text');
+      expect(stage.lines[0].characterId).toBe('chr-9');
+    });
+  });
 });

@@ -3,7 +3,7 @@
 // Add a new tool by pushing another entry onto TOOLS.
 
 import { captureThought, getInboxLog } from '../brain.js';
-import { STAGE_IDS as PIPELINE_STAGE_IDS } from '../pipeline/issues.js';
+import { NAVIGABLE_STAGE_IDS as PIPELINE_STAGE_IDS } from '../pipeline/issues.js';
 import { logDrink, getAlcoholSummary } from '../meatspaceAlcohol.js';
 import { logNicotine, getNicotineSummary } from '../meatspaceNicotine.js';
 import { addBodyEntry } from '../meatspaceHealth.js';

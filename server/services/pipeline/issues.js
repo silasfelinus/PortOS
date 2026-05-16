@@ -81,7 +81,17 @@ export const ISSUES_PER_RESPONSE_MAX = 1000;
 // in MVP.
 export const TEXT_STAGE_IDS = Object.freeze(['idea', 'prose', 'comicScript', 'teleplay']);
 export const VISUAL_STAGE_IDS = Object.freeze(['comicPages', 'storyboards', 'episodeVideo']);
-export const STAGE_IDS = Object.freeze([...TEXT_STAGE_IDS, ...VISUAL_STAGE_IDS]);
+// Audio is its own category — voice-over lines + music. Feature-gated on
+// series.targetFormat (only meaningful when the series ships video, not
+// comic-only). Kept separate from VISUAL_STAGE_IDS so the artifact shape
+// (`lines[]`, `music`) stays distinct from visual stages.
+export const AUDIO_STAGE_IDS = Object.freeze(['audio']);
+export const STAGE_IDS = Object.freeze([...TEXT_STAGE_IDS, ...VISUAL_STAGE_IDS, ...AUDIO_STAGE_IDS]);
+// Stages exposed to voice navigation ("next stage" / "previous stage" tools)
+// and the tab strip. Audio is intentionally excluded until the audio UI page
+// lands so voice users don't navigate to an empty route. The audio stage
+// itself is still a valid write target via STAGE_IDS.
+export const NAVIGABLE_STAGE_IDS = Object.freeze([...TEXT_STAGE_IDS, ...VISUAL_STAGE_IDS]);
 export const STAGE_STATUSES = Object.freeze(['empty', 'generating', 'ready', 'edited', 'needs-review', 'error']);
 export const ISSUE_STATUSES = Object.freeze(['draft', 'running', 'needs-review', 'shipped']);
 
@@ -184,10 +194,60 @@ const sanitizeVisualStage = (raw, stageId = null) => {
   };
 };
 
+// Audio stage shape — dialogue VO lines + optional background music. Each
+// line carries the source character + the actual line text + the render job
+// id + a server-stamped filename (the storyboards filename hook's pattern
+// will be extended to audio in a follow-up). `voiceIdOverride` lets a single
+// line use a different voice than the character's default (narrator V.O.,
+// flashback voice, etc.).
+const AUDIO_LINE_TEXT_MAX = 4000;
+const AUDIO_LINES_MAX = 1000;
+const AUDIO_FILENAME_MAX = 500;
+const AUDIO_LINE_ID_MAX = 80;
+const sanitizeAudioLine = (raw, i) => {
+  if (!raw || typeof raw !== 'object') return null;
+  const text = trimTo(raw.text, AUDIO_LINE_TEXT_MAX);
+  if (!text) return null;
+  const id = trimTo(raw.id, AUDIO_LINE_ID_MAX) || `line-${String(i + 1).padStart(3, '0')}`;
+  return {
+    id,
+    characterId: trimTo(raw.characterId, 80) || null,
+    characterName: trimTo(raw.characterName, 120) || null,
+    text,
+    voiceIdOverride: trimTo(raw.voiceIdOverride, 200) || null,
+    audioJobId: isStr(raw.audioJobId) && raw.audioJobId ? raw.audioJobId : null,
+    audioFilename: isStr(raw.audioFilename) && raw.audioFilename
+      ? raw.audioFilename.slice(0, AUDIO_FILENAME_MAX)
+      : null,
+  };
+};
+
+const MUSIC_SOURCES = new Set(['upload', 'library', 'gen']);
+const sanitizeMusicTrack = (raw) => {
+  if (!raw || typeof raw !== 'object') return null;
+  const source = MUSIC_SOURCES.has(raw.source) ? raw.source : null;
+  const trackFilename = trimTo(raw.trackFilename, AUDIO_FILENAME_MAX) || null;
+  const label = trimTo(raw.label, 200) || null;
+  if (!source && !trackFilename && !label) return null;
+  return { source, trackFilename, label };
+};
+
+const sanitizeAudioStage = (raw) => {
+  const base = sanitizeStage(raw);
+  return {
+    ...base,
+    lines: Array.isArray(raw?.lines)
+      ? raw.lines.slice(0, AUDIO_LINES_MAX).map(sanitizeAudioLine).filter(Boolean)
+      : [],
+    music: sanitizeMusicTrack(raw?.music),
+  };
+};
+
 const sanitizeStages = (raw = {}) => {
   const out = {};
   for (const id of TEXT_STAGE_IDS) out[id] = sanitizeStage(raw[id]);
   for (const id of VISUAL_STAGE_IDS) out[id] = sanitizeVisualStage(raw[id], id);
+  for (const id of AUDIO_STAGE_IDS) out[id] = sanitizeAudioStage(raw[id]);
   return out;
 };
 
@@ -494,6 +554,7 @@ export function updateStageWithLatest(issueId, stageId, computeFn) {
   if (idx < 0) throw makeErr(`Issue not found: ${issueId}`, ERR_NOT_FOUND);
   const cur = state.issues[idx];
   const isVisual = VISUAL_STAGE_IDS.includes(stageId);
+  const isAudio = AUDIO_STAGE_IDS.includes(stageId);
   const currentStage = cur.stages[stageId];
   const patch = computeFn(currentStage);
   // Empty-patch fast path: a computeFn that returns `{}` is a "decided not
@@ -508,7 +569,10 @@ export function updateStageWithLatest(issueId, stageId, computeFn) {
     ...patch,
     updatedAt: new Date().toISOString(),
   };
-  const next = isVisual ? sanitizeVisualStage(merged, stageId) : sanitizeStage(merged);
+  let next;
+  if (isVisual) next = sanitizeVisualStage(merged, stageId);
+  else if (isAudio) next = sanitizeAudioStage(merged);
+  else next = sanitizeStage(merged);
   const mergedIssue = sanitizeIssue({
     ...cur,
     stages: { ...cur.stages, [stageId]: next },

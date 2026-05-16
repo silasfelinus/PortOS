@@ -52,6 +52,8 @@ import { ASPECT_RATIOS, QUALITIES } from '../lib/creativeDirectorPresets.js';
 import { extractScenes, SOURCE_KIND } from '../lib/sceneExtractor.js';
 import { listVisualStyles } from '../lib/visualStyles.js';
 import { buildComicPdf, PAGE_SIZES, DEFAULT_PAGE_SIZE, ERR_NO_RENDERED_PAGES } from '../services/pipeline/comicPdf.js';
+import { listAllVoices, synthesizeToFile, parseVoiceId } from '../services/pipeline/audio.js';
+import { synthesize as synthesizeVoice } from '../services/voice/tts.js';
 import { parseComicScript } from '../lib/comicScriptParser.js';
 import {
   LENGTH_PROFILE_NAMES,
@@ -251,6 +253,16 @@ const visualStageInputSchema = stageInputSchema.extend({
   visualStyleOverride: visualStyleRefSchema.optional(),
 });
 
+// Audio stage payloads carry lines[] (voice-over per dialogue line) + a
+// nullable music descriptor. Light validation — the sanitizer in
+// services/pipeline/issues.js enforces per-line + per-music shape. Without
+// this arm in the union below, audio PATCHes silently fall through to the
+// base stageInputSchema and Zod strips lines[]/music.
+const audioStageInputSchema = stageInputSchema.extend({
+  lines: z.array(z.any()).max(1000).optional(),
+  music: z.any().nullable().optional(),
+});
+
 const issuePatchSchema = z.object({
   title: z.string().trim().min(1).max(issuesSvc.TITLE_MAX).optional(),
   number: z.number().int().min(1).max(9999).optional(),
@@ -271,7 +283,9 @@ const issuePatchSchema = z.object({
   // is a superset of stageInputSchema (those four are optional additions), so
   // text-stage patches still validate. Z.union picks the first schema that
   // succeeds — stageInputSchema first would silently strip the visual fields.
-  stages: z.record(z.string(), z.union([visualStageInputSchema, stageInputSchema])).optional(),
+  // Union order matters: Zod picks the first arm that succeeds, so the
+  // more-specific schemas (visual, audio) must precede the bare base.
+  stages: z.record(z.string(), z.union([visualStageInputSchema, audioStageInputSchema, stageInputSchema])).optional(),
 }).refine((p) => Object.keys(p).length > 0, { message: 'patch must include at least one field' });
 
 const generateSchema = z.object({
@@ -436,6 +450,60 @@ const autoRunSchema = z.object({
 // dedup via the module-level promise cache in apiPipeline.js.
 router.get('/visual-styles', asyncHandler(async (_req, res) => {
   res.json({ styles: listVisualStyles() });
+}));
+
+// Merged voice list across every supported TTS engine (Kokoro + Piper today;
+// future ElevenLabs/etc. when added). Each voice is namespaced with
+// `engine:voiceName` so the character voice picker shows a single flat list.
+router.get('/tts/voices', asyncHandler(async (_req, res) => {
+  res.json({ voices: await listAllVoices() });
+}));
+
+// Audition a voice before binding it to a character. Returns the rendered
+// WAV inline so the picker can <audio> it without persisting anything. Body:
+// { voiceId, text? } — text defaults to a short generic sample.
+const ttsPreviewSchema = z.object({
+  voiceId: z.string().trim().min(1).max(200),
+  text: z.string().trim().max(500).optional(),
+});
+const DEFAULT_PREVIEW_TEXT = 'The morning fog burned off slow that day, and nothing felt quite the same after.';
+router.post('/tts/preview', asyncHandler(async (req, res) => {
+  const body = validateRequest(ttsPreviewSchema, req.body ?? {});
+  const { engine, voice } = parseVoiceId(body.voiceId);
+  const text = body.text || DEFAULT_PREVIEW_TEXT;
+  // Surface "unknown voice" + transient model-load failures as 400/503 with
+  // a useful message instead of asyncHandler's default 500.
+  let wav; let latencyMs; let usedEngine;
+  try {
+    ({ wav, latencyMs, engine: usedEngine } = await synthesizeVoice(text, {
+      ...(engine ? { engine } : {}),
+      ...(voice ? { voice } : {}),
+    }));
+  } catch (err) {
+    if (err?.message?.startsWith('unknown') || err?.code === 'UNKNOWN_VOICE') {
+      throw new ServerError(err.message, { status: 400, code: 'PIPELINE_AUDIO_UNKNOWN_VOICE' });
+    }
+    throw err;
+  }
+  res.setHeader('Content-Type', 'audio/wav');
+  res.setHeader('X-TTS-Latency-Ms', String(latencyMs));
+  res.setHeader('X-TTS-Engine', usedEngine);
+  res.send(wav);
+}));
+
+// Persist a one-off voice line to disk under PATHS.audio and return the
+// resulting filename. The audio stage's lines[] table calls this to render
+// individual dialogue lines; the bulk "render all dialogue" flow lands in
+// a follow-up. Mainly intended for the per-line Render button in the UI.
+const ttsSynthesizeSchema = z.object({
+  text: z.string().trim().min(1).max(4000),
+  voiceId: z.string().trim().max(200).optional(),
+});
+router.post('/tts/synthesize', asyncHandler(async (req, res) => {
+  const body = validateRequest(ttsSynthesizeSchema, req.body ?? {});
+  const result = await synthesizeToFile({ text: body.text, voiceId: body.voiceId })
+    .catch((err) => { throw mapServiceError(err); });
+  res.json(result);
 }));
 
 // =====================
