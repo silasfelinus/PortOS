@@ -485,12 +485,15 @@ if (existsSync(CLIENT_DIST)) {
   // Skip asset requests (.js, .css, etc.) so stale chunk requests get a proper 404
   // instead of index.html with text/html MIME type. We serve the stamped HTML
   // string (with <meta name="portos-build-id"> injected) instead of sendFile
-  // so the bundled JS can read its own build id at boot.
-  const stampedIndexHtml = getStampedIndexHtml();
+  // so the bundled JS can read its own build id at boot. Re-read per request —
+  // a `npm run build` between server start and the request rewrites index.html
+  // with new chunk filenames; a stale snapshot would tell the browser to load
+  // chunks that no longer exist on disk.
   app.get('/{*splat}', (req, res, next) => {
     if (req.path.match(/\.\w+$/) && !req.path.endsWith('.html')) {
       return next();
     }
+    const stampedIndexHtml = getStampedIndexHtml();
     if (stampedIndexHtml) {
       res.type('html').send(stampedIndexHtml);
     } else {

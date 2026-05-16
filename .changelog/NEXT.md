@@ -945,6 +945,22 @@
 
 ## Fixed
 
+- **Stale-build cache — buildId now invalidates when `client/dist/index.html` changes.**
+  The boot-time cache in `server/lib/buildId.js` was load-once: once captured,
+  the server kept serving the *original* stamped index.html — referencing the
+  *original* Vite chunk filenames — even after a subsequent `npm run build`
+  rewrote `client/dist/` with new chunk hashes. The old chunk files were gone
+  from disk, so the browser got 404s on every code-split chunk and rendered
+  a black page; the only workaround was restarting the server. Same caching
+  affected `getBuildId()`, so the socket's `build:id` emit reported the *old*
+  build id and the stale-build toast never fired. Fix: cache keyed on the
+  file's mtime, recomputed on read when the mtime advances. The SPA-fallback
+  handler in `server/index.js` was also pulling the stamped HTML once at boot
+  outside the route handler; moved inside the handler so it picks up rebuilds
+  per request. **Files:** `server/lib/buildId.js`, `server/index.js`. New
+  `server/lib/buildId.test.js` covers the rebuild path, the no-change cache
+  hit, and the missing-file dev fallback.
+
 - **Arc header — "Generate arc" stays accurate when only a shape is picked.**
   After the sanitizer started preserving shape-only arcs, any series created
   with a Vonnegut shape but no other arc content immediately showed
