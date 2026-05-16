@@ -233,7 +233,22 @@ You are running inside the Claude Code TUI, which has the project's slashdo comm
 
 1. ${simplifyEnabled ? '`/simplify` — review the changed code for reuse, quality, and efficiency, and fix any issues it surfaces.' : '(simplify is disabled for this task — skip step 1)'}
 2. \`${tuiCompletionCommand}\` — commits${willOpenPR ? `, pushes, and opens a pull request against the default branch. Write the PR title and body yourself based on the actual changes you made; do NOT let any tool auto-generate the body from terminal output.${willReviewLoop ? ' After the PR is open, request a Copilot review (e.g. via `gh` if available).' : ''}` : ' and pushes the branch'}.
-3. Write the completion sentinel so PortOS knows you finished: \`echo "done" > "${worktreeInfo?.worktreePath || workspaceDir}/.agent-done"\` (PortOS polls for this file; without it the agent will sit idle until the 3-minute fallback timer fires).
+3. Write your task summary to the completion sentinel as a SHORT markdown report — this becomes the task summary PortOS displays in the agent card and feeds into downstream features (memory extraction, completion hooks, etc.). Aim for ~5–15 lines. Use this exact shell-quoted heredoc form:
+
+   \`\`\`bash
+   cat > "${worktreeInfo?.worktreePath || workspaceDir}/.agent-done" <<'EOF'
+   ## Summary
+   <one-sentence statement of what was accomplished>
+
+   ## Changes
+   - <key file or area>: <what changed and why>
+   - <…>
+
+   ${willOpenPR ? '## PR\n   <PR URL>' : '## Branch\n   <branch name>'}
+   EOF
+   \`\`\`
+
+   PortOS polls for this file every 2 seconds; without it the agent will sit idle until the 3-minute fallback timer fires.
 4. Run \`/quit\` to exit the Claude Code session cleanly.
 
 Do not wait for further user input between these steps — run them in sequence as soon as the implementation work is finished.

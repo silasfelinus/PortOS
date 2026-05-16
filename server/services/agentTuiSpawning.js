@@ -417,9 +417,13 @@ export async function spawnTuiAgent(agentId, task, prompt, workspacePath, model,
   }, 5000);
 
   // Sentinel-file watcher. The agent's prompt instructs it to write
-  // .agent-done in the workspace after running /simplify + /do:pr; that's
-  // the primary completion signal (idle-complete is just the fallback for
-  // an agent that didn't comply).
+  // .agent-done in the workspace after running /simplify + /do:pr; the file
+  // contains a markdown task summary that we ingest line-by-line into the
+  // agent's outputBuffer so downstream code (extractFinalSummary,
+  // persistSimplifySummaries, completion hooks, the agent card) gets the
+  // same `outputBuffer.tail = summary` shape it used to get from headless
+  // CLI runs. Idle-complete is just the fallback for an agent that didn't
+  // comply.
   const doneSentinelPath = workspacePath ? join(workspacePath, DONE_SENTINEL_NAME) : null;
   const doneSentinelTimer = doneSentinelPath ? setInterval(() => {
     if (finalized) return;
@@ -428,7 +432,13 @@ export async function spawnTuiAgent(agentId, task, prompt, workspacePath, model,
     readFile(doneSentinelPath, 'utf8')
       .then(contents => {
         const trimmed = contents.trim();
-        if (trimmed) appendLine(`✅ Agent signaled completion: ${trimmed.slice(0, 200)}`);
+        if (!trimmed) return;
+        appendLine(`✅ Agent signaled completion`);
+        // Cap at 4 KB so a runaway agent that pasted the entire diff into
+        // the sentinel doesn't blow up the agent record / downstream
+        // memory-extraction prompts.
+        const truncated = trimmed.length > 4096 ? `${trimmed.slice(0, 4096)}\n…[truncated]` : trimmed;
+        for (const line of truncated.split('\n')) appendLine(line);
       })
       .catch(() => {})
       .finally(() => {

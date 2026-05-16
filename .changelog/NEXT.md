@@ -932,6 +932,22 @@
 
 ## Changed
 
+- **TUI agents now write a markdown task summary into `.agent-done` and
+  PortOS ingests it as the agent's `outputBuffer`.** With per-line PTY
+  capture off, the agent card's "Show output" panel only showed
+  lifecycle events — no view of what the agent actually accomplished,
+  and downstream consumers (`extractFinalSummary`, memory extraction,
+  completion hooks) had nothing to work with. The Completion Workflow
+  prompt section now instructs the agent to `cat > .agent-done <<EOF
+  …` a short markdown report (Summary / Changes / PR sections) instead
+  of just `echo "done"`. The spawner's sentinel watcher reads that
+  content, line-feeds it through `appendLine` so it lands in both
+  `outputBuffer` and `output.txt`, and caps the ingested content at 4 KB
+  so a runaway agent that dumps an entire diff doesn't bloat the agent
+  record or downstream memory prompts. Headless CLI agents still capture
+  their summary the old way (Claude's stdout response trailer); only the
+  TUI path needed the explicit sentinel pivot.
+
 - **Claude Code TUI is now the default enabled provider in the base PortOS
   config.** Fresh installs get `activeProvider: "claude-code-tui"` with
   `claude-code-tui.enabled: true` out of the seed JSON. The headless
