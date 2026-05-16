@@ -326,6 +326,38 @@ describe('sharing round-trip', () => {
     expect(hasBeenProcessed(cursor, exp.filename, exp.manifestId)).toBe(true);
   });
 
+  it('keeps universe manifests retryable while the record JSON itself is still syncing', async () => {
+    const bucket = await buckets.createBucket({ name: 'SlowRecordBucket', path: tempBucket, mode: 'auto-merge' });
+    const universeBuilder = await import('../universeBuilder.js');
+    const { readCursor, hasBeenProcessed } = await import('./manifest.js');
+    const u = await universeBuilder.createUniverse({ name: 'Late Record Universe' });
+
+    const exp = await exporter.exportUniverse(u.id, bucket.id);
+    simulateRemoteSender(tempBucket, exp.filename);
+    // Simulate Drive delivering the manifest before the record JSON syncs.
+    const fs = await import('fs');
+    const recordPath = join(tempBucket, 'records', 'universes', `${u.id}.json`);
+    const recordSnapshot = fs.readFileSync(recordPath);
+    fs.rmSync(recordPath, { force: true });
+    await universeBuilder.deleteUniverse(u.id);
+
+    const first = await importer.processManifest(bucket.id, exp.filename);
+    expect(first.pending).toBe(true);
+    expect(first.outcome.pendingRecords).toEqual([u.id]);
+    let cursor = await readCursor(bucket.id);
+    expect(hasBeenProcessed(cursor, exp.filename, exp.manifestId)).toBe(false);
+    await expect(universeBuilder.getUniverse(u.id)).rejects.toThrow();
+
+    // Record JSON finally syncs — retry should insert + mark processed.
+    fs.writeFileSync(recordPath, recordSnapshot);
+    const retry = await importer.processBacklog(bucket.id);
+    expect(retry.processed).toBe(1);
+    const restored = await universeBuilder.getUniverse(u.id);
+    expect(restored.name).toBe('Late Record Universe');
+    cursor = await readCursor(bucket.id);
+    expect(hasBeenProcessed(cursor, exp.filename, exp.manifestId)).toBe(true);
+  });
+
   it('subscription round-trip: subscribe → mutate → re-export onto same filename → unsubscribe → unshared event', async () => {
     const { subscribe, unsubscribe, subscriptionFilename, __resetForTests } = await import('./subscriptions.js');
     const { sharingEvents } = await import('./importer.js');

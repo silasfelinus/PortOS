@@ -185,28 +185,44 @@ async function mergeMediaJobRecords(bucketPath, recordIds) {
   }
 }
 
-/** Read the records referenced by a manifest. */
+/**
+ * Read the records referenced by a manifest. `missing` lists recordIds whose
+ * JSON file hasn't synced into the bucket yet — the caller defers
+ * markProcessed until that list is empty, otherwise a manifest delivered
+ * ahead of its records would be silently dropped forever.
+ */
 async function readReferencedRecords(bucketPath, manifest) {
   const records = { series: [], issues: [], universes: [], media: [] };
-  for (const id of manifest.recordIds || []) {
+  const missing = [];
+  const resolveOne = async (id) => {
     if (id.startsWith('ser-')) {
       const r = await readJSONFile(join(bucketPath, 'records', 'series', `${id}.json`), null, { logError: false });
-      if (r) records.series.push(r);
-    } else if (id.startsWith('iss-')) {
-      const r = await readJSONFile(join(bucketPath, 'records', 'issues', `${id}.json`), null, { logError: false });
-      if (r) records.issues.push(r);
-    } else if (id.startsWith('chr-') || id.startsWith('set-') || id.startsWith('obj-')) {
-      // Bible entries — never standalone, just skip.
-      continue;
-    } else {
-      // Could be a universe (uuid only) or media job (uuid only). Try both.
-      const uni = await readJSONFile(join(bucketPath, 'records', 'universes', `${id}.json`), null, { logError: false });
-      if (uni) { records.universes.push(uni); continue; }
-      const med = await readJSONFile(join(bucketPath, 'records', 'media', `${id}.json`), null, { logError: false });
-      if (med) records.media.push(med);
+      return r ? { kind: 'series', record: r } : { kind: 'missing', id };
     }
+    if (id.startsWith('iss-')) {
+      const r = await readJSONFile(join(bucketPath, 'records', 'issues', `${id}.json`), null, { logError: false });
+      return r ? { kind: 'issues', record: r } : { kind: 'missing', id };
+    }
+    if (id.startsWith('chr-') || id.startsWith('set-') || id.startsWith('obj-')) {
+      // Bible entries — never standalone, just skip.
+      return { kind: 'skip' };
+    }
+    // UUID-only — could be a universe or a media job. Try both.
+    const uni = await readJSONFile(join(bucketPath, 'records', 'universes', `${id}.json`), null, { logError: false });
+    if (uni) return { kind: 'universes', record: uni };
+    const med = await readJSONFile(join(bucketPath, 'records', 'media', `${id}.json`), null, { logError: false });
+    if (med) return { kind: 'media', record: med };
+    return { kind: 'missing', id };
+  };
+  const resolved = await Promise.all((manifest.recordIds || []).map(resolveOne));
+  for (const r of resolved) {
+    if (r.kind === 'missing') missing.push(r.id);
+    else if (r.kind === 'series') records.series.push(r.record);
+    else if (r.kind === 'issues') records.issues.push(r.record);
+    else if (r.kind === 'universes') records.universes.push(r.record);
+    else if (r.kind === 'media') records.media.push(r.record);
   }
-  return records;
+  return { records, missing };
 }
 
 /**
@@ -406,7 +422,7 @@ export async function processManifest(bucketId, manifestFilename) {
     console.log(`⚠️ sharing: bucket=${bucket.name} manifest=${manifest.id} schemaVersion=${remoteVersion} > local=${SHARING_SCHEMA_VERSION} — refusing import (peer producedBy=${manifest.producedByVersion || 'unknown'})`);
     return { skipped: true, reason: 'incompatible-version', remoteVersion, localVersion: SHARING_SCHEMA_VERSION };
   }
-  const records = await readReferencedRecords(bucket.path, manifest);
+  const { records, missing: missingRecords } = await readReferencedRecords(bucket.path, manifest);
 
   // Always copy assets + media-job records ahead of the merge so canon and
   // pipeline records that reference them point at present files. Asset sync can
@@ -422,10 +438,11 @@ export async function processManifest(bucketId, manifestFilename) {
   } else {
     outcome = { mode: 'inbox', ...(await applyInbox(bucket, manifest, manifestFilename, records)) };
   }
-  if (assetCopy.missing.length > 0) {
-    outcome.pendingAssets = assetCopy.missing;
+  if (assetCopy.missing.length > 0 || missingRecords.length > 0) {
+    if (assetCopy.missing.length > 0) outcome.pendingAssets = assetCopy.missing;
+    if (missingRecords.length > 0) outcome.pendingRecords = missingRecords;
     sharingEvents.emit('manifest-processed', { bucketId, manifestId: manifest.id, manifestFilename, outcome });
-    console.log(`⏳ sharing: bucket=${bucket.name} manifest=${manifest.id} kind=${manifest.kind} mode=${bucket.mode} waitingForAssets=${assetCopy.missing.length}`);
+    console.log(`⏳ sharing: bucket=${bucket.name} manifest=${manifest.id} kind=${manifest.kind} mode=${bucket.mode} waitingForAssets=${assetCopy.missing.length} waitingForRecords=${missingRecords.length}`);
     return { processed: true, pending: true, manifest, outcome };
   }
   await markProcessed(bucketId, manifestFilename, manifest.id);
@@ -520,7 +537,13 @@ export async function promoteInboxItem(bucketId, manifestId) {
   const bucket = await getBucket(bucketId);
   const manifest = await readManifest(bucket.path, item.manifestFilename);
   if (!manifest) throw new Error(`Manifest no longer exists in bucket: ${item.manifestFilename}`);
-  const records = await readReferencedRecords(bucket.path, manifest);
+  const { records, missing: missingRecords } = await readReferencedRecords(bucket.path, manifest);
+  if (missingRecords.length > 0) {
+    throw Object.assign(new Error(`Manifest records are still syncing (${missingRecords.length} missing)`), {
+      code: 'SHARING_RECORDS_PENDING',
+      missingRecords,
+    });
+  }
   const assetCopy = await copyAssetsLocally(bucket.path, manifestAssetRefs(manifest));
   if (assetCopy.missing.length > 0) {
     throw Object.assign(new Error(`Manifest assets are still syncing (${assetCopy.missing.length} missing)`), {
