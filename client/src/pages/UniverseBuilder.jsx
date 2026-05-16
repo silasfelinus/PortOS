@@ -760,31 +760,35 @@ export default function UniverseBuilder() {
   // Mobile = flex column (grid template ignored); lg+ = grid where the inline
   // `gridTemplateColumns` swap between collapsed/expanded widths takes effect.
   // Flipping `display` at the breakpoint (rather than overriding grid-cols-1
-  // with an inline style) keeps the mobile stack working.
-  const desktopGridCols = worldsCollapsed ? '32px minmax(0, 1fr)' : '260px minmax(0, 1fr)';
+  // with an inline style) keeps the mobile stack working. Collapsed track is
+  // 0px (not a thin rail) — matches CoS pattern where a floating expand
+  // button stands in for the rail.
+  const desktopGridCols = worldsCollapsed ? '0px minmax(0, 1fr)' : '260px minmax(0, 1fr)';
 
   return (
     <div className="flex flex-col h-full">
       <div
-        className="flex-1 flex flex-col lg:grid min-h-0"
+        className="relative flex-1 flex flex-col lg:grid min-h-0 transition-[grid-template-columns] duration-200"
         style={{ gridTemplateColumns: desktopGridCols }}
       >
-      {/* Sidebar — world list. Collapses to a thin rail with just an open
-          button on desktop; mobile keeps the full sidebar inline (the page
-          stacks vertically below `lg`, so collapsing doesn't help there).
-          Border-r + tinted bg matches WritersRoom's tight integrated look —
-          the editor area flows directly off the sidebar without a card gap. */}
+      {/* Sidebar — world list. Collapses entirely on desktop (no rail) —
+          a floating expand button at the nav edge stands in. Mobile keeps the
+          full sidebar inline (the page stacks vertically below `lg`, so
+          collapsing doesn't help there). Border-r + tinted bg matches
+          WritersRoom's tight integrated look — the editor area flows directly
+          off the sidebar without a card gap. */}
+      {worldsCollapsed && (
+        <button
+          onClick={toggleWorldsCollapsed}
+          className="hidden lg:flex absolute left-0 top-2 z-20 p-1.5 text-gray-500 hover:text-white transition-colors rounded-r-md hover:bg-port-card bg-port-card/60 border border-l-0 border-port-border"
+          title="Show universes"
+          aria-label="Show universes"
+        >
+          <PanelLeftOpen size={16} />
+        </button>
+      )}
       {worldsCollapsed ? (
-        <aside className="hidden lg:flex border-r border-port-border bg-port-card/40 items-start justify-center pt-3">
-          <button
-            onClick={toggleWorldsCollapsed}
-            className="p-1.5 text-gray-500 hover:text-white"
-            title="Show universes"
-            aria-label="Show universes"
-          >
-            <PanelLeftOpen size={14} />
-          </button>
-        </aside>
+        <div className="hidden lg:block overflow-hidden min-w-0" />
       ) : (
         <aside className="border-b lg:border-b-0 lg:border-r border-port-border bg-port-card/40 px-3 py-3 flex flex-col gap-2 lg:overflow-y-auto">
           <div className="flex items-center justify-between">

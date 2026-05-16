@@ -161,26 +161,29 @@ export default function PipelineSeries() {
   // `gridTemplateColumns` swap between collapsed/expanded widths takes effect.
   // Mirrors the UniverseBuilder full-bleed layout so the bible rail sits flush
   // against the main app sidebar instead of floating inside Layout padding.
-  const desktopGridCols = sidebarCollapsed ? '32px minmax(0, 1fr)' : '360px minmax(0, 1fr)';
+  // Collapsed track is 0px (not a thin rail) — matches CoS pattern where a
+  // floating expand button stands in for the rail.
+  const desktopGridCols = sidebarCollapsed ? '0px minmax(0, 1fr)' : '360px minmax(0, 1fr)';
 
   return (
     <div className="flex flex-col h-full">
       <div
-        className="flex-1 flex flex-col lg:grid min-h-0"
+        className="relative flex-1 flex flex-col lg:grid min-h-0 transition-[grid-template-columns] duration-200"
         style={{ gridTemplateColumns: desktopGridCols }}
       >
+        {sidebarCollapsed && (
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            className="hidden lg:flex absolute left-0 top-2 z-20 p-1.5 text-gray-500 hover:text-white transition-colors rounded-r-md hover:bg-port-card bg-port-card/60 border border-l-0 border-port-border"
+            title="Show series bible"
+            aria-label="Expand series bible sidebar"
+          >
+            <PanelLeftOpen size={16} />
+          </button>
+        )}
         {sidebarCollapsed ? (
-          <aside className="hidden lg:flex border-r border-port-border bg-port-card/40 items-start justify-center pt-3">
-            <button
-              type="button"
-              onClick={toggleSidebar}
-              className="p-1.5 text-gray-500 hover:text-white"
-              title="Show series bible"
-              aria-label="Expand series bible sidebar"
-            >
-              <PanelLeftOpen size={14} />
-            </button>
-          </aside>
+          <div className="hidden lg:block overflow-hidden min-w-0" />
         ) : (
           <aside className="border-b lg:border-b-0 lg:border-r border-port-border bg-port-card/40 lg:overflow-y-auto">
             <BibleSidebar

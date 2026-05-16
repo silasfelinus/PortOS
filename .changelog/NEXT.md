@@ -796,6 +796,19 @@
 
 ## Changed
 
+- **Writers Room / Universe Builder / Series detail — collapse UX now matches
+  CoS.** The three pages previously left a 32px vertical rail in place when
+  their middle sidebar was collapsed. They now mirror the Chief of Staff
+  pattern exactly: the grid track collapses to `0px` and a floating
+  `PanelLeftOpen` button anchored at `left-0 top-2 z-20` (styled as a tab
+  flush with the app nav edge — `rounded-r-md`, `border-l-0`, `bg-port-card/60`)
+  stands in for the rail. Added `transition-[grid-template-columns] duration-200`
+  on the grid container so the swap animates instead of jumping. Each page
+  keeps its own breakpoint convention (`md:` for Writers Room, `lg:` for the
+  other two). Files: `client/src/pages/WritersRoom.jsx`,
+  `client/src/pages/UniverseBuilder.jsx`,
+  `client/src/pages/PipelineSeries.jsx`.
+
 - **Pipeline stage `tvScript` renamed to `teleplay` end-to-end.** Full
   rename of the internal stage id, not just the visible label. Touches
   server schemas (`TEXT_STAGE_IDS`, `STAGE_IDS`), routes
