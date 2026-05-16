@@ -12,20 +12,26 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, Sparkles, Wand2, Mic } from 'lucide-react';
+import { Loader2, Sparkles, Wand2, Mic, Music, Upload, Trash2 } from 'lucide-react';
 import toast from '../../ui/Toast';
 import {
   extractPipelineAudioLines,
   renderPipelineAudioLine,
   patchPipelineAudioLine,
+  listPipelineMusicLibrary,
+  uploadPipelineMusicTrack,
+  attachPipelineMusicTrack,
+  detachPipelineMusicTrack,
+  deletePipelineMusicTrack,
   PIPELINE_STAGE_LABELS,
   PIPELINE_STAGE_STATUS_LABEL as STATUS_LABEL,
   PIPELINE_STAGE_STATUS_COLOR as STATUS_COLOR,
 } from '../../../services/api';
 
 export default function AudioStage({ issue, onStageUpdate }) {
-  const stage = issue.stages?.audio || { status: 'empty', lines: [] };
+  const stage = issue.stages?.audio || { status: 'empty', lines: [], music: null };
   const lines = Array.isArray(stage.lines) ? stage.lines : [];
+  const music = stage.music || null;
   const [extracting, setExtracting] = useState(false);
   // Per-line render busy state keyed by line index — multiple lines can
   // render concurrently with independent spinners.
@@ -47,6 +53,81 @@ export default function AudioStage({ issue, onStageUpdate }) {
   useEffect(() => () => {
     if (armTimerRef.current) clearTimeout(armTimerRef.current);
   }, []);
+
+  const [musicLibrary, setMusicLibrary] = useState(null);
+  const [musicLibraryLoading, setMusicLibraryLoading] = useState(false);
+  const [musicPickerOpen, setMusicPickerOpen] = useState(false);
+  const [musicUploading, setMusicUploading] = useState(false);
+  const [musicAttaching, setMusicAttaching] = useState(null);
+  // Inline confirm-row pattern per the user's preference: clicking trash
+  // reveals [Cancel] [Delete] for that row only. Stored as the filename so
+  // only one row shows the confirm at a time.
+  const [pendingLibraryDelete, setPendingLibraryDelete] = useState(null);
+  const fileInputRef = useRef(null);
+
+  const loadMusicLibrary = async () => {
+    setMusicLibraryLoading(true);
+    const result = await listPipelineMusicLibrary().catch((err) => {
+      toast.error(err.message || 'Failed to load music library');
+      return null;
+    });
+    setMusicLibraryLoading(false);
+    if (result) setMusicLibrary(result.tracks || []);
+  };
+
+  const openMusicPicker = async () => {
+    setMusicPickerOpen(true);
+    if (musicLibrary === null) await loadMusicLibrary();
+  };
+
+  const handleMusicUpload = async (file) => {
+    if (!file) return;
+    setMusicUploading(true);
+    const result = await uploadPipelineMusicTrack(issue.id, file).catch((err) => {
+      toast.error(err.message || 'Upload failed');
+      return null;
+    });
+    setMusicUploading(false);
+    if (!result) return;
+    onStageUpdate?.('audio', result.stage, result.issue);
+    setMusicLibrary(null);
+    setMusicPickerOpen(false);
+    toast.success(`Uploaded ${file.name}`);
+  };
+
+  const handleAttach = async (track) => {
+    setMusicAttaching(track.filename);
+    const result = await attachPipelineMusicTrack(issue.id, { trackFilename: track.filename, label: track.label }).catch((err) => {
+      toast.error(err.message || 'Attach failed');
+      return null;
+    });
+    setMusicAttaching(null);
+    if (!result) return;
+    onStageUpdate?.('audio', result.stage, result.issue);
+    setMusicPickerOpen(false);
+    toast.success(`Attached ${track.label || track.filename}`);
+  };
+
+  const handleDetach = async () => {
+    const result = await detachPipelineMusicTrack(issue.id).catch((err) => {
+      toast.error(err.message || 'Detach failed');
+      return null;
+    });
+    if (!result) return;
+    onStageUpdate?.('audio', result.stage, result.issue);
+    toast.success('Removed music from this issue');
+  };
+
+  const handleLibraryDelete = async (filename) => {
+    setPendingLibraryDelete(null);
+    const result = await deletePipelineMusicTrack(filename).catch((err) => {
+      toast.error(err.message || 'Delete failed');
+      return null;
+    });
+    if (!result) return;
+    setMusicLibrary((prev) => (prev || []).filter((t) => t.filename !== filename));
+    toast.success(`Removed ${filename} from library`);
+  };
 
   const storyboardSceneCount = (issue.stages?.storyboards?.scenes || []).length;
   const canExtract = storyboardSceneCount > 0;
@@ -249,6 +330,163 @@ export default function AudioStage({ issue, onStageUpdate }) {
           })}
         </ul>
       )}
+
+      <section className="pt-4 border-t border-port-border">
+        <div className="flex items-start justify-between flex-wrap gap-3 mb-3">
+          <div className="flex items-center gap-3">
+            <Music className="w-5 h-5 text-port-accent" />
+            <div>
+              <h3 className="text-base font-semibold text-white">Background Music</h3>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Optional track played under the rendered episode. Upload from disk now;
+                {' '}<span className="text-gray-600">local OSS generation (MusicGen) coming next.</span>
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/mp4,audio/m4a,audio/ogg,audio/flac,.mp3,.wav,.m4a,.ogg,.flac"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (file) void handleMusicUpload(file);
+              }}
+              className="hidden"
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={musicUploading}
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-card border border-port-border text-white text-sm hover:border-port-accent/50 disabled:opacity-40"
+            >
+              {musicUploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+              Upload track
+            </button>
+            <button
+              type="button"
+              onClick={() => (musicPickerOpen ? setMusicPickerOpen(false) : openMusicPicker())}
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-card border border-port-border text-white text-sm hover:border-port-accent/50"
+            >
+              <Music size={14} />
+              {musicPickerOpen ? 'Close library' : 'Pick from library'}
+            </button>
+          </div>
+        </div>
+
+        {music ? (
+          <div className="p-3 bg-port-card border border-port-border rounded-lg">
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-sm font-medium text-white truncate">
+                    {music.label || music.trackFilename}
+                  </span>
+                  <span className="text-[10px] uppercase tracking-wider text-gray-500">
+                    {music.source || 'unknown'}
+                  </span>
+                </div>
+                {music.trackFilename ? (
+                  <audio
+                    controls
+                    src={`/data/music/${encodeURIComponent(music.trackFilename)}`}
+                    className="w-full max-w-md"
+                  >
+                    <track kind="captions" />
+                  </audio>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={handleDetach}
+                title="Remove music from this issue (track stays in the library)"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-gray-400 hover:text-port-error border border-port-border hover:border-port-error/50"
+              >
+                <Trash2 size={12} /> Remove
+              </button>
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-gray-400 italic">
+            No background music attached. Upload a track or pick one from the library.
+          </p>
+        )}
+
+        {musicPickerOpen ? (
+          <div className="mt-3 p-3 bg-port-bg border border-port-border rounded-lg">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs uppercase tracking-wider text-gray-500">Library</span>
+              {musicLibraryLoading ? (
+                <Loader2 size={12} className="animate-spin text-gray-500" />
+              ) : null}
+            </div>
+            {musicLibrary === null || musicLibraryLoading ? (
+              <p className="text-xs text-gray-500">Loading…</p>
+            ) : musicLibrary.length === 0 ? (
+              <p className="text-xs text-gray-500 italic">
+                Library is empty. Click <strong>Upload track</strong> above to add your first one.
+              </p>
+            ) : (
+              <ul className="space-y-1.5 max-h-80 overflow-y-auto">
+                {musicLibrary.map((track) => {
+                  const isCurrent = music?.trackFilename === track.filename;
+                  const isAttaching = musicAttaching === track.filename;
+                  const confirming = pendingLibraryDelete === track.filename;
+                  return (
+                    <li key={track.filename} className="flex items-center gap-2 p-2 bg-port-card border border-port-border rounded">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm text-white truncate">{track.label || track.filename}</div>
+                        <div className="text-[10px] text-gray-500 font-mono">{track.filename}</div>
+                      </div>
+                      {confirming ? (
+                        <>
+                          <span className="text-xs text-gray-400 italic">Delete from library?</span>
+                          <button
+                            type="button"
+                            onClick={() => setPendingLibraryDelete(null)}
+                            className="px-2 py-1 rounded border border-port-border text-gray-300 text-xs hover:border-gray-500"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleLibraryDelete(track.filename)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-port-error text-white text-xs"
+                          >
+                            <Trash2 size={12} /> Delete
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleAttach(track)}
+                            disabled={isCurrent || isAttaching}
+                            title={isCurrent ? 'Already attached to this issue' : 'Attach to this issue'}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-port-accent text-white text-xs disabled:opacity-50"
+                          >
+                            {isAttaching ? <Loader2 size={12} className="animate-spin" /> : null}
+                            {isCurrent ? 'Attached' : 'Attach'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPendingLibraryDelete(track.filename)}
+                            title="Delete from library (issues that point at this file will fail playback)"
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs border border-port-border text-gray-400 hover:text-port-error hover:border-port-error/50"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        ) : null}
+      </section>
     </div>
   );
 }

@@ -1,4 +1,5 @@
-import { request } from './apiCore.js';
+import { request, API_BASE } from './apiCore.js';
+import { buildFormData } from './apiImageVideo.js';
 
 // Stage IDs mirror server/services/pipeline/issues.js — keep these in sync.
 // `nouns` is a UI-only pseudo-stage: it has no server stage record + no LLM
@@ -364,4 +365,45 @@ export const patchPipelineAudioLine = (issueId, lineIdx, patch) =>
   request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/audio/lines/${encodeURIComponent(lineIdx)}`, {
     method: 'PATCH',
     body: JSON.stringify(patch),
+  });
+
+// ---- Music library (Phase 4c) ----
+export const listPipelineMusicLibrary = () =>
+  request('/pipeline/audio/music-library');
+
+// Bypasses `request()` because that helper hard-codes
+// `Content-Type: application/json`, which conflicts with FormData's
+// auto-generated multipart boundary.
+export const uploadPipelineMusicTrack = async (issueId, file, { label } = {}) => {
+  const res = await fetch(
+    `${API_BASE}/pipeline/issues/${encodeURIComponent(issueId)}/stages/audio/music/upload`,
+    { method: 'POST', body: buildFormData({ track: file, label }) },
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    const e = new Error(err.error || res.statusText);
+    e.code = err.code;
+    e.status = res.status;
+    throw e;
+  }
+  return res.json();
+};
+
+export const attachPipelineMusicTrack = (issueId, { trackFilename, label } = {}) =>
+  request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/audio/music/attach`, {
+    method: 'POST',
+    body: JSON.stringify({ trackFilename, label }),
+  });
+
+export const detachPipelineMusicTrack = (issueId) =>
+  request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/audio/music`, {
+    method: 'DELETE',
+  });
+
+// Library deletes do NOT auto-purge issue references — by design, so the
+// user sees the broken playback and re-picks rather than the library
+// silently rewriting issue state.
+export const deletePipelineMusicTrack = (filename) =>
+  request(`/pipeline/audio/music-library/${encodeURIComponent(filename)}`, {
+    method: 'DELETE',
   });

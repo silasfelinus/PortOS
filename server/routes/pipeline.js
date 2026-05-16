@@ -60,6 +60,16 @@ import { listVisualStyles } from '../lib/visualStyles.js';
 import { buildComicPdf, PAGE_SIZES, DEFAULT_PAGE_SIZE, ERR_NO_RENDERED_PAGES } from '../services/pipeline/comicPdf.js';
 import { listAllVoices, synthesizeToFile, parseVoiceId, extractDialogueLines, resolveVoiceForLine } from '../services/pipeline/audio.js';
 import { synthesize as synthesizeVoice } from '../services/voice/tts.js';
+import {
+  listMusicLibrary,
+  importUploadedTrack,
+  deleteMusicTrack,
+  statMusicTrack,
+  isSupportedMusicUpload,
+  MUSIC_SOURCE,
+  MUSIC_UPLOAD_MAX_BYTES,
+} from '../services/pipeline/musicLibrary.js';
+import { uploadSingle } from '../lib/multipart.js';
 import { parseComicScript } from '../lib/comicScriptParser.js';
 import {
   LENGTH_PROFILE_NAMES,
@@ -650,6 +660,98 @@ router.post('/issues/:id/stages/audio/lines/:lineIdx/render', asyncHandler(async
     engine: synthResult.engine,
     voiceId: synthResult.voiceId || voiceId,
   });
+}));
+
+// Music library — shared across every issue; the audio stage stores only a
+// pointer (`music.trackFilename`). Local OSS generation (4c.2) and 3rd-party
+// engines (4c.3) plug in as sibling sources behind the same library list.
+
+const musicUpload = uploadSingle('track', {
+  limits: { fileSize: MUSIC_UPLOAD_MAX_BYTES },
+  fileFilter: (_req, file, cb) => {
+    if (isSupportedMusicUpload(file)) {
+      cb(null, true);
+    } else {
+      cb(new ServerError(
+        'Unsupported audio format — accepted: MP3, WAV, M4A, OGG, FLAC',
+        { status: 400, code: 'PIPELINE_MUSIC_UNSUPPORTED_FORMAT' },
+      ));
+    }
+  },
+});
+
+// The audio stage status reflects whether the *VO line list* is ready, since
+// music alone doesn't make an episode renderable. So music-only mutations
+// leave status at 'empty' when no lines exist and bump to 'edited' otherwise.
+const audioStatusAfterMusicChange = (issue) =>
+  ((issue.stages?.audio?.lines || []).length ? 'edited' : 'empty');
+
+router.get('/audio/music-library', asyncHandler(async (_req, res) => {
+  res.json({ tracks: await listMusicLibrary() });
+}));
+
+router.post('/issues/:id/stages/audio/music/upload', musicUpload, asyncHandler(async (req, res) => {
+  if (!req.file) {
+    throw new ServerError('No audio file uploaded', {
+      status: 400, code: 'PIPELINE_MUSIC_NO_FILE',
+    });
+  }
+  const issue = await issuesSvc.getIssue(req.params.id).catch((err) => { throw mapServiceError(err); });
+  const { filename, sizeBytes } = await importUploadedTrack(req.file.path, req.file.originalname);
+  const label = typeof req.body?.label === 'string' && req.body.label.trim()
+    ? req.body.label.trim()
+    : null;
+  const { issue: updatedIssue, stage } = await issuesSvc.updateStage(req.params.id, 'audio', {
+    status: audioStatusAfterMusicChange(issue),
+    music: { source: MUSIC_SOURCE.UPLOAD, trackFilename: filename, label },
+    errorMessage: '',
+  });
+  res.json({ issue: updatedIssue, stage, music: stage.music, sizeBytes });
+}));
+
+const musicAttachSchema = z.object({
+  trackFilename: z.string().trim().min(1).max(500),
+  label: z.string().trim().max(200).nullable().optional(),
+});
+router.post('/issues/:id/stages/audio/music/attach', asyncHandler(async (req, res) => {
+  const body = validateRequest(musicAttachSchema, req.body ?? {});
+  // Single-file stat instead of full library listing — one syscall vs. N+1.
+  const found = await statMusicTrack(body.trackFilename);
+  if (!found) {
+    throw new ServerError('Music track not found in library', {
+      status: 404, code: 'PIPELINE_MUSIC_NOT_FOUND',
+    });
+  }
+  const issue = await issuesSvc.getIssue(req.params.id).catch((err) => { throw mapServiceError(err); });
+  const { issue: updatedIssue, stage } = await issuesSvc.updateStage(req.params.id, 'audio', {
+    status: audioStatusAfterMusicChange(issue),
+    music: {
+      source: MUSIC_SOURCE.LIBRARY,
+      trackFilename: body.trackFilename,
+      label: body.label?.trim() || found.label,
+    },
+    errorMessage: '',
+  });
+  res.json({ issue: updatedIssue, stage, music: stage.music });
+}));
+
+router.delete('/issues/:id/stages/audio/music', asyncHandler(async (req, res) => {
+  const issue = await issuesSvc.getIssue(req.params.id).catch((err) => { throw mapServiceError(err); });
+  const { issue: updatedIssue, stage } = await issuesSvc.updateStage(req.params.id, 'audio', {
+    status: audioStatusAfterMusicChange(issue),
+    music: null,
+    errorMessage: '',
+  });
+  res.json({ issue: updatedIssue, stage });
+}));
+
+// Deleting from the library leaves stale `music.trackFilename` pointers on
+// issues so the user sees the broken playback and re-picks. Auto-purging
+// would scan every issue on every delete; deferred until needed.
+router.delete('/audio/music-library/:filename', asyncHandler(async (req, res) => {
+  const { filename } = req.params;
+  const existed = await deleteMusicTrack(filename);
+  res.json({ filename, deleted: existed });
 }));
 
 // =====================

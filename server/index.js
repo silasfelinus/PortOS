@@ -477,6 +477,9 @@ app.use('/data/video-thumbnails', express.static(PATHS.videoThumbnails));
 // Voice-over WAVs rendered by the pipeline audio stage — the AudioStage UI
 // pulls them inline via <audio src="/data/audio/<filename>">.
 app.use('/data/audio', express.static(PATHS.audio));
+// Background-music tracks (uploaded today, generated locally tomorrow). The
+// AudioStage music picker plays them inline via <audio src="/data/music/...">.
+app.use('/data/music', express.static(PATHS.music));
 
 // Serve built client UI (production mode — no Vite dev server needed)
 const CLIENT_DIST = join(__dirname, '..', 'client', 'dist');

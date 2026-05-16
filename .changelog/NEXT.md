@@ -2,6 +2,31 @@
 
 ## Added
 
+- **Pipeline audio stage: background-music upload + shared library + picker
+  (Phase 4c).** The audio stage now carries an optional music track alongside
+  the VO lines, with three new routes: `POST
+  /pipeline/issues/:id/stages/audio/music/upload` (multipart upload + attach
+  in one round trip; MP3/WAV/M4A/OGG/FLAC, 50 MB max), `POST
+  …/music/attach` (re-bind an existing library track to the issue), `DELETE
+  …/music` (detach from the issue), plus library-level `GET
+  /pipeline/audio/music-library` and `DELETE /pipeline/audio/music-library/:filename`.
+  Tracks live under a new shared `data/music/` directory served via
+  `/data/music` static; deleting a library file intentionally leaves
+  pointers stale on issue records so the broken playback surfaces to the
+  user (auto-purge would scan every issue on every delete). The AudioStage
+  UI gains a "Background Music" section below the lines list with Upload /
+  Pick from library buttons, an inline confirm row for destructive library
+  deletes (matching the user's preference for `[Cancel] [Delete]` over the
+  two-click-arm pattern), and inline `<audio>` playback for the attached
+  track. The `MUSIC_SOURCE` const (`upload | library | gen`) replaces bare
+  strings in the routes so the upcoming local-OSS MusicGen sub-phase
+  (4c.2) plugs in as a sibling `'gen'` source without a contract change.
+  Touches: new `server/services/pipeline/musicLibrary.js` + tests, new
+  `server/services/pipeline/musicLibrary.test.js`, `server/routes/pipeline.js`,
+  `server/lib/fileUtils.js` (`PATHS.music`), `server/index.js` (static
+  mount), `client/src/services/apiPipeline.js`,
+  `client/src/components/pipeline/stages/AudioStage.jsx`.
+
 - **`plan-task` scheduled task — strict PLAN.md executor.** New task type in
   `server/services/taskSchedule.js` that picks the next unchecked PLAN.md
   item, implements it (worktree + `/simplify` + PR by default), and **moves**

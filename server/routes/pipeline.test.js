@@ -191,6 +191,48 @@ vi.mock('../services/voice/tts.js', () => ({
   VALID_ENGINES: new Set(['kokoro', 'piper']),
 }));
 
+const musicLibraryStore = new Map();
+let lastImportedName = null;
+const assertSafe = (name) => {
+  if (typeof name !== 'string' || name.includes('..') || name.includes('/')) {
+    const e = new Error('Invalid music filename');
+    e.status = 400; e.code = 'VALIDATION_ERROR';
+    throw e;
+  }
+};
+vi.mock('../services/pipeline/musicLibrary.js', () => ({
+  MUSIC_UPLOAD_MAX_BYTES: 50 * 1024 * 1024,
+  MUSIC_SOURCE: { UPLOAD: 'upload', LIBRARY: 'library', GEN: 'gen' },
+  isSupportedMusicUpload: vi.fn(() => true),
+  listMusicLibrary: vi.fn(async () => Array.from(musicLibraryStore.values())),
+  importUploadedTrack: vi.fn(async (_tmpPath, originalName) => {
+    lastImportedName = originalName;
+    const filename = `music-uuid-${++uuidCounter}.mp3`;
+    musicLibraryStore.set(filename, { filename, label: originalName.replace(/\.[^.]+$/, ''), sizeBytes: 11, updatedAt: new Date().toISOString() });
+    return { filename, sizeBytes: 11 };
+  }),
+  statMusicTrack: vi.fn(async (filename) => {
+    assertSafe(filename);
+    return musicLibraryStore.get(filename) || null;
+  }),
+  deleteMusicTrack: vi.fn(async (filename) => {
+    assertSafe(filename);
+    const existed = musicLibraryStore.has(filename);
+    musicLibraryStore.delete(filename);
+    return existed;
+  }),
+}));
+
+vi.mock('../lib/multipart.js', () => ({
+  uploadSingle: () => (req, _res, next) => {
+    req.file = req.body?._mockFile || null;
+    delete req.body?._mockFile;
+    next();
+  },
+  optionalUpload: () => (_req, _res, next) => next(),
+  uploadFields: () => (_req, _res, next) => next(),
+}));
+
 const pipelineRouter = (await import('./pipeline.js')).default;
 
 function makeApp() {
@@ -1308,6 +1350,122 @@ describe('pipeline routes', () => {
         .post(`/api/pipeline/issues/${iss.id}/stages/audio/lines/nope/render`)
         .send({});
       expect(r.status).toBe(400);
+    });
+  });
+
+  describe('music library routes', () => {
+    beforeEach(() => {
+      musicLibraryStore.clear();
+      lastImportedName = null;
+    });
+
+    async function seedIssue(app) {
+      const ser = await request(app).post('/api/pipeline/series').send({ name: 'S' });
+      const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
+      return iss.body;
+    }
+
+    it('GET /audio/music-library returns the current track list', async () => {
+      const app = makeApp();
+      musicLibraryStore.set('music-1.mp3', { filename: 'music-1.mp3', label: 'theme', sizeBytes: 100, updatedAt: '2026-05-15T00:00:00.000Z' });
+      const r = await request(app).get('/api/pipeline/audio/music-library');
+      expect(r.status).toBe(200);
+      expect(r.body.tracks).toHaveLength(1);
+      expect(r.body.tracks[0].filename).toBe('music-1.mp3');
+    });
+
+    it('POST /audio/music/upload imports the file and attaches it to the issue', async () => {
+      const app = makeApp();
+      const iss = await seedIssue(app);
+      const r = await request(app)
+        .post(`/api/pipeline/issues/${iss.id}/stages/audio/music/upload`)
+        // The mock multipart parser pulls req.file out of req.body._mockFile so
+        // this test can sidestep the real streaming parser without losing the
+        // route's req.file contract.
+        .send({ _mockFile: { path: '/tmp/uploaded.mp3', originalname: 'My Theme.mp3', mimetype: 'audio/mpeg', size: 11 } });
+      expect(r.status).toBe(200);
+      expect(r.body.music.source).toBe('upload');
+      expect(r.body.music.trackFilename).toMatch(/^music-uuid-/);
+      // Persisted on the issue
+      const after = await request(app).get(`/api/pipeline/issues/${iss.id}`);
+      expect(after.body.stages.audio.music.trackFilename).toBe(r.body.music.trackFilename);
+      expect(lastImportedName).toBe('My Theme.mp3');
+    });
+
+    it('POST /audio/music/upload 400s when no file is uploaded', async () => {
+      const app = makeApp();
+      const iss = await seedIssue(app);
+      const r = await request(app)
+        .post(`/api/pipeline/issues/${iss.id}/stages/audio/music/upload`)
+        .send({});
+      expect(r.status).toBe(400);
+    });
+
+    it('POST /audio/music/attach attaches an existing library track', async () => {
+      const app = makeApp();
+      const iss = await seedIssue(app);
+      musicLibraryStore.set('shared.mp3', { filename: 'shared.mp3', label: 'shared', sizeBytes: 100, updatedAt: '2026-05-15T00:00:00.000Z' });
+      const r = await request(app)
+        .post(`/api/pipeline/issues/${iss.id}/stages/audio/music/attach`)
+        .send({ trackFilename: 'shared.mp3', label: 'Library pick' });
+      expect(r.status).toBe(200);
+      expect(r.body.music.source).toBe('library');
+      expect(r.body.music.trackFilename).toBe('shared.mp3');
+      expect(r.body.music.label).toBe('Library pick');
+    });
+
+    it('POST /audio/music/attach 404s when the track is not in the library', async () => {
+      const app = makeApp();
+      const iss = await seedIssue(app);
+      const r = await request(app)
+        .post(`/api/pipeline/issues/${iss.id}/stages/audio/music/attach`)
+        .send({ trackFilename: 'ghost.mp3' });
+      expect(r.status).toBe(404);
+    });
+
+    it('POST /audio/music/attach 400s on path-traversal filenames', async () => {
+      const app = makeApp();
+      const iss = await seedIssue(app);
+      const r = await request(app)
+        .post(`/api/pipeline/issues/${iss.id}/stages/audio/music/attach`)
+        .send({ trackFilename: '../etc/passwd' });
+      expect(r.status).toBe(400);
+    });
+
+    it('DELETE /audio/music clears music from the issue without deleting the library entry', async () => {
+      const app = makeApp();
+      const iss = await seedIssue(app);
+      musicLibraryStore.set('shared.mp3', { filename: 'shared.mp3', label: 'shared', sizeBytes: 100, updatedAt: '2026-05-15T00:00:00.000Z' });
+      await request(app)
+        .post(`/api/pipeline/issues/${iss.id}/stages/audio/music/attach`)
+        .send({ trackFilename: 'shared.mp3' });
+      const r = await request(app)
+        .delete(`/api/pipeline/issues/${iss.id}/stages/audio/music`)
+        .send();
+      expect(r.status).toBe(200);
+      expect(r.body.stage.music).toBeNull();
+      // Library entry survives the issue detach
+      expect(musicLibraryStore.has('shared.mp3')).toBe(true);
+    });
+
+    it('DELETE /audio/music-library/:filename removes the file from the library', async () => {
+      const app = makeApp();
+      musicLibraryStore.set('doomed.mp3', { filename: 'doomed.mp3', label: 'doomed', sizeBytes: 1, updatedAt: '2026-05-15T00:00:00.000Z' });
+      const r = await request(app)
+        .delete('/api/pipeline/audio/music-library/doomed.mp3')
+        .send();
+      expect(r.status).toBe(200);
+      expect(r.body.deleted).toBe(true);
+      expect(musicLibraryStore.has('doomed.mp3')).toBe(false);
+    });
+
+    it('DELETE /audio/music-library/:filename returns deleted:false when the file is already gone', async () => {
+      const app = makeApp();
+      const r = await request(app)
+        .delete('/api/pipeline/audio/music-library/ghost.mp3')
+        .send();
+      expect(r.status).toBe(200);
+      expect(r.body.deleted).toBe(false);
     });
   });
 });
