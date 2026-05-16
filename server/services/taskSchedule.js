@@ -23,7 +23,7 @@ import { isTaskTypeEnabledForApp, getAppTaskTypeInterval, getActiveApps, getAppT
 import { loadState, isImprovementEnabled } from './cosState.js';
 import { PORTOS_UI_URL, PORTOS_API_URL } from '../lib/ports.js';
 import { getUserTimezone, getLocalParts } from '../lib/timezone.js';
-import { parseCronToNextRun } from './eventScheduler.js';
+import { parseCronToNextRun, parseCronToPrevRun } from './eventScheduler.js';
 
 const DATA_DIR = PATHS.cos;
 const SCHEDULE_FILE = join(DATA_DIR, 'task-schedule.json');
@@ -1963,6 +1963,39 @@ export async function shouldRunTask(taskType, appId = null) {
         result = { shouldRun: false, reason: 'invalid-cron' };
         break;
       }
+
+      // Catch-up: if a cron slot has already elapsed since the last successful run
+      // (or, for never-run tasks, within the last cron period), fire it now instead
+      // of waiting another full period. This recovers from daemon downtime, restarts,
+      // and the hourly-check window missing the 60-second cron match.
+      const prevRun = parseCronToPrevRun(cronExpr, new Date(now), timezone);
+      if (prevRun) {
+        const prevRunMs = prevRun.getTime();
+        let lookbackBound;
+        if (lastRun) {
+          lookbackBound = lastRun;
+        } else {
+          // Never-run: only catch up if the most-recent occurrence is within ONE cron
+          // period of now (e.g. daily cron catches up to ~24h, hourly to ~1h). The bound
+          // is "the occurrence before prevRun" — anything older has already been missed
+          // by more than one period and shouldn't be replayed.
+          const beforePrev = parseCronToPrevRun(cronExpr, new Date(prevRunMs - 60_000), timezone);
+          lookbackBound = beforePrev ? beforePrev.getTime() : 0;
+        }
+        if (prevRunMs > lookbackBound && prevRunMs <= now) {
+          // Compute nextRun for telemetry/reporting
+          const nextRunAfterCatch = parseCronToNextRun(cronExpr, new Date(now), timezone);
+          result = {
+            shouldRun: true,
+            reason: 'cron-catch-up',
+            cronExpression: cronExpr,
+            missedSlot: prevRun.toISOString(),
+            nextRunAt: nextRunAfterCatch ? nextRunAfterCatch.toISOString() : null
+          };
+          break;
+        }
+      }
+
       // For never-run tasks, use 1 minute ago so the first scheduled occurrence can match
       const fromDate = lastRun ? new Date(lastRun) : new Date(now - 60_000);
       const nextRun = parseCronToNextRun(cronExpr, fromDate, timezone);
@@ -2021,8 +2054,15 @@ export async function getNextTaskType(appId = null, lastType = '') {
   const schedule = await loadSchedule();
   const taskTypes = Object.keys(schedule.tasks);
 
-  // First, check for daily/weekly/once tasks that are due
   const dueTasks = await getDueTasks(appId);
+
+  // Explicit time-based schedules (cron, custom interval) outrank loose interval-based
+  // ones (daily/weekly/once). A user-pinned 9 AM cron should fire at 9 AM even if a
+  // weekly task is perpetually "ready" — the loose tasks will pick up the next slot.
+  const cronDue = dueTasks.filter(t => t.interval.type === INTERVAL_TYPES.CRON || t.interval.type === INTERVAL_TYPES.CUSTOM);
+  if (cronDue.length > 0) {
+    return { taskType: cronDue[0].taskType, reason: `${cronDue[0].interval.type}-due` };
+  }
 
   const dailyDue = dueTasks.filter(t => t.interval.type === INTERVAL_TYPES.DAILY);
   if (dailyDue.length > 0) {
@@ -2037,11 +2077,6 @@ export async function getNextTaskType(appId = null, lastType = '') {
   const onceDue = dueTasks.filter(t => t.interval.type === INTERVAL_TYPES.ONCE);
   if (onceDue.length > 0) {
     return { taskType: onceDue[0].taskType, reason: 'once-first-run' };
-  }
-
-  const cronDue = dueTasks.filter(t => t.interval.type === INTERVAL_TYPES.CRON || t.interval.type === INTERVAL_TYPES.CUSTOM);
-  if (cronDue.length > 0) {
-    return { taskType: cronDue[0].taskType, reason: `${cronDue[0].interval.type}-due` };
   }
 
   // Fall back to rotation among enabled rotation tasks

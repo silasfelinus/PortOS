@@ -21,6 +21,35 @@
 
 ## Fixed
 
+- **Scheduled cron tasks (e.g. `plan-task` at 9 AM) silently never fired.**
+  Four overlapping bugs in the CoS scheduler combined to make user-pinned
+  cron schedules guaranteed misses: (1) `shouldRunTask` had no catch-up
+  branch — when the daemon was down across a cron boundary, the first run
+  after restart computed `nextRun = TOMORROW` and waited a full period;
+  (2) `scheduleNextImprovementCheck` peeked only `getUpcomingTasks(1)`, so
+  a perpetually-ready weekly task (`status='ready'`) masked any
+  `status='scheduled'` cron task behind it and the next check defaulted
+  to a flat 1h interval that never aligned to cron boundaries; (3)
+  `getNextTaskType` filtered daily → weekly → once → cron, so a ready
+  weekly always outranked a cron task firing right now; (4) stale
+  `activeAgentId` pointers in `app-activity.json` (from idle-review
+  agents that died across long-ago restarts) made `isAppOnCooldown`
+  return `true` indefinitely for affected apps, so
+  `queueEligibleImprovementTasks` silently skipped them every cycle.
+  Fix: added `parseCronToPrevRun` + a `cron-catch-up` branch in
+  `shouldRunTask` (catches up the most-recent past slot within one cron
+  period), widened the upcoming-tasks scan to find the soonest scheduled
+  task across the full list, reordered `getNextTaskType` to put cron /
+  custom ahead of daily / weekly / once, and added
+  `clearStaleActiveAgents()` wired into daemon startup to drop pointers
+  that don't resolve to live agents in `state.agents`. Touches
+  `server/services/eventScheduler.js` (new `parseCronToPrevRun`),
+  `server/services/taskSchedule.js` (catch-up + priority reorder),
+  `server/services/cos.js` (alignment + startup cleanup),
+  `server/services/appActivity.js` (`clearStaleActiveAgents`), plus
+  catch-up + priority regression tests in
+  `server/services/taskSchedule.test.js`.
+
 - **Universe canon writes silently dropped at the Zod layer.** The
   `patchSchema` in `server/routes/universeBuilder.js` didn't list
   `characters` / `settings` / `objects` / `origin`, so Zod's default-strip

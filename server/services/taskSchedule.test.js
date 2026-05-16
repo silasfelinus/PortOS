@@ -59,7 +59,8 @@ vi.mock('../lib/timezone.js', () => ({
 }))
 
 vi.mock('./eventScheduler.js', () => ({
-  parseCronToNextRun: vi.fn()
+  parseCronToNextRun: vi.fn(),
+  parseCronToPrevRun: vi.fn()
 }))
 
 // Use the real isImprovementEnabled implementation; only stub loadState.
@@ -99,6 +100,7 @@ import { readJSONFile } from '../lib/fileUtils.js'
 import { isTaskTypeEnabledForApp, getAppTaskTypeInterval } from './apps.js'
 import { getLocalParts } from '../lib/timezone.js'
 import { getAdaptiveCooldownMultiplier } from './taskLearning.js'
+import { parseCronToNextRun, parseCronToPrevRun } from './eventScheduler.js'
 
 const mockSchedule = ({ tasks = {}, executions = {}, templates = [] } = {}) => {
   readJSONFile.mockResolvedValue({ version: 2, tasks, executions, templates })
@@ -482,6 +484,81 @@ describe('taskSchedule', () => {
       expect(result.shouldRun).toBe(true)
       expect(result.reason).toContain('daily-due')
     })
+
+    describe('cron catch-up', () => {
+      it('catches up a never-run cron when the most-recent slot is within one period', async () => {
+        // Cron: 0 9 * * * (daily 9 AM). It's now 10:30 AM — today's 9 AM slot already elapsed.
+        // First call (from=now): most-recent past 9 AM is today.
+        // Second call (from=prev-60s): one occurrence earlier = yesterday's 9 AM (the lookback bound).
+        const todayNineAm = new Date()
+        todayNineAm.setHours(9, 0, 0, 0)
+        const yesterdayNineAm = new Date(todayNineAm.getTime() - 24 * 60 * 60 * 1000)
+
+        parseCronToPrevRun
+          .mockReturnValueOnce(todayNineAm)      // most-recent past occurrence
+          .mockReturnValueOnce(yesterdayNineAm)  // one period earlier (the bound)
+        parseCronToNextRun.mockReturnValueOnce(new Date(todayNineAm.getTime() + 24 * 60 * 60 * 1000))
+
+        mockSchedule({
+          tasks: {
+            'plan-task': { type: 'cron', enabled: true, cronExpression: '0 9 * * *', providerId: null, model: null, prompt: null }
+          }
+        })
+
+        const result = await shouldRunTask('plan-task')
+        expect(result.shouldRun).toBe(true)
+        expect(result.reason).toBe('cron-catch-up')
+        expect(result.missedSlot).toBe(todayNineAm.toISOString())
+      })
+
+      it('catches up after the recorded lastRun even if the daemon missed the slot', async () => {
+        // Cron fired yesterday, then daemon was down across today's 9 AM. Now it's 11 AM.
+        // Catch-up bound is the recorded lastRun (yesterday), so today's 9 AM counts as missed.
+        const todayNineAm = new Date()
+        todayNineAm.setHours(9, 0, 0, 0)
+        const yesterdayNineAm = new Date(todayNineAm.getTime() - 24 * 60 * 60 * 1000)
+
+        parseCronToPrevRun.mockReturnValueOnce(todayNineAm)
+        parseCronToNextRun.mockReturnValueOnce(new Date(todayNineAm.getTime() + 24 * 60 * 60 * 1000))
+
+        mockSchedule({
+          tasks: {
+            'plan-task': { type: 'cron', enabled: true, cronExpression: '0 9 * * *', providerId: null, model: null, prompt: null }
+          },
+          executions: {
+            'task:plan-task': { lastRun: yesterdayNineAm.toISOString(), count: 1, perApp: {} }
+          }
+        })
+
+        const result = await shouldRunTask('plan-task')
+        expect(result.shouldRun).toBe(true)
+        expect(result.reason).toBe('cron-catch-up')
+      })
+
+      it('does NOT catch up when lastRun already covers the most-recent slot', async () => {
+        // Cron fired this morning at 9 AM; it's now 10 AM. lastRun is at the same 9 AM.
+        // prevRun == lastRun → not strictly greater → no catch-up.
+        const todayNineAm = new Date()
+        todayNineAm.setHours(9, 0, 0, 0)
+        const tomorrowNineAm = new Date(todayNineAm.getTime() + 24 * 60 * 60 * 1000)
+
+        parseCronToPrevRun.mockReturnValueOnce(todayNineAm)
+        parseCronToNextRun.mockReturnValueOnce(tomorrowNineAm)
+
+        mockSchedule({
+          tasks: {
+            'plan-task': { type: 'cron', enabled: true, cronExpression: '0 9 * * *', providerId: null, model: null, prompt: null }
+          },
+          executions: {
+            'task:plan-task': { lastRun: todayNineAm.toISOString(), count: 1, perApp: {} }
+          }
+        })
+
+        const result = await shouldRunTask('plan-task')
+        expect(result.shouldRun).toBe(false)
+        expect(result.reason).toBe('cron-cooldown')
+      })
+    })
   })
 
   describe('getDueTasks', () => {
@@ -539,6 +616,34 @@ describe('taskSchedule', () => {
 
       const result = await getNextTaskType(null, 'code-quality')
       expect(result.taskType).toBe('error-handling')
+    })
+
+    it('prefers a due cron task over a perpetually-ready weekly task', async () => {
+      // A weekly task with no execution record is perpetually 'ready' (weekly-due).
+      // A cron task firing right now should still win — explicit time-based schedules
+      // shouldn't get masked by loose interval-based ones.
+      const todayNineAm = new Date()
+      todayNineAm.setHours(9, 0, 0, 0)
+      const tomorrowNineAm = new Date(todayNineAm.getTime() + 24 * 60 * 60 * 1000)
+      const yesterdayNineAm = new Date(todayNineAm.getTime() - 24 * 60 * 60 * 1000)
+
+      // shouldRunTask iterates both tasks. For plan-task it calls prev twice (catch-up
+      // path); for code-quality it doesn't call cron helpers at all.
+      parseCronToPrevRun
+        .mockReturnValueOnce(todayNineAm)      // plan-task prevRun
+        .mockReturnValueOnce(yesterdayNineAm)  // plan-task beforePrev (bound)
+      parseCronToNextRun.mockReturnValue(tomorrowNineAm)
+
+      mockSchedule({
+        tasks: {
+          'code-quality': { type: 'weekly', enabled: true, providerId: null, model: null, prompt: null, runAfter: [] },
+          'plan-task':    { type: 'cron',   enabled: true, cronExpression: '0 9 * * *', providerId: null, model: null, prompt: null }
+        }
+      })
+
+      const result = await getNextTaskType()
+      expect(result.taskType).toBe('plan-task')
+      expect(result.reason).toBe('cron-due')
     })
   })
 
