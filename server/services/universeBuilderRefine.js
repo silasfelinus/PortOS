@@ -41,13 +41,11 @@ import {
   sanitizeInfluences,
   sanitizeLocked,
 } from "./universeBuilder.js";
+import { trimTo } from "../lib/storyBible.js";
 
 const MAX_FEEDBACK = 3000;
 const MAX_RATIONALE = 1200;
 const MAX_CHANGES = 8;
-
-const trimTo = (value, max) =>
-  typeof value === "string" ? value.trim().slice(0, max) : "";
 
 const cleanChanges = (changes) =>
   Array.isArray(changes)

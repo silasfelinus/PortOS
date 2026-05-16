@@ -15,6 +15,8 @@
  * null) so downstream template renderers don't need null-guards.
  * Unexpected text between panels is ignored.
  */
+import { trimTo } from './storyBible.js';
+
 const PAGE_RE = /^##\s+Page\s+([\dIVX]+)\b/i;
 // `## Cover concept` — the optional cover-art section the comic-script
 // template emits before the first `## Page 1` header. Also accepts the
@@ -53,8 +55,6 @@ const PANEL_LIMITS = Object.freeze({
   // with comfortable headroom.
   PAGE_SCRIPT_MAX: 40_000,
 });
-
-const trimTo = (s, max) => (typeof s === 'string' ? s.trim().slice(0, max) : '');
 
 /**
  * Parse one panel body — the lines between this panel's header and the next

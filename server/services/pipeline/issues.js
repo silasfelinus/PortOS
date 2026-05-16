@@ -28,6 +28,7 @@ import {
 import { sanitizeOrigin } from '../../lib/sharingOrigin.js';
 import { sanitizeVisualStyleRef } from '../../lib/visualStyles.js';
 import { ARC_ROLES } from '../../lib/storyArc.js';
+import { isStr, trimTo } from '../../lib/storyBible.js';
 import { emitRecordUpdated } from '../sharing/recordEvents.js';
 
 // Lazy resolution — see series.js for context.
@@ -102,9 +103,6 @@ export function isStageReady(stage) {
 }
 export const STAGE_STATUSES = Object.freeze(['empty', 'generating', 'ready', 'edited', 'needs-review', 'error']);
 export const ISSUE_STATUSES = Object.freeze(['draft', 'running', 'needs-review', 'shipped']);
-
-const isStr = (v) => typeof v === 'string';
-const trimTo = (v, max) => (isStr(v) ? v.trim().slice(0, max) : '');
 
 const emptyStage = () => ({
   status: 'empty',

@@ -27,9 +27,8 @@ import { getJob } from '../mediaJobQueue/index.js';
 import { getInstanceId } from '../instances.js';
 import { getSettings } from '../settings.js';
 import { getProducedByVersion } from './version.js';
+import { isStr } from '../../lib/storyBible.js';
 import * as os from 'os';
-
-const isStr = (v) => typeof v === 'string';
 
 /** Resolve the bucket-effective display name (per-bucket override → instance setting → OS user). */
 async function resolveSourceName(bucket) {

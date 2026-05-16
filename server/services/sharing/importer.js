@@ -33,8 +33,7 @@ import { insertUniverseWithId, updateUniverse, getUniverse } from '../universeBu
 import { findOrCreateCollectionByName, addItem as addCollectionItem, ERR_DUPLICATE as COLLECTION_ERR_DUPLICATE } from '../mediaCollections.js';
 import { adoptImportedSubscription, withReexportSuppressed } from './subscriptions.js';
 import { getInstanceId } from '../instances.js';
-
-const isStr = (v) => typeof v === 'string';
+import { isStr } from '../../lib/storyBible.js';
 
 const UNKNOWN_INSTANCE_ID = 'unknown';
 

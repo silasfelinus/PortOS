@@ -28,7 +28,7 @@ import { PATHS, atomicWrite, readJSONFile, ensureDir } from '../lib/fileUtils.js
 import { composeStyledPrompt } from '../lib/composeStyledPrompt.js';
 import {
   sanitizeBibleList, BIBLE_KIND, BIBLE_FIELD, BIBLE_LIMITS, BIBLE_SOURCE,
-  normalizeBibleName,
+  normalizeBibleName, isStr, trimTo,
 } from '../lib/storyBible.js';
 import { sanitizeOrigin } from '../lib/sharingOrigin.js';
 import { emitRecordUpdated, emitRecordDeleted } from './sharing/recordEvents.js';
@@ -139,9 +139,6 @@ const resolveCanonForCategory = (categoryKey) =>
   CATEGORY_TO_CANON[categoryKey] || { kind: BIBLE_KIND.OBJECT, tags: [categoryKey] };
 
 const DEFAULT_STATE = { universes: [], runs: [] };
-
-const isStr = (v) => typeof v === 'string';
-const trimTo = (v, max) => (isStr(v) ? v.trim().slice(0, max) : '');
 
 // Case-insensitive key for matching variation/composite labels across the
 // original + LLM-refined sets. Returning the same lowercase string ensures

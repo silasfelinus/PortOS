@@ -1049,6 +1049,17 @@
 
 ## Changed
 
+- **DRY: consolidate duplicate `isStr`/`trimTo` helpers.** Six server modules
+  (`server/services/pipeline/issues.js`, `server/services/sharing/exporter.js`,
+  `server/services/sharing/manifest.js`, `server/services/sharing/importer.js`,
+  `server/services/universeBuilder.js`,
+  `server/services/universeBuilderRefine.js`, `server/lib/comicScriptParser.js`)
+  each redefined the same `isStr = v => typeof v === 'string'` and/or
+  `trimTo = (v, max) => isStr(v) ? v.trim().slice(0, max) : ''` one-liners.
+  All now import from the canonical exports in `server/lib/storyBible.js`
+  (which already had a comment inviting reuse and which ~10 other modules
+  already used). Net -10 lines; all 4917 server tests still pass.
+
 - **CI test output is now quiet + fail-fast.** New `server/package.json`
   `test:ci` script (`vitest run --bail=1 --silent=passed-only
   --reporter=default --reporter=github-actions`) used by `.github/workflows/ci.yml`.

@@ -19,13 +19,12 @@ import { join } from 'path';
 import { readdir } from 'fs/promises';
 import { PATHS, atomicWrite, readJSONFile, ensureDir } from '../../lib/fileUtils.js';
 import { SHARING_SCHEMA_VERSION, getProducedByVersion } from './version.js';
+import { isStr } from '../../lib/storyBible.js';
 
 export const MANIFEST_KIND = Object.freeze(['series', 'universe', 'media']);
 
 /** @deprecated Use SHARING_SCHEMA_VERSION from ./version.js. Kept exported for back-compat. */
 export const MANIFEST_SCHEMA_VERSION = SHARING_SCHEMA_VERSION;
-
-const isStr = (v) => typeof v === 'string';
 
 const cursorPath = (bucketId) => join(PATHS.data, 'sharing', 'cursors', `${bucketId}.json`);
 
