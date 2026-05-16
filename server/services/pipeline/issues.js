@@ -433,6 +433,8 @@ export function createIssue(input = {}) {
   if (!next) throw makeErr('Invalid issue payload', ERR_VALIDATION);
   state.issues.push(next);
   await writeState(state);
+  // New issue = series-level change for any active share subscription.
+  emitRecordUpdated('series', next.seriesId);
   return next;
   }); // end queueIssueWrite
 }

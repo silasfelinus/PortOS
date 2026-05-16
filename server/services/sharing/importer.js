@@ -189,7 +189,9 @@ async function mergeMediaJobRecords(bucketPath, recordIds) {
  * Read the records referenced by a manifest. `missing` lists recordIds whose
  * JSON file hasn't synced into the bucket yet — the caller defers
  * markProcessed until that list is empty, otherwise a manifest delivered
- * ahead of its records would be silently dropped forever.
+ * ahead of its records would be silently dropped forever. Bible-prefixed ids
+ * (chr-/set-/obj-) are sub-records of universes and never standalone, so they
+ * are skipped without being tracked as missing.
  */
 async function readReferencedRecords(bucketPath, manifest) {
   const records = { series: [], issues: [], universes: [], media: [] };
@@ -425,9 +427,10 @@ export async function processManifest(bucketId, manifestFilename) {
   const { records, missing: missingRecords } = await readReferencedRecords(bucket.path, manifest);
 
   // Always copy assets + media-job records ahead of the merge so canon and
-  // pipeline records that reference them point at present files. Asset sync can
-  // lag behind manifest sync in Drive/Dropbox/etc.; copy what exists now and
-  // leave the manifest un-cursored until the rest arrives.
+  // pipeline records that reference them point at present files. Asset and
+  // record-bundle sync can both lag behind manifest sync in Drive/Dropbox/etc.;
+  // apply what exists now and leave the manifest un-cursored until the rest
+  // arrives (the watcher re-fires backlog on records/ + assets/ changes).
   const assetCopy = await copyAssetsLocally(bucket.path, manifestAssetRefs(manifest));
   const availableAssetKeys = new Set(assetCopy.available.map((ref) => `${ref.kind}:${ref.ref}`));
   await mergeMediaJobRecords(bucket.path, manifest.recordIds);

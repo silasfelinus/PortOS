@@ -71,7 +71,7 @@
       "name": "Codex TUI",
       "type": "tui",
       "command": "codex",
-      "args": [],
+      "args": ["--ask-for-approval", "never"],
       "models": ["codex-configured-default"],
       "defaultModel": "codex-configured-default",
       "lightModel": "codex-configured-default",

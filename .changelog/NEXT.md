@@ -41,6 +41,41 @@
 
 ## Fixed
 
+- **Series shares now deliver issues, scripts, and renders to collaborators.**
+  When the manifest reached a peer ahead of its 30+ issue record JSONs
+  (Google Drive sync is order-non-deterministic), the importer silently
+  dropped the missing records and advanced the cursor, orphaning the issues
+  forever — the series and universe appeared on the collaborator but the
+  issues panel was empty. Three fixes: `readReferencedRecords` now returns
+  a `missing` list and `processManifest` defers cursoring whenever any
+  record file (or asset blob) is still unsynced, mirroring the existing
+  pending-assets path. The chokidar watcher now watches `records/` in
+  addition to `manifests/` and `assets/`, so a late-arriving issue JSON
+  re-fires `processBacklog`. `createIssue` now emits `recordUpdated`
+  alongside every other issue mutation, so a freshly-created issue
+  propagates to subscribers without waiting for a follow-up stage edit.
+  `queueBacklog` collapses bursts of records/ events into at most one
+  in-flight scan + one queued follow-up so a 32-file sync doesn't trigger
+  32 sequential rescans. Touches:
+  `server/services/sharing/importer.js`,
+  `server/services/sharing/watcher.js`,
+  `server/services/pipeline/issues.js`,
+  `server/services/sharing/integration.test.js`.
+
+- **Codex TUI agents no longer hang waiting for tool approvals.** Spawning
+  a sub-agent through the Codex TUI provider invoked `codex` without
+  `--ask-for-approval never`, so every tool call paused waiting for a human
+  at the keyboard — unattended runs (`agent-46d2e8ff` was the canary) sat
+  idle until the idle-timeout fired. `buildTuiSpawnConfig` now injects
+  `--ask-for-approval never` whenever the command is `codex` and the
+  provider's saved args don't already pin the flag, so existing installs
+  pick it up without a migration. The `codex-tui` entries in both sample
+  provider JSONs also include the flag so new installs match. Touches:
+  `server/services/agentTuiSpawning.js`,
+  `server/services/agentTuiSpawning.test.js`,
+  `data.sample/providers.json`,
+  `server/lib/aiToolkit/defaults/providers.sample.json`.
+
 - **Sharing inbox no longer prompts you to import your own shares.** When the
   local PortOS published a manifest into a share bucket (e.g. a Google Drive
   folder it also reads from), the importer treated the round-tripped file as

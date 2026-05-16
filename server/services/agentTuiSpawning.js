@@ -116,9 +116,20 @@ function inferTuiCommand(id) {
   return 'claude';
 }
 
+// Without `--ask-for-approval never`, codex TUI blocks on the user to approve
+// every tool call — there's no human at the keyboard for sub-agent runs, so
+// the session hangs until idle-timeout. Injected here (vs. requiring it in
+// every saved provider config) so existing installs upgrade automatically.
+function applyCommandDefaults(command, args) {
+  if (command === 'codex' && !args.includes('--ask-for-approval')) {
+    return ['--ask-for-approval', 'never', ...args];
+  }
+  return args;
+}
+
 export function buildTuiSpawnConfig(provider, model) {
   const command = provider?.command || inferTuiCommand(provider?.id);
-  const baseArgs = [...(provider?.args || [])];
+  const baseArgs = applyCommandDefaults(command, [...(provider?.args || [])]);
   const args = appendModelArgs(baseArgs, model);
 
   return {

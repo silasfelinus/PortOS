@@ -100,8 +100,38 @@ describe('agent TUI spawning', () => {
     }, 'codex-configured-default');
 
     expect(config.command).toBe('codex');
-    expect(config.args).toEqual([]);
-    expect(config.commandLine).toBe('codex');
+    expect(config.args).toEqual(['--ask-for-approval', 'never']);
+    expect(config.commandLine).toBe('codex --ask-for-approval never');
+  });
+
+  it('injects --ask-for-approval never for codex TUI when not already set', () => {
+    const config = buildTuiSpawnConfig({
+      id: 'codex-tui',
+      command: 'codex',
+      type: 'tui',
+      args: ['--cd', '/tmp/work']
+    }, null);
+    expect(config.args).toEqual(['--ask-for-approval', 'never', '--cd', '/tmp/work']);
+  });
+
+  it('does not duplicate --ask-for-approval when the provider config already pins it', () => {
+    const config = buildTuiSpawnConfig({
+      id: 'codex-tui',
+      command: 'codex',
+      type: 'tui',
+      args: ['--ask-for-approval', 'on-failure']
+    }, null);
+    expect(config.args).toEqual(['--ask-for-approval', 'on-failure']);
+  });
+
+  it('does not inject --ask-for-approval for non-codex TUI commands', () => {
+    const config = buildTuiSpawnConfig({
+      id: 'claude-code-tui',
+      command: 'claude',
+      type: 'tui',
+      args: ['--dangerously-skip-permissions']
+    }, null);
+    expect(config.args).toEqual(['--dangerously-skip-permissions']);
   });
 
   it('quotes TUI arguments and carries idle timing config', () => {
@@ -143,8 +173,8 @@ describe('agent TUI spawning', () => {
 
   it('omits the --model flag when model is null/empty', () => {
     const config = buildTuiSpawnConfig({ id: 'codex-tui', command: 'codex', type: 'tui', args: [] }, null);
-    expect(config.args).toEqual([]);
-    expect(config.commandLine).toBe('codex');
+    expect(config.args).toEqual(['--ask-for-approval', 'never']);
+    expect(config.commandLine).toBe('codex --ask-for-approval never');
   });
 });
 

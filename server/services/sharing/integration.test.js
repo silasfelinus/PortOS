@@ -358,6 +358,73 @@ describe('sharing round-trip', () => {
     expect(hasBeenProcessed(cursor, exp.filename, exp.manifestId)).toBe(true);
   });
 
+  it('keeps series manifests retryable while issue record files are still syncing', async () => {
+    const bucket = await buckets.createBucket({ name: 'SlowIssueSync', path: tempBucket, mode: 'auto-merge' });
+    const { readCursor, hasBeenProcessed } = await import('./manifest.js');
+
+    const s = await series.createSeries({ name: 'Drifts a Bit Late' });
+    const issA = await issues.createIssue({ seriesId: s.id, title: 'Arrives on Time' });
+    const issB = await issues.createIssue({ seriesId: s.id, title: 'Arrives Later' });
+
+    const exp = await exporter.exportSeries(s.id, bucket.id);
+    expect(exp.recordCount).toBe(3); // series + 2 issues
+
+    // Simulate Drive having synced the manifest + series + issA but not yet issB.
+    const fs = await import('fs');
+    const issBPath = join(tempBucket, 'records', 'issues', `${issB.id}.json`);
+    expect(fs.existsSync(issBPath)).toBe(true);
+    fs.rmSync(issBPath, { force: true });
+
+    // Drop local copies so the importer has to insert from the bucket.
+    await issues.deleteIssue(issA.id);
+    await issues.deleteIssue(issB.id);
+    await series.deleteSeries(s.id);
+
+    simulateRemoteSender(tempBucket, exp.filename);
+    const first = await importer.processManifest(bucket.id, exp.filename);
+    expect(first.pending).toBe(true);
+    expect(first.outcome.pendingRecords).toEqual([issB.id]);
+    expect(first.outcome.pendingAssets).toBeUndefined();
+
+    // The records that DID arrive should be applied — the late one stays absent.
+    const restoredA = await issues.getIssue(issA.id);
+    expect(restoredA.title).toBe('Arrives on Time');
+    await expect(issues.getIssue(issB.id)).rejects.toMatchObject({ code: 'PIPELINE_ISSUE_NOT_FOUND' });
+
+    let cursor = await readCursor(bucket.id);
+    expect(hasBeenProcessed(cursor, exp.filename, exp.manifestId)).toBe(false);
+
+    // Late-arriving record file → backlog retry completes the import.
+    fs.writeFileSync(issBPath, JSON.stringify({
+      id: issB.id, seriesId: s.id, title: 'Arrives Later', number: 2,
+      status: 'draft', stages: {},
+      createdAt: issB.createdAt, updatedAt: issB.updatedAt,
+    }));
+
+    const retry = await importer.processBacklog(bucket.id);
+    expect(retry.processed).toBe(1);
+
+    const restoredB = await issues.getIssue(issB.id);
+    expect(restoredB.title).toBe('Arrives Later');
+    cursor = await readCursor(bucket.id);
+    expect(hasBeenProcessed(cursor, exp.filename, exp.manifestId)).toBe(true);
+  });
+
+  it('createIssue emits recordUpdated so series subscriptions re-export', async () => {
+    const { recordEvents } = await import('./recordEvents.js');
+    const s = await series.createSeries({ name: 'Emits On Create' });
+    const events = [];
+    const onUpdated = (p) => events.push(p);
+    recordEvents.on('updated', onUpdated);
+    try {
+      const iss = await issues.createIssue({ seriesId: s.id, title: 'First Issue' });
+      expect(events).toContainEqual({ recordKind: 'series', recordId: s.id });
+      expect(iss.seriesId).toBe(s.id);
+    } finally {
+      recordEvents.off('updated', onUpdated);
+    }
+  });
+
   it('subscription round-trip: subscribe → mutate → re-export onto same filename → unsubscribe → unshared event', async () => {
     const { subscribe, unsubscribe, subscriptionFilename, __resetForTests } = await import('./subscriptions.js');
     const { sharingEvents } = await import('./importer.js');
