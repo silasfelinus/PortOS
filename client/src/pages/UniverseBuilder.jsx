@@ -169,7 +169,7 @@ function InfluencesEditor({ influences, onChange, locked, onToggleLock }) {
     <div>
       <div className="mb-1">
         <label className="text-xs text-gray-400">
-          Influences <span className="text-gray-600">— prepended to render prompts deterministically; embrace + avoid lock independently</span>
+          Influences <span className="text-gray-600">— appended to style/negative prompts at render time; embrace + avoid lock independently</span>
         </label>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

@@ -69,7 +69,7 @@ function buildExpansionPrompt({
   const avoidTag = locked?.influencesAvoid ? ' [LOCKED]' : '';
   const influencesSection =
     embrace.length || avoid.length
-      ? `\n# Influences (canonical reference list — these MUST inform stylePrompt + styleNotes for embraces and negativePrompt for avoids)\nEmbrace${embraceTag}: ${embrace.join(", ") || "(none)"}\nAvoid${avoidTag}: ${avoid.join(", ") || "(none)"}\n`
+      ? `\n# Influences (canonical reference list — appended to stylePrompt/negativePrompt at render time; keep them distinct from the prose fields)\nEmbrace${embraceTag}: ${embrace.join(", ") || "(none)"}\nAvoid${avoidTag}: ${avoid.join(", ") || "(none)"}\n`
       : "";
 
   // Locked entries are flagged and MUST be echoed verbatim; unlocked entries
@@ -129,9 +129,9 @@ Return a SINGLE JSON object. NO markdown, NO commentary. The object MUST have th
 - logline:        string. ONE sentence (≤500 chars) capturing the universe's central tension/hook — protagonist-agnostic if no protagonist is implied. Example: "A foundry city goes silent — and the only survivor is a child."
 - premise:        string. 1-3 short paragraphs (≤4000 chars total) describing the setting, the central conflict or situation, the stakes, and the tone. Write it as the elevator pitch a showrunner would hand to a writers' room. No bullet points; prose only.
 - styleNotes:     string. A prose paragraph (≤4000 chars) describing the visual + tonal style for the story bible — references (artists, films, comics, games), mood, palette, pacing, narrative voice. This is read by writers + creative directors, not the image model, so use full sentences instead of comma-separated tokens.
-- influences:     object { "embrace": [string], "avoid": [string] }. Short canonical reference labels (max 120 chars each, max 30 per list) — artists, comics, films, directors, palettes, materials, eras the universe EMBRACES; styles, tropes, palettes the universe AVOIDS. The renderer prepends these to stylePrompt/negativePrompt verbatim, so each entry should read as a clean prompt token (e.g. "Moebius", "cel-shading", "Ghibli painterly", "neon cyberpunk"). When influence input is provided above, preserve those entries unless the starter idea explicitly contradicts them.
-- stylePrompt:    string. A single comma-separated style fragment (lighting, color palette, render quality, artist references) that will be PREFIXED to every variation prompt. Keep under 400 characters. No subject nouns — those go in variations. Echo the embrace influences here so the renderer-side prompt is self-contained even before the structured prepend kicks in.
-- negativePrompt: string. Comma-separated tokens to avoid (e.g. "blurry, lowres, watermark, extra fingers"). Tailor to the universe's aesthetic. Echo the avoid influences here.
+- influences:     object { "embrace": [string], "avoid": [string] }. Short canonical reference labels (max 120 chars each, max 30 per list) — artists, comics, films, directors, palettes, materials, eras the universe EMBRACES; styles, tropes, palettes the universe AVOIDS. The renderer appends these to stylePrompt/negativePrompt at render time, so each entry should read as a clean prompt token (e.g. "Moebius", "cel-shading", "Ghibli painterly", "neon cyberpunk"). When influence input is provided above, preserve those entries unless the starter idea explicitly contradicts them.
+- stylePrompt:    string. A single comma-separated style fragment (lighting, color palette, render quality, artist references) compiled from the style notes and starter idea. This is PREPENDED to every variation prompt. Keep under 400 characters. No subject nouns — those go in variations. Do NOT echo embrace tokens here — the renderer appends them at render time.
+- negativePrompt: string. Comma-separated tokens to avoid (e.g. "blurry, lowres, watermark, extra fingers") compiled from the style notes and starter idea. Do NOT echo avoid tokens here — the renderer appends them at render time.
 - categories: object. Atomic reusable buckets. Use snake_case keys. Start from these common buckets when useful:
 ${WORLD_CATEGORIES.map((c) => `    - ${c}`).join("\n")}
   Add, remove, or rename buckets to fit the user's actual universe-building task. Do not force every project into the starter buckets.

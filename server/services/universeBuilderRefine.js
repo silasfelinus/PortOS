@@ -232,15 +232,15 @@ The user has seven top-level fields that define a "universe":
 - LOGLINE — one-sentence narrative hook.
 - PREMISE — 1-3 paragraph elevator pitch (setting, conflict, stakes, tone).
 - STYLE NOTES — narrative-side prose about references, mood, palette, pacing, voice.
-- INFLUENCES — structured { embrace: [string], avoid: [string] } reference list. The renderer prepends embrace verbatim to the style prompt and avoid verbatim to the negative prompt, so this is the canonical record of "what direction is this universe pointing." Each entry is a short prompt-token-style label (e.g. "Moebius", "cel-shading", "Ghibli painterly"). Max 30 entries per list, max 120 chars each.
+- INFLUENCES — structured { embrace: [string], avoid: [string] } reference list. The renderer appends embrace to the style prompt and avoid to the negative prompt at render time — they are separate from and complementary to the stylePrompt/negativePrompt prose. Each entry is a short prompt-token-style label (e.g. "Moebius", "cel-shading", "Ghibli painterly"). Max 30 entries per list, max 120 chars each.
 
 The user has given feedback about the story, mood, style, or design they want refined. Rewrite ALL seven fields so they more faithfully express the user's intention and stay internally consistent. Output the COMPLETE rewritten text/values for each — not a placeholder, not a summary, not a diff.
 
 ${lockedSection}Return ONLY valid JSON in this schema (replace every <…> with real content; do NOT output the literal angle-bracket text):
 {
   "starterPrompt": "<full rewritten high-concept starter idea, 1-3 sentences. Stays a clean seed — do NOT append style direction prose here, that belongs in influences + styleNotes>",
-  "stylePrompt": "<full rewritten style fragment, comma-separated tokens, no subject nouns — palette, lighting, render quality, artist references; should echo the embrace influences>",
-  "negativePrompt": "<full rewritten negative prompt, comma-separated tokens to avoid; empty string if none; should echo the avoid influences>",
+  "stylePrompt": "<full rewritten style fragment, comma-separated tokens, no subject nouns — palette, lighting, render quality, artist references; compiled from style notes, NOT echoing embrace tokens (those are appended at render time)>",
+  "negativePrompt": "<full rewritten negative prompt, comma-separated tokens to avoid; empty string if none; compiled from style notes, NOT echoing avoid tokens (those are appended at render time)>",
   "logline": "<full rewritten one-sentence narrative hook>",
   "premise": "<full rewritten 1-3 paragraph elevator pitch>",
   "styleNotes": "<full rewritten narrative-style prose about references, mood, palette, pacing, voice>",
@@ -252,8 +252,8 @@ ${lockedSection}Return ONLY valid JSON in this schema (replace every <…> with 
 Rules:
 - Preserve story/character/universe DNA from the originals unless the user's feedback explicitly contradicts it.
 - The "starterPrompt" stays a clean high-concept seed — no category content (landscapes, factions, etc.) and no style-direction prose. The structured "influences" field carries that direction so re-expansions inherit it deterministically.
-- The "stylePrompt" must be comma-separated visual-style tokens only. No subject nouns. No camera/aspect tokens. Under 400 characters. It SHOULD echo every "embrace" influence so the prompt is self-contained even before the structured prepend kicks in.
-- The "negativePrompt" must be comma-separated tokens. It SHOULD echo every "avoid" influence. If the universe relies on text/typography (e.g. pitch posters), avoid putting "text" in negatives — prefer "watermark, logo, unreadable tiny text, text artifacts".
+- The "stylePrompt" must be comma-separated visual-style tokens only. No subject nouns. No camera/aspect tokens. Under 400 characters. Compile from style notes — do NOT echo embrace tokens here; the renderer appends them at render time.
+- The "negativePrompt" must be comma-separated tokens compiled from style notes. Do NOT echo avoid tokens here; the renderer appends them at render time. If the universe relies on text/typography (e.g. pitch posters), avoid putting "text" in negatives — prefer "watermark, logo, unreadable tiny text, text artifacts".
 - The "influences" lists are the canonical reference set. Add what the user's feedback embraces, drop what's no longer relevant, and add explicit avoids for things they're moving away from. Keep entries short (a name, a movement, a palette descriptor) — they're prepended verbatim to the renderer prompt.
 - The "logline", "premise", and "styleNotes" must stay narratively coherent with the refined influences and style prompts.
 - Apply the user's feedback decisively. If they ask for a different style/mood/era, move toward it in influences + style prompt + styleNotes, and name the things to avoid in negativePrompt + influences.avoid.

@@ -663,10 +663,10 @@ export async function listRuns(universeId = null) {
  */
 export function composeInfluenceTokens(structured = [], prose = '') {
   const all = [];
-  if (Array.isArray(structured)) all.push(...structured);
   if (typeof prose === 'string' && prose.trim()) {
     all.push(...prose.split(',').map((s) => s.trim()).filter(Boolean));
   }
+  if (Array.isArray(structured)) all.push(...structured);
   const seen = new Set();
   const out = [];
   for (const token of all) {

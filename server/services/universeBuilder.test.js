@@ -450,7 +450,7 @@ describe("universeBuilder service", () => {
       expect(patched.influences.avoid).toEqual([]);
     });
 
-    it("compilePrompts deterministically prepends embrace to prompt + avoid to negative, deduped", async () => {
+    it("compilePrompts deterministically appends embrace to prompt + avoid to negative, deduped", async () => {
       const w = await seedWorld({
         // stylePrompt already mentions one of the embraces — dedupe should
         // ensure it doesn't appear twice in the rendered prompt.
@@ -465,17 +465,17 @@ describe("universeBuilder service", () => {
         selection: { landscapes: ["Crystal Canyon"] },
       });
       expect(compiled).toHaveLength(1);
-      // Embrace tokens prefix the existing style tokens; the duplicate
+      // Style prose comes first; embrace tokens are appended; duplicate
       // "cel-shading" only appears once.
       expect(
         compiled[0].prompt.startsWith(
-          "Moebius, cel-shading, ink, dust palette",
+          "cel-shading, ink, dust palette, Moebius",
         ),
       ).toBe(true);
       expect((compiled[0].prompt.match(/cel-shading/g) || []).length).toBe(1);
-      // Negative: avoid tokens prefix existing negatives, deduped against "lowres".
+      // Negative: existing negatives come first; avoid tokens are appended, deduped against "lowres".
       expect(
-        compiled[0].negativePrompt.startsWith("ghibli painterly, lowres"),
+        compiled[0].negativePrompt.startsWith("lowres, ghibli painterly"),
       ).toBe(true);
       expect((compiled[0].negativePrompt.match(/lowres/g) || []).length).toBe(
         1,
