@@ -253,6 +253,7 @@ describe('pipeline episodeVideo helper', () => {
     expect(cdCreated).toHaveLength(1);
     expect(cdCreated[0].autoAcceptScenes).toBe(true);
     expect(cdCreated[0].disableAudio).toBe(true);
+    expect(cdCreated[0].sourceIssueId).toBe(issue.id);
     expect(cdTreatments).toHaveLength(1);
     expect(cdTreatments[0].treatment.scenes).toHaveLength(2);
     const refreshed = await issuesSvc.getIssue(issue.id);

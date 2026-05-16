@@ -941,6 +941,10 @@ export const creativeDirectorProjectCreateSchema = z.object({
   // (videoGen one-offs still default to enabled.)
   disableAudio: z.boolean().optional().default(true),
   autoAcceptScenes: z.boolean().optional().default(false),
+  // Optional back-pointer to the pipeline issue that spawned this project,
+  // used by the stitch step to mix in audio-stage music. Bare CD projects
+  // (no pipeline origin) leave this null.
+  sourceIssueId: z.string().min(1).max(64).nullable().optional(),
 });
 
 // Update is restricted to a few editable fields. modelId / aspectRatio /

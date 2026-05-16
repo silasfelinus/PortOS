@@ -2,6 +2,24 @@
 
 ## Added
 
+- **Pipeline audio stage: music bed muxed into the episode video (Phase 4d).**
+  When the Creative Director stitch step finishes the timeline render, a
+  second ffmpeg pass overlays the issue's `stages.audio.music.trackFilename`
+  as a looped-and-cut music bed (`-stream_loop -1 -shortest`, `-c:v copy`,
+  default -6 dB gain). The pass is best-effort: a missing ffmpeg, missing
+  music file, or non-zero exit logs and leaves the silent stitch in place
+  rather than blocking the whole project. The link runs through a new
+  `sourceIssueId` back-pointer on the CD project (set at create time in
+  `episodeVideo.js`, validated by the create Zod schema). Per-temp-UUID
+  output paths keep a future parallel-stitch scenario from racing on the
+  destination filename. VO line muxing (per-scene timed dialogue + music
+  ducking) is deferred to 4d.2 in PLAN.md once the gap-between-lines
+  heuristic has real-world testing. Touches: new
+  `server/services/pipeline/audioMux.js` + tests, `server/lib/validation.js`
+  (schema parity), `server/services/creativeDirector/local.js`,
+  `server/services/creativeDirector/stitchRunner.js`,
+  `server/services/pipeline/episodeVideo.js` + tests.
+
 - **Pipeline audio stage: background-music upload + shared library + picker
   (Phase 4c).** The audio stage now carries an optional music track alongside
   the VO lines, with three new routes: `POST

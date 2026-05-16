@@ -157,6 +157,7 @@ export async function startEpisodeVideoForIssue(issueId, options = {}) {
     userStory: issue.stages?.prose?.output || null,
     disableAudio: true,
     autoAcceptScenes: true,
+    sourceIssueId: issueId,
   });
   await setCDTreatment(project.id, treatment);
 
