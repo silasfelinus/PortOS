@@ -80,6 +80,17 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 node scripts/setup-browser.js
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+# Install/update slash-do (project-level slash commands for Claude Code et al.)
+# via npx. Failures are non-fatal — PortOS still works without the
+# user-global command pool.
+Write-Host ""
+Write-Host "Installing/updating slash-do commands (npx slash-do@latest)..." -ForegroundColor Yellow
+npx --yes slash-do@latest
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "⚠️  slash-do install failed — skipping (you can re-run later: npx slash-do@latest)" -ForegroundColor Yellow
+    $global:LASTEXITCODE = 0
+}
+
 # Optional Ghostty setup
 Write-Host ""
 $setupGhostty = Read-Host "Set up Ghostty terminal themes? (y/N)"

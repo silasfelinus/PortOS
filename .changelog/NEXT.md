@@ -886,6 +886,19 @@
 
 ## Changed
 
+- **`setup.{sh,ps1}` and `update.{sh,ps1}` now auto-install/update slash-do
+  via `npx slash-do@latest`.** Previously, `update.sh` and `update.ps1`
+  prompted the user interactively to install `slash-do` only when the
+  global binary was missing (and `setup` didn't touch it at all), so most
+  installs sat on a stale or absent user-global command pool. All four
+  scripts now run `npx --yes slash-do@latest` unconditionally to lay down
+  the latest slash commands for whichever AI environments are detected
+  (`~/.claude/commands/`, etc.). Failures are non-fatal — PortOS continues
+  setup/update if the npm registry is down or the package install
+  errors. The git submodule at `lib/slashdo` remains the in-repo source
+  for inline command loading from CoS agents; the npx call is purely for
+  keeping the user-global pool fresh.
+
 - **TUI agents now own the simplify → push → PR sequence and self-signal
   completion.** With Claude Code TUI available as a provider type, the
   system no longer needs to drive `cleanupAgentWorktree`'s push/PR steps
