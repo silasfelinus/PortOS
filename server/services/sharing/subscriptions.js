@@ -76,6 +76,43 @@ export async function findSubscription(bucketId, recordKind, recordId) {
 }
 
 /**
+ * Adopt an inbound subscription as a local outgoing subscription without
+ * immediately exporting back into the bucket. Importing a subscribed record
+ * means the local user has joined that collaboration, so ShareToButton should
+ * show the source bucket as checked and future local edits should re-export.
+ */
+export async function adoptImportedSubscription({ bucketId, recordKind, recordId, lastManifestId = null }) {
+  if (!SUBSCRIBABLE_KINDS.includes(recordKind)) return null;
+  if (!isStr(bucketId) || !isStr(recordId)) return null;
+  await getBucket(bucketId);
+
+  const state = await readState();
+  const id = subId({ bucketId, recordKind, recordId });
+  const now = new Date().toISOString();
+  let sub = state.subscriptions.find((s) => s.id === id);
+  if (!sub) {
+    sub = {
+      id,
+      bucketId,
+      recordKind,
+      recordId,
+      createdAt: now,
+      updatedAt: now,
+      lastManifestId,
+      lastExportedAt: null,
+      adoptedFromImport: true,
+    };
+    state.subscriptions.push(sub);
+  } else {
+    sub.updatedAt = now;
+    sub.lastManifestId = lastManifestId || sub.lastManifestId || null;
+    sub.adoptedFromImport = sub.adoptedFromImport ?? true;
+  }
+  await writeState(state);
+  return sub;
+}
+
+/**
  * Create a subscription and trigger the first export. If a subscription
  * already exists for the same (bucket, kind, id), idempotently re-export
  * rather than throwing — clicking "subscribe" on an already-subscribed
@@ -181,6 +218,24 @@ export async function unsubscribeAllForRecord(recordKind, recordId) {
  */
 const DEBOUNCE_MS = 3000;
 const pendingTimers = new Map(); // subId → Timeout
+const suppressedReexports = new Map(); // `${kind}:${id}` → count
+
+function suppressionKey(recordKind, recordId) {
+  return `${recordKind}:${recordId}`;
+}
+
+export async function withReexportSuppressed(recordKind, recordId, fn) {
+  if (!recordKind || !recordId || typeof fn !== 'function') return fn?.();
+  const key = suppressionKey(recordKind, recordId);
+  suppressedReexports.set(key, (suppressedReexports.get(key) || 0) + 1);
+  try {
+    return await fn();
+  } finally {
+    const next = (suppressedReexports.get(key) || 1) - 1;
+    if (next <= 0) suppressedReexports.delete(key);
+    else suppressedReexports.set(key, next);
+  }
+}
 
 async function reexportNow(sub) {
   const exp = await runExport(sub).catch((err) => {
@@ -198,6 +253,7 @@ async function reexportNow(sub) {
 }
 
 export async function reexportSubscribedRecord(recordKind, recordId) {
+  if (suppressedReexports.has(suppressionKey(recordKind, recordId))) return;
   const subs = await listSubscriptions({ recordKind, recordId });
   for (const sub of subs) {
     const existing = pendingTimers.get(sub.id);
@@ -239,6 +295,7 @@ export function installSubscriptionListener() {
 export function __resetForTests() {
   for (const t of pendingTimers.values()) clearTimeout(t);
   pendingTimers.clear();
+  suppressedReexports.clear();
   if (onUpdated) recordEvents.off('updated', onUpdated);
   if (onDeleted) recordEvents.off('deleted', onDeleted);
   onUpdated = null;

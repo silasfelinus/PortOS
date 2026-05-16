@@ -356,6 +356,43 @@ describe('sharing round-trip', () => {
     expect(stillThere.id).toBe(u.id);
   });
 
+  it('adopts an imported universe subscription so the source bucket is selected for sharing', async () => {
+    const { listSubscriptions, subscriptionFilename, __resetForTests } = await import('./subscriptions.js');
+    __resetForTests();
+    const bucket = await buckets.createBucket({ name: 'CollabBucket', path: tempBucket, mode: 'auto-merge' });
+    const universeBuilder = await import('../universeBuilder.js');
+    const u = await universeBuilder.createUniverse({ name: 'Shared Universe' });
+
+    const exp = await exporter.exportUniverse(u.id, bucket.id, {
+      subscription: { recordKind: 'universe', recordId: u.id },
+    });
+    expect(exp.filename).toBe(subscriptionFilename({ recordKind: 'universe', recordId: u.id }));
+
+    await universeBuilder.deleteUniverse(u.id);
+    expect(await listSubscriptions({ recordKind: 'universe', recordId: u.id })).toEqual([]);
+
+    const result = await importer.processManifest(bucket.id, exp.filename);
+    expect(result.processed).toBe(true);
+    expect(result.outcome.adoptedSubscription).toMatchObject({
+      bucketId: bucket.id,
+      recordKind: 'universe',
+      recordId: u.id,
+    });
+
+    const restored = await universeBuilder.getUniverse(u.id);
+    expect(restored.id).toBe(u.id);
+    const subs = await listSubscriptions({ recordKind: 'universe', recordId: u.id });
+    expect(subs).toHaveLength(1);
+    expect(subs[0]).toMatchObject({
+      bucketId: bucket.id,
+      recordKind: 'universe',
+      recordId: u.id,
+      adoptedFromImport: true,
+      lastManifestId: exp.manifestId,
+    });
+    expect(subs[0].lastExportedAt).toBe(null);
+  });
+
   it('refuses a manifest with a sharingSchemaVersion newer than local + emits incompatible event', async () => {
     const { SHARING_SCHEMA_VERSION } = await import('./version.js');
     const { sharingEvents } = await import('./importer.js');
