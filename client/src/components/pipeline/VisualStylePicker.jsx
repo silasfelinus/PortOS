@@ -3,11 +3,20 @@
  * overrides (`issue.stages.<stageId>.visualStyleOverride`). Symmetric contract:
  *   value: { id, customPrompt } | null
  *   onChange(next | null)
+ *
+ * Menu is portalled to <body> with fixed positioning so it escapes
+ * `overflow:auto` ancestors — z-index alone can't break out of an overflow clip.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ChevronDown, Palette, X } from 'lucide-react';
 import { listPipelineVisualStyles } from '../../services/apiPipeline';
+
+const MENU_WIDTH = 320;
+const MENU_MIN_WIDTH = 220;
+const MENU_GAP = 4;
+const VIEWPORT_PADDING = 8;
 
 export default function VisualStylePicker({
   value,
@@ -20,7 +29,9 @@ export default function VisualStylePicker({
 }) {
   const [styles, setStyles] = useState([]);
   const [open, setOpen] = useState(false);
-  const wrapRef = useRef(null);
+  const triggerRef = useRef(null);
+  const menuRef = useRef(null);
+  const [menuStyle, setMenuStyle] = useState(null);
   // Draft is only seeded when the menu opens — otherwise a parent re-render
   // that re-passes the same value reference would wipe in-progress typing.
   const [customDraft, setCustomDraft] = useState('');
@@ -37,22 +48,82 @@ export default function VisualStylePicker({
     if (disabled && open) setOpen(false);
   }, [disabled, open]);
 
+  const updateMenuPosition = useCallback(() => {
+    const trigger = triggerRef.current;
+    const menu = menuRef.current;
+    if (!trigger || !menu) return;
+
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const width = Math.min(MENU_WIDTH, Math.max(MENU_MIN_WIDTH, viewportWidth - VIEWPORT_PADDING * 2));
+    // Apply width imperatively before measuring height: on narrow viewports
+    // the clamp differs from the JSX fallback, and React's batched commit
+    // wouldn't reflect the right width by the time getBoundingClientRect runs.
+    menu.style.width = `${width}px`;
+
+    const triggerRect = trigger.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+
+    const maxLeft = viewportWidth - width - VIEWPORT_PADDING;
+    const left = Math.min(
+      Math.max(triggerRect.right - width, VIEWPORT_PADDING),
+      Math.max(VIEWPORT_PADDING, maxLeft),
+    );
+
+    const belowTop = triggerRect.bottom + MENU_GAP;
+    const aboveTop = triggerRect.top - menuRect.height - MENU_GAP;
+    const wouldOverflowBottom = belowTop + menuRect.height + VIEWPORT_PADDING > viewportHeight;
+    const canFitAbove = aboveTop >= VIEWPORT_PADDING;
+    let top = wouldOverflowBottom && canFitAbove ? aboveTop : belowTop;
+    const maxTop = Math.max(VIEWPORT_PADDING, viewportHeight - menuRect.height - VIEWPORT_PADDING);
+    top = Math.min(Math.max(top, VIEWPORT_PADDING), maxTop);
+
+    setMenuStyle((prev) => {
+      const next = { left: `${left}px`, top: `${top}px`, width: `${width}px` };
+      if (prev && prev.left === next.left && prev.top === next.top && prev.width === next.width) return prev;
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     if (!open) return undefined;
     setCustomDraft(value?.customPrompt || '');
     const onDoc = (e) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+      const onTrigger = triggerRef.current?.contains(e.target);
+      const onMenu = menuRef.current?.contains(e.target);
+      if (!onTrigger && !onMenu) setOpen(false);
     };
     const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    let rafId = null;
+    const onReposition = () => {
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        updateMenuPosition();
+      });
+    };
     document.addEventListener('mousedown', onDoc);
     document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', onReposition);
+    window.addEventListener('scroll', onReposition, true);
     return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
       document.removeEventListener('mousedown', onDoc);
       document.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', onReposition);
+      window.removeEventListener('scroll', onReposition, true);
     };
     // value?.customPrompt intentionally omitted — see comment on customDraft.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, updateMenuPosition]);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setMenuStyle(null);
+      return;
+    }
+    updateMenuPosition();
+  }, [open, updateMenuPosition, styles.length]);
 
   const activeId = value?.id || null;
   const activeStyle = activeId ? styles.find((s) => s.id === activeId) : null;
@@ -83,8 +154,9 @@ export default function VisualStylePicker({
   };
 
   return (
-    <div ref={wrapRef} className="relative inline-block">
+    <>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         disabled={disabled}
@@ -99,6 +171,7 @@ export default function VisualStylePicker({
           ? `Visual style: ${triggerLabel}${value?.customPrompt ? ' (+ custom)' : ''}`
           : 'Pick a visual style preset for downstream image generation'}
         aria-expanded={open}
+        aria-haspopup="menu"
       >
         <Palette size={12} className="text-gray-500" />
         <span className="font-medium">{triggerLabel}</span>
@@ -106,8 +179,19 @@ export default function VisualStylePicker({
         <ChevronDown size={12} className="text-gray-500" />
       </button>
 
-      {open && (
-        <div className="absolute right-0 mt-1 w-80 max-h-[70vh] overflow-y-auto bg-port-card border border-port-border rounded-lg shadow-lg z-50 p-1">
+      {open && createPortal(
+        <div
+          ref={menuRef}
+          role="menu"
+          className="fixed bg-port-card border border-port-border rounded-lg shadow-xl z-[100] p-1 overflow-y-auto"
+          style={{
+            left: menuStyle?.left ?? `${VIEWPORT_PADDING}px`,
+            top: menuStyle?.top ?? `${VIEWPORT_PADDING}px`,
+            width: menuStyle?.width ?? `${MENU_WIDTH}px`,
+            maxHeight: `min(70vh, calc(100vh - ${VIEWPORT_PADDING * 2}px))`,
+            visibility: menuStyle ? 'visible' : 'hidden',
+          }}
+        >
           {hasValue && (
             <button
               type="button"
@@ -159,8 +243,9 @@ export default function VisualStylePicker({
               Apply custom additions
             </button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
-    </div>
+    </>
   );
 }

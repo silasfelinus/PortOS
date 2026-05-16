@@ -162,6 +162,7 @@ entries._
 - [ ] **[MEDIUM][CLIENT]** 4 components still redefine `formatBytes`/`formatTime`/`formatDuration`/`timeAgo`/`formatDate` locally instead of importing from `client/src/utils/formatters.js`: `pages/VideoTimelineEditor.jsx`, `pages/VideoTimeline.jsx`, `components/settings/MortalLoomTab.jsx`, `components/brain/tabs/ImportTab.jsx`. (Down from 8.)
 - [ ] **[MEDIUM][PERF]** `server/services/feeds.js#getItems` (lines 303–319) — full-sort-then-paginate on every request. Pre-sort once at write time or maintain a per-feed index.
 - [ ] **[MEDIUM][CODE]** Magic numbers in `cos.js:166,357`, `lmStudioManager.js:66`; brittle `err.message.startsWith('unknown piper voice:')` in `routes/voice.js:160` and `err.message.includes('not initialized')` in `services/visionTest.js:124`.
+- [ ] **[LOW][CLIENT]** Extract a shared `usePopoverPosition` hook (or `lib/popoverPosition.js`) — the inline portal-with-fixed-positioning pattern is now duplicated across four components with near-identical `updateMenuPosition` + rAF-coalesced scroll/resize listeners + `useLayoutEffect` measurement: `client/src/components/media/AddToCollectionMenu.jsx` (reference), `client/src/components/media/BulkTargetPicker.jsx`, `client/src/components/ThemeSwitcher.jsx`, `client/src/components/pipeline/VisualStylePicker.jsx`. Each carries its own `MENU_WIDTH` / `MENU_GAP` / `VIEWPORT_PADDING` constants. Deferred from the VisualStylePicker portal-fix /simplify pass — out of scope there, but the fourth copy is the right moment to dedup.
 
 ### Deferred Architecture (human-led planning)
 

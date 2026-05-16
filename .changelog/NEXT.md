@@ -72,13 +72,22 @@
 
 ## Fixed
 
-- **Visual Style Preset dropdown bleed-through on Pipeline Series.** The
-  open dropdown on the series-bible right pane was rendering under the
-  sticky bible sidebar (`<aside class="bg-port-card/40 ...">`), so the
-  sidebar's character names and "Linked World" content visibly bled
-  through the dropdown's panel with a 40%-opacity wash. Bumped the
-  picker's panel z-index from `z-30` to `z-50`, matching the convention
-  used by `NotificationDropdown` and `IconPicker`. Touches:
+- **Visual Style Preset dropdown clipped inside the bible sidebar.** The
+  prior z-30 → z-50 bump was a no-op for the real problem: the dropdown
+  lives inside the Pipeline Series bible `<aside class="lg:overflow-y-auto">`,
+  and `overflow:auto` creates a clipping context that absolutely-positioned
+  descendants cannot escape regardless of stacking order — the panel was
+  being cut off by the aside's scroll bounds, not hidden behind a higher-z
+  sibling. `VisualStylePicker` now portals its panel into `<body>` with
+  fixed positioning anchored to the trigger button, mirroring the
+  `AddToCollectionMenu` pattern. Position is clamped to the viewport on
+  all four sides, flips above the trigger when there isn't room below,
+  and repositions on `scroll` (capture phase, so it tracks the aside's
+  internal scroll) and `resize`. Click-away now checks both the trigger
+  and the portalled menu refs since the menu is no longer a DOM child of
+  the trigger's wrapper. Same fix benefits the per-stage views
+  (`ComicScriptStage`, `StoryboardsStage`, `EpisodeVideoStage`) where the
+  picker sits inside its own scrollable stage card. Touches:
   `client/src/components/pipeline/VisualStylePicker.jsx`.
 
 - **Series shares now deliver issues, scripts, and renders to collaborators.**
