@@ -225,6 +225,48 @@ describe('composeComicPagePrompt', () => {
   });
 });
 
+describe('visual style resolution threads into image prompts', () => {
+  it('applies series.visualStyleDefault catalog fragment to the cover prompt', async () => {
+    const seriesMod = await import('./series.js');
+    seriesMod.getSeries.mockResolvedValueOnce({
+      id: 'ser-test', name: 'Test', styleNotes: '', characters: [], settings: [],
+      visualStyleDefault: { id: 'graphic-novel', customPrompt: null },
+    });
+    const result = await enqueueComicCover('iss-test', {});
+    // The graphic-novel preset's promptFragment lands inside the cover prompt's
+    // `Art style: ...` clause via stackStyle's composition.
+    expect(result.prompt).toMatch(/Art style:.*halftone/i);
+  });
+
+  it('stage override beats series default for comic page prompts', async () => {
+    const seriesMod = await import('./series.js');
+    seriesMod.getSeries.mockResolvedValueOnce({
+      id: 'ser-test', name: 'Test', styleNotes: '', characters: [], settings: [],
+      visualStyleDefault: { id: 'graphic-novel', customPrompt: null },
+    });
+    getIssueMock.mockResolvedValueOnce({
+      ...structuredClone(mockIssue),
+      stages: {
+        ...mockIssue.stages,
+        comicPages: {
+          ...mockIssue.stages.comicPages,
+          visualStyleOverride: { id: 'anime', customPrompt: null },
+        },
+      },
+    });
+    const result = await enqueueComicCover('iss-test', {});
+    expect(result.prompt).toMatch(/anime|cel-shaded/i);
+    expect(result.prompt).not.toMatch(/halftone/i);
+  });
+
+  it('falls back to the storyboards catalog default (cinematic) when nothing is configured', async () => {
+    const result = await enqueueStoryboardSceneVideo('iss-test', 0, { aspectRatio: '16:9' });
+    // 'cinematic' fragment includes "photorealistic" and "35mm film".
+    const params = enqueueJobMock.mock.calls.at(-1)[0].params;
+    expect(params.prompt).toMatch(/photorealistic|35mm film/i);
+  });
+});
+
 describe('enqueueStoryboardSceneVideo', () => {
   it('rejects a non-integer sceneIndex', async () => {
     await expect(enqueueStoryboardSceneVideo('iss-test', 'nope')).rejects.toThrow(/non-negative integer/);

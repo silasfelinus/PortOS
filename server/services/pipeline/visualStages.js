@@ -36,14 +36,22 @@ import {
   matchSettingsInText, matchObjectsInText,
 } from '../../lib/scenePrompt.js';
 import { composeStyledPrompt } from '../../lib/composeStyledPrompt.js';
+import { resolveVisualStyle } from '../../lib/visualStyles.js';
 import { getDefaultVideoModelId, getVideoModels } from '../../lib/mediaModels.js';
 import { runStagedLLM } from '../../lib/stageRunner.js';
 import { runPromptRefine } from './refineHelpers.js';
 import { resolveSeriesCanonSync } from './seriesCanon.js';
 import { ASPECT_PRESETS } from '../../lib/creativeDirectorPresets.js';
 
-const stackStyle = (series, extraStyle) =>
-  [series?.styleNotes, extraStyle].map((s) => (s || '').trim()).filter(Boolean).join(', ');
+const joinStyleParts = (...parts) =>
+  parts.map((s) => (s || '').trim()).filter(Boolean).join(', ');
+
+const stackStyle = (series, extraStyle) => joinStyleParts(series?.styleNotes, extraStyle);
+
+// Resolved fragment leads so the curated aesthetic dominates over the caller's
+// free-text additions.
+const composeExtraStyle = (series, issue, stageId, callerExtraStyle = '') =>
+  joinStyleParts(resolveVisualStyle(series, issue, stageId)?.promptFragment, callerExtraStyle);
 
 const applyWorldStyle = (prompt, world) => {
   if (!world) return prompt;
@@ -232,7 +240,8 @@ export async function enqueueComicCover(issueId, options = {}) {
     : (cover?.script || '');
   const mode = resolveMode(options, settings);
   const prompt = composeComicCoverPrompt({
-    series, world, issue, coverScript, extraStyle: options.extraStyle,
+    series, world, issue, coverScript,
+    extraStyle: composeExtraStyle(series, issue, 'comicPages', options.extraStyle),
   });
   const jobId = enqueueImageJob({
     prompt, world, settings, options, mode,
@@ -394,7 +403,8 @@ export async function enqueueVisualComicPage(issueId, options = {}) {
   // already rejected above. The "(continuation of previous beat)" placeholder
   // covers panels with no description, so the prompt is non-empty by here.
   const prompt = composeComicPagePrompt({
-    series, world, page, pageNumber: pageIndex + 1, extraStyle: options.extraStyle,
+    series, world, page, pageNumber: pageIndex + 1,
+    extraStyle: composeExtraStyle(series, issue, 'comicPages', options.extraStyle),
     matchedCharacters, matchedSettings, matchedObjects,
   });
 
@@ -419,14 +429,14 @@ export async function enqueueVisualImage(issueId, stageId, options = {}) {
       status: 400, code: 'PIPELINE_VISUAL_BAD_STAGE',
     });
   }
-  const { settings, series, world, canon } = await loadBibleContext(issueId);
+  const { issue, settings, series, world, canon } = await loadBibleContext(issueId);
   const mode = resolveMode(options, settings);
   const matchedCharacters = matchCharactersInText(options.description || '', canon.characters);
   const prompt = composeVisualPrompt({
     series,
     description: options.description,
     slugline: options.slugline,
-    extraStyle: options.extraStyle,
+    extraStyle: composeExtraStyle(series, issue, stageId, options.extraStyle),
     matchedCharacters,
     world,
   });
@@ -493,7 +503,7 @@ export async function enqueueStoryboardSceneVideo(issueId, sceneIndex, options =
     series,
     description: scene.description,
     slugline: scene.slugline || '',
-    extraStyle: options.extraStyle,
+    extraStyle: composeExtraStyle(series, issue, 'storyboards', options.extraStyle),
     matchedCharacters,
     world,
   });

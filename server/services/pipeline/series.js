@@ -19,6 +19,7 @@ import {
   isStr, trimTo,
 } from '../../lib/storyBible.js';
 import { sanitizeArc, sanitizeSeasonList } from '../../lib/storyArc.js';
+import { sanitizeVisualStyleRef } from '../../lib/visualStyles.js';
 import { extractBible } from '../../lib/bibleExtractor.js';
 import { sanitizeOrigin } from '../../lib/sharingOrigin.js';
 import { emitRecordUpdated, emitRecordDeleted } from '../sharing/recordEvents.js';
@@ -86,6 +87,11 @@ const sanitizeSeries = (raw) => {
     arc: sanitizeArc(raw.arc),
     seasons: sanitizeSeasonList(raw.seasons),
     styleNotes: trimTo(raw.styleNotes, STYLE_NOTES_MAX),
+    // Series-level default visual style (catalog id + optional custom prompt).
+    // `null` when the user hasn't picked one — stage-level fallbacks in
+    // resolveVisualStyle() handle that case so legacy series keep rendering
+    // without a writer pass.
+    visualStyleDefault: sanitizeVisualStyleRef(raw.visualStyleDefault),
     targetFormat,
     issueCountTarget,
     llm,
@@ -194,6 +200,7 @@ export async function updateSeries(id, patch = {}) {
     ...('arc' in patch ? { arc: patch.arc } : {}),
     ...('seasons' in patch ? { seasons: patch.seasons } : {}),
     ...('styleNotes' in patch ? { styleNotes: patch.styleNotes } : {}),
+    ...('visualStyleDefault' in patch ? { visualStyleDefault: patch.visualStyleDefault } : {}),
     ...('targetFormat' in patch ? { targetFormat: patch.targetFormat } : {}),
     ...('issueCountTarget' in patch ? { issueCountTarget: patch.issueCountTarget } : {}),
     ...('origin' in patch ? { origin: patch.origin } : {}),

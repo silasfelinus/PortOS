@@ -18,6 +18,7 @@ import {
   generatePipelineComicCover,
   updatePipelineComicPage,
   updatePipelineIssue,
+  updateIssueStageVisualStyle,
   PIPELINE_STAGE_LABELS,
   PIPELINE_STAGE_STATUS_LABEL as STATUS_LABEL,
   PIPELINE_STAGE_STATUS_COLOR as STATUS_COLOR,
@@ -26,6 +27,7 @@ import { getSettings, updateSettings } from '../../../services/apiSystem';
 import { listImageModels } from '../../../services/apiImageVideo';
 import MediaJobThumb from '../MediaJobThumb';
 import MediaPreview from '../../media/MediaPreview';
+import VisualStylePicker from '../VisualStylePicker';
 import Drawer from '../../Drawer';
 import ImageGenSettingsForm from '../../imageGen/ImageGenSettingsForm';
 import { deriveAvailableBackends } from '../../../lib/imageGenBackends';
@@ -271,6 +273,16 @@ export default function ComicScriptStage({ issue, series, onStageUpdate, actions
           ) : null}
         </div>
         <div className="flex items-center gap-2">
+          <VisualStylePicker
+            compact
+            value={comicPages.visualStyleOverride || null}
+            inheritedLabel={series?.visualStyleDefault?.id ? 'Series default' : 'Pick style'}
+            onChange={async (next) => {
+              const updated = await updateIssueStageVisualStyle(issue.id, 'comicPages', next)
+                .catch((err) => { toast.error(err.message || 'Save failed'); return null; });
+              if (updated) onStageUpdate?.('comicPages', updated.stages.comicPages, updated);
+            }}
+          />
           <button
             type="button"
             onClick={openImageSettings}

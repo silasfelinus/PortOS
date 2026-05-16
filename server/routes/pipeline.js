@@ -49,6 +49,7 @@ import { refineCharacterDescription } from '../services/pipeline/nounRefine.js';
 import { startEpisodeVideoForIssue, ERR_NO_STORYBOARDS } from '../services/pipeline/episodeVideo.js';
 import { ASPECT_RATIOS, QUALITIES } from '../lib/creativeDirectorPresets.js';
 import { extractScenes, SOURCE_KIND } from '../lib/sceneExtractor.js';
+import { listVisualStyles } from '../lib/visualStyles.js';
 import { parseComicScript } from '../lib/comicScriptParser.js';
 import {
   LENGTH_PROFILE_NAMES,
@@ -108,6 +109,16 @@ const objectSchema = objectBibleCreateSchema.extend({
   id: z.string().trim().max(80).optional(),
 }).passthrough();
 
+// Visual style ref — `{ id, customPrompt? }`. The id is validated lazily
+// (against the catalog in server/lib/visualStyles.js) by the sanitizer at
+// persist time so adding a new style doesn't force a schema bump. `id: null`
+// + `customPrompt: "..."` is the valid "custom only" shape — preventing it
+// here would force the UI to invent a sentinel id just to clear the picker.
+const visualStyleRefSchema = z.object({
+  id: z.string().trim().max(64).nullable().optional(),
+  customPrompt: z.string().trim().max(2000).nullable().optional(),
+}).nullable();
+
 // Arc + Season — phase 2 of Story Arc Planning. The arc lives on the series
 // record itself; seasons get their own resource so the route layer can take
 // per-record CRUD without forcing the caller to PATCH the whole series.
@@ -146,6 +157,7 @@ const seriesCreateSchema = z.object({
   arc: arcSchema.nullable().optional(),
   seasons: z.array(seasonSchema).max(ARC_LIMITS.SEASONS_PER_SERIES_MAX).optional(),
   styleNotes: z.string().trim().max(seriesSvc.STYLE_NOTES_MAX).optional().default(''),
+  visualStyleDefault: visualStyleRefSchema.optional(),
   targetFormat: z.enum(seriesSvc.TARGET_FORMATS).optional(),
   issueCountTarget: z.number().int().min(0).max(seriesSvc.ISSUE_COUNT_TARGET_MAX).optional(),
   llm: llmSchema,
@@ -163,6 +175,7 @@ const seriesPatchSchema = z.object({
   arc: arcSchema.nullable().optional(),
   seasons: z.array(seasonSchema).max(ARC_LIMITS.SEASONS_PER_SERIES_MAX).optional(),
   styleNotes: z.string().trim().max(seriesSvc.STYLE_NOTES_MAX).optional(),
+  visualStyleDefault: visualStyleRefSchema.optional(),
   targetFormat: z.enum(seriesSvc.TARGET_FORMATS).optional(),
   issueCountTarget: z.number().int().min(0).max(seriesSvc.ISSUE_COUNT_TARGET_MAX).optional(),
   llm: llmSchema,
@@ -229,6 +242,10 @@ const visualStageInputSchema = stageInputSchema.extend({
     imageJobId: z.string().trim().max(200).nullable().optional(),
     prompt: z.string().max(16_000).nullable().optional(),
   }).nullable().optional(),
+  // Per-stage visual style override. Validated lazily by the sanitizer
+  // (unknown catalog ids are dropped) so adding a new style doesn't force
+  // a schema bump on every client.
+  visualStyleOverride: visualStyleRefSchema.optional(),
 });
 
 const issuePatchSchema = z.object({
@@ -411,6 +428,12 @@ const autoRunSchema = z.object({
   quality: z.enum(QUALITIES).optional(),
   modelId: z.string().trim().max(64).optional(),
 });
+
+// Static catalog. Express's default ETag handles re-fetches; clients also
+// dedup via the module-level promise cache in apiPipeline.js.
+router.get('/visual-styles', asyncHandler(async (_req, res) => {
+  res.json({ styles: listVisualStyles() });
+}));
 
 // =====================
 // Series routes

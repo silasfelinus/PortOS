@@ -26,6 +26,7 @@ import {
   CUSTOM_PAGE_MIN, CUSTOM_PAGE_MAX, CUSTOM_MINUTE_MIN, CUSTOM_MINUTE_MAX,
 } from '../../lib/issueLength.js';
 import { sanitizeOrigin } from '../../lib/sharingOrigin.js';
+import { sanitizeVisualStyleRef } from '../../lib/visualStyles.js';
 import { ARC_ROLES } from '../../lib/storyArc.js';
 import { emitRecordUpdated } from '../sharing/recordEvents.js';
 
@@ -177,6 +178,9 @@ const sanitizeVisualStage = (raw, stageId = null) => {
     // field — `sanitizeStages` below threads the stageId through so the
     // canonical persistence path enforces the rule.
     cover: stageId === null || stageId === 'comicPages' ? sanitizeCover(raw?.cover) : null,
+    // Per-stage override so a series can mix aesthetics
+    // (e.g. graphic-novel panels + cinematic storyboards).
+    visualStyleOverride: sanitizeVisualStyleRef(raw?.visualStyleOverride),
   };
 };
 

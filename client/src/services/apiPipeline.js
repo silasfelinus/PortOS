@@ -53,6 +53,25 @@ export const PIPELINE_STAGE_STATUS_COLOR = Object.freeze({
   error: 'text-port-error',
 });
 
+// ---- Visual styles catalog ----
+// Module-level promise dedup: the catalog is immutable for the life of the
+// server, so concurrent mounts share one in-flight fetch and subsequent calls
+// resolve from cache. Cleared on rejection so a transient failure can retry.
+let _visualStylesPromise = null;
+export const listPipelineVisualStyles = () => {
+  if (!_visualStylesPromise) {
+    _visualStylesPromise = request('/pipeline/visual-styles')
+      .catch((err) => { _visualStylesPromise = null; throw err; });
+  }
+  return _visualStylesPromise;
+};
+
+// Per-stage style override is identical-shaped across every visual stage —
+// factor the PATCH shape here so the three stage components don't each
+// hand-roll the body.
+export const updateIssueStageVisualStyle = (issueId, stageId, next) =>
+  updatePipelineIssue(issueId, { stages: { [stageId]: { visualStyleOverride: next } } });
+
 // ---- Series ----
 export const listPipelineSeries = () => request('/pipeline/series');
 export const getPipelineSeries = (id) => request(`/pipeline/series/${encodeURIComponent(id)}`);

@@ -24,9 +24,11 @@ import {
   generatePipelineSceneVideo,
   refinePipelineSceneImagePrompt,
   updatePipelineIssue,
+  updateIssueStageVisualStyle,
   extractPipelineStoryboardScenes,
 } from '../../../services/api';
 import MediaJobThumb from '../MediaJobThumb';
+import VisualStylePicker from '../VisualStylePicker';
 import { genConfigToImageOptions, genConfigToRefineOptions } from './VisualGenSettings';
 
 export default function StoryboardsStage({ issue, series, onStageUpdate, actionsGated = false }) {
@@ -199,6 +201,16 @@ export default function StoryboardsStage({ issue, series, onStageUpdate, actions
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          <VisualStylePicker
+            compact
+            value={issue.stages?.storyboards?.visualStyleOverride || null}
+            inheritedLabel={series?.visualStyleDefault?.id ? 'Series default' : 'Pick style'}
+            onChange={async (next) => {
+              const updated = await updateIssueStageVisualStyle(issue.id, 'storyboards', next)
+                .catch((err) => { toast.error(err.message || 'Save failed'); return null; });
+              if (updated) onStageUpdate?.('storyboards', updated.stages.storyboards, updated);
+            }}
+          />
           <button
             type="button"
             onClick={() => onExtractClick('teleplay')}

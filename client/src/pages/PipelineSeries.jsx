@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import ArcCanvas from '../components/pipeline/ArcCanvas';
+import VisualStylePicker from '../components/pipeline/VisualStylePicker';
 import {
   getPipelineSeries, updatePipelineSeries,
   listPipelineIssues,
@@ -301,6 +302,18 @@ function BibleSidebar({ series, universes, patchSeries, onAddCharacter, onUpdate
           maxLength={4000}
           placeholder="moebius linework, washed sepia, slow zooms, ambient drones. Reused as the visual prefix for every image-gen call from this series."
         />
+      </Field>
+
+      <Field label="Visual style preset">
+        <div className="flex items-center gap-2">
+          <VisualStylePicker
+            value={series.visualStyleDefault || null}
+            onChange={(next) => patchSeries({ visualStyleDefault: next })}
+          />
+          <span className="text-xs text-gray-500">
+            Applied to comic pages, storyboards, and episode video unless a stage overrides it.
+          </span>
+        </div>
       </Field>
 
       <Field label="Linked World (from Universe Builder)">
