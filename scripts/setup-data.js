@@ -125,7 +125,7 @@ if (!existsSync(migrationsDir)) {
 // Mirror data/migrations/003+ NEW/OLD hashes. Array values let the check
 // recognize multi-migration lineages (file evolved through 003 → 004 → 005);
 // a user at any intermediate hash still gets the "run migrations" prompt.
-const PIPELINE_LENGTH_OLD_MD5 = {
+const SHIPPED_PROMPT_OLD_MD5 = {
   // idea-expansion: aee… (pre-003) and 41fa… (post-003, pre-004) both
   // auto-updatable to the post-004 hash.
   'pipeline-idea-expansion.md': ['aee25112b2c596f643b17c559b772c22', '41facefbc0c0549d456bef9111f95ab9'],
@@ -140,8 +140,10 @@ const PIPELINE_LENGTH_OLD_MD5 = {
   'pipeline-arc-verify.md':      '52e31abc93e3105176236fcaa5d1575a',
   'pipeline-volume-verify.md':   'c6ea28e972ad6e229bafb2d602b4dda3',
   'pipeline-arc-resolve.md':     '87bc5c01f1a8a97b681727a38b05edc6',
+  // Shot decomposition additions (migration 006).
+  'pipeline-extract-scenes.md':  '59fa5ee305ce53d91eb15224d8b546d3',
 };
-const PIPELINE_LENGTH_NEW_MD5 = {
+const SHIPPED_PROMPT_NEW_MD5 = {
   'pipeline-idea-expansion.md': '1ee44cf95851ff8debf18729ebcd40b4',
   'pipeline-prose.md':          '30ac30ec2b9d3e2a9eb869c181732cc6',
   'pipeline-comic-script.md':   'beab031951859ca13579cdb9c4dbe769',
@@ -151,8 +153,9 @@ const PIPELINE_LENGTH_NEW_MD5 = {
   'pipeline-arc-verify.md':     'ff56d8387162017e08d5d0491060ddd6',
   'pipeline-volume-verify.md':  '03f3c874cb80e1c98abcf03168fa7a92',
   'pipeline-arc-resolve.md':    'a8677bbe1eb38f871fb152a5b0fec7c6',
+  'pipeline-extract-scenes.md': 'c51fb208568d0d903eb43b437478b0ba',
 };
-const PIPELINE_LENGTH_PROMPTS = Object.keys(PIPELINE_LENGTH_OLD_MD5);
+const SHIPPED_PROMPT_FILES = Object.keys(SHIPPED_PROMPT_OLD_MD5);
 
 const sampleStagesDir = join(sampleDir, 'prompts', 'stages');
 const dataStagesDir   = join(dataDir,   'prompts', 'stages');
@@ -165,12 +168,12 @@ if (existsSync(sampleStagesDir) && existsSync(dataStagesDir)) {
   const autoUpdatable = [];
   const customized    = [];
 
-  for (const f of PIPELINE_LENGTH_PROMPTS) {
+  for (const f of SHIPPED_PROMPT_FILES) {
     const dataPath = join(dataStagesDir, f);
     if (!existsSync(dataPath)) continue; // missing files handled above
     const dataMd5 = md5(readFileSync(dataPath, 'utf8'));
-    if (dataMd5 === PIPELINE_LENGTH_NEW_MD5[f]) continue; // already up to date
-    const oldExpected = PIPELINE_LENGTH_OLD_MD5[f];
+    if (dataMd5 === SHIPPED_PROMPT_NEW_MD5[f]) continue; // already up to date
+    const oldExpected = SHIPPED_PROMPT_OLD_MD5[f];
     const oldHashes = Array.isArray(oldExpected) ? oldExpected : [oldExpected];
     if (oldHashes.includes(dataMd5)) {
       autoUpdatable.push(f);
