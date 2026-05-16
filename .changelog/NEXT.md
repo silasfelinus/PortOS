@@ -912,6 +912,39 @@
 
 ## Changed
 
+- **BTW ("by the way") messages are now Claude-Code-TUI-only and paste live
+  into the running session.** The old flow wrote a `BTW.md` file in the
+  workspace and relied on a prompt instruction telling the agent to poll
+  for it — brittle, often ignored, and required ephemeral-file cleanup on
+  every cleanup path. The new flow detects whether the running agent is a
+  Claude Code TUI session (codex / gemini / lm-studio TUIs don't honor
+  bracketed-paste the same way) and, if so, pastes the BTW message into
+  the live PTY as bracketed paste + delayed Enter. Non-Claude-TUI agents
+  (headless CLI, runner-spawned, other TUI kinds) reject the request with
+  a clear error instead of silently writing a file the agent will never
+  read. The prompt's `BTW Messages` instruction is removed entirely
+  because Claude Code natively handles user input mid-session and other
+  agents no longer support BTW. The client BTW input box is gated on
+  `metadata.executionMode === 'tui' && metadata.tuiKind === 'claude'` so it
+  never offers a feature the server can't honor. `BTW.md` cleanup paths
+  (`agentLifecycle`, `agentTuiSpawning`, `agentCliSpawning`) and the
+  runner-client `sendBtwToAgent` HTTP wrapper are deleted. A new
+  `metadata.tuiKind` field on agent state records which TUI binary is
+  running (`claude`, `codex`, `gemini`, etc.).
+
+- **TUI agents own the full PR creation and write the body themselves.**
+  Reinforced after a TUI agent's PR ended up populated with garbled
+  captured-output as the PR body. The Completion Workflow section now
+  explicitly states "**You own the entire commit → push → PR sequence —
+  PortOS will NOT push or open a PR on your behalf**" and instructs the
+  agent to write the PR title/body itself based on actual changes (not
+  auto-generated from terminal output). The post-exit `cleanupAgentWorktree`
+  path for TUI agents was already passing `openPR: false`,
+  `requestCopilotReview: false`, `skipMerge: true`; the review-loop prompt
+  section is now also suppressed for TUI so the agent isn't told the
+  system will request a Copilot review (it won't — the agent does it
+  inline via `gh` after `/do:pr`).
+
 - **`setup.{sh,ps1}` and `update.{sh,ps1}` now auto-install/update slash-do
   via `npx slash-do@latest`.** Previously, `update.sh` and `update.ps1`
   prompted the user interactively to install `slash-do` only when the

@@ -6,7 +6,7 @@
  */
 
 import { join } from 'path';
-import { readFile, writeFile, rm } from 'fs/promises';
+import { readFile, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { spawn } from 'child_process';
 import { homedir } from 'os';
@@ -567,11 +567,6 @@ export async function spawnDirectly(agentId, task, prompt, workspacePath, model,
 
     // Process memory extraction and app cooldown
     await processAgentCompletion(agentId, task, success, outputBuffer);
-
-    // Clean up ephemeral BTW.md before worktree removal
-    if (workspacePath) {
-      await rm(join(workspacePath, 'BTW.md')).catch(() => {});
-    }
 
     // Clean up worktree if agent was using one
     const directOpenPR = isTruthyMetaFn(task.metadata?.openPR);

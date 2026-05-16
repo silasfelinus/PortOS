@@ -267,7 +267,6 @@ export async function spawnTuiAgent(agentId, task, prompt, workspacePath, model,
     }
 
     await processAgentCompletion(agentId, task, finalSuccess, outputBuffer);
-    if (workspacePath) await rm(join(workspacePath, 'BTW.md')).catch(() => {});
     if (workspacePath) await rm(join(workspacePath, DONE_SENTINEL_NAME)).catch(() => {});
 
     // TUI agents run /do:pr (or /do:push) themselves before signaling via
@@ -454,6 +453,11 @@ export async function spawnTuiAgent(agentId, task, prompt, workspacePath, model,
     doneSentinelTimer
   });
 
+  // Identify which TUI binary this session is running so consumers can gate
+  // features that aren't universal — e.g. only Claude Code supports
+  // bracketed-paste injection of post-spawn BTW messages; codex/gemini/lm-studio
+  // TUIs don't.
+  const tuiKind = commandName.toLowerCase();
   await updateAgent(agentId, {
     pid,
     metadata: {
@@ -461,6 +465,7 @@ export async function spawnTuiAgent(agentId, task, prompt, workspacePath, model,
       executionMode: 'tui',
       tuiSessionId: sessionId,
       tuiCommand: tuiConfig.commandLine,
+      tuiKind,
       tuiIdleTimeoutMs: tuiConfig.idleTimeoutMs
     }
   });

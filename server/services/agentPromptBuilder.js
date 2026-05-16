@@ -229,10 +229,10 @@ After completing your work and before committing, run \`/simplify\` to review th
   const tuiCompletionCommand = willOpenPR ? '/do:pr' : '/do:push';
   const tuiCompletionSection = isTui ? `
 ## Completion Workflow
-You are running inside the Claude Code TUI, which has the project's slashdo commands available as slash commands. When your task is complete, run the following — in order — without further user input:
+You are running inside the Claude Code TUI, which has the project's slashdo commands available as slash commands. **You own the entire commit → push → ${willOpenPR ? 'PR' : 'push'} sequence — PortOS will NOT push or open a PR on your behalf.** When your task is complete, run the following — in order — without further user input:
 
 1. ${simplifyEnabled ? '`/simplify` — review the changed code for reuse, quality, and efficiency, and fix any issues it surfaces.' : '(simplify is disabled for this task — skip step 1)'}
-2. \`${tuiCompletionCommand}\` — commits${willOpenPR ? ', pushes, and opens a pull request against the default branch' : ' and pushes the branch'}.
+2. \`${tuiCompletionCommand}\` — commits${willOpenPR ? `, pushes, and opens a pull request against the default branch. Write the PR title and body yourself based on the actual changes you made; do NOT let any tool auto-generate the body from terminal output.${willReviewLoop ? ' After the PR is open, request a Copilot review (e.g. via `gh` if available).' : ''}` : ' and pushes the branch'}.
 3. Write the completion sentinel so PortOS knows you finished: \`echo "done" > "${worktreeInfo?.worktreePath || workspaceDir}/.agent-done"\` (PortOS polls for this file; without it the agent will sit idle until the 3-minute fallback timer fires).
 4. Run \`/quit\` to exit the Claude Code session cleanly.
 
@@ -245,8 +245,10 @@ Do not wait for further user input between these steps — run them in sequence 
   // PRs. On non-GitHub forges (e.g. GitLab MRs) this step is skipped because the
   // Copilot reviewer is GitHub-only. Only meaningful when a PR will actually be
   // created (willOpenPR), since the Copilot review request is a no-op without a
-  // PR URL.
-  const reviewLoopSection = willReviewLoop && willOpenPR ? `
+  // PR URL. Suppressed for TUI agents because TUI agents open the PR themselves
+  // and the Completion Workflow above instructs them to request the Copilot
+  // review inline — the system-side post-exit handler never fires for TUI.
+  const reviewLoopSection = willReviewLoop && willOpenPR && !isTui ? `
 ## Code Review
 After your task completes, the system will request a Copilot code review automatically for GitHub PRs (the step is skipped for GitLab MRs and other non-GitHub forges). The system will then spawn a follow-up agent that runs the full review-and-fix loop until Copilot returns zero comments and merges the PR. You do not need to open the PR, trigger the review, or address feedback yourself — focus on producing high-quality, well-tested code so the review pass goes cleanly.
 ` : '';
@@ -416,7 +418,6 @@ ${skillSection ? `## Task-Type Skill Guidelines\n\n${skillSection}\n` : ''}${too
 - Do not make unrelated changes
 - If blocked, explain clearly why
 - Never update the PortOS changelog (\`.changelog/\`) for work on managed apps — the PortOS changelog tracks PortOS core changes only
-- **BTW Messages**: The user may send you additional context while you work. Check for a \`BTW.md\` file in your working directory root — if it exists, read it for important messages from the user. Incorporate that context into your work. Do not delete or modify BTW.md.
 ${isTruthyMetaFn(task.metadata?.readOnly) ? `- **This is a read-only task.** Do NOT commit, push, or modify any files in the repository. Only read data and generate reports.` : worktreeInfo && willOpenPR ? `- On successful completion, the system will push your branch and open a pull request — do NOT open a PR manually. (If the task fails, no PR is opened; the worktree is then cleaned up unless a safety check preserves it for manual recovery.)${willReviewLoop ? ' For GitHub PRs, a Copilot code review will also be requested automatically (skipped on GitLab and other non-GitHub forges) — do NOT run \`/do:rpr\` or attempt to address review comments yourself; you will have already exited.' : ''}` : worktreeInfo ? `- Your worktree branch will be automatically merged back to the source branch when your task completes — do NOT open a PR.` : ``}
 
 ## Git Hygiene (CRITICAL)

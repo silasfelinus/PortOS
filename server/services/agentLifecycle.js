@@ -43,16 +43,6 @@ const AGENTS_DIR = PATHS.cosAgents;
 
 
 /**
- * Remove BTW.md from agent workspace after completion.
- * Prevents ephemeral context files from being committed to git.
- */
-async function cleanupBtwFile(workspacePath) {
-  if (!workspacePath) return;
-  const btwPath = join(workspacePath, 'BTW.md');
-  await rm(btwPath).catch(() => {});
-}
-
-/**
  * Sync running agents from the runner (recovery after server restart).
  * This allows us to receive completion events for agents spawned before restart.
  */
@@ -1133,9 +1123,6 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
     handleCreativeDirectorCompletion(task, agentId, effectiveSuccess)
       .catch((err) => console.log(`⚠️ creativeDirector completion hook failed: ${err.message}`));
   }
-
-  // Clean up ephemeral BTW.md before worktree removal
-  await cleanupBtwFile(agentState?.metadata?.workspacePath);
 
   // Clean up worktree if agent was using one (skip merge when JIRA branch — PR handles merge)
   if (!jiraBranch) {

@@ -500,23 +500,47 @@ export async function killAgent(agentId) {
   return killAgentFromSpawner(agentId);
 }
 
-// Send a BTW (additional context) message to a running agent
+// Send a BTW (additional context) message to a running agent.
+//
+// BTW is only supported for Claude Code TUI agents — the message gets
+// bracket-pasted directly into the live PTY session as if the user typed it
+// themselves. The legacy BTW.md path is gone: it required headless agents to
+// poll a file mid-run, which most CLIs (codex / gemini / LM Studio) don't do
+// reliably anyway, and the indirection had to be reflected in the prompt with
+// a brittle "check this file" instruction. Other TUI kinds (codex, gemini)
+// don't honor bracketed-paste in the same way, so they're not eligible
+// either.
 export async function sendBtwToAgent(agentId, message) {
-  // Single locked read to validate agent and extract workspacePath
   const agentInfo = await withStateLock(async () => {
     const state = await loadState();
     const agent = state.agents[agentId];
     if (!agent) return { error: 'Agent not found' };
     if (agent.status !== 'running') return { error: 'Agent is not running' };
-    if (!agent.metadata?.workspacePath) return { error: 'Agent has no workspace path' };
-    return { workspacePath: agent.metadata.workspacePath };
+    if (agent.metadata?.executionMode !== 'tui') {
+      return { error: 'BTW is only supported for Claude Code TUI agents.' };
+    }
+    if (agent.metadata?.tuiKind !== 'claude') {
+      return { error: `BTW is only supported for Claude Code TUI agents (this agent runs ${agent.metadata.tuiKind || 'an unknown TUI'}).` };
+    }
+    if (!agent.metadata?.tuiSessionId) {
+      return { error: 'Agent has no attached TUI session' };
+    }
+    return { tuiSessionId: agent.metadata.tuiSessionId };
   });
 
   if (agentInfo.error) return agentInfo;
 
-  // Send to runner to write the BTW.md file
-  const { sendBtwToAgent: sendViaRunner } = await import('./cosRunnerClient.js');
-  const result = await sendViaRunner(agentId, message);
+  const shellService = await import('./shell.js');
+  if (!shellService.getSession(agentInfo.tuiSessionId)) {
+    return { error: 'TUI session is no longer alive' };
+  }
+  // Bracketed-paste + delayed Enter, mirroring the initial prompt paste in
+  // agentTuiSpawning.js: Claude Code commits the paste buffer before the
+  // submit arrives, so multi-line messages land as a single paste event.
+  shellService.writeToSession(agentInfo.tuiSessionId, `\x1b[200~${message}\x1b[201~`);
+  setTimeout(() => {
+    shellService.writeToSession(agentInfo.tuiSessionId, '\r');
+  }, 400);
 
   // Track in agent state (cap at 50 messages)
   const timestamp = new Date().toISOString();
@@ -534,7 +558,7 @@ export async function sendBtwToAgent(agentId, message) {
   });
 
   cosEvents.emit('agent:btw', { agentId, message, timestamp });
-  return { success: true, ...result };
+  return { success: true, delivered: 'tui-paste', tuiSessionId: agentInfo.tuiSessionId };
 }
 
 // Get process stats for an agent (CPU, memory)
