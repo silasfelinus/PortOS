@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Loader2, Sparkles, ImageIcon, Save, Trash2, ChevronDown, ChevronRight, Settings as SettingsIcon, FileDown } from 'lucide-react';
+import { Loader2, Sparkles, ImageIcon, Save, Trash2, ChevronDown, ChevronRight, Settings as SettingsIcon, FileDown, Layers } from 'lucide-react';
 import toast from '../../ui/Toast';
 import {
   generatePipelineStage,
@@ -36,6 +36,91 @@ import {
   readPipelineImageSettings,
   pipelineImageCfgToRenderOpts,
 } from '../../../lib/pipelineImageDefaults';
+
+// Legacy records (pre-proof/final split) carry `imageJobId`/`filename` at
+// the record root; surface those as the proof slot so the UI keeps showing
+// the old render until the user re-renders into the new shape.
+const getProofSlot = (rec) => {
+  if (!rec) return null;
+  if (rec.proofImage?.jobId || rec.proofImage?.filename) return rec.proofImage;
+  if (rec.imageJobId || rec.filename) {
+    return { jobId: rec.imageJobId || null, filename: rec.filename || null };
+  }
+  return null;
+};
+
+const getFinalSlot = (rec) => (rec?.finalImage?.jobId || rec?.finalImage?.filename ? rec.finalImage : null);
+
+// Whichever slot the user should see as "rendered" for PDF-readiness math
+// and the lightbox preview — final wins over proof when both exist.
+const getPreferredSlot = (rec) => getFinalSlot(rec) || getProofSlot(rec);
+
+// 5s grace window for stale-jobId staleness: if MediaJobThumb never reports
+// a real status (job archive expired before this session), stop treating the
+// unresolved 'unknown' as in-flight so the render button isn't permanently
+// disabled.
+function useSlotInFlight(slot) {
+  const [status, setStatus] = useState('unknown');
+  const [expired, setExpired] = useState(false);
+  useEffect(() => {
+    setStatus('unknown');
+    setExpired(false);
+    if (!slot?.jobId) return undefined;
+    const t = setTimeout(() => setExpired(true), 5000);
+    return () => clearTimeout(t);
+  }, [slot?.jobId]);
+  const inFlight = !!slot?.jobId
+    && status !== 'completed' && status !== 'failed' && status !== 'canceled'
+    && !(status === 'unknown' && expired);
+  return { inFlight, setStatus };
+}
+
+// Tooltip text for the "Render final" button — picks the first applicable
+// reason from a precedence chain so the user always sees the most specific
+// blocker. `dirtyMsg` is page-only; the cover row passes null.
+function finalButtonTooltip({ gated, inFlight, needsProof, dirty, dirtyMsg, defaultMsg }) {
+  if (gated) return 'Saving settings…';
+  if (dirty) return dirtyMsg;
+  if (inFlight) return 'Final render in progress…';
+  if (needsProof) return 'Render the proof first — "from proof" needs a completed proof image to use as the i2i base.';
+  return defaultMsg;
+}
+
+// Shared proof/final thumb cell — used by both the cover row and the per-
+// page row. Header shows the variant label + WxH; body shows the
+// MediaJobThumb (or an empty-state hint when the slot is unpopulated).
+function RenderSlotThumb({
+  slot, label, emptyHint, thumbLabel, size = 'md',
+  onStatus, onFilename, onPreview, fillFromProofLabel = false,
+}) {
+  return (
+    <div className="flex flex-col bg-port-bg border border-port-border rounded p-1.5">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[10px] uppercase tracking-wider text-gray-500">
+          {label}{fillFromProofLabel && slot?.fromProof ? ' (from proof)' : ''}
+        </span>
+        {slot?.width && slot?.height ? (
+          <span className="text-[10px] text-gray-600">{slot.width}×{slot.height}</span>
+        ) : null}
+      </div>
+      <div className="flex-1 flex items-center justify-center overflow-hidden">
+        {slot?.jobId ? (
+          <MediaJobThumb
+            jobId={slot.jobId}
+            label={thumbLabel}
+            size={size}
+            onStatus={onStatus}
+            onFilename={onFilename}
+            onPreview={onPreview}
+            fallbackFilename={slot.filename || null}
+          />
+        ) : (
+          <span className="text-[10px] text-gray-500 italic">{emptyHint}</span>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // Reconstructs a page's markdown from its parsed `panels[]`. Used as a
 // fallback for pages persisted BEFORE the parser started preserving rawText —
@@ -102,8 +187,12 @@ export default function ComicScriptStage({ issue, series, onStageUpdate, actions
     const pageList = Array.isArray(comicPages.pages) ? comicPages.pages : [];
     return pageList
       .map((p, idx) => {
-        if (!p.imageJobId) return null;
-        const filename = filenameByJobId[p.imageJobId];
+        // Prefer the hi-res final when present; fall back to proof (or legacy)
+        // so users still see something while the final renders or before they
+        // upgrade a page to a final render.
+        const slot = getPreferredSlot(p);
+        if (!slot?.jobId) return null;
+        const filename = slot.filename || filenameByJobId[slot.jobId];
         if (!filename) return null;
         return buildPageItem(idx, p, filename);
       })
@@ -165,34 +254,24 @@ export default function ComicScriptStage({ issue, series, onStageUpdate, actions
   // Front cover lives on stages.comicPages.cover so it persists alongside the
   // page renders. The textarea owns a draft string separate from the persisted
   // value so keystrokes don't round-trip until blur.
-  const cover = comicPages.cover || { script: '', imageJobId: null, prompt: null };
+  const cover = comicPages.cover || { script: '', proofImage: null, finalImage: null };
+  const coverProof = getProofSlot(cover);
+  const coverFinal = getFinalSlot(cover);
   const [draftCoverScript, setDraftCoverScript] = useState(cover.script || '');
   useEffect(() => { setDraftCoverScript(cover.script || ''); }, [cover.script]);
-  const [renderingCover, setRenderingCover] = useState(false);
-  // Mirror PageRow's job-status pattern: start 'unknown' so we treat any
-  // existing jobId as in-flight until MediaJobThumb reports back.
-  const [coverJobStatus, setCoverJobStatus] = useState('unknown');
-  // `unknown` means the GET /media-jobs/:id is still in-flight OR the job
-  // archive has expired (404). After a short grace period, stop treating an
-  // unresolved `unknown` as in-flight so a stale imageJobId (job archived,
-  // page reloaded) doesn't permanently disable "Render cover". The 5-second
-  // window comfortably outlasts any LAN round-trip while being short enough
-  // that an actual expired-archive case doesn't frustrate the user.
-  const [coverUnknownExpired, setCoverUnknownExpired] = useState(false);
-  // Reset both whenever the jobId changes so a freshly-queued job gets a
-  // clean slate and is immediately treated as in-flight.
-  useEffect(() => {
-    setCoverJobStatus('unknown');
-    setCoverUnknownExpired(false);
-    if (!cover.imageJobId) return undefined;
-    const t = setTimeout(() => setCoverUnknownExpired(true), 5000);
-    return () => clearTimeout(t);
-  }, [cover.imageJobId]);
-  const coverJobInFlight = !!cover.imageJobId
-    && coverJobStatus !== 'completed'
-    && coverJobStatus !== 'failed'
-    && coverJobStatus !== 'canceled'
-    && !(coverJobStatus === 'unknown' && coverUnknownExpired);
+  const [renderingCoverProof, setRenderingCoverProof] = useState(false);
+  const [renderingCoverFinal, setRenderingCoverFinal] = useState(false);
+  const [useProofForCoverFinal, setUseProofForCoverFinal] = useState(true);
+  const { inFlight: coverProofInFlight, setStatus: setCoverProofStatus } = useSlotInFlight(coverProof);
+  const { inFlight: coverFinalInFlight, setStatus: setCoverFinalStatus } = useSlotInFlight(coverFinal);
+
+  // Codex CLI's `$imagegen` has no init-image input, so the "use proof as
+  // base" upscale path can't preserve composition there. Disable the
+  // checkbox + show a tooltip when codex is the active backend.
+  const i2iSupported = imageCfg.mode !== 'codex';
+  const i2iDisabledReason = i2iSupported
+    ? null
+    : 'Codex (gpt-image-2) does not support image-to-image. Switch backend in the image-gen settings to use the proof as a base.';
 
   const persistCoverScript = async (nextScript) => {
     // Only send the script text. Never clear imageJobId/prompt from the blur
@@ -209,21 +288,26 @@ export default function ComicScriptStage({ issue, series, onStageUpdate, actions
     if (updated) onStageUpdate?.('comicPages', updated.stages.comicPages, updated);
   };
 
-  const handleRenderCover = async () => {
-    setRenderingCover(true);
+  const handleRenderCover = async (target) => {
+    const setFlight = target === 'final' ? setRenderingCoverFinal : setRenderingCoverProof;
+    setFlight(true);
+    const useProofAsBase = target === 'final' && useProofForCoverFinal && i2iSupported;
     const result = await generatePipelineComicCover(issue.id, {
       coverScript: draftCoverScript || '',
       ...renderOpts,
+      target,
+      useProofAsBase,
     }, { silent: true }).catch((err) => {
-      toast.error(err.message || 'Failed to render cover');
+      toast.error(err.message || `Failed to render ${target} cover`);
       return null;
     });
-    setRenderingCover(false);
+    setFlight(false);
     if (!result) return;
     if (result.issue) {
       onStageUpdate?.('comicPages', result.issue.stages.comicPages, result.issue);
     }
-    toast.success(`Queued ${result.mode} cover render (${result.jobId.slice(0, 8)})`);
+    const suffix = useProofAsBase ? ' (from proof)' : '';
+    toast.success(`Queued ${result.mode} ${target} cover render${suffix} (${result.jobId.slice(0, 8)})`);
   };
 
   const overrides = {
@@ -260,8 +344,11 @@ export default function ComicScriptStage({ issue, series, onStageUpdate, actions
     }
   };
 
-  const pdfRenderedCount = pages.filter((p) => p?.filename).length
-    + (comicPages.cover?.filename ? 1 : 0);
+  // Count any page/cover that has a final OR proof slot with a filename — the
+  // PDF assembly's fallback chain prefers final, then proof, then legacy.
+  const isRendered = (rec) => !!getPreferredSlot(rec)?.filename;
+  const pdfRenderedCount = pages.filter(isRendered).length
+    + (isRendered(comicPages.cover) ? 1 : 0);
   const pdfTotal = pages.length + (comicPages.cover ? 1 : 0);
   const pdfReady = pdfRenderedCount > 0;
 
@@ -348,32 +435,55 @@ export default function ComicScriptStage({ issue, series, onStageUpdate, actions
         </p>
       ) : null}
 
-      <div className="p-3 bg-port-card border border-port-border rounded-lg">
-        <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+      <div className="p-3 bg-port-card border border-port-border rounded-lg space-y-2">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
           <span className="text-xs uppercase tracking-wider text-gray-500">Cover</span>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <button
               type="button"
-              onClick={handleRenderCover}
-              disabled={renderingCover || coverJobInFlight || actionsGated}
+              onClick={() => handleRenderCover('proof')}
+              disabled={renderingCoverProof || coverProofInFlight || actionsGated}
               title={actionsGated
                 ? 'Saving settings…'
-                : coverJobInFlight
-                  ? 'Cover render in progress…'
-                  : 'Render the issue\'s front cover — series masthead + issue number tag + your cover concept.'}
+                : coverProofInFlight
+                  ? 'Proof render in progress…'
+                  : 'Render a fast proof cover at the configured size — series masthead + issue number tag + your cover concept.'}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-port-accent text-white text-xs font-medium hover:bg-port-accent/90 disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              {(renderingCover || coverJobInFlight) ? <Loader2 size={12} className="animate-spin" /> : <ImageIcon size={12} />}
-              Render cover
+              {(renderingCoverProof || coverProofInFlight) ? <Loader2 size={12} className="animate-spin" /> : <ImageIcon size={12} />}
+              Render proof
             </button>
-            {cover.imageJobId ? (
-              <div className="flex items-center gap-2">
-                <MediaJobThumb jobId={cover.imageJobId} label="Cover" size="md" onStatus={setCoverJobStatus} fallbackFilename={cover.filename || null} />
-                <span className="text-[10px] text-gray-500 font-mono break-all" title="Last cover render job">
-                  {cover.imageJobId.slice(0, 8)}
-                </span>
-              </div>
-            ) : null}
+            <label
+              className={`flex items-center gap-1 text-[11px] text-gray-400 ${i2iSupported ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
+              title={i2iDisabledReason || 'Use the proof image as the base for the final render — preserves composition.'}
+            >
+              <input
+                type="checkbox"
+                checked={i2iSupported && useProofForCoverFinal}
+                onChange={(e) => setUseProofForCoverFinal(e.target.checked)}
+                disabled={!i2iSupported}
+                className="rounded"
+              />
+              from proof
+            </label>
+            <button
+              type="button"
+              onClick={() => handleRenderCover('final')}
+              disabled={
+                renderingCoverFinal || coverFinalInFlight || actionsGated
+                || (i2iSupported && useProofForCoverFinal && !coverProof?.filename)
+              }
+              title={finalButtonTooltip({
+                gated: actionsGated,
+                inFlight: coverFinalInFlight,
+                needsProof: i2iSupported && useProofForCoverFinal && !coverProof?.filename,
+                defaultMsg: 'Render the hi-res final cover at the configured size. Tick "from proof" to upscale the proof rather than redraw it.',
+              })}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-port-accent text-white text-xs font-medium hover:bg-port-accent/90 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {(renderingCoverFinal || coverFinalInFlight) ? <Loader2 size={12} className="animate-spin" /> : <Layers size={12} />}
+              Render final
+            </button>
           </div>
         </div>
         <textarea
@@ -387,6 +497,25 @@ export default function ComicScriptStage({ issue, series, onStageUpdate, actions
           className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
           maxLength={8000}
         />
+        {(coverProof || coverFinal) ? (
+          <div className="grid grid-cols-2 gap-2">
+            <RenderSlotThumb
+              slot={coverProof}
+              label="Proof"
+              thumbLabel="Proof"
+              emptyHint="No proof yet."
+              onStatus={setCoverProofStatus}
+            />
+            <RenderSlotThumb
+              slot={coverFinal}
+              label="Final"
+              thumbLabel="Final"
+              emptyHint="No final yet."
+              onStatus={setCoverFinalStatus}
+              fillFromProofLabel
+            />
+          </div>
+        ) : null}
       </div>
 
       <ul className="space-y-4">
@@ -397,6 +526,8 @@ export default function ComicScriptStage({ issue, series, onStageUpdate, actions
             pageIndex={pi}
             page={page}
             renderOpts={renderOpts}
+            i2iSupported={i2iSupported}
+            i2iDisabledReason={i2iDisabledReason}
             onStageUpdate={onStageUpdate}
             onPreview={openPreview}
             onFilenameKnown={onFilenameKnown}
@@ -434,30 +565,35 @@ export default function ComicScriptStage({ issue, series, onStageUpdate, actions
   );
 }
 
-function PageRow({ issue, pageIndex, page, renderOpts = {}, onStageUpdate, onPreview, onFilenameKnown }) {
+function PageRow({
+  issue, pageIndex, page, renderOpts = {},
+  i2iSupported = true, i2iDisabledReason = null,
+  onStageUpdate, onPreview, onFilenameKnown,
+}) {
   const rawText = useMemo(
     () => page.rawText || panelsToMarkdown(page.panels, pageIndex + 1),
     [page.rawText, page.panels, pageIndex],
   );
   const [draft, setDraft] = useState(rawText);
   const [saving, setSaving] = useState(false);
-  const [rendering, setRendering] = useState(false);
+  const [renderingProof, setRenderingProof] = useState(false);
+  const [renderingFinal, setRenderingFinal] = useState(false);
+  const [useProofForFinal, setUseProofForFinal] = useState(true);
   // Sync local edits with parent updates (re-extract / re-render persist).
   useEffect(() => { setDraft(rawText); }, [rawText]);
   const dirty = draft !== rawText;
 
-  // Job status comes from MediaJobThumb via callback so we don't double-
-  // subscribe to the same socket events. Treat 'unknown' (pre-hydration)
-  // as in-flight when a jobId exists — avoids a brief re-enable flash
-  // after page reload while the GET /media-jobs/:id catches up.
-  const [jobStatus, setJobStatus] = useState('unknown');
-  const jobInFlight = !!page.imageJobId
-    && jobStatus !== 'completed'
-    && jobStatus !== 'failed'
-    && jobStatus !== 'canceled';
-  const onJobFilename = useCallback((filename) => {
-    if (page.imageJobId) onFilenameKnown?.(page.imageJobId, filename);
-  }, [page.imageJobId, onFilenameKnown]);
+  const proofSlot = getProofSlot(page);
+  const finalSlot = getFinalSlot(page);
+  const { inFlight: proofInFlight, setStatus: setProofStatus } = useSlotInFlight(proofSlot);
+  const { inFlight: finalInFlight, setStatus: setFinalStatus } = useSlotInFlight(finalSlot);
+
+  const onProofFilename = useCallback((filename) => {
+    if (proofSlot?.jobId) onFilenameKnown?.(proofSlot.jobId, filename);
+  }, [proofSlot?.jobId, onFilenameKnown]);
+  const onFinalFilename = useCallback((filename) => {
+    if (finalSlot?.jobId) onFilenameKnown?.(finalSlot.jobId, filename);
+  }, [finalSlot?.jobId, onFilenameKnown]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -470,14 +606,20 @@ function PageRow({ issue, pageIndex, page, renderOpts = {}, onStageUpdate, onPre
     }
   };
 
-  const handleRender = async () => {
-    setRendering(true);
-    const res = await generatePipelineComicPage(issue.id, pageIndex, renderOpts)
-      .catch((err) => { toast.error(err.message || 'Render failed'); return null; });
-    setRendering(false);
+  const handleRender = async (target) => {
+    const setFlight = target === 'final' ? setRenderingFinal : setRenderingProof;
+    setFlight(true);
+    const useProofAsBase = target === 'final' && useProofForFinal && i2iSupported;
+    const res = await generatePipelineComicPage(issue.id, pageIndex, {
+      ...renderOpts,
+      target,
+      useProofAsBase,
+    }).catch((err) => { toast.error(err.message || 'Render failed'); return null; });
+    setFlight(false);
     if (res) {
       onStageUpdate?.('comicPages', res.stage);
-      toast.success(`Page ${pageIndex + 1} render queued (${res.mode || renderOpts.mode || 'local'})`);
+      const suffix = useProofAsBase ? ' (from proof)' : '';
+      toast.success(`Page ${pageIndex + 1} ${target}${suffix} render queued (${res.mode || renderOpts.mode || 'local'})`);
     }
   };
 
@@ -492,15 +634,17 @@ function PageRow({ issue, pageIndex, page, renderOpts = {}, onStageUpdate, onPre
     }
   };
 
+  const finalNeedsProof = i2iSupported && useProofForFinal && !proofSlot?.filename;
+
   return (
     <li className="rounded-lg border border-port-border bg-port-card/40">
-      <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-port-border">
+      <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-port-border flex-wrap">
         <div className="flex items-center gap-2">
           <span className="text-xs uppercase tracking-wider text-gray-500">Page {pageIndex + 1}</span>
           <span className="text-[10px] text-gray-600">{page.panels?.length || 0} panel{page.panels?.length === 1 ? '' : 's'}</span>
           {dirty ? <span className="text-[10px] text-port-warning">unsaved</span> : null}
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 flex-wrap">
           <button
             type="button"
             onClick={handleSave}
@@ -512,17 +656,47 @@ function PageRow({ issue, pageIndex, page, renderOpts = {}, onStageUpdate, onPre
           </button>
           <button
             type="button"
-            onClick={handleRender}
-            disabled={rendering || dirty || jobInFlight}
+            onClick={() => handleRender('proof')}
+            disabled={renderingProof || dirty || proofInFlight}
             className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs bg-port-accent text-white font-medium disabled:opacity-40"
             title={dirty
               ? 'Save changes before rendering'
-              : jobInFlight
-                ? 'Render in progress…'
-                : 'Queue a full-page render for this page'}
+              : proofInFlight
+                ? 'Proof render in progress…'
+                : 'Queue a fast proof render at the configured size'}
           >
-            {(rendering || jobInFlight) ? <Loader2 size={12} className="animate-spin" /> : <ImageIcon size={12} />}
-            Render
+            {(renderingProof || proofInFlight) ? <Loader2 size={12} className="animate-spin" /> : <ImageIcon size={12} />}
+            Proof
+          </button>
+          <label
+            className={`flex items-center gap-1 text-[11px] text-gray-400 px-1 ${i2iSupported ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
+            title={i2iDisabledReason || 'Use the proof image as the base for the final render — preserves panel layout.'}
+          >
+            <input
+              type="checkbox"
+              checked={i2iSupported && useProofForFinal}
+              onChange={(e) => setUseProofForFinal(e.target.checked)}
+              disabled={!i2iSupported}
+              className="rounded"
+            />
+            from proof
+          </label>
+          <button
+            type="button"
+            onClick={() => handleRender('final')}
+            disabled={renderingFinal || dirty || finalInFlight || finalNeedsProof}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs bg-port-accent text-white font-medium disabled:opacity-40"
+            title={finalButtonTooltip({
+              gated: false,
+              inFlight: finalInFlight,
+              needsProof: finalNeedsProof,
+              dirty,
+              dirtyMsg: 'Save changes before rendering',
+              defaultMsg: 'Queue a hi-res final render. Tick "from proof" to upscale the proof rather than redraw it.',
+            })}
+          >
+            {(renderingFinal || finalInFlight) ? <Loader2 size={12} className="animate-spin" /> : <Layers size={12} />}
+            Final
           </button>
           <button
             type="button"
@@ -544,20 +718,28 @@ function PageRow({ issue, pageIndex, page, renderOpts = {}, onStageUpdate, onPre
           className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white text-xs font-mono leading-relaxed"
           placeholder={`## Page ${pageIndex + 1}\n\n### Panel 1\n**Description:** ...`}
         />
-        <div className="flex items-center justify-center bg-port-bg border border-port-border rounded min-h-[200px] overflow-hidden">
-          {page.imageJobId ? (
-            <MediaJobThumb
-              jobId={page.imageJobId}
-              label={`Page ${pageIndex + 1}`}
-              size="fill"
-              onPreview={(filename) => onPreview?.(pageIndex, filename, page)}
-              onStatus={setJobStatus}
-              onFilename={onJobFilename}
-              fallbackFilename={page.filename || null}
-            />
-          ) : (
-            <span className="text-xs text-gray-500 italic">No render yet — click <em>Render</em>.</span>
-          )}
+        <div className="grid grid-cols-2 gap-2 min-h-[200px]">
+          <RenderSlotThumb
+            slot={proofSlot}
+            label="Proof"
+            thumbLabel={`Page ${pageIndex + 1} (proof)`}
+            emptyHint="No proof yet"
+            size="fill"
+            onStatus={setProofStatus}
+            onFilename={onProofFilename}
+            onPreview={(filename) => onPreview?.(pageIndex, filename, page)}
+          />
+          <RenderSlotThumb
+            slot={finalSlot}
+            label="Final"
+            thumbLabel={`Page ${pageIndex + 1} (final)`}
+            emptyHint="No final yet"
+            size="fill"
+            onStatus={setFinalStatus}
+            onFilename={onFinalFilename}
+            onPreview={(filename) => onPreview?.(pageIndex, filename, page)}
+            fillFromProofLabel
+          />
         </div>
       </div>
     </li>

@@ -1,8 +1,9 @@
 /**
  * Assemble a print-ready PDF from a comic issue's rendered cover + pages.
- * Filenames come from `stages.comicPages.cover.filename` and
- * `stages.comicPages.pages[].filename`, stamped by the comic-pages filename
- * hook at media-job completion. Pages without a filename are skipped — the
+ * Filenames come from each record's proof/final slot (or legacy `filename`
+ * for records that predate the split): finalImage > proofImage > legacy
+ * filename. The comic-pages filename hook stamps each slot's filename at
+ * media-job completion. Pages without any rendered slot are skipped — the
  * route surfaces "X of Y rendered" to the user before download.
  */
 
@@ -83,14 +84,31 @@ export async function buildComicPdf(issueId, opts = {}) {
   const includeCover = opts.includeCover !== false;
   const includeColophon = opts.includeColophon !== false;
 
+  // Read-fallback chain for each cover/page filename:
+  //   1. finalImage.filename  — the hi-res print-ready render (preferred)
+  //   2. proofImage.filename  — the fast layout render
+  //   3. legacy `filename`    — pre-proof/final split records
+  // The user can keep iterating on the proof while the final is in flight,
+  // and the PDF will still assemble — just at whichever resolution is
+  // currently available.
+  const pickRenderedFilename = (record) => {
+    if (!record) return null;
+    return record.finalImage?.filename
+      || record.proofImage?.filename
+      || (typeof record.filename === 'string' && record.filename ? record.filename : null);
+  };
+
   const comicPages = issue.stages?.comicPages || {};
   const cover = includeCover ? comicPages.cover : null;
   const pages = Array.isArray(comicPages.pages) ? comicPages.pages : [];
-  const renderedPages = pages.filter((p) => p && typeof p.filename === 'string' && p.filename);
 
   const targets = [];
-  if (cover?.filename) targets.push(cover.filename);
-  for (const p of renderedPages) targets.push(p.filename);
+  const coverFilename = pickRenderedFilename(cover);
+  if (coverFilename) targets.push(coverFilename);
+  for (const p of pages) {
+    const name = pickRenderedFilename(p);
+    if (name) targets.push(name);
+  }
   if (targets.length === 0) {
     throw makeErr('Issue has no rendered pages or cover yet', ERR_NO_RENDERED_PAGES);
   }

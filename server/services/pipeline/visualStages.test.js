@@ -509,7 +509,7 @@ describe('enqueueComicCover', () => {
     expect(result.prompt).toMatch(/issue-number tag reading "#5"/);
     expect(enqueueJobMock).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'image',
-      owner: 'pipeline:iss-test:comicPages:cover',
+      owner: 'pipeline:iss-test:comicPages:cover:proof',
       params: expect.objectContaining({
         pythonPath: '/usr/bin/python3',
         prompt: expect.stringContaining('Cover concept:'),

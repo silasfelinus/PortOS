@@ -23,10 +23,12 @@
  * path drives the Creative Director scene runner end-to-end.
  */
 
+import { basename, join, resolve as resolvePath, sep as PATH_SEP } from 'node:path';
 import { enqueueJob } from '../mediaJobQueue/index.js';
 import { getSettings } from '../settings.js';
 import { getSeries } from './series.js';
 import { getIssue, updateStage, VISUAL_STAGE_IDS } from './issues.js';
+import { PATHS } from '../../lib/fileUtils.js';
 import { buildComicPagesOwner, buildStoryboardsShotOwner } from './owners.js';
 import { getUniverse } from '../universeBuilder.js';
 import { ServerError } from '../../lib/errorHandler.js';
@@ -81,6 +83,55 @@ const resolveMode = (options, settings) => {
   return 'local';
 };
 
+// Defensive fallback — an unrecognized value must never land in the final
+// slot, even if a future client bypasses the route schema.
+const resolveVariant = (target) => (target === 'final' ? 'final' : 'proof');
+
+// Shape for a fresh in-flight render slot — used by both route handlers
+// (cover + page) and the filename hook's legacy-migration path. `filename`
+// starts null; the comic-pages filename hook stamps it on job completion.
+// `fromProof` is omitted for the proof slot and required for the final slot.
+export const buildRenderSlot = ({ slotKey, jobId, prompt, width, height, fromProof = false, filename = null }) => ({
+  jobId,
+  filename,
+  prompt: prompt || null,
+  width: width ?? null,
+  height: height ?? null,
+  createdAt: new Date().toISOString(),
+  ...(slotKey === 'finalImage' ? { fromProof } : {}),
+});
+
+// Default denoise strength for the "use proof as base" upscale path. Low
+// enough to preserve composition (panel layout, character placement),
+// high enough to let the model add the extra detail the larger canvas
+// affords. Tweakable per-call via options.initImageStrength.
+const PROOF_AS_BASE_DEFAULT_STRENGTH = 0.25;
+
+// Resolve a stored proof filename (e.g. "abc123.png") to an absolute path
+// under PATHS.images, enforcing the gallery prefix. Skips existsSync — the
+// downstream image-gen runner reads the path and will surface a clear error
+// if the file vanished between enqueue and exec; an existsSync here would
+// add a TOCTOU race for no real benefit.
+const resolveProofInitImage = (proofImage, label) => {
+  const name = proofImage?.filename;
+  if (typeof name !== 'string' || !name) {
+    throw new ServerError(
+      `Cannot use proof as base for ${label}: no proof render available yet — render the proof first.`,
+      { status: 400, code: 'PIPELINE_COMIC_PROOF_MISSING' },
+    );
+  }
+  const candidate = join(PATHS.images, basename(name));
+  const imagesRoot = resolvePath(PATHS.images) + PATH_SEP;
+  const resolved = resolvePath(candidate);
+  if (!resolved.startsWith(imagesRoot)) {
+    throw new ServerError(
+      `Proof image path escaped the gallery for ${label}: ${name}`,
+      { status: 400, code: 'PIPELINE_COMIC_PROOF_NOT_FOUND' },
+    );
+  }
+  return resolved;
+};
+
 const loadBibleContext = async (issueId) => {
   const issueChain = (async () => {
     const issue = await getIssue(issueId);
@@ -115,6 +166,13 @@ const enqueueImageJob = ({ prompt, world, settings, options, mode, owner, logLin
     cfgScale: options.cfgScale,
     // Honored by local mflux + diffusers runners; codex picks its own.
     ...(Number.isFinite(options.seed) ? { seed: options.seed } : {}),
+    // i2i upscale path: when the caller passes an init image (e.g.
+    // "use proof as base" for a final render) we forward it to the local
+    // image-gen runner. Codex silently ignores both fields — its
+    // `$imagegen` skill has no init-image input — so a codex-backend
+    // final render with useProofAsBase=true degrades to a full redraw.
+    ...(options.initImagePath ? { initImagePath: options.initImagePath } : {}),
+    ...(Number.isFinite(options.initImageStrength) ? { initImageStrength: options.initImageStrength } : {}),
   };
   const params = mode === 'codex'
     ? { mode: 'codex', codexPath: settings.imageGen?.codex?.codexPath, model: settings.imageGen?.codex?.model, ...baseParams }
@@ -227,10 +285,16 @@ export function composeComicCoverPrompt({
  * Enqueue a comic-issue front-cover image render. Builds a cover-art
  * prompt (series masthead + issue-number tag + user's cover concept) and
  * hands it to the image-gen queue. Caller records the returned jobId on
- * `stages.comicPages.cover.imageJobId`.
+ * the appropriate variant slot (cover.proofImage / cover.finalImage)
+ * based on `options.target` ('proof' | 'final', default 'proof').
  *
- * Returns the resolved coverScript alongside { jobId, mode, prompt } so
- * the route can persist it without a second read of the issue file.
+ * When `options.useProofAsBase` is set and target='final', resolves the
+ * existing proof image to an absolute path under PATHS.images and passes
+ * it through as `initImagePath` so the local i2i runner can preserve
+ * the proof's composition while rendering at the larger size.
+ *
+ * Returns { jobId, mode, prompt, coverScript, variant, fromProof } so the
+ * route can construct the slot record without re-reading the issue file.
  */
 export async function enqueueComicCover(issueId, options = {}) {
   const { issue, settings, series, world } = await loadBibleContext(issueId);
@@ -239,16 +303,25 @@ export async function enqueueComicCover(issueId, options = {}) {
     ? options.coverScript
     : (cover?.script || '');
   const mode = resolveMode(options, settings);
+  const variant = resolveVariant(options.target);
+  const fromProof = variant === 'final' && options.useProofAsBase === true;
+  const initImagePath = fromProof
+    ? resolveProofInitImage(cover?.proofImage, 'cover')
+    : null;
+  const initImageStrength = fromProof
+    ? (Number.isFinite(options.initImageStrength) ? options.initImageStrength : PROOF_AS_BASE_DEFAULT_STRENGTH)
+    : undefined;
   const prompt = composeComicCoverPrompt({
     series, world, issue, coverScript,
     extraStyle: composeExtraStyle(series, issue, 'comicPages', options.extraStyle),
   });
   const jobId = enqueueImageJob({
-    prompt, world, settings, options, mode,
-    owner: buildComicPagesOwner({ issueId, target: 'cover' }),
-    logLine: `🎨 Pipeline comic cover — issue=${issueId.slice(0, 8)} number=${issue.number || 1}`,
+    prompt, world, settings, mode,
+    options: { ...options, initImagePath, initImageStrength },
+    owner: buildComicPagesOwner({ issueId, target: 'cover', variant }),
+    logLine: `🎨 Pipeline comic cover — issue=${issueId.slice(0, 8)} number=${issue.number || 1} variant=${variant}${fromProof ? ' (from proof)' : ''}`,
   });
-  return { jobId, mode, prompt, coverScript };
+  return { jobId, mode, prompt, coverScript, variant, fromProof };
 }
 
 export function composeComicPagePrompt({
@@ -339,10 +412,15 @@ export function composeComicPagePrompt({
 /**
  * Enqueue a full-comic-page image render. Builds a structured page-level
  * prompt from `issue.stages.comicPages.pages[pageIndex].panels[]` and hands
- * it to the image-gen queue. Caller records the returned jobId on
- * `pages[pageIndex].imageJobId`.
+ * it to the image-gen queue. Caller records the returned jobId on the
+ * appropriate variant slot (`pages[pageIndex].proofImage` /
+ * `pages[pageIndex].finalImage`) based on `options.target`.
  *
- * Returns { jobId, mode, prompt, pageIndex }.
+ * When `options.useProofAsBase` is set and target='final', resolves the
+ * page's existing proof image and passes it as initImagePath so the local
+ * i2i runner can preserve panel layout while upscaling.
+ *
+ * Returns { jobId, mode, prompt, pageIndex, variant, fromProof }.
  */
 export async function enqueueVisualComicPage(issueId, options = {}) {
   const pageIndex = Number(options.pageIndex);
@@ -366,6 +444,14 @@ export async function enqueueVisualComicPage(issueId, options = {}) {
   }
 
   const mode = resolveMode(options, settings);
+  const variant = resolveVariant(options.target);
+  const fromProof = variant === 'final' && options.useProofAsBase === true;
+  const initImagePath = fromProof
+    ? resolveProofInitImage(page.proofImage, `page ${pageIndex + 1}`)
+    : null;
+  const initImageStrength = fromProof
+    ? (Number.isFinite(options.initImageStrength) ? options.initImageStrength : PROOF_AS_BASE_DEFAULT_STRENGTH)
+    : undefined;
 
   // Build a free-text haystack from every panel's prose (description +
   // caption + sfx). Dialogue lines feed character matching via CAPS names
@@ -409,11 +495,12 @@ export async function enqueueVisualComicPage(issueId, options = {}) {
   });
 
   const jobId = enqueueImageJob({
-    prompt, world, settings, options, mode,
-    owner: buildComicPagesOwner({ issueId, target: 'page', pageIndex }),
-    logLine: `📄 Pipeline comic page — issue=${issueId.slice(0, 8)} page=${pageIndex + 1} panels=${page.panels.length}`,
+    prompt, world, settings, mode,
+    options: { ...options, initImagePath, initImageStrength },
+    owner: buildComicPagesOwner({ issueId, target: 'page', pageIndex, variant }),
+    logLine: `📄 Pipeline comic page — issue=${issueId.slice(0, 8)} page=${pageIndex + 1} panels=${page.panels.length} variant=${variant}${fromProof ? ' (from proof)' : ''}`,
   });
-  return { jobId, mode, prompt, pageIndex };
+  return { jobId, mode, prompt, pageIndex, variant, fromProof };
 }
 
 /**

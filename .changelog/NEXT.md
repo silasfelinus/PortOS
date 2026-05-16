@@ -2,6 +2,35 @@
 
 ## Added
 
+- **Comic pages + cover: proof vs final renders, with i2i upscale from
+  proof.** Each comic page (and the cover) now carries two render slots —
+  `proofImage` (fast layout render) and `finalImage` (hi-res print render).
+  The UI exposes two render buttons per row plus a "from proof" checkbox
+  that, when ticked for the final render, passes the proof's PNG as the
+  i2i init image (denoise strength `0.25` by default) so the larger
+  canvas preserves panel layout / character placement instead of redrawing
+  from scratch. Codex (gpt-image-2 `$imagegen`) has no init-image input,
+  so the checkbox disables with an explanatory tooltip when codex is the
+  active backend — picking it anyway falls back to a full redraw with a
+  server-side warning. PDF assembly reads `finalImage → proofImage →
+  legacy filename` so the print bundle always uses the best available
+  resolution per page. Schema caps lifted from 2048 to 3840 per edge with
+  a total pixel cap of 8,294,400 (gpt-image-2's hard ceiling) across
+  `imageGen.js` + the three pipeline render schemas, and three new codex-
+  only presets land in `imageGenResolutions.js`: `3840×2160` (4K
+  landscape), `2160×3840` (4K portrait, comic-page default), `2880×2880`
+  (4K square). Owner format extended to `pipeline:<id>:comicPages:<target>:<variant>`;
+  the filename hook routes completions to the right slot and migrates any
+  legacy in-flight job into the new shape on landing, so upgrade is
+  zero-friction. Files: `client/src/lib/imageGenResolutions.js`,
+  `client/src/components/pipeline/stages/ComicScriptStage.jsx`,
+  `server/routes/imageGen.js`, `server/routes/pipeline.js`,
+  `server/services/pipeline/{owners,visualStages,comicPagesFilenameHook,
+  comicPdf,issues}.js`, `server/services/imageGen/codex.js`. Tests:
+  10 `owners.test.js` cases for the variant suffix + legacy parsing; 2
+  `pipeline.test.js` render assertions migrated to the new slot shape; 1
+  `visualStages.test.js` owner-string assertion bumped.
+
 - **Story shape is now load-bearing across arc planning.** The Vonnegut
   shape picker on the series arc was previously decorative — picked, rendered
   as a sparkline, then ignored by every LLM prompt. Now the picked shape (or

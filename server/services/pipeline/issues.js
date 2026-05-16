@@ -162,18 +162,59 @@ const sanitizeGenConfig = (raw) => {
 
 const COVER_SCRIPT_MAX = 8000;
 const COVER_PROMPT_MAX = 16_000;
+const RENDER_FILENAME_MAX = 500;
+
+// Proof vs final render slot — each cover/page can have one of each. Stored
+// as a structured record so the UI/PDF can pick the right resolution without
+// re-rendering, and so the i2i "use proof as base" path has a stable
+// filename to read for the final render's init image.
+//
+// `final` slots additionally carry `fromProof: boolean` so the UI can show
+// "(upscaled from proof)" provenance.
+const sanitizeRenderSlot = (raw, { isFinal = false } = {}) => {
+  if (!raw || typeof raw !== 'object') return null;
+  const jobId = isStr(raw.jobId) && raw.jobId ? raw.jobId : null;
+  const filename = isStr(raw.filename) && raw.filename
+    ? raw.filename.slice(0, RENDER_FILENAME_MAX)
+    : null;
+  const prompt = trimTo(raw.prompt, COVER_PROMPT_MAX) || null;
+  const width = Number.isFinite(raw.width) ? Math.max(0, Math.floor(raw.width)) : null;
+  const height = Number.isFinite(raw.height) ? Math.max(0, Math.floor(raw.height)) : null;
+  const createdAt = isStr(raw.createdAt) ? raw.createdAt : null;
+  // Empty slot — drop it so the persisted JSON stays clean.
+  if (!jobId && !filename) return null;
+  const out = { jobId, filename, prompt, width, height, createdAt };
+  if (isFinal) out.fromProof = raw.fromProof === true;
+  return out;
+};
+
 const sanitizeCover = (raw) => {
   if (!raw || typeof raw !== 'object') return null;
   const script = trimTo(raw.script, COVER_SCRIPT_MAX);
+  // Legacy fields — pre-proof/final split. Preserved so existing data still
+  // displays via the UI/PDF read-fallback chain (final → proof → legacy).
+  // New renders write to proofImage/finalImage; the filename hook migrates
+  // any in-flight legacy job's completion into the new slots on landing.
   const imageJobId = isStr(raw.imageJobId) && raw.imageJobId ? raw.imageJobId : null;
   const prompt = trimTo(raw.prompt, COVER_PROMPT_MAX);
-  // `filename` is stamped by the comic-pages filename hook on image-gen
-  // completion. It survives the 24h media-job archive TTL so the UI can
-  // still render the cover after the job record expires.
   const filename = isStr(raw.filename) && raw.filename ? raw.filename : null;
-  if (!script && !imageJobId && !prompt && !filename) return null;
-  return { script, imageJobId, prompt: prompt || null, filename };
+  const proofImage = sanitizeRenderSlot(raw.proofImage);
+  const finalImage = sanitizeRenderSlot(raw.finalImage, { isFinal: true });
+  if (!script && !imageJobId && !prompt && !filename && !proofImage && !finalImage) return null;
+  return {
+    script,
+    imageJobId,
+    prompt: prompt || null,
+    filename,
+    proofImage,
+    finalImage,
+  };
 };
+
+// Page records (pages[]) are pass-through in sanitizeVisualStage's array
+// slice, so the new proofImage/finalImage fields survive there without an
+// explicit sanitizer. If pages ever gets a deep sanitizer, route slot
+// records through sanitizeRenderSlot the same way the cover does.
 
 const sanitizeVisualStage = (raw, stageId = null) => {
   // Visual stages keep arbitrary structured artifact lists. Sanitize the

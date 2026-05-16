@@ -97,6 +97,18 @@ vi.mock('../services/pipeline/visualStages.js', () => ({
     issue: { id: issueId, stages: { storyboards: { scenes: [] } } },
     stage: { scenes: [] },
   })),
+  // Pure helper used by the route to construct the in-flight slot record.
+  // Kept inline (not vi.fn) so the route's call-site logic is exercised
+  // without forcing every test to thread a mock implementation through.
+  buildRenderSlot: ({ slotKey, jobId, prompt, width, height, fromProof = false, filename = null }) => ({
+    jobId,
+    filename,
+    prompt: prompt || null,
+    width: width ?? null,
+    height: height ?? null,
+    createdAt: new Date().toISOString(),
+    ...(slotKey === 'finalImage' ? { fromProof } : {}),
+  }),
   refineComicPanelPrompt: vi.fn(async (issueId, pi, ni) => ({
     panel: { description: 'refined panel body' },
     page: { panels: [] },
@@ -819,10 +831,13 @@ describe('pipeline routes', () => {
     expect(r.body.jobId).toMatch(/^page-job-/);
     // pageNumber is pageIndex + 1, so /pages/1/render renders the *2nd* page.
     expect(r.body.prompt).toMatch(/page 2/);
-    expect(r.body.stage.pages[1].imageJobId).toBe(r.body.jobId);
-    expect(r.body.stage.pages[1].prompt).toBe(r.body.prompt);
-    // Other page untouched
-    expect(r.body.stage.pages[0].imageJobId).toBeUndefined();
+    // No explicit target → defaults to proof (per the route schema).
+    // The render lands on pages[1].proofImage, not the legacy imageJobId slot.
+    expect(r.body.stage.pages[1].proofImage.jobId).toBe(r.body.jobId);
+    expect(r.body.stage.pages[1].proofImage.prompt).toBe(r.body.prompt);
+    expect(r.body.stage.pages[1].proofImage.filename).toBeNull();
+    // Other page untouched — has no slot record either.
+    expect(r.body.stage.pages[0].proofImage).toBeFalsy();
     expect(r.body.stage.status).toBe('edited');
   });
 
@@ -858,13 +873,15 @@ describe('pipeline routes', () => {
     expect(r.status).toBe(200);
     expect(r.body.jobId).toMatch(/^cover-job-/);
     expect(r.body.prompt).toBe('cover art prompt');
-    // Persistence: stages.comicPages.cover must carry script, imageJobId, prompt.
+    // Persistence: cover carries the user's script + the proof slot
+    // record. No `target` in the request → defaults to 'proof' per schema.
     expect(r.body.cover.script).toBe('Hero stands atop the foundry, smoke rising');
-    expect(r.body.cover.imageJobId).toBe(r.body.jobId);
-    expect(r.body.cover.prompt).toBe(r.body.prompt);
+    expect(r.body.cover.proofImage.jobId).toBe(r.body.jobId);
+    expect(r.body.cover.proofImage.prompt).toBe(r.body.prompt);
+    expect(r.body.cover.proofImage.filename).toBeNull();
     // Top-level issue + stage are also returned.
     expect(r.body.issue.id).toBe(iss.body.id);
-    expect(r.body.stage.cover.imageJobId).toBe(r.body.jobId);
+    expect(r.body.stage.cover.proofImage.jobId).toBe(r.body.jobId);
   });
 
   it('POST /issues/:id/stages/comicPages/cover/render 404s for an unknown issue', async () => {

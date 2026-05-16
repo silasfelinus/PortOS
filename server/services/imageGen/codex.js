@@ -119,9 +119,22 @@ export async function checkConnection({ codexPath } = {}) {
 
 const SESSION_ID_RE = /^session id:\s*([0-9a-f-]{36})/im;
 
-export async function generateImage({ codexPath, model, prompt, width, height, negativePrompt, jobId: providedJobId = null }) {
+export async function generateImage({
+  codexPath, model, prompt, width, height, negativePrompt,
+  // Accepted (and ignored) so the pipeline's "use proof as base" upscale path
+  // doesn't reject when codex is the active backend. The `$imagegen` skill in
+  // the Codex CLI has no init-image input; this surface is local-only. Logged
+  // so the degraded behavior is visible — a final render kicked off with
+  // useProofAsBase=true against codex will be a full redraw at the larger
+  // size, not an i2i upscale that preserves the proof's composition.
+  initImagePath, initImageStrength: _initImageStrength,
+  jobId: providedJobId = null,
+}) {
   if (!prompt?.trim()) {
     throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
+  }
+  if (initImagePath) {
+    console.log(`⚠️ codex generateImage: ignoring initImagePath (gpt-image-2 $imagegen has no init-image input — falling back to full redraw)`);
   }
   await ensureDir(PATHS.images);
 

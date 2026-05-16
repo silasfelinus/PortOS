@@ -30,6 +30,9 @@ import {
   characterBibleCreateSchema,
   settingBibleCreateSchema,
   objectBibleCreateSchema,
+  imageEdgeSchema,
+  refineImagePixelCap,
+  PIXEL_CAP_MESSAGE,
 } from '../lib/validation.js';
 import * as seriesSvc from '../services/pipeline/series.js';
 import * as issuesSvc from '../services/pipeline/issues.js';
@@ -46,9 +49,11 @@ import {
   enqueueStoryboardShotStartFrame,
   refineComicPanelPrompt,
   refineStoryboardScenePrompt,
+  buildRenderSlot,
 } from '../services/pipeline/visualStages.js';
 import { refineCharacterDescription } from '../services/pipeline/nounRefine.js';
 import { startEpisodeVideoForIssue, ERR_NO_STORYBOARDS } from '../services/pipeline/episodeVideo.js';
+import { COMIC_PAGE_VARIANTS, slotKeyForVariant } from '../services/pipeline/owners.js';
 import { ASPECT_RATIOS, QUALITIES } from '../lib/creativeDirectorPresets.js';
 import { extractScenes, SOURCE_KIND } from '../lib/sceneExtractor.js';
 import { listVisualStyles } from '../lib/visualStyles.js';
@@ -84,19 +89,6 @@ const mapServiceError = (err) => {
   if (status) return new ServerError(err.message, { status, code: err.code });
   return err;
 };
-
-// gpt-image-2 (codex backend) caps at 3840px per edge and 8,294,400 total
-// pixels. Mirror that ceiling for every pipeline image-gen route. Local
-// mflux can render up to 3840 in principle but is impractically slow past
-// ~2048 — the UI's `compatible: ['codex']` filter on the 4K presets keeps
-// those out of the local picker. The validator is shared because the cap
-// and refinement message must stay identical across schemas.
-const MAX_IMAGE_EDGE = 3840;
-const MAX_IMAGE_PIXELS = 8_294_400;
-const imageEdge = z.number().int().min(64).max(MAX_IMAGE_EDGE).optional();
-const refineImagePixelCap = (d) =>
-  !(d.width && d.height) || d.width * d.height <= MAX_IMAGE_PIXELS;
-const PIXEL_CAP_MESSAGE = `Total pixels (width × height) must be ≤ ${MAX_IMAGE_PIXELS.toLocaleString()}`;
 
 // ---- Series schemas ----
 
@@ -316,8 +308,8 @@ const visualGenerateSchema = z.object({
   extraStyle: z.string().trim().max(2000).optional(),
   mode: z.enum(['local', 'codex']).optional(),
   modelId: z.string().trim().max(64).optional(),
-  width: imageEdge,
-  height: imageEdge,
+  width: imageEdgeSchema,
+  height: imageEdgeSchema,
   steps: z.number().int().min(1).max(150).optional(),
   cfgScale: z.number().min(0).max(30).optional(),
   guidance: z.number().min(0).max(30).optional(),
@@ -336,8 +328,8 @@ const comicCoverRenderSchema = z.object({
   extraStyle: z.string().trim().max(2000).optional(),
   mode: z.enum(['local', 'codex']).optional(),
   modelId: z.string().trim().max(64).optional(),
-  width: imageEdge,
-  height: imageEdge,
+  width: imageEdgeSchema,
+  height: imageEdgeSchema,
   steps: z.number().int().min(1).max(150).optional(),
   cfgScale: z.number().min(0).max(30).optional(),
   guidance: z.number().min(0).max(30).optional(),
@@ -345,7 +337,7 @@ const comicCoverRenderSchema = z.object({
   // Proof vs Final render variant. Each variant lands in its own slot
   // (cover.proofImage / cover.finalImage) so the user can keep a fast
   // proof for layout decisions and a hi-res final for the PDF.
-  target: z.enum(['proof', 'final']).optional().default('proof'),
+  target: z.enum(COMIC_PAGE_VARIANTS).optional().default('proof'),
   // When the user likes the proof and wants the final to preserve its
   // composition, set this to true — the server will pass the proof image
   // as the init image for the final render at low denoise strength.
@@ -362,14 +354,14 @@ const comicPageRenderSchema = z.object({
   extraStyle: z.string().trim().max(2000).optional(),
   mode: z.enum(['local', 'codex']).optional(),
   modelId: z.string().trim().max(64).optional(),
-  width: imageEdge,
-  height: imageEdge,
+  width: imageEdgeSchema,
+  height: imageEdgeSchema,
   steps: z.number().int().min(1).max(150).optional(),
   cfgScale: z.number().min(0).max(30).optional(),
   guidance: z.number().min(0).max(30).optional(),
   seed: z.number().int().min(0).optional(),
   // See comicCoverRenderSchema for the proof/final semantics.
-  target: z.enum(['proof', 'final']).optional().default('proof'),
+  target: z.enum(COMIC_PAGE_VARIANTS).optional().default('proof'),
   useProofAsBase: z.boolean().optional().default(false),
 }).refine(refineImagePixelCap, { message: PIXEL_CAP_MESSAGE, path: ['width'] });
 
@@ -1103,20 +1095,29 @@ router.post('/issues/:id/stages/comicPages/cover/render', asyncHandler(async (re
   const result = await enqueueComicCover(req.params.id, body)
     .catch((err) => { throw mapServiceError(err); });
 
-  // Persist coverScript + jobId + prompt back onto the issue so the UI
-  // shows the in-flight render on reload, even if the user navigates away.
-  const nextCover = {
-    script: result.coverScript || '',
-    imageJobId: result.jobId,
-    prompt: result.prompt,
-    // Clear the prior render's filename so the UI doesn't show the stale
-    // image while the new job is in flight. The comic-pages filename hook
-    // re-stamps it on completion.
-    filename: null,
-  };
-  const { issue: updatedIssue, stage } = await issuesSvc.updateStage(req.params.id, 'comicPages', {
-    cover: nextCover,
+  // Seed the in-flight render into the matching slot. The filename hook
+  // stamps `filename` on completion; `filename: null` here lets the UI
+  // render an "in-flight" thumb without showing the previous render's
+  // image while the new job is running.
+  const slotKey = slotKeyForVariant(result.variant);
+  const slotRecord = buildRenderSlot({
+    slotKey, jobId: result.jobId, prompt: result.prompt,
+    width: body.width, height: body.height, fromProof: result.fromProof,
   });
+  const { issue: updatedIssue, stage } = await issuesSvc.updateStageWithLatest(
+    req.params.id,
+    'comicPages',
+    (currentStage) => {
+      const currentCover = currentStage?.cover || {};
+      return {
+        cover: {
+          ...currentCover,
+          script: result.coverScript || '',
+          [slotKey]: slotRecord,
+        },
+      };
+    },
+  ).catch((err) => { throw mapServiceError(err); });
   res.json({ ...result, cover: stage.cover, issue: updatedIssue, stage });
 }));
 
@@ -1152,20 +1153,21 @@ router.post('/issues/:id/stages/comicPages/pages/:pageIndex/render', asyncHandle
   const result = await enqueueVisualComicPage(req.params.id, { pageIndex, ...body })
     .catch((err) => { throw mapServiceError(err); });
 
-  // Persist the jobId on the page so a reload still shows the in-flight render.
-  // The splice happens inside updateStageWithLatest's computeFn so it lands on
-  // the freshest persisted pages array — a concurrent page edit or sibling
-  // page's render that wrote between our enqueue and persist would otherwise
-  // be reverted by the stale snapshot above.
+  // The splice happens inside updateStageWithLatest's computeFn so the
+  // slot lands on the freshest persisted pages array — a concurrent page
+  // edit or sibling render that wrote between our enqueue and persist
+  // would otherwise be reverted by a stale snapshot.
+  const slotKey = slotKeyForVariant(result.variant);
+  const slotRecord = buildRenderSlot({
+    slotKey, jobId: result.jobId, prompt: result.prompt,
+    width: body.width, height: body.height, fromProof: result.fromProof,
+  });
   const { issue: updatedIssue, stage } = await issuesSvc.updateStageWithLatest(
     req.params.id,
     'comicPages',
     (currentStage) => {
       const currentPages = Array.isArray(currentStage?.pages) ? currentStage.pages : [];
       if (!currentPages[pageIndex]) {
-        // Page was deleted between enqueue and persist (unlikely but possible).
-        // Throw 404 — the queued render job will surface as orphaned in the
-        // media-jobs queue, which the UI can clean up.
         throw new ServerError(
           `pageIndex ${pageIndex} out of range — comicPages has ${currentPages.length} page${currentPages.length === 1 ? '' : 's'}`,
           { status: 404, code: 'PIPELINE_COMIC_PAGE_NOT_FOUND' },
@@ -1174,11 +1176,7 @@ router.post('/issues/:id/stages/comicPages/pages/:pageIndex/render', asyncHandle
       const nextPages = [...currentPages];
       nextPages[pageIndex] = {
         ...currentPages[pageIndex],
-        imageJobId: result.jobId,
-        prompt: result.prompt,
-        // Clear the prior render's filename so the UI doesn't show the stale
-        // image while the new job is in flight. The hook re-stamps on completion.
-        filename: null,
+        [slotKey]: slotRecord,
       };
       return { status: 'edited', pages: nextPages };
     },

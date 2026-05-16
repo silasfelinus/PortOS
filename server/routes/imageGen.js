@@ -15,7 +15,9 @@ import { existsSync } from 'fs';
 import { copyFile, unlink } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
-import { validateRequest } from '../lib/validation.js';
+import {
+  validateRequest, imageEdgeSchema, refineImagePixelCap, PIXEL_CAP_MESSAGE,
+} from '../lib/validation.js';
 import { optionalUpload } from '../lib/multipart.js';
 import * as imageGen from '../services/imageGen/index.js';
 import { local, IMAGE_GEN_MODES } from '../services/imageGen/index.js';
@@ -47,8 +49,8 @@ const generateSchema = z.object({
   // `imageGen.mode` from settings.json.
   mode: z.enum(IMAGE_GEN_MODES).optional(),
   modelId: z.string().max(64).optional(),
-  width: z.number().int().min(64).max(2048).optional(),
-  height: z.number().int().min(64).max(2048).optional(),
+  width: imageEdgeSchema,
+  height: imageEdgeSchema,
   steps: z.number().int().min(1).max(150).optional(),
   cfgScale: z.number().min(0).max(30).optional(),
   guidance: z.number().min(0).max(30).optional(),
@@ -66,7 +68,7 @@ const generateSchema = z.object({
   // upload. Strength: 0.0 = ignore source, 1.0 = max influence.
   initImageFile: z.string().max(256).regex(/^[^/\\]+\.(png|jpg|jpeg|webp)$/i, 'init image must be a basename ending in png/jpg/jpeg/webp').optional(),
   initImageStrength: z.number().min(0).max(1).optional(),
-});
+}).refine(refineImagePixelCap, { message: PIXEL_CAP_MESSAGE, path: ['width'] });
 
 // JSON callers (SDAPI bridge, avatar route, the Imagine page's old payload
 // shape) skip the parser entirely; FormData callers get req.file + string
