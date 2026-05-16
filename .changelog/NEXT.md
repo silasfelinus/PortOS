@@ -2,6 +2,26 @@
 
 ## Added
 
+- **Clean-plate render mode for settings (Cluster A — A4).** Setting canon
+  cards get a "Clean plate" button next to the existing "Render reference"
+  affordance. Clicking it builds a no-people prompt variant — prefixed with
+  "Empty location, no characters, no people, edge-to-edge composition"
+  plus the setting's INT/EXT + time-of-day metadata in parentheses
+  ("interior, night") — and dispatches through the same image-gen path as
+  the regular reference render. The result lands in `imageRefs[]` like any
+  other rendered ref; the user can then pin it as primary so downstream
+  pipelines treat it as the location's canonical background plate. The
+  composer + negative prompt live in a new `client/src/lib/cleanPlatePrompt.js`
+  module (`composeCleanPlatePrompt(setting, userNegative) → { prompt,
+  negativePrompt }`) so the Universe Canon and Nouns Stage call sites stay
+  symmetrical. Touches:
+  `client/src/lib/cleanPlatePrompt.js` (new + tests),
+  `client/src/components/pipeline/CanonCard.jsx` (per-setting Clean plate
+  button + `onRenderCleanPlate` callback),
+  `client/src/pages/UniverseCanon.jsx` + `client/src/components/pipeline/stages/NounsStage.jsx`
+  (handler that styles the plate prompt through the universe's
+  stylePrompt + dispatches `generateImage`).
+
 - **Canon entries: primary reference image (Cluster A — A3/A4/A5).** Every
   character, place, and object canon entry gains an optional
   `primaryImageRef: filename | null` slot that pins one of its rendered

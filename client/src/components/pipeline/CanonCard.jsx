@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, ImagePlus, WandSparkles, Lock, Unlock, Shirt, Plus, Trash2, ChevronDown, ChevronRight, Star } from 'lucide-react';
+import { Loader2, ImagePlus, WandSparkles, Lock, Unlock, Shirt, Plus, Trash2, ChevronDown, ChevronRight, Star, Square } from 'lucide-react';
 import useMediaJobProgress from '../../hooks/useMediaJobProgress';
 import MediaJobThumb from './MediaJobThumb';
 
@@ -220,6 +220,9 @@ export default function CanonCard({
   // Optional — when provided + kind is settings, surfaces inline chip pickers
   // for `intExt` / `timeOfDay`. Called with `(entryId, { intExt?, timeOfDay? })`.
   onPatchEntry = null,
+  // Optional — settings-only "Render clean plate" affordance. Called with
+  // `(entry)` so the parent can build the no-people prompt variant.
+  onRenderCleanPlate = null,
 }) {
   const description = kind.descFor(entry);
   const refs = Array.isArray(entry.imageRefs) ? entry.imageRefs : [];
@@ -353,6 +356,20 @@ export default function CanonCard({
             {inFlightJobId ? <Loader2 size={10} className="animate-spin" /> : <ImagePlus size={10} />}
             Render reference
           </button>
+          {kind.key === 'settings' && onRenderCleanPlate ? (
+            <button
+              type="button"
+              onClick={() => onRenderCleanPlate(entry)}
+              disabled={!description.trim() || !!inFlightJobId}
+              className="inline-flex items-center justify-center gap-1 px-2 py-1 text-[10px] rounded border border-port-border text-gray-300 hover:bg-port-border/40 hover:text-white disabled:opacity-40"
+              title={description.trim()
+                ? `Render an empty-location plate for ${entry.name} — no people, edge-to-edge`
+                : 'Add a description first'}
+            >
+              {inFlightJobId ? <Loader2 size={10} className="animate-spin" /> : <Square size={10} />}
+              Clean plate
+            </button>
+          ) : null}
         </div>
       </div>
       {(refs.length > 0 || inFlightJobId) ? (

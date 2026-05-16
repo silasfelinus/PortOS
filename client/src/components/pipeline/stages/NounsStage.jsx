@@ -33,6 +33,7 @@ import {
   matchCharactersInText, matchSettingsInText, matchObjectsInText,
 } from '../../../lib/scenePrompt';
 import { composeStyledPrompt } from '../../../lib/composeStyledPrompt';
+import { composeCleanPlatePrompt } from '../../../lib/cleanPlatePrompt';
 import useMounted from '../../../hooks/useMounted';
 import CanonCard from '../CanonCard';
 import MediaPreview from '../../media/MediaPreview';
@@ -244,6 +245,28 @@ export default function NounsStage({ issue, series }) {
     toast.success(`Rendering reference for ${entry.name}`);
   };
 
+  const handleRenderCleanPlate = async (entry) => {
+    if (!entry?.description?.trim()) {
+      toast.error(`Add a description before generating a clean plate for ${entry.name}`);
+      return;
+    }
+    const baseOpts = pipelineImageCfgToRenderOpts(imageCfg);
+    const plate = composeCleanPlatePrompt(entry, baseOpts.negativePrompt || '');
+    const styled = composeStyledPrompt(
+      plate.prompt,
+      plate.negativePrompt,
+      universe ? { prompt: universe.stylePrompt, negativePrompt: universe.negativePrompt } : null,
+    );
+    const queued = await generateImage({
+      ...baseOpts,
+      prompt: styled.prompt,
+      negativePrompt: styled.negativePrompt || undefined,
+    }).catch((err) => { toast.error(err.message || 'Clean plate render failed'); return null; });
+    if (!queued?.jobId || !mountedRef.current) return;
+    setRenderingJobs((prev) => ({ ...prev, [entry.id]: queued.jobId }));
+    toast.success(`Rendering clean plate for ${entry.name}`);
+  };
+
   // Pin a freshly-completed render onto the universe's imageRefs[]. Server
   // replaces the full kind list on PATCH, so we send the entire kind array
   // with this entry mutated. Single-user app — no race.
@@ -366,6 +389,7 @@ export default function NounsStage({ issue, series }) {
           onRefine={handleRefineCharacter}
           refiningCharacterId={refiningCharacterId}
           onPatchEntry={(entryId, patch) => handlePatchEntry(kind, entryId, patch)}
+          onRenderCleanPlate={handleRenderCleanPlate}
         />
       ))}
 
@@ -383,7 +407,7 @@ export default function NounsStage({ issue, series }) {
   );
 }
 
-function KindSection({ kind, all, prose, renderingJobs, onRender, onJobCompleted, onJobFailed, onPreview, onRefine, refiningCharacterId, onPatchEntry }) {
+function KindSection({ kind, all, prose, renderingJobs, onRender, onJobCompleted, onJobFailed, onPreview, onRefine, refiningCharacterId, onPatchEntry, onRenderCleanPlate }) {
   const Icon = kind.icon;
   const inIssue = useMemo(() => kind.match(prose, all), [prose, all, kind]);
   const inIssueIds = useMemo(() => new Set(inIssue.map((e) => e.id || e.name)), [inIssue]);
@@ -428,6 +452,7 @@ function KindSection({ kind, all, prose, renderingJobs, onRender, onJobCompleted
                   refining={refiningCharacterId === entry.id}
                   refineDisabled={!!refiningCharacterId && refiningCharacterId !== entry.id}
                   onPatchEntry={onPatchEntry}
+                  onRenderCleanPlate={onRenderCleanPlate}
                 />
               ))}
             </ul>
@@ -455,6 +480,7 @@ function KindSection({ kind, all, prose, renderingJobs, onRender, onJobCompleted
                   refining={refiningCharacterId === entry.id}
                   refineDisabled={!!refiningCharacterId && refiningCharacterId !== entry.id}
                   onPatchEntry={onPatchEntry}
+                  onRenderCleanPlate={onRenderCleanPlate}
                 />
               ))}
             </ul>

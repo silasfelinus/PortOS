@@ -25,6 +25,7 @@ import {
 } from '../services/apiUniverseBuilder';
 import { generateImage, getSettings } from '../services/apiSystem';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt';
+import { composeCleanPlatePrompt } from '../lib/cleanPlatePrompt';
 import { useAsyncAction } from '../hooks/useAsyncAction';
 import useMounted from '../hooks/useMounted';
 import CanonCard from '../components/pipeline/CanonCard';
@@ -211,6 +212,31 @@ export default function UniverseCanon() {
     toast.success(`Rendering reference for ${entry.name}`);
   };
 
+  const handleRenderCleanPlate = async (entry) => {
+    if (!entry?.description?.trim()) {
+      toast.error(`Add a description before generating a clean plate for ${entry.name}`);
+      return;
+    }
+    const baseOpts = pipelineImageCfgToRenderOpts(imageCfg);
+    const plate = composeCleanPlatePrompt(entry, baseOpts.negativePrompt || '');
+    // Layer the universe style on top of the clean-plate composition so
+    // the empty-location render shares the visual language of the
+    // populated reference renders.
+    const styled = composeStyledPrompt(
+      plate.prompt,
+      plate.negativePrompt,
+      universe ? { prompt: universe.stylePrompt, negativePrompt: universe.negativePrompt } : null,
+    );
+    const queued = await generateImage({
+      ...baseOpts,
+      prompt: styled.prompt,
+      negativePrompt: styled.negativePrompt || undefined,
+    }).catch((err) => { toast.error(err.message || 'Clean plate render failed'); return null; });
+    if (!queued?.jobId || !mountedRef.current) return;
+    setRenderingJobs((prev) => ({ ...prev, [entry.id]: queued.jobId }));
+    toast.success(`Rendering clean plate for ${entry.name}`);
+  };
+
   const handleRefCompleted = useCallback(async (kindKey, entryId, filename) => {
     if (!filename || !universe) return;
     setRenderingJobs((prev) => {
@@ -345,6 +371,7 @@ export default function UniverseCanon() {
           onToggleLock={(entryId, nextLocked) => handleToggleLock(kind, entryId, nextLocked)}
           togglingLockId={togglingLockId}
           onPatchEntry={(entryId, patch) => handlePatchEntry(kind, entryId, patch)}
+          onRenderCleanPlate={handleRenderCleanPlate}
         />
       ))}
 
@@ -353,7 +380,7 @@ export default function UniverseCanon() {
   );
 }
 
-function KindSection({ kind, all, usage, renderingJobs, onRender, onJobCompleted, onJobFailed, onPreview, onRefine, refiningId, onToggleLock, togglingLockId, onPatchEntry }) {
+function KindSection({ kind, all, usage, renderingJobs, onRender, onJobCompleted, onJobFailed, onPreview, onRefine, refiningId, onToggleLock, togglingLockId, onPatchEntry, onRenderCleanPlate }) {
   const Icon = kind.icon;
   return (
     <section className="rounded-lg border border-port-border bg-port-card/40">
@@ -384,6 +411,7 @@ function KindSection({ kind, all, usage, renderingJobs, onRender, onJobCompleted
                 onToggleLock={onToggleLock}
                 togglingLock={togglingLockId === entry.id}
                 onPatchEntry={onPatchEntry}
+                onRenderCleanPlate={onRenderCleanPlate}
               />
             ))}
           </ul>
