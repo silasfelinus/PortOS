@@ -395,6 +395,62 @@ When PLAN.md is missing, empty, or fully completed, brainstorm and implement a n
    \`\`\`
 8. Commit with a clear description of the feature and rationale`,
 
+  'plan-task': `[Plan Task: {appName}] Execute Next PLAN.md Item
+
+Your goal is to implement the next unchecked item from PLAN.md and archive it to DONE.md in the same commit. No brainstorming, no scope expansion — just execute what is already planned.
+
+Repository: {repoPath}
+
+## Phase 1 — Find the Next Task
+
+1. Read PLAN.md from {repoPath}
+2. Read DONE.md from {repoPath} (if it exists) so you understand the archive format
+3. Find the first unchecked item (\`- [ ]\`) that does NOT have a \`<!-- NEEDS_INPUT -->\` annotation
+4. If PLAN.md is missing, has no unchecked items, or every unchecked item is annotated \`<!-- NEEDS_INPUT -->\`, **stop here** — exit cleanly without commits or PR. This task is a strict executor of planned work; brainstorming is handled by the \`feature-ideas\` task.
+
+Capture the exact text of the item you selected (without the leading \`- [ ]\`) — you will need it verbatim for the DONE.md entry.
+
+## Phase 2 — Evaluate Feasibility
+
+5. Read relevant source files to understand the scope of the item
+6. Decide: can this be implemented without user clarification? (requirements clear, no ambiguous design choices, no blocking external decisions)
+
+## Phase 3a — Implement (if feasible)
+
+7. Implement the change:
+   - Write clean, tested code following existing patterns
+   - Run tests to ensure nothing is broken
+8. Run \`/simplify\` to review changed code for reuse, quality, and efficiency. Fix any issues found in the same diff.
+9. **Move the item from PLAN.md to DONE.md (do NOT leave a checked \`- [x]\` behind in PLAN.md):**
+   - Remove the item's line(s) from PLAN.md entirely. If the item was a nested bullet under a heading and removing it leaves the surrounding section empty, leave the heading alone — separate plan curation is the \`do-replan\` task's job.
+   - Append a corresponding entry to DONE.md under today's date heading (\`## YYYY-MM-DD\`). Insert today's date heading directly below the top-of-file preamble if no section for today exists; otherwise append under the existing section.
+   - DONE.md entry format: \`- **<short title pulled from the PLAN.md item>** — <1–3 sentences describing what was actually implemented, key files touched, and any caveats>\`. Mirror the prose style of recent DONE.md entries.
+10. Commit the code change, the PLAN.md removal, and the DONE.md append **together in a single commit**. Commit message should reference the PLAN.md item title.
+
+## Phase 3b — Request Clarification (if not feasible)
+
+7. Create a file named \`.plan-questions.md\` in {repoPath} with this format:
+   \`\`\`
+   # Plan Question: <short title summarizing the PLAN.md item>
+
+   ## PLAN.md Item
+   <the exact text of the unchecked item>
+
+   ## Questions
+   - <question 1>
+   - <question 2>
+   \`\`\`
+8. Annotate the PLAN.md item by appending \` <!-- NEEDS_INPUT -->\` to its line (do NOT remove it from PLAN.md)
+9. Commit both changes with message \`chore: flag PLAN.md item needing user input\`
+10. Do NOT open a PR — stop here
+
+## Constraints
+
+- This task has **no \`runAfter\` dependencies** — it runs independently of \`do-replan\`, \`pr-reviewer\`, etc.
+- Do NOT brainstorm new features. Do NOT propose items not already in PLAN.md.
+- Do NOT touch unrelated PLAN.md items, even to tidy them.
+- One commit. One PR (or no PR if clarification was needed).`,
+
   'code-reviewer-review': `[Review: {appName}] Deep Codebase Review (Stage 1)
 
 Perform a comprehensive review of {appName} and write your findings to REVIEW.md.
@@ -1025,6 +1081,7 @@ For each reference above:
 // Only non-customized prompts (promptCustomized !== true) are upgraded.
 const PROMPT_VERSIONS = {
   'feature-ideas': 6,  // v6: remove hardcoded worktree language (worktree context injected by agentPromptBuilder)
+  'plan-task': 1,      // v1: strict PLAN.md executor — move item to DONE.md in same commit, no brainstorm fallback, no runAfter deps
   'pr-reviewer': 3,    // v3: multi-stage pipeline (security scan → code review + merge)
   'code-reviewer-a': 1, // v1: 2-stage pipeline (codebase review → triage & implement)
   'code-reviewer-b': 1, // v1: 2-stage pipeline (codebase review → triage & implement)
@@ -1400,7 +1457,7 @@ Before reviewing code quality, scan each PR for malicious content:
 export const SELF_IMPROVEMENT_TASK_TYPES = [
   'security', 'code-quality', 'test-coverage', 'performance',
   'accessibility', 'branch-cleanup', 'console-errors', 'dependency-updates', 'documentation',
-  'ui-bugs', 'mobile-responsive', 'feature-ideas', 'error-handling',
+  'ui-bugs', 'mobile-responsive', 'feature-ideas', 'plan-task', 'error-handling',
   'typing', 'release-check', 'pr-reviewer', 'code-reviewer-a', 'code-reviewer-b',
   'jira-sprint-manager', 'jira-status-report', 'do-replan',
   // Watches `referenceRepos` configured on the app — fetches each upstream
@@ -1427,6 +1484,10 @@ const DEFAULT_TASK_INTERVALS = {
   // feature-ideas waits for do-replan so new work is grounded in a fresh PLAN.md
   // that already accounts for any in-flight or unmerged work.
   'feature-ideas':       { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, runAfter: ['do-replan'], taskMetadata: { useWorktree: true, openPR: true, simplify: true } },
+  // plan-task is a strict executor of PLAN.md items — no brainstorm fallback, no
+  // runAfter deps. Picks the next unchecked item, implements it, and moves it
+  // from PLAN.md to DONE.md in the same commit.
+  'plan-task':           { type: INTERVAL_TYPES.DAILY, enabled: false, providerId: null, model: null, prompt: null, taskMetadata: { useWorktree: true, openPR: true, simplify: true } },
   'error-handling':      { type: INTERVAL_TYPES.ROTATION, enabled: false, providerId: null, model: null, prompt: null },
   'typing':              { type: INTERVAL_TYPES.ONCE, enabled: false, providerId: null, model: null, prompt: null },
   'release-check':       { type: INTERVAL_TYPES.ON_DEMAND, enabled: false, providerId: null, model: null, prompt: null },
@@ -2363,6 +2424,7 @@ function getTaskTypeDescription(taskType) {
     'test-coverage': 'Improve test coverage',
     'documentation': 'Update documentation',
     'feature-ideas': 'Implement next planned feature or brainstorm new one',
+    'plan-task': 'Execute next PLAN.md item and archive it to DONE.md (worktree+PR)',
     'accessibility': 'Accessibility audit',
     'branch-cleanup': 'Clean up merged branches',
     'dependency-updates': 'Update dependencies',

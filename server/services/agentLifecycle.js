@@ -1086,8 +1086,9 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
     });
   }
 
-  // Check for plan questions marker file (feature-ideas task needing user input)
-  if (task?.metadata?.analysisType === 'feature-ideas') {
+  // Check for plan questions marker file (feature-ideas / plan-task needing user input)
+  const planAnalysisType = task?.metadata?.analysisType;
+  if (planAnalysisType === 'feature-ideas' || planAnalysisType === 'plan-task') {
     const planWorkspace = agentState?.metadata?.workspacePath || task?.metadata?.repoPath || ROOT_DIR;
     const markerPath = join(planWorkspace, '.plan-questions.md');
 
@@ -1104,7 +1105,7 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
         message: markerContent,
         priority: PRIORITY_LEVELS.MEDIUM,
         link: appId ? `/apps/${appId}/documents` : undefined,
-        metadata: { appId, agentId, taskType: 'feature-ideas' }
+        metadata: { appId, agentId, taskType: planAnalysisType }
       }).catch(err => {
         emitLog('warn', `Failed to create plan_question notification: ${err.message}`, { agentId });
       });

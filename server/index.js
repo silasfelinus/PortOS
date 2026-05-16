@@ -494,6 +494,13 @@ if (existsSync(CLIENT_DIST)) {
     if (req.path.match(/\.\w+$/) && !req.path.endsWith('.html')) {
       return next();
     }
+    // index.html embeds the current build's hashed asset filenames. After a
+    // rebuild + restart, a browser still holding a cached copy would point at
+    // chunks that no longer exist on disk (the `index-CwBEDqDF.css` class of
+    // 404). `no-cache` lets the browser keep the file but forces an etag
+    // revalidation on every navigation, so a fresh build is picked up on the
+    // very next request without a hard refresh.
+    res.set('Cache-Control', 'no-cache');
     const stampedIndexHtml = getStampedIndexHtml();
     if (stampedIndexHtml) {
       res.type('html').send(stampedIndexHtml);

@@ -1086,6 +1086,7 @@ function getTaskDescription(taskType, appName) {
       'ui-bugs': `Review UI for visual bugs in ${appName}`,
       'mobile-responsive': `Check mobile responsiveness of ${appName}`,
       'feature-ideas': `Implement a feature idea for ${appName} aligned with GOALS.md and PLAN.md (worktree+PR)`,
+      'plan-task': `Execute next PLAN.md item for ${appName} and archive it to DONE.md (worktree+PR)`,
       'release-check': `Verify release readiness for ${appName}`,
       'jira-sprint-manager': `Triage and implement JIRA sprint tickets for ${appName} (worktree+PR)`,
       'jira-status-report': `Generate JIRA weekly status report for ${appName}`,
@@ -1103,6 +1104,7 @@ function getTaskDescription(taskType, appName) {
     'test-coverage': 'Add missing tests for uncovered code paths',
     'documentation': 'Update documentation, comments, and README files',
     'feature-ideas': 'Implement a feature idea aligned with GOALS.md and PLAN.md (worktree+PR)',
+    'plan-task': 'Execute next PLAN.md item and archive it to DONE.md (worktree+PR)',
     'accessibility': 'Audit and fix accessibility issues (ARIA, keyboard nav, contrast)',
     'dependency-updates': 'Check for and safely update outdated dependencies',
     'error-handling': 'Improve error handling patterns and recovery logic',
@@ -1133,6 +1135,7 @@ const IMPROVEMENT_TYPES = [
   'documentation',
   // Goal 4: User Engagement
   'feature-ideas',
+  'plan-task',
   // Goal 5: System Health
   'accessibility',
   'dependency-updates',

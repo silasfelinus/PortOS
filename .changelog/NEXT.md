@@ -2,6 +2,24 @@
 
 ## Added
 
+- **`plan-task` scheduled task — strict PLAN.md executor.** New task type in
+  `server/services/taskSchedule.js` that picks the next unchecked PLAN.md
+  item, implements it (worktree + `/simplify` + PR by default), and **moves**
+  the item from PLAN.md to DONE.md in the same commit (mirrored entry under
+  today's `## YYYY-MM-DD` section). Unlike `feature-ideas`, it has no
+  `runAfter` dependencies and no brainstorm fallback — when PLAN.md is empty
+  or every unchecked item is annotated `<!-- NEEDS_INPUT -->`, the task exits
+  cleanly. Phase 3b mirrors `feature-ideas`: an infeasible item emits a
+  `.plan-questions.md` marker, which `agentLifecycle.js` now converts into a
+  `plan_question` notification for both task types. Default schedule: daily,
+  disabled, `useWorktree+openPR+simplify`. Surfaces in the workflow visualizer
+  alongside `feature-ideas` under the `build` stage; gets a `✅` icon in the
+  Upcoming Tasks widget. `TaskItem.jsx#extractTaskType` learned the new
+  description shape and matches it ahead of `do-replan` so the substring
+  `plan.md` doesn't steal the icon. Touches `taskSchedule.js`, `cos.js`,
+  `workflow.js`, `agentLifecycle.js`, `UpcomingTasksWidget.jsx`,
+  `TaskItem.jsx`.
+
 - **Comic pages + cover: proof vs final renders, with i2i upscale from
   proof.** Each comic page (and the cover) now carries two render slots —
   `proofImage` (fast layout render) and `finalImage` (hi-res print render).
@@ -1060,6 +1078,17 @@
   to scrub stray references from sibling unlocked composites' prompts.
 
 ## Fixed
+
+- **`index.html` now revalidates on every navigation, so rebuilds are picked
+  up without a hard refresh.** The SPA fallback in `server/index.js` was
+  serving `index.html` with no `Cache-Control` header, so browsers fell back
+  to default heuristics and happily cached the file — which embeds the
+  current build's hashed asset filenames. After a rebuild + restart, the
+  stale HTML pointed at chunks that no longer existed on disk
+  (`index-CwBEDqDF.css: 404` class of error). The fallback now sets
+  `Cache-Control: no-cache` on the HTML response, forcing an etag
+  revalidation on every request; hashed assets continue to cache normally
+  because their filenames change on every build.
 
 - **Scheduled tasks no longer block forever on disabled dependencies.** `checkRunAfterDeps`
   in `server/services/taskSchedule.js` previously required every `runAfter`
