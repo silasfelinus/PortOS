@@ -28,3 +28,26 @@ export function parseComicPagesOwner(owner) {
   if (!Number.isInteger(pageIndex) || pageIndex < 0) return null;
   return { issueId, target: 'page', pageIndex };
 }
+
+// Per-shot start-frame renders inside the storyboards stage. Scene-level
+// owners (`pipeline:<id>:storyboards:scene<N>`) still exist for legacy
+// scene-image renders that don't decompose into shots — that string is
+// produced inline by `enqueueVisualImage` and intentionally falls outside
+// this parser (no filename hook needed for the scene-level path).
+export function buildStoryboardsShotOwner({ issueId, sceneIndex, shotIndex }) {
+  return `${PREFIX}:${issueId}:storyboards:scene${sceneIndex}:shot${shotIndex}`;
+}
+
+const STORYBOARDS_SHOT_RE = /^pipeline:([^:]+):storyboards:scene(\d+):shot(\d+)$/;
+
+export function parseStoryboardsShotOwner(owner) {
+  if (typeof owner !== 'string') return null;
+  const m = owner.match(STORYBOARDS_SHOT_RE);
+  if (!m) return null;
+  const [, issueId, sceneIdxStr, shotIdxStr] = m;
+  const sceneIndex = Number(sceneIdxStr);
+  const shotIndex = Number(shotIdxStr);
+  if (!Number.isInteger(sceneIndex) || sceneIndex < 0) return null;
+  if (!Number.isInteger(shotIndex) || shotIndex < 0) return null;
+  return { issueId, sceneIndex, shotIndex };
+}

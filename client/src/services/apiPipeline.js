@@ -203,6 +203,15 @@ export const generatePipelineSceneVideo = (issueId, sceneIndex, opts = {}) =>
     body: JSON.stringify(opts),
   });
 
+// Render the start-frame image for a single shot inside a storyboard scene.
+// Server persists the resulting jobId on
+// stages.storyboards.scenes[sceneIndex].shots[shotIndex].startFrameJobId.
+export const generatePipelineShotStartFrame = (issueId, sceneIndex, shotIndex, opts = {}) =>
+  request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/storyboards/scenes/${encodeURIComponent(sceneIndex)}/shots/${encodeURIComponent(shotIndex)}/render`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+  });
+
 // LLM-driven refinement of a single comic panel's description into a
 // richer image-gen prompt. Uses the pipeline-comic-panel-image-prompt
 // stage with neighboring-panel continuity context. Server persists the

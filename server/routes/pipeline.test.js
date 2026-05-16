@@ -88,6 +88,15 @@ vi.mock('../services/pipeline/visualStages.js', () => ({
     issue: { id: issueId, stages: { storyboards: { scenes: [] } } },
     stage: { scenes: [] },
   })),
+  enqueueStoryboardShotStartFrame: vi.fn(async (issueId, sceneIndex, shotIndex) => ({
+    jobId: `shot-img-${++uuidCounter}`,
+    mode: 'local',
+    prompt: `shot ${shotIndex} prompt`,
+    sceneIndex,
+    shotIndex,
+    issue: { id: issueId, stages: { storyboards: { scenes: [] } } },
+    stage: { scenes: [] },
+  })),
   refineComicPanelPrompt: vi.fn(async (issueId, pi, ni) => ({
     panel: { description: 'refined panel body' },
     page: { panels: [] },
@@ -280,6 +289,29 @@ describe('pipeline routes', () => {
     const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
     const r = await request(app)
       .post(`/api/pipeline/issues/${iss.body.id}/stages/storyboards/scenes/nope/video`)
+      .send({});
+    expect(r.status).toBe(400);
+  });
+
+  it('POST /issues/:id/stages/storyboards/scenes/:sceneIndex/shots/:shotIndex/render returns the enqueued jobId', async () => {
+    const app = makeApp();
+    const ser = await request(app).post('/api/pipeline/series').send({ name: 'S' });
+    const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
+    const r = await request(app)
+      .post(`/api/pipeline/issues/${iss.body.id}/stages/storyboards/scenes/0/shots/2/render`)
+      .send({});
+    expect(r.status).toBe(200);
+    expect(r.body.jobId).toMatch(/^shot-img-/);
+    expect(r.body.sceneIndex).toBe(0);
+    expect(r.body.shotIndex).toBe(2);
+  });
+
+  it('POST /issues/:id/stages/storyboards/scenes/:sceneIndex/shots/:shotIndex/render rejects bad indices', async () => {
+    const app = makeApp();
+    const ser = await request(app).post('/api/pipeline/series').send({ name: 'S' });
+    const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
+    const r = await request(app)
+      .post(`/api/pipeline/issues/${iss.body.id}/stages/storyboards/scenes/nope/shots/0/render`)
       .send({});
     expect(r.status).toBe(400);
   });

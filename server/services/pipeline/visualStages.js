@@ -27,7 +27,7 @@ import { enqueueJob } from '../mediaJobQueue/index.js';
 import { getSettings } from '../settings.js';
 import { getSeries } from './series.js';
 import { getIssue, updateStage, VISUAL_STAGE_IDS } from './issues.js';
-import { buildComicPagesOwner } from './owners.js';
+import { buildComicPagesOwner, buildStoryboardsShotOwner } from './owners.js';
 import { getUniverse } from '../universeBuilder.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import {
@@ -546,6 +546,76 @@ export async function enqueueStoryboardSceneVideo(issueId, sceneIndex, options =
   });
   console.log(`🎥 Pipeline scene video — issue=${issueId.slice(0, 8)} scene=${idx + 1} jobId=${jobId.slice(0, 8)}`);
   return { jobId, prompt, sceneIndex: idx, issue: updatedIssue, stage };
+}
+
+/**
+ * Enqueue an image render for a single shot inside a storyboard scene. Mirror
+ * of enqueueStoryboardSceneVideo but for IMAGE (start-frame), at shot
+ * granularity. Shot description is the primary anchor; falls back to the
+ * parent scene's description when the shot is sparse so a fresh shot still
+ * renders something coherent.
+ */
+export async function enqueueStoryboardShotStartFrame(issueId, sceneIndex, shotIndex, options = {}) {
+  const sIdx = Number(sceneIndex);
+  const tIdx = Number(shotIndex);
+  if (!Number.isInteger(sIdx) || sIdx < 0 || !Number.isInteger(tIdx) || tIdx < 0) {
+    throw new ServerError('sceneIndex and shotIndex must be non-negative integers', {
+      status: 400, code: 'PIPELINE_SHOT_BAD_INDEX',
+    });
+  }
+  const { issue, settings, series, world, canon } = await loadBibleContext(issueId);
+  const scenes = Array.isArray(issue.stages?.storyboards?.scenes)
+    ? [...issue.stages.storyboards.scenes]
+    : [];
+  const scene = scenes[sIdx];
+  if (!scene) {
+    throw new ServerError(`sceneIndex ${sIdx} out of range (have ${scenes.length})`, {
+      status: 404, code: 'PIPELINE_SCENE_NOT_FOUND',
+    });
+  }
+  const shots = Array.isArray(scene.shots) ? [...scene.shots] : [];
+  const shot = shots[tIdx];
+  if (!shot) {
+    throw new ServerError(`shotIndex ${tIdx} out of range (have ${shots.length})`, {
+      status: 404, code: 'PIPELINE_SHOT_NOT_FOUND',
+    });
+  }
+
+  const shotDescription = (shot.description || '').trim();
+  const description = shotDescription || (scene.description || '').trim();
+  if (!description) {
+    throw new ServerError('shot has no description (parent scene also empty) — add a description first', {
+      status: 400, code: 'PIPELINE_SHOT_EMPTY_DESCRIPTION',
+    });
+  }
+
+  const mode = resolveMode(options, settings);
+  const matchedCharacters = matchCharactersInText(
+    `${description} ${scene.slugline || ''}`,
+    canon.characters,
+  );
+  const prompt = composeVisualPrompt({
+    series,
+    description,
+    slugline: scene.slugline || '',
+    extraStyle: composeExtraStyle(series, issue, 'storyboards', options.extraStyle),
+    matchedCharacters,
+    world,
+  });
+
+  const jobId = enqueueImageJob({
+    prompt, world, settings, options, mode,
+    owner: buildStoryboardsShotOwner({ issueId, sceneIndex: sIdx, shotIndex: tIdx }),
+    logLine: `🎞️ Pipeline shot start-frame — issue=${issueId.slice(0, 8)} scene=${sIdx + 1} shot=${tIdx + 1}`,
+  });
+
+  shots[tIdx] = { ...shot, startFrameJobId: jobId };
+  scenes[sIdx] = { ...scene, shots };
+  const { issue: updatedIssue, stage } = await updateStage(issueId, 'storyboards', {
+    status: 'edited',
+    scenes,
+  });
+  return { jobId, mode, prompt, sceneIndex: sIdx, shotIndex: tIdx, issue: updatedIssue, stage };
 }
 
 const seriesBibleCtx = (series) => ({

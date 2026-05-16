@@ -42,6 +42,7 @@ import {
   enqueueVisualComicPage,
   enqueueComicCover,
   enqueueStoryboardSceneVideo,
+  enqueueStoryboardShotStartFrame,
   refineComicPanelPrompt,
   refineStoryboardScenePrompt,
 } from '../services/pipeline/visualStages.js';
@@ -1095,6 +1096,29 @@ router.post('/issues/:id/stages/storyboards/scenes/:index/refine-prompt',
       Number(req.params.index),
       body,
     ).catch((err) => { throw mapServiceError(err); });
+    res.json(result);
+  }),
+);
+
+// Render the start-frame image for a single shot inside a storyboard scene.
+// Shot-level granularity sits parallel to the existing scene-level image
+// render: a scene either has shots[] (per-shot images) or doesn't (per-scene
+// image). Caller persists the jobId on `scene.shots[shotIndex].startFrameJobId`;
+// the storyboards filename hook later stamps `startFrameFilename` on
+// completion.
+router.post(
+  '/issues/:id/stages/storyboards/scenes/:sceneIndex/shots/:shotIndex/render',
+  asyncHandler(async (req, res) => {
+    const sceneIndex = Number(req.params.sceneIndex);
+    const shotIndex = Number(req.params.shotIndex);
+    if (!Number.isInteger(sceneIndex) || sceneIndex < 0 || !Number.isInteger(shotIndex) || shotIndex < 0) {
+      throw new ServerError('sceneIndex and shotIndex must be non-negative integers', {
+        status: 400, code: 'PIPELINE_SHOT_BAD_INDEX',
+      });
+    }
+    const body = validateRequest(comicPageRenderSchema, req.body ?? {});
+    const result = await enqueueStoryboardShotStartFrame(req.params.id, sceneIndex, shotIndex, body)
+      .catch((err) => { throw mapServiceError(err); });
     res.json(result);
   }),
 );

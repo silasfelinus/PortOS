@@ -69,6 +69,7 @@ const {
   composeComicCoverPrompt,
   enqueueComicCover,
   enqueueStoryboardSceneVideo,
+  enqueueStoryboardShotStartFrame,
   refineComicPanelPrompt,
   refineStoryboardScenePrompt,
 } = await import('./visualStages.js');
@@ -309,6 +310,67 @@ describe('enqueueStoryboardSceneVideo', () => {
         expect.objectContaining({ sceneVideoJobId: 'job-fake-1234' }),
       ]),
     }));
+  });
+});
+
+describe('enqueueStoryboardShotStartFrame', () => {
+  it('rejects non-integer indices', async () => {
+    await expect(enqueueStoryboardShotStartFrame('iss-test', 'nope', 0)).rejects.toThrow(/non-negative integers/);
+    await expect(enqueueStoryboardShotStartFrame('iss-test', 0, -1)).rejects.toThrow(/non-negative integers/);
+  });
+
+  it('404s when the scene index is out of range', async () => {
+    await expect(enqueueStoryboardShotStartFrame('iss-test', 99, 0)).rejects.toThrow(/scene.*out of range/i);
+  });
+
+  it('404s when the shot index is out of range', async () => {
+    getIssueMock.mockResolvedValueOnce({
+      ...structuredClone(mockIssue),
+      stages: { ...mockIssue.stages, storyboards: { scenes: [{ description: 'a', shots: [{ id: 's1', description: 'first' }] }] } },
+    });
+    await expect(enqueueStoryboardShotStartFrame('iss-test', 0, 5)).rejects.toThrow(/shot.*out of range/i);
+  });
+
+  it('rejects when the shot AND parent scene are both empty', async () => {
+    getIssueMock.mockResolvedValueOnce({
+      ...structuredClone(mockIssue),
+      stages: { ...mockIssue.stages, storyboards: { scenes: [{ description: '   ', shots: [{ id: 's1', description: '   ' }] }] } },
+    });
+    await expect(enqueueStoryboardShotStartFrame('iss-test', 0, 0)).rejects.toThrow(/no description/i);
+  });
+
+  it('happy path: enqueues image job, stamps startFrameJobId on the shot', async () => {
+    getIssueMock.mockResolvedValueOnce({
+      ...structuredClone(mockIssue),
+      stages: { ...mockIssue.stages, storyboards: { scenes: [{ description: 'wide', shots: [{ id: 's1', description: 'close on the lock' }] }] } },
+    });
+    const result = await enqueueStoryboardShotStartFrame('iss-test', 0, 0);
+    expect(result.jobId).toBe('job-fake-1234');
+    expect(result.sceneIndex).toBe(0);
+    expect(result.shotIndex).toBe(0);
+    expect(enqueueJobMock).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'image',
+      owner: 'pipeline:iss-test:storyboards:scene0:shot0',
+    }));
+    expect(updateStageMock).toHaveBeenCalledWith('iss-test', 'storyboards', expect.objectContaining({
+      status: 'edited',
+      scenes: expect.arrayContaining([
+        expect.objectContaining({
+          shots: expect.arrayContaining([
+            expect.objectContaining({ startFrameJobId: 'job-fake-1234' }),
+          ]),
+        }),
+      ]),
+    }));
+  });
+
+  it('falls back to the parent scene description when the shot description is empty', async () => {
+    getIssueMock.mockResolvedValueOnce({
+      ...structuredClone(mockIssue),
+      stages: { ...mockIssue.stages, storyboards: { scenes: [{ description: 'wide shot of the bridge at dawn', shots: [{ id: 's1', description: '' }] }] } },
+    });
+    const result = await enqueueStoryboardShotStartFrame('iss-test', 0, 0);
+    expect(result.prompt).toMatch(/bridge at dawn/i);
   });
 });
 

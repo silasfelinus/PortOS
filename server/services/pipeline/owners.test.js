@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { buildComicPagesOwner, parseComicPagesOwner } from './owners.js';
+import {
+  buildComicPagesOwner, parseComicPagesOwner,
+  buildStoryboardsShotOwner, parseStoryboardsShotOwner,
+} from './owners.js';
 
 describe('pipeline owner strings', () => {
   it('round-trips a cover owner', () => {
@@ -24,5 +27,23 @@ describe('pipeline owner strings', () => {
     expect(parseComicPagesOwner('not-a-pipeline-owner')).toBeNull();
     expect(parseComicPagesOwner('pipeline:iss:storyboards:scene0')).toBeNull();
     expect(parseComicPagesOwner('pipeline:iss:comicPages:pageNaN')).toBeNull();
+  });
+
+  it('round-trips a storyboards shot owner', () => {
+    const owner = buildStoryboardsShotOwner({ issueId: 'iss-789', sceneIndex: 2, shotIndex: 5 });
+    expect(owner).toBe('pipeline:iss-789:storyboards:scene2:shot5');
+    expect(parseStoryboardsShotOwner(owner)).toEqual({ issueId: 'iss-789', sceneIndex: 2, shotIndex: 5 });
+  });
+
+  it('shot parser rejects non-shot owners and malformed indices', () => {
+    expect(parseStoryboardsShotOwner(null)).toBeNull();
+    expect(parseStoryboardsShotOwner('pipeline:iss:comicPages:cover')).toBeNull();
+    expect(parseStoryboardsShotOwner('pipeline:iss:storyboards:scene0')).toBeNull();
+    expect(parseStoryboardsShotOwner('pipeline:iss:storyboards:scene1:shotNaN')).toBeNull();
+  });
+
+  it('comic parser does not match shot owners and vice versa', () => {
+    expect(parseComicPagesOwner('pipeline:iss:storyboards:scene1:shot2')).toBeNull();
+    expect(parseStoryboardsShotOwner('pipeline:iss:comicPages:page3')).toBeNull();
   });
 });
