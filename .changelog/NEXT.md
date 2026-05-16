@@ -1539,6 +1539,41 @@
 
 ## Fixed
 
+- **Pipeline volume delete: clearer confirmation, loading state, and no
+  exporter warning storm.** Three coupled fixes to the trash button on a
+  series volume / season in the Arc Canvas:
+  1. Replaced the two-click `useArmedAction` arm (which users found
+     non-discoverable — first click looked like a no-op) with an inline
+     confirm row matching `LayoutEditor`'s pattern: clicking the trash
+     swaps the Edit + Trash controls for `Delete volume? [Cancel]
+     [Delete]`.
+  2. The cascade reassigns every child issue's `seasonId`, which can take
+     several seconds on a populated volume. Added a `Loader2`
+     `Deleting…` state so the row visibly works instead of looking
+     frozen.
+  3. Each per-issue `updateIssue` was emitting `emitRecordUpdated('series',
+     …)`, which scheduled N debounced re-exports of the same series. Every
+     re-export then walked the series and called `exportMediaJobAndAsset`
+     for each issue's `imageJobId`, logging
+     `⚠️ sharing.exporter: imageJobId <id> not found in live queue or
+     archive` for any job already aged out of the persisted archive — one
+     warning per missing job per re-export, multiplied by the cascade. The
+     season-delete service now wraps the reassign cascade in
+     `withReexportSuppressed('series', seriesId, …)` and emits a single
+     `emitRecordUpdated` against the final state, collapsing the storm to
+     one re-export.
+  Moved `withReexportSuppressed` + its suppression registry from
+  `sharing/subscriptions.js` down to `sharing/recordEvents.js` so pipeline
+  services can suppress without transitively pulling the exporter / file-IO
+  graph into their test mocks (matches the file's existing "Kept separate
+  …so importing this bus doesn't drag in the heavyweight pipeline graph"
+  intent). `subscriptions.js` re-exports `withReexportSuppressed` so
+  `importer.js`'s import path stays stable. Touches
+  `client/src/components/pipeline/ArcCanvas.jsx`,
+  `server/services/pipeline/seasons.js`,
+  `server/services/sharing/recordEvents.js`,
+  `server/services/sharing/subscriptions.js`.
+
 - **`update.sh` / `setup.sh` (+ PowerShell siblings) no longer hang on
   slash-do install when multiple AI environments are detected.** The
   `npx --yes slash-do@latest` call inside the four install/update scripts
