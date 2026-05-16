@@ -1215,6 +1215,22 @@
 
 ## Fixed
 
+- **Theme contrast: white text on light-green success backgrounds now uses
+  dark text.** `--port-on-success` defaulted to white (255 255 255), which
+  fails WCAG AA against bright/medium-bright greens (white on #22c55e ≈ 2.0,
+  on #16a34a ≈ 3.3). The base token now routes to dark forest green
+  (5 46 22) — fixes Classic Midnight, Classic Noon, and Lumen Glass Day,
+  where the `bg-port-success text-white` mapping in `index.css` (lines
+  336-338) now produces readable contrast (≥ 4.6). Darker-green day themes
+  (Phosphor Paper #167a3c, Drafting Paper #15803d) keep white text since
+  their greens are dark enough that white passes AA (~5.0+) and dark text
+  would fail. Added a defensive CSS rule that routes hardcoded Tailwind
+  `bg-green-{400,500,600}` / `bg-emerald-{400,500,600}` / `bg-lime-{400,500}`
+  + `text-white` combos through the same `--port-on-success` token, so
+  components that bypass the theme color (DataDog/Jira/SoulWizard buttons,
+  etc.) inherit the fix automatically. Touches `client/src/themes/portosThemes.js`,
+  `client/src/index.css`.
+
 - **TUI agent prompt now actually lands in Claude Code's input.** The fixed
   2500 ms paste delay raced Claude Code's banner/loading render, so bracketed
   paste arrived before the input field was ready and the entire prompt was
