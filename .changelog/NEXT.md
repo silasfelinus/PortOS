@@ -2,6 +2,48 @@
 
 ## Added
 
+- **Story shape is now load-bearing across arc planning.** The Vonnegut
+  shape picker on the series arc was previously decorative — picked, rendered
+  as a sparkline, then ignored by every LLM prompt. Now the picked shape (or
+  the LLM's proposed shape when the user hasn't picked one) flows into all
+  five arc-planning passes as `{{{shapeGuidance}}}` (rendered curve +
+  per-shape beat guidance) plus per-volume `{{shapePosition}}` /
+  `{{volumeShapePosition}}` (where this season/volume sits on the curve so
+  episode pacing and volume-internal beats follow the right trajectory):
+  - `pipeline-arc-overview` — honor-or-propose mode. With a pre-pick the LLM
+    must trace the curve and round-trip `shape` in the JSON. Without a pick
+    the LLM proposes one from the 8 ids and returns it in the JSON.
+  - `pipeline-season-episodes` — episode beats ramp / fall / plateau the
+    direction the season's curve placement demands, not just by `arcRole`.
+  - `pipeline-arc-verify` — new "story-shape adherence" check (rule 7/8)
+    flags volumes whose ending hook contradicts the curve.
+  - `pipeline-volume-verify` — new volume-internal adherence check + per-
+    volume curve placement context.
+  - `pipeline-arc-resolve` — preserves picked shape during auto-resolve.
+
+  **Files:** new `ARC_SHAPES` catalog + `getArcShape` / `renderArcShapeGuidance`
+  / `describeArcShapePositionForSeason` in `server/lib/storyArc.js` (points
+  arrays kept in sync with the client `STORY_SHAPES` via a parity test);
+  `buildArcBaseContext` / `buildArcOverviewContext` / `buildSeasonEpisodesContext`
+  / `buildVolumeVerifyContext` in `server/services/pipeline/arcPlanner.js`
+  thread shape into prompt contexts; both `data.sample/` and `data/`
+  copies of the five prompts updated (resolve added to `data.sample/` for
+  the first time — it previously only existed in `data/`); migration
+  `005-shape-aware-arc-prompts.js` auto-applies the new templates when the
+  installed copy still matches the pre-change shipped hash, skips with a
+  manual-merge warning when customized; drift-warning hashes in
+  `scripts/setup-data.js` extended to include the new lineage. 16 new tests
+  (3 in `storyArc.test.js`, 5 in `arcPlanner.test.js`) lock the catalog
+  shape, the position helper edge cases, both overview modes, and the
+  season-episodes + volume-verify shape-context wiring.
+
+- **`generateArcOverview` preserves an existing `arc.shape` on regenerate.**
+  Sibling `resolveVerifyIssues` already had the right preservation pattern
+  (`shape: content?.arc?.shape ?? series.arc.shape ?? null`); the regenerate
+  path missed it, so every "Regenerate arc" click wiped a Vonnegut shape
+  the user (or the LLM) had picked. **Files:** `server/services/pipeline/arcPlanner.js`
+  + regression test in `arcPlanner.test.js`.
+
 - **Beat-sheet expansion — arc / volume / neighbor-issue context block.**
   The `idea` text stage previously generated each issue's beats in isolation
   against the series bible + the user's seed. It now sees the whole frame a

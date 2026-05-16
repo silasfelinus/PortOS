@@ -25,6 +25,14 @@ You are a writers-room showrunner planning the **episode-by-episode breakdown fo
 
 - **Themes:** {{arc.themesCsv}}
 
+## Story shape (Vonnegut) — this season's curve placement
+
+{{{shapeGuidance}}}
+
+**This season's expected emotional placement:** {{shapePosition}}
+
+Pace the episodes you write so the season's fortune trajectory matches this placement. The first episode should open near the *level* implied by the prior season's ending, the finale episode should land at the *level* implied by this season's ending hook, and the in-between beats should bend the curve in the right direction — even when the per-episode `arcRole` would otherwise read as neutral.
+
 {{> bible-deference }}
 
 ## Prior seasons (continuity — do not contradict)

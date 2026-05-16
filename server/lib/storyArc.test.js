@@ -6,7 +6,18 @@ vi.mock('crypto', async () => {
   return { ...actual, randomUUID: () => `uuid-${++uuidCounter}` };
 });
 
-const { sanitizeArc, sanitizeSeason, sanitizeSeasonList, buildSeason, ARC_LIMITS } = await import('./storyArc.js');
+const {
+  sanitizeArc,
+  sanitizeSeason,
+  sanitizeSeasonList,
+  buildSeason,
+  ARC_LIMITS,
+  ARC_SHAPES,
+  ARC_SHAPE_IDS,
+  getArcShape,
+  renderArcShapeGuidance,
+  describeArcShapePositionForSeason,
+} = await import('./storyArc.js');
 
 describe('storyArc — sanitizeArc', () => {
   it('returns null for null/undefined/non-objects', () => {
@@ -153,6 +164,102 @@ describe('storyArc — sanitizeSeasonList', () => {
   it('caps at SEASONS_PER_SERIES_MAX', () => {
     const many = Array.from({ length: ARC_LIMITS.SEASONS_PER_SERIES_MAX + 5 }, (_, i) => ({ title: `s${i}`, number: i + 1 }));
     expect(sanitizeSeasonList(many)).toHaveLength(ARC_LIMITS.SEASONS_PER_SERIES_MAX);
+  });
+});
+
+describe('storyArc — Vonnegut shape catalog', () => {
+  it('exports all 8 shapes, ids match the curve definitions', () => {
+    expect(ARC_SHAPES).toHaveLength(8);
+    expect(ARC_SHAPE_IDS).toEqual(ARC_SHAPES.map((s) => s.id));
+    for (const shape of ARC_SHAPES) {
+      expect(shape.id).toMatch(/^[a-z][a-z-]+$/);
+      expect(shape.label).toBeTruthy();
+      expect(shape.description).toBeTruthy();
+      expect(shape.guidance.length).toBeGreaterThan(50);
+      expect(shape.points).toHaveLength(7);
+      // Each point in [-1, 1]
+      for (const p of shape.points) {
+        expect(p).toBeGreaterThanOrEqual(-1);
+        expect(p).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  // Lock the server-side `points` arrays to the client's `STORY_SHAPES`
+  // definitions so the sparkline and the prompt guidance stay in sync.
+  // (CLAUDE.md: "Keep `points` arrays in sync with client/.../StoryShapes.jsx".)
+  it('points arrays match the client-side STORY_SHAPES curves', () => {
+    const CLIENT_POINTS = {
+      'rags-to-riches':  [-1, -0.7, -0.4, -0.1, 0.3, 0.7, 1],
+      'tragedy':         [1, 0.7, 0.4, 0.1, -0.3, -0.7, -1],
+      'man-in-hole':     [0.4, 0, -0.6, -1, -0.5, 0.3, 0.9],
+      'icarus':          [-0.4, 0.2, 0.7, 1, 0.5, -0.2, -1],
+      'cinderella':      [-0.7, -0.3, 0.2, 0.5, -0.3, 0.4, 1],
+      'oedipus':         [0.3, -0.2, -0.7, 0.2, 0.5, 0, -1],
+      'boy-meets-girl':  [0, 0.6, 0.9, 0.2, -0.5, 0.3, 0.9],
+      'creation-story':  [-1, -1, -0.4, -0.4, 0.3, 0.3, 1],
+    };
+    for (const shape of ARC_SHAPES) {
+      expect(shape.points).toEqual(CLIENT_POINTS[shape.id]);
+    }
+  });
+
+  it('getArcShape returns the matching record or null', () => {
+    expect(getArcShape('cinderella').label).toBe('Cinderella');
+    expect(getArcShape('bogus')).toBe(null);
+    expect(getArcShape(null)).toBe(null);
+  });
+
+  it('renderArcShapeGuidance returns null for unknown / missing shapes', () => {
+    expect(renderArcShapeGuidance(null)).toBe(null);
+    expect(renderArcShapeGuidance('')).toBe(null);
+    expect(renderArcShapeGuidance('bogus')).toBe(null);
+  });
+
+  it('renderArcShapeGuidance produces a labeled, multi-line guidance block', () => {
+    const out = renderArcShapeGuidance('rags-to-riches');
+    expect(out).toContain('Rags to Riches');
+    expect(out).toContain('rags-to-riches');
+    expect(out).toContain('monotonically');
+  });
+});
+
+describe('storyArc — describeArcShapePositionForSeason', () => {
+  it('returns null for unknown shape or invalid totals', () => {
+    expect(describeArcShapePositionForSeason('bogus', 1, 3)).toBe(null);
+    expect(describeArcShapePositionForSeason('rags-to-riches', 0, 3)).toBe(null);
+    expect(describeArcShapePositionForSeason('rags-to-riches', 4, 3)).toBe(null);
+    expect(describeArcShapePositionForSeason('rags-to-riches', 1, 0)).toBe(null);
+  });
+
+  it('places season 1 of N at the opening, season N of N at the terminal', () => {
+    const opening = describeArcShapePositionForSeason('rags-to-riches', 1, 3);
+    const finale  = describeArcShapePositionForSeason('rags-to-riches', 3, 3);
+    expect(opening.fortune).toBeLessThan(-0.5);   // opens at the bottom
+    expect(finale.fortune).toBeGreaterThan(0.5);  // ends at the top
+    expect(opening.movement).toBe('opening position');
+    expect(finale.movement).toContain('climb');
+  });
+
+  it('detects the man-in-hole midpoint as the nadir', () => {
+    // Volume 2 of 3 in man-in-hole hits the deepest point in the 7-pt curve.
+    const mid = describeArcShapePositionForSeason('man-in-hole', 2, 3);
+    expect(mid.level).toMatch(/nadir|low/);
+    expect(mid.movement).toContain('fall');
+  });
+
+  it('handles single-season arcs by sampling the curve midpoint', () => {
+    const only = describeArcShapePositionForSeason('icarus', 1, 1);
+    expect(only).not.toBe(null);
+    expect(only.movement).toBe('opening position');
+    // icarus midpoint is the peak
+    expect(only.fortune).toBeGreaterThan(0.5);
+  });
+
+  it('summary string names the volume and the shape', () => {
+    const out = describeArcShapePositionForSeason('cinderella', 2, 3);
+    expect(out.summary).toContain('Volume 2 of 3');
+    expect(out.summary).toContain('Cinderella');
   });
 });
 

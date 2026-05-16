@@ -48,6 +48,12 @@ The arc was authored against this World Builder world: **{{worldName}}**. Contin
 {{arc.summary}}
 ```
 
+## Story shape (Vonnegut) — full arc + this volume's placement
+
+{{{shapeGuidance}}}
+
+**This volume's expected emotional placement within the curve:** {{volumeShapePosition}}
+
 ## This volume
 
 - **Volume / Season number:** {{volume.number}}
@@ -88,6 +94,7 @@ Walk the volume in issue / episode order. Score each issue against the volume's 
 6. **Cast economy.** A character introduced in this volume that gets exactly one beat and is never seen again. Or a major character from the bible / world that the volume's issues never use despite a thematic fit.
 7. **World entity drift (volume scope).** This volume's issues name factions / characters / locations that don't exist in the linked world (suggest renaming to a real entity).
 8. **Length-vs-weight mismatch.** Issue count target says 8 but the synopsis is summarizable in 3 beats, or vice versa. (Cross-volume pass already checks the whole arc — only flag here when it's obvious from this volume in isolation.)
+9. **Volume-internal shape adherence.** If a Vonnegut shape was selected (see "Story shape" above — skip this check if none was selected), this volume's beats must trace the segment of the curve described under "This volume's expected emotional placement." Flag a volume whose final issue lands at a fortune level that contradicts the curve placement (e.g. a "rags-to-riches" volume 2 of 3 ending lower than it opened, or a "man-in-hole" midpoint volume that never reaches the nadir).
 
 DO NOT flag problems that are properly cross-volume in nature (a character introduced in volume 1 paying off in volume 4 — that's the arc verify's job, not yours). Stay inside this volume's walls; the only outside-the-walls checks allowed are #5 (boundary continuity with the immediate neighbors shown above).
 

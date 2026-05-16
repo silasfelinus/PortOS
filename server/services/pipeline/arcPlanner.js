@@ -24,7 +24,16 @@ import { ServerError } from '../../lib/errorHandler.js';
 import { getSeries, updateSeries } from './series.js';
 import { listIssues } from './issues.js';
 import { getSeason } from './seasons.js';
-import { sanitizeArc, sanitizeSeasonList, sanitizeSeason, buildSeason, ARC_ROLES as ARC_ROLE_LIST } from '../../lib/storyArc.js';
+import {
+  sanitizeArc,
+  sanitizeSeasonList,
+  sanitizeSeason,
+  buildSeason,
+  ARC_ROLES as ARC_ROLE_LIST,
+  ARC_SHAPE_IDS,
+  renderArcShapeGuidance,
+  renderArcShapePositionSummary,
+} from '../../lib/storyArc.js';
 import { recommendStructure, describeStructure } from '../../lib/seasonStructure.js';
 import { LENGTH_PROFILE_NAMES, DEFAULT_LENGTH_PROFILE } from '../../lib/issueLength.js';
 import { getUniverse } from '../universeBuilder.js';
@@ -118,9 +127,12 @@ export const compareIssuesByPosition = (a, b) =>
 // Series + world + arc fields shared by every arc-level prompt context.
 // Pulled out so verify-arc and verify-volume don't drift on what counts as
 // "the bible block" — both passes must see the same series identity.
+const SHAPE_GUIDANCE_NONE = '(no Vonnegut story shape selected — the verifier should not flag shape adherence)';
+
 async function buildArcBaseContext(series, preloadedWorld) {
   const arc = series.arc || {};
   const world = await resolveWorldContext(series, preloadedWorld);
+  const shapeGuidance = renderArcShapeGuidance(arc.shape) || SHAPE_GUIDANCE_NONE;
   return {
     series: {
       name: series.name,
@@ -133,7 +145,9 @@ async function buildArcBaseContext(series, preloadedWorld) {
       summary: arc.summary || '',
       protagonistArc: arc.protagonistArc || '',
       themesCsv: Array.isArray(arc.themes) ? arc.themes.join(', ') : '',
+      shape: arc.shape || '',
     },
+    shapeGuidance,
   };
 }
 
@@ -142,8 +156,17 @@ async function buildArcBaseContext(series, preloadedWorld) {
 // defaulting to 3 seasons regardless of total count.
 async function buildArcOverviewContext(series, preloadedWorld) {
   const structure = recommendStructure(series.issueCountTarget);
-  const world = await resolveWorldContext(series, preloadedWorld);
-  const canon = await getSeriesCanon(series);
+  const [world, canon] = await Promise.all([
+    resolveWorldContext(series, preloadedWorld),
+    getSeriesCanon(series),
+  ]);
+  const arc = series.arc || {};
+  // Two-mode prompt: when arc.shape is set the prompt's `{{#pickedShapeId}}`
+  // section fires (honor mode); when it's empty the `{{^pickedShapeId}}`
+  // inverted section fires (propose mode). promptTemplate.js treats `''` as
+  // falsy per Mustache spec, so the empty string is the right sentinel.
+  const shapeGuidance = renderArcShapeGuidance(arc.shape)
+    || `(no shape selected — you must propose one of: ${ARC_SHAPE_IDS.join(', ')}. Return your pick as the JSON field "shape". Choose the shape that best matches the premise's emotional trajectory.)`;
   return {
     series: {
       name: series.name,
@@ -158,6 +181,9 @@ async function buildArcOverviewContext(series, preloadedWorld) {
       : '(no target episode count set — propose 1–3 volumes based on premise weight)',
     recommendedSeasonCount: structure ? structure.seasons : '',
     recommendedPerSeasonJson: structure ? JSON.stringify(structure.perSeason) : '[]',
+    shapeGuidance,
+    pickedShapeId: arc.shape || '',
+    allowedShapeIdsCsv: ARC_SHAPE_IDS.join(', '),
     existingCharactersJson: JSON.stringify(canon.characters, null, 2),
     existingSettingsJson: JSON.stringify(canon.settings, null, 2),
     existingObjectsJson: JSON.stringify(canon.objects, null, 2),
@@ -202,11 +228,15 @@ export async function generateArcOverview(seriesId, options = {}) {
   // Build the canonical arc + seasons shape from the LLM payload. We send
   // both back to the caller so the route can persist in one updateSeries
   // call (or hand the user a preview before committing).
+  // `shape` is the user's Vonnegut pick — the overview prompt doesn't ask
+  // the LLM for it, so without this fallback a regenerate would wipe the
+  // pick. Mirrors `resolveVerifyIssues` further down.
   const arc = sanitizeArc({
     logline: content?.logline || '',
     summary: content?.summary || '',
     themes: content?.themes,
     protagonistArc: content?.protagonistArc || '',
+    shape: content?.shape ?? series.arc?.shape ?? null,
     status: 'draft',
   });
   const seasons = shapeSeasonOutlines(content?.seasonOutlines);
@@ -231,8 +261,14 @@ async function buildSeasonEpisodesContext(series, season, priorSeasons, priorIss
   const priorSeasonsContext = priorSeasons.length === 0
     ? '(this is the first season — no prior context)'
     : priorSeasons.map((s) => renderPriorSeason(s, priorIssues)).join('\n\n');
-  const world = await resolveWorldContext(series, preloadedWorld);
-  const canon = await getSeriesCanon(series);
+  const [world, canon] = await Promise.all([
+    resolveWorldContext(series, preloadedWorld),
+    getSeriesCanon(series),
+  ]);
+  const totalSeasons = (series.seasons || []).length || 1;
+  const arcGuidance = renderArcShapeGuidance(arc.shape) || SHAPE_GUIDANCE_NONE;
+  const shapePosition = renderArcShapePositionSummary(arc.shape, season.number, totalSeasons)
+    || '(no story shape selected — pace episode beats by arcRole only)';
   return {
     series: {
       name: series.name,
@@ -245,7 +281,10 @@ async function buildSeasonEpisodesContext(series, season, priorSeasons, priorIss
       logline: arc.logline || '',
       protagonistArc: arc.protagonistArc || '',
       themesCsv,
+      shape: arc.shape || '',
     },
+    shapeGuidance: arcGuidance,
+    shapePosition,
     priorSeasonsContext,
     season: {
       number: season.number,
@@ -517,6 +556,12 @@ async function buildVolumeVerifyContext(series, season, preloadedWorld) {
     .filter((iss) => iss.seasonId === season.id)
     .sort(compareIssuesByPosition)
     .map(renderVolumeIssue);
+  // Volume-specific curve placement layered on top of base's arc-wide
+  // shapeGuidance so the verifier can flag "this volume inverts the expected
+  // fortune at its position."
+  const totalSeasons = (series.seasons || []).length || 1;
+  const volumeShapePosition = renderArcShapePositionSummary(series.arc?.shape, season.number, totalSeasons)
+    || '(no story shape selected — do not flag shape adherence for this volume)';
   return {
     ...base,
     volume: {
@@ -528,6 +573,7 @@ async function buildVolumeVerifyContext(series, season, preloadedWorld) {
       episodeCountTarget: season.episodeCountTarget ?? '',
       themesCsv: Array.isArray(season.themes) ? season.themes.join(', ') : '',
     },
+    volumeShapePosition,
     neighborsJson: JSON.stringify(buildNeighborVolumes(series.seasons, season.id), null, 2),
     volumeIssuesJson: JSON.stringify(volumeIssues, null, 2),
   };
