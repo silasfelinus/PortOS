@@ -32,8 +32,18 @@ import { insertIssueWithId, updateIssue, getIssue } from '../pipeline/issues.js'
 import { insertUniverseWithId, updateUniverse, getUniverse } from '../universeBuilder.js';
 import { findOrCreateCollectionByName, addItem as addCollectionItem, ERR_DUPLICATE as COLLECTION_ERR_DUPLICATE } from '../mediaCollections.js';
 import { adoptImportedSubscription, withReexportSuppressed } from './subscriptions.js';
+import { getInstanceId } from '../instances.js';
 
 const isStr = (v) => typeof v === 'string';
+
+const UNKNOWN_INSTANCE_ID = 'unknown';
+
+function isSelfAuthored(senderInstanceId, localInstanceId) {
+  return !!localInstanceId
+    && !!senderInstanceId
+    && senderInstanceId !== UNKNOWN_INSTANCE_ID
+    && senderInstanceId === localInstanceId;
+}
 
 export const sharingEvents = new EventEmitter();
 
@@ -328,6 +338,7 @@ async function applyInbox(bucket, manifest, manifestFilename, records) {
     subscription: sub || null,
     source: manifest.source,
     sourceBio: manifest.sourceBio,
+    senderInstanceId: manifest.senderInstanceId || null,
     producedByVersion: manifest.producedByVersion || null,
     sharingSchemaVersion: manifest.sharingSchemaVersion ?? manifest.schemaVersion ?? null,
     createdAt: manifest.createdAt,
@@ -369,6 +380,14 @@ export async function processManifest(bucketId, manifestFilename) {
   // across updates and a fresh manifestId means the contents changed.
   if (hasBeenProcessed(cursor, manifestFilename, manifest.id)) {
     return { skipped: true, reason: 'already-processed' };
+  }
+  // Re-importing our own shares would falsely surface them in the inbox
+  // (or no-op merge into their own LWW state). Mark processed so the
+  // watcher doesn't replay on every file event.
+  const localInstanceId = await getInstanceId().catch(() => null);
+  if (isSelfAuthored(manifest.senderInstanceId, localInstanceId)) {
+    await markProcessed(bucketId, manifestFilename, manifest.id);
+    return { skipped: true, reason: 'self-authored' };
   }
   // Read schemaVersion (also accepts the descriptive alias sharingSchemaVersion).
   const remoteVersion = Number.isFinite(manifest.sharingSchemaVersion)
@@ -417,9 +436,57 @@ export async function processManifest(bucketId, manifestFilename) {
   return { processed: true, manifest, outcome };
 }
 
+/**
+ * Drop any inbox items the local instance itself produced. Pre-fix releases
+ * could surface self-shares as pending imports; this prunes those on the
+ * next backlog pass. Items predating the senderInstanceId field are
+ * backfilled by reading the underlying manifest, so the pruning works for
+ * legacy inbox state too.
+ */
+async function pruneSelfAuthoredInbox(bucket, localInstanceId) {
+  if (!localInstanceId) return { pruned: 0 };
+  const inbox = await readInbox(bucket.id);
+  const items = Array.isArray(inbox.items) ? inbox.items : [];
+  if (items.length === 0) return { pruned: 0 };
+
+  let changed = false;
+  const kept = [];
+  for (const it of items) {
+    let sender = it.senderInstanceId || null;
+    let backfilled = it;
+    if (!sender) {
+      const m = await readManifest(bucket.path, it.manifestFilename).catch(() => null);
+      sender = m?.senderInstanceId || null;
+      if (sender) {
+        backfilled = { ...it, senderInstanceId: sender };
+        changed = true;
+      }
+    }
+    if (isSelfAuthored(sender, localInstanceId)) {
+      changed = true;
+      continue;
+    }
+    kept.push(backfilled);
+  }
+  const pruned = items.length - kept.length;
+  if (changed) {
+    inbox.items = kept;
+    await writeInbox(bucket.id, inbox);
+    if (pruned > 0) {
+      sharingEvents.emit('inbox-updated', { bucketId: bucket.id });
+      console.log(`🧹 sharing: bucket=${bucket.name} pruned ${pruned} self-authored inbox item(s)`);
+    }
+  }
+  return { pruned };
+}
+
 /** On startup or registration, scan the manifests dir for unprocessed entries. */
 export async function processBacklog(bucketId) {
   const bucket = await getBucket(bucketId);
+  const localInstanceId = await getInstanceId().catch(() => null);
+  await pruneSelfAuthoredInbox(bucket, localInstanceId).catch((err) => {
+    console.log(`⚠️ sharing.importer: pruneSelfAuthoredInbox failed: ${err.message}`);
+  });
   const manifestsDir = join(bucket.path, 'manifests');
   if (!existsSync(manifestsDir)) return { processed: 0 };
   const filenames = (await readdir(manifestsDir).catch(() => []))

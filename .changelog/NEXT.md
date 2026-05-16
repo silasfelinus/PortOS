@@ -41,6 +41,21 @@
 
 ## Fixed
 
+- **Sharing inbox no longer prompts you to import your own shares.** When the
+  local PortOS published a manifest into a share bucket (e.g. a Google Drive
+  folder it also reads from), the importer treated the round-tripped file as
+  an incoming share from "@you" and queued it as a pending import. The fix
+  filters self-authored manifests at import time by comparing
+  `manifest.senderInstanceId` against `getInstanceId()` and marks them
+  processed so the watcher won't replay them. A backfill prunes any
+  pre-existing self-authored items already in `data/sharing/inbox/*.json`
+  on the next `processBacklog` pass (which runs on server startup per
+  bucket): missing `senderInstanceId` fields are filled from the manifest
+  file on disk, then any item matching the local instance id is dropped
+  with an `inbox-updated` socket event so the UI clears immediately.
+  Touches: `server/services/sharing/importer.js`,
+  `server/services/sharing/integration.test.js`.
+
 - **`adoptImportedSubscription` no longer mislabels deliberately-subscribed
   records as imported.** On the update branch, `sub.adoptedFromImport ?? true`
   flipped `undefined` (a deliberate `subscribe()` result) to `true` the next

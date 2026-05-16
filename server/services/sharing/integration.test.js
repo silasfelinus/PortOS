@@ -53,6 +53,19 @@ const importer = await import('./importer.js');
 const series = await import('../pipeline/series.js');
 const issues = await import('../pipeline/issues.js');
 
+// Rewrite a manifest's senderInstanceId on disk so the importer sees it as
+// coming from a remote peer. The mocked `getInstanceId` returns the same
+// id for both producer and consumer in these tests, but in production
+// instance A publishes and instance B imports — `processManifest` now
+// short-circuits self-authored manifests, so the round-trip tests must
+// flip the sender to simulate a peer.
+function simulateRemoteSender(bucketPath, filename, peerId = 'remote-peer-id') {
+  const p = join(bucketPath, 'manifests', filename);
+  const m = JSON.parse(readFileSync(p, 'utf-8'));
+  m.senderInstanceId = peerId;
+  writeFileSync(p, JSON.stringify(m, null, 2));
+}
+
 describe('sharing round-trip', () => {
   beforeEach(() => {
     // Wipe and re-seed the temp data dir + a fake asset for each test.
@@ -92,6 +105,7 @@ describe('sharing round-trip', () => {
 
     // Process as inbox (the bucket mode is 'inbox'). The manifest should
     // queue, not auto-apply.
+    simulateRemoteSender(tempBucket, exp.filename);
     const result = await importer.processManifest(bucket.id, exp.filename);
     expect(result.processed).toBe(true);
     expect(result.outcome.mode).toBe('inbox');
@@ -137,6 +151,7 @@ describe('sharing round-trip', () => {
 
     // Drop the local series, then process — auto-merge inserts under preserved id.
     await series.deleteSeries(s.id);
+    simulateRemoteSender(tempBucket, exp.filename);
     const r1 = await importer.processManifest(bucket.id, exp.filename);
     expect(r1.outcome.mode).toBe('auto-merge');
     expect(r1.outcome.applied).toBeGreaterThan(0);
@@ -162,6 +177,7 @@ describe('sharing round-trip', () => {
     writeFileSync(statePath, JSON.stringify(state, null, 2));
 
     // Process the new manifest — should LWW-override.
+    simulateRemoteSender(tempBucket, exp2.filename);
     const r2 = await importer.processManifest(bucket.id, exp2.filename);
     expect(r2.outcome.mode).toBe('auto-merge');
     expect(r2.outcome.overridden).toHaveLength(1);
@@ -176,6 +192,7 @@ describe('sharing round-trip', () => {
     const s = await series.createSeries({ name: 'X' });
     const exp = await exporter.exportSeries(s.id, bucket.id);
     await series.deleteSeries(s.id);
+    simulateRemoteSender(tempBucket, exp.filename);
 
     const r1 = await importer.processManifest(bucket.id, exp.filename);
     expect(r1.processed).toBe(true);
@@ -219,6 +236,7 @@ describe('sharing round-trip', () => {
     await universeBuilder.deleteUniverse(u.id);
     expect((await mediaCollections.listCollections()).find((c) => c.universeId === u.id)).toBeUndefined();
 
+    simulateRemoteSender(tempBucket, manifestFile);
     const r = await importer.processManifest(bucket.id, manifestFile);
     expect(r.processed).toBe(true);
     expect(r.outcome.collectionItemsAdded).toBe(2);
@@ -253,6 +271,7 @@ describe('sharing round-trip', () => {
     await mediaCollections.deleteCollection(collection.id);
     await universeBuilder.deleteUniverse(u.id);
 
+    simulateRemoteSender(tempBucket, exp.filename);
     const r = await importer.processManifest(bucket.id, exp.filename);
     expect(r.processed).toBe(true);
     expect(r.outcome.collectionItemsAdded).toBe(1);
@@ -284,6 +303,7 @@ describe('sharing round-trip', () => {
     await mediaCollections.deleteCollection(collection.id);
     await universeBuilder.deleteUniverse(u.id);
 
+    simulateRemoteSender(tempBucket, exp.filename);
     const first = await importer.processManifest(bucket.id, exp.filename);
     expect(first.pending).toBe(true);
     expect(first.outcome.pendingAssets).toEqual([{ kind: 'image', ref: 'late.png' }]);
@@ -371,6 +391,7 @@ describe('sharing round-trip', () => {
     await universeBuilder.deleteUniverse(u.id);
     expect(await listSubscriptions({ recordKind: 'universe', recordId: u.id })).toEqual([]);
 
+    simulateRemoteSender(tempBucket, exp.filename);
     const result = await importer.processManifest(bucket.id, exp.filename);
     expect(result.processed).toBe(true);
     expect(result.outcome.adoptedSubscription).toMatchObject({
@@ -391,6 +412,57 @@ describe('sharing round-trip', () => {
       lastManifestId: exp.manifestId,
     });
     expect(subs[0].lastExportedAt).toBe(null);
+  });
+
+  it('skips self-authored manifests on import and prunes pre-existing self-authored inbox items', async () => {
+    const { sharingEvents } = await import('./importer.js');
+    const bucket = await buckets.createBucket({ name: 'SelfBucket', path: tempBucket, mode: 'inbox' });
+
+    // Author + export a series locally — the manifest is dropped into our own bucket.
+    const s = await series.createSeries({ name: 'Mine', logline: 'Local-only' });
+    const exp = await exporter.exportSeries(s.id, bucket.id);
+    expect(exp.manifestId).toBeTruthy();
+
+    // The watcher would now pick the manifest up. Process it manually and
+    // verify it never enters the inbox — `senderInstanceId === localInstanceId`.
+    const res = await importer.processManifest(bucket.id, exp.filename);
+    expect(res.skipped).toBe(true);
+    expect(res.reason).toBe('self-authored');
+    expect(await importer.listInbox(bucket.id)).toEqual([]);
+
+    // Second pass is the cursor's already-processed branch.
+    const replay = await importer.processManifest(bucket.id, exp.filename);
+    expect(replay.skipped).toBe(true);
+    expect(replay.reason).toBe('already-processed');
+
+    // Pre-fix bug: simulate a stale inbox entry from before the filter existed
+    // (no senderInstanceId field). processBacklog should backfill from the
+    // manifest file on disk and prune it.
+    const fs = await import('fs');
+    const inboxFile = join(tempData, 'sharing', 'inbox', `${bucket.id}.json`);
+    mkdirSync(join(tempData, 'sharing', 'inbox'), { recursive: true });
+    fs.writeFileSync(inboxFile, JSON.stringify({ items: [{
+      manifestId: exp.manifestId,
+      manifestFilename: exp.filename,
+      kind: 'series',
+      subscription: null,
+      source: 'antic',
+      sourceBio: null,
+      createdAt: new Date().toISOString(),
+      receivedAt: new Date().toISOString(),
+      recordIds: [s.id],
+      assetCount: 0,
+    }] }));
+
+    const updates = [];
+    const onUpdate = (p) => updates.push(p);
+    sharingEvents.on('inbox-updated', onUpdate);
+    await importer.processBacklog(bucket.id);
+    sharingEvents.off('inbox-updated', onUpdate);
+
+    expect(await importer.listInbox(bucket.id)).toEqual([]);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({ bucketId: bucket.id });
   });
 
   it('refuses a manifest with a sharingSchemaVersion newer than local + emits incompatible event', async () => {
