@@ -35,6 +35,14 @@ import {
   readPipelineImageSettings,
   pipelineImageCfgToRenderOpts,
 } from '../lib/pipelineImageDefaults';
+import { joinInfluenceList } from '../lib/joinInfluenceList';
+
+const universeStylePreset = (universe) => {
+  const embrace = joinInfluenceList(universe?.influences?.embrace);
+  const avoid = joinInfluenceList(universe?.influences?.avoid);
+  if (!embrace && !avoid) return null;
+  return { prompt: embrace, negativePrompt: avoid };
+};
 
 const KINDS = [
   {
@@ -200,7 +208,7 @@ export default function UniverseCanon() {
     const styled = composeStyledPrompt(
       `${entry.name}: ${description}`,
       baseOpts.negativePrompt || '',
-      universe ? { prompt: universe.stylePrompt, negativePrompt: universe.negativePrompt } : null,
+      universe ? universeStylePreset(universe) : null,
     );
     const queued = await generateImage({
       ...baseOpts,
@@ -225,7 +233,7 @@ export default function UniverseCanon() {
     const styled = composeStyledPrompt(
       plate.prompt,
       plate.negativePrompt,
-      universe ? { prompt: universe.stylePrompt, negativePrompt: universe.negativePrompt } : null,
+      universe ? universeStylePreset(universe) : null,
     );
     const queued = await generateImage({
       ...baseOpts,

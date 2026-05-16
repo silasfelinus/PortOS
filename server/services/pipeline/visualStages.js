@@ -30,7 +30,7 @@ import { getSeries } from './series.js';
 import { getIssue, updateStage, VISUAL_STAGE_IDS } from './issues.js';
 import { PATHS } from '../../lib/fileUtils.js';
 import { buildComicPagesOwner, buildStoryboardsShotOwner } from './owners.js';
-import { getUniverse } from '../universeBuilder.js';
+import { getUniverse, joinInfluenceList } from '../universeBuilder.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import {
   buildScenePrompt, buildSettingByKey, matchSceneSetting,
@@ -57,7 +57,9 @@ const composeExtraStyle = (series, issue, stageId, callerExtraStyle = '') =>
 
 const applyWorldStyle = (prompt, world) => {
   if (!world) return prompt;
-  return composeStyledPrompt(prompt, '', { prompt: world.stylePrompt, negativePrompt: '' }).prompt;
+  const stylePrompt = joinInfluenceList(world.influences?.embrace);
+  if (!stylePrompt) return prompt;
+  return composeStyledPrompt(prompt, '', { prompt: stylePrompt, negativePrompt: '' }).prompt;
 };
 
 // Resolution order for the image-gen mode on a pipeline visual stage:
@@ -152,7 +154,7 @@ const enqueueImageJob = ({ prompt, world, settings, options, mode, owner, logLin
   // effect even when the caller supplies their own additions. Deduplicated
   // by token so a user repeating a world negative doesn't double-weight it.
   const userNeg = (options.negativePrompt || '').trim();
-  const worldNeg = (world?.negativePrompt || '').trim();
+  const worldNeg = joinInfluenceList(world?.influences?.avoid);
   const negativeTokens = [userNeg, worldNeg]
     .flatMap((s) => s.split(',').map((t) => t.trim()).filter(Boolean));
   const negativePrompt = [...new Set(negativeTokens)].join(', ') || undefined;

@@ -6,7 +6,7 @@
  *   GET    /api/universe-builder/:id                    → Universe
  *   PATCH  /api/universe-builder/:id                    → Universe
  *   DELETE /api/universe-builder/:id                    → { id }
- *   POST   /api/universe-builder/expand                 → { stylePrompt, negativePrompt, categories, compositeSheets, llm }
+ *   POST   /api/universe-builder/expand                 → { influences, categories, compositeSheets, llm }
  *   POST   /api/universe-builder/:id/render             → { runId, collectionId, jobIds, promptCount }
  *   GET    /api/universe-builder/:id/runs               → Run[]
  */
@@ -87,11 +87,20 @@ const influencesSchema = z.object({
   avoid: z.array(influenceEntrySchema).max(svc.INFLUENCES_PER_LIST_MAX).optional().default([]),
 }).strict();
 
+// Legacy prose prompts: the v2 universe template carried `stylePrompt` /
+// `negativePrompt` as comma-separated prose strings; v3 collapses them into
+// the chip-based `influences` lists. Accepting them here (as optional) lets
+// a stale client (or an importer of a v2 share-bucket payload) hand us the
+// legacy shape — the service-layer sanitizer splits + merges the tokens into
+// influences. New callers should send `influences` directly.
+const legacyStylePromptField = z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional();
+const legacyNegativePromptField = z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional();
+
 const createSchema = z.object({
   name: z.string().trim().min(1).max(svc.NAME_MAX_LENGTH),
   starterPrompt: z.string().trim().max(svc.STARTER_PROMPT_MAX).optional().default(''),
-  stylePrompt: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional().default(''),
-  negativePrompt: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional().default(''),
+  stylePrompt: legacyStylePromptField,
+  negativePrompt: legacyNegativePromptField,
   logline: z.string().trim().max(svc.LOGLINE_MAX).optional().default(''),
   premise: z.string().trim().max(svc.PREMISE_MAX).optional().default(''),
   styleNotes: z.string().trim().max(svc.STYLE_NOTES_MAX).optional().default(''),
@@ -117,8 +126,10 @@ const originField = z.record(z.unknown()).nullable().optional();
 const patchSchema = z.object({
   name: z.string().trim().min(1).max(svc.NAME_MAX_LENGTH).optional(),
   starterPrompt: z.string().trim().max(svc.STARTER_PROMPT_MAX).optional(),
-  stylePrompt: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional(),
-  negativePrompt: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional(),
+  // Legacy prose prompts — see legacy*Field comment above. Tolerated on PATCH
+  // so a stale client tab can still save while the new chip-based UI lands.
+  stylePrompt: legacyStylePromptField,
+  negativePrompt: legacyNegativePromptField,
   logline: z.string().trim().max(svc.LOGLINE_MAX).optional(),
   premise: z.string().trim().max(svc.PREMISE_MAX).optional(),
   styleNotes: z.string().trim().max(svc.STYLE_NOTES_MAX).optional(),
@@ -157,8 +168,6 @@ const expandSchema = z.object({
   logline: z.string().trim().max(svc.LOGLINE_MAX).optional(),
   premise: z.string().trim().max(svc.PREMISE_MAX).optional(),
   styleNotes: z.string().trim().max(svc.STYLE_NOTES_MAX).optional(),
-  stylePrompt: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional(),
-  negativePrompt: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional(),
   locked: lockedSchema.optional(),
   providerId: z.string().trim().max(80).optional(),
   model: z.string().trim().max(200).optional(),
@@ -173,16 +182,12 @@ const generateVariationsSchema = z.object({
   logline: z.string().trim().max(svc.LOGLINE_MAX).optional().default(''),
   premise: z.string().trim().max(svc.PREMISE_MAX).optional().default(''),
   styleNotes: z.string().trim().max(svc.STYLE_NOTES_MAX).optional().default(''),
-  stylePrompt: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional().default(''),
-  negativePrompt: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional().default(''),
   providerId: z.string().trim().max(80).optional(),
   model: z.string().trim().max(200).optional(),
 });
 
 const refinePromptsSchema = z.object({
   starterPrompt: z.string().trim().min(1).max(svc.STARTER_PROMPT_MAX),
-  stylePrompt: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional().default(''),
-  negativePrompt: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional().default(''),
   // Bible context: passed in so the refiner sees the full seed, refines them
   // alongside the prompts, and stays consistent with the universe's narrative.
   logline: z.string().trim().max(svc.LOGLINE_MAX).optional().default(''),

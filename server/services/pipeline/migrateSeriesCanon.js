@@ -45,8 +45,6 @@ export async function migrateSeriesCanon({ dryRun = false, log = console.log } =
         const newUniverse = await createUniverse({
           name: `${s.name} (auto-migrated)`,
           starterPrompt: s.logline || s.premise?.slice(0, 500) || '',
-          stylePrompt: '',
-          negativePrompt: '',
         });
         await updateSeries(s.id, { universeId: newUniverse.id });
         universeId = newUniverse.id;

@@ -5,6 +5,7 @@
 import { getSeries, updateSeries } from './series.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { runPromptRefine } from './refineHelpers.js';
+import { joinInfluenceList } from '../universeBuilder.js';
 
 const peerForPrompt = (entry) => ({
   name: entry.name,
@@ -46,8 +47,9 @@ export async function refineCharacterDescription(seriesId, entryId, options = {}
   const peers = list.filter((_, i) => i !== idx);
 
   const universe = null; // orphan-series path only — universeId branch returns early above
+  const universeAesthetic = joinInfluenceList(universe?.influences?.embrace);
   const styleBits = [
-    universe?.stylePrompt ? `Universe aesthetic: ${universe.stylePrompt}` : null,
+    universeAesthetic ? `Universe aesthetic: ${universeAesthetic}` : null,
     series.styleNotes ? `Series notes: ${series.styleNotes}` : null,
   ].filter(Boolean);
   const styleClause = styleBits.length
