@@ -433,10 +433,11 @@ export async function spawnAgentForTask(task) {
 
   const isTui = provider.type === 'tui';
 
-  // Build the agent prompt (includes worktree and JIRA context if applicable).
-  // TUI providers (Claude Code, etc.) read CLAUDE.md natively at session boot,
-  // so don't paste it into the prompt — saves tokens and avoids duplication.
-  const prompt = await buildAgentPrompt(task, config, workspacePath, worktreeInfo, isTruthyMeta, { skipClaudeMd: isTui, tui: isTui });
+  // Build the agent prompt. `provider.type` drives the light-vs-full split
+  // inside buildAgentPrompt — see its doc comment.
+  const prompt = await buildAgentPrompt(task, config, workspacePath, worktreeInfo, isTruthyMeta, {
+    providerType: provider.type
+  });
 
   // Create agent directory
   const agentDir = join(AGENTS_DIR, agentId);

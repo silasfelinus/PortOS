@@ -144,6 +144,17 @@ const SHIPPED_PROMPT_OLD_MD5 = {
   'pipeline-extract-scenes.md':  '59fa5ee305ce53d91eb15224d8b546d3',
   // INT/EXT + time-of-day additions to the places extractor (migration 007).
   'writers-room-places.md':      '7f1f80eb63d67a21161994cde115045e',
+  // CoS agent prompt: drop obsolete "# Chief of Staff Agent Briefing" header
+  // and "You are an autonomous agent…" preamble (migration 009). Every
+  // historical shipped hash is auto-updatable to the new sample.
+  'cos-agent-briefing.md': [
+    '699d053875472df455258724a0162bd5',
+    '181b26838e526427173e4dccfc884d01',
+    '3e1ca7f7b14b799f89a193c568003624',
+    'af73fd50d6f29d561772474c12346e53',
+    '9bcd3a0167dd4aed7cfff7f404494dfb',
+    'd761133753da290a0c02eca1c87709e4',
+  ],
 };
 const SHIPPED_PROMPT_NEW_MD5 = {
   'pipeline-idea-expansion.md': '1ee44cf95851ff8debf18729ebcd40b4',
@@ -157,6 +168,7 @@ const SHIPPED_PROMPT_NEW_MD5 = {
   'pipeline-arc-resolve.md':    'a8677bbe1eb38f871fb152a5b0fec7c6',
   'pipeline-extract-scenes.md': 'c51fb208568d0d903eb43b437478b0ba',
   'writers-room-places.md':     '24a33628cc94d80fa5ca60831d973daf',
+  'cos-agent-briefing.md':      'dccb392a43cbd3dac900fee12c31619a',
 };
 const SHIPPED_PROMPT_FILES = Object.keys(SHIPPED_PROMPT_OLD_MD5);
 

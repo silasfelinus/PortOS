@@ -1049,6 +1049,24 @@
 
 ## Changed
 
+- **CoS agent prompts: light vs full context split.** Codex / Claude Code /
+  Gemini agents (`provider.type` ∈ {`tui`, `cli`}) now receive a minimal
+  runtime-built prompt — just task description, attached context, screenshot
+  paths, worktree/JIRA/pipeline coordinates, and the completion-workflow
+  contract. Memory dumps, CLAUDE.md re-paste, digital twin, tools summary,
+  `.planning/` snippets, auto-matched skill templates, and compaction
+  warnings are deliberately omitted because those agents already have
+  filesystem tools and native CLAUDE.md loading. API providers (LM Studio,
+  raw OpenAI/Anthropic) keep the existing full-context prompt. Also drops
+  the obsolete "# Chief of Staff Agent Briefing" header and "You are an
+  autonomous agent…" role-play preamble from the shipped template. An
+  example end-to-end TUI prompt now lands at ~1.7 KB instead of multiple KB
+  of kitchen-sink context. New `buildLightContextPrompt()` in
+  `server/services/agentPromptBuilder.js` is unit-tested with 16 cases
+  covering routing + section assembly. Existing installs auto-migrate the
+  shipped template via `data/migrations/009-simplify-cos-agent-briefing.js`
+  if untouched; customized templates get a skip-with-warning.
+
 - **DRY: consolidate duplicate `isStr`/`trimTo` helpers.** Six server modules
   (`server/services/pipeline/issues.js`, `server/services/sharing/exporter.js`,
   `server/services/sharing/manifest.js`, `server/services/sharing/importer.js`,

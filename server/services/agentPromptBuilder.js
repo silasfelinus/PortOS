@@ -145,23 +145,46 @@ ${hints.map(h => `- ${h}`).join('\n')}
 }
 
 /**
- * Build the full agent prompt.
+ * Provider types that get the **light** prompt: agentic CLIs with native
+ * filesystem tools and CLAUDE.md loading (Claude Code, Codex, Gemini —
+ * whether running interactively as `tui` or one-shot as `cli`). Everything
+ * else (`api`: LM Studio, raw OpenAI/Anthropic) needs the full pasted-in
+ * context because it has no native filesystem access.
+ */
+const LIGHT_CONTEXT_PROVIDER_TYPES = new Set(['tui', 'cli']);
+
+/**
+ * Build the agent prompt.
+ *
+ * Two context modes, selected by `options.providerType`:
+ *
+ * - **Light** (`tui` / `cli`): minimal prompt — task description, attached
+ *   context, screenshot paths, worktree/jira/pipeline coordinates, and the
+ *   completion-workflow contract. Memory, CLAUDE.md, digital twin, tools
+ *   summary, planning context, skill templates, and compaction warnings are
+ *   deliberately omitted because the agent can fetch them itself.
+ * - **Full** (`api`): kitchen-sink prompt with memory + CLAUDE.md + digital
+ *   twin + tools + skills + planning + git hygiene. The leading
+ *   "# Chief of Staff Agent Briefing" header is dropped from both modes.
+ *
  * @param {Object} task - Task object
  * @param {Object} config - CoS configuration
  * @param {string} workspaceDir - Working directory (may be a worktree)
  * @param {Object|null} worktreeInfo - Worktree details if using a worktree
  * @param {Function} isTruthyMetaFn - isTruthyMeta function (passed to avoid circular dep)
+ * @param {Object} options
+ * @param {string} [options.providerType='api'] - `'tui' | 'cli' | 'api'`
  */
 export async function buildAgentPrompt(task, config, workspaceDir, worktreeInfo = null, isTruthyMetaFn = (v) => v === true || v === 'true', options = {}) {
-  // TUI agents run inside an interactive Claude Code shell that already reads
-  // CLAUDE.md natively at session start — re-pasting it into the prompt just
-  // wastes tokens and duplicates context. TUI agents also own their
-  // commit/push/PR workflow directly via slashdo commands (Claude Code TUI
-  // has /simplify, /do:pr, etc. available), so the worktree/simplify
-  // sections that assume system-side post-exit cleanup are replaced with a
-  // single TUI workflow block.
-  const skipClaudeMd = options.skipClaudeMd === true;
-  const isTui = options.tui === true;
+  const providerType = options.providerType || 'api';
+  const isTui = providerType === 'tui';
+
+  if (LIGHT_CONTEXT_PROVIDER_TYPES.has(providerType)) {
+    return buildLightContextPrompt(task, workspaceDir, worktreeInfo, isTruthyMetaFn, { isTui });
+  }
+
+  // Full path: API providers don't read CLAUDE.md natively, so always include it.
+  const skipClaudeMd = false;
   // Fetch independent context sections in parallel
   const [memorySection, claudeMdSection, digitalTwinSection] = await Promise.all([
     getMemorySection(task, { maxTokens: config.memory?.maxContextTokens || 2000 })
@@ -392,14 +415,11 @@ ${task.metadata.jiraBranch ? 'Commit your changes to this branch. Do NOT switch 
   }
 
   // Fallback to built-in template
-  return `# Chief of Staff Agent Briefing
-
-${claudeMdSection || ''}
+  return `${claudeMdSection || ''}
 
 ${memorySection || ''}
 
 ## Task Assignment
-You are an autonomous agent working on behalf of the Chief of Staff.
 
 ### Task Details
 - **ID**: ${task.id}
@@ -452,6 +472,210 @@ ${worktreeInfo ? `- **Your PR should contain only your task's commits.** If you 
 ${task.metadata?.app ? `You are working in the target app directory: \`${workspaceDir}\`. All code changes, research, plans, and docs for this task belong in this directory — NOT in the PortOS repo.` : 'You are working in the project directory.'} Use the available tools to explore, modify, and test code.
 
 Begin working on the task now.`;
+}
+
+/**
+ * Build the **light-context** prompt for agents that have native filesystem
+ * tools and CLAUDE.md loading (Claude Code, Codex, Gemini — `tui` or `cli`).
+ *
+ * The agent already has direct access to the project, so we don't paste in:
+ *   memory dumps, CLAUDE.md contents, digital twin, tools summary,
+ *   `.planning/` snippets, auto-matched skill templates, or compaction
+ *   warnings. We just hand it the task, any user-attached context/screenshots,
+ *   and the PortOS-specific contract bits it can't infer (worktree branch,
+ *   JIRA ticket, pipeline predecessors, completion-sentinel protocol,
+ *   review-loop follow-up procedure).
+ *
+ * Falls back gracefully when worktree/jira/pipeline metadata is absent — only
+ * the present sections render.
+ */
+export function buildLightContextPrompt(task, workspaceDir, worktreeInfo, isTruthyMetaFn, { isTui = true } = {}) {
+  const willOpenPR = isTruthyMetaFn(task.metadata?.openPR);
+  const willReviewLoop = isTruthyMetaFn(task.metadata?.reviewLoop);
+  const simplifyEnabled = isTruthyMetaFn(task.metadata?.simplify);
+  const isReadOnly = isTruthyMetaFn(task.metadata?.readOnly);
+  const isReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
+  const isWorktreeOnExistingBranch = worktreeInfo?.existingBranch === true;
+
+  const sections = [];
+
+  // --- Task block --------------------------------------------------------
+  const taskLines = [
+    '## Task',
+    `- **ID**: ${task.id}`,
+    `- **Priority**: ${task.priority}`,
+    `- **Description**: ${task.description}`
+  ];
+  if (task.metadata?.app) taskLines.push(`- **Target App**: ${task.metadata.app}`);
+  taskLines.push(`- **Working Directory**: \`${workspaceDir}\``);
+  sections.push(taskLines.join('\n'));
+
+  const context = task.metadata?.context;
+  if (context) {
+    sections.push(context.includes('\n')
+      ? `### Context\n\n${context.trimEnd()}`
+      : `### Context\n${context}`);
+  }
+
+  if (Array.isArray(task.metadata?.screenshots) && task.metadata.screenshots.length > 0) {
+    sections.push(
+      '### Screenshots\nUse your filesystem tools to inspect each path:\n' +
+      task.metadata.screenshots.map(s => `- \`${s}\``).join('\n')
+    );
+  }
+
+  // --- Worktree ----------------------------------------------------------
+  if (worktreeInfo) {
+    sections.push([
+      '## Git Worktree',
+      `- **Branch**: \`${worktreeInfo.branchName}\`${isWorktreeOnExistingBranch ? ' *(pre-existing PR branch)*' : ''}`,
+      `- **Path**: \`${worktreeInfo.worktreePath}\``,
+      worktreeInfo.baseBranch ? `- **Based on**: \`${worktreeInfo.baseBranch}\`` : null,
+      '',
+      worktreeCommitGuidance({ isTui, isWorktreeOnExistingBranch, willOpenPR }),
+      'Do NOT manually switch branches or modify the worktree configuration.'
+    ].filter(Boolean).join('\n'));
+  }
+
+  // --- Pipeline ----------------------------------------------------------
+  const pipelineCtx = task.metadata?.pipeline;
+  if (pipelineCtx?.previousStageAgentId) {
+    const prevOutput = join(AGENTS_DIR, pipelineCtx.previousStageAgentId, 'output.txt');
+    sections.push([
+      '## Pipeline Context',
+      `Stage ${pipelineCtx.currentStage + 1} of ${pipelineCtx.stages.length}: "${pipelineCtx.stages[pipelineCtx.currentStage]?.name}"`,
+      `Previous stage: "${pipelineCtx.stages[pipelineCtx.currentStage - 1]?.name}"`,
+      '',
+      `Read the previous stage's output from: \`${prevOutput}\``,
+      'If it produced a JSON results block, parse it to determine which items to process.'
+    ].join('\n'));
+  }
+
+  // --- JIRA --------------------------------------------------------------
+  if (task.metadata?.jiraTicketId) {
+    sections.push([
+      '## JIRA',
+      `- **Ticket**: ${task.metadata.jiraTicketId} (${task.metadata.jiraTicketUrl})`,
+      task.metadata.jiraBranch ? `- **Branch**: \`${task.metadata.jiraBranch}\` — commit here; do NOT switch branches.` : null,
+      `Include the ticket ID in commit messages, e.g. \`${task.metadata.jiraTicketId}: description\`.`
+    ].filter(Boolean).join('\n'));
+  }
+
+  // --- Completion / review-loop ------------------------------------------
+  if (isReadOnly) {
+    sections.push('## Read-Only Task\nDo NOT commit, push, or modify any files. Read data and report findings only.');
+  } else if (isReviewLoopFollowUp) {
+    const prUrl = task.metadata?.reviewLoopPRUrl || '';
+    const prBranch = task.metadata?.reviewLoopPRBranch || '';
+    const prNumber = task.metadata?.reviewLoopPRNumber ?? '';
+    const prOwner = task.metadata?.reviewLoopPROwner ?? '';
+    const prRepo = task.metadata?.reviewLoopPRRepo ?? '';
+    const sourceTaskId = task.metadata?.sourceTaskId || 'unknown';
+    sections.push([
+      '## Review-Loop Follow-up (PRIMARY OBJECTIVE)',
+      `A previous agent finished task **${sourceTaskId}** and opened **PR ${prUrl}** on \`${prBranch}\`. The system has requested an initial Copilot review. Drive the review-and-fix loop to completion and merge.`,
+      '',
+      '**Loop UNTIL zero unresolved Copilot comments OR 10 iterations:**',
+      '1. Wait for the latest Copilot review (poll 5–15s, max 5 min per round).',
+      '2. If unresolved threads: fix in this worktree, run tests, commit (`feat:`/`fix:` prefix, no Co-Authored-By), push, resolve threads.',
+      '3. Re-request a Copilot review.',
+      '4. Repeat.',
+      '5. When clean, merge with:',
+      '   ```bash',
+      `   gh pr merge "${prUrl}" --squash --auto --delete-branch`,
+      '   ```',
+      prOwner && prRepo && prNumber ? `   (Equivalent: \`gh pr merge ${prNumber} --repo ${prOwner}/${prRepo} --squash --auto --delete-branch\`.)` : null,
+      '6. Exit — do NOT run `/do:push` or open a new PR.',
+      '',
+      '**Hard stop:** if not converged after 10 rounds, post a PR comment summarising blockers and exit.',
+      '**Repeated comments:** if a round only re-raises feedback you intentionally rejected (with a reply explaining why), treat as clean and merge.'
+    ].filter(Boolean).join('\n'));
+  } else if (isTui) {
+    sections.push(buildTuiCompletionSection({
+      willOpenPR, willReviewLoop, simplifyEnabled, sentinelPath: `${worktreeInfo?.worktreePath || workspaceDir}/.agent-done`
+    }));
+  } else {
+    sections.push(buildCliCompletionSection({ worktreeInfo, willOpenPR }));
+  }
+
+  sections.push('Begin working on the task now.');
+  return sections.join('\n\n') + '\n';
+}
+
+/**
+ * Worktree commit-guidance helper for the light prompt. Picks the right
+ * single-sentence instruction based on whether the agent will run its own
+ * push workflow (TUI), reuse an existing PR branch (review fixes), or hand
+ * off to PortOS's post-exit push.
+ */
+function worktreeCommitGuidance({ isTui, isWorktreeOnExistingBranch, willOpenPR }) {
+  if (isTui) return 'Commit your changes to this branch — see **Completion Workflow** below.';
+  if (isWorktreeOnExistingBranch) {
+    return 'Commit and **push** any review-fix commits to this branch (the PR points at it). Use `git pull --rebase` before pushing if needed.';
+  }
+  if (willOpenPR) {
+    return 'Commit your changes here. The system will push and open a PR after you exit — do NOT push or open a PR yourself.';
+  }
+  return 'Commit your changes here. Your branch will be merged back automatically when the task completes.';
+}
+
+/**
+ * TUI completion-workflow block. The TUI owns its own commit → push → PR
+ * pipeline via slashdo commands and signals "done" with a sentinel file.
+ */
+function buildTuiCompletionSection({ willOpenPR, willReviewLoop, simplifyEnabled, sentinelPath }) {
+  const cmd = willOpenPR ? '/do:pr' : '/do:push';
+  const verb = willOpenPR ? 'PR' : 'push';
+  const cmdEffect = willOpenPR
+    ? ', pushes, and opens a PR against the default branch. Write the PR title and body yourself; do NOT let any tool auto-generate from terminal output'
+    : ' and pushes the branch';
+  const reviewSuffix = willOpenPR && willReviewLoop
+    ? ' After the PR is open, request a Copilot review (e.g. via `gh`).' : '';
+  const simplifyStep = simplifyEnabled
+    ? '1. `/simplify` — review the changed code for reuse/quality/efficiency and fix any findings.'
+    : '1. (simplify disabled — skip)';
+  const sentinelTail = willOpenPR ? '   ## PR\n   <PR URL>' : '   ## Branch\n   <branch name>';
+
+  return [
+    '## Completion Workflow',
+    `You own the entire commit → push → ${verb} sequence. PortOS will NOT push or open a PR for you. When the task is complete, run these in order without further user input:`,
+    '',
+    simplifyStep,
+    `2. \`${cmd}\` — commits${cmdEffect}.${reviewSuffix}`,
+    '3. Write the completion sentinel as a SHORT markdown report (~5–15 lines):',
+    '',
+    '   ```bash',
+    `   cat > "${sentinelPath}" <<'EOF'`,
+    '   ## Summary',
+    '   <one-sentence statement of what was accomplished>',
+    '',
+    '   ## Changes',
+    '   - <key file or area>: <what changed and why>',
+    '',
+    sentinelTail,
+    '   EOF',
+    '   ```',
+    '',
+    '   PortOS polls for this file every 2 seconds; without it the agent sits idle until the 3-minute fallback fires.',
+    '4. Run `/quit` to exit cleanly.'
+  ].join('\n');
+}
+
+/**
+ * CLI (non-TUI) completion block. CLI agents (codex exec / claude -p /
+ * gemini one-shot) don't have slashdo commands available — they commit and
+ * PortOS handles the push/PR after exit.
+ */
+function buildCliCompletionSection({ worktreeInfo, willOpenPR }) {
+  let body;
+  if (worktreeInfo && willOpenPR) {
+    body = 'Commit your changes (stage specific files, `feat:`/`fix:` prefix, no Co-Authored-By). Do NOT push — PortOS will push and open the PR after you exit.';
+  } else if (worktreeInfo) {
+    body = 'Commit your changes to this branch. PortOS will merge it back when the task completes.';
+  } else {
+    body = 'Commit and push your changes (`git pull --rebase && git push`, conventional commit prefix, no `git add -A`).';
+  }
+  return `## Completion\n${body}`;
 }
 
 /**
