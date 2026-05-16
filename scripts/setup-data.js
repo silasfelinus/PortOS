@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, cpSync, readdirSync, statSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, cpSync, readdirSync, statSync, readFileSync, writeFileSync, renameSync, rmdirSync } from 'fs';
 import { createHash } from 'crypto';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -10,6 +10,24 @@ const dataDir = join(rootDir, 'data');
 const sampleDir = join(rootDir, 'data.sample');
 
 console.log('📁 Setting up data directory...');
+
+// One-shot cleanup for installs that predate the migrations-out-of-data move:
+// (1) relocate data/migrations/.applied.json → data/migrations.applied.json so
+//     run-migrations.js finds the prior applied-list and doesn't re-run anything;
+// (2) drop the now-orphan data/migrations/ directory if empty. Guarded so we
+//     never clobber a fresh-layout applied file and never blow away a non-empty
+//     dir (in case a user has uncommitted local migration files).
+const legacyMigrationsDir = join(dataDir, 'migrations');
+const legacyAppliedFile = join(legacyMigrationsDir, '.applied.json');
+const newAppliedFile = join(dataDir, 'migrations.applied.json');
+if (existsSync(legacyAppliedFile) && !existsSync(newAppliedFile)) {
+  renameSync(legacyAppliedFile, newAppliedFile);
+  console.log('🧹 Moved data/migrations/.applied.json → data/migrations.applied.json');
+}
+if (existsSync(legacyMigrationsDir) && readdirSync(legacyMigrationsDir).length === 0) {
+  rmdirSync(legacyMigrationsDir);
+  console.log('🧹 Removed orphan data/migrations/ directory');
+}
 
 if (!existsSync(dataDir)) {
   console.log('📁 Creating data directory from data.sample...');
@@ -104,13 +122,6 @@ for (const { relPath, mergeKey } of JSON_MERGE_TARGETS) {
   mergeJsonStarter(relPath, mergeKey);
 }
 
-// Ensure migrations directory exists (not in data.sample, needed for both fresh and existing installs)
-const migrationsDir = join(dataDir, 'migrations');
-if (!existsSync(migrationsDir)) {
-  console.log('📁 Creating missing directory: migrations');
-  mkdirSync(migrationsDir, { recursive: true });
-}
-
 // Drift detection — warn when a data.sample/prompts/stages/*.md differs from
 // the installed data/prompts/stages/*.md copy. Only fires on existing installs
 // (fresh installs already got a full copy above). Prompt templates drift when
@@ -118,11 +129,11 @@ if (!existsSync(migrationsDir)) {
 // existing installs won't pick up because setup-data.js only copies *missing*
 // files.
 //
-// NOTE: only the files managed by data/migrations/003+ are checked here —
+// NOTE: only the files managed by scripts/migrations/003+ are checked here —
 // scanning all stage prompts would produce misleading warnings for prompts
 // that have no migration counterpart (e.g. cd-evaluate.md, writers-room prompts).
 //
-// Mirror data/migrations/003+ NEW/OLD hashes. Array values let the check
+// Mirror scripts/migrations/003+ NEW/OLD hashes. Array values let the check
 // recognize multi-migration lineages (file evolved through 003 → 004 → 005);
 // a user at any intermediate hash still gets the "run migrations" prompt.
 const SHIPPED_PROMPT_OLD_MD5 = {
