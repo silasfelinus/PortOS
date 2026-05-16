@@ -8,8 +8,11 @@ import { request } from './apiCore.js';
 // auto-run text chain skips it and POST /stages/nouns/generate would 400.
 export const PIPELINE_TEXT_STAGES = Object.freeze(['idea', 'prose', 'comicScript', 'teleplay']);
 export const PIPELINE_VISUAL_STAGES = Object.freeze(['comicPages', 'storyboards', 'episodeVideo']);
+export const PIPELINE_AUDIO_STAGES = Object.freeze(['audio']);
 export const PIPELINE_UI_STAGES = Object.freeze(['nouns']);
-export const PIPELINE_STAGES = Object.freeze([...PIPELINE_TEXT_STAGES, ...PIPELINE_VISUAL_STAGES, ...PIPELINE_UI_STAGES]);
+export const PIPELINE_STAGES = Object.freeze([
+  ...PIPELINE_TEXT_STAGES, ...PIPELINE_VISUAL_STAGES, ...PIPELINE_AUDIO_STAGES, ...PIPELINE_UI_STAGES,
+]);
 
 // Stages that appear as their own tab, in display order. `comicPages` is
 // folded into the Comic Script tab (one merged page-by-page editor) — the
@@ -17,7 +20,7 @@ export const PIPELINE_STAGES = Object.freeze([...PIPELINE_TEXT_STAGES, ...PIPELI
 // `nouns` is inserted between Prose and Comic Pages so the workflow reads
 // Idea → Prose → Nouns → Comic → Teleplay → Storyboards → Episode Video.
 export const PIPELINE_TAB_STAGES = Object.freeze([
-  'idea', 'prose', 'nouns', 'comicScript', 'teleplay', 'storyboards', 'episodeVideo',
+  'idea', 'prose', 'nouns', 'comicScript', 'teleplay', 'storyboards', 'episodeVideo', 'audio',
 ]);
 
 export const PIPELINE_STAGE_LABELS = Object.freeze({
@@ -31,6 +34,7 @@ export const PIPELINE_STAGE_LABELS = Object.freeze({
   comicPages: 'Comic',
   storyboards: 'Storyboards',
   episodeVideo: 'Video',
+  audio: 'Audio',
 });
 
 export const PIPELINE_TARGET_FORMATS = Object.freeze(['comic', 'tv', 'comic+tv']);
@@ -332,3 +336,32 @@ export const cancelPipelineAutoRunText = (issueId) =>
 
 export const pipelineAutoRunSseUrl = (issueId) =>
   `/api/pipeline/issues/${encodeURIComponent(issueId)}/auto-run-text/progress`;
+
+// ---- Audio stage ----
+// Walks storyboards.scenes[].dialogue and populates stages.audio.lines[].
+// Pass { force: true } to replace existing lines wholesale (server defaults
+// to a 409 when lines[] is already populated so a stray click can't wipe
+// manual edits).
+export const extractPipelineAudioLines = (issueId, { force } = {}) =>
+  request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/audio/extract-lines`, {
+    method: 'POST',
+    body: JSON.stringify({ force }),
+  });
+
+// Render one VO line. Voice resolution priority (server-side): explicit
+// voiceId body param > line.voiceIdOverride > character.voiceId > system
+// default. Returns { issue, stage, lineIdx, filename, engine, voiceId }.
+export const renderPipelineAudioLine = (issueId, lineIdx, { voiceId } = {}) =>
+  request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/audio/lines/${encodeURIComponent(lineIdx)}/render`, {
+    method: 'POST',
+    body: JSON.stringify({ voiceId }),
+  });
+
+// Per-line edit (text or voice override). Narrow patch shape — the server
+// merges against the freshest persisted record inside the per-issue write
+// queue so two simultaneous blurs against different lines can't clobber.
+export const patchPipelineAudioLine = (issueId, lineIdx, patch) =>
+  request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/audio/lines/${encodeURIComponent(lineIdx)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });

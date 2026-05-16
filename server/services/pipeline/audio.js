@@ -77,6 +77,120 @@ export async function listAllVoices() {
  * name (interpreted against the active engine). Empty / falsy `voiceId`
  * uses the configured default voice.
  */
+/**
+ * Walk an issue's already-extracted storyboard scenes and emit a flat
+ * `lines[]` ready to write onto `stages.audio.lines`. The scene extractor
+ * already parsed dialogue into `{ character, line }` per scene, so we don't
+ * re-parse markdown here — we just flatten + bind each speaker to a series
+ * character (by name, case-insensitive) so the per-line render can resolve
+ * a voice id.
+ *
+ * Lines without a matching series character still get persisted (the user
+ * may want narrator / un-named-character lines synthesized via the project
+ * default voice); `characterId` stays null in that case.
+ */
+/**
+ * Voice resolution for a single VO line. Priority:
+ *   1. `explicit`           (per-request body override)
+ *   2. `line.voiceIdOverride` (per-line override saved on the issue)
+ *   3. `character.voiceId`    (series character binding by line.characterId)
+ *   4. `null`                 (caller falls through to the configured default voice)
+ *
+ * Pure function — no I/O — so the route, a future "render all" flow, and
+ * unit tests all use the same priority logic.
+ */
+export function resolveVoiceForLine(line, series, { explicit } = {}) {
+  if (typeof explicit === 'string' && explicit.trim()) return explicit.trim();
+  if (line?.voiceIdOverride) return line.voiceIdOverride;
+  if (line?.characterId) {
+    const char = (series?.characters || []).find((c) => c?.id === line.characterId);
+    if (char?.voiceId) return char.voiceId;
+  }
+  return null;
+}
+
+/**
+ * Strip parenthetical performance hints from a screenplay speaker label so
+ * character matching works on the bare name. Handles trailing single
+ * (`JEAN (O.S.)`), stacked trailing (`JEAN (O.S.)(angry)`), and leading
+ * (`(O.S.) JEAN`) parens — all three appear in real teleplays.
+ */
+function stripSpeakerParens(raw) {
+  if (typeof raw !== 'string') return '';
+  return raw
+    .replace(/^\s*\([^)]*\)\s*/, '')
+    .replace(/\s*\([^)]*\)\s*/g, ' ')
+    .trim();
+}
+
+export function extractDialogueLines(issue, series, { preserveFrom = [] } = {}) {
+  const scenes = Array.isArray(issue?.stages?.storyboards?.scenes)
+    ? issue.stages.storyboards.scenes
+    : [];
+  // First-registration wins so duplicate character names / aliased collisions
+  // resolve deterministically. Last-writer-wins on a Map would silently flip
+  // a binding when a later character shares a name.
+  const charactersByKey = new Map();
+  const rememberKey = (key, c) => {
+    if (key && !charactersByKey.has(key)) charactersByKey.set(key, c);
+  };
+  for (const c of (series?.characters || [])) {
+    if (!c || typeof c !== 'object') continue;
+    const name = typeof c.name === 'string' ? c.name.trim() : '';
+    if (!name) continue;
+    rememberKey(name.toLowerCase(), c);
+    if (Array.isArray(c.aliases)) {
+      for (const alias of c.aliases) {
+        if (typeof alias === 'string' && alias.trim()) rememberKey(alias.trim().toLowerCase(), c);
+      }
+    }
+  }
+
+  // Build a (speakerKey + text) → prior line index so re-extraction can carry
+  // forward rendered audio for lines that haven't changed. The match is
+  // intentionally strict — any edit to text or character invalidates the
+  // existing render.
+  const preservedByKey = new Map();
+  if (Array.isArray(preserveFrom)) {
+    for (const prev of preserveFrom) {
+      if (!prev || typeof prev !== 'object') continue;
+      if (!prev.audioFilename && !prev.audioJobId) continue;
+      const key = `${(prev.characterName || '').toLowerCase()}|${prev.text || ''}`;
+      if (!preservedByKey.has(key)) preservedByKey.set(key, prev);
+    }
+  }
+
+  const lines = [];
+  let preservedCount = 0;
+  let lineNumber = 1;
+  for (let sIdx = 0; sIdx < scenes.length; sIdx += 1) {
+    const scene = scenes[sIdx];
+    const dialogue = Array.isArray(scene?.dialogue) ? scene.dialogue : [];
+    for (let dIdx = 0; dIdx < dialogue.length; dIdx += 1) {
+      const d = dialogue[dIdx];
+      const text = typeof d?.line === 'string' ? d.line.trim() : '';
+      if (!text) continue;
+      const rawSpeaker = typeof d?.character === 'string' ? d.character.trim() : '';
+      const bareSpeaker = stripSpeakerParens(rawSpeaker);
+      const match = bareSpeaker ? charactersByKey.get(bareSpeaker.toLowerCase()) : null;
+      const preserveKey = `${rawSpeaker.toLowerCase()}|${text}`;
+      const carryover = preservedByKey.get(preserveKey);
+      if (carryover) preservedCount += 1;
+      lines.push({
+        id: `line-${String(lineNumber).padStart(3, '0')}`,
+        characterId: match?.id || null,
+        characterName: rawSpeaker || null,
+        text,
+        voiceIdOverride: carryover?.voiceIdOverride || null,
+        audioJobId: carryover?.audioJobId || null,
+        audioFilename: carryover?.audioFilename || null,
+      });
+      lineNumber += 1;
+    }
+  }
+  return { lines, preservedCount };
+}
+
 export async function synthesizeToFile({ text, voiceId, signal } = {}) {
   const trimmed = (text || '').trim();
   if (!trimmed) {

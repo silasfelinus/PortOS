@@ -474,6 +474,9 @@ app.use('/data/images', express.static(PATHS.images));
 // can pull them by URL without going through an explicit download route.
 app.use('/data/videos', express.static(PATHS.videos));
 app.use('/data/video-thumbnails', express.static(PATHS.videoThumbnails));
+// Voice-over WAVs rendered by the pipeline audio stage — the AudioStage UI
+// pulls them inline via <audio src="/data/audio/<filename>">.
+app.use('/data/audio', express.static(PATHS.audio));
 
 // Serve built client UI (production mode — no Vite dev server needed)
 const CLIENT_DIST = join(__dirname, '..', 'client', 'dist');

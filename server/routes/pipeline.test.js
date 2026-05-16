@@ -139,6 +139,58 @@ vi.mock('../services/pipeline/episodeVideo.js', () => ({
   })),
 }));
 
+// Audio service mocks — avoid touching the real TTS pipeline + filesystem
+// while still exercising the route's voice-resolution + persist flow.
+vi.mock('../services/pipeline/audio.js', () => ({
+  listAllVoices: vi.fn(async () => [{ id: 'kokoro:af_heart', engine: 'kokoro', voice: 'af_heart', label: 'Heart' }]),
+  synthesizeToFile: vi.fn(async ({ voiceId }) => ({
+    filename: `vo-mock-${++uuidCounter}.wav`,
+    latencyMs: 5,
+    engine: 'kokoro',
+    voiceId: voiceId || null,
+  })),
+  parseVoiceId: vi.fn((v) => {
+    if (!v) return { engine: null, voice: null };
+    const m = v.match(/^([a-z]+):(.+)$/);
+    return m ? { engine: m[1], voice: m[2] } : { engine: null, voice: v };
+  }),
+  extractDialogueLines: vi.fn((issue) => {
+    const scenes = issue?.stages?.storyboards?.scenes || [];
+    const out = [];
+    let n = 1;
+    for (const s of scenes) {
+      for (const d of (s.dialogue || [])) {
+        if (!d?.line?.trim()) continue;
+        out.push({
+          id: `line-${String(n).padStart(3, '0')}`,
+          characterId: null,
+          characterName: d.character || null,
+          text: d.line,
+          voiceIdOverride: null,
+          audioJobId: null,
+          audioFilename: null,
+        });
+        n += 1;
+      }
+    }
+    return { lines: out, preservedCount: 0 };
+  }),
+  resolveVoiceForLine: vi.fn((line, series, { explicit } = {}) => {
+    if (explicit) return explicit;
+    if (line?.voiceIdOverride) return line.voiceIdOverride;
+    if (line?.characterId && series?.characters) {
+      const c = series.characters.find((x) => x?.id === line.characterId);
+      if (c?.voiceId) return c.voiceId;
+    }
+    return null;
+  }),
+}));
+vi.mock('../services/voice/tts.js', () => ({
+  synthesize: vi.fn(async () => ({ wav: Buffer.from('w'), latencyMs: 1, engine: 'kokoro' })),
+  listVoices: vi.fn(async () => ({ engine: 'kokoro', voices: [] })),
+  VALID_ENGINES: new Set(['kokoro', 'piper']),
+}));
+
 const pipelineRouter = (await import('./pipeline.js')).default;
 
 function makeApp() {
@@ -1168,5 +1220,94 @@ describe('pipeline routes', () => {
     expect(r.body.issues).toHaveLength(1);
     expect(r.body.issues[0].location).toBe('episode:3');
     expect(volumeVerifySpy).toHaveBeenCalledWith(ser.body.id, 'sea-fake', expect.objectContaining({ providerOverride: 'anthropic' }));
+  });
+
+  describe('audio stage routes', () => {
+    async function seedIssueWithStoryboards(app) {
+      const ser = await request(app).post('/api/pipeline/series').send({ name: 'S' });
+      const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
+      await request(app).patch(`/api/pipeline/issues/${iss.body.id}`).send({
+        stages: {
+          storyboards: {
+            scenes: [{
+              slugline: 'INT. KITCHEN — NIGHT',
+              dialogue: [
+                { character: 'JEAN', line: 'I told you he was coming.' },
+                { character: 'DON CARLOS', line: 'Quiet now.' },
+              ],
+            }],
+          },
+        },
+      });
+      return iss.body;
+    }
+
+    it('POST /audio/extract-lines populates lines[] from storyboards dialogue', async () => {
+      const app = makeApp();
+      const iss = await seedIssueWithStoryboards(app);
+      const r = await request(app)
+        .post(`/api/pipeline/issues/${iss.id}/stages/audio/extract-lines`)
+        .send({});
+      expect(r.status).toBe(200);
+      expect(r.body.lineCount).toBe(2);
+      expect(r.body.stage.lines).toHaveLength(2);
+      expect(r.body.stage.lines[0].text).toMatch(/coming/);
+    });
+
+    it('POST /audio/extract-lines 409s on second call without force:true', async () => {
+      const app = makeApp();
+      const iss = await seedIssueWithStoryboards(app);
+      await request(app).post(`/api/pipeline/issues/${iss.id}/stages/audio/extract-lines`).send({});
+      const r = await request(app)
+        .post(`/api/pipeline/issues/${iss.id}/stages/audio/extract-lines`)
+        .send({});
+      expect(r.status).toBe(409);
+    });
+
+    it('POST /audio/extract-lines with force:true replaces existing lines', async () => {
+      const app = makeApp();
+      const iss = await seedIssueWithStoryboards(app);
+      await request(app).post(`/api/pipeline/issues/${iss.id}/stages/audio/extract-lines`).send({});
+      const r = await request(app)
+        .post(`/api/pipeline/issues/${iss.id}/stages/audio/extract-lines`)
+        .send({ force: true });
+      expect(r.status).toBe(200);
+      expect(r.body.lineCount).toBe(2);
+    });
+
+    it('POST /audio/lines/:idx/render persists audioFilename on the matching line', async () => {
+      const app = makeApp();
+      const iss = await seedIssueWithStoryboards(app);
+      await request(app).post(`/api/pipeline/issues/${iss.id}/stages/audio/extract-lines`).send({});
+      const r = await request(app)
+        .post(`/api/pipeline/issues/${iss.id}/stages/audio/lines/0/render`)
+        .send({});
+      expect(r.status).toBe(200);
+      expect(r.body.filename).toMatch(/^vo-mock-/);
+      expect(r.body.lineIdx).toBe(0);
+      expect(r.body.engine).toBe('kokoro');
+      // Refetch the issue and confirm the audio filename landed.
+      const issAfter = await request(app).get(`/api/pipeline/issues/${iss.id}`);
+      expect(issAfter.body.stages.audio.lines[0].audioFilename).toMatch(/^vo-mock-/);
+    });
+
+    it('POST /audio/lines/:idx/render 404s for out-of-range index', async () => {
+      const app = makeApp();
+      const iss = await seedIssueWithStoryboards(app);
+      await request(app).post(`/api/pipeline/issues/${iss.id}/stages/audio/extract-lines`).send({});
+      const r = await request(app)
+        .post(`/api/pipeline/issues/${iss.id}/stages/audio/lines/99/render`)
+        .send({});
+      expect(r.status).toBe(404);
+    });
+
+    it('POST /audio/lines/:idx/render 400s for non-integer index', async () => {
+      const app = makeApp();
+      const iss = await seedIssueWithStoryboards(app);
+      const r = await request(app)
+        .post(`/api/pipeline/issues/${iss.id}/stages/audio/lines/nope/render`)
+        .send({});
+      expect(r.status).toBe(400);
+    });
   });
 });

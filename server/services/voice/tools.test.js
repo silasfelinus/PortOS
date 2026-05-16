@@ -699,8 +699,8 @@ describe('pipeline stage navigation tools', () => {
       expect(ctx.sideEffects).toEqual([{ type: 'navigate', path: '/pipeline/issues/iss-abc/prose' }]);
     });
 
-    it('refuses to advance past episodeVideo (last stage)', async () => {
-      const r = await dispatchTool('pipeline_next_stage', {}, makeCtx('/pipeline/issues/x/episodeVideo'));
+    it('refuses to advance past audio (last navigable stage)', async () => {
+      const r = await dispatchTool('pipeline_next_stage', {}, makeCtx('/pipeline/issues/x/audio'));
       expect(r.ok).toBe(false);
       expect(r.summary).toMatch(/last stage/);
     });

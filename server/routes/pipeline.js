@@ -58,7 +58,7 @@ import { ASPECT_RATIOS, QUALITIES } from '../lib/creativeDirectorPresets.js';
 import { extractScenes, SOURCE_KIND } from '../lib/sceneExtractor.js';
 import { listVisualStyles } from '../lib/visualStyles.js';
 import { buildComicPdf, PAGE_SIZES, DEFAULT_PAGE_SIZE, ERR_NO_RENDERED_PAGES } from '../services/pipeline/comicPdf.js';
-import { listAllVoices, synthesizeToFile, parseVoiceId } from '../services/pipeline/audio.js';
+import { listAllVoices, synthesizeToFile, parseVoiceId, extractDialogueLines, resolveVoiceForLine } from '../services/pipeline/audio.js';
 import { synthesize as synthesizeVoice } from '../services/voice/tts.js';
 import { parseComicScript } from '../lib/comicScriptParser.js';
 import {
@@ -531,6 +531,125 @@ router.post('/tts/synthesize', asyncHandler(async (req, res) => {
   const result = await synthesizeToFile({ text: body.text, voiceId: body.voiceId })
     .catch((err) => { throw mapServiceError(err); });
   res.json(result);
+}));
+
+// Walk the issue's storyboards.scenes[].dialogue and populate
+// stages.audio.lines[]. `force: true` replaces existing lines wholesale;
+// the default refuses overwrite when lines[] is already populated so a
+// stray click can't wipe a user's manual edits.
+const extractAudioLinesSchema = z.object({ force: z.boolean().optional() });
+router.post('/issues/:id/stages/audio/extract-lines', asyncHandler(async (req, res) => {
+  const body = validateRequest(extractAudioLinesSchema, req.body ?? {});
+  const issue = await issuesSvc.getIssue(req.params.id).catch((err) => { throw mapServiceError(err); });
+  const existingLines = issue.stages?.audio?.lines || [];
+  if (existingLines.length > 0 && !body.force) {
+    throw new ServerError(
+      `Audio stage already has ${existingLines.length} line${existingLines.length === 1 ? '' : 's'}. Pass force: true to replace.`,
+      { status: 409, code: 'PIPELINE_AUDIO_LINES_EXIST' },
+    );
+  }
+  const series = await seriesSvc.getSeries(issue.seriesId).catch((err) => { throw mapServiceError(err); });
+  // Carry forward already-rendered audio on re-extract when the same speaker
+  // + same line text appears in the fresh extraction — otherwise a small edit
+  // anywhere upstream would silently invalidate every previously-rendered WAV.
+  const { lines, preservedCount } = extractDialogueLines(issue, series, {
+    preserveFrom: existingLines,
+  });
+  const { issue: updatedIssue, stage } = await issuesSvc.updateStage(req.params.id, 'audio', {
+    status: lines.length ? 'ready' : 'empty',
+    lines,
+    errorMessage: '',
+  });
+  res.json({ issue: updatedIssue, stage, lineCount: lines.length, preservedCount });
+}));
+
+// Per-line edit endpoint. Replaces the prior whole-stage PATCH path so a
+// blur-save against line N can't clobber a concurrent edit against line M
+// — the server merges against the freshest persisted record inside the
+// per-issue write queue. Patch fields are intentionally narrow (text +
+// voiceIdOverride); the per-line audio fields are owned by the render path.
+const lineEditSchema = z.object({
+  text: z.string().max(4000).optional(),
+  voiceIdOverride: z.string().trim().max(200).nullable().optional(),
+});
+router.patch('/issues/:id/stages/audio/lines/:lineIdx', asyncHandler(async (req, res) => {
+  const lineIdx = Number(req.params.lineIdx);
+  if (!Number.isInteger(lineIdx) || lineIdx < 0) {
+    throw new ServerError('lineIdx must be a non-negative integer', {
+      status: 400, code: 'PIPELINE_AUDIO_BAD_INDEX',
+    });
+  }
+  const body = validateRequest(lineEditSchema, req.body ?? {});
+  if (Object.keys(body).length === 0) {
+    throw new ServerError('patch must include at least one field', {
+      status: 400, code: 'VALIDATION_ERROR',
+    });
+  }
+  const { issue: updatedIssue, stage } = await issuesSvc.updateStageWithLatest(
+    req.params.id,
+    'audio',
+    (current) => {
+      const lines = Array.isArray(current?.lines) ? current.lines : [];
+      const line = lines[lineIdx];
+      if (!line) return {};
+      const next = { ...line };
+      if ('text' in body) next.text = body.text;
+      if ('voiceIdOverride' in body) next.voiceIdOverride = body.voiceIdOverride;
+      const nextLines = [...lines];
+      nextLines[lineIdx] = next;
+      return { status: 'edited', lines: nextLines };
+    },
+  ).catch((err) => { throw mapServiceError(err); });
+  res.json({ issue: updatedIssue, stage, lineIdx });
+}));
+
+// Render one VO line. Voice resolution priority:
+//   1. line.voiceIdOverride  (explicit per-line override)
+//   2. character.voiceId      (series character binding)
+//   3. (none → uses the configured default voice via synthesize())
+const lineRenderSchema = z.object({ voiceId: z.string().trim().max(200).optional() });
+router.post('/issues/:id/stages/audio/lines/:lineIdx/render', asyncHandler(async (req, res) => {
+  const lineIdx = Number(req.params.lineIdx);
+  if (!Number.isInteger(lineIdx) || lineIdx < 0) {
+    throw new ServerError('lineIdx must be a non-negative integer', {
+      status: 400, code: 'PIPELINE_AUDIO_BAD_INDEX',
+    });
+  }
+  const body = validateRequest(lineRenderSchema, req.body ?? {});
+  const issue = await issuesSvc.getIssue(req.params.id).catch((err) => { throw mapServiceError(err); });
+  const lines = issue.stages?.audio?.lines || [];
+  const line = lines[lineIdx];
+  if (!line) {
+    throw new ServerError(`lineIdx ${lineIdx} out of range (have ${lines.length})`, {
+      status: 404, code: 'PIPELINE_AUDIO_LINE_NOT_FOUND',
+    });
+  }
+  // Resolve voice via the shared priority chain (explicit > line override
+  // > character binding > project default). One source of truth, reused by
+  // the eventual "render all" flow + unit-tested for priority order.
+  const series = line.characterId
+    ? await seriesSvc.getSeries(issue.seriesId).catch(() => null)
+    : null;
+  const voiceId = resolveVoiceForLine(line, series, { explicit: body.voiceId });
+  const synthResult = await synthesizeToFile({ text: line.text, voiceId })
+    .catch((err) => { throw mapServiceError(err); });
+  const nextLines = [...lines];
+  nextLines[lineIdx] = {
+    ...line,
+    audioJobId: null,
+    audioFilename: synthResult.filename,
+  };
+  const { issue: updatedIssue, stage } = await issuesSvc.updateStage(req.params.id, 'audio', {
+    status: 'edited',
+    lines: nextLines,
+    errorMessage: '',
+  });
+  res.json({
+    issue: updatedIssue, stage, lineIdx,
+    filename: synthResult.filename,
+    engine: synthResult.engine,
+    voiceId: synthResult.voiceId || voiceId,
+  });
 }));
 
 // =====================

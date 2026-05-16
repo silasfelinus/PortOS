@@ -10,7 +10,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Sparkles, Loader2, X, Lightbulb, BookOpen, FileText, Film as FilmIcon,
-  LayoutGrid, Image as ImageIcon, Clapperboard, Users, Settings,
+  LayoutGrid, Image as ImageIcon, Clapperboard, Users, Settings, Mic,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import Modal from '../components/ui/Modal';
@@ -28,6 +28,7 @@ import TeleplayStage from '../components/pipeline/stages/TeleplayStage';
 import ComicPagesStage from '../components/pipeline/stages/ComicPagesStage';
 import StoryboardsStage from '../components/pipeline/stages/StoryboardsStage';
 import EpisodeVideoStage from '../components/pipeline/stages/EpisodeVideoStage';
+import AudioStage from '../components/pipeline/stages/AudioStage';
 import SeriesLlmPicker from '../components/pipeline/SeriesLlmPicker';
 import LengthProfilePicker from '../components/pipeline/LengthProfilePicker';
 import { VisualGenSettingsPanel } from '../components/pipeline/stages/VisualGenSettings';
@@ -48,6 +49,7 @@ const STAGE_ICONS = {
   comicPages: LayoutGrid,
   storyboards: ImageIcon,
   episodeVideo: Clapperboard,
+  audio: Mic,
 };
 
 const STAGE_COMPONENTS = {
@@ -59,6 +61,7 @@ const STAGE_COMPONENTS = {
   comicPages: ComicPagesStage,
   storyboards: StoryboardsStage,
   episodeVideo: EpisodeVideoStage,
+  audio: AudioStage,
 };
 
 const STATUS_DOT = {
@@ -182,12 +185,18 @@ export default function PipelineIssue() {
     }) : prev);
   };
 
-  const stageTabs = useMemo(() => PIPELINE_TAB_STAGES.map((id) => ({
-    id,
-    label: PIPELINE_STAGE_LABELS[id],
-    Icon: STAGE_ICONS[id],
-    status: issue?.stages?.[id]?.status || 'empty',
-  })), [issue]);
+  const stageTabs = useMemo(() => PIPELINE_TAB_STAGES
+    // Audio is only meaningful when the series ships video — comic-only
+    // series don't render dialogue as sound, so the tab is hidden to keep
+    // the strip uncluttered. Showing the audio data still works for users
+    // who navigate to `/pipeline/issues/:id/audio` directly.
+    .filter((id) => id !== 'audio' || series?.targetFormat !== 'comic')
+    .map((id) => ({
+      id,
+      label: PIPELINE_STAGE_LABELS[id],
+      Icon: STAGE_ICONS[id],
+      status: issue?.stages?.[id]?.status || 'empty',
+    })), [issue, series?.targetFormat]);
 
   if (loading) return <div className="p-6 text-gray-500 text-sm">Loading issue…</div>;
   if (!issue) return null;
