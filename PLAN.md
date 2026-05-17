@@ -185,7 +185,4 @@ God-file decomposition candidates — none are bugs; pick up when touching the f
 - **Workspace Contexts** — project context syncing across shell, git, tasks.
 - **Inline Code Review Annotations** — one-click fix from self-improvement findings.
 - **Major Dependency Upgrades** — React 19, Zod 4, PM2 6, Vite 8.
-- **Dynamic Skill Marketplace** — self-generating skill templates from task patterns.
 - **Workflow tab Phase 2** — drag-and-drop ordering of stages, custom user-defined stages, per-app workflow overrides.
-- **Chronotype-Aware Scheduling** — integrate genome sleep/circadian markers into CoS task scheduling (closes GOALS secondary goal).
-- **Apple Health live sync** — iOS bulk historical import + live sync (closes GOALS "Apple Health integration planned").
