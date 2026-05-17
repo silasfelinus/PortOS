@@ -145,10 +145,6 @@ export const WORLD_CATEGORIES = Object.freeze([
 export const CATEGORY_KINDS = Object.freeze(['characters', 'settings', 'objects', 'other']);
 export const DEFAULT_CATEGORY_KIND = 'other';
 
-// Bucket keys retired from the schema — sanitizeCategories drops them from
-// `categories` on read (variations get folded into canon by
-// backfillCanonFromCategories). Single hook for future retirements.
-const RETIRED_CATEGORY_KEYS = Object.freeze(new Set(['characters']));
 
 // Built-in default categories carry a known kind so they land under the right
 // trunk in the UI without user intervention. Custom keys not in this map fall
@@ -201,6 +197,10 @@ export const normalizeCategoryKey = (raw) => {
     .replace(/_{2,}/g, '_')
     .slice(0, WORLD_CATEGORY_KEY_MAX);
 };
+
+// Matches the retired `characters` bucket and its variant spellings
+// ("character_variations", "Characters", etc.) after key normalization.
+const isCharactersBucket = (k) => /^characters?(_|$)/i.test(normalizeCategoryKey(k));
 
 const sanitizeVariation = (raw) => {
   if (!raw || typeof raw !== 'object') return null;
@@ -277,7 +277,7 @@ export const sanitizeCategories = (raw = {}) => {
     // Retired buckets get dropped here; variations are folded into the
     // matching canon array by backfillCanonFromCategories, which runs
     // alongside this sanitizer in sanitizeTemplate.
-    if (RETIRED_CATEGORY_KEYS.has(key)) continue;
+    if (isCharactersBucket(key)) continue;
     if (!categories[key] && customCount >= WORLD_CATEGORY_COUNT_MAX) continue;
     if (!categories[key]) customCount += 1;
     Object.assign(categories, mergeCategories(categories, { [key]: sanitizeCategory(rawCategory, key) }));
@@ -449,13 +449,6 @@ function foldRetiredCharactersBucket(raw, canon) {
   const categories = raw && raw.categories && typeof raw.categories === 'object'
     ? raw.categories
     : {};
-  // Match ANY key whose first word is "character(s)" — covers exact match
-  // ("characters"), case variants ("Characters"), and multi-word aliases
-  // ("character variations", "Character_Variations") that normalizeCategoryKey
-  // encodes as "character_variations" (not equal to the literal "characters").
-  // Without this, a payload using those variant keys slips past the exact check
-  // and has its variations silently dropped on save instead of folded into canon.
-  const isCharactersBucket = (k) => /^characters?(_|$)/i.test(normalizeCategoryKey(k));
   let variations = null;
   for (const [rawKey, value] of Object.entries(categories)) {
     if (!isCharactersBucket(rawKey)) continue;
@@ -546,9 +539,9 @@ function backfillCanonFromCategories(raw, existingCanon) {
   const categories = raw && typeof raw.categories === 'object' ? raw.categories : {};
   for (const [rawKey, value] of Object.entries(categories)) {
     const categoryKey = normalizeCategoryKey(rawKey) || rawKey;
-    // Skip the retired `characters` bucket — foldRetiredCharactersBucket
-    // already handled it on the always-on path.
-    if (categoryKey === 'characters') continue;
+    // Skip retired characters buckets — foldRetiredCharactersBucket
+    // already handled them on the always-on path.
+    if (isCharactersBucket(categoryKey)) continue;
     const { kind, tags } = resolveCanonForCategory(categoryKey);
     const targetField = BIBLE_FIELD[kind];
     const variations = Array.isArray(value?.variations) ? value.variations : [];
