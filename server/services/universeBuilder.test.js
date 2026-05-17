@@ -457,6 +457,218 @@ describe("universeBuilder service", () => {
       expect(compiled).toHaveLength(4); // 3 atomic variations + 1 composite
       expect(compiled.map((p) => p.category)).toContain("composite_sheets");
     });
+
+    describe("canon", () => {
+      // Compile canon directly off a draft (createUniverse doesn't accept canon —
+      // it lands via the canon-extract / refine path or the expand auto-save).
+      // The synthesis path doesn't touch persistence, so a literal world shape
+      // is enough.
+      const canonWorld = () => ({
+        influences: {
+          embrace: ["moebius linework"],
+          avoid: ["blurry"],
+        },
+        characters: [
+          {
+            name: "Mira",
+            physicalDescription: "weathered scavenger, dust mask, copper goggles",
+            role: "protagonist",
+          },
+          { name: "Vex", physicalDescription: "tall, scarred, plate-armor smith" },
+        ],
+        settings: [
+          {
+            name: "Foundry City",
+            slugline: "EXT. FOUNDRY CITY — DAY",
+            description: "vast smelting works at the canyon rim",
+            palette: "rust + bone",
+          },
+        ],
+        objects: [
+          { name: "Brass Compass", description: "always points away from home" },
+        ],
+      });
+
+      it("synthesizes canon prompts from name + descriptive fields with style prefix", () => {
+        const w = canonWorld();
+        const compiled = svc.compilePrompts(w, {
+          promptMode: "canon",
+          canonSelection: { characters: "all", settings: "all", objects: "all" },
+        });
+        // 2 characters + 1 setting + 1 object = 4
+        expect(compiled).toHaveLength(4);
+        const mira = compiled.find((c) => c.label === "Mira");
+        expect(mira.category).toBe("canon:characters");
+        expect(mira.prompt).toBe(
+          "moebius linework. Mira — weathered scavenger, dust mask, copper goggles. protagonist",
+        );
+        expect(mira.negativePrompt).toBe("blurry");
+        const place = compiled.find((c) => c.label === "Foundry City");
+        expect(place.category).toBe("canon:settings");
+        expect(place.prompt).toContain("Foundry City");
+        expect(place.prompt).toContain("palette: rust + bone");
+      });
+
+      it("canonSelection: missing trunk skips it", () => {
+        const w = canonWorld();
+        const compiled = svc.compilePrompts(w, {
+          promptMode: "canon",
+          canonSelection: { settings: "all" },
+        });
+        expect(compiled).toHaveLength(1);
+        expect(compiled[0].category).toBe("canon:settings");
+      });
+
+      it("canonSelection: array filters by name (case-insensitive)", () => {
+        const w = canonWorld();
+        const compiled = svc.compilePrompts(w, {
+          promptMode: "canon",
+          canonSelection: { characters: ["mira"] },
+        });
+        expect(compiled).toHaveLength(1);
+        expect(compiled[0].label).toBe("Mira");
+      });
+
+      it("synthesizes a settings prompt from slugline-only entries (no name)", () => {
+        // The bible sanitizer accepts a setting whose only identifier is a
+        // slugline (name field empty). synthesizeCanonPrompt must fall back
+        // to slugline as the identifier seed so such entries don't silently
+        // synthesize to '' and get skipped at render time.
+        const w = canonWorld();
+        w.settings.push({
+          // No name — only a slugline identifier + description.
+          slugline: "INT. OLD ARCHIVE — NIGHT",
+          description: "lantern-lit shelves of ledgers",
+        });
+        const compiled = svc.compilePrompts(w, {
+          promptMode: "canon",
+          canonSelection: { settings: "all" },
+        });
+        // Two settings now: the named Foundry City + the slugline-only Archive.
+        expect(compiled).toHaveLength(2);
+        const archive = compiled.find((c) => c.label === "INT. OLD ARCHIVE — NIGHT");
+        expect(archive).toBeTruthy();
+        expect(archive.prompt).toContain("INT. OLD ARCHIVE — NIGHT");
+        expect(archive.prompt).toContain("lantern-lit shelves of ledgers");
+      });
+
+      it("canonSelection: settings also matches by slugline", () => {
+        const w = canonWorld();
+        const compiled = svc.compilePrompts(w, {
+          promptMode: "canon",
+          canonSelection: { settings: ["EXT. FOUNDRY CITY — DAY"] },
+        });
+        expect(compiled).toHaveLength(1);
+        expect(compiled[0].label).toBe("Foundry City");
+      });
+
+      it("canonSelection: slugline matching is settings-only (characters/objects ignore stray slugline)", () => {
+        // A stray `slugline` on a character or object should NOT participate
+        // in canon-selection matching — slugline is part of the settings
+        // schema only. This guards against accidental cross-trunk selection
+        // when an upstream tool mis-tags an entry.
+        const w = {
+          ...canonWorld(),
+          characters: [
+            {
+              name: "Ghost",
+              slugline: "should-not-match-on-character",
+              physicalDescription: "spectral",
+            },
+          ],
+          objects: [
+            {
+              name: "Shard",
+              slugline: "should-not-match-on-object",
+              description: "humming crystal",
+            },
+          ],
+        };
+        const charsCompiled = svc.compilePrompts(w, {
+          promptMode: "canon",
+          canonSelection: { characters: ["should-not-match-on-character"] },
+        });
+        expect(charsCompiled).toHaveLength(0);
+        const objsCompiled = svc.compilePrompts(w, {
+          promptMode: "canon",
+          canonSelection: { objects: ["should-not-match-on-object"] },
+        });
+        expect(objsCompiled).toHaveLength(0);
+        // Sanity — name still matches.
+        const nameMatched = svc.compilePrompts(w, {
+          promptMode: "canon",
+          canonSelection: { characters: ["Ghost"], objects: ["Shard"] },
+        });
+        expect(nameMatched).toHaveLength(2);
+      });
+
+      it("entry.prompt wins over synthesized fields", () => {
+        const w = {
+          ...canonWorld(),
+          characters: [
+            {
+              name: "Mira",
+              physicalDescription: "ignored",
+              prompt: "explicit hand-authored prompt",
+            },
+          ],
+        };
+        const compiled = svc.compilePrompts(w, {
+          promptMode: "canon",
+          canonSelection: { characters: "all" },
+        });
+        expect(compiled).toHaveLength(1);
+        expect(compiled[0].prompt).toBe(
+          "moebius linework. explicit hand-authored prompt",
+        );
+      });
+
+      it("skips entries with no name and no descriptive content", () => {
+        const w = { ...canonWorld(), characters: [{}, { name: "Mira" }] };
+        const compiled = svc.compilePrompts(w, {
+          promptMode: "canon",
+          canonSelection: { characters: "all" },
+        });
+        expect(compiled).toHaveLength(1);
+        expect(compiled[0].label).toBe("Mira");
+      });
+
+      it("promptMode=all compiles variations + sheets + canon together", async () => {
+        const w = await seedWorld({
+          compositeSheets: [
+            { label: "Sheet", prompt: "clean reference sheet" },
+          ],
+        });
+        // Layer canon directly onto the persisted world for this scenario.
+        w.characters = [
+          { name: "Mira", physicalDescription: "weathered scavenger" },
+        ];
+        const compiled = svc.compilePrompts(w, {
+          promptMode: "all",
+          canonSelection: { characters: "all" },
+        });
+        // 3 variations + 1 sheet + 1 canon = 5
+        expect(compiled).toHaveLength(5);
+        expect(compiled.map((c) => c.category)).toContain("canon:characters");
+      });
+
+      it("respects batchPerVariation for canon", () => {
+        const w = canonWorld();
+        const compiled = svc.compilePrompts(w, {
+          promptMode: "canon",
+          canonSelection: { characters: ["mira"] },
+          batchPerVariation: 3,
+        });
+        expect(compiled).toHaveLength(3);
+        expect(compiled.every((c) => c.label === "Mira")).toBe(true);
+      });
+
+      it("canon promptMode without canonSelection produces no prompts", () => {
+        const w = canonWorld();
+        const compiled = svc.compilePrompts(w, { promptMode: "canon" });
+        expect(compiled).toEqual([]);
+      });
+    });
   });
 
   describe("influences", () => {

@@ -18,7 +18,7 @@ import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { validateRequest } from '../lib/validation.js';
 import * as svc from '../services/universeBuilder.js';
 import * as canonSvc from '../services/universeCanon.js';
-import { BIBLE_KINDS } from '../lib/storyBible.js';
+import { BIBLE_KINDS, BIBLE_LIMITS } from '../lib/storyBible.js';
 import { getUniverseCanonUsage } from '../services/canonUsage.js';
 import { expandWorldTemplate, generateCategoryVariations } from '../services/universeBuilderExpand.js';
 import { refineWorldPrompts } from '../services/universeBuilderRefine.js';
@@ -237,6 +237,23 @@ const selectionSchema = z.record(
   message: `selection cannot exceed ${svc.WORLD_CATEGORY_COUNT_MAX} buckets`,
 });
 
+// `canonSelection` per trunk: 'all' or array of canon-entry names (case-insensitive).
+// Settings entries also match on `slugline` so a render queued from the Places
+// tab can target an entry the user filed by slugline ("INT. FOUNDRY — DAY").
+// Per-trunk cap mirrors the bible sanitizer (`ENTRIES_PER_BIBLE_MAX`) so this
+// can't enqueue more entries than the server actually persists; per-string cap
+// uses the looser of `NAME_MAX` / `SLUGLINE_MAX` so a settings entry filed by
+// slugline isn't rejected if those limits ever diverge (both 200 today).
+const CANON_TRUNK_KEYS = ['characters', 'settings', 'objects'];
+const CANON_NEEDLE_MAX = Math.max(BIBLE_LIMITS.NAME_MAX, BIBLE_LIMITS.SLUGLINE_MAX);
+const canonSelectionValueSchema = z.union([
+  z.literal('all'),
+  z.array(z.string().trim().min(1).max(CANON_NEEDLE_MAX)).max(BIBLE_LIMITS.ENTRIES_PER_BIBLE_MAX),
+]);
+const canonSelectionSchema = z.object(
+  Object.fromEntries(CANON_TRUNK_KEYS.map((k) => [k, canonSelectionValueSchema.optional()])),
+).strict();
+
 const renderSchema = z.object({
   // Removed: callers that still send `collectionName` get an explicit 400
   // (see the .refine() below) instead of a confusing silent no-op. The
@@ -255,10 +272,11 @@ const renderSchema = z.object({
   guidance: z.number().min(0).max(30).optional(),
   quantize: z.enum(['3', '4', '5', '6', '8']).optional(),
   // Per-variation render count and per-category subset.
-  promptMode: z.enum(['variations', 'sheets', 'all']).optional().default('variations'),
+  promptMode: z.enum(['variations', 'sheets', 'canon', 'all']).optional().default('variations'),
   batchPerVariation: z.number().int().min(1).max(20).optional().default(1),
   selection: selectionSchema.optional(),
   sheetSelection: z.union([z.literal('all'), z.array(z.string().trim().min(1).max(svc.VARIATION_LABEL_MAX)).max(svc.COMPOSITE_SHEETS_MAX)]).optional(),
+  canonSelection: canonSelectionSchema.optional(),
 }).refine((body) => body.collectionName === undefined, {
   message: 'collectionName is no longer supported — the linked collection follows the universe name automatically. Remove this field.',
   path: ['collectionName'],
@@ -323,10 +341,11 @@ router.post('/:id/render', asyncHandler(async (req, res) => {
     promptMode: body.promptMode,
     selection: body.selection,
     sheetSelection: body.sheetSelection,
+    canonSelection: body.canonSelection,
     batchPerVariation: body.batchPerVariation,
   });
   if (!compiled.length) {
-    throw new ServerError('No prompts to render — add variations or composite sheets first', {
+    throw new ServerError('No prompts to render — add canon entries, variations, or composite sheets first', {
       status: 400, code: 'WORLD_BUILDER_EMPTY',
     });
   }
