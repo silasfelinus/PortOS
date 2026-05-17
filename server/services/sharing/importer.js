@@ -450,6 +450,17 @@ export async function processManifest(bucketId, manifestFilename) {
   // that merges author-by-author into data/media-annotations.json.
   if (manifest.kind === 'media-annotations') {
     const outcome = await processAnnotationManifest(bucket, manifest);
+    // If the per-instance record JSON hasn't synced yet (cloud sync can deliver
+    // the manifest before the record), leave the manifest un-cursored so the
+    // watcher retries when records/ changes. Mirrors the asset/record pending
+    // path below — without this, a manifest delivered before its record would
+    // get markProcessed'd permanently and the annotation update would be lost.
+    if (outcome.missing) {
+      outcome.pendingRecords = [manifest.recordIds?.[0] || manifest.senderInstanceId];
+      sharingEvents.emit('manifest-processed', { bucketId, manifestId: manifest.id, manifestFilename, outcome });
+      console.log(`⏳ sharing: bucket=${bucket.name} manifest=${manifest.id} kind=media-annotations waitingForRecord=${outcome.reason}`);
+      return { processed: true, pending: true, manifest, outcome };
+    }
     await markProcessed(bucketId, manifestFilename, manifest.id);
     sharingEvents.emit('manifest-processed', { bucketId, manifestId: manifest.id, manifestFilename, outcome });
     console.log(`📥 sharing: bucket=${bucket.name} manifest=${manifest.id} kind=media-annotations applied=${outcome.applied}`);

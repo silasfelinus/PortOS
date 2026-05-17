@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { listMediaAnnotations, setMediaAnnotation } from '../services/api';
 import socket from '../services/socket';
 import toast from '../components/ui/Toast';
@@ -32,6 +32,12 @@ function enrichAll(raw) {
 
 export function useMediaAnnotations() {
   const [annotations, setAnnotations] = useState({});
+  // Mirror the latest annotations in a ref so toggleStar can read prior state
+  // without using setAnnotations as a side-channel. Calling setState with a
+  // side effect inside the updater function is unsafe under StrictMode /
+  // concurrent rendering (state updaters must be pure).
+  const annotationsRef = useRef(annotations);
+  useEffect(() => { annotationsRef.current = annotations; }, [annotations]);
 
   useEffect(() => {
     let cancelled = false;
@@ -96,15 +102,16 @@ export function useMediaAnnotations() {
     return res?.entry ?? null;
   }, []);
 
-  // Reads prior starred state from the functional setter so the callback's
-  // identity doesn't change on every annotations update (otherwise every
-  // MediaCard receives a new `onToggleStar` prop after each star flip).
+  // Reads prior starred state from the ref so the callback's identity stays
+  // stable across annotations updates (otherwise every MediaCard receives a
+  // new `onToggleStar` prop after each star flip). The ref pattern replaces
+  // the previous setAnnotations-as-side-channel, which violated React's
+  // "state updaters must be pure" contract under StrictMode / concurrent
+  // rendering.
   const toggleStar = useCallback((item) => {
     if (!item?.key) return;
-    setAnnotations((prev) => {
-      updateAnnotation(item.key, { starred: !prev[item.key]?.own?.starred });
-      return prev;
-    });
+    const priorStarred = !!annotationsRef.current[item.key]?.own?.starred;
+    updateAnnotation(item.key, { starred: !priorStarred });
   }, [updateAnnotation]);
 
   return { annotations, toggleStar, updateAnnotation };
