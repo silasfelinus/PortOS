@@ -69,7 +69,7 @@ export default {
       return { changed: false, alreadyCurrent };
     }
     await writeFile(annotationsPath, JSON.stringify({ annotations: next }, null, 2));
-    console.log(`📝 migration 012: attributed ${migrated} annotation(s) to instanceId=${instanceId} (already-multi-author=${alreadyCurrent})`);
+    console.log(`📝 migration 014: attributed ${migrated} annotation(s) to instanceId=${instanceId} (already-multi-author=${alreadyCurrent})`);
     return { changed: true, migrated, alreadyCurrent };
   },
 };

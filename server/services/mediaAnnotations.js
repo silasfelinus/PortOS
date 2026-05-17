@@ -48,8 +48,8 @@ function sanitizeAuthorEntry(raw) {
   return { authorName, starred, note, updatedAt };
 }
 
-// Safety net for a stale install: migration 012 rewrites the file once, but a
-// hand-edited or pre-012 file still parses correctly here.
+// Safety net for a stale install: migration 014 rewrites the file once, but a
+// hand-edited or pre-014 file still parses correctly here.
 async function liftLegacyEntry(rawEntry) {
   const isLegacy = rawEntry
     && typeof rawEntry === 'object'

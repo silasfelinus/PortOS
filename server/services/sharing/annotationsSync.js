@@ -9,7 +9,7 @@
 import { join } from 'path';
 import { readdir } from 'fs/promises';
 import { existsSync } from 'fs';
-import { ensureDir, atomicWrite } from '../../lib/fileUtils.js';
+import { ensureDir, atomicWrite, readJSONFile } from '../../lib/fileUtils.js';
 import { listBuckets } from './buckets.js';
 import { buildManifest, writeManifest, annotationManifestFilename } from './manifest.js';
 import { getProducedByVersion } from './version.js';
@@ -47,15 +47,38 @@ async function exportAnnotationsToBucket(bucket, localAnnotations, senderInstanc
   await ensureDir(recordDir);
   const recordId = senderInstanceId;
   const recordPath = join(recordDir, `${recordId}.json`);
+
+  // Tombstone synthesis: peers only learn about deletions by seeing them. The
+  // import-side merge (`mergePeerAnnotations`) iterates incoming keys and
+  // treats `sanitizeAuthorEntry` returning null as "delete the peer's entry."
+  // So we diff the previously-written record (for this bucket+instance) for
+  // keys we used to publish but no longer do, and emit an explicit empty
+  // tombstone for each. Without this, a local delete shows up as "the key is
+  // simply absent from the next snapshot" — and peers retain the stale note
+  // forever. Scoped per-bucket because each bucket's prior record is its own
+  // file, so a key dropped from bucket A doesn't tombstone the same key on
+  // bucket B (it may still be valid there).
+  const tombstoneTs = new Date().toISOString();
+  const prior = await readJSONFile(recordPath, null, { logError: false });
+  const priorKeys = prior && prior.annotations && typeof prior.annotations === 'object'
+    ? Object.keys(prior.annotations)
+    : [];
+  for (const key of priorKeys) {
+    if (filtered[key]) continue;
+    // Only tombstone keys whose assets are still in this bucket — pruning a
+    // key whose asset has been removed from the bucket would tell peers to
+    // delete the note even though they may still hold the asset.
+    if (!assetKeys.has(key)) continue;
+    filtered[key] = { starred: false, note: '', updatedAt: tombstoneTs };
+  }
+
   const record = {
     id: recordId,
     instanceId: senderInstanceId,
     authorName: sourceName,
-    updatedAt: new Date().toISOString(),
+    updatedAt: tombstoneTs,
     annotations: filtered,
   };
-  // Always write the record even when filtered is empty — an empty payload is
-  // how we signal "I deleted all my notes on assets in this bucket" to peers.
   await atomicWrite(recordPath, record);
   const manifest = buildManifestForAnnotations({
     senderInstanceId,

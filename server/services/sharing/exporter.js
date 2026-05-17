@@ -90,8 +90,17 @@ async function copyAssetIfPresent(filename, kind, bucketPath) {
  * Build a synthetic job record from a `.metadata.json` sidecar when the
  * in-memory queue/archive no longer holds the job (>24h TTL). The sidecar
  * lives alongside the image file so its lifetime is tied to the asset.
+ *
+ * Guards against path traversal: rejects any jobId that contains a path
+ * separator, parent-directory token, or otherwise normalizes to something
+ * other than its bare basename. A corrupted or hostile imageJobId
+ * (`../../etc/passwd`, `..\foo`, absolute paths) could otherwise read
+ * arbitrary JSON outside `PATHS.images`. Same posture as `copyAssetIfPresent`.
  */
 async function jobFromSidecar(jobId) {
+  if (typeof jobId !== 'string' || !jobId) return null;
+  if (basename(jobId) !== jobId) return null;
+  if (jobId.includes('/') || jobId.includes('\\') || jobId.includes('..')) return null;
   const sc = await readJSONFile(join(PATHS.images, `${jobId}.metadata.json`));
   if (!sc) return null;
   return {
