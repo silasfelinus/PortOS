@@ -68,22 +68,26 @@ export function useMediaAnnotations() {
   }, []);
 
   const updateAnnotation = useCallback(async (key, patch) => {
-    let prior;
+    // Snapshot prior state synchronously from the ref — state updaters in
+    // React 18 concurrent mode can be deferred or retried, so mutating an
+    // outer `let prior` from inside `setAnnotations((prev) => { ... })` is
+    // unsafe and would leave the revert path with the wrong (or undefined)
+    // snapshot. The ref always reflects the latest committed state.
+    const prior = annotationsRef.current[key];
+    const priorOwn = prior?.own ?? null;
+    const mergedOwn = {
+      authorName: priorOwn?.authorName ?? '',
+      starred: 'starred' in patch ? patch.starred : (priorOwn?.starred ?? false),
+      note: 'note' in patch ? patch.note : (priorOwn?.note ?? ''),
+      updatedAt: new Date().toISOString(),
+    };
+    const others = prior?.others ?? [];
+    const ownEmpty = !mergedOwn.starred && !mergedOwn.note;
+    const nextEntry = enrich({
+      own: ownEmpty ? null : mergedOwn,
+      others,
+    });
     setAnnotations((prev) => {
-      prior = prev[key];
-      const priorOwn = prior?.own ?? null;
-      const mergedOwn = {
-        authorName: priorOwn?.authorName ?? '',
-        starred: 'starred' in patch ? patch.starred : (priorOwn?.starred ?? false),
-        note: 'note' in patch ? patch.note : (priorOwn?.note ?? ''),
-        updatedAt: new Date().toISOString(),
-      };
-      const others = prior?.others ?? [];
-      const ownEmpty = !mergedOwn.starred && !mergedOwn.note;
-      const nextEntry = enrich({
-        own: ownEmpty ? null : mergedOwn,
-        others,
-      });
       const next = { ...prev };
       if (!nextEntry || (!nextEntry.own && nextEntry.others.length === 0)) delete next[key];
       else next[key] = nextEntry;
