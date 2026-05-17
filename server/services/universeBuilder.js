@@ -463,7 +463,11 @@ function foldRetiredCharactersBucket(raw, canon) {
     if (!label) continue;
     const nameKey = normalizeBibleName(label);
     if (seen.has(nameKey)) continue;
-    if (next.characters.length >= BIBLE_LIMITS.ENTRIES_PER_BIBLE_MAX) break;
+    // Do NOT cap by length here against raw canon entries — they haven't
+    // been sanitized yet, and a malformed bunch of pre-existing entries
+    // could cause this fold to skip legitimate variations. sanitizeBibleList
+    // applies ENTRIES_PER_BIBLE_MAX after both arrays are merged and shape-
+    // validated.
     const entry = {
       name: label,
       prompt: trimTo(typeof variation === 'object' ? variation?.prompt : '', BIBLE_LIMITS.PROMPT_MAX),

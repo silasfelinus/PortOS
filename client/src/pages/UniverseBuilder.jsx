@@ -457,7 +457,7 @@ export default function UniverseBuilder() {
       return;
     }
     setSaving(true);
-    const payload = {
+    const basePayload = {
       name: draft.name.trim(),
       starterPrompt: draft.starterPrompt || '',
       logline: draft.logline || '',
@@ -465,16 +465,18 @@ export default function UniverseBuilder() {
       styleNotes: draft.styleNotes || '',
       categories: draft.categories,
       compositeSheets: draft.compositeSheets || [],
-      // Canon arrays must be included on the manual Save/Create path too —
-      // the post-expand auto-save covers most paths, but a user editing a
-      // saved world's canon manually still goes through this handler.
-      characters: draft.characters || [],
-      settings: draft.settings || [],
-      objects: draft.objects || [],
       influences: ensureInfluences(draft.influences),
       locked: draft.locked || {},
       llm: draft.llm || {},
     };
+    // Canon arrays are wholesale-replaced server-side, so including them on
+    // a manual update can clobber concurrent edits from the canon UI / other
+    // tabs. Send canon ONLY on create (the new universe starts empty and
+    // needs the expanded canon as its initial state). On update, the canon
+    // UI persists its mutations via targeted PATCHes already.
+    const payload = selectedId
+      ? basePayload
+      : { ...basePayload, characters: draft.characters || [], settings: draft.settings || [], objects: draft.objects || [] };
     const result = selectedId
       ? await updateUniverse(selectedId, payload).catch((e) => { toast.error(`Save failed: ${e.message}`); return null; })
       : await createUniverse(payload).catch((e) => { toast.error(`Save failed: ${e.message}`); return null; });
@@ -1156,7 +1158,7 @@ export default function UniverseBuilder() {
           <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={handleExpand}
-              disabled={expanding || !draft.starterPrompt?.trim()}
+              disabled={expanding || saving || !draft.starterPrompt?.trim()}
               className="px-3 py-2 bg-purple-600/30 hover:bg-purple-600/50 disabled:opacity-50 text-purple-200 border border-purple-600/40 rounded flex items-center gap-2 min-h-[40px]"
             >
               {expanding ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />}
