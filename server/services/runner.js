@@ -333,6 +333,24 @@ export async function executeApiRun(runId, provider, model, prompt, workspacePat
   return aiToolkitInstance.services.runner.executeApiRun(runId, provider, model, prompt, workspacePath, screenshots, onData, onComplete);
 }
 
+/**
+ * Register an in-flight run's killable process (ChildProcess or IPty) in the
+ * same `_portosActiveRuns` map the patched `stopRun`/`isRunActive` consult.
+ * Used by `executeTuiRun` so TUI runs can be stopped from /runs the same way
+ * CLI runs can. Both ChildProcess and node-pty IPty expose `.kill(signal?)`.
+ */
+export function registerActiveRun(runId, killable) {
+  if (!aiToolkitInstance) throw new Error('AI Toolkit not initialized');
+  if (!aiToolkitInstance.services.runner._portosActiveRuns) {
+    aiToolkitInstance.services.runner._portosActiveRuns = new Map();
+  }
+  aiToolkitInstance.services.runner._portosActiveRuns.set(runId, killable);
+}
+
+export function unregisterActiveRun(runId) {
+  aiToolkitInstance?.services?.runner?._portosActiveRuns?.delete(runId);
+}
+
 export async function stopRun(runId) {
   if (!aiToolkitInstance) throw new Error('AI Toolkit not initialized');
   // Check local active runs first (CLI runs spawned by this override)

@@ -240,7 +240,14 @@ try {
 // (no shell, prompt via stdin) — the PortOS variant exists for the per-CLI
 // invocation conventions, not for security.
 import { executeCliRun as executeCliRunFixed } from './services/runner.js';
+import { executeTuiRun as executeTuiRunFixed } from './lib/tuiPromptRunner.js';
 aiToolkit.services.runner.executeCliRun = executeCliRunFixed;
+// Attach the TUI executor so POST /api/runs with a TUI provider dispatches
+// here instead of erroring. The toolkit's runs router checks for
+// `runnerService.executeTuiRun` and 400s otherwise — without this patch,
+// runs UI would be unable to start TUI runs even though the staged-LLM path
+// (promptRunner.js) already routes TUI internally.
+aiToolkit.services.runner.executeTuiRun = executeTuiRunFixed;
 // Also patch stopRun + isRunActive so they consult `_portosActiveRuns`
 // (where the PortOS CLI variant tracks child processes), not just the
 // toolkit's internal `activeRuns` map. Without this, the runs router

@@ -16,7 +16,7 @@ import { join } from 'path';
 import { updateSeries } from './series.js';
 import { PATHS, readJSONFile } from '../../lib/fileUtils.js';
 import { getUniverse, createUniverse, updateUniverse } from '../universeBuilder.js';
-import { mergeExtractedBible, BIBLE_FIELD } from '../../lib/storyBible.js';
+import { mergeExtractedBible, BIBLE_FIELD, BIBLE_SOURCE } from '../../lib/storyBible.js';
 
 // Raw read of pipeline-series.json (bypasses sanitizeSeries, which post-B.4
 // strips the legacy canon fields the migration needs to see).
@@ -80,7 +80,18 @@ export async function migrateSeriesCanon({ dryRun = false, log = console.log } =
       // the call so the diff check below sees the pre-merge length, and
       // pass a clone so the live universe object isn't mutated mid-loop.
       const before = Array.isArray(universe[field]) ? universe[field] : [];
-      const merged = mergeExtractedBible([...before], incoming, kind);
+      // Mirror the live extract path's provenance (textStages.js +
+      // routes/pipeline.js): series-driven canon enters the universe as
+      // SERIES_EXTRACT with autoLock so a later AI refine/differentiate
+      // can't silently rewrite it. Without these opts the migrated
+      // entries default to source:'ai' + autoLock:false, leaving them one
+      // click away from being clobbered — the opposite of what the live
+      // path promises.
+      const merged = mergeExtractedBible([...before], incoming, kind, {
+        source: BIBLE_SOURCE.SERIES_EXTRACT,
+        autoLock: true,
+        sourceSeriesId: s.id,
+      });
       if (merged.length > before.length || JSON.stringify(merged) !== JSON.stringify(before)) {
         patch[field] = merged;
         summary.perKind[field] += incoming.length;

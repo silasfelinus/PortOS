@@ -874,13 +874,19 @@ export async function commitSeasonsWithRemap(currentSeries, { arc, seasons }) {
   // one `recomputeIssueNumbers` after, wrapped in `withReexportSuppressed` so
   // we don't fan out N socket events + N debounced re-exports of the same
   // series.
+  //
+  // Persist the new seasons FIRST so that a crash between writes leaves
+  // issues attached to ids that still exist in `series.seasons[]`. If we
+  // wrote issues first and crashed before `updateSeries`, every reassigned
+  // issue would point at a `seasonId` that's not in the persisted series —
+  // the exact orphan state this helper was written to prevent.
   let updated;
   await withReexportSuppressed('series', seriesId, async () => {
+    updated = await updateSeries(seriesId, { arc, seasons });
     for (const iss of reassignList) {
       const target = remap.get(iss.seasonId) ?? null;
       await updateIssue(iss.id, { seasonId: target }, { skipRenumber: true });
     }
-    updated = await updateSeries(seriesId, { arc, seasons });
     if (reassignList.length) await recomputeIssueNumbersForSeries(seriesId);
   });
   if (reassignList.length) emitRecordUpdated('series', seriesId);

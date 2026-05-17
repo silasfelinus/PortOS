@@ -29,7 +29,7 @@ import { spawn as ptySpawn } from 'node-pty';
 import { join } from 'path';
 import { ensureDir, PATHS } from './fileUtils.js';
 import { createStreamingAnsiStripper } from './ansiStrip.js';
-import { getRunsPath, finalizeRunRecord, emitRunStarted } from '../services/runner.js';
+import { getRunsPath, finalizeRunRecord, emitRunStarted, registerActiveRun, unregisterActiveRun } from '../services/runner.js';
 import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
   PASTE_MARKER_POLL_MS,
@@ -130,6 +130,14 @@ export async function executeTuiRun(runId, provider, prompt, cwd, onData, onComp
     throw new Error(`Failed to spawn TUI '${command}': ${err.message}`);
   }
 
+  // Register in the same active-runs map the patched stopRun/isRunActive
+  // consult, so /runs UI can stop a hung TUI run. Without this, stopRun is a
+  // no-op for TUI and isRunActive returns false — the PTY keeps spending
+  // tokens with no way to cancel from the UI. Mirrors executeCliRun's
+  // registration of its ChildProcess; node-pty's IPty exposes the same
+  // .kill(signal?) interface so the patched stopRun works unchanged.
+  registerActiveRun(runId, ptyProcess);
+
   // Fire the toolkit's `onRunStarted` hook now that the PTY is alive — the
   // CLI/API paths fire it inside the toolkit's executeCliRun/executeApiRun,
   // but the TUI path doesn't go through those. Without this hook, /runs and
@@ -163,6 +171,7 @@ export async function executeTuiRun(runId, provider, prompt, cwd, onData, onComp
       if (finalized) return;
       finalized = true;
       cleanupTimers();
+      unregisterActiveRun(runId);
 
       // Kill the PTY if still alive — one-shot runs don't leave a session
       // behind for the user to interact with.
