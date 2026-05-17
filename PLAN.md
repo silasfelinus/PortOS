@@ -20,6 +20,18 @@ V1 landed: buckets, ShareToButton on Pipeline + UniverseBuilder + MediaCollectio
 - [ ] **Extend `syncOrchestrator` to cover pipeline/universe over Tailscale.** Separate ticket from buckets — same-network peers on Tailscale should be able to sync these categories without going through a bucket.
 - [ ] **Multi-hop provenance chains.** Re-share authors a fresh `origin` block; chain[] would preserve full attribution. Defer until users ask.
 
+### Create Suite — Importer page
+
+New on-ramp to the Create pipeline. User pastes a short story / novel / screenplay / comic script + Universe Name + Series Name; the Importer LLM-extracts universe canon (characters/places/objects), the story arc, and a proposed issue split; user reviews and commits to create or extend the universe + series with prose-seeded issues ready for the visual render stages. Find-or-create on both Universe and Series names so the same import can extend an existing world. See `~/.claude/plans/i-want-to-add-vivid-bear.md` for the full design.
+
+- [ ] Page scaffold: `client/src/pages/Importer.jsx` (intake + review phases), API client `client/src/services/apiImporter.js`, lazy `<Route path="importer">` in `App.jsx`, sidebar entry in `Layout.jsx`, `nav.create.importer` in `navManifest.js`.
+- [ ] Server orchestrator `server/services/importer.js` — `analyzeImport` (no persistence) + `commitImport` (universe canon merge + series arc/seasons + issue creation with `stages.prose.output` seeded).
+- [ ] Server routes `server/routes/importer.js` + Zod schemas `importerAnalyzeSchema` / `importerCommitSchema` in `server/lib/validation.js`.
+- [ ] Three new stage prompts: `importer-canon-extract.md`, `importer-arc-extract.md`, `importer-issue-proposal.md` (in `data.sample/prompts/stages/`); content-type branching inside via Liquid `{% if %}`. Add a migration script in `scripts/migrations/` so existing installs pick them up.
+- [ ] Find-or-create logic: case-insensitive name match; series match scoped to universe; respect `series.locked.arc` (throw `ERR_VALIDATION`, mirror arcPlanner pattern).
+- [ ] Tests in `server/services/importer.test.js` — find-or-create, analyze shape, commit happy/locked/duplicate paths, route validation.
+- [ ] **Follow-up**: chunked extraction for source > 200K chars (v1 hard-rejects; capture as a separate item once we hit the limit on a real import).
+
 ### Universe-as-Canon refactor — Phase B.4 cleanup + follow-ups
 
 The world model is now a Marvel-style **universe** carrying canonical entities (characters, places, objects) that multiple series can share for crossovers + cameos. Shipped 2026-05-14 across Phase 0 (world→universe rename), Phase A (canon arrays + Universe Canon page + cast-wide differentiate + image-delete purge sync), Phase B (render paths read via `getSeriesCanon`), Phase B.2 (Nouns page reads/writes universe canon), Phase B.3a (legacy series-side canon helpers redirect to universe when linked), Phase B.3b (Nouns page drops the orphan series fallback), and the "Appears in" cross-reference footer on every Canon card. Migration scripts: `server/scripts/migrateAll.js` (chains `migrateWorldToUniverse.js` + `migrateSeriesCanon.js`).
