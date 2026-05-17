@@ -103,10 +103,21 @@ export default function UniverseCanon() {
 
   // Lazy usage fetch. Decoupled from the universe load so a slow cross-
   // reference scan doesn't gate the page paint, and so it can be refetched
-  // independently after canon mutations.
+  // independently after canon mutations. The captured `requestedFor` is
+  // checked against the live `currentUniverseIdRef` so a slow response from
+  // a previous universe (rapid navigation) can't repopulate `usage` with
+  // stale data — `setUsage(null)` on universeId change would otherwise be
+  // immediately undone.
+  const currentUniverseIdRef = useRef(universeId);
+  useEffect(() => { currentUniverseIdRef.current = universeId; }, [universeId]);
   const refreshUsage = useCallback(() => {
-    getUniverseCanonUsage(universeId)
-      .then((u) => { if (mountedRef.current) setUsage(u); })
+    const requestedFor = universeId;
+    getUniverseCanonUsage(requestedFor)
+      .then((u) => {
+        if (!mountedRef.current) return;
+        if (currentUniverseIdRef.current !== requestedFor) return;
+        setUsage(u);
+      })
       .catch(() => { /* non-fatal; cards just render without usage footer */ });
   }, [universeId, mountedRef]);
   useEffect(() => { refreshUsage(); }, [refreshUsage]);
