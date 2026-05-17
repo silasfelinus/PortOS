@@ -24,7 +24,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
-import { ensureDir, PATHS } from '../../lib/fileUtils.js';
+import { ensureDir, PATHS, resolveGalleryImage } from '../../lib/fileUtils.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { imageGenEvents } from '../imageGenEvents.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay } from '../../lib/sseUtils.js';
@@ -146,6 +146,13 @@ export async function generateImage({
   }
   await ensureDir(PATHS.images);
 
+  // Defense-in-depth: HTTP routes already resolve basenames to absolute paths,
+  // but re-anchor here so any future caller can't attach an arbitrary local
+  // file via the codex CLI's `-i` flag. Mirrors imageGen/local.js.
+  const validInitImagePath = (initImagePath && typeof initImagePath === 'string')
+    ? resolveGalleryImage(initImagePath)
+    : null;
+
   const jobId = providedJobId || randomUUID();
   const filename = `${jobId}.png`;
   const outputPath = join(PATHS.images, filename);
@@ -158,7 +165,7 @@ export async function generateImage({
   const sizeHint = (width && height) ? ` (${width}x${height})` : '';
   const qualityHint = (width >= 1536 || height >= 1536) ? ' (high quality)' : '';
   const avoidHint = negativePrompt?.trim() ? `\nAvoid: ${negativePrompt.trim()}` : '';
-  const editPrefix = initImagePath
+  const editPrefix = validInitImagePath
     ? `Edit the attached reference image — ${describeFidelity(initImageStrength)}. Render target:\n`
     : '';
   const fullPrompt = `$imagegen ${editPrefix}${prompt.trim()}${sizeHint}${qualityHint}${avoidHint}`;
@@ -168,7 +175,7 @@ export async function generateImage({
     'exec',
     '--skip-git-repo-check',
     '--sandbox', 'workspace-write',
-    ...(initImagePath ? ['-i', initImagePath] : []),
+    ...(validInitImagePath ? ['-i', validInitImagePath] : []),
     ...(model ? ['-m', String(model)] : []),
     fullPrompt,
   ];
