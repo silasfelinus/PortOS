@@ -122,10 +122,15 @@ const mergeCanonByName = (existing, fresh, kind = 'character') => {
     const collides = (nameKey && seen.has(nameKey))
       || (sluglineKey && seen.has(sluglineKey))
       || aliasMatches.some((k) => seen.has(k));
-    if (collides) continue;
+    // On collision, still register every identity key the fresh entry
+    // carried — so a *later* fresh entry with overlapping aliases/sluglines
+    // is recognized as a within-batch duplicate too. Without this, fresh
+    // entry A (collides on alias) gets skipped silently and fresh entry B
+    // (uses A's primary name) slips in as a duplicate of the existing record.
     if (nameKey) seen.add(nameKey);
     if (sluglineKey) seen.add(sluglineKey);
     for (const k of aliasMatches) seen.add(k);
+    if (collides) continue;
     merged.push(e);
   }
   return merged;

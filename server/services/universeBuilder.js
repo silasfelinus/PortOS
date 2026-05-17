@@ -436,12 +436,56 @@ export const sanitizeCompositeSheets = (raw = []) => {
   return sheets;
 };
 
+// Always-on fold of the retired `characters` category bucket into
+// universe.characters[]. Runs regardless of schemaVersion so the Phase A
+// retirement contract holds for every write path (createUniverse,
+// updateUniverse, importer share-bucket, stale-client PATCH). Dedupes by
+// normalized name so existing canon records are preserved on collision.
+// Returns the (mutated-shape) canon arrays the caller should consume.
+function foldRetiredCharactersBucket(raw, canon) {
+  const categories = raw && typeof raw.categories === 'object' ? raw.categories : {};
+  const charBucket = categories.characters;
+  const variations = Array.isArray(charBucket)
+    ? charBucket
+    : Array.isArray(charBucket?.variations)
+      ? charBucket.variations
+      : null;
+  if (!variations) return canon;
+  const next = {
+    characters: Array.isArray(canon.characters) ? [...canon.characters] : [],
+    settings: canon.settings,
+    objects: canon.objects,
+  };
+  const seen = new Set(next.characters.map((e) => normalizeBibleName(e?.name)));
+  for (const variation of variations) {
+    const labelSource = typeof variation === 'string' ? variation : variation?.label;
+    const label = trimTo(labelSource, BIBLE_LIMITS.NAME_MAX);
+    if (!label) continue;
+    const nameKey = normalizeBibleName(label);
+    if (seen.has(nameKey)) continue;
+    if (next.characters.length >= BIBLE_LIMITS.ENTRIES_PER_BIBLE_MAX) break;
+    const entry = {
+      name: label,
+      prompt: trimTo(typeof variation === 'object' ? variation?.prompt : '', BIBLE_LIMITS.PROMPT_MAX),
+      tags: [],
+      source: BIBLE_SOURCE.UNIVERSE_EXPAND,
+    };
+    if (typeof variation === 'object' && variation?.locked === true) entry.locked = true;
+    next.characters.push(entry);
+    seen.add(nameKey);
+  }
+  return next;
+}
+
 // Backfill canon arrays from v1 `categories[].variations[]`. Idempotent:
 // entries matching an existing canon name (case-insensitive) are skipped, so
-// hand-authored / series-extracted records are never overwritten. Categories
-// stay intact during the transition; Phase 2 UI retires them.
+// hand-authored / series-extracted records are never overwritten. The
+// retired `characters` bucket is handled by foldRetiredCharactersBucket
+// before this runs; here we only fold the *other* legacy categories
+// (landscapes/environments/structures/vehicles + customs) into
+// settings/objects for the v3→v4 transition.
 function backfillCanonFromCategories(raw, existingCanon) {
-  // v2 hot path — already backfilled. Sanitize through the kind sanitizers
+  // v4 hot path — already backfilled. Sanitize through the kind sanitizers
   // once and return; no category scan needed.
   if (raw.schemaVersion >= CURRENT_SCHEMA_VERSION) {
     return {
@@ -466,6 +510,9 @@ function backfillCanonFromCategories(raw, existingCanon) {
   const categories = raw && typeof raw.categories === 'object' ? raw.categories : {};
   for (const [rawKey, value] of Object.entries(categories)) {
     const categoryKey = normalizeCategoryKey(rawKey) || rawKey;
+    // Skip the retired `characters` bucket — foldRetiredCharactersBucket
+    // already handled it on the always-on path.
+    if (categoryKey === 'characters') continue;
     const { kind, tags } = resolveCanonForCategory(categoryKey);
     const targetField = BIBLE_FIELD[kind];
     const variations = Array.isArray(value?.variations) ? value.variations : [];
@@ -519,14 +566,21 @@ const sanitizeTemplate = (raw) => {
     mergeLegacyPromptsIntoInfluences(raw.influences, raw.stylePrompt, raw.negativePrompt),
   );
   const locked = sanitizeLocked(raw.locked);
-  // Canon registries. Backfill copies legacy `categories[].variations[]` into
-  // the matching kind on first read so series-side prompts can pull canon by
-  // entity name; categories stays alive until Phase 2 retires it.
-  const canonBackfill = backfillCanonFromCategories(raw, {
+  // Canon registries. Two passes:
+  //   1. foldRetiredCharactersBucket — Phase A retirement contract. ALWAYS
+  //      runs (regardless of schemaVersion) so a `categories.characters`
+  //      bucket arriving from any write path folds into universe.characters[].
+  //   2. backfillCanonFromCategories — legacy v3→v4 migration. Runs ONLY for
+  //      pre-v4 reads, folds all OTHER category buckets (landscapes/vehicles/
+  //      custom) into settings/objects. New v4 universes skip this so Phase
+  //      B's separation of canon (named entities) and categories (exploratory
+  //      variations) stays clean.
+  const foldedCanon = foldRetiredCharactersBucket(raw, {
     characters: raw.characters,
     settings: raw.settings,
     objects: raw.objects,
   });
+  const canonBackfill = backfillCanonFromCategories(raw, foldedCanon);
   const { characters, settings, objects, schemaVersion } = canonBackfill;
   const llm = raw.llm && typeof raw.llm === 'object'
     ? {
@@ -631,6 +685,14 @@ export async function createUniverse(input = {}) {
     characters: input.characters || [],
     settings: input.settings || [],
     objects: input.objects || [],
+    // Stamp the current schema so backfillCanonFromCategories takes its
+    // hot-path skip on first read. Without this, the legacy categories→
+    // canon backfill fires on every brand-new universe and re-pollutes
+    // `characters/settings/objects` with every category variation —
+    // counter to Phase B's separation of canon (named entities) from
+    // categories (exploratory variations). New universes are always at
+    // CURRENT_SCHEMA_VERSION; the backfill exists only for legacy reads.
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     llm: input.llm || {},
     createdAt: now,
     updatedAt: now,

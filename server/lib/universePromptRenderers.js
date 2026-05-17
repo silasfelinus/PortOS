@@ -52,35 +52,46 @@ const truncDesc = (s) => {
 // One row per canon trunk; renderCanonForPrompt iterates this so a future
 // kind addition (or field tweak) is a one-line change. formatEntry truncates
 // the long description field so a single entry can't dominate the prompt.
+// Build a `  - name [role]: physDesc. personality (background). tags: a, b`
+// line for a canon character. Trailing metadata is rendered only when
+// present so an empty bible doesn't pollute the prompt with empty markers.
+const formatCharacter = (c) => {
+  const role = c.role ? ` [${c.role}]` : '';
+  const tags = Array.isArray(c.tags) && c.tags.length ? ` tags: ${c.tags.join(', ')}` : '';
+  const parts = [
+    truncDesc(c.physicalDescription || c.description || ''),
+    truncDesc(c.personality || ''),
+    c.background ? `background: ${truncDesc(c.background)}` : '',
+  ].filter(Boolean);
+  const body = parts.length ? `: ${parts.join('. ')}` : '';
+  return `  - ${c.name}${role}${body}${tags}`;
+};
+
+// Place: prefer name; show slugline when present (screenplay-style location
+// header used by scene matchers); include recurringDetails — the expand
+// contract collects all three and the LLM uses them as continuity anchors.
+const formatSetting = (s) => {
+  const label = s.name || s.slugline || '(unnamed)';
+  const sluglineTag = s.name && s.slugline ? ` (${s.slugline})` : '';
+  const palette = s.palette ? ` palette: ${s.palette}` : '';
+  const parts = [
+    truncDesc(s.description || ''),
+    s.recurringDetails ? `recurring: ${truncDesc(s.recurringDetails)}` : '',
+  ].filter(Boolean);
+  const body = parts.length ? `: ${parts.join('. ')}` : '';
+  return `  - ${label}${sluglineTag}${body}${palette}`;
+};
+
+const formatObject = (o) => {
+  const desc = truncDesc(o.description || '');
+  const sig = o.significance ? ` (${truncDesc(o.significance)})` : '';
+  return `  - ${o.name}${desc ? `: ${desc}` : ''}${sig}`;
+};
+
 const CANON_SECTIONS = [
-  {
-    field: 'characters',
-    header: 'characters',
-    formatEntry: (c) => {
-      const desc = truncDesc(c.physicalDescription || c.description || '');
-      const role = c.role ? ` [${c.role}]` : '';
-      return `  - ${c.name}${role}${desc ? `: ${desc}` : ''}`;
-    },
-  },
-  {
-    field: 'settings',
-    header: 'places',
-    formatEntry: (s) => {
-      const label = s.name || s.slugline || '(unnamed)';
-      const desc = truncDesc(s.description || '');
-      const palette = s.palette ? ` palette: ${s.palette}` : '';
-      return `  - ${label}${desc ? `: ${desc}` : ''}${palette}`;
-    },
-  },
-  {
-    field: 'objects',
-    header: 'objects',
-    formatEntry: (o) => {
-      const desc = truncDesc(o.description || '');
-      const sig = o.significance ? ` (${truncDesc(o.significance)})` : '';
-      return `  - ${o.name}${desc ? `: ${desc}` : ''}${sig}`;
-    },
-  },
+  { field: 'characters', header: 'characters', formatEntry: formatCharacter },
+  { field: 'settings', header: 'places', formatEntry: formatSetting },
+  { field: 'objects', header: 'objects', formatEntry: formatObject },
 ];
 
 // Render the universe's canon arrays (characters/settings/objects) into a
