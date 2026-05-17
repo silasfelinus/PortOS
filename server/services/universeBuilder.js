@@ -443,7 +443,12 @@ export const sanitizeCompositeSheets = (raw = []) => {
 // normalized name so existing canon records are preserved on collision.
 // Returns the (mutated-shape) canon arrays the caller should consume.
 function foldRetiredCharactersBucket(raw, canon) {
-  const categories = raw && typeof raw.categories === 'object' ? raw.categories : {};
+  // `typeof null === 'object'` so the truthy check is load-bearing — without
+  // it, a payload with `categories: null` would dereference null below and
+  // throw inside sanitizeTemplate.
+  const categories = raw && raw.categories && typeof raw.categories === 'object'
+    ? raw.categories
+    : {};
   const charBucket = categories.characters;
   const variations = Array.isArray(charBucket)
     ? charBucket
@@ -456,7 +461,22 @@ function foldRetiredCharactersBucket(raw, canon) {
     settings: canon.settings,
     objects: canon.objects,
   };
-  const seen = new Set(next.characters.map((e) => normalizeBibleName(e?.name)));
+  // Index existing canon character names AND aliases — server-side
+  // MERGE_CONFIG.character treats both as identity keys, so a retired-bucket
+  // variation matching an existing alias should collide and NOT create a
+  // duplicate. Without alias indexing, an "Ashley" character with alias
+  // "Ash" plus a `categories.characters: [{label: "Ash"}]` payload would
+  // produce two records.
+  const seen = new Set();
+  for (const e of next.characters) {
+    if (e?.name) seen.add(normalizeBibleName(e.name));
+    if (Array.isArray(e?.aliases)) {
+      for (const alias of e.aliases) {
+        const key = normalizeBibleName(alias);
+        if (key) seen.add(key);
+      }
+    }
+  }
   for (const variation of variations) {
     const labelSource = typeof variation === 'string' ? variation : variation?.label;
     const label = trimTo(labelSource, BIBLE_LIMITS.NAME_MAX);
