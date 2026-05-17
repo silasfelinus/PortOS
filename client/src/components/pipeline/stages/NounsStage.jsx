@@ -71,6 +71,18 @@ const KINDS = [
   },
 ];
 
+// Stitch the series' optional `stylePromptOverride` ahead of the linked
+// universe's stylePrompt — mirrors server-side `applyWorldStyle` in
+// visualStages.js so client preview renders match comic-page renders.
+const universeStylePreset = (universe, series) => {
+  if (!universe) return null;
+  const stylePrompt = [series?.stylePromptOverride, universe.stylePrompt]
+    .map((s) => (s || '').trim())
+    .filter(Boolean)
+    .join('. ');
+  return { prompt: stylePrompt, negativePrompt: universe.negativePrompt };
+};
+
 export default function NounsStage({ issue, series }) {
   const mountedRef = useMounted();
   const prose = (issue.stages?.prose?.output || '').trim();
@@ -227,11 +239,14 @@ export default function NounsStage({ issue, series }) {
     // Inject the universe's stylePrompt as a prefix and merge negativePrompts so
     // ref images and comic pages share the same aesthetic (Codex doesn't
     // accept reference images, so style consistency comes from text alone).
+    // `series.stylePromptOverride` prepends ahead of the universe style so
+    // a single series can deviate without forking the universe — mirrors
+    // server-side `applyWorldStyle` in visualStages.js.
     const userPrompt = `${entry.name}: ${description}`;
     const styled = composeStyledPrompt(
       userPrompt,
       baseOpts.negativePrompt || '',
-      universe ? { prompt: universe.stylePrompt, negativePrompt: universe.negativePrompt } : null,
+      universeStylePreset(universe, series),
     );
     const payload = {
       ...baseOpts,
@@ -255,7 +270,7 @@ export default function NounsStage({ issue, series }) {
     const styled = composeStyledPrompt(
       plate.prompt,
       plate.negativePrompt,
-      universe ? { prompt: universe.stylePrompt, negativePrompt: universe.negativePrompt } : null,
+      universeStylePreset(universe, series),
     );
     const queued = await generateImage({
       ...baseOpts,

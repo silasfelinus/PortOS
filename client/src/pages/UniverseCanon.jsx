@@ -9,9 +9,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
-  Library, Loader2, Users, MapPin, Package, Globe2, Wand2, ArrowLeft,
+  Library, Loader2, Users, MapPin, Package, Globe2, Wand2, ArrowLeft, Filter,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import {
@@ -65,6 +65,8 @@ const KINDS = [
 
 export default function UniverseCanon() {
   const { universeId } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const seriesFilter = searchParams.get('series') || '';
   const mountedRef = useMounted();
   const [universe, setUniverse] = useState(null);
   const [loadErr, setLoadErr] = useState(null);
@@ -108,6 +110,64 @@ export default function UniverseCanon() {
       .catch(() => { /* non-fatal; cards just render without usage footer */ });
   }, [universeId, mountedRef]);
   useEffect(() => { refreshUsage(); }, [refreshUsage]);
+
+  // Series-with-usage options for the filter dropdown. Derived from the
+  // usage map rather than a fresh API call so the dropdown only lists
+  // series that actually reference this universe's canon — a series linked
+  // to the universe with zero issues has nothing to filter to.
+  const seriesOptions = useMemo(() => {
+    if (!usage) return [];
+    const seen = new Map();
+    for (const kind of KINDS) {
+      const perEntry = usage[kind.key] || {};
+      for (const list of Object.values(perEntry)) {
+        for (const row of (list || [])) {
+          if (row?.seriesId && !seen.has(row.seriesId)) {
+            seen.set(row.seriesId, row.seriesName || row.seriesId);
+          }
+        }
+      }
+    }
+    return [...seen.entries()]
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [usage]);
+
+  // If the URL names a series that isn't in this universe's usage map
+  // (stale bookmark, deleted series), drop the param silently so the page
+  // doesn't show an empty "filtered" view forever.
+  useEffect(() => {
+    if (!usage || !seriesFilter) return;
+    if (!seriesOptions.some((s) => s.id === seriesFilter)) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('series');
+      setSearchParams(next, { replace: true });
+    }
+  }, [usage, seriesFilter, seriesOptions, searchParams, setSearchParams]);
+
+  const handleSeriesFilterChange = useCallback((value) => {
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set('series', value);
+    else next.delete('series');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  // Build a per-kind filtered entry list. When no filter is active the
+  // raw universe arrays pass through unchanged.
+  const filteredByKind = useMemo(() => {
+    if (!universe) return {};
+    const out = {};
+    for (const kind of KINDS) {
+      const all = Array.isArray(universe[kind.key]) ? universe[kind.key] : [];
+      if (!seriesFilter || !usage) { out[kind.key] = all; continue; }
+      const perEntry = usage[kind.key] || {};
+      out[kind.key] = all.filter((entry) => {
+        const rows = perEntry[entry.id] || [];
+        return rows.some((r) => r.seriesId === seriesFilter);
+      });
+    }
+    return out;
+  }, [universe, usage, seriesFilter]);
 
   const previewItems = useMemo(() => {
     if (!universe) return [];
@@ -312,6 +372,23 @@ export default function UniverseCanon() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          {seriesOptions.length > 1 ? (
+            <label className="inline-flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-port-card border border-port-border text-gray-300 text-sm">
+              <Filter size={12} className="text-gray-500" />
+              <span className="sr-only">Filter by series</span>
+              <select
+                value={seriesFilter}
+                onChange={(e) => handleSeriesFilterChange(e.target.value)}
+                className="bg-transparent text-xs focus:outline-none"
+                aria-label="Filter canon by series"
+              >
+                <option value="">All series</option>
+                {seriesOptions.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           <button
             type="button"
             onClick={() => setExtractOpen((v) => !v)}
@@ -363,11 +440,24 @@ export default function UniverseCanon() {
         </section>
       ) : null}
 
+      {seriesFilter && seriesOptions.length > 1 ? (
+        <p className="text-xs text-gray-500 italic">
+          Showing canon used in <span className="text-gray-300">{seriesOptions.find((s) => s.id === seriesFilter)?.name || 'selected series'}</span>.{' '}
+          <button
+            type="button"
+            onClick={() => handleSeriesFilterChange('')}
+            className="text-port-accent hover:underline"
+          >Clear filter</button>
+        </p>
+      ) : null}
+
       {KINDS.map((kind) => (
         <KindSection
           key={kind.key}
           kind={kind}
-          all={universe[kind.key] || []}
+          all={filteredByKind[kind.key] || []}
+          totalCount={(universe[kind.key] || []).length}
+          filtered={!!seriesFilter}
           usage={usage?.[kind.key] || null}
           renderingJobs={renderingJobs}
           onRender={(entry) => handleRenderRef(kind, entry)}
@@ -388,18 +478,22 @@ export default function UniverseCanon() {
   );
 }
 
-function KindSection({ kind, all, usage, renderingJobs, onRender, onJobCompleted, onJobFailed, onPreview, onRefine, refiningId, onToggleLock, togglingLockId, onPatchEntry, onRenderCleanPlate }) {
+function KindSection({ kind, all, totalCount, filtered, usage, renderingJobs, onRender, onJobCompleted, onJobFailed, onPreview, onRefine, refiningId, onToggleLock, togglingLockId, onPatchEntry, onRenderCleanPlate }) {
   const Icon = kind.icon;
   return (
     <section className="rounded-lg border border-port-border bg-port-card/40">
       <div className="flex items-center gap-2 px-3 py-2 border-b border-port-border">
         <Icon size={14} className="text-gray-400" />
         <h3 className="text-sm font-semibold text-white">{kind.label}</h3>
-        <span className="text-[10px] text-gray-500">{all.length}</span>
+        <span className="text-[10px] text-gray-500">
+          {filtered && totalCount !== all.length ? `${all.length} / ${totalCount}` : all.length}
+        </span>
       </div>
       <div className="p-3">
         {all.length === 0 ? (
-          <p className="text-xs text-gray-500 italic">No {kind.label.toLowerCase()} yet. Use <em>Extract from prose</em> above to populate this list from an issue.</p>
+          filtered && totalCount > 0
+            ? <p className="text-xs text-gray-500 italic">No {kind.label.toLowerCase()} in the selected series. {totalCount} total in this universe — clear the filter to see them all.</p>
+            : <p className="text-xs text-gray-500 italic">No {kind.label.toLowerCase()} yet. Use <em>Extract from prose</em> above to populate this list from an issue.</p>
         ) : (
           <ul className="space-y-2">
             {all.map((entry) => (

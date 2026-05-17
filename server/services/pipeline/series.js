@@ -59,6 +59,7 @@ export const NAME_MAX = 200;
 export const LOGLINE_MAX = 500;
 export const PREMISE_MAX = 8000;
 export const STYLE_NOTES_MAX = 4000;
+export const STYLE_PROMPT_OVERRIDE_MAX = 1000;
 export const CHARACTER_NAME_MAX = BIBLE_LIMITS.NAME_MAX;
 export const CHARACTER_DESCRIPTION_MAX = BIBLE_LIMITS.PHYSICAL_DESCRIPTION_MAX;
 export const CHARACTERS_PER_SERIES_MAX = BIBLE_LIMITS.ENTRIES_PER_BIBLE_MAX;
@@ -119,6 +120,12 @@ const sanitizeSeries = (raw) => {
     seasons: sanitizeSeasonList(raw.seasons),
     locked: sanitizeSeriesLocked(raw.locked),
     styleNotes: trimTo(raw.styleNotes, STYLE_NOTES_MAX),
+    // Per-series override that prepends ahead of the linked universe's
+    // stylePrompt during image-gen composition. Lets a single series in a
+    // shared universe deviate slightly (e.g. a noir spin-off) without
+    // forking the universe. Empty string = no override; fall through to
+    // universe-only style.
+    stylePromptOverride: trimTo(raw.stylePromptOverride, STYLE_PROMPT_OVERRIDE_MAX),
     // Series-level default visual style (catalog id + optional custom prompt).
     // `null` when the user hasn't picked one — stage-level fallbacks in
     // resolveVisualStyle() handle that case so legacy series keep rendering
@@ -177,6 +184,7 @@ export async function createSeries(input = {}) {
       seasons: input.seasons || [],
       locked: input.locked || {},
       styleNotes: input.styleNotes || '',
+      stylePromptOverride: input.stylePromptOverride || '',
       targetFormat: input.targetFormat || 'comic+tv',
       issueCountTarget: input.issueCountTarget || 0,
       llm: input.llm || null,
@@ -240,6 +248,7 @@ export async function updateSeries(id, patch = {}) {
       // Wholesale replace — `locked: {}` clears every lock; omission preserves.
       ...('locked' in patch ? { locked: patch.locked } : {}),
       ...('styleNotes' in patch ? { styleNotes: patch.styleNotes } : {}),
+      ...('stylePromptOverride' in patch ? { stylePromptOverride: patch.stylePromptOverride } : {}),
       ...('visualStyleDefault' in patch ? { visualStyleDefault: patch.visualStyleDefault } : {}),
       ...('targetFormat' in patch ? { targetFormat: patch.targetFormat } : {}),
       ...('issueCountTarget' in patch ? { issueCountTarget: patch.issueCountTarget } : {}),

@@ -93,7 +93,7 @@ export default function PipelineSeries() {
   const flushPending = async () => {
     if (!series) return false;
     const saved = lastSavedRef.current || series;
-    const fields = ['name', 'logline', 'premise', 'styleNotes', 'issueCountTarget', 'universeId'];
+    const fields = ['name', 'logline', 'premise', 'styleNotes', 'stylePromptOverride', 'issueCountTarget', 'universeId'];
     const dirty = fields.some((k) => (series[k] ?? '') !== (saved[k] ?? ''))
       || JSON.stringify(series.characters || []) !== JSON.stringify(saved.characters || [])
       || JSON.stringify(series.llm || {}) !== JSON.stringify(saved.llm || {});
@@ -104,6 +104,7 @@ export default function PipelineSeries() {
       premise: series.premise,
       universeId: series.universeId || null,
       styleNotes: series.styleNotes,
+      stylePromptOverride: series.stylePromptOverride || '',
       issueCountTarget: series.issueCountTarget,
       characters: series.characters,
       llm: series.llm || { provider: null, model: null },
@@ -338,6 +339,22 @@ function BibleSidebar({ series, universes, patchSeries, onAddCharacter, onUpdate
           </Link>
         </div>
       </Field>
+
+      {series.universeId ? (
+        <Field label="Universe style override (this series only)">
+          <textarea
+            value={series.stylePromptOverride || ''}
+            onChange={(e) => patchSeries({ stylePromptOverride: e.target.value })}
+            rows={2}
+            className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white"
+            maxLength={1000}
+            placeholder="moody noir lighting, high contrast monochrome. Prepended ahead of the universe's style so this series can deviate without forking the universe."
+          />
+          <p className="text-[11px] text-gray-500 mt-1">
+            Prepended ahead of the linked universe's <em>stylePrompt</em> for every image-gen call from this series. Leave blank to use the universe style verbatim.
+          </p>
+        </Field>
+      ) : null}
 
       <div>
         <div className="flex items-center justify-between mb-2">

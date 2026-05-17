@@ -55,9 +55,20 @@ const stackStyle = (series, extraStyle) => joinStyleParts(series?.styleNotes, ex
 const composeExtraStyle = (series, issue, stageId, callerExtraStyle = '') =>
   joinStyleParts(resolveVisualStyle(series, issue, stageId)?.promptFragment, callerExtraStyle);
 
-const applyWorldStyle = (prompt, world) => {
-  if (!world) return prompt;
-  const stylePrompt = joinInfluenceList(world.influences?.embrace);
+// Build the style-prompt prefix for a series + universe pair. The per-series
+// override prepends ahead of the universe's embrace influences so a single
+// series can deviate (e.g. a noir spin-off) without forking the universe;
+// the universe's broader aesthetic still trails so it stays visible to the
+// diffusion model. Returns '' when neither side has content — caller skips
+// the composeStyledPrompt wrap in that case.
+const buildStyleClause = (world, series) => {
+  const override = (series?.stylePromptOverride || '').trim();
+  const universeStyle = joinInfluenceList(world?.influences?.embrace);
+  return [override, universeStyle].filter(Boolean).join('. ');
+};
+
+const applyWorldStyle = (prompt, world, series = null) => {
+  const stylePrompt = buildStyleClause(world, series);
   if (!stylePrompt) return prompt;
   return composeStyledPrompt(prompt, '', { prompt: stylePrompt, negativePrompt: '' }).prompt;
 };
@@ -185,7 +196,7 @@ export function composeVisualPrompt({ series, description, slugline = '', extraS
     stackStyle(series, extraStyle),
     matchSceneSetting(slugline, map),
   );
-  return applyWorldStyle(scenePrompt, world);
+  return applyWorldStyle(scenePrompt, world, series);
 }
 
 // Marvel/DC scripts attach parentheticals to speakers — `ETTA (EARPIECE):`,
@@ -272,7 +283,7 @@ export function composeComicCoverPrompt({
 
   const layout = `A single full printable comic-book front cover for a serialized issue. ${titleBlock} ${numberBlock}${titleLine} The rest of the cover is one bold hero image (no panel borders, no multi-panel layout — this is the cover, not an interior page).${styleClause}`;
   const body = `Cover concept: ${sceneDescription}`;
-  return applyWorldStyle(`${layout}\n\n${body}`, world);
+  return applyWorldStyle(`${layout}\n\n${body}`, world, series);
 }
 
 /**
@@ -302,7 +313,7 @@ export function composeComicBackCoverPrompt({
 
   const layout = `A single full printable comic-book BACK cover for a serialized issue. NO text of any kind — no masthead, no logo, no title, no issue-number tag, no UPC, no credits, no typography, no captions, no panel borders, no multi-panel layout. The entire cover is one bold illustrated hero image, edge-to-edge.${styleClause}`;
   const body = `Back-cover concept: ${sceneDescription}`;
-  return applyWorldStyle(`${layout}\n\n${body}`, world);
+  return applyWorldStyle(`${layout}\n\n${body}`, world, series);
 }
 
 /**
@@ -426,7 +437,7 @@ export function composeVolumeCoverPrompt({
 
   const layout = `A single full printable comic-book trade-paperback FRONT cover collecting an entire volume of issues. ${titleBlock} ${numberBlock}${titleLine} The rest of the cover is one bold hero image — bigger and more iconic than any single-issue cover (no panel borders, no multi-panel layout — this is a collected-edition cover).${styleClause}`;
   const body = `Volume cover concept: ${sceneDescription}`;
-  return applyWorldStyle(`${layout}\n\n${body}`, world);
+  return applyWorldStyle(`${layout}\n\n${body}`, world, series);
 }
 
 export function composeVolumeBackCoverPrompt({
@@ -445,7 +456,7 @@ export function composeVolumeBackCoverPrompt({
 
   const layout = `A single full printable comic-book trade-paperback BACK cover. NO text of any kind — no masthead, no logo, no title, no volume tag, no UPC, no credits, no typography, no captions, no panel borders, no multi-panel layout. The entire cover is one bold illustrated hero image, edge-to-edge.${styleClause}`;
   const body = `Volume back-cover concept: ${sceneDescription}`;
-  return applyWorldStyle(`${layout}\n\n${body}`, world);
+  return applyWorldStyle(`${layout}\n\n${body}`, world, series);
 }
 
 /**
@@ -593,7 +604,7 @@ export function composeComicPagePrompt({
   const settingClause = settingsClause ? `\n\nSetting — ${settingsClause}` : '';
   const notableClause = notable ? `\n\nNotable — ${notable}` : '';
 
-  return applyWorldStyle(`${layout}${featuringClause}${settingClause}${notableClause}\n\n${panelLines.join('\n\n')}`, world);
+  return applyWorldStyle(`${layout}${featuringClause}${settingClause}${notableClause}\n\n${panelLines.join('\n\n')}`, world, series);
 }
 
 /**
