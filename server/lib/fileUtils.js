@@ -683,7 +683,7 @@ export async function listDirectoryByExtension(dir, { extensions, mapEntry, requ
     if (requireRegularFile && !s.isFile()) return null;
     return mapEntry(name, fullPath, s);
   }));
-  return entries.filter(Boolean);
+  return entries.filter((v) => v != null);
 }
 
 // Size in bytes of every file under `path`. Shells out to `du -sk` (or
