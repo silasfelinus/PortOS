@@ -490,7 +490,7 @@ function KindSection({ kind, all, totalCount, filtered, usage, renderingJobs, on
         <Icon size={14} className="text-gray-400" />
         <h3 className="text-sm font-semibold text-white">{kind.label}</h3>
         <span className="text-[10px] text-gray-500">
-          {filtered && totalCount !== all.length ? `${all.length} / ${totalCount}` : all.length}
+          {filtered ? `${all.length} / ${totalCount}` : all.length}
         </span>
       </div>
       <div className="p-3">
