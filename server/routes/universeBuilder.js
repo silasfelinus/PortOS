@@ -28,6 +28,7 @@ import { getSettings } from '../services/settings.js';
 import { findOrCreateUniverseCollection } from '../services/mediaCollections.js';
 import { registerUniverseBuilderRun } from '../services/universeBuilderCollectionHook.js';
 import { getImageModels, isFlux2, isZImage, isErnie } from '../lib/mediaModels.js';
+import { getStylePresetById } from '../lib/writersRoomStylePresets.js';
 
 const router = Router();
 
@@ -289,6 +290,24 @@ const renderSchema = z.object({
   selection: selectionSchema.optional(),
   sheetSelection: z.union([z.literal('all'), z.array(z.string().trim().min(1).max(svc.VARIATION_LABEL_MAX)).max(svc.COMPOSITE_SHEETS_MAX)]).optional(),
   canonSelection: canonSelectionSchema.optional(),
+  // Per-batch overrides surfaced through the full Image-Gen form. All optional;
+  // empty values are treated as "use the universe's existing influences."
+  // `seed` matches /api/image-gen/generate's contract (non-negative integer) —
+  // local image gen coerces via Number(seed) and would yield NaN for arbitrary
+  // strings, so reject early at the boundary.
+  seed: z.number().int().min(0).optional(),
+  negativePrompt: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional(),
+  extraStyle: z.string().trim().max(svc.PROMPT_FRAGMENT_MAX).optional(),
+  stylePresetId: z.string().trim().max(80).optional(),
+  // Matches /api/image-gen/generate's LoRA contract: basenames only (server
+  // resolves against PATHS.loras), max 8 stacked LoRAs per render. Keeping
+  // the two routes in sync so a payload that's accepted here can also flow
+  // through /api/image-gen/generate if we ever proxy it.
+  loras: z.array(z.object({
+    filename: z.string().trim().min(1).max(256).regex(/^[^/\\]+$/, 'lora filename must not contain path separators'),
+    scale: z.number().min(0).max(2),
+    name: z.string().trim().max(256).optional(),
+  })).max(8).optional(),
 }).refine((body) => body.collectionName === undefined, {
   message: 'collectionName is no longer supported — the linked collection follows the universe name automatically. Remove this field.',
   path: ['collectionName'],
@@ -349,12 +368,22 @@ router.post('/:id/render', asyncHandler(async (req, res) => {
   const body = validateRequest(renderSchema, req.body ?? {});
   const universe = await svc.getUniverse(req.params.id).catch((err) => { throw mapServiceError(err); });
 
+  // Resolve a style preset (server-side authoritative list) so the embrace
+  // tokens are deterministic for this render even if the client sent a stale
+  // preset object. Unknown ids are ignored (server is the source of truth).
+  const stylePreset = getStylePresetById(body.stylePresetId);
+  // `negativePrompt` is the schema field; `extraNegative` is compilePrompts'
+  // option name (avoids shadowing `negativePrompt` on each compiled item).
   const compiled = svc.compilePrompts(universe, {
     promptMode: body.promptMode,
     selection: body.selection,
     sheetSelection: body.sheetSelection,
     canonSelection: body.canonSelection,
     batchPerVariation: body.batchPerVariation,
+    extraStyle: body.extraStyle,
+    extraNegative: body.negativePrompt,
+    stylePresetPrompt: stylePreset?.prompt,
+    stylePresetNegative: stylePreset?.negativePrompt,
   });
   if (!compiled.length) {
     throw new ServerError('No prompts to render — add canon entries, variations, or composite sheets first', {
@@ -421,6 +450,15 @@ router.post('/:id/render', asyncHandler(async (req, res) => {
   // dispatcher), so without this mapping the Universe Builder UI's CFG control
   // would silently no-op for local renders.
   const guidance = body.guidance ?? body.cfgScale;
+  // Local image gen reads `loraFilenames` (basenames) + `loraScales` (parallel
+  // array of numbers), not the `[{filename, scale}]` UI shape. Convert here so
+  // every enqueued job actually applies the user's LoRA selection.
+  const loraFilenames = Array.isArray(body.loras) && body.loras.length
+    ? body.loras.map((l) => l.filename)
+    : undefined;
+  const loraScales = Array.isArray(body.loras) && body.loras.length
+    ? body.loras.map((l) => l.scale)
+    : undefined;
   const baseParams = {
     width: body.width,
     height: body.height,
@@ -428,6 +466,9 @@ router.post('/:id/render', asyncHandler(async (req, res) => {
     cfgScale: body.cfgScale,
     guidance,
     quantize: body.quantize,
+    seed: body.seed,
+    loraFilenames,
+    loraScales,
   };
 
   for (const item of compiled) {
