@@ -695,6 +695,10 @@ export default function UniverseBuilder() {
     // (disabled={saving || ...}) can't double-submit during the await window
     // between expanding=false and goToWorld(saved.id).
     if (expandedDraft.name?.trim()) {
+      // Set saving BEFORE the refetch so the Expand + Save buttons
+      // (both disabled on `saving`) can't double-fire during the
+      // getUniverse await window below.
+      setSaving(true);
       // For updates: refetch the server's canon and merge in the local
       // additions so a concurrent canon edit (Nouns stage, another tab)
       // landing during the LLM call isn't wholesale-clobbered.
@@ -726,7 +730,8 @@ export default function UniverseBuilder() {
         locked: expandedDraft.locked || {},
         llm: expandedDraft.llm || {},
       };
-      setSaving(true);
+      // setSaving(true) already happened before the getUniverse refetch
+      // above so the disable-gate covers the whole save sequence.
       const saved = await (selectedId
         ? updateUniverse(selectedId, payload)
         : createUniverse(payload))
