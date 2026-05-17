@@ -23,7 +23,7 @@ import * as imageGen from '../services/imageGen/index.js';
 import { local, IMAGE_GEN_MODES } from '../services/imageGen/index.js';
 import { enqueueJob, attachSseClient as attachQueueSseClient, cancelJob, listJobs } from '../services/mediaJobQueue/index.js';
 import { getSettings, saveSettings } from '../services/settings.js';
-import { getHfToken, HF_TOKEN_REGEX } from '../lib/hfToken.js';
+import { getHfToken, getHfTokenInfo, HF_TOKEN_REGEX } from '../lib/hfToken.js';
 import { getImageModels, isFlux2, isZImage, isErnie } from '../lib/mediaModels.js';
 import {
   REQUIRED_PACKAGES, detectPython, checkPackages, installPackages,
@@ -491,8 +491,8 @@ router.get('/setup/flux2-status', asyncHandler(async (_req, res) => {
 // the FLUX.2 venv. Any model entry with `requiresHfToken: true` in
 // data/media-models.json drives the banner through this endpoint.
 router.get('/setup/hf-token-status', asyncHandler(async (_req, res) => {
-  const token = await getHfToken();
-  res.json({ hfTokenPresent: !!token });
+  const { token, source } = await getHfTokenInfo();
+  res.json({ hfTokenPresent: !!token, source });
 }));
 
 // Save the HF token from the inline form on the Image Gen page. settings.json
@@ -509,7 +509,17 @@ router.post('/setup/hf-token', asyncHandler(async (req, res) => {
     ...settings,
     imageGen: { ...(settings.imageGen || {}), hfToken: token.trim() },
   });
-  res.json({ ok: true, hfTokenPresent: true });
+  res.json({ ok: true, hfTokenPresent: true, source: 'stored' });
+}));
+
+// Clear the stored HF token. Falls back to env / CLI tokens if present —
+// callers should re-fetch /setup/hf-token-status to see the post-clear state.
+router.delete('/setup/hf-token', asyncHandler(async (_req, res) => {
+  const settings = await getSettings();
+  const { hfToken: _drop, ...restImageGen } = settings.imageGen || {};
+  await saveSettings({ ...settings, imageGen: restImageGen });
+  const { token, source } = await getHfTokenInfo();
+  res.json({ ok: true, hfTokenPresent: !!token, source });
 }));
 
 const checkSchema = z.object({ pythonPath: z.string().min(1) });
