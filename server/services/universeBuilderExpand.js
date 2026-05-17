@@ -426,6 +426,23 @@ export async function expandWorldTemplate({
   const logline = trimField(parsed.logline, LOGLINE_MAX);
   const premise = trimField(parsed.premise, PREMISE_MAX);
   const styleNotes = trimField(parsed.styleNotes, STYLE_NOTES_MAX);
+  // Phase A retired the default `characters` category — the persisted
+  // sanitizer drops it (RETIRED_CATEGORY_KEYS) and the v3→v4 backfill no
+  // longer fires (schemaVersion already ≥4). If the LLM emits a top-level
+  // `characters` category bucket here, fold its variations into the canon
+  // characters[] return before normalizing, so the entries land in canon
+  // instead of being silently dropped on auto-save round-trip.
+  const rawCategories = parsed.categories && typeof parsed.categories === 'object' ? parsed.categories : {};
+  const retiredCharBucket = rawCategories.characters;
+  let rawCharacters = Array.isArray(parsed.characters) ? [...parsed.characters] : [];
+  if (retiredCharBucket && Array.isArray(retiredCharBucket.variations)) {
+    for (const v of retiredCharBucket.variations) {
+      if (!v || typeof v !== 'object' || !v.label) continue;
+      rawCharacters.push({ name: v.label, prompt: v.prompt });
+    }
+    const { characters: _drop, ...rest } = rawCategories;
+    parsed.categories = rest;
+  }
   const categories = normalizeCategories(parsed.categories || {});
   const compositeSheets = normalizeCompositeSheets(
     parsed.compositeSheets || [],
@@ -433,7 +450,7 @@ export async function expandWorldTemplate({
   // normalizeCanonArray stamps `source: BIBLE_SOURCE.UNIVERSE_EXPAND` on each
   // entry before sanitize, so provenance lands on disk consistently with the
   // existing categories→canon backfill in universeBuilder.js.
-  const characters = normalizeCanonArray(parsed.characters, BIBLE_KIND.CHARACTER);
+  const characters = normalizeCanonArray(rawCharacters, BIBLE_KIND.CHARACTER);
   const settings = normalizeCanonArray(parsed.settings, BIBLE_KIND.SETTING);
   const objects = normalizeCanonArray(parsed.objects, BIBLE_KIND.OBJECT);
   // sanitizeInfluences enforces the same per-entry cap, list cap, and

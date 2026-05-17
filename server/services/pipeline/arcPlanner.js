@@ -86,6 +86,11 @@ async function loadWorldContext(universeId) {
   const avoid = Array.isArray(world.influences?.avoid) ? world.influences.avoid : [];
 
   return {
+    // Truthy mustache flag the prompt templates use to gate the entire
+    // "Linked World" block — unlinked arc/verify runs render a neutral
+    // placeholder instead of telling the LLM the series is grounded in a
+    // non-existent world.
+    hasLinkedWorld: true,
     worldName: world.name || '',
     worldStarter: world.starterPrompt || '',
     worldLogline: world.logline || '',
@@ -103,8 +108,11 @@ async function loadWorldContext(universeId) {
 }
 
 // Fallback when series has no linked world — prompt partials still expect
-// these variables to be defined.
+// these variables to be defined. `hasLinkedWorld: false` lets the template's
+// `{{#hasLinkedWorld}}…{{/hasLinkedWorld}}` block fall through so the LLM
+// isn't told to ground arcs in a non-existent universe.
 const EMPTY_WORLD_CONTEXT = {
+  hasLinkedWorld: false,
   worldName: '(no linked world)',
   worldStarter: '',
   worldLogline: '',

@@ -62,10 +62,10 @@ const ACCEPTED_OLD_MD5 = {
 
 // New shipped hashes — what data.sample carries post-migration.
 const NEW_SHIPPED_MD5 = {
-  'pipeline-arc-overview.md':   '59e19fb81417e640194a5e3ac5773125',
-  'pipeline-arc-verify.md':     'd077c3d6197fbb9a684a1fbb41a9493c',
-  'pipeline-arc-resolve.md':    '2651dc3947adc75c02c4f394135f2703',
-  'pipeline-volume-verify.md':  '56ad31371452a6fdf68597512f8c0d35',
+  'pipeline-arc-overview.md':   '0a1f6ffa6908522e3690c5e9e53a6ee0',
+  'pipeline-arc-verify.md':     '36aa70cdfc25d7549573a4d556e7702c',
+  'pipeline-arc-resolve.md':    '8e348f3d1894382889f9f0ee7d5c6792',
+  'pipeline-volume-verify.md':  '49458d36700cb94e34806d536ffe2940',
 };
 
 export default {
