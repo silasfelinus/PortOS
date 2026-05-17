@@ -897,13 +897,30 @@ export default function UniverseBuilder() {
   // server's stale copy of those fields.
   const handleCanonChange = (updated) => {
     if (!updated) return;
-    setDraft((d) => ({
-      ...d,
-      characters: updated.characters,
-      settings: updated.settings,
-      objects: updated.objects,
-      updatedAt: updated.updatedAt,
-    }));
+    setDraft((d) => {
+      // If a prior expand merged canon that hasn't been persisted yet,
+      // mergeCanonByName the local entries against the server's response so
+      // those pending additions aren't wholesale-replaced when a canon UI
+      // action lands. mergeCanonByName preserves identity dedupe (name +
+      // slugline + aliases) so a duplicate isn't created if the server
+      // happens to already have one.
+      if (canonDirty) {
+        return {
+          ...d,
+          characters: mergeCanonByName(updated.characters || [], d.characters || [], 'character'),
+          settings: mergeCanonByName(updated.settings || [], d.settings || [], 'setting'),
+          objects: mergeCanonByName(updated.objects || [], d.objects || [], 'object'),
+          updatedAt: updated.updatedAt,
+        };
+      }
+      return {
+        ...d,
+        characters: updated.characters,
+        settings: updated.settings,
+        objects: updated.objects,
+        updatedAt: updated.updatedAt,
+      };
+    });
   };
   // Toggle a single field's lock state and (when the world is already saved)
   // persist immediately — locks are part of the world template, so a stale
@@ -927,7 +944,11 @@ export default function UniverseBuilder() {
   };
   const updateCategory = (cat, variations) => setDraft((d) => ({
     ...d,
-    categories: { ...d.categories, [cat]: { variations } },
+    // Preserve the bucket's `kind` (which the server sanitizer would
+    // otherwise re-derive from defaults/`other` on the next save). Without
+    // this, every user edit to a custom bucket silently resets its canon
+    // trunk to `other`.
+    categories: { ...d.categories, [cat]: { ...(d.categories?.[cat] || {}), variations } },
   }));
   const handleGenerateInCategory = async (cat, count) => {
     const current = draft.categories?.[cat]?.variations || [];
@@ -953,7 +974,10 @@ export default function UniverseBuilder() {
     }
     const nextDraft = {
       ...draft,
-      categories: { ...draft.categories, [cat]: { variations: merged } },
+      // Preserve the bucket's `kind` (mirror of updateCategory's behavior;
+      // see comment there). Generate-more is the second write path that
+      // could silently reset the trunk to default/other.
+      categories: { ...draft.categories, [cat]: { ...(draft.categories?.[cat] || {}), variations: merged } },
     };
     setDraft(nextDraft);
     if (selectedId && nextDraft.name?.trim()) {
