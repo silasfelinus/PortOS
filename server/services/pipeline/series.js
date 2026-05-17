@@ -2,9 +2,10 @@
  * Pipeline — Series Service
  *
  * A Series is the long-lived parent record for a narrative arc (comic series,
- * TV show, or both). It carries the shared "bible" — premise, characters,
- * world ref, style notes — that gets injected into every Issue's stage prompts
- * so issues stay visually and tonally consistent.
+ * TV show, or both). It carries premise + arc + style notes and links to a
+ * Universe (`universeId`) where canon — characters, places, objects — lives;
+ * those flow into every Issue's stage prompts so issues stay visually and
+ * tonally consistent.
  *
  * Persisted to data/pipeline-series.json. Issues live in their own file
  * (server/services/pipeline/issues.js) and reference a series by id.

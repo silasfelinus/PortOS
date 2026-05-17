@@ -645,17 +645,16 @@ router.post('/issues/:id/stages/audio/lines/:lineIdx/render', asyncHandler(async
   }
   // Resolve voice via the shared priority chain (explicit > line override
   // > character binding > project default). One source of truth, reused by
-  // the eventual "render all" flow + unit-tested for priority order.
-  // Phase B.4: the character binding lives on the linked universe — load
-  // it and pass its canon into resolveVoiceForLine through the series-
-  // shaped adapter the helper already accepts.
-  let canonAdapter = null;
-  if (line.characterId) {
+  // the eventual "render all" flow + unit-tested for priority order. Skip
+  // the canon load when a higher-priority resolver will win — otherwise
+  // every per-line render pays two file reads it doesn't use.
+  const needsCanon = !body.voiceId?.trim() && !line.voiceIdOverride && line.characterId;
+  let canon = null;
+  if (needsCanon) {
     const series = await seriesSvc.getSeries(issue.seriesId).catch(() => null);
-    const canon = series ? await getSeriesCanon(series) : null;
-    canonAdapter = canon ? { characters: canon.characters } : null;
+    if (series) canon = await getSeriesCanon(series);
   }
-  const voiceId = resolveVoiceForLine(line, canonAdapter, { explicit: body.voiceId });
+  const voiceId = resolveVoiceForLine(line, canon, { explicit: body.voiceId });
   const synthResult = await synthesizeToFile({ text: line.text, voiceId })
     .catch((err) => { throw mapServiceError(err); });
   const nextLines = [...lines];

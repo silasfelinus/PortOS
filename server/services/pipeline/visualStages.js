@@ -42,6 +42,7 @@ import { resolveVisualStyle } from '../../lib/visualStyles.js';
 import { getDefaultVideoModelId, getVideoModels } from '../../lib/mediaModels.js';
 import { runStagedLLM } from '../../lib/stageRunner.js';
 import { runPromptRefine } from './refineHelpers.js';
+import { pickCanon } from './seriesCanon.js';
 import { ASPECT_PRESETS } from '../../lib/creativeDirectorPresets.js';
 
 const joinStyleParts = (...parts) =>
@@ -141,16 +142,10 @@ const loadBibleContext = async (issueId) => {
     const issue = await getIssue(issueId);
     const series = await getSeries(issue.seriesId);
     const world = series.universeId ? await getUniverse(series.universeId).catch(() => null) : null;
-    // Canon lives on the linked universe (Phase B.4). An orphan series (no
-    // universeId or a dangling reference) renders against empty canon arrays
-    // — the visual prompt still includes scene description, just without
-    // character/setting/object metadata.
-    const canon = {
-      characters: Array.isArray(world?.characters) ? world.characters : [],
-      settings: Array.isArray(world?.settings) ? world.settings : [],
-      objects: Array.isArray(world?.objects) ? world.objects : [],
-    };
-    return { issue, series, world, canon };
+    // Orphan series (no universeId or a dangling reference) render against
+    // empty canon — the visual prompt still includes scene description,
+    // just without character/setting/object metadata.
+    return { issue, series, world, canon: pickCanon(world) };
   })();
   const [chain, settings] = await Promise.all([issueChain, getSettings()]);
   return { ...chain, settings };

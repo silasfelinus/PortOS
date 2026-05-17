@@ -8,12 +8,8 @@
  * refine / render-reference) target the universe directly.
  *
  * A series with no `universeId` gets a gate banner directing the user to
- * link a universe — the orphan-series legacy flow was removed in Phase B.3b
- * since every active series in this install was migrated, and keeping the
- * dual-path branching just added complexity. Server-side legacy paths
- * remain for now (`extractAndMergeIntoSeries` etc.), but no UI exercises
- * them — they're scheduled for a future cleanup once the schema fields
- * (`series.{characters,settings,objects}`) get dropped too.
+ * link a universe — orphan-series canon was removed in Phase B.4 (the
+ * series schema no longer carries `characters` / `settings` / `objects`).
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -34,6 +30,7 @@ import {
 } from '../../../lib/scenePrompt';
 import { composeStyledPrompt } from '../../../lib/composeStyledPrompt';
 import { composeCleanPlatePrompt } from '../../../lib/cleanPlatePrompt';
+import { joinInfluenceList } from '../../../lib/joinInfluenceList';
 import useMounted from '../../../hooks/useMounted';
 import CanonCard from '../CanonCard';
 import MediaPreview from '../../media/MediaPreview';
@@ -71,16 +68,18 @@ const KINDS = [
   },
 ];
 
-// Stitch the series' optional `stylePromptOverride` ahead of the linked
-// universe's stylePrompt — mirrors server-side `applyWorldStyle` in
-// visualStages.js so client preview renders match comic-page renders.
+// Mirrors server-side `applyWorldStyle` (visualStages.js): the series'
+// optional `stylePromptOverride` prepends ahead of the universe's embrace
+// chip list, joined with the same `'. '` separator the server uses. Without
+// this parity, client preview renders drift from comic-page renders.
 const universeStylePreset = (universe, series) => {
   if (!universe) return null;
-  const stylePrompt = [series?.stylePromptOverride, universe.stylePrompt]
-    .map((s) => (s || '').trim())
-    .filter(Boolean)
-    .join('. ');
-  return { prompt: stylePrompt, negativePrompt: universe.negativePrompt };
+  const override = (series?.stylePromptOverride || '').trim();
+  const embrace = joinInfluenceList(universe.influences?.embrace);
+  const avoid = joinInfluenceList(universe.influences?.avoid);
+  const prompt = [override, embrace].filter(Boolean).join('. ');
+  if (!prompt && !avoid) return null;
+  return { prompt, negativePrompt: avoid };
 };
 
 export default function NounsStage({ issue, series }) {

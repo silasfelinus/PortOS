@@ -8,7 +8,13 @@ import { getUniverse } from '../universeBuilder.js';
 
 const EMPTY = Object.freeze({ characters: [], settings: [], objects: [] });
 
-const pickCanon = (universe) => ({
+/**
+ * Shape a universe record into `{ characters, settings, objects }` arrays,
+ * tolerating missing/non-array fields. Exposed so callers that already have
+ * a universe in scope (e.g. `visualStages.loadBibleContext`) can avoid the
+ * round-trip through `getSeriesCanon`.
+ */
+export const pickCanon = (universe) => ({
   characters: Array.isArray(universe?.characters) ? universe.characters : [],
   settings: Array.isArray(universe?.settings) ? universe.settings : [],
   objects: Array.isArray(universe?.objects) ? universe.objects : [],

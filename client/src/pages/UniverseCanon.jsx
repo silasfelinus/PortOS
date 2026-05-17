@@ -135,10 +135,14 @@ export default function UniverseCanon() {
 
   // If the URL names a series that isn't in this universe's usage map
   // (stale bookmark, deleted series), drop the param silently so the page
-  // doesn't show an empty "filtered" view forever.
+  // doesn't show an empty "filtered" view forever. One-shot — runs when
+  // usage first resolves; later URL changes are driven by the dropdown
+  // (handleSeriesFilterChange) which only sets known-good ids.
+  const validatedRef = useRef(false);
   useEffect(() => {
-    if (!usage || !seriesFilter) return;
-    if (!seriesOptions.some((s) => s.id === seriesFilter)) {
+    if (!usage || validatedRef.current) return;
+    validatedRef.current = true;
+    if (seriesFilter && !seriesOptions.some((s) => s.id === seriesFilter)) {
       const next = new URLSearchParams(searchParams);
       next.delete('series');
       setSearchParams(next, { replace: true });

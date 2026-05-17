@@ -705,8 +705,8 @@ export async function listRuns(universeId = null) {
 // shape the renderer's `composeStyledPrompt` consumes. Tokens have already
 // been deduped + capped by `sanitizeInfluenceList` at write time, so this is
 // just a thin join — exported so downstream consumers (universeCanon,
-// pipeline/nounRefine, pipeline/visualStages) read a single helper instead
-// of each open-coding `(arr || []).join(', ')`.
+// pipeline/visualStages) read a single helper instead of each open-coding
+// `(arr || []).join(', ')`.
 export function joinInfluenceList(structured = []) {
   if (!Array.isArray(structured)) return '';
   return structured.filter((t) => typeof t === 'string' && t.trim()).join(', ');
