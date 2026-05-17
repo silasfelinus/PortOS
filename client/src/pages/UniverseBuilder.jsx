@@ -324,6 +324,12 @@ export default function UniverseBuilder() {
   // universes start as a draft with no id; saving creates the persisted record.
   const [draft, setDraft] = useState(emptyTemplate());
   const [newCategoryName, setNewCategoryName] = useState('');
+  // True when handleExpand merged new canon entries into the draft that the
+  // server doesn't yet know about (auto-save failed or hasn't run). On the
+  // next manual Save, include canon arrays in the update payload so the
+  // merged entries actually persist. Cleared on successful save and on
+  // universe-switch (the new draft's canon is loaded from server, in sync).
+  const [canonDirty, setCanonDirty] = useState(false);
 
   // Per-page render knobs. Persisted to localStorage so the user's
   // preferred batch size sticks across visits.
@@ -396,6 +402,7 @@ export default function UniverseBuilder() {
   useEffect(() => {
     setPendingDeleteId(null);
     resetRefinePanel();
+    setCanonDirty(false);
     if (!selectedId) {
       setDraft(emptyTemplate());
       setRuns([]);
@@ -471,17 +478,25 @@ export default function UniverseBuilder() {
     };
     // Canon arrays are wholesale-replaced server-side, so including them on
     // a manual update can clobber concurrent edits from the canon UI / other
-    // tabs. Send canon ONLY on create (the new universe starts empty and
-    // needs the expanded canon as its initial state). On update, the canon
-    // UI persists its mutations via targeted PATCHes already.
-    const payload = selectedId
-      ? basePayload
-      : { ...basePayload, characters: draft.characters || [], settings: draft.settings || [], objects: draft.objects || [] };
+    // tabs. Send canon when EITHER:
+    //   - creating (new universe needs the expanded canon as initial state)
+    //   - the draft has merged-but-unpersisted canon from a failed/skipped
+    //     auto-save after expand (`canonDirty`). Without this, the user's
+    //     "review then Save" toast doesn't actually persist the new canon.
+    // Otherwise the canon UI's own targeted PATCHes own the writes.
+    const needsCanonInPayload = !selectedId || canonDirty;
+    const payload = needsCanonInPayload
+      ? { ...basePayload, characters: draft.characters || [], settings: draft.settings || [], objects: draft.objects || [] }
+      : basePayload;
     const result = selectedId
       ? await updateUniverse(selectedId, payload).catch((e) => { toast.error(`Save failed: ${e.message}`); return null; })
       : await createUniverse(payload).catch((e) => { toast.error(`Save failed: ${e.message}`); return null; });
     setSaving(false);
     if (result) {
+      // Save persisted whatever canon was in the payload; clear the dirty
+      // flag so the next save can resume the "skip canon to avoid clobber"
+      // path. No-op if it was already false.
+      if (needsCanonInPayload) setCanonDirty(false);
       toast.success(selectedId ? 'World updated' : 'World created');
       setWorlds((prev) => {
         const without = prev.filter((w) => w.id !== result.id);
@@ -641,6 +656,9 @@ export default function UniverseBuilder() {
       llm: result.llm || draft.llm,
     };
     setDraft(expandedDraft);
+    // Flag the merged-but-not-yet-persisted canon so a subsequent manual
+    // Save (if auto-save fails or is bypassed) includes the new entries.
+    if (addedCanonCount > 0) setCanonDirty(true);
     const lockedKeys = Object.keys(locks).filter((k) => locks[k]);
     if (lockedKeys.length) {
       console.log(`🔒 Universe Builder expand preserved ${lockedKeys.length} locked field(s): ${lockedKeys.join(', ')}`);
@@ -686,6 +704,10 @@ export default function UniverseBuilder() {
           const without = prev.filter((w) => w.id !== saved.id);
           return [saved, ...without];
         });
+        // Auto-save succeeded — server now has the merged canon, so a
+        // subsequent manual Save shouldn't re-send it (avoids the
+        // concurrent-edit clobber).
+        setCanonDirty(false);
         // New record: route to its id so the canon section gates flip and
         // subsequent draft state reflects the persisted record.
         if (!selectedId) goToWorld(saved.id);
