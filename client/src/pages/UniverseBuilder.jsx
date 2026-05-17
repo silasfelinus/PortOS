@@ -92,6 +92,12 @@ const mergeVariations = (existing, fresh) => {
 //                          separate place-canon entries, and `Foundry-City`
 //                          vs `Foundry City` would duplicate by name even
 //                          though every downstream lookup treats them as one.
+// Match server's BIBLE_LIMITS.ENTRIES_PER_BIBLE_MAX so the client doesn't
+// optimistically display + count entries the server will silently truncate
+// at sanitize time. Without this cap, the post-expand toast can claim
+// "+12 canon entries" while the server-saved record only kept some of them.
+const CLIENT_CANON_MAX = 200;
+
 const mergeCanonByName = (existing, fresh, kind = 'character') => {
   // Empty/missing fresh — return `existing` unchanged (preserve reference so
   // a no-op expand doesn't trigger downstream identity-comparing effects).
@@ -131,6 +137,7 @@ const mergeCanonByName = (existing, fresh, kind = 'character') => {
     if (sluglineKey) seen.add(sluglineKey);
     for (const k of aliasMatches) seen.add(k);
     if (collides) continue;
+    if (merged.length >= CLIENT_CANON_MAX) break;
     merged.push(e);
   }
   return merged;
@@ -459,10 +466,8 @@ export default function UniverseBuilder() {
       categories: draft.categories,
       compositeSheets: draft.compositeSheets || [],
       // Canon arrays must be included on the manual Save/Create path too —
-      // a brand-new world that took the "review then Save" toast path would
-      // otherwise drop every expanded canon entry on first create, since
-      // only the auto-save branch (which only runs for already-saved worlds)
-      // forwards them. See review-resolved Copilot finding on PRRT_kwDOQx8jQ86CpLRw.
+      // the post-expand auto-save covers most paths, but a user editing a
+      // saved world's canon manually still goes through this handler.
       characters: draft.characters || [],
       settings: draft.settings || [],
       objects: draft.objects || [],
@@ -648,6 +653,10 @@ export default function UniverseBuilder() {
     // important for the canon section's visibility — it's gated on
     // `selectedId && draft.id === selectedId`, so without an id the user
     // can't see/manage the canon arrays just merged into the draft.
+    //
+    // Wrap the auto-save in `setSaving(true/false)` so the Create button
+    // (disabled={saving || ...}) can't double-submit during the await window
+    // between expanding=false and goToWorld(saved.id).
     if (expandedDraft.name?.trim()) {
       const payload = {
         name: expandedDraft.name.trim(),
@@ -664,9 +673,12 @@ export default function UniverseBuilder() {
         locked: expandedDraft.locked || {},
         llm: expandedDraft.llm || {},
       };
-      const saved = selectedId
-        ? await updateUniverse(selectedId, payload).catch((e) => { toast.error(`Auto-save after expand failed: ${e.message}`); return null; })
-        : await createUniverse(payload).catch((e) => { toast.error(`Auto-save after expand failed: ${e.message}`); return null; });
+      setSaving(true);
+      const saved = await (selectedId
+        ? updateUniverse(selectedId, payload)
+        : createUniverse(payload))
+        .catch((e) => { toast.error(`Auto-save after expand failed: ${e.message}`); return null; })
+        .finally(() => setSaving(false));
       if (saved) {
         setWorlds((prev) => {
           const without = prev.filter((w) => w.id !== saved.id);
