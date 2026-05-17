@@ -252,6 +252,31 @@ export default function MediaLightbox({
   );
 }
 
+function PeerNotes({ others }) {
+  if (!Array.isArray(others) || others.length === 0) return null;
+  return (
+    <div>
+      <div className="mb-1">
+        <span className="text-gray-500 uppercase tracking-wide text-xs">Notes from others</span>
+      </div>
+      <ul className="space-y-2">
+        {others.map((o) => (
+          <li key={o.instanceId} className="rounded border border-port-border bg-port-bg/50 p-2">
+            <div className="flex items-center justify-between text-[10px] text-gray-500 mb-1">
+              <span className="flex items-center gap-1.5 text-gray-300">
+                {o.starred && <Star className="w-3 h-3 fill-current text-port-warning" />}
+                <span>{o.authorName || 'Unknown'}</span>
+              </span>
+              <span>{o.updatedAt ? new Date(o.updatedAt).toLocaleDateString() : ''}</span>
+            </div>
+            {o.note && <p className="text-gray-200 whitespace-pre-wrap text-xs">{o.note}</p>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function SettingsPane({
   item, meta, isVideo,
   onClose, onRemix, onSendToVideo, onContinue, onClean,
@@ -358,7 +383,7 @@ function SettingsPane({
         {onAnnotationChange && (
           <div>
             <div className="flex items-center justify-between mb-1">
-              <span className="text-gray-500 uppercase tracking-wide">Notes</span>
+              <span className="text-gray-500 uppercase tracking-wide">My note</span>
               <div className="flex items-center gap-2 text-[10px] text-gray-500">
                 {saveStatus === 'pending' && <span>Saving…</span>}
                 {saveStatus === 'saved' && <span className="text-port-success">Saved</span>}
@@ -376,6 +401,8 @@ function SettingsPane({
             />
           </div>
         )}
+
+        <PeerNotes others={annotation?.others} />
 
         {item.negativePrompt && (
           <div>

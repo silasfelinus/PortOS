@@ -33,6 +33,7 @@ import { insertUniverseWithId, updateUniverse, getUniverse } from '../universeBu
 import { findOrCreateCollectionByName, addItem as addCollectionItem, ERR_DUPLICATE as COLLECTION_ERR_DUPLICATE } from '../mediaCollections.js';
 import { adoptImportedSubscription, withReexportSuppressed } from './subscriptions.js';
 import { getInstanceId } from '../instances.js';
+import { mergePeerAnnotations } from '../mediaAnnotations.js';
 import { isStr } from '../../lib/storyBible.js';
 
 const UNKNOWN_INSTANCE_ID = 'unknown';
@@ -158,6 +159,26 @@ async function copyAssetsLocally(bucketPath, assetRefs) {
     }
   }));
   return { copied, available, missing };
+}
+
+async function processAnnotationManifest(bucket, manifest) {
+  const recordId = (manifest.recordIds || [])[0] || manifest.senderInstanceId;
+  if (!recordId) return { applied: 0, missing: true, reason: 'no-record-id' };
+  const recordPath = join(bucket.path, 'records', 'media-annotations', `${recordId}.json`);
+  const record = await readJSONFile(recordPath, null, { logError: false });
+  if (!record) return { applied: 0, missing: true, reason: 'record-not-synced' };
+  // record.instanceId is the source-of-truth for the author; fall back to the
+  // manifest envelope for older records that omit it.
+  const payload = {
+    instanceId: record.instanceId || manifest.senderInstanceId,
+    authorName: record.authorName || manifest.source,
+    annotations: record.annotations || {},
+  };
+  const { changed, projections } = await mergePeerAnnotations(payload);
+  for (const key of changed) {
+    sharingEvents.emit('annotation-updated', { key, entry: projections.get(key) });
+  }
+  return { applied: changed.length, changedKeys: changed };
 }
 
 /** Merge bucket-bundled media-job records into local data/media-jobs.json. */
@@ -423,6 +444,16 @@ export async function processManifest(bucketId, manifestFilename) {
     });
     console.log(`⚠️ sharing: bucket=${bucket.name} manifest=${manifest.id} schemaVersion=${remoteVersion} > local=${SHARING_SCHEMA_VERSION} — refusing import (peer producedBy=${manifest.producedByVersion || 'unknown'})`);
     return { skipped: true, reason: 'incompatible-version', remoteVersion, localVersion: SHARING_SCHEMA_VERSION };
+  }
+  // Annotation manifests bypass the records/assets/applyMerge pipeline — they
+  // carry a per-instance annotation snapshot at records/media-annotations/<id>.json
+  // that merges author-by-author into data/media-annotations.json.
+  if (manifest.kind === 'media-annotations') {
+    const outcome = await processAnnotationManifest(bucket, manifest);
+    await markProcessed(bucketId, manifestFilename, manifest.id);
+    sharingEvents.emit('manifest-processed', { bucketId, manifestId: manifest.id, manifestFilename, outcome });
+    console.log(`📥 sharing: bucket=${bucket.name} manifest=${manifest.id} kind=media-annotations applied=${outcome.applied}`);
+    return { processed: true, manifest, outcome };
   }
   const { records, missing: missingRecords } = await readReferencedRecords(bucket.path, manifest);
 

@@ -28,16 +28,12 @@ import { getInstanceId } from '../instances.js';
 import { getSettings } from '../settings.js';
 import { getProducedByVersion } from './version.js';
 import { isStr } from '../../lib/storyBible.js';
-import * as os from 'os';
+import { resolveGlobalDisplayName } from './annotationIdentity.js';
 
-/** Resolve the bucket-effective display name (per-bucket override → instance setting → OS user). */
+/** Resolve the bucket-effective display name (per-bucket override → global identity). */
 async function resolveSourceName(bucket) {
   if (bucket.displayNameOverride) return bucket.displayNameOverride;
-  const settings = await getSettings().catch(() => ({}));
-  if (isStr(settings?.sharingDisplayName) && settings.sharingDisplayName.trim()) {
-    return settings.sharingDisplayName.trim();
-  }
-  return os.userInfo().username || 'unknown';
+  return resolveGlobalDisplayName();
 }
 
 /**

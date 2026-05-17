@@ -646,4 +646,76 @@ describe('sharing round-trip', () => {
     expect(replay.skipped).toBe(true);
     expect(replay.reason).toBe('already-processed');
   });
+
+  it('annotation manifest round-trip: peer record merges into local annotations without touching pipeline records', async () => {
+    const { sharingEvents } = await import('./importer.js');
+    const { SHARING_SCHEMA_VERSION } = await import('./version.js');
+    const mediaAnnotations = await import('../mediaAnnotations.js');
+    const bucket = await buckets.createBucket({ name: 'AnnotationsBucket', path: tempBucket, mode: 'auto-merge' });
+
+    // Stage a bucket asset so peer annotations have a corresponding key.
+    mkdirSync(join(tempBucket, 'assets', 'images'), { recursive: true });
+    writeFileSync(join(tempBucket, 'assets', 'images', 'fakeasset.png'), 'PNGSTUB');
+
+    // Hand-write a peer's annotation record + manifest. Bypasses the exporter
+    // (which would stamp the LOCAL instance id and short-circuit as
+    // self-authored on import). simulateRemoteSender is conceptually the same
+    // trick the other tests use.
+    const recordDir = join(tempBucket, 'records', 'media-annotations');
+    mkdirSync(recordDir, { recursive: true });
+    const peerRecord = {
+      id: 'peer-on-other-machine',
+      instanceId: 'peer-on-other-machine',
+      authorName: 'Sam',
+      updatedAt: '2099-01-01T00:00:00.000Z',
+      annotations: {
+        'image:fakeasset.png': { starred: true, note: 'great shot', updatedAt: '2099-01-01T00:00:00.000Z' },
+      },
+    };
+    writeFileSync(join(recordDir, 'peer-on-other-machine.json'), JSON.stringify(peerRecord));
+
+    const peerManifest = {
+      id: 'mfst-annotations-peer',
+      schemaVersion: SHARING_SCHEMA_VERSION,
+      sharingSchemaVersion: SHARING_SCHEMA_VERSION,
+      producedByVersion: '1.0.0',
+      createdAt: '2099-01-01T00:00:00.000Z',
+      kind: 'media-annotations',
+      senderInstanceId: 'peer-on-other-machine',
+      source: 'Sam',
+      sourceBio: null,
+      bucketId: bucket.id,
+      bucketName: bucket.name,
+      recordIds: ['peer-on-other-machine'],
+      assetRefs: [],
+      note: null,
+    };
+    const filename = `annotations-peer-on-other-machine.json`;
+    mkdirSync(join(tempBucket, 'manifests'), { recursive: true });
+    writeFileSync(join(tempBucket, 'manifests', filename), JSON.stringify(peerManifest));
+
+    const events = [];
+    const onUpdate = (p) => events.push(p);
+    sharingEvents.on('annotation-updated', onUpdate);
+
+    const result = await importer.processManifest(bucket.id, filename);
+    sharingEvents.off('annotation-updated', onUpdate);
+
+    expect(result.processed).toBe(true);
+    expect(result.outcome.applied).toBe(1);
+    expect(events).toHaveLength(1);
+    expect(events[0].key).toBe('image:fakeasset.png');
+    expect(events[0].entry.others[0]).toMatchObject({ authorName: 'Sam', starred: true, note: 'great shot' });
+
+    // The peer record lives under their instanceId in local annotations; our
+    // own author entry (would-be empty in a fresh fixture) is untouched.
+    const local = await mediaAnnotations.listAnnotations();
+    expect(local['image:fakeasset.png'].own).toBeNull();
+    expect(local['image:fakeasset.png'].others[0]).toMatchObject({ authorName: 'Sam', starred: true, note: 'great shot' });
+
+    // Cursor was advanced — replay is a no-op.
+    const replay = await importer.processManifest(bucket.id, filename);
+    expect(replay.skipped).toBe(true);
+    expect(replay.reason).toBe('already-processed');
+  });
 });

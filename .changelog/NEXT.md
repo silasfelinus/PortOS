@@ -12,4 +12,6 @@
 
 ## Fixed
 
+- **Media annotations now sync across PortOS instances via shared Drive buckets, with per-author attribution.** Previously, a note or star added on one machine was invisible to peers sharing the same Drive bucket — `data/media-annotations.json` lived purely client-local. Storage is now per-author: each instance owns its own `instanceId` sub-entry under each `<kind>:<ref>` key (`{ authors: { [instanceId]: { authorName, starred, note, updatedAt } } }`), so my notes never clobber yours and vice versa. A new manifest kind (`media-annotations`) carries each instance's annotation snapshot into every auto-merge bucket via a stable filename (`annotations-<instanceId>.json`), debounced 2s after the last local edit. The export is per-bucket scoped to assets actually present in that bucket, so a private annotation can't leak into an unrelated share. On import, peer records merge per-author by `updatedAt` LWW and re-broadcast `media:annotation:updated` so open clients refresh without a reload. Stars are also per-author — "my favorites" remains my view, not a tug-of-war. The lightbox now shows my note in the editable textarea and "Notes from others" as labeled read-only blocks below (with the peer's display name + their star). Migration `012-attribute-existing-annotations.js` rewraps existing notes under the local instance's id on first run.
+
 ## Removed
