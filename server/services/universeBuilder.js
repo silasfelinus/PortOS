@@ -35,6 +35,7 @@ import {
 } from '../lib/storyBible.js';
 import { sanitizeOrigin } from '../lib/sharingOrigin.js';
 import { emitRecordUpdated, emitRecordDeleted } from './sharing/recordEvents.js';
+import { renameCollectionForUniverse, unlinkCollectionsForUniverse } from './mediaCollections.js';
 
 // Bumped when a sanitizer-time backfill changes how on-disk universes are
 // shaped, so future migrations can gate on the prior version.
@@ -814,6 +815,13 @@ export async function updateUniverse(id, patch = {}) {
   if (!merged) throw makeErr('Invalid universe payload', ERR_VALIDATION);
   state.universes[idx] = merged;
   await writeState(state);
+  // Cascade rename onto the linked media collection — log but don't fail
+  // the save: a stale collection name is recoverable, a failed save isn't.
+  if (merged.name !== cur.name) {
+    await renameCollectionForUniverse(merged.id, merged.name).catch((err) => {
+      console.error(`❌ universe-collection rename cascade failed for ${merged.id}: ${err?.message || err}`);
+    });
+  }
   emitRecordUpdated('universe', merged.id);
   return merged;
 }
@@ -826,6 +834,14 @@ export async function deleteUniverse(id) {
   // Drop runs referencing the deleted universe — they're useless without it.
   state.runs = state.runs.filter((r) => r.universeId !== id);
   await writeState(state);
+  // Release the rename-lock on any linked media collections — without this,
+  // the orphan collection's `universeId` stays stamped and the lock in
+  // updateCollection blocks renames forever even though the universe is gone.
+  // Best-effort: a failure here mustn't fail the delete (the universe is
+  // already gone from state).
+  await unlinkCollectionsForUniverse(id).catch((err) => {
+    console.error(`❌ unlink media collections for deleted universe ${id} failed: ${err?.message || err}`);
+  });
   emitRecordDeleted('universe', id);
   return { id };
 }

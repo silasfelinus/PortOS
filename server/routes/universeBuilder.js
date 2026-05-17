@@ -24,7 +24,7 @@ import { expandWorldTemplate, generateCategoryVariations } from '../services/uni
 import { refineWorldPrompts } from '../services/universeBuilderRefine.js';
 import { enqueueJob } from '../services/mediaJobQueue/index.js';
 import { getSettings } from '../services/settings.js';
-import { findOrCreateCollectionByName, NAME_MAX_LENGTH as COLLECTION_NAME_MAX } from '../services/mediaCollections.js';
+import { findOrCreateUniverseCollection } from '../services/mediaCollections.js';
 import { registerUniverseBuilderRun } from '../services/universeBuilderCollectionHook.js';
 import { getImageModels, isFlux2, isZImage, isErnie } from '../lib/mediaModels.js';
 
@@ -238,9 +238,12 @@ const selectionSchema = z.record(
 });
 
 const renderSchema = z.object({
-  // Optional friendly name for the resulting collection. If omitted, server
-  // synthesizes "Universe: <name> (timestamp)".
-  collectionName: z.string().trim().min(1).max(COLLECTION_NAME_MAX).optional(),
+  // Removed: callers that still send `collectionName` get an explicit 400
+  // (see the .refine() below) instead of a confusing silent no-op. The
+  // canonical "Universe: <name>" identity is owned by the universe and
+  // enforced by the rename-lock — per-render overrides have no semantic
+  // home in that model.
+  collectionName: z.unknown().optional(),
   // Image-gen knobs — these mirror /api/image-gen/generate so the user can
   // pick mode/size/steps without bouncing to the Image page first.
   mode: z.enum(['external', 'local', 'codex']).optional(),
@@ -256,6 +259,9 @@ const renderSchema = z.object({
   batchPerVariation: z.number().int().min(1).max(20).optional().default(1),
   selection: selectionSchema.optional(),
   sheetSelection: z.union([z.literal('all'), z.array(z.string().trim().min(1).max(svc.VARIATION_LABEL_MAX)).max(svc.COMPOSITE_SHEETS_MAX)]).optional(),
+}).refine((body) => body.collectionName === undefined, {
+  message: 'collectionName is no longer supported — the linked collection follows the universe name automatically. Remove this field.',
+  path: ['collectionName'],
 });
 
 router.get('/', asyncHandler(async (_req, res) => {
@@ -365,16 +371,16 @@ router.post('/:id/render', asyncHandler(async (req, res) => {
 
   // Provision the collection up front so renders can be tagged as they
   // complete. The completion hook (universeBuilderCollectionHook) will add
-  // each finished image's filename to this collection. Repeat renders of
-  // the same universe reuse the existing `Universe: <name>` bucket so per-universe
-  // output accumulates in one place instead of fragmenting into a fresh
-  // date-suffixed collection per run.
-  const collectionName = body.collectionName?.trim()
-    || `Universe: ${universe.name}`;
-  const collection = await findOrCreateCollectionByName({
-    name: collectionName.slice(0, COLLECTION_NAME_MAX),
-    description: `Universe Builder renders for "${universe.name}"`,
+  // each finished image's filename to this collection. Resolution is
+  // universeId-first (not name-first) so a re-render finds the existing
+  // linked bucket even if the universe was hand-renamed or another
+  // universe happens to share the same display name. Name-only matching
+  // would either fork the bucket on rename or hijack a foreign universe's
+  // collection — the atomic helper rules out both.
+  const collection = await findOrCreateUniverseCollection({
     universeId: universe.id,
+    universeName: universe.name,
+    description: `Universe Builder renders for "${universe.name}"`,
   });
 
   const runId = randomUUID();

@@ -59,12 +59,35 @@ const mockCreateRec = (name) => {
   collectionsByName.set(name.toLowerCase(), rec);
   return rec;
 };
+// Mirrors the production helper's universeId-first resolution so repeat-
+// render tests verify the new contract (same `universeId` → same collection
+// id) rather than the old name-only contract.
+const collectionsByUniverseId = new Map();
+const upsertUniverseRec = ({ universeId, universeName }) => {
+  if (collectionsByUniverseId.has(universeId)) return collectionsByUniverseId.get(universeId);
+  const name = `Universe: ${universeName || ''}`.slice(0, 80);
+  const rec = mockCreateRec(name);
+  rec.universeId = universeId;
+  collectionsByUniverseId.set(universeId, rec);
+  return rec;
+};
 vi.mock('../services/mediaCollections.js', () => ({
   createCollection: vi.fn(async ({ name }) => mockCreateRec(name)),
   findOrCreateCollectionByName: vi.fn(async ({ name }) => {
     return collectionsByName.get(name.toLowerCase()) ?? mockCreateRec(name);
   }),
+  findOrCreateUniverseCollection: vi.fn(async ({ universeId, universeName }) =>
+    upsertUniverseRec({ universeId, universeName })),
   addItem: vi.fn(),
+  // Universe rename → collection rename cascade calls this from updateUniverse.
+  // No-op here is fine: the routes test cares about the universe PATCH itself,
+  // not the bookkeeping side-effect (covered in mediaCollections.test.js).
+  renameCollectionForUniverse: vi.fn(async () => null),
+  // Universe delete → unlink linked collections so the orphaned bucket
+  // becomes a normal user-owned collection. No-op stub mirrors the rename
+  // cascade pattern above (behavior is covered in mediaCollections.test.js).
+  unlinkCollectionsForUniverse: vi.fn(async () => []),
+  universeCollectionNameFor: (name) => `Universe: ${name || ''}`.slice(0, 80),
   ERR_DUPLICATE: 'DUPLICATE',
   NAME_MAX_LENGTH: 80,
 }));
@@ -91,6 +114,7 @@ describe('universe-builder routes', () => {
     fileStore.clear();
     uuidCounter = 0;
     collectionsByName.clear();
+    collectionsByUniverseId.clear();
   });
 
   it('GET / returns []', async () => {
@@ -365,21 +389,19 @@ describe('universe-builder routes', () => {
     expect(second.body.collectionName).not.toMatch(/\d{4}-\d{2}-\d{2}/);
   });
 
-  it('POST /:id/render reuses an existing collection when collectionName matches', async () => {
+  it('POST /:id/render rejects body.collectionName with a clear error (deprecated field)', async () => {
     const app = buildApp();
     const created = await request(app).post('/api/universe-builder').send({
-      name: 'Custom Bucket Universe',
+      name: 'Reject CollectionName Universe',
       categories: {
         landscapes: { variations: [{ label: 'A', prompt: 'a' }] },
       },
     });
-    const first = await request(app)
+    const res = await request(app)
       .post(`/api/universe-builder/${created.body.id}/render`)
       .send({ mode: 'local', collectionName: 'Shared Bucket' });
-    const second = await request(app)
-      .post(`/api/universe-builder/${created.body.id}/render`)
-      .send({ mode: 'local', collectionName: '  shared bucket  ' });
-    expect(second.body.collectionId).toBe(first.body.collectionId);
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/collectionName/i);
   });
 
   it('POST /:id/render rejects when no variations exist', async () => {

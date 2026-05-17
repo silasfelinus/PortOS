@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, CheckSquare, Copy, FolderInput, Inbox, Pencil, Star, StarOff, Trash2, X } from 'lucide-react';
+import { ArrowLeft, CheckSquare, Copy, FolderInput, Inbox, Lock, Pencil, Star, StarOff, Trash2, X } from 'lucide-react';
 import ShareToButton from '../components/sharing/ShareToButton';
 import toast from '../components/ui/Toast';
 import MediaCard from '../components/media/MediaCard';
@@ -299,6 +299,29 @@ export default function MediaCollectionDetail() {
         {collection.name}
       </h1>
     );
+    // Universe-linked collections own their visible name — the user-facing
+    // identity follows the universe (renaming the universe cascades here).
+    // Routing is by `universeId` server-side regardless of name; this lock
+    // exists to keep the displayed name consistent with the universe. The
+    // server enforces it independently via the rename-lock in
+    // updateCollection. The lock state is exposed visually (icon + title
+    // tooltip for sighted users) and programmatically via the `sr-only`
+    // span — real text content screen readers announce after the
+    // collection name. An `aria-label` on the heading would override the
+    // visible name; the `sr-only` text adds context without clobbering it.
+    if (collection.universeId) {
+      const lockMsg = 'Linked to a Universe — rename the universe to rename this collection.';
+      return (
+        <h1
+          className="text-xl font-semibold text-white flex items-center gap-2"
+          title={lockMsg}
+        >
+          {collection.name}
+          <Lock className="w-4 h-4 text-gray-500" aria-hidden="true" />
+          <span className="sr-only">{lockMsg}</span>
+        </h1>
+      );
+    }
     if (editingName) return (
       <input
         autoFocus
