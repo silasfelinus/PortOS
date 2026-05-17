@@ -29,7 +29,7 @@ import { getSettings } from '../settings.js';
 import { getSeries } from './series.js';
 import { getIssue, updateStage, VISUAL_STAGE_IDS } from './issues.js';
 import { PATHS } from '../../lib/fileUtils.js';
-import { buildComicPagesOwner, buildStoryboardsShotOwner } from './owners.js';
+import { buildComicPagesOwner, buildSeasonCoverOwner, buildStoryboardsShotOwner } from './owners.js';
 import { getUniverse, joinInfluenceList } from '../universeBuilder.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import {
@@ -89,19 +89,11 @@ const resolveMode = (options, settings) => {
 // slot, even if a future client bypasses the route schema.
 const resolveVariant = (target) => (target === 'final' ? 'final' : 'proof');
 
-// Shape for a fresh in-flight render slot — used by both route handlers
-// (cover + page) and the filename hook's legacy-migration path. `filename`
-// starts null; the comic-pages filename hook stamps it on job completion.
-// `fromProof` is omitted for the proof slot and required for the final slot.
-export const buildRenderSlot = ({ slotKey, jobId, prompt, width, height, fromProof = false, filename = null }) => ({
-  jobId,
-  filename,
-  prompt: prompt || null,
-  width: width ?? null,
-  height: height ?? null,
-  createdAt: new Date().toISOString(),
-  ...(slotKey === 'finalImage' ? { fromProof } : {}),
-});
+// `buildRenderSlot` moved to server/lib/renderSlot.js so season-cover
+// render paths (which don't import from visualStages.js) can share the
+// shape. Re-exported here for back-compat with route-level callers that
+// still import it from this module.
+export { buildRenderSlot } from '../../lib/renderSlot.js';
 
 // Default denoise strength for the "use proof as base" upscale path. Low
 // enough to preserve composition (panel layout, character placement),
@@ -284,6 +276,80 @@ export function composeComicCoverPrompt({
 }
 
 /**
+ * Compose a comic-book BACK-cover prompt. Distinguishing constraints vs.
+ * front cover: no masthead, no issue-number tag, no title banner — back
+ * covers are pure illustration in this app. The negative clause forbids
+ * typography explicitly because diffusion models default to "helpfully"
+ * re-adding logos/UPC blocks/credits typography when the canvas reads as
+ * a comic back cover.
+ *
+ * Returns the full prompt string (with world style baked in when present).
+ */
+export function composeComicBackCoverPrompt({
+  series, world, issue, backCoverScript = '', extraStyle = '',
+}) {
+  const issueTitle = (issue?.title || '').trim();
+  const concept = (backCoverScript || '').trim();
+
+  const styleStack = stackStyle(series, extraStyle);
+  const styleClause = styleStack ? ` Art style: ${styleStack}.` : '';
+
+  // Fallback when the user hasn't written a back-cover script yet — keep
+  // it thematically on-target so a one-click render still produces
+  // something meaningful instead of a blank canvas.
+  const sceneDescription = concept
+    || (issueTitle ? `A quiet companion image evoking "${issueTitle}" — atmospheric, single subject.` : 'A quiet companion image — atmospheric, single subject.');
+
+  const layout = `A single full printable comic-book BACK cover for a serialized issue. NO text of any kind — no masthead, no logo, no title, no issue-number tag, no UPC, no credits, no typography, no captions, no panel borders, no multi-panel layout. The entire cover is one bold illustrated hero image, edge-to-edge.${styleClause}`;
+  const body = `Back-cover concept: ${sceneDescription}`;
+  return applyWorldStyle(`${layout}\n\n${body}`, world);
+}
+
+/**
+ * Shared enqueue path for issue covers and back covers — front/back share
+ * 95% of the plumbing (variant resolution, proof-as-base init image,
+ * owner + job + log). Only the script-field name, slot location on the
+ * stage, and prompt composer differ; those are passed in by the caller.
+ *
+ * Returns { jobId, mode, prompt, script, variant, fromProof } — the
+ * `script` field is the resolved text (option override or persisted),
+ * named neutrally because the caller knows whether it's a coverScript or
+ * a backCoverScript.
+ */
+async function enqueueComicCoverLike(issueId, target, options = {}) {
+  if (target !== 'cover' && target !== 'backCover') {
+    throw new Error(`enqueueComicCoverLike: unknown target "${target}"`);
+  }
+  const { issue, settings, series, world } = await loadBibleContext(issueId);
+  const record = issue.stages?.comicPages?.[target] || null;
+  const scriptOptionKey = target === 'cover' ? 'coverScript' : 'backCoverScript';
+  const script = typeof options[scriptOptionKey] === 'string'
+    ? options[scriptOptionKey]
+    : (record?.script || '');
+  const mode = resolveMode(options, settings);
+  const variant = resolveVariant(options.target);
+  const fromProof = variant === 'final' && options.useProofAsBase === true;
+  const initImagePath = fromProof
+    ? resolveProofInitImage(record?.proofImage, target)
+    : null;
+  const initImageStrength = fromProof
+    ? (Number.isFinite(options.initImageStrength) ? options.initImageStrength : PROOF_AS_BASE_DEFAULT_STRENGTH)
+    : undefined;
+  const extraStyle = composeExtraStyle(series, issue, 'comicPages', options.extraStyle);
+  const prompt = target === 'cover'
+    ? composeComicCoverPrompt({ series, world, issue, coverScript: script, extraStyle })
+    : composeComicBackCoverPrompt({ series, world, issue, backCoverScript: script, extraStyle });
+  const logTarget = target === 'cover' ? 'cover' : 'back cover';
+  const jobId = enqueueImageJob({
+    prompt, world, settings, mode,
+    options: { ...options, initImagePath, initImageStrength },
+    owner: buildComicPagesOwner({ issueId, target, variant }),
+    logLine: `🎨 Pipeline comic ${logTarget} — issue=${issueId.slice(0, 8)} number=${issue.number || 1} variant=${variant}${fromProof ? ' (from proof)' : ''}`,
+  });
+  return { jobId, mode, prompt, script, variant, fromProof };
+}
+
+/**
  * Enqueue a comic-issue front-cover image render. Builds a cover-art
  * prompt (series masthead + issue-number tag + user's cover concept) and
  * hands it to the image-gen queue. Caller records the returned jobId on
@@ -299,31 +365,150 @@ export function composeComicCoverPrompt({
  * route can construct the slot record without re-reading the issue file.
  */
 export async function enqueueComicCover(issueId, options = {}) {
-  const { issue, settings, series, world } = await loadBibleContext(issueId);
-  const cover = issue.stages?.comicPages?.cover || null;
-  const coverScript = typeof options.coverScript === 'string'
-    ? options.coverScript
-    : (cover?.script || '');
+  const { script, ...rest } = await enqueueComicCoverLike(issueId, 'cover', options);
+  return { ...rest, coverScript: script };
+}
+
+/**
+ * Enqueue a comic-issue back-cover image render. Same flow as
+ * `enqueueComicCover` but with a back-cover-specific prompt (no
+ * masthead / issue-number / title; explicit no-text negative) and the
+ * job lands on `stages.comicPages.backCover.{proofImage|finalImage}`.
+ *
+ * Returns { jobId, mode, prompt, backCoverScript, variant, fromProof }.
+ */
+export async function enqueueComicBackCover(issueId, options = {}) {
+  const { script, ...rest } = await enqueueComicCoverLike(issueId, 'backCover', options);
+  return { ...rest, backCoverScript: script };
+}
+
+// ---- Volume (season) covers ---------------------------------------------
+
+const loadSeasonContext = async (seriesId, seasonId) => {
+  const seriesChain = (async () => {
+    const series = await getSeries(seriesId);
+    const world = series.universeId ? await getUniverse(series.universeId).catch(() => null) : null;
+    return { series, world };
+  })();
+  const [chain, settings] = await Promise.all([seriesChain, getSettings()]);
+  const season = (chain.series.seasons || []).find((s) => s.id === seasonId);
+  if (!season) {
+    throw new ServerError(`Season not found: ${seasonId}`, {
+      status: 404, code: 'PIPELINE_SEASON_NOT_FOUND',
+    });
+  }
+  return { ...chain, season, settings };
+};
+
+export function composeVolumeCoverPrompt({
+  series, world, season, coverScript = '', extraStyle = '',
+}) {
+  const seriesName = (series?.name || '').trim();
+  const volumeNumber = Number.isFinite(season?.number) ? Math.max(1, Math.floor(season.number)) : 1;
+  const volumeTitle = (season?.title || '').trim();
+  const concept = (coverScript || '').trim();
+
+  const styleStack = stackStyle(series, extraStyle);
+  const styleClause = styleStack ? ` Art style: ${styleStack}.` : '';
+
+  const titleBlock = seriesName
+    ? `Render the series masthead "${seriesName}" as bold, large comic-book logo typography near the top of the cover.`
+    : 'Render a bold comic-book series masthead as large logo typography near the top of the cover.';
+  const numberBlock = `Include a clearly legible volume tag reading "VOL. ${volumeNumber}" in the top-left corner — small but readable.`;
+  const titleLine = volumeTitle
+    ? ` Include the volume title "${volumeTitle}" as a secondary banner below the masthead.`
+    : '';
+
+  const sceneDescription = concept
+    || (volumeTitle
+      ? `A single dramatic hero image evoking the volume "${volumeTitle}" — the collected arc, not any single issue.`
+      : 'A single dramatic hero image of the protagonist that embodies the collected arc.');
+
+  const layout = `A single full printable comic-book trade-paperback FRONT cover collecting an entire volume of issues. ${titleBlock} ${numberBlock}${titleLine} The rest of the cover is one bold hero image — bigger and more iconic than any single-issue cover (no panel borders, no multi-panel layout — this is a collected-edition cover).${styleClause}`;
+  const body = `Volume cover concept: ${sceneDescription}`;
+  return applyWorldStyle(`${layout}\n\n${body}`, world);
+}
+
+export function composeVolumeBackCoverPrompt({
+  series, world, season, backCoverScript = '', extraStyle = '',
+}) {
+  const volumeTitle = (season?.title || '').trim();
+  const concept = (backCoverScript || '').trim();
+
+  const styleStack = stackStyle(series, extraStyle);
+  const styleClause = styleStack ? ` Art style: ${styleStack}.` : '';
+
+  const sceneDescription = concept
+    || (volumeTitle
+      ? `A quiet companion image evoking the volume "${volumeTitle}" — atmospheric, single subject.`
+      : 'A quiet companion image — atmospheric, single subject.');
+
+  const layout = `A single full printable comic-book trade-paperback BACK cover. NO text of any kind — no masthead, no logo, no title, no volume tag, no UPC, no credits, no typography, no captions, no panel borders, no multi-panel layout. The entire cover is one bold illustrated hero image, edge-to-edge.${styleClause}`;
+  const body = `Volume back-cover concept: ${sceneDescription}`;
+  return applyWorldStyle(`${layout}\n\n${body}`, world);
+}
+
+/**
+ * Shared volume-cover enqueue helper — front + back covers share variant
+ * resolution, proof-as-base i2i path, owner build, and job enqueue. Only the
+ * prompt composer + script field name differ.
+ *
+ * Returns { jobId, mode, prompt, script, variant, fromProof } — `script`
+ * is the resolved text (option override or persisted); caller renames to
+ * `coverScript` / `backCoverScript` for its public API symmetry.
+ */
+async function enqueueVolumeCoverLike(seriesId, seasonId, target, options = {}) {
+  if (target !== 'cover' && target !== 'backCover') {
+    throw new Error(`enqueueVolumeCoverLike: unknown target "${target}"`);
+  }
+  const { series, world, season, settings } = await loadSeasonContext(seriesId, seasonId);
+  const record = season[target] || null;
+  const scriptOptionKey = target === 'cover' ? 'coverScript' : 'backCoverScript';
+  const script = typeof options[scriptOptionKey] === 'string'
+    ? options[scriptOptionKey]
+    : (record?.script || '');
   const mode = resolveMode(options, settings);
   const variant = resolveVariant(options.target);
   const fromProof = variant === 'final' && options.useProofAsBase === true;
   const initImagePath = fromProof
-    ? resolveProofInitImage(cover?.proofImage, 'cover')
+    ? resolveProofInitImage(record?.proofImage, `volume ${target}`)
     : null;
   const initImageStrength = fromProof
     ? (Number.isFinite(options.initImageStrength) ? options.initImageStrength : PROOF_AS_BASE_DEFAULT_STRENGTH)
     : undefined;
-  const prompt = composeComicCoverPrompt({
-    series, world, issue, coverScript,
-    extraStyle: composeExtraStyle(series, issue, 'comicPages', options.extraStyle),
-  });
+  // Volume covers use the series-level visual style (no per-issue override,
+  // since a volume spans many issues that may have different overrides).
+  const styleFragment = resolveVisualStyle(series, null, 'comicPages')?.promptFragment || '';
+  const extraStyle = joinStyleParts(styleFragment, options.extraStyle);
+  const prompt = target === 'cover'
+    ? composeVolumeCoverPrompt({ series, world, season, coverScript: script, extraStyle })
+    : composeVolumeBackCoverPrompt({ series, world, season, backCoverScript: script, extraStyle });
+  const logTarget = target === 'cover' ? 'cover' : 'back cover';
   const jobId = enqueueImageJob({
     prompt, world, settings, mode,
     options: { ...options, initImagePath, initImageStrength },
-    owner: buildComicPagesOwner({ issueId, target: 'cover', variant }),
-    logLine: `🎨 Pipeline comic cover — issue=${issueId.slice(0, 8)} number=${issue.number || 1} variant=${variant}${fromProof ? ' (from proof)' : ''}`,
+    owner: buildSeasonCoverOwner({ seriesId, seasonId, target, variant }),
+    logLine: `🎨 Pipeline volume ${logTarget} — series=${seriesId.slice(0, 8)} season=${seasonId.slice(0, 8)} vol=${season.number || 1} variant=${variant}${fromProof ? ' (from proof)' : ''}`,
   });
-  return { jobId, mode, prompt, coverScript, variant, fromProof };
+  return { jobId, mode, prompt, script, variant, fromProof };
+}
+
+/**
+ * Enqueue a volume (season) FRONT cover render. Returns
+ * { jobId, mode, prompt, coverScript, variant, fromProof }.
+ */
+export async function enqueueVolumeCover(seriesId, seasonId, options = {}) {
+  const { script, ...rest } = await enqueueVolumeCoverLike(seriesId, seasonId, 'cover', options);
+  return { ...rest, coverScript: script };
+}
+
+/**
+ * Enqueue a volume (season) BACK cover render. Returns
+ * { jobId, mode, prompt, backCoverScript, variant, fromProof }.
+ */
+export async function enqueueVolumeBackCover(seriesId, seasonId, options = {}) {
+  const { script, ...rest } = await enqueueVolumeCoverLike(seriesId, seasonId, 'backCover', options);
+  return { ...rest, backCoverScript: script };
 }
 
 export function composeComicPagePrompt({

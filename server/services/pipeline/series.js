@@ -28,6 +28,26 @@ import { emitRecordUpdated, emitRecordDeleted } from '../sharing/recordEvents.js
 // (e.g. tests that swap it through a Proxy mock).
 const statePath = () => join(PATHS.data, 'pipeline-series.json');
 
+// File-level write lock — same pattern as issueWriteTail in issues.js.
+// Required because multiple write paths can race on the single shared
+// pipeline-series.json file: PATCH /series/:id (bible edits), PATCH
+// /seasons/:seasonId (season metadata), the new volume cover-render route,
+// the season-cover filename hook landing, and the bible-extract merge.
+// All of those read-then-write the same JSON; without serialization a
+// later writer's `readState` can land on a pre-image snapshot and clobber
+// the earlier write. CLAUDE.md: "single tail per shared file."
+let seriesWriteTail = Promise.resolve();
+
+function queueSeriesWrite(fn) {
+  const next = seriesWriteTail.then(fn, fn); // run fn even when prev rejects
+  const silenced = next.catch(() => {});
+  seriesWriteTail = silenced;
+  silenced.finally(() => {
+    if (seriesWriteTail === silenced) seriesWriteTail = Promise.resolve();
+  });
+  return next;
+}
+
 export const ERR_NOT_FOUND = 'PIPELINE_SERIES_NOT_FOUND';
 export const ERR_VALIDATION = 'PIPELINE_SERIES_VALIDATION';
 export const ERR_DUPLICATE = 'PIPELINE_SERIES_DUPLICATE';
@@ -140,31 +160,33 @@ export async function getSeries(id) {
 export async function createSeries(input = {}) {
   const name = trimTo(input.name, NAME_MAX);
   if (!name) throw makeErr(`Series name is required (1..${NAME_MAX} chars)`, ERR_VALIDATION);
-  const state = await readState();
-  const now = new Date().toISOString();
-  const next = sanitizeSeries({
-    id: `ser-${randomUUID()}`,
-    name,
-    logline: input.logline || '',
-    premise: input.premise || '',
-    universeId: input.universeId || null,
-    writersRoomWorkId: input.writersRoomWorkId || null,
-    characters: input.characters || [],
-    settings: input.settings || [],
-    objects: input.objects || [],
-    arc: input.arc || null,
-    seasons: input.seasons || [],
-    locked: input.locked || {},
-    styleNotes: input.styleNotes || '',
-    targetFormat: input.targetFormat || 'comic+tv',
-    issueCountTarget: input.issueCountTarget || 0,
-    llm: input.llm || null,
-    createdAt: now,
-    updatedAt: now,
+  return queueSeriesWrite(async () => {
+    const state = await readState();
+    const now = new Date().toISOString();
+    const next = sanitizeSeries({
+      id: `ser-${randomUUID()}`,
+      name,
+      logline: input.logline || '',
+      premise: input.premise || '',
+      universeId: input.universeId || null,
+      writersRoomWorkId: input.writersRoomWorkId || null,
+      characters: input.characters || [],
+      settings: input.settings || [],
+      objects: input.objects || [],
+      arc: input.arc || null,
+      seasons: input.seasons || [],
+      locked: input.locked || {},
+      styleNotes: input.styleNotes || '',
+      targetFormat: input.targetFormat || 'comic+tv',
+      issueCountTarget: input.issueCountTarget || 0,
+      llm: input.llm || null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    state.series.push(next);
+    await writeState(state);
+    return next;
   });
-  state.series.push(next);
-  await writeState(state);
-  return next;
 }
 
 /**
@@ -180,53 +202,97 @@ export async function insertSeriesWithId(input = {}) {
   }
   const name = trimTo(input.name, NAME_MAX);
   if (!name) throw makeErr(`Series name is required (1..${NAME_MAX} chars)`, ERR_VALIDATION);
-  const state = await readState();
-  if (state.series.some((s) => s.id === input.id)) {
-    throw makeErr(`Series id already exists: ${input.id}`, ERR_DUPLICATE);
-  }
-  const next = sanitizeSeries({ ...input, name });
-  if (!next) throw makeErr('Invalid series payload', ERR_VALIDATION);
-  state.series.push(next);
-  await writeState(state);
-  return next;
+  return queueSeriesWrite(async () => {
+    const state = await readState();
+    if (state.series.some((s) => s.id === input.id)) {
+      throw makeErr(`Series id already exists: ${input.id}`, ERR_DUPLICATE);
+    }
+    const next = sanitizeSeries({ ...input, name });
+    if (!next) throw makeErr('Invalid series payload', ERR_VALIDATION);
+    state.series.push(next);
+    await writeState(state);
+    return next;
+  });
 }
 
 export async function updateSeries(id, patch = {}) {
-  const state = await readState();
-  const idx = state.series.findIndex((s) => s.id === id);
-  if (idx < 0) throw makeErr(`Series not found: ${id}`, ERR_NOT_FOUND);
-  const cur = state.series[idx];
-  // Per-field merge so `{ provider: 'codex' }` doesn't clobber an existing `model`.
-  const mergedLlm = 'llm' in patch
-    ? { ...(cur.llm || {}), ...(patch.llm || {}) }
-    : cur.llm;
-  const merged = sanitizeSeries({
-    ...cur,
-    ...('name' in patch ? { name: patch.name } : {}),
-    ...('logline' in patch ? { logline: patch.logline } : {}),
-    ...('premise' in patch ? { premise: patch.premise } : {}),
-    ...('universeId' in patch ? { universeId: patch.universeId } : {}),
-    ...('writersRoomWorkId' in patch ? { writersRoomWorkId: patch.writersRoomWorkId } : {}),
-    ...('characters' in patch ? { characters: patch.characters } : {}),
-    ...('settings' in patch ? { settings: patch.settings } : {}),
-    ...('objects' in patch ? { objects: patch.objects } : {}),
-    ...('arc' in patch ? { arc: patch.arc } : {}),
-    ...('seasons' in patch ? { seasons: patch.seasons } : {}),
-    // Wholesale replace — `locked: {}` clears every lock; omission preserves.
-    ...('locked' in patch ? { locked: patch.locked } : {}),
-    ...('styleNotes' in patch ? { styleNotes: patch.styleNotes } : {}),
-    ...('visualStyleDefault' in patch ? { visualStyleDefault: patch.visualStyleDefault } : {}),
-    ...('targetFormat' in patch ? { targetFormat: patch.targetFormat } : {}),
-    ...('issueCountTarget' in patch ? { issueCountTarget: patch.issueCountTarget } : {}),
-    ...('origin' in patch ? { origin: patch.origin } : {}),
-    llm: mergedLlm,
-    updatedAt: new Date().toISOString(),
+  return queueSeriesWrite(async () => {
+    const state = await readState();
+    const idx = state.series.findIndex((s) => s.id === id);
+    if (idx < 0) throw makeErr(`Series not found: ${id}`, ERR_NOT_FOUND);
+    const cur = state.series[idx];
+    // Per-field merge so `{ provider: 'codex' }` doesn't clobber an existing `model`.
+    const mergedLlm = 'llm' in patch
+      ? { ...(cur.llm || {}), ...(patch.llm || {}) }
+      : cur.llm;
+    const merged = sanitizeSeries({
+      ...cur,
+      ...('name' in patch ? { name: patch.name } : {}),
+      ...('logline' in patch ? { logline: patch.logline } : {}),
+      ...('premise' in patch ? { premise: patch.premise } : {}),
+      ...('universeId' in patch ? { universeId: patch.universeId } : {}),
+      ...('writersRoomWorkId' in patch ? { writersRoomWorkId: patch.writersRoomWorkId } : {}),
+      ...('characters' in patch ? { characters: patch.characters } : {}),
+      ...('settings' in patch ? { settings: patch.settings } : {}),
+      ...('objects' in patch ? { objects: patch.objects } : {}),
+      ...('arc' in patch ? { arc: patch.arc } : {}),
+      ...('seasons' in patch ? { seasons: patch.seasons } : {}),
+      // Wholesale replace — `locked: {}` clears every lock; omission preserves.
+      ...('locked' in patch ? { locked: patch.locked } : {}),
+      ...('styleNotes' in patch ? { styleNotes: patch.styleNotes } : {}),
+      ...('visualStyleDefault' in patch ? { visualStyleDefault: patch.visualStyleDefault } : {}),
+      ...('targetFormat' in patch ? { targetFormat: patch.targetFormat } : {}),
+      ...('issueCountTarget' in patch ? { issueCountTarget: patch.issueCountTarget } : {}),
+      ...('origin' in patch ? { origin: patch.origin } : {}),
+      llm: mergedLlm,
+      updatedAt: new Date().toISOString(),
+    });
+    if (!merged) throw makeErr('Invalid series payload', ERR_VALIDATION);
+    state.series[idx] = merged;
+    await writeState(state);
+    emitRecordUpdated('series', merged.id);
+    return merged;
   });
-  if (!merged) throw makeErr('Invalid series payload', ERR_VALIDATION);
-  state.series[idx] = merged;
-  await writeState(state);
-  emitRecordUpdated('series', merged.id);
-  return merged;
+}
+
+/**
+ * Apply a structured patch to one season inside a series. Routes through the
+ * shared series write tail so a season-cover render PATCH, the season-cover
+ * filename hook landing, and a user-driven season metadata edit all serialize
+ * against the single pipeline-series.json file. Returns the updated series.
+ *
+ * Throws `PIPELINE_SEASON_NOT_FOUND` (the seasons-service ERR_NOT_FOUND
+ * value, inlined here to avoid a circular import seasons → series → seasons)
+ * when the season is missing so the season-resource routes surface a 404
+ * with "Season not found" rather than "Series not found".
+ */
+export async function updateSeasonOnSeries(seriesId, seasonId, patchFn) {
+  return queueSeriesWrite(async () => {
+    const state = await readState();
+    const idx = state.series.findIndex((s) => s.id === seriesId);
+    if (idx < 0) throw makeErr(`Series not found: ${seriesId}`, ERR_NOT_FOUND);
+    const cur = state.series[idx];
+    const seasons = Array.isArray(cur.seasons) ? cur.seasons : [];
+    const seasonIdx = seasons.findIndex((s) => s.id === seasonId);
+    if (seasonIdx < 0) {
+      throw makeErr(`Season not found: ${seasonId}`, 'PIPELINE_SEASON_NOT_FOUND');
+    }
+    const existing = seasons[seasonIdx];
+    const patched = patchFn(existing);
+    const nextSeasons = [...seasons];
+    // Force a fresh updatedAt on the touched season so LWW comparisons fire.
+    nextSeasons[seasonIdx] = { ...existing, ...patched, updatedAt: new Date().toISOString() };
+    const merged = sanitizeSeries({
+      ...cur,
+      seasons: nextSeasons,
+      updatedAt: new Date().toISOString(),
+    });
+    if (!merged) throw makeErr('Invalid series payload after season patch', ERR_VALIDATION);
+    state.series[idx] = merged;
+    await writeState(state);
+    emitRecordUpdated('series', merged.id);
+    return merged;
+  });
 }
 
 /**
@@ -240,35 +306,37 @@ export async function updateSeries(id, patch = {}) {
  */
 export async function purgeImageRefFromAllSeries(filename) {
   if (!filename || typeof filename !== 'string') return { removed: 0 };
-  const state = await readState();
-  let removed = 0;
-  const touchedIds = [];
-  const nextSeries = state.series.map((s) => {
-    let touched = false;
-    const patched = { ...s };
-    for (const key of BIBLE_KEYS) {
-      const list = Array.isArray(s[key]) ? s[key] : null;
-      if (!list) continue;
-      const nextList = list.map((entry) => {
-        const refs = Array.isArray(entry.imageRefs) ? entry.imageRefs : null;
-        if (!refs || !refs.includes(filename)) return entry;
-        const trimmed = refs.filter((f) => f !== filename);
-        removed += refs.length - trimmed.length;
-        touched = true;
-        return { ...entry, imageRefs: trimmed };
-      });
-      if (touched) patched[key] = nextList;
+  return queueSeriesWrite(async () => {
+    const state = await readState();
+    let removed = 0;
+    const touchedIds = [];
+    const nextSeries = state.series.map((s) => {
+      let touched = false;
+      const patched = { ...s };
+      for (const key of BIBLE_KEYS) {
+        const list = Array.isArray(s[key]) ? s[key] : null;
+        if (!list) continue;
+        const nextList = list.map((entry) => {
+          const refs = Array.isArray(entry.imageRefs) ? entry.imageRefs : null;
+          if (!refs || !refs.includes(filename)) return entry;
+          const trimmed = refs.filter((f) => f !== filename);
+          removed += refs.length - trimmed.length;
+          touched = true;
+          return { ...entry, imageRefs: trimmed };
+        });
+        if (touched) patched[key] = nextList;
+      }
+      if (touched) touchedIds.push(s.id);
+      return touched ? { ...patched, updatedAt: new Date().toISOString() } : s;
+    });
+    if (removed > 0) {
+      await writeState({ series: nextSeries });
+      // Each touched series is a mutation any active subscription should
+      // propagate to its bucket; otherwise recipients keep stale imageRefs.
+      for (const id of touchedIds) emitRecordUpdated('series', id);
     }
-    if (touched) touchedIds.push(s.id);
-    return touched ? { ...patched, updatedAt: new Date().toISOString() } : s;
+    return { removed };
   });
-  if (removed > 0) {
-    await writeState({ series: nextSeries });
-    // Each touched series is a mutation any active subscription should
-    // propagate to its bucket; otherwise recipients keep stale imageRefs.
-    for (const id of touchedIds) emitRecordUpdated('series', id);
-  }
-  return { removed };
 }
 
 /**
@@ -346,13 +414,15 @@ export async function extractAndMergeIntoSeries(seriesId, opts = {}) {
 }
 
 export async function deleteSeries(id) {
-  const state = await readState();
-  const before = state.series.length;
-  state.series = state.series.filter((s) => s.id !== id);
-  if (state.series.length === before) throw makeErr(`Series not found: ${id}`, ERR_NOT_FOUND);
-  await writeState(state);
-  // Any live share-bucket subscription for this series tears itself down via
-  // the recordEvents listener instead of orphaning.
-  emitRecordDeleted('series', id);
-  return { id };
+  return queueSeriesWrite(async () => {
+    const state = await readState();
+    const before = state.series.length;
+    state.series = state.series.filter((s) => s.id !== id);
+    if (state.series.length === before) throw makeErr(`Series not found: ${id}`, ERR_NOT_FOUND);
+    await writeState(state);
+    // Any live share-bucket subscription for this series tears itself down via
+    // the recordEvents listener instead of orphaning.
+    emitRecordDeleted('series', id);
+    return { id };
+  });
 }

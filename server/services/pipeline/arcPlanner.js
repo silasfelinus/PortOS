@@ -21,7 +21,7 @@
 
 import { runStagedLLM } from '../../lib/stageRunner.js';
 import { ServerError } from '../../lib/errorHandler.js';
-import { getSeries, updateSeries } from './series.js';
+import { getSeries, updateSeries, updateSeasonOnSeries } from './series.js';
 import { listIssues } from './issues.js';
 import { getSeason } from './seasons.js';
 import {
@@ -397,6 +397,87 @@ export async function generateSeasonEpisodes(seriesId, seasonId, options = {}) {
   return {
     season,
     episodes,
+    raw: content,
+    runId,
+    providerId,
+    model,
+  };
+}
+
+/**
+ * Generate FRONT + BACK cover-art concepts for one volume (season). Returns
+ * the proposed text without persisting; pass `commit: true` to write the
+ * scripts to `season.cover.script` / `season.backCover.script` — only when
+ * those slots are currently blank, never clobbering a user edit.
+ *
+ * Sized as a lightweight per-season LLM call rather than bolted onto the
+ * arc-overview pass so (a) cover concepts can be regenerated independently
+ * of the arc structure, and (b) the heavier arc-overview prompt's output
+ * tokens stay focused on structural beats.
+ */
+export async function generateVolumeCoverConcepts(seriesId, seasonId, options = {}) {
+  const series = await getSeries(seriesId);
+  const seasons = series.seasons || [];
+  const season = seasons.find((s) => s.id === seasonId);
+  if (!season) {
+    throw makeErr(`Season not found on series: ${seasonId}`, ERR_VALIDATION);
+  }
+  const themesCsv = Array.isArray(season.themes) ? season.themes.join(', ') : '';
+  const ctx = {
+    series: {
+      name: series.name,
+      logline: series.logline,
+      styleNotes: series.styleNotes,
+    },
+    season: {
+      number: season.number,
+      title: season.title,
+      logline: season.logline,
+      synopsis: season.synopsis,
+      endingHook: season.endingHook,
+      episodeCountTarget: season.episodeCountTarget,
+      themesCsv,
+    },
+  };
+  const { content, runId, providerId, model } = await runStagedLLM(
+    'pipeline-volume-cover-concepts',
+    ctx,
+    {
+      providerOverride: options.providerOverride,
+      modelOverride: options.modelOverride,
+      returnsJson: true,
+      source: 'pipeline-volume-cover-concepts',
+    },
+  );
+  const coverConcept = (typeof content?.coverConcept === 'string' ? content.coverConcept : '').trim();
+  const backCoverConcept = (typeof content?.backCoverConcept === 'string' ? content.backCoverConcept : '').trim();
+  let updatedSeries = null;
+  const seeded = { cover: false, backCover: false };
+  if (options.commit) {
+    // Scoped per-season patch via updateSeasonOnSeries — runs inside the
+    // series write tail, skips the full sanitizeSeries pass over every
+    // bible list. The "only seed when blank" check happens INSIDE the
+    // callback so it reads the freshest persisted scripts (avoiding a
+    // race against a concurrent user blur-save).
+    updatedSeries = await updateSeasonOnSeries(seriesId, seasonId, (cur) => {
+      const patch = {};
+      if (coverConcept && !(cur.cover?.script || '')) {
+        patch.cover = { ...(cur.cover || {}), script: coverConcept };
+        seeded.cover = true;
+      }
+      if (backCoverConcept && !(cur.backCover?.script || '')) {
+        patch.backCover = { ...(cur.backCover || {}), script: backCoverConcept };
+        seeded.backCover = true;
+      }
+      return patch;
+    });
+  }
+  return {
+    season: updatedSeries ? (updatedSeries.seasons || []).find((s) => s.id === seasonId) : season,
+    series: updatedSeries,
+    coverConcept,
+    backCoverConcept,
+    seeded,
     raw: content,
     runId,
     providerId,

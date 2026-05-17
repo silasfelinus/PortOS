@@ -92,6 +92,7 @@ import universeBuilderRoutes from './routes/universeBuilder.js';
 import { initUniverseBuilderCollectionHook } from './services/universeBuilderCollectionHook.js';
 import { initComicPagesFilenameHook } from './services/pipeline/comicPagesFilenameHook.js';
 import { initStoryboardsFilenameHook } from './services/pipeline/storyboardsFilenameHook.js';
+import { initSeasonCoverFilenameHook } from './services/pipeline/seasonCoverFilenameHook.js';
 import pipelineRoutes from './routes/pipeline.js';
 import { initMediaJobQueue } from './services/mediaJobQueue/index.js';
 import { recoverInFlightProjects } from './services/creativeDirector/recovery.js';
@@ -542,6 +543,7 @@ ensureSelf()
     // 24h media-job archive TTL elapses.
     initComicPagesFilenameHook();
     initStoryboardsFilenameHook();
+    initSeasonCoverFilenameHook();
   })
   .then(() => {
     // Sharing: attach chokidar watchers to every registered share bucket so

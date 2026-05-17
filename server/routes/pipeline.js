@@ -45,6 +45,9 @@ import {
   enqueueVisualImage,
   enqueueVisualComicPage,
   enqueueComicCover,
+  enqueueComicBackCover,
+  enqueueVolumeCover,
+  enqueueVolumeBackCover,
   enqueueStoryboardSceneVideo,
   enqueueStoryboardShotStartFrame,
   refineComicPanelPrompt,
@@ -58,6 +61,10 @@ import { ASPECT_RATIOS, QUALITIES } from '../lib/creativeDirectorPresets.js';
 import { extractScenes, SOURCE_KIND } from '../lib/sceneExtractor.js';
 import { listVisualStyles } from '../lib/visualStyles.js';
 import { buildComicPdf, PAGE_SIZES, DEFAULT_PAGE_SIZE, ERR_NO_RENDERED_PAGES } from '../services/pipeline/comicPdf.js';
+import {
+  buildVolumePdf,
+  ERR_NO_VOLUME_COVER, ERR_NO_RENDERED_ISSUES,
+} from '../services/pipeline/volumePdf.js';
 import { listAllVoices, synthesizeToFile, parseVoiceId, extractDialogueLines, resolveVoiceForLine } from '../services/pipeline/audio.js';
 import { synthesize as synthesizeVoice } from '../services/voice/tts.js';
 import {
@@ -92,6 +99,8 @@ const SERVICE_ERROR_STATUS = {
   [arcPlanner.ERR_VALIDATION]: 400,
   [ERR_NO_STORYBOARDS]: 400,
   [ERR_NO_RENDERED_PAGES]: 409,
+  [ERR_NO_VOLUME_COVER]: 409,
+  [ERR_NO_RENDERED_ISSUES]: 409,
 };
 
 const mapServiceError = (err) => {
@@ -153,6 +162,18 @@ const arcSchema = z.object({
   status: z.enum(ARC_STATUSES).optional(),
 });
 
+// Volume-cover / back-cover sub-schema — accepts the script text plus the
+// pre-split legacy fields. Render-slot details (`proofImage`, `finalImage`)
+// arrive only from the render route's PATCH path, which builds them
+// server-side; PATCHes of the season metadata only carry the user-editable
+// `script`. Explicit shape (not `.passthrough()`) so the "all inputs
+// validated" CLAUDE.md convention holds for new fields.
+const seasonCoverSchema = z.object({
+  script: z.string().max(8000).optional(),
+  imageJobId: z.string().trim().max(200).nullable().optional(),
+  prompt: z.string().max(16_000).nullable().optional(),
+});
+
 const seasonSchema = z.object({
   id: z.string().trim().min(1).max(64).optional(),
   number: z.number().int().min(0).max(ARC_LIMITS.SEASON_NUMBER_MAX).optional(),
@@ -163,6 +184,8 @@ const seasonSchema = z.object({
   themes: z.array(z.string().trim().min(1).max(ARC_LIMITS.THEME_MAX))
     .max(ARC_LIMITS.THEMES_PER_ARC_MAX).optional(),
   endingHook: z.string().trim().max(ARC_LIMITS.SEASON_ENDING_HOOK_MAX).optional(),
+  cover: seasonCoverSchema.nullable().optional(),
+  backCover: seasonCoverSchema.nullable().optional(),
   status: z.enum(SEASON_STATUSES).optional(),
 }).passthrough();
 
@@ -271,6 +294,16 @@ const visualStageInputSchema = stageInputSchema.extend({
     imageJobId: z.string().trim().max(200).nullable().optional(),
     prompt: z.string().max(16_000).nullable().optional(),
   }).nullable().optional(),
+  // Comic-issue back cover — identical shape to `cover`. Only meaningful
+  // on the comicPages stage. The render route + filename hook treat the
+  // two slots symmetrically; only the rendered prompt differs (no
+  // masthead, explicit no-text negative — back covers are illustration-
+  // only).
+  backCover: z.object({
+    script: z.string().max(8000).optional(),
+    imageJobId: z.string().trim().max(200).nullable().optional(),
+    prompt: z.string().max(16_000).nullable().optional(),
+  }).nullable().optional(),
   // Per-stage visual style override. Validated lazily by the sanitizer
   // (unknown catalog ids are dropped) so adding a new style doesn't force
   // a schema bump on every client.
@@ -334,14 +367,20 @@ const visualGenerateSchema = z.object({
   seed: z.number().int().min(0).optional(),
 }).refine(refineImagePixelCap, { message: PIXEL_CAP_MESSAGE, path: ['width'] });
 
-// Comic-issue front cover render. Accepts an optional `coverScript`
-// override (otherwise the route reads it from stages.comicPages.cover.script);
-// the rest of the prompt is built server-side from series + issue metadata.
-// `seed` mirrors the page/panel render schemas so the shared image-gen drawer
-// flows the same render settings into the cover — enqueueImageJob honors it
-// via options.seed.
-const comicCoverRenderSchema = z.object({
-  coverScript: z.string().max(8000).optional(),
+// Render-schema factory — every cover/back-cover render route shares the
+// same shape (image-gen knobs + proof/final variant + useProofAsBase i2i),
+// differing only in the script-field name. Four routes × ~16 fields each
+// were a 60-line mirror before this factory; new fields now apply to all
+// four call sites at once. `target` is the proof/final variant; the route
+// param resolves the cover-vs-backCover slot.
+//
+// `seed` mirrors the page/panel render schemas so the shared image-gen
+// drawer flows the same render settings into the cover —
+// enqueueImageJob honors it via options.seed. `useProofAsBase` is silently
+// ignored by Codex (gpt-image-2's $imagegen has no init-image input);
+// local + external honor it.
+const makeCoverRenderSchema = (scriptField) => z.object({
+  [scriptField]: z.string().max(8000).optional(),
   negativePrompt: z.string().trim().max(2000).optional(),
   extraStyle: z.string().trim().max(2000).optional(),
   mode: z.enum(['local', 'codex']).optional(),
@@ -352,17 +391,20 @@ const comicCoverRenderSchema = z.object({
   cfgScale: z.number().min(0).max(30).optional(),
   guidance: z.number().min(0).max(30).optional(),
   seed: z.number().int().min(0).optional(),
-  // Proof vs Final render variant. Each variant lands in its own slot
-  // (cover.proofImage / cover.finalImage) so the user can keep a fast
-  // proof for layout decisions and a hi-res final for the PDF.
   target: z.enum(COMIC_PAGE_VARIANTS).optional().default('proof'),
-  // When the user likes the proof and wants the final to preserve its
-  // composition, set this to true — the server will pass the proof image
-  // as the init image for the final render at low denoise strength.
-  // Codex backend silently ignores it (gpt-image-2's $imagegen tool has
-  // no init-image input); local + external honor it.
   useProofAsBase: z.boolean().optional().default(false),
 }).refine(refineImagePixelCap, { message: PIXEL_CAP_MESSAGE, path: ['width'] });
+
+const comicCoverRenderSchema     = makeCoverRenderSchema('coverScript');
+const comicBackCoverRenderSchema = makeCoverRenderSchema('backCoverScript');
+const volumeCoverRenderSchema    = makeCoverRenderSchema('coverScript');
+const volumeBackCoverRenderSchema = makeCoverRenderSchema('backCoverScript');
+
+const volumeCoverConceptsSchema = z.object({
+  commit: z.boolean().optional().default(false),
+  providerOverride: z.string().trim().max(80).optional(),
+  modelOverride: z.string().trim().max(200).optional(),
+});
 
 // Full-comic-page render: same knobs as panel render minus `description` /
 // `slugline` (the prompt is built server-side from the page's panels[] so it
@@ -1071,6 +1113,99 @@ router.post('/series/:id/arc/resolve-issues', asyncHandler(async (req, res) => {
 }));
 
 // =====================
+// Volume (season) covers — front + back illustration on the season record.
+// Stored on series.seasons[].cover / .backCover, sanitized by sanitizeSeason,
+// rendered by enqueueVolumeCover{,BackCover}, stamped on completion by
+// seasonCoverFilenameHook. Compiled with all child issues into a trade-
+// paperback PDF by the volume.pdf route below.
+// =====================
+
+router.post('/series/:id/seasons/:seasonId/cover-concepts/generate', asyncHandler(async (req, res) => {
+  const body = validateRequest(volumeCoverConceptsSchema, req.body ?? {});
+  const result = await arcPlanner.generateVolumeCoverConcepts(req.params.id, req.params.seasonId, body)
+    .catch((err) => { throw mapServiceError(err); });
+  res.json(result);
+}));
+
+// Render the volume front cover. Persists the in-flight render slot onto
+// season.cover via seriesSvc.updateSeasonOnSeries (queue-serialized) — the
+// season-cover filename hook stamps the completed filename later.
+// (Missing series / season surface as PIPELINE_SEASON_NOT_FOUND from
+// enqueueVolumeCover's loadSeasonContext, mapped to 404 by mapServiceError.)
+router.post('/series/:id/seasons/:seasonId/cover/render', asyncHandler(async (req, res) => {
+  const body = validateRequest(volumeCoverRenderSchema, req.body ?? {});
+  const result = await enqueueVolumeCover(req.params.id, req.params.seasonId, body)
+    .catch((err) => { throw mapServiceError(err); });
+
+  const slotKey = slotKeyForVariant(result.variant);
+  const slotRecord = buildRenderSlot({
+    slotKey, jobId: result.jobId, prompt: result.prompt,
+    width: body.width, height: body.height, fromProof: result.fromProof,
+  });
+  const series = await seriesSvc.updateSeasonOnSeries(
+    req.params.id,
+    req.params.seasonId,
+    (cur) => {
+      const currentCover = cur?.cover || {};
+      return {
+        cover: {
+          ...currentCover,
+          script: result.coverScript || '',
+          [slotKey]: slotRecord,
+        },
+      };
+    },
+  ).catch((err) => { throw mapServiceError(err); });
+  const season = (series.seasons || []).find((s) => s.id === req.params.seasonId);
+  res.json({ ...result, season, series });
+}));
+
+router.post('/series/:id/seasons/:seasonId/back-cover/render', asyncHandler(async (req, res) => {
+  const body = validateRequest(volumeBackCoverRenderSchema, req.body ?? {});
+  const result = await enqueueVolumeBackCover(req.params.id, req.params.seasonId, body)
+    .catch((err) => { throw mapServiceError(err); });
+
+  const slotKey = slotKeyForVariant(result.variant);
+  const slotRecord = buildRenderSlot({
+    slotKey, jobId: result.jobId, prompt: result.prompt,
+    width: body.width, height: body.height, fromProof: result.fromProof,
+  });
+  const series = await seriesSvc.updateSeasonOnSeries(
+    req.params.id,
+    req.params.seasonId,
+    (cur) => {
+      const currentBack = cur?.backCover || {};
+      return {
+        backCover: {
+          ...currentBack,
+          script: result.backCoverScript || '',
+          [slotKey]: slotRecord,
+        },
+      };
+    },
+  ).catch((err) => { throw mapServiceError(err); });
+  const season = (series.seasons || []).find((s) => s.id === req.params.seasonId);
+  res.json({ ...result, season, series });
+}));
+
+// Compile a trade-paperback PDF: volume front → for each issue
+// [issue front → issue pages → issue back] → volume back → optional colophon.
+// 409 with ERR_NO_VOLUME_COVER when the season has no rendered front cover;
+// 409 with ERR_NO_RENDERED_ISSUES when no issue has any rendered page yet.
+router.get('/series/:id/seasons/:seasonId/volume.pdf', asyncHandler(async (req, res) => {
+  const sizeRaw = typeof req.query.size === 'string' ? req.query.size : '';
+  const size = PAGE_SIZES[sizeRaw] ? sizeRaw : DEFAULT_PAGE_SIZE;
+  const includeColophon = req.query.colophon !== 'skip';
+  const { bytes, filename } = await buildVolumePdf(req.params.id, req.params.seasonId, {
+    size, includeColophon,
+  }).catch((err) => { throw mapServiceError(err); });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.setHeader('Content-Length', String(bytes.length));
+  res.end(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+}));
+
+// =====================
 // Issue routes
 // =====================
 
@@ -1223,19 +1358,21 @@ router.post('/issues/:id/stages/comicPages/extract-pages', asyncHandler(async (r
     );
   }
 
-  const { pages, coverConcept } = parseComicScript(source);
+  const { pages, coverConcept, backCoverConcept } = parseComicScript(source);
 
-  // Preserve a user-edited cover script if one is already set — only seed
-  // from the parsed concept when the cover is currently blank. Otherwise an
-  // extract re-run would clobber a hand-curated cover. When we DO seed, also
-  // clear any prior imageJobId / prompt — they were rendered against the old
-  // (likely placeholder / fallback) script, so leaving them would show a
-  // rendered cover image that doesn't match the new concept text.
+  // Preserve a user-edited cover / back-cover script if one is already set —
+  // only seed from the parsed concept when the slot is currently blank.
+  // Otherwise an extract re-run would clobber a hand-curated cover/back. When
+  // we DO seed, also clear any prior imageJobId / prompt — they were
+  // rendered against the old (likely placeholder / fallback) script, so
+  // leaving them would show a rendered image that doesn't match the new
+  // concept text.
   //
-  // The decision is made inside updateStageWithLatest so it reads the freshest
-  // persisted cover, not the stale snapshot from the getIssue read above. A
-  // concurrent cover/render call that writes imageJobId between the two awaits
-  // would otherwise be silently overwritten.
+  // The decision is made inside updateStageWithLatest so it reads the
+  // freshest persisted cover/back, not the stale snapshot from the
+  // getIssue read above. A concurrent cover/render call that writes
+  // imageJobId between the two awaits would otherwise be silently
+  // overwritten.
   const { issue: updatedIssue, stage } = await issuesSvc.updateStageWithLatest(
     issue.id,
     'comicPages',
@@ -1244,10 +1381,15 @@ router.post('/issues/:id/stages/comicPages/extract-pages', asyncHandler(async (r
       const nextCover = coverConcept && !currentCoverScript
         ? { script: coverConcept, imageJobId: null, prompt: null }
         : currentStage?.cover ?? null;
+      const currentBackScript = currentStage?.backCover?.script || '';
+      const nextBackCover = backCoverConcept && !currentBackScript
+        ? { script: backCoverConcept, imageJobId: null, prompt: null }
+        : currentStage?.backCover ?? null;
       return {
         status: pages.length ? 'ready' : 'empty',
         pages,
         cover: nextCover,
+        backCover: nextBackCover,
         errorMessage: '',
       };
     },
@@ -1349,6 +1491,38 @@ router.post('/issues/:id/stages/comicPages/cover/render', asyncHandler(async (re
   res.json({ ...result, cover: stage.cover, issue: updatedIssue, stage });
 }));
 
+// Render the comic-issue BACK cover. Same flow as the front-cover route;
+// differs in the prompt (no masthead, explicit no-text negative) and the
+// persisted slot (`stages.comicPages.backCover.{proofImage|finalImage}`).
+router.post('/issues/:id/stages/comicPages/back-cover/render', asyncHandler(async (req, res) => {
+  const body = validateRequest(comicBackCoverRenderSchema, req.body ?? {});
+  await issuesSvc.getIssue(req.params.id).catch((err) => { throw mapServiceError(err); });
+
+  const result = await enqueueComicBackCover(req.params.id, body)
+    .catch((err) => { throw mapServiceError(err); });
+
+  const slotKey = slotKeyForVariant(result.variant);
+  const slotRecord = buildRenderSlot({
+    slotKey, jobId: result.jobId, prompt: result.prompt,
+    width: body.width, height: body.height, fromProof: result.fromProof,
+  });
+  const { issue: updatedIssue, stage } = await issuesSvc.updateStageWithLatest(
+    req.params.id,
+    'comicPages',
+    (currentStage) => {
+      const currentBack = currentStage?.backCover || {};
+      return {
+        backCover: {
+          ...currentBack,
+          script: result.backCoverScript || '',
+          [slotKey]: slotRecord,
+        },
+      };
+    },
+  ).catch((err) => { throw mapServiceError(err); });
+  res.json({ ...result, backCover: stage.backCover, issue: updatedIssue, stage });
+}));
+
 // Render a full comic page (multi-panel layout in one image) — the
 // recommended default for cloud-class image models (Codex, Google Imagen);
 // local diffusion models can render this but tend to produce draft-quality
@@ -1420,9 +1594,10 @@ router.get('/issues/:id/comic.pdf', asyncHandler(async (req, res) => {
   const sizeRaw = typeof req.query.size === 'string' ? req.query.size : '';
   const size = PAGE_SIZES[sizeRaw] ? sizeRaw : DEFAULT_PAGE_SIZE;
   const includeCover = req.query.cover !== 'skip';
+  const includeBackCover = req.query.backCover !== 'skip';
   const includeColophon = req.query.colophon !== 'skip';
   const { bytes, filename } = await buildComicPdf(req.params.id, {
-    size, includeCover, includeColophon,
+    size, includeCover, includeBackCover, includeColophon,
   }).catch((err) => { throw mapServiceError(err); });
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);

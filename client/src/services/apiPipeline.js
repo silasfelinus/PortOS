@@ -187,6 +187,53 @@ export const generatePipelineComicCover = (issueId, opts = {}, options = {}) =>
     ...options,
   });
 
+// Render the issue's back cover. Same flow as the front cover wrapper above
+// but body field is `backCoverScript` and the persisted slot is
+// stages.comicPages.backCover. Server enforces an illustration-only prompt
+// (no masthead, no text). Returns { jobId, mode, prompt, backCover, issue, stage }.
+export const generatePipelineComicBackCover = (issueId, opts = {}, options = {}) =>
+  request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/comicPages/back-cover/render`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+    ...options,
+  });
+
+// Volume (season) cover render. Persists in-flight slot on
+// series.seasons[].cover via the season write tail.
+// Returns { jobId, mode, prompt, coverScript, season, series, variant, fromProof }.
+export const generatePipelineVolumeCover = (seriesId, seasonId, opts = {}, options = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/seasons/${encodeURIComponent(seasonId)}/cover/render`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+    ...options,
+  });
+
+// Volume back-cover render — same shape, lands on season.backCover.
+export const generatePipelineVolumeBackCover = (seriesId, seasonId, opts = {}, options = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/seasons/${encodeURIComponent(seasonId)}/back-cover/render`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+    ...options,
+  });
+
+// Ask the LLM to propose front + back cover concepts for the volume.
+// Pass { commit: true } to also seed `season.cover.script` /
+// `season.backCover.script` when those slots are currently blank (the
+// server never clobbers a user edit). Returns the proposed text plus the
+// updated season + series records.
+export const generatePipelineVolumeCoverConcepts = (seriesId, seasonId, opts = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/seasons/${encodeURIComponent(seasonId)}/cover-concepts/generate`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+  });
+
+// Build the trade-paperback PDF download URL for one volume. Used as an
+// <a href> so the browser streams the response straight to disk.
+export const pipelineVolumePdfUrl = (seriesId, seasonId, { size } = {}) => {
+  const qs = size ? `?size=${encodeURIComponent(size)}` : '';
+  return `/api/pipeline/series/${encodeURIComponent(seriesId)}/seasons/${encodeURIComponent(seasonId)}/volume.pdf${qs}`;
+};
+
 // Patch one comic page's raw markdown — the server re-parses panels from the
 // edited rawText so subsequent renders still get a structured prompt.
 // Returns { issue, stage, page }.
