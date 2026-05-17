@@ -187,8 +187,13 @@ const enqueueImageJob = ({ prompt, world, settings, options, mode, owner, logLin
   return jobId;
 };
 
-export function composeVisualPrompt({ series, description, slugline = '', extraStyle = '', settingByKey = null, matchedCharacters = [], world = null }) {
-  const map = settingByKey || buildSettingByKey(series?.settings);
+// Canon settings now live on the linked universe (Phase B.4). Callers can
+// either pass a pre-built `settingByKey` (when they've already computed it
+// for reuse across many scenes — see episodeVideo) or pass `canon` and let
+// us build the map here. `series?.settings` is no longer read — that field
+// was retired with the series-side canon teardown.
+export function composeVisualPrompt({ series, description, slugline = '', extraStyle = '', settingByKey = null, matchedCharacters = [], world = null, canon = null }) {
+  const map = settingByKey || buildSettingByKey(canon?.settings);
   const scenePrompt = buildScenePrompt(
     series?.name || '',
     { visualPrompt: description || '', slugline },
@@ -724,6 +729,7 @@ export async function enqueueVisualImage(issueId, stageId, options = {}) {
     extraStyle: composeExtraStyle(series, issue, stageId, options.extraStyle),
     matchedCharacters,
     world,
+    canon,
   });
   if (!prompt) {
     throw new ServerError('visual prompt is empty (no description, no style)', {
@@ -791,6 +797,7 @@ export async function enqueueStoryboardSceneVideo(issueId, sceneIndex, options =
     extraStyle: composeExtraStyle(series, issue, 'storyboards', options.extraStyle),
     matchedCharacters,
     world,
+    canon,
   });
 
   const aspectRatio = ASPECT_PRESETS[options.aspectRatio] ? options.aspectRatio : '16:9';
@@ -886,6 +893,7 @@ export async function enqueueStoryboardShotStartFrame(issueId, sceneIndex, shotI
     extraStyle: composeExtraStyle(series, issue, 'storyboards', options.extraStyle),
     matchedCharacters,
     world,
+    canon,
   });
 
   const jobId = enqueueImageJob({
