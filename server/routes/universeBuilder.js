@@ -25,6 +25,7 @@ import { refineWorldPrompts } from '../services/universeBuilderRefine.js';
 import { enqueueJob } from '../services/mediaJobQueue/index.js';
 import { getSettings } from '../services/settings.js';
 import { findOrCreateCollectionByName, NAME_MAX_LENGTH as COLLECTION_NAME_MAX } from '../services/mediaCollections.js';
+import { registerUniverseBuilderRun } from '../services/universeBuilderCollectionHook.js';
 import { getImageModels, isFlux2, isZImage, isErnie } from '../lib/mediaModels.js';
 
 const router = Router();
@@ -423,6 +424,10 @@ router.post('/:id/render', asyncHandler(async (req, res) => {
     promptCount: compiled.length,
     createdAt: new Date().toISOString(),
   });
+
+  // Tell the completion hook how many jobs to expect so per-image
+  // emitRecordUpdated calls can be coalesced into one re-export at run end.
+  registerUniverseBuilderRun({ runId, universeId: universe.id, jobCount: jobIds.length });
 
   console.log(`🌍 Universe Builder render — universe=${universe.name} prompts=${compiled.length} mode=${mode} runId=${runId.slice(0, 8)}`);
 
