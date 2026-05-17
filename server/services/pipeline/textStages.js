@@ -231,10 +231,17 @@ export async function generateStage(issueId, stageId, options = {}) {
   // succeeds, the user just doesn't get the bible auto-populated until
   // they link a universe.
   if (stageId === 'prose' && output && series.universeId) {
+    // Stamp new inserts as series-extracted: autoLock prevents a later AI
+    // refine/differentiate from silently rewriting prose-derived canon, and
+    // sourceSeriesId attributes them to the triggering series. Matches the
+    // pre-B.4 `extractAndMergeIntoSeries` semantics so existing-data behavior
+    // is preserved.
     await extractCanonFromProse(series.universeId, {
       corpus: output,
       providerOverride: options.providerId,
       parallel: true,
+      autoLock: true,
+      sourceSeriesId: series.id,
     }).catch((err) => {
       console.warn(`⚠️ Prose extraction failed for issue ${issueId.slice(0, 8)}: ${err.message}`);
     });

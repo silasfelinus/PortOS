@@ -935,10 +935,16 @@ router.post('/series/:id/seasons/:seasonId/episodes/generate', asyncHandler(asyn
       .filter(Boolean)
       .join('\n\n');
     if (corpus.trim() && series?.universeId) {
+      // Stamp new inserts as series-extracted (autoLock + sourceSeriesId) so
+      // continuity-derived canon survives later AI refines and stays
+      // attributable to this series. Matches the pre-B.4 series-side
+      // extract semantics.
       const extractRes = await extractCanonFromProse(series.universeId, {
         corpus,
         providerOverride: body.providerOverride,
         parallel: true,
+        autoLock: true,
+        sourceSeriesId: series.id,
       }).catch((err) => {
         console.warn(`⚠️ Continuity extraction failed for season ${req.params.seasonId}: ${err.message}`);
         return null;
