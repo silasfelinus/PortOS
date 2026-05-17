@@ -103,6 +103,12 @@ async function jobFromSidecar(jobId) {
   if (jobId.includes('/') || jobId.includes('\\') || jobId.includes('..')) return null;
   const sc = await readJSONFile(join(PATHS.images, `${jobId}.metadata.json`));
   if (!sc) return null;
+  // Sidecar schema differs between paths:
+  //   codex.js writes { mode: 'codex', model }
+  //   local.js writes { modelId } and omits `mode` (it's locally-rendered)
+  // Map both to a unified { mode, model } so re-render fidelity is preserved
+  // for local renders too (without this, local-render shares lost both fields
+  // once the in-memory job queue aged out and re-render fell back to defaults).
   return {
     id: sc.id || jobId,
     kind: 'image',
@@ -114,8 +120,11 @@ async function jobFromSidecar(jobId) {
       negativePrompt: sc.negativePrompt,
       width: sc.width,
       height: sc.height,
-      mode: sc.mode,
-      model: sc.model,
+      mode: sc.mode || (sc.modelId ? 'local' : null),
+      model: sc.model || sc.modelId || null,
+      seed: sc.seed,
+      steps: sc.steps,
+      guidance: sc.guidance,
     },
     result: { filename: sc.filename },
   };

@@ -1,7 +1,7 @@
 /**
  *   GET    /api/media/annotations
- *     → { [key]: { own: { authorName, starred, note, updatedAt } | null,
- *                  others: [{ instanceId, authorName, starred, note, updatedAt }] } }
+ *     → { annotations: { [key]: { own: { authorName, starred, note, updatedAt } | null,
+ *                                  others: [{ instanceId, authorName, starred, note, updatedAt }] } } }
  *   PATCH  /api/media/annotations/:key
  *     body: { starred?: boolean, note?: string } — writes the local-author entry
  *     → { key, entry: { own, others } }
