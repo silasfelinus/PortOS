@@ -24,6 +24,7 @@ import { listObjects } from './objects.js';
 import { getAnalysis } from './evaluator.js';
 import * as seriesSvc from '../pipeline/series.js';
 import * as issuesSvc from '../pipeline/issues.js';
+import { createUniverse } from '../universeBuilder.js';
 
 export const ERR_NO_DRAFT_BODY = 'WR_PROMOTE_NO_DRAFT_BODY';
 
@@ -90,13 +91,25 @@ export async function promoteWorkToPipeline(workId, { force = false } = {}) {
     loadScriptScenes(workId),
   ]);
 
+  // Phase B.4: canon now lives on the universe, never on the series. Mint a
+  // dedicated universe for this promoted work and seed it with the writers-
+  // room bibles. Naming follows the work title — the user can rename or
+  // re-link later via the Series page if they want to share an existing
+  // universe across crossover series. A fresh universe per work keeps the
+  // initial state predictable and avoids touching unrelated canon if the
+  // user re-promotes after destructive edits.
+  const universe = await createUniverse({
+    name: manifest.title,
+    characters,
+    settings,
+    objects,
+  });
+
   const series = await seriesSvc.createSeries({
     name: manifest.title,
     logline: '',
     premise: '',
-    characters,
-    settings,
-    objects,
+    universeId: universe.id,
     styleNotes: '',
     targetFormat: 'comic+tv',
     issueCountTarget: 1,

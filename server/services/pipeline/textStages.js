@@ -15,7 +15,8 @@
  */
 
 import { runStagedLLM } from '../../lib/stageRunner.js';
-import { getSeries, extractAndMergeIntoSeries } from './series.js';
+import { getSeries } from './series.js';
+import { extractCanonFromProse } from '../universeCanon.js';
 import { getIssue, listIssues, updateStage, TEXT_STAGE_IDS } from './issues.js';
 import { getSeriesCanon } from './seriesCanon.js';
 import { compareIssuesByPosition } from './arcPlanner.js';
@@ -225,8 +226,12 @@ export async function generateStage(issueId, stageId, options = {}) {
   // Only runs on `prose`: scripts derive from prose so new characters land here
   // first; idea is too short to extract usefully. Non-fatal — prose succeeded,
   // and a noisy extract shouldn't roll back the user's accepted draft.
-  if (stageId === 'prose' && output) {
-    await extractAndMergeIntoSeries(series.id, {
+  // Phase B.4: canon lives on the universe, so an orphan series (no
+  // universeId) silently skips extraction — the prose write still
+  // succeeds, the user just doesn't get the bible auto-populated until
+  // they link a universe.
+  if (stageId === 'prose' && output && series.universeId) {
+    await extractCanonFromProse(series.universeId, {
       corpus: output,
       providerOverride: options.providerId,
       parallel: true,
