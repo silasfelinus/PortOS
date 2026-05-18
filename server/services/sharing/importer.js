@@ -430,8 +430,10 @@ const INBOX_MAX = 1000;
  * Inbox mode: write the manifest + record refs to the bucket's inbox for review.
  *
  * For subscription manifests we replace any prior inbox entry for the same
- * (recordKind, recordId) so a sender's repeated edits don't pile up as N
- * inbox items — the user always sees the latest snapshot. One-shot manifests
+ * (recordKind, recordId, senderInstanceId) so a sender's repeated edits don't
+ * pile up as N inbox items — the user always sees that sender's latest
+ * snapshot. Two peers sharing the same record produce two distinct inbox rows
+ * (the per-sender filenames keep them apart on disk). One-shot manifests
  * dedup by manifest id.
  */
 async function applyInbox(bucket, manifest, manifestFilename, records) {
@@ -439,9 +441,25 @@ async function applyInbox(bucket, manifest, manifestFilename, records) {
   inbox.items = Array.isArray(inbox.items) ? inbox.items : [];
   const sub = manifest.subscription;
   if (sub?.recordKind && sub?.recordId) {
-    inbox.items = inbox.items.filter((it) => !(it.subscription
+    const senderId = manifest.senderInstanceId || null;
+    const existing = inbox.items.find((it) => it.subscription
       && it.subscription.recordKind === sub.recordKind
-      && it.subscription.recordId === sub.recordId));
+      && it.subscription.recordId === sub.recordId
+      && (it.senderInstanceId || null) === senderId);
+    // Freshness gate: during upgrade a bucket may hold both the new
+    // `sub-<kind>-<id>-<sender>.json` and the pre-v2 legacy
+    // `sub-<kind>-<id>.json` for the same sender, and lexicographic
+    // backlog order visits the new file before the legacy one
+    // (`-` (0x2D) < `.` (0x2E)). Without a createdAt compare, the
+    // older legacy manifest would replace the newer inbox row. Skip
+    // when the incoming manifest is older than what we already have.
+    if (existing && existing.createdAt && manifest.createdAt
+      && existing.createdAt > manifest.createdAt) {
+      return { queued: false, reason: 'inbox-has-newer' };
+    }
+    if (existing) {
+      inbox.items = inbox.items.filter((it) => it !== existing);
+    }
   } else if (inbox.items.some((it) => it.manifestId === manifest.id)) {
     return { queued: false, reason: 'already-in-inbox' };
   }

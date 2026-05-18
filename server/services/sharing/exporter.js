@@ -297,8 +297,9 @@ function stampOrigin(record, { bucket, source, sourceBio, manifestId }) {
  *
  * `opts.subscription` (optional): when set to `{ recordKind, recordId }` the
  * manifest is marked as a subscription — bucket-side filename becomes
- * deterministic (`sub-series-<id>.json`) so re-exports overwrite in place
- * instead of accumulating. Omit for one-shot legacy shares.
+ * deterministic (`sub-series-<id>-<senderInstanceId>.json`) so re-exports
+ * overwrite in place instead of accumulating, and two peers sharing the same
+ * series don't collide on the bucket file. Omit for one-shot legacy shares.
  */
 export async function exportSeries(seriesId, bucketId, opts = {}) {
   const bucket = await getBucket(bucketId);

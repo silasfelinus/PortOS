@@ -177,29 +177,54 @@ export function buildManifest({
   };
 }
 
+/** Filename prefix shared by every subscription manifest, regardless of
+ *  schema version. The prune filter at `pruneBucketManifests` uses this same
+ *  prefix to exempt subscription manifests from archive cleanup. */
+export const SUBSCRIPTION_FILE_PREFIX = 'sub-';
+
+/** Filename for a subscription manifest. Used by both the writer (exporter)
+ *  and the reader (subscriptions service, watcher) so the formula stays in
+ *  one place. The `senderInstanceId` segment keeps two peers' shares of the
+ *  same record from colliding; absent senderInstanceId falls back to
+ *  `'unknown'` so the filename is always valid. The sender segment is
+ *  sanitized with the same allowlist/length cap used by
+ *  `annotationManifestFilename` so a malformed persisted instance id
+ *  containing path separators can't escape the `manifests` directory. */
+export function subscriptionFilename({ recordKind, recordId, senderInstanceId }) {
+  const raw = (isStr(senderInstanceId) ? senderInstanceId.trim() : '') || 'unknown';
+  const sender = raw.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80) || 'unknown';
+  return `${SUBSCRIPTION_FILE_PREFIX}${recordKind}-${recordId}-${sender}.json`;
+}
+
+/** Legacy pre-sharing-v2 subscription filename — kept so we can clean up the
+ *  old file when a peer upgrades and switches to the per-sender name. */
+export function legacySubscriptionFilename({ recordKind, recordId }) {
+  return `${SUBSCRIPTION_FILE_PREFIX}${recordKind}-${recordId}.json`;
+}
+
 /**
  * Filename a manifest lives under inside `<bucket>/manifests/`.
  *
  * For subscription manifests we use a deterministic name keyed on the
- * (recordKind, recordId, bucketId) tuple so re-exports overwrite the same
- * file — bucket recipients see updates via chokidar `change` events, not as
- * accumulating new files. For one-shot manifests we use the legacy
+ * (recordKind, recordId, senderInstanceId) tuple so re-exports overwrite the
+ * same file — bucket recipients see updates via chokidar `change` events, not
+ * as accumulating new files. Including the senderInstanceId means two peers
+ * each subscribed to the same record write to distinct files instead of
+ * clobbering each other. For one-shot manifests we use the legacy
  * `<iso-ts>-<source>-<uuid>.json` naming so the watcher's add-order remains
  * lexicographically deterministic.
  */
-/** Filename for a subscription manifest. Used by both the writer (exporter)
- *  and the reader (subscriptions service, watcher) so the formula stays in
- *  one place. */
-export function subscriptionFilename({ recordKind, recordId }) {
-  return `sub-${recordKind}-${recordId}.json`;
-}
 
 export function manifestFilename(manifest) {
   if (manifest.kind === 'media-annotations') {
     return annotationManifestFilename(manifest.senderInstanceId);
   }
   if (manifest.subscription?.recordKind && manifest.subscription?.recordId) {
-    return subscriptionFilename(manifest.subscription);
+    return subscriptionFilename({
+      recordKind: manifest.subscription.recordKind,
+      recordId: manifest.subscription.recordId,
+      senderInstanceId: manifest.senderInstanceId,
+    });
   }
   const ts = manifest.createdAt.replace(/[:.]/g, '-');
   const senderSlug = (manifest.source || manifest.senderInstanceId || 'unknown')
@@ -303,7 +328,7 @@ export async function pruneBucketManifests(bucket, opts = {}) {
   const manifestsDir = join(bucket.path, 'manifests');
   const entries = await readdir(manifestsDir).catch(() => []);
   const candidates = entries
-    .filter((f) => f.endsWith('.json') && !f.startsWith('sub-') && !f.startsWith('annotations-'))
+    .filter((f) => f.endsWith('.json') && !f.startsWith(SUBSCRIPTION_FILE_PREFIX) && !f.startsWith('annotations-'))
     .sort();
   // Fast path: if the total candidate count is at or below the cap, no read
   // of any manifest is necessary — owned count cannot exceed total.
