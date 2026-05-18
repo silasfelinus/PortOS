@@ -481,7 +481,10 @@ function foldRetiredCharactersBucket(raw, canon) {
   // variation matching an existing alias should collide and NOT create a
   // duplicate. Without alias indexing, an "Ashley" character with alias
   // "Ash" plus a `categories.characters: [{label: "Ash"}]` payload would
-  // produce two records.
+  // produce two records. We keep a Set (rather than re-scanning the live
+  // array via findBibleEntryByName each iteration) so the per-variation
+  // membership test stays O(1) — folding a large retired bucket against a
+  // large canon would otherwise be O(n*m).
   const seen = new Set();
   for (const e of next.characters) {
     if (e?.name) seen.add(normalizeBibleName(e.name));

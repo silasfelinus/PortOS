@@ -18,20 +18,17 @@ vi.mock('crypto', async () => {
   return { ...actual, randomUUID: () => `uuid-${++uuidCounter}` };
 });
 
-// Stub the provider + LLM dispatch so tests don't need a live runner. The
+// Stub the LLM dispatch so tests don't need a live runner. The
 // `runPromptThroughProvider` mock is overridden per-test to return the
-// per-kind JSON shape we expect from the LLM.
-const getActiveProviderMock = vi.fn();
-const getProviderByIdMock = vi.fn();
-vi.mock('./providers.js', () => ({
-  getActiveProvider: (...a) => getActiveProviderMock(...a),
-  getProviderById: (...a) => getProviderByIdMock(...a),
-}));
-
+// per-kind JSON shape we expect from the LLM. `resolveProviderAndModel`
+// is stubbed flat — `promptRunner.test.js` already exercises its real
+// branching, so re-mirroring it here would just double-mock the same
+// contract.
+const resolveProviderAndModelMock = vi.fn();
 const runPromptThroughProviderMock = vi.fn();
 vi.mock('../lib/promptRunner.js', () => ({
   runPromptThroughProvider: (...a) => runPromptThroughProviderMock(...a),
-  resolveEffectiveModel: (_provider, model) => model || 'mock-default',
+  resolveProviderAndModel: (...a) => resolveProviderAndModelMock(...a),
 }));
 
 // Pull services AFTER mocks register so module-level imports resolve through
@@ -62,11 +59,11 @@ const mockLlm = (entry) => {
 beforeEach(() => {
   fileStore.clear();
   uuidCounter = 0;
-  getActiveProviderMock.mockReset();
-  getProviderByIdMock.mockReset();
+  resolveProviderAndModelMock.mockReset();
   runPromptThroughProviderMock.mockReset();
-  getActiveProviderMock.mockResolvedValue({
-    id: 'provider-mock', name: 'Mock', type: 'api', defaultModel: 'mock-default',
+  resolveProviderAndModelMock.mockResolvedValue({
+    provider: { id: 'provider-mock', name: 'Mock', type: 'api', defaultModel: 'mock-default' },
+    selectedModel: 'mock-default',
   });
 });
 
@@ -95,8 +92,13 @@ describe('universeBuilderPromote — happy path', () => {
     const result = await promoteSvc.promoteVariationToCanon(w.id, {
       category: 'landscapes',
       label: 'Crystalline canyon',
+      providerId: 'p-explicit',
+      model: 'm-explicit',
     });
 
+    // Arg-shape pin: a future typo (provider/Provider/etc.) would silently
+    // pass under a flat resolver mock without this assertion.
+    expect(resolveProviderAndModelMock).toHaveBeenCalledWith({ providerId: 'p-explicit', model: 'm-explicit' });
     expect(result.targetKind).toBe('settings');
     expect(result.entry.name).toBe('Crystalline Canyon');
     expect(result.entry.palette).toContain('pale violet');
@@ -308,6 +310,33 @@ describe('universeBuilderPromote — error paths', () => {
     ).rejects.toMatchObject({ status: 409, code: 'UNIVERSE_PROMOTE_DUPLICATE' });
     // LLM should NOT be invoked when the duplicate check fails up front —
     // we want a cheap rejection, not a wasted model call.
+    expect(runPromptThroughProviderMock).not.toHaveBeenCalled();
+  });
+
+  it('409s on settings slugline collision (name differs, slugline matches)', async () => {
+    // Variation label maps to an existing setting via slugline normalization
+    // — the name-only check would miss this, but the kind-specific slugline
+    // fallback catches it.
+    const existing = [{
+      name: 'Foundry City Bay',
+      slugline: 'EXT. FOUNDRY CITY — DAY',
+      description: 'A pre-existing canon entry keyed by slugline.',
+    }];
+    const w = await seedUniverseWithBucket(
+      {
+        landscapes: {
+          kind: 'settings',
+          variations: [{ label: 'EXT. FOUNDRY CITY - DAY', prompt: 'dawn light over docks' }],
+        },
+      },
+      { settings: existing },
+    );
+    await expect(
+      promoteSvc.promoteVariationToCanon(w.id, {
+        category: 'landscapes',
+        label: 'EXT. FOUNDRY CITY - DAY',
+      }),
+    ).rejects.toMatchObject({ status: 409, code: 'UNIVERSE_PROMOTE_DUPLICATE' });
     expect(runPromptThroughProviderMock).not.toHaveBeenCalled();
   });
 
