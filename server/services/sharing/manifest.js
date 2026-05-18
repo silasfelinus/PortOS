@@ -198,9 +198,13 @@ export const SUBSCRIPTION_FILE_PREFIX = 'sub-';
  *  and the reader (subscriptions service, watcher) so the formula stays in
  *  one place. The `senderInstanceId` segment keeps two peers' shares of the
  *  same record from colliding; absent senderInstanceId falls back to
- *  `'unknown'` so the filename is always valid. */
+ *  `'unknown'` so the filename is always valid. The sender segment is
+ *  sanitized with the same allowlist/length cap used by
+ *  `annotationManifestFilename` so a malformed persisted instance id
+ *  containing path separators can't escape the `manifests` directory. */
 export function subscriptionFilename({ recordKind, recordId, senderInstanceId }) {
-  const sender = (isStr(senderInstanceId) ? senderInstanceId.trim() : '') || 'unknown';
+  const raw = (isStr(senderInstanceId) ? senderInstanceId.trim() : '') || 'unknown';
+  const sender = raw.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80) || 'unknown';
   return `${SUBSCRIPTION_FILE_PREFIX}${recordKind}-${recordId}-${sender}.json`;
 }
 
