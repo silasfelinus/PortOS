@@ -177,18 +177,6 @@ export function buildManifest({
   };
 }
 
-/**
- * Filename a manifest lives under inside `<bucket>/manifests/`.
- *
- * For subscription manifests we use a deterministic name keyed on the
- * (recordKind, recordId, senderInstanceId) tuple so re-exports overwrite the
- * same file — bucket recipients see updates via chokidar `change` events, not
- * as accumulating new files. Including the senderInstanceId means two peers
- * each subscribed to the same record write to distinct files instead of
- * clobbering each other. For one-shot manifests we use the legacy
- * `<iso-ts>-<source>-<uuid>.json` naming so the watcher's add-order remains
- * lexicographically deterministic.
- */
 /** Filename prefix shared by every subscription manifest, regardless of
  *  schema version. The prune filter at `pruneBucketManifests` uses this same
  *  prefix to exempt subscription manifests from archive cleanup. */
@@ -213,6 +201,19 @@ export function subscriptionFilename({ recordKind, recordId, senderInstanceId })
 export function legacySubscriptionFilename({ recordKind, recordId }) {
   return `${SUBSCRIPTION_FILE_PREFIX}${recordKind}-${recordId}.json`;
 }
+
+/**
+ * Filename a manifest lives under inside `<bucket>/manifests/`.
+ *
+ * For subscription manifests we use a deterministic name keyed on the
+ * (recordKind, recordId, senderInstanceId) tuple so re-exports overwrite the
+ * same file — bucket recipients see updates via chokidar `change` events, not
+ * as accumulating new files. Including the senderInstanceId means two peers
+ * each subscribed to the same record write to distinct files instead of
+ * clobbering each other. For one-shot manifests we use the legacy
+ * `<iso-ts>-<source>-<uuid>.json` naming so the watcher's add-order remains
+ * lexicographically deterministic.
+ */
 
 export function manifestFilename(manifest) {
   if (manifest.kind === 'media-annotations') {
