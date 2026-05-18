@@ -38,6 +38,9 @@ import EntryCard from '../components/universe/EntryCard';
 import EntryThumbSlot from '../components/universe/EntryThumbSlot';
 import useMediaJobProgress from '../hooks/useMediaJobProgress';
 import MediaPreview from '../components/media/MediaPreview';
+import useImagePreviewActions from '../hooks/useImagePreviewActions';
+import { useMediaAnnotations } from '../hooks/useMediaAnnotations';
+import { listImageGallery } from '../services/apiImageVideo';
 import TabPills from '../components/ui/TabPills';
 import { deriveAvailableBackends, IMAGE_GEN_MODE } from '../lib/imageGenBackends';
 import { PIPELINE_IMAGE_DEFAULTS, readPipelineImageSettings } from '../lib/pipelineImageDefaults';
@@ -684,6 +687,29 @@ export default function UniverseBuilder() {
   // one covers the category-bucket rows so clicking a variation thumb opens
   // the same full-detail modal the gallery / history uses.
   const [preview, setPreview] = useState(null);
+  // Filename → full image-metadata-sidecar record (prompt, negativePrompt,
+  // modelId, width, height, seed, etc.). Hydrates `previewItems` with the
+  // ACTUAL prompt that was used to render the image — without this the
+  // modal would only see the variation's label, and Refine Prompt / Remix
+  // / Send to Video would all open with empty fields. Loaded once per
+  // mount via `listImageGallery()` (the same call the History page uses)
+  // and refreshed whenever a render completes (universe `runs` advances).
+  const [galleryByFilename, setGalleryByFilename] = useState(() => new Map());
+  useEffect(() => {
+    let cancelled = false;
+    listImageGallery().then((list) => {
+      if (cancelled) return;
+      const map = new Map();
+      for (const item of Array.isArray(list) ? list : []) {
+        if (item?.filename) map.set(item.filename, item);
+      }
+      setGalleryByFilename(map);
+    }).catch(() => { /* non-fatal; modal falls back to filename-only display */ });
+    return () => { cancelled = true; };
+    // Re-fetch when a new render run lands (runs array advances) so freshly
+    // rendered images pick up their metadata sidecar.
+  }, [runs.length]);
+  const { annotations, updateAnnotation } = useMediaAnnotations();
   const previewItems = useMemo(() => {
     const out = [];
     const seen = new Set();
@@ -691,13 +717,32 @@ export default function UniverseBuilder() {
       if (typeof filename !== 'string' || !filename) return;
       if (seen.has(filename)) return;
       seen.add(filename);
+      // Pull the real prompt + render settings out of the gallery metadata
+      // map when available so the lightbox shows the full prompt that was
+      // sent to the renderer (with universe style influences, variation
+      // prompt fragment, etc.), not just the row's display label.
+      // Falls back to the label-only shape for filenames not in the gallery
+      // (legacy renders or pending re-fetch).
+      const meta = galleryByFilename.get(filename) || null;
       out.push({
         key: `universe-thumb:${filename}`,
         kind: 'image',
         filename,
         previewUrl: `/data/images/${filename}`,
         downloadUrl: `/data/images/${filename}`,
-        prompt: label || filename,
+        prompt: meta?.prompt || label || filename,
+        negativePrompt: meta?.negativePrompt || null,
+        modelId: meta?.modelId || meta?.model || null,
+        width: meta?.width ?? null,
+        height: meta?.height ?? null,
+        seed: meta?.seed ?? null,
+        steps: meta?.steps ?? null,
+        guidance: meta?.guidance ?? null,
+        quantize: meta?.quantize ?? null,
+        // `raw` carries the original sidecar so MediaLightbox's "Refine
+        // Prompt" / clean / remix downstream handlers can pull any field
+        // the spec doesn't surface at the top level.
+        raw: meta,
       });
     };
     const cats = draft?.categories && typeof draft.categories === 'object' ? draft.categories : {};
@@ -714,7 +759,22 @@ export default function UniverseBuilder() {
       for (const f of refs) pushFilename(f, `Composite · ${s.label}`);
     }
     return out;
-  }, [draft]);
+  }, [draft, galleryByFilename]);
+  // Shared preview action handlers (Remix / SendToVideo / Clean) so the
+  // universe lightbox opens the same downstream pages with the same params
+  // as the History grid + Image Gen page. `onCleanComplete` splices the
+  // cleaned image into the local gallery map so the next preview open
+  // shows it immediately — no full refetch needed.
+  const previewActions = useImagePreviewActions({
+    onCleanComplete: useCallback((cleaned) => {
+      if (!cleaned?.filename) return;
+      setGalleryByFilename((prev) => {
+        const next = new Map(prev);
+        next.set(cleaned.filename, cleaned);
+        return next;
+      });
+    }, []),
+  });
   const openVariationPreview = useCallback((filename) => {
     if (!filename) return;
     const match = previewItems.find((i) => i.filename === filename);
@@ -2042,8 +2102,22 @@ export default function UniverseBuilder() {
           `previewItems` above — they're handled there. Mounted at the page
           level (not inside RenderTab) so the lightbox state is in scope; it
           renders regardless of active tab because variation thumbs in the
-          Cast / Places / Objects / Other tabs all open the same modal. */}
-      <MediaPreview preview={preview} setPreview={setPreview} items={previewItems} />
+          Cast / Places / Objects / Other tabs all open the same modal.
+          Action handlers (Remix / SendToVideo / Clean / Continue) and the
+          annotations channel come from the shared `useImagePreviewActions`
+          + `useMediaAnnotations` hooks so the surface matches History /
+          MediaCollectionDetail / ImageGen exactly. */}
+      <MediaPreview
+        preview={preview}
+        setPreview={setPreview}
+        items={previewItems}
+        annotations={annotations}
+        updateAnnotation={updateAnnotation}
+        onRemix={previewActions.handleRemix}
+        onSendToVideo={previewActions.handleSendToVideo}
+        onClean={(item, level) => previewActions.handleClean(item?.raw || item, level)}
+        onContinue={(item) => previewActions.handleContinue(item?.raw || item)}
+      />
     </div>
   );
 }
