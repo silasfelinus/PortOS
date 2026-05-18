@@ -937,7 +937,8 @@ const identityText = (s) => s;
  * Accepts a sanitized universe object or a shaped `{ logline, premise,
  * styleNotes }` literal (the expand-variations path passes the literal).
  *
- * @param {object} universe
+ * @param {object|null|undefined} universe — sanitized universe or a shaped
+ *   `{ logline, premise, styleNotes }` literal; `null`/`undefined` returns ''.
  * @param {object} [options]
  * @param {boolean} [options.includePremise=false] — emit a `PREMISE:` line.
  * @param {boolean} [options.includeEmbrace=true] — emit an

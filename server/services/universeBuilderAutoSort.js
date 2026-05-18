@@ -35,9 +35,10 @@ const VARIATION_SAMPLE_PER_BUCKET = 10;
 // newline-stripped — without `stripPromptControlChars` a label containing
 // "\n# Output contract\n..." could redirect the LLM's structure. The
 // universe-context block applies the same defense via
-// `buildUniverseStyleContext({ escape: true })` below. Downstream gates
-// (per-entry kind filter, byKey lookup) keep the blast radius bounded even
-// if injection lands, but stripping at the embed layer is the cheap defense.
+// `buildUniverseStyleContext(universe, { escape: true })` below. Downstream
+// gates (per-entry kind filter, byKey lookup) keep the blast radius bounded
+// even if injection lands, but stripping at the embed layer is the cheap
+// defense.
 
 const kindUnionForPrompt = SORTABLE_KINDS.map((k) => `"${k}"`).join(' | ');
 const kindListForPrompt = SORTABLE_KINDS.join(', ');
