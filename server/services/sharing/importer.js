@@ -121,19 +121,43 @@ async function mergeCollectionPayload(payload, availableAssetKeys = null) {
     if (!localSeries) {
       return { itemsAdded: 0, itemsDeferred: payload.items.length, missingSeries: true };
     }
-    const fallbackRaw = typeof payload.name === 'string' ? payload.name : '';
-    const fallbackName = fallbackRaw.replace(/^Series:\s*/i, '').trim() || payload.seriesId;
-    const seriesName = typeof localSeries.name === 'string' && localSeries.name.trim()
-      ? localSeries.name
-      : fallbackName;
-    collection = await findOrCreateSeriesCollection({
-      seriesId: payload.seriesId,
-      seriesName,
-      description: payload.description || '',
-    }).catch((err) => {
-      console.log(`⚠️ sharing.importer: findOrCreateSeriesCollection failed: ${err.message}`);
-      return null;
-    });
+    // If the local series has since been linked to a universe (peer's
+    // manifest is from an older universeless phase, or local user linked it
+    // after the manifest was produced), re-route into the universe
+    // collection — same contract the exporter and cover filer enforce.
+    // Minting a fresh seriesId-stamped collection here would leave a
+    // rename-locked stale per-series bucket attached to a linked series.
+    if (localSeries.universeId) {
+      const localUniverse = await getUniverse(localSeries.universeId).catch(() => null);
+      if (!localUniverse) {
+        // Dangling universe link — defer so a later sync of the universe
+        // record unblocks the merge under the universe contract. Treat as
+        // missingSeries (same defer semantics) so the manifest stays pending.
+        return { itemsAdded: 0, itemsDeferred: payload.items.length, missingSeries: true };
+      }
+      collection = await findOrCreateUniverseCollection({
+        universeId: localUniverse.id,
+        universeName: localUniverse.name,
+        description: payload.description || '',
+      }).catch((err) => {
+        console.log(`⚠️ sharing.importer: findOrCreateUniverseCollection (series re-route) failed: ${err.message}`);
+        return null;
+      });
+    } else {
+      const fallbackRaw = typeof payload.name === 'string' ? payload.name : '';
+      const fallbackName = fallbackRaw.replace(/^Series:\s*/i, '').trim() || payload.seriesId;
+      const seriesName = typeof localSeries.name === 'string' && localSeries.name.trim()
+        ? localSeries.name
+        : fallbackName;
+      collection = await findOrCreateSeriesCollection({
+        seriesId: payload.seriesId,
+        seriesName,
+        description: payload.description || '',
+      }).catch((err) => {
+        console.log(`⚠️ sharing.importer: findOrCreateSeriesCollection failed: ${err.message}`);
+        return null;
+      });
+    }
   }
   if (!collection) return { itemsAdded: 0 };
   let added = 0;
