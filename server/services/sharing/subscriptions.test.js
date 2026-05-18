@@ -116,6 +116,22 @@ describe('sharing/subscriptions', () => {
     expect(fs.existsSync(legacyPath)).toBe(true);
   });
 
+  it('unsubscribe preserves a legacy filename with no senderInstanceId (ownership unverifiable)', async () => {
+    // A pre-v2 or malformed legacy file with no `senderInstanceId` could
+    // belong to any peer; deleting it on unsubscribe risks stomping a
+    // peer's share. The strict-equality gate must leave it in place.
+    const bucket = await buckets.createBucket({ name: 'B', path: tempBucket });
+    const u = await universeBuilder.createUniverse({ name: 'U-legacy-anon' });
+    const fs = await import('fs');
+
+    const sub = await subs.subscribe({ bucketId: bucket.id, recordKind: 'universe', recordId: u.id });
+    const legacyPath = join(tempBucket, 'manifests', `sub-universe-${u.id}.json`);
+    fs.writeFileSync(legacyPath, JSON.stringify({ /* senderInstanceId absent */ }));
+
+    await subs.unsubscribe(sub.id);
+    expect(fs.existsSync(legacyPath)).toBe(true);
+  });
+
   it('listSubscriptions filters by bucketId / recordKind / recordId', async () => {
     const bucket1 = await buckets.createBucket({ name: 'A', path: tempBucket });
     const bucket2Path = mkdtempSync(join(tmpdir(), 'portos-subs-b2-'));

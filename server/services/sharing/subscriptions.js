@@ -192,7 +192,10 @@ export async function unsubscribe(id) {
   // if it exists AND was authored by THIS instance — a peer that subscribed
   // pre-upgrade and unsubscribed post-upgrade would otherwise leave a phantom
   // file in the bucket. Read the file's `senderInstanceId` before unlinking
-  // so we don't stomp on a different peer's pre-upgrade share.
+  // so we don't stomp on a different peer's pre-upgrade share. We only unlink
+  // on a strict positive match — a legacy file missing `senderInstanceId`
+  // (very early v1 or malformed) is left alone, since ownership cannot be
+  // verified and removing a peer's share is worse than leaving a phantom.
   const bucket = await getBucket(sub.bucketId).catch(() => null);
   if (bucket) {
     const myInstanceId = await getInstanceId().catch(() => null);
@@ -205,9 +208,9 @@ export async function unsubscribe(id) {
     }
     const legacyName = legacySubscriptionFilename(sub);
     const legacyPath = join(bucket.path, 'manifests', legacyName);
-    if (existsSync(legacyPath)) {
+    if (existsSync(legacyPath) && isStr(myInstanceId)) {
       const legacy = await readJSONFile(legacyPath, null, { logError: false });
-      if (legacy && (!legacy.senderInstanceId || legacy.senderInstanceId === myInstanceId)) {
+      if (legacy && legacy.senderInstanceId === myInstanceId) {
         await unlink(legacyPath).catch((err) => {
           console.log(`⚠️ sharing.subscriptions: failed to remove legacy ${legacyPath}: ${err.message}`);
         });
