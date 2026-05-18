@@ -449,6 +449,18 @@ const extractComicPagesSchema = z.object({
   force: z.boolean().optional(),
 });
 
+const extractCanonFromScriptSchema = z.object({
+  providerOverride: z.string().trim().max(80).optional(),
+});
+
+// Collapses the `extractCanonFromProse` result-shape trio used by both the
+// season-episodes continuity extract and the manual script-stage extract.
+const countExtractedCanon = (results) => ({
+  characters: results.characters?.extracted?.length || 0,
+  places: results.places?.extracted?.length || 0,
+  objects: results.objects?.extracted?.length || 0,
+});
+
 const comicPagePatchSchema = z.object({
   rawText: z.string().max(40000),
 });
@@ -979,9 +991,7 @@ router.post('/series/:id/seasons/:seasonId/episodes/generate', asyncHandler(asyn
       });
       if (extractRes) {
         bibleExtracted = {
-          characters: extractRes.results.characters?.extracted?.length || 0,
-          places: extractRes.results.places?.extracted?.length || 0,
-          objects: extractRes.results.objects?.extracted?.length || 0,
+          ...countExtractedCanon(extractRes.results),
           universe: extractRes.universe,
         };
       }
@@ -1357,6 +1367,50 @@ router.post('/issues/:id/stages/comicPages/extract-pages', asyncHandler(async (r
     stage,
     pageCount: pages.length,
     panelCount,
+  });
+}));
+
+// Auto-extract runs only after `prose` (textStages.js:233); this endpoint
+// lets the writer pull canon from a script stage on demand so characters
+// introduced only in panel directions or dialogue cues land in the bible.
+// Same autoLock + sourceSeriesId stamping as prose extraction so script-
+// derived entries survive later AI refines.
+router.post('/issues/:id/stages/:stageId/extract-canon', asyncHandler(async (req, res) => {
+  const { id, stageId } = req.params;
+  if (stageId !== 'comicScript' && stageId !== 'teleplay') {
+    throw new ServerError(
+      `Stage "${stageId}" does not support canon extraction — supported: comicScript, teleplay`,
+      { status: 400, code: 'PIPELINE_CANON_EXTRACT_BAD_STAGE' },
+    );
+  }
+  const body = validateRequest(extractCanonFromScriptSchema, req.body ?? {});
+  const issue = await issuesSvc.getIssue(id).catch((err) => { throw mapServiceError(err); });
+  const corpus = (issue.stages?.[stageId]?.output || '').trim();
+  if (!corpus) {
+    throw new ServerError(
+      `Cannot extract canon — issue's ${stageId} stage is empty`,
+      { status: 400, code: 'PIPELINE_CANON_EXTRACT_NO_CORPUS' },
+    );
+  }
+  const series = await seriesSvc.getSeries(issue.seriesId).catch((err) => { throw mapServiceError(err); });
+  if (!series.universeId) {
+    throw new ServerError(
+      `Cannot extract canon — series has no linked universe. Link a universe in the series settings first.`,
+      { status: 400, code: 'PIPELINE_CANON_EXTRACT_NO_UNIVERSE' },
+    );
+  }
+  const result = await extractCanonFromProse(series.universeId, {
+    corpus,
+    providerOverride: body.providerOverride,
+    parallel: true,
+    autoLock: true,
+    sourceSeriesId: series.id,
+  }).catch((err) => { throw mapServiceError(err); });
+
+  res.json({
+    universe: result.universe,
+    extracted: countExtractedCanon(result.results),
+    sourceStage: stageId,
   });
 }));
 
