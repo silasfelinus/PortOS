@@ -4,7 +4,7 @@
 // same pattern the comic-page renderer uses to decide which characters to
 // cite in the diffusion prompt.
 
-import { getUniverse } from './universeBuilder.js';
+import { getUniverse, ERR_NOT_FOUND } from './universeBuilder.js';
 import { listSeries } from './pipeline/series.js';
 import { listIssues } from './pipeline/issues.js';
 import {
@@ -33,6 +33,29 @@ function corpusForIssue(issue) {
     stages.teleplay?.output,
   ];
   return parts.filter(Boolean).join('\n\n');
+}
+
+/**
+ * Thin variant of getUniverseCanonUsage that only returns the linked-series
+ * id/name pairs — no per-issue prose scan, no canon matchers. Callers that
+ * just need the seriesId → seriesName lookup (e.g. NounsStage's "from
+ * <series>" canon-card chip) should prefer this; the full cross-reference
+ * endpoint is O(series × issues × matchers).
+ */
+export async function listLinkedSeriesNames(universeId) {
+  // Validate the universe exists so 404s line up with the heavier endpoint.
+  // Only translate the explicit not-found condition to 404; let I/O / parse
+  // errors bubble so they don't masquerade as "not found".
+  await getUniverse(universeId).catch((err) => {
+    if (err?.code === ERR_NOT_FOUND) {
+      throw new ServerError('Universe not found', { status: 404, code: 'UNIVERSE_NOT_FOUND' });
+    }
+    throw err;
+  });
+  const allSeries = await listSeries();
+  return allSeries
+    .filter((s) => s.universeId === universeId)
+    .map((s) => ({ id: s.id, name: s.name }));
 }
 
 /**

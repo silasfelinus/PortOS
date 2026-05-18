@@ -8,9 +8,10 @@ const mockSeriesList = [];
 const mockIssuesBySeries = new Map();
 
 vi.mock('./universeBuilder.js', () => ({
+  ERR_NOT_FOUND: 'NOT_FOUND',
   getUniverse: vi.fn(async (id) => {
     const u = mockUniverses.get(id);
-    if (!u) throw new Error(`Universe not found: ${id}`);
+    if (!u) throw Object.assign(new Error(`Universe not found: ${id}`), { code: 'NOT_FOUND' });
     return u;
   }),
 }));
@@ -23,7 +24,8 @@ vi.mock('./pipeline/issues.js', () => ({
   listIssues: vi.fn(async ({ seriesId }) => mockIssuesBySeries.get(seriesId) || []),
 }));
 
-const { getUniverseCanonUsage } = await import('./canonUsage.js');
+const { listIssues } = await import('./pipeline/issues.js');
+const { getUniverseCanonUsage, listLinkedSeriesNames } = await import('./canonUsage.js');
 
 beforeEach(() => {
   mockUniverses.clear();
@@ -65,5 +67,41 @@ describe('canonUsage — seriesNameMap', () => {
     const usage = await getUniverseCanonUsage('uni-empty');
     expect(usage.seriesNameMap).toEqual({});
     expect(usage.seriesCount).toBe(0);
+  });
+});
+
+describe('canonUsage — listLinkedSeriesNames', () => {
+  it('returns only series linked to the requested universe as {id,name}', async () => {
+    mockUniverses.set('uni-1', { id: 'uni-1', characters: [], settings: [], objects: [] });
+    mockSeriesList.push(
+      { id: 'ser-a', name: 'Alpha', universeId: 'uni-1' },
+      { id: 'ser-b', name: 'Beta', universeId: 'uni-1' },
+      // Different universe — must NOT appear in the result.
+      { id: 'ser-c', name: 'Gamma', universeId: 'uni-other' },
+    );
+    // Seed issues to prove the thin variant skips the prose scan entirely —
+    // the explicit listIssues assertion below is what locks that in; the
+    // seeded data just ensures the assertion would catch a regression.
+    mockIssuesBySeries.set('ser-a', [{ id: 'iss-1', stages: { prose: { output: 'long prose' } } }]);
+
+    listIssues.mockClear();
+    const result = await listLinkedSeriesNames('uni-1');
+    expect(result).toEqual([
+      { id: 'ser-a', name: 'Alpha' },
+      { id: 'ser-b', name: 'Beta' },
+    ]);
+    // The thin endpoint must NOT scan issues — that's the whole point.
+    expect(listIssues).not.toHaveBeenCalled();
+  });
+
+  it('returns an empty array when no series link to the universe', async () => {
+    mockUniverses.set('uni-empty', { id: 'uni-empty', characters: [], settings: [], objects: [] });
+    const result = await listLinkedSeriesNames('uni-empty');
+    expect(result).toEqual([]);
+  });
+
+  it('throws 404 when the universe does not exist', async () => {
+    await expect(listLinkedSeriesNames('missing'))
+      .rejects.toMatchObject({ status: 404, code: 'UNIVERSE_NOT_FOUND' });
   });
 });
