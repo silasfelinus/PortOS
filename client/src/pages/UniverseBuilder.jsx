@@ -554,18 +554,42 @@ export default function UniverseBuilder() {
   const [saving, setSaving] = useState(false);
   const [expanding, setExpanding] = useState(false);
   const [rendering, setRendering] = useState(false);
-  // entryId → jobId map for variation / composite-sheet rows that have an
-  // in-flight render. Populated from /render's `entryJobs` response and
-  // cleared when MediaJobThumb fires a terminal status (completed / failed /
-  // canceled). Canon entries have their own pending map in UniverseCanonSection
-  // (`renderingJobs`) so they aren't included here.
+  // entryId → jobId[] queue for any row with one or more in-flight renders.
+  // Stores an ARRAY because `batchPerVariation > 1` (or any path that queues
+  // multiple jobs for the same entry) lands several jobIds against the same
+  // entryId — a scalar would overwrite siblings and the spinner would clear
+  // as soon as the first finished, even though others are still running.
+  // Canon entries are included here too (the batch `/render` route compiles
+  // canon prompts when the user picks "all" / "canon" mode, and those jobs
+  // don't go through `UniverseCanonSection.renderingJobs`).
   const [pendingByEntryId, setPendingByEntryId] = useState({});
-  const clearPendingForEntry = useCallback((entryId) => {
+  // First-jobId-per-entry view for components that just need a single
+  // subscription per row (MediaJobThumb takes one jobId). When the head
+  // finishes we shift it off and the next jobId in the queue takes over.
+  const pendingHeadByEntryId = useMemo(() => {
+    const out = {};
+    for (const [entryId, jobs] of Object.entries(pendingByEntryId)) {
+      if (Array.isArray(jobs) && jobs.length > 0) out[entryId] = jobs[0];
+    }
+    return out;
+  }, [pendingByEntryId]);
+  // Remove a specific completed jobId from the entry's queue (preferred path
+  // — handlers know which jobId finished). When called without a jobId
+  // (failure paths that want to bail entirely on the entry), drops every
+  // pending job for that entry.
+  const clearPendingForEntry = useCallback((entryId, jobId = null) => {
     if (!entryId) return;
     setPendingByEntryId((prev) => {
-      if (!(entryId in prev)) return prev;
+      const jobs = prev[entryId];
+      if (!Array.isArray(jobs) || jobs.length === 0) return prev;
       const next = { ...prev };
-      delete next[entryId];
+      if (jobId == null) {
+        delete next[entryId];
+        return next;
+      }
+      const remaining = jobs.filter((j) => j !== jobId);
+      if (remaining.length === 0) delete next[entryId];
+      else next[entryId] = remaining;
       return next;
     });
   }, []);
@@ -1371,22 +1395,31 @@ export default function UniverseBuilder() {
     }).catch((e) => { toast.error(`Render failed: ${e.message}`); return null; });
     setRendering(false);
     if (!result) return;
-    // Stamp per-entry pending state so each variation row can swap its
-    // thumbnail for a MediaJobThumb spinner. Canon entries take a different
-    // render path (UniverseCanonSection's `generateImage`) and composite
-    // sheets don't yet subscribe to this map (CompositeSheetsEditor has no
-    // pending-thumb UI), so we explicitly include only `variation` kinds —
-    // otherwise sheet jobs would accumulate here forever with no consumer to
-    // clear them. When CompositeSheetsEditor grows per-row pending state,
-    // widen this filter to include 'sheet' and wire the matching cleared /
-    // completed callbacks through it.
+    // Stamp per-entry pending state so each variation / canon row can swap
+    // its thumbnail for a MediaJobThumb spinner. `variation` covers the
+    // category-bucket rows; `canon` covers the trunk-canon rows that the
+    // `/render` route compiles when `promptMode` is "canon" / "all" / a
+    // per-trunk scope (the canon section's own one-off renders go through
+    // `UniverseCanonSection`'s `generateImage` path and populate its
+    // separate `renderingJobs` map; both maps merge at the read site).
+    // Composite sheets are skipped because `CompositeSheetsEditor` has no
+    // pending-thumb UI yet — sheet jobs would accumulate forever with no
+    // consumer to clear them. When sheets grow per-row pending UI, widen
+    // this allow-list to include 'sheet' and wire matching callbacks.
+    //
+    // Each kind's jobIds are APPENDED to a per-entry queue: `batchPerVariation
+    // > 1` queues multiple jobs against the same id, and back-to-back
+    // renders on the same row should all stay tracked. Each completion
+    // shifts its jobId out (see `clearPendingForEntry`); the head jobId
+    // is the one MediaJobThumb subscribes to at any moment.
     if (Array.isArray(result.entryJobs) && result.entryJobs.length > 0) {
       setPendingByEntryId((prev) => {
         const next = { ...prev };
         for (const { jobId, entryRef } of result.entryJobs) {
           if (!jobId || !entryRef?.id) continue;
-          if (entryRef.kind !== 'variation') continue;
-          next[entryRef.id] = jobId;
+          if (entryRef.kind !== 'variation' && entryRef.kind !== 'canon') continue;
+          const existing = Array.isArray(next[entryRef.id]) ? next[entryRef.id] : [];
+          next[entryRef.id] = [...existing, jobId];
         }
         return next;
       });
@@ -1863,11 +1896,12 @@ export default function UniverseBuilder() {
               onBulkRenderBucket={(bucket) => runRender({ promptMode: 'variations', selection: { [bucket]: 'all' } })}
               onRenderVariation={(bucket, v) => runRender({ promptMode: 'variations', selection: { [bucket]: [v.label] } })}
               onPreviewVariation={openVariationPreview}
-              pendingByEntryId={pendingByEntryId}
+              pendingByEntryId={pendingHeadByEntryId}
+              externalPendingByEntryId={pendingHeadByEntryId}
               onPendingCleared={clearPendingForEntry}
-              onJobCompletedForEntry={(entryId, filename, bucket) => {
+              onJobCompletedForEntry={(entryId, filename, bucket, completedJobId = null) => {
                 if (!filename || !bucket) {
-                  clearPendingForEntry(entryId);
+                  clearPendingForEntry(entryId, completedJobId);
                   return;
                 }
                 // Optimistically append the new filename to the variation's
@@ -1885,7 +1919,7 @@ export default function UniverseBuilder() {
                   });
                   return { ...d, categories: { ...d.categories, [bucket]: { ...cat, variations } } };
                 });
-                clearPendingForEntry(entryId);
+                clearPendingForEntry(entryId, completedJobId);
               }}
               onBulkRenderTrunk={() => {
                 const selection = Object.fromEntries(
@@ -1926,11 +1960,11 @@ export default function UniverseBuilder() {
             onAssignBucketKind={assignBucketKind}
             onAutoSort={handleAutoSort}
             autoSorting={autoSorting}
-            pendingByEntryId={pendingByEntryId}
+            pendingByEntryId={pendingHeadByEntryId}
             onPendingCleared={clearPendingForEntry}
-            onJobCompletedForEntry={(entryId, filename, bucket) => {
+            onJobCompletedForEntry={(entryId, filename, bucket, completedJobId = null) => {
               if (!filename || !bucket) {
-                clearPendingForEntry(entryId);
+                clearPendingForEntry(entryId, completedJobId);
                 return;
               }
               setDraft((d) => {
@@ -1944,7 +1978,7 @@ export default function UniverseBuilder() {
                 });
                 return { ...d, categories: { ...d.categories, [bucket]: { ...cat, variations } } };
               });
-              clearPendingForEntry(entryId);
+              clearPendingForEntry(entryId, completedJobId);
             }}
           />
         )}
@@ -2755,10 +2789,14 @@ function VariationCard({
     if (settledRef.current === inFlightJobId) return;
     if (jobStatus === 'completed' && jobFilename) {
       settledRef.current = inFlightJobId;
-      onJobCompleted?.(v.id, jobFilename);
+      // Pass `inFlightJobId` back so the parent can shift exactly this jobId
+      // out of its per-entry queue. Without the jobId, `clearPendingForEntry`
+      // would drop every queued job for the row — wrong when `batchPerVariation
+      // > 1` queues N siblings and only one has just finished.
+      onJobCompleted?.(v.id, jobFilename, inFlightJobId);
     } else if (jobStatus === 'failed' || jobStatus === 'canceled') {
       settledRef.current = inFlightJobId;
-      onJobFailed?.(v.id, jobError || jobStatus);
+      onJobFailed?.(v.id, jobError || jobStatus, inFlightJobId);
     }
   }, [inFlightJobId, jobStatus, jobFilename, jobError, v.id, onJobCompleted, onJobFailed]);
 
@@ -3163,7 +3201,11 @@ export function TrunkView({
   onBulkRenderBucket, onRenderVariation, onBulkRenderTrunk,
   onAddBucket,
   onPreviewVariation = null,
-  pendingByEntryId = {}, onPendingCleared = null, onJobCompletedForEntry = null,
+  pendingByEntryId = {},
+  // Same pending head-map, passed through to UniverseCanonSection so canon
+  // rows show a spinner when a batch `/render` queues canon prompts.
+  externalPendingByEntryId = null,
+  onPendingCleared = null, onJobCompletedForEntry = null,
 }) {
   const canonList = Array.isArray(draft[trunk.kind]) ? draft[trunk.kind] : [];
   // Only count canon entries the server will actually compile — mirror the
@@ -3263,6 +3305,8 @@ export function TrunkView({
           onUniverseChange={onUniverseChange}
           imageCfg={imageCfg}
           kindFilter={trunk.kind}
+          externalPendingByEntryId={externalPendingByEntryId}
+          onExternalCanonJobSettled={onPendingCleared}
         />
       ) : null}
 
@@ -3299,8 +3343,9 @@ export function TrunkView({
                   onPromote={onPromoteVariation ? (v) => onPromoteVariation(cat, v) : null}
                   onPreviewVariation={onPreviewVariation}
                   pendingByEntryId={pendingByEntryId}
-                  onJobCompleted={(entryId, filename) => onJobCompletedForEntry?.(entryId, filename, cat)}
-                  onJobFailed={(entryId) => onPendingCleared?.(entryId)}
+                  onJobCompleted={(entryId, filename, completedJobId) =>
+                    onJobCompletedForEntry?.(entryId, filename, cat, completedJobId)}
+                  onJobFailed={(entryId, _err, failedJobId) => onPendingCleared?.(entryId, failedJobId)}
                 />
               ))}
             </section>
@@ -3368,8 +3413,9 @@ export function OtherTab({
             onAssignBucketKind={onAssignBucketKind ? (targetKind) => onAssignBucketKind(cat, targetKind) : null}
             onPreviewVariation={onPreviewVariation}
             pendingByEntryId={pendingByEntryId}
-            onJobCompleted={(entryId, filename) => onJobCompletedForEntry?.(entryId, filename, cat)}
-            onJobFailed={(entryId) => onPendingCleared?.(entryId)}
+            onJobCompleted={(entryId, filename, completedJobId) =>
+              onJobCompletedForEntry?.(entryId, filename, cat, completedJobId)}
+            onJobFailed={(entryId, _err, failedJobId) => onPendingCleared?.(entryId, failedJobId)}
           />
         ))}
       </section>

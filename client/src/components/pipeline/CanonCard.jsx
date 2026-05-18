@@ -312,10 +312,14 @@ export default function CanonCard({
     if (settledRef.current === inFlightJobId) return;
     if (status === 'completed' && filename) {
       settledRef.current = inFlightJobId;
-      onJobCompleted?.(entry.id, filename);
+      // Pass `inFlightJobId` back so the universe-page pending queue can
+      // shift exactly this jobId out (vs. dropping every queued job for
+      // the row, which would mis-handle batch renders that queue multiple
+      // jobs against a single canon entry).
+      onJobCompleted?.(entry.id, filename, inFlightJobId);
     } else if (status === 'failed' || status === 'canceled') {
       settledRef.current = inFlightJobId;
-      onJobFailed?.(entry.id, error || status);
+      onJobFailed?.(entry.id, error || status, inFlightJobId);
     }
   }, [inFlightJobId, status, filename, error, entry.id, onJobCompleted, onJobFailed]);
 

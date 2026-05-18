@@ -53,7 +53,19 @@ const KINDS = [
   },
 ];
 
-export default function UniverseCanonSection({ universe, universeId, onUniverseChange, imageCfg, kindFilter = null }) {
+export default function UniverseCanonSection({
+  universe, universeId, onUniverseChange, imageCfg, kindFilter = null,
+  // entryId → jobId head-map from the universe-page-level pending tracker.
+  // Lets canon rows show a MediaJobThumb spinner when a batch `/render` queues
+  // canon prompts (the batch path doesn't flow through `renderingJobs` here,
+  // which is populated only by this section's own per-entry render calls).
+  externalPendingByEntryId = null,
+  // Fired when a batch-rendered canon job settles so the parent can shift its
+  // completed jobId out of the page-level pending queue. Without this, the
+  // queue accumulates completed jobIds forever and a follow-up batch render
+  // would show the previous run's image instead of the new spinner.
+  onExternalCanonJobSettled = null,
+}) {
   const mountedRef = useMounted();
   const [searchParams, setSearchParams] = useSearchParams();
   const seriesFilter = searchParams.get('series') || '';
@@ -558,8 +570,23 @@ export default function UniverseCanonSection({ universe, universeId, onUniverseC
           usage={usage?.[kind.key] || null}
           renderingJobs={renderingJobs}
           onRender={(entry) => handleRenderRef(kind, entry)}
-          onJobCompleted={(entryId, filename) => handleRefCompleted(kind.key, entryId, filename)}
-          onJobFailed={handleRefFailed}
+          onJobCompleted={(entryId, filename, completedJobId) => {
+            handleRefCompleted(kind.key, entryId, filename);
+            // Shift the completed jobId off the universe-page's pending
+            // queue for this entry. Only fires when the jobId came from the
+            // external (batch-render) source — section-local renders
+            // route through `renderingJobs` which `handleRefCompleted`
+            // already clears.
+            if (completedJobId && externalPendingByEntryId?.[entryId] === completedJobId) {
+              onExternalCanonJobSettled?.(entryId, completedJobId);
+            }
+          }}
+          onJobFailed={(entryId, errMsg, failedJobId) => {
+            handleRefFailed(entryId, errMsg);
+            if (failedJobId && externalPendingByEntryId?.[entryId] === failedJobId) {
+              onExternalCanonJobSettled?.(entryId, failedJobId);
+            }
+          }}
           onPreview={openPreview}
           onRefine={handleRefineCharacter}
           refiningId={refiningId}
@@ -574,6 +601,7 @@ export default function UniverseCanonSection({ universe, universeId, onUniverseC
           onBulkLock={(nextLocked) => handleBulkLockKind(kind, nextLocked)}
           bulkLocking={bulkLockingKindKey === kind.key}
           fullList={Array.isArray(universe[kind.key]) ? universe[kind.key] : []}
+          externalPendingByEntryId={externalPendingByEntryId}
         />
       ))}
 
@@ -582,7 +610,7 @@ export default function UniverseCanonSection({ universe, universeId, onUniverseC
   );
 }
 
-function KindSection({ kind, universeId, all, totalCount, filtered, usage, renderingJobs, onRender, onJobCompleted, onJobFailed, onPreview, onRefine, refiningId, onExpandCharacter, expandingId, onSheetCompleted, onToggleLock, togglingLockId, onPatchEntry, onRenderCleanPlate, seriesNameMap, onBulkLock, bulkLocking, fullList }) {
+function KindSection({ kind, universeId, all, totalCount, filtered, usage, renderingJobs, onRender, onJobCompleted, onJobFailed, onPreview, onRefine, refiningId, onExpandCharacter, expandingId, onSheetCompleted, onToggleLock, togglingLockId, onPatchEntry, onRenderCleanPlate, seriesNameMap, onBulkLock, bulkLocking, fullList, externalPendingByEntryId = null }) {
   // Universe-only character wiring — `null` for non-character kinds so
   // CanonCard's gate stays `kind === 'characters' && characterExtensions`.
   // Memoized so the BASE object is stable across re-renders that aren't
@@ -652,7 +680,14 @@ function KindSection({ kind, universeId, all, totalCount, filtered, usage, rende
                 key={entry.id || entry.name}
                 kind={kind}
                 entry={entry}
-                inFlightJobId={renderingJobs[entry.id]}
+                // Merge the section-local pending map (one-off renders) with
+                // the universe-page-level map (batch `/render` jobs). The
+                // section's own state wins because its completion handler is
+                // the one that does the optimistic imageRefs[] append for
+                // canon entries (`handleRefCompleted`); the external map is
+                // a presentation-only fallback so the spinner shows for
+                // batch-queued canon jobs too.
+                inFlightJobId={renderingJobs[entry.id] || externalPendingByEntryId?.[entry.id] || null}
                 onRender={() => onRender(entry)}
                 onJobCompleted={onJobCompleted}
                 onJobFailed={onJobFailed}
