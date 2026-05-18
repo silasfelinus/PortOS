@@ -42,7 +42,8 @@ describe('CategoryEditor — promote wiring', () => {
     expect(promoteBtn).not.toHaveAttribute('aria-haspopup');
 
     await user.click(promoteBtn);
-    expect(onPromote).toHaveBeenCalledExactlyOnceWith(sampleVariation, undefined);
+    expect(onPromote).toHaveBeenCalledTimes(1);
+    expect(onPromote).toHaveBeenCalledWith(sampleVariation, undefined);
   });
 
   it('opens a trunk-picker menu when bucketKind is "other" instead of promoting directly', async () => {
@@ -73,7 +74,8 @@ describe('CategoryEditor — promote wiring', () => {
     await user.click(screen.getByRole('button', { name: /Promote to canon — pick a trunk/i }));
     await user.click(screen.getByRole('menuitem', { name: 'Places' }));
 
-    expect(onPromote).toHaveBeenCalledExactlyOnceWith(sampleVariation, { targetKind: 'settings' });
+    expect(onPromote).toHaveBeenCalledTimes(1);
+    expect(onPromote).toHaveBeenCalledWith(sampleVariation, { targetKind: 'settings' });
   });
 });
 
