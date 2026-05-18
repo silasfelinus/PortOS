@@ -2,8 +2,14 @@
  * Shared card shell for canon entries (CanonCard) and category variations
  * (VariationCard). Both render through this so the locked-accent border +
  * slot layout stay in sync — visual drift is the bug this guards against.
- * Each slot accepts a ReactNode; consumers own their internal layout (e.g.
- * column vs. row for `actions`) so EntryCard stays unopinionated.
+ *
+ * Slot contract:
+ * - `title`, `body`, `actions`, `footer` — ReactNode. Consumers own internal
+ *   layout (e.g. column vs. row for `actions`) so EntryCard stays unopinionated.
+ * - `thumbnail` — descriptor object `{ filename, alt?, onClick?, isPrimary? }`
+ *   (NOT a ReactNode). Spread into the internal `EntryCardThumbnail` renderer
+ *   so the 12x12 frame, primary-star badge, and zoom-in button styling stay
+ *   consistent across consumers. Pass `null`/omit to skip the thumbnail column.
  */
 
 import { Star } from 'lucide-react';
