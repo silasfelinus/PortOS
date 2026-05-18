@@ -38,7 +38,7 @@ const VARIATION_SAMPLE_PER_BUCKET = 10;
 // bounded even if injection lands, but stripping at the embed layer is the
 // cheap defense.
 const escapePromptText = (s) =>
-  typeof s === 'string' ? s.replace(/[\r\n\t]+/g, ' ').trim() : '';
+  typeof s === 'string' ? s.replace(/[\r\n\t\f\v\u0085\u2028\u2029]+/g, ' ').trim() : '';
 
 const kindUnionForPrompt = SORTABLE_KINDS.map((k) => `"${k}"`).join(' | ');
 const kindListForPrompt = SORTABLE_KINDS.join(', ');
@@ -89,7 +89,15 @@ const isClassificationsShape = (o) => {
 };
 
 const extractClassifications = (raw) => {
-  if (!raw || typeof raw !== 'string') throw new Error('Empty LLM response');
+  // Surface empty/non-string responses through the same typed 502 path as
+  // malformed JSON — without this, a successful run with empty `text` would
+  // throw an untyped Error that the route would normalize to a generic 500.
+  if (!raw || typeof raw !== 'string') {
+    throw new ServerError(
+      'LLM returned an empty response for bucket classification. Try a different model or rerun.',
+      { status: 502, code: 'LLM_INVALID_JSON' },
+    );
+  }
   const { value, lastError, lastPreview } = extractJsonShared(raw, {
     shapePredicate: isClassificationsShape,
   });
