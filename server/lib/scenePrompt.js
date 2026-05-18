@@ -142,9 +142,12 @@ export function buildScenePrompt(workTitle, scene, matchedCharacters, worldStyle
     : '';
   const settingMetaFrag = [intExtPart, todPart].filter(Boolean).join(', ');
   // Pull descriptor fragments via the shared canon-prompt helper so the
-  // setting baseline stays in sync with `KINDS[].descFor` (UI) and
-  // `synthesizeCanonPrompt` (canon-render synthesis). Trailing-period on
-  // prefixed fragments preserves the pre-extraction "Palette: X." sentence
+  // setting baseline shares the *SHORT* spec subset (description / Palette /
+  // recurringDetails) with `KINDS[].descFor` (UI summary). Note:
+  // `synthesizeCanonPrompt` uses the *RICH* spec — same helper, broader
+  // field set (adds era / weather). Both call sites stay coherent via the
+  // shared helper, but they are not byte-equivalent prompts. Trailing-period
+  // on prefixed fragments preserves the pre-extraction "Palette: X." sentence
   // boundary so palette + recurringDetails don't run together when the
   // budget-truncation join collapses fragments with a single space.
   const baselineFrags = matchedSetting

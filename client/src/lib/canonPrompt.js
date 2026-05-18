@@ -1,6 +1,8 @@
-// Mirror of server/lib/canonPrompt.js — keep byte-for-byte in sync.
-// The server copy is authoritative; tests in server/lib/canonPrompt.test.js
-// are the contract.
+// Mirror of server/lib/canonPrompt.js — logic kept in sync (specs + helpers
+// must match exactly). Header comments differ intentionally (the server copy
+// carries the full JSDoc); when editing, port logic changes verbatim and
+// leave commentary scoped to each side. The server copy is authoritative;
+// tests in server/lib/canonPrompt.test.js are the contract.
 
 const trim = (s) => (typeof s === 'string' ? s.trim() : '');
 
