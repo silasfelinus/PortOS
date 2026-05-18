@@ -59,6 +59,11 @@ export const PATHS = {
   decisions: join(__lib_dirname, '../../data/cos/decisions'),
   telegram: join(__lib_dirname, '../../data/telegram'),
   templates: join(__lib_dirname, '../../data/prompts/templates'),
+  // Visual template assets (e.g. the character reference-sheet layout PNG used
+  // as the init-image anchor by the universe-builder character sheet renderer).
+  // Distinct from `templates` above, which is the legacy prompt-template dir.
+  // Files here are shipped via data.sample/templates/ on first install.
+  visualTemplates: join(__lib_dirname, '../../data/templates'),
   settings: join(__lib_dirname, '../../data/settings'),
   missions: join(__lib_dirname, '../../data/cos/missions'),
   tools: join(__lib_dirname, '../../data/tools'),
@@ -672,6 +677,98 @@ export function resolveImageRef(name, { mustExist = true } = {}) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolve any user-supplied image input (init image OR multi-reference image)
+ * to an absolute path under one of PortOS's approved image roots — the
+ * gallery (`PATHS.images`), the multi-ref upload dir (`PATHS.imageRefs`),
+ * or the shipped visual-template dir (`PATHS.visualTemplates`). Used by the
+ * image-gen runner to re-validate paths that originated from internal
+ * features (gallery picks, reference-sheet renders) which may legitimately
+ * cross dir boundaries — a portrait pinned from the gallery passed as a
+ * multi-ref input, a template PNG used as an init-image anchor.
+ *
+ * The defense-in-depth checks (basename strip, traversal block, root prefix,
+ * existence + isFile gate) apply at each candidate root just like the
+ * single-root resolvers (`resolveGalleryImage`, `resolveImageRef`,
+ * `resolveTemplateAsset`).
+ *
+ * Accepts both basename input (`"foo.png"`) and already-resolved absolute
+ * paths (the local image-gen runner re-validates the same input on every
+ * call so we need to accept both shapes).
+ *
+ * @param {string} rawPath - basename or absolute path
+ * @returns {string|null} validated absolute path, or null
+ */
+export function resolveImageInputPath(rawPath) {
+  if (typeof rawPath !== 'string' || !rawPath) return null;
+  // For ABSOLUTE inputs, dispatch by prefix. The single-root resolvers
+  // basename their input for defense-in-depth, so trying them in order on an
+  // absolute path can silently redirect a `/data/templates/foo.png` input
+  // to `/data/images/foo.png` whenever a same-named file lives in the gallery.
+  // Validate against the matching root only.
+  const ROOTS = [
+    [PATHS.images, resolveGalleryImage],
+    [PATHS.imageRefs, resolveImageRef],
+    [PATHS.visualTemplates, resolveTemplateAsset],
+  ];
+  const resolvedInput = resolvePath(rawPath);
+  for (const [rootDir, resolver] of ROOTS) {
+    const rootPrefix = resolvePath(rootDir) + PATH_SEP;
+    if (resolvedInput.startsWith(rootPrefix)) return resolver(rawPath);
+  }
+  // For basename / relative input (no matching prefix), fall through the
+  // resolvers in order. First match wins; basename collisions across roots
+  // are accepted as ambiguous and resolve to the first defined root.
+  for (const [, resolver] of ROOTS) {
+    const candidate = resolver(rawPath);
+    if (candidate) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Resolve a shipped visual template filename (e.g. character reference-sheet
+ * layout PNG) to an absolute path under `PATHS.visualTemplates`. Mirrors
+ * `resolveImageRef` / `resolveGalleryImage`: basename + traversal + root-prefix
+ * + existence checks. Allows PNG/JPG/JPEG/WEBP since the template assets are
+ * shipped image files.
+ *
+ * @param {string} name - Filename (basenamed internally)
+ * @param {object} [opts]
+ * @param {boolean} [opts.mustExist=true] - Require an existing regular file
+ * @returns {string|null} Absolute path inside PATHS.visualTemplates, or null
+ */
+// Templates are shipped assets — once a basename resolves to a file the path
+// is stable for the lifetime of the process, so cache the result. This stays
+// off the hot path of every reference-sheet render without sacrificing the
+// defense-in-depth basename + traversal + extension checks.
+const _templateAssetCache = new Map();
+export function resolveTemplateAsset(name, { mustExist = true } = {}) {
+  if (typeof name !== 'string' || !name) return null;
+  const safe = basename(name);
+  if (!safe || safe === '.' || safe === '..') return null;
+  const lower = safe.toLowerCase();
+  if (!/\.(png|jpg|jpeg|webp)$/.test(lower)) return null;
+  const cacheKey = mustExist ? `must:${safe}` : `nostat:${safe}`;
+  if (_templateAssetCache.has(cacheKey)) return _templateAssetCache.get(cacheKey);
+  const root = resolvePath(PATHS.visualTemplates) + PATH_SEP;
+  const localPath = resolvePath(join(PATHS.visualTemplates, safe));
+  if (!localPath.startsWith(root)) return null;
+  if (!mustExist) {
+    _templateAssetCache.set(cacheKey, localPath);
+    return localPath;
+  }
+  let resolved = null;
+  try {
+    const stat = statSync(localPath, { throwIfNoEntry: false });
+    resolved = stat?.isFile() ? localPath : null;
+  } catch { /* falls through to null */ }
+  // Only cache successful resolutions — a missing-then-installed template
+  // should pick up on the next call (e.g. setup-data.js races a render).
+  if (resolved) _templateAssetCache.set(cacheKey, resolved);
+  return resolved;
 }
 
 /**

@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const fileStore = new Map();
 
+// Per-test reference-sheet "what exists on disk" — keys are filenames the
+// referenceSheetImageRef preservation guard / pruner asks about. Default
+// behavior is "non-empty filename resolves" so existing tests using fake
+// names like 'sheet-B.png' still pass; the stale-prune test overrides
+// resolveImageRef to return null for the stale filename.
+const refSheetFilesByName = new Map();
 vi.mock("../lib/fileUtils.js", () => ({
   PATHS: { data: "/mock/data" },
   ensureDir: vi.fn().mockResolvedValue(undefined),
@@ -11,6 +17,15 @@ vi.mock("../lib/fileUtils.js", () => ({
   readJSONFile: vi.fn(async (path, fallback) =>
     fileStore.has(path) ? fileStore.get(path) : fallback,
   ),
+  // mustExist: true → return a non-null path when the filename either
+  // appears in refSheetFilesByName or has no explicit "missing" entry.
+  // Tests opt into "this file is gone" by calling
+  // refSheetFilesByName.set('foo.png', null).
+  resolveImageRef: vi.fn((ref) => {
+    if (typeof ref !== 'string' || !ref) return null;
+    if (refSheetFilesByName.has(ref)) return refSheetFilesByName.get(ref);
+    return `/mock/refs/${ref}`;
+  }),
 }));
 
 let uuidCounter = 0;
@@ -335,6 +350,105 @@ describe("universeBuilder service", () => {
     const w = await seedWorld();
     const patched = await svc.updateUniverse(w.id, { name: "Solo Rename" });
     expect(patched.name).toBe("Solo Rename");
+  });
+
+  it("updateUniverse preserves server-owned referenceSheetImageRef across character PATCHes", async () => {
+    // Multi-tab race: tab B finished a newer sheet render (server pointer is
+    // 'sheet-B.png'), tab A PATCH-saves with a character body it loaded
+    // BEFORE the render landed (still carrying the previous 'sheet-A.png',
+    // or null). Without server-side preservation the older PATCH would
+    // clobber the newer server pointer and the UI would 404 on the stale
+    // filename. The render-completion handler bypasses this preservation
+    // path because it writes referenceSheetImageRef inside its own
+    // updateUniverse mutator from the latest record state.
+    const w = await seedWorld();
+    // Simulate the render-completion stamp via an in-queue mutator (same
+    // path the real onSheetComplete uses).
+    await svc.updateUniverse(w.id, (latest) => {
+      const next = [...(latest.characters || []), {
+        id: "c-1", name: "Vale", referenceSheetImageRef: "sheet-B.png",
+      }];
+      return { characters: next };
+    });
+    // Client PATCH that round-trips a stale body — sheet pointer is the
+    // OLD value (or null). Server should keep 'sheet-B.png' regardless.
+    const afterClientPatch = await svc.updateUniverse(w.id, {
+      characters: [{ id: "c-1", name: "Vale", referenceSheetImageRef: "sheet-A.png" }],
+    });
+    const char = afterClientPatch.characters.find((c) => c.id === "c-1");
+    expect(char?.referenceSheetImageRef).toBe("sheet-B.png");
+
+    // Same invariant when client PATCHes with the field omitted entirely.
+    const afterOmitPatch = await svc.updateUniverse(w.id, {
+      characters: [{ id: "c-1", name: "Vale" }],
+    });
+    const charOmit = afterOmitPatch.characters.find((c) => c.id === "c-1");
+    expect(charOmit?.referenceSheetImageRef).toBe("sheet-B.png");
+
+    // Mutator path (the render-completion handler) IS trusted to update
+    // referenceSheetImageRef — it constructs the patch from the latest
+    // record. Preservation must NOT run against mutator output, or the
+    // newly-stamped filename gets clobbered back to the old value.
+    const afterRenderStamp = await svc.updateUniverse(w.id, (latest) => {
+      const next = (latest.characters || []).map((c) =>
+        c.id === "c-1" ? { ...c, referenceSheetImageRef: "sheet-C.png" } : c,
+      );
+      return { characters: next };
+    });
+    const charAfterStamp = afterRenderStamp.characters.find((c) => c.id === "c-1");
+    expect(charAfterStamp?.referenceSheetImageRef).toBe("sheet-C.png");
+  });
+
+  it("updateUniverse preservation skips when cur's referenceSheetImageRef no longer resolves on disk", async () => {
+    // GET /:id runs pruneStaleReferenceSheets, returning null when the
+    // underlying file is gone. Client PATCHes carry the pruned null. The
+    // preservation guard MUST honor that null by skipping preservation —
+    // otherwise the stale filename comes back from cur and the UI 404s
+    // again. resolveImageRef returning null is the "file missing" signal.
+    const w = await seedWorld();
+    // Stamp a sheet (mutator path is trusted).
+    await svc.updateUniverse(w.id, (latest) => {
+      const next = [...(latest.characters || []), {
+        id: "c-stale", name: "Stale", referenceSheetImageRef: "sheet-DEAD.png",
+      }];
+      return { characters: next };
+    });
+    // Mark that filename as missing for the resolveImageRef mock.
+    refSheetFilesByName.set("sheet-DEAD.png", null);
+    // Client PATCH that carries the pruned null (matching what GET would
+    // surface after pruneStaleReferenceSheets ran). Preservation should
+    // detect the stale cur value and skip, so the null wins.
+    const after = await svc.updateUniverse(w.id, {
+      characters: [{ id: "c-stale", name: "Stale", referenceSheetImageRef: null }],
+    });
+    const stale = after.characters.find((c) => c.id === "c-stale");
+    expect(stale?.referenceSheetImageRef).toBeNull();
+    // Clean up the per-test FS shim so later tests start clean.
+    refSheetFilesByName.delete("sheet-DEAD.png");
+  });
+
+  it("updateUniverse persists null for stale referenceSheetImageRef on the write path, not just GET", async () => {
+    // Reviewer-found bug: the GET-route pruner nulled the response but the
+    // on-disk record kept the stale filename, so a later PATCH that omitted
+    // `characters` (e.g. rename) merged from cur and returned the stale value.
+    // The write-time prune in updateUniverse fixes this — any PATCH catches
+    // the on-disk record up.
+    const w = await seedWorld();
+    await svc.updateUniverse(w.id, (latest) => ({
+      characters: [...(latest.characters || []), {
+        id: "c-rename", name: "Anchor", referenceSheetImageRef: "sheet-RENAME.png",
+      }],
+    }));
+    refSheetFilesByName.set("sheet-RENAME.png", null);
+    // PATCH that does NOT include `characters` — only renames the universe.
+    const renamed = await svc.updateUniverse(w.id, { name: "Renamed" });
+    const char = renamed.characters.find((c) => c.id === "c-rename");
+    expect(char?.referenceSheetImageRef).toBeNull();
+    // And a follow-up GET sees the same null — disk is now consistent.
+    const reread = await svc.getUniverse(w.id);
+    const charReread = reread.characters.find((c) => c.id === "c-rename");
+    expect(charReread?.referenceSheetImageRef).toBeNull();
+    refSheetFilesByName.delete("sheet-RENAME.png");
   });
 
   it("deleteUniverse removes the universe and its runs", async () => {

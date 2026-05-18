@@ -18,7 +18,9 @@ import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { validateRequest } from '../lib/validation.js';
 import * as svc from '../services/universeBuilder.js';
 import * as canonSvc from '../services/universeCanon.js';
-import { BIBLE_KINDS, BIBLE_LIMITS } from '../lib/storyBible.js';
+import { expandUniverseCharacter } from '../services/universeCharacterExpand.js';
+import { renderCharacterReferenceSheet } from '../services/universeCharacterSheet.js';
+import { BIBLE_KINDS, BIBLE_LIMITS, pruneStaleReferenceSheets } from '../lib/storyBible.js';
 import { getUniverseCanonUsage, listLinkedSeriesNames } from '../services/canonUsage.js';
 import { expandWorldTemplate, generateCategoryVariations } from '../services/universeBuilderExpand.js';
 import { refineWorldPrompts } from '../services/universeBuilderRefine.js';
@@ -355,7 +357,15 @@ router.post('/refine-prompts', asyncHandler(async (req, res) => {
 
 router.get('/:id', asyncHandler(async (req, res) => {
   const w = await svc.getUniverse(req.params.id).catch((err) => { throw mapServiceError(err); });
-  res.json(w);
+  // Lazy stale-reference-sheet collapse: nulls out any character.referenceSheetImageRef
+  // whose underlying file was deleted from disk, so the UI never tries to
+  // render `<img src="/data/image-refs/<gone>">`. Doesn't persist the change
+  // — next render or PATCH will overwrite cleanly. Sub-millisecond for the
+  // typical 5-50 character universe.
+  const pruned = Array.isArray(w?.characters)
+    ? { ...w, characters: pruneStaleReferenceSheets(w.characters) }
+    : w;
+  res.json(pruned);
 }));
 
 router.patch('/:id', asyncHandler(async (req, res) => {
@@ -589,6 +599,35 @@ const refineCharSchema = z.object({
 router.post('/:id/characters/:entryId/refine', asyncHandler(async (req, res) => {
   const body = validateRequest(refineCharSchema, req.body ?? {});
   const result = await canonSvc.refineUniverseCharacter(req.params.id, req.params.entryId, body)
+    .catch((err) => { throw mapServiceError(err); });
+  res.json(result);
+}));
+
+// Expand a character via one LLM call — fills BLANK extended fields
+// (pronouns/age/stats/colorPalette/expressions/...) so a novelist + graphic
+// novelist have full reference data. No-clobber on populated fields; locked
+// characters return `{ locked: true }` with no LLM call.
+router.post('/:id/characters/:entryId/expand', asyncHandler(async (req, res) => {
+  const body = validateRequest(refineCharSchema, req.body ?? {});
+  const result = await expandUniverseCharacter(req.params.id, req.params.entryId, body)
+    .catch((err) => { throw mapServiceError(err); });
+  res.json(result);
+}));
+
+// Generate a single dense artist reference sheet (turnaround + expressions +
+// palette + wardrobe + props + hand gestures) from a structured TEXT prompt
+// — no init image required, so it works across codex / local backends.
+// Returns immediately with `{ jobId, generationId }`; client subscribes to
+// SSE for progress, and the server-side completion handler stamps
+// `character.referenceSheetImageRef` on success.
+const renderReferenceSheetSchema = z.object({
+  overridePrompt: z.string().trim().max(8000).optional(),
+  overrideNegativePrompt: z.string().trim().max(2000).optional(),
+  modelId: z.string().trim().max(64).optional(),
+});
+router.post('/:id/characters/:entryId/render-reference-sheet', asyncHandler(async (req, res) => {
+  const body = validateRequest(renderReferenceSheetSchema, req.body ?? {});
+  const result = await renderCharacterReferenceSheet(req.params.id, req.params.entryId, body)
     .catch((err) => { throw mapServiceError(err); });
   res.json(result);
 }));

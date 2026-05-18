@@ -27,12 +27,14 @@
 
 import { join } from 'path';
 import { randomUUID } from 'crypto';
-import { PATHS, atomicWrite, readJSONFile, ensureDir } from '../lib/fileUtils.js';
+import { PATHS, atomicWrite, readJSONFile, ensureDir, resolveImageRef } from '../lib/fileUtils.js';
 import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt.js';
 import { richCanonDescriptorFragments } from '../lib/canonPrompt.js';
 import {
   sanitizeBibleList, BIBLE_KIND, BIBLE_FIELD, BIBLE_LIMITS, BIBLE_SOURCE,
+  SERVER_OWNED_CHARACTER_FIELDS,
+  pruneStaleReferenceSheets,
   normalizeBibleName, isStr, trimTo,
 } from '../lib/storyBible.js';
 import { sanitizeOrigin } from '../lib/sharingOrigin.js';
@@ -854,6 +856,46 @@ export async function updateUniverse(id, patchOrMutator = {}) {
     const scalarPatch = Object.fromEntries(
       PATCHABLE_SCALARS.filter((k) => k in patch).map((k) => [k, patch[k]]),
     );
+    // Server-owned operational fields on characters (see
+    // SERVER_OWNED_CHARACTER_FIELDS in storyBible.js) are written only by
+    // server-side render-completion mutators. A literal-object PATCH that
+    // round-trips a character body the client loaded before a newer
+    // render finished would otherwise clobber the freshly-stamped
+    // pointer (multi-tab / parallel render race). Preserve cur's value
+    // per-(id, field); new characters in the patch start fresh.
+    //
+    // ONLY applies to literal-object patches. The mutator path is the
+    // trusted writer here — `onSheetComplete` reads `cur` itself and
+    // intentionally constructs a patch with the newly stamped value, so
+    // running preservation against its output would clobber the stamp
+    // back to the OLD/null value and the sheet would never persist. The
+    // sharing importer wraps `updateUniverse(id, () => record)` for the
+    // same reason — sync's intent is LWW including operational pointers,
+    // so it opts into the mutator-bypass.
+    if (!isMutator
+      && Array.isArray(scalarPatch.characters)
+      && Array.isArray(cur.characters)) {
+      const curById = new Map(cur.characters.filter((c) => c?.id).map((c) => [c.id, c]));
+      scalarPatch.characters = scalarPatch.characters.map((c) => {
+        const prev = c?.id ? curById.get(c.id) : null;
+        if (!prev) return c;
+        const preserved = { ...c };
+        // Preserve cur's value ONLY when it still resolves on disk. Without
+        // the FS check, this guard reintroduces stale pointers that the
+        // GET route's lazy `pruneStaleReferenceSheets` already nulled out:
+        // GET → null (file gone) → client PATCH carries null → guard
+        // overwrites null with cur's stale filename → thumbnail 404s
+        // again. The pruner returns null for non-existent files, so we
+        // skip preservation in that case and let the patch's value (the
+        // pruned null) survive.
+        for (const f of SERVER_OWNED_CHARACTER_FIELDS) {
+          if (prev[f] && resolveImageRef(prev[f], { mustExist: true })) {
+            preserved[f] = prev[f];
+          }
+        }
+        return preserved;
+      });
+    }
 
     const mergedRecord = sanitizeTemplate({
       ...cur,
@@ -869,6 +911,16 @@ export async function updateUniverse(id, patchOrMutator = {}) {
       updatedAt: new Date().toISOString(),
     });
     if (!mergedRecord) throw makeErr('Invalid universe payload', ERR_VALIDATION);
+    // Persist the stale-reference-sheet null at write time so the on-disk
+    // record catches up with what the GET-route pruner shows. Otherwise a
+    // PATCH that omits `characters` (e.g. rename) merges from `cur` and
+    // returns the stale filename, and the UI re-renders the broken thumbnail.
+    // Render-completion writes are unaffected — the renderer copies the file
+    // BEFORE its mutator runs, so the just-stamped pointer resolves on disk
+    // and the prune skips it.
+    if (Array.isArray(mergedRecord.characters)) {
+      mergedRecord.characters = pruneStaleReferenceSheets(mergedRecord.characters);
+    }
     state.universes[idx] = mergedRecord;
     await writeState(state);
     return { merged: mergedRecord, nameChanged: mergedRecord.name !== cur.name, skipped: false };

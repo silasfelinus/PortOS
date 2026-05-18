@@ -28,6 +28,10 @@ const {
   BIBLE_LIMITS,
   BIBLE_KIND,
   createBibleStore,
+  pruneStaleReferenceSheets,
+  stripCanonControlFields,
+  CANON_CONTROL_FIELDS,
+  SERVER_OWNED_CHARACTER_FIELDS,
 } = storyBible;
 
 const WORK_ID = 'wr-work-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
@@ -256,6 +260,267 @@ describe('storyBible — sanitizeCharacter', () => {
       const out = sanitizeCharacter({ name: 'A', wardrobes: 'not an array' });
       expect(out.wardrobes).toEqual([]);
     });
+  });
+
+  describe('extended character fields (novelist + graphic-novelist depth)', () => {
+    it('defaults every new string field to empty + every list field to []', () => {
+      const out = sanitizeCharacter({ name: 'Bare' });
+      // String defaults
+      expect(out.pronouns).toBe('');
+      expect(out.age).toBe('');
+      expect(out.coreTheme).toBe('');
+      expect(out.speechAccent).toBe('');
+      expect(out.visualNotes).toBe('');
+      expect(out.silhouetteNotes).toBe('');
+      expect(out.postureNotes).toBe('');
+      expect(out.specialTraits).toBe('');
+      expect(out.visualIdentity).toBe('');
+      expect(out.motivations).toBe('');
+      expect(out.likes).toBe('');
+      expect(out.dislikes).toBe('');
+      expect(out.mannerisms).toBe('');
+      expect(out.relationships).toBe('');
+      expect(out.skills).toBe('');
+      // List defaults
+      expect(out.stats).toEqual([]);
+      expect(out.colorPalette).toEqual([]);
+      expect(out.props).toEqual([]);
+      expect(out.expressions).toEqual([]);
+      expect(out.handGestures).toEqual([]);
+      // Operational
+      expect(out.referenceSheetImageRef).toBeNull();
+    });
+
+    it('round-trips a fully-populated character', () => {
+      const out = sanitizeCharacter({
+        name: 'Vale',
+        pronouns: 'she/her',
+        age: '27',
+        coreTheme: 'cartographer of grief',
+        speechAccent: 'clipped Edinburgh',
+        visualNotes: 'layered streetwear',
+        silhouetteNotes: 'compact upper body',
+        postureNotes: 'slight forward lean',
+        specialTraits: 'quick hands, restless energy',
+        visualIdentity: 'urban utilitarian; analog tech feel',
+        motivations: 'finish the map; protect her sister',
+        likes: 'thunderstorms, fresh ink',
+        dislikes: 'small talk, fluorescent light',
+        mannerisms: 'touches the back of her neck when lying',
+        relationships: 'estranged from her father; ride-or-die with Park',
+        skills: 'conversational Mandarin, sleight-of-hand',
+      });
+      expect(out.pronouns).toBe('she/her');
+      expect(out.age).toBe('27');
+      expect(out.coreTheme).toBe('cartographer of grief');
+      expect(out.skills).toBe('conversational Mandarin, sleight-of-hand');
+    });
+
+    it('caps every new string field at its BIBLE_LIMITS bound', () => {
+      const longs = {
+        pronouns: 'p'.repeat(BIBLE_LIMITS.PRONOUNS_MAX + 5),
+        age: 'a'.repeat(BIBLE_LIMITS.AGE_MAX + 5),
+        coreTheme: 't'.repeat(BIBLE_LIMITS.CORE_THEME_MAX + 50),
+        motivations: 'm'.repeat(BIBLE_LIMITS.MOTIVATIONS_MAX + 50),
+        skills: 's'.repeat(BIBLE_LIMITS.SKILLS_MAX + 50),
+      };
+      const out = sanitizeCharacter({ name: 'A', ...longs });
+      expect(out.pronouns.length).toBe(BIBLE_LIMITS.PRONOUNS_MAX);
+      expect(out.age.length).toBe(BIBLE_LIMITS.AGE_MAX);
+      expect(out.coreTheme.length).toBe(BIBLE_LIMITS.CORE_THEME_MAX);
+      expect(out.motivations.length).toBe(BIBLE_LIMITS.MOTIVATIONS_MAX);
+      expect(out.skills.length).toBe(BIBLE_LIMITS.SKILLS_MAX);
+    });
+
+    it('keeps the open key/value stats list (non-human characters supported)', () => {
+      const out = sanitizeCharacter({
+        name: 'The Reach',
+        stats: [
+          { label: 'Form', value: 'translucent vapor' },
+          { label: 'Eyes', value: 'none (echolocates)' },
+          { label: 'Limbs', value: '6 segmented' },
+        ],
+      });
+      expect(out.stats).toHaveLength(3);
+      expect(out.stats[0]).toMatchObject({ label: 'Form', value: 'translucent vapor' });
+      expect(out.stats[0].id).toMatch(/^stat-/);
+      expect(out.stats[2].label).toBe('Limbs');
+    });
+
+    it('stats round-trip caller-supplied id and assign UUIDs to fresh rows', () => {
+      const out = sanitizeCharacter({
+        name: 'A',
+        stats: [
+          { label: 'Form', value: 'vapor' },
+          { id: 'stat-fixed-1', label: 'Limbs', value: '6' },
+        ],
+      });
+      expect(out.stats[0].id).toMatch(/^stat-/);
+      expect(out.stats[1].id).toBe('stat-fixed-1');
+    });
+
+    it('drops stats entries missing a label, caps overall list', () => {
+      const tooMany = Array.from({ length: BIBLE_LIMITS.STATS_PER_CHARACTER_MAX + 5 }, (_, i) => ({ label: `s${i}`, value: 'v' }));
+      const out = sanitizeCharacter({
+        name: 'A',
+        stats: [
+          { value: 'no label' },
+          ...tooMany,
+        ],
+      });
+      // Nameless entry dropped; list capped at the limit.
+      expect(out.stats).toHaveLength(BIBLE_LIMITS.STATS_PER_CHARACTER_MAX);
+      expect(out.stats[0]).toMatchObject({ label: 's0', value: 'v' });
+    });
+
+    it('color palette accepts hex + role; drops nameless rows', () => {
+      const out = sanitizeCharacter({
+        name: 'A',
+        colorPalette: [
+          { name: 'amber', hex: '#f59e0b', role: 'skin' },
+          { name: 'olive', hex: '', role: '' },
+          { role: 'no name' },
+        ],
+      });
+      expect(out.colorPalette).toHaveLength(2);
+      expect(out.colorPalette[0]).toMatchObject({ name: 'amber', hex: '#f59e0b', role: 'skin' });
+      expect(out.colorPalette[0].id).toMatch(/^color-/);
+      expect(out.colorPalette[1]).toMatchObject({ name: 'olive', hex: '', role: '' });
+    });
+
+    it('props get a UUID id and round-trip caller-supplied ids', () => {
+      const out = sanitizeCharacter({
+        name: 'A',
+        props: [
+          { name: 'Radio', purpose: 'comms', materials: 'plastic + alloy' },
+          { id: 'prop-fixed-1', name: 'Compass' },
+        ],
+      });
+      expect(out.props).toHaveLength(2);
+      expect(out.props[0].id).toMatch(/^prop-/);
+      expect(out.props[1].id).toBe('prop-fixed-1');
+      expect(out.props[0].purpose).toBe('comms');
+    });
+
+    it('expressions + handGestures drop rows without a name', () => {
+      const out = sanitizeCharacter({
+        name: 'A',
+        expressions: [
+          { name: 'neutral', description: 'baseline' },
+          { description: 'no name' },
+        ],
+        handGestures: [
+          { description: 'no name' },
+          { name: 'pointing', description: 'index out' },
+        ],
+      });
+      expect(out.expressions).toHaveLength(1);
+      expect(out.expressions[0].name).toBe('neutral');
+      expect(out.expressions[0].id).toMatch(/^expr-/);
+      expect(out.handGestures).toHaveLength(1);
+      expect(out.handGestures[0].name).toBe('pointing');
+      expect(out.handGestures[0].id).toMatch(/^gesture-/);
+    });
+
+    it('referenceSheetImageRef accepts a filename and trims it', () => {
+      const out = sanitizeCharacter({ name: 'A', referenceSheetImageRef: '  universe-abc-character-sheet.png  ' });
+      expect(out.referenceSheetImageRef).toBe('universe-abc-character-sheet.png');
+    });
+
+    it('referenceSheetImageRef collapses to null for non-string / blank', () => {
+      expect(sanitizeCharacter({ name: 'A', referenceSheetImageRef: '' }).referenceSheetImageRef).toBeNull();
+      expect(sanitizeCharacter({ name: 'A', referenceSheetImageRef: '   ' }).referenceSheetImageRef).toBeNull();
+      expect(sanitizeCharacter({ name: 'A', referenceSheetImageRef: 123 }).referenceSheetImageRef).toBeNull();
+      expect(sanitizeCharacter({ name: 'A' }).referenceSheetImageRef).toBeNull();
+    });
+
+    it('REGRESSION: referenceSheetImageRef rejects path separators + traversal', () => {
+      // Defense-in-depth against an LLM-extracted payload that bypassed
+      // stripCanonControlFields. The runtime route serves /data/image-refs/<x>
+      // — a value with separators or dot-prefix would 404 OR escape the dir.
+      expect(sanitizeCharacter({ name: 'A', referenceSheetImageRef: '../etc/passwd' }).referenceSheetImageRef).toBeNull();
+      expect(sanitizeCharacter({ name: 'A', referenceSheetImageRef: 'foo/bar.png' }).referenceSheetImageRef).toBeNull();
+      expect(sanitizeCharacter({ name: 'A', referenceSheetImageRef: 'foo\\bar.png' }).referenceSheetImageRef).toBeNull();
+      expect(sanitizeCharacter({ name: 'A', referenceSheetImageRef: '.' }).referenceSheetImageRef).toBeNull();
+      expect(sanitizeCharacter({ name: 'A', referenceSheetImageRef: '..' }).referenceSheetImageRef).toBeNull();
+      expect(sanitizeCharacter({ name: 'A', referenceSheetImageRef: '.hidden.png' }).referenceSheetImageRef).toBeNull();
+    });
+  });
+});
+
+describe('storyBible — canon control + server-owned field invariants', () => {
+  // These constants are the single source of truth for "fields the LLM /
+  // client shouldn't be the writer of". `stripCanonControlFields` reads
+  // CANON_CONTROL_FIELDS; `updateUniverse`'s PATCH-preservation guard
+  // reads SERVER_OWNED_CHARACTER_FIELDS. Pin both so a new operational
+  // field added to one constant without updating the other (or its
+  // consumer) gets caught.
+
+  it('stripCanonControlFields drops every CANON_CONTROL_FIELD on an entry', () => {
+    const entry = {
+      id: 'c-1', createdAt: 'x', updatedAt: 'y',
+      locked: true, sourceSeriesId: 'sr-1',
+      imageRefs: ['a.png'], primaryImageRef: 'a.png',
+      referenceSheetImageRef: 'sheet.png',
+      // Non-control field — must survive.
+      name: 'Vale', personality: 'alert',
+    };
+    const stripped = stripCanonControlFields(entry);
+    for (const f of CANON_CONTROL_FIELDS) {
+      expect(stripped).not.toHaveProperty(f);
+    }
+    expect(stripped.name).toBe('Vale');
+    expect(stripped.personality).toBe('alert');
+  });
+
+  it('SERVER_OWNED_CHARACTER_FIELDS is a subset of CANON_CONTROL_FIELDS', () => {
+    // The PATCH-preservation guard reads server-owned fields; the
+    // strip-from-LLM guard reads control fields. Server-owned MUST be a
+    // strict subset — otherwise a new server-owned field could appear
+    // in literal PATCH bodies that bypass `stripCanonControlFields`.
+    const ctrl = new Set(CANON_CONTROL_FIELDS);
+    for (const f of SERVER_OWNED_CHARACTER_FIELDS) {
+      expect(ctrl.has(f)).toBe(true);
+    }
+  });
+
+  it('SERVER_OWNED_CHARACTER_FIELDS lists exactly the render-completion-stamped pointers', () => {
+    // Pin the current set so a new server-owned addition is a deliberate
+    // change (update both this test AND the corresponding render flow).
+    expect([...SERVER_OWNED_CHARACTER_FIELDS]).toEqual(['referenceSheetImageRef']);
+  });
+});
+
+describe('storyBible — pruneStaleReferenceSheets', () => {
+  // Lives outside the sanitizeCharacter describe because it does FS I/O
+  // (intentionally outside the sanitizer's pure contract). It collapses any
+  // character.referenceSheetImageRef whose underlying file is missing from
+  // PATHS.imageRefs — what the universe-builder GET route surfaces to the UI.
+
+  it('returns the input unchanged when nothing is stale', () => {
+    // No character has a pointer → nothing to check, returns the same array.
+    const list = [{ name: 'A' }, { name: 'B', referenceSheetImageRef: null }];
+    const out = pruneStaleReferenceSheets(list);
+    expect(out).toBe(list);
+  });
+
+  it('nulls out pointers whose file does not exist (without persisting back)', () => {
+    const list = [
+      { name: 'A', referenceSheetImageRef: 'definitely-not-on-disk.png' },
+      { name: 'B' },
+    ];
+    const out = pruneStaleReferenceSheets(list);
+    expect(out).not.toBe(list); // new array on change
+    expect(out[0].referenceSheetImageRef).toBeNull();
+    // Untouched character pass-through (same reference).
+    expect(out[1]).toBe(list[1]);
+    expect(out).toHaveLength(2);
+  });
+
+  it('passes through a non-array input', () => {
+    expect(pruneStaleReferenceSheets(null)).toBeNull();
+    expect(pruneStaleReferenceSheets(undefined)).toBeUndefined();
+    expect(pruneStaleReferenceSheets('not array')).toBe('not array');
   });
 });
 
