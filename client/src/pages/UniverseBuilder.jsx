@@ -3042,7 +3042,7 @@ export function TrunkView({
 // Other tab — un-kinded buckets that haven't been sorted into a trunk yet.
 // Same card grid as TrunkView but no canon plumbing, plus an "Auto-sort"
 // action that (eventually) LLM-classifies each bucket into the right trunk.
-function OtherTab({
+export function OtherTab({
   draft, buckets, activeBucket, setBucket, canRender, canPromote,
   onUpdateBucket, onRemoveBucket, onGenerateInBucket, onPromoteVariation,
   onBulkRenderBucket, onRenderVariation, onAssignBucketKind, onAutoSort,

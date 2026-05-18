@@ -3,7 +3,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 
-import { CategoryEditor, TrunkView } from './UniverseBuilder';
+import { CategoryEditor, TrunkView, OtherTab } from './UniverseBuilder';
 
 // MemoryRouter wrapper — UniverseBuilder.jsx imports react-router-dom hooks at
 // module scope, so the test harness needs a router context even when the
@@ -133,5 +133,51 @@ describe('TrunkView — Bulk-render-all button', () => {
 
     const bulkBtn = screen.getByRole('button', { name: /Bulk-render all \(3\)/i });
     expect(bulkBtn).toBeEnabled();
+  });
+});
+
+describe('OtherTab — Auto-sort button', () => {
+  const noop = () => {};
+  const baseProps = {
+    buckets: ['mysteries'],
+    activeBucket: 'mysteries',
+    setBucket: noop,
+    canRender: true,
+    canPromote: true,
+    onUpdateBucket: noop,
+    onRemoveBucket: noop,
+    onGenerateInBucket: noop,
+    onPromoteVariation: noop,
+    onBulkRenderBucket: noop,
+    onRenderVariation: noop,
+    onAssignBucketKind: noop,
+    draft: {
+      id: 'u1',
+      categories: {
+        mysteries: { kind: 'other', variations: [{ label: 'a', prompt: 'p' }] },
+      },
+    },
+  };
+
+  it('fires onAutoSort when the Auto-sort button is clicked', async () => {
+    const onAutoSort = vi.fn();
+    const user = userEvent.setup();
+    renderWithRouter(<OtherTab {...baseProps} onAutoSort={onAutoSort} />);
+
+    const btn = screen.getByRole('button', { name: /Auto-sort with AI/i });
+    expect(btn).toBeEnabled();
+    await user.click(btn);
+    expect(onAutoSort).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables the button and shows "Sorting…" while autoSorting is true', () => {
+    const onAutoSort = vi.fn();
+    renderWithRouter(<OtherTab {...baseProps} onAutoSort={onAutoSort} autoSorting />);
+
+    const btn = screen.getByRole('button', { name: /Sorting…/i });
+    expect(btn).toBeDisabled();
+    // The disabled state must visibly block re-entry, not just rely on the
+    // page-level autoSortingRef guard (which the user can't see).
+    expect(screen.queryByRole('button', { name: /^Auto-sort with AI$/i })).toBeNull();
   });
 });
