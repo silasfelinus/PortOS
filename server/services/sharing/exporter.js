@@ -24,7 +24,7 @@ import { buildManifest, writeManifest, pruneBucketManifests } from './manifest.j
 import { listSeries, getSeries } from '../pipeline/series.js';
 import { listIssues } from '../pipeline/issues.js';
 import { getUniverse } from '../universeBuilder.js';
-import { listCollections } from '../mediaCollections.js';
+import { findCollectionByUniverseId, findCollectionBySeriesId } from '../mediaCollections.js';
 import { getJob } from '../mediaJobQueue/index.js';
 import { getInstanceId } from '../instances.js';
 import { getSettings } from '../settings.js';
@@ -241,29 +241,6 @@ function collectAssetReferences(record) {
   };
 }
 
-/**
- * Find the media collection linked to a universe. universeId-only routing
- * — no name-based legacy fallback. Two reasons the legacy fallback was
- * removed:
- *   1. A post-`deleteUniverse` orphan (now name-matching some new
- *      same-named universe) would otherwise be picked up and its old
- *      items would be serialized as the new universe's collection,
- *      reintroducing the cross-universe mixing this PR set out to
- *      prevent.
- *   2. An ambiguous case that migration 021 deliberately skipped (two
- *      universes share a display name, no safe link) would otherwise be
- *      exported under whichever universe ran the export — same
- *      mis-attribution risk.
- *
- * Pre-link installs converge on universeId stamps via migration 021 at
- * boot, so the runtime fallback is no longer needed for the upgrade
- * path. Returns null when no collection is linked.
- */
-async function findCollectionForUniverse(universe) {
-  if (!universe?.id) return null;
-  const all = await listCollections().catch(() => []);
-  return all.find((c) => c.universeId === universe.id) || null;
-}
 
 /**
  * Walk a collection's items and return:
@@ -273,9 +250,9 @@ async function findCollectionForUniverse(universe) {
  *     resolution on canon entries)
  *
  * The serialized `collection` payload in the manifest carries the raw
- * items + the linked universeId + the canonical name; the recipient's
- * importer reuses these to find-or-create a local collection of the
- * same name and add the items.
+ * items + the linked owner id (universeId OR seriesId) + the canonical
+ * name; the recipient's importer reuses these to find-or-create a local
+ * collection of the same name and add the items.
  */
 function collectCollectionAssets(collection) {
   const assetFilenames = [];
@@ -325,7 +302,17 @@ export async function exportSeries(seriesId, bucketId, opts = {}) {
   let linkedCollection = null;
   if (series.universeId) {
     universe = await getUniverse(series.universeId).catch(() => null);
-    if (universe) linkedCollection = await findCollectionForUniverse(universe);
+    if (universe) linkedCollection = await findCollectionByUniverseId(universe.id);
+  }
+  // Per-series fallback so a universeless series still ships with its
+  // auto-filed cover renders via the seriesId-stamped collection. Gate on
+  // `series.universeId` being absent — a series that has been linked to a
+  // universe must always export under the universe-collection contract,
+  // even if a stale seriesId-stamped collection survives from before the
+  // link (orphaned mid-flight by `unlinkCollectionsForUniverse` recovery, or
+  // a legacy bucket from an earlier universeless state).
+  if (!linkedCollection && !series.universeId) {
+    linkedCollection = await findCollectionBySeriesId(series.id);
   }
 
   const [source, sourceBio, senderInstanceId, producedByVersion] = await Promise.all([
@@ -410,7 +397,7 @@ export async function exportUniverse(universeId, bucketId, opts = {}) {
   const bucket = await getBucket(bucketId);
   await ensureBucketLayout(bucket);
   const universe = await getUniverse(universeId);
-  const linkedCollection = await findCollectionForUniverse(universe);
+  const linkedCollection = await findCollectionByUniverseId(universe.id);
 
   const [source, sourceBio, senderInstanceId, producedByVersion] = await Promise.all([
     resolveSourceName(bucket),

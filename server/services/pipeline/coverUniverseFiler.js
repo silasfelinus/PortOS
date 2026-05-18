@@ -1,37 +1,55 @@
 /**
- * Pipeline — auto-file series/volume/issue cover renders into a Universe's
- * media collection.
+ * Pipeline — auto-file series/volume/issue cover renders into either the
+ * series' universe collection (when the series is universe-linked) or a
+ * per-series collection (fallback for series without a universe).
  *
  * The Universe Builder already maintains a `Universe: <name>` collection per
  * universe (`server/services/universeBuilderCollectionHook.js` files render
  * jobs into it by tag). Pipeline cover renders bypass that hook — they go
  * through dedicated routes that don't carry a `universeRun` tag — so without
  * this helper, a series/volume/issue cover image renders into the gallery
- * but never lands in the universe's collection alongside the universe's own
- * concept art.
+ * but never lands in any collection. Without a collection to bundle, the
+ * share-bucket exporter has nothing to put in `manifest.collection` either.
  *
  * The two cover filename hooks (seasonCover, comicPages cover/backCover)
- * call into this helper after they finish stamping the filename on the
- * stage record. Failures are logged and swallowed — bookkeeping must never
- * fail the user's render.
+ * call `fileCoverIntoAutoCollection` after they finish stamping the
+ * filename on the stage record. Failures are logged and swallowed —
+ * bookkeeping must never fail the user's render.
  *
- * **Concurrency.** No per-universe queue is needed here. Every collection
- * write the helper makes (findOrCreateUniverseCollection, addItem,
- * unlinkCollectionsForUniverse) routes through the single file-level write
- * tail in `mediaCollections.js`. Two parallel filings for the same universe
- * (cover + back-cover from the same render burst) interleave their own
- * `await` points freely; the file tail serializes the *writes* so both
- * filenames land and neither orphans the collection.
+ * **Concurrency.** No per-universe/per-series queue is needed here. Every
+ * collection write routes through the single file-level write tail in
+ * `mediaCollections.js`. Two parallel filings for the same series (cover +
+ * back-cover from the same render burst) interleave their own `await`
+ * points freely; the file tail serializes the *writes* so both filenames
+ * land and neither orphans the collection.
  */
 
 import {
   findOrCreateUniverseCollection,
+  findOrCreateSeriesCollection,
   unlinkCollectionsForUniverse,
+  unlinkCollectionsForSeries,
   addItem,
   ERR_DUPLICATE,
 } from '../mediaCollections.js';
 import * as seriesSvc from './series.js';
 import * as universeSvc from '../universeBuilder.js';
+
+/**
+ * Dispatch a freshly-rendered cover image to whichever auto-collection the
+ * series qualifies for: universe-linked first, per-series fallback when
+ * the series has no universeId. Silent no-op for missing/invalid input.
+ */
+export async function fileCoverIntoAutoCollection({ seriesId, filename }) {
+  if (!seriesId || typeof filename !== 'string' || !filename) return;
+  const series = await seriesSvc.getSeries(seriesId).catch(() => null);
+  if (!series) return;
+  if (series.universeId) {
+    await fileCoverIntoUniverseCollection({ seriesId, filename });
+    return;
+  }
+  await fileCoverIntoSeriesCollection({ seriesId, filename });
+}
 
 // Adds a freshly-rendered cover image to the universe's collection.
 // `seriesId` is the bridge — series → universeId → universe → collection.
@@ -97,6 +115,63 @@ export async function fileCoverIntoUniverseCollection({ seriesId, filename }) {
       // stays bound to a deleted universeId (rename-locked) and the
       // operator needs the log entry to find + fix it.
       console.error(`❌ cover → universe collection orphan-unlink failed for universe=${universeId}: ${err?.message || err}`);
+    });
+  }
+}
+
+// Per-series fallback when `series.universeId` is null. Same shape +
+// delete-race recovery as the universe path above.
+export async function fileCoverIntoSeriesCollection({ seriesId, filename }) {
+  if (!seriesId || typeof filename !== 'string' || !filename) return;
+
+  // Re-fetch close to the create so a series rename mid-flight stamps the
+  // collection with the freshest name.
+  const liveSeries = await seriesSvc.getSeries(seriesId).catch(() => null);
+  if (!liveSeries) return;
+
+  // Re-route if the series has (gained) a universe link. Two ways this matters:
+  // (a) this helper is exported and a direct caller may invoke it for an
+  // already-linked series — without the guard we'd stamp a per-series bucket
+  // even though linked series are supposed to use the universe collection;
+  // (b) when called via the dispatcher, `updateSeries` could land a universe
+  // link between the dispatcher's branch and this fetch. Either way, defer
+  // to the universe path so all linked series share one universe collection.
+  if (liveSeries.universeId) {
+    await fileCoverIntoUniverseCollection({ seriesId, filename });
+    return;
+  }
+
+  const collection = await findOrCreateSeriesCollection({
+    seriesId: liveSeries.id,
+    seriesName: liveSeries.name,
+    description: `Renders for "${liveSeries.name}"`,
+  }).catch((err) => {
+    console.error(`❌ cover → series collection provision failed for ${filename}: ${err?.message || err}`);
+    return null;
+  });
+  if (!collection) return;
+
+  await addItem(collection.id, { kind: 'image', ref: filename }).catch((err) => {
+    if (err?.code === ERR_DUPLICATE) return;
+    console.error(`❌ cover → series collection filing failed for ${filename}: ${err?.message || err}`);
+  });
+
+  // Delete- and re-link-race recovery. Two failure modes after the addItem:
+  //   (a) deleteSeries fired between getSeries and the collection write
+  //       → leaves a seriesId-stamped collection bound to a now-deleted
+  //       series (rename-locked with no series to cascade from);
+  //   (b) updateSeries linked the series to a universe between the earlier
+  //       liveSeries read and the write → leaves a seriesId-stamped
+  //       collection on a universe-linked series, which violates the
+  //       "linked series export under the universe contract" invariant and
+  //       would otherwise be picked up by the exporter's per-series fallback.
+  // Both recoveries unlink the per-series collection so it becomes a normal
+  // user-owned bucket; the covers added above are preserved either way.
+  const stillExists = await seriesSvc.getSeries(seriesId).catch(() => null);
+  const gainedUniverse = stillExists && stillExists.id === liveSeries.id && stillExists.universeId;
+  if (!stillExists || stillExists.id !== liveSeries.id || gainedUniverse) {
+    await unlinkCollectionsForSeries(seriesId).catch((err) => {
+      console.error(`❌ cover → series collection orphan-unlink failed for series=${seriesId}: ${err?.message || err}`);
     });
   }
 }

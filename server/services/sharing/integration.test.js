@@ -261,6 +261,187 @@ describe('sharing round-trip', () => {
     expect(fs.existsSync(join(tempData, 'images', 'second.png'))).toBe(true);
   });
 
+  it('series export bundles the per-series collection when the series has no universe', async () => {
+    // A series without a universeId — covers auto-file into a per-series
+    // "Series: <name>" collection (mediaCollections.seriesId stamp) and the
+    // exporter must bundle that into manifest.collection so the recipient
+    // sees the same covers alongside the series record.
+    const bucket = await buckets.createBucket({ name: 'SeriesCollBucket', path: tempBucket, mode: 'auto-merge' });
+    const mediaCollections = await import('../mediaCollections.js');
+    const s = await series.createSeries({ name: 'Indie Saga', logline: 'L' });
+
+    const fs = await import('fs');
+    fs.writeFileSync(join(tempData, 'images', 'cover-a.png'), 'COVA');
+    fs.writeFileSync(join(tempData, 'images', 'cover-b.png'), 'COVB');
+    const collection = await mediaCollections.findOrCreateSeriesCollection({
+      seriesId: s.id, seriesName: s.name,
+    });
+    await mediaCollections.addItem(collection.id, { kind: 'image', ref: 'cover-a.png' });
+    await mediaCollections.addItem(collection.id, { kind: 'image', ref: 'cover-b.png' });
+
+    // Export — manifest must carry the seriesId-keyed collection payload.
+    const exp = await exporter.exportSeries(s.id, bucket.id);
+    const manifest = JSON.parse(fs.readFileSync(join(tempBucket, 'manifests', exp.filename), 'utf-8'));
+    expect(manifest.collection).toMatchObject({ seriesId: s.id });
+    expect(manifest.collection.universeId).toBeUndefined();
+    expect(manifest.collection.items.map((i) => i.ref).sort()).toEqual(['cover-a.png', 'cover-b.png']);
+    expect(fs.existsSync(join(tempBucket, 'assets', 'blobs', sha256Hex('COVA')))).toBe(true);
+    expect(fs.existsSync(join(tempBucket, 'assets', 'blobs', sha256Hex('COVB')))).toBe(true);
+
+    // Drop the local collection + series, then re-process: importer
+    // restores the series and find-or-creates the local per-series
+    // collection by seriesId, unioning the items in.
+    await mediaCollections.deleteCollection(collection.id);
+    await series.deleteSeries(s.id);
+    expect((await mediaCollections.listCollections()).find((c) => c.seriesId === s.id)).toBeUndefined();
+
+    simulateRemoteSender(tempBucket, exp.filename);
+    const r = await importer.processManifest(bucket.id, exp.filename);
+    expect(r.processed).toBe(true);
+    expect(r.outcome.collectionItemsAdded).toBe(2);
+
+    const localCollections = await mediaCollections.listCollections();
+    const restored = localCollections.find((c) => c.seriesId === s.id);
+    expect(restored).toBeTruthy();
+    expect(restored.name).toBe('Series: Indie Saga');
+    expect(restored.items.map((i) => i.ref).sort()).toEqual(['cover-a.png', 'cover-b.png']);
+    // Asset blobs are back in the local data/images pool.
+    expect(fs.existsSync(join(tempData, 'images', 'cover-a.png'))).toBe(true);
+    expect(fs.existsSync(join(tempData, 'images', 'cover-b.png'))).toBe(true);
+  });
+
+  it('series export prefers the universe-linked collection when both exist', async () => {
+    // A series can in principle be linked to a universe (universe-owned
+    // collection) AND have a stray per-series collection (e.g. from a
+    // prior universeless phase). The exporter prefers the universe one
+    // since it represents the canonical bucket for that universe.
+    const bucket = await buckets.createBucket({ name: 'BothBucket', path: tempBucket, mode: 'auto-merge' });
+    const universeBuilder = await import('../universeBuilder.js');
+    const mediaCollections = await import('../mediaCollections.js');
+    const u = await universeBuilder.createUniverse({ name: 'Linked' });
+    const s = await series.createSeries({ name: 'Series', universeId: u.id });
+
+    const fs = await import('fs');
+    fs.writeFileSync(join(tempData, 'images', 'uni.png'), 'UNI');
+    fs.writeFileSync(join(tempData, 'images', 'ser.png'), 'SER');
+
+    const uniColl = await mediaCollections.findOrCreateUniverseCollection({
+      universeId: u.id, universeName: u.name,
+    });
+    await mediaCollections.addItem(uniColl.id, { kind: 'image', ref: 'uni.png' });
+
+    const serColl = await mediaCollections.findOrCreateSeriesCollection({
+      seriesId: s.id, seriesName: s.name,
+    });
+    await mediaCollections.addItem(serColl.id, { kind: 'image', ref: 'ser.png' });
+
+    const exp = await exporter.exportSeries(s.id, bucket.id);
+    const manifest = JSON.parse(fs.readFileSync(join(tempBucket, 'manifests', exp.filename), 'utf-8'));
+    expect(manifest.collection).toMatchObject({ universeId: u.id });
+    expect(manifest.collection.items.map((i) => i.ref)).toEqual(['uni.png']);
+  });
+
+  it('linked series never falls through to a stray seriesId-stamped collection', async () => {
+    // A series can be linked to a universe AND have a stray per-series
+    // collection from a prior universeless phase (or an orphan after
+    // `unlinkCollectionsForUniverse` recovery). When the universe-linked
+    // collection happens to be absent at export time (mid-migration, or
+    // a manual deletion), the exporter must NOT silently fall back to the
+    // stale seriesId-stamped collection — linked series export under the
+    // universe-collection contract or no collection payload at all.
+    const bucket = await buckets.createBucket({ name: 'LinkedNoUniColl', path: tempBucket, mode: 'auto-merge' });
+    const universeBuilder = await import('../universeBuilder.js');
+    const mediaCollections = await import('../mediaCollections.js');
+    const u = await universeBuilder.createUniverse({ name: 'CanonOnly' });
+    const s = await series.createSeries({ name: 'Bound', universeId: u.id });
+
+    const fs = await import('fs');
+    fs.writeFileSync(join(tempData, 'images', 'stale.png'), 'STALE');
+    // Stamp a seriesId collection directly (simulating a leftover from a
+    // prior universeless phase). No universe collection exists.
+    const serColl = await mediaCollections.findOrCreateSeriesCollection({
+      seriesId: s.id, seriesName: s.name,
+    });
+    await mediaCollections.addItem(serColl.id, { kind: 'image', ref: 'stale.png' });
+    expect(await mediaCollections.findCollectionByUniverseId(u.id)).toBeNull();
+
+    const exp = await exporter.exportSeries(s.id, bucket.id);
+    const manifest = JSON.parse(fs.readFileSync(join(tempBucket, 'manifests', exp.filename), 'utf-8'));
+    // No collection payload — the stale seriesId bucket was correctly ignored.
+    expect(manifest.collection).toBeNull();
+  });
+
+  it('series collection import re-routes to the universe collection when the local series is now universe-linked', async () => {
+    // Peer's manifest was produced when the series was universeless (so it
+    // carries `collection.seriesId`), but the local series has since been
+    // linked to a universe. Importer must NOT mint a fresh seriesId-stamped
+    // collection — that would leave a rename-locked stale per-series bucket
+    // attached to a linked series, breaking the contract the exporter and
+    // cover filer enforce. Re-route the payload into the universe collection.
+    const bucket = await buckets.createBucket({ name: 'StaleSeriesPayload', path: tempBucket, mode: 'auto-merge' });
+    const mediaCollections = await import('../mediaCollections.js');
+    const universeBuilder = await import('../universeBuilder.js');
+    const fs = await import('fs');
+
+    // Sender side: universeless series + per-series collection with one cover.
+    const s = await series.createSeries({ name: 'WillLink', logline: 'L' });
+    fs.writeFileSync(join(tempData, 'images', 'stale-cover.png'), 'STALE');
+    const senderColl = await mediaCollections.findOrCreateSeriesCollection({
+      seriesId: s.id, seriesName: s.name,
+    });
+    await mediaCollections.addItem(senderColl.id, { kind: 'image', ref: 'stale-cover.png' });
+    const exp = await exporter.exportSeries(s.id, bucket.id);
+
+    // Now (still on the sender — same env, simpler test setup) link the
+    // series to a universe and drop the per-series collection. The "local"
+    // state from the importer's perspective is: linked series, no per-series
+    // collection. Recipient re-applies the manifest.
+    const u = await universeBuilder.createUniverse({ name: 'NewCanon' });
+    await series.updateSeries(s.id, { universeId: u.id });
+    await mediaCollections.deleteCollection(senderColl.id);
+
+    simulateRemoteSender(tempBucket, exp.filename);
+    const r = await importer.processManifest(bucket.id, exp.filename);
+    expect(r.processed).toBe(true);
+    expect(r.outcome.collectionItemsAdded).toBe(1);
+
+    // The cover landed in the UNIVERSE collection, not a new seriesId bucket.
+    const universeColl = await mediaCollections.findCollectionByUniverseId(u.id);
+    expect(universeColl).toBeTruthy();
+    expect(universeColl.items.map((i) => i.ref)).toEqual(['stale-cover.png']);
+    // No seriesId-stamped collection exists for the now-linked series.
+    expect(await mediaCollections.findCollectionBySeriesId(s.id)).toBeNull();
+  });
+
+  it('series collection import defers when the local series is missing', async () => {
+    // Mirrors the universe-pending case: the manifest references a
+    // seriesId we haven't imported locally. The cursor must stay
+    // un-advanced so a later sync of the series unblocks the merge.
+    const bucket = await buckets.createBucket({ name: 'DeferBucket', path: tempBucket, mode: 'auto-merge' });
+    const mediaCollections = await import('../mediaCollections.js');
+    const s = await series.createSeries({ name: 'Will Vanish' });
+    const fs = await import('fs');
+    fs.writeFileSync(join(tempData, 'images', 'late-cover.png'), 'LATE');
+    const collection = await mediaCollections.findOrCreateSeriesCollection({
+      seriesId: s.id, seriesName: s.name,
+    });
+    await mediaCollections.addItem(collection.id, { kind: 'image', ref: 'late-cover.png' });
+
+    const exp = await exporter.exportSeries(s.id, bucket.id);
+    // Delete the series locally so the importer sees an orphaned payload.
+    await mediaCollections.deleteCollection(collection.id);
+    await series.deleteSeries(s.id);
+    // Also drop the series record from the bucket so insertSeriesWithId
+    // doesn't restore it — this isolates the "collection waits on series"
+    // case rather than "round-trip restores everything."
+    fs.rmSync(join(tempBucket, 'records', 'series', `${s.id}.json`), { force: true });
+
+    simulateRemoteSender(tempBucket, exp.filename);
+    const r = await importer.processManifest(bucket.id, exp.filename);
+    expect(r.pending).toBe(true);
+    expect(r.outcome.pendingCollectionSeries).toBe(s.id);
+  });
+
   it('universe export ignores a same-named unlinked collection (universeId-only routing)', async () => {
     // Round-9 review caught that the exporter's old "fall back to name
     // match" path could pick up a post-deleteUniverse orphan and ship it
