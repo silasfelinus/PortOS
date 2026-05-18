@@ -299,18 +299,27 @@ export async function setCanonKindLockAll(universeId, kind, locked) {
       { status: 400, code: 'UNIVERSE_CANON_INVALID_KIND' },
     );
   }
-  const universe = await getUniverse(universeId);
   const field = BIBLE_FIELD[kind];
-  const list = Array.isArray(universe[field]) ? universe[field] : [];
   let changed = 0;
-  const nextList = list.map((e) => {
-    if ((e.locked === true) === (locked === true)) return e;
-    changed += 1;
-    return { ...e, locked };
+  let total = 0;
+  // Run inside `updateUniverse`'s file-write queue (mutator form) so the
+  // patch is built from the freshest persisted state. A read-modify-write
+  // split (getUniverse → updateUniverse(patchObject)) would clobber a
+  // concurrent render-completion `imageRefs[]` append or an inline canon
+  // edit landing between the two calls — the patch's full-array shape
+  // replaces wholesale via PATCHABLE_SCALARS. Mirrors `setVariationsLockAll`.
+  const updated = await updateUniverse(universeId, (cur) => {
+    const list = Array.isArray(cur[field]) ? cur[field] : [];
+    total = list.length;
+    const nextList = list.map((e) => {
+      if ((e.locked === true) === (locked === true)) return e;
+      changed += 1;
+      return { ...e, locked };
+    });
+    if (changed === 0) return null; // no-op short-circuit
+    return { [field]: nextList };
   });
-  if (changed === 0) return { universe, kind, locked, changed: 0, total: list.length };
-  const updated = await updateUniverse(universeId, { [field]: nextList });
-  return { universe: updated, kind, locked, changed, total: list.length };
+  return { universe: updated, kind, locked, changed, total };
 }
 
 /**
