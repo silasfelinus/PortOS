@@ -153,6 +153,22 @@ describe('fileCoverIntoSeriesCollection', () => {
     expect(await collections.listCollections()).toEqual([]);
   });
 
+  it('re-routes to the universe collection when the series is universe-linked', async () => {
+    // Guard against (a) a direct caller invoking this helper for an
+    // already-linked series and (b) a parallel `updateSeries` adding a
+    // universe link between the dispatcher's branch and this fetch. Either
+    // way the cover must land in the universe collection, not a per-series
+    // bucket that contradicts the canon link.
+    const universe = await universeSvc.createUniverse({ name: 'Linked' });
+    const series = await seriesSvc.createSeries({ name: 'Bound', universeId: universe.id });
+    await fileCoverIntoSeriesCollection({ seriesId: series.id, filename: 'rerouted.png' });
+    expect(await collections.findCollectionBySeriesId(series.id)).toBeNull();
+    expect(await collections.findCollectionByUniverseId(universe.id)).toMatchObject({
+      name: 'Universe: Linked',
+      items: [expect.objectContaining({ ref: 'rerouted.png' })],
+    });
+  });
+
   it('serializes concurrent filings for the same series', async () => {
     const series = await seriesSvc.createSeries({ name: 'RaceSeries' });
     await Promise.all([

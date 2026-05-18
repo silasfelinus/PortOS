@@ -129,6 +129,18 @@ export async function fileCoverIntoSeriesCollection({ seriesId, filename }) {
   const liveSeries = await seriesSvc.getSeries(seriesId).catch(() => null);
   if (!liveSeries) return;
 
+  // Re-route if the series has (gained) a universe link. Two ways this matters:
+  // (a) this helper is exported and a direct caller may invoke it for an
+  // already-linked series — without the guard we'd stamp a per-series bucket
+  // even though linked series are supposed to use the universe collection;
+  // (b) when called via the dispatcher, `updateSeries` could land a universe
+  // link between the dispatcher's branch and this fetch. Either way, defer
+  // to the universe path so all linked series share one universe collection.
+  if (liveSeries.universeId) {
+    await fileCoverIntoUniverseCollection({ seriesId, filename });
+    return;
+  }
+
   const collection = await findOrCreateSeriesCollection({
     seriesId: liveSeries.id,
     seriesName: liveSeries.name,
