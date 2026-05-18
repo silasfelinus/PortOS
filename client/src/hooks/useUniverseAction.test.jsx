@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
+import { renderHook } from '@testing-library/react';
 
 const toastMock = {
   success: vi.fn(),
@@ -62,7 +62,6 @@ describe('useUniverseAction', () => {
     expect(ref.current).toBe(false);
     expect(toastMock.loading).toHaveBeenCalledWith('Working…');
     expect(setWorlds).toHaveBeenCalled();
-    // setWorlds reducer puts the updated universe first and dedupes by id
     const updated = setWorlds.mock.results[0].value;
     expect(updated[0]).toEqual({ id: 'u1', name: 'new' });
     expect(onFreshResult).toHaveBeenCalledWith(out, { capturedId: 'u1' });
@@ -153,9 +152,8 @@ describe('useUniverseAction', () => {
     await run({ ref, setBusy, action });
     // CLAUDE.md "Deferred work must respect both staleness and unmount" —
     // hook intentionally skips ref/busy reset when unmounted to avoid
-    // post-unmount setState. Async caller closure handles it on remount.
+    // post-unmount setState.
     expect(ref.current).toBe(true);
-    // setBusy(true) was called on entry but the cleanup setBusy(false) is gated.
     expect(setBusy).toHaveBeenCalledTimes(1);
     expect(setBusy).toHaveBeenCalledWith(true);
     expect(setWorlds).toHaveBeenCalled();

@@ -3,32 +3,17 @@ import toast from '../components/ui/Toast';
 
 // Scaffolding for LLM-driven universe mutations that follow the
 // "guarded API call → setWorlds → stale-write-checked setDraft" pattern.
-//
 // Used by handlePromoteVariation + handleAutoSort in UniverseBuilder.jsx.
-// Both: (1) require the universe to be saved, (2) need a page-level
-// re-entrancy guard, (3) show a loading toast that flips to success/error,
-// (4) always update the cached worlds list when the server returns a new
-// universe (even across navigation), and (5) only mutate the local draft
-// when the user is still on the same universe (stale-write guard).
 //
 // handleGenerateInCategory is intentionally NOT a consumer — it does an
 // eager local merge first and then a best-effort save, so the guard /
-// loading-toast / required-savedId shape doesn't fit. Extracting just its
-// setWorlds line through this hook would be more abstraction than savings.
+// loading-toast / required-savedId shape doesn't fit. Forcing it through
+// would warp it for almost no shared scaffolding.
 //
-// Contract for `action`:
-//   - Receives `capturedId` (the selectedId at call time).
-//   - Pass `{ silent: true }` to the underlying API helper so toasts only
-//     fire from this hook (per CLAUDE.md "Custom catch ⇒ silent: true").
-//   - Resolve with `{ universe, ... }`; reject with an Error whose message
-//     is user-displayable.
-//
-// Contract for `onFreshResult`:
-//   - Called only when the user is still on the same universe at result time.
-//   - Caller does its own selective `setDraft` here (different actions touch
-//     different fields — promote rewrites canon arrays + one category, autoSort
-//     rewrites only reclassified buckets).
-//   - Return a string to use as the success toast, or null/void to suppress it.
+// `action(capturedId)` must pass `{ silent: true }` to its API helper so
+// toasts only fire from this hook (per CLAUDE.md "Custom catch ⇒ silent").
+// `onFreshResult(result, { capturedId })` runs only when the user is still
+// on the same universe; return a string to use as the success toast.
 export default function useUniverseAction({ selectedId, mountedRef, setWorlds }) {
   return useCallback(async function runUniverseAction({
     ref,
