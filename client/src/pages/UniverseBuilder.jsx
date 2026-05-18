@@ -2134,7 +2134,11 @@ function CompositeSheetsEditor({ sheets, onChange, canRender = false, onRender =
     const label = newLabel.trim();
     const prompt = newPrompt.trim();
     if (!label || !prompt) return;
-    onChange([...sheets, { kind: newKind, label: label.slice(0, 120), prompt: prompt.slice(0, COMPOSITE_PROMPT_MAX) }]);
+    // Stamp `locked: true` up front so the in-draft row matches the
+    // lock-by-default contract before the next save round-trips through
+    // sanitizeCompositeSheet — otherwise the bulk-toggle's locked-count
+    // gate would treat freshly-added boards as unlocked.
+    onChange([...sheets, { kind: newKind, label: label.slice(0, 120), prompt: prompt.slice(0, COMPOSITE_PROMPT_MAX), locked: true }]);
     setNewKind('reference_sheet');
     setNewLabel('');
     setNewPrompt('');
@@ -2446,7 +2450,11 @@ export function CategoryEditor({
     const label = newLabel.trim();
     const prompt = newPrompt.trim();
     if (!label || !prompt) return;
-    onChange([...variations, { label: label.slice(0, 120), prompt: prompt.slice(0, 2000) }]);
+    // Stamp `locked: true` so the in-draft row matches the lock-by-default
+    // contract before the next save round-trips through sanitizeVariation.
+    // Without this, the bulk-toggle counts a freshly-added variation as
+    // unlocked even though the user expects every new entry to land locked.
+    onChange([...variations, { label: label.slice(0, 120), prompt: prompt.slice(0, 2000), locked: true }]);
     setNewLabel('');
     setNewPrompt('');
     setAdding(false);
