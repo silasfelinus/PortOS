@@ -10,8 +10,17 @@
  *   (NOT a ReactNode). Spread into the internal `EntryCardThumbnail` renderer
  *   so the 12x12 frame, primary-star badge, and zoom-in button styling stay
  *   consistent across consumers. Pass `null`/omit to skip the thumbnail column.
+ * - `selectable` — descriptor `{ selected, onToggle, label? }`. Turns the row
+ *   into a checkbox-driven selection card (used by the Importer review for
+ *   pre-commit canon picks). Selected accent matches `locked`'s family;
+ *   unselected dims with `opacity-60` so picked vs. dropped reads at a glance.
+ *   Implementation: an overlay `<label htmlFor>` sits above the padded card
+ *   surface so the entire bordered area toggles the checkbox; `actions` and
+ *   clickable (`onClick`) thumbnails sit on a `relative z-10` layer above the
+ *   overlay so they remain independently clickable without nesting interactive
+ *   controls inside a `<label>` (invalid HTML).
  */
-
+import { useId } from 'react';
 import { Star } from 'lucide-react';
 
 export default function EntryCard({
@@ -21,19 +30,50 @@ export default function EntryCard({
   body = null,
   actions = null,
   footer = null,
+  selectable = null,
 }) {
-  const borderClass = locked ? 'border-port-accent/40' : 'border-port-border';
+  const reactId = useId();
+  const checkboxId = selectable ? `entry-card-cb-${reactId}` : undefined;
+  const isSelected = selectable ? selectable.selected : false;
+  const borderClass = selectable
+    ? (isSelected ? 'border-port-accent bg-port-accent/5' : 'border-port-border opacity-60')
+    : (locked ? 'border-port-accent/40' : 'border-port-border');
+  // Match the pre-extract Importer card spacing (p-3) in selectable mode so
+  // the visual diff vs. the inline card it replaces is genuinely zero.
+  const paddingClass = selectable ? 'p-3' : 'p-2';
+
   return (
-    <li className={`rounded border bg-port-bg/60 p-2 ${borderClass}`}>
+    <li className={`relative rounded border bg-port-bg/60 ${paddingClass} ${borderClass}`}>
+      {selectable ? (
+        <label
+          htmlFor={checkboxId}
+          aria-label={selectable.label || 'Select entry'}
+          className="absolute inset-0 cursor-pointer"
+        />
+      ) : null}
       <div className="flex items-start gap-3">
-        {thumbnail ? <EntryCardThumbnail {...thumbnail} /> : null}
+        {selectable ? (
+          <input
+            id={checkboxId}
+            type="checkbox"
+            checked={isSelected}
+            onChange={selectable.onToggle}
+            aria-label={selectable.label || 'Select entry'}
+            className="relative z-10 mt-1 accent-port-accent shrink-0"
+          />
+        ) : null}
+        {thumbnail ? (
+          <div className={thumbnail.onClick ? 'relative z-10' : undefined}>
+            <EntryCardThumbnail {...thumbnail} />
+          </div>
+        ) : null}
         <div className="flex-1 min-w-0">
           {title}
           {body}
         </div>
-        {actions ? <div className="shrink-0">{actions}</div> : null}
+        {actions ? <div className="relative z-10 shrink-0">{actions}</div> : null}
       </div>
-      {footer}
+      {footer ? <div className="relative z-10">{footer}</div> : null}
     </li>
   );
 }
