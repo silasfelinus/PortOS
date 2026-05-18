@@ -52,6 +52,7 @@ import {
   buildRenderSlot,
 } from '../services/pipeline/visualStages.js';
 import { extractCanonFromProse } from '../services/universeCanon.js';
+import { IMPORTER_SOURCE_CHAR_LIMIT } from '../services/importer.js';
 import { getSeriesCanon } from '../services/pipeline/seriesCanon.js';
 import { startEpisodeVideoForIssue, ERR_NO_STORYBOARDS } from '../services/pipeline/episodeVideo.js';
 import { generateSeriesTitleLogo } from '../services/pipeline/seriesTitleLogo.js';
@@ -453,11 +454,11 @@ const extractCanonFromScriptSchema = z.object({
   providerOverride: z.string().trim().max(80).optional(),
 });
 
-// Matches `IMPORTER_SOURCE_CHAR_LIMIT` in `server/routes/universeBuilder.js` —
-// the safe ceiling we've already settled on for canon-extraction LLM prompts.
-// `STAGE_OUTPUT_MAX` (400KB) is large enough that long scripts can exceed
-// most provider context windows; clamp before forwarding.
-const EXTRACT_CANON_CORPUS_MAX = 200_000;
+// Reuses the importer's source-size ceiling — both feed the same
+// `extractBible` machinery, so a single constant keeps the safe-corpus
+// budget in sync. `STAGE_OUTPUT_MAX` (400KB) is large enough that long
+// scripts can exceed most provider context windows; clamp before forwarding.
+const EXTRACT_CANON_CORPUS_MAX = IMPORTER_SOURCE_CHAR_LIMIT;
 
 // Collapses the `extractCanonFromProse` result-shape trio used by both the
 // season-episodes continuity extract and the manual script-stage extract.
@@ -1412,7 +1413,11 @@ router.post('/issues/:id/stages/:stageId/extract-canon', asyncHandler(async (req
   }
   const result = await extractCanonFromProse(series.universeId, {
     corpus,
-    providerOverride: body.providerOverride,
+    // Fall back to the series' configured LLM when the client doesn't pass
+    // an explicit override — matches every other Pipeline LLM action
+    // (e.g. storyboards/extract-scenes) so a manual extract honors the
+    // provider picked in the series header instead of the global default.
+    providerOverride: body.providerOverride || series.llm?.provider || undefined,
     parallel: true,
     autoLock: true,
     sourceSeriesId: series.id,

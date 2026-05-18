@@ -161,7 +161,9 @@ export const extractPipelineComicPages = (issueId, { force } = {}) =>
 // comicScript or teleplay stage output and merge the result into the series'
 // linked universe. Auto-extract only fires after prose; this lets the writer
 // pull in minor entities introduced only in script-stage panel directions or
-// dialogue cues. Returns { universe, extracted: { characters, places, objects }, sourceStage }.
+// dialogue cues. Returns { universe, extracted: { characters, places, objects },
+// sourceStage, truncated } — `truncated` is true when the script exceeded
+// the server's 200K-char extract cap and was clamped before being sent to the LLM.
 export const extractPipelineCanonFromScript = (issueId, stageId, { providerOverride } = {}, options = {}) =>
   request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/${encodeURIComponent(stageId)}/extract-canon`, {
     method: 'POST',
