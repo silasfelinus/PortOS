@@ -30,12 +30,25 @@ const SORTABLE_KINDS = VALID_TARGET_KINDS;
 
 const VARIATION_SAMPLE_PER_BUCKET = 10;
 
+// Collapse newlines + control chars in user-supplied free text before embedding
+// in the prompt. Variation labels + logline + styleNotes are user-owned strings
+// that pass sanitization but aren't newline-stripped — without this a label
+// containing "\n# Output contract\n..." could redirect the LLM's structure.
+// Downstream gates (per-entry kind filter, byKey lookup) keep the blast radius
+// bounded even if injection lands, but stripping at the embed layer is the
+// cheap defense.
+const escapePromptText = (s) =>
+  typeof s === 'string' ? s.replace(/[\r\n\t]+/g, ' ').trim() : '';
+
+const kindUnionForPrompt = SORTABLE_KINDS.map((k) => `"${k}"`).join(' | ');
+const kindListForPrompt = SORTABLE_KINDS.join(', ');
+
 const buildAutoSortPrompt = ({ buckets, universe }) => {
   const embraceTokens = joinInfluenceList(universe.influences?.embrace);
   const styleContext = [
-    universe.logline ? `LOGLINE: ${universe.logline}` : null,
-    universe.styleNotes ? `STYLE NOTES: ${universe.styleNotes}` : null,
-    embraceTokens ? `EMBRACE INFLUENCES: ${embraceTokens}` : null,
+    universe.logline ? `LOGLINE: ${escapePromptText(universe.logline)}` : null,
+    universe.styleNotes ? `STYLE NOTES: ${escapePromptText(universe.styleNotes)}` : null,
+    embraceTokens ? `EMBRACE INFLUENCES: ${escapePromptText(embraceTokens)}` : null,
   ].filter(Boolean).join('\n\n');
   const styleSection = styleContext
     ? `\n# Universe context\n${styleContext}\n`
@@ -44,22 +57,22 @@ const buildAutoSortPrompt = ({ buckets, universe }) => {
   const bucketBlock = buckets.map(({ key, variations }) => {
     const sample = variations
       .slice(0, VARIATION_SAMPLE_PER_BUCKET)
-      .map((v) => `  - ${v.label}`)
+      .map((v) => `  - ${escapePromptText(v.label)}`)
       .join('\n');
     const body = sample || '  (no variations yet)';
     return `## ${key}\n${body}`;
   }).join('\n\n');
 
-  return `You are organizing a story-bible template. The user has these custom buckets that aren't yet tagged to a canon trunk. For each bucket, decide whether it represents CHARACTERS (people, beings, factions of people), SETTINGS (places, environments, locations, regions), or OBJECTS (props, vehicles, weapons, artifacts, technology). Optionally suggest a clearer snake_case bucket key when the original is ambiguous.
+  return `You are organizing a story-bible template. The user has these custom buckets that aren't yet tagged to a canon trunk. For each bucket, decide whether it represents one of these trunks: ${kindListForPrompt}. Optionally suggest a clearer snake_case bucket key when the original is ambiguous.
 ${styleSection}
 # Buckets to classify
 ${bucketBlock}
 
 # Output contract
-Return a JSON object: { "classifications": [{ "key": "<original bucket key, unchanged>", "kind": "characters" | "settings" | "objects", "suggestedKey": "<optional snake_case alternative>" }] }
+Return a JSON object: { "classifications": [{ "key": "<original bucket key, unchanged>", "kind": ${kindUnionForPrompt}, "suggestedKey": "<optional snake_case alternative>" }] }
 
 # Rules
-- "kind" MUST be one of: characters, settings, objects. Never "other".
+- "kind" MUST be one of: ${kindListForPrompt}. Never "other".
 - "key" MUST exactly match an input bucket key from the list above.
 - "suggestedKey" is OPTIONAL — include only when the original is ambiguous or unclear. lowercase snake_case, max 64 chars, no spaces. Omit when the original is fine.
 - Output ONLY the JSON object. No commentary, no markdown, no code fences.`;

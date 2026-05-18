@@ -1416,15 +1416,24 @@ export default function UniverseBuilder() {
       autoSortingRef.current = false;
       setAutoSorting(false);
     }
-    if (!result?.universe) return;
+    if (!result?.universe) {
+      // .catch already dismissed on error; covers the unreachable
+      // "service resolved with falsy universe" defensive path too.
+      toast.dismiss(toastId);
+      return;
+    }
     const updated = result.universe;
+    // Always update the cached worlds list — even when the user navigated
+    // away mid-flight, the persisted shape changed and other surfaces
+    // (list page, palette) should see it. Mirrors handlePromoteVariation.
     setWorlds((prev) => {
       const without = prev.filter((w) => w.id !== updated.id);
       return [updated, ...without];
     });
-    if (!mountedRef.current || capturedId !== selectedId) return;
-    // Only the categories changed server-side — preserve other in-progress
-    // draft edits the user might have made while the LLM call was in flight.
+    if (!mountedRef.current || capturedId !== selectedId) {
+      toast.dismiss(toastId);
+      return;
+    }
     setDraft((d) => ({
       ...d,
       categories: updated.categories,
