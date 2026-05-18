@@ -1434,12 +1434,22 @@ export default function UniverseBuilder() {
       toast.dismiss(toastId);
       return;
     }
-    setDraft((d) => ({
-      ...d,
-      categories: updated.categories,
-      schemaVersion: updated.schemaVersion,
-      updatedAt: updated.updatedAt,
-    }));
+    // Merge only the reclassified buckets into the draft — wholesale-
+    // replacing `categories` with the server snapshot would discard any
+    // user edits to OTHER buckets made while the LLM call was in flight.
+    const sortedKeys = new Set((result.results || []).map((r) => r.sourceKey));
+    setDraft((d) => {
+      const next = { ...(d.categories || {}) };
+      for (const key of sortedKeys) {
+        if (updated.categories?.[key]) next[key] = updated.categories[key];
+      }
+      return {
+        ...d,
+        categories: next,
+        schemaVersion: updated.schemaVersion,
+        updatedAt: updated.updatedAt,
+      };
+    });
     toast.dismiss(toastId);
     const sortedCount = result.results?.length || 0;
     const renames = (result.results || []).filter((r) => r.suggestedKey);

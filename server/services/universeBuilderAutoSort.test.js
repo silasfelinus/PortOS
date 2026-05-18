@@ -246,6 +246,25 @@ describe('universeBuilderAutoSort — LLM-shaped failures', () => {
     ).rejects.toMatchObject({ status: 502, code: 'UNIVERSE_AUTOSORT_NO_CLASSIFICATIONS' });
   });
 
+  it('rejects with LLM_INVALID_JSON when value.classifications is not an array (fallback path)', async () => {
+    // extractJson returns the first parseable block as a fallback even when
+    // shapePredicate fails. A malformed top-level shape (classifications: null)
+    // must hit the typed 502 path, not flow into the for-of loop and throw a 500.
+    const w = await seedUniverseWithBuckets({
+      colonies: {
+        variations: [{ label: 'Foundry Prime', prompt: 'colony' }],
+      },
+    });
+    runPromptThroughProviderMock.mockResolvedValue({
+      text: '{"classifications": null}',
+      runId: 'run-bad-3',
+      model: 'mock-default',
+    });
+    await expect(
+      autoSortSvc.autoSortOtherBuckets(w.id),
+    ).rejects.toMatchObject({ status: 502, code: 'LLM_INVALID_JSON' });
+  });
+
   it('rejects when no AI provider is available', async () => {
     const w = await seedUniverseWithBuckets({
       colonies: {
