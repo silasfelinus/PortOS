@@ -36,13 +36,32 @@ For project goals, see [GOALS.md](./GOALS.md). For completed work, see [DONE.md]
 ### Universe-as-Canon — Phase 2 + extensions
 
 - [ ] [canoncard-from-series-name-full-provenance-label] **CanonCard "from series: <name>" full provenance label.** Card currently shows a "from series" chip with the series id in the tooltip. Plumb a `seriesNameMap` (or `sourceSeriesName` per entry) so the chip can render the actual series name. Needs the parent (`UniverseCanonSection` / `NounsStage`) to pass a `{ [seriesId]: name }` lookup.
-- [x] [retire-universe-categories-on-the-schema-rejected] ~~**Retire `universe.categories` on the schema.**~~ **Rejected 2026-05-17** — categories are an active user-facing exploration workflow (custom buckets like `factions`/`colonies`/`raider_clans`, bulk variation generation, batch render). Canon has no equivalent. See "Categories vs canon — decision" below.
 - [→] **Drop the default `characters` category.** Folded into Next Up #1 Phase A.
 - [→] **Universe expand LLM contract enrichment.** Folded into Next Up #1 Phase B.
 - [→] **arcPlanner prompt context — include canon characters/places/objects.** Folded into Next Up #1 Phase B (Phase B PR shipped `renderCanonForPrompt(world)` + `worldCanonText` + migration 019 for all four arc/volume templates: `pipeline-arc-overview`, `pipeline-arc-verify`, `pipeline-arc-resolve`, `pipeline-volume-verify`). Follow-up: sweep `grep -rn "world\.categories" server/services/pipeline server/services/universeBuilder*.js` for other prompt builders that read categories but not canon.
-> ⚠️ DRIFT: collides with commit `a704d668` (2026-05-17 writers-room template consolidation) which set up the `'writers-room-settings'` → `'writers-room-places'` stage-config mapping + migration 018 and explicitly deferred this enum rename. Executing as worded now would require re-coordinating with migration 018 — confirm the scope before picking this up.
 
-- [ ] [settings-places-kind-rename-bible-kind-setting] **Settings → Places kind rename.** `BIBLE_KIND.SETTING → BIBLE_KIND.PLACE`, `BIBLE_FIELD[SETTING]: 'settings' → 'places'`. Touches ~20 files. Stick the rename to bible context — app settings stays as "settings".
+- [ ] [bible-kind-setting-rename-to-place] **Bible `SETTING` kind rename to `PLACE`.** Rename the bible-domain "setting" entity to "place" everywhere it's an identifier (NOT app settings — `data/settings.json` and `/api/settings` are unrelated and stay). Migration 018 (2026-05-17, PR #265) already renamed the `writers-room-settings` stage-config key + prompt template file; this is the broader enum/field/route/data-shape rename it explicitly deferred.
+
+  **Code changes (~14 files, verified via grep 2026-05-17):**
+  - `server/lib/storyBible.js` — `BIBLE_KIND.SETTING: 'setting'` → `PLACE: 'place'`; `BIBLE_FIELD[…SETTING]: 'settings'` → `'places'`; `PROMPT_FIELDS` key; constants `SETTING_INT_EXT`, `SETTING_TIME_OF_DAY`, `SETTING_DESCRIPTION_MAX`, `SETTING_INT_EXT_SET`, `SETTING_TIME_OF_DAY_SET` → `PLACE_*`.
+  - `server/lib/{bibleExtractor,sceneExtractor}.js` — prompt-variable name `existingSettingsJson` → `existingPlacesJson` (5 sites incl. 3 in `server/services/pipeline/arcPlanner.js`).
+  - `server/services/writersRoom/settings.js` → rename file to `places.js`; function exports `listSettings/createSetting/updateSetting/deleteSetting/mergeExtractedSettings` → `listPlaces/…/mergeExtractedPlaces`; id prefix `'wr-setting-'` → `'wr-place-'`; error labels.
+  - `server/services/writersRoom/{evaluator,promoteToPipeline}.js` — import sites + `BIBLE_KIND.SETTING` usages.
+  - `server/services/{universeBuilder,universeBuilderExpand,universeBuilderPromote,universeCanon,importer}.js` + `pipeline/{arcPlanner,visualStages}.js` — `BIBLE_KIND.SETTING` swaps; `canonSelection` key `'settings'` → `'places'`; property accesses `canon.settings`, `universe.settings`.
+  - `server/routes/writersRoom.js` — route `/works/:id/settings/:settingId` → `/works/:id/places/:placeId`; param + handler renames.
+  - `client/src/pages/UniverseBuilder.jsx` — `kind === 'setting'` checks, `mergeCanonByName(..., 'setting')` calls (4 sites), `TRUNK_TABS` kind value `'settings'` → `'places'`.
+  - `client/src/components/pipeline/CanonCard.jsx` — `SETTING_INT_EXT_OPTIONS` / `SETTING_TIME_OF_DAY_OPTIONS` → `PLACE_*`.
+  - `client/src/components/{pipeline/stages/NounsStage,universe/UniverseCanonSection}.jsx` — `key: 'settings'` / `apiKind: 'setting'` shape.
+  - All `*.test.js` for the above (`storyBible.test.js`, `bibleExtractor.test.js`, `writersRoom.test.js`, `settings.test.js`, etc. — ~6 test files with fixture ids `'wr-setting-1'`, kind enums, expected error messages).
+
+  **Migration NNN-rename-bible-setting-to-place.js (required — touches persisted state):**
+  - Walk every `data/universes/*.json`, `data/series/*.json`, and any writers-room work record. For each: rename the `settings: [...]` array key → `places: [...]`, and rewrite each entry's `kind: 'setting'` → `kind: 'place'`. Idempotent guard: skip if `places` is already present.
+  - Coordinate with migration 018: 018 already renamed the stage-config KEY (`writers-room-settings` → `writers-room-places`) but did NOT touch `BIBLE_KIND.SETTING` values in canon entries; this migration is purely the record-internal rename. No conflict, but they must run in order (018 → NNN).
+  - The `existingSettingsJson` → `existingPlacesJson` prompt-variable rename also requires updating prompt template files `data.sample/prompts/stages/writers-room-places.md` and `data.sample/prompts/_partials/bible-deference.md` (currently reference `{{existingSettingsJson}}`). Stage-prompt migration pattern (see `scripts/migrations/003-…`) with `OLD_SHIPPED_MD5` / `NEW_SHIPPED_MD5` so user-customized templates aren't clobbered.
+
+  **Non-goals / out of scope:** `data/settings.json`, the Settings page, the `/api/settings` routes, app-level user-prefs — all stay as "settings".
+
+  **Why now:** with the 3-canon-trunks architecture (Cast / Places / Objects) fully shipped (Next Up #1), the user-facing terminology is "Places" everywhere except inside the bible code. This finishes that alignment so a future contributor doesn't have to mentally translate `setting ↔ place`.
 - [ ] [use-rendered-reference-images-as-i2i-anchors-in] **Use rendered reference images as i2i anchors in downstream comic-page renders for models that support it.** SDXL/Flux pipelines anchor every panel render on the per-character rendered ref.
 
 ### Pipeline continuity / approval
@@ -158,24 +177,6 @@ For project goals, see [GOALS.md](./GOALS.md). For completed work, see [DONE.md]
 - [ ] [extract-migration-scaffolding-into-scripts] **Extract migration scaffolding into `scripts/migrations/_lib.js`.** Migrations 003, 006, and 019 all implement the same hash-driven prompt-replace pattern (~75 lines of boilerplate each). Lift to a shared helper; next migration becomes ~15 lines.
 - [ ] [shots-aware-scene-output-contract-partial-split] **Shots-aware scene-output-contract partial.** Split into `_partials/scene-fields-core.md` + `_partials/scene-fields-shots.md` when a third shots-using stage appears.
 - [ ] [per-panel-scene-image-progress-in-the-pipeline-ui] **Per-panel/scene image progress in the Pipeline UI.** ComicPages and Storyboards record `jobId` but don't subscribe to the media-job SSE for live preview.
-
----
-
-## Design decisions
-
-### Categories vs canon — decision (2026-05-17)
-
-**First framing (rejected same day):** retire `universe.categories` entirely, assuming canon subsumed it. This was wrong — canon and categories serve different workflows (consistency vs. exploration) and custom buckets like `factions`/`colonies` have no clean home in canon.
-
-**Second framing (rejected same day):** keep canon and categories as *complementary siblings* (two top-level sections of the Universe Builder page). Rejected because it preserves the bifurcated mental model — the user sees `Cast` and `Factions` as separate top-level concepts even though factions are characters.
-
-**Final framing (accepted 2026-05-17):** **unify under 3 canon trunks.** The Universe Builder has 3 first-class trunks — `Characters`, `Places`, `Objects` — and every entity in the universe (canon entries AND category variations) lives under exactly one trunk. Each category gets a new `kind` field tagging it to its trunk:
-
-- **Canon entries** = first-class entities with rich production metadata (`physicalDescription`, `palette`, `recurringDetails`, `wardrobe`, `imageRefs`). Named, consistent across episodes.
-- **Sub-buckets** (formerly "categories") = organizational + bulk-generation surfaces *within* a trunk. `Cast > Heroes/Villains/Factions`, `Places > Colonies/Ruins`, `Objects > Vehicles/Weapons`. Each holds flat `{label, prompt}` variations for visual exploration.
-- **Promotion**: a variation can be promoted to canon — the LLM expands it into a full canon entry and moves it from the bucket into the canon array.
-
-This collapses the page to 3 navigable trunks (plus Bible/Composites/Render), supports inline thumbnails per entry, and gives every entity one obvious home. See Next Up #1 for the multi-phase implementation.
 
 ---
 
