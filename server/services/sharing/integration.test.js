@@ -673,6 +673,142 @@ describe('sharing round-trip', () => {
     expect(updates).toHaveLength(1);
   });
 
+  // Rotation-orphan cull — peer reincarnates with a new senderInstanceId
+  // (factory reset, new device), and the old identity's inbox row would
+  // otherwise persist forever. Cull when same source + same record, but
+  // different senderInstanceId, AND the existing row is older than 30 days.
+  it('culls a rotation-orphan inbox row when the same source re-shares from a new senderInstanceId after 30+ days', async () => {
+    const bucket = await buckets.createBucket({ name: 'RotateBucket', path: tempBucket, mode: 'inbox' });
+    const universeBuilder = await import('../universeBuilder.js');
+    const u = await universeBuilder.createUniverse({ name: 'Shared Universe' });
+
+    // Pre-seed the inbox with a stale row from peer "Adam's old laptop"
+    // (senderInstanceId inst-OLD) — same source as the incoming manifest,
+    // same record, 60 days old.
+    const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+    const fs = await import('fs');
+    const inboxFile = join(tempData, 'sharing', 'inbox', `${bucket.id}.json`);
+    mkdirSync(join(tempData, 'sharing', 'inbox'), { recursive: true });
+    fs.writeFileSync(inboxFile, JSON.stringify({ items: [{
+      manifestId: 'stale-mfst',
+      manifestFilename: `sub-universe-${u.id}-inst-OLD.json`,
+      kind: 'universe',
+      subscription: { recordKind: 'universe', recordId: u.id },
+      source: 'remote-peer',
+      sourceBio: null,
+      senderInstanceId: 'inst-OLD',
+      createdAt: sixtyDaysAgo,
+      receivedAt: sixtyDaysAgo,
+      recordIds: [u.id],
+      assetCount: 0,
+    }] }));
+
+    // Now export from the SAME source name but a fresh senderInstanceId.
+    const exp = await exporter.exportUniverse(u.id, bucket.id, {
+      subscription: { recordKind: 'universe', recordId: u.id },
+    });
+    simulateRemoteSender(tempBucket, exp.filename, 'inst-NEW');
+    // The exporter stamps `source` from the bucket's display name resolver;
+    // override on disk to match the pre-seeded row's source so the cull fires.
+    const manifestPath = join(tempBucket, 'manifests', exp.filename);
+    const m = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    m.source = 'remote-peer';
+    fs.writeFileSync(manifestPath, JSON.stringify(m));
+
+    await importer.processManifest(bucket.id, exp.filename);
+
+    const after = await importer.listInbox(bucket.id);
+    expect(after).toHaveLength(1);
+    expect(after[0].senderInstanceId).toBe('inst-NEW');
+    expect(after[0].manifestId).not.toBe('stale-mfst');
+  });
+
+  it('preserves a same-source-different-sender row that is younger than the rotation cull window', async () => {
+    const bucket = await buckets.createBucket({ name: 'FreshSourceBucket', path: tempBucket, mode: 'inbox' });
+    const universeBuilder = await import('../universeBuilder.js');
+    const u = await universeBuilder.createUniverse({ name: 'Co-shared Universe' });
+
+    // Same source name, different senderInstanceId, only 2 days old —
+    // could plausibly be a second device of the same user (both named
+    // "MacBook") rather than a rotation orphan. Preserve it.
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    const fs = await import('fs');
+    const inboxFile = join(tempData, 'sharing', 'inbox', `${bucket.id}.json`);
+    mkdirSync(join(tempData, 'sharing', 'inbox'), { recursive: true });
+    fs.writeFileSync(inboxFile, JSON.stringify({ items: [{
+      manifestId: 'fresh-other',
+      manifestFilename: `sub-universe-${u.id}-inst-OTHER.json`,
+      kind: 'universe',
+      subscription: { recordKind: 'universe', recordId: u.id },
+      source: 'shared-name',
+      sourceBio: null,
+      senderInstanceId: 'inst-OTHER',
+      createdAt: twoDaysAgo,
+      receivedAt: twoDaysAgo,
+      recordIds: [u.id],
+      assetCount: 0,
+    }] }));
+
+    const exp = await exporter.exportUniverse(u.id, bucket.id, {
+      subscription: { recordKind: 'universe', recordId: u.id },
+    });
+    simulateRemoteSender(tempBucket, exp.filename, 'inst-ME');
+    const manifestPath = join(tempBucket, 'manifests', exp.filename);
+    const m = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    m.source = 'shared-name';
+    fs.writeFileSync(manifestPath, JSON.stringify(m));
+
+    await importer.processManifest(bucket.id, exp.filename);
+
+    const after = await importer.listInbox(bucket.id);
+    // Both rows should remain — fresh peer + new arrival.
+    expect(after).toHaveLength(2);
+    const senders = after.map((r) => r.senderInstanceId).sort();
+    expect(senders).toEqual(['inst-ME', 'inst-OTHER']);
+  });
+
+  it('preserves a different-source row even when older than the rotation cull window', async () => {
+    const bucket = await buckets.createBucket({ name: 'OtherSourceBucket', path: tempBucket, mode: 'inbox' });
+    const universeBuilder = await import('../universeBuilder.js');
+    const u = await universeBuilder.createUniverse({ name: 'Public Universe' });
+
+    // Different source name, different senderInstanceId — definitely a
+    // different peer, regardless of age. Preserve.
+    const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+    const fs = await import('fs');
+    const inboxFile = join(tempData, 'sharing', 'inbox', `${bucket.id}.json`);
+    mkdirSync(join(tempData, 'sharing', 'inbox'), { recursive: true });
+    fs.writeFileSync(inboxFile, JSON.stringify({ items: [{
+      manifestId: 'different-peer',
+      manifestFilename: `sub-universe-${u.id}-inst-PEER-B.json`,
+      kind: 'universe',
+      subscription: { recordKind: 'universe', recordId: u.id },
+      source: 'peer-bob',
+      sourceBio: null,
+      senderInstanceId: 'inst-PEER-B',
+      createdAt: sixtyDaysAgo,
+      receivedAt: sixtyDaysAgo,
+      recordIds: [u.id],
+      assetCount: 0,
+    }] }));
+
+    const exp = await exporter.exportUniverse(u.id, bucket.id, {
+      subscription: { recordKind: 'universe', recordId: u.id },
+    });
+    simulateRemoteSender(tempBucket, exp.filename, 'inst-PEER-A');
+    const manifestPath = join(tempBucket, 'manifests', exp.filename);
+    const m = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    m.source = 'peer-alice';
+    fs.writeFileSync(manifestPath, JSON.stringify(m));
+
+    await importer.processManifest(bucket.id, exp.filename);
+
+    const after = await importer.listInbox(bucket.id);
+    expect(after).toHaveLength(2);
+    const sources = after.map((r) => r.source).sort();
+    expect(sources).toEqual(['peer-alice', 'peer-bob']);
+  });
+
   it('content-addressed blob is shared when two manifests reference identical bytes under different filenames', async () => {
     const bucket = await buckets.createBucket({ name: 'DedupBucket', path: tempBucket, mode: 'auto-merge' });
     const fs = await import('fs');

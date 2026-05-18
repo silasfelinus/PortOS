@@ -426,6 +426,16 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
 
 const INBOX_MAX = 1000;
 
+/** Time window after which an inbox row with the same `(recordKind, recordId,
+ *  source)` but a DIFFERENT `senderInstanceId` is treated as a rotation
+ *  orphan and culled. Post-sharing-v2 the inbox dedup keys on senderInstanceId,
+ *  so a peer that rotates its identity (factory reset / new device) re-shares
+ *  with a fresh id and the old row never re-matches — without this cull, the
+ *  stale row would persist forever as an "active" subscription. 30 days is
+ *  conservative; legitimate same-source-different-peer rows (e.g. two devices
+ *  both named "MacBook") would only be culled after a month of no updates. */
+const ROTATION_CULL_MS = 30 * 24 * 60 * 60 * 1000;
+
 /**
  * Inbox mode: write the manifest + record refs to the bucket's inbox for review.
  *
@@ -435,6 +445,11 @@ const INBOX_MAX = 1000;
  * snapshot. Two peers sharing the same record produce two distinct inbox rows
  * (the per-sender filenames keep them apart on disk). One-shot manifests
  * dedup by manifest id.
+ *
+ * Cross-sender rotation orphans (same `source` name, same record, DIFFERENT
+ * `senderInstanceId`, row older than `ROTATION_CULL_MS`) are culled on every
+ * subscription-manifest arrival — they represent the same peer reincarnated
+ * with a fresh instance id (factory reset, new device onboarding).
  */
 async function applyInbox(bucket, manifest, manifestFilename, records) {
   const inbox = await readInbox(bucket.id);
@@ -442,6 +457,25 @@ async function applyInbox(bucket, manifest, manifestFilename, records) {
   const sub = manifest.subscription;
   if (sub?.recordKind && sub?.recordId) {
     const senderId = manifest.senderInstanceId || null;
+    const incomingSource = manifest.source || null;
+    // Cull cross-sender rotation orphans first so the same-sender match
+    // below operates on the cleaned-up list. Skip when source is missing
+    // — a row with no display name can't be attributed to a peer identity.
+    if (incomingSource) {
+      const cullThresholdMs = Date.now() - ROTATION_CULL_MS;
+      inbox.items = inbox.items.filter((it) => {
+        if (!it.subscription) return true;
+        if (it.subscription.recordKind !== sub.recordKind) return true;
+        if (it.subscription.recordId !== sub.recordId) return true;
+        if (it.source !== incomingSource) return true;
+        if ((it.senderInstanceId || null) === senderId) return true;
+        const createdMs = it.createdAt ? Date.parse(it.createdAt) : NaN;
+        if (!Number.isFinite(createdMs)) return true;
+        if (createdMs >= cullThresholdMs) return true;
+        console.log(`🧹 sharing: bucket=${bucket.name} culled rotation-orphan inbox row source="${incomingSource}" recordKind=${sub.recordKind} recordId=${sub.recordId} oldSender=${it.senderInstanceId || 'null'} newSender=${senderId || 'null'}`);
+        return false;
+      });
+    }
     const existing = inbox.items.find((it) => it.subscription
       && it.subscription.recordKind === sub.recordKind
       && it.subscription.recordId === sub.recordId
