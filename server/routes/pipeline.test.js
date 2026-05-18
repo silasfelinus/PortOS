@@ -244,7 +244,10 @@ const universeSvc = await import('../services/universeBuilder.js');
 
 function makeApp() {
   const app = express();
-  app.use(express.json());
+  // Mirror production's `express.json({ limit: '55mb' })` in server/index.js so
+  // tests can exercise the route's own size handling (e.g. 200K-char extract
+  // corpus truncation) without hitting the default 100KB body cap first.
+  app.use(express.json({ limit: '55mb' }));
   app.use('/api/pipeline', pipelineRouter);
   app.use(errorMiddleware);
   return app;
@@ -835,6 +838,7 @@ describe('pipeline routes', () => {
     expect(r.body.sourceStage).toBe('comicScript');
     expect(r.body.extracted).toEqual({ characters: 1, places: 0, objects: 0 });
     expect(r.body.universe.id).toBe(uni.id);
+    expect(r.body.truncated).toBe(false);
 
     // Service was called with the script's output as corpus + stamp opts.
     expect(spy).toHaveBeenCalledTimes(1);
@@ -844,6 +848,37 @@ describe('pipeline routes', () => {
     expect(calledOpts.parallel).toBe(true);
     expect(calledOpts.autoLock).toBe(true);
     expect(calledOpts.sourceSeriesId).toBe(ser.body.id);
+    spy.mockRestore();
+  });
+
+  it('POST /issues/:id/stages/:stageId/extract-canon truncates corpus over 200K chars and flags it', async () => {
+    const canonSvc = await import('../services/universeCanon.js');
+    const spy = vi.spyOn(canonSvc, 'extractCanonFromProse').mockResolvedValue({
+      universe: { id: 'u-mock', characters: [], places: [], objects: [] },
+      results: {
+        characters: { extracted: [] },
+        places: { extracted: [] },
+        objects: { extracted: [] },
+      },
+    });
+
+    const app = makeApp();
+    const uni = await universeSvc.createUniverse({ name: 'U' });
+    const ser = await request(app).post('/api/pipeline/series').send({ name: 'S', universeId: uni.id });
+    const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
+    // 250K chars — exceeds the 200K extract cap (well under STAGE_OUTPUT_MAX=400K).
+    const oversized = 'PANEL DESCRIPTION. '.repeat(14_000);
+    expect(oversized.length).toBeGreaterThan(200_000);
+    await request(app).patch(`/api/pipeline/issues/${iss.body.id}`).send({
+      stages: { comicScript: { status: 'ready', output: oversized } },
+    });
+    const r = await request(app)
+      .post(`/api/pipeline/issues/${iss.body.id}/stages/comicScript/extract-canon`)
+      .send({});
+    expect(r.status).toBe(200);
+    expect(r.body.truncated).toBe(true);
+    // Service receives a clamped corpus, not the full 250K input.
+    expect(spy.mock.calls[0][1].corpus.length).toBe(200_000);
     spy.mockRestore();
   });
 

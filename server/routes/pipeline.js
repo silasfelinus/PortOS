@@ -453,6 +453,12 @@ const extractCanonFromScriptSchema = z.object({
   providerOverride: z.string().trim().max(80).optional(),
 });
 
+// Matches `IMPORTER_SOURCE_CHAR_LIMIT` in `server/routes/universeBuilder.js` —
+// the safe ceiling we've already settled on for canon-extraction LLM prompts.
+// `STAGE_OUTPUT_MAX` (400KB) is large enough that long scripts can exceed
+// most provider context windows; clamp before forwarding.
+const EXTRACT_CANON_CORPUS_MAX = 200_000;
+
 // Collapses the `extractCanonFromProse` result-shape trio used by both the
 // season-episodes continuity extract and the manual script-stage extract.
 const countExtractedCanon = (results) => ({
@@ -1385,12 +1391,17 @@ router.post('/issues/:id/stages/:stageId/extract-canon', asyncHandler(async (req
   }
   const body = validateRequest(extractCanonFromScriptSchema, req.body ?? {});
   const issue = await issuesSvc.getIssue(id).catch((err) => { throw mapServiceError(err); });
-  const corpus = (issue.stages?.[stageId]?.output || '').trim();
-  if (!corpus) {
+  const rawCorpus = (issue.stages?.[stageId]?.output || '').trim();
+  if (!rawCorpus) {
     throw new ServerError(
       `Cannot extract canon — issue's ${stageId} stage is empty`,
       { status: 400, code: 'PIPELINE_CANON_EXTRACT_NO_CORPUS' },
     );
+  }
+  const truncated = rawCorpus.length > EXTRACT_CANON_CORPUS_MAX;
+  const corpus = truncated ? rawCorpus.slice(0, EXTRACT_CANON_CORPUS_MAX) : rawCorpus;
+  if (truncated) {
+    console.warn(`⚠️ Pipeline canon extract — issue=${id.slice(0, 8)} stage=${stageId} corpus truncated ${rawCorpus.length}→${EXTRACT_CANON_CORPUS_MAX}`);
   }
   const series = await seriesSvc.getSeries(issue.seriesId).catch((err) => { throw mapServiceError(err); });
   if (!series.universeId) {
@@ -1411,6 +1422,7 @@ router.post('/issues/:id/stages/:stageId/extract-canon', asyncHandler(async (req
     universe: result.universe,
     extracted: countExtractedCanon(result.results),
     sourceStage: stageId,
+    truncated,
   });
 }));
 

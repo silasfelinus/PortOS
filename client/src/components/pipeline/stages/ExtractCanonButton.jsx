@@ -1,15 +1,15 @@
 import { useState } from 'react';
 import { Loader2, BookOpen } from 'lucide-react';
 import toast from '../../ui/Toast';
-import { extractPipelineCanonFromScript } from '../../../services/apiPipeline';
+import { extractPipelineCanonFromScript, PIPELINE_STAGE_LABELS } from '../../../services/apiPipeline';
 
 // Manual canon-extraction trigger for the comicScript / teleplay stages.
 // Auto-extract runs only after `prose` (server/services/pipeline/textStages.js),
 // so characters/places/objects introduced only in panel directions or
 // dialogue cues never make it into the bible until the writer clicks this.
-function getTooltip({ gated, hasContent, hasUniverse, busy, stageId }) {
+function getTooltip({ gated, hasContent, hasUniverse, busy, stageLabel }) {
   if (gated) return 'Saving settings…';
-  if (!hasContent) return `Generate the ${stageId} stage first`;
+  if (!hasContent) return `Generate the ${stageLabel} stage first`;
   if (!hasUniverse) return 'Link a universe to the series first — extraction needs a target bible.';
   if (busy) return 'Extraction in progress…';
   return 'Extract characters / places / objects from this script and merge into the linked universe.';
@@ -20,7 +20,8 @@ export default function ExtractCanonButton({ issue, series, stageId, gated = fal
   const hasContent = !!(issue.stages?.[stageId]?.output || '').trim();
   const hasUniverse = !!series?.universeId;
   const disabled = busy || gated || !hasContent || !hasUniverse;
-  const tooltip = getTooltip({ gated, hasContent, hasUniverse, busy, stageId });
+  const stageLabel = PIPELINE_STAGE_LABELS[stageId] || stageId;
+  const tooltip = getTooltip({ gated, hasContent, hasUniverse, busy, stageLabel });
 
   const handleClick = async () => {
     setBusy(true);
@@ -34,8 +35,9 @@ export default function ExtractCanonButton({ issue, series, stageId, gated = fal
     const c = result.extracted?.characters || 0;
     const p = result.extracted?.places || 0;
     const o = result.extracted?.objects || 0;
+    const suffix = result.truncated ? ' (script truncated to fit context window)' : '';
     toast.success(
-      `Extracted ${c} character${c === 1 ? '' : 's'}, ${p} place${p === 1 ? '' : 's'}, ${o} object${o === 1 ? '' : 's'} into the universe`,
+      `Extracted ${c} character${c === 1 ? '' : 's'}, ${p} place${p === 1 ? '' : 's'}, ${o} object${o === 1 ? '' : 's'} into the universe${suffix}`,
     );
   };
 
