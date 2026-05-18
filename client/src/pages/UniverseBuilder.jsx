@@ -27,6 +27,7 @@ import {
 } from '../services/api';
 import useClickOutside from '../hooks/useClickOutside';
 import { useLocalStoragePersisted } from '../hooks/useLocalStorageBool';
+import useUniverseAction from '../hooks/useUniverseAction';
 import InfluenceChipsInput from '../components/universeBuilder/InfluenceChipsInput';
 import ImageGenSettingsForm from '../components/imageGen/ImageGenSettingsForm';
 import { RUNNER_FAMILIES } from '../lib/runnerFamilies';
@@ -571,6 +572,10 @@ export default function UniverseBuilder() {
   const promotingRef = useRef(false);
   const [autoSorting, setAutoSorting] = useState(false);
   const autoSortingRef = useRef(false);
+  // Scaffolding shared by handlePromoteVariation + handleAutoSort:
+  // selectedId guard, ref re-entrancy, capturedId + toast lifecycle,
+  // setWorlds always-update, stale-write detection. See the hook header.
+  const runUniverseAction = useUniverseAction({ selectedId, mountedRef, setWorlds });
   const [newCategoryName, setNewCategoryName] = useState('');
   // True when handleExpand merged new canon entries into the draft that the
   // server doesn't yet know about (auto-save failed or hasn't run). On the
@@ -1397,73 +1402,45 @@ export default function UniverseBuilder() {
   // single atomic patch server-side so the universe ends up consistent or
   // unchanged. Renames the LLM suggests are surfaced in the toast but not
   // auto-applied (the user can rename manually if they want it).
-  const handleAutoSort = async () => {
-    if (!selectedId) {
-      toast.error('Save the universe first — auto-sort needs the persisted record');
-      return;
-    }
-    if (autoSortingRef.current) return;
-    autoSortingRef.current = true;
-    setAutoSorting(true);
-    const capturedId = selectedId;
-    const toastId = toast.loading('Auto-sorting buckets with AI…');
-    const result = await autoSortBuckets(selectedId, {
+  const handleAutoSort = () => runUniverseAction({
+    ref: autoSortingRef,
+    setBusy: setAutoSorting,
+    loadingMessage: 'Auto-sorting buckets with AI…',
+    errorPrefix: 'Auto-sort failed',
+    notSavedMessage: 'Save the universe first — auto-sort needs the persisted record',
+    action: (capturedId) => autoSortBuckets(capturedId, {
       providerId: draft.llm?.provider || undefined,
       model: draft.llm?.model || undefined,
-    }, { silent: true }).catch((e) => {
-      toast.dismiss(toastId);
-      toast.error(`Auto-sort failed: ${e.message}`);
-      return null;
-    });
-    if (mountedRef.current) {
-      autoSortingRef.current = false;
-      setAutoSorting(false);
-    }
-    if (!result?.universe) {
-      // .catch already dismissed on error; covers the unreachable
-      // "service resolved with falsy universe" defensive path too.
-      toast.dismiss(toastId);
-      return;
-    }
-    const updated = result.universe;
-    // Always update the cached worlds list — even when the user navigated
-    // away mid-flight, the persisted shape changed and other surfaces
-    // (list page, palette) should see it. Mirrors handlePromoteVariation.
-    setWorlds((prev) => {
-      const without = prev.filter((w) => w.id !== updated.id);
-      return [updated, ...without];
-    });
-    if (!mountedRef.current || capturedId !== selectedId) {
-      toast.dismiss(toastId);
-      return;
-    }
-    // Merge only the reclassified buckets into the draft — wholesale-
-    // replacing `categories` with the server snapshot would discard any
-    // user edits to OTHER buckets made while the LLM call was in flight.
-    const sortedKeys = new Set((result.results || []).map((r) => r.sourceKey));
-    setDraft((d) => {
-      const next = { ...(d.categories || {}) };
-      for (const key of sortedKeys) {
-        if (updated.categories?.[key]) next[key] = updated.categories[key];
-      }
-      return {
-        ...d,
-        categories: next,
-        schemaVersion: updated.schemaVersion,
-        updatedAt: updated.updatedAt,
-      };
-    });
-    toast.dismiss(toastId);
-    const sortedCount = result.results?.length || 0;
-    const renames = (result.results || []).filter((r) => r.suggestedKey);
-    const summary = sortedCount
-      ? `Sorted ${sortedCount} bucket${sortedCount === 1 ? '' : 's'} into canon trunks`
-      : 'No buckets were classified';
-    const renameHint = renames.length
-      ? ` — ${renames.length} rename suggestion${renames.length === 1 ? '' : 's'} available`
-      : '';
-    toast.success(`${summary}${renameHint}`);
-  };
+    }, { silent: true }),
+    onFreshResult: (result) => {
+      const updated = result.universe;
+      // Merge only the reclassified buckets into the draft — wholesale-
+      // replacing `categories` with the server snapshot would discard any
+      // user edits to OTHER buckets made while the LLM call was in flight.
+      const sortedKeys = new Set((result.results || []).map((r) => r.sourceKey));
+      setDraft((d) => {
+        const next = { ...(d.categories || {}) };
+        for (const key of sortedKeys) {
+          if (updated.categories?.[key]) next[key] = updated.categories[key];
+        }
+        return {
+          ...d,
+          categories: next,
+          schemaVersion: updated.schemaVersion,
+          updatedAt: updated.updatedAt,
+        };
+      });
+      const sortedCount = result.results?.length || 0;
+      const renames = (result.results || []).filter((r) => r.suggestedKey);
+      const summary = sortedCount
+        ? `Sorted ${sortedCount} bucket${sortedCount === 1 ? '' : 's'} into canon trunks`
+        : 'No buckets were classified';
+      const renameHint = renames.length
+        ? ` — ${renames.length} rename suggestion${renames.length === 1 ? '' : 's'} available`
+        : '';
+      return `${summary}${renameHint}`;
+    },
+  });
 
   const handleGenerateInCategory = async (cat, count) => {
     const current = draft.categories?.[cat]?.variations || [];
@@ -1513,58 +1490,38 @@ export default function UniverseBuilder() {
   // so an unsaved draft can't be promoted from. The page-level `promoting`
   // gate prevents two promotes (across buckets or trunks) from racing each
   // other to stale-snapshot writes against the same universe.
-  const handlePromoteVariation = async (category, variation, { targetKind } = {}) => {
-    if (!selectedId) {
-      toast.error('Save the universe first — promote needs the persisted record');
-      return;
-    }
-    if (!variation?.label) return;
-    if (promotingRef.current) return;
-    promotingRef.current = true;
-    setPromoting(true);
-    const capturedId = selectedId;
-    const toastId = toast.loading(`Promoting "${variation.label}" to canon…`);
-    const result = await promoteVariationToCanon(selectedId, {
-      category,
-      label: variation.label,
-      targetKind,
-      providerId: draft.llm?.provider || undefined,
-      model: draft.llm?.model || undefined,
-    }, { silent: true }).catch((e) => {
-      toast.dismiss(toastId);
-      toast.error(`Promote failed: ${e.message}`);
-      return null;
+  const handlePromoteVariation = (category, variation, { targetKind } = {}) => {
+    if (!variation?.label) return Promise.resolve(null);
+    return runUniverseAction({
+      ref: promotingRef,
+      setBusy: setPromoting,
+      loadingMessage: `Promoting "${variation.label}" to canon…`,
+      errorPrefix: 'Promote failed',
+      notSavedMessage: 'Save the universe first — promote needs the persisted record',
+      action: (capturedId) => promoteVariationToCanon(capturedId, {
+        category,
+        label: variation.label,
+        targetKind,
+        providerId: draft.llm?.provider || undefined,
+        model: draft.llm?.model || undefined,
+      }, { silent: true }),
+      onFreshResult: (result) => {
+        const updated = result.universe;
+        // Selective merge: only the canon array + the affected category bucket
+        // changed server-side. Preserve every other draft field (the user may
+        // have typed into logline/premise/influences during the LLM call).
+        setDraft((d) => ({
+          ...d,
+          characters: updated.characters,
+          settings: updated.settings,
+          objects: updated.objects,
+          categories: { ...d.categories, [result.removed.category]: updated.categories?.[result.removed.category] },
+          schemaVersion: updated.schemaVersion,
+          updatedAt: updated.updatedAt,
+        }));
+        return `Promoted "${variation.label}" → ${result.targetKind} canon`;
+      },
     });
-    if (mountedRef.current) {
-      promotingRef.current = false;
-      setPromoting(false);
-    }
-    if (!result?.universe) return;
-    const updated = result.universe;
-    // Always update the cached list — even when the user navigated away mid-
-    // flight, the persisted shape changed and other surfaces should see it.
-    setWorlds((prev) => {
-      const without = prev.filter((w) => w.id !== updated.id);
-      return [updated, ...without];
-    });
-    // Guard: if the user navigated to a different universe during the LLM
-    // call, the response belongs to the previous one — don't clobber the
-    // new draft. The list update above still surfaces the change.
-    if (!mountedRef.current || capturedId !== selectedId) return;
-    // Selective merge: only the canon array + the affected category bucket
-    // changed server-side. Preserve every other draft field (the user may
-    // have typed into logline/premise/influences during the LLM call).
-    setDraft((d) => ({
-      ...d,
-      characters: updated.characters,
-      settings: updated.settings,
-      objects: updated.objects,
-      categories: { ...d.categories, [result.removed.category]: updated.categories?.[result.removed.category] },
-      schemaVersion: updated.schemaVersion,
-      updatedAt: updated.updatedAt,
-    }));
-    toast.dismiss(toastId);
-    toast.success(`Promoted "${variation.label}" → ${result.targetKind} canon`);
   };
   const updateCompositeSheets = (sheets) => setDraft((d) => ({ ...d, compositeSheets: sheets }));
   const addCategory = () => {
