@@ -16,7 +16,6 @@ _Nothing currently parked — pick the next item from the Backlog._
 - [ ] [multi-hop-provenance-chains-re-share-authors-a] **Multi-hop provenance chains.** Re-share authors a fresh `origin` block; `chain[]` would preserve full attribution. Defer until users ask.
 - [ ] [same-collection-export-pattern-for-pipeline-series] **Same collection-export pattern for pipeline series with auto-collections.** Series renders that get auto-filed into a per-series collection should also flow through `manifest.collection`.
 - [ ] [sharing-inbox-live-subscription-badge] **"🔄 live" badge on inbox subscription rows.** No badge UI today; mark rows whose subscription file has updated within the last sync window.
-- [ ] [sharing-inbox-orphans-on-peer-instance-id-rotation] **Cull orphan inbox rows on peer instance-id rotation.** Post-`sharing-v2-per-sender-subscription-filenames` (2026-05-17), inbox dedup in `server/services/sharing/importer.js:applyInbox` keys on `(recordKind, recordId, senderInstanceId)`. A peer that rotates its `instanceId` (factory reset, new device onboarding) re-shares with a new id; the old id's row no longer matches and persists forever as an "active" subscription row. Detect on import: when an incoming subscription manifest's `(recordKind, recordId, source)` matches an existing row but `senderInstanceId` differs, prompt the user (or auto-cull rows older than N days with the same source name) so stale identity rows don't pile up. Pre-v2 behavior wiped these implicitly because dedup was per-record, not per-sender.
 
 ### Importer (deferred research)
 
