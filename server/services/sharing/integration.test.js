@@ -341,6 +341,36 @@ describe('sharing round-trip', () => {
     expect(manifest.collection.items.map((i) => i.ref)).toEqual(['uni.png']);
   });
 
+  it('linked series never falls through to a stray seriesId-stamped collection', async () => {
+    // A series can be linked to a universe AND have a stray per-series
+    // collection from a prior universeless phase (or an orphan after
+    // `unlinkCollectionsForUniverse` recovery). When the universe-linked
+    // collection happens to be absent at export time (mid-migration, or
+    // a manual deletion), the exporter must NOT silently fall back to the
+    // stale seriesId-stamped collection — linked series export under the
+    // universe-collection contract or no collection payload at all.
+    const bucket = await buckets.createBucket({ name: 'LinkedNoUniColl', path: tempBucket, mode: 'auto-merge' });
+    const universeBuilder = await import('../universeBuilder.js');
+    const mediaCollections = await import('../mediaCollections.js');
+    const u = await universeBuilder.createUniverse({ name: 'CanonOnly' });
+    const s = await series.createSeries({ name: 'Bound', universeId: u.id });
+
+    const fs = await import('fs');
+    fs.writeFileSync(join(tempData, 'images', 'stale.png'), 'STALE');
+    // Stamp a seriesId collection directly (simulating a leftover from a
+    // prior universeless phase). No universe collection exists.
+    const serColl = await mediaCollections.findOrCreateSeriesCollection({
+      seriesId: s.id, seriesName: s.name,
+    });
+    await mediaCollections.addItem(serColl.id, { kind: 'image', ref: 'stale.png' });
+    expect(await mediaCollections.findCollectionByUniverseId(u.id)).toBeNull();
+
+    const exp = await exporter.exportSeries(s.id, bucket.id);
+    const manifest = JSON.parse(fs.readFileSync(join(tempBucket, 'manifests', exp.filename), 'utf-8'));
+    // No collection payload — the stale seriesId bucket was correctly ignored.
+    expect(manifest.collection).toBeNull();
+  });
+
   it('series collection import defers when the local series is missing', async () => {
     // Mirrors the universe-pending case: the manifest references a
     // seriesId we haven't imported locally. The cursor must stay

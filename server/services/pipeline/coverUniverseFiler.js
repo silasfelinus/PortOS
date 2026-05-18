@@ -156,11 +156,20 @@ export async function fileCoverIntoSeriesCollection({ seriesId, filename }) {
     console.error(`❌ cover → series collection filing failed for ${filename}: ${err?.message || err}`);
   });
 
-  // Delete-race recovery: deleteSeries may have fired between getSeries and
-  // the collection write. Unlink the stamped collection so the user can
-  // rename or delete it via normal flows; covers added above are preserved.
+  // Delete- and re-link-race recovery. Two failure modes after the addItem:
+  //   (a) deleteSeries fired between getSeries and the collection write
+  //       → leaves a seriesId-stamped collection bound to a now-deleted
+  //       series (rename-locked with no series to cascade from);
+  //   (b) updateSeries linked the series to a universe between the earlier
+  //       liveSeries read and the write → leaves a seriesId-stamped
+  //       collection on a universe-linked series, which violates the
+  //       "linked series export under the universe contract" invariant and
+  //       would otherwise be picked up by the exporter's per-series fallback.
+  // Both recoveries unlink the per-series collection so it becomes a normal
+  // user-owned bucket; the covers added above are preserved either way.
   const stillExists = await seriesSvc.getSeries(seriesId).catch(() => null);
-  if (!stillExists || stillExists.id !== liveSeries.id) {
+  const gainedUniverse = stillExists && stillExists.id === liveSeries.id && stillExists.universeId;
+  if (!stillExists || stillExists.id !== liveSeries.id || gainedUniverse) {
     await unlinkCollectionsForSeries(seriesId).catch((err) => {
       console.error(`❌ cover → series collection orphan-unlink failed for series=${seriesId}: ${err?.message || err}`);
     });

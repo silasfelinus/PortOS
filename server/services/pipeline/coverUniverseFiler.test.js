@@ -153,6 +153,41 @@ describe('fileCoverIntoSeriesCollection', () => {
     expect(await collections.listCollections()).toEqual([]);
   });
 
+  it('unlinks the per-series collection when the series gains a universe link mid-flight', async () => {
+    // Re-link race: the series was universeless at the initial fetch (so we
+    // committed to the per-series path), but `updateSeries` linked it to a
+    // universe between then and the recovery check. Leaving the per-series
+    // collection bound would violate the "linked series export under the
+    // universe contract" invariant; recovery must unlink so the collection
+    // becomes a normal user-owned bucket. The cover render added above is
+    // preserved in the now-orphaned bucket either way.
+    const series = await seriesSvc.createSeries({ name: 'Pre-Link' });
+    const universe = await universeSvc.createUniverse({ name: 'Late' });
+    // First getSeries (the one inside fileCoverIntoSeriesCollection that
+    // commits to the per-series path) sees the universeless original.
+    // Second getSeries (the recovery check after addItem) sees the linked
+    // version — simulates an updateSeries landing during the collection
+    // write window.
+    const realGet = seriesSvc.getSeries;
+    let call = 0;
+    const spy = vi.spyOn(seriesSvc, 'getSeries').mockImplementation(async (id) => {
+      call += 1;
+      const fresh = await realGet(id);
+      if (call >= 2 && fresh) return { ...fresh, universeId: universe.id };
+      return fresh;
+    });
+    await fileCoverIntoSeriesCollection({ seriesId: series.id, filename: 'racy.png' });
+    spy.mockRestore();
+    // Recovery fired: the seriesId stamp was unlinked so the collection
+    // is no longer attached to the series (orphaned-but-preserved bucket).
+    expect(await collections.findCollectionBySeriesId(series.id)).toBeNull();
+    // The cover render itself survives in the now-orphaned collection.
+    const all = await collections.listCollections();
+    const orphan = all.find((c) => c.items.some((it) => it.ref === 'racy.png'));
+    expect(orphan).toBeTruthy();
+    expect(orphan.seriesId).toBeFalsy();
+  });
+
   it('re-routes to the universe collection when the series is universe-linked', async () => {
     // Guard against (a) a direct caller invoking this helper for an
     // already-linked series and (b) a parallel `updateSeries` adding a

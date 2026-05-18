@@ -305,8 +305,15 @@ export async function exportSeries(seriesId, bucketId, opts = {}) {
     if (universe) linkedCollection = await findCollectionByUniverseId(universe.id);
   }
   // Per-series fallback so a universeless series still ships with its
-  // auto-filed cover renders via the seriesId-stamped collection.
-  if (!linkedCollection) linkedCollection = await findCollectionBySeriesId(series.id);
+  // auto-filed cover renders via the seriesId-stamped collection. Gate on
+  // `series.universeId` being absent — a series that has been linked to a
+  // universe must always export under the universe-collection contract,
+  // even if a stale seriesId-stamped collection survives from before the
+  // link (orphaned mid-flight by `unlinkCollectionsForUniverse` recovery, or
+  // a legacy bucket from an earlier universeless state).
+  if (!linkedCollection && !series.universeId) {
+    linkedCollection = await findCollectionBySeriesId(series.id);
+  }
 
   const [source, sourceBio, senderInstanceId, producedByVersion] = await Promise.all([
     resolveSourceName(bucket),
