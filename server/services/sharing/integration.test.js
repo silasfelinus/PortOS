@@ -437,7 +437,7 @@ describe('sharing round-trip', () => {
 
     // Subscribe — first export writes a deterministic-named file.
     const sub = await subscribe({ bucketId: bucket.id, recordKind: 'universe', recordId: u.id });
-    const filename = subscriptionFilename(sub);
+    const filename = subscriptionFilename({ ...sub, senderInstanceId: 'test-instance-id' });
     const filePath = join(tempBucket, 'manifests', filename);
     const fs = await import('fs');
     expect(fs.existsSync(filePath)).toBe(true);
@@ -487,7 +487,9 @@ describe('sharing round-trip', () => {
     const exp = await exporter.exportUniverse(u.id, bucket.id, {
       subscription: { recordKind: 'universe', recordId: u.id },
     });
-    expect(exp.filename).toBe(subscriptionFilename({ recordKind: 'universe', recordId: u.id }));
+    expect(exp.filename).toBe(subscriptionFilename({
+      recordKind: 'universe', recordId: u.id, senderInstanceId: 'test-instance-id',
+    }));
 
     await universeBuilder.deleteUniverse(u.id);
     expect(await listSubscriptions({ recordKind: 'universe', recordId: u.id })).toEqual([]);

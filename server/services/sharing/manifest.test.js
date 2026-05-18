@@ -236,19 +236,42 @@ describe('sharing/manifest', () => {
     });
   });
 
-  it('manifestFilename is deterministic when subscription is set', () => {
+  it('manifestFilename is deterministic per-sender when subscription is set', () => {
     const m = manifest.buildManifest({
-      kind: 'universe', source: 'me', bucketId: 'b1', bucketName: 'c',
+      kind: 'universe', source: 'me', senderInstanceId: 'inst-A',
+      bucketId: 'b1', bucketName: 'c',
       recordIds: [], assetRefs: [],
       subscription: { recordKind: 'universe', recordId: 'uni-abc-123' },
     });
-    expect(manifest.manifestFilename(m)).toBe('sub-universe-uni-abc-123.json');
-    // Same record → same filename regardless of timestamp.
+    expect(manifest.manifestFilename(m)).toBe('sub-universe-uni-abc-123-inst-A.json');
+    // Same record + same sender → same filename regardless of timestamp.
     const m2 = manifest.buildManifest({
-      kind: 'universe', source: 'me', bucketId: 'b1', bucketName: 'c',
+      kind: 'universe', source: 'me', senderInstanceId: 'inst-A',
+      bucketId: 'b1', bucketName: 'c',
       recordIds: [], assetRefs: [],
       subscription: { recordKind: 'universe', recordId: 'uni-abc-123' },
     });
     expect(manifest.manifestFilename(m2)).toBe(manifest.manifestFilename(m));
+  });
+
+  it('manifestFilename produces distinct names for two peers sharing the same record', () => {
+    const peerA = manifest.buildManifest({
+      kind: 'universe', source: 'A', senderInstanceId: 'inst-A',
+      bucketId: 'b1', bucketName: 'c', recordIds: [], assetRefs: [],
+      subscription: { recordKind: 'universe', recordId: 'uni-shared' },
+    });
+    const peerB = manifest.buildManifest({
+      kind: 'universe', source: 'B', senderInstanceId: 'inst-B',
+      bucketId: 'b1', bucketName: 'c', recordIds: [], assetRefs: [],
+      subscription: { recordKind: 'universe', recordId: 'uni-shared' },
+    });
+    expect(manifest.manifestFilename(peerA)).not.toBe(manifest.manifestFilename(peerB));
+    expect(manifest.manifestFilename(peerA)).toBe('sub-universe-uni-shared-inst-A.json');
+    expect(manifest.manifestFilename(peerB)).toBe('sub-universe-uni-shared-inst-B.json');
+  });
+
+  it('legacySubscriptionFilename returns the pre-v2 sender-less name', () => {
+    expect(manifest.legacySubscriptionFilename({ recordKind: 'series', recordId: 'ser-1' }))
+      .toBe('sub-series-ser-1.json');
   });
 });

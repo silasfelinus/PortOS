@@ -20,6 +20,10 @@
 
 - **Removed duplicate Universe Builder tab.** The MediaGen tab strip no longer shows a Universe Builder entry — the Create sidebar already links straight to `/universe-builder`. Legacy `/media/universe-builder/*` URLs redirect to the top-level routes so bookmarks keep working.
 
+### Sharing
+
+- **Per-sender subscription filenames.** `subscriptionFilename()` now includes the sender's instance id in the bucket-side filename (`sub-<kind>-<recordId>-<senderInstanceId>.json`) so two peers subscribed to the same series/universe don't clobber each other's deterministic share files. Inbox dedup keys on `(recordKind, recordId, senderInstanceId)` so a peer's update no longer wipes the other peer's inbox row. `unsubscribe` best-effort cleans up the pre-v2 sender-less filename when its `senderInstanceId` matches this instance, leaving any other peer's pre-upgrade file intact. New `legacySubscriptionFilename` export for the legacy name. Touched `server/services/sharing/{manifest,subscriptions,importer,exporter}.js` + tests.
+
 ## Changed
 
 - **Universe Builder — starter idea is no longer capped at 4000 chars.** The starter idea is whatever the user wants to type, from a one-line pitch to a full treatment. The Zod-backed `STARTER_PROMPT_MAX` is raised to 200,000 chars (a sanity ceiling, not an artificial brevity constraint) and the textarea's `maxLength={4000}` attribute is removed.
