@@ -224,6 +224,23 @@ export const setUniverseCanonLock = (universeId, kind, entryId, locked) =>
     body: JSON.stringify({ locked }),
   });
 
+// Bulk lock/unlock every canon entry of a single kind. Returns
+// `{ universe, kind, locked, changed, total }`.
+export const setUniverseCanonLockAll = (universeId, kind, locked) =>
+  request(`/universe-builder/${encodeURIComponent(universeId)}/canon/${encodeURIComponent(kind)}/lock-all`, {
+    method: 'PATCH',
+    body: JSON.stringify({ locked }),
+  });
+
+// Bulk lock/unlock variations across one bucket (`category`) or every bucket
+// (`category: null`). Pass `includeSheets: true` to also flip composite
+// sheets in the same call.
+export const setUniverseVariationsLockAll = (universeId, { locked, category = null, includeSheets = false } = {}) =>
+  request(`/universe-builder/${encodeURIComponent(universeId)}/variations/lock-all`, {
+    method: 'PATCH',
+    body: JSON.stringify({ locked, category, includeSheets }),
+  });
+
 // Promote a category variation into a full canon entry. `targetKind` is
 // required only when the source bucket's `kind` is 'other' (otherwise the
 // server derives it from the bucket). Pass `{ silent: true }` in `options`

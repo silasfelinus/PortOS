@@ -71,16 +71,46 @@ export async function extractCanonFromProse(universeId, opts = {}) {
     ? await Promise.all(kinds.map(runOne))
     : await kinds.reduce(async (acc, kind) => [...(await acc), await runOne(kind)], Promise.resolve([]));
 
+  const wantsLock = opts.autoLock !== false;
   const mergeOpts = {
     source: opts.source || BIBLE_SOURCE.SERIES_EXTRACT,
-    autoLock: opts.autoLock === true,
+    // Default to locked-on-insert. New canon entries are protected from AI
+    // overwrite from the moment they land so users don't have to chase a
+    // batch extract with a Lock All click. Callers can opt out with an
+    // explicit `autoLock: false` — in that case we still stamp `locked:
+    // false` on the new entries below so the universe-side
+    // lock-by-default contract (sanitizeTemplate.defaultLockCanon) doesn't
+    // silently re-lock them on the next read.
+    autoLock: wantsLock,
     sourceSeriesId: opts.sourceSeriesId || null,
   };
   const results = {};
   const patch = {};
   for (const { kind, result } of completed) {
     const field = BIBLE_FIELD[kind];
-    patch[field] = mergeExtractedBible(universe[field] || [], result.extracted, kind, mergeOpts);
+    // Capture existing ids BEFORE the merge — mergeExtractedBible mutates the
+    // existing list in place via push(), so reading universe[field] after the
+    // merge already includes the new inserts and breaks the "is this an
+    // already-known entry?" check below.
+    const existingIds = wantsLock
+      ? null
+      : new Set((universe[field] || []).map((e) => e?.id).filter(Boolean));
+    const merged = mergeExtractedBible(universe[field] || [], result.extracted, kind, mergeOpts);
+    // Opt-out path: caller asked for unlocked inserts. The merge step left
+    // `locked` absent on new entries; sanitizeTemplate.defaultLockCanon
+    // would then read them back as locked. Stamp explicit `false` on every
+    // entry the merge inserted that doesn't already have a `locked` field
+    // so the unlock survives the round-trip.
+    if (!wantsLock) {
+      patch[field] = merged.map((e) => {
+        if (!e || typeof e !== 'object') return e;
+        if (existingIds.has(e.id)) return e;
+        if (e.locked === true || e.locked === false) return e;
+        return { ...e, locked: false };
+      });
+    } else {
+      patch[field] = merged;
+    }
     results[field] = {
       extracted: result.extracted, runId: result.runId,
       providerId: result.providerId, model: result.model,
@@ -248,12 +278,39 @@ export async function setCanonEntryLock(universeId, kind, entryId, locked) {
   if ((target.locked === true) === (locked === true)) {
     return { universe, entry: target };
   }
-  // applyCanonExtras strips locked: false on save, so we can pass it through
-  // directly instead of destructure-stripping here.
+  // applyCanonExtras now persists explicit locked:false (the universe-builder
+  // contract), so the bit survives the round-trip and the unlock sticks.
   const nextList = list.map((e, i) => (i === idx ? { ...e, locked } : e));
   const updated = await updateUniverse(universeId, { [field]: nextList });
   const entry = (updated[field] || []).find((e) => e.id === entryId) || null;
   return { universe: updated, entry };
+}
+
+/**
+ * Bulk-set the `locked` flag on every canon entry of a single kind. Returns
+ * the updated universe plus the count of entries whose lock state actually
+ * changed (no-op on entries already in the target state, so the response
+ * carries enough info for a toast like "Locked 7 characters").
+ */
+export async function setCanonKindLockAll(universeId, kind, locked) {
+  if (!BIBLE_KINDS.includes(kind)) {
+    throw new ServerError(
+      `Invalid canon kind "${kind}" — expected one of: ${BIBLE_KINDS.join(', ')}`,
+      { status: 400, code: 'UNIVERSE_CANON_INVALID_KIND' },
+    );
+  }
+  const universe = await getUniverse(universeId);
+  const field = BIBLE_FIELD[kind];
+  const list = Array.isArray(universe[field]) ? universe[field] : [];
+  let changed = 0;
+  const nextList = list.map((e) => {
+    if ((e.locked === true) === (locked === true)) return e;
+    changed += 1;
+    return { ...e, locked };
+  });
+  if (changed === 0) return { universe, kind, locked, changed: 0, total: list.length };
+  const updated = await updateUniverse(universeId, { [field]: nextList });
+  return { universe: updated, kind, locked, changed, total: list.length };
 }
 
 /**

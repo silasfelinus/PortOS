@@ -127,6 +127,9 @@ describe("universeBuilder service", () => {
         label: "Rib-Cage Nomads",
         prompt: "reference sheet, layered sailcloth, bone toggles",
         imageRefs: [],
+        // Variations now lock-by-default — see sanitizeVariation in
+        // services/universeBuilder.js for the contract.
+        locked: true,
       },
     ]);
     expect(w.categories.factions.variations).toHaveLength(1);
@@ -151,6 +154,8 @@ describe("universeBuilder service", () => {
         prompt:
           "Create a clean illustrated costume reference sheet with five figures, materials swatches, fasteners, accessories, and color palette strip.",
         imageRefs: [],
+        // Composite sheets lock-by-default — see sanitizeCompositeSheet.
+        locked: true,
       },
     ]);
   });
@@ -174,6 +179,8 @@ describe("universeBuilder service", () => {
         prompt:
           "Create a cinematic universe summary concept pitch poster with hero panorama, inset environments, cultures, creatures, visual language, color palette, materials, light atmosphere, and theme icons.",
         imageRefs: [],
+        // Composite sheets lock-by-default — see sanitizeCompositeSheet.
+        locked: true,
       },
     ]);
   });
@@ -1133,27 +1140,30 @@ describe("universeBuilder service", () => {
   });
 
   describe("per-item locks", () => {
-    it("round-trips a `locked: true` flag on variations", async () => {
+    it("defaults variations to locked + preserves explicit lock state", async () => {
+      // Variations now lock-by-default: an entry with no `locked` field
+      // reads as locked, and explicit `false` survives the round-trip so
+      // a user-unlock isn't silently re-locked on the next read.
       const w = await seedWorld({
         categories: {
           landscapes: {
             variations: [
-              {
-                label: "Pinned canyon",
-                prompt: "pinned canyon prompt",
-                locked: true,
-              },
+              { label: "Pinned canyon", prompt: "pinned canyon prompt", locked: true },
               { label: "Open canyon", prompt: "open canyon prompt" },
+              { label: "Hand-unlocked", prompt: "hand unlocked prompt", locked: false },
             ],
           },
         },
       });
       const vs = w.categories.landscapes.variations;
       expect(vs.find((v) => v.label === "Pinned canyon").locked).toBe(true);
-      expect(vs.find((v) => v.label === "Open canyon").locked).toBeUndefined();
+      expect(vs.find((v) => v.label === "Open canyon").locked).toBe(true);
+      expect(vs.find((v) => v.label === "Hand-unlocked").locked).toBe(false);
     });
 
-    it("drops non-true `locked` values rather than recording them", async () => {
+    it("coerces non-boolean `locked` values to the locked-by-default state", async () => {
+      // Anything other than `false` collapses to the default (true); only
+      // explicit `false` records an unlock.
       const w = await seedWorld({
         categories: {
           landscapes: {
@@ -1168,12 +1178,12 @@ describe("universeBuilder service", () => {
       const labels = Object.fromEntries(
         w.categories.landscapes.variations.map((v) => [v.label, v.locked]),
       );
-      expect(labels.A).toBeUndefined();
-      expect(labels.B).toBeUndefined();
-      expect(labels.C).toBeUndefined();
+      expect(labels.A).toBe(false);
+      expect(labels.B).toBe(true);
+      expect(labels.C).toBe(true);
     });
 
-    it("round-trips a `locked: true` flag on composite sheets", async () => {
+    it("defaults composite sheets to locked + preserves explicit lock state", async () => {
       const w = await seedWorld({
         compositeSheets: [
           {
@@ -1183,6 +1193,7 @@ describe("universeBuilder service", () => {
             locked: true,
           },
           { label: "Open sheet", prompt: "open sheet prompt long enough" },
+          { label: "Unlocked sheet", prompt: "unlocked sheet prompt long enough", locked: false },
         ],
       });
       expect(
@@ -1190,7 +1201,10 @@ describe("universeBuilder service", () => {
       ).toBe(true);
       expect(
         w.compositeSheets.find((s) => s.label === "Open sheet").locked,
-      ).toBeUndefined();
+      ).toBe(true);
+      expect(
+        w.compositeSheets.find((s) => s.label === "Unlocked sheet").locked,
+      ).toBe(false);
     });
   });
 

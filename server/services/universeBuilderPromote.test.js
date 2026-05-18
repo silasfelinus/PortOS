@@ -406,8 +406,11 @@ describe('universeBuilderPromote — control field stripping', () => {
     });
     // ID stripped → sanitizer mints a fresh one.
     expect(result.entry.id).not.toBe('set-hallucinated');
-    // `locked` stripped → user has to explicitly lock from the canon UI.
-    expect(result.entry.locked).toBeUndefined();
+    // LLM's `locked` flag is stripped, but promote stamps `locked: true` at
+    // the service layer as part of the universe-builder lock-by-default
+    // contract — promoted identities are user-deliberate so AI rewrite paths
+    // should skip them until the user explicitly unlocks.
+    expect(result.entry.locked).toBe(true);
     // Image refs stripped → those are operational, owned by the render UI.
     expect(result.entry.imageRefs).toEqual([]);
     expect(result.entry.primaryImageRef).toBe(null);

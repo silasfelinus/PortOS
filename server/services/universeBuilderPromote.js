@@ -272,6 +272,10 @@ export async function promoteVariationToCanon(universeId, options = {}) {
     ...stripCanonControlFields(parsed),
     name: (typeof parsed?.name === 'string' && parsed.name.trim()) ? parsed.name.trim() : variation.label,
     source: BIBLE_SOURCE.UNIVERSE_EXPAND,
+    // Default-lock promoted canon entries. Promotion produces a named identity
+    // the user picked deliberately; treat it as user-authoritative so AI
+    // refine/differentiate paths skip it until the user explicitly unlocks.
+    locked: true,
   };
   if (!enriched.prompt && typeof variation.prompt === 'string' && variation.prompt.trim()) {
     enriched.prompt = variation.prompt.trim();

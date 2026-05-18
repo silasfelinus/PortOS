@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
-  Library, Loader2, Users, MapPin, Package, Wand2, Filter,
+  Library, Loader2, Users, MapPin, Package, Wand2, Filter, Lock, Unlock,
 } from 'lucide-react';
 import toast from '../ui/Toast';
 import {
@@ -24,6 +24,7 @@ import {
   updateUniverse,
   getUniverseCanonUsage,
   setUniverseCanonLock,
+  setUniverseCanonLockAll,
   expandUniverseCharacter,
 } from '../../services/apiUniverseBuilder';
 import { generateImage } from '../../services/apiSystem';
@@ -250,6 +251,27 @@ export default function UniverseCanonSection({ universe, universeId, onUniverseC
     onUniverseChange(result.universe);
     toast.success(`Differentiated ${result.touched}/${result.touched + result.skipped} characters — ${(result.rationale || '').slice(0, 140)}`);
   };
+
+  // Track which kind has a bulk-lock in flight so we can disable its buttons
+  // and show a spinner. Keyed by `kind.key` (characters / places / objects)
+  // because the action is scoped to that section.
+  const [bulkLockingKindKey, setBulkLockingKindKey] = useState(null);
+
+  const handleBulkLockKind = useCallback(async (kind, nextLocked) => {
+    if (bulkLockingKindKey) return;
+    setBulkLockingKindKey(kind.key);
+    const capturedId = universeId;
+    const result = await setUniverseCanonLockAll(universeId, kind.apiKind, nextLocked)
+      .catch((err) => { toast.error(err.message || `Bulk ${nextLocked ? 'lock' : 'unlock'} failed`); return null; });
+    if (mountedRef.current) setBulkLockingKindKey(null);
+    if (!result || !mountedRef.current || currentUniverseIdRef.current !== capturedId) return;
+    if (result.universe) onUniverseChange(result.universe);
+    if (result.changed === 0) {
+      toast.success(`All ${kind.label.toLowerCase()} already ${nextLocked ? 'locked' : 'unlocked'}`);
+    } else {
+      toast.success(`${nextLocked ? 'Locked' : 'Unlocked'} ${result.changed} ${kind.label.toLowerCase()}`);
+    }
+  }, [universeId, onUniverseChange, mountedRef, bulkLockingKindKey]);
 
   const handleToggleLock = useCallback(async (kind, entryId, nextLocked) => {
     if (togglingLockRef.current) return;
@@ -549,6 +571,9 @@ export default function UniverseCanonSection({ universe, universeId, onUniverseC
           onPatchEntry={(entryId, patch) => handlePatchEntry(kind, entryId, patch)}
           onRenderCleanPlate={handleRenderCleanPlate}
           seriesNameMap={usage?.seriesNameMap || null}
+          onBulkLock={(nextLocked) => handleBulkLockKind(kind, nextLocked)}
+          bulkLocking={bulkLockingKindKey === kind.key}
+          fullList={Array.isArray(universe[kind.key]) ? universe[kind.key] : []}
         />
       ))}
 
@@ -557,7 +582,7 @@ export default function UniverseCanonSection({ universe, universeId, onUniverseC
   );
 }
 
-function KindSection({ kind, universeId, all, totalCount, filtered, usage, renderingJobs, onRender, onJobCompleted, onJobFailed, onPreview, onRefine, refiningId, onExpandCharacter, expandingId, onSheetCompleted, onToggleLock, togglingLockId, onPatchEntry, onRenderCleanPlate, seriesNameMap }) {
+function KindSection({ kind, universeId, all, totalCount, filtered, usage, renderingJobs, onRender, onJobCompleted, onJobFailed, onPreview, onRefine, refiningId, onExpandCharacter, expandingId, onSheetCompleted, onToggleLock, togglingLockId, onPatchEntry, onRenderCleanPlate, seriesNameMap, onBulkLock, bulkLocking, fullList }) {
   // Universe-only character wiring — `null` for non-character kinds so
   // CanonCard's gate stays `kind === 'characters' && characterExtensions`.
   // Memoized so the BASE object is stable across re-renders that aren't
@@ -571,6 +596,16 @@ function KindSection({ kind, universeId, all, totalCount, filtered, usage, rende
     [kind.key, universeId, onExpandCharacter, onSheetCompleted],
   );
   const Icon = kind.icon;
+  // Bulk lock-state summary computed off the FULL list (not the series-filtered
+  // view) so the buttons reflect the universe-wide state the bulk action will
+  // change. A mixed list (some locked, some not) enables BOTH buttons so the
+  // user can pick a direction without first having to inspect.
+  const lockedCount = fullList.filter((e) => e?.locked === true).length;
+  // "All locked" gates the toggle button's icon + action direction. A mixed
+  // list (some locked, some not) falls into the same bucket as all-unlocked
+  // so the next click locks the remaining holdouts.
+  const allLocked = fullList.length > 0 && lockedCount === fullList.length;
+  const bulkDisabled = !onBulkLock || bulkLocking || fullList.length === 0;
   return (
     <section className="rounded border border-port-border bg-port-bg/60">
       <div className="flex items-center gap-2 px-3 py-2 border-b border-port-border">
@@ -579,6 +614,31 @@ function KindSection({ kind, universeId, all, totalCount, filtered, usage, rende
         <span className="text-[10px] text-gray-500">
           {filtered ? `${all.length} / ${totalCount}` : all.length}
         </span>
+        {fullList.length > 0 && onBulkLock ? (
+          // Single toggle button — mirrors the per-item lock-toggle visual.
+          // Lock icon when every entry is already locked (click unlocks all);
+          // Unlock icon for the all-unlocked + mixed cases (click locks all)
+          // so "the next click locks the holdouts" is always the action.
+          <button
+            type="button"
+            onClick={() => onBulkLock(!allLocked)}
+            disabled={bulkDisabled}
+            title={allLocked
+              ? `Unlock all ${kind.label.toLowerCase()} — AI refine / differentiate may overwrite them`
+              : `Lock all ${kind.label.toLowerCase()} — AI refine / differentiate will skip them`}
+            aria-label={allLocked ? `Unlock all ${kind.label}` : `Lock all ${kind.label}`}
+            aria-pressed={allLocked}
+            className={`ml-auto p-1 rounded disabled:opacity-30 disabled:cursor-not-allowed ${
+              allLocked
+                ? 'text-port-accent hover:bg-port-accent/20'
+                : 'text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            {bulkLocking
+              ? <Loader2 size={14} className="animate-spin" />
+              : allLocked ? <Lock size={14} /> : <Unlock size={14} />}
+          </button>
+        ) : null}
       </div>
       <div className="p-3">
         {all.length === 0 ? (

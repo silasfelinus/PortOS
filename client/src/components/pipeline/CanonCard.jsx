@@ -16,6 +16,7 @@ import useMediaJobProgress from '../../hooks/useMediaJobProgress';
 import useFieldDraft from '../../hooks/useFieldDraft';
 import MediaJobThumb from './MediaJobThumb';
 import EntryCard from '../universe/EntryCard';
+import EntryThumbSlot from '../universe/EntryThumbSlot';
 import CharacterDetailEditor from '../universe/CharacterDetailEditor';
 import CharacterReferenceSheetPanel from '../universe/CharacterReferenceSheetPanel';
 import { BIBLE_LIMITS } from '../../lib/bibleLimits';
@@ -282,15 +283,13 @@ export default function CanonCard({
   const refs = Array.isArray(entry.imageRefs) ? entry.imageRefs : [];
   const locked = entry.locked === true;
   const tags = Array.isArray(entry.tags) ? entry.tags.filter(Boolean) : [];
-  // Refine + Render guarded against locked entries — locks signal "frozen
-  // identity"; both AI rewrite (refine/differentiate) and new visual refs are
-  // gated so the user explicitly unlocks before reshaping the entry.
-  // Gate on `locked` alone, NOT on `!!onToggleLock` — consumers like
-  // NounsStage embed CanonCard without passing a toggle, but the underlying
-  // entry's `locked` flag still represents frozen-identity semantics on the
-  // server (Refine → 409 `UNIVERSE_CANON_LOCKED`, Render persists a new
-  // visual ref through bypass). The unlock UX lives in Universe Builder; the
-  // pipeline view just needs to respect it.
+  // Lock guards prompt-data rewrites only — `refineUniverseCharacter`
+  // returns 409 `UNIVERSE_CANON_LOCKED` on a locked target, and the cast-wide
+  // differentiate skips locked entries at apply time. Render paths do NOT
+  // consult the lock: rendering a new reference image (or a clean plate for
+  // places) doesn't mutate the entry's prompt/description, just appends to
+  // `imageRefs[]`. The pipeline view (NounsStage) inherits the same UX —
+  // locked entries are still renderable, just not LLM-rewritable.
   const blockedByLock = locked;
 
   // Visual at-a-glance without scrolling to the footer ref grid. Falls back
@@ -408,20 +407,37 @@ export default function CanonCard({
     </>
   );
 
+  // Icon-only action strip — same visual contract as the variation cards
+  // (`VariationCard` in `pages/UniverseBuilder.jsx`): `p-1` icon button per
+  // action, horizontal row, 14px icons, accent hover for primary actions,
+  // accent-on-locked styling for the lock toggle. Keeps the canon section
+  // visually consistent with the bucket cards above it.
   const actions = (
-    <div className="flex flex-col gap-1 items-stretch">
-      {onToggleLock ? (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        onClick={onRender}
+        disabled={!description.trim() || !!inFlightJobId}
+        className="p-1 text-gray-400 hover:text-port-accent disabled:opacity-30 disabled:cursor-not-allowed rounded"
+        title={description.trim()
+          ? `Render a canonical reference image for ${entry.name}`
+          : 'Add a description first'}
+        aria-label={`Render reference for ${entry.name}`}
+      >
+        {inFlightJobId ? <Loader2 size={14} className="animate-spin" /> : <ImagePlus size={14} />}
+      </button>
+      {kind.key === 'places' && onRenderCleanPlate ? (
         <button
           type="button"
-          onClick={() => onToggleLock(entry.id, !locked)}
-          disabled={togglingLock}
-          className="inline-flex items-center justify-center gap-1 px-2 py-1 text-[10px] rounded border border-port-border text-gray-300 hover:bg-port-border/40 hover:text-white disabled:opacity-40"
-          title={locked
-            ? `Unlock ${entry.name} so refine / differentiate / re-extract can modify it`
-            : `Lock ${entry.name} so AI passes don't rewrite it`}
+          onClick={() => onRenderCleanPlate(entry)}
+          disabled={!description.trim() || !!inFlightJobId}
+          className="p-1 text-gray-400 hover:text-port-accent disabled:opacity-30 disabled:cursor-not-allowed rounded"
+          title={description.trim()
+            ? `Render an empty-location plate for ${entry.name} — no people, edge-to-edge`
+            : 'Add a description first'}
+          aria-label={`Render clean plate for ${entry.name}`}
         >
-          {togglingLock ? <Loader2 size={10} className="animate-spin" /> : (locked ? <Unlock size={10} /> : <Lock size={10} />)}
-          {locked ? 'Unlock' : 'Lock'}
+          {inFlightJobId ? <Loader2 size={14} className="animate-spin" /> : <Square size={14} />}
         </button>
       ) : null}
       {kind.key === 'characters' && onRefine ? (
@@ -429,41 +445,27 @@ export default function CanonCard({
           type="button"
           onClick={() => onRefine(entry.id)}
           disabled={refining || refineDisabled || blockedByLock}
-          className="inline-flex items-center justify-center gap-1 px-2 py-1 text-[10px] rounded border border-port-border text-gray-300 hover:bg-port-border/40 hover:text-white disabled:opacity-40"
+          className="p-1 text-gray-400 hover:text-port-accent disabled:opacity-30 disabled:cursor-not-allowed rounded"
           title={blockedByLock
             ? `Unlock ${entry.name} to refine`
-            : `Rewrite ${entry.name}'s description so they render distinct from every other character`}
+            : `AI: rewrite ${entry.name}'s description so they render distinct from every other character`}
+          aria-label={`AI differentiate ${entry.name}`}
         >
-          {refining ? <Loader2 size={10} className="animate-spin" /> : <WandSparkles size={10} />}
-          AI: differentiate
+          {refining ? <Loader2 size={14} className="animate-spin" /> : <WandSparkles size={14} />}
         </button>
       ) : null}
-      <button
-        type="button"
-        onClick={onRender}
-        disabled={!description.trim() || !!inFlightJobId || blockedByLock}
-        className="inline-flex items-center justify-center gap-1 px-2 py-1 text-[10px] rounded border border-port-border text-gray-300 hover:bg-port-border/40 hover:text-white disabled:opacity-40"
-        title={blockedByLock
-          ? `Unlock ${entry.name} to render a new reference`
-          : (description.trim() ? `Render a canonical reference image for ${entry.name}` : 'Add a description first')}
-      >
-        {inFlightJobId ? <Loader2 size={10} className="animate-spin" /> : <ImagePlus size={10} />}
-        Render reference
-      </button>
-      {kind.key === 'places' && onRenderCleanPlate ? (
+      {onToggleLock ? (
         <button
           type="button"
-          onClick={() => onRenderCleanPlate(entry)}
-          disabled={!description.trim() || !!inFlightJobId || blockedByLock}
-          className="inline-flex items-center justify-center gap-1 px-2 py-1 text-[10px] rounded border border-port-border text-gray-300 hover:bg-port-border/40 hover:text-white disabled:opacity-40"
-          title={blockedByLock
-            ? `Unlock ${entry.name} to render a clean plate`
-            : (description.trim()
-              ? `Render an empty-location plate for ${entry.name} — no people, edge-to-edge`
-              : 'Add a description first')}
+          onClick={() => onToggleLock(entry.id, !locked)}
+          disabled={togglingLock}
+          className={`p-1 rounded ${locked ? 'text-port-accent hover:bg-port-accent/20' : 'text-gray-500 hover:text-gray-300'}`}
+          title={locked
+            ? `Unlock ${entry.name} so refine / differentiate / re-extract can modify it`
+            : `Lock ${entry.name} so AI passes don't rewrite it`}
+          aria-pressed={locked}
         >
-          {inFlightJobId ? <Loader2 size={10} className="animate-spin" /> : <Square size={10} />}
-          Clean plate
+          {togglingLock ? <Loader2 size={14} className="animate-spin" /> : (locked ? <Lock size={14} /> : <Unlock size={14} />)}
         </button>
       ) : null}
     </div>
@@ -542,21 +544,27 @@ export default function CanonCard({
     </>
   );
 
-  // `fallbackRefs` lets EntryCardThumbnail walk back through prior renders
-  // when the chosen primary file no longer exists on disk — so a deleted
-  // gallery image gracefully degrades to the next existing render rather
-  // than producing a broken thumbnail. `onClick` receives the currently
-  // displayed filename (which may be a fallback) so the lightbox previews
-  // what the user actually sees rather than the absent primary.
-  const thumbnail = thumbnailRef
-    ? {
-      filename: thumbnailRef,
-      alt: `${entry.name} reference`,
-      onClick: (visibleFilename) => onPreview?.(visibleFilename || thumbnailRef),
-      isPrimary: !!entry.primaryImageRef && entry.primaryImageRef === thumbnailRef,
-      fallbackRefs: refs,
-    }
-    : null;
+  // Three-state thumbnail slot (pending / empty / completed). Empty state
+  // shows a placeholder box with a Render button that fires the same handler
+  // as the actions-column Image button — surfaces a one-click affordance for
+  // canon entries that haven't been visualized yet. Pending shows the live
+  // diffusion spinner from MediaJobThumb (also mirrored in the footer's
+  // ref-grid for live-progress detail).
+  // Lock no longer gates rendering — see the `blockedByLock` comment above.
+  // Render still requires a description (the prompt source) + an actual
+  // handler from the parent. Pending state is checked inside EntryThumbSlot.
+  const canRender = !!onRender && !!description.trim();
+  const thumbnail = (
+    <EntryThumbSlot
+      inFlightJobId={inFlightJobId || null}
+      imageRefs={refs}
+      primaryImageRef={entry.primaryImageRef || null}
+      alt={`${entry.name} reference`}
+      onPreview={onPreview ? (visibleFilename) => onPreview(visibleFilename || thumbnailRef) : null}
+      onRender={onRender}
+      canRender={canRender}
+    />
+  );
 
   return (
     <EntryCard

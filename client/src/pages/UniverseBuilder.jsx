@@ -35,6 +35,9 @@ import ShareToButton from '../components/sharing/ShareToButton';
 import OriginBadge from '../components/sharing/OriginBadge';
 import UniverseCanonSection from '../components/universe/UniverseCanonSection';
 import EntryCard from '../components/universe/EntryCard';
+import EntryThumbSlot from '../components/universe/EntryThumbSlot';
+import useMediaJobProgress from '../hooks/useMediaJobProgress';
+import MediaPreview from '../components/media/MediaPreview';
 import TabPills from '../components/ui/TabPills';
 import { deriveAvailableBackends, IMAGE_GEN_MODE } from '../lib/imageGenBackends';
 import { PIPELINE_IMAGE_DEFAULTS, readPipelineImageSettings } from '../lib/pipelineImageDefaults';
@@ -551,6 +554,21 @@ export default function UniverseBuilder() {
   const [saving, setSaving] = useState(false);
   const [expanding, setExpanding] = useState(false);
   const [rendering, setRendering] = useState(false);
+  // entryId → jobId map for variation / composite-sheet rows that have an
+  // in-flight render. Populated from /render's `entryJobs` response and
+  // cleared when MediaJobThumb fires a terminal status (completed / failed /
+  // canceled). Canon entries have their own pending map in UniverseCanonSection
+  // (`renderingJobs`) so they aren't included here.
+  const [pendingByEntryId, setPendingByEntryId] = useState({});
+  const clearPendingForEntry = useCallback((entryId) => {
+    if (!entryId) return;
+    setPendingByEntryId((prev) => {
+      if (!(entryId in prev)) return prev;
+      const next = { ...prev };
+      delete next[entryId];
+      return next;
+    });
+  }, []);
   const [providers, setProviders] = useState([]);
   const [activeProviderId, setActiveProviderId] = useState(null);
   // Image-gen plumbing for the batch-render form (reused from Image Gen).
@@ -637,6 +655,47 @@ export default function UniverseBuilder() {
   );
 
   const [runs, setRuns] = useState([]);
+  // Page-level lightbox state for variation + composite-sheet thumbs. Canon
+  // entries route through `UniverseCanonSection`'s own MediaPreview; this
+  // one covers the category-bucket rows so clicking a variation thumb opens
+  // the same full-detail modal the gallery / history uses.
+  const [preview, setPreview] = useState(null);
+  const previewItems = useMemo(() => {
+    const out = [];
+    const seen = new Set();
+    const pushFilename = (filename, label) => {
+      if (typeof filename !== 'string' || !filename) return;
+      if (seen.has(filename)) return;
+      seen.add(filename);
+      out.push({
+        key: `universe-thumb:${filename}`,
+        kind: 'image',
+        filename,
+        previewUrl: `/data/images/${filename}`,
+        downloadUrl: `/data/images/${filename}`,
+        prompt: label || filename,
+      });
+    };
+    const cats = draft?.categories && typeof draft.categories === 'object' ? draft.categories : {};
+    for (const [bucketKey, bucket] of Object.entries(cats)) {
+      const variations = Array.isArray(bucket?.variations) ? bucket.variations : [];
+      for (const v of variations) {
+        const refs = Array.isArray(v?.imageRefs) ? v.imageRefs : [];
+        for (const f of refs) pushFilename(f, `${bucketKey} · ${v.label}`);
+      }
+    }
+    const sheets = Array.isArray(draft?.compositeSheets) ? draft.compositeSheets : [];
+    for (const s of sheets) {
+      const refs = Array.isArray(s?.imageRefs) ? s.imageRefs : [];
+      for (const f of refs) pushFilename(f, `Composite · ${s.label}`);
+    }
+    return out;
+  }, [draft]);
+  const openVariationPreview = useCallback((filename) => {
+    if (!filename) return;
+    const match = previewItems.find((i) => i.filename === filename);
+    if (match) setPreview(match);
+  }, [previewItems]);
 
   // Two-click delete: first click flips this to the world id; a second
   // click within the live render confirms. Avoids window.confirm per
@@ -1312,6 +1371,21 @@ export default function UniverseBuilder() {
     }).catch((e) => { toast.error(`Render failed: ${e.message}`); return null; });
     setRendering(false);
     if (!result) return;
+    // Stamp per-entry pending state so each variation / composite sheet row can
+    // swap its thumbnail for a MediaJobThumb spinner. Canon entries take a
+    // different render path (UniverseCanonSection's `generateImage`) so
+    // entryJobs entries with `kind: 'canon'` are intentionally ignored here.
+    if (Array.isArray(result.entryJobs) && result.entryJobs.length > 0) {
+      setPendingByEntryId((prev) => {
+        const next = { ...prev };
+        for (const { jobId, entryRef } of result.entryJobs) {
+          if (!jobId || !entryRef?.id) continue;
+          if (entryRef.kind === 'canon') continue;
+          next[entryRef.id] = jobId;
+        }
+        return next;
+      });
+    }
     toast.success(`Queued ${result.promptCount} renders → "${result.collectionName}"`);
     const updated = await listWorldRuns(selectedId).catch(() => runs);
     setRuns(updated);
@@ -1783,6 +1857,31 @@ export default function UniverseBuilder() {
               onPromoteVariation={(bucket, v) => handlePromoteVariation(bucket, v)}
               onBulkRenderBucket={(bucket) => runRender({ promptMode: 'variations', selection: { [bucket]: 'all' } })}
               onRenderVariation={(bucket, v) => runRender({ promptMode: 'variations', selection: { [bucket]: [v.label] } })}
+              onPreviewVariation={openVariationPreview}
+              pendingByEntryId={pendingByEntryId}
+              onPendingCleared={clearPendingForEntry}
+              onJobCompletedForEntry={(entryId, filename, bucket) => {
+                if (!filename || !bucket) {
+                  clearPendingForEntry(entryId);
+                  return;
+                }
+                // Optimistically append the new filename to the variation's
+                // imageRefs[] so the row swaps from spinner → rendered image
+                // without a roundtrip. Server already stamped this via the
+                // collection hook; the next universe refetch will agree.
+                setDraft((d) => {
+                  const cat = d.categories?.[bucket];
+                  if (!cat?.variations) return d;
+                  const variations = cat.variations.map((v) => {
+                    if (v.id !== entryId) return v;
+                    const refs = Array.isArray(v.imageRefs) ? v.imageRefs : [];
+                    if (refs.includes(filename)) return v;
+                    return { ...v, imageRefs: [...refs, filename] };
+                  });
+                  return { ...d, categories: { ...d.categories, [bucket]: { ...cat, variations } } };
+                });
+                clearPendingForEntry(entryId);
+              }}
               onBulkRenderTrunk={() => {
                 const selection = Object.fromEntries(
                   (bucketsByKind[trunk.kind] || []).map((b) => [b, 'all']),
@@ -1818,9 +1917,30 @@ export default function UniverseBuilder() {
             onPromoteVariation={(bucket, v, opts) => handlePromoteVariation(bucket, v, opts)}
             onBulkRenderBucket={(bucket) => runRender({ promptMode: 'variations', selection: { [bucket]: 'all' } })}
             onRenderVariation={(bucket, v) => runRender({ promptMode: 'variations', selection: { [bucket]: [v.label] } })}
+            onPreviewVariation={openVariationPreview}
             onAssignBucketKind={assignBucketKind}
             onAutoSort={handleAutoSort}
             autoSorting={autoSorting}
+            pendingByEntryId={pendingByEntryId}
+            onPendingCleared={clearPendingForEntry}
+            onJobCompletedForEntry={(entryId, filename, bucket) => {
+              if (!filename || !bucket) {
+                clearPendingForEntry(entryId);
+                return;
+              }
+              setDraft((d) => {
+                const cat = d.categories?.[bucket];
+                if (!cat?.variations) return d;
+                const variations = cat.variations.map((v) => {
+                  if (v.id !== entryId) return v;
+                  const refs = Array.isArray(v.imageRefs) ? v.imageRefs : [];
+                  if (refs.includes(filename)) return v;
+                  return { ...v, imageRefs: [...refs, filename] };
+                });
+                return { ...d, categories: { ...d.categories, [bucket]: { ...cat, variations } } };
+              });
+              clearPendingForEntry(entryId);
+            }}
           />
         )}
 
@@ -2008,12 +2128,11 @@ function CompositeSheetsEditor({ sheets, onChange, canRender = false, onRender =
 
   const removeAt = (idx) => onChange(sheets.filter((_, i) => i !== idx));
 
+  // Sheets default to locked at the sanitizer (locked-by-default contract);
+  // persist an unlock as explicit `false` so it survives the next read.
   const toggleLockAt = (idx) => onChange(sheets.map((s, i) => {
     if (i !== idx) return s;
-    const next = { ...s };
-    if (next.locked) delete next.locked;
-    else next.locked = true;
-    return next;
+    return { ...s, locked: !s.locked };
   }));
 
   const startEdit = (idx, sheet) => {
@@ -2040,6 +2159,11 @@ function CompositeSheetsEditor({ sheets, onChange, canRender = false, onRender =
     setEditIdx(null);
   };
 
+  const setAllSheetsLocked = (nextLocked) =>
+    onChange(sheets.map((s) => (s?.locked === nextLocked ? s : { ...s, locked: nextLocked })));
+  const sheetsLockedCount = sheets.filter((s) => s?.locked === true).length;
+  const allSheetsLocked = sheets.length > 0 && sheetsLockedCount === sheets.length;
+
   return (
     <section className="bg-port-card border border-port-border rounded p-4 flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
@@ -2047,12 +2171,31 @@ function CompositeSheetsEditor({ sheets, onChange, canRender = false, onRender =
           Composite boards
           <span className="ml-2 text-xs text-gray-500">{sheets.length}</span>
         </h2>
-        <button
-          onClick={() => setAdding((v) => !v)}
-          className="text-xs px-2 py-1 bg-port-accent/15 hover:bg-port-accent/25 text-port-accent rounded flex items-center gap-1 min-h-[40px] sm:min-h-0"
-        >
-          <Plus size={12} /> Add
-        </button>
+        <div className="flex items-center gap-1">
+          {sheets.length > 0 && (
+            <button
+              onClick={() => setAllSheetsLocked(!allSheetsLocked)}
+              title={allSheetsLocked
+                ? 'Unlock all composite boards — Expand may overwrite them'
+                : 'Lock all composite boards — Expand will preserve them'}
+              aria-label={allSheetsLocked ? 'Unlock all composite boards' : 'Lock all composite boards'}
+              aria-pressed={allSheetsLocked}
+              className={`p-1 rounded ${
+                allSheetsLocked
+                  ? 'text-port-accent hover:bg-port-accent/20'
+                  : 'text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              {allSheetsLocked ? <Lock size={14} /> : <Unlock size={14} />}
+            </button>
+          )}
+          <button
+            onClick={() => setAdding((v) => !v)}
+            className="text-xs px-2 py-1 bg-port-accent/15 hover:bg-port-accent/25 text-port-accent rounded flex items-center gap-1 min-h-[40px] sm:min-h-0"
+          >
+            <Plus size={12} /> Add
+          </button>
+        </div>
       </div>
       {adding && (
         <div className="bg-port-bg border border-port-border rounded p-2 flex flex-col gap-2">
@@ -2209,6 +2352,15 @@ export function CategoryEditor({
   // Only set by OtherTab — clicking opens a picker that retags the bucket's
   // `kind` to a canon trunk. Variations stay in place; bucket moves tabs.
   onAssignBucketKind = null,
+  // Clicking the row's thumbnail opens the page-level MediaPreview lightbox
+  // (same modal that the history / gallery uses). Receives the visible
+  // filename so the modal lands on the exact ref the user saw, not a stale
+  // primary that may have walked-back on a 404.
+  onPreviewVariation = null,
+  // Per-row render-pending plumbing — `pendingByEntryId[v.id]` returns the
+  // in-flight jobId (or undefined). Completion / failure callbacks fire when
+  // the row's MediaJobThumb settles.
+  pendingByEntryId = {}, onJobCompleted = null, onJobFailed = null,
 }) {
   const requiresTargetKind = !TRUNK_BY_KIND[bucketKind];
   const [adding, setAdding] = useState(false);
@@ -2287,13 +2439,20 @@ export function CategoryEditor({
 
   const removeAt = (idx) => onChange(variations.filter((_, i) => i !== idx));
 
+  // Variations default to locked at the sanitizer (locked-by-default contract),
+  // so an unlock must persist as explicit `false` — not as an absent key —
+  // otherwise the next read would re-lock the entry the user just unlocked.
   const toggleLockAt = (idx) => onChange(variations.map((v, i) => {
     if (i !== idx) return v;
-    const next = { ...v };
-    if (next.locked) delete next.locked;
-    else next.locked = true;
-    return next;
+    return { ...v, locked: !v.locked };
   }));
+
+  // Bulk lock/unlock everything in this bucket. Same persistence contract:
+  // unlock writes explicit `false` so it survives the round-trip.
+  const setAllLocked = (nextLocked) =>
+    onChange(variations.map((v) => (v?.locked === nextLocked ? v : { ...v, locked: nextLocked })));
+  const lockedCount = variations.filter((v) => v?.locked === true).length;
+  const allLocked = variations.length > 0 && lockedCount === variations.length;
 
   const startEdit = (idx, v) => {
     setEditIdx(idx);
@@ -2432,6 +2591,27 @@ export function CategoryEditor({
               )}
             </div>
           )}
+          {variations.length > 0 && (
+            // Single toggle — mirrors the per-row lock button. Lock icon when
+            // every variation is locked (click unlocks all); Unlock icon for
+            // the all-unlocked + mixed cases so a click always locks the
+            // holdouts.
+            <button
+              onClick={() => setAllLocked(!allLocked)}
+              title={allLocked
+                ? 'Unlock all variations — Expand / Generate may overwrite them'
+                : 'Lock all variations — Expand / Generate will preserve them'}
+              aria-label={allLocked ? 'Unlock all variations' : 'Lock all variations'}
+              aria-pressed={allLocked}
+              className={`p-1 rounded ${
+                allLocked
+                  ? 'text-port-accent hover:bg-port-accent/20'
+                  : 'text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              {allLocked ? <Lock size={14} /> : <Unlock size={14} />}
+            </button>
+          )}
           {canRemove && (
             <button
               onClick={onRemove}
@@ -2512,6 +2692,10 @@ export function CategoryEditor({
               runPromote={runPromote}
               onRenderVariation={onRenderVariation}
               canRender={canRender}
+              onPreviewVariation={onPreviewVariation}
+              inFlightJobId={pendingByEntryId[v.id] || null}
+              onJobCompleted={onJobCompleted}
+              onJobFailed={onJobFailed}
             />
           ))}
         </ul>
@@ -2529,6 +2713,8 @@ function VariationCard({
   onPromote, canPromote, requiresTargetKind, promotingIdx,
   pickerIdx, setPickerIdx, pickerWrapRef, runPromote,
   onRenderVariation, canRender,
+  onPreviewVariation = null,
+  inFlightJobId = null, onJobCompleted = null, onJobFailed = null,
 }) {
   const locked = !!v.locked;
   if (editMode) {
@@ -2566,20 +2752,36 @@ function VariationCard({
       ? 'Promote to canon — pick a trunk'
       : 'Promote to canon — LLM expands this variation into a full canon entry';
 
-  // Show the most recent render as an avatar. `imageRefs` is chronological
-  // (renders append to the end). EntryCardThumbnail falls back through the
-  // history on `onError` so a deleted gallery file degrades gracefully. The
-  // thumbnail column collapses when there are no renders yet — matching the
-  // contract that nothing shows until at least one image has been generated.
+  // Thumbnail slot is now three-state (pending / empty / completed) — see
+  // `EntryThumbSlot`. Subscribe to the row's in-flight job so we can fire the
+  // completion / failure callbacks back up to the parent (which clears
+  // pending state + appends the new filename to the variation's imageRefs[]
+  // optimistically). settledRef prevents duplicate fires under React 18
+  // StrictMode's mount → cleanup → mount dev double-fire.
   const renders = Array.isArray(v.imageRefs) ? v.imageRefs : [];
-  const latestRender = renders[renders.length - 1] || null;
-  const thumbnail = latestRender
-    ? {
-      filename: latestRender,
-      alt: `${v.label} render`,
-      fallbackRefs: renders,
+  const { status: jobStatus, filename: jobFilename, error: jobError } = useMediaJobProgress(inFlightJobId);
+  const settledRef = useRef(null);
+  useEffect(() => {
+    if (!inFlightJobId) { settledRef.current = null; return; }
+    if (settledRef.current === inFlightJobId) return;
+    if (jobStatus === 'completed' && jobFilename) {
+      settledRef.current = inFlightJobId;
+      onJobCompleted?.(v.id, jobFilename);
+    } else if (jobStatus === 'failed' || jobStatus === 'canceled') {
+      settledRef.current = inFlightJobId;
+      onJobFailed?.(v.id, jobError || jobStatus);
     }
-    : null;
+  }, [inFlightJobId, jobStatus, jobFilename, jobError, v.id, onJobCompleted, onJobFailed]);
+  const thumbnail = (
+    <EntryThumbSlot
+      inFlightJobId={inFlightJobId}
+      imageRefs={renders}
+      alt={`${v.label} render`}
+      canRender={!!onRenderVariation && canRender}
+      onRender={onRenderVariation ? () => onRenderVariation(v) : null}
+      onPreview={onPreviewVariation || null}
+    />
+  );
 
   const title = <div className="text-sm text-white font-medium truncate">{v.label}</div>;
   const body = <div className="text-xs text-gray-400 line-clamp-2 mt-1">{v.prompt}</div>;
@@ -2931,6 +3133,8 @@ export function TrunkView({
   onRemoveBucket, onUpdateBucket, onGenerateInBucket, onPromoteVariation,
   onBulkRenderBucket, onRenderVariation, onBulkRenderTrunk,
   onAddBucket,
+  onPreviewVariation = null,
+  pendingByEntryId = {}, onPendingCleared = null, onJobCompletedForEntry = null,
 }) {
   const canonList = Array.isArray(draft[trunk.kind]) ? draft[trunk.kind] : [];
   // Only count canon entries the server will actually compile — mirror the
@@ -3064,6 +3268,10 @@ export function TrunkView({
                   canPromote={canPromote}
                   bucketKind={draft.categories?.[cat]?.kind ?? trunk.kind}
                   onPromote={onPromoteVariation ? (v) => onPromoteVariation(cat, v) : null}
+                  onPreviewVariation={onPreviewVariation}
+                  pendingByEntryId={pendingByEntryId}
+                  onJobCompleted={(entryId, filename) => onJobCompletedForEntry?.(entryId, filename, cat)}
+                  onJobFailed={(entryId) => onPendingCleared?.(entryId)}
                 />
               ))}
             </section>
@@ -3082,6 +3290,8 @@ export function OtherTab({
   onUpdateBucket, onRemoveBucket, onGenerateInBucket, onPromoteVariation,
   onBulkRenderBucket, onRenderVariation, onAssignBucketKind, onAutoSort,
   autoSorting = false,
+  onPreviewVariation = null,
+  pendingByEntryId = {}, onPendingCleared = null, onJobCompletedForEntry = null,
 }) {
   return (
     <>
@@ -3127,6 +3337,10 @@ export function OtherTab({
             bucketKind={draft.categories?.[cat]?.kind}
             onPromote={onPromoteVariation ? (v, opts) => onPromoteVariation(cat, v, opts) : null}
             onAssignBucketKind={onAssignBucketKind ? (targetKind) => onAssignBucketKind(cat, targetKind) : null}
+            onPreviewVariation={onPreviewVariation}
+            pendingByEntryId={pendingByEntryId}
+            onJobCompleted={(entryId, filename) => onJobCompletedForEntry?.(entryId, filename, cat)}
+            onJobFailed={(entryId) => onPendingCleared?.(entryId)}
           />
         ))}
       </section>
@@ -3405,6 +3619,13 @@ function RenderTab({
           </ul>
         </section>
       )}
+
+      {/* Page-level lightbox for variation + composite-sheet thumb clicks.
+          UniverseCanonSection owns its own MediaPreview for canon entries
+          (which routes character reference sheets through a different
+          static prefix), so we deliberately don't include canon refs in
+          `previewItems` above — they're handled there. */}
+      <MediaPreview preview={preview} setPreview={setPreview} items={previewItems} />
     </>
   );
 }

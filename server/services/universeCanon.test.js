@@ -70,13 +70,19 @@ describe('universeCanon — setCanonEntryLock', () => {
     expect(reread.characters.find((c) => c.id === entryId).locked).toBe(true);
   });
 
-  it('removes the locked field entirely on unlock (minimal on-disk shape)', async () => {
+  it('persists explicit locked: false on unlock so the bit survives round-trips', async () => {
+    // After PR #N the universe-builder canon contract is "locked by default":
+    // a missing `locked` field reads as locked. Unlock therefore MUST persist
+    // explicit `false` rather than collapsing to absent — otherwise the next
+    // read of the same record would re-lock it.
     const w = await seedUniverseWithCharacters([
       { name: 'Alex', physicalDescription: 'jacket', locked: true },
     ]);
     const entryId = w.characters[0].id;
     const { entry } = await canonSvc.setCanonEntryLock(w.id, 'character', entryId, false);
-    expect(entry.locked).toBeUndefined();
+    expect(entry.locked).toBe(false);
+    const reread = (await svc.listUniverses())[0];
+    expect(reread.characters.find((c) => c.id === entryId).locked).toBe(false);
   });
 
   it('rejects unknown kind with a 400-coded ServerError', async () => {
@@ -111,9 +117,12 @@ describe('universeCanon — refineUniverseCharacter respects locks', () => {
   });
 
   it('proceeds when the character is unlocked', async () => {
+    // Universe canon is locked-by-default — seed entries with explicit
+    // `locked: false` to put them in the unlocked state the refine guard
+    // requires.
     const w = await seedUniverseWithCharacters([
-      { name: 'Alex', physicalDescription: 'jacket' },
-      { name: 'Beth', physicalDescription: 'coat' },
+      { name: 'Alex', physicalDescription: 'jacket', locked: false },
+      { name: 'Beth', physicalDescription: 'coat', locked: false },
     ]);
     runPromptRefineMock.mockResolvedValue({
       refined: 'fresh description', changes: [], rationale: 'distinct from Beth',
@@ -127,9 +136,11 @@ describe('universeCanon — refineUniverseCharacter respects locks', () => {
 
 describe('universeCanon — differentiateUniverseCast respects locks', () => {
   it('skips locked entries at apply time even though the LLM saw them', async () => {
+    // Beth is explicitly unlocked so the cast isn't all-locked (the guard
+    // before the LLM call) while Alex stays protected at apply time.
     const w = await seedUniverseWithCharacters([
       { name: 'Alex', physicalDescription: 'jacket', locked: true },
-      { name: 'Beth', physicalDescription: 'coat' },
+      { name: 'Beth', physicalDescription: 'coat', locked: false },
     ]);
     const [alex, beth] = w.characters;
     runStagedLLMMock.mockResolvedValue({
@@ -182,7 +193,10 @@ describe('universeCanon — extractCanonFromProse passes autoLock + sourceSeries
     expect(inserted.sourceSeriesId).toBe('ser-active');
   });
 
-  it('without autoLock, new entries are unlocked (universe-side direct extraction)', async () => {
+  it('without an explicit autoLock=false, new entries lock by default', async () => {
+    // The universe-builder default is "lock new canon on insert" so users
+    // don't have to chase batch extracts with a Lock All click; only an
+    // explicit `autoLock: false` opts out.
     const w = await seedUniverseWithCharacters([]);
     extractBibleMock.mockImplementation(async ({ kind }) => ({
       extracted: kind === 'character' ? [{ name: 'Newby' }] : [],
@@ -193,7 +207,22 @@ describe('universeCanon — extractCanonFromProse passes autoLock + sourceSeries
       kinds: ['character'],
     });
     const inserted = result.universe.characters.find((c) => c.name === 'Newby');
-    expect(inserted.locked).toBeUndefined();
+    expect(inserted.locked).toBe(true);
     expect(inserted.source).toBe('series-extract'); // default new vocab
+  });
+
+  it('autoLock=false opts out so the entry lands unlocked', async () => {
+    const w = await seedUniverseWithCharacters([]);
+    extractBibleMock.mockImplementation(async ({ kind }) => ({
+      extracted: kind === 'character' ? [{ name: 'Optout' }] : [],
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+    const result = await canonSvc.extractCanonFromProse(w.id, {
+      corpus: 'some prose',
+      kinds: ['character'],
+      autoLock: false,
+    });
+    const inserted = result.universe.characters.find((c) => c.name === 'Optout');
+    expect(inserted.locked).not.toBe(true);
   });
 });
