@@ -22,6 +22,9 @@ vi.mock('../lib/uuid.js', () => {
 });
 
 vi.mock('../lib/fileUtils.js', () => ({
+  atomicWrite: vi.fn(async (path, data) => {
+    fileStore.set(path, typeof data === 'string' ? data : JSON.stringify(data, null, 2));
+  }),
   ensureDir: vi.fn().mockResolvedValue(undefined),
   PATHS: { agentPersonalities: '/mock/agents' },
   safeJSONParse: (s, fallback) => { try { return JSON.parse(s); } catch { return fallback; } }
