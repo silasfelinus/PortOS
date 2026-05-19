@@ -375,6 +375,16 @@ export async function generateSeasonEpisodes(seriesId, seasonId, options = {}) {
   if (!season) {
     throw makeErr(`Season not found on series: ${seasonId}`, ERR_VALIDATION);
   }
+  // Per-season lock — same semantics as the arc-level lock above, scoped to
+  // this volume. Generating episodes seeds new issue records under the
+  // season; a locked season's shape is frozen, so refuse before the LLM call.
+  // Verify (read-only) stays available so the user can still inspect findings.
+  if (season.locked === true) {
+    throw makeErr(
+      `Season "${season.title || season.number}" is locked — unlock it before generating episodes`,
+      ERR_VALIDATION,
+    );
+  }
   // A season with no synopsis + no logline gives the LLM nothing to riff
   // against — fail loud so the user sees the misconfiguration instead of
   // getting back 8 episodes of "a thing happens then another thing".

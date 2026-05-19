@@ -10,7 +10,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Sparkles, Loader2, X, Lightbulb, BookOpen, FileText, Film as FilmIcon,
-  LayoutGrid, Image as ImageIcon, Clapperboard, Users, Settings, Mic,
+  LayoutGrid, Image as ImageIcon, Clapperboard, Users, Settings, Mic, Lock,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import Modal from '../components/ui/Modal';
@@ -186,6 +186,23 @@ export default function PipelineIssue() {
     }) : prev);
   };
 
+  // Surface parent-season + arc lock state on the strip — generation actions
+  // routed through generateSeasonEpisodes / arc-resolve are gated on these
+  // server-side, so the user sees WHY the buttons inside each stage panel
+  // refuse to fire. The lock indicator replaces the status dot when locked
+  // because lock > status (a locked stage's status is frozen by definition).
+  const parentSeason = useMemo(() => {
+    if (!series?.seasons || !issue?.seasonId) return null;
+    return series.seasons.find((s) => s.id === issue.seasonId) || null;
+  }, [series?.seasons, issue?.seasonId]);
+  const seasonLocked = parentSeason?.locked === true;
+  const arcLocked = series?.locked?.arc === true;
+  const lockHint = seasonLocked
+    ? `Volume ${parentSeason.number || ''} is locked — unlock it on the Arc Canvas to enable regeneration`
+    : arcLocked
+      ? 'Arc is locked — unlock it on the Arc Canvas to enable regeneration'
+      : null;
+
   const stageTabs = useMemo(() => PIPELINE_TAB_STAGES
     // Audio is only meaningful when the series ships video — comic-only
     // series don't render dialogue as sound, so the tab is hidden to keep
@@ -194,13 +211,16 @@ export default function PipelineIssue() {
     .filter((id) => id !== 'audio' || series?.targetFormat !== 'comic')
     .map((id) => {
       const status = issue?.stages?.[id]?.status || 'empty';
+      const trailing = lockHint
+        ? <Lock size={11} className="text-port-warning" aria-label={lockHint} />
+        : <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[status] || STATUS_DOT.empty}`} aria-hidden="true" />;
       return {
         id,
         label: PIPELINE_STAGE_LABELS[id],
         icon: STAGE_ICONS[id],
-        trailing: <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[status] || STATUS_DOT.empty}`} aria-hidden="true" />,
+        trailing,
       };
-    }), [issue, series?.targetFormat]);
+    }), [issue, series?.targetFormat, lockHint]);
 
   if (loading) return <div className="p-6 text-gray-500 text-sm">Loading issue…</div>;
   if (!issue) return null;
@@ -305,6 +325,12 @@ export default function PipelineIssue() {
         onChange={(id) => navigate(`/pipeline/issues/${issueId}/${id}`)}
         ariaLabel="Pipeline stages"
       />
+
+      {lockHint ? (
+        <div className="px-4 md:px-6 py-1.5 border-b border-port-border bg-port-warning/5 text-xs text-port-warning flex items-center gap-1.5">
+          <Lock size={11} /> {lockHint}.
+        </div>
+      ) : null}
 
       {/* Active stage panel */}
       <div className="flex-1 overflow-auto p-4 md:p-6">

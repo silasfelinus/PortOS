@@ -92,6 +92,11 @@ const SERVICE_ERROR_STATUS = {
   [seriesSvc.ERR_VALIDATION]: 400,
   [issuesSvc.ERR_NOT_FOUND]: 404,
   [issuesSvc.ERR_VALIDATION]: 400,
+  // Per-season-lock errors map to 409 (the lock-conflict idiom — same status
+  // ERR_NO_VOLUME_COVER and friends use) so the client can disambiguate a
+  // locked-resource refusal from a malformed-payload 400.
+  [issuesSvc.ERR_SEASON_LOCKED]: 409,
+  [seasonsSvc.ERR_LOCKED]: 409,
   [seasonsSvc.ERR_NOT_FOUND]: 404,
   [seasonsSvc.ERR_VALIDATION]: 400,
   [seasonsSvc.ERR_REASSIGN_TARGET]: 400,
@@ -163,6 +168,11 @@ const seasonSchema = z.object({
   cover: seasonCoverSchema.nullable().optional(),
   backCover: seasonCoverSchema.nullable().optional(),
   status: z.enum(SEASON_STATUSES).optional(),
+  // Per-season editorial lock. Enforced by `seasonsSvc.updateSeason` (refuses
+  // content patches while locked) and `arcPlanner.generateSeasonEpisodes` /
+  // `issuesSvc.bulkReassignSeason` / `seasonsSvc.deleteSeason` (refuse on
+  // locked seasons). The sibling arc-level lock lives on `series.locked.arc`.
+  locked: z.boolean().optional(),
 }).passthrough();
 
 // `.passthrough` keeps the door open for future per-season / per-field locks
