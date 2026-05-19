@@ -32,7 +32,7 @@ Claim the next unclaimed `- [ ]` item from PLAN.md via the slug-ID system, work 
 
 ## Phase 2: Claim (worktree) — REQUIRED, NOT OPTIONAL
 
-> **This phase overrides CLAUDE.md's "don't spawn a worktree in TUI" rule.** That rule exists so single-session TUI work doesn't fragment into stray worktrees. `/claim` is the documented exception: the worktree is what lets the user fire off a *second* `/claim` in another tab without the two claims fighting over the main repo's working tree. **A `/claim` without a worktree is a broken claim — it blocks every subsequent claim until cleaned up.**
+> `/claim` always uses a worktree so the user can fire off a *second* `/claim` in another tab without the two claims fighting over the main repo's working tree. **A `/claim` without a worktree is a broken claim — it blocks every subsequent claim until cleaned up.**
 >
 > **Hard rules:**
 > - ❌ NEVER run `git checkout -b claim/<slug>` in the main repo. That's the failure mode this phase exists to prevent.

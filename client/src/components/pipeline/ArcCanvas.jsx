@@ -39,7 +39,7 @@ import {
   generatePipelineArcOverview, generatePipelineSeasonEpisodes, verifyPipelineArc,
   verifyPipelineVolume,
   resolvePipelineArcIssues,
-  listPipelineIssues, updatePipelineSeries,
+  listPipelineIssues, updatePipelineSeries, setPipelineArcFieldLock,
   startPipelineVolumeBeats, cancelPipelineVolumeBeats,
   generatePipelineVolumeCover, generatePipelineVolumeBackCover,
   generatePipelineVolumeCoverConcepts,
@@ -210,7 +210,7 @@ function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
     setLockBusy(true);
     const updated = await updatePipelineSeries(series.id, {
       locked: { ...(series.locked || {}), arc: next },
-    }).catch((err) => {
+    }, { silent: true }).catch((err) => {
       toast.error(err.message || 'Failed to update lock');
       return null;
     });
@@ -570,15 +570,12 @@ function FieldLockToggle({ series, field, label, onSeriesUpdate }) {
   const [saving, setSaving] = useState(false);
   const toggle = async () => {
     if (saving) return;
-    const nextFields = { ...lockedFields };
-    if (locked) delete nextFields[field];
-    else nextFields[field] = true;
     setSaving(true);
-    // `updatePipelineSeries` toasts the error itself on rejection — silent: false
-    // by default in apiCore.request. No custom catch needed; just short-circuit.
-    const updated = await updatePipelineSeries(series.id, {
-      locked: { ...(series.locked || {}), arcFields: nextFields },
-    }).catch(() => null);
+    const updated = await setPipelineArcFieldLock(series.id, field, !locked, { silent: true })
+      .catch((err) => {
+        toast.error(err.message || `${label} lock update failed`);
+        return null;
+      });
     setSaving(false);
     if (!updated) return;
     onSeriesUpdate(updated);

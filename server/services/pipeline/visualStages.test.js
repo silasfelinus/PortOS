@@ -31,12 +31,11 @@ const updateStageMock = vi.fn(async (issueId, stageId, patch) => ({
   issue: { ...mockIssue, stages: { ...mockIssue.stages, [stageId]: { ...mockIssue.stages[stageId], ...patch } } },
   stage: { ...mockIssue.stages[stageId], ...patch },
 }));
+const assertStageUnlockedMock = vi.fn(() => undefined);
 vi.mock('./issues.js', () => ({
   getIssue: (...a) => getIssueMock(...a),
   updateStage: (...a) => updateStageMock(...a),
-  // Default to "not locked" so existing tests keep their semantics; per-stage
-  // lock enforcement is covered in its own describe block.
-  assertStageUnlocked: vi.fn(() => undefined),
+  assertStageUnlocked: (...a) => assertStageUnlockedMock(...a),
   VISUAL_STAGE_IDS: ['comicPages', 'storyboards', 'episodeVideo'],
   STAGE_IDS: ['idea', 'prose', 'comicScript', 'teleplay', 'comicPages', 'storyboards', 'episodeVideo'],
 }));
@@ -86,6 +85,7 @@ const {
 beforeEach(() => {
   getIssueMock.mockClear();
   updateStageMock.mockClear();
+  assertStageUnlockedMock.mockClear();
   enqueueJobMock.mockClear();
   runStagedLLMMock.mockClear();
 });
@@ -371,6 +371,18 @@ describe('visual style resolution threads into image prompts', () => {
     // 'cinematic' fragment includes "photorealistic" and "35mm film".
     const params = enqueueJobMock.mock.calls.at(-1)[0].params;
     expect(params.prompt).toMatch(/photorealistic|35mm film/i);
+  });
+});
+
+describe('per-stage lock enforcement', () => {
+  it('checks the comicPages lock before queueing a cover render', async () => {
+    await enqueueComicCover('iss-test', {});
+    expect(assertStageUnlockedMock).toHaveBeenCalledWith(expect.objectContaining({ id: 'iss-test' }), 'comicPages');
+  });
+
+  it('checks the storyboards lock before queueing a scene video', async () => {
+    await enqueueStoryboardSceneVideo('iss-test', 0, { aspectRatio: '16:9' });
+    expect(assertStageUnlockedMock).toHaveBeenCalledWith(expect.objectContaining({ id: 'iss-test' }), 'storyboards');
   });
 });
 

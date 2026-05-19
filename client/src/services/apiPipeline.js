@@ -84,10 +84,18 @@ export const createPipelineSeries = (data) => request('/pipeline/series', {
   method: 'POST',
   body: JSON.stringify(data),
 });
-export const updatePipelineSeries = (id, patch) => request(`/pipeline/series/${encodeURIComponent(id)}`, {
+export const updatePipelineSeries = (id, patch, requestOptions = {}) => request(`/pipeline/series/${encodeURIComponent(id)}`, {
   method: 'PATCH',
   body: JSON.stringify(patch),
+  ...requestOptions,
 });
+
+export const setPipelineArcFieldLock = (id, field, locked, requestOptions = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(id)}/arc-fields/${encodeURIComponent(field)}/lock`, {
+    method: 'PATCH',
+    body: JSON.stringify({ locked }),
+    ...requestOptions,
+  });
 export const deletePipelineSeries = (id) => request(`/pipeline/series/${encodeURIComponent(id)}`, {
   method: 'DELETE',
 });
@@ -117,10 +125,11 @@ export const createPipelineIssue = (seriesId, data) =>
 
 export const getPipelineIssue = (id) => request(`/pipeline/issues/${encodeURIComponent(id)}`);
 
-export const updatePipelineIssue = (id, patch) =>
+export const updatePipelineIssue = (id, patch, requestOptions = {}) =>
   request(`/pipeline/issues/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     body: JSON.stringify(patch),
+    ...requestOptions,
   });
 
 export const deletePipelineIssue = (id) =>

@@ -826,6 +826,34 @@ describe('arcPlanner — commitSeasonsWithRemap', () => {
     expect(out.series.arc.protagonistArc).toBe('a fresh pa');
     expect(out.series.arc.shape).toBe('icarus');
   });
+
+  it('honors arc field locks toggled after the caller snapshot was read', async () => {
+    const s = await setupSeries({
+      arc: {
+        logline: 'original logline',
+        summary: 'original summary',
+        themes: [],
+        protagonistArc: '',
+        shape: null,
+        status: 'draft',
+      },
+    });
+    const stale = await seriesSvc.getSeries(s.id);
+    await seriesSvc.updateSeries(s.id, {
+      arc: { ...stale.arc, logline: 'latest locked logline' },
+      locked: { arcFields: { logline: true } },
+    });
+    const out = await planner.commitSeasonsWithRemap(stale, {
+      arc: {
+        ...stale.arc,
+        logline: 'incoming overwrite',
+        summary: 'incoming summary',
+      },
+      seasons: [],
+    });
+    expect(out.series.arc.logline).toBe('latest locked logline');
+    expect(out.series.arc.summary).toBe('incoming summary');
+  });
 });
 
 describe('arcPlanner — mergeArcWithLocks', () => {

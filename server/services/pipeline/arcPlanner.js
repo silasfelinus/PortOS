@@ -870,7 +870,7 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
   // Verify (read-only) stays enabled — the user can act on findings manually.
   if (series.locked?.arc === true) {
     throw new ServerError(
-      'Arc is locked — unlock it before auto-resolving findings',
+      'Arc is locked — unlock it before rewriting the arc',
       { status: 400, code: ERR_VALIDATION },
     );
   }
@@ -996,15 +996,23 @@ export function mergeArcWithLocks(currentArc, nextArc, lockedFields) {
  * are restored from `currentSeries.arc` before the persist, so an auto-resolve
  * that proposes a new logline can preserve the user-frozen themes verbatim.
  *
- * `currentSeries` is the pre-write snapshot; pass the result of `getSeries(id)`
- * so we know which ids existed before the write.
+ * `currentSeries` identifies the target series. The helper refreshes the
+ * latest snapshot before writing so locks toggled while an LLM run is in
+ * flight are honored at commit time.
  */
 export async function commitSeasonsWithRemap(currentSeries, { arc, seasons }) {
   const seriesId = currentSeries.id;
-  const mergedArc = mergeArcWithLocks(currentSeries.arc, arc, currentSeries.locked?.arcFields);
+  const latestSeries = await getSeries(seriesId);
+  if (latestSeries.locked?.arc === true) {
+    throw new ServerError(
+      'Arc is locked — unlock it before rewriting the arc',
+      { status: 400, code: ERR_VALIDATION },
+    );
+  }
+  const mergedArc = mergeArcWithLocks(latestSeries.arc, arc, latestSeries.locked?.arcFields);
   const newIds = new Set((seasons || []).map((s) => s.id));
-  const droppedOldSeasons = (currentSeries.seasons || []).filter((s) => !newIds.has(s.id));
-  const oldIds = new Set((currentSeries.seasons || []).map((s) => s.id));
+  const droppedOldSeasons = (latestSeries.seasons || []).filter((s) => !newIds.has(s.id));
+  const oldIds = new Set((latestSeries.seasons || []).map((s) => s.id));
   const newlyMintedSeasons = (seasons || []).filter((s) => !oldIds.has(s.id));
   const remap = buildSeasonRemap(droppedOldSeasons, newlyMintedSeasons);
   const droppedIdSet = new Set(droppedOldSeasons.map((s) => s.id));

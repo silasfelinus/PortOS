@@ -223,6 +223,7 @@ const seriesPatchSchema = z.object({
   issueCountTarget: z.number().int().min(0).max(seriesSvc.ISSUE_COUNT_TARGET_MAX).optional(),
   llm: llmSchema,
 }).refine((p) => Object.keys(p).length > 0, { message: 'patch must include at least one field' });
+const arcFieldLockSchema = z.object({ locked: z.boolean() });
 
 // Season-resource schemas: dedicated CRUD on a sibling resource so the
 // client can edit one season without resending the whole series patch.
@@ -256,6 +257,7 @@ const stageInputSchema = z.object({
   input: z.string().max(issuesSvc.STAGE_INPUT_MAX).optional(),
   output: z.string().max(issuesSvc.STAGE_OUTPUT_MAX).optional(),
   errorMessage: z.string().max(issuesSvc.STAGE_NOTES_MAX).optional(),
+  locked: z.boolean().optional(),
 });
 
 // Visual stage records also accept pages/scenes/cdProjectId/videoPath — those
@@ -839,6 +841,13 @@ router.get('/series/:id', asyncHandler(async (req, res) => {
 router.patch('/series/:id', asyncHandler(async (req, res) => {
   const body = validateRequest(seriesPatchSchema, req.body ?? {});
   const s = await seriesSvc.updateSeries(req.params.id, body).catch((err) => { throw mapServiceError(err); });
+  res.json(s);
+}));
+
+router.patch('/series/:id/arc-fields/:field/lock', asyncHandler(async (req, res) => {
+  const body = validateRequest(arcFieldLockSchema, req.body ?? {});
+  const s = await seriesSvc.setArcFieldLock(req.params.id, req.params.field, body.locked)
+    .catch((err) => { throw mapServiceError(err); });
   res.json(s);
 }));
 
