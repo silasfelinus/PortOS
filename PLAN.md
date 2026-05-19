@@ -183,6 +183,10 @@ God-file decomposition candidates — none are bugs; pick up when touching the f
 
 ---
 
+## Deferred from better/2026-05-19
+
+- [ ] **Client formatter dedupe — signatures differ, skipped.** `client/src/pages/VideoTimelineEditor.jsx:41` defines `formatTime(sec)` (outputs `M:SS.ss` for video timecodes) vs shared `formatTime(timestamp)` (relative time like "5m ago"). `client/src/pages/VideoTimeline.jsx:7` defines `formatDuration(sec)` in seconds; shared alternatives are `formatDurationMs` (ms) and `formatDurationMin` (minutes). `client/src/components/brain/tabs/ImportTab.jsx:56` defines `formatDate` with `month: 'short'` and `'—'` fallback; shared version uses `month: 'long'` and returns `null`. All three need either reconciliation of the shared helper signatures or new named exports (`formatTimecode`, `formatDurationSec`) added to `client/src/utils/formatters.js` before the locals can be removed.
+
 ## Future Ideas
 
 - **Identity Context Injection** — per-task-type digital twin preamble toggle.

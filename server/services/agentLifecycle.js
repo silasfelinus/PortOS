@@ -8,7 +8,7 @@
 import { join, relative, resolve, sep } from 'path';
 import { readFile, unlink, rm } from 'fs/promises';
 import { existsSync } from 'fs';
-import { execSync } from 'child_process';
+import { execGit } from '../lib/execGit.js';
 import { cosEvents, emitLog } from './cosEvents.js';
 import { registerAgent, updateAgent, completeAgent, appendAgentOutput } from './cosAgents.js';
 import { getConfig, updateTask, addTask, getTaskById, checkStagePrecondition } from './cos.js';
@@ -319,7 +319,7 @@ export async function spawnAgentForTask(task) {
           const { baseBranch: defaultBranch } = await git.getRepoBranches(workspacePath).catch(() => ({ baseBranch: null }));
           if (defaultBranch) {
             await git.checkout(workspacePath, defaultBranch).catch(() => {});
-            try { execSync(`git merge --ff-only origin/${defaultBranch}`, { cwd: workspacePath, stdio: 'ignore', windowsHide: true }); } catch (err) { emitLog('warn', `Fast-forward merge of ${defaultBranch} failed: ${err.message}`, { taskId: task.id }); }
+            await execGit(['merge', '--ff-only', `origin/${defaultBranch}`], workspacePath).catch(err => { emitLog('warn', `Fast-forward merge of ${defaultBranch} failed: ${err.message}`, { taskId: task.id }); });
           }
         }
 
