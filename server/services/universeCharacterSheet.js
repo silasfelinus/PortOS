@@ -27,6 +27,9 @@ import { findOrCreateUniverseCollection } from './mediaCollections.js';
 import {
   flattenStats, flattenPalette, flattenWardrobes, flattenProps, flattenNamedList,
 } from '../lib/canonPrompt.js';
+import {
+  claimPendingSheetSlot, getPendingSheetSlot, releasePendingSheetSlot,
+} from './universeCharacterSheetSlot.js';
 
 // 2048×1536 keeps panel labels legible while still rendering in a single
 // pass on Apple Silicon local backends. Codex / nano-banana ignore the
@@ -159,14 +162,13 @@ export function buildCharacterReferenceSheetPrompt(universe, character) {
 const sheetFilename = (universeId, characterId, generationId) =>
   `universe-${shortId(universeId)}-${shortId(characterId)}-sheet-${shortId(generationId)}.png`;
 
-// `(universeId, characterId) → latest generationId requested`. When a new
-// render starts for a character it claims the slot; when a render completes,
-// we only stamp `referenceSheetImageRef` if the slot STILL holds our
-// generationId (no newer render started during ours). Prevents an
-// older-but-slower render from clobbering a newer-but-finished one. The map
-// grows bounded by the number of characters ever rendered.
-const _latestPendingByCharacter = new Map();
-const pendingKey = (universeId, characterId) => `${universeId}:${characterId}`;
+// `(universeId, characterId) → latest generationId requested` is owned by
+// `./universeCharacterSheetSlot.js` (extracted so universeBuilder.js can
+// clear slots on delete without an import cycle). The supersede-aware
+// contract is unchanged: a render claims the slot at enqueue, the
+// completion handler only stamps `referenceSheetImageRef` when the slot
+// still holds its jobId, and a newer render overwrites the slot so the
+// older one sees itself as superseded.
 
 // Single-dispatcher subscription so N pending sheets don't attach 4*N
 // listeners on the global `mediaJobEvents` emitter (Node defaults to a
@@ -299,7 +301,7 @@ export async function renderCharacterReferenceSheet(universeId, entryId, options
   // Claim the latest-pending slot for this character. onSheetComplete checks
   // it before stamping — guards against an older-but-slower render finishing
   // after a newer one and overwriting the newer pointer.
-  _latestPendingByCharacter.set(pendingKey(universeId, entryId), jobId);
+  claimPendingSheetSlot(universeId, entryId, jobId);
 
   // Subscribe to the queue's completion bus via the shared sheet
   // dispatcher (NOT imageGenEvents directly — the queue mediates the
@@ -349,9 +351,7 @@ export async function renderCharacterReferenceSheet(universeId, entryId, options
     onFailed: (job) => {
       detach();
       // Release the slot so a retry render doesn't get superseded by this dead one.
-      if (_latestPendingByCharacter.get(pendingKey(universeId, entryId)) === jobId) {
-        _latestPendingByCharacter.delete(pendingKey(universeId, entryId));
-      }
+      releasePendingSheetSlot(universeId, entryId, jobId);
       console.log(`⚠️ Character sheet render ${job.status} [${shortId(jobId)}]: ${job.error || 'unknown'}`);
     },
   });
@@ -387,11 +387,12 @@ export async function onSheetComplete({ universeId, entryId, jobId, sourceFilena
   console.log(`📸 Character sheet copied to image-refs: ${destFilename}`);
 
   // If a newer render has been started for this character while ours was in
-  // flight, the slot now holds someone else's jobId. Skip the stamp — the
-  // newer render will stamp its own filename when it finishes. Without this,
-  // an older-but-slower render could overwrite a newer-but-finished pointer.
-  const key = pendingKey(universeId, entryId);
-  if (_latestPendingByCharacter.get(key) !== jobId) {
+  // flight (OR the character was deleted, which clears the slot), the slot
+  // no longer holds our jobId. Skip the stamp — the newer render will stamp
+  // its own filename when it finishes, and a deleted character would
+  // re-introduce an orphaned pointer. Without this, an older-but-slower
+  // render could overwrite a newer-but-finished pointer.
+  if (getPendingSheetSlot(universeId, entryId) !== jobId) {
     console.log(`⏭️ Character sheet [${shortId(jobId)}] superseded by newer render — file saved, pointer not stamped`);
     return { filename: destFilename, path: destPath, superseded: true };
   }
@@ -420,9 +421,7 @@ export async function onSheetComplete({ universeId, entryId, jobId, sourceFilena
   // and skip its own stamp — leaving the older filename persisted. A
   // failed stamp leaves the slot owned by us so the next render-start
   // cleanly overwrites it.
-  if (_latestPendingByCharacter.get(key) === jobId) {
-    _latestPendingByCharacter.delete(key);
-  }
+  releasePendingSheetSlot(universeId, entryId, jobId);
   if (!stamped) {
     console.log(`⚠️ Character ${entryId} not found post-render — sheet saved but not linked`);
     return null;
