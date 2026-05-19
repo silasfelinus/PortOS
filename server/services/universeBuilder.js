@@ -30,7 +30,7 @@ import { randomUUID } from 'crypto';
 import { PATHS, atomicWrite, readJSONFile, ensureDir, resolveImageRef } from '../lib/fileUtils.js';
 import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt.js';
-import { richCanonDescriptorFragments } from '../lib/canonPrompt.js';
+import { flattenCanonDescriptorFragments, richCanonDescriptorFragments } from '../lib/canonPrompt.js';
 import {
   sanitizeBibleList, BIBLE_KIND, BIBLE_FIELD, BIBLE_LIMITS, BIBLE_SOURCE,
   SERVER_OWNED_CHARACTER_FIELDS,
@@ -1439,9 +1439,7 @@ export function synthesizeCanonPrompt(kind, entry) {
     ? entry.slugline.trim()
     : '';
   const identifier = name || sluglineId;
-  const body = richCanonDescriptorFragments(kind, entry)
-    .map((f) => (f.prefix ? `${f.prefix}: ${f.value}` : f.value))
-    .join('. ');
+  const body = flattenCanonDescriptorFragments(richCanonDescriptorFragments(kind, entry));
   if (identifier && body) return `${identifier} — ${body}`;
   return identifier || body;
 }
