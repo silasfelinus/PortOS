@@ -33,6 +33,7 @@ import {
 import toast from '../ui/Toast';
 import { timeAgo } from '../../utils/formatters';
 import { useArmedAction } from '../../hooks/useArmedAction';
+import { useLockToggle } from '../../hooks/useLockToggle';
 import {
   createPipelineIssue, deletePipelineIssue, updatePipelineIssue,
   createPipelineSeason, updatePipelineSeason, deletePipelineSeason,
@@ -175,7 +176,18 @@ function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
   // show its own spinner without blocking the rest of the page.
   const [resolvingIdx, setResolvingIdx] = useState(new Set());
   const [confirmingRegen, setConfirmingRegen] = useState(false);
-  const [lockBusy, setLockBusy] = useState(false);
+  const { busy: lockBusy, toggle: toggleArcLock } = useLockToggle({
+    patchFn: (next) => updatePipelineSeries(series.id, {
+      locked: { ...(series.locked || {}), arc: next },
+    }, { silent: true }),
+    onSuccess: (updated, next) => {
+      onSeriesUpdate(updated);
+      if (next) setConfirmingRegen(false);
+    },
+    lockedMessage: 'Arc locked — regeneration and auto-resolve are now blocked',
+    unlockedMessage: 'Arc unlocked',
+    errorMessage: 'Failed to update lock',
+  });
 
   const llmOverride = useMemo(() => ({
     providerOverride: series.llm?.provider || undefined,
@@ -205,23 +217,6 @@ function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
     toast.success('Arc generated and saved');
   };
 
-  const toggleArcLock = async () => {
-    const next = !arcLocked;
-    setLockBusy(true);
-    const updated = await updatePipelineSeries(series.id, {
-      locked: { ...(series.locked || {}), arc: next },
-    }, { silent: true }).catch((err) => {
-      toast.error(err.message || 'Failed to update lock');
-      return null;
-    });
-    setLockBusy(false);
-    if (!updated) return;
-    onSeriesUpdate(updated);
-    if (next) setConfirmingRegen(false);
-    toast.success(next
-      ? 'Arc locked — regeneration and auto-resolve are now blocked'
-      : 'Arc unlocked');
-  };
   const runVerify = async () => {
     setRunning('verify');
     const result = await withFlush(() =>
@@ -317,7 +312,7 @@ function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
           {hasGeneratedArc ? (
             <button
               type="button"
-              onClick={toggleArcLock}
+              onClick={() => toggleArcLock(arcLocked)}
               disabled={lockBusy || !!running}
               title={arcLocked
                 ? 'Arc is locked — click to unlock and allow regeneration'
@@ -567,24 +562,17 @@ function ThemeChips({ series, arc, onSeriesUpdate }) {
 function FieldLockToggle({ series, field, label, onSeriesUpdate }) {
   const lockedFields = series.locked?.arcFields || {};
   const locked = lockedFields[field] === true;
-  const [saving, setSaving] = useState(false);
-  const toggle = async () => {
-    if (saving) return;
-    setSaving(true);
-    const updated = await setPipelineArcFieldLock(series.id, field, !locked, { silent: true })
-      .catch((err) => {
-        toast.error(err.message || `${label} lock update failed`);
-        return null;
-      });
-    setSaving(false);
-    if (!updated) return;
-    onSeriesUpdate(updated);
-    toast.success(locked ? `${label} unlocked` : `${label} locked — preserved on regenerate / auto-resolve`);
-  };
+  const { busy: saving, toggle } = useLockToggle({
+    patchFn: (next) => setPipelineArcFieldLock(series.id, field, next, { silent: true }),
+    onSuccess: (updated) => onSeriesUpdate(updated),
+    lockedMessage: `${label} locked — preserved on regenerate / auto-resolve`,
+    unlockedMessage: `${label} unlocked`,
+    errorMessage: `${label} lock update failed`,
+  });
   return (
     <button
       type="button"
-      onClick={toggle}
+      onClick={() => toggle(locked)}
       disabled={saving}
       aria-pressed={locked}
       title={locked
@@ -818,8 +806,17 @@ function SeasonRow({ series, season, seasons, issues, onSeriesUpdate, onIssuesUp
   const [editing, setEditing] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [verifyIssues, setVerifyIssues] = useState(null);
-  const [lockBusy, setLockBusy] = useState(false);
   const seasonLocked = season.locked === true;
+  const { busy: lockBusy, toggle: toggleSeasonLock } = useLockToggle({
+    patchFn: (next) => updatePipelineSeason(series.id, season.id, { locked: next }),
+    onSuccess: (updated) => onSeriesUpdate({
+      ...series,
+      seasons: seasons.map((s) => (s.id === season.id ? updated : s)),
+    }),
+    lockedMessage: `Volume ${season.number} locked — generation, delete, and content edits are blocked`,
+    unlockedMessage: `Volume ${season.number} unlocked`,
+    errorMessage: 'Lock toggle failed',
+  });
   // Volume beat-sheet bulk run — `active` gates SSE subscription; the latest
   // frame drives the per-issue label on the button.
   const [beatsActive, setBeatsActive] = useState(false);
@@ -930,24 +927,6 @@ function SeasonRow({ series, season, seasons, issues, onSeriesUpdate, onIssuesUp
     toast.success(`Generated ${n} issue${n === 1 ? '' : 's'} / episode${n === 1 ? '' : 's'}${extractedSummary}`);
   };
 
-  const toggleSeasonLock = async () => {
-    const next = !seasonLocked;
-    setLockBusy(true);
-    const updated = await updatePipelineSeason(series.id, season.id, { locked: next }).catch((err) => {
-      toast.error(err.message || 'Lock toggle failed');
-      return null;
-    });
-    setLockBusy(false);
-    if (!updated) return;
-    onSeriesUpdate({
-      ...series,
-      seasons: seasons.map((s) => (s.id === season.id ? updated : s)),
-    });
-    toast.success(next
-      ? `Volume ${season.number} locked — generation, delete, and content edits are blocked`
-      : `Volume ${season.number} unlocked`);
-  };
-
   // 'idle' | 'confirm' | 'deleting' — drives an inline confirm row that swaps
   // in for the Edit/Trash buttons. Two-click "arm" was confusing (see
   // feedback memory); inline confirm matches LayoutEditor's pattern.
@@ -994,7 +973,7 @@ function SeasonRow({ series, season, seasons, issues, onSeriesUpdate, onIssuesUp
             <>
               <button
                 type="button"
-                onClick={toggleSeasonLock}
+                onClick={() => toggleSeasonLock(seasonLocked)}
                 disabled={lockBusy}
                 className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs border disabled:opacity-50 ${
                   seasonLocked

@@ -30,6 +30,7 @@ import {
   imageEdgeSchema,
   refineImagePixelCap,
   PIXEL_CAP_MESSAGE,
+  optionalBooleanMap,
 } from '../lib/validation.js';
 
 import * as seriesSvc from '../services/pipeline/series.js';
@@ -176,10 +177,8 @@ const seasonSchema = z.object({
 // holds the per-field arc locks (logline / summary / themes / etc.) that
 // `commitSeasonsWithRemap` honors when rewriting `series.arc`.
 const seriesLockedSchema = z.object({
-  ...Object.fromEntries(seriesSvc.LOCKABLE_STAGES.map((k) => [k, z.boolean().optional()])),
-  arcFields: z.object(
-    Object.fromEntries(seriesSvc.ARC_LOCKABLE_FIELDS.map((k) => [k, z.boolean().optional()])),
-  ).optional(),
+  ...optionalBooleanMap(seriesSvc.LOCKABLE_STAGES),
+  arcFields: z.object(optionalBooleanMap(seriesSvc.ARC_LOCKABLE_FIELDS)).optional(),
 }).passthrough();
 
 const seriesCreateSchema = z.object({

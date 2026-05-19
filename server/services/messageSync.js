@@ -1,6 +1,6 @@
-import { readFile } from 'fs/promises';
+
 import { join } from 'path';
-import { atomicWrite, ensureDir, filterBySearch as genericFilterBySearch, PATHS, safeDate, safeJSONParse, UUID_RE } from '../lib/fileUtils.js';
+import { atomicWrite, ensureDir, filterBySearch as genericFilterBySearch, PATHS, safeDate, safeJSONParse, UUID_RE, tryReadFile } from '../lib/fileUtils.js';
 import { getAccount, updateSyncStatus } from './messageAccounts.js';
 
 const CACHE_DIR = join(PATHS.messages, 'cache');
@@ -15,7 +15,7 @@ async function loadCache(accountId) {
   if (!UUID_RE.test(accountId)) throw new Error(`Invalid accountId: ${accountId}`);
   await ensureDir(CACHE_DIR);
   const filePath = join(CACHE_DIR, `${accountId}.json`);
-  const content = await readFile(filePath, 'utf-8').catch(() => null);
+  const content = await tryReadFile(filePath);
   if (!content) return { syncCursor: null, messages: [] };
   const parsed = safeJSONParse(content, { syncCursor: null, messages: [] }, { context: `messageCache:${accountId}` });
   if (!parsed || !Array.isArray(parsed.messages)) return { syncCursor: null, messages: [] };

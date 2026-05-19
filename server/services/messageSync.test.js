@@ -2,13 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock fs/promises before importing the module
 vi.mock('fs/promises', () => ({
-  readFile: vi.fn(),
   writeFile: vi.fn(),
   readdir: vi.fn(),
   unlink: vi.fn()
 }));
 
 vi.mock('../lib/fileUtils.js', () => ({
+  tryReadFile: vi.fn(),
   atomicWrite: vi.fn().mockResolvedValue(undefined),
   ensureDir: vi.fn(),
   PATHS: { messages: '/mock/data/messages' },
@@ -44,8 +44,8 @@ vi.mock('./messagePlaywrightSync.js', () => ({
   syncPlaywright: vi.fn()
 }));
 
-import { readFile, readdir, unlink } from 'fs/promises';
-import { atomicWrite } from '../lib/fileUtils.js';
+import { readdir, unlink } from 'fs/promises';
+import { tryReadFile as readFile, atomicWrite } from '../lib/fileUtils.js';
 import { getMessages, getMessage, syncAccount, deleteCache, getSyncStatus } from './messageSync.js';
 import { getAccount, updateSyncStatus } from './messageAccounts.js';
 import { syncGmail } from './messageGmailSync.js';
@@ -56,8 +56,8 @@ const VALID_UUID_2 = '22222222-2222-2222-2222-222222222222';
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // Default: cache file not found
-  readFile.mockRejectedValue(new Error('ENOENT'));
+  // Default: cache file not found — tryReadFile returns null on read error
+  readFile.mockResolvedValue(null);
 });
 
 // ─── Cache I/O: getMessages ───

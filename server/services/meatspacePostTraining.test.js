@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../lib/fileUtils.js', () => ({
+tryReadFile: vi.fn().mockResolvedValue(null),
   atomicWrite: vi.fn().mockResolvedValue(undefined),
   PATHS: { meatspace: '/tmp/test-meatspace' },
   ensureDir: vi.fn().mockResolvedValue(undefined),

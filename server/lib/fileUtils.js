@@ -285,6 +285,21 @@ export function safeJSONParse(str, defaultValue = null, { allowArray = true, log
  * const config = await readJSONFile('./config.json', { port: 3000 });
  * const items = await readJSONFile('./items.json', []);
  */
+/**
+ * Read a file, returning null on any error (missing file, permission denied, etc.).
+ *
+ * Collapses the inlined `readFile(path, encoding).catch(() => null)` pattern used
+ * across services for "optional file — fall through if absent." For Buffer reads,
+ * pass `encoding: null` (or omit when calling with no second arg, default 'utf8').
+ *
+ * @param {string} filePath - Path to read
+ * @param {string|null} [encoding='utf8'] - Encoding (null for Buffer)
+ * @returns {Promise<string|Buffer|null>} File contents or null on any read error
+ */
+export async function tryReadFile(filePath, encoding = 'utf8') {
+  return readFile(filePath, encoding).catch(() => null);
+}
+
 export async function readJSONFile(filePath, defaultValue = null, { allowArray = true, logError = true } = {}) {
   let content;
   try {

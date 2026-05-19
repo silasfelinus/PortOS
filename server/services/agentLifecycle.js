@@ -17,7 +17,7 @@ import { getActiveProvider, getAllProviders, getProviderById } from './providers
 import { isProviderAvailable, markProviderUsageLimit, markProviderRateLimited, getFallbackProvider, getProviderStatus } from './providerStatus.js';
 import { PIPELINE_BEHAVIOR_FLAGS, MAX_TOTAL_SPAWNS } from '../lib/validation.js';
 import { isInternalTaskId } from '../lib/taskParser.js';
-import { ensureDir, PATHS } from '../lib/fileUtils.js';
+import { ensureDir, PATHS, tryReadFile } from '../lib/fileUtils.js';
 import { getAppById } from './apps.js';
 import { createToolExecution, startExecution, completeExecution, errorExecution } from './toolStateMachine.js';
 import { determineLane, acquire, release } from './executionLanes.js';
@@ -878,7 +878,7 @@ export async function extractPipelineOutputSummary(task, workspacePath, outputBu
   // For review stages: read REVIEW.md from workspace (the deliverable)
   if (promptKey.includes('review') && !promptKey.includes('implement') && workspacePath) {
     const reviewPath = join(workspacePath, 'REVIEW.md');
-    const content = await readFile(reviewPath, 'utf-8').catch(() => null);
+    const content = await tryReadFile(reviewPath);
     if (content?.trim()) return content.trim();
   }
 
@@ -1210,7 +1210,7 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
       const planWorkspace = agentState?.metadata?.workspacePath || task?.metadata?.repoPath || ROOT_DIR;
       const markerPath = join(planWorkspace, '.plan-questions.md');
 
-      const markerContent = await readFile(markerPath, 'utf8').catch(() => null);
+      const markerContent = await tryReadFile(markerPath);
       if (markerContent) {
         const titleMatch = markerContent.match(/^#\s+Plan Question:\s*(.+)/m);
         const title = titleMatch?.[1]?.trim() || 'PLAN.md item needs your input';
