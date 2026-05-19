@@ -36,7 +36,7 @@ import {
   buildCharByKey, matchSceneCharacters, matchCharactersInText,
   matchPlacesInText, matchObjectsInText,
 } from '../../lib/scenePrompt.js';
-import { richCanonDescriptorFragments } from '../../lib/canonPrompt.js';
+import { flattenCanonDescriptorFragments, richCanonDescriptorFragments } from '../../lib/canonPrompt.js';
 import { composeStyledPrompt } from '../../lib/composeStyledPrompt.js';
 import { getDefaultVideoModelId, getVideoModels } from '../../lib/mediaModels.js';
 import { runStagedLLM } from '../../lib/stageRunner.js';
@@ -607,9 +607,7 @@ export function composeComicPagePrompt({
   // is supported (a single page can span more than one location).
   const placesClause = (matchedPlaces || [])
     .map((p) => {
-      const body = richCanonDescriptorFragments('place', p)
-        .map((f) => (f.prefix ? `${f.prefix}: ${f.value}` : f.value))
-        .join('. ');
+      const body = flattenCanonDescriptorFragments(richCanonDescriptorFragments('place', p));
       const head = p.name ? `${p.name}:` : '';
       return [head, body].filter(Boolean).join(' ');
     })
