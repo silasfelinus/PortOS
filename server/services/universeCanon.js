@@ -98,14 +98,15 @@ export async function extractCanonFromProse(universeId, opts = {}) {
     const merged = mergeExtractedBible(universe[field] || [], result.extracted, kind, mergeOpts);
     // Opt-out path: caller asked for unlocked inserts. The merge step left
     // `locked` absent on new entries; sanitizeTemplate.defaultLockCanon
-    // would then read them back as locked. Stamp explicit `false` on every
-    // entry the merge inserted that doesn't already have a `locked` field
-    // so the unlock survives the round-trip.
+    // would then read them back as locked. Force explicit `locked: false`
+    // on every new insert so the opt-out survives the round-trip — even
+    // if the extractor payload tried to set `locked: true`, `autoLock:
+    // false` is the explicit override. Existing entries are skipped via
+    // existingIds (they keep their current lock state).
     if (!wantsLock) {
       patch[field] = merged.map((e) => {
         if (!e || typeof e !== 'object') return e;
         if (existingIds.has(e.id)) return e;
-        if (e.locked === true || e.locked === false) return e;
         return { ...e, locked: false };
       });
     } else {
@@ -263,25 +264,33 @@ export async function setCanonEntryLock(universeId, kind, entryId, locked) {
       { status: 400, code: 'UNIVERSE_CANON_INVALID_KIND' },
     );
   }
-  const universe = await getUniverse(universeId);
   const field = BIBLE_FIELD[kind];
-  const list = Array.isArray(universe[field]) ? universe[field] : [];
-  const idx = list.findIndex((e) => e.id === entryId);
-  if (idx < 0) {
+  let found = false;
+  // Mutator form (same as setCanonKindLockAll) so the flip is computed from
+  // the freshest persisted state inside updateUniverse's write queue. A
+  // read-modify-write split (getUniverse → updateUniverse(patchObject))
+  // would replace the full canon array via PATCHABLE_SCALARS and could
+  // clobber a concurrent render-completion `imageRefs[]` append landing
+  // between the read and the write.
+  const updated = await updateUniverse(universeId, (cur) => {
+    const list = Array.isArray(cur[field]) ? cur[field] : [];
+    const idx = list.findIndex((e) => e.id === entryId);
+    if (idx < 0) return null;
+    found = true;
+    const target = list[idx];
+    // No-op short-circuit avoids a write + updatedAt churn on redundant toggles.
+    if ((target.locked === true) === (locked === true)) return null;
+    // applyCanonExtras now persists explicit locked:false (the universe-builder
+    // contract), so the bit survives the round-trip and the unlock sticks.
+    const nextList = list.map((e, i) => (i === idx ? { ...e, locked } : e));
+    return { [field]: nextList };
+  });
+  if (!found) {
     throw new ServerError(
       `Canon ${kind} ${entryId} not found in universe`,
       { status: 404, code: 'UNIVERSE_CANON_NOT_FOUND' },
     );
   }
-  const target = list[idx];
-  // No-op short-circuit avoids a write + updatedAt churn on redundant toggles.
-  if ((target.locked === true) === (locked === true)) {
-    return { universe, entry: target };
-  }
-  // applyCanonExtras now persists explicit locked:false (the universe-builder
-  // contract), so the bit survives the round-trip and the unlock sticks.
-  const nextList = list.map((e, i) => (i === idx ? { ...e, locked } : e));
-  const updated = await updateUniverse(universeId, { [field]: nextList });
   const entry = (updated[field] || []).find((e) => e.id === entryId) || null;
   return { universe: updated, entry };
 }
