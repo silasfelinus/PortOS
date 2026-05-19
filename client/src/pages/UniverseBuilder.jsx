@@ -695,6 +695,14 @@ export default function UniverseBuilder() {
   // mount via `listImageGallery()` (the same call the History page uses)
   // and refreshed whenever a render completes (universe `runs` advances).
   const [galleryByFilename, setGalleryByFilename] = useState(() => new Map());
+  // Bumped on every job completion so the gallery-metadata fetch below
+  // re-runs once the new sidecar exists on disk. Keying the fetch only on
+  // `runs.length` was insufficient: that advances when a run is queued or
+  // loaded, NOT when one of its jobs completes — so a freshly rendered
+  // thumb would open the lightbox with label-only metadata until a full
+  // page reload.
+  const [galleryRefreshKey, setGalleryRefreshKey] = useState(0);
+  const bumpGalleryRefresh = useCallback(() => setGalleryRefreshKey((k) => k + 1), []);
   useEffect(() => {
     let cancelled = false;
     listImageGallery().then((list) => {
@@ -706,9 +714,9 @@ export default function UniverseBuilder() {
       setGalleryByFilename(map);
     }).catch(() => { /* non-fatal; modal falls back to filename-only display */ });
     return () => { cancelled = true; };
-    // Re-fetch when a new render run lands (runs array advances) so freshly
-    // rendered images pick up their metadata sidecar.
-  }, [runs.length]);
+    // `runs.length` covers initial-load and queue-time; `galleryRefreshKey`
+    // covers per-job completion (see bumpGalleryRefresh callers).
+  }, [runs.length, galleryRefreshKey]);
   const { annotations, updateAnnotation } = useMediaAnnotations();
   const previewItems = useMemo(() => {
     const out = [];
@@ -725,7 +733,12 @@ export default function UniverseBuilder() {
       // (legacy renders or pending re-fetch).
       const meta = galleryByFilename.get(filename) || null;
       out.push({
-        key: `universe-thumb:${filename}`,
+        // Same `image:<filename>` key normalizeImage() stamps everywhere
+        // else — History, Collections, ImageGen — so a star/note added
+        // from this lightbox is the SAME annotation record those pages
+        // already read. A page-local key would silently fork the user's
+        // favorites by surface.
+        key: `image:${filename}`,
         kind: 'image',
         filename,
         previewUrl: `/data/images/${filename}`,
@@ -1980,6 +1993,10 @@ export default function UniverseBuilder() {
                   return { ...d, categories: { ...d.categories, [bucket]: { ...cat, variations } } };
                 });
                 clearPendingForEntry(entryId, completedJobId);
+                // The new sidecar exists now — pull it into galleryByFilename
+                // so the lightbox opens with the real prompt/settings rather
+                // than label-only metadata.
+                bumpGalleryRefresh();
               }}
               onBulkRenderTrunk={() => {
                 const selection = Object.fromEntries(
@@ -2039,6 +2056,10 @@ export default function UniverseBuilder() {
                 return { ...d, categories: { ...d.categories, [bucket]: { ...cat, variations } } };
               });
               clearPendingForEntry(entryId, completedJobId);
+              // Pull the new sidecar into galleryByFilename so the lightbox
+              // opens with the real prompt/settings (mirrors the Cast/Places
+              // path's onJobCompletedForEntry above).
+              bumpGalleryRefresh();
             }}
           />
         )}
