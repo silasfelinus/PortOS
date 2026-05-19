@@ -331,15 +331,19 @@ async function writeState(state) {
   await atomicWrite(statePath(), state);
 }
 
-export async function listIssues({ seriesId = null } = {}) {
+export async function listIssues({ seriesId = null, offset = 0, limit = ISSUES_PER_RESPONSE_MAX, paginated = false } = {}) {
   const { issues } = await readState();
   const filtered = seriesId ? issues.filter((i) => i.seriesId === seriesId) : issues;
-  return [...filtered]
-    .sort((a, b) => {
-      if (a.seriesId !== b.seriesId) return a.seriesId.localeCompare(b.seriesId);
-      return (a.number || 0) - (b.number || 0);
-    })
-    .slice(0, ISSUES_PER_RESPONSE_MAX);
+  const sorted = [...filtered].sort((a, b) => {
+    if (a.seriesId !== b.seriesId) return a.seriesId.localeCompare(b.seriesId);
+    return (a.number || 0) - (b.number || 0);
+  });
+  const safeLimit = Math.min(Math.max(1, limit), ISSUES_PER_RESPONSE_MAX);
+  const safeOffset = Math.max(0, offset);
+  if (paginated) {
+    return { items: sorted.slice(safeOffset, safeOffset + safeLimit), total: sorted.length, offset: safeOffset, limit: safeLimit };
+  }
+  return sorted.slice(0, ISSUES_PER_RESPONSE_MAX);
 }
 
 /**

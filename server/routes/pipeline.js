@@ -31,6 +31,7 @@ import {
   refineImagePixelCap,
   PIXEL_CAP_MESSAGE,
 } from '../lib/validation.js';
+
 import * as seriesSvc from '../services/pipeline/series.js';
 import * as issuesSvc from '../services/pipeline/issues.js';
 import * as seasonsSvc from '../services/pipeline/seasons.js';
@@ -84,6 +85,12 @@ import {
 } from '../lib/issueLength.js';
 import { llmSchema } from './universeBuilder.js';
 import { ARC_LIMITS, ARC_STATUSES, ARC_SHAPE_IDS, ARC_ROLES, SEASON_STATUSES } from '../lib/storyArc.js';
+
+// Inline until better/code-quality lands and exports this from validation.js
+const issuesListQuerySchema = z.object({
+  offset: z.preprocess((v) => (v === undefined ? 0 : Number(v)), z.number().int().min(0)).default(0),
+  limit: z.preprocess((v) => (v === undefined ? 1000 : Number(v)), z.number().int().min(1).max(1000)).default(1000),
+});
 
 const router = Router();
 
@@ -874,7 +881,13 @@ router.get('/series/:id/issues', asyncHandler(async (req, res) => {
   // Validate the series exists so a typo returns 404 instead of [] (less
   // confusing for the UI).
   await seriesSvc.getSeries(req.params.id).catch((err) => { throw mapServiceError(err); });
-  res.json(await issuesSvc.listIssues({ seriesId: req.params.id }));
+  const hasPagination = req.query.offset !== undefined || req.query.limit !== undefined;
+  if (hasPagination) {
+    const { offset, limit } = validateRequest(issuesListQuerySchema, req.query);
+    res.json(await issuesSvc.listIssues({ seriesId: req.params.id, offset, limit, paginated: true }));
+  } else {
+    res.json(await issuesSvc.listIssues({ seriesId: req.params.id }));
+  }
 }));
 
 router.post('/series/:id/issues', asyncHandler(async (req, res) => {
