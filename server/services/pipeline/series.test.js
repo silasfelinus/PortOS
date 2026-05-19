@@ -211,5 +211,19 @@ describe('pipeline series service', () => {
       expect(updated.locked).toEqual({ arc: true });
       expect(updated.logline).toBe('new logline');
     });
+
+    it('setArcFieldLock merges against latest arcFields without clobbering siblings', async () => {
+      const s = await svc.createSeries({ name: 'X', locked: { arcFields: { logline: true } } });
+      const updated = await svc.setArcFieldLock(s.id, 'themes', true);
+      expect(updated.locked.arcFields).toEqual({ logline: true, themes: true });
+      const cleared = await svc.setArcFieldLock(s.id, 'logline', false);
+      expect(cleared.locked.arcFields).toEqual({ themes: true });
+    });
+
+    it('setArcFieldLock rejects unknown arc fields', async () => {
+      const s = await svc.createSeries({ name: 'X' });
+      await expect(svc.setArcFieldLock(s.id, 'bogus', true))
+        .rejects.toMatchObject({ code: svc.ERR_VALIDATION });
+    });
   });
 });

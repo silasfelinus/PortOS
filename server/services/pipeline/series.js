@@ -59,11 +59,26 @@ export const ISSUE_COUNT_TARGET_MAX = 999;
 
 export const LOCKABLE_STAGES = Object.freeze(['arc']);
 
+// Per-field arc lock targets. Each field can be individually frozen so
+// `resolveVerifyIssues` / `commitSeasonsWithRemap` rewrite unlocked fields
+// while preserving locked ones verbatim. Sibling to the binary `locked.arc`
+// (which freezes everything); the two stack — `locked.arc: true` always wins.
+export const ARC_LOCKABLE_FIELDS = Object.freeze([
+  'logline', 'summary', 'protagonistArc', 'themes', 'shape',
+]);
+
 const sanitizeSeriesLocked = (raw = {}) => {
   if (!raw || typeof raw !== 'object') return {};
   const out = {};
   for (const key of LOCKABLE_STAGES) {
     if (raw[key] === true) out[key] = true;
+  }
+  if (raw.arcFields && typeof raw.arcFields === 'object') {
+    const arcFields = {};
+    for (const k of ARC_LOCKABLE_FIELDS) {
+      if (raw.arcFields[k] === true) arcFields[k] = true;
+    }
+    if (Object.keys(arcFields).length > 0) out.arcFields = arcFields;
   }
   return out;
 };
@@ -256,6 +271,34 @@ export async function updateSeries(id, patch = {}) {
     });
   }
   return merged;
+}
+
+export async function setArcFieldLock(id, field, locked) {
+  if (!ARC_LOCKABLE_FIELDS.includes(field)) {
+    throw makeErr(`Unknown arc lock field: ${field}`, ERR_VALIDATION);
+  }
+  return queueSeriesWrite(async () => {
+    const state = await readState();
+    const idx = state.series.findIndex((s) => s.id === id);
+    if (idx < 0) throw makeErr(`Series not found: ${id}`, ERR_NOT_FOUND);
+    const cur = state.series[idx];
+    const arcFields = { ...(cur.locked?.arcFields || {}) };
+    if (locked === true) arcFields[field] = true;
+    else delete arcFields[field];
+    const nextLocked = { ...(cur.locked || {}) };
+    if (Object.keys(arcFields).length > 0) nextLocked.arcFields = arcFields;
+    else delete nextLocked.arcFields;
+    const next = sanitizeSeries({
+      ...cur,
+      locked: nextLocked,
+      updatedAt: new Date().toISOString(),
+    });
+    if (!next) throw makeErr('Invalid series payload', ERR_VALIDATION);
+    state.series[idx] = next;
+    await writeState(state);
+    emitRecordUpdated('series', next.id);
+    return next;
+  });
 }
 
 /**

@@ -175,11 +175,16 @@ const seasonSchema = z.object({
   locked: z.boolean().optional(),
 }).passthrough();
 
-// `.passthrough` keeps the door open for future per-season / per-field locks
-// without a schema bump — the series sanitizer is the source of truth.
-const seriesLockedSchema = z.object(
-  Object.fromEntries(seriesSvc.LOCKABLE_STAGES.map((k) => [k, z.boolean().optional()])),
-).passthrough();
+// `.passthrough` keeps the door open for future per-season locks without a
+// schema bump — the series sanitizer is the source of truth. `arcFields`
+// holds the per-field arc locks (logline / summary / themes / etc.) that
+// `commitSeasonsWithRemap` honors when rewriting `series.arc`.
+const seriesLockedSchema = z.object({
+  ...Object.fromEntries(seriesSvc.LOCKABLE_STAGES.map((k) => [k, z.boolean().optional()])),
+  arcFields: z.object(
+    Object.fromEntries(seriesSvc.ARC_LOCKABLE_FIELDS.map((k) => [k, z.boolean().optional()])),
+  ).optional(),
+}).passthrough();
 
 const seriesCreateSchema = z.object({
   name: z.string().trim().min(1).max(seriesSvc.NAME_MAX),
@@ -218,6 +223,7 @@ const seriesPatchSchema = z.object({
   issueCountTarget: z.number().int().min(0).max(seriesSvc.ISSUE_COUNT_TARGET_MAX).optional(),
   llm: llmSchema,
 }).refine((p) => Object.keys(p).length > 0, { message: 'patch must include at least one field' });
+const arcFieldLockSchema = z.object({ locked: z.boolean() });
 
 // Season-resource schemas: dedicated CRUD on a sibling resource so the
 // client can edit one season without resending the whole series patch.
@@ -251,6 +257,7 @@ const stageInputSchema = z.object({
   input: z.string().max(issuesSvc.STAGE_INPUT_MAX).optional(),
   output: z.string().max(issuesSvc.STAGE_OUTPUT_MAX).optional(),
   errorMessage: z.string().max(issuesSvc.STAGE_NOTES_MAX).optional(),
+  locked: z.boolean().optional(),
 });
 
 // Visual stage records also accept pages/scenes/cdProjectId/videoPath — those
@@ -598,6 +605,7 @@ const extractAudioLinesSchema = z.object({ force: z.boolean().optional() });
 router.post('/issues/:id/stages/audio/extract-lines', asyncHandler(async (req, res) => {
   const body = validateRequest(extractAudioLinesSchema, req.body ?? {});
   const issue = await issuesSvc.getIssue(req.params.id).catch((err) => { throw mapServiceError(err); });
+  issuesSvc.assertStageUnlocked(issue, 'audio');
   const existingLines = issue.stages?.audio?.lines || [];
   if (existingLines.length > 0 && !body.force) {
     throw new ServerError(
@@ -679,6 +687,7 @@ router.post('/issues/:id/stages/audio/lines/:lineIdx/render', asyncHandler(async
   }
   const body = validateRequest(lineRenderSchema, req.body ?? {});
   const issue = await issuesSvc.getIssue(req.params.id).catch((err) => { throw mapServiceError(err); });
+  issuesSvc.assertStageUnlocked(issue, 'audio');
   const lines = issue.stages?.audio?.lines || [];
   const line = lines[lineIdx];
   if (!line) {
@@ -832,6 +841,13 @@ router.get('/series/:id', asyncHandler(async (req, res) => {
 router.patch('/series/:id', asyncHandler(async (req, res) => {
   const body = validateRequest(seriesPatchSchema, req.body ?? {});
   const s = await seriesSvc.updateSeries(req.params.id, body).catch((err) => { throw mapServiceError(err); });
+  res.json(s);
+}));
+
+router.patch('/series/:id/arc-fields/:field/lock', asyncHandler(async (req, res) => {
+  const body = validateRequest(arcFieldLockSchema, req.body ?? {});
+  const s = await seriesSvc.setArcFieldLock(req.params.id, req.params.field, body.locked)
+    .catch((err) => { throw mapServiceError(err); });
   res.json(s);
 }));
 
@@ -1254,6 +1270,7 @@ router.post('/issues/:id/stages/:stageId/generate', asyncHandler(async (req, res
 router.post('/issues/:id/stages/storyboards/extract-scenes', asyncHandler(async (req, res) => {
   const body = validateRequest(extractScenesSchema, req.body ?? {});
   const issue = await issuesSvc.getIssue(req.params.id).catch((err) => { throw mapServiceError(err); });
+  issuesSvc.assertStageUnlocked(issue, 'storyboards');
   const series = await seriesSvc.getSeries(issue.seriesId).catch((err) => { throw mapServiceError(err); });
 
   const sourceKind = body.from;
@@ -1324,6 +1341,7 @@ router.post('/issues/:id/stages/storyboards/extract-scenes', asyncHandler(async 
 router.post('/issues/:id/stages/comicPages/extract-pages', asyncHandler(async (req, res) => {
   const body = validateRequest(extractComicPagesSchema, req.body ?? {});
   const issue = await issuesSvc.getIssue(req.params.id).catch((err) => { throw mapServiceError(err); });
+  issuesSvc.assertStageUnlocked(issue, 'comicPages');
 
   const source = (issue.stages?.comicScript?.output || '').trim();
   if (!source) {

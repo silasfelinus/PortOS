@@ -1208,6 +1208,17 @@ describe('pipeline routes', () => {
     expect(r.body.arcPosition).toBe(3);
   });
 
+  it('PATCH /issues/:id preserves per-stage locked flags through validation', async () => {
+    const app = makeApp();
+    const ser = await request(app).post('/api/pipeline/series').send({ name: 'S' });
+    const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'Ep 1' });
+    const r = await request(app).patch(`/api/pipeline/issues/${iss.body.id}`)
+      .send({ stages: { idea: { locked: true } } });
+    expect(r.status).toBe(200);
+    expect(r.body.stages.idea.locked).toBe(true);
+    expect(r.body.stages.idea.status).toBe('empty');
+  });
+
   it('PATCH /series/:id accepts arc payload', async () => {
     const app = makeApp();
     const ser = await request(app).post('/api/pipeline/series').send({ name: 'S' });
@@ -1220,6 +1231,19 @@ describe('pipeline routes', () => {
       themes: ['legacy', 'betrayal'],
       status: 'draft',
     });
+  });
+
+  it('PATCH /series/:id/arc-fields/:field/lock merges a single arc field lock', async () => {
+    const app = makeApp();
+    const ser = await request(app).post('/api/pipeline/series').send({
+      name: 'S',
+      locked: { arcFields: { logline: true } },
+    });
+    const r = await request(app)
+      .patch(`/api/pipeline/series/${ser.body.id}/arc-fields/themes/lock`)
+      .send({ locked: true });
+    expect(r.status).toBe(200);
+    expect(r.body.locked.arcFields).toEqual({ logline: true, themes: true });
   });
 
   // -----------------------
