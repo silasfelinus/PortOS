@@ -60,7 +60,6 @@ import { generateSeriesTitleLogo } from '../services/pipeline/seriesTitleLogo.js
 import { COMIC_PAGE_VARIANTS, slotKeyForVariant } from '../services/pipeline/owners.js';
 import { ASPECT_RATIOS, QUALITIES } from '../lib/creativeDirectorPresets.js';
 import { extractScenes, SOURCE_KIND } from '../lib/sceneExtractor.js';
-import { listVisualStyles } from '../lib/visualStyles.js';
 import { buildComicPdf, PAGE_SIZES, DEFAULT_PAGE_SIZE, ERR_NO_RENDERED_PAGES } from '../services/pipeline/comicPdf.js';
 import {
   buildVolumePdf,
@@ -127,16 +126,6 @@ const mapServiceError = (err) => {
 // Zod shapes (`characterSchema` et al.) and the `BIBLE_KIND` plumbing moved
 // out of this file when the series-side canon routes were retired.
 
-// Visual style ref — `{ id, customPrompt? }`. The id is validated lazily
-// (against the catalog in server/lib/visualStyles.js) by the sanitizer at
-// persist time so adding a new style doesn't force a schema bump. `id: null`
-// + `customPrompt: "..."` is the valid "custom only" shape — preventing it
-// here would force the UI to invent a sentinel id just to clear the picker.
-const visualStyleRefSchema = z.object({
-  id: z.string().trim().max(64).nullable().optional(),
-  customPrompt: z.string().trim().max(2000).nullable().optional(),
-}).nullable();
-
 // Arc + Season — phase 2 of Story Arc Planning. The arc lives on the series
 // record itself; seasons get their own resource so the route layer can take
 // per-record CRUD without forcing the caller to PATCH the whole series.
@@ -197,6 +186,12 @@ const seriesCreateSchema = z.object({
   name: z.string().trim().min(1).max(seriesSvc.NAME_MAX),
   logline: z.string().trim().max(seriesSvc.LOGLINE_MAX).optional().default(''),
   premise: z.string().trim().max(seriesSvc.PREMISE_MAX).optional().default(''),
+  // Series in PortOS are expected to be linked to a universe — canon
+  // (characters, places, objects, style) lives on the universe and an
+  // orphan series has nothing to render against. The UI's create form
+  // enforces this; the route stays permissive so the importer and
+  // share-bucket sync paths (which preserve remote data fidelity) can
+  // still land legacy orphans.
   universeId: z.string().trim().max(seriesSvc.UNIVERSE_ID_MAX).nullable().optional(),
   writersRoomWorkId: z.string().trim().max(seriesSvc.WRITERS_ROOM_WORK_ID_MAX).nullable().optional(),
   arc: arcSchema.nullable().optional(),
@@ -206,7 +201,7 @@ const seriesCreateSchema = z.object({
   titleLogo: z.string().trim().max(seriesSvc.TITLE_LOGO_MAX).optional().default(''),
   author: z.string().trim().max(seriesSvc.AUTHOR_MAX).optional().default(''),
   stylePromptOverride: z.string().trim().max(seriesSvc.STYLE_PROMPT_OVERRIDE_MAX).optional().default(''),
-  visualStyleDefault: visualStyleRefSchema.optional(),
+  stylePromptOverrideMode: z.enum(seriesSvc.STYLE_PROMPT_OVERRIDE_MODES).optional(),
   targetFormat: z.enum(seriesSvc.TARGET_FORMATS).optional(),
   issueCountTarget: z.number().int().min(0).max(seriesSvc.ISSUE_COUNT_TARGET_MAX).optional(),
   llm: llmSchema,
@@ -225,7 +220,7 @@ const seriesPatchSchema = z.object({
   titleLogo: z.string().trim().max(seriesSvc.TITLE_LOGO_MAX).optional(),
   author: z.string().trim().max(seriesSvc.AUTHOR_MAX).optional(),
   stylePromptOverride: z.string().trim().max(seriesSvc.STYLE_PROMPT_OVERRIDE_MAX).optional(),
-  visualStyleDefault: visualStyleRefSchema.optional(),
+  stylePromptOverrideMode: z.enum(seriesSvc.STYLE_PROMPT_OVERRIDE_MODES).optional(),
   targetFormat: z.enum(seriesSvc.TARGET_FORMATS).optional(),
   issueCountTarget: z.number().int().min(0).max(seriesSvc.ISSUE_COUNT_TARGET_MAX).optional(),
   llm: llmSchema,
@@ -304,10 +299,6 @@ const visualStageInputSchema = stageInputSchema.extend({
     imageJobId: z.string().trim().max(200).nullable().optional(),
     prompt: z.string().max(16_000).nullable().optional(),
   }).nullable().optional(),
-  // Per-stage visual style override. Validated lazily by the sanitizer
-  // (unknown catalog ids are dropped) so adding a new style doesn't force
-  // a schema bump on every client.
-  visualStyleOverride: visualStyleRefSchema.optional(),
 });
 
 // Audio stage payloads carry lines[] (voice-over per dialogue line) + a
@@ -543,12 +534,6 @@ const autoRunSchema = z.object({
   quality: z.enum(QUALITIES).optional(),
   modelId: z.string().trim().max(64).optional(),
 });
-
-// Static catalog. Express's default ETag handles re-fetches; clients also
-// dedup via the module-level promise cache in apiPipeline.js.
-router.get('/visual-styles', asyncHandler(async (_req, res) => {
-  res.json({ styles: listVisualStyles() });
-}));
 
 // Merged voice list across every supported TTS engine (Kokoro + Piper today;
 // future ElevenLabs/etc. when added). Each voice is namespaced with
