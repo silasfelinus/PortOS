@@ -5,6 +5,7 @@ vi.mock('fs/promises', () => ({
 }));
 
 vi.mock('../lib/fileUtils.js', () => ({
+  atomicWrite: vi.fn().mockResolvedValue(undefined),
   ensureDir: vi.fn().mockResolvedValue(undefined),
   readJSONFile: vi.fn(),
   PATHS: { data: '/mock/data', root: '/mock/root' },

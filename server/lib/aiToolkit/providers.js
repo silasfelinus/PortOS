@@ -1,6 +1,7 @@
-import { readFile, writeFile, mkdir } from 'fs/promises';
+import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, dirname } from 'path';
+import { atomicWrite } from './internal/atomicWrite.js';
 import { fileURLToPath } from 'url';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -49,19 +50,11 @@ export function createProviderService(config = {}) {
 
   const PROVIDERS_PATH = join(dataDir, providersFile);
 
-  async function ensureDataDir() {
-    if (!existsSync(dataDir)) {
-      await mkdir(dataDir, { recursive: true });
-    }
-  }
-
   async function loadProviders() {
-    await ensureDataDir();
-
     if (!existsSync(PROVIDERS_PATH)) {
       if (sampleFile && existsSync(sampleFile)) {
         const sample = await readFile(sampleFile, 'utf-8');
-        await writeFile(PROVIDERS_PATH, sample);
+        await atomicWrite(PROVIDERS_PATH, sample);
         return JSON.parse(sample);
       }
       return { activeProvider: null, providers: {} };
@@ -71,7 +64,7 @@ export function createProviderService(config = {}) {
     const data = JSON.parse(content);
 
     if (migrateCodexProvider(data)) {
-      await writeFile(PROVIDERS_PATH, JSON.stringify(data, null, 2));
+      await atomicWrite(PROVIDERS_PATH, data);
       console.log('🔧 Migrated codex provider config to codex-configured-default sentinel');
     }
 
@@ -79,8 +72,7 @@ export function createProviderService(config = {}) {
   }
 
   async function saveProviders(data) {
-    await ensureDataDir();
-    await writeFile(PROVIDERS_PATH, JSON.stringify(data, null, 2));
+    await atomicWrite(PROVIDERS_PATH, data);
   }
 
   return {
