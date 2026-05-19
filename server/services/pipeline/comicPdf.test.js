@@ -47,7 +47,6 @@ const mockSeries = {
   id: 'ser-test',
   name: 'Bone Walker',
   logline: 'A cult, a city, a child.',
-  visualStyleDefault: { id: 'graphic-novel', customPrompt: null },
 };
 
 const getIssueMock = vi.fn(async () => structuredClone(mockIssue));

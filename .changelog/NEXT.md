@@ -30,3 +30,9 @@
 - **NAV_COMMANDS manifest** registers `/city/settings` and `/ambient` so they are reachable from `⌘K` and voice.
 
 ## Removed
+
+- **Series Bible "Visual style preset" + per-stage style override.** The curated catalog (`server/lib/visualStyles.js`: graphic-novel / cinematic / anime / etc.) and the `series.visualStyleDefault` + `issue.stages.*.visualStyleOverride` plumbing have been retired. Style now flows from a single source — the linked universe's `stylePrompt` plus the series-level `stylePromptOverride` with a new `stylePromptOverrideMode` toggle (`prepend` | `append` | `override`). The `VisualStylePicker` component, the three stage-component pickers, the `/api/pipeline/visual-styles` route, and `listPipelineVisualStyles` / `updateIssueStageVisualStyle` API helpers all gone. Migration `026-remove-visual-style-fields.js` strips the dead fields from `pipeline-series.json` + `pipeline-issues.json`.
+
+## Changed (continued)
+
+- **Series creation requires a universe in the UI.** The `New Series` form's universe picker is now required (submit disabled until one is picked); the bible's "Linked World" picker drops the `— None —` option. Server-side stays permissive so the importer / share-bucket sync can still land legacy orphan records — the UI is the gate, matching PortOS's single-user model.

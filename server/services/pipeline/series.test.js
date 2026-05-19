@@ -92,6 +92,31 @@ describe('pipeline series service', () => {
     expect(s.targetFormat).toBe('comic+tv');
   });
 
+  describe('stylePromptOverrideMode', () => {
+    it('defaults to "prepend" when not supplied', async () => {
+      const s = await svc.createSeries({ name: 'X' });
+      expect(s.stylePromptOverrideMode).toBe('prepend');
+    });
+
+    it('accepts "append" and "override" on create', async () => {
+      const a = await svc.createSeries({ name: 'A', stylePromptOverrideMode: 'append' });
+      const b = await svc.createSeries({ name: 'B', stylePromptOverrideMode: 'override' });
+      expect(a.stylePromptOverrideMode).toBe('append');
+      expect(b.stylePromptOverrideMode).toBe('override');
+    });
+
+    it('coerces an unknown value back to "prepend"', async () => {
+      const s = await svc.createSeries({ name: 'X', stylePromptOverrideMode: 'nonsense' });
+      expect(s.stylePromptOverrideMode).toBe('prepend');
+    });
+
+    it('round-trips through updateSeries', async () => {
+      const s = await svc.createSeries({ name: 'X' });
+      const u = await svc.updateSeries(s.id, { stylePromptOverrideMode: 'override' });
+      expect(u.stylePromptOverrideMode).toBe('override');
+    });
+  });
+
   it('silently drops legacy canon fields on create (Phase B.4: canon moved to universe)', async () => {
     // A stale client that still sends `characters: [...]` on series create
     // gets a 200 — the field is dropped server-side instead of 400'ing —

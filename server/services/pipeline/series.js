@@ -17,7 +17,6 @@ import { PATHS, atomicWrite, readJSONFile, ensureDir } from '../../lib/fileUtils
 import { createFileWriteQueue } from '../../lib/fileWriteQueue.js';
 import { isStr, trimTo } from '../../lib/storyBible.js';
 import { sanitizeArc, sanitizeSeasonList } from '../../lib/storyArc.js';
-import { sanitizeVisualStyleRef } from '../../lib/visualStyles.js';
 import { sanitizeOrigin } from '../../lib/sharingOrigin.js';
 import { emitRecordUpdated, emitRecordDeleted } from '../sharing/recordEvents.js';
 import { renameCollectionForSeries, unlinkCollectionsForSeries } from '../mediaCollections.js';
@@ -47,6 +46,15 @@ export const LOGLINE_MAX = 500;
 export const PREMISE_MAX = 8000;
 export const STYLE_NOTES_MAX = 4000;
 export const STYLE_PROMPT_OVERRIDE_MAX = 1000;
+// How `stylePromptOverride` composes with the universe's style influences:
+//   'prepend'  — override leads, universe trails (the historical default
+//                — slight deviation, universe still visible)
+//   'append'   — universe leads, override trails (universe-dominant)
+//   'override' — universe style is dropped entirely (full spinoff look)
+// Default 'prepend' so existing series migrate forward without a writer
+// pass and the field can be absent in JSON.
+export const STYLE_PROMPT_OVERRIDE_MODES = Object.freeze(['prepend', 'append', 'override']);
+export const STYLE_PROMPT_OVERRIDE_MODE_DEFAULT = 'prepend';
 // Title/logo design concept — prose description injected into cover + TV
 // title-screen prompts as the "logo design" cue. Generated from the universe's
 // style notes on series creation; editable in the bible.
@@ -126,11 +134,9 @@ const sanitizeSeries = (raw) => {
     // forking the universe. Empty string = no override; fall through to
     // universe-only style.
     stylePromptOverride: trimTo(raw.stylePromptOverride, STYLE_PROMPT_OVERRIDE_MAX),
-    // Series-level default visual style (catalog id + optional custom prompt).
-    // `null` when the user hasn't picked one — stage-level fallbacks in
-    // resolveVisualStyle() handle that case so legacy series keep rendering
-    // without a writer pass.
-    visualStyleDefault: sanitizeVisualStyleRef(raw.visualStyleDefault),
+    stylePromptOverrideMode: STYLE_PROMPT_OVERRIDE_MODES.includes(raw.stylePromptOverrideMode)
+      ? raw.stylePromptOverrideMode
+      : STYLE_PROMPT_OVERRIDE_MODE_DEFAULT,
     targetFormat,
     issueCountTarget,
     llm,
@@ -184,6 +190,7 @@ export async function createSeries(input = {}) {
       titleLogo: input.titleLogo || '',
       author: input.author || '',
       stylePromptOverride: input.stylePromptOverride || '',
+      stylePromptOverrideMode: input.stylePromptOverrideMode,
       targetFormat: input.targetFormat || 'comic+tv',
       issueCountTarget: input.issueCountTarget || 0,
       llm: input.llm || null,
@@ -247,7 +254,7 @@ export async function updateSeries(id, patch = {}) {
       ...('titleLogo' in patch ? { titleLogo: patch.titleLogo } : {}),
       ...('author' in patch ? { author: patch.author } : {}),
       ...('stylePromptOverride' in patch ? { stylePromptOverride: patch.stylePromptOverride } : {}),
-      ...('visualStyleDefault' in patch ? { visualStyleDefault: patch.visualStyleDefault } : {}),
+      ...('stylePromptOverrideMode' in patch ? { stylePromptOverrideMode: patch.stylePromptOverrideMode } : {}),
       ...('targetFormat' in patch ? { targetFormat: patch.targetFormat } : {}),
       ...('issueCountTarget' in patch ? { issueCountTarget: patch.issueCountTarget } : {}),
       ...('origin' in patch ? { origin: patch.origin } : {}),
