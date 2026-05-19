@@ -69,8 +69,19 @@ export function createProviderService(config = {}) {
     if (!existsSync(PROVIDERS_PATH)) {
       if (sampleFile && existsSync(sampleFile)) {
         const sample = await readFile(sampleFile, 'utf-8');
+        // Parse BEFORE persisting — if the shipped sample is malformed we
+        // don't want to seed user-side providers.json with garbage, and
+        // parseOrRescue's rename target must be the user file, not the
+        // shared sample (which would silently move it aside on every boot).
+        let parsed;
+        try {
+          parsed = JSON.parse(sample);
+        } catch (err) {
+          console.error(`❌ sample providers file ${sampleFile} parse failed (${err.message}); starting from empty`);
+          return { activeProvider: null, providers: {} };
+        }
         await atomicWrite(PROVIDERS_PATH, sample);
-        return await parseOrRescue(sample, sampleFile);
+        return parsed;
       }
       return { activeProvider: null, providers: {} };
     }
