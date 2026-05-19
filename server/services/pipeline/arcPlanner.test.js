@@ -856,6 +856,125 @@ describe('arcPlanner — commitSeasonsWithRemap', () => {
   });
 });
 
+describe('arcPlanner — mergeSeasonsWithLocks', () => {
+  it('replaces an LLM-proposed season with the existing locked record when ids match', () => {
+    const current = [
+      { id: 'sea-a', number: 1, title: 'Locked Title', logline: 'locked log', locked: true },
+      { id: 'sea-b', number: 2, title: 'Unlocked', logline: 'old log', locked: false },
+    ];
+    const next = [
+      { id: 'sea-a', number: 1, title: 'LLM rewrite', logline: 'LLM log' },
+      { id: 'sea-b', number: 2, title: 'Unlocked rewritten', logline: 'new log' },
+    ];
+    const merged = planner.__testing.mergeSeasonsWithLocks(current, next);
+    expect(merged[0]).toBe(current[0]);
+    expect(merged[0].title).toBe('Locked Title');
+    expect(merged[1].title).toBe('Unlocked rewritten');
+  });
+
+  it('re-inserts a locked season that the LLM dropped from the new shape', () => {
+    const current = [
+      { id: 'sea-a', number: 1, title: 'Drop me', locked: true },
+      { id: 'sea-b', number: 2, title: 'Keep me', locked: false },
+    ];
+    const next = [
+      { id: 'sea-b', number: 2, title: 'Keep me' },
+    ];
+    const merged = planner.__testing.mergeSeasonsWithLocks(current, next);
+    expect(merged).toHaveLength(2);
+    expect(merged.find((s) => s.id === 'sea-a')).toBe(current[0]);
+  });
+
+  it('returns next unchanged when no current season is locked', () => {
+    const current = [{ id: 'sea-a', number: 1, locked: false }];
+    const next = [{ id: 'sea-a', number: 1, title: 'rewrite' }];
+    expect(planner.__testing.mergeSeasonsWithLocks(current, next)).toBe(next);
+  });
+
+  it('returns next unchanged when currentSeasons is not an array', () => {
+    const next = [{ id: 'sea-a', number: 1 }];
+    expect(planner.__testing.mergeSeasonsWithLocks(undefined, next)).toBe(next);
+    expect(planner.__testing.mergeSeasonsWithLocks(null, next)).toBe(next);
+  });
+
+  it('returns nextSeasons untouched when nextSeasons is not an array', () => {
+    expect(planner.__testing.mergeSeasonsWithLocks([{ id: 'a', locked: true }], null)).toBeNull();
+    expect(planner.__testing.mergeSeasonsWithLocks([{ id: 'a', locked: true }], undefined)).toBeUndefined();
+  });
+});
+
+describe('arcPlanner — commitSeasonsWithRemap (season locks)', () => {
+  beforeEach(() => {
+    fileStore.clear();
+    uuidCounter = 0;
+    stageRunnerSpy = undefined;
+  });
+
+  it('preserves a locked season verbatim when the LLM tries to rewrite its content', async () => {
+    const s = await setupSeries();
+    const s1 = await seasonsSvc.createSeason(s.id, {
+      title: 'Locked Title',
+      logline: 'locked logline',
+      synopsis: 'locked synopsis',
+      episodeCountTarget: 3,
+      number: 1,
+    });
+    await seasonsSvc.updateSeason(s.id, s1.id, { locked: true });
+    const cur = await seriesSvc.getSeries(s.id);
+    const out = await planner.commitSeasonsWithRemap(cur, {
+      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
+      seasons: [
+        // LLM tries to rewrite the locked season's content under the same id.
+        { id: s1.id, number: 1, title: 'LLM rewrite', logline: 'LLM logline', synopsis: 'LLM synopsis', endingHook: '', episodeCountTarget: 9, themes: [] },
+      ],
+    });
+    const persisted = out.series.seasons.find((x) => x.id === s1.id);
+    expect(persisted.title).toBe('Locked Title');
+    expect(persisted.logline).toBe('locked logline');
+    expect(persisted.synopsis).toBe('locked synopsis');
+    expect(persisted.episodeCountTarget).toBe(3);
+    expect(persisted.locked).toBe(true);
+  });
+
+  it('re-inserts a locked season the LLM dropped, with no issue reassignment', async () => {
+    const s = await setupSeries();
+    const s1 = await seasonsSvc.createSeason(s.id, { title: 'Locked', episodeCountTarget: 3, number: 1 });
+    await seasonsSvc.updateSeason(s.id, s1.id, { locked: true });
+    const i1 = await issuesSvc.createIssue({ seriesId: s.id, seasonId: s1.id, title: 'Pilot' });
+    const cur = await seriesSvc.getSeries(s.id);
+    const out = await planner.commitSeasonsWithRemap(cur, {
+      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
+      // LLM proposed dropping the locked season entirely.
+      seasons: [],
+    });
+    expect(out.series.seasons.map((x) => x.id)).toContain(s1.id);
+    expect(out.reassignedIssueCount).toBe(0);
+    const finalI1 = await issuesSvc.getIssue(i1.id);
+    expect(finalI1.seasonId).toBe(s1.id);
+  });
+
+  it('still rewrites unlocked sibling seasons while preserving the locked one', async () => {
+    const s = await setupSeries();
+    const locked = await seasonsSvc.createSeason(s.id, { title: 'Frozen', episodeCountTarget: 4, number: 1 });
+    await seasonsSvc.updateSeason(s.id, locked.id, { locked: true });
+    const unlocked = await seasonsSvc.createSeason(s.id, { title: 'Editable', episodeCountTarget: 4, number: 2 });
+    const cur = await seriesSvc.getSeries(s.id);
+    const out = await planner.commitSeasonsWithRemap(cur, {
+      arc: { logline: 'L', summary: '', themes: [], protagonistArc: '', shape: null, status: 'draft' },
+      seasons: [
+        { id: locked.id, number: 1, title: 'LLM rewrite of frozen', logline: '', synopsis: '', endingHook: '', episodeCountTarget: 1, themes: [] },
+        { id: unlocked.id, number: 2, title: 'Editable v2', logline: 'updated', synopsis: '', endingHook: '', episodeCountTarget: 5, themes: [] },
+      ],
+    });
+    const frozenAfter = out.series.seasons.find((x) => x.id === locked.id);
+    const editableAfter = out.series.seasons.find((x) => x.id === unlocked.id);
+    expect(frozenAfter.title).toBe('Frozen');
+    expect(frozenAfter.locked).toBe(true);
+    expect(editableAfter.title).toBe('Editable v2');
+    expect(editableAfter.episodeCountTarget).toBe(5);
+  });
+});
+
 describe('arcPlanner — mergeArcWithLocks', () => {
   it('replaces locked fields with the current arc values', () => {
     const current = { logline: 'a', summary: 'b', themes: ['t1'], protagonistArc: 'c', shape: 's1' };
