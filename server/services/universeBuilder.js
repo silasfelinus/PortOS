@@ -286,15 +286,17 @@ const sanitizeVariation = (raw) => {
   const prompt = trimTo(raw.prompt, PROMPT_FRAGMENT_MAX);
   if (!label || !prompt) return null;
   // Per-item lock — when true, expand merges preserve this entry instead of
-  // letting the LLM regenerate it. Only `true` is recorded; missing/false
-  // collapses to undefined so the on-disk shape stays minimal.
+  // letting the LLM regenerate it. Default is `true` (locked) so newly-arriving
+  // variations from extract / generate / manual add are protected by default;
+  // only explicit `locked: false` records the user's unlock so it survives
+  // round-trips through the sanitizer.
   const out = {
     id: ensureEntryId(raw.id, 'var-'),
     label,
     prompt,
     imageRefs: sanitizeEntryImageRefs(raw.imageRefs),
+    locked: raw.locked === false ? false : true,
   };
-  if (raw.locked === true) out.locked = true;
   return out;
 };
 
@@ -304,14 +306,16 @@ const sanitizeCompositeSheet = (raw) => {
   const prompt = trimTo(raw.prompt, COMPOSITE_PROMPT_MAX);
   if (!label || !prompt) return null;
   const kind = COMPOSITE_SHEET_KINDS.includes(raw.kind) ? raw.kind : 'reference_sheet';
+  // Default to locked — same rationale as sanitizeVariation; user explicitly
+  // unlocks via `locked: false` and that survives round-trips.
   const out = {
     id: ensureEntryId(raw.id, 'sheet-'),
     kind,
     label,
     prompt,
     imageRefs: sanitizeEntryImageRefs(raw.imageRefs),
+    locked: raw.locked === false ? false : true,
   };
-  if (raw.locked === true) out.locked = true;
   return out;
 };
 
@@ -702,7 +706,18 @@ const sanitizeTemplate = (raw) => {
     objects: raw.objects,
   });
   const canonBackfill = backfillCanonFromCategories(raw, foldedCanon);
-  const { characters, places, objects, schemaVersion } = canonBackfill;
+  const { schemaVersion } = canonBackfill;
+  // Default-lock universe canon entries. Existing records on disk that pre-
+  // date the lock-by-default contract have no `locked` field; stamp `true`
+  // here so reads return a locked view. Explicit `locked: false` is preserved
+  // verbatim so a user-unlock survives round-trips (applyCanonExtras now
+  // persists both true and false).
+  const defaultLockCanon = (list) => (Array.isArray(list) ? list : []).map((e) =>
+    e && typeof e === 'object' && e.locked === undefined ? { ...e, locked: true } : e
+  );
+  const characters = defaultLockCanon(canonBackfill.characters);
+  const places = defaultLockCanon(canonBackfill.places);
+  const objects = defaultLockCanon(canonBackfill.objects);
   const llm = raw.llm && typeof raw.llm === 'object'
     ? {
       provider: trimTo(raw.llm.provider, 80) || null,
@@ -1174,6 +1189,66 @@ export async function listRuns(universeId = null) {
 // filename doesn't bloat the history. Runs through `updateUniverse`'s mutator
 // form so the read→modify→write window is serialized against concurrent edits
 // on the same universe.
+/**
+ * Bulk-set `locked` on every variation in a category bucket. When
+ * `categoryKey` is null, every variation in every bucket of the universe is
+ * affected. Composite sheets are included in the universe-wide path (caller
+ * intent for "lock everything" is consistent across both lists). Returns the
+ * updated universe plus the count of variations whose state actually changed
+ * — entries already at the target state are no-ops so the toast can read
+ * "Locked N variations".
+ */
+export async function setVariationsLockAll(universeId, { categoryKey = null, locked, includeSheets = false } = {}) {
+  const target = locked === true;
+  let changed = 0;
+  let total = 0;
+  const updated = await updateUniverse(universeId, (cur) => {
+    const patch = {};
+    const categories = cur.categories || {};
+    const nextCategories = {};
+    let touchedCategories = false;
+    for (const [key, bucket] of Object.entries(categories)) {
+      const variations = Array.isArray(bucket?.variations) ? bucket.variations : [];
+      if (categoryKey && key !== categoryKey) {
+        nextCategories[key] = bucket;
+        continue;
+      }
+      // Increment `total` only for buckets the caller actually targeted —
+      // otherwise a single-bucket lock-all would report every variation in
+      // every bucket as the denominator and the response toast lies.
+      total += variations.length;
+      let bucketTouched = false;
+      const nextVariations = variations.map((v) => {
+        if (!v || typeof v !== 'object') return v;
+        if ((v.locked === true) === target) return v;
+        changed += 1;
+        bucketTouched = true;
+        return { ...v, locked: target };
+      });
+      nextCategories[key] = bucketTouched ? { ...bucket, variations: nextVariations } : bucket;
+      if (bucketTouched) touchedCategories = true;
+    }
+    if (touchedCategories) patch.categories = nextCategories;
+
+    if (!categoryKey && includeSheets && Array.isArray(cur.compositeSheets)) {
+      total += cur.compositeSheets.length;
+      let sheetsTouched = false;
+      const nextSheets = cur.compositeSheets.map((s) => {
+        if (!s || typeof s !== 'object') return s;
+        if ((s.locked === true) === target) return s;
+        changed += 1;
+        sheetsTouched = true;
+        return { ...s, locked: target };
+      });
+      if (sheetsTouched) patch.compositeSheets = nextSheets;
+    }
+
+    if (!Object.keys(patch).length) return null;
+    return patch;
+  });
+  return { universe: updated, locked: target, changed, total, categoryKey: categoryKey || null };
+}
+
 export async function appendEntryImageRef(universeId, entryRef, filename) {
   if (!isStr(universeId) || !entryRef || typeof entryRef !== 'object') return null;
   // Apply the same filename guard the sanitizer uses on round-trip so a

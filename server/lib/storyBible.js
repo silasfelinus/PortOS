@@ -456,9 +456,10 @@ function sanitizeHandGesture(raw) {
   return { id: ensureId(raw.id, 'gesture-'), name, description: trimTo(raw.description, BIBLE_LIMITS.GESTURE_DESC_MAX) };
 }
 
-// Shared canon extras applied to every kind. `locked` follows the on-disk
-// minimization pattern from universe-builder variations: only `true` is
-// persisted, missing/false collapses to absent.
+// Shared canon extras applied to every kind. Persists explicit `locked: true`
+// AND `locked: false` so a Universe-Builder caller can flip the bit and have
+// the change survive round-trips. Missing `locked` still collapses to absent
+// — writers-room callers that never set the flag stay on the legacy shape.
 function applyCanonExtras(raw) {
   const out = {
     prompt: trimTo(raw.prompt, BIBLE_LIMITS.PROMPT_MAX),
@@ -467,6 +468,7 @@ function applyCanonExtras(raw) {
     sourceSeriesId: trimTo(raw.sourceSeriesId, BIBLE_LIMITS.SOURCE_SERIES_ID_MAX) || null,
   };
   if (raw.locked === true) out.locked = true;
+  else if (raw.locked === false) out.locked = false;
   return out;
 }
 

@@ -519,6 +519,12 @@ router.post('/:id/render', asyncHandler(async (req, res) => {
     loraScales,
   };
 
+  // Parallel-indexed mapping from jobId → entryRef so the client can show a
+  // per-entry pending loader (MediaJobThumb-style) on the variation / sheet /
+  // canon row that owns this render. Only entries with a stable `id` carry an
+  // entryRef in `compiled` (the sanitizer mints ids on every write now, so
+  // legacy id-less records are the only gap).
+  const entryJobs = [];
   for (const item of compiled) {
     const params = {
       ...baseParams,
@@ -541,22 +547,23 @@ router.post('/:id/render', asyncHandler(async (req, res) => {
         ...(item.entryRef ? { entryRef: item.entryRef } : {}),
       },
     };
+    let queued;
     if (mode === 'codex') {
       const c = settings.imageGen?.codex || {};
-      const queued = enqueueJob({
+      queued = enqueueJob({
         kind: 'image',
         params: { mode: 'codex', codexPath: c.codexPath, model: c.model, ...params },
       });
-      jobIds.push(queued.jobId);
-      continue;
+    } else {
+      // mode === 'local' (validated upfront).
+      const py = settings.imageGen?.local?.pythonPath || null;
+      queued = enqueueJob({
+        kind: 'image',
+        params: { pythonPath: py, modelId: body.modelId, ...params },
+      });
     }
-    // mode === 'local' (validated upfront).
-    const py = settings.imageGen?.local?.pythonPath || null;
-    const queued = enqueueJob({
-      kind: 'image',
-      params: { pythonPath: py, modelId: body.modelId, ...params },
-    });
     jobIds.push(queued.jobId);
+    if (item.entryRef) entryJobs.push({ jobId: queued.jobId, entryRef: item.entryRef });
   }
 
   const run = await svc.recordRun({
@@ -580,6 +587,9 @@ router.post('/:id/render', asyncHandler(async (req, res) => {
     collectionName: collection.name,
     promptCount: compiled.length,
     jobIds,
+    // Per-entry mapping for client-side pending-state UI. Empty when the
+    // batch only contains entries without stable ids (legacy fallback).
+    entryJobs,
     mode,
   });
 }));
@@ -713,6 +723,35 @@ router.patch('/:id/canon/:kind/:entryId/lock', asyncHandler(async (req, res) => 
     req.params.entryId,
     body.locked,
   ).catch((err) => { throw mapServiceError(err); });
+  res.json(result);
+}));
+
+// Bulk lock/unlock every canon entry of a single kind. Powers the
+// "Lock all / Unlock all" buttons in the Universe Builder canon section.
+router.patch('/:id/canon/:kind/lock-all', asyncHandler(async (req, res) => {
+  const { kind } = validateRequest(lockParamsSchema, req.params);
+  const body = validateRequest(setLockSchema, req.body ?? {});
+  const result = await canonSvc.setCanonKindLockAll(req.params.id, kind, body.locked)
+    .catch((err) => { throw mapServiceError(err); });
+  res.json(result);
+}));
+
+// Bulk lock/unlock every variation in a category bucket. Powers the
+// per-bucket "Lock all / Unlock all" affordance on the variations grid.
+// Omit `category` in the body to apply to every variation in every bucket;
+// pass `includeSheets: true` to also flip composite sheets in the same call.
+const setVariationsLockAllSchema = z.object({
+  locked: z.boolean(),
+  category: z.string().trim().min(1).max(svc.WORLD_CATEGORY_KEY_MAX).nullable().optional(),
+  includeSheets: z.boolean().optional(),
+});
+router.patch('/:id/variations/lock-all', asyncHandler(async (req, res) => {
+  const body = validateRequest(setVariationsLockAllSchema, req.body ?? {});
+  const result = await svc.setVariationsLockAll(req.params.id, {
+    categoryKey: body.category || null,
+    locked: body.locked,
+    includeSheets: body.includeSheets === true,
+  }).catch((err) => { throw mapServiceError(err); });
   res.json(result);
 }));
 

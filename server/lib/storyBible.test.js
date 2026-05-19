@@ -120,8 +120,12 @@ describe('storyBible — sanitizeCharacter', () => {
     expect(out.source).toBe('series-extract');
   });
 
-  it('omits locked when not strictly true (mirrors variation pattern)', () => {
-    expect(sanitizeCharacter({ name: 'A', locked: false }).locked).toBeUndefined();
+  it('preserves explicit true/false on locked and omits other shapes', () => {
+    // applyCanonExtras now persists explicit `locked: false` so the
+    // universe-builder lock-by-default contract can round-trip an unlock.
+    // Anything else (truthy non-bool, missing) still collapses to absent so
+    // writers-room callers that never set the flag stay on the legacy shape.
+    expect(sanitizeCharacter({ name: 'A', locked: false }).locked).toBe(false);
     expect(sanitizeCharacter({ name: 'A', locked: 'yes' }).locked).toBeUndefined();
     expect(sanitizeCharacter({ name: 'A', locked: 1 }).locked).toBeUndefined();
     expect(sanitizeCharacter({ name: 'A' }).locked).toBeUndefined();

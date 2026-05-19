@@ -35,12 +35,29 @@ import ShareToButton from '../components/sharing/ShareToButton';
 import OriginBadge from '../components/sharing/OriginBadge';
 import UniverseCanonSection from '../components/universe/UniverseCanonSection';
 import EntryCard from '../components/universe/EntryCard';
+import EntryThumbSlot from '../components/universe/EntryThumbSlot';
+import useMediaJobProgress from '../hooks/useMediaJobProgress';
+import MediaPreview from '../components/media/MediaPreview';
+import useImagePreviewActions from '../hooks/useImagePreviewActions';
+import { useMediaAnnotations } from '../hooks/useMediaAnnotations';
+import { listImageGallery } from '../services/apiImageVideo';
 import TabPills from '../components/ui/TabPills';
 import { deriveAvailableBackends, IMAGE_GEN_MODE } from '../lib/imageGenBackends';
 import { PIPELINE_IMAGE_DEFAULTS, readPipelineImageSettings } from '../lib/pipelineImageDefaults';
 import { normalizeSlugline } from '../lib/scenePrompt';
 import { hasCanonDescriptorContent } from '../lib/canonPrompt';
 import { upsertByIdPrepend } from '../lib/upsertByIdPrepend';
+import { BIBLE_LIMITS } from '../lib/bibleLimits';
+
+// Mirror of server-side appendEntryImageRef cap (most recent N wins). Used
+// so optimistic on-completion appends produce the same final array shape
+// the server would, preventing a brief window where a save round-trip
+// could reorder the visible thumbnails.
+const capImageRefs = (refs) => (
+  refs.length > BIBLE_LIMITS.IMAGE_REFS_PER_ENTRY_MAX
+    ? refs.slice(-BIBLE_LIMITS.IMAGE_REFS_PER_ENTRY_MAX)
+    : refs
+);
 
 const CATEGORY_LABELS = {
   landscapes: 'Landscapes',
@@ -551,6 +568,45 @@ export default function UniverseBuilder() {
   const [saving, setSaving] = useState(false);
   const [expanding, setExpanding] = useState(false);
   const [rendering, setRendering] = useState(false);
+  // entryId → jobId[] queue for any row with one or more in-flight renders.
+  // Stores an ARRAY because `batchPerVariation > 1` (or any path that queues
+  // multiple jobs for the same entry) lands several jobIds against the same
+  // entryId — a scalar would overwrite siblings and the spinner would clear
+  // as soon as the first finished, even though others are still running.
+  // Canon entries are included here too (the batch `/render` route compiles
+  // canon prompts when the user picks "all" / "canon" mode, and those jobs
+  // don't go through `UniverseCanonSection.renderingJobs`).
+  const [pendingByEntryId, setPendingByEntryId] = useState({});
+  // First-jobId-per-entry view for components that just need a single
+  // subscription per row (MediaJobThumb takes one jobId). When the head
+  // finishes we shift it off and the next jobId in the queue takes over.
+  const pendingHeadByEntryId = useMemo(() => {
+    const out = {};
+    for (const [entryId, jobs] of Object.entries(pendingByEntryId)) {
+      if (Array.isArray(jobs) && jobs.length > 0) out[entryId] = jobs[0];
+    }
+    return out;
+  }, [pendingByEntryId]);
+  // Remove a specific completed jobId from the entry's queue (preferred path
+  // — handlers know which jobId finished). When called without a jobId
+  // (failure paths that want to bail entirely on the entry), drops every
+  // pending job for that entry.
+  const clearPendingForEntry = useCallback((entryId, jobId = null) => {
+    if (!entryId) return;
+    setPendingByEntryId((prev) => {
+      const jobs = prev[entryId];
+      if (!Array.isArray(jobs) || jobs.length === 0) return prev;
+      const next = { ...prev };
+      if (jobId == null) {
+        delete next[entryId];
+        return next;
+      }
+      const remaining = jobs.filter((j) => j !== jobId);
+      if (remaining.length === 0) delete next[entryId];
+      else next[entryId] = remaining;
+      return next;
+    });
+  }, []);
   const [providers, setProviders] = useState([]);
   const [activeProviderId, setActiveProviderId] = useState(null);
   // Image-gen plumbing for the batch-render form (reused from Image Gen).
@@ -637,6 +693,117 @@ export default function UniverseBuilder() {
   );
 
   const [runs, setRuns] = useState([]);
+  // Page-level lightbox state for variation + composite-sheet thumbs. Canon
+  // entries route through `UniverseCanonSection`'s own MediaPreview; this
+  // one covers the category-bucket rows so clicking a variation thumb opens
+  // the same full-detail modal the gallery / history uses.
+  const [preview, setPreview] = useState(null);
+  // Filename → full image-metadata-sidecar record (prompt, negativePrompt,
+  // modelId, width, height, seed, etc.). Hydrates `previewItems` with the
+  // ACTUAL prompt that was used to render the image — without this the
+  // modal would only see the variation's label, and Refine Prompt / Remix
+  // / Send to Video would all open with empty fields. Loaded once per
+  // mount via `listImageGallery()` (the same call the History page uses)
+  // and refreshed whenever a render completes (universe `runs` advances).
+  const [galleryByFilename, setGalleryByFilename] = useState(() => new Map());
+  // Bumped on every job completion so the gallery-metadata fetch below
+  // re-runs once the new sidecar exists on disk. Keying the fetch only on
+  // `runs.length` was insufficient: that advances when a run is queued or
+  // loaded, NOT when one of its jobs completes — so a freshly rendered
+  // thumb would open the lightbox with label-only metadata until a full
+  // page reload.
+  const [galleryRefreshKey, setGalleryRefreshKey] = useState(0);
+  const bumpGalleryRefresh = useCallback(() => setGalleryRefreshKey((k) => k + 1), []);
+  useEffect(() => {
+    let cancelled = false;
+    listImageGallery().then((list) => {
+      if (cancelled) return;
+      const map = new Map();
+      for (const item of Array.isArray(list) ? list : []) {
+        if (item?.filename) map.set(item.filename, item);
+      }
+      setGalleryByFilename(map);
+    }).catch(() => { /* non-fatal; modal falls back to filename-only display */ });
+    return () => { cancelled = true; };
+    // `runs.length` covers initial-load and queue-time; `galleryRefreshKey`
+    // covers per-job completion (see bumpGalleryRefresh callers).
+  }, [runs.length, galleryRefreshKey]);
+  const { annotations, updateAnnotation } = useMediaAnnotations();
+  const previewItems = useMemo(() => {
+    const out = [];
+    const seen = new Set();
+    const pushFilename = (filename, label) => {
+      if (typeof filename !== 'string' || !filename) return;
+      if (seen.has(filename)) return;
+      seen.add(filename);
+      // Pull the real prompt + render settings out of the gallery metadata
+      // map when available so the lightbox shows the full prompt that was
+      // sent to the renderer (with universe style influences, variation
+      // prompt fragment, etc.), not just the row's display label.
+      // Falls back to the label-only shape for filenames not in the gallery
+      // (legacy renders or pending re-fetch).
+      const meta = galleryByFilename.get(filename) || null;
+      out.push({
+        // Same `image:<filename>` key normalizeImage() stamps everywhere
+        // else — History, Collections, ImageGen — so a star/note added
+        // from this lightbox is the SAME annotation record those pages
+        // already read. A page-local key would silently fork the user's
+        // favorites by surface.
+        key: `image:${filename}`,
+        kind: 'image',
+        filename,
+        previewUrl: `/data/images/${filename}`,
+        downloadUrl: `/data/images/${filename}`,
+        prompt: meta?.prompt || label || filename,
+        negativePrompt: meta?.negativePrompt || null,
+        modelId: meta?.modelId || meta?.model || null,
+        width: meta?.width ?? null,
+        height: meta?.height ?? null,
+        seed: meta?.seed ?? null,
+        steps: meta?.steps ?? null,
+        guidance: meta?.guidance ?? null,
+        quantize: meta?.quantize ?? null,
+        // `raw` carries the original sidecar so MediaLightbox's "Refine
+        // Prompt" / clean / remix downstream handlers can pull any field
+        // the spec doesn't surface at the top level.
+        raw: meta,
+      });
+    };
+    const cats = draft?.categories && typeof draft.categories === 'object' ? draft.categories : {};
+    for (const [bucketKey, bucket] of Object.entries(cats)) {
+      const variations = Array.isArray(bucket?.variations) ? bucket.variations : [];
+      for (const v of variations) {
+        const refs = Array.isArray(v?.imageRefs) ? v.imageRefs : [];
+        for (const f of refs) pushFilename(f, `${bucketKey} · ${v.label}`);
+      }
+    }
+    const sheets = Array.isArray(draft?.compositeSheets) ? draft.compositeSheets : [];
+    for (const s of sheets) {
+      const refs = Array.isArray(s?.imageRefs) ? s.imageRefs : [];
+      for (const f of refs) pushFilename(f, `Composite · ${s.label}`);
+    }
+    return out;
+  }, [draft, galleryByFilename]);
+  // Shared preview action handlers (Remix / SendToVideo / Clean) so the
+  // universe lightbox opens the same downstream pages with the same params
+  // as the History grid + Image Gen page. `onCleanComplete` splices the
+  // cleaned image into the local gallery map so the next preview open
+  // shows it immediately — no full refetch needed.
+  const previewActions = useImagePreviewActions({
+    onCleanComplete: useCallback((cleaned) => {
+      if (!cleaned?.filename) return;
+      setGalleryByFilename((prev) => {
+        const next = new Map(prev);
+        next.set(cleaned.filename, cleaned);
+        return next;
+      });
+    }, []),
+  });
+  const openVariationPreview = useCallback((filename) => {
+    if (!filename) return;
+    const match = previewItems.find((i) => i.filename === filename);
+    if (match) setPreview(match);
+  }, [previewItems]);
 
   // Two-click delete: first click flips this to the world id; a second
   // click within the live render confirms. Avoids window.confirm per
@@ -1312,6 +1479,35 @@ export default function UniverseBuilder() {
     }).catch((e) => { toast.error(`Render failed: ${e.message}`); return null; });
     setRendering(false);
     if (!result) return;
+    // Stamp per-entry pending state so each variation / canon row can swap
+    // its thumbnail for a MediaJobThumb spinner. `variation` covers the
+    // category-bucket rows; `canon` covers the trunk-canon rows that the
+    // `/render` route compiles when `promptMode` is "canon" / "all" / a
+    // per-trunk scope (the canon section's own one-off renders go through
+    // `UniverseCanonSection`'s `generateImage` path and populate its
+    // separate `renderingJobs` map; both maps merge at the read site).
+    // Composite sheets are skipped because `CompositeSheetsEditor` has no
+    // pending-thumb UI yet — sheet jobs would accumulate forever with no
+    // consumer to clear them. When sheets grow per-row pending UI, widen
+    // this allow-list to include 'sheet' and wire matching callbacks.
+    //
+    // Each kind's jobIds are APPENDED to a per-entry queue: `batchPerVariation
+    // > 1` queues multiple jobs against the same id, and back-to-back
+    // renders on the same row should all stay tracked. Each completion
+    // shifts its jobId out (see `clearPendingForEntry`); the head jobId
+    // is the one MediaJobThumb subscribes to at any moment.
+    if (Array.isArray(result.entryJobs) && result.entryJobs.length > 0) {
+      setPendingByEntryId((prev) => {
+        const next = { ...prev };
+        for (const { jobId, entryRef } of result.entryJobs) {
+          if (!jobId || !entryRef?.id) continue;
+          if (entryRef.kind !== 'variation' && entryRef.kind !== 'canon') continue;
+          const existing = Array.isArray(next[entryRef.id]) ? next[entryRef.id] : [];
+          next[entryRef.id] = [...existing, jobId];
+        }
+        return next;
+      });
+    }
     toast.success(`Queued ${result.promptCount} renders → "${result.collectionName}"`);
     const updated = await listWorldRuns(selectedId).catch(() => runs);
     setRuns(updated);
@@ -1783,6 +1979,36 @@ export default function UniverseBuilder() {
               onPromoteVariation={(bucket, v) => handlePromoteVariation(bucket, v)}
               onBulkRenderBucket={(bucket) => runRender({ promptMode: 'variations', selection: { [bucket]: 'all' } })}
               onRenderVariation={(bucket, v) => runRender({ promptMode: 'variations', selection: { [bucket]: [v.label] } })}
+              onPreviewVariation={openVariationPreview}
+              pendingByEntryId={pendingHeadByEntryId}
+              externalPendingByEntryId={pendingHeadByEntryId}
+              onPendingCleared={clearPendingForEntry}
+              onJobCompletedForEntry={(entryId, filename, bucket, completedJobId = null) => {
+                if (!filename || !bucket) {
+                  clearPendingForEntry(entryId, completedJobId);
+                  return;
+                }
+                // Optimistically append the new filename to the variation's
+                // imageRefs[] so the row swaps from spinner → rendered image
+                // without a roundtrip. Server already stamped this via the
+                // collection hook; the next universe refetch will agree.
+                setDraft((d) => {
+                  const cat = d.categories?.[bucket];
+                  if (!cat?.variations) return d;
+                  const variations = cat.variations.map((v) => {
+                    if (v.id !== entryId) return v;
+                    const refs = Array.isArray(v.imageRefs) ? v.imageRefs : [];
+                    if (refs.includes(filename)) return v;
+                    return { ...v, imageRefs: capImageRefs([...refs, filename]) };
+                  });
+                  return { ...d, categories: { ...d.categories, [bucket]: { ...cat, variations } } };
+                });
+                clearPendingForEntry(entryId, completedJobId);
+                // The new sidecar exists now — pull it into galleryByFilename
+                // so the lightbox opens with the real prompt/settings rather
+                // than label-only metadata.
+                bumpGalleryRefresh();
+              }}
               onBulkRenderTrunk={() => {
                 const selection = Object.fromEntries(
                   (bucketsByKind[trunk.kind] || []).map((b) => [b, 'all']),
@@ -1818,9 +2044,34 @@ export default function UniverseBuilder() {
             onPromoteVariation={(bucket, v, opts) => handlePromoteVariation(bucket, v, opts)}
             onBulkRenderBucket={(bucket) => runRender({ promptMode: 'variations', selection: { [bucket]: 'all' } })}
             onRenderVariation={(bucket, v) => runRender({ promptMode: 'variations', selection: { [bucket]: [v.label] } })}
+            onPreviewVariation={openVariationPreview}
             onAssignBucketKind={assignBucketKind}
             onAutoSort={handleAutoSort}
             autoSorting={autoSorting}
+            pendingByEntryId={pendingHeadByEntryId}
+            onPendingCleared={clearPendingForEntry}
+            onJobCompletedForEntry={(entryId, filename, bucket, completedJobId = null) => {
+              if (!filename || !bucket) {
+                clearPendingForEntry(entryId, completedJobId);
+                return;
+              }
+              setDraft((d) => {
+                const cat = d.categories?.[bucket];
+                if (!cat?.variations) return d;
+                const variations = cat.variations.map((v) => {
+                  if (v.id !== entryId) return v;
+                  const refs = Array.isArray(v.imageRefs) ? v.imageRefs : [];
+                  if (refs.includes(filename)) return v;
+                  return { ...v, imageRefs: capImageRefs([...refs, filename]) };
+                });
+                return { ...d, categories: { ...d.categories, [bucket]: { ...cat, variations } } };
+              });
+              clearPendingForEntry(entryId, completedJobId);
+              // Pull the new sidecar into galleryByFilename so the lightbox
+              // opens with the real prompt/settings (mirrors the Cast/Places
+              // path's onJobCompletedForEntry above).
+              bumpGalleryRefresh();
+            }}
           />
         )}
 
@@ -1875,6 +2126,30 @@ export default function UniverseBuilder() {
           />
         )}
       </section>
+
+      {/* Page-level lightbox for variation + composite-sheet thumb clicks.
+          UniverseCanonSection owns its own MediaPreview for canon entries
+          (which routes character reference sheets through a different
+          static prefix), so we deliberately don't include canon refs in
+          `previewItems` above — they're handled there. Mounted at the page
+          level (not inside RenderTab) so the lightbox state is in scope; it
+          renders regardless of active tab because variation thumbs in the
+          Cast / Places / Objects / Other tabs all open the same modal.
+          Action handlers (Remix / SendToVideo / Clean / Continue) and the
+          annotations channel come from the shared `useImagePreviewActions`
+          + `useMediaAnnotations` hooks so the surface matches History /
+          MediaCollectionDetail / ImageGen exactly. */}
+      <MediaPreview
+        preview={preview}
+        setPreview={setPreview}
+        items={previewItems}
+        annotations={annotations}
+        updateAnnotation={updateAnnotation}
+        onRemix={previewActions.handleRemix}
+        onSendToVideo={previewActions.handleSendToVideo}
+        onClean={(item, level) => previewActions.handleClean(item?.raw || item, level)}
+        onContinue={(item) => previewActions.handleContinue(item?.raw || item)}
+      />
     </div>
   );
 }
@@ -1999,7 +2274,11 @@ function CompositeSheetsEditor({ sheets, onChange, canRender = false, onRender =
     const label = newLabel.trim();
     const prompt = newPrompt.trim();
     if (!label || !prompt) return;
-    onChange([...sheets, { kind: newKind, label: label.slice(0, 120), prompt: prompt.slice(0, COMPOSITE_PROMPT_MAX) }]);
+    // Stamp `locked: true` up front so the in-draft row matches the
+    // lock-by-default contract before the next save round-trips through
+    // sanitizeCompositeSheet — otherwise the bulk-toggle's locked-count
+    // gate would treat freshly-added boards as unlocked.
+    onChange([...sheets, { kind: newKind, label: label.slice(0, 120), prompt: prompt.slice(0, COMPOSITE_PROMPT_MAX), locked: true }]);
     setNewKind('reference_sheet');
     setNewLabel('');
     setNewPrompt('');
@@ -2008,12 +2287,11 @@ function CompositeSheetsEditor({ sheets, onChange, canRender = false, onRender =
 
   const removeAt = (idx) => onChange(sheets.filter((_, i) => i !== idx));
 
+  // Sheets default to locked at the sanitizer (locked-by-default contract);
+  // persist an unlock as explicit `false` so it survives the next read.
   const toggleLockAt = (idx) => onChange(sheets.map((s, i) => {
     if (i !== idx) return s;
-    const next = { ...s };
-    if (next.locked) delete next.locked;
-    else next.locked = true;
-    return next;
+    return { ...s, locked: !s.locked };
   }));
 
   const startEdit = (idx, sheet) => {
@@ -2040,6 +2318,11 @@ function CompositeSheetsEditor({ sheets, onChange, canRender = false, onRender =
     setEditIdx(null);
   };
 
+  const setAllSheetsLocked = (nextLocked) =>
+    onChange(sheets.map((s) => (s?.locked === nextLocked ? s : { ...s, locked: nextLocked })));
+  const sheetsLockedCount = sheets.filter((s) => s?.locked === true).length;
+  const allSheetsLocked = sheets.length > 0 && sheetsLockedCount === sheets.length;
+
   return (
     <section className="bg-port-card border border-port-border rounded p-4 flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
@@ -2047,12 +2330,31 @@ function CompositeSheetsEditor({ sheets, onChange, canRender = false, onRender =
           Composite boards
           <span className="ml-2 text-xs text-gray-500">{sheets.length}</span>
         </h2>
-        <button
-          onClick={() => setAdding((v) => !v)}
-          className="text-xs px-2 py-1 bg-port-accent/15 hover:bg-port-accent/25 text-port-accent rounded flex items-center gap-1 min-h-[40px] sm:min-h-0"
-        >
-          <Plus size={12} /> Add
-        </button>
+        <div className="flex items-center gap-1">
+          {sheets.length > 0 && (
+            <button
+              onClick={() => setAllSheetsLocked(!allSheetsLocked)}
+              title={allSheetsLocked
+                ? 'Unlock all composite boards — Expand may overwrite them'
+                : 'Lock all composite boards — Expand will preserve them'}
+              aria-label={allSheetsLocked ? 'Unlock all composite boards' : 'Lock all composite boards'}
+              aria-pressed={allSheetsLocked}
+              className={`p-1 rounded ${
+                allSheetsLocked
+                  ? 'text-port-accent hover:bg-port-accent/20'
+                  : 'text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              {allSheetsLocked ? <Lock size={14} /> : <Unlock size={14} />}
+            </button>
+          )}
+          <button
+            onClick={() => setAdding((v) => !v)}
+            className="text-xs px-2 py-1 bg-port-accent/15 hover:bg-port-accent/25 text-port-accent rounded flex items-center gap-1 min-h-[40px] sm:min-h-0"
+          >
+            <Plus size={12} /> Add
+          </button>
+        </div>
       </div>
       {adding && (
         <div className="bg-port-bg border border-port-border rounded p-2 flex flex-col gap-2">
@@ -2209,6 +2511,15 @@ export function CategoryEditor({
   // Only set by OtherTab — clicking opens a picker that retags the bucket's
   // `kind` to a canon trunk. Variations stay in place; bucket moves tabs.
   onAssignBucketKind = null,
+  // Clicking the row's thumbnail opens the page-level MediaPreview lightbox
+  // (same modal that the history / gallery uses). Receives the visible
+  // filename so the modal lands on the exact ref the user saw, not a stale
+  // primary that may have walked-back on a 404.
+  onPreviewVariation = null,
+  // Per-row render-pending plumbing — `pendingByEntryId[v.id]` returns the
+  // in-flight jobId (or undefined). Completion / failure callbacks fire when
+  // the row's MediaJobThumb settles.
+  pendingByEntryId = {}, onJobCompleted = null, onJobFailed = null,
 }) {
   const requiresTargetKind = !TRUNK_BY_KIND[bucketKind];
   const [adding, setAdding] = useState(false);
@@ -2279,7 +2590,11 @@ export function CategoryEditor({
     const label = newLabel.trim();
     const prompt = newPrompt.trim();
     if (!label || !prompt) return;
-    onChange([...variations, { label: label.slice(0, 120), prompt: prompt.slice(0, 2000) }]);
+    // Stamp `locked: true` so the in-draft row matches the lock-by-default
+    // contract before the next save round-trips through sanitizeVariation.
+    // Without this, the bulk-toggle counts a freshly-added variation as
+    // unlocked even though the user expects every new entry to land locked.
+    onChange([...variations, { label: label.slice(0, 120), prompt: prompt.slice(0, 2000), locked: true }]);
     setNewLabel('');
     setNewPrompt('');
     setAdding(false);
@@ -2287,13 +2602,20 @@ export function CategoryEditor({
 
   const removeAt = (idx) => onChange(variations.filter((_, i) => i !== idx));
 
+  // Variations default to locked at the sanitizer (locked-by-default contract),
+  // so an unlock must persist as explicit `false` — not as an absent key —
+  // otherwise the next read would re-lock the entry the user just unlocked.
   const toggleLockAt = (idx) => onChange(variations.map((v, i) => {
     if (i !== idx) return v;
-    const next = { ...v };
-    if (next.locked) delete next.locked;
-    else next.locked = true;
-    return next;
+    return { ...v, locked: !v.locked };
   }));
+
+  // Bulk lock/unlock everything in this bucket. Same persistence contract:
+  // unlock writes explicit `false` so it survives the round-trip.
+  const setAllLocked = (nextLocked) =>
+    onChange(variations.map((v) => (v?.locked === nextLocked ? v : { ...v, locked: nextLocked })));
+  const lockedCount = variations.filter((v) => v?.locked === true).length;
+  const allLocked = variations.length > 0 && lockedCount === variations.length;
 
   const startEdit = (idx, v) => {
     setEditIdx(idx);
@@ -2432,6 +2754,27 @@ export function CategoryEditor({
               )}
             </div>
           )}
+          {variations.length > 0 && (
+            // Single toggle — mirrors the per-row lock button. Lock icon when
+            // every variation is locked (click unlocks all); Unlock icon for
+            // the all-unlocked + mixed cases so a click always locks the
+            // holdouts.
+            <button
+              onClick={() => setAllLocked(!allLocked)}
+              title={allLocked
+                ? 'Unlock all variations — Expand / Generate may overwrite them'
+                : 'Lock all variations — Expand / Generate will preserve them'}
+              aria-label={allLocked ? 'Unlock all variations' : 'Lock all variations'}
+              aria-pressed={allLocked}
+              className={`p-1 rounded ${
+                allLocked
+                  ? 'text-port-accent hover:bg-port-accent/20'
+                  : 'text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              {allLocked ? <Lock size={14} /> : <Unlock size={14} />}
+            </button>
+          )}
           {canRemove && (
             <button
               onClick={onRemove}
@@ -2512,6 +2855,10 @@ export function CategoryEditor({
               runPromote={runPromote}
               onRenderVariation={onRenderVariation}
               canRender={canRender}
+              onPreviewVariation={onPreviewVariation}
+              inFlightJobId={pendingByEntryId[v.id] || null}
+              onJobCompleted={onJobCompleted}
+              onJobFailed={onJobFailed}
             />
           ))}
         </ul>
@@ -2529,8 +2876,36 @@ function VariationCard({
   onPromote, canPromote, requiresTargetKind, promotingIdx,
   pickerIdx, setPickerIdx, pickerWrapRef, runPromote,
   onRenderVariation, canRender,
+  onPreviewVariation = null,
+  inFlightJobId = null, onJobCompleted = null, onJobFailed = null,
 }) {
   const locked = !!v.locked;
+  // Hooks MUST run unconditionally and in stable order — calling them after
+  // the editMode early-return below would change the hook count between
+  // display ↔ edit toggles and crash React with "Rendered more hooks than
+  // during the previous render". Subscribe to the row's in-flight job here
+  // so completion / failure callbacks fire back up to the parent (which
+  // clears pending state + appends the new filename to the variation's
+  // imageRefs[] optimistically). settledRef prevents duplicate fires under
+  // React 18 StrictMode's mount → cleanup → mount dev double-fire.
+  const { status: jobStatus, filename: jobFilename, error: jobError } = useMediaJobProgress(inFlightJobId);
+  const settledRef = useRef(null);
+  useEffect(() => {
+    if (!inFlightJobId) { settledRef.current = null; return; }
+    if (settledRef.current === inFlightJobId) return;
+    if (jobStatus === 'completed' && jobFilename) {
+      settledRef.current = inFlightJobId;
+      // Pass `inFlightJobId` back so the parent can shift exactly this jobId
+      // out of its per-entry queue. Without the jobId, `clearPendingForEntry`
+      // would drop every queued job for the row — wrong when `batchPerVariation
+      // > 1` queues N siblings and only one has just finished.
+      onJobCompleted?.(v.id, jobFilename, inFlightJobId);
+    } else if (jobStatus === 'failed' || jobStatus === 'canceled') {
+      settledRef.current = inFlightJobId;
+      onJobFailed?.(v.id, jobError || jobStatus, inFlightJobId);
+    }
+  }, [inFlightJobId, jobStatus, jobFilename, jobError, v.id, onJobCompleted, onJobFailed]);
+
   if (editMode) {
     return (
       <EntryCard
@@ -2566,20 +2941,20 @@ function VariationCard({
       ? 'Promote to canon — pick a trunk'
       : 'Promote to canon — LLM expands this variation into a full canon entry';
 
-  // Show the most recent render as an avatar. `imageRefs` is chronological
-  // (renders append to the end). EntryCardThumbnail falls back through the
-  // history on `onError` so a deleted gallery file degrades gracefully. The
-  // thumbnail column collapses when there are no renders yet — matching the
-  // contract that nothing shows until at least one image has been generated.
+  // Thumbnail slot is three-state (pending / empty / completed) — see
+  // `EntryThumbSlot`. Hook subscription that drives this lives above the
+  // editMode early-return so the hook order stays stable across toggles.
   const renders = Array.isArray(v.imageRefs) ? v.imageRefs : [];
-  const latestRender = renders[renders.length - 1] || null;
-  const thumbnail = latestRender
-    ? {
-      filename: latestRender,
-      alt: `${v.label} render`,
-      fallbackRefs: renders,
-    }
-    : null;
+  const thumbnail = (
+    <EntryThumbSlot
+      inFlightJobId={inFlightJobId}
+      imageRefs={renders}
+      alt={`${v.label} render`}
+      canRender={!!onRenderVariation && canRender}
+      onRender={onRenderVariation ? () => onRenderVariation(v) : null}
+      onPreview={onPreviewVariation || null}
+    />
+  );
 
   const title = <div className="text-sm text-white font-medium truncate">{v.label}</div>;
   const body = <div className="text-xs text-gray-400 line-clamp-2 mt-1">{v.prompt}</div>;
@@ -2931,6 +3306,12 @@ export function TrunkView({
   onRemoveBucket, onUpdateBucket, onGenerateInBucket, onPromoteVariation,
   onBulkRenderBucket, onRenderVariation, onBulkRenderTrunk,
   onAddBucket,
+  onPreviewVariation = null,
+  pendingByEntryId = {},
+  // Same pending head-map, passed through to UniverseCanonSection so canon
+  // rows show a spinner when a batch `/render` queues canon prompts.
+  externalPendingByEntryId = null,
+  onPendingCleared = null, onJobCompletedForEntry = null,
 }) {
   const canonList = Array.isArray(draft[trunk.kind]) ? draft[trunk.kind] : [];
   // Only count canon entries the server will actually compile — mirror the
@@ -3030,6 +3411,8 @@ export function TrunkView({
           onUniverseChange={onUniverseChange}
           imageCfg={imageCfg}
           kindFilter={trunk.kind}
+          externalPendingByEntryId={externalPendingByEntryId}
+          onExternalCanonJobSettled={onPendingCleared}
         />
       ) : null}
 
@@ -3064,6 +3447,19 @@ export function TrunkView({
                   canPromote={canPromote}
                   bucketKind={draft.categories?.[cat]?.kind ?? trunk.kind}
                   onPromote={onPromoteVariation ? (v) => onPromoteVariation(cat, v) : null}
+                  onPreviewVariation={onPreviewVariation}
+                  pendingByEntryId={pendingByEntryId}
+                  onJobCompleted={(entryId, filename, completedJobId) =>
+                    onJobCompletedForEntry?.(entryId, filename, cat, completedJobId)}
+                  onJobFailed={(entryId, err, failedJobId) => {
+                    // Toast BEFORE clearing — clearing removes the
+                    // MediaJobThumb from the row and the failure state
+                    // disappears with it. Without the toast, a failed
+                    // variation render collapses silently to the empty
+                    // thumbnail (mirrors UniverseCanonSection.onJobFailed).
+                    if (err) toast.error(`Render failed: ${typeof err === 'string' ? err : (err.message || err)}`);
+                    onPendingCleared?.(entryId, failedJobId);
+                  }}
                 />
               ))}
             </section>
@@ -3082,6 +3478,8 @@ export function OtherTab({
   onUpdateBucket, onRemoveBucket, onGenerateInBucket, onPromoteVariation,
   onBulkRenderBucket, onRenderVariation, onAssignBucketKind, onAutoSort,
   autoSorting = false,
+  onPreviewVariation = null,
+  pendingByEntryId = {}, onPendingCleared = null, onJobCompletedForEntry = null,
 }) {
   return (
     <>
@@ -3127,6 +3525,17 @@ export function OtherTab({
             bucketKind={draft.categories?.[cat]?.kind}
             onPromote={onPromoteVariation ? (v, opts) => onPromoteVariation(cat, v, opts) : null}
             onAssignBucketKind={onAssignBucketKind ? (targetKind) => onAssignBucketKind(cat, targetKind) : null}
+            onPreviewVariation={onPreviewVariation}
+            pendingByEntryId={pendingByEntryId}
+            onJobCompleted={(entryId, filename, completedJobId) =>
+              onJobCompletedForEntry?.(entryId, filename, cat, completedJobId)}
+            onJobFailed={(entryId, err, failedJobId) => {
+              // Same surface-then-clear order as the Trunk-tab handler above:
+              // MediaJobThumb is unmounted on clear, so the toast must fire
+              // first or the user gets no signal that the render failed.
+              if (err) toast.error(`Render failed: ${typeof err === 'string' ? err : (err.message || err)}`);
+              onPendingCleared?.(entryId, failedJobId);
+            }}
           />
         ))}
       </section>
@@ -3405,6 +3814,7 @@ function RenderTab({
           </ul>
         </section>
       )}
+
     </>
   );
 }

@@ -127,6 +127,9 @@ describe("universeBuilder service", () => {
         label: "Rib-Cage Nomads",
         prompt: "reference sheet, layered sailcloth, bone toggles",
         imageRefs: [],
+        // Variations now lock-by-default — see sanitizeVariation in
+        // services/universeBuilder.js for the contract.
+        locked: true,
       },
     ]);
     expect(w.categories.factions.variations).toHaveLength(1);
@@ -151,6 +154,8 @@ describe("universeBuilder service", () => {
         prompt:
           "Create a clean illustrated costume reference sheet with five figures, materials swatches, fasteners, accessories, and color palette strip.",
         imageRefs: [],
+        // Composite sheets lock-by-default — see sanitizeCompositeSheet.
+        locked: true,
       },
     ]);
   });
@@ -174,6 +179,8 @@ describe("universeBuilder service", () => {
         prompt:
           "Create a cinematic universe summary concept pitch poster with hero panorama, inset environments, cultures, creatures, visual language, color palette, materials, light atmosphere, and theme icons.",
         imageRefs: [],
+        // Composite sheets lock-by-default — see sanitizeCompositeSheet.
+        locked: true,
       },
     ]);
   });
@@ -1133,27 +1140,30 @@ describe("universeBuilder service", () => {
   });
 
   describe("per-item locks", () => {
-    it("round-trips a `locked: true` flag on variations", async () => {
+    it("defaults variations to locked + preserves explicit lock state", async () => {
+      // Variations now lock-by-default: an entry with no `locked` field
+      // reads as locked, and explicit `false` survives the round-trip so
+      // a user-unlock isn't silently re-locked on the next read.
       const w = await seedWorld({
         categories: {
           landscapes: {
             variations: [
-              {
-                label: "Pinned canyon",
-                prompt: "pinned canyon prompt",
-                locked: true,
-              },
+              { label: "Pinned canyon", prompt: "pinned canyon prompt", locked: true },
               { label: "Open canyon", prompt: "open canyon prompt" },
+              { label: "Hand-unlocked", prompt: "hand unlocked prompt", locked: false },
             ],
           },
         },
       });
       const vs = w.categories.landscapes.variations;
       expect(vs.find((v) => v.label === "Pinned canyon").locked).toBe(true);
-      expect(vs.find((v) => v.label === "Open canyon").locked).toBeUndefined();
+      expect(vs.find((v) => v.label === "Open canyon").locked).toBe(true);
+      expect(vs.find((v) => v.label === "Hand-unlocked").locked).toBe(false);
     });
 
-    it("drops non-true `locked` values rather than recording them", async () => {
+    it("coerces non-boolean `locked` values to the locked-by-default state", async () => {
+      // Anything other than `false` collapses to the default (true); only
+      // explicit `false` records an unlock.
       const w = await seedWorld({
         categories: {
           landscapes: {
@@ -1168,12 +1178,12 @@ describe("universeBuilder service", () => {
       const labels = Object.fromEntries(
         w.categories.landscapes.variations.map((v) => [v.label, v.locked]),
       );
-      expect(labels.A).toBeUndefined();
-      expect(labels.B).toBeUndefined();
-      expect(labels.C).toBeUndefined();
+      expect(labels.A).toBe(false);
+      expect(labels.B).toBe(true);
+      expect(labels.C).toBe(true);
     });
 
-    it("round-trips a `locked: true` flag on composite sheets", async () => {
+    it("defaults composite sheets to locked + preserves explicit lock state", async () => {
       const w = await seedWorld({
         compositeSheets: [
           {
@@ -1183,6 +1193,7 @@ describe("universeBuilder service", () => {
             locked: true,
           },
           { label: "Open sheet", prompt: "open sheet prompt long enough" },
+          { label: "Unlocked sheet", prompt: "unlocked sheet prompt long enough", locked: false },
         ],
       });
       expect(
@@ -1190,7 +1201,87 @@ describe("universeBuilder service", () => {
       ).toBe(true);
       expect(
         w.compositeSheets.find((s) => s.label === "Open sheet").locked,
-      ).toBeUndefined();
+      ).toBe(true);
+      expect(
+        w.compositeSheets.find((s) => s.label === "Unlocked sheet").locked,
+      ).toBe(false);
+    });
+  });
+
+  describe("setVariationsLockAll", () => {
+    const seedTwoBuckets = () =>
+      seedWorld({
+        categories: {
+          landscapes: {
+            variations: [
+              { label: "A", prompt: "a" },
+              { label: "B", prompt: "b", locked: false },
+            ],
+          },
+          outfits: {
+            variations: [
+              { label: "X", prompt: "x" },
+              { label: "Y", prompt: "y" },
+            ],
+          },
+        },
+      });
+
+    it("scopes total + changed counts to a single bucket when categoryKey is set", async () => {
+      // Regression guard: previously `total += variations.length` ran before
+      // the categoryKey filter, so a single-bucket call over-reported the
+      // denominator as every variation universe-wide.
+      const w = await seedTwoBuckets();
+      const res = await svc.setVariationsLockAll(w.id, {
+        categoryKey: "landscapes",
+        locked: false,
+      });
+      expect(res.total).toBe(2); // only landscapes' variations counted
+      expect(res.changed).toBe(1); // only "A" flipped (true → false); "B" already false
+      const reread = (await svc.listUniverses())[0];
+      expect(reread.categories.landscapes.variations.every((v) => v.locked === false)).toBe(true);
+      // Other bucket untouched.
+      expect(reread.categories.outfits.variations.every((v) => v.locked === true)).toBe(true);
+    });
+
+    it("universe-wide path locks every variation across every bucket", async () => {
+      const w = await seedTwoBuckets();
+      // First, unlock everything explicitly so the test's "lock all" call has
+      // real work to do (sanitizer defaults new variations to locked).
+      await svc.setVariationsLockAll(w.id, { locked: false });
+      const res = await svc.setVariationsLockAll(w.id, { locked: true });
+      expect(res.total).toBe(4); // 2 landscapes + 2 outfits
+      expect(res.changed).toBe(4);
+      const reread = (await svc.listUniverses())[0];
+      for (const bucket of Object.values(reread.categories)) {
+        expect(bucket.variations.every((v) => v.locked === true)).toBe(true);
+      }
+    });
+
+    it("includeSheets: true also flips composite sheets in the same call (only when no categoryKey)", async () => {
+      const w = await seedWorld({
+        compositeSheets: [
+          { label: "Cover board", prompt: "cover board prompt long enough" },
+        ],
+      });
+      await svc.setVariationsLockAll(w.id, { locked: false, includeSheets: true });
+      const reread = (await svc.listUniverses())[0];
+      expect(reread.compositeSheets[0].locked).toBe(false);
+    });
+
+    it("ignores includeSheets when a categoryKey is set (single-bucket scope is strict)", async () => {
+      const w = await seedWorld({
+        compositeSheets: [
+          { label: "Cover board", prompt: "cover board prompt long enough" },
+        ],
+      });
+      await svc.setVariationsLockAll(w.id, {
+        categoryKey: "landscapes",
+        locked: false,
+        includeSheets: true,
+      });
+      const reread = (await svc.listUniverses())[0];
+      expect(reread.compositeSheets[0].locked).toBe(true); // still locked
     });
   });
 

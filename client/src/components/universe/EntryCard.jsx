@@ -6,15 +6,18 @@
  * Slot contract:
  * - `title`, `body`, `actions`, `footer` — ReactNode. Consumers own internal
  *   layout (e.g. column vs. row for `actions`) so EntryCard stays unopinionated.
- * - `thumbnail` — descriptor object `{ filename, alt?, onClick?, isPrimary?,
- *   fallbackRefs? }` (NOT a ReactNode). Spread into the internal
- *   `EntryCardThumbnail` renderer so the 12x12 frame, primary-star badge, and
- *   zoom-in button styling stay consistent across consumers. Pass `null`/omit
- *   to skip the thumbnail column. `fallbackRefs` is an optional chronological
- *   list of older filenames — when the primary one fails to load (file
- *   deleted), the thumbnail walks back through this list to the next existing
- *   render rather than producing a broken image; if none load, the column
- *   collapses to nothing.
+ * - `thumbnail` — either a descriptor object `{ filename, alt?, onClick?,
+ *   isPrimary?, fallbackRefs? }` OR a React element. The descriptor flows
+ *   through `EntryCardThumbnail` (12x12 frame, primary-star badge, walk-back
+ *   on 404) so the existing image case stays consistent across consumers.
+ *   A React element is rendered as-is — used by variation/canon rows that
+ *   need to drop in a `MediaJobThumb` (in-flight render spinner) or an
+ *   empty-state "Render" placeholder box in the thumbnail slot. Pass
+ *   `null`/omit to skip the thumbnail column entirely. `fallbackRefs` (on
+ *   the descriptor) is an optional chronological list of older filenames —
+ *   when the primary file no longer resolves, the thumbnail walks back
+ *   through this list rather than producing a broken image; if none load,
+ *   the column collapses to nothing.
  * - `selectable` — descriptor `{ selected, onToggle, label? }`. Turns the row
  *   into a checkbox-driven selection card (used by the Importer review for
  *   pre-commit canon picks). Selected accent matches `locked`'s family;
@@ -25,7 +28,7 @@
  *   overlay so they remain independently clickable without nesting interactive
  *   controls inside a `<label>` (invalid HTML).
  */
-import { useId, useState, useEffect } from 'react';
+import { useId, useState, useEffect, isValidElement } from 'react';
 import { Star } from 'lucide-react';
 
 export default function EntryCard({
@@ -68,7 +71,9 @@ export default function EntryCard({
           />
         ) : null}
         {thumbnail ? (
-          <EntryCardThumbnail {...thumbnail} />
+          isValidElement(thumbnail)
+            ? <div className="shrink-0">{thumbnail}</div>
+            : <EntryCardThumbnail {...thumbnail} />
         ) : null}
         <div className="flex-1 min-w-0">
           {title}
