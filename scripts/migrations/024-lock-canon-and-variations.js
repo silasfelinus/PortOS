@@ -89,16 +89,36 @@ const ensureIdOnVariation = (entry, prefix) => {
   return { ...entry, id: `${prefix}${randomUUID()}` };
 };
 
-const appendUniqueRef = (entry, filename) => {
-  if (!entry || typeof entry !== 'object' || !filename) return { entry, added: false };
-  const refs = Array.isArray(entry.imageRefs) ? entry.imageRefs : [];
-  if (refs.includes(filename)) return { entry, added: false };
-  const next = [...refs, filename];
-  const capped = next.length > IMAGE_REFS_PER_ENTRY_MAX
-    ? next.slice(-IMAGE_REFS_PER_ENTRY_MAX)
-    : next;
-  return { entry: { ...entry, imageRefs: capped }, added: true };
+// Merge candidate filenames (in deterministic job-file order) with the
+// variation's existing imageRefs, dedupe, and apply the cap exactly once.
+// Candidates lead the combined list so that on a rerun the dedup order is
+// driven by the (deterministic) jobs file, not by where previous runs
+// happened to leave imageRefs after capping — that arrangement is the
+// idempotency contract: same jobs + same existing imageRefs ⇒ same output.
+//
+// A per-job append+cap loop would NOT be idempotent when a variation has
+// more than IMAGE_REFS_PER_ENTRY_MAX matching historical jobs: the first
+// run prunes older filenames out of imageRefs[], the second run sees them
+// as missing, re-appends and re-rotates, and reports changes every run.
+const mergeAndCap = (existing, candidates) => {
+  const seen = new Set();
+  const out = [];
+  for (const f of candidates) {
+    if (typeof f !== 'string' || !f || seen.has(f)) continue;
+    seen.add(f);
+    out.push(f);
+  }
+  for (const f of existing) {
+    if (typeof f !== 'string' || !f || seen.has(f)) continue;
+    seen.add(f);
+    out.push(f);
+  }
+  return out.length > IMAGE_REFS_PER_ENTRY_MAX
+    ? out.slice(-IMAGE_REFS_PER_ENTRY_MAX)
+    : out;
 };
+
+const sameRefs = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 
 export default {
   async up({ rootDir }) {
@@ -192,6 +212,10 @@ export default {
         }
       }
 
+      // Pass 1: gather candidate filenames per variation in deterministic
+      // job-file order (dedup so a job that emitted the same filename twice
+      // doesn't double-count).
+      const candidatesByKey = new Map();
       for (const job of jobs) {
         if (!job || job.kind !== 'image' || job.status !== 'completed') continue;
         const tag = job.params?.universeRun;
@@ -201,18 +225,31 @@ export default {
         const category = normalizeCategoryKey(tag.category);
         const label = labelKey(tag.label);
         if (!universeId || !category || !label) continue;
-        const hit = variationIndex.get(`${universeId}|${category}|${label}`);
-        if (!hit) continue;
+        const key = `${universeId}|${category}|${label}`;
+        if (!variationIndex.has(key)) continue;
+        let arr = candidatesByKey.get(key);
+        if (!arr) { arr = []; candidatesByKey.set(key, arr); }
+        if (!arr.includes(filename)) arr.push(filename);
+      }
+
+      // Pass 2: merge each variation's full candidate set with its existing
+      // imageRefs in one shot, so the cap is applied to the merged whole
+      // (idempotency — see mergeAndCap comment).
+      for (const [key, candidates] of candidatesByKey) {
+        const hit = variationIndex.get(key);
         const bucket = hit.universe.categories[hit.bucketKey];
         const variations = Array.isArray(bucket.variations) ? bucket.variations : [];
         const current = variations[hit.idx];
-        const { entry: nextEntry, added } = appendUniqueRef(current, filename);
-        if (added) {
-          variations[hit.idx] = nextEntry;
-          bucket.variations = variations;
-          hit.universe.categories[hit.bucketKey] = bucket;
-          appendedRefs += 1;
-        }
+        const existing = Array.isArray(current?.imageRefs) ? current.imageRefs : [];
+        const merged = mergeAndCap(existing, candidates);
+        if (sameRefs(merged, existing)) continue;
+        const existingSet = new Set(existing);
+        let addedCount = 0;
+        for (const f of merged) if (!existingSet.has(f)) addedCount += 1;
+        variations[hit.idx] = { ...current, imageRefs: merged };
+        bucket.variations = variations;
+        hit.universe.categories[hit.bucketKey] = bucket;
+        appendedRefs += addedCount;
       }
     }
 

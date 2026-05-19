@@ -202,6 +202,52 @@ describe('migration 024 — lock canon + variations, back-fill thumbnails', () =
     expect(second.mintedVariationIds).toBe(0);
   });
 
+  it('is idempotent across reruns when a variation has MORE than the imageRefs cap of completed jobs', async () => {
+    // Regression: the previous per-job append-and-cap loop pruned older
+    // filenames out of imageRefs[] during the first run, then the second run
+    // saw them as missing, re-appended them, rotated the list, and reported
+    // changes on every rerun. The merge-then-cap approach computes the same
+    // deterministic capped window each run regardless of where the prior run
+    // left imageRefs.
+    const variationLabel = 'Heavy Renderer';
+    const totalJobs = 18; // > IMAGE_REFS_PER_ENTRY_MAX (12)
+    writeJson(universesPath, {
+      universes: [
+        {
+          id: 'u-1',
+          categories: {
+            landscapes: {
+              variations: [{ id: 'var-1', label: variationLabel, prompt: 'a' }],
+            },
+          },
+        },
+      ],
+    });
+    const jobs = Array.from({ length: totalJobs }, (_, i) => ({
+      id: `job-${i}`,
+      kind: 'image',
+      status: 'completed',
+      params: { universeRun: { universeId: 'u-1', category: 'landscapes', label: variationLabel } },
+      result: { filename: `render-${String(i).padStart(3, '0')}.png` },
+    }));
+    writeJson(jobsPath, { jobs });
+
+    const first = await migration.up({ rootDir });
+    expect(first.appendedRefs).toBe(12);
+    const afterFirst = readJson(universesPath);
+    const firstRefs = afterFirst.universes[0].categories.landscapes.variations[0].imageRefs;
+    expect(firstRefs).toHaveLength(12);
+    // Last-12-wins window: jobs 6..17 in file order.
+    expect(firstRefs[0]).toBe('render-006.png');
+    expect(firstRefs[11]).toBe('render-017.png');
+
+    const second = await migration.up({ rootDir });
+    expect(second.appendedRefs).toBe(0);
+    const afterSecond = readJson(universesPath);
+    expect(afterSecond.universes[0].categories.landscapes.variations[0].imageRefs)
+      .toEqual(firstRefs);
+  });
+
   it('returns `no-universes` when the data file is missing', async () => {
     // Skip writing universesPath — the loader should bail.
     const result = await migration.up({ rootDir });
