@@ -48,6 +48,7 @@ const queueIssueWrite = createFileWriteQueue();
 export const ERR_NOT_FOUND = 'PIPELINE_ISSUE_NOT_FOUND';
 export const ERR_VALIDATION = 'PIPELINE_ISSUE_VALIDATION';
 export const ERR_DUPLICATE = 'PIPELINE_ISSUE_DUPLICATE';
+export const ERR_SEASON_LOCKED = 'PIPELINE_ISSUE_SEASON_LOCKED';
 const makeErr = (message, code) => Object.assign(new Error(message), { code });
 
 const ISSUE_ID_RE = /^iss-[A-Za-z0-9-]+$/;
@@ -415,8 +416,26 @@ export function recomputeIssueNumbersForSeries(seriesId, fromSeasonId = null) {
  * the renumber pass — callers under `withReexportSuppressed` get exactly one
  * `series:updated` event regardless of the issue count.
  */
-export function bulkReassignSeason(seriesId, fromSeasonId, toSeasonId = null) {
+export function bulkReassignSeason(seriesId, fromSeasonId, toSeasonId = null, { _preloadedSeries = null } = {}) {
   return queueIssueWrite(async () => {
+    // Honor per-season locks — refuse to move issues OUT of or INTO a locked
+    // volume. Series lives in a different write queue, so this is best-effort
+    // single-user gating, not strict serialization (fine per CLAUDE.md).
+    // Callers that already hold a fresh series (e.g. `deleteSeason` reads it
+    // for the reassign-target validation) can pass `_preloadedSeries` to skip
+    // the duplicate read.
+    if (fromSeasonId || toSeasonId) {
+      const series = _preloadedSeries || await seriesSvc.getSeries(seriesId);
+      const seasons = Array.isArray(series.seasons) ? series.seasons : [];
+      const findLocked = (id) => (id ? seasons.find((s) => s.id === id && s.locked === true) : null);
+      const blocker = findLocked(fromSeasonId) || findLocked(toSeasonId);
+      if (blocker) {
+        throw makeErr(
+          `Season "${blocker.title || blocker.number}" is locked — unlock it before reassigning issues`,
+          ERR_SEASON_LOCKED,
+        );
+      }
+    }
     const state = await readState();
     let reassigned = 0;
     const now = new Date().toISOString();
