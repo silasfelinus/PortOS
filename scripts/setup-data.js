@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, cpSync, readdirSync, statSync, readFileSync, writeFileSync, renameSync, rmdirSync } from 'fs';
-import { createHash } from 'crypto';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+
+import { md5 } from './migrations/_lib.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(__dirname, '..');
@@ -137,9 +138,10 @@ for (const { relPath, mergeKey } of JSON_MERGE_TARGETS) {
 // recognize multi-migration lineages (file evolved through 003 → 004 → 005);
 // a user at any intermediate hash still gets the "run migrations" prompt.
 const SHIPPED_PROMPT_OLD_MD5 = {
-  // idea-expansion: aee… (pre-003) and 41fa… (post-003, pre-004) both
-  // auto-updatable to the post-004 hash.
-  'pipeline-idea-expansion.md': ['aee25112b2c596f643b17c559b772c22', '41facefbc0c0549d456bef9111f95ab9'],
+  // idea-expansion: aee… (pre-003), 41fa… (post-003, pre-004), and
+  // 1ee44c… (post-004, pre-025) all auto-updatable to the post-025
+  // (role/physicalDescription/personality/background plumbing) hash.
+  'pipeline-idea-expansion.md': ['aee25112b2c596f643b17c559b772c22', '41facefbc0c0549d456bef9111f95ab9', '1ee44cf95851ff8debf18729ebcd40b4'],
   'pipeline-prose.md':          'bfea5aeeb471aae9749baee765b473a7',
   // comic-script: 40e5fd… (pre-003) and beab03… (post-003, pre-011) both
   // auto-updatable to the post-011 (back-cover) hash.
@@ -181,7 +183,7 @@ const SHIPPED_PROMPT_OLD_MD5 = {
   ],
 };
 const SHIPPED_PROMPT_NEW_MD5 = {
-  'pipeline-idea-expansion.md': '1ee44cf95851ff8debf18729ebcd40b4',
+  'pipeline-idea-expansion.md': '1f3c5d077a5ef9a4b610335d5e3edd9c',
   'pipeline-prose.md':          '30ac30ec2b9d3e2a9eb869c181732cc6',
   'pipeline-comic-script.md':   '1e0af305c27d0c80c4b482d2ebcb4a0d',
   'pipeline-teleplay.md':       '376f779f4687b598f1c92ca4e770fd5a',
@@ -209,11 +211,6 @@ const SHIPPED_PARTIAL_NEW_MD5 = {
   'bible-deference.md': 'a4681348c27776e414acf6e0be566a99',
 };
 const SHIPPED_PARTIAL_FILES = Object.keys(SHIPPED_PARTIAL_OLD_MD5);
-
-const md5 = (s) => {
-  const normalized = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  return createHash('md5').update(normalized).digest('hex');
-};
 
 // Walk one directory's worth of shipped prompt files against a hash table
 // and partition them into auto-updatable (still on a known old hash) vs.
