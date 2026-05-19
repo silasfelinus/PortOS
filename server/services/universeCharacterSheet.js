@@ -89,6 +89,7 @@ export function buildCharacterReferenceSheetPrompt(universe, character) {
   const age = trim(character.age);
   const personality = trim(character.personality);
   const speechAccent = trim(character.speechAccent);
+  const speechPattern = trim(character.speechPattern);
   const coreTheme = trim(character.coreTheme);
   const visualNotes = trim(character.visualNotes);
 
@@ -99,7 +100,8 @@ export function buildCharacterReferenceSheetPrompt(universe, character) {
     pronouns ? `Pronouns: ${pronouns}.` : '',
     role ? `Role: ${role}.` : '',
     personality ? `Personality: ${personality}.` : '',
-    speechAccent ? `Speech: ${speechAccent}.` : '',
+    speechAccent ? `Accent: ${speechAccent}.` : '',
+    speechPattern ? `Speech pattern: ${speechPattern}.` : '',
     coreTheme ? `Core theme: ${coreTheme}.` : '',
     visualNotes ? `Visual notes: ${visualNotes}.` : '',
   ].filter(Boolean).join(' ');

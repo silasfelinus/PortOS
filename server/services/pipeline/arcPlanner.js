@@ -39,7 +39,7 @@ import { recommendStructure, describeStructure } from '../../lib/seasonStructure
 import { LENGTH_PROFILE_NAMES, DEFAULT_LENGTH_PROFILE } from '../../lib/issueLength.js';
 import { getUniverse } from '../universeBuilder.js';
 import { getSeriesCanon } from './seriesCanon.js';
-import { renderCategoriesForPrompt, renderCompositesForPrompt, renderCanonForPrompt } from '../../lib/universePromptRenderers.js';
+import { renderCategoriesForPrompt, renderCompositesForPrompt, renderCanonForPrompt, renderEntitiesSummary } from '../../lib/universePromptRenderers.js';
 
 export const ERR_VALIDATION = 'PIPELINE_ARC_VALIDATION';
 const makeErr = (message, code) => Object.assign(new Error(message), { code });
@@ -74,6 +74,12 @@ function renderPriorSeason(s, priorIssues) {
   return `${header}\n\nEpisode beats:\n${lines}`;
 }
 
+// Shared placeholder for world-context fields when the series has no linked
+// Universe Builder world. Exported so per-issue context builders
+// (textStages.buildStageContext) render the same string instead of drifting
+// to a near-duplicate phrasing.
+export const NO_LINKED_UNIVERSE_PLACEHOLDER = '(none — series has no linked Universe Builder world)';
+
 // The world is the canonical source for factions, characters, environments,
 // etc. — without this, the arc planner would only see the series' own
 // characters/places/objects which are usually empty pre-prose.
@@ -104,6 +110,11 @@ async function loadWorldContext(universeId) {
     // name. Separate from categories because the LLM should treat these as
     // first-class entities, not exploratory variations.
     worldCanonText: renderCanonForPrompt(world) || '(none)',
+    // Compact one-line-per-kind synopsis of canon — intended for text stages
+    // (prose/teleplay/comic-script) where the full canon dump would dominate
+    // the prompt. Arc-level prompts also receive it so a template author can
+    // pick whichever level of detail fits the section being grounded.
+    worldEntitiesSummary: renderEntitiesSummary(world) || '(none)',
   };
 }
 
@@ -120,9 +131,10 @@ const EMPTY_WORLD_CONTEXT = {
   worldStyleNotes: '',
   worldInfluencesEmbrace: '(none)',
   worldInfluencesAvoid: '(none)',
-  worldCategoriesText: '(none — series has no linked Universe Builder world)',
+  worldCategoriesText: NO_LINKED_UNIVERSE_PLACEHOLDER,
   worldCompositesText: '(none)',
-  worldCanonText: '(none — series has no linked Universe Builder world)',
+  worldCanonText: NO_LINKED_UNIVERSE_PLACEHOLDER,
+  worldEntitiesSummary: NO_LINKED_UNIVERSE_PLACEHOLDER,
 };
 
 // Resolve world context, accepting an optional preloaded value so callers
@@ -981,6 +993,44 @@ export function mergeArcWithLocks(currentArc, nextArc, lockedFields) {
   return merged;
 }
 
+// Preserve per-season locks. For every locked season in `currentSeasons`:
+//   - if the LLM proposed an entry with the same id, replace it with the
+//     existing locked record field-for-field (LLM's title/logline/etc. are
+//     discarded);
+//   - if the LLM dropped it entirely, re-insert it so it survives the resolve.
+// Unlocked seasons (and brand-new entries the LLM minted) pass through. The
+// caller still funnels the result through `sanitizeSeasonList`, which re-sorts
+// by `number` ascending and dedups by id.
+//
+// Mirrors `mergeArcWithLocks`'s contract: locks are an *enforcement* gate, not
+// a workflow signal — the arc-level `series.locked.arc` check up the stack
+// remains the all-or-nothing block; this lets users freeze individual seasons
+// while still letting auto-resolve rewrite the rest of the arc.
+export function mergeSeasonsWithLocks(currentSeasons, nextSeasons) {
+  if (!Array.isArray(nextSeasons)) return nextSeasons;
+  if (!Array.isArray(currentSeasons)) return nextSeasons;
+  const lockedById = new Map();
+  for (const s of currentSeasons) {
+    if (s?.locked === true && s.id) lockedById.set(s.id, s);
+  }
+  if (lockedById.size === 0) return nextSeasons;
+  const seen = new Set();
+  const merged = [];
+  for (const next of nextSeasons) {
+    const locked = next?.id ? lockedById.get(next.id) : null;
+    if (locked) {
+      merged.push(locked);
+      seen.add(locked.id);
+    } else {
+      merged.push(next);
+    }
+  }
+  for (const [id, locked] of lockedById) {
+    if (!seen.has(id)) merged.push(locked);
+  }
+  return merged;
+}
+
 /**
  * Persist a new `arc` + `seasons[]` onto a series, migrating any child issues
  * whose `seasonId` referenced a season that the new shape dropped or renamed.
@@ -1010,10 +1060,16 @@ export async function commitSeasonsWithRemap(currentSeries, { arc, seasons }) {
     );
   }
   const mergedArc = mergeArcWithLocks(latestSeries.arc, arc, latestSeries.locked?.arcFields);
-  const newIds = new Set((seasons || []).map((s) => s.id));
+  // Per-season locks: restore any locked existing seasons over LLM-proposed
+  // rewrites, and re-insert any locked seasons the LLM dropped. Re-sanitize
+  // so the locked records merge with the new shape (sort by number, dedup).
+  const mergedSeasons = sanitizeSeasonList(
+    mergeSeasonsWithLocks(latestSeries.seasons, seasons),
+  );
+  const newIds = new Set(mergedSeasons.map((s) => s.id));
   const droppedOldSeasons = (latestSeries.seasons || []).filter((s) => !newIds.has(s.id));
   const oldIds = new Set((latestSeries.seasons || []).map((s) => s.id));
-  const newlyMintedSeasons = (seasons || []).filter((s) => !oldIds.has(s.id));
+  const newlyMintedSeasons = mergedSeasons.filter((s) => !oldIds.has(s.id));
   const remap = buildSeasonRemap(droppedOldSeasons, newlyMintedSeasons);
   const droppedIdSet = new Set(droppedOldSeasons.map((s) => s.id));
   const reassignList = droppedIdSet.size
@@ -1032,7 +1088,7 @@ export async function commitSeasonsWithRemap(currentSeries, { arc, seasons }) {
   // the exact orphan state this helper was written to prevent.
   let updated;
   await withReexportSuppressed('series', seriesId, async () => {
-    updated = await updateSeries(seriesId, { arc: mergedArc, seasons });
+    updated = await updateSeries(seriesId, { arc: mergedArc, seasons: mergedSeasons });
     for (const iss of reassignList) {
       const target = remap.get(iss.seasonId) ?? null;
       await updateIssue(iss.id, { seasonId: target }, { skipRenumber: true });
@@ -1118,4 +1174,5 @@ export const __testing = {
   renderVolumeIssue,
   buildNeighborVolumes,
   mergeArcWithLocks,
+  mergeSeasonsWithLocks,
 };
