@@ -15,7 +15,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
-import { validateRequest } from '../lib/validation.js';
+import { validateRequest, optionalBooleanMap } from '../lib/validation.js';
 import * as svc from '../services/universeBuilder.js';
 import * as canonSvc from '../services/universeCanon.js';
 import { expandUniverseCharacter } from '../services/universeCharacterExpand.js';
@@ -103,7 +103,7 @@ export const llmSchema = z.object({
 // PATCHing a previously saved lock map still pass validation (sanitizeLocked
 // rewrites it on read into the per-list keys).
 const lockedSchema = z.object({
-  ...Object.fromEntries(svc.LOCKABLE_FIELDS.map((k) => [k, z.boolean().optional()])),
+  ...optionalBooleanMap(svc.LOCKABLE_FIELDS),
   influences: z.boolean().optional(),
 }).strict();
 

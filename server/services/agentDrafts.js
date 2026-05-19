@@ -5,10 +5,9 @@
  * Drafts are stored as JSON files: data/agents/drafts/{agentId}.json
  */
 
-import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { v4 as uuidv4 } from '../lib/uuid.js';
-import { atomicWrite, ensureDir, PATHS, safeJSONParse } from '../lib/fileUtils.js';
+import { atomicWrite, ensureDir, PATHS, safeJSONParse, tryReadFile } from '../lib/fileUtils.js';
 
 const DRAFTS_DIR = join(PATHS.agentPersonalities, 'drafts');
 
@@ -19,7 +18,7 @@ async function getDraftsPath(agentId) {
 
 async function loadDrafts(agentId) {
   const filePath = await getDraftsPath(agentId);
-  const content = await readFile(filePath, 'utf-8').catch(() => null);
+  const content = await tryReadFile(filePath);
   if (!content) return [];
   return safeJSONParse(content, [], { context: `agentDrafts:${agentId}` });
 }

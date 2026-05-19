@@ -19,6 +19,13 @@ export const refineImagePixelCap = (d) =>
   !(d.width && d.height) || d.width * d.height <= MAX_IMAGE_PIXELS;
 export const PIXEL_CAP_MESSAGE = `Total pixels (width × height) must be ≤ ${MAX_IMAGE_PIXELS.toLocaleString()}`;
 
+// Build a sparse-map Zod shape from a string array of boolean-typed keys.
+// Returns the raw record so callers can either spread it (...optionalBooleanMap(KEYS))
+// into a larger object schema or wrap it directly (z.object(optionalBooleanMap(KEYS))).
+// Mirrors the `{ field?: boolean }` shape used for per-field lock maps.
+export const optionalBooleanMap = (keys) =>
+  Object.fromEntries(keys.map((k) => [k, z.boolean().optional()]));
+
 // =============================================================================
 // AGENT PERSONALITY SCHEMAS
 // =============================================================================

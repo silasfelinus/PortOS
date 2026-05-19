@@ -21,6 +21,7 @@ import {
   PIPELINE_STAGES, PIPELINE_TAB_STAGES, PIPELINE_STAGE_LABELS,
 } from '../services/api';
 import { usePipelineAutoRunProgress } from '../hooks/usePipelineAutoRunProgress';
+import { useLockToggle } from '../hooks/useLockToggle';
 import IdeaStage from '../components/pipeline/stages/IdeaStage';
 import ProseStage from '../components/pipeline/stages/ProseStage';
 import NounsStage from '../components/pipeline/stages/NounsStage';
@@ -96,7 +97,6 @@ export default function PipelineIssue() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [lengthProfileSaving, setLengthProfileSaving] = useState(false);
   const [genConfigSaving, setGenConfigSaving] = useState(false);
-  const [stageLockSaving, setStageLockSaving] = useState(false);
   // Close the settings modal whenever the active stage changes so it doesn't
   // reopen unexpectedly when the user returns to a previously-visited stage.
   useEffect(() => { setSettingsOpen(false); }, [stageId]);
@@ -192,23 +192,19 @@ export default function PipelineIssue() {
   // boundary (textStages.generateStage, visualStages.enqueueXxx, etc.).
   // The merged Comic tab owns both text (`comicScript`) and render/page
   // artifacts (`comicPages`), so it toggles both persisted stages together.
-  const handleStageLockToggle = async () => {
-    if (stageLockSaving || !issue || !canLockActiveStage) return;
-    const next = !activeStageLocked;
-    setStageLockSaving(true);
-    const stages = Object.fromEntries(activeLockStageIds.map((id) => [id, { locked: next }]));
-    const updated = await updatePipelineIssue(issueId, {
-      stages,
-    }, { silent: true }).catch((err) => {
-      toast.error(err.message || `${PIPELINE_STAGE_LABELS[stageId]} lock update failed`);
-      return null;
-    });
-    setStageLockSaving(false);
-    if (!updated) return;
-    setIssue(updated);
-    toast.success(next
-      ? `${PIPELINE_STAGE_LABELS[stageId]} locked — regeneration is now blocked`
-      : `${PIPELINE_STAGE_LABELS[stageId]} unlocked`);
+  const { busy: stageLockSaving, toggle: toggleStageLock } = useLockToggle({
+    patchFn: (next) => {
+      const stages = Object.fromEntries(activeLockStageIds.map((id) => [id, { locked: next }]));
+      return updatePipelineIssue(issueId, { stages }, { silent: true });
+    },
+    onSuccess: (updated) => setIssue(updated),
+    lockedMessage: `${PIPELINE_STAGE_LABELS[stageId]} locked — regeneration is now blocked`,
+    unlockedMessage: `${PIPELINE_STAGE_LABELS[stageId]} unlocked`,
+    errorMessage: `${PIPELINE_STAGE_LABELS[stageId]} lock update failed`,
+  });
+  const handleStageLockToggle = () => {
+    if (!issue || !canLockActiveStage) return;
+    toggleStageLock(activeStageLocked);
   };
 
   const handleStageUpdate = (id, updatedStage, updatedIssue) => {

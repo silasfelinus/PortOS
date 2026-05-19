@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const fileStore = new Map();
 
 vi.mock('../lib/fileUtils.js', () => ({
+  tryReadFile: vi.fn().mockResolvedValue(null),
   PATHS: { data: '/mock/data', imageRefs: '/mock/data/image-refs' },
   ensureDir: vi.fn().mockResolvedValue(undefined),
   atomicWrite: vi.fn(async (path, data) => { fileStore.set(path, data); }),

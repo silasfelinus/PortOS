@@ -29,6 +29,7 @@ vi.mock('./agentState.js', () => ({
   userTerminatedAgents: new Set(),
 }));
 vi.mock('../lib/fileUtils.js', () => ({
+tryReadFile: vi.fn().mockResolvedValue(null),
   safeJSONParse: (str, fallback) => { try { return JSON.parse(str); } catch { return fallback; } },
   PATHS: { root: '/tmp', cosAgents: '/tmp/agents', data: '/tmp/data' },
 }));

@@ -9,6 +9,7 @@ const fileStore = new Map();
 // resolveImageRef to return null for the stale filename.
 const refSheetFilesByName = new Map();
 vi.mock("../lib/fileUtils.js", () => ({
+tryReadFile: vi.fn().mockResolvedValue(null),
   PATHS: { data: "/mock/data" },
   ensureDir: vi.fn().mockResolvedValue(undefined),
   atomicWrite: vi.fn(async (path, data) => {
