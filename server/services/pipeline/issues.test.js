@@ -203,6 +203,46 @@ describe('pipeline issues service', () => {
     expect(list1.every((i) => i.seriesId === 'ser-1')).toBe(true);
   });
 
+  describe('listIssues pagination', () => {
+    it('returns raw array when paginated is false (legacy default)', async () => {
+      await svc.createIssue({ seriesId: 'ser-1', title: 'A' });
+      await svc.createIssue({ seriesId: 'ser-1', title: 'B' });
+      const result = await svc.listIssues({ seriesId: 'ser-1' });
+      expect(Array.isArray(result)).toBe(true);
+      expect(result).toHaveLength(2);
+    });
+
+    it('returns paginated envelope when paginated:true', async () => {
+      await svc.createIssue({ seriesId: 'ser-1', title: 'A' });
+      await svc.createIssue({ seriesId: 'ser-1', title: 'B' });
+      await svc.createIssue({ seriesId: 'ser-1', title: 'C' });
+      const result = await svc.listIssues({ seriesId: 'ser-1', offset: 0, limit: 2, paginated: true });
+      expect(result.total).toBe(3);
+      expect(result.offset).toBe(0);
+      expect(result.limit).toBe(2);
+      expect(result.items).toHaveLength(2);
+      expect(result.items[0].title).toBe('A');
+      expect(result.items[1].title).toBe('B');
+    });
+
+    it('respects offset when paginated:true', async () => {
+      await svc.createIssue({ seriesId: 'ser-1', title: 'A' });
+      await svc.createIssue({ seriesId: 'ser-1', title: 'B' });
+      await svc.createIssue({ seriesId: 'ser-1', title: 'C' });
+      const result = await svc.listIssues({ seriesId: 'ser-1', offset: 2, limit: 10, paginated: true });
+      expect(result.total).toBe(3);
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].title).toBe('C');
+    });
+
+    it('offset beyond total returns empty items but correct total', async () => {
+      await svc.createIssue({ seriesId: 'ser-1', title: 'A' });
+      const result = await svc.listIssues({ seriesId: 'ser-1', offset: 100, limit: 10, paginated: true });
+      expect(result.total).toBe(1);
+      expect(result.items).toHaveLength(0);
+    });
+  });
+
   describe('listRecentIssues', () => {
     it('orders descending by updatedAt across all series', async () => {
       const a = await svc.createIssue({ seriesId: 'ser-1', title: 'A' });
@@ -623,6 +663,30 @@ describe('pipeline issues service', () => {
       await seasonsSvc.updateSeason(series.id, a.id, { locked: false });
       const result = await svc.bulkReassignSeason(series.id, a.id, b.id);
       expect(result.reassigned).toBe(3);
+    });
+  });
+
+  describe('concurrent write serialization', () => {
+    it('two concurrent writes do not clobber each other — both fields survive in final state', async () => {
+      // This is the key regression test for the queueIssueWrite tail.
+      // If the write queue is bypassed or broken, both calls read the same
+      // pre-write snapshot and the last one to land wins — exactly one of
+      // the two writes is silently dropped.
+      const issue = await svc.createIssue({ seriesId: 'ser-1', title: 'Concurrency target' });
+
+      // Fire two writes concurrently without awaiting individually.
+      // updateStage writes to `idea.output`; updateIssue writes to top-level `status`.
+      // A clobbering race would lose whichever write landed second (its pre-image
+      // read captured an empty idea.output or no status change).
+      await Promise.all([
+        svc.updateStage(issue.id, 'idea', { status: 'ready', output: 'beat sheet content' }),
+        svc.updateIssue(issue.id, { status: 'needs-review' }),
+      ]);
+
+      const final = await svc.getIssue(issue.id);
+      // Both mutations must survive — if either is missing, the write tail is broken.
+      expect(final.stages.idea.output).toBe('beat sheet content');
+      expect(final.status).toBe('needs-review');
     });
   });
 });
