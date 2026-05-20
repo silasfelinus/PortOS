@@ -71,7 +71,7 @@ describe('sharing/annotationsSync.exportAnnotationsToBucket', () => {
     fileStore.clear();
     writeCalls.length = 0;
     writeManifestMock.mockClear();
-    svc._resetBucketAssetKeysCache();
+    svc.__resetBucketAssetKeysCache();
     statMock.mockReset();
     statMock.mockResolvedValue({ mtimeMs: 1 });
   });
@@ -200,7 +200,7 @@ describe('sharing/annotationsSync.listBucketAssetKeys cache', () => {
     fileStore.clear();
     writeCalls.length = 0;
     writeManifestMock.mockClear();
-    svc._resetBucketAssetKeysCache();
+    svc.__resetBucketAssetKeysCache();
     statMock.mockReset();
     statMock.mockResolvedValue({ mtimeMs: 100 });
   });
@@ -283,6 +283,62 @@ describe('sharing/annotationsSync.listBucketAssetKeys cache', () => {
     // Each call scans both image+video dirs (4 readdir calls total over 2
     // flushes). If the legacy scan were incorrectly cached this would be 2.
     expect(fsp.readdir).toHaveBeenCalledTimes(4);
+  });
+
+  it('skips caching when stat fails with a non-ENOENT error so the real fault stays observable', async () => {
+    const { listManifestFilenames, readManifest } = await import('./manifest.js');
+    const eacces = Object.assign(new Error('EACCES'), { code: 'EACCES' });
+    statMock.mockRejectedValue(eacces);
+    listManifestFilenames.mockClear();
+    readManifest.mockClear();
+    listManifestFilenames.mockResolvedValue(['a.manifest.json']);
+    readManifest.mockResolvedValue({ assetRefs: [{ kind: 'image', ref: 'a.png' }], collection: null });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const ann = { 'image:a.png': { starred: true, note: 'hi', updatedAt: '2026-01-01T00:00:00.000Z' } };
+    await svc.exportAnnotationsToBucket(bucket(), ann, 'local-instance');
+    await svc.exportAnnotationsToBucket(bucket(), ann, 'local-instance');
+
+    // Both calls re-scan because EACCES poisons caching for this bucket.
+    expect(listManifestFilenames).toHaveBeenCalledTimes(2);
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it('layers legacy v1 keys onto the manifest set without polluting the cache for the next call', async () => {
+    // First call has v1 dirs populated → returned Set contains the v1 key.
+    // Second call has v1 dirs empty → returned Set must NOT contain the v1
+    // key. If the legacy fall-through had `.add()`d into the cached manifest
+    // set instead of allocating a fresh union Set, the second call would
+    // still see the stale v1 key. We probe this by feeding an annotation
+    // that ONLY matches the v1 key: it should write on call 1 (legacy
+    // present) and skip on call 2 (legacy gone, manifest set untouched).
+    const fs = await import('fs');
+    const fsp = await import('fs/promises');
+    const { listManifestFilenames, readManifest } = await import('./manifest.js');
+    listManifestFilenames.mockClear();
+    readManifest.mockClear();
+    listManifestFilenames.mockResolvedValue(['a.manifest.json']);
+    readManifest.mockResolvedValue({ assetRefs: [{ kind: 'image', ref: 'a.png' }], collection: null });
+
+    fs.existsSync.mockReturnValue(true);
+    fsp.readdir.mockResolvedValueOnce(['rogue.png']).mockResolvedValueOnce([]);
+    const ann = { 'image:rogue.png': { starred: true, note: 'hi', updatedAt: '2026-01-01T00:00:00.000Z' } };
+    const r1 = await svc.exportAnnotationsToBucket(bucket(), ann, 'local-instance');
+    expect(r1.skipped).toBe(false); // v1 fall-through provided the matching key
+
+    // v1 dirs disappear (deleted between flushes); cached manifest set must
+    // not have absorbed the v1 key on the prior call.
+    fs.existsSync.mockReturnValue(false);
+    fsp.readdir.mockResolvedValue([]);
+    // Drop the prior record so the late-stage tombstone path doesn't write.
+    fileStore.delete('/mock/bucket/records/media-annotations/local-instance.json');
+    const r2 = await svc.exportAnnotationsToBucket(bucket(), ann, 'local-instance');
+    expect(r2.skipped).toBe(true);
+    expect(r2.reason).toBe('no-annotations-for-bucket');
+    // Manifest parse stays cached across both calls — the mutation defense
+    // does not compromise the hit rate.
+    expect(listManifestFilenames).toHaveBeenCalledTimes(1);
   });
 
   it('treats an absent manifests dir as a stable cache key', async () => {

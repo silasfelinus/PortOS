@@ -33,11 +33,9 @@ let installed = false;
  * per flush. With the cache the steady-state cost drops to one `stat` per
  * bucket.
  *
- * @type {Map<string, { manifestsMtimeMs: number, manifestKeys: Set<string> }>}
+ * @type {Map<string, { manifestsMtimeMs: number | null, manifestKeys: Set<string> }>}
  */
 const manifestKeysCache = new Map();
-/** Sentinel: manifests dir doesn't exist yet. */
-const MANIFESTS_DIR_ABSENT = -1;
 
 /**
  * Set of `${kind}:${filename}` keys for every asset referenced by any manifest
@@ -47,15 +45,31 @@ const MANIFESTS_DIR_ABSENT = -1;
  * scan covers v1 buckets that never wrote a manifest's `hash` field.
  *
  * The manifests-side scan is cached per (bucket, manifests-dir mtime); the
- * legacy v1 dir scan is small and runs uncached.
+ * legacy v1 dir scan is small and runs uncached. Callers must treat the
+ * returned Set as read-only — the cache may hand back the same Set instance
+ * to subsequent callers when the legacy fall-through adds nothing (the
+ * common v2-only path), so mutating it would poison the next cache hit.
  */
 async function listBucketAssetKeys(bucketPath) {
   const manifestsDir = join(bucketPath, 'manifests');
-  const dirStat = await stat(manifestsDir).catch(() => null);
-  const manifestsMtimeMs = dirStat ? dirStat.mtimeMs : MANIFESTS_DIR_ABSENT;
+  // ENOENT (dir not created yet) is normal; null is a stable cache key.
+  // Other errors (EACCES, EIO) are surfaced via a warning + uncached scan so
+  // a real permission/IO problem is observable instead of being swallowed
+  // into a phantom `unknown` mtime.
+  let manifestsMtimeMs = null;
+  let cacheable = true;
+  const dirStat = await stat(manifestsDir).catch((err) => err);
+  if (dirStat instanceof Error) {
+    if (dirStat.code !== 'ENOENT') {
+      console.error(`⚠️ sharing.annotations: stat(${manifestsDir}) failed code=${dirStat.code}: ${dirStat.message}`);
+      cacheable = false;
+    }
+  } else {
+    manifestsMtimeMs = dirStat.mtimeMs;
+  }
 
   let manifestKeys;
-  const cached = manifestKeysCache.get(bucketPath);
+  const cached = cacheable ? manifestKeysCache.get(bucketPath) : null;
   if (cached && cached.manifestsMtimeMs === manifestsMtimeMs) {
     manifestKeys = cached.manifestKeys;
   } else {
@@ -74,26 +88,29 @@ async function listBucketAssetKeys(bucketPath) {
         manifestKeys.add(`${kind}:${item.ref}`);
       }
     }));
-    manifestKeysCache.set(bucketPath, { manifestsMtimeMs, manifestKeys });
+    if (cacheable) manifestKeysCache.set(bucketPath, { manifestsMtimeMs, manifestKeys });
   }
 
-  // Copy so callers can't mutate the cached set, then layer on the legacy
-  // v1 dir scan (small; runs every call).
-  const keys = new Set(manifestKeys);
+  // Layer on the legacy v1 dir scan (small; runs every call). The common
+  // v2-native bucket has no `assets/{images,videos}/` so we return the
+  // cached Set unmodified and avoid the per-call copy entirely.
+  let legacyKeys = null;
   for (const [subdir, kind] of [['images', 'image'], ['videos', 'video']]) {
     const dir = join(bucketPath, 'assets', subdir);
     if (!existsSync(dir)) continue;
     const files = await readdir(dir).catch(() => []);
     for (const f of files) {
       if (f.endsWith('.metadata.json')) continue;
-      keys.add(`${kind}:${f}`);
+      if (!legacyKeys) legacyKeys = new Set();
+      legacyKeys.add(`${kind}:${f}`);
     }
   }
-  return keys;
+  if (!legacyKeys) return manifestKeys;
+  return new Set([...manifestKeys, ...legacyKeys]);
 }
 
 /** Test hook — reset the per-bucket manifest-keys cache between cases. */
-export function _resetBucketAssetKeysCache() {
+export function __resetBucketAssetKeysCache() {
   manifestKeysCache.clear();
 }
 
