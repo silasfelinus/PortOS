@@ -19,6 +19,7 @@ import { parseEcosystemFromPath, usesPm2 } from '../services/streamingDetect.js'
 import { detectAppIcon, getIconContentType, isUsableSvg } from '../services/appIconDetect.js';
 import { hasDeployScript } from '../services/appDeployer.js';
 import { checkScripts, installScripts, XCODE_SCRIPT_NAMES } from '../services/xcodeScripts.js';
+import { certPaths } from '../../lib/certPaths.js';
 
 const router = Router();
 
@@ -268,7 +269,7 @@ router.post('/:id/upgrade-tls', loadApp, asyncHandler(async (req, res) => {
     overwrote: alreadyExists,
     tlsPort,
     snippet,
-    certDirHint: join(PATHS.data, 'certs'),
+    certDirHint: certPaths(PATHS.data).dir,
     note: 'Point your app at the PortOS cert dir (or symlink it) so apps share the single Tailscale cert.'
   });
 }));

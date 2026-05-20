@@ -8,13 +8,13 @@
  * boot HTTP-only while setup.sh's file-presence check still claimed HTTPS).
  */
 import { hasTailscaleCert } from '../lib/tailscale-https.js';
+import { certPaths } from '../lib/certPaths.js';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const CERT_DIR = join(ROOT, 'data', 'certs');
-const META_PATH = join(CERT_DIR, 'meta.json');
+const { dir: CERT_DIR, meta: META_PATH } = certPaths(join(ROOT, 'data'));
 const API_PORT = Number(process.env.PORT) || 5555;
 const MIRROR_PORT = Number(process.env.PORTOS_HTTP_PORT) || 5553;
 

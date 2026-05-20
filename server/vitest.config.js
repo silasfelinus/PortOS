@@ -14,6 +14,7 @@ export default defineConfig({
       '**/*.test.js',
       '../client/src/**/*.test.js',
       '../scripts/**/*.test.js',
+      '../lib/**/*.test.js',
     ],
     coverage: {
       provider: 'v8',

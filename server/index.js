@@ -7,6 +7,7 @@ import { PORTS } from './lib/ports.js';
 import { existsSync } from 'fs';
 import { readFile, unlink } from 'fs/promises';
 import { createTailscaleServers } from '../lib/tailscale-https.js';
+import { certPaths } from '../lib/certPaths.js';
 import { getSelfHost } from './lib/peerSelfHost.js';
 import { getBuildId, getStampedIndexHtml } from './lib/buildId.js';
 
@@ -150,7 +151,7 @@ const PORT = process.env.PORT || 5555;
 const HOST = process.env.HOST || '0.0.0.0';
 
 // Delegates HTTPS / HTTP-mirror wiring to lib/tailscale-https.js — see there.
-const CERT_DIR = join(PATHS.data, 'certs');
+const { dir: CERT_DIR } = certPaths(PATHS.data);
 const { server: httpServer, mirror: localHttpServer, httpsEnabled } =
   createTailscaleServers(app, { certDir: CERT_DIR });
 const scheme = httpsEnabled ? 'https' : 'http';
