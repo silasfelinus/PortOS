@@ -54,6 +54,7 @@ import {
 } from '../services/api';
 import { randomSeed, safeParseJSON } from '../lib/genUtils';
 import { VIDEO_RESOLUTIONS } from '../lib/videoGenResolutions';
+import { resolveResolutionLabel } from '../lib/imageGenResolutions';
 
 // Values follow LTX-2's 8k+1 latent boundary so the model doesn't silently
 // snap. 241 = 10s @ 24fps is the comfortable single-pass ceiling on 48 GB
@@ -315,8 +316,7 @@ export default function VideoGen() {
   }, [refreshStatus]);
 
   const currentModel = models.find((m) => m.id === modelId);
-  const matchedResolution = VIDEO_RESOLUTIONS.find((r) => r.w === width && r.h === height);
-  const resolutionLabel = matchedResolution?.label || `${width}×${height}`;
+  const { matched: matchedResolution, label: resolutionLabel } = resolveResolutionLabel(VIDEO_RESOLUTIONS, width, height);
   const progressPct = progress?.progress != null ? Math.round(progress.progress * 100) : null;
 
   const handleResolutionChange = (e) => {
