@@ -84,6 +84,15 @@ async function readAll() {
     resolveLocalAuthorName().catch(() => ''),
   ]);
   const liftCtx = { localInstanceId, defaultAuthorName };
+  // Heal-on-read: migration 014 wrote the literal `'unknown'` as an author key
+  // when it ran before `ensureSelf()` had created the local identity. Re-key
+  // those entries to the real `localInstanceId` so they project as the user's
+  // own annotation and become exportable again (annotationsSync.flushAll
+  // refuses to ship payloads with instanceId `'unknown'`). The heal is in-
+  // memory only — the first subsequent `setAnnotation` for the key persists
+  // the clean shape via the normal write path. Skip the heal when we still
+  // don't have a real local identity, otherwise we'd just rename the phantom.
+  const healUnknownAuthor = localInstanceId && localInstanceId !== 'unknown';
   const out = {};
   for (const [key, value] of Object.entries(annotations)) {
     if (!isValidKey(key)) continue;
@@ -93,7 +102,18 @@ async function readAll() {
     for (const [instanceId, sub] of Object.entries(lifted.authors)) {
       if (typeof instanceId !== 'string' || !instanceId) continue;
       const sane = sanitizeAuthorEntry(sub);
-      if (sane) authors[instanceId] = sane;
+      if (!sane) continue;
+      if (instanceId === 'unknown' && healUnknownAuthor) {
+        // Prefer a real local entry already present — it's the source of truth;
+        // the unknown bucket is the phantom that needs to be dropped.
+        if (!authors[localInstanceId]) {
+          authors[localInstanceId] = sane.authorName
+            ? sane
+            : { ...sane, authorName: defaultAuthorName };
+        }
+        continue;
+      }
+      authors[instanceId] = sane;
     }
     if (Object.keys(authors).length > 0) out[key] = { authors };
   }

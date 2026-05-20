@@ -245,6 +245,46 @@ describe('mediaAnnotations service (multi-author)', () => {
     expect(storedMs).toBeLessThanOrEqual(afterMerge);
   });
 
+  it('heals authors.unknown → local instanceId on read (post-migration-014 phantom)', async () => {
+    // Migration 014 wrote `'unknown'` as a phantom author key when it ran
+    // before ensureSelf() created the local identity. readAll() must re-key
+    // those into the real localInstanceId so they project as the user's own
+    // (otherwise setAnnotation refuses to merge with them and the sharing
+    // export silently drops them).
+    fileStore.set(STATE_PATH, {
+      annotations: {
+        'image:phantom.png': {
+          authors: {
+            unknown: { authorName: 'pre-id-host', starred: true, note: 'pre-id', updatedAt: '2026-01-01T00:00:00.000Z' },
+          },
+        },
+      },
+    });
+    const all = await svc.listAnnotations();
+    expect(all['image:phantom.png'].own).toMatchObject({ starred: true, note: 'pre-id' });
+    expect(all['image:phantom.png'].others).toEqual([]);
+    const mine = await svc.listLocalAuthorAnnotations();
+    expect(mine['image:phantom.png']).toBeDefined();
+  });
+
+  it('heals authors.unknown but prefers an existing real local entry when both are present', async () => {
+    // If a real local entry already exists, that's the source of truth — the
+    // unknown phantom must be dropped, not merged or favored.
+    fileStore.set(STATE_PATH, {
+      annotations: {
+        'image:both.png': {
+          authors: {
+            unknown: { authorName: 'old-host', starred: true, note: 'phantom', updatedAt: '2026-01-01T00:00:00.000Z' },
+            [LOCAL_INSTANCE]: { authorName: 'Local User', starred: false, note: 'real', updatedAt: '2026-02-01T00:00:00.000Z' },
+          },
+        },
+      },
+    });
+    const all = await svc.listAnnotations();
+    expect(all['image:both.png'].own).toMatchObject({ note: 'real', starred: false });
+    expect(all['image:both.png'].others).toEqual([]); // unknown bucket dropped, not exposed as a peer
+  });
+
   it('legacy single-author entries are lifted into the local author bucket on read', async () => {
     fileStore.set(STATE_PATH, {
       annotations: {
