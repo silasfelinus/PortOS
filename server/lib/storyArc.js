@@ -338,7 +338,7 @@ export function sanitizeSeasonList(rawList, opts = {}) {
   if (duplicateIds.length) {
     const distinct = [...new Set(duplicateIds)];
     console.warn(
-      `⚠️ sanitizeSeasonList dropped ${duplicateIds.length} duplicate season entry/entries via LWW across ${distinct.length} colliding id(s): ${distinct.join(', ')} — child issues stay attached to the surviving entry`,
+      `⚠️ sanitizeSeasonList collapsed ${duplicateIds.length} duplicate season entry/entries across ${distinct.length} colliding id(s): ${distinct.join(', ')} — child issues stay attached to the surviving entry`,
     );
   }
   return [...byId.values()].sort((a, b) => (a.number || 0) - (b.number || 0));
