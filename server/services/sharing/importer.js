@@ -444,10 +444,12 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
   // to a universe that isn't in this manifest and isn't local), skip the
   // sanitized-series insert for that record — otherwise the canon arrays
   // get silently stripped by `sanitizeSeries` and the bug we just fixed
-  // recurs. The bucket record stays untouched so the user can reimport
-  // after fixing the missing universe (or rerunning when transient I/O
-  // recovers).
+  // recurs. The bucket record stays untouched and `legacyCanonPendingUniverses`
+  // surfaces upward to the manifest-pending check, so the watcher retries
+  // when the missing universe later arrives instead of cursor-advancing into
+  // permanent skip.
   const skipSeriesMerge = new Set();
+  const legacyCanonPendingUniverses = [];
   for (const s of records.series) {
     const hasLegacyCanon = ['characters', 'settings', 'places', 'objects']
       .some((field) => Array.isArray(s[field]) && s[field].length > 0);
@@ -459,6 +461,9 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
     if (!r || r.skipped === 'missing-universe') {
       console.log(`⚠️ sharing.importer: skipping series ${s.id} merge — legacy canon could not be salvaged (${r?.skipped || 'helper failed'})`);
       skipSeriesMerge.add(s.id);
+      if (r?.skipped === 'missing-universe' && r.universeId) {
+        legacyCanonPendingUniverses.push(r.universeId);
+      }
       continue;
     }
     // Stamp the freshly-created orphan universe id onto the in-memory record
@@ -531,6 +536,7 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
     collectionItemsDeferred: itemsDeferred,
     collectionPendingUniverse,
     collectionPendingSeries,
+    legacyCanonPendingUniverses: legacyCanonPendingUniverses.length > 0 ? legacyCanonPendingUniverses : null,
     adoptedSubscription: adoptedSubscription
       ? { id: adoptedSubscription.id, bucketId: adoptedSubscription.bucketId, recordKind: adoptedSubscription.recordKind, recordId: adoptedSubscription.recordId }
       : null,
@@ -743,13 +749,15 @@ export async function processManifest(bucketId, manifestFilename) {
   // `recordIds`.
   const collectionPendingUniverse = outcome?.collectionPendingUniverse || null;
   const collectionPendingSeries = outcome?.collectionPendingSeries || null;
-  if (assetCopy.missing.length > 0 || missingRecords.length > 0 || collectionPendingUniverse || collectionPendingSeries) {
+  const legacyCanonPendingUniverses = outcome?.legacyCanonPendingUniverses || null;
+  if (assetCopy.missing.length > 0 || missingRecords.length > 0 || collectionPendingUniverse || collectionPendingSeries || legacyCanonPendingUniverses) {
     if (assetCopy.missing.length > 0) outcome.pendingAssets = assetCopy.missing;
     if (missingRecords.length > 0) outcome.pendingRecords = missingRecords;
     if (collectionPendingUniverse) outcome.pendingCollectionUniverse = collectionPendingUniverse;
     if (collectionPendingSeries) outcome.pendingCollectionSeries = collectionPendingSeries;
+    if (legacyCanonPendingUniverses) outcome.pendingLegacyCanonUniverses = legacyCanonPendingUniverses;
     sharingEvents.emit('manifest-processed', { bucketId, manifestId: manifest.id, manifestFilename, outcome });
-    console.log(`⏳ sharing: bucket=${bucket.name} manifest=${manifest.id} kind=${manifest.kind} mode=${bucket.mode} waitingForAssets=${assetCopy.missing.length} waitingForRecords=${missingRecords.length}${collectionPendingUniverse ? ` waitingForUniverse=${collectionPendingUniverse}` : ''}${collectionPendingSeries ? ` waitingForSeries=${collectionPendingSeries}` : ''}`);
+    console.log(`⏳ sharing: bucket=${bucket.name} manifest=${manifest.id} kind=${manifest.kind} mode=${bucket.mode} waitingForAssets=${assetCopy.missing.length} waitingForRecords=${missingRecords.length}${collectionPendingUniverse ? ` waitingForUniverse=${collectionPendingUniverse}` : ''}${collectionPendingSeries ? ` waitingForSeries=${collectionPendingSeries}` : ''}${legacyCanonPendingUniverses ? ` waitingForLegacyCanonUniverses=${legacyCanonPendingUniverses.join(',')}` : ''}`);
     return { processed: true, pending: true, manifest, outcome };
   }
   await markProcessed(bucketId, manifestFilename, manifest.id);

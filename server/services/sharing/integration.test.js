@@ -1385,20 +1385,23 @@ describe('sharing round-trip', () => {
     expect(orphanUni.characters.map((c) => c.name)).toContain('Solo');
   });
 
-  it('skips the series merge when legacy canon cannot land (universeId points to a missing universe)', async () => {
+  it('leaves the manifest pending and retries when the missing universe later arrives', async () => {
     // Without this guard, the importer would fall through to insertSeriesWithId
     // and `sanitizeSeries` would silently drop the legacy canon arrays — the
-    // exact bug this PR fixes. The bucket record stays untouched so the user
-    // can reimport after fixing the missing universe.
+    // exact bug this PR fixes. The bucket record stays untouched and the
+    // cursor stays un-advanced so the watcher retries when the missing
+    // universe later shows up.
+    const { hasBeenProcessed, readCursor } = await import('./manifest.js');
     const bucket = await buckets.createBucket({ name: 'MissingUniBucket', path: tempBucket, mode: 'auto-merge' });
 
+    const missingUniverseId = 'uni-not-yet-bundled-123';
     const seriesId = 'ser-missing-uni';
     const legacySeries = {
       id: seriesId,
       name: 'Missing-Uni Series',
       logline: 'orphaned link',
       premise: 'links to a universe not in the bundle',
-      universeId: 'uni-does-not-exist-123',
+      universeId: missingUniverseId,
       characters: [{ name: 'Ghost', physicalDescription: 'unseen' }],
       createdAt: '2026-05-01T00:00:00.000Z',
       updatedAt: '2026-05-01T00:00:00.000Z',
@@ -1427,13 +1430,37 @@ describe('sharing round-trip', () => {
     const filename = `2026-05-01T00-00-00-000Z-missing-uni-peer-${manifest.id}.json`;
     writeFileSync(join(tempBucket, 'manifests', filename), JSON.stringify(manifest));
 
-    const result = await importer.processManifest(bucket.id, filename);
-    expect(result.processed).toBe(true);
+    // First pass: universe is missing → manifest must stay pending, cursor not advanced, series not written.
+    const first = await importer.processManifest(bucket.id, filename);
+    expect(first.processed).toBe(true);
+    expect(first.pending).toBe(true);
+    expect(first.outcome.pendingLegacyCanonUniverses).toEqual([missingUniverseId]);
+    let cursor = await readCursor(bucket.id);
+    expect(hasBeenProcessed(cursor, filename, manifest.id)).toBe(false);
+    const stillMissing = await series.getSeries(seriesId).catch(() => null);
+    expect(stillMissing).toBeNull();
 
-    // Series MUST NOT have been written — otherwise sanitizeSeries would have
-    // silently dropped the legacy canon arrays.
-    const restored = await series.getSeries(seriesId).catch(() => null);
-    expect(restored).toBeNull();
+    // Local universe lands (peer re-shares it via a different channel, or
+    // the user creates one with the matching id).
+    await universeSvc.insertUniverseWithId({
+      id: missingUniverseId,
+      name: 'Late-Arriving Universe',
+      starterPrompt: '',
+      createdAt: '2026-05-01T00:00:00.000Z',
+      updatedAt: '2026-05-01T00:00:00.000Z',
+    });
+
+    // Retry: now the migration lands canon on the universe, the series imports.
+    const second = await importer.processManifest(bucket.id, filename);
+    expect(second.processed).toBe(true);
+    expect(second.pending).toBeFalsy();
+    cursor = await readCursor(bucket.id);
+    expect(hasBeenProcessed(cursor, filename, manifest.id)).toBe(true);
+    const restored = await series.getSeries(seriesId);
+    expect(restored.id).toBe(seriesId);
+    expect(restored.universeId).toBe(missingUniverseId);
+    const restoredUni = await universeSvc.getUniverse(missingUniverseId);
+    expect(restoredUni.characters.map((c) => c.name)).toContain('Ghost');
   });
 
   it('refuses a manifest with a sharingSchemaVersion newer than local + emits incompatible event', async () => {
