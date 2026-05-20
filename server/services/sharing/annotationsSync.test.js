@@ -53,8 +53,10 @@ vi.mock('fs', async () => {
 
 // Stub `assets/{images,videos}` readdir to return [] (legacy v1 fallback) and
 // `stat` so the manifests-dir mtime can be driven from individual tests (used
-// by the cache hit/miss assertions).
-const statMock = vi.fn(async () => ({ mtimeMs: 1 }));
+// by the cache hit/miss assertions). `vi.mock` factories are hoisted above
+// top-level `const`s, so the shared `statMock` binding must come from
+// `vi.hoisted` or the closure can fire before initialization.
+const { statMock } = vi.hoisted(() => ({ statMock: vi.fn(async () => ({ mtimeMs: 1 })) }));
 vi.mock('fs/promises', async () => {
   const actual = await vi.importActual('fs/promises');
   return { ...actual, readdir: vi.fn(async () => []), stat: statMock };
