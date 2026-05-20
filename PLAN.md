@@ -25,7 +25,6 @@ _Nothing currently parked — pick the next item from the Backlog._
 
 ### Creative Director / Audio
 
-- [ ] [whole-episode-audio-generation-strategy-stop] **Whole-episode audio generation strategy.** Stop relying on per-clip audio; drive audio gen from episode-level prose/script arc. Generator candidates: Suno (commercial, duration control), MusicGen-MLX (local, bounded ~30s), AudioLDM2. New `audioMode: 'per-clip' | 'silent' | 'generated' | 'uploaded-track'`. Treat as a new sub-brainstorm when picked up — investigation first.
 - [ ] [render-slowness-on-long-sessions-per-scene-render] **Render slowness on long sessions.** Per-scene render time degraded from ~3.5 min to 10–30 min within one project. Profile after sustained use; verify round-22 dedup helped.
 - [ ] [pipeline-audio-phase-4c-2-4c-3-4d-2-local-oss] **Pipeline Audio Phase 4c.2/4c.3/4d.2.** Local OSS music gen (MusicGen sidecar; pick generator first); 3rd-party engine stubs; VO line muxing into the CD stitch with per-line offsets + music-bed ducking.
 - [ ] [voice-picker-on-character-cards-voiceid-binding] **Voice picker on character cards.** `voiceId` binding via dropdown on `CanonCard` when `kind === 'character'`; audition button hitting `/api/pipeline/tts/preview`. Same picker re-usable as per-line override in `AudioStage.jsx`.
@@ -163,6 +162,12 @@ The 2026-04-25 CODEX 5.5 review's concrete bugs (Brain Feeds nav, Time Capsule n
 - [ ] [codex5-visual-modes] **[P2][DESIGN]** Product-specific visual modes: `Ops` (dense terminal-like, minimal animation), `Focus` (quiet, spacious, only next actions), `Health` (warmer, less cyber, more explanation), `Review` (document-like, optimized for reading + decisions). Tied to the day-mode selector from `[codex5-operating-loop-dashboard]`. Extend the existing Tailwind token system rather than introducing a parallel theming layer.
 - [ ] [codex5-decision-provenance-everywhere] **[P2][DESIGN]** Decision/provenance pattern across CoS, Insights, Health, Goals, Dashboard widgets. Each AI-generated or rule-driven surface answers: "Why am I seeing this?", "What data backs this?", "What changed?", "What can I do next?" Reuse the Ask source-chip component. Pairs with `[codex5-health-provenance-chips]`.
 - [ ] [codex5-empty-states-teach] **[P3][ONBOARDING]** Workflow-teaching empty states. Each "no data" state replaces "Nothing here" with a setup hint that names the next action: "Connect calendar to unlock schedule-aware goals", "Add birth date + genome file to unlock longevity estimates", "Capture 10 notes to improve Ask Yourself", "Configure one API provider to enable autonomous CoS". Inventory empty states first, then prioritize by which pages new users hit earliest.
+
+### Design spikes / brainstorms (investigation-first)
+
+Items here need a research/design pass before any code lands — `/claim` should skip them by default.
+
+- [ ] [whole-episode-audio-generation-strategy-stop] **Whole-episode audio generation strategy.** Stop relying on per-clip audio; drive audio gen from episode-level prose/script arc. Generator candidates: Suno (commercial, duration control), MusicGen-MLX (local, bounded ~30s), AudioLDM2. New `audioMode: 'per-clip' | 'silent' | 'generated' | 'uploaded-track'`. Treat as a new sub-brainstorm when picked up — investigation first.
 
 ---
 
