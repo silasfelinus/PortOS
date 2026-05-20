@@ -25,11 +25,21 @@ import { join } from 'path';
 import os from 'os';
 import crypto from 'crypto';
 
+// Mirrors `safeJSONParse` in server/lib/fileUtils.js — a syntactically corrupt
+// instances.json must NOT crash the migration runner, otherwise this fix would
+// itself be a new boot-blocker. Treat parse failure as "no usable file" and let
+// the caller fall back to the default shape (which triggers fresh-identity
+// creation, the same recovery the in-server reader provides).
 async function readJsonOr(path, fallback) {
   if (!existsSync(path)) return fallback;
   const raw = await readFile(path, 'utf8').catch(() => null);
   if (!raw) return fallback;
-  return JSON.parse(raw);
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    console.warn(`⚠️ migration 014: ${path} is not valid JSON (${err.message}); falling back to defaults`);
+    return fallback;
+  }
 }
 
 // Self-contained ensureSelf: matches `server/services/instances.js`
@@ -39,7 +49,14 @@ async function readJsonOr(path, fallback) {
 // CLI with no server lifecycle).
 async function ensureSelfIdentity(instancesPath) {
   const data = await readJsonOr(instancesPath, { self: null, peers: [] });
-  if (data?.self?.instanceId) return data.self;
+  // Strict: only reuse a real-looking identity. Reject the `'unknown'` sentinel
+  // (this is exactly the value we're trying to never persist), reject non-string
+  // shapes, and reject empty strings — any of those would re-introduce the
+  // phantom-author bug we're fixing. Fall through to fresh-identity creation.
+  const existingId = data?.self?.instanceId;
+  if (typeof existingId === 'string' && existingId && existingId !== 'unknown') {
+    return data.self;
+  }
   const self = { instanceId: crypto.randomUUID(), name: os.hostname() };
   const next = {
     self,

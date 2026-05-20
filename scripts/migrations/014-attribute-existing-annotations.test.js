@@ -143,6 +143,58 @@ describe('migration 014 — attribute existing annotations', () => {
     expect(out['image:keep.png']).toBeDefined();
   });
 
+  it('rejects existing self.instanceId === "unknown" and creates a fresh identity', async () => {
+    // The whole point of this migration fix is to never persist the literal
+    // 'unknown' string as an author key. If a previous run (or hand-edit) left
+    // self.instanceId === 'unknown', the migration must replace it with a real
+    // uuid — otherwise we'd re-attribute legacy entries to the phantom again.
+    writeInstances({ self: { instanceId: 'unknown', name: 'old-host' }, peers: [] });
+    writeAnnotations({
+      'image:foo.png': { starred: true, updatedAt: '2025-01-01T00:00:00.000Z' },
+    });
+    await migration.up({ rootDir });
+    const instances = readInstances();
+    expect(instances.self.instanceId).not.toBe('unknown');
+    expect(instances.self.instanceId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    const out = readAnnotations();
+    expect(Object.keys(out['image:foo.png'].authors)).toEqual([instances.self.instanceId]);
+  });
+
+  it('rejects non-string self.instanceId (numeric) and creates a fresh identity', async () => {
+    writeInstances({ self: { instanceId: 42, name: 'host' }, peers: [] });
+    writeAnnotations({
+      'image:foo.png': { starred: true, updatedAt: '2025-01-01T00:00:00.000Z' },
+    });
+    await migration.up({ rootDir });
+    const instances = readInstances();
+    expect(typeof instances.self.instanceId).toBe('string');
+    expect(instances.self.instanceId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-/);
+  });
+
+  it('rejects empty-string self.instanceId and creates a fresh identity', async () => {
+    writeInstances({ self: { instanceId: '', name: 'host' }, peers: [] });
+    writeAnnotations({
+      'image:foo.png': { starred: true, updatedAt: '2025-01-01T00:00:00.000Z' },
+    });
+    await migration.up({ rootDir });
+    const instances = readInstances();
+    expect(instances.self.instanceId.length).toBeGreaterThan(0);
+    expect(instances.self.instanceId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-/);
+  });
+
+  it('tolerates corrupt instances.json — treats as missing and creates a fresh identity', async () => {
+    // The in-server reader (safeJSONParse) tolerates malformed JSON; the
+    // migration must match that behavior, otherwise a hand-edited or
+    // half-written instances.json would brick boot.
+    writeFileSync(instancesPath, '{ this is not valid JSON');
+    writeAnnotations({
+      'image:foo.png': { starred: true, updatedAt: '2025-01-01T00:00:00.000Z' },
+    });
+    await expect(migration.up({ rootDir })).resolves.not.toThrow();
+    const instances = readInstances();
+    expect(instances.self.instanceId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-/);
+  });
+
   it('is idempotent — re-running over already-migrated data is a no-op', async () => {
     writeInstances({ self: { instanceId: 'real-uuid', name: 'host' }, peers: [] });
     writeAnnotations({
