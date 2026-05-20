@@ -743,8 +743,8 @@ const musicUpload = uploadSingle('track', {
 // The audio stage status reflects whether the *VO line list* is ready, since
 // music alone doesn't make an episode renderable. So music-only mutations
 // leave status at 'empty' when no lines exist and bump to 'edited' otherwise.
-const audioStatusAfterMusicChange = (issue) =>
-  ((issue.stages?.audio?.lines || []).length ? 'edited' : 'empty');
+const audioStatusAfterMusicChange = (stage) =>
+  (stage.lines?.length ? 'edited' : 'empty');
 
 router.get('/audio/music-library', asyncHandler(async (_req, res) => {
   res.json({ tracks: await listMusicLibrary() });
@@ -756,16 +756,22 @@ router.post('/issues/:id/stages/audio/music/upload', musicUpload, asyncHandler(a
       status: 400, code: 'PIPELINE_MUSIC_NO_FILE',
     });
   }
-  const issue = await issuesSvc.getIssue(req.params.id).catch((err) => { throw mapServiceError(err); });
+  // Guard the filesystem write that follows — `updateStageWithLatest`'s 404
+  // would otherwise orphan the imported file in the music library.
+  await issuesSvc.getIssue(req.params.id).catch((err) => { throw mapServiceError(err); });
   const { filename, sizeBytes } = await importUploadedTrack(req.file.path, req.file.originalname);
   const label = typeof req.body?.label === 'string' && req.body.label.trim()
     ? req.body.label.trim()
     : null;
-  const { issue: updatedIssue, stage } = await issuesSvc.updateStage(req.params.id, 'audio', {
-    status: audioStatusAfterMusicChange(issue),
-    music: { source: MUSIC_SOURCE.UPLOAD, trackFilename: filename, label },
-    errorMessage: '',
-  });
+  const { issue: updatedIssue, stage } = await issuesSvc.updateStageWithLatest(
+    req.params.id,
+    'audio',
+    (current) => ({
+      status: audioStatusAfterMusicChange(current),
+      music: { source: MUSIC_SOURCE.UPLOAD, trackFilename: filename, label },
+      errorMessage: '',
+    }),
+  ).catch((err) => { throw mapServiceError(err); });
   res.json({ issue: updatedIssue, stage, music: stage.music, sizeBytes });
 }));
 
@@ -782,26 +788,32 @@ router.post('/issues/:id/stages/audio/music/attach', asyncHandler(async (req, re
       status: 404, code: 'PIPELINE_MUSIC_NOT_FOUND',
     });
   }
-  const issue = await issuesSvc.getIssue(req.params.id).catch((err) => { throw mapServiceError(err); });
-  const { issue: updatedIssue, stage } = await issuesSvc.updateStage(req.params.id, 'audio', {
-    status: audioStatusAfterMusicChange(issue),
-    music: {
-      source: MUSIC_SOURCE.LIBRARY,
-      trackFilename: body.trackFilename,
-      label: body.label?.trim() || found.label,
-    },
-    errorMessage: '',
-  });
+  const { issue: updatedIssue, stage } = await issuesSvc.updateStageWithLatest(
+    req.params.id,
+    'audio',
+    (current) => ({
+      status: audioStatusAfterMusicChange(current),
+      music: {
+        source: MUSIC_SOURCE.LIBRARY,
+        trackFilename: body.trackFilename,
+        label: body.label?.trim() || found.label,
+      },
+      errorMessage: '',
+    }),
+  ).catch((err) => { throw mapServiceError(err); });
   res.json({ issue: updatedIssue, stage, music: stage.music });
 }));
 
 router.delete('/issues/:id/stages/audio/music', asyncHandler(async (req, res) => {
-  const issue = await issuesSvc.getIssue(req.params.id).catch((err) => { throw mapServiceError(err); });
-  const { issue: updatedIssue, stage } = await issuesSvc.updateStage(req.params.id, 'audio', {
-    status: audioStatusAfterMusicChange(issue),
-    music: null,
-    errorMessage: '',
-  });
+  const { issue: updatedIssue, stage } = await issuesSvc.updateStageWithLatest(
+    req.params.id,
+    'audio',
+    (current) => ({
+      status: audioStatusAfterMusicChange(current),
+      music: null,
+      errorMessage: '',
+    }),
+  ).catch((err) => { throw mapServiceError(err); });
   res.json({ issue: updatedIssue, stage });
 }));
 
