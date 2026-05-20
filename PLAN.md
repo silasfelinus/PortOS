@@ -12,8 +12,6 @@ _Nothing currently parked — pick the next item from the Backlog._
 
 ### Code quality / dedup (from `/simplify` passes)
 
-- [ ] [strip-stray-tryreadfile-from-instances-mocks] **[LOW][TESTS]** Three `vi.mock('../instances.js', ...)` factories carry a stray `tryReadFile: vi.fn().mockResolvedValue(null)` property — `server/services/mediaAnnotations.test.js:6`-ish (legacy mock shape), `server/services/sharing/integration.test.js:45`, `server/services/sharing/subscriptions.test.js:26`. `instances.js` does not export `tryReadFile` (it's a `fileUtils.js` export), so the key is a no-op copy-paste artifact. Drop it from the three mock factories. Surfaced by /simplify during `[unknown-instance-id-sentinel-extract]`; deferred because that PR was scoped to the sentinel extraction.
-
 ### v2.1.0 pre-release review residue (deferred from main→release multi-agent review, 2026-05-16)
 
 - [ ] [med-pipeline-server-services-pipeline-arcplanner-2] **[MED][PIPELINE]** `server/services/pipeline/arcPlanner.js:929-942` — `buildSeasonRemap` Pass 3 (positional fallback) silently invents wrong mappings when the LLM structurally reshapes the arc. Log a warning when Pass 3 fires; consider only firing when unmatched count ≤ 1.
