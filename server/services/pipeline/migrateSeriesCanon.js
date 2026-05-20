@@ -102,23 +102,26 @@ export async function applyLegacySeriesCanonToUniverse(series, { dryRun = false,
   for (const [field, kind] of Object.entries(KIND_BY_FIELD)) {
     const incoming = Array.isArray(series[field]) ? series[field] : [];
     if (incoming.length === 0) continue;
-    // mergeExtractedBible mutates its first arg (pushes new entries into the
-    // array, then sorts in place). Snapshot the universe side BEFORE the
-    // call so the diff check below sees the pre-merge length, and pass a
-    // clone so the live universe object isn't mutated mid-loop.
-    const before = Array.isArray(universe[field]) ? universe[field] : [];
+    // mergeExtractedBible mutates its first arg AND can mutate matched
+    // entries in place (firstAppearance / evidence / missingFromProse).
+    // `[...arr]` is only a shallow clone, so a mutation would also reach
+    // the live universe object AND defeat the post-merge diff check
+    // (stringifying the mutated object on both sides hides the change).
+    // Snapshot to JSON before the call, run the merge on a deep clone, and
+    // diff against the frozen snapshot.
+    const beforeJson = JSON.stringify(Array.isArray(universe[field]) ? universe[field] : []);
     // Mirror the live extract path's provenance (textStages.js +
     // routes/pipeline.js): series-driven canon enters the universe as
     // SERIES_EXTRACT with autoLock so a later AI refine/differentiate can't
     // silently rewrite it. Without these opts the migrated entries default
     // to source:'ai' + autoLock:false, leaving them one click away from
     // being clobbered — the opposite of what the live path promises.
-    const merged = mergeExtractedBible([...before], incoming, kind, {
+    const merged = mergeExtractedBible(JSON.parse(beforeJson), incoming, kind, {
       source: BIBLE_SOURCE.SERIES_EXTRACT,
       autoLock: true,
       sourceSeriesId: series.id,
     });
-    if (merged.length > before.length || JSON.stringify(merged) !== JSON.stringify(before)) {
+    if (JSON.stringify(merged) !== beforeJson) {
       patch[field] = merged;
       perKindApplied[field] = incoming.length;
     }
