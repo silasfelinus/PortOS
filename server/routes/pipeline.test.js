@@ -1691,13 +1691,17 @@ describe('pipeline routes', () => {
       expect(r.status).toBe(400);
     });
 
-    it('POST /audio/music/attach 404s when the issue does not exist', async () => {
+    it('POST /audio/music/attach 404s with PIPELINE_ISSUE_NOT_FOUND when the issue does not exist', async () => {
       const app = makeApp();
       musicLibraryStore.set('shared.mp3', { filename: 'shared.mp3', label: 'shared', sizeBytes: 100, updatedAt: '2026-05-15T00:00:00.000Z' });
       const r = await request(app)
         .post('/api/pipeline/issues/iss-does-not-exist/stages/audio/music/attach')
         .send({ trackFilename: 'shared.mp3' });
       expect(r.status).toBe(404);
+      // Pin both status AND code — the precheck-removal equivalence depends
+      // on `updateStageWithLatest` preserving the same error shape the dropped
+      // `getIssue` precheck would have raised.
+      expect(r.body.code).toBe('PIPELINE_ISSUE_NOT_FOUND');
     });
 
     it('DELETE /audio/music clears music from the issue without deleting the library entry', async () => {
@@ -1716,12 +1720,13 @@ describe('pipeline routes', () => {
       expect(musicLibraryStore.has('shared.mp3')).toBe(true);
     });
 
-    it('DELETE /audio/music 404s when the issue does not exist', async () => {
+    it('DELETE /audio/music 404s with PIPELINE_ISSUE_NOT_FOUND when the issue does not exist', async () => {
       const app = makeApp();
       const r = await request(app)
         .delete('/api/pipeline/issues/iss-does-not-exist/stages/audio/music')
         .send();
       expect(r.status).toBe(404);
+      expect(r.body.code).toBe('PIPELINE_ISSUE_NOT_FOUND');
     });
 
     it('DELETE /audio/music-library/:filename removes the file from the library', async () => {
