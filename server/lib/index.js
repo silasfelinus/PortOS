@@ -83,6 +83,7 @@ export * from './pythonSetup.js';
 export * from './fetchWithTimeout.js';
 export * from './httpClient.js';
 export * from './httpsState.js';
+export * from './networkExposure.js';
 export * from './peerHttpClient.js';
 export * from './peerSelfHost.js';
 export * from './peerUrl.js';
