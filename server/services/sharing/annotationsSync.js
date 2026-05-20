@@ -14,7 +14,7 @@ import { listBuckets } from './buckets.js';
 import { buildManifest, writeManifest, annotationManifestFilename, readManifest, listManifestFilenames } from './manifest.js';
 import { getProducedByVersion } from './version.js';
 import { getInstanceId } from '../instances.js';
-import { resolveLocalAuthorName } from './annotationIdentity.js';
+import { resolveBucketSourceName } from './annotationIdentity.js';
 import { onLocalAnnotationChange, listLocalAuthorAnnotations } from '../mediaAnnotations.js';
 
 const DEBOUNCE_MS = 2000;
@@ -58,18 +58,27 @@ async function listBucketAssetKeys(bucketPath) {
   return keys;
 }
 
-async function exportAnnotationsToBucket(bucket, localAnnotations, senderInstanceId, sourceName) {
+export async function exportAnnotationsToBucket(bucket, localAnnotations, senderInstanceId) {
   if (bucket.mode !== 'auto-merge') return { skipped: true, reason: 'not-auto-merge' };
+  const recordDir = join(bucket.path, 'records', 'media-annotations');
+  const recordId = senderInstanceId;
+  const recordPath = join(recordDir, `${recordId}.json`);
+  // Cheap early-out: no local annotations AND no prior record means this
+  // bucket has nothing to publish and never did. Skip the manifest+asset-dir
+  // scan that `listBucketAssetKeys` does — for a fresh install the listener
+  // fires for every set/clear on every auto-merge bucket, and most of them
+  // hit this branch.
+  if (Object.keys(localAnnotations).length === 0 && !existsSync(recordPath)) {
+    return { skipped: true, reason: 'no-annotations-for-bucket' };
+  }
   const assetKeys = await listBucketAssetKeys(bucket.path);
   if (assetKeys.size === 0) return { skipped: true, reason: 'no-bucket-assets' };
   const filtered = {};
   for (const [key, entry] of Object.entries(localAnnotations)) {
     if (assetKeys.has(key)) filtered[key] = entry;
   }
-  const recordDir = join(bucket.path, 'records', 'media-annotations');
+  const sourceName = await resolveBucketSourceName(bucket);
   await ensureDir(recordDir);
-  const recordId = senderInstanceId;
-  const recordPath = join(recordDir, `${recordId}.json`);
 
   // Tombstone synthesis: peers only learn about deletions by seeing them. The
   // import-side merge (`mergePeerAnnotations`) iterates incoming keys and
@@ -93,6 +102,13 @@ async function exportAnnotationsToBucket(bucket, localAnnotations, senderInstanc
     // delete the note even though they may still hold the asset.
     if (!assetKeys.has(key)) continue;
     filtered[key] = { starred: false, note: '', updatedAt: tombstoneTs };
+  }
+
+  // Nothing to publish and nothing was ever published for this (bucket,
+  // instance) — skip the record + manifest write so a local annotation edit
+  // doesn't fan an empty record into every unrelated auto-merge bucket.
+  if (Object.keys(filtered).length === 0 && priorKeys.length === 0) {
+    return { skipped: true, reason: 'no-annotations-for-bucket' };
   }
 
   const record = {
@@ -129,17 +145,19 @@ function buildManifestForAnnotations({ senderInstanceId, sourceName, bucket, rec
 
 async function flushAll() {
   // pendingTimer is already cleared by scheduleFlush's setTimeout callback.
-  const [buckets, senderInstanceId, sourceName, localAnnotations] = await Promise.all([
+  // Each bucket resolves its own sourceName inside exportAnnotationsToBucket
+  // so per-bucket displayNameOverride is honored (otherwise every bucket
+  // would carry the global sharing display name in its annotation envelope).
+  const [buckets, senderInstanceId, localAnnotations] = await Promise.all([
     listBuckets().catch(() => []),
     getInstanceId().catch(() => null),
-    resolveLocalAuthorName().catch(() => 'unknown'),
     listLocalAuthorAnnotations().catch(() => ({})),
   ]);
   if (!senderInstanceId || senderInstanceId === 'unknown') return;
   const autoMerge = buckets.filter((b) => b.mode === 'auto-merge');
   if (autoMerge.length === 0) return;
   await Promise.all(autoMerge.map(async (bucket) => {
-    const res = await exportAnnotationsToBucket(bucket, localAnnotations, senderInstanceId, sourceName).catch((err) => {
+    const res = await exportAnnotationsToBucket(bucket, localAnnotations, senderInstanceId).catch((err) => {
       console.error(`⚠️ sharing.annotations: export to bucket=${bucket.name} failed: ${err.message}`);
       return null;
     });

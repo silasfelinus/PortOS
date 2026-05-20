@@ -34,14 +34,25 @@ function emitLocalChange(key) {
   }
 }
 
-function sanitizeAuthorEntry(raw) {
+const isValidIsoTimestamp = (v) => typeof v === 'string' && !Number.isNaN(Date.parse(v));
+
+function sanitizeAuthorEntry(raw, { clampUpdatedAtTo = null } = {}) {
   if (!raw || typeof raw !== 'object') return null;
   const starred = raw.starred === true;
   const note = typeof raw.note === 'string' ? raw.note.slice(0, NOTE_MAX_LENGTH) : '';
   if (!starred && !note) return null;
-  const updatedAt = typeof raw.updatedAt === 'string' && !Number.isNaN(Date.parse(raw.updatedAt))
-    ? raw.updatedAt
-    : new Date().toISOString();
+  // Read-path callers (legacy migration, on-disk hydration) tolerate a missing
+  // updatedAt and stamp `now` so the entry is still usable. The merge path
+  // pre-rejects malformed payloads in `mergePeerAnnotations` before calling
+  // here, so a peer record with a missing updatedAt never reaches this fallback.
+  let updatedAt = isValidIsoTimestamp(raw.updatedAt) ? raw.updatedAt : new Date().toISOString();
+  // Merge path clamps a future-skewed peer timestamp to local-now: a peer
+  // whose clock is years ahead would otherwise dominate every subsequent LWW
+  // round on the same key. Clamping caps the upper bound at local-now without
+  // disturbing reasonable timestamps.
+  if (clampUpdatedAtTo && Date.parse(updatedAt) > clampUpdatedAtTo) {
+    updatedAt = new Date(clampUpdatedAtTo).toISOString();
+  }
   const authorName = typeof raw.authorName === 'string' && raw.authorName.trim()
     ? raw.authorName.trim().slice(0, 120)
     : '';
@@ -142,16 +153,30 @@ export async function listLocalAuthorAnnotations() {
 export async function mergePeerAnnotations(payload) {
   if (!payload || typeof payload !== 'object') return { changed: [], projections: new Map() };
   const peerInstanceId = typeof payload.instanceId === 'string' ? payload.instanceId : null;
-  if (!peerInstanceId) return { changed: [], projections: new Map() };
+  // Reject empty or sentinel `'unknown'` peer ids on import. The outgoing path
+  // already guards (`annotationsSync.flushAll` early-returns on `'unknown'`)
+  // but a hand-crafted manifest or a peer in an inconsistent state could ship
+  // one — without this guard, every such peer would alias into the same
+  // `'unknown'` bucket and clobber each other on every merge.
+  if (!peerInstanceId || peerInstanceId === 'unknown') return { changed: [], projections: new Map() };
   const localInstanceId = await getInstanceId().catch(() => null);
   if (peerInstanceId === localInstanceId) return { changed: [], projections: new Map() };
   const incoming = payload.annotations && typeof payload.annotations === 'object'
     ? payload.annotations : {};
   const all = await readAll();
   const changed = [];
+  const clampUpdatedAtTo = Date.now();
   for (const [key, rawEntry] of Object.entries(incoming)) {
     if (!isValidKey(key)) continue;
-    const sane = sanitizeAuthorEntry({ ...rawEntry, authorName: rawEntry?.authorName || payload.authorName });
+    // A malformed payload (missing/invalid updatedAt) must be ignored entirely
+    // rather than falling through to the tombstone branch — `sanitize` returns
+    // null for BOTH "empty tombstone" and "malformed", and the tombstone branch
+    // would otherwise delete the prior peer entry on any garbage payload.
+    if (!isValidIsoTimestamp(rawEntry?.updatedAt)) continue;
+    const sane = sanitizeAuthorEntry(
+      { ...rawEntry, authorName: rawEntry?.authorName || payload.authorName },
+      { clampUpdatedAtTo },
+    );
     const prior = all[key]?.authors?.[peerInstanceId] ?? null;
     if (!sane) {
       if (prior) {

@@ -120,6 +120,82 @@ describe('mediaAnnotations service (multi-author)', () => {
     expect(result.changed).toEqual([]);
   });
 
+  it('mergePeerAnnotations refuses peerInstanceId of "unknown"', async () => {
+    const result = await svc.mergePeerAnnotations({
+      instanceId: 'unknown',
+      authorName: 'Anon',
+      annotations: {
+        'image:a.png': { starred: true, note: 'note', updatedAt: '2026-01-01T00:00:00.000Z' },
+      },
+    });
+    expect(result.changed).toEqual([]);
+  });
+
+  it('mergePeerAnnotations refuses empty peerInstanceId', async () => {
+    const result = await svc.mergePeerAnnotations({
+      instanceId: '',
+      authorName: 'Anon',
+      annotations: {
+        'image:a.png': { starred: true, note: 'note', updatedAt: '2026-01-01T00:00:00.000Z' },
+      },
+    });
+    expect(result.changed).toEqual([]);
+  });
+
+  it('mergePeerAnnotations drops entries with missing updatedAt (strict on merge)', async () => {
+    fileStore.set(STATE_PATH, {
+      annotations: {
+        'image:a.png': {
+          authors: {
+            'peer-1': { authorName: 'Sam', starred: true, note: 'existing', updatedAt: '2026-02-01T00:00:00.000Z' },
+          },
+        },
+      },
+    });
+    const result = await svc.mergePeerAnnotations({
+      instanceId: 'peer-1',
+      authorName: 'Sam',
+      annotations: {
+        // No updatedAt — must NOT win LWW by getting a fresh `now` stamp.
+        'image:a.png': { starred: true, note: 'no-timestamp' },
+      },
+    });
+    expect(result.changed).toEqual([]);
+    const all = await svc.listAnnotations();
+    expect(all['image:a.png'].others[0].note).toBe('existing');
+  });
+
+  it('mergePeerAnnotations drops entries with invalid updatedAt (strict on merge)', async () => {
+    const result = await svc.mergePeerAnnotations({
+      instanceId: 'peer-1',
+      authorName: 'Sam',
+      annotations: {
+        'image:a.png': { starred: true, note: 'malformed', updatedAt: 'not-a-date' },
+      },
+    });
+    expect(result.changed).toEqual([]);
+  });
+
+  it('mergePeerAnnotations clamps future-skewed peer updatedAt to local-now', async () => {
+    // Peer clock is years ahead. Without clamping, every subsequent LWW round
+    // for the same key would defer to this peer forever.
+    const futureTs = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+    const beforeMerge = Date.now();
+    await svc.mergePeerAnnotations({
+      instanceId: 'peer-1',
+      authorName: 'Sam',
+      annotations: {
+        'image:a.png': { starred: true, note: 'future-skewed', updatedAt: futureTs },
+      },
+    });
+    const afterMerge = Date.now();
+    const all = await svc.listAnnotations();
+    const stored = all['image:a.png'].others[0];
+    const storedMs = Date.parse(stored.updatedAt);
+    expect(storedMs).toBeGreaterThanOrEqual(beforeMerge);
+    expect(storedMs).toBeLessThanOrEqual(afterMerge);
+  });
+
   it('legacy single-author entries are lifted into the local author bucket on read', async () => {
     fileStore.set(STATE_PATH, {
       annotations: {
