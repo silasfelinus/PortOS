@@ -66,6 +66,7 @@ grep -i "what you want to do" client/src/hooks/README.md
 | `useContainerWidth` | `[ref, width]` via ResizeObserver. | Layout responds to a specific container's width. |
 | `useFieldDraft` | Local input draft that commits on blur. | Bible-editor-style single-field input that must dedupe sibling races. |
 | `useRowDraft` | Multi-column row draft (analogue of `useFieldDraft`). | Multi-column row that commits as a unit. |
+| `usePendingListRows` | List-of-rows where a new row is held client-side until a required column fills, then promoted to `onChange`. | Editable list whose nameless rows would otherwise be dropped by the server sanitizer (WardrobeSection, CharacterDetailEditor list sections). |
 | `useKeyboardControls` | Keyboard binding for CyberCity mode toggle. | CyberCity-specific. |
 | `useKeyboardHelp` | Esc closes, even from inputs/textareas. | Help/cheatsheet modals. |
 | `useLockToggle` | Optimistic-PATCH lock toggle. | New "lock this field/stage/arc" button — use this, do not re-implement. |
