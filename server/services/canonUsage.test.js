@@ -105,3 +105,139 @@ describe('canonUsage — listLinkedSeriesNames', () => {
       .rejects.toMatchObject({ status: 404, code: 'UNIVERSE_NOT_FOUND' });
   });
 });
+
+describe('canonUsage — getUniverseCanonUsage entry rows', () => {
+  it('throws 404 when the universe does not exist', async () => {
+    await expect(getUniverseCanonUsage('missing'))
+      .rejects.toMatchObject({ status: 404, code: 'UNIVERSE_NOT_FOUND' });
+  });
+
+  it('sorts per-entry rows by issueCount desc with alpha tiebreaker on seriesName', async () => {
+    // Lyra appears in three series: 1 issue in "Zeta Tales", 1 in "Alpha Tales",
+    // and 2 in "Beta Tales". Expected order: Beta (2) → Alpha (1) → Zeta (1).
+    // Alpha vs Zeta lock the alpha-ascending tiebreaker at equal issueCount.
+    mockUniverses.set('uni-1', {
+      id: 'uni-1',
+      characters: [{ id: 'char-lyra', name: 'Lyra' }],
+      places: [],
+      objects: [],
+    });
+    mockSeriesList.push(
+      { id: 'ser-zeta', name: 'Zeta Tales', universeId: 'uni-1' },
+      { id: 'ser-alpha', name: 'Alpha Tales', universeId: 'uni-1' },
+      { id: 'ser-beta', name: 'Beta Tales', universeId: 'uni-1' },
+    );
+    mockIssuesBySeries.set('ser-zeta', [
+      { id: 'iss-z1', stages: { prose: { output: 'Lyra walks home.' } } },
+    ]);
+    mockIssuesBySeries.set('ser-alpha', [
+      { id: 'iss-a1', stages: { prose: { output: 'Lyra reads a book.' } } },
+    ]);
+    mockIssuesBySeries.set('ser-beta', [
+      { id: 'iss-b1', stages: { prose: { output: 'Lyra fights.' } } },
+      { id: 'iss-b2', stages: { prose: { output: 'Lyra rests.' } } },
+    ]);
+
+    const usage = await getUniverseCanonUsage('uni-1');
+    expect(usage.characters['char-lyra']).toEqual([
+      { seriesId: 'ser-beta', seriesName: 'Beta Tales', issueIds: ['iss-b1', 'iss-b2'], issueCount: 2 },
+      { seriesId: 'ser-alpha', seriesName: 'Alpha Tales', issueIds: ['iss-a1'], issueCount: 1 },
+      { seriesId: 'ser-zeta', seriesName: 'Zeta Tales', issueIds: ['iss-z1'], issueCount: 1 },
+    ]);
+    expect(usage.issueCount).toBe(4);
+  });
+
+  it('routes each kind through its dedicated matcher (characters/places/objects)', async () => {
+    mockUniverses.set('uni-1', {
+      id: 'uni-1',
+      characters: [{ id: 'char-1', name: 'Lyra' }],
+      places: [{ id: 'place-1', name: 'Thornwood' }],
+      objects: [{ id: 'obj-1', name: 'Lantern' }],
+    });
+    mockSeriesList.push({ id: 'ser-1', name: 'Series One', universeId: 'uni-1' });
+    mockIssuesBySeries.set('ser-1', [
+      // One issue mentioning all three so we can prove each matcher wires to
+      // the right universe field (a swap between places/objects would put the
+      // entry under the wrong key).
+      { id: 'iss-1', stages: { prose: { output: 'Lyra walked through Thornwood holding a Lantern.' } } },
+    ]);
+
+    const usage = await getUniverseCanonUsage('uni-1');
+    expect(usage.characters['char-1']).toEqual([
+      { seriesId: 'ser-1', seriesName: 'Series One', issueIds: ['iss-1'], issueCount: 1 },
+    ]);
+    expect(usage.places['place-1']).toEqual([
+      { seriesId: 'ser-1', seriesName: 'Series One', issueIds: ['iss-1'], issueCount: 1 },
+    ]);
+    expect(usage.objects['obj-1']).toEqual([
+      { seriesId: 'ser-1', seriesName: 'Series One', issueIds: ['iss-1'], issueCount: 1 },
+    ]);
+  });
+
+  it('skips issues with empty / whitespace-only corpus', async () => {
+    mockUniverses.set('uni-1', {
+      id: 'uni-1',
+      characters: [{ id: 'char-1', name: 'Lyra' }],
+      places: [],
+      objects: [],
+    });
+    mockSeriesList.push({ id: 'ser-1', name: 'Series One', universeId: 'uni-1' });
+    mockIssuesBySeries.set('ser-1', [
+      { id: 'iss-blank', stages: {} },
+      { id: 'iss-ws', stages: { prose: { output: '   \n  ' } } },
+      { id: 'iss-real', stages: { prose: { output: 'Lyra was here.' } } },
+    ]);
+
+    const usage = await getUniverseCanonUsage('uni-1');
+    // `issueCount` is "total issues scanned" per the JSDoc contract — skipped-
+    // corpus issues still count toward it, only the matched issue contributes
+    // to the per-entry rows below.
+    expect(usage.issueCount).toBe(3);
+    expect(usage.characters['char-1']).toEqual([
+      { seriesId: 'ser-1', seriesName: 'Series One', issueIds: ['iss-real'], issueCount: 1 },
+    ]);
+  });
+
+  it('aggregates corpus across prose / idea / comicScript / teleplay stages', async () => {
+    // A character that only appears in dialogue (comicScript / teleplay) or in
+    // the idea blurb must still surface — that's the whole point of the
+    // multi-stage corpus assembly in corpusForIssue().
+    mockUniverses.set('uni-1', {
+      id: 'uni-1',
+      characters: [
+        { id: 'char-idea', name: 'Ideana' },
+        { id: 'char-script', name: 'Scriptia' },
+        { id: 'char-tele', name: 'Telepha' },
+      ],
+      places: [],
+      objects: [],
+    });
+    mockSeriesList.push({ id: 'ser-1', name: 'Series One', universeId: 'uni-1' });
+    mockIssuesBySeries.set('ser-1', [
+      { id: 'iss-1', stages: { idea: { output: 'Ideana arrives.' } } },
+      { id: 'iss-2', stages: { comicScript: { output: 'Scriptia speaks.' } } },
+      { id: 'iss-3', stages: { teleplay: { output: 'Telepha exits.' } } },
+    ]);
+
+    const usage = await getUniverseCanonUsage('uni-1');
+    expect(Object.keys(usage.characters).sort()).toEqual(['char-idea', 'char-script', 'char-tele']);
+  });
+
+  it('omits a kind entirely when the universe has no entries of that kind', async () => {
+    mockUniverses.set('uni-1', {
+      id: 'uni-1',
+      characters: [{ id: 'char-1', name: 'Lyra' }],
+      // places + objects intentionally undefined to also pin the
+      // `Array.isArray(...) ? ... : []` guard in canonUsage.js.
+    });
+    mockSeriesList.push({ id: 'ser-1', name: 'Series One', universeId: 'uni-1' });
+    mockIssuesBySeries.set('ser-1', [
+      { id: 'iss-1', stages: { prose: { output: 'Lyra appears.' } } },
+    ]);
+
+    const usage = await getUniverseCanonUsage('uni-1');
+    expect(usage.characters['char-1']).toBeDefined();
+    expect(usage.places).toEqual({});
+    expect(usage.objects).toEqual({});
+  });
+});
