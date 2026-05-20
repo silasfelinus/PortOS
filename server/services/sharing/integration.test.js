@@ -1446,6 +1446,65 @@ describe('sharing round-trip', () => {
     expect(autoMigrated).toHaveLength(1);
   });
 
+  it('promoteInboxItem keeps the inbox row when legacy canon needs a missing universe', async () => {
+    // Without the gate in promoteInboxItem the user's "promote" click would
+    // splice the inbox row even though the series merge skipped — same
+    // silent-data-loss shape as the auto-merge path before this PR.
+    const bucket = await buckets.createBucket({ name: 'InboxLegacyBucket', path: tempBucket, mode: 'inbox' });
+
+    const missingUniverseId = 'uni-inbox-not-bundled';
+    const seriesId = 'ser-inbox-legacy';
+    const legacySeries = {
+      id: seriesId,
+      name: 'Inbox Legacy Series',
+      logline: 'inbox-pending test',
+      premise: 'links to a universe not in the bundle',
+      universeId: missingUniverseId,
+      characters: [{ name: 'Phantom', physicalDescription: 'inbox-pending' }],
+      createdAt: '2026-05-01T00:00:00.000Z',
+      updatedAt: '2026-05-01T00:00:00.000Z',
+    };
+    mkdirSync(join(tempBucket, 'records', 'series'), { recursive: true });
+    writeFileSync(
+      join(tempBucket, 'records', 'series', `${seriesId}.json`),
+      JSON.stringify(legacySeries),
+    );
+    const manifest = {
+      id: 'mfst-inbox-legacy',
+      schemaVersion: 1,
+      sharingSchemaVersion: 1,
+      producedByVersion: '1.0.0',
+      createdAt: new Date().toISOString(),
+      kind: 'series',
+      senderInstanceId: 'inbox-legacy-peer',
+      source: 'Inbox Legacy Peer',
+      sourceBio: null,
+      bucketId: bucket.id,
+      bucketName: bucket.name,
+      recordIds: [seriesId],
+      assetRefs: [],
+      note: null,
+    };
+    const filename = `2026-05-01T00-00-00-000Z-inbox-legacy-peer-${manifest.id}.json`;
+    writeFileSync(join(tempBucket, 'manifests', filename), JSON.stringify(manifest));
+
+    // First: queue as an inbox item (the bucket is inbox mode).
+    const r1 = await importer.processManifest(bucket.id, filename);
+    expect(r1.outcome.mode).toBe('inbox');
+    expect((await importer.listInbox(bucket.id))).toHaveLength(1);
+
+    // Promote — should throw because the linked universe is missing, AND the
+    // inbox row must NOT be removed.
+    let promoteErr = null;
+    await importer.promoteInboxItem(bucket.id, manifest.id).catch((err) => { promoteErr = err; });
+    expect(promoteErr).toBeTruthy();
+    expect(promoteErr.code).toBe('SHARING_LEGACY_CANON_UNIVERSE_PENDING');
+    expect(promoteErr.pendingLegacyCanonUniverses).toEqual([missingUniverseId]);
+    expect((await importer.listInbox(bucket.id))).toHaveLength(1);
+    const stillMissing = await series.getSeries(seriesId).catch(() => null);
+    expect(stillMissing).toBeNull();
+  });
+
   it('leaves the manifest pending and retries when the missing universe later arrives', async () => {
     // Without this guard, the importer would fall through to insertSeriesWithId
     // and `sanitizeSeries` would silently drop the legacy canon arrays — the

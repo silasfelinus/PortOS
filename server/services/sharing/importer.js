@@ -911,6 +911,23 @@ export async function promoteInboxItem(bucketId, manifestId) {
       pendingCollectionSeries: outcome.collectionPendingSeries,
     });
   }
+  // Same gate for the legacy-canon migration: a pre-B.4 series whose linked
+  // universe isn't local or whose helper threw transiently must keep the
+  // inbox row so the user can re-promote after fixing the missing universe
+  // or the transient I/O issue. Without this, the user's "promote" click
+  // would consume the inbox row while the series merge silently skipped.
+  if (outcome.legacyCanonPendingUniverses) {
+    throw Object.assign(new Error(`Legacy series canon waiting on universe ${outcome.legacyCanonPendingUniverses.join(', ')} to be imported first`), {
+      code: 'SHARING_LEGACY_CANON_UNIVERSE_PENDING',
+      pendingLegacyCanonUniverses: outcome.legacyCanonPendingUniverses,
+    });
+  }
+  if (outcome.legacyCanonPendingFailures) {
+    throw Object.assign(new Error(`Legacy series canon migration failed for ${outcome.legacyCanonPendingFailures.join(', ')} — retry after resolving the underlying error`), {
+      code: 'SHARING_LEGACY_CANON_FAILED',
+      pendingLegacyCanonFailures: outcome.legacyCanonPendingFailures,
+    });
+  }
   // Drop from inbox.
   inbox.items.splice(idx, 1);
   await writeInbox(bucketId, inbox);
