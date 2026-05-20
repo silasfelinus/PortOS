@@ -103,7 +103,7 @@ print_access_url() {
         local mirror_port="${PORTOS_HTTP_PORT:-5553}"
         echo "Access at: http://localhost:${mirror_port}  (loopback HTTP mirror — no cert warning)"
         echo "       or: https://<machine>.<tailnet>.ts.net:5555  (trusted via Tailscale)"
-        echo "       or: https://localhost:5555  (browser will warn on self-signed cert)"
+        echo "       or: https://localhost:5555  (browser warns — cert SAN doesn't cover localhost)"
     else
         echo "Access at: http://localhost:5555"
     fi
