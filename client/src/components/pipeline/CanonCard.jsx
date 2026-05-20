@@ -96,11 +96,7 @@ function SourceSeriesChip({ sourceSeriesId, seriesName }) {
   );
 }
 
-// One wardrobe row — multi-column draft+blur with sibling ride-along lives in
-// `useRowDraft`. Committing column B while column A still has a pending draft
-// ships BOTH in one `onCommit(nextRow)` call, so a fast desc-blur right after
-// a name keystroke can't drop the name. The parent decides between patching
-// an existing row vs promoting a pending one based on the required column.
+// Parent decides patch-vs-promote on `nextRow.name` non-empty; see `useRowDraft`.
 function WardrobeRow({ wardrobe, editable, onCommit, onRemove }) {
   const { draftFor, setDraft, commit } = useRowDraft(wardrobe, onCommit);
   if (!editable) {
@@ -172,13 +168,11 @@ function WardrobeSection({ wardrobes, editable, onChange }) {
   const commit = (idx, nextRow) => {
     if (isPending(idx)) {
       const pendingIdx = idx - wardrobes.length;
-      // Promote on name-non-empty. The pending row already carries a
-      // server-shaped `wd-<uuid>` id (minted client-side in `addOne`) so
-      // it persists verbatim — and crucially, the React key stays stable
-      // across promotion so the `WardrobeRow` instance doesn't unmount
-      // and lose any pending sibling draft buffered inside its
-      // `useRowDraft` hook.
-      if (String(nextRow.name || '').trim()) {
+      // Stable React key across promotion — `w.id` was minted server-shaped
+      // in `addOne` so it round-trips verbatim, which keeps `WardrobeRow`
+      // mounted across the pending → persisted swap and preserves any
+      // in-flight sibling draft in its `useRowDraft` buffer.
+      if (nextRow.name?.trim()) {
         setPendingNew(pendingNew.filter((_, i) => i !== pendingIdx));
         onChange([...wardrobes, nextRow]);
       } else {
