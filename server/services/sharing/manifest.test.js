@@ -12,12 +12,6 @@ vi.mock('../../lib/fileUtils.js', async () => {
   return makePathsProxy(actual, { dataRoot: () => tempRoot });
 });
 
-// instances.js loads peerSelfHost.js at module top-level, which reads
-// PATHS.data via certPaths() — but `tempRoot` is allocated in beforeEach, not
-// at hoisted module load. Stub instances.js so the only export manifest.js
-// needs (UNKNOWN_INSTANCE_ID) is available without the side-effect chain.
-vi.mock('../instances.js', () => ({ UNKNOWN_INSTANCE_ID: 'unknown' }));
-
 const manifest = await import('./manifest.js');
 
 describe('sharing/manifest', () => {
