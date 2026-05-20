@@ -11,13 +11,13 @@
  * should show.
  */
 import { readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
 import { PATHS, safeJSONParse } from './fileUtils.js';
 import { PORTS } from './ports.js';
 import { getHttpsEnabledAtBoot } from './httpsState.js';
 import { getSelfHost } from './peerSelfHost.js';
+import { certPaths } from '../../lib/certPaths.js';
 
-const META_PATH = join(PATHS.data, 'certs', 'meta.json');
+const { meta: META_PATH } = certPaths(PATHS.data);
 // docs/PORTS.md is checked into the repo but the server doesn't serve the
 // docs/ directory, so link out to GitHub for the canonical guide rather than
 // to a 404. The widget shows this as "Learn more →".

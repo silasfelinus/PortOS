@@ -33,13 +33,11 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { findTailscale } from '../server/lib/tailscale.js';
 import { hasTailscaleCert } from '../lib/tailscale-https.js';
+import { certPaths } from '../lib/certPaths.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
-const CERT_DIR = join(ROOT, 'data', 'certs');
-const KEY_PATH = join(CERT_DIR, 'key.pem');
-const CERT_PATH = join(CERT_DIR, 'cert.pem');
-const META_PATH = join(CERT_DIR, 'meta.json');
+const { dir: CERT_DIR, cert: CERT_PATH, key: KEY_PATH, meta: META_PATH } = certPaths(join(ROOT, 'data'));
 
 const FORCE = process.argv.includes('--force');
 const SELF_SIGNED_ONLY = process.argv.includes('--self-signed');

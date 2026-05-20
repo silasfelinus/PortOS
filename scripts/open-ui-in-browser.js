@@ -8,9 +8,10 @@
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hasTailscaleCert } from '../lib/tailscale-https.js';
+import { certPaths } from '../lib/certPaths.js';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const CERT_DIR = join(ROOT, 'data', 'certs');
+const { dir: CERT_DIR } = certPaths(join(ROOT, 'data'));
 const API_PORT = Number(process.env.PORT) || 5555;
 const HTTP_LOOPBACK_PORT = Number(process.env.PORTOS_HTTP_PORT) || 5553;
 // Share the same cert predicate the server's HTTPS gate uses (file presence

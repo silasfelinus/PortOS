@@ -13,17 +13,14 @@
  */
 import { execFile } from 'child_process';
 import { existsSync, readFileSync, statSync } from 'fs';
-import { join } from 'path';
 import { promisify } from 'util';
 import { PATHS } from '../lib/fileUtils.js';
 import { findTailscale } from '../lib/tailscale.js';
+import { certPaths } from '../../lib/certPaths.js';
 
 const execFileAsync = promisify(execFile);
 
-const CERT_DIR = join(PATHS.data, 'certs');
-const CERT_PATH = join(CERT_DIR, 'cert.pem');
-const KEY_PATH = join(CERT_DIR, 'key.pem');
-const META_PATH = join(CERT_DIR, 'meta.json');
+const { cert: CERT_PATH, key: KEY_PATH, meta: META_PATH } = certPaths(PATHS.data);
 const RENEW_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 function readMeta() {

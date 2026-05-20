@@ -2,10 +2,10 @@
 // announces. Self-signed mode binds to localhost + IPs, which can't be
 // announced as a host, so falls through to null.
 import { readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
 import { PATHS, safeJSONParse } from './fileUtils.js';
+import { certPaths } from '../../lib/certPaths.js';
 
-const META_PATH = join(PATHS.data, 'certs', 'meta.json');
+const { meta: META_PATH } = certPaths(PATHS.data);
 
 export function getSelfHost() {
   if (process.env.PORTOS_HOST) return process.env.PORTOS_HOST;
