@@ -1122,63 +1122,71 @@ router.post('/series/:id/seasons/:seasonId/cover-concepts/generate', asyncHandle
   res.json(result);
 }));
 
+// Cover-render factory — shared by the four cover-render routes (volume
+// front/back + comic-issue front/back).
+//
+// Script-gate semantics: only update `script` when the body carried the
+// field as a string — absent preserves, empty-string intentionally clears.
+// Blur-save (PATCH stages/.../cover) owns the script field and races
+// against render; writing the *resolved* value (which falls back to the
+// persisted record's script when absent) would clobber a concurrent blur.
+const buildCoverPatchFn = ({ slotField, scriptField, body, slotKey, slotRecord }) => (current) => {
+  const currentSlot = current?.[slotField] || {};
+  const nextSlot = { ...currentSlot, [slotKey]: slotRecord };
+  if (typeof body[scriptField] === 'string') nextSlot.script = body[scriptField];
+  return { [slotField]: nextSlot };
+};
+
+const makeCoverRenderHandler = ({
+  schema, slotField, scriptField, prepare, enqueue, applyWrite, buildResponse,
+}) => asyncHandler(async (req, res) => {
+  const body = validateRequest(schema, req.body ?? {});
+  if (prepare) await prepare(req).catch((err) => { throw mapServiceError(err); });
+  const result = await enqueue(req, body).catch((err) => { throw mapServiceError(err); });
+
+  const slotKey = slotKeyForVariant(result.variant);
+  const slotRecord = buildRenderSlot({
+    slotKey, jobId: result.jobId, prompt: result.prompt,
+    width: body.width, height: body.height, fromProof: result.fromProof,
+  });
+  const computeFn = buildCoverPatchFn({ slotField, scriptField, body, slotKey, slotRecord });
+  const writeResult = await applyWrite(req, computeFn)
+    .catch((err) => { throw mapServiceError(err); });
+  res.json(buildResponse({ result, writeResult, req }));
+});
+
+const buildVolumeCoverResponse = ({ result, writeResult: series, req }) => {
+  const season = (series.seasons || []).find((s) => s.id === req.params.seasonId);
+  return { ...result, season, series };
+};
+
+const updateVolumeSeason = (req, computeFn) =>
+  seriesSvc.updateSeasonOnSeries(req.params.id, req.params.seasonId, computeFn);
+
+const updateComicPagesStage = (req, computeFn) =>
+  issuesSvc.updateStageWithLatest(req.params.id, 'comicPages', computeFn);
+
 // Render the volume front cover. Persists the in-flight render slot onto
 // season.cover via seriesSvc.updateSeasonOnSeries (queue-serialized) — the
 // season-cover filename hook stamps the completed filename later.
 // (Missing series / season surface as PIPELINE_SEASON_NOT_FOUND from
 // enqueueVolumeCover's loadSeasonContext, mapped to 404 by mapServiceError.)
-router.post('/series/:id/seasons/:seasonId/cover/render', asyncHandler(async (req, res) => {
-  const body = validateRequest(volumeCoverRenderSchema, req.body ?? {});
-  const result = await enqueueVolumeCover(req.params.id, req.params.seasonId, body)
-    .catch((err) => { throw mapServiceError(err); });
-
-  const slotKey = slotKeyForVariant(result.variant);
-  const slotRecord = buildRenderSlot({
-    slotKey, jobId: result.jobId, prompt: result.prompt,
-    width: body.width, height: body.height, fromProof: result.fromProof,
-  });
-  // Only update `script` when the request body actually carried the field.
-  // Blur-save (PATCH stages/.../cover) owns the script — render races against
-  // it, so writing the *resolved* value (which falls back to the persisted
-  // record's script when absent) would clobber a concurrent blur. Distinguish
-  // absent (preserve) from empty string (intentional clear).
-  const series = await seriesSvc.updateSeasonOnSeries(
-    req.params.id,
-    req.params.seasonId,
-    (cur) => {
-      const currentCover = cur?.cover || {};
-      const nextCover = { ...currentCover, [slotKey]: slotRecord };
-      if (typeof body.coverScript === 'string') nextCover.script = body.coverScript;
-      return { cover: nextCover };
-    },
-  ).catch((err) => { throw mapServiceError(err); });
-  const season = (series.seasons || []).find((s) => s.id === req.params.seasonId);
-  res.json({ ...result, season, series });
+router.post('/series/:id/seasons/:seasonId/cover/render', makeCoverRenderHandler({
+  schema: volumeCoverRenderSchema,
+  slotField: 'cover',
+  scriptField: 'coverScript',
+  enqueue: (req, body) => enqueueVolumeCover(req.params.id, req.params.seasonId, body),
+  applyWrite: updateVolumeSeason,
+  buildResponse: buildVolumeCoverResponse,
 }));
 
-router.post('/series/:id/seasons/:seasonId/back-cover/render', asyncHandler(async (req, res) => {
-  const body = validateRequest(volumeBackCoverRenderSchema, req.body ?? {});
-  const result = await enqueueVolumeBackCover(req.params.id, req.params.seasonId, body)
-    .catch((err) => { throw mapServiceError(err); });
-
-  const slotKey = slotKeyForVariant(result.variant);
-  const slotRecord = buildRenderSlot({
-    slotKey, jobId: result.jobId, prompt: result.prompt,
-    width: body.width, height: body.height, fromProof: result.fromProof,
-  });
-  // Same script-gate rationale as the front-cover route above.
-  const series = await seriesSvc.updateSeasonOnSeries(
-    req.params.id,
-    req.params.seasonId,
-    (cur) => {
-      const currentBack = cur?.backCover || {};
-      const nextBack = { ...currentBack, [slotKey]: slotRecord };
-      if (typeof body.backCoverScript === 'string') nextBack.script = body.backCoverScript;
-      return { backCover: nextBack };
-    },
-  ).catch((err) => { throw mapServiceError(err); });
-  const season = (series.seasons || []).find((s) => s.id === req.params.seasonId);
-  res.json({ ...result, season, series });
+router.post('/series/:id/seasons/:seasonId/back-cover/render', makeCoverRenderHandler({
+  schema: volumeBackCoverRenderSchema,
+  slotField: 'backCover',
+  scriptField: 'backCoverScript',
+  enqueue: (req, body) => enqueueVolumeBackCover(req.params.id, req.params.seasonId, body),
+  applyWrite: updateVolumeSeason,
+  buildResponse: buildVolumeCoverResponse,
 }));
 
 // Compile a trade-paperback PDF: volume front → for each issue
@@ -1522,67 +1530,34 @@ router.post('/issues/:id/cover-concepts/generate', asyncHandler(async (req, res)
 // returned jobId on stages.comicPages.cover.imageJobId. Pass `coverScript`
 // in the body to override or update the persisted cover concept in the
 // same call. Returns { jobId, mode, prompt, cover, issue, stage }.
-router.post('/issues/:id/stages/comicPages/cover/render', asyncHandler(async (req, res) => {
-  const body = validateRequest(comicCoverRenderSchema, req.body ?? {});
-  // Make sure the issue exists up front — defense in depth + clean 404
-  // before we spend the bible-context load.
-  await issuesSvc.getIssue(req.params.id).catch((err) => { throw mapServiceError(err); });
-
-  const result = await enqueueComicCover(req.params.id, body)
-    .catch((err) => { throw mapServiceError(err); });
-
-  // Seed the in-flight render into the matching slot. The filename hook
-  // stamps `filename` on completion; `filename: null` here lets the UI
-  // render an "in-flight" thumb without showing the previous render's
-  // image while the new job is running.
-  const slotKey = slotKeyForVariant(result.variant);
-  const slotRecord = buildRenderSlot({
-    slotKey, jobId: result.jobId, prompt: result.prompt,
-    width: body.width, height: body.height, fromProof: result.fromProof,
-  });
-  // Only update `script` when the request body actually carried the field —
-  // blur-save (PATCH /issues/:id { stages.comicPages.cover.script }) owns the
-  // field. See the equivalent gate on the volume route above for rationale.
-  const { issue: updatedIssue, stage } = await issuesSvc.updateStageWithLatest(
-    req.params.id,
-    'comicPages',
-    (currentStage) => {
-      const currentCover = currentStage?.cover || {};
-      const nextCover = { ...currentCover, [slotKey]: slotRecord };
-      if (typeof body.coverScript === 'string') nextCover.script = body.coverScript;
-      return { cover: nextCover };
-    },
-  ).catch((err) => { throw mapServiceError(err); });
-  res.json({ ...result, cover: stage.cover, issue: updatedIssue, stage });
+// The `prepare` hook (getIssue) is defense in depth + clean 404 before we
+// spend the bible-context load. The seeded slot's `filename: null` lets
+// the UI render an "in-flight" thumb without showing the previous render
+// while the new job is running; the filename hook stamps `filename` on
+// completion.
+router.post('/issues/:id/stages/comicPages/cover/render', makeCoverRenderHandler({
+  schema: comicCoverRenderSchema,
+  slotField: 'cover',
+  scriptField: 'coverScript',
+  prepare: (req) => issuesSvc.getIssue(req.params.id),
+  enqueue: (req, body) => enqueueComicCover(req.params.id, body),
+  applyWrite: updateComicPagesStage,
+  buildResponse: ({ result, writeResult: { issue, stage } }) =>
+    ({ ...result, cover: stage.cover, issue, stage }),
 }));
 
 // Render the comic-issue BACK cover. Same flow as the front-cover route;
 // differs in the prompt (no masthead, explicit no-text negative) and the
 // persisted slot (`stages.comicPages.backCover.{proofImage|finalImage}`).
-router.post('/issues/:id/stages/comicPages/back-cover/render', asyncHandler(async (req, res) => {
-  const body = validateRequest(comicBackCoverRenderSchema, req.body ?? {});
-  await issuesSvc.getIssue(req.params.id).catch((err) => { throw mapServiceError(err); });
-
-  const result = await enqueueComicBackCover(req.params.id, body)
-    .catch((err) => { throw mapServiceError(err); });
-
-  const slotKey = slotKeyForVariant(result.variant);
-  const slotRecord = buildRenderSlot({
-    slotKey, jobId: result.jobId, prompt: result.prompt,
-    width: body.width, height: body.height, fromProof: result.fromProof,
-  });
-  // Same script-gate rationale as the front-cover route above.
-  const { issue: updatedIssue, stage } = await issuesSvc.updateStageWithLatest(
-    req.params.id,
-    'comicPages',
-    (currentStage) => {
-      const currentBack = currentStage?.backCover || {};
-      const nextBack = { ...currentBack, [slotKey]: slotRecord };
-      if (typeof body.backCoverScript === 'string') nextBack.script = body.backCoverScript;
-      return { backCover: nextBack };
-    },
-  ).catch((err) => { throw mapServiceError(err); });
-  res.json({ ...result, backCover: stage.backCover, issue: updatedIssue, stage });
+router.post('/issues/:id/stages/comicPages/back-cover/render', makeCoverRenderHandler({
+  schema: comicBackCoverRenderSchema,
+  slotField: 'backCover',
+  scriptField: 'backCoverScript',
+  prepare: (req) => issuesSvc.getIssue(req.params.id),
+  enqueue: (req, body) => enqueueComicBackCover(req.params.id, body),
+  applyWrite: updateComicPagesStage,
+  buildResponse: ({ result, writeResult: { issue, stage } }) =>
+    ({ ...result, backCover: stage.backCover, issue, stage }),
 }));
 
 // Render a full comic page (multi-panel layout in one image) — the
