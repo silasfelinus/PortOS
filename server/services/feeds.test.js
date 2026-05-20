@@ -271,11 +271,26 @@ describe('refreshAllFeeds', () => {
       '</feed>',
       `<entry><title>Atom New</title><link href="https://example.com/atom/N"/><updated>2026-05-20T12:00:00Z</updated></entry></feed>`,
     );
-    fetchMock.mockImplementation(async (url) =>
-      url.includes('/atom') ? makeResponse({ body: B_NEXT }) : makeResponse({ body: A_NEXT }),
+
+    // Deferred-promise pattern: each fetch parks until externally resolved.
+    // If refreshAllFeeds were serial, fetch B wouldn't start before A resolved,
+    // so resolving A first and asserting B is in-flight pins true parallelism.
+    let resolveA;
+    let resolveB;
+    const aFetch = new Promise(r => { resolveA = r; });
+    const bFetch = new Promise(r => { resolveB = r; });
+    fetchMock.mockImplementation((url) =>
+      url.includes('/atom') ? bFetch : aFetch,
     );
 
-    const result = await feeds.refreshAllFeeds();
+    fetchMock.mockClear();
+    const refreshPromise = feeds.refreshAllFeeds();
+    await new Promise(r => setImmediate(r));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    resolveA(makeResponse({ body: A_NEXT }));
+    resolveB(makeResponse({ body: B_NEXT }));
+    const result = await refreshPromise;
     expect(result).toMatchObject({ refreshed: 2, newItems: 2, failures: 0 });
     expect((await feeds.getItems({ feedId: a.id })).map(i => i.title)).toContain('RSS New');
     expect((await feeds.getItems({ feedId: b.id })).map(i => i.title)).toContain('Atom New');

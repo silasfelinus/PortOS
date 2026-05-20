@@ -83,15 +83,16 @@ describe('createShellSession', () => {
       PATH: '/usr/bin',
       MY_SECRET_API_KEY: 'leak-me',
     };
-    shell.createShellSession(makeSocket(), { env: { CALLER_KEY: 'explicit' } });
-    process.env = originalEnv;
-
-    const spawnCall = defaultSpawn.mock.calls[0];
-    const env = spawnCall[2].env;
-    expect(env.HOME).toBe('/home/x');
-    expect(env.PATH).toBe('/usr/bin');
-    expect(env.MY_SECRET_API_KEY).toBeUndefined();
-    expect(env.CALLER_KEY).toBe('explicit');
+    try {
+      shell.createShellSession(makeSocket(), { env: { CALLER_KEY: 'explicit' } });
+      const env = defaultSpawn.mock.calls[0][2].env;
+      expect(env.HOME).toBe('/home/x');
+      expect(env.PATH).toBe('/usr/bin');
+      expect(env.MY_SECRET_API_KEY).toBeUndefined();
+      expect(env.CALLER_KEY).toBe('explicit');
+    } finally {
+      process.env = originalEnv;
+    }
   });
 
   it('emits shell:error and returns null when max sessions reached', () => {
