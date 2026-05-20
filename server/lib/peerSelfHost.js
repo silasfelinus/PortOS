@@ -5,11 +5,13 @@ import { PATHS } from './fileUtils.js';
 import { certPaths } from '../../lib/certPaths.js';
 import { readCertMeta } from '../../lib/certMeta.js';
 
-const { meta: META_PATH } = certPaths(PATHS.data);
-
+// `PATHS.data` is resolved at call time (not module load) so test harnesses
+// that proxy `fileUtils.PATHS` after import — and every transitive importer
+// of this module via `instances.js` — see their override.
 export function getSelfHost() {
   if (process.env.PORTOS_HOST) return process.env.PORTOS_HOST;
 
+  const { meta: META_PATH } = certPaths(PATHS.data);
   const meta = readCertMeta(META_PATH);
   if (!meta) return null;
   return meta.mode === 'tailscale' && typeof meta.hostname === 'string' && meta.hostname
