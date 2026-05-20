@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import { BIBLE_LIMITS } from './bibleLimits.js';
 import {
   mergeVariations,
   mergeCanonByName,
   extractPreservedFromDraft,
   mergeExpandIntoDraft,
-  CLIENT_CANON_MAX,
 } from './universeBuilderExpand.js';
 
 // Identity helper used in several lock/clear tests below.
@@ -112,11 +112,12 @@ describe('mergeCanonByName', () => {
     expect(out).toHaveLength(2);
   });
 
-  it('caps merged output at CLIENT_CANON_MAX (mirror of server BIBLE_LIMITS)', () => {
-    const existing = Array.from({ length: CLIENT_CANON_MAX - 1 }, (_, i) => ({ name: `e${i}` }));
+  it('caps merged output at BIBLE_LIMITS.ENTRIES_PER_BIBLE_MAX', () => {
+    const cap = BIBLE_LIMITS.ENTRIES_PER_BIBLE_MAX;
+    const existing = Array.from({ length: cap - 1 }, (_, i) => ({ name: `e${i}` }));
     const fresh = Array.from({ length: 5 }, (_, i) => ({ name: `f${i}` }));
     const out = mergeCanonByName(existing, fresh, 'character');
-    expect(out).toHaveLength(CLIENT_CANON_MAX);
+    expect(out).toHaveLength(cap);
   });
 });
 

@@ -27,13 +27,15 @@
 //     are preserved and merged ahead of LLM output.
 //   - Canon arrays merge by name/slugline/alias collision (existing wins).
 import { mergeInfluencesWithLocks } from '../services/api';
+import { BIBLE_LIMITS } from './bibleLimits';
 import { normalizeSlugline } from './scenePrompt';
 
-// Match server's BIBLE_LIMITS.ENTRIES_PER_BIBLE_MAX so the client doesn't
-// optimistically display + count entries the server will silently truncate
-// at sanitize time. Without this cap, the post-expand toast can claim
-// "+12 canon entries" while the server-saved record only kept some of them.
-export const CLIENT_CANON_MAX = 200;
+// Aliased so the call site in mergeCanonByName reads naturally. Sourced from
+// the BIBLE_LIMITS mirror so the client doesn't optimistically display +
+// count entries the server will silently truncate at sanitize time. Without
+// this cap, the post-expand toast can claim "+12 canon entries" while the
+// server-saved record only kept some of them.
+const CANON_ENTRIES_CAP = BIBLE_LIMITS.ENTRIES_PER_BIBLE_MAX;
 
 // Merge two variation arrays under a single category bucket. Locked rows
 // (already filtered upstream into `existing`) come first; LLM-supplied
@@ -112,7 +114,7 @@ export const mergeCanonByName = (existing, fresh, kind = 'character') => {
     if (sluglineKey) seen.add(sluglineKey);
     for (const k of aliasMatches) seen.add(k);
     if (collides) continue;
-    if (merged.length >= CLIENT_CANON_MAX) break;
+    if (merged.length >= CANON_ENTRIES_CAP) break;
     merged.push(e);
   }
   return merged;
