@@ -14,7 +14,7 @@ _Nothing currently parked — pick the next item from the Backlog._
 
 ### v2.1.0 pre-release review residue (deferred from main→release multi-agent review, 2026-05-16)
 
-- [ ] [med-canon-server-services-canonusage-js-zero-test] **[MED][CANON]** `server/services/canonUsage.js` — zero test coverage for `getUniverseCanonUsage`. The "Appears-in sort: issueCount desc + alpha tiebreaker" invariant lives at line ~101 with no test. Add a `canonUsage.test.js`.
+- [ ] [cover-prose-input-idea-input-in-canonusage-corpus] **[LOW][TESTS]** **Cover `prose.input` + `idea.input` in canonUsage corpus aggregation test.** `server/services/canonUsage.js#corpusForIssue` (lines 25–36) aggregates 6 stage fields into the matcher corpus: `prose.output`, `prose.input`, `idea.output`, `idea.input`, `comicScript.output`, `teleplay.output`. Across the new describe block, 4 of those 6 fields are covered: the "aggregates corpus across idea / comicScript / teleplay stages" test seeds 3 (`idea.output`, `comicScript.output`, `teleplay.output`), and `prose.output` is covered by the sort / empty-corpus / bucket-wiring tests in the same block. `prose.input` and `idea.input` aren't pinned by any test. A regression that drops one of those two fields from the corpus list would slip past the suite silently. Extend the existing test or add a sibling test that seeds an issue with a unique character name in each of those two `input` fields. Surfaced by /simplify reuse-agent during `[med-canon-server-services-canonusage-js-zero-test]`; deferred to keep that PR scoped to the sort invariant + heavy-endpoint shape.
 
 ### Better-audit residue
 
