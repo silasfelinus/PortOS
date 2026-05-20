@@ -147,7 +147,7 @@ describe('canonUsage — getUniverseCanonUsage entry rows', () => {
     expect(usage.issueCount).toBe(4);
   });
 
-  it('routes each kind through its dedicated matcher (characters/places/objects)', async () => {
+  it('buckets matched entries under each kind\'s output key (characters/places/objects)', async () => {
     mockUniverses.set('uni-1', {
       id: 'uni-1',
       characters: [{ id: 'char-1', name: 'Lyra' }],
@@ -156,9 +156,15 @@ describe('canonUsage — getUniverseCanonUsage entry rows', () => {
     });
     mockSeriesList.push({ id: 'ser-1', name: 'Series One', universeId: 'uni-1' });
     mockIssuesBySeries.set('ser-1', [
-      // One issue mentioning all three so we can prove each matcher wires to
-      // the right universe field (a swap between places/objects would put the
-      // entry under the wrong key).
+      // One issue mentioning all three pins (a) that the iteration over
+      // `Object.keys(MATCHERS)` covers all 3 kinds and (b) that each kind's
+      // matches land in the correctly-named `usage[kind]` output bucket. A
+      // refactor that dropped one of the three from the loop, or that wrote
+      // `usage.locations` instead of `usage.places`, would fail here. (This
+      // test does NOT verify the per-matcher *behavior* — alias-aware vs
+      // name-only — because all three seeded names are unique to their kind;
+      // matcher-function swaps would still pass. Behavior coverage belongs
+      // in `scenePrompt.test.js` against the matchers directly.)
       { id: 'iss-1', stages: { prose: { output: 'Lyra walked through Thornwood holding a Lantern.' } } },
     ]);
 
