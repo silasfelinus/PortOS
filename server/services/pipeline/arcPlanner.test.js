@@ -1034,18 +1034,38 @@ describe('arcPlanner — buildSeasonRemap', () => {
     expect(remap.get('old1')).toBe('new2');
   });
 
-  it('falls back positionally when counts match and unique-number is ambiguous', () => {
+  it('falls back positionally when exactly one unmatched on each side (forced 1↔1)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const dropped = [{ id: 'old1', number: 1, title: 'A' }];
+    const minted = [{ id: 'new1', number: 2, title: 'X' }];
+    const remap = planner.buildSeasonRemap(dropped, minted);
+    expect(remap.get('old1')).toBe('new1');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Pass 3 fired'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('drops orphans to null when 2+ unmatched on each side after pass 1/2', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Titles diverge AND numbers diverge → Pass 1 (title) and Pass 2 (unique
+    // number) leave 2-old × 2-new unmatched. Old behavior would positionally
+    // pair them; new behavior refuses and warns.
     const dropped = [
-      { id: 'old1', number: 1, title: 'A' },
-      { id: 'old2', number: 2, title: 'B' },
+      { id: 'old1', number: 10, title: 'A' },
+      { id: 'old2', number: 20, title: 'B' },
     ];
     const minted = [
       { id: 'new1', number: 1, title: 'X' },
       { id: 'new2', number: 2, title: 'Y' },
     ];
     const remap = planner.buildSeasonRemap(dropped, minted);
-    expect(remap.get('old1')).toBe('new1');
-    expect(remap.get('old2')).toBe('new2');
+    expect(remap.get('old1')).toBeNull();
+    expect(remap.get('old2')).toBeNull();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('skipped positional fallback'),
+    );
+    warnSpy.mockRestore();
   });
 
   it('maps to null when nothing plausible exists', () => {

@@ -1103,7 +1103,12 @@ export async function commitSeasonsWithRemap(currentSeries, { arc, seasons }) {
 // and the freshly-minted ones in the same resolve. Matching priority:
 //   1. normalized title equality (LLM was told to preserve titles when it can)
 //   2. `number` equality (only when the target number is unique among new ones)
-//   3. positional fallback (only when counts match and ordering aligns)
+//   3. positional fallback — only fires when exactly ONE unmatched on each
+//      side. With a single pair the mapping is forced and unambiguous; with
+//      2+ unmatched the LLM may have reshuffled/renamed everything and
+//      positional guessing silently invents wrong mappings (the bug that
+//      motivated this guard). Skipped runs log a warning and let those
+//      orphans fall through to the ungrouped bucket below.
 // Anything that can't be matched maps to null so the issue lands in the
 // ungrouped bucket instead of staying stranded behind a defunct id.
 export function buildSeasonRemap(droppedOldSeasons, newlyMintedSeasons) {
@@ -1137,20 +1142,20 @@ export function buildSeasonRemap(droppedOldSeasons, newlyMintedSeasons) {
     }
   }
 
-  // Pass 3: positional fallback when the unclaimed sets line up 1:1
+  // Pass 3: positional fallback — only when the unmatched sets are exactly
+  // 1↔1, where the pairing is forced.
   const oldRemaining = droppedOldSeasons.filter((s) => !remap.has(s.id));
   const newRemaining = newlyMintedSeasons.filter((n) => !claimed.has(n.id));
-  if (oldRemaining.length && oldRemaining.length === newRemaining.length) {
-    const oldSorted = [...oldRemaining].sort(
-      (a, b) => (a.number ?? 0) - (b.number ?? 0),
+  if (oldRemaining.length === 1 && newRemaining.length === 1) {
+    console.warn(
+      `⚠️ buildSeasonRemap Pass 3 fired: forced 1↔1 pairing "${oldRemaining[0].title || oldRemaining[0].id}" → "${newRemaining[0].title || newRemaining[0].id}"`,
     );
-    const newSorted = [...newRemaining].sort(
-      (a, b) => (a.number ?? 0) - (b.number ?? 0),
+    remap.set(oldRemaining[0].id, newRemaining[0].id);
+    claimed.add(newRemaining[0].id);
+  } else if (oldRemaining.length && newRemaining.length) {
+    console.warn(
+      `⚠️ buildSeasonRemap skipped positional fallback (${oldRemaining.length} old × ${newRemaining.length} new unmatched) — orphan issues route to ungrouped`,
     );
-    for (let i = 0; i < oldSorted.length; i += 1) {
-      remap.set(oldSorted[i].id, newSorted[i].id);
-      claimed.add(newSorted[i].id);
-    }
   }
 
   // Anything still unmapped → null (ungrouped bucket).
