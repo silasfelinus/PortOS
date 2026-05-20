@@ -109,7 +109,18 @@ export default function MediaLightbox({
   };
 
   const isCodex = item.mode === 'codex';
+  // Map raw `entryKind` tokens to user-facing labels — the sidecar stores
+  // 'canon' / 'variation' / 'sheet' (ENTRY_REF_KIND values) for parity with
+  // the server contract; users shouldn't see the wire tokens.
+  const entryKindLabel = ({ canon: 'Canon entry', variation: 'Category variation', sheet: 'Composite sheet' })[item.entryKind] || item.entryKind;
   const meta = [
+    // Universe Builder context — placed first so "this is Ash from MyVerse"
+    // reads before the technical render params. Sidecars without a universe
+    // tag fall through the existing null-filter at the end.
+    ['Universe', item.universeName],
+    ['Entity', item.entryName],
+    ['Kind', entryKindLabel],
+    ['Category', item.entryCategory],
     ['Model', item.modelId],
     ['Resolution', item.width && item.height ? `${item.width}×${item.height}` : null],
     ['Steps', item.steps],

@@ -76,6 +76,13 @@ export default function MediaHistory() {
     item.seed != null ? `seed ${item.seed}` : '',
     item.width && item.height ? `${item.width}x${item.height}` : '',
     ...(Array.isArray(item.loraNames) ? item.loraNames : []),
+    // Universe Builder tags — searchable by entity name (e.g. "Ash"), universe
+    // name, kind, or category even when those tokens aren't in the prompt.
+    item.universeName,
+    item.entryName,
+    item.entryLabel,
+    item.entryCategory,
+    item.entryKind,
     item.extractedFromVideoId ? 'extracted frame' : '',
     item.stitchedFrom ? 'stitched' : '',
     item.upscaledFrom ? 'upscaled 2x' : '',
@@ -180,7 +187,7 @@ export default function MediaHistory() {
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search prompt, model, seed, lora…"
+              placeholder="Search prompt, model, character, place…"
               className="w-full pl-7 pr-7 py-1 bg-port-bg border border-port-border rounded text-xs text-white placeholder-gray-500 focus:outline-none focus:border-port-accent"
             />
             {query && (

@@ -44,6 +44,18 @@ export function normalizeImage(i) {
     codexSessionId: i.codexSessionId,
     mode: i.mode,
     loraNames,
+    // Universe Builder tags — stamped onto sidecars by the completion hook
+    // (server/services/universeBuilderCollectionHook.js) for renders driven
+    // by a canon entry, category variation, or composite sheet. Powers
+    // entity-name search in MediaHistory and the lightbox detail panel.
+    universeId: i.universeId || null,
+    universeName: i.universeName || null,
+    universeRunId: i.universeRunId || null,
+    entryKind: i.entryKind || null,        // 'canon' | 'variation' | 'sheet'
+    entryCategory: i.entryCategory || null,
+    entryId: i.entryId || null,
+    entryName: i.entryName || null,
+    entryLabel: i.entryLabel || null,
     createdAt: i.createdAt,
     hidden: !!i.hidden,
     extractedFromVideoId: i.extractedFromVideoId || null,
