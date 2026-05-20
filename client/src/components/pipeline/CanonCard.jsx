@@ -15,6 +15,7 @@ import { Loader2, ImagePlus, WandSparkles, Lock, Unlock, Shirt, Plus, Trash2, Ch
 import useMediaJobProgress from '../../hooks/useMediaJobProgress';
 import useRowDraft from '../../hooks/useRowDraft';
 import useFieldDraft from '../../hooks/useFieldDraft';
+import usePendingListRows from '../../hooks/usePendingListRows';
 import MediaJobThumb from './MediaJobThumb';
 import EntryCard from '../universe/EntryCard';
 import EntryThumbSlot from '../universe/EntryThumbSlot';
@@ -183,59 +184,28 @@ function WardrobeRow({ wardrobe, editable, onCommit, onRemove }) {
 // universe-wide round-trip per character. The ride-along merge means a
 // fast desc-blur after a name keystroke ships both columns together, so the
 // row promotes correctly even if the user never explicitly blurs name first.
+//
+// Pending rows use `wd-<uuid>` ids (server `ensureId` preserves them, so
+// they round-trip verbatim across the pending → persisted promotion) —
+// `stripIdOnPromote` stays false to keep WardrobeRow mounted across the
+// swap and preserve sibling draft buffers.
 function WardrobeSection({ wardrobes, editable, onChange }) {
   const [open, setOpen] = useState(false);
-  // Pending new rows live entirely client-side until the user types a name
-  // — committing immediately would PATCH a nameless entry, the server-side
-  // sanitizer would drop it, and the row would vanish mid-type.
-  const [pendingNew, setPendingNew] = useState([]);
-
-  const merged = pendingNew.length
-    ? [...wardrobes, ...pendingNew]
-    : wardrobes;
+  const { merged, addRow, updateRow, removeRow } = usePendingListRows({
+    persisted: wardrobes,
+    requiredColumn: 'name',
+    idPrefix: 'wd-',
+    blankRow: () => ({ name: '', description: '' }),
+    onChange,
+  });
 
   if (!editable && merged.length === 0) return null;
 
   const summary = merged.map((w) => w.name).filter(Boolean).join(', ');
-  const isPending = (idx) => idx >= wardrobes.length;
-
-  const commit = (idx, nextRow) => {
-    if (isPending(idx)) {
-      const pendingIdx = idx - wardrobes.length;
-      // Stable React key across promotion — `w.id` was minted server-shaped
-      // in `addOne` so it round-trips verbatim, which keeps `WardrobeRow`
-      // mounted across the pending → persisted swap and preserves any
-      // in-flight sibling draft in its `useRowDraft` buffer.
-      if (nextRow.name?.trim()) {
-        setPendingNew(pendingNew.filter((_, i) => i !== pendingIdx));
-        onChange([...wardrobes, nextRow]);
-      } else {
-        setPendingNew(pendingNew.map((p, i) => i === pendingIdx ? nextRow : p));
-      }
-      return;
-    }
-    onChange(wardrobes.map((w, i) => (i === idx ? nextRow : w)));
-  };
-
-  const removeAt = (idx) => {
-    if (isPending(idx)) {
-      const pendingIdx = idx - wardrobes.length;
-      setPendingNew(pendingNew.filter((_, i) => i !== pendingIdx));
-      return;
-    }
-    onChange(wardrobes.filter((_, i) => i !== idx));
-  };
 
   const addOne = () => {
     setOpen(true);
-    // Mint a server-shaped `wd-<uuid>` client-side so the React key stays
-    // stable across the pending → persisted promotion. Server `ensureId`
-    // preserves any non-empty string, so this id round-trips unchanged.
-    // `globalThis.crypto` — bare `crypto?.…` ReferenceErrors when the
-     // identifier is undeclared (e.g. some non-secure contexts); going
-     // through `globalThis` short-circuits cleanly to the Date+Math fallback.
-    const id = `wd-${(globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36) + Math.random().toString(36).slice(2))}`;
-    setPendingNew((prev) => [...prev, { id, name: '', description: '' }]);
+    addRow();
   };
 
   return (
@@ -256,8 +226,8 @@ function WardrobeSection({ wardrobes, editable, onChange }) {
               key={w.id || i}
               wardrobe={w}
               editable={editable}
-              onCommit={(nextRow) => commit(i, nextRow)}
-              onRemove={() => removeAt(i)}
+              onCommit={(nextRow) => updateRow(i, nextRow)}
+              onRemove={() => removeRow(i)}
             />
           ))}
           {editable ? (
