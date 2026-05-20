@@ -1385,6 +1385,67 @@ describe('sharing round-trip', () => {
     expect(orphanUni.characters.map((c) => c.name)).toContain('Solo');
   });
 
+  it('reuses an existing local series.universeId on retry — no duplicate auto-migrated universes', async () => {
+    // When the same orphan-series manifest is processed twice (e.g. an
+    // unrelated pending condition held the cursor back the first time),
+    // the legacy-canon helper must reuse the persisted local universeId
+    // instead of minting a fresh "<name> (auto-migrated)" universe each pass.
+    const bucket = await buckets.createBucket({ name: 'OrphanIdempBucket', path: tempBucket, mode: 'auto-merge' });
+
+    const seriesId = 'ser-orphan-idemp';
+    const legacySeries = {
+      id: seriesId,
+      name: 'Orphan Idemp Series',
+      logline: 'will be reimported',
+      premise: 'idempotency test',
+      characters: [{ name: 'Echo', physicalDescription: 'on retry' }],
+      createdAt: '2026-05-01T00:00:00.000Z',
+      updatedAt: '2026-05-01T00:00:00.000Z',
+    };
+    mkdirSync(join(tempBucket, 'records', 'series'), { recursive: true });
+    writeFileSync(
+      join(tempBucket, 'records', 'series', `${seriesId}.json`),
+      JSON.stringify(legacySeries),
+    );
+    const manifest = {
+      id: 'mfst-orphan-idemp',
+      schemaVersion: 1,
+      sharingSchemaVersion: 1,
+      producedByVersion: '1.0.0',
+      createdAt: new Date().toISOString(),
+      kind: 'series',
+      senderInstanceId: 'orphan-idemp-peer',
+      source: 'Orphan Idemp Peer',
+      sourceBio: null,
+      bucketId: bucket.id,
+      bucketName: bucket.name,
+      recordIds: [seriesId],
+      assetRefs: [],
+      note: null,
+    };
+    const filename = `2026-05-01T00-00-00-000Z-orphan-idemp-peer-${manifest.id}.json`;
+    writeFileSync(join(tempBucket, 'manifests', filename), JSON.stringify(manifest));
+
+    // First pass — creates the orphan universe + inserts the series.
+    await importer.processManifest(bucket.id, filename);
+    const restoredFirst = await series.getSeries(seriesId);
+    const firstUniverseId = restoredFirst.universeId;
+    expect(firstUniverseId).toBeTruthy();
+
+    // Force a retry — simulate the cursor being un-advanced by forgetting the
+    // manifest, then re-process. Without idempotency the helper would mint a
+    // SECOND auto-migrated universe and `mergeOne` would no-op the series.
+    const { forgetProcessed } = await import('./manifest.js');
+    await forgetProcessed(bucket.id, filename);
+    await importer.processManifest(bucket.id, filename);
+
+    const restoredAfter = await series.getSeries(seriesId);
+    expect(restoredAfter.universeId).toBe(firstUniverseId);
+    const allUnis = await universeSvc.listUniverses();
+    const autoMigrated = allUnis.filter((u) => /Orphan Idemp Series/.test(u.name));
+    expect(autoMigrated).toHaveLength(1);
+  });
+
   it('leaves the manifest pending and retries when the missing universe later arrives', async () => {
     // Without this guard, the importer would fall through to insertSeriesWithId
     // and `sanitizeSeries` would silently drop the legacy canon arrays — the

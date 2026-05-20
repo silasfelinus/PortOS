@@ -444,26 +444,48 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
   // to a universe that isn't in this manifest and isn't local), skip the
   // sanitized-series insert for that record — otherwise the canon arrays
   // get silently stripped by `sanitizeSeries` and the bug we just fixed
-  // recurs. The bucket record stays untouched and `legacyCanonPendingUniverses`
+  // recurs. The bucket record stays untouched and the relevant pending list
   // surfaces upward to the manifest-pending check, so the watcher retries
-  // when the missing universe later arrives instead of cursor-advancing into
+  // when the underlying cause resolves instead of cursor-advancing into
   // permanent skip.
   const skipSeriesMerge = new Set();
   const legacyCanonPendingUniverses = [];
+  const legacyCanonPendingFailures = [];
   for (const s of records.series) {
     const hasLegacyCanon = ['characters', 'settings', 'places', 'objects']
       .some((field) => Array.isArray(s[field]) && s[field].length > 0);
     if (!hasLegacyCanon) continue;
+
+    // Retry idempotency: when a local series record already exists from a
+    // prior pass (manifest is being retried because some OTHER pending
+    // condition held the cursor back), reuse its persisted universeId so
+    // we don't keep minting fresh "<name> (auto-migrated)" universes per
+    // retry. And if LWW would no-op the upcoming series merge, skip the
+    // helper entirely — re-merging stale remote canon over a locally-newer
+    // universe would just reset provenance.
+    const existing = await getSeries(s.id).catch(() => null);
+    if (existing) {
+      if (!remoteWins(existing.updatedAt, s.updatedAt)) continue;
+      if (!s.universeId && existing.universeId) s.universeId = existing.universeId;
+    }
+
     const r = await applyLegacySeriesCanonToUniverse(s).catch((err) => {
       console.log(`⚠️ sharing.importer: legacy series canon migration for ${s.id} failed: ${err.message}`);
       return null;
     });
-    if (!r || r.skipped === 'missing-universe') {
-      console.log(`⚠️ sharing.importer: skipping series ${s.id} merge — legacy canon could not be salvaged (${r?.skipped || 'helper failed'})`);
+    if (!r) {
+      // Helper threw — keep the manifest retryable so a transient I/O
+      // failure doesn't permanently lose this series. The failure id
+      // flows through `pendingLegacyCanonFailures` so processManifest
+      // leaves the cursor un-advanced.
       skipSeriesMerge.add(s.id);
-      if (r?.skipped === 'missing-universe' && r.universeId) {
-        legacyCanonPendingUniverses.push(r.universeId);
-      }
+      legacyCanonPendingFailures.push(s.id);
+      continue;
+    }
+    if (r.skipped === 'missing-universe') {
+      console.log(`⚠️ sharing.importer: skipping series ${s.id} merge — missing universe ${r.universeId}`);
+      skipSeriesMerge.add(s.id);
+      if (r.universeId) legacyCanonPendingUniverses.push(r.universeId);
       continue;
     }
     // Stamp the freshly-created orphan universe id onto the in-memory record
@@ -537,6 +559,7 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
     collectionPendingUniverse,
     collectionPendingSeries,
     legacyCanonPendingUniverses: legacyCanonPendingUniverses.length > 0 ? legacyCanonPendingUniverses : null,
+    legacyCanonPendingFailures: legacyCanonPendingFailures.length > 0 ? legacyCanonPendingFailures : null,
     adoptedSubscription: adoptedSubscription
       ? { id: adoptedSubscription.id, bucketId: adoptedSubscription.bucketId, recordKind: adoptedSubscription.recordKind, recordId: adoptedSubscription.recordId }
       : null,
@@ -750,14 +773,16 @@ export async function processManifest(bucketId, manifestFilename) {
   const collectionPendingUniverse = outcome?.collectionPendingUniverse || null;
   const collectionPendingSeries = outcome?.collectionPendingSeries || null;
   const legacyCanonPendingUniverses = outcome?.legacyCanonPendingUniverses || null;
-  if (assetCopy.missing.length > 0 || missingRecords.length > 0 || collectionPendingUniverse || collectionPendingSeries || legacyCanonPendingUniverses) {
+  const legacyCanonPendingFailures = outcome?.legacyCanonPendingFailures || null;
+  if (assetCopy.missing.length > 0 || missingRecords.length > 0 || collectionPendingUniverse || collectionPendingSeries || legacyCanonPendingUniverses || legacyCanonPendingFailures) {
     if (assetCopy.missing.length > 0) outcome.pendingAssets = assetCopy.missing;
     if (missingRecords.length > 0) outcome.pendingRecords = missingRecords;
     if (collectionPendingUniverse) outcome.pendingCollectionUniverse = collectionPendingUniverse;
     if (collectionPendingSeries) outcome.pendingCollectionSeries = collectionPendingSeries;
     if (legacyCanonPendingUniverses) outcome.pendingLegacyCanonUniverses = legacyCanonPendingUniverses;
+    if (legacyCanonPendingFailures) outcome.pendingLegacyCanonFailures = legacyCanonPendingFailures;
     sharingEvents.emit('manifest-processed', { bucketId, manifestId: manifest.id, manifestFilename, outcome });
-    console.log(`⏳ sharing: bucket=${bucket.name} manifest=${manifest.id} kind=${manifest.kind} mode=${bucket.mode} waitingForAssets=${assetCopy.missing.length} waitingForRecords=${missingRecords.length}${collectionPendingUniverse ? ` waitingForUniverse=${collectionPendingUniverse}` : ''}${collectionPendingSeries ? ` waitingForSeries=${collectionPendingSeries}` : ''}${legacyCanonPendingUniverses ? ` waitingForLegacyCanonUniverses=${legacyCanonPendingUniverses.join(',')}` : ''}`);
+    console.log(`⏳ sharing: bucket=${bucket.name} manifest=${manifest.id} kind=${manifest.kind} mode=${bucket.mode} waitingForAssets=${assetCopy.missing.length} waitingForRecords=${missingRecords.length}${collectionPendingUniverse ? ` waitingForUniverse=${collectionPendingUniverse}` : ''}${collectionPendingSeries ? ` waitingForSeries=${collectionPendingSeries}` : ''}${legacyCanonPendingUniverses ? ` waitingForLegacyCanonUniverses=${legacyCanonPendingUniverses.join(',')}` : ''}${legacyCanonPendingFailures ? ` legacyCanonFailures=${legacyCanonPendingFailures.join(',')}` : ''}`);
     return { processed: true, pending: true, manifest, outcome };
   }
   await markProcessed(bucketId, manifestFilename, manifest.id);
