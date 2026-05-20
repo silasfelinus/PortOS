@@ -133,4 +133,24 @@ describe('detectAppWithAi', () => {
       expect(result.detected.name).toBe('Test App');
     });
   });
+
+  it('skips an echoed package.json block when picking the detection JSON (TUI prompt-echo case)', async () => {
+    const provider = { id: 'p', name: 'P', type: 'tui', enabled: true };
+    getActiveProvider.mockResolvedValue(provider);
+    // Prompt-echoing TUI providers replay the package.json from the prompt
+    // before the real answer — the first parseable block must be skipped.
+    const echoedPackageJson = JSON.stringify({ name: 'echoed-from-prompt', scripts: { dev: 'vite' } });
+    runPromptThroughProvider.mockResolvedValue({
+      text: 'package.json:\n' + echoedPackageJson + '\n\nMy answer:\n' + VALID_DETECTION_JSON,
+      runId: 'r1',
+      model: 'm1'
+    });
+
+    await withProjectDir({ 'package.json': echoedPackageJson }, async (dir) => {
+      const result = await detectAppWithAi(dir);
+      expect(result.success).toBe(true);
+      expect(result.detected.name).toBe('Test App');
+      expect(result.detected.uiPort).toBe(3000);
+    });
+  });
 });

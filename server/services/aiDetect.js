@@ -116,13 +116,18 @@ Rules:
 - If the app has both frontend and backend, suggest separate PM2 processes`;
 }
 
+// Match the detection-response JSON, not the package.json the prompt echoes
+// back. Prompt-echoing CLI/TUI providers (Codex, Claude Code) replay the input
+// before the real answer; without a shape gate, extractJson would lock onto
+// the echoed `{ "name": "...", "scripts": {...} }` block and return defaults.
+const isDetectionShape = (v) => (
+  v && typeof v === 'object' && !Array.isArray(v)
+  && ('hasFrontend' in v || 'hasBackend' in v || 'uiPort' in v || 'apiPort' in v || 'pm2ProcessNames' in v || 'startCommands' in v)
+);
+
 function parseAiResponse(response) {
-  // Route through the shared extractor so banner-stripping, trailing-comma
-  // repair, and the `[...]` placeholder elision the rest of PortOS's LLM
-  // callers benefit from also apply here — TUI providers in particular emit
-  // banner text around the JSON payload that the legacy regex would miss.
-  const { value } = extractJson(response);
-  if (!value || typeof value !== 'object') throw new Error('Failed to parse AI detection response');
+  const { value } = extractJson(response, { shapePredicate: isDetectionShape });
+  if (!isDetectionShape(value)) throw new Error('Failed to parse AI detection response');
   return value;
 }
 
