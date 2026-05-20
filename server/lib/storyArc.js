@@ -308,15 +308,30 @@ export function sanitizeSeason(raw, { preserveTimestamps = true } = {}) {
  * SEASONS_PER_SERIES_MAX, deduplicates ids (last-write-wins on collision),
  * and sorts by `number` ascending so consumers can render straight from the
  * array.
+ *
+ * LWW dedupe is silent — surfacing the collision matters because child issues
+ * carry `seasonId` pointers, so a dropped duplicate leaves those issues
+ * attached to the surviving season under the colliding id, which is rarely
+ * what the producer (usually an LLM rewrite) intended. The helper warns on
+ * duplicates with the offending ids so the responsible run is grep-able in
+ * logs without crashing the persist path.
  */
 export function sanitizeSeasonList(rawList, opts = {}) {
   if (!Array.isArray(rawList)) return [];
   const byId = new Map();
+  const duplicateIds = [];
   for (const raw of rawList) {
     const s = sanitizeSeason(raw, opts);
     if (!s) continue;
+    if (byId.has(s.id)) duplicateIds.push(s.id);
     byId.set(s.id, s);
     if (byId.size >= ARC_LIMITS.SEASONS_PER_SERIES_MAX) break;
+  }
+  if (duplicateIds.length) {
+    const distinct = [...new Set(duplicateIds)];
+    console.warn(
+      `⚠️ sanitizeSeasonList dropped ${duplicateIds.length} duplicate season entry/entries via LWW across ${distinct.length} colliding id(s): ${distinct.join(', ')} — child issues stay attached to the surviving entry`,
+    );
   }
   return [...byId.values()].sort((a, b) => (a.number || 0) - (b.number || 0));
 }
