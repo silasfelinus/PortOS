@@ -15,7 +15,6 @@ _Nothing currently parked — pick the next item from the Backlog._
 ### v2.1.0 pre-release review residue (deferred from main→release multi-agent review, 2026-05-16)
 
 - [ ] [med-canon-server-services-canonusage-js-zero-test] **[MED][CANON]** `server/services/canonUsage.js` — zero test coverage for `getUniverseCanonUsage`. The "Appears-in sort: issueCount desc + alpha tiebreaker" invariant lives at line ~101 with no test. Add a `canonUsage.test.js`.
-- [ ] [add-emitrunstarted-hook-shape-test-to-runner] **[LOW][TESTS]** `server/services/runner.test.js` has no coverage for `emitRunStarted`'s payload shape — `runner.js:198-204` flattens `provider` to `provider?.name || provider?.id` and falls back `model ?? provider?.defaultModel`, but no test pins that contract. The `executeTuiRun` PTY tests intentionally mock `emitRunStarted`, so a regression in the flattening logic (e.g. dropping the `name` preference or breaking the model fallback) would slip past `tuiPromptRunner.test.js`. Add a focused test that registers a `runnerConfig.hooks.onRunStarted` mock, calls `emitRunStarted({ runId, provider, model })` with `{ name, id, defaultModel }` variants, and asserts the hook payload shape. Surfaced by codex review iter 1 during `[med-tests-no-direct-tests-for-executetuirun-pty]`; deferred because the scope of that PR was `executeTuiRun` (not `runner.js`), and the fix touches a different test file.
 
 ### Better-audit residue
 
