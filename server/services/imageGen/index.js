@@ -26,6 +26,15 @@ const sdapiUrl = (s) => cfg(s).external?.sdapiUrl || cfg(s).sdapiUrl || null;
 const pythonPath = (s) => cfg(s).local?.pythonPath || null;
 const codexCfg = (s) => cfg(s).codex || {};
 
+// Body wins when explicit (per-render checkbox); otherwise inherit the saved
+// per-mode default. Shared by `/generate` (stamps the resolved value onto the
+// request so all three dispatch paths agree) and `generateImage()` (safety net
+// for direct callers like `generateAvatar`).
+export function resolveAutoClean(bodyValue, settings, mode) {
+  if (typeof bodyValue === 'boolean') return bodyValue;
+  return cfg(settings)[mode]?.autoClean === true;
+}
+
 export async function getMode() {
   const s = await getSettings();
   return cfg(s).mode || DEFAULT_MODE;
@@ -69,13 +78,12 @@ export async function generateImage(params) {
     delete normalized.initImagePath;
     delete normalized.initImageStrength;
   }
-  // Auto-clean is per-provider-mode, opt-in. Precedence: caller-supplied
-  // boolean (the `/generate` route's per-render checkbox) wins; otherwise
-  // inherit the saved per-mode setting. Strip from `normalized` so the
-  // explicit arg on each provider call isn't shadowed by the spread.
-  const autoClean = (typeof normalized.autoClean === 'boolean')
-    ? normalized.autoClean
-    : (cfg(s)[mode]?.autoClean === true);
+  // Auto-clean is per-provider-mode, opt-in. The route layer already resolves
+  // this so the queue/route paths agree, but resolve here too for direct
+  // callers (e.g. `generateAvatar`) that skip the route. Strip from
+  // `normalized` so the explicit arg on each provider call isn't shadowed by
+  // the spread.
+  const autoClean = resolveAutoClean(normalized.autoClean, s, mode);
   delete normalized.autoClean;
   if (mode === 'codex') {
     const c = codexCfg(s);

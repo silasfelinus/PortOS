@@ -53,9 +53,8 @@ export function ImageGenTab() {
   // (when present) and reduces visible AI-generation artifacts via a median
   // pass + sharpen. Does NOT defeat SynthID — gpt-image embeds SynthID and our
   // median+sharpen+re-encode falls inside Google's stated robustness envelope.
-  const [autoCleanCodex, setAutoCleanCodex] = useState(false);
-  const [autoCleanLocal, setAutoCleanLocal] = useState(false);
-  const [autoCleanExternal, setAutoCleanExternal] = useState(false);
+  const [autoCleanByMode, setAutoCleanByMode] = useState({ external: false, local: false, codex: false });
+  const setAutoCleanFor = (m) => (v) => setAutoCleanByMode((p) => ({ ...p, [m]: v }));
   // Raw string held while the user is typing in the parallel-limit input.
   // Clamping is deferred to onBlur so multi-digit entry isn't blocked.
   const [parallelLimitDraft, setParallelLimitDraft] = useState('1');
@@ -73,7 +72,7 @@ export function ImageGenTab() {
   const [saved, setSaved] = useState({
     mode: 'external', sdapiUrl: '', pythonPath: '', exposeA1111: false,
     codexEnabled: false, codexPath: '', codexModel: '', codexParallelLimit: 1,
-    autoCleanCodex: false, autoCleanLocal: false, autoCleanExternal: false,
+    autoCleanByMode: { external: false, local: false, codex: false },
   });
 
   const [status, setStatus] = useState(null);
@@ -146,9 +145,11 @@ export function ImageGenTab() {
           : PARALLEL_FALLBACK;
         setParallelBounds(bounds);
         const cxParallel = clampParallel(cx.parallelLimit, bounds);
-        const acCodex = cx.autoClean === true;
-        const acLocal = ig.local?.autoClean === true;
-        const acExternal = ig.external?.autoClean === true;
+        const ac = {
+          codex: cx.autoClean === true,
+          local: ig.local?.autoClean === true,
+          external: ig.external?.autoClean === true,
+        };
         setMode(m);
         setSdapiUrl(url);
         setPythonPath(py);
@@ -158,14 +159,12 @@ export function ImageGenTab() {
         setCodexModel(cxModel);
         setCodexParallelLimit(cxParallel);
         setParallelLimitDraft(String(cxParallel));
-        setAutoCleanCodex(acCodex);
-        setAutoCleanLocal(acLocal);
-        setAutoCleanExternal(acExternal);
+        setAutoCleanByMode(ac);
         setSaved({
           mode: m, sdapiUrl: url, pythonPath: py, exposeA1111: expose,
           codexEnabled: cxEnabled, codexPath: cxPath, codexModel: cxModel,
           codexParallelLimit: cxParallel,
-          autoCleanCodex: acCodex, autoCleanLocal: acLocal, autoCleanExternal: acExternal,
+          autoCleanByMode: ac,
         });
         setToolRegistered(tools.some((t) => t.id === SDAPI_TOOL_ID));
         setCodexToolRegistered(tools.some((t) => t.id === CODEX_TOOL_ID));
@@ -190,9 +189,9 @@ export function ImageGenTab() {
     || codexPath !== saved.codexPath
     || codexModel !== saved.codexModel
     || codexParallelLimit !== saved.codexParallelLimit
-    || autoCleanCodex !== saved.autoCleanCodex
-    || autoCleanLocal !== saved.autoCleanLocal
-    || autoCleanExternal !== saved.autoCleanExternal;
+    || autoCleanByMode.codex !== saved.autoCleanByMode.codex
+    || autoCleanByMode.local !== saved.autoCleanByMode.local
+    || autoCleanByMode.external !== saved.autoCleanByMode.external;
 
   const handleSave = async () => {
     setSaving(true);
@@ -203,11 +202,11 @@ export function ImageGenTab() {
     const patch = {
       imageGen: {
         mode,
-        external: { sdapiUrl: url, autoClean: autoCleanExternal },
-        local: { pythonPath: pythonPath || undefined, autoClean: autoCleanLocal },
+        external: { sdapiUrl: url, autoClean: autoCleanByMode.external },
+        local: { pythonPath: pythonPath || undefined, autoClean: autoCleanByMode.local },
         codex: {
           enabled: codexEnabled, codexPath: cxPath, model: cxModel, parallelLimit: cxParallel,
-          autoClean: autoCleanCodex,
+          autoClean: autoCleanByMode.codex,
         },
         expose: { a1111: exposeA1111 },
         // Keep the legacy field populated so anything still reading
@@ -225,7 +224,7 @@ export function ImageGenTab() {
         mode, sdapiUrl: url || '', pythonPath, exposeA1111,
         codexEnabled, codexPath: cxPath || '', codexModel: cxModel || '',
         codexParallelLimit: cxParallel,
-        autoCleanCodex, autoCleanLocal, autoCleanExternal,
+        autoCleanByMode,
       });
       if (cxParallel !== codexParallelLimit) {
         setCodexParallelLimit(cxParallel);
@@ -426,7 +425,7 @@ export function ImageGenTab() {
             placeholder="http://localhost:7860"
           />
           <p className="text-xs text-gray-500">Base URL for the SD WebUI server PortOS should send generation requests to.</p>
-          <AutoCleanToggle checked={autoCleanExternal} onChange={setAutoCleanExternal} />
+          <AutoCleanToggle checked={autoCleanByMode.external} onChange={setAutoCleanFor('external')} />
         </div>
       )}
 
@@ -440,7 +439,7 @@ export function ImageGenTab() {
             and are surfaced in <a href="/media/models" className="text-port-accent hover:underline">Media → Models</a>.
           </p>
           <LocalSetupPanel pythonPath={pythonPath} onPythonPathChange={setPythonPath} />
-          <AutoCleanToggle checked={autoCleanLocal} onChange={setAutoCleanLocal} />
+          <AutoCleanToggle checked={autoCleanByMode.local} onChange={setAutoCleanFor('local')} />
         </div>
       )}
 
@@ -536,7 +535,7 @@ export function ImageGenTab() {
                 )}
               </p>
             </div>
-            <AutoCleanToggle checked={autoCleanCodex} onChange={setAutoCleanCodex} />
+            <AutoCleanToggle checked={autoCleanByMode.codex} onChange={setAutoCleanFor('codex')} />
           </div>
         )}
       </div>

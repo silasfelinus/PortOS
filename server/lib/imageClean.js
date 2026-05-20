@@ -186,6 +186,9 @@ export async function autoCleanGeneratedImage({ enabled, pngPath, sidecarPath, m
   });
   if (!result || result.format !== 'png') return { cleaned: false };
 
+  // Sidecar read has no data dependency on the PNG write — kick it off in
+  // parallel so the disk-read latency overlaps the encode/write window.
+  const sidecarReadP = sidecarPath ? tryReadFile(sidecarPath) : Promise.resolve(null);
   const replaced = await atomicWrite(pngPath, result.data)
     .then(() => true)
     .catch((err) => {
@@ -197,7 +200,7 @@ export async function autoCleanGeneratedImage({ enabled, pngPath, sidecarPath, m
   // Best-effort sidecar patch — a missing sidecar is fine, the clean still
   // happened. Merge so other fields aren't dropped.
   if (sidecarPath) {
-    const raw = await tryReadFile(sidecarPath);
+    const raw = await sidecarReadP;
     const patched = {
       ...safeJSONParse(raw, {}),
       autoCleaned: true,
