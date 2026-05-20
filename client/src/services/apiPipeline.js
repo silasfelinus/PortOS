@@ -406,24 +406,16 @@ export const pipelineAutoRunSseUrl = (issueId) =>
 export const listPipelineTtsVoices = () => request('/pipeline/tts/voices', { silent: true });
 
 // Audition a voice — returns the rendered WAV as an ArrayBuffer so callers
-// can feed it to `playWav` from voiceClient. Uses raw fetch because the
-// shared `request()` helper auto-parses JSON. Optional `text` overrides the
-// server-side default preview line.
-export const previewPipelineTtsVoice = async (voiceId, text) => {
-  const res = await fetch('/api/pipeline/tts/preview', {
+// can feed it to `playWav` from voiceClient. Optional `text` overrides the
+// server-side default preview line. Silent — VoicePicker owns its own
+// inline error toast.
+export const previewPipelineTtsVoice = (voiceId, text) =>
+  request('/pipeline/tts/preview', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(text ? { voiceId, text } : { voiceId }),
+    responseType: 'arraybuffer',
+    silent: true,
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-    const e = new Error(err.error || 'Preview failed');
-    e.code = err.code;
-    e.status = res.status;
-    throw e;
-  }
-  return res.arrayBuffer();
-};
 
 // Walks storyboards.scenes[].dialogue and populates stages.audio.lines[].
 // Pass { force: true } to replace existing lines wholesale (server defaults
