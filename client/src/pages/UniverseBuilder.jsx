@@ -8,7 +8,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import {
   Plus, Trash2, Sparkles, Wand2, Loader2, Save, FolderOpen,
   Edit3, X, MessageSquarePlus, Play, Lock, Unlock,
@@ -28,6 +28,7 @@ import {
 import useClickOutside from '../hooks/useClickOutside';
 import { useLocalStoragePersisted } from '../hooks/useLocalStorageBool';
 import useUniverseAction from '../hooks/useUniverseAction';
+import { useUniverseNav } from '../hooks/useUniverseNav';
 import InfluenceChipsInput from '../components/universeBuilder/InfluenceChipsInput';
 import ImageGenSettingsForm from '../components/imageGen/ImageGenSettingsForm';
 import { RUNNER_FAMILIES } from '../lib/runnerFamilies';
@@ -468,19 +469,14 @@ export default function UniverseBuilder() {
   // and /media/universe-builder(/:universeId) — strip any trailing /<id> off the
   // current pathname to derive the base for navigation back to the list.
   const params = useParams();
-  const navigate = useNavigate();
   const location = useLocation();
   const selectedId = params.universeId || null;
-  const basePath = location.pathname.replace(/\/universe-builder(?:\/.*)?$/, '/universe-builder');
-  // Preserve the `?tab=&bucket=` (and `?series=`) query string so the
-  // auto-save → create path doesn't snap the user back to the Bible tab
+  // `goToWorld` preserves `location.search` (e.g. `?tab=&bucket=&series=`) so
+  // the auto-save → create path doesn't snap the user back to the Bible tab
   // after they triggered Generate From Idea from inside Cast/Places/Objects.
   // The stale-bucket effect already strips any bucket that no longer exists
   // under the new universe's categories.
-  const goToWorld = (id) => navigate({
-    pathname: id ? `${basePath}/${encodeURIComponent(id)}` : basePath,
-    search: location.search,
-  });
+  const goToWorld = useUniverseNav();
 
   const [universes, setWorlds] = useState([]);
   const [loading, setLoading] = useState(true);
