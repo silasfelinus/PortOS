@@ -3,9 +3,13 @@
  * Provisions a TLS cert for PortOS at data/certs/{cert,key}.pem.
  *
  * Prefers a real Let's Encrypt cert via `tailscale cert` (browsers trust it,
- * no click-through). Falls back to a self-signed cert covering localhost +
- * every non-internal IPv4 on the host (including the Tailscale IP) when
- * Tailscale HTTPS isn't available.
+ * no click-through). Will only generate a self-signed cert when the user opts
+ * in via `--self-signed` OR a self-signed cert is already present on disk
+ * (renewal/IP-rotation path). On a fresh install without Tailscale and without
+ * `--self-signed`, this script exits cleanly and PortOS keeps serving plain
+ * HTTP on :5555 — silently flipping a vanilla install to HTTPS with a
+ * self-signed cert breaks the documented `http://localhost:5555` URL and
+ * forces a click-through warning, which is a worse first-run UX than HTTP.
  *
  * Why we prefer Tailscale: Let's Encrypt does not issue certs for bare IPs.
  * Tailscale owns `ts.net` and provisions LE certs against your tailnet's
@@ -28,6 +32,7 @@ import { networkInterfaces } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { findTailscale } from '../server/lib/tailscale.js';
+import { hasTailscaleCert } from '../lib/tailscale-https.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -178,6 +183,23 @@ function trySelfSigned() {
   }
 }
 
+// Implicit fallback gate. We only auto-generate a self-signed cert when the
+// user has previously opted in (existing self-signed cert on disk — we want
+// to keep it fresh on IP changes). Otherwise we exit without provisioning so
+// `npm start`'s mandatory `setup-cert.js` step doesn't silently flip a vanilla
+// install from HTTP→HTTPS-self-signed and break the documented :5555 URL.
+function maybeFallbackSelfSigned() {
+  const meta = readMeta();
+  if (meta?.mode === 'self-signed' && hasTailscaleCert(CERT_DIR)) {
+    trySelfSigned();
+    return;
+  }
+  console.log(`ℹ️  Staying HTTP-only on :5555 (no Tailscale cert provisioned).`);
+  console.log(`   To enable HTTPS (required for in-browser mic), choose one:`);
+  console.log(`     • Install Tailscale + enable HTTPS in the tailnet admin, then \`npm run setup:cert\``);
+  console.log(`     • Generate a self-signed cert (browser warning): \`npm run setup:cert -- --self-signed\``);
+}
+
 if (SELF_SIGNED_ONLY) {
   trySelfSigned();
   process.exit(0);
@@ -185,8 +207,8 @@ if (SELF_SIGNED_ONLY) {
 
 const bin = findTailscale();
 if (!bin) {
-  console.log(`ℹ️  Tailscale CLI not found — falling back to self-signed cert.`);
-  trySelfSigned();
+  console.log(`ℹ️  Tailscale CLI not found.`);
+  maybeFallbackSelfSigned();
   process.exit(0);
 }
 
@@ -194,15 +216,15 @@ let status;
 try {
   status = tailscaleStatus(bin);
 } catch (err) {
-  console.log(`ℹ️  tailscale status failed (${err.message}) — falling back to self-signed cert.`);
-  trySelfSigned();
+  console.log(`ℹ️  tailscale status failed (${err.message}).`);
+  maybeFallbackSelfSigned();
   process.exit(0);
 }
 
 const hostname = tailscaleHostname(status);
 if (!hostname || status.BackendState !== 'Running') {
-  console.log(`ℹ️  Tailscale not running or no DNSName — falling back to self-signed cert.`);
-  trySelfSigned();
+  console.log(`ℹ️  Tailscale not running or no DNSName.`);
+  maybeFallbackSelfSigned();
   process.exit(0);
 }
 
@@ -217,15 +239,15 @@ console.log(`🔒 Fetching Let's Encrypt cert for ${hostname} via Tailscale...`)
 try {
   runTailscaleCert(bin, hostname);
 } catch (err) {
-  console.log(`⚠️  tailscale cert failed (${err.message}) — falling back to self-signed cert.`);
+  console.log(`⚠️  tailscale cert failed (${err.message}).`);
   console.log(`   (Common cause: HTTPS Certificates not enabled in the tailnet admin console at login.tailscale.com/admin/dns)`);
-  trySelfSigned();
+  maybeFallbackSelfSigned();
   process.exit(0);
 }
 
 if (!existsSync(CERT_PATH) || !existsSync(KEY_PATH)) {
-  console.log(`⚠️  tailscale cert returned success but files missing — falling back to self-signed.`);
-  trySelfSigned();
+  console.log(`⚠️  tailscale cert returned success but files missing.`);
+  maybeFallbackSelfSigned();
   process.exit(0);
 }
 

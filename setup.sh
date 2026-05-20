@@ -93,6 +93,22 @@ if [ -t 0 ]; then
     done
 fi
 
+# Print the URL the user should open. The server flips between HTTP and HTTPS
+# on :5555 based on whether data/certs/{cert,key}.pem exist (see
+# lib/tailscale-https.js). When HTTPS is active, :5555 speaks TLS only — plain
+# http://localhost:5555 hits a TLS mismatch — and a loopback HTTP mirror spawns
+# on :5553 (or $PORTOS_HTTP_PORT) for cert-free local access.
+print_access_url() {
+    if [ -f data/certs/cert.pem ] && [ -f data/certs/key.pem ]; then
+        local mirror_port="${PORTOS_HTTP_PORT:-5553}"
+        echo "Access at: http://localhost:${mirror_port}  (loopback HTTP mirror — no cert warning)"
+        echo "       or: https://<machine>.<tailnet>.ts.net:5555  (trusted via Tailscale)"
+        echo "       or: https://localhost:5555  (browser will warn on self-signed cert)"
+    else
+        echo "Access at: http://localhost:5555"
+    fi
+}
+
 if [ "$start_now" = "1" ]; then
     echo ""
     echo "Starting PortOS..."
@@ -104,7 +120,7 @@ if [ "$start_now" = "1" ]; then
     echo "  PortOS is running"
     echo "==================================="
     echo ""
-    echo "Access at: http://localhost:5555"
+    print_access_url
     echo "Logs:      npm run pm2:logs"
     echo "Stop:      npm run pm2:stop"
     echo ""
@@ -119,6 +135,6 @@ else
     echo "  Stop:         npm run pm2:stop"
     echo "  Logs:         npm run pm2:logs"
     echo ""
-    echo "Access at: http://localhost:5555"
+    print_access_url
     echo ""
 fi
