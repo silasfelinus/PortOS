@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Loader2, ImagePlus, WandSparkles, Lock, Unlock, Shirt, Plus, Trash2, ChevronDown, ChevronRight, Star, Square, BookOpen } from 'lucide-react';
 import useMediaJobProgress from '../../hooks/useMediaJobProgress';
 import useRowDraft from '../../hooks/useRowDraft';
+import useFieldDraft from '../../hooks/useFieldDraft';
 import MediaJobThumb from './MediaJobThumb';
 import EntryCard from '../universe/EntryCard';
 import EntryThumbSlot from '../universe/EntryThumbSlot';
@@ -50,6 +51,39 @@ function ChipPicker({ label, value, options, onChange }) {
         );
       })}
     </div>
+  );
+}
+
+// Inline editable description for the canon card's primary descriptor field.
+// Read-only `<p>` when locked or no PATCH channel; buffered textarea otherwise
+// (commits on blur via `useFieldDraft`, mirroring the WardrobeRow pattern).
+// The bound value falls back to the legacy field (`description` on characters,
+// `significance` on objects) so pre-migration entries pre-fill on first edit
+// and migrate to the canonical field on save.
+function DescriptionField({ entry, descField, fallbackField, max, editable, onCommit, placeholder }) {
+  const stored = entry[descField];
+  const fallback = fallbackField ? entry[fallbackField] : null;
+  const seed = (typeof stored === 'string' && stored)
+    || (typeof fallback === 'string' ? fallback : '')
+    || '';
+  const draft = useFieldDraft(seed, onCommit);
+  if (!editable) {
+    return (
+      <p className="text-xs text-gray-400 mt-1 line-clamp-3 whitespace-pre-wrap">
+        {seed || <em className="text-gray-600">No description yet.</em>}
+      </p>
+    );
+  }
+  return (
+    <textarea
+      value={draft.value}
+      onChange={draft.onChange}
+      onBlur={draft.onBlur}
+      placeholder={placeholder}
+      rows={3}
+      maxLength={max}
+      className="w-full mt-1 px-2 py-1 text-xs bg-port-bg border border-port-border rounded text-gray-200 whitespace-pre-wrap"
+    />
   );
 }
 
@@ -322,11 +356,6 @@ export default function CanonCard({
           aka {entry.aliases.join(', ')}
         </span>
       ) : null}
-      {locked ? (
-        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-port-accent/15 text-port-accent text-[9px] uppercase tracking-wider">
-          <Lock size={9} /> Locked
-        </span>
-      ) : null}
       {entry.sourceSeriesId ? (
         <SourceSeriesChip
           sourceSeriesId={entry.sourceSeriesId}
@@ -347,9 +376,15 @@ export default function CanonCard({
           ))}
         </div>
       ) : null}
-      <p className="text-xs text-gray-400 mt-1 line-clamp-3 whitespace-pre-wrap">
-        {description || <em className="text-gray-600">No description yet.</em>}
-      </p>
+      <DescriptionField
+        entry={entry}
+        descField={kind.descField || 'description'}
+        fallbackField={kind.descFieldFallback || null}
+        max={kind.descFieldMax}
+        editable={!!onPatchEntry && !locked && !!kind.descField}
+        onCommit={(v) => onPatchEntry?.(entry.id, { [kind.descField]: v })}
+        placeholder={`Describe ${entry.name} (image-gen-ready prose)`}
+      />
       {kind.key === 'places' && onPatchEntry && !locked ? (
         <div className="flex flex-wrap items-center gap-2 mt-2">
           <ChipPicker

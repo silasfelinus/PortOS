@@ -73,6 +73,87 @@ describe('CanonCard — "from series" provenance chip', () => {
   });
 });
 
+describe('CanonCard — inline description editor', () => {
+  const editableKind = {
+    key: 'characters',
+    label: 'Characters',
+    descFor: (e) => e.physicalDescription || e.description || '',
+    descField: 'physicalDescription',
+    descFieldFallback: 'description',
+    descFieldMax: 2000,
+  };
+
+  it('stays read-only when locked even with onPatchEntry wired', () => {
+    const onPatchEntry = vi.fn();
+    render(
+      <CanonCard
+        kind={editableKind}
+        entry={{ ...baseEntry, physicalDescription: 'Tall.', locked: true }}
+        onRender={() => {}}
+        onPatchEntry={onPatchEntry}
+      />,
+    );
+    expect(screen.getByText('Tall.')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/Describe Lyra/)).not.toBeInTheDocument();
+  });
+
+  it('renders a buffered textarea when unlocked + onPatchEntry + kind.descField is wired', () => {
+    const onPatchEntry = vi.fn();
+    render(
+      <CanonCard
+        kind={editableKind}
+        entry={{ ...baseEntry, physicalDescription: 'Tall.' }}
+        onRender={() => {}}
+        onPatchEntry={onPatchEntry}
+      />,
+    );
+    const textarea = screen.getByPlaceholderText(/Describe Lyra/);
+    expect(textarea).toHaveValue('Tall.');
+    fireEvent.change(textarea, { target: { value: 'Tall, sharp-eyed cartographer.' } });
+    // Buffered — no PATCH until blur.
+    expect(onPatchEntry).not.toHaveBeenCalled();
+    fireEvent.blur(textarea);
+    expect(onPatchEntry).toHaveBeenCalledWith('ent-1', { physicalDescription: 'Tall, sharp-eyed cartographer.' });
+  });
+
+  it('pre-fills from the legacy fallback field and migrates to the canonical field on save', () => {
+    const onPatchEntry = vi.fn();
+    render(
+      <CanonCard
+        kind={editableKind}
+        // Legacy entry: only `description` (the fallback), no `physicalDescription`.
+        entry={{ ...baseEntry, description: 'Cartographer-spy.' }}
+        onRender={() => {}}
+        onPatchEntry={onPatchEntry}
+      />,
+    );
+    const textarea = screen.getByPlaceholderText(/Describe Lyra/);
+    expect(textarea).toHaveValue('Cartographer-spy.');
+    fireEvent.change(textarea, { target: { value: 'Cartographer-spy with a forged passport.' } });
+    fireEvent.blur(textarea);
+    // Migrates onto the canonical field — descFor will now prefer it.
+    expect(onPatchEntry).toHaveBeenCalledWith('ent-1', { physicalDescription: 'Cartographer-spy with a forged passport.' });
+  });
+
+  it('falls back to read-only when kind.descField is absent (NounsStage / series view)', () => {
+    const seriesKind = {
+      key: 'characters', label: 'Characters',
+      descFor: (e) => e.description || '',
+      // No descField — series view stays read-only on canon descriptions.
+    };
+    render(
+      <CanonCard
+        kind={seriesKind}
+        entry={baseEntry}
+        onRender={() => {}}
+        onPatchEntry={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Cartographer-spy.')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/Describe Lyra/)).not.toBeInTheDocument();
+  });
+});
+
 describe('CanonCard — wardrobe pending-row promotion', () => {
   const renderEditable = (onPatchEntry) => render(
     <CanonCard

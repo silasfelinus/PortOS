@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
-  Library, Loader2, Users, MapPin, Package, Wand2, Filter, Lock, Unlock,
+  Library, Loader2, Users, MapPin, Package, Wand2, Filter, Lock, Unlock, ImagePlus,
 } from 'lucide-react';
 import toast from '../ui/Toast';
 import {
@@ -44,18 +44,26 @@ const capImageRefs = (refs) => (
     : refs
 );
 
+// `descField` is the writable field bound to the inline description editor in
+// `CanonCard`. `descFor` (used for the render prompt + the read-only fallback
+// view) prefers the primary then the legacy/sibling field — so for characters
+// the editor writes `physicalDescription` while `descFor` still surfaces any
+// pre-migration `description` value until the user re-saves.
 const KINDS = [
   {
     key: 'characters', apiKind: 'character', label: 'Characters', singular: 'character', icon: Users,
     descFor: (c) => descriptorForCanonEntry('characters', c),
+    descField: 'physicalDescription', descFieldFallback: 'description', descFieldMax: BIBLE_LIMITS.PHYSICAL_DESCRIPTION_MAX,
   },
   {
     key: 'places', apiKind: 'place', label: 'Places', singular: 'place', icon: MapPin,
     descFor: (p) => descriptorForCanonEntry('places', p),
+    descField: 'description', descFieldMax: BIBLE_LIMITS.PLACE_DESCRIPTION_MAX,
   },
   {
     key: 'objects', apiKind: 'object', label: 'Objects', singular: 'object', icon: Package,
     descFor: (o) => descriptorForCanonEntry('objects', o),
+    descField: 'description', descFieldFallback: 'significance', descFieldMax: BIBLE_LIMITS.OBJECT_DESCRIPTION_MAX,
   },
 ];
 
@@ -361,6 +369,36 @@ export default function UniverseCanonSection({
     toast.success(`Rendering reference for ${entry.name}`);
   };
 
+  // Render All — fires `handleRenderRef` for every entry in the kind that
+  // (a) has a non-blank descFor() prompt and (b) doesn't already carry an
+  // image ref. Already-rendered entries are intentionally skipped so the
+  // button is the one-shot "fill in the holes" affordance; users can still
+  // re-render an individual entry from its row.
+  // Parallel kickoff is safe — `renderingJobs[entry.id]` is keyed per entry
+  // and the queue handler clears each independently on completion.
+  const [renderAllKindKey, setRenderAllKindKey] = useState(null);
+  const handleRenderAll = async (kind) => {
+    const entries = Array.isArray(universe?.[kind.key]) ? universe[kind.key] : [];
+    const candidates = entries.filter((e) =>
+      kind.descFor(e).trim()
+      && !(Array.isArray(e.imageRefs) && e.imageRefs.length > 0)
+    );
+    if (candidates.length === 0) {
+      toast.error(`No ${kind.label.toLowerCase()} need a reference render`);
+      return;
+    }
+    setRenderAllKindKey(kind.key);
+    try {
+      // Sequential await isn't necessary for correctness, but it keeps the
+      // first toast from racing the spinner-state writes for many entries
+      // at once. `generateImage` returns as soon as the job is queued.
+      await Promise.all(candidates.map((entry) => handleRenderRef(kind, entry)));
+      toast.success(`Queued ${candidates.length} reference render${candidates.length === 1 ? '' : 's'}`);
+    } finally {
+      if (mountedRef.current) setRenderAllKindKey(null);
+    }
+  };
+
   const handleRenderCleanPlate = async (entry) => {
     // Match CanonCard's button-enable predicate (descFor includes palette +
     // recurringDetails for places) — composeCleanPlatePrompt builds a valid
@@ -636,6 +674,14 @@ export default function UniverseCanonSection({
           bulkLocking={bulkLockingKindKey === kind.key}
           fullList={Array.isArray(universe[kind.key]) ? universe[kind.key] : []}
           externalPendingByEntryId={externalPendingByEntryId}
+          // Single-kind view (`?kind=places`, sidebar deep-links) — the
+          // outer canon section already supplies the h2 + description + card
+          // chrome, so KindSection drops its own bordered wrapper + duplicate
+          // header. Multi-kind view keeps the chrome so Characters / Places /
+          // Objects stay visually separated.
+          compact={!!kindFilter}
+          onRenderAll={() => handleRenderAll(kind)}
+          renderingAll={renderAllKindKey === kind.key}
         />
       ))}
 
@@ -643,7 +689,7 @@ export default function UniverseCanonSection({
   );
 }
 
-function KindSection({ kind, universeId, all, totalCount, filtered, usage, renderingJobs, onRender, onJobCompleted, onJobFailed, onPreview, onRefine, refiningId, onExpandCharacter, expandingId, onSheetCompleted, onSheetDeleted, onToggleLock, togglingLockId, onPatchEntry, onRenderCleanPlate, seriesNameMap, onBulkLock, bulkLocking, fullList, externalPendingByEntryId = null }) {
+function KindSection({ kind, universeId, all, totalCount, filtered, usage, renderingJobs, onRender, onJobCompleted, onJobFailed, onPreview, onRefine, refiningId, onExpandCharacter, expandingId, onSheetCompleted, onSheetDeleted, onToggleLock, togglingLockId, onPatchEntry, onRenderCleanPlate, seriesNameMap, onBulkLock, bulkLocking, fullList, externalPendingByEntryId = null, compact = false, onRenderAll = null, renderingAll = false }) {
   // Universe-only character wiring — `null` for non-character kinds so
   // CanonCard's gate stays `kind === 'characters' && characterExtensions`.
   // Memoized so the BASE object is stable across re-renders that aren't
@@ -667,6 +713,119 @@ function KindSection({ kind, universeId, all, totalCount, filtered, usage, rende
   // so the next click locks the remaining holdouts.
   const allLocked = fullList.length > 0 && lockedCount === fullList.length;
   const bulkDisabled = !onBulkLock || bulkLocking || fullList.length === 0;
+
+  // Render All — disabled when every entry already has a ref image or no entry
+  // carries a renderable description. Mirrors the per-entry render button's
+  // own enable predicate, just folded over the kind's full list.
+  const renderableCount = fullList.filter((e) =>
+    kind.descFor(e).trim()
+    && !(Array.isArray(e.imageRefs) && e.imageRefs.length > 0)
+  ).length;
+  const renderAllDisabled = !onRenderAll || renderingAll || renderableCount === 0;
+
+  const controls = (
+    <>
+      {onRenderAll ? (
+        <button
+          type="button"
+          onClick={onRenderAll}
+          disabled={renderAllDisabled}
+          title={renderableCount === 0
+            ? `Every ${kind.singular} already has a reference image`
+            : `Queue reference renders for ${renderableCount} ${renderableCount === 1 ? kind.singular : kind.label.toLowerCase()} without an image yet`}
+          aria-label={`Render all ${kind.label}`}
+          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-gray-400 hover:text-port-accent disabled:opacity-30 disabled:cursor-not-allowed border border-port-border hover:border-port-accent/50"
+        >
+          {renderingAll ? <Loader2 size={11} className="animate-spin" /> : <ImagePlus size={11} />}
+          Render all{renderableCount > 0 ? ` (${renderableCount})` : ''}
+        </button>
+      ) : null}
+      {fullList.length > 0 && onBulkLock ? (
+        // Single toggle button — mirrors the per-item lock-toggle visual.
+        // Lock icon when every entry is already locked (click unlocks all);
+        // Unlock icon for the all-unlocked + mixed cases (click locks all)
+        // so "the next click locks the holdouts" is always the action.
+        <button
+          type="button"
+          onClick={() => onBulkLock(!allLocked)}
+          disabled={bulkDisabled}
+          title={allLocked
+            ? `Unlock all ${kind.label.toLowerCase()} — AI refine / differentiate may overwrite them`
+            : `Lock all ${kind.label.toLowerCase()} — AI refine / differentiate will skip them`}
+          aria-label={allLocked ? `Unlock all ${kind.label}` : `Lock all ${kind.label}`}
+          aria-pressed={allLocked}
+          className={`p-1 rounded disabled:opacity-30 disabled:cursor-not-allowed ${
+            allLocked
+              ? 'text-port-accent hover:bg-port-accent/20'
+              : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          {bulkLocking
+            ? <Loader2 size={14} className="animate-spin" />
+            : allLocked ? <Lock size={14} /> : <Unlock size={14} />}
+        </button>
+      ) : null}
+    </>
+  );
+
+  const list = all.length === 0 ? (
+    filtered && totalCount > 0
+      ? <p className="text-xs text-gray-500 italic">No {kind.label.toLowerCase()} in the selected series. {totalCount} total in this universe — clear the filter to see them all.</p>
+      : <p className="text-xs text-gray-500 italic">No {kind.label.toLowerCase()} yet. Use <em>Extract from prose</em> above to populate this list from an issue.</p>
+  ) : (
+    <ul className="space-y-2">
+      {all.map((entry) => (
+        <CanonCard
+          key={entry.id || entry.name}
+          kind={kind}
+          entry={entry}
+          // Merge the section-local pending map (one-off renders) with
+          // the universe-page-level map (batch `/render` jobs). The
+          // section's own state wins because its completion handler is
+          // the one that does the optimistic imageRefs[] append for
+          // canon entries (`handleRefCompleted`); the external map is
+          // a presentation-only fallback so the spinner shows for
+          // batch-queued canon jobs too.
+          inFlightJobId={renderingJobs[entry.id] || externalPendingByEntryId?.[entry.id] || null}
+          onRender={() => onRender(entry)}
+          onJobCompleted={onJobCompleted}
+          onJobFailed={onJobFailed}
+          onPreview={onPreview}
+          onRefine={onRefine}
+          refining={refiningId === entry.id}
+          refineDisabled={!!refiningId && refiningId !== entry.id}
+          usage={usage?.[entry.id] || null}
+          onToggleLock={onToggleLock}
+          togglingLock={togglingLockId === entry.id}
+          onPatchEntry={onPatchEntry}
+          onRenderCleanPlate={onRenderCleanPlate}
+          seriesNameMap={seriesNameMap}
+          characterExtensions={characterExtensions
+            ? { ...characterExtensions, expanding: expandingId === entry.id }
+            : null}
+        />
+      ))}
+    </ul>
+  );
+
+  // Compact mode: the outer canon section already supplies the h2 + bordered
+  // card chrome, so KindSection drops its own wrapper to avoid double-nesting.
+  // The duplicate icon + label header is hidden too — only the controls strip
+  // (count, Render all, bulk lock) stays as a slim toolbar above the list.
+  if (compact) {
+    return (
+      <div>
+        <div className="flex items-center justify-end gap-1.5 mb-2">
+          <span className="text-[10px] text-gray-500 mr-auto">
+            {filtered ? `${all.length} / ${totalCount}` : all.length} {all.length === 1 ? kind.singular : kind.label.toLowerCase()}
+          </span>
+          {controls}
+        </div>
+        {list}
+      </div>
+    );
+  }
+
   return (
     <section className="rounded border border-port-border bg-port-bg/60">
       <div className="flex items-center gap-2 px-3 py-2 border-b border-port-border">
@@ -675,73 +834,11 @@ function KindSection({ kind, universeId, all, totalCount, filtered, usage, rende
         <span className="text-[10px] text-gray-500">
           {filtered ? `${all.length} / ${totalCount}` : all.length}
         </span>
-        {fullList.length > 0 && onBulkLock ? (
-          // Single toggle button — mirrors the per-item lock-toggle visual.
-          // Lock icon when every entry is already locked (click unlocks all);
-          // Unlock icon for the all-unlocked + mixed cases (click locks all)
-          // so "the next click locks the holdouts" is always the action.
-          <button
-            type="button"
-            onClick={() => onBulkLock(!allLocked)}
-            disabled={bulkDisabled}
-            title={allLocked
-              ? `Unlock all ${kind.label.toLowerCase()} — AI refine / differentiate may overwrite them`
-              : `Lock all ${kind.label.toLowerCase()} — AI refine / differentiate will skip them`}
-            aria-label={allLocked ? `Unlock all ${kind.label}` : `Lock all ${kind.label}`}
-            aria-pressed={allLocked}
-            className={`ml-auto p-1 rounded disabled:opacity-30 disabled:cursor-not-allowed ${
-              allLocked
-                ? 'text-port-accent hover:bg-port-accent/20'
-                : 'text-gray-500 hover:text-gray-300'
-            }`}
-          >
-            {bulkLocking
-              ? <Loader2 size={14} className="animate-spin" />
-              : allLocked ? <Lock size={14} /> : <Unlock size={14} />}
-          </button>
-        ) : null}
+        <div className="ml-auto flex items-center gap-1.5">
+          {controls}
+        </div>
       </div>
-      <div className="p-3">
-        {all.length === 0 ? (
-          filtered && totalCount > 0
-            ? <p className="text-xs text-gray-500 italic">No {kind.label.toLowerCase()} in the selected series. {totalCount} total in this universe — clear the filter to see them all.</p>
-            : <p className="text-xs text-gray-500 italic">No {kind.label.toLowerCase()} yet. Use <em>Extract from prose</em> above to populate this list from an issue.</p>
-        ) : (
-          <ul className="space-y-2">
-            {all.map((entry) => (
-              <CanonCard
-                key={entry.id || entry.name}
-                kind={kind}
-                entry={entry}
-                // Merge the section-local pending map (one-off renders) with
-                // the universe-page-level map (batch `/render` jobs). The
-                // section's own state wins because its completion handler is
-                // the one that does the optimistic imageRefs[] append for
-                // canon entries (`handleRefCompleted`); the external map is
-                // a presentation-only fallback so the spinner shows for
-                // batch-queued canon jobs too.
-                inFlightJobId={renderingJobs[entry.id] || externalPendingByEntryId?.[entry.id] || null}
-                onRender={() => onRender(entry)}
-                onJobCompleted={onJobCompleted}
-                onJobFailed={onJobFailed}
-                onPreview={onPreview}
-                onRefine={onRefine}
-                refining={refiningId === entry.id}
-                refineDisabled={!!refiningId && refiningId !== entry.id}
-                usage={usage?.[entry.id] || null}
-                onToggleLock={onToggleLock}
-                togglingLock={togglingLockId === entry.id}
-                onPatchEntry={onPatchEntry}
-                onRenderCleanPlate={onRenderCleanPlate}
-                seriesNameMap={seriesNameMap}
-                characterExtensions={characterExtensions
-                  ? { ...characterExtensions, expanding: expandingId === entry.id }
-                  : null}
-              />
-            ))}
-          </ul>
-        )}
-      </div>
+      <div className="p-3">{list}</div>
     </section>
   );
 }
