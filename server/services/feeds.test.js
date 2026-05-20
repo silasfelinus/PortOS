@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -29,6 +29,10 @@ beforeAll(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
+afterAll(() => {
+  vi.restoreAllMocks();
+});
+
 beforeEach(async () => {
   tmpRoot = mkdtempSync(join(tmpdir(), 'portos-feeds-test-'));
   vi.resetModules();
@@ -38,6 +42,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
@@ -72,6 +77,7 @@ const ATOM_FIXTURE = `<?xml version="1.0"?>
 <title>Atom Source</title>
 <entry>
   <title>Entry One</title>
+  <link rel="self" href="https://example.com/atom/1.self"/>
   <link rel="alternate" href="https://example.com/atom/1"/>
   <summary>summary one</summary>
   <updated>2026-05-18T12:00:00Z</updated>
@@ -174,20 +180,24 @@ describe('addFeed', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('follows a single safe redirect', async () => {
+  it('follows a single safe redirect to the new URL', async () => {
     fetchMock
       .mockResolvedValueOnce(makeResponse({ status: 302, headers: { location: 'https://example.com/final.xml' } }))
       .mockResolvedValueOnce(makeResponse({ body: RSS_FIXTURE }));
     const result = await feeds.addFeed('https://example.com/redirect');
     expect(result.error).toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toBe('https://example.com/final.xml');
+    expect(fetchMock.mock.calls[1][1].redirect).toBe('error');
   });
 
-  it('rejects redirects to private IPs', async () => {
+  it('rejects redirects to private IPs without making the second fetch', async () => {
     dnsResolveMock.mockImplementation(async (host) => host === 'evil.example.com' ? ['10.0.0.1'] : ['93.184.216.34']);
     fetchMock.mockResolvedValueOnce(makeResponse({ status: 302, headers: { location: 'https://evil.example.com/x' } }));
     const result = await feeds.addFeed('https://example.com/redirect');
     expect(result).toEqual({ error: FETCH_ERROR });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(dnsResolveMock).toHaveBeenCalledWith('evil.example.com');
   });
 
   it('falls back to the URL hostname when the feed has no <title>', async () => {
@@ -232,7 +242,6 @@ describe('refreshFeed', () => {
     expect(result.feed.itemCount).toBe(3);
     expect(result.feed.lastFetched).not.toBe(before);
     expect((await feeds.getItems({ feedId: feed.id })).map(i => i.title)).toContain('Third');
-    vi.useRealTimers();
   });
 
   it('returns an error when the feed id is unknown', async () => {

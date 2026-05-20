@@ -42,6 +42,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -130,15 +131,19 @@ describe('createShellSession', () => {
 
   it('buffers output and trims oldest chunks past 50KB', () => {
     const id = shell.createShellSession(makeSocket());
-    const big = 'x'.repeat(20 * 1024);
-    ptyInstances[0].emitData(big);
-    ptyInstances[0].emitData(big);
-    ptyInstances[0].emitData(big);
+    const oldest = 'A'.repeat(20 * 1024);
+    const middle = 'B'.repeat(20 * 1024);
+    const newest = 'C'.repeat(20 * 1024);
+    ptyInstances[0].emitData(oldest);
+    ptyInstances[0].emitData(middle);
+    ptyInstances[0].emitData(newest);
 
     const session = shell.getSession(id);
     expect(session.bufferSize()).toBeLessThanOrEqual(50 * 1024);
     const result = shell.attachSession(id, makeSocket('sock-B'));
-    expect(result.bufferedOutput.length).toBeLessThanOrEqual(50 * 1024);
+    expect(result.bufferedOutput).not.toContain('A');
+    expect(result.bufferedOutput).toContain(middle);
+    expect(result.bufferedOutput).toContain(newest);
   });
 
   it('catches synchronous errors from the onData hook without crashing', async () => {
