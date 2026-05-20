@@ -180,7 +180,7 @@ describe('canonUsage — getUniverseCanonUsage entry rows', () => {
     ]);
   });
 
-  it('skips issues with empty / whitespace-only corpus', async () => {
+  it('counts empty/whitespace-corpus issues toward issueCount but excludes them from entry rows', async () => {
     mockUniverses.set('uni-1', {
       id: 'uni-1',
       characters: [{ id: 'char-1', name: 'Lyra' }],
@@ -204,10 +204,13 @@ describe('canonUsage — getUniverseCanonUsage entry rows', () => {
     ]);
   });
 
-  it('aggregates corpus across prose / idea / comicScript / teleplay stages', async () => {
-    // A character that only appears in dialogue (comicScript / teleplay) or in
-    // the idea blurb must still surface — that's the whole point of the
-    // multi-stage corpus assembly in corpusForIssue().
+  it('aggregates corpus across idea / comicScript / teleplay stages', async () => {
+    // A character that only appears in dialogue (comicScript / teleplay) or
+    // in the idea blurb must still surface — that's the whole point of the
+    // multi-stage corpus assembly in corpusForIssue(). `prose.output` is
+    // covered by the other tests in this describe block; the two remaining
+    // corpus fields (`prose.input`, `idea.input`) aren't yet seeded — see
+    // PLAN.md `[cover-prose-input-idea-input-in-canonusage-corpus]`.
     mockUniverses.set('uni-1', {
       id: 'uni-1',
       characters: [
@@ -229,7 +232,7 @@ describe('canonUsage — getUniverseCanonUsage entry rows', () => {
     expect(Object.keys(usage.characters).sort()).toEqual(['char-idea', 'char-script', 'char-tele']);
   });
 
-  it('omits a kind entirely when the universe has no entries of that kind', async () => {
+  it('returns empty buckets for kinds the universe defines no entries for', async () => {
     mockUniverses.set('uni-1', {
       id: 'uni-1',
       characters: [{ id: 'char-1', name: 'Lyra' }],
