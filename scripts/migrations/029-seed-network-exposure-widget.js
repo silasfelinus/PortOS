@@ -25,23 +25,50 @@ import { readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 
 const WIDGET_ID = 'network-exposure';
+const WIDGET_W = 3;
+const WIDGET_H = 5;
 
 // Mirror of the geometry chosen in `server/services/dashboardLayouts.js`
 // DEFAULT_LAYOUTS. Edits here must match that file or fresh installs +
-// migrated installs will diverge.
-const GRID_INSERTS = {
-  default: { id: WIDGET_ID, x: 9, y: 10, w: 3, h: 5 },
-  ops:     { id: WIDGET_ID, x: 3, y: 5,  w: 3, h: 5 },
+// migrated installs will diverge — when the preferred slot is clear.
+const PREFERRED_SLOTS = {
+  default: { x: 9, y: 10 },
+  ops:     { x: 3, y: 5 },
 };
+
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+function collidesWith(grid, candidate) {
+  for (const item of grid) {
+    if (rectsOverlap(item, candidate)) return true;
+  }
+  return false;
+}
+
+// Place the widget at the preferred (x, y) when free. If a user-rearranged
+// layout already occupies that cell, fall back to appending below every
+// existing item at x=0 so the new widget never overlaps user content. The
+// user can drag it back to the preferred slot via the dashboard's
+// Arrange button.
+function pickGridEntry(grid, layoutId) {
+  const preferred = PREFERRED_SLOTS[layoutId];
+  if (preferred) {
+    const candidate = { id: WIDGET_ID, x: preferred.x, y: preferred.y, w: WIDGET_W, h: WIDGET_H };
+    if (!collidesWith(grid, candidate)) return candidate;
+  }
+  const bottom = grid.reduce((max, it) => Math.max(max, (it.y ?? 0) + (it.h ?? 0)), 0);
+  return { id: WIDGET_ID, x: 0, y: bottom, w: WIDGET_W, h: WIDGET_H };
+}
 
 function applyToLayout(layout) {
   if (!layout || typeof layout !== 'object') return false;
   if (!Array.isArray(layout.widgets)) return false;
   if (layout.widgets.includes(WIDGET_ID)) return false;
   layout.widgets = [...layout.widgets, WIDGET_ID];
-  const gridInsert = GRID_INSERTS[layout.id];
-  if (gridInsert && Array.isArray(layout.grid)) {
-    layout.grid = [...layout.grid, { ...gridInsert }];
+  if (Array.isArray(layout.grid)) {
+    layout.grid = [...layout.grid, pickGridEntry(layout.grid, layout.id)];
   }
   return true;
 }

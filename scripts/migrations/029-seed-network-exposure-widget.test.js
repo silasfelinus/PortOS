@@ -82,6 +82,37 @@ describe('migration 029 — seed network-exposure widget into built-in layouts',
     expect(result.reason).toBe('unreadable');
   });
 
+  it('appends below existing items when the preferred slot is occupied by user rearrangement', async () => {
+    writeJson(layoutsPath, {
+      activeLayoutId: 'default',
+      layouts: [
+        {
+          id: 'default',
+          name: 'Everything',
+          builtIn: true,
+          widgets: ['system-health'],
+          grid: [{ id: 'system-health', x: 9, y: 10, w: 3, h: 5 }],
+        },
+      ],
+    });
+    const result = await migration.up({ rootDir });
+    expect(result.updated).toBe(1);
+    const after = readJson(layoutsPath);
+    const newEntry = after.layouts[0].grid.find((g) => g.id === 'network-exposure');
+    expect(newEntry).toBeDefined();
+    expect(newEntry.y).toBeGreaterThanOrEqual(15);
+    expect(newEntry.x).toBe(0);
+    expect(newEntry.w).toBe(3);
+    expect(newEntry.h).toBe(5);
+    const userHealth = after.layouts[0].grid.find((g) => g.id === 'system-health');
+    const overlaps =
+      newEntry.x < userHealth.x + userHealth.w &&
+      userHealth.x < newEntry.x + newEntry.w &&
+      newEntry.y < userHealth.y + userHealth.h &&
+      userHealth.y < newEntry.y + newEntry.h;
+    expect(overlaps).toBe(false);
+  });
+
   it('skips a built-in layout that was hand-removed (single deleted built-in stays absent)', async () => {
     writeJson(layoutsPath, {
       activeLayoutId: 'default',
