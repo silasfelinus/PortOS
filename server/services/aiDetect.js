@@ -2,8 +2,11 @@ import { readFile, readdir, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, basename } from 'path';
 import { getActiveProvider, getProviderById } from './providers.js';
-import { spawn } from 'child_process';
-import { safeJSONParse, tryReadFile } from '../lib/fileUtils.js';
+import { tryReadFile } from '../lib/fileUtils.js';
+import { extractJson } from '../lib/jsonExtract.js';
+import { runPromptThroughProvider } from '../lib/promptRunner.js';
+
+const DEFAULT_AI_DETECT_TIMEOUT_MS = 60000;
 
 /**
  * Gather project context for AI analysis
@@ -113,97 +116,14 @@ Rules:
 - If the app has both frontend and backend, suggest separate PM2 processes`;
 }
 
-/**
- * Execute AI detection using CLI provider
- */
-async function executeCliDetection(provider, prompt, cwd) {
-  return new Promise((resolve, reject) => {
-    const args = [...(provider.args || []), prompt];
-    let output = '';
-
-    const child = spawn(provider.command, args, {
-      cwd,
-      env: process.env,
-      shell: false,
-      windowsHide: true
-    });
-
-    child.stdout.on('data', (data) => {
-      output += data.toString();
-    });
-
-    child.stderr.on('data', (data) => {
-      output += data.toString();
-    });
-
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve(output);
-      } else {
-        reject(new Error(`CLI exited with code ${code}`));
-      }
-    });
-
-    child.on('error', reject);
-
-    // Timeout after provider timeout or 60s
-    setTimeout(() => {
-      child.kill();
-      reject(new Error('Detection timed out'));
-    }, provider.timeout || 60000);
-  });
-}
-
-/**
- * Execute AI detection using API provider
- */
-async function executeApiDetection(provider, prompt) {
-  const headers = { 'Content-Type': 'application/json' };
-  if (provider.apiKey) {
-    headers['Authorization'] = `Bearer ${provider.apiKey}`;
-  }
-
-  const response = await fetch(`${provider.endpoint}/chat/completions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      model: provider.defaultModel,
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.1
-    }),
-    signal: AbortSignal.timeout(provider.timeout || 60000)
-  });
-
-  if (!response.ok) {
-    throw new Error(`API error: ${response.status}`);
-  }
-
-  const data = await response.json();
-  return data.choices?.[0]?.message?.content || '';
-}
-
-/**
- * Parse AI response to extract JSON
- */
 function parseAiResponse(response) {
-  // Try to extract JSON from response
-  let jsonStr = response.trim();
-
-  // Remove markdown code blocks if present
-  const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (jsonMatch) {
-    jsonStr = jsonMatch[1].trim();
-  }
-
-  // Try to find JSON object
-  const objectMatch = jsonStr.match(/\{[\s\S]*\}/);
-  if (objectMatch) {
-    jsonStr = objectMatch[0];
-  }
-
-  const parsed = safeJSONParse(jsonStr, null, { logError: true, context: 'AI app detection' });
-  if (!parsed) throw new Error('Failed to parse AI detection response');
-  return parsed;
+  // Route through the shared extractor so banner-stripping, trailing-comma
+  // repair, and the `[...]` placeholder elision the rest of PortOS's LLM
+  // callers benefit from also apply here — TUI providers in particular emit
+  // banner text around the JSON payload that the legacy regex would miss.
+  const { value } = extractJson(response);
+  if (!value || typeof value !== 'object') throw new Error('Failed to parse AI detection response');
+  return value;
 }
 
 /**
@@ -237,17 +157,14 @@ export async function detectAppWithAi(dirPath, providerId = null) {
   const context = await gatherProjectContext(dirPath);
   const prompt = buildAnalysisPrompt(context);
 
-  // Execute detection
-  let response;
-  if (provider.type === 'cli') {
-    response = await executeCliDetection(provider, prompt, dirPath)
-      .catch(err => { throw new Error(`CLI detection failed: ${err.message}`); });
-  } else if (provider.type === 'api') {
-    response = await executeApiDetection(provider, prompt)
-      .catch(err => { throw new Error(`API detection failed: ${err.message}`); });
-  } else {
-    return { success: false, error: 'Unknown provider type' };
-  }
+  // cwd: dirPath so any spawned CLI/TUI runs against the analyzed repo, not PortOS's own cwd.
+  const { text: response } = await runPromptThroughProvider({
+    provider,
+    prompt,
+    source: 'ai-app-detect',
+    timeout: provider.timeout || DEFAULT_AI_DETECT_TIMEOUT_MS,
+    cwd: dirPath,
+  });
 
   // Parse response
   const detected = parseAiResponse(response);
