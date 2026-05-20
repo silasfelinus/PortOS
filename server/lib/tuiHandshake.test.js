@@ -155,6 +155,7 @@ describe('tuiHandshake.buildTuiInvocation', () => {
     { form: '--model X', bakedArgs: ['--model', 'baked-in'] },
     { form: '--model=X', bakedArgs: ['--model=baked-in'] },
     { form: '-m X', bakedArgs: ['-m', 'baked-in'] },
+    { form: '-m=X', bakedArgs: ['-m=baked-in'] },
   ])('does NOT append --model when provider.args pins one ($form form)', ({ bakedArgs }) => {
     const provider = { id: 'claude', args: ['-p', '-', ...bakedArgs] };
     const out = buildTuiInvocation(provider, 'caller-model');
