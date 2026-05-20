@@ -19,7 +19,7 @@ import {
 } from '../lib/validation.js';
 import { optionalUploadFields } from '../lib/multipart.js';
 import * as imageGen from '../services/imageGen/index.js';
-import { local, IMAGE_GEN_MODES } from '../services/imageGen/index.js';
+import { local, IMAGE_GEN_MODES, resolveAutoClean } from '../services/imageGen/index.js';
 import { enqueueJob, attachSseClient as attachQueueSseClient, cancelJob, listJobs } from '../services/mediaJobQueue/index.js';
 import { getSettings, saveSettings } from '../services/settings.js';
 import { getHfToken, getHfTokenInfo, HF_TOKEN_REGEX } from '../lib/hfToken.js';
@@ -198,12 +198,9 @@ router.post('/generate', imageGenUploads, asyncHandler(async (req, res) => {
   const mode = data.mode || settings.imageGen?.mode || 'external';
   // Resolve autoClean ONCE at the route layer so all three dispatch paths
   // (synchronous external, codex queue, local queue) see the same value.
-  // Body wins when explicit (the per-render checkbox); otherwise inherit the
-  // saved per-mode setting. Stamp onto `data` so the value flows through
-  // the spread-into-params calls below verbatim.
-  data.autoClean = (typeof data.autoClean === 'boolean')
-    ? data.autoClean
-    : (settings.imageGen?.[mode]?.autoClean === true);
+  // Stamp onto `data` so the value flows through the spread-into-params
+  // calls below verbatim.
+  data.autoClean = resolveAutoClean(data.autoClean, settings, mode);
 
   // Multi-reference is a FLUX.2-only, local-backend-only feature — local.js's
   // buildArgs only emits --reference-images/--reference-strengths inside the

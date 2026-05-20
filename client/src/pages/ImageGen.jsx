@@ -123,6 +123,10 @@ export default function ImageGen() {
   const [hfTokenPresent, setHfTokenPresent] = useState(null);
 
   const [selectedMode, setSelectedMode] = useState(null);
+  // Mirror selectedMode in a ref so callbacks (reloadBackends) can read the
+  // latest value without re-creating themselves on every mode flip.
+  const selectedModeRef = useRef(null);
+  selectedModeRef.current = selectedMode;
   const [availableBackends, setAvailableBackends] = useState([]);
 
   const [prompt, setPrompt] = useState('');
@@ -158,6 +162,10 @@ export default function ImageGen() {
   // payload so all three dispatch paths (external sync, codex queue, local
   // queue) see the same boolean.
   const [autoClean, setAutoClean] = useState(false);
+  // Saved per-mode default — keeps the "(overrides saved default)" hint
+  // reactive to settings reloads. Held as state (not a ref) so when the user
+  // edits a saved default in the Settings drawer and closes it, the hint
+  // re-evaluates even if `autoClean` happens to match the new saved value.
   const [savedAutoCleanByMode, setSavedAutoCleanByMode] = useState({});
 
   const [generating, setGenerating] = useState(false);
@@ -231,32 +239,36 @@ export default function ImageGen() {
   const reloadBackends = useCallback(() => {
     return getSettings().then((s) => {
       const backends = deriveAvailableBackends(s);
-      setAvailableBackends(backends);
-      const saved = s?.imageGen?.mode || IMAGE_GEN_MODE.EXTERNAL;
-      // If the user just disabled the currently-selected backend, fall
-      // through to the first viable one — a just-toggled provider should
-      // Just Work without a page reload.
-      setSelectedMode((prev) => {
-        if (prev && backends.find((b) => b.id === prev)) return prev;
-        if (backends.find((b) => b.id === saved)) return saved;
-        if (backends.length) return backends[0].id;
-        return saved;
-      });
-      setSavedAutoCleanByMode({
+      const savedMap = {
         external: s?.imageGen?.external?.autoClean === true,
         local: s?.imageGen?.local?.autoClean === true,
         codex: s?.imageGen?.codex?.autoClean === true,
-      });
+      };
+      const saved = s?.imageGen?.mode || IMAGE_GEN_MODE.EXTERNAL;
+      // If the user just disabled the currently-selected backend, fall
+      // through to the first viable one — a just-toggled provider should
+      // Just Work without a page reload. Reading `selectedMode` here instead
+      // of inside a setSelectedMode updater keeps the state update pure
+      // (React updaters must not call other setters).
+      const prev = selectedModeRef.current;
+      const next = (prev && backends.find((b) => b.id === prev)) ? prev
+        : backends.find((b) => b.id === saved) ? saved
+        : backends.length ? backends[0].id
+        : saved;
+      setAvailableBackends(backends);
+      setSavedAutoCleanByMode(savedMap);
+      setSelectedMode(next);
+      setAutoClean(savedMap[next] === true);
     }).catch(() => {});
   }, []);
 
-  // Re-seed the autoClean checkbox whenever the effective mode changes (mode
-  // switch OR settings refresh). Without this, a user who flips from external
-  // to local would still see the external autoClean value in the form.
-  useEffect(() => {
-    if (Object.keys(savedAutoCleanByMode).length === 0) return;
-    setAutoClean(savedAutoCleanByMode[effectiveMode] === true);
-  }, [effectiveMode, savedAutoCleanByMode]);
+  // Re-seed the autoClean checkbox when the user manually picks a different
+  // backend chip — without this, switching external→local would leave the
+  // external autoClean value in the form.
+  const handleSelectMode = useCallback((next) => {
+    setSelectedMode(next);
+    setAutoClean(savedAutoCleanByMode[next] === true);
+  }, [savedAutoCleanByMode]);
 
   useEffect(() => {
     listImageModels().then((m) => {
@@ -869,7 +881,7 @@ export default function ImageGen() {
             <BackendChipStrip
               availableBackends={availableBackends}
               value={effectiveMode}
-              onChange={setSelectedMode}
+              onChange={handleSelectMode}
               disabled={statusLoading}
               loadingId={statusLoading ? effectiveMode : null}
               titlePrefix="Use"

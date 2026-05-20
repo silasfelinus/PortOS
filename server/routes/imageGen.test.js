@@ -10,6 +10,11 @@ vi.mock('../services/imageGen/index.js', () => ({
   attachSseClient: vi.fn(() => false),
   cancel: vi.fn(() => false),
   IMAGE_GEN_MODES: ['external', 'local', 'codex'],
+  // Mirror the real precedence so route-level resolution behaves correctly
+  // under test: explicit body bool wins, otherwise fall back to settings.
+  resolveAutoClean: (bodyValue, settings, mode) => (typeof bodyValue === 'boolean'
+    ? bodyValue
+    : settings?.imageGen?.[mode]?.autoClean === true),
   local: {
     listImageModels: vi.fn(() => []),
     listLoraFilenames: vi.fn(async () => []),
