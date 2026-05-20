@@ -12,7 +12,7 @@ _Nothing currently parked — pick the next item from the Backlog._
 
 ### Code quality / dedup (from `/simplify` passes)
 
-- [ ] [unknown-instance-id-sentinel-extract] **Extract the `'unknown'` instanceId sentinel to a named constant.** The literal string `'unknown'` appears at 7+ sites across `server/services/instances.js#getInstanceId` (the default), `server/services/mediaAnnotations.js` (heal check in `readAll`, peer-merge guard, `setAnnotation` precondition), and `server/services/sharing/annotationsSync.js#flushAll` (export-refusal guard). Promote to `export const UNKNOWN_INSTANCE_ID = 'unknown'` in `instances.js` and import where compared, so the contract is greppable and typo-proof. Surfaced by /simplify during `[med-migration-scripts-migrations-014-attribute]`.
+- [ ] [strip-stray-tryreadfile-from-instances-mocks] **[LOW][TESTS]** Three `vi.mock('../instances.js', ...)` factories carry a stray `tryReadFile: vi.fn().mockResolvedValue(null)` property — `server/services/mediaAnnotations.test.js:6`-ish (legacy mock shape), `server/services/sharing/integration.test.js:45`, `server/services/sharing/subscriptions.test.js:26`. `instances.js` does not export `tryReadFile` (it's a `fileUtils.js` export), so the key is a no-op copy-paste artifact. Drop it from the three mock factories. Surfaced by /simplify during `[unknown-instance-id-sentinel-extract]`; deferred because that PR was scoped to the sentinel extraction.
 
 ### v2.1.0 pre-release review residue (deferred from main→release multi-agent review, 2026-05-16)
 
@@ -25,7 +25,6 @@ _Nothing currently parked — pick the next item from the Backlog._
 - [ ] [med-importer-server-routes-importer-test-js-no] **[MED][IMPORTER]** `server/routes/importer.test.js` — no test pins `ERR_PARTIAL_COMMIT_ISSUES → 207` status mapping. Future refactor that drops the entry from `SERVICE_ERROR_STATUS` would 500 on partial commits and trigger pager alerts (the in-code comment's stated regression).
 - [ ] [med-importer-server-services-importer-test-js-no] **[MED][IMPORTER]** `server/services/importer.test.js` — no test exercises `existingCanonBlock` dedupe wiring. A regression that wires `null` would silently degrade second-pass imports. Assert `mockRunStagedLLM.mock.calls[0][1].existingCanonBlock` contains a seeded character name.
 - [ ] [med-canon-server-services-canonusage-js-zero-test] **[MED][CANON]** `server/services/canonUsage.js` — zero test coverage for `getUniverseCanonUsage`. The "Appears-in sort: issueCount desc + alpha tiebreaker" invariant lives at line ~101 with no test. Add a `canonUsage.test.js`.
-- [ ] [promote-unknown-instance-id-constant] **[LOW][SHARING]** Promote `UNKNOWN_INSTANCE_ID` from `server/services/sharing/importer.js:41` to a shared module (likely `server/services/instances.js`) and replace the bare string `'unknown'` literal at the four other sites that compare against it: `server/services/sharing/manifest.js` (multiple), `server/services/sharing/annotationsSync.js` (`flushAll` early-return), `server/services/mediaAnnotations.js` (`mergePeerAnnotations` peer-id guard), and `server/services/sharing/importer.js` (additional `manifest.producedByVersion || 'unknown'` etc.). Surfaced by /simplify during the sharing-merge-hardening bundle; deferred to keep that PR scoped to behavior fixes.
 
 ### Better-audit residue
 

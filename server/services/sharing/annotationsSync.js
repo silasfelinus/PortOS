@@ -13,7 +13,7 @@ import { ensureDir, atomicWrite, readJSONFile } from '../../lib/fileUtils.js';
 import { listBuckets } from './buckets.js';
 import { buildManifest, writeManifest, annotationManifestFilename, readManifest, listManifestFilenames } from './manifest.js';
 import { getProducedByVersion } from './version.js';
-import { getInstanceId } from '../instances.js';
+import { getInstanceId, UNKNOWN_INSTANCE_ID } from '../instances.js';
 import { resolveBucketSourceName } from './annotationIdentity.js';
 import { onLocalAnnotationChange, listLocalAuthorAnnotations } from '../mediaAnnotations.js';
 
@@ -210,7 +210,7 @@ async function flushAll() {
     getInstanceId().catch(() => null),
     listLocalAuthorAnnotations().catch(() => ({})),
   ]);
-  if (!senderInstanceId || senderInstanceId === 'unknown') return;
+  if (!senderInstanceId || senderInstanceId === UNKNOWN_INSTANCE_ID) return;
   const autoMerge = buckets.filter((b) => b.mode === 'auto-merge');
   if (autoMerge.length === 0) return;
   await Promise.all(autoMerge.map(async (bucket) => {
