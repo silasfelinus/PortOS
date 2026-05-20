@@ -7,7 +7,7 @@
  */
 
 import { join } from 'path';
-import { readdir } from 'fs/promises';
+import { readdir, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { ensureDir, atomicWrite, readJSONFile } from '../../lib/fileUtils.js';
 import { listBuckets } from './buckets.js';
@@ -22,30 +22,64 @@ let pendingTimer = null;
 let installed = false;
 
 /**
+ * Cache of manifest-derived asset keys per bucket, invalidated by the
+ * `manifests/` directory's mtime. Every manifest write goes through
+ * `atomicWrite` (temp + rename), and every archive sweep uses `rename`, both
+ * of which bump the directory mtime — so the mtime is the cheapest available
+ * signal that "the set of manifests in this bucket has changed."
+ *
+ * Without the cache, every 2s annotation flush re-reads + re-parses every
+ * manifest in every auto-merge bucket — fan-out is O(buckets × manifests)
+ * per flush. With the cache the steady-state cost drops to one `stat` per
+ * bucket.
+ *
+ * @type {Map<string, { manifestsMtimeMs: number, manifestKeys: Set<string> }>}
+ */
+const manifestKeysCache = new Map();
+/** Sentinel: manifests dir doesn't exist yet. */
+const MANIFESTS_DIR_ABSENT = -1;
+
+/**
  * Set of `${kind}:${filename}` keys for every asset referenced by any manifest
  * in the bucket. v2's content-addressed `assets/blobs/<hash>` paths don't
  * carry filenames, so the manifests are the only source-of-truth for which
  * user-facing filenames the bucket holds; the legacy `assets/{images,videos}/`
  * scan covers v1 buckets that never wrote a manifest's `hash` field.
+ *
+ * The manifests-side scan is cached per (bucket, manifests-dir mtime); the
+ * legacy v1 dir scan is small and runs uncached.
  */
 async function listBucketAssetKeys(bucketPath) {
-  const keys = new Set();
-  const filenames = await listManifestFilenames(bucketPath);
-  await Promise.all(filenames.map(async (filename) => {
-    const m = await readManifest(bucketPath, filename).catch(() => null);
-    for (const ref of m?.assetRefs || []) {
-      if (!ref?.ref || typeof ref.ref !== 'string') continue;
-      const kind = ref.kind === 'video' ? 'video' : 'image';
-      keys.add(`${kind}:${ref.ref}`);
-    }
-    for (const item of m?.collection?.items || []) {
-      if (!item?.ref || typeof item.ref !== 'string') continue;
-      const kind = item.kind === 'video' ? 'video' : 'image';
-      keys.add(`${kind}:${item.ref}`);
-    }
-  }));
-  // Legacy v1 buckets predate manifest-as-authority: fall through to a
-  // direct dir scan so existing buckets still advertise their assets.
+  const manifestsDir = join(bucketPath, 'manifests');
+  const dirStat = await stat(manifestsDir).catch(() => null);
+  const manifestsMtimeMs = dirStat ? dirStat.mtimeMs : MANIFESTS_DIR_ABSENT;
+
+  let manifestKeys;
+  const cached = manifestKeysCache.get(bucketPath);
+  if (cached && cached.manifestsMtimeMs === manifestsMtimeMs) {
+    manifestKeys = cached.manifestKeys;
+  } else {
+    manifestKeys = new Set();
+    const filenames = await listManifestFilenames(bucketPath);
+    await Promise.all(filenames.map(async (filename) => {
+      const m = await readManifest(bucketPath, filename).catch(() => null);
+      for (const ref of m?.assetRefs || []) {
+        if (!ref?.ref || typeof ref.ref !== 'string') continue;
+        const kind = ref.kind === 'video' ? 'video' : 'image';
+        manifestKeys.add(`${kind}:${ref.ref}`);
+      }
+      for (const item of m?.collection?.items || []) {
+        if (!item?.ref || typeof item.ref !== 'string') continue;
+        const kind = item.kind === 'video' ? 'video' : 'image';
+        manifestKeys.add(`${kind}:${item.ref}`);
+      }
+    }));
+    manifestKeysCache.set(bucketPath, { manifestsMtimeMs, manifestKeys });
+  }
+
+  // Copy so callers can't mutate the cached set, then layer on the legacy
+  // v1 dir scan (small; runs every call).
+  const keys = new Set(manifestKeys);
   for (const [subdir, kind] of [['images', 'image'], ['videos', 'video']]) {
     const dir = join(bucketPath, 'assets', subdir);
     if (!existsSync(dir)) continue;
@@ -56,6 +90,11 @@ async function listBucketAssetKeys(bucketPath) {
     }
   }
   return keys;
+}
+
+/** Test hook — reset the per-bucket manifest-keys cache between cases. */
+export function _resetBucketAssetKeysCache() {
+  manifestKeysCache.clear();
 }
 
 export async function exportAnnotationsToBucket(bucket, localAnnotations, senderInstanceId) {
