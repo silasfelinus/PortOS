@@ -12,8 +12,6 @@ _Nothing currently parked — pick the next item from the Backlog._
 
 ### Universe-as-Canon — Phase 2 + extensions
 
-- [ ] [wardroberow-migrate-to-userowdraft] **Migrate `WardrobeRow` to consume `useRowDraft`.** `client/src/components/pipeline/CanonCard.jsx:104-149` currently runs two separate `useFieldDraft` calls (one per column: `name`, `description`). Switching to a single `useRowDraft` call would shrink the row and pick up the same sibling-draft ride-along race protection that landed for `ListRow` in `[characterdetaileditor-listrow-row-draft-hook]`. Non-trivial because `WardrobeSection.commit` (lines 171-193) does pending-row promotion on per-field `name` commits, not on whole-row commits — switching to row-shaped `onCommit(nextRow)` changes the promotion trigger. Surfaced by /simplify during the `useRowDraft` extraction PR; deferred because the promotion semantics need their own design pass.
-
 - [x] ~~**Drop the default `characters` category.**~~ Shipped via the Universe Builder redesign Phase A migration; default `characters` bucket retired, variations backfilled into `universe.characters[]`.
 - [x] ~~**Universe expand LLM contract enrichment.**~~ Shipped via the Universe Builder redesign Phase B — expand contract now returns rich canon arrays alongside categories.
 - [x] ~~**arcPlanner prompt context — include canon characters/places/objects.**~~ Shipped via the Universe Builder redesign Phase B (`renderCanonForPrompt(world)` + `worldCanonText` + migration 019 for `pipeline-arc-overview`, `pipeline-arc-verify`, `pipeline-arc-resolve`, `pipeline-volume-verify`). Follow-up still open: sweep `grep -rn "world\.categories" server/services/pipeline server/services/universeBuilder*.js` for other prompt builders that read categories but not canon.
