@@ -383,7 +383,7 @@ const LIST_ID = 'universe-selector-list';
 const OPTION_ID_PREFIX = 'universe-option-';
 const CREATE_OPTION_ID = 'universe-option-create';
 
-function UniverseSelector({ universes, selectedId, value, onChange, onPick, onCreate, busy }) {
+export function UniverseSelector({ universes, selectedId, value, onChange, onPick, onCreate, busy }) {
   const wrapRef = useRef(null);
   const [open, setOpen] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
