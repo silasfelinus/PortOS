@@ -45,6 +45,7 @@ import { pickCanon } from './seriesCanon.js';
 import { STYLE_PROMPT_OVERRIDE_MODE_DEFAULT } from './series.js';
 import { ASPECT_PRESETS } from '../../lib/creativeDirectorPresets.js';
 import { IMAGE_GEN_MODE } from '../imageGen/modes.js';
+import { resolveAutoClean } from '../imageGen/index.js';
 
 const joinStyleParts = (...parts) =>
   parts.map((s) => (s || '').trim()).filter(Boolean).join(', ');
@@ -179,9 +180,16 @@ const enqueueImageJob = ({ prompt, world, settings, options, mode, owner, logLin
     ...(options.initImagePath ? { initImagePath: options.initImagePath } : {}),
     ...(Number.isFinite(options.initImageStrength) ? { initImageStrength: options.initImageStrength } : {}),
   };
+  // The queue dispatches directly to imageGen/{codex,local}.generateImage,
+  // bypassing imageGen/index.js's dispatcher that resolves autoClean for
+  // direct callers. The /api/image-gen/generate route resolves it at the
+  // route layer; pipeline renders need the same resolution here, otherwise
+  // the saved settings.imageGen[mode].autoClean has no effect on storyboard,
+  // comic-panel, or cover renders.
+  const autoClean = resolveAutoClean(undefined, settings, mode);
   const params = mode === IMAGE_GEN_MODE.CODEX
-    ? { mode: IMAGE_GEN_MODE.CODEX, codexPath: settings.imageGen?.codex?.codexPath, model: settings.imageGen?.codex?.model, ...baseParams }
-    : { pythonPath: settings.imageGen?.local?.pythonPath || null, modelId: options.modelId, ...baseParams };
+    ? { mode: IMAGE_GEN_MODE.CODEX, codexPath: settings.imageGen?.codex?.codexPath, model: settings.imageGen?.codex?.model, autoClean, ...baseParams }
+    : { pythonPath: settings.imageGen?.local?.pythonPath || null, modelId: options.modelId, autoClean, ...baseParams };
   const { jobId } = enqueueJob({ kind: 'image', params, owner });
   console.log(`${logLine} mode=${mode} jobId=${jobId.slice(0, 8)}`);
   return jobId;

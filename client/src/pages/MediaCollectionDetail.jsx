@@ -249,11 +249,19 @@ export default function MediaCollectionDetail() {
   // `onCleanComplete`.
   const { handleRemix, handleSendToVideo, handleContinue, handleClean } = useImagePreviewActions({
     onCleanComplete: async (cleaned) => {
+      // The server's clean route auto-files the cleaned filename into every
+      // collection that contained the source — including this one — so this
+      // client-side add usually returns ERR_DUPLICATE. Catch both shapes:
+      // when the add wins (cleaning from outside any collection containing
+      // the source) we get an updated collection; when it loses to the
+      // server's pre-fill we get null and need to refresh from the server
+      // so collection.items picks up the new entry.
       const updated = await addMediaCollectionItem(collection.id, {
         kind: 'image',
         ref: cleaned.filename,
       }).catch(() => null);
       if (updated) setCollection(updated);
+      else await refresh();
       // Without this the next render misses the cleaned file until
       // refresh() reruns.
       setImagesByName((m) => {
