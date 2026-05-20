@@ -650,11 +650,17 @@ export default function UniverseBuilder() {
   const { annotations, updateAnnotation } = useMediaAnnotations();
   const previewItems = useMemo(() => {
     const out = [];
+    // Dedupe by full namespaced key (`image:<filename>` vs
+    // `canon-sheet:<filename>`) so a gallery image and a character reference
+    // sheet that share a basename can coexist in the items list — without the
+    // namespace, the first-pushed item would suppress the second and the
+    // preview-URL resolver would never see the other asset.
     const seen = new Set();
     const pushFilename = (filename, label) => {
       if (typeof filename !== 'string' || !filename) return;
-      if (seen.has(filename)) return;
-      seen.add(filename);
+      const key = `image:${filename}`;
+      if (seen.has(key)) return;
+      seen.add(key);
       // Pull the real prompt + render settings out of the gallery metadata
       // map when available so the lightbox shows the full prompt that was
       // sent to the renderer (with universe style influences, variation
@@ -722,10 +728,11 @@ export default function UniverseBuilder() {
         for (const f of refs) pushFilename(f, fallbackLabel);
         if (kind.key === 'characters' && typeof entry.referenceSheetImageRef === 'string' && entry.referenceSheetImageRef) {
           const filename = entry.referenceSheetImageRef;
-          if (!seen.has(filename)) {
-            seen.add(filename);
+          const sheetKey = `canon-sheet:${filename}`;
+          if (!seen.has(sheetKey)) {
+            seen.add(sheetKey);
             out.push({
-              key: `canon-sheet:${filename}`,
+              key: sheetKey,
               kind: 'image',
               filename,
               previewUrl: `/data/image-refs/${filename}`,
