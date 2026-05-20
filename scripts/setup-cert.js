@@ -152,7 +152,11 @@ function daysUntil(date) {
 
 function shouldRegenTailscale(hostname) {
   if (FORCE) return true;
-  if (!existsSync(CERT_PATH) || !existsSync(KEY_PATH)) return true;
+  // hasTailscaleCert covers BOTH file presence AND PEM parseability — so a
+  // half-written cert from an interrupted prior run regenerates instead of
+  // being preserved (the file would be present but createSecureContext would
+  // throw at server boot).
+  if (!hasTailscaleCert(CERT_DIR)) return true;
   const meta = readMeta();
   if (!meta || meta.mode !== 'tailscale' || meta.hostname !== hostname) return true;
   const expiry = certExpiresAt();
@@ -164,7 +168,7 @@ function shouldRegenTailscale(hostname) {
 
 function shouldRegenSelfSigned(ips) {
   if (FORCE) return true;
-  if (!existsSync(CERT_PATH) || !existsSync(KEY_PATH)) return true;
+  if (!hasTailscaleCert(CERT_DIR)) return true;
   const meta = readMeta();
   if (!meta || meta.mode !== 'self-signed') return true;
   const prev = (meta.ips || []).slice().sort().join(',');
