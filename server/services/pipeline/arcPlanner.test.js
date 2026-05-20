@@ -1046,6 +1046,18 @@ describe('arcPlanner — buildSeasonRemap', () => {
     warnSpy.mockRestore();
   });
 
+  it('sanitizes multi-line / control-char titles in the Pass 3 warning to keep logging single-line', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const dropped = [{ id: 'old1', number: 1, title: 'A\n\tWith newline' }];
+    const minted = [{ id: 'new1', number: 2, title: '' }];
+    planner.buildSeasonRemap(dropped, minted);
+    const msg = warnSpy.mock.calls[0][0];
+    expect(msg).not.toMatch(/\n/);
+    expect(msg).toContain('A With newline');
+    expect(msg).toContain('new1'); // empty title → falls back to id
+    warnSpy.mockRestore();
+  });
+
   it('drops orphans to null when 2+ unmatched on each side after pass 1/2', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // Titles diverge AND numbers diverge → Pass 1 (title) and Pass 2 (unique

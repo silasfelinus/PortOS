@@ -1147,8 +1147,15 @@ export function buildSeasonRemap(droppedOldSeasons, newlyMintedSeasons) {
   const oldRemaining = droppedOldSeasons.filter((s) => !remap.has(s.id));
   const newRemaining = newlyMintedSeasons.filter((n) => !claimed.has(n.id));
   if (oldRemaining.length === 1 && newRemaining.length === 1) {
+    // Sanitize titles before logging — LLM-generated text can carry newlines
+    // or control chars that would break the project's single-line logging
+    // convention; fall back to the stable id when the title is empty.
+    const safeLabel = (s) => {
+      const t = typeof s.title === 'string' ? s.title.replace(/\s+/g, ' ').trim().slice(0, 60) : '';
+      return t || s.id;
+    };
     console.warn(
-      `⚠️ buildSeasonRemap Pass 3 fired: forced 1↔1 pairing "${oldRemaining[0].title || oldRemaining[0].id}" → "${newRemaining[0].title || newRemaining[0].id}"`,
+      `⚠️ buildSeasonRemap Pass 3 fired: forced 1↔1 pairing "${safeLabel(oldRemaining[0])}" → "${safeLabel(newRemaining[0])}"`,
     );
     remap.set(oldRemaining[0].id, newRemaining[0].id);
     claimed.add(newRemaining[0].id);
