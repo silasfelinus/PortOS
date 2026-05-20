@@ -395,14 +395,20 @@ function UniverseSelector({ universes, selectedId, value, onChange, onPick, onCr
   const trimmed = (value || '').trim();
   const lower = trimmed.toLowerCase();
 
+  // When the input still mirrors the selected universe's name, the user is
+  // browsing the list (just clicked the chevron) rather than searching — show
+  // every universe instead of filtering down to the one we then exclude.
+  const selectedName = (universes || []).find((u) => u.id === selectedId)?.name || '';
+  const isBrowsing = !!selectedId && lower === selectedName.trim().toLowerCase();
+
   // Exclude current — clicking it would be a navigation no-op.
   const filtered = useMemo(() => {
     if (!Array.isArray(universes) || universes.length === 0) return [];
     return universes
       .filter((u) => u.id !== selectedId)
-      .filter((u) => !lower || (u.name || '').toLowerCase().includes(lower))
+      .filter((u) => isBrowsing || !lower || (u.name || '').toLowerCase().includes(lower))
       .slice(0, 20);
-  }, [universes, selectedId, lower]);
+  }, [universes, selectedId, lower, isBrowsing]);
 
   // exactMatch still considers the current one so renaming-to-same doesn't
   // surface a misleading Create option.
