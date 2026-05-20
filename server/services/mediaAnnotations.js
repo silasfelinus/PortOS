@@ -101,19 +101,18 @@ async function readAll() {
     const authors = {};
     for (const [instanceId, sub] of Object.entries(lifted.authors)) {
       if (typeof instanceId !== 'string' || !instanceId) continue;
+      if (instanceId === 'unknown' && healUnknownAuthor) continue; // re-keyed below
       const sane = sanitizeAuthorEntry(sub);
-      if (!sane) continue;
-      if (instanceId === 'unknown' && healUnknownAuthor) {
-        // Prefer a real local entry already present — it's the source of truth;
-        // the unknown bucket is the phantom that needs to be dropped.
-        if (!authors[localInstanceId]) {
-          authors[localInstanceId] = sane.authorName
-            ? sane
-            : { ...sane, authorName: defaultAuthorName };
-        }
-        continue;
+      if (sane) authors[instanceId] = sane;
+    }
+    // Heal the phantom: re-key `unknown` → real local id. Skip when a real
+    // local entry already exists for this key — that's the source of truth
+    // (a later setAnnotation already wrote there) and the phantom is dropped.
+    if (healUnknownAuthor && lifted.authors.unknown && !authors[localInstanceId]) {
+      const sane = sanitizeAuthorEntry(lifted.authors.unknown);
+      if (sane) {
+        authors[localInstanceId] = { ...sane, authorName: sane.authorName || defaultAuthorName };
       }
-      authors[instanceId] = sane;
     }
     if (Object.keys(authors).length > 0) out[key] = { authors };
   }
