@@ -5,7 +5,7 @@ import AppContextPicker from '../AppContextPicker';
 import * as api from '../../services/api';
 import { processScreenshotUploads, processAttachmentUploads } from '../../utils/fileUpload';
 import { formatBytes } from '../../utils/formatters';
-import { filterSelectableModels } from '../../utils/providers';
+import { filterSelectableModels, isTuiProvider, isCliProvider } from '../../utils/providers';
 import { REVIEWER_OPTIONS, DEFAULT_REVIEWER } from './constants';
 
 const isCodexProvider = (provider) => {
@@ -83,9 +83,9 @@ export default function TaskAddForm({ providers, apps, onTaskAdded, compact = fa
   const availableModels = filterSelectableModels(selectedProvider?.models);
   const providerModelNote = (() => {
     if (!selectedProvider) return '';
-    if (selectedProvider.type === 'tui') return `${selectedProvider.name} runs in an attachable terminal UI session.`;
+    if (isTuiProvider(selectedProvider)) return `${selectedProvider.name} runs in an attachable terminal UI session.`;
     if (isCodexProvider(selectedProvider)) return 'Codex uses the model configured in ~/.codex/config.toml.';
-    if (selectedProvider.type === 'cli') return `${selectedProvider.name} uses its CLI configured default model.`;
+    if (isCliProvider(selectedProvider)) return `${selectedProvider.name} uses its CLI configured default model.`;
     return 'No models are configured. PortOS will use the provider default.';
   })();
 

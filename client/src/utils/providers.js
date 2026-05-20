@@ -21,6 +21,17 @@ export const filterSelectableModels = (models) =>
 export const isTuiProvider = (provider) => provider?.type === 'tui';
 
 /**
+ * Check if a provider is a one-shot CLI agent provider.
+ */
+export const isCliProvider = (provider) => provider?.type === 'cli';
+
+/**
+ * Check if a provider is process-backed (cli or tui), as opposed to an
+ * HTTP-API provider. Use this for "shows a Command + args" config predicates.
+ */
+export const isProcessProvider = (provider) => isCliProvider(provider) || isTuiProvider(provider);
+
+/**
  * Tailwind chip classes for the provider type badge ('cli' / 'tui' / 'api').
  * Lifted out of AIProviders.jsx so other components can render the same
  * color treatment without redefining it.
