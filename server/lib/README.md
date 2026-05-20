@@ -81,6 +81,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 |---|---|
 | `fileUtils.js` | `PATHS` constants, `atomicWrite`, `tryReadFile`, `safeJSONParse`, dir scans, hashes, JSON helpers. Most paths/file work goes through here. |
 | `fileWriteQueue.js` | Single-tail promise chain for serializing writes to a file. |
+| `imageClean.js` | `cleanImageBuffer` (sharp-based denoise + C2PA strip) + `autoCleanGeneratedImage` (in-place clean for post-generation hook). HTTP route in `routes/imageClean.js` wraps `cleanImageBuffer`. |
 | `multipart.js` | Streaming multipart/form-data parser. |
 | `pdfImageEmbed.js` | PDF image embed helpers for comic / volume PDFs. |
 | `zipStream.js` | Streaming ZIP parser. |

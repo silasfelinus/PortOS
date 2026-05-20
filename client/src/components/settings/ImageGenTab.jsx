@@ -47,6 +47,15 @@ export function ImageGenTab() {
   const [codexPath, setCodexPath] = useState('');
   const [codexModel, setCodexModel] = useState('');
   const [codexParallelLimit, setCodexParallelLimit] = useState(1);
+  // Auto-clean toggles — per-provider so users can opt in selectively. The
+  // clean runs after the PNG lands and before the SSE complete event so
+  // subscribers see the cleaned bytes. Scope: removes the C2PA metadata chunk
+  // (when present) and reduces visible AI-generation artifacts via a median
+  // pass + sharpen. Does NOT defeat SynthID — gpt-image embeds SynthID and our
+  // median+sharpen+re-encode falls inside Google's stated robustness envelope.
+  const [autoCleanCodex, setAutoCleanCodex] = useState(false);
+  const [autoCleanLocal, setAutoCleanLocal] = useState(false);
+  const [autoCleanExternal, setAutoCleanExternal] = useState(false);
   // Raw string held while the user is typing in the parallel-limit input.
   // Clamping is deferred to onBlur so multi-digit entry isn't blocked.
   const [parallelLimitDraft, setParallelLimitDraft] = useState('1');
@@ -64,6 +73,7 @@ export function ImageGenTab() {
   const [saved, setSaved] = useState({
     mode: 'external', sdapiUrl: '', pythonPath: '', exposeA1111: false,
     codexEnabled: false, codexPath: '', codexModel: '', codexParallelLimit: 1,
+    autoCleanCodex: false, autoCleanLocal: false, autoCleanExternal: false,
   });
 
   const [status, setStatus] = useState(null);
@@ -136,6 +146,9 @@ export function ImageGenTab() {
           : PARALLEL_FALLBACK;
         setParallelBounds(bounds);
         const cxParallel = clampParallel(cx.parallelLimit, bounds);
+        const acCodex = cx.autoClean === true;
+        const acLocal = ig.local?.autoClean === true;
+        const acExternal = ig.external?.autoClean === true;
         setMode(m);
         setSdapiUrl(url);
         setPythonPath(py);
@@ -145,10 +158,14 @@ export function ImageGenTab() {
         setCodexModel(cxModel);
         setCodexParallelLimit(cxParallel);
         setParallelLimitDraft(String(cxParallel));
+        setAutoCleanCodex(acCodex);
+        setAutoCleanLocal(acLocal);
+        setAutoCleanExternal(acExternal);
         setSaved({
           mode: m, sdapiUrl: url, pythonPath: py, exposeA1111: expose,
           codexEnabled: cxEnabled, codexPath: cxPath, codexModel: cxModel,
           codexParallelLimit: cxParallel,
+          autoCleanCodex: acCodex, autoCleanLocal: acLocal, autoCleanExternal: acExternal,
         });
         setToolRegistered(tools.some((t) => t.id === SDAPI_TOOL_ID));
         setCodexToolRegistered(tools.some((t) => t.id === CODEX_TOOL_ID));
@@ -172,7 +189,10 @@ export function ImageGenTab() {
     || codexEnabled !== saved.codexEnabled
     || codexPath !== saved.codexPath
     || codexModel !== saved.codexModel
-    || codexParallelLimit !== saved.codexParallelLimit;
+    || codexParallelLimit !== saved.codexParallelLimit
+    || autoCleanCodex !== saved.autoCleanCodex
+    || autoCleanLocal !== saved.autoCleanLocal
+    || autoCleanExternal !== saved.autoCleanExternal;
 
   const handleSave = async () => {
     setSaving(true);
@@ -183,9 +203,12 @@ export function ImageGenTab() {
     const patch = {
       imageGen: {
         mode,
-        external: { sdapiUrl: url },
-        local: { pythonPath: pythonPath || undefined },
-        codex: { enabled: codexEnabled, codexPath: cxPath, model: cxModel, parallelLimit: cxParallel },
+        external: { sdapiUrl: url, autoClean: autoCleanExternal },
+        local: { pythonPath: pythonPath || undefined, autoClean: autoCleanLocal },
+        codex: {
+          enabled: codexEnabled, codexPath: cxPath, model: cxModel, parallelLimit: cxParallel,
+          autoClean: autoCleanCodex,
+        },
         expose: { a1111: exposeA1111 },
         // Keep the legacy field populated so anything still reading
         // `imageGen.sdapiUrl` directly stays working.
@@ -202,6 +225,7 @@ export function ImageGenTab() {
         mode, sdapiUrl: url || '', pythonPath, exposeA1111,
         codexEnabled, codexPath: cxPath || '', codexModel: cxModel || '',
         codexParallelLimit: cxParallel,
+        autoCleanCodex, autoCleanLocal, autoCleanExternal,
       });
       if (cxParallel !== codexParallelLimit) {
         setCodexParallelLimit(cxParallel);
@@ -402,6 +426,7 @@ export function ImageGenTab() {
             placeholder="http://localhost:7860"
           />
           <p className="text-xs text-gray-500">Base URL for the SD WebUI server PortOS should send generation requests to.</p>
+          <AutoCleanToggle checked={autoCleanExternal} onChange={setAutoCleanExternal} />
         </div>
       )}
 
@@ -415,6 +440,7 @@ export function ImageGenTab() {
             and are surfaced in <a href="/media/models" className="text-port-accent hover:underline">Media → Models</a>.
           </p>
           <LocalSetupPanel pythonPath={pythonPath} onPythonPathChange={setPythonPath} />
+          <AutoCleanToggle checked={autoCleanLocal} onChange={setAutoCleanLocal} />
         </div>
       )}
 
@@ -510,6 +536,7 @@ export function ImageGenTab() {
                 )}
               </p>
             </div>
+            <AutoCleanToggle checked={autoCleanCodex} onChange={setAutoCleanCodex} />
           </div>
         )}
       </div>
@@ -710,6 +737,31 @@ export function ImageGenTab() {
         )}
       </div>
     </div>
+  );
+}
+
+// Shared per-provider "auto-clean after generation" checkbox. The user-visible
+// helper text below already explains scope (C2PA removed, SynthID not
+// defeated) so the comment doesn't need to repeat it. Ordering invariant:
+// the clean must run before the SSE complete event fires so subscribers see
+// the cleaned bytes on first fetch — enforced by the provider success paths,
+// not here.
+function AutoCleanToggle({ checked, onChange }) {
+  return (
+    <label className="flex items-start gap-3 cursor-pointer pt-1">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="rounded mt-0.5"
+      />
+      <span className="text-sm text-gray-300">
+        Auto-clean after generation
+        <span className="block text-xs text-gray-500 mt-0.5">
+          Remove the C2PA metadata chunk (when present) and reduce visible AI-generation artifacts on every render. Does NOT defeat SynthID — gpt-image / Imagen renders stay detectable by their vendor watermark checkers. The cleaned image replaces the original on disk.
+        </span>
+      </span>
+    </label>
   );
 }
 

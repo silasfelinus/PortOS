@@ -508,7 +508,7 @@ export default function MediaCollectionDetail() {
         onRemix={handleRemix}
         onSendToVideo={handleSendToVideo}
         onContinue={(i) => handleContinue(i.raw || i)}
-        onClean={(i, level) => handleClean(i?.raw || i, level)}
+        onClean={(i) => handleClean(i?.raw || i)}
       />
     </div>
   );

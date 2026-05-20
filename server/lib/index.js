@@ -69,6 +69,7 @@ export * from './tuiPromptRunner.js';
 // === File & I/O ===
 export * from './fileUtils.js';
 export * from './fileWriteQueue.js';
+export * from './imageClean.js';
 export * from './multipart.js';
 export * from './pdfImageEmbed.js';
 export * from './zipStream.js';

@@ -2205,7 +2205,7 @@ export default function UniverseBuilder() {
         updateAnnotation={updateAnnotation}
         onRemix={previewActions.handleRemix}
         onSendToVideo={previewActions.handleSendToVideo}
-        onClean={(item, level) => previewActions.handleClean(item?.raw || item, level)}
+        onClean={(item) => previewActions.handleClean(item?.raw || item)}
         onContinue={(item) => previewActions.handleContinue(item?.raw || item)}
       />
     </div>

@@ -299,7 +299,7 @@ export default function MediaHistory() {
         onRemix={handleRemix}
         onSendToVideo={handleSendToVideo}
         onContinue={handleContinue}
-        onClean={(item, level) => handleClean(item?.raw, level)}
+        onClean={(item) => handleClean(item?.raw)}
       />
     </div>
   );

@@ -12,6 +12,7 @@ import { randomUUID } from 'crypto';
 import { ensureDir, PATHS } from '../../lib/fileUtils.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { fetchWithTimeout } from '../../lib/fetchWithTimeout.js';
+import { autoCleanGeneratedImage } from '../../lib/imageClean.js';
 import { imageGenEvents } from '../imageGenEvents.js';
 
 const DEFAULT_NEGATIVE_PROMPT = 'blurry, low quality, distorted, deformed, ugly, watermark, text, signature';
@@ -102,7 +103,7 @@ function startProgressPolling(baseUrl, generationId) {
 let activeJob = null;
 export const getActiveJob = () => activeJob;
 
-export async function generateImage({ sdapiUrl, prompt, negativePrompt, width, height, steps, cfgScale, seed }) {
+export async function generateImage({ sdapiUrl, prompt, negativePrompt, width, height, steps, cfgScale, seed, autoClean }) {
   const baseUrl = validateSdUrl(sdapiUrl);
   const model = await detectModel(baseUrl);
   const isFlux = model?.toLowerCase().includes('flux');
@@ -165,7 +166,12 @@ export async function generateImage({ sdapiUrl, prompt, negativePrompt, width, h
 
   await ensureDir(PATHS.images);
   const filename = `${randomUUID()}.png`;
-  await writeFile(join(PATHS.images, filename), Buffer.from(data.images[0], 'base64'));
+  const pngPath = join(PATHS.images, filename);
+  await writeFile(pngPath, Buffer.from(data.images[0], 'base64'));
+  // Auto-clean BEFORE the SSE complete fires so the URL the client opens
+  // serves the cleaned bytes. External mode has no sidecar — pass null so
+  // the helper just patches the PNG in place.
+  await autoCleanGeneratedImage({ enabled: autoClean, pngPath, sidecarPath: null, mode: 'external' });
   const path = `/data/images/${filename}`;
   console.log(`🖼️ Image saved: ${filename}`);
   activeJob = null;

@@ -60,6 +60,14 @@ export function normalizeImage(i) {
     hidden: !!i.hidden,
     extractedFromVideoId: i.extractedFromVideoId || null,
     extractedFromVideoFilename: i.extractedFromVideoFilename || null,
+    // Cleaning lineage — stamped by /api/image-gen/:filename/clean (manual,
+    // `cleanedFrom` points at the source) or by the auto-clean post-generation
+    // hook (`autoCleaned: true`, in-place replace). Surfaced in the lightbox
+    // so the user can tell at a glance which version they're looking at.
+    cleanedFrom: i.cleanedFrom || null,
+    cleanLevel: i.cleanLevel || null,
+    autoCleaned: i.autoCleaned === true,
+    c2paStripped: typeof i.c2paStripped === 'boolean' ? i.c2paStripped : null,
     raw: i,
   };
 }

@@ -69,6 +69,14 @@ export async function generateImage(params) {
     delete normalized.initImagePath;
     delete normalized.initImageStrength;
   }
+  // Auto-clean is per-provider-mode, opt-in. Precedence: caller-supplied
+  // boolean (the `/generate` route's per-render checkbox) wins; otherwise
+  // inherit the saved per-mode setting. Strip from `normalized` so the
+  // explicit arg on each provider call isn't shadowed by the spread.
+  const autoClean = (typeof normalized.autoClean === 'boolean')
+    ? normalized.autoClean
+    : (cfg(s)[mode]?.autoClean === true);
+  delete normalized.autoClean;
   if (mode === 'codex') {
     const c = codexCfg(s);
     if (!c.enabled) {
@@ -77,12 +85,12 @@ export async function generateImage(params) {
         { status: 400, code: 'CODEX_IMAGEGEN_DISABLED' },
       );
     }
-    return codex.generateImage({ codexPath: c.codexPath, model: c.model, ...normalized });
+    return codex.generateImage({ codexPath: c.codexPath, model: c.model, autoClean, ...normalized });
   }
   if (mode === 'local') {
-    return local.generateImage({ pythonPath: pythonPath(s), ...normalized });
+    return local.generateImage({ pythonPath: pythonPath(s), autoClean, ...normalized });
   }
-  return external.generateImage({ sdapiUrl: sdapiUrl(s), ...normalized });
+  return external.generateImage({ sdapiUrl: sdapiUrl(s), autoClean, ...normalized });
 }
 
 const DEFAULT_NEGATIVE_PROMPT = 'blurry, low quality, distorted, deformed, ugly, watermark, text, signature';

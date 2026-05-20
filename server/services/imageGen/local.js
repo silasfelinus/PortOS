@@ -20,6 +20,7 @@ import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
 import { assertSafeFilename, ensureDir, listDirectoryByExtension, PATHS, safeJSONParse, resolveGalleryImage, resolveImageInputPath, tryReadFile } from '../../lib/fileUtils.js';
 import { ServerError } from '../../lib/errorHandler.js';
+import { autoCleanGeneratedImage } from '../../lib/imageClean.js';
 import { imageGenEvents } from '../imageGenEvents.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay, PYTHON_NOISE_RE } from '../../lib/sseUtils.js';
 import { resolveFlux2Python, FLUX2_VENV_DEFAULT } from '../../lib/pythonSetup.js';
@@ -212,7 +213,7 @@ export const buildArgs = ({ pythonPath, model, prompt, negativePrompt, width, he
   return { bin, args };
 };
 
-export async function generateImage({ pythonPath, prompt, negativePrompt = '', modelId = 'dev', width = 1024, height = 1024, steps, guidance, seed, quantize = '8', loraFilenames = [], loraPaths = [], loraScales = [], initImagePath = null, initImageStrength = null, referenceImagePaths = [], referenceImageStrengths = [], jobId: providedJobId = null }) {
+export async function generateImage({ pythonPath, prompt, negativePrompt = '', modelId = 'dev', width = 1024, height = 1024, steps, guidance, seed, quantize = '8', loraFilenames = [], loraPaths = [], loraScales = [], initImagePath = null, initImageStrength = null, referenceImagePaths = [], referenceImageStrengths = [], jobId: providedJobId = null, autoClean = false }) {
   if (!prompt?.trim()) throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
   // Single-flight is enforced by the mediaJobQueue worker upstream. Direct
   // callers that bypass the queue must not run two concurrent renders — the
@@ -556,6 +557,9 @@ export async function generateImage({ pythonPath, prompt, negativePrompt = '', m
       // --metadata sidecar lives at a slightly different filename shape.
       const sidecar = join(PATHS.images, `${jobId}.metadata.json`);
       await writeFile(sidecar, JSON.stringify(meta, null, 2)).catch(() => {});
+      // Auto-clean (settings.imageGen.local.autoClean) — runs BEFORE the
+      // SSE complete + completed events so subscribers see the cleaned bytes.
+      await autoCleanGeneratedImage({ enabled: autoClean, pngPath: outputPath, sidecarPath: sidecar, mode: 'local' });
       console.log(`✅ Image generated [${jobId.slice(0, 8)}]: ${filename}`);
       const result = { filename, seed: actualSeed, path: `/data/images/${filename}` };
       broadcastSse(job, { type: 'complete', result });
