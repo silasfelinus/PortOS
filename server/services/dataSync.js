@@ -415,11 +415,13 @@ async function applyPipelineRemote(remoteData) {
 
 // --- Public API ---
 
-// Files each category reads, used to keep the in-process checksum cache honest:
-// we skip the full snapshot on `getChecksum` when none of these files' mtimes
-// changed since the last computed checksum. mtime resolution is milliseconds,
-// which is fine for a single-user / single-writer system — every PortOS write
-// path goes through `atomicWrite` (temp+rename), which bumps mtime.
+// Files each category reads, used to keep the in-process checksum cache
+// honest: `getChecksum` skips the full snapshot when none of these files'
+// fingerprints changed since the last computed checksum. The fingerprint is
+// `{ mtimeMs, size }` — including size catches the (very narrow) case where
+// two writes land in the same millisecond tick on the same path: even a tick
+// collision can't keep the cache stale unless the new content is also exactly
+// the same byte length.
 const CHECKSUM_PATHS = {
   goals: [GOALS_FILE],
   character: [CHARACTER_FILE],
@@ -438,22 +440,22 @@ const CATEGORIES = {
   pipeline: { getSnapshot: getPipelineSnapshot, applyRemote: applyPipelineRemote }
 };
 
-// Per-category `{ mtimes, checksum }` cache. The orchestrator hits getChecksum
-// every cycle — by far the hottest sync-side I/O — so caching keyed on
-// underlying-file mtimes lets it stat-and-return when nothing has changed,
-// instead of re-materializing the full payload.
+// Per-category `{ fingerprints, checksum }` cache. The orchestrator hits
+// getChecksum every cycle — by far the hottest sync-side I/O — so caching
+// keyed on underlying-file `(mtime, size)` lets it stat-and-return when
+// nothing has changed, instead of re-materializing the full payload.
 const checksumCache = new Map();
 
-async function readMtimeMap(paths) {
+async function readFingerprintMap(paths) {
   const out = {};
   await Promise.all(paths.map(async (p) => {
     const s = await stat(p).catch(() => null);
-    out[p] = s ? s.mtimeMs : null;
+    out[p] = s ? `${s.mtimeMs}:${s.size}` : null;
   }));
   return out;
 }
 
-function mtimeMapsEqual(a, b) {
+function fingerprintsEqual(a, b) {
   for (const p in a) if (a[p] !== b[p]) return false;
   for (const p in b) if (a[p] !== b[p]) return false;
   return true;
@@ -468,13 +470,13 @@ export async function getChecksum(category) {
   if (!cat) return null;
   const paths = CHECKSUM_PATHS[category];
   if (paths) {
-    const mtimes = await readMtimeMap(paths);
+    const fingerprints = await readFingerprintMap(paths);
     const cached = checksumCache.get(category);
-    if (cached && mtimeMapsEqual(cached.mtimes, mtimes)) {
+    if (cached && fingerprintsEqual(cached.fingerprints, fingerprints)) {
       return { checksum: cached.checksum };
     }
     const snapshot = await cat.getSnapshot();
-    checksumCache.set(category, { mtimes, checksum: snapshot.checksum });
+    checksumCache.set(category, { fingerprints, checksum: snapshot.checksum });
     return { checksum: snapshot.checksum };
   }
   const snapshot = await cat.getSnapshot();
