@@ -40,10 +40,16 @@ export default function AudioStage({ issue, onStageUpdate }) {
   // Per-line edit drafts so the textarea reflects in-flight keystrokes
   // even though we PATCH only on blur (or before render).
   const [drafts, setDrafts] = useState({});
-  // Pending PATCH promises by line index so handleRender can await the
-  // blur-flush before kicking off the synth (CLAUDE.md "In-flight saves
-  // must gate dependent actions"). Refs not state — we never re-render
-  // because of this and we want the latest value inside async handlers.
+  // Pending PATCH promises by line index so handleRender can await every
+  // outstanding save before kicking off the synth (CLAUDE.md "In-flight
+  // saves must gate dependent actions"). Refs not state — we never
+  // re-render because of this and we want the latest value inside async
+  // handlers. Stored as `Map<lineIdx, Set<Promise>>` because a single
+  // line can have BOTH a text-blur save AND a voice-override save in
+  // flight simultaneously (textarea blur, then pick a voice, then click
+  // Render — both PATCHes overlap). The set drops each promise on
+  // settle; handleRender Promise.all's the snapshot of whatever's
+  // outstanding at the moment of call.
   const pendingSavesRef = useRef(new Map());
 
   // Two-click arm pattern (no window.confirm) for the destructive
@@ -170,13 +176,14 @@ export default function AudioStage({ issue, onStageUpdate }) {
     }
   };
 
-  // Per-line patch (text edit OR voice override). Returns the in-flight
-  // Promise so handleRender can await it before firing the synth request —
-  // the server resolves character.voiceId / line.voiceIdOverride at render
-  // time, so a render fired before the override PATCH settles would synth
-  // against the prior voice. Same pending-Promise map keyed by lineIdx is
-  // reused for either field.
+  // Per-line patch (text edit OR voice override). Registers the in-flight
+  // Promise in `pendingSavesRef` so handleRender can await it before firing
+  // the synth request — the server resolves character.voiceId /
+  // line.voiceIdOverride at render time, so a render fired before any
+  // outstanding PATCH settles could synth against stale state.
   const saveLinePatch = (lineIdx, patch) => {
+    const set = pendingSavesRef.current.get(lineIdx) || new Set();
+    if (!pendingSavesRef.current.has(lineIdx)) pendingSavesRef.current.set(lineIdx, set);
     const promise = patchPipelineAudioLine(issue.id, lineIdx, patch)
       .then((updated) => {
         if (updated) onStageUpdate?.('audio', updated.stage, updated.issue);
@@ -184,11 +191,10 @@ export default function AudioStage({ issue, onStageUpdate }) {
       })
       .catch((err) => { toast.error(err.message || 'Save failed'); return null; })
       .finally(() => {
-        if (pendingSavesRef.current.get(lineIdx) === promise) {
-          pendingSavesRef.current.delete(lineIdx);
-        }
+        set.delete(promise);
+        if (set.size === 0) pendingSavesRef.current.delete(lineIdx);
       });
-    pendingSavesRef.current.set(lineIdx, promise);
+    set.add(promise);
     return promise;
   };
 
@@ -211,10 +217,13 @@ export default function AudioStage({ issue, onStageUpdate }) {
   };
 
   const handleRender = async (lineIdx) => {
-    // If a blur-save is in flight for this line, wait for it so the synth
-    // reads the up-to-date persisted text instead of stale bytes.
-    const pendingSave = pendingSavesRef.current.get(lineIdx);
-    if (pendingSave) await pendingSave;
+    // Snapshot + await every outstanding PATCH for this line — both text
+    // and voice-override saves can be in flight at once (e.g. textarea
+    // blur fires, then the user picks a voice, then clicks Render). The
+    // synth resolves text + voice at render time on the server, so a
+    // missed save would synth against stale state.
+    const pendingSet = pendingSavesRef.current.get(lineIdx);
+    if (pendingSet && pendingSet.size > 0) await Promise.all([...pendingSet]);
     // If the textarea still has an unflushed draft (user clicked Render
     // without losing focus), flush it now and await.
     const draftBeforeRender = drafts[lineIdx];
