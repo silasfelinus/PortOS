@@ -99,13 +99,27 @@ fi
 # http://localhost:5555 hits a TLS mismatch — and a loopback HTTP mirror spawns
 # on :5553 (or $PORTOS_HTTP_PORT) for cert-free local access.
 print_access_url() {
-    if [ -f data/certs/cert.pem ] && [ -f data/certs/key.pem ]; then
-        local mirror_port="${PORTOS_HTTP_PORT:-5553}"
-        echo "Access at: http://localhost:${mirror_port}  (loopback HTTP mirror — no cert warning)"
-        echo "       or: https://<machine>.<tailnet>.ts.net:5555  (trusted via Tailscale)"
-        echo "       or: https://localhost:5555  (browser warns — cert SAN doesn't cover localhost)"
-    else
+    if [ ! -f data/certs/cert.pem ] || [ ! -f data/certs/key.pem ]; then
         echo "Access at: http://localhost:5555"
+        return
+    fi
+    local mirror_port="${PORTOS_HTTP_PORT:-5553}"
+    # Read cert mode from meta.json — self-signed certs cover localhost + local
+    # IPv4s but not the Tailscale hostname; Tailscale LE certs cover the
+    # tailnet hostname but not localhost. The advertised URLs must match the
+    # cert's SAN coverage or we'll send users to a URL their browser rejects.
+    local cert_mode=""
+    if [ -f data/certs/meta.json ]; then
+        cert_mode=$(node -e "try{process.stdout.write(JSON.parse(require('fs').readFileSync('data/certs/meta.json','utf8')).mode||'')}catch{}" 2>/dev/null)
+    fi
+    echo "Access at: http://localhost:${mirror_port}  (loopback HTTP mirror — no cert warning)"
+    if [ "$cert_mode" = "tailscale" ]; then
+        echo "       or: https://<machine>.<tailnet>.ts.net:5555  (trusted via Tailscale)"
+        echo "       or: https://localhost:5555  (browser warns — cert is for the Tailscale hostname)"
+    elif [ "$cert_mode" = "self-signed" ]; then
+        echo "       or: https://localhost:5555  (browser warns on first visit — self-signed cert)"
+    else
+        echo "       or: https://localhost:5555  (browser may warn on cert)"
     fi
 }
 
