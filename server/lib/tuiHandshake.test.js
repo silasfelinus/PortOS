@@ -69,8 +69,12 @@ describe('tuiHandshake — paste timing constants', () => {
   it('pins buffer caps with headroom > cap (defensive growth allowance)', () => {
     expect(RAW_BUFFER_CAP).toBe(512 * 1024);
     expect(RAW_BUFFER_HEADROOM).toBe(640 * 1024);
-    expect(OUTPUT_BUFFER_CAP).toBe(1024 * 1024);
-    expect(OUTPUT_BUFFER_HEADROOM).toBe(1280 * 1024);
+    // OUTPUT cap was bumped 1MB → 8MB so realistic full-context LLM responses
+    // (~600KB UTF-8 from a 200K-token window + screen chrome) fit cleanly
+    // when the file-write path falls back to the buffer scrape. A regression
+    // back to ~1MB would silently mid-token-truncate large fallback responses.
+    expect(OUTPUT_BUFFER_CAP).toBe(8 * 1024 * 1024);
+    expect(OUTPUT_BUFFER_HEADROOM).toBe(10 * 1024 * 1024);
     // Headroom must exceed cap so the slice-tail-after-overflow logic in
     // the callers actually keeps recent bytes instead of dropping them.
     expect(RAW_BUFFER_HEADROOM).toBeGreaterThan(RAW_BUFFER_CAP);
