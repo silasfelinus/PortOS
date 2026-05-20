@@ -7,7 +7,7 @@
  */
 
 import { join } from 'path';
-import { readdir } from 'fs/promises';
+import { readdir, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { ensureDir, atomicWrite, readJSONFile } from '../../lib/fileUtils.js';
 import { listBuckets } from './buckets.js';
@@ -22,40 +22,96 @@ let pendingTimer = null;
 let installed = false;
 
 /**
+ * Cache of manifest-derived asset keys per bucket, invalidated by the
+ * `manifests/` directory's mtime. Every manifest write goes through
+ * `atomicWrite` (temp + rename), and every archive sweep uses `rename`, both
+ * of which bump the directory mtime — so the mtime is the cheapest available
+ * signal that "the set of manifests in this bucket has changed."
+ *
+ * Without the cache, every 2s annotation flush re-reads + re-parses every
+ * manifest in every auto-merge bucket — fan-out is O(buckets × manifests)
+ * per flush. With the cache the steady-state cost drops to one `stat` per
+ * bucket.
+ *
+ * @type {Map<string, { manifestsMtimeMs: number | null, manifestKeys: Set<string> }>}
+ */
+const manifestKeysCache = new Map();
+
+/**
  * Set of `${kind}:${filename}` keys for every asset referenced by any manifest
  * in the bucket. v2's content-addressed `assets/blobs/<hash>` paths don't
  * carry filenames, so the manifests are the only source-of-truth for which
  * user-facing filenames the bucket holds; the legacy `assets/{images,videos}/`
  * scan covers v1 buckets that never wrote a manifest's `hash` field.
+ *
+ * The manifests-side scan is cached per (bucket, manifests-dir mtime); the
+ * legacy v1 dir scan is small and runs uncached. Callers must treat the
+ * returned Set as read-only — the cache may hand back the same Set instance
+ * to subsequent callers when the legacy fall-through adds nothing (the
+ * common v2-only path), so mutating it would poison the next cache hit.
  */
 async function listBucketAssetKeys(bucketPath) {
-  const keys = new Set();
-  const filenames = await listManifestFilenames(bucketPath);
-  await Promise.all(filenames.map(async (filename) => {
-    const m = await readManifest(bucketPath, filename).catch(() => null);
-    for (const ref of m?.assetRefs || []) {
-      if (!ref?.ref || typeof ref.ref !== 'string') continue;
-      const kind = ref.kind === 'video' ? 'video' : 'image';
-      keys.add(`${kind}:${ref.ref}`);
+  const manifestsDir = join(bucketPath, 'manifests');
+  // ENOENT (dir not created yet) is normal; null is a stable cache key.
+  // Other errors (EACCES, EIO) are surfaced via a warning + uncached scan so
+  // a real permission/IO problem is observable instead of being swallowed
+  // into a phantom `unknown` mtime.
+  let manifestsMtimeMs = null;
+  let cacheable = true;
+  const dirStat = await stat(manifestsDir).catch((err) => err);
+  if (dirStat instanceof Error) {
+    if (dirStat.code !== 'ENOENT') {
+      console.error(`⚠️ sharing.annotations: stat(${manifestsDir}) failed code=${dirStat.code}: ${dirStat.message}`);
+      cacheable = false;
     }
-    for (const item of m?.collection?.items || []) {
-      if (!item?.ref || typeof item.ref !== 'string') continue;
-      const kind = item.kind === 'video' ? 'video' : 'image';
-      keys.add(`${kind}:${item.ref}`);
-    }
-  }));
-  // Legacy v1 buckets predate manifest-as-authority: fall through to a
-  // direct dir scan so existing buckets still advertise their assets.
+  } else {
+    manifestsMtimeMs = dirStat.mtimeMs;
+  }
+
+  let manifestKeys;
+  const cached = cacheable ? manifestKeysCache.get(bucketPath) : null;
+  if (cached && cached.manifestsMtimeMs === manifestsMtimeMs) {
+    manifestKeys = cached.manifestKeys;
+  } else {
+    manifestKeys = new Set();
+    const filenames = await listManifestFilenames(bucketPath);
+    await Promise.all(filenames.map(async (filename) => {
+      const m = await readManifest(bucketPath, filename).catch(() => null);
+      for (const ref of m?.assetRefs || []) {
+        if (!ref?.ref || typeof ref.ref !== 'string') continue;
+        const kind = ref.kind === 'video' ? 'video' : 'image';
+        manifestKeys.add(`${kind}:${ref.ref}`);
+      }
+      for (const item of m?.collection?.items || []) {
+        if (!item?.ref || typeof item.ref !== 'string') continue;
+        const kind = item.kind === 'video' ? 'video' : 'image';
+        manifestKeys.add(`${kind}:${item.ref}`);
+      }
+    }));
+    if (cacheable) manifestKeysCache.set(bucketPath, { manifestsMtimeMs, manifestKeys });
+  }
+
+  // Layer on the legacy v1 dir scan (small; runs every call). The common
+  // v2-native bucket has no `assets/{images,videos}/` so we return the
+  // cached Set unmodified and avoid the per-call copy entirely.
+  let legacyKeys = null;
   for (const [subdir, kind] of [['images', 'image'], ['videos', 'video']]) {
     const dir = join(bucketPath, 'assets', subdir);
     if (!existsSync(dir)) continue;
     const files = await readdir(dir).catch(() => []);
     for (const f of files) {
       if (f.endsWith('.metadata.json')) continue;
-      keys.add(`${kind}:${f}`);
+      if (!legacyKeys) legacyKeys = new Set();
+      legacyKeys.add(`${kind}:${f}`);
     }
   }
-  return keys;
+  if (!legacyKeys) return manifestKeys;
+  return new Set([...manifestKeys, ...legacyKeys]);
+}
+
+/** Test hook — reset the per-bucket manifest-keys cache between cases. */
+export function __resetBucketAssetKeysCache() {
+  manifestKeysCache.clear();
 }
 
 export async function exportAnnotationsToBucket(bucket, localAnnotations, senderInstanceId) {
@@ -132,6 +188,15 @@ export async function exportAnnotationsToBucket(bucket, localAnnotations, sender
     producedByVersion,
   });
   const filename = await writeManifest(bucket.path, manifest);
+  // The annotation manifest we just wrote bumps the manifests-dir mtime, but
+  // its `assetRefs: []` means the bucket's asset-key set is unchanged. Roll
+  // the cached mtime forward so the next flush still hits this bucket's
+  // cache instead of re-parsing every other manifest in the dir.
+  const cached = manifestKeysCache.get(bucket.path);
+  if (cached) {
+    const dirStat = await stat(join(bucket.path, 'manifests')).catch(() => null);
+    if (dirStat) cached.manifestsMtimeMs = dirStat.mtimeMs;
+  }
   return { skipped: false, filename, entryCount: Object.keys(filtered).length };
 }
 
