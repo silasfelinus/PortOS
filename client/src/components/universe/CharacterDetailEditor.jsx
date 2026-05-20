@@ -18,6 +18,7 @@ import {
 import { BIBLE_LIMITS as L } from '../../lib/bibleLimits';
 import useFieldDraft from '../../hooks/useFieldDraft';
 import useRowDraft from '../../hooks/useRowDraft';
+import VoicePicker from '../voice/VoicePicker';
 
 const SECTIONS = Object.freeze([
   {
@@ -309,6 +310,16 @@ export default function CharacterDetailEditor({ entry, onPatch, onExpand, expand
               idPrefix={entry.id}
             />
           ))}
+          {section.key === 'identity' ? (
+            <VoicePicker
+              label="Voice (TTS)"
+              value={entry.voiceId || null}
+              onChange={(v) => patchField('voiceId', v)}
+              disabled={disabled}
+              placeholder="Project default voice"
+              previewText={entry.name ? `Hi, I'm ${entry.name}. This is how I sound.` : undefined}
+            />
+          ) : null}
         </CollapsibleSection>
       ))}
 

@@ -14,6 +14,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Loader2, Sparkles, Wand2, Mic, Music, Upload, Trash2 } from 'lucide-react';
 import toast from '../../ui/Toast';
+import VoicePicker from '../../voice/VoicePicker';
 import {
   extractPipelineAudioLines,
   renderPipelineAudioLine,
@@ -169,10 +170,14 @@ export default function AudioStage({ issue, onStageUpdate }) {
     }
   };
 
-  // Per-line text save. Returns the in-flight Promise so handleRender can
-  // await it before firing the synth request.
-  const saveLineText = (lineIdx, text) => {
-    const promise = patchPipelineAudioLine(issue.id, lineIdx, { text })
+  // Per-line patch (text edit OR voice override). Returns the in-flight
+  // Promise so handleRender can await it before firing the synth request —
+  // the server resolves character.voiceId / line.voiceIdOverride at render
+  // time, so a render fired before the override PATCH settles would synth
+  // against the prior voice. Same pending-Promise map keyed by lineIdx is
+  // reused for either field.
+  const saveLinePatch = (lineIdx, patch) => {
+    const promise = patchPipelineAudioLine(issue.id, lineIdx, patch)
       .then((updated) => {
         if (updated) onStageUpdate?.('audio', updated.stage, updated.issue);
         return updated;
@@ -195,8 +200,14 @@ export default function AudioStage({ issue, onStageUpdate }) {
       setDrafts((prev) => { const next = { ...prev }; delete next[lineIdx]; return next; });
       return;
     }
-    void saveLineText(lineIdx, draft);
+    void saveLinePatch(lineIdx, { text: draft });
     setDrafts((prev) => { const next = { ...prev }; delete next[lineIdx]; return next; });
+  };
+
+  // Voice override change. `voiceId: null` clears the override so the line
+  // falls back to the canon character voice (or project default).
+  const handleVoiceOverride = (lineIdx, voiceId) => {
+    void saveLinePatch(lineIdx, { voiceIdOverride: voiceId });
   };
 
   const handleRender = async (lineIdx) => {
@@ -208,7 +219,7 @@ export default function AudioStage({ issue, onStageUpdate }) {
     // without losing focus), flush it now and await.
     const draftBeforeRender = drafts[lineIdx];
     if (draftBeforeRender !== undefined && draftBeforeRender !== (lines[lineIdx]?.text || '')) {
-      await saveLineText(lineIdx, draftBeforeRender);
+      await saveLinePatch(lineIdx, { text: draftBeforeRender });
       setDrafts((prev) => { const next = { ...prev }; delete next[lineIdx]; return next; });
     }
 
@@ -304,6 +315,18 @@ export default function AudioStage({ issue, onStageUpdate }) {
                       className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
                       maxLength={4000}
                     />
+                    <div className="mt-2 max-w-md">
+                      <VoicePicker
+                        compact
+                        hideWhenEmpty
+                        value={line.voiceIdOverride || null}
+                        onChange={(v) => handleVoiceOverride(i, v)}
+                        placeholder={line.characterId
+                          ? `Inherit (${line.characterName} default)`
+                          : 'Inherit (project default)'}
+                        previewText={textValue?.trim() ? textValue.slice(0, 200) : undefined}
+                      />
+                    </div>
                     {line.audioFilename ? (
                       <audio
                         controls
