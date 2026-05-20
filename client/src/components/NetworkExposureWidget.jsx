@@ -19,17 +19,24 @@ import * as api from '../services/api';
 // 127.0.0.1/::1 — anything else (Tailscale IP, LAN IP, plain hostname over
 // HTTP) silently fails. Server-side we know the scheme + bind, but only the
 // browser knows which of those origins it actually loaded from.
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
+// Browsers report IPv6 `window.location.hostname` with brackets (`[::1]`)
+// while the bare-form `::1` shows up in env-style configs; accept both so
+// the heuristic doesn't false-negative on `http://[::1]:5555`.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+function isLoopbackOrigin() {
+  if (typeof window === 'undefined' || !window.location) return false;
+  return LOOPBACK_HOSTS.has(window.location.hostname);
+}
 
 function describeMicAvailability() {
   if (typeof window === 'undefined' || !window.location) {
     return { available: true, reason: 'unknown' };
   }
-  const { protocol, hostname } = window.location;
-  if (protocol === 'https:') {
+  if (window.location.protocol === 'https:') {
     return { available: true, reason: 'https' };
   }
-  if (LOOPBACK_HOSTS.has(hostname)) {
+  if (isLoopbackOrigin()) {
     return { available: true, reason: 'loopback' };
   }
   return { available: false, reason: 'insecure-context' };
@@ -167,14 +174,25 @@ const NetworkExposureWidget = memo(function NetworkExposureWidget() {
               Loopback HTTP mirror
             </dt>
             <dd className="text-right text-gray-300">
-              <a
-                href={`http://localhost:${loopbackMirror.port}`}
-                target="_blank"
-                rel="noreferrer"
-                className="font-mono text-xs text-port-accent hover:underline"
-              >
-                :{loopbackMirror.port}
-              </a>
+              {/* Mirror is bound to 127.0.0.1 server-side, so it's only
+                  reachable when the browser is on the same host. Anywhere
+                  else (Tailscale IP, LAN), an `http://localhost:5553` link
+                  would resolve to the viewer's own machine and 404 — show
+                  informational text instead of a broken link. */}
+              {isLoopbackOrigin() ? (
+                <a
+                  href={`http://localhost:${loopbackMirror.port}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-mono text-xs text-port-accent hover:underline"
+                >
+                  :{loopbackMirror.port}
+                </a>
+              ) : (
+                <span className="font-mono text-xs text-gray-500" title="Reachable only from the PortOS host machine">
+                  :{loopbackMirror.port} (host-only)
+                </span>
+              )}
             </dd>
           </div>
         )}
