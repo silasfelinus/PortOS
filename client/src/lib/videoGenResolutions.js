@@ -4,7 +4,7 @@
 //
 // Video sizes follow LTX-2's preferred latent boundaries (multiples of 32 on
 // each edge); the aspect-ratio hints in the labels surface common shapes the
-// user picks for (16:9 social, 9:16 mobile, 1:1 grid).
+// user picks for (16:9 social, 2:3 portrait, 1:1 grid).
 export const VIDEO_RESOLUTIONS = [
   { label: '512×320 (16:10)', w: 512, h: 320 },
   { label: '640×384 (5:3)', w: 640, h: 384 },
