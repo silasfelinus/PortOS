@@ -13,7 +13,7 @@ vi.mock('../lib/fileUtils.js', () => ({
   // Stubs to satisfy notifications.js (the real module imports these at load).
   PATHS: { data: '/mock/data' },
   ensureDir: vi.fn().mockResolvedValue(undefined),
-  readJSONFile: vi.fn().mockResolvedValue(null),
+  readJSONFile: vi.fn(async (_path, defaultValue = null) => defaultValue),
   atomicWrite: vi.fn().mockResolvedValue(undefined)
 }));
 
@@ -88,6 +88,7 @@ describe('telegramBridge service', () => {
     updateCachedForwardTypes(null);
     vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   describe('init', () => {
@@ -212,11 +213,14 @@ describe('telegramBridge service', () => {
 
   describe('cleanup', () => {
     it('clears module state and unsubscribes from notification events', async () => {
+      // Capture baseline listener count; the assertion is relative so any
+      // unrelated listeners attached at module-import time don't false-fail us.
+      const baselineListeners = notificationEvents.listenerCount('added');
       seedCredentials();
       const fetchSpy = mockTelegramFetch();
       vi.stubGlobal('fetch', fetchSpy);
       await init();
-      expect(notificationEvents.listenerCount('added')).toBeGreaterThanOrEqual(1);
+      expect(notificationEvents.listenerCount('added')).toBe(baselineListeners + 1);
 
       await cleanup();
       expect(getStatus()).toMatchObject({
@@ -226,7 +230,7 @@ describe('telegramBridge service', () => {
         hasBotToken: false,
         hasChatId: false
       });
-      expect(notificationEvents.listenerCount('added')).toBe(0);
+      expect(notificationEvents.listenerCount('added')).toBe(baselineListeners);
     });
   });
 
