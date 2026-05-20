@@ -22,7 +22,7 @@ import {
   renderWorld, listWorldRuns, getProviders, refineWorldPrompts, WORLD_CATEGORIES,
   WORLD_CATEGORY_KEY_MAX, COMPOSITE_PROMPT_MAX, WORLD_LOGLINE_MAX,
   WORLD_PREMISE_MAX, WORLD_STYLE_NOTES_MAX, WORLD_LOCKABLE_FIELDS,
-  ensureInfluences, isInfluenceLockField, mergeInfluencesWithLocks,
+  ensureInfluences, isInfluenceLockField,
   listImageModels, listLorasFull, getSettings,
 } from '../services/api';
 import useClickOutside from '../hooks/useClickOutside';
@@ -45,10 +45,12 @@ import { listImageGallery } from '../services/apiImageVideo';
 import TabPills from '../components/ui/TabPills';
 import { deriveAvailableBackends, IMAGE_GEN_MODE } from '../lib/imageGenBackends';
 import { PIPELINE_IMAGE_DEFAULTS, readPipelineImageSettings } from '../lib/pipelineImageDefaults';
-import { normalizeSlugline } from '../lib/scenePrompt';
 import { hasCanonDescriptorContent, descriptorForCanonEntry } from '../lib/canonPrompt';
 import { upsertByIdPrepend } from '../lib/upsertByIdPrepend';
 import { BIBLE_LIMITS } from '../lib/bibleLimits';
+import {
+  mergeVariations, mergeCanonByName, mergeExpandIntoDraft, extractPreservedFromDraft,
+} from '../lib/universeBuilderExpand';
 
 // Mirror of server-side appendEntryImageRef cap (most recent N wins). Used
 // so optimistic on-completion appends produce the same final array shape
@@ -112,96 +114,6 @@ const normalizeCategoryKey = (raw) => (raw || '')
   .replace(/^_+|_+$/g, '')
   .replace(/_{2,}/g, '_')
   .slice(0, WORLD_CATEGORY_KEY_MAX);
-
-// Merge `fresh` items after `existing`, case-insensitively deduping by label.
-// Used by both Expand (locked + LLM result) and per-category Generate (current
-// + LLM additions); pinned/existing entries keep their slot at the top.
-// Rows with a missing/non-string label (older universes pre-rename, partial
-// LLM payloads) are dropped from both sides — keeping them in `merged` while
-// excluding from the dedup Set would let a fresh row with the same missing
-// label silently duplicate.
-const mergeVariations = (existing, fresh) => {
-  const merged = [];
-  const seen = new Set();
-  for (const v of [...(existing || []), ...(fresh || [])]) {
-    const key = v?.label?.toLowerCase();
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    merged.push(v);
-  }
-  return merged;
-};
-
-// Merge LLM-expanded canon entries into the draft's existing canon array.
-// Existing entries always win on collision (lock or no — the user authored
-// them; the LLM's repeat is a hallucination at this point). Mirrors the
-// server-side dedupe in backfillCanonFromCategories + storyBible's
-// MERGE_CONFIG (`storyBible.js` keyFields).
-//
-// Identity rules are kind-aware to match the server's MERGE_CONFIG:
-//   - characters/objects → `normalizeBibleName` (trim + lowercase) on `name`
-//                          AND `aliases[]`. Without aliases, an existing
-//                          character "Ashley" with alias "Ash" would not
-//                          collide with an LLM-returned "Ash", producing a
-//                          duplicate canon entry the user has to merge by hand.
-//   - places             → `normalizeSlugline` for BOTH `slugline` AND `name`
-//                          (`storyBible.js` MERGE_CONFIG.place.keyFields).
-//                          Without this, sluglines that differ only in dash
-//                          style or punctuation ("INT. FOUNDRY CITY — DAY"
-//                          vs "INT FOUNDRY CITY - DAY") would land as two
-//                          separate place-canon entries, and `Foundry-City`
-//                          vs `Foundry City` would duplicate by name even
-//                          though every downstream lookup treats them as one.
-// Match server's BIBLE_LIMITS.ENTRIES_PER_BIBLE_MAX so the client doesn't
-// optimistically display + count entries the server will silently truncate
-// at sanitize time. Without this cap, the post-expand toast can claim
-// "+12 canon entries" while the server-saved record only kept some of them.
-const CLIENT_CANON_MAX = 200;
-
-const mergeCanonByName = (existing, fresh, kind = 'character') => {
-  // Empty/missing fresh — return `existing` unchanged (preserve reference so
-  // a no-op expand doesn't trigger downstream identity-comparing effects).
-  if (!fresh?.length) return existing || [];
-  const isPlace = kind === 'place';
-  const normName = isPlace
-    ? (s) => (typeof s === 'string' ? normalizeSlugline(s) : '')
-    : (s) => (typeof s === 'string' ? s.trim().toLowerCase() : '');
-  const normSlug = (s) => (typeof s === 'string' ? normalizeSlugline(s) : '');
-  // Aliases participate in identity for character/object only — places use
-  // slugline collision instead (the server's MERGE_CONFIG.place has no
-  // aliases field).
-  const aliasKeys = (entry) => {
-    if (isPlace || !Array.isArray(entry?.aliases)) return [];
-    return entry.aliases.map(normName).filter(Boolean);
-  };
-  const seen = new Set();
-  for (const e of existing || []) {
-    if (e?.name) seen.add(normName(e.name));
-    if (e?.slugline) seen.add(normSlug(e.slugline));
-    for (const k of aliasKeys(e)) seen.add(k);
-  }
-  const merged = [...(existing || [])];
-  for (const e of fresh) {
-    const nameKey = normName(e?.name);
-    const sluglineKey = normSlug(e?.slugline);
-    const aliasMatches = aliasKeys(e);
-    const collides = (nameKey && seen.has(nameKey))
-      || (sluglineKey && seen.has(sluglineKey))
-      || aliasMatches.some((k) => seen.has(k));
-    // On collision, still register every identity key the fresh entry
-    // carried — so a *later* fresh entry with overlapping aliases/sluglines
-    // is recognized as a within-batch duplicate too. Without this, fresh
-    // entry A (collides on alias) gets skipped silently and fresh entry B
-    // (uses A's primary name) slips in as a duplicate of the existing record.
-    if (nameKey) seen.add(nameKey);
-    if (sluglineKey) seen.add(sluglineKey);
-    for (const k of aliasMatches) seen.add(k);
-    if (collides) continue;
-    if (merged.length >= CLIENT_CANON_MAX) break;
-    merged.push(e);
-  }
-  return merged;
-};
 
 const humanizeCategory = (key) => CATEGORY_LABELS[key]
   || key.replace(/_/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase());
@@ -1099,16 +1011,11 @@ export default function UniverseBuilder() {
       toast.error('Add a starter prompt to expand');
       return;
     }
-    // Extract per-item locks so the server can include them in the LLM
-    // prompt (avoid duplicate generation) AND we can merge them back in
-    // after the result returns. Only LOCKED entries are forwarded — the
+    // Extract per-item locks so the server can include them in the LLM prompt
+    // (avoid duplicate generation) AND mergeExpandIntoDraft can merge them back
+    // in after the result returns. Only LOCKED entries are forwarded — the
     // unlocked items get fully replaced.
-    const preservedVariations = {};
-    for (const [cat, bucket] of Object.entries(draft.categories || {})) {
-      const locked = (bucket?.variations || []).filter((v) => v?.locked === true);
-      if (locked.length) preservedVariations[cat] = locked;
-    }
-    const preservedCompositeSheets = (draft.compositeSheets || []).filter((s) => s?.locked === true);
+    const { preservedVariations, preservedCompositeSheets } = extractPreservedFromDraft(draft);
 
     setExpanding(true);
     const result = await expandUniverse({
@@ -1127,102 +1034,9 @@ export default function UniverseBuilder() {
     }).catch((e) => { toast.error(`Expansion failed: ${e.message}`); return null; });
     setExpanding(false);
     if (!result) return;
-    // For each lockable field: pick the LLM's value when unlocked (falling
-    // back to the draft if the LLM produced empty); pick the draft's value
-    // verbatim when locked. Categories + compositeSheets aren't lockable
-    // (the lock UI scopes to the bible/prompt scalars), so they always
-    // come from the LLM. `starterPrompt` is normally untouched by expand
-    // (the LLM doesn't return one), but if it ever did, lock honoring
-    // protects the user's edits.
-    const locks = draft.locked || {};
-    // Distinguish "LLM omitted the field" (null/undefined → keep draft) from
-    // "LLM returned empty string" (a legitimate "" — the user's `||` would
-    // silently restore a stale value they wanted gone).
-    const pick = (key, llmValue) => {
-      if (locks[key]) return draft[key];
-      return llmValue == null ? draft[key] : llmValue;
-    };
-    const refinedInfluences = mergeInfluencesWithLocks(locks, result.influences, draft.influences);
-    const llmCategories = result.categories || {};
-    const mergedCategories = {};
-    const allCatKeys = new Set([
-      ...Object.keys(preservedVariations),
-      ...Object.keys(llmCategories),
-    ]);
-    for (const cat of allCatKeys) {
-      const locked = preservedVariations[cat] || [];
-      const fresh = (llmCategories[cat]?.variations || []);
-      // Preserve the bucket's `kind` so the category-to-canon-trunk contract
-      // survives the round-trip. Precedence:
-      //   - existing non-'other' draft kind (user curated it to a specific trunk)
-      //   - LLM-returned kind for this expand round (fresh classification)
-      //   - existing 'other' draft kind (Phase-B default for custom buckets)
-      //   - undefined (server's sanitizeCategory falls back to default-map / 'other')
-      // Allowing a fresh LLM kind to supersede an existing 'other' is intentional:
-      // pre-Phase-B "factions" buckets saved as `other` can be promoted to
-      // `characters` by a re-expand without requiring the user to manually change
-      // the trunk. User-curated non-`other` kinds (e.g. `places`) are preserved.
-      const existingKind = draft.categories?.[cat]?.kind;
-      const freshKind = llmCategories[cat]?.kind;
-      const kind = (existingKind && existingKind !== 'other') ? existingKind : (freshKind || existingKind);
-      mergedCategories[cat] = {
-        ...(kind ? { kind } : {}),
-        variations: mergeVariations(locked, fresh),
-      };
-    }
-    // Composite sheets merge follows the same locked-first + dedupe pattern.
-    const mergedSheets = (() => {
-      const llmSheets = result.compositeSheets || [];
-      const seen = new Set(preservedCompositeSheets.map((s) => s.label.toLowerCase()));
-      const out = [...preservedCompositeSheets];
-      for (const s of llmSheets) {
-        const key = s.label?.toLowerCase();
-        if (!key || seen.has(key)) continue;
-        seen.add(key);
-        out.push(s);
-      }
-      return out;
-    })();
-
-    // Merge LLM-emitted canon arrays into the draft's existing canon. Existing
-    // entries always win on name/slugline collision so a re-expand can't
-    // clobber hand-authored or series-extracted records. mergeCanonByName
-    // short-circuits when `fresh` is empty so identity is preserved.
-    //
-    // `kind` is passed so places use `normalizeSlugline` for both `name` and
-    // `slugline` (matching the server's MERGE_CONFIG.place.keyFields) —
-    // dash/punct-variant identifiers collide instead of duplicating.
-    const pickCanon = (key, kind) => mergeCanonByName(
-      draft[key] || [],
-      Array.isArray(result[key]) ? result[key] : [],
-      kind,
-    );
-    const mergedCharacters = pickCanon('characters', 'character');
-    const mergedPlaces = pickCanon('places', 'place');
-    const mergedObjects = pickCanon('objects', 'object');
-    // Count NEW canon entries this expand added (post-merge minus pre-existing).
-    // Used by the toast so a re-expand on a populated universe doesn't claim
-    // credit for entries the user already authored. Existing entries always win
-    // on collision in mergeCanonByName, so the delta is always non-negative.
-    const addedCanonCount =
-      (mergedCharacters.length - (draft.characters?.length || 0))
-      + (mergedPlaces.length - (draft.places?.length || 0))
-      + (mergedObjects.length - (draft.objects?.length || 0));
-
-    const expandedDraft = {
-      ...draft,
-      starterPrompt: pick('starterPrompt', result.starterPrompt),
-      logline: pick('logline', result.logline),
-      premise: pick('premise', result.premise),
-      styleNotes: pick('styleNotes', result.styleNotes),
-      influences: refinedInfluences,
-      categories: ensureDraftCategories(mergedCategories),
-      compositeSheets: mergedSheets,
-      characters: mergedCharacters,
-      places: mergedPlaces,
-      objects: mergedObjects,
-      llm: result.llm || draft.llm,
-    };
+    const {
+      expandedDraft, addedCanonCount, pendingAdditions, lockedKeys,
+    } = mergeExpandIntoDraft(draft, result, { ensureDraftCategories });
     setDraft(expandedDraft);
     // Flag the merged-but-not-yet-persisted canon so a subsequent manual
     // Save (if auto-save fails or is bypassed) includes the new entries.
@@ -1231,23 +1045,12 @@ export default function UniverseBuilder() {
     // full stale draft.
     if (addedCanonCount > 0) {
       setCanonDirty(true);
-      const computeAdditions = (existing, merged) => {
-        const norm = (s) => (typeof s === 'string' ? s.trim().toLowerCase() : '');
-        const existingNames = new Set((existing || []).map((e) => norm(e?.name)).filter(Boolean));
-        const existingSluglines = new Set((existing || []).map((e) => norm(e?.slugline)).filter(Boolean));
-        return (merged || []).filter((e) => {
-          const n = norm(e?.name);
-          const s = norm(e?.slugline);
-          return !(n && existingNames.has(n)) && !(s && existingSluglines.has(s));
-        });
-      };
       pendingCanonAdditionsRef.current = {
-        characters: [...pendingCanonAdditionsRef.current.characters, ...computeAdditions(draft.characters, mergedCharacters)],
-        places: [...pendingCanonAdditionsRef.current.places, ...computeAdditions(draft.places, mergedPlaces)],
-        objects: [...pendingCanonAdditionsRef.current.objects, ...computeAdditions(draft.objects, mergedObjects)],
+        characters: [...pendingCanonAdditionsRef.current.characters, ...pendingAdditions.characters],
+        places: [...pendingCanonAdditionsRef.current.places, ...pendingAdditions.places],
+        objects: [...pendingCanonAdditionsRef.current.objects, ...pendingAdditions.objects],
       };
     }
-    const lockedKeys = Object.keys(locks).filter((k) => locks[k]);
     if (lockedKeys.length) {
       console.log(`🔒 Universe Builder expand preserved ${lockedKeys.length} locked field(s): ${lockedKeys.join(', ')}`);
     }
