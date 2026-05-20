@@ -8,7 +8,7 @@
 import { join } from 'path';
 import { PATHS, atomicWrite, readJSONFile, ensureDir } from '../lib/fileUtils.js';
 import { isValidKey } from '../lib/mediaItemKey.js';
-import { getInstanceId } from './instances.js';
+import { getInstanceId, UNKNOWN_INSTANCE_ID } from './instances.js';
 import { resolveLocalAuthorName } from './sharing/annotationIdentity.js';
 
 const STATE_PATH = join(PATHS.data, 'media-annotations.json');
@@ -80,19 +80,19 @@ async function readAll() {
   // Resolve identity inputs ONCE for the whole file scan — every legacy entry
   // would otherwise repeat both awaits below.
   const [localInstanceId, defaultAuthorName] = await Promise.all([
-    getInstanceId().catch(() => 'unknown'),
+    getInstanceId().catch(() => UNKNOWN_INSTANCE_ID),
     resolveLocalAuthorName().catch(() => ''),
   ]);
   const liftCtx = { localInstanceId, defaultAuthorName };
-  // Heal-on-read: migration 014 wrote the literal `'unknown'` as an author key
+  // Heal-on-read: migration 014 wrote UNKNOWN_INSTANCE_ID as an author key
   // when it ran before `ensureSelf()` had created the local identity. Re-key
   // those entries to the real `localInstanceId` so they project as the user's
   // own annotation and become exportable again (annotationsSync.flushAll
-  // refuses to ship payloads with instanceId `'unknown'`). The heal is in-
+  // refuses to ship payloads with instanceId UNKNOWN_INSTANCE_ID). The heal is in-
   // memory only — the first subsequent `setAnnotation` for the key persists
   // the clean shape via the normal write path. Skip the heal when we still
   // don't have a real local identity, otherwise we'd just rename the phantom.
-  const healUnknownAuthor = localInstanceId && localInstanceId !== 'unknown';
+  const healUnknownAuthor = localInstanceId && localInstanceId !== UNKNOWN_INSTANCE_ID;
   const out = {};
   for (const [key, value] of Object.entries(annotations)) {
     if (!isValidKey(key)) continue;
@@ -101,15 +101,15 @@ async function readAll() {
     const authors = {};
     for (const [instanceId, sub] of Object.entries(lifted.authors)) {
       if (typeof instanceId !== 'string' || !instanceId) continue;
-      if (instanceId === 'unknown' && healUnknownAuthor) continue; // re-keyed below
+      if (instanceId === UNKNOWN_INSTANCE_ID && healUnknownAuthor) continue; // re-keyed below
       const sane = sanitizeAuthorEntry(sub);
       if (sane) authors[instanceId] = sane;
     }
-    // Heal the phantom: re-key `unknown` → real local id. Skip when a real
+    // Heal the phantom: re-key UNKNOWN_INSTANCE_ID → real local id. Skip when a real
     // local entry already exists for this key — that's the source of truth
     // (a later setAnnotation already wrote there) and the phantom is dropped.
-    if (healUnknownAuthor && lifted.authors.unknown && !authors[localInstanceId]) {
-      const sane = sanitizeAuthorEntry(lifted.authors.unknown);
+    if (healUnknownAuthor && lifted.authors[UNKNOWN_INSTANCE_ID] && !authors[localInstanceId]) {
+      const sane = sanitizeAuthorEntry(lifted.authors[UNKNOWN_INSTANCE_ID]);
       if (sane) {
         authors[localInstanceId] = { ...sane, authorName: sane.authorName || defaultAuthorName };
       }
@@ -132,7 +132,7 @@ function projectForLocal(authorsMap, localInstanceId) {
 export async function listAnnotations() {
   const [all, localInstanceId] = await Promise.all([
     readAll(),
-    getInstanceId().catch(() => 'unknown'),
+    getInstanceId().catch(() => UNKNOWN_INSTANCE_ID),
   ]);
   const out = {};
   for (const [key, { authors }] of Object.entries(all)) {
@@ -145,7 +145,7 @@ export async function listAnnotations() {
 export async function listLocalAuthorAnnotations() {
   const [all, localInstanceId] = await Promise.all([
     readAll(),
-    getInstanceId().catch(() => 'unknown'),
+    getInstanceId().catch(() => UNKNOWN_INSTANCE_ID),
   ]);
   const out = {};
   for (const [key, { authors }] of Object.entries(all)) {
@@ -166,12 +166,12 @@ export async function listLocalAuthorAnnotations() {
 export async function mergePeerAnnotations(payload) {
   if (!payload || typeof payload !== 'object') return { changed: [], projections: new Map() };
   const peerInstanceId = typeof payload.instanceId === 'string' ? payload.instanceId : null;
-  // Reject empty or sentinel `'unknown'` peer ids on import. The outgoing path
-  // already guards (`annotationsSync.flushAll` early-returns on `'unknown'`)
+  // Reject empty or UNKNOWN_INSTANCE_ID peer ids on import. The outgoing path
+  // already guards (`annotationsSync.flushAll` early-returns on the sentinel)
   // but a hand-crafted manifest or a peer in an inconsistent state could ship
   // one — without this guard, every such peer would alias into the same
-  // `'unknown'` bucket and clobber each other on every merge.
-  if (!peerInstanceId || peerInstanceId === 'unknown') return { changed: [], projections: new Map() };
+  // sentinel bucket and clobber each other on every merge.
+  if (!peerInstanceId || peerInstanceId === UNKNOWN_INSTANCE_ID) return { changed: [], projections: new Map() };
   const localInstanceId = await getInstanceId().catch(() => null);
   if (peerInstanceId === localInstanceId) return { changed: [], projections: new Map() };
   const incoming = payload.annotations && typeof payload.annotations === 'object'
@@ -262,7 +262,7 @@ export async function setAnnotation(key, patch) {
     getInstanceId(),
     resolveLocalAuthorName().catch(() => ''),
   ]);
-  if (!localInstanceId || localInstanceId === 'unknown') {
+  if (!localInstanceId || localInstanceId === UNKNOWN_INSTANCE_ID) {
     throw makeErr('Local instance identity not initialized', ERR_VALIDATION);
   }
 

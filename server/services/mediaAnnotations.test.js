@@ -14,6 +14,7 @@ tryReadFile: vi.fn().mockResolvedValue(null),
 const LOCAL_INSTANCE = 'local-instance-id';
 vi.mock('./instances.js', () => ({
   getInstanceId: vi.fn(async () => LOCAL_INSTANCE),
+  UNKNOWN_INSTANCE_ID: 'unknown',
 }));
 vi.mock('./sharing/annotationIdentity.js', () => ({
   resolveLocalAuthorName: vi.fn(async () => 'Local User'),

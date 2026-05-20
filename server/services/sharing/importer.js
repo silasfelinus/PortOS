@@ -34,11 +34,9 @@ import { insertIssueWithId, updateIssue, getIssue } from '../pipeline/issues.js'
 import { insertUniverseWithId, updateUniverse, getUniverse } from '../universeBuilder.js';
 import { findOrCreateUniverseCollection, findOrCreateSeriesCollection, addItem as addCollectionItem, ERR_DUPLICATE as COLLECTION_ERR_DUPLICATE } from '../mediaCollections.js';
 import { adoptImportedSubscription, withReexportSuppressed } from './subscriptions.js';
-import { getInstanceId } from '../instances.js';
+import { getInstanceId, UNKNOWN_INSTANCE_ID } from '../instances.js';
 import { mergePeerAnnotations } from '../mediaAnnotations.js';
 import { isStr } from '../../lib/storyBible.js';
-
-const UNKNOWN_INSTANCE_ID = 'unknown';
 
 function isSelfAuthored(senderInstanceId, localInstanceId) {
   return !!localInstanceId

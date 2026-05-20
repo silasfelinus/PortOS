@@ -32,6 +32,7 @@ vi.mock('./buckets.js', () => ({
 
 vi.mock('../instances.js', () => ({
   getInstanceId: vi.fn(async () => 'local-instance'),
+  UNKNOWN_INSTANCE_ID: 'unknown',
 }));
 
 vi.mock('./annotationIdentity.js', () => ({

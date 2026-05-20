@@ -44,6 +44,7 @@ vi.mock('../../lib/fileUtils.js', async () => {
 vi.mock('../instances.js', () => ({
 tryReadFile: vi.fn().mockResolvedValue(null),
   getInstanceId: () => Promise.resolve('test-instance-id'),
+  UNKNOWN_INSTANCE_ID: 'unknown',
 }));
 
 // Stub mediaJobQueue.getJob — exporter uses it for full-fidelity gen
