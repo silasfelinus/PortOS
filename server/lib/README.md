@@ -106,6 +106,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `sharingOrigin.js` | Origin metadata for records imported from share buckets. |
 | `tailscale.js` | Common paths where the Tailscale CLI binary is found. |
 | `httpsState.js` | Captures whether PortOS booted with HTTPS active. |
+| `networkExposure.js` | Snapshot of scheme + bind + cert mode for the dashboard's Network Exposure widget. |
 
 ## Search & indexing
 
