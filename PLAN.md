@@ -19,7 +19,6 @@ _Nothing currently parked — pick the next item from the Backlog._
 
 ### Pipeline — deferred
 
-- [ ] [wire-storyboards-scene-video-rendering-as-a] **Wire `storyboards` scene-video rendering** as a separate path from the episode-video handoff. Add optional `sceneVideoJobId` per scene.
 - [ ] [versioning-diff-view-per-stage-persist-last-n] **Versioning / diff view per stage.** Persist last N `lastRunId` snapshots; offer a diff modal.
 - [ ] [voice-controlled-stage-advancement-register] **Voice-controlled stage advancement.** Register pipeline stage navigation actions in `voice/tools.js`.
 - [ ] [backport-pre-023-migrations-to-_lib] **Back-port pre-023 prompt-replace migrations onto `scripts/migrations/_lib.js`.** 003 / 004 / 005 / 006 / 010 / 013 / 019 all clone the inline `applyMigration` + per-file scan + customized-skip warning pattern that `_lib.js` now centralizes. Wrap any `OLD_SHIPPED_MD5: string` entries (003 / 004 / 006) into single-element arrays to match the `accepted[filename]: string[]` shape. Drop ~70 LOC per migration; nothing changes behaviorally so the only risk is mis-typed hashes — review each diff alongside a re-run of its test against the `_testHelpers.js` `runPromptMigrationTests`. Settled-history migrations have a higher rewrite-bar than active code, so a separate PR with focused review is appropriate. Surfaced by /simplify during `[pipeline-idea-stage-character-detail-plumbing]`.
