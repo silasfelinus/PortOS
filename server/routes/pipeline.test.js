@@ -476,6 +476,54 @@ describe('pipeline routes', () => {
     expect(r.body.find((i) => i.id === iss1.body.id)?.seriesName).toBe('Alpha');
   });
 
+  // Service-layer tests cover withHistory:true/false; these pin the route
+  // wiring on the endpoints UI lists hit so a future change can't silently
+  // re-introduce stage runHistory on list payloads.
+  describe('list endpoints strip runHistory at the HTTP boundary', () => {
+    async function seedIssueWithHistory(app) {
+      const ser = await request(app).post('/api/pipeline/series').send({ name: 'S' });
+      const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
+      await request(app).post(`/api/pipeline/issues/${iss.body.id}/stages/idea/generate`).send({ seedInput: 'v1' });
+      const r = await request(app).post(`/api/pipeline/issues/${iss.body.id}/stages/idea/generate`).send({ seedInput: 'v2' });
+      expect(r.body.stage.runHistory).toHaveLength(1);
+      return { seriesId: ser.body.id, issueId: iss.body.id };
+    }
+
+    it.each([
+      ['non-paginated', '', (body) => body, { withHistory: false }],
+      ['paginated', '?offset=0&limit=10', (body) => body.items, { paginated: true, withHistory: false }],
+    ])('GET /series/:id/issues (%s) strips stages.*.runHistory and forwards withHistory:false', async (_label, qs, pickItems, expectedArgs) => {
+      const issuesSvc = await import('../services/pipeline/issues.js');
+      const app = makeApp();
+      const { seriesId, issueId } = await seedIssueWithHistory(app);
+      const spy = vi.spyOn(issuesSvc, 'listIssues');
+      const r = await request(app).get(`/api/pipeline/series/${seriesId}/issues${qs}`);
+      expect(r.status).toBe(200);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({ seriesId, ...expectedArgs }));
+      const items = pickItems(r.body);
+      expect(Array.isArray(items)).toBe(true);
+      expect(items.find((i) => i.id === issueId).stages.idea.runHistory).toEqual([]);
+      spy.mockRestore();
+    });
+
+    it('GET /issues/recent forwards withHistory:false and projects stages out of the response', async () => {
+      const issuesSvc = await import('../services/pipeline/issues.js');
+      const app = makeApp();
+      // Tiny seed so the response is non-empty and we can assert the
+      // route's `stages`-dropping projection actually holds.
+      const ser = await request(app).post('/api/pipeline/series').send({ name: 'S' });
+      await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'T' });
+      const spy = vi.spyOn(issuesSvc, 'listRecentIssues');
+      const r = await request(app).get('/api/pipeline/issues/recent?limit=5');
+      expect(r.status).toBe(200);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({ withHistory: false }));
+      expect(r.body[0]).not.toHaveProperty('stages');
+      spy.mockRestore();
+    });
+  });
+
   it('POST /issues/:id/stages/storyboards/scenes/:index/video returns the enqueued jobId', async () => {
     const app = makeApp();
     const ser = await request(app).post('/api/pipeline/series').send({ name: 'S' });
