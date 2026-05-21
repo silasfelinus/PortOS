@@ -50,9 +50,10 @@ describe('MORNING_DEFAULT_WINDOW', () => {
   });
 });
 
-// pickActiveLayoutId + recordManualLayoutPick touch window.localStorage, so
-// only the client's jsdom vitest can run them. Server vitest also picks up
-// `**/*.test.js` from `client/src/**` and would error under node env.
+// These describes need window.localStorage. The client's jsdom vitest runs
+// them in full (verified 13/13 tests pass under jsdom). The server's node-
+// env vitest also picks up `client/src/**/*.test.js` (see server/vitest.config.js
+// include list) and would crash here without the skip.
 const hasLocalStorage = typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
 
 describe.skipIf(!hasLocalStorage)('pickActiveLayoutId', () => {

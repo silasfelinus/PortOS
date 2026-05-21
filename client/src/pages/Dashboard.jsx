@@ -57,6 +57,19 @@ export default function Dashboard() {
 
   // One-shot per mount — guards against re-evaluation stomping manual picks.
   const autoSwitchedRef = useRef(false);
+  // Serializes activeLayoutId writes so an auto-window PUT can't land at the
+  // server after a manual pick that the user fired during the auto's flight
+  // (would make the server contradict the user's intent). Matches the server-
+  // side serialization convention in CLAUDE.md ("Async PATCH races on shared
+  // records — serialize writes").
+  const activeLayoutWriteTailRef = useRef(Promise.resolve());
+  const queueActiveLayoutWrite = useCallback((id) => {
+    const tail = activeLayoutWriteTailRef.current.then(() => api.setActiveDashboardLayout(id));
+    // Tail must survive failures so subsequent writes still chain — but the
+    // returned promise to callers keeps the rejection so they can revert.
+    activeLayoutWriteTailRef.current = tail.catch(() => null);
+    return tail;
+  }, []);
 
   useEffect(() => {
     // `cancelled` guard prevents setState-on-unmounted warnings (and
@@ -73,12 +86,14 @@ export default function Dashboard() {
         if (desiredActiveId === data.activeLayoutId) {
           autoSwitchedRef.current = true;
         } else {
-          // Only mark "auto-switched" after the server confirms — a failing
-          // PUT would otherwise leave the UI on the window layout while the
-          // server still says the old one, with no retry path until reload.
-          api.setActiveDashboardLayout(desiredActiveId)
-            .then(() => { autoSwitchedRef.current = true; })
+          // Routed through the write queue so a manual pick fired during
+          // this PUT's flight queues after it — the user's intent always
+          // wins at the server. Mark "auto-switched" only after the PUT
+          // settles so a failing server gets retried on the next mount.
+          queueActiveLayoutWrite(desiredActiveId)
+            .then(() => { if (!cancelled) autoSwitchedRef.current = true; })
             .catch(() => {
+              if (cancelled) return;
               setActiveLayoutId((current) => (current === desiredActiveId ? data.activeLayoutId : current));
             });
         }
@@ -191,12 +206,10 @@ export default function Dashboard() {
     const previousId = activeLayoutId;
     setActiveLayoutId(id);
     recordManualLayoutPick(id);
-    // Revert on failure. request() already surfaces the error via toast,
-    // so swallow here to prevent an unhandled rejection from click handlers.
-    // Guard the revert with a functional setState — if the user has since
-    // switched to another layout, the more recent selection wins instead
-    // of snapping back to the stale `previousId`.
-    await api.setActiveDashboardLayout(id).catch(() => {
+    // Queued so an in-flight auto-window PUT can't land after this — the
+    // user's manual pick always reaches the server last. Revert on failure
+    // via functional setState so a later selection isn't clobbered.
+    await queueActiveLayoutWrite(id).catch(() => {
       setActiveLayoutId((current) => (current === id ? previousId : current));
     });
   };
@@ -227,11 +240,9 @@ export default function Dashboard() {
     // Lock in for the day so a window-driven auto-switch on the next mount
     // doesn't bump the user off the brand-new layout they just created.
     recordManualLayoutPick(id);
-    // Mirror selectLayout's revert-on-failure so the picker doesn't
-    // diverge from server state if the active-write fails. Only revert
-    // if the UI still reflects the id we tried to set; a later selection
-    // must not be clobbered by an earlier failed request.
-    await api.setActiveDashboardLayout(id).catch(() => {
+    // Queued so any in-flight auto-window PUT can't land after this.
+    // Revert via functional setState so a later selection isn't clobbered.
+    await queueActiveLayoutWrite(id).catch(() => {
       setActiveLayoutId((current) => (current === id ? previousId : current));
     });
   };
