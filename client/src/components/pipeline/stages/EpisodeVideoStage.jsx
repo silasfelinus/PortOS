@@ -50,13 +50,20 @@ export default function EpisodeVideoStage({ issue, series, onStageUpdate }) {
   // so terminal projects no longer trigger re-renders even though the poll
   // continues. Single-user app on Tailscale — the small bandwidth cost of
   // polling a complete project until the user navigates away is negligible.
+  //
+  // Errors are intentionally allowed to throw — the hook's catch logs the
+  // failure and preserves the previously-applied data, so a transient network
+  // blip doesn't wipe the currently-displayed project. (A `.catch(() => null)`
+  // here would make the poll "succeed" with null and clear cdProject.)
+  //
+  // `immediate: false` because the useEffect below owns the on-mount /
+  // on-id-swap immediate fetch — running both would double-fetch on every
+  // mount and on every null↔id toggle. The interval still fires at
+  // POLL_INTERVAL_MS once the hook is enabled.
   const { data: rawCdProject, refetch: refetchCdProject } = useAutoRefetch(
-    () => getCreativeDirectorProject(cdProjectId, { slim: true }).catch((err) => {
-      console.log(`pipeline:episode poll error ${err.message}`);
-      return null;
-    }),
+    () => getCreativeDirectorProject(cdProjectId, { slim: true }),
     POLL_INTERVAL_MS,
-    { enabled: !!cdProjectId, compare: sameProjectSnapshot },
+    { enabled: !!cdProjectId, immediate: false, compare: sameProjectSnapshot },
   );
 
   // After a restart the hook still holds the previous project's snapshot until
@@ -64,8 +71,10 @@ export default function EpisodeVideoStage({ issue, series, onStageUpdate }) {
   // new context.
   const cdProject = rawCdProject?.id === cdProjectId ? rawCdProject : null;
 
-  // Fire an immediate fetch on cdProjectId change so a project swap doesn't
-  // wait a full poll interval before the new project appears.
+  // Sole immediate-fetch path: fires on mount and on every cdProjectId change
+  // (including truthy→truthy id swaps that the hook's `enabled` toggle doesn't
+  // cover). Paired with `immediate: false` on the hook above so the on-mount
+  // case isn't double-fetched.
   useEffect(() => {
     if (cdProjectId) refetchCdProject();
   }, [cdProjectId, refetchCdProject]);
