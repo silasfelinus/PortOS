@@ -386,13 +386,37 @@ export async function getFeedStats() {
 
 // ─── Internal Helpers ───────────────────────────────────────────────────────
 
-// Check if an IP address is private/loopback/link-local
+// Check if an IP address is private/loopback/link-local (IPv4 or IPv6).
 function isPrivateIP(ip) {
   if (!ip) return true;
-  // IPv6 loopback
-  if (ip === '::1' || ip === '::') return true;
+  const lower = ip.toLowerCase();
+  // IPv6
+  if (lower.includes(':')) {
+    if (lower === '::1' || lower === '::') return true;
+    // IPv4-mapped IPv6 — accept both ::ffff:a.b.c.d (raw form from dns.resolve)
+    // and ::ffff:wxyz:wxyz (the hex form Node's URL parser normalizes to).
+    const mappedDotted = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (mappedDotted) return isPrivateIP(mappedDotted[1]);
+    const mappedHex = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (mappedHex) {
+      const high = parseInt(mappedHex[1], 16);
+      const low = parseInt(mappedHex[2], 16);
+      return isPrivateIP(`${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`);
+    }
+    const firstGroup = lower.split(':')[0];
+    if (firstGroup) {
+      const firstWord = parseInt(firstGroup, 16);
+      if (Number.isFinite(firstWord)) {
+        // ULA fc00::/7 (top 7 bits = 1111110)
+        if ((firstWord & 0xfe00) === 0xfc00) return true;
+        // Link-local fe80::/10 (top 10 bits = 1111111010)
+        if ((firstWord & 0xffc0) === 0xfe80) return true;
+      }
+    }
+    return false;
+  }
   // IPv4
-  const parts = ip.split('.').map(Number);
+  const parts = lower.split('.').map(Number);
   if (parts.length === 4 && parts.every(p => !isNaN(p) && p >= 0 && p <= 255)) {
     if (parts[0] === 10) return true;
     if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
@@ -406,10 +430,14 @@ function isPrivateIP(ip) {
 
 // Resolve hostname and verify it doesn't point to a private IP
 async function isHostSafe(hostname) {
-  // Numeric IPs: check directly
-  if (net.isIP(hostname)) return !isPrivateIP(hostname);
+  // URL.hostname preserves the [::1] bracketed form for IPv6 literals; strip
+  // brackets so net.isIP recognizes the address before falling through to DNS.
+  const stripped = hostname.startsWith('[') && hostname.endsWith(']')
+    ? hostname.slice(1, -1)
+    : hostname;
+  if (net.isIP(stripped)) return !isPrivateIP(stripped);
   // DNS resolution: check all resolved addresses
-  const addresses = await dns.resolve4(hostname).catch(() => []);
+  const addresses = await dns.resolve4(stripped).catch(() => []);
   if (addresses.length === 0) return false;
   return addresses.every(addr => !isPrivateIP(addr));
 }
