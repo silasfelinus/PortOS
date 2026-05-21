@@ -1,46 +1,87 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 
 /**
- * Hook for auto-refetching data on an interval.
- * Eliminates the repeated useEffect + setInterval pattern across dashboard widgets.
+ * Auto-refetch on an interval, pausing while the tab is hidden and re-firing
+ * once when it becomes visible again. Replaces the per-component
+ * useEffect + setInterval pattern for data-fetch polling.
  *
- * @param {Function} fetchFn - Async function that returns data (should handle its own errors)
- * @param {number} intervalMs - Refetch interval in milliseconds (changing this will restart the interval with the new value)
- * @returns {{ data: any, loading: boolean }}
+ * fetchFn should handle its own errors. Side-effect-only callers that manage
+ * their own state via setStates inside fetchFn typically `return null` and
+ * ignore the hook's `data` return; that's fine, but be aware the hook will
+ * still set `data = null` on each tick.
+ *
+ * @param {Function} fetchFn - async, returns the new data
+ * @param {number} intervalMs - poll cadence; changing restarts the interval
+ * @param {Object} [options]
+ * @param {boolean} [options.enabled=true] - when false, no interval and no fetch
+ * @param {boolean} [options.immediate=true] - when false, skip the on-mount fetch
+ *   and wait `intervalMs` before the first fetch. Use when the caller already
+ *   performs a one-shot fetch via another path (e.g. `useCityData.fetchAll`).
+ * @returns {{ data: any, loading: boolean, refetch: Function }}
  */
-export function useAutoRefetch(fetchFn, intervalMs) {
+export function useAutoRefetch(fetchFn, intervalMs, options = {}) {
+  const { enabled = true, immediate = true } = options;
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const fetchRef = useRef(fetchFn);
 
-  // Keep ref current so interval callbacks don't capture stale closures
   useEffect(() => {
     fetchRef.current = fetchFn;
   }, [fetchFn]);
 
+  // Stable, unconditional refetch for callers (Refresh buttons, post-mutation
+  // refresh paths, and key-change effects that need an immediate fetch with
+  // the new closure). Bypasses the visibility short-circuit — when a user
+  // clicks Refresh the tab is by definition visible.
+  const refetch = useCallback(async () => {
+    try {
+      const result = await fetchRef.current();
+      setData(result);
+      setLoading(false);
+      return result;
+    } catch (err) {
+      console.warn(`⚠️ Auto-refetch failed: ${err.message}`);
+      setLoading(false);
+      return undefined;
+    }
+  }, []);
+
   useEffect(() => {
+    if (!enabled) return undefined;
+
     let cancelled = false;
 
     const loadData = async () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       try {
         const result = await fetchRef.current();
         if (cancelled) return;
         setData(result);
         setLoading(false);
       } catch (err) {
-        // Keep prior data on failure, just clear loading state
         console.warn(`⚠️ Auto-refetch failed: ${err.message}`);
         if (!cancelled) setLoading(false);
       }
     };
 
-    loadData();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') loadData();
+    };
+
+    if (immediate) loadData();
     const interval = setInterval(loadData, intervalMs);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+    }
+
     return () => {
       cancelled = true;
       clearInterval(interval);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
     };
-  }, [intervalMs]);
+  }, [intervalMs, enabled, immediate]);
 
-  return { data, loading };
+  return { data, loading, refetch };
 }
