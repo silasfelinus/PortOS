@@ -14,7 +14,7 @@ _Nothing currently parked — pick the next item from the Backlog._
 
 ### Better-audit residue
 
-- [ ] [feeds-ssrf-ipv6-bracket-hostname-gap] **[MED][SECURITY]** `server/services/feeds.js#isHostSafe` doesn't reliably reject IPv6 literal hostnames like `http://[::1]/feed`. `new URL(...).hostname` returns `'[::1]'` (with brackets), so `net.isIP('[::1]')` returns 0 (brackets aren't valid IP syntax) and execution falls through to `dns.resolve4('[::1]')`. Production DNS typically errors → empty addresses → `return false`, so the loopback is protected _incidentally_, but the protection is fragile (any caching resolver or unusual hosts file could subvert it). Fix: strip surrounding `[…]` brackets before `net.isIP`, add an explicit `if (net.isIP(stripped) === 6) return !isPrivateIP(stripped)` branch, and extend `isPrivateIP` to cover ULA (`fc00::/7`) and link-local (`fe80::/10`) ranges. `isPrivateIP` already handles `::1`/`::`. Surfaced 2026-05-19 while adding feeds.js test coverage; deferred to keep that PR scoped to tests.
+- [ ] [feeds-ssrf-aaaa-record-blindness] **[LOW][SECURITY]** `server/services/feeds.js#isHostSafe` only calls `dns.resolve4`, so a hostname with a public A record + private AAAA record passes the guard but Node's fetch (happy-eyeballs) may prefer the AAAA and reach a private IPv6. Fix: `Promise.all([dns.resolve4, dns.resolve6])`, treat empty-both as fail, require *every* address across both families to pass `isPrivateIP`. Update the test mock to also intercept `resolve6`. Same fix unlocks AAAA-only feeds (currently rejected as "no A records") as a side effect. Skipped from `[feeds-ssrf-ipv6-bracket-hostname-gap]` to keep that PR scoped to the bracket-stripping bug.
 
 ### Pipeline — deferred
 
