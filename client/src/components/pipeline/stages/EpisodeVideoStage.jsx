@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Film, ExternalLink, Loader2, Sparkles, AlertCircle, CheckCircle2 } from 'lucide-react';
 import toast from '../../ui/Toast';
@@ -8,6 +8,15 @@ import { getSceneStatusBadge, PROJECT_STATUS_LABEL } from '../../creative-direct
 import ScenePreview from '../../creative-director/ScenePreview';
 import { useAsyncAction } from '../../../hooks/useAsyncAction';
 import { useAutoRefetch } from '../../../hooks/useAutoRefetch';
+
+// Monotonic snapshot: a poll is logically equivalent when the project's id,
+// updatedAt, and status all match. Including `id` guards against the restart
+// edge case where prev/next describe different projects with coincidentally
+// matching keys.
+const sameProjectSnapshot = (prev, next) =>
+  prev.id === next.id
+  && prev.updatedAt === next.updatedAt
+  && prev.status === next.status;
 
 const POLL_INTERVAL_MS = 4000;
 
@@ -29,7 +38,6 @@ export default function EpisodeVideoStage({ issue, series, onStageUpdate }) {
   const storyboardScenes = issue.stages?.storyboards?.scenes || [];
   const usableScenes = storyboardScenes.filter((s) => (s?.description || '').trim().length > 0);
 
-  const [cdProject, setCdProject] = useState(null);
   const [confirmRestart, setConfirmRestart] = useState(false);
   // Initialize from the persisted stage values so a page reload (or a fresh
   // tab) doesn't lose the user's previous picks. Falls through to defaults
@@ -37,32 +45,43 @@ export default function EpisodeVideoStage({ issue, series, onStageUpdate }) {
   const [aspectRatio, setAspectRatio] = useState(stage.aspectRatio || '16:9');
   const [quality, setQuality] = useState(stage.quality || 'standard');
 
-  // Poll while the project could still mutate. Pauses on hidden tab via
-  // useAutoRefetch's visibility short-circuit and stops once status is terminal.
-  const { refetch: refetchCdProject } = useAutoRefetch(
-    async () => {
-      const p = await getCreativeDirectorProject(cdProjectId, { slim: true }).catch((err) => {
-        console.log(`pipeline:episode poll error ${err.message}`);
-        return null;
-      });
-      if (!p) return null;
-      // Skip the setState (and downstream re-render + scene re-sort) when the
-      // poll returns the same monotonic snapshot we already hold.
-      setCdProject((prev) => (
-        prev && prev.updatedAt === p.updatedAt && prev.status === p.status ? prev : p
-      ));
-      return null;
-    },
+  // Poll while a project id is bound. Pauses on hidden tab via the hook's
+  // visibility short-circuit; identical snapshots dedup via the compare option
+  // so terminal projects no longer trigger re-renders even though the poll
+  // continues. Single-user app on Tailscale — the small bandwidth cost of
+  // polling a complete project until the user navigates away is negligible.
+  //
+  // Errors are intentionally allowed to throw — the hook's catch logs the
+  // failure and preserves the previously-applied data, so a transient network
+  // blip doesn't wipe the currently-displayed project. (A `.catch(() => null)`
+  // here would make the poll "succeed" with null and clear cdProject.)
+  //
+  // `immediate: true` (default) — the hook owns the visibility-aware initial
+  // fetch on mount and on every enabled-toggle (null↔id). The useEffect below
+  // only covers truthy→truthy id swaps that the hook's enabled gate misses.
+  const { data: rawCdProject, refetch: refetchCdProject } = useAutoRefetch(
+    () => getCreativeDirectorProject(cdProjectId, { slim: true }),
     POLL_INTERVAL_MS,
-    { enabled: !!cdProjectId && !isTerminalProjectStatus(cdProject?.status) },
+    { enabled: !!cdProjectId, compare: sameProjectSnapshot },
   );
 
-  // Clear the displayed project on stage reset; refetch immediately on id
-  // change so a project swap doesn't strand the previous project on screen
-  // until the next interval tick.
+  // After a restart the hook still holds the previous project's snapshot until
+  // the next fetch lands; filter by id so the stale view doesn't paint into the
+  // new context.
+  const cdProject = rawCdProject?.id === cdProjectId ? rawCdProject : null;
+
+  // Fires only on truthy→truthy cdProjectId swaps (restart). The hook's own
+  // immediate fetch covers mount and null↔id transitions and respects the
+  // hidden-tab short-circuit. `refetch` bypasses visibility, so we gate the
+  // call on visibilityState — on hidden tab the hook's visibility-event
+  // listener will pick up the new closure when the tab is reactivated.
+  const prevCdProjectIdRef = useRef(cdProjectId);
   useEffect(() => {
-    if (!cdProjectId) setCdProject(null);
-    else refetchCdProject();
+    const prev = prevCdProjectIdRef.current;
+    prevCdProjectIdRef.current = cdProjectId;
+    if (!cdProjectId || !prev || prev === cdProjectId) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    refetchCdProject();
   }, [cdProjectId, refetchCdProject]);
 
   const [runSubmit, submitting] = useAsyncAction(
@@ -87,11 +106,10 @@ export default function EpisodeVideoStage({ issue, series, onStageUpdate }) {
     const result = await runSubmit({ force });
     if (!result) return;
     if (force) {
-      // Only clear the prior project view AFTER the restart kickoff succeeds.
-      // Clearing pre-flight (which we used to do) meant a failed restart
-      // tore the in-flight progress UI off the page even though the
-      // previous CD project was still rendering.
-      setCdProject(null);
+      // The prior project view clears automatically because the cdProjectId
+      // filter on `rawCdProject` drops the stale snapshot once onStageUpdate
+      // swaps to the new id. A failed restart leaves the previous project
+      // visible because cdProjectId is unchanged in that path.
       toast.success(`Restarted: ${result.cdProjectId?.slice(0, 8) ?? '?'}`);
     } else if (result.reused) {
       toast.success(`Reusing in-flight CD project ${result.cdProjectId?.slice(0, 8) ?? '?'}`);

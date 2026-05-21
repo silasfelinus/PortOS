@@ -1,10 +1,11 @@
-import { useState, useCallback } from 'react';
+import { useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import * as api from '../services/api';
 import {Brain as BrainIcon} from 'lucide-react';
 import BrailleSpinner from '../components/BrailleSpinner';
 import TabPills from '../components/ui/TabPills';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
+import { sameJsonShape } from '../lib/sameJsonShape';
 
 import { TABS } from '../components/brain/constants';
 import { timeAgo } from '../utils/formatters';
@@ -26,22 +27,19 @@ export default function Brain() {
   const navigate = useNavigate();
   const activeTab = tab || 'inbox';
 
-  const [summary, setSummary] = useState(null);
-  const [settings, setSettings] = useState(null);
-  const [loading, setLoading] = useState(true);
-
   const fetchData = useCallback(async () => {
-    const [summaryData, settingsData] = await Promise.all([
+    const [summary, settings] = await Promise.all([
       api.getBrainSummary().catch(() => null),
       api.getBrainSettings().catch(() => null)
     ]);
-    setSummary(summaryData);
-    setSettings(settingsData);
-    setLoading(false);
-    return null;
+    return { summary, settings };
   }, []);
 
-  useAutoRefetch(fetchData, 30_000);
+  const { data, loading, refetch } = useAutoRefetch(fetchData, 30_000, {
+    compare: sameJsonShape,
+  });
+  const summary = data?.summary ?? null;
+  const settings = data?.settings ?? null;
 
   const handleTabChange = (tabId) => {
     navigate(`/brain/${tabId}`);
@@ -50,29 +48,29 @@ export default function Brain() {
   const renderTabContent = () => {
     switch (activeTab) {
       case 'inbox':
-        return <InboxTab onRefresh={fetchData} settings={settings} />;
+        return <InboxTab onRefresh={refetch} settings={settings} />;
       case 'links':
-        return <LinksTab onRefresh={fetchData} />;
+        return <LinksTab onRefresh={refetch} />;
       case 'memory':
-        return <MemoryTab onRefresh={fetchData} />;
+        return <MemoryTab onRefresh={refetch} />;
       case 'notes':
-        return <NotesTab onRefresh={fetchData} />;
+        return <NotesTab onRefresh={refetch} />;
       case 'daily-log':
         return <DailyLogTab />;
       case 'graph':
         return <BrainGraph />;
       case 'digest':
-        return <DigestTab onRefresh={fetchData} />;
+        return <DigestTab onRefresh={refetch} />;
       case 'feeds':
-        return <FeedsTab onRefresh={fetchData} />;
+        return <FeedsTab onRefresh={refetch} />;
       case 'trust':
-        return <TrustTab onRefresh={fetchData} />;
+        return <TrustTab onRefresh={refetch} />;
       case 'import':
         return <ImportTab />;
       case 'config':
-        return <ConfigTab onRefresh={fetchData} />;
+        return <ConfigTab onRefresh={refetch} />;
       default:
-        return <InboxTab onRefresh={fetchData} settings={settings} />;
+        return <InboxTab onRefresh={refetch} settings={settings} />;
     }
   };
 
