@@ -14,8 +14,6 @@ _Nothing currently parked — pick the next item from the Backlog._
 
 ### Better-audit residue
 
-- [ ] [feeds-ssrf-aaaa-record-blindness] **[LOW][SECURITY]** `server/services/feeds.js#isHostSafe` only calls `dns.resolve4`, so a hostname with a public A record + private AAAA record passes the guard but Node's fetch (happy-eyeballs) may prefer the AAAA and reach a private IPv6. Fix: `Promise.all([dns.resolve4, dns.resolve6])`, treat empty-both as fail, require *every* address across both families to pass `isPrivateIP`. Update the test mock to also intercept `resolve6`. Same fix unlocks AAAA-only feeds (currently rejected as "no A records") as a side effect. Skipped from `[feeds-ssrf-ipv6-bracket-hostname-gap]` to keep that PR scoped to the bracket-stripping bug.
-
 ### Pipeline — deferred
 
 - [ ] [voice-controlled-stage-advancement-register] **Voice-controlled stage advancement.** Register pipeline stage navigation actions in `voice/tools.js`.
