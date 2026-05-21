@@ -1,16 +1,15 @@
 /**
  * Shared scaffolding for hash-driven prompt-replace migrations.
  *
- * Migrations 023 and 025 use `makePromptReplaceMigration` to collapse each
- * migration onto ~50 lines (hash table + label + customized-skip hint).
- * 003, 006, 019 are inline copies of the same pattern — candidates for a
- * back-port pass; see PLAN.md `[backport-pre-023-migrations-to-_lib]`.
+ * Every prompt-replace migration from 003 onward uses
+ * `makePromptReplaceMigration` to collapse onto ~50 lines (hash table + label
+ * + customized-skip hint).
  *
  * The runner (`scripts/run-migrations.js`) explicitly skips `_`-prefixed
  * files so this module is never imported as a migration.
  */
 
-import { readFile, writeFile } from 'fs/promises';
+import { readFile, writeFile, unlink } from 'fs/promises';
 import { join } from 'path';
 import { createHash } from 'crypto';
 
@@ -26,7 +25,21 @@ export const md5 = (str) => {
 /**
  * Core scan — exposed so tests can pass synthetic `accepted` / `current`
  * tables to exercise the OLD→NEW branch without pinning to a real shipped
- * hash. Files missing from `data/` are no-ops — `setup-data.js` creates them.
+ * hash.
+ *
+ * Per-migration opt-ins (both default `false`):
+ *
+ * - `createIfMissing` — when the data-side file is absent, copy the sample
+ *   file in. Used by migration 005, whose `pipeline-arc-resolve.md` may not
+ *   have shipped in `data.sample/` yet at the time it was authored.
+ *
+ * - `retireOnSampleMissing` — when the sample-side file is absent (the prompt
+ *   was renamed or retired by a later commit), treat it as a soft delete:
+ *   unlink the data-side file when it still matches an accepted-old hash,
+ *   and warn (counting as `skipped`) when it's been customized. Without this
+ *   flag, a missing sample raises an ENOENT at read time. Used by migration
+ *   003 to handle the `pipeline-tv-script.md` → `pipeline-teleplay.md`
+ *   rename.
  */
 export async function applyPromptReplaceMigration({
   rootDir,
@@ -34,6 +47,8 @@ export async function applyPromptReplaceMigration({
   current,
   label,
   customizedHint,
+  createIfMissing = false,
+  retireOnSampleMissing = false,
 }) {
   const stagesDir = join(rootDir, 'data', 'prompts', 'stages');
   const sampleDir = join(rootDir, 'data.sample', 'prompts', 'stages');
@@ -41,6 +56,8 @@ export async function applyPromptReplaceMigration({
   let updated = 0;
   let alreadyCurrent = 0;
   let skipped = 0;
+  let created = 0;
+  let retired = 0;
 
   for (const filename of Object.keys(accepted)) {
     const dataPath = join(stagesDir, filename);
@@ -52,6 +69,15 @@ export async function applyPromptReplaceMigration({
     });
 
     if (existing === null) {
+      if (createIfMissing) {
+        const sampleContent = await readFile(samplePath, 'utf-8').catch(() => null);
+        if (sampleContent != null) {
+          await writeFile(dataPath, sampleContent);
+          console.log(`📄 created ${label}: ${filename}`);
+          created++;
+          continue;
+        }
+      }
       console.log(`📄 ${label} ${filename}: not present in data/, will be created by setup-data.js`);
       continue;
     }
@@ -64,7 +90,34 @@ export async function applyPromptReplaceMigration({
     }
 
     const acceptedOld = accepted[filename];
-    if (!acceptedOld.includes(existingMd5)) {
+    const matchesAcceptedOld = acceptedOld.includes(existingMd5);
+
+    if (retireOnSampleMissing) {
+      // Peek at the sample before the upgrade branch: a missing sample means
+      // the prompt was renamed or retired upstream, in which case the on-disk
+      // file is obsolete and should be removed (when unmodified) or flagged
+      // (when customized) rather than read-then-crash.
+      const sampleExists = await readFile(samplePath, 'utf-8').then(() => true, (err) => {
+        if (err.code === 'ENOENT') return false;
+        throw err;
+      });
+      if (!sampleExists) {
+        if (matchesAcceptedOld) {
+          await unlink(dataPath);
+          console.log(`🗑️  ${label} ${filename} was renamed/retired upstream — removed unmodified copy from data/`);
+          retired++;
+        } else {
+          console.warn(
+            `⚠️  ${label} ${filename} was renamed/retired upstream but your local copy has been customized.\n` +
+            `   Check data.sample/prompts/stages/ for the replacement file and merge any custom edits manually.`,
+          );
+          skipped++;
+        }
+        continue;
+      }
+    }
+
+    if (!matchesAcceptedOld) {
       console.warn(
         `⚠️  ${label} ${filename} has been customized — skipping auto-update.\n` +
         customizedHint(filename),
@@ -79,7 +132,7 @@ export async function applyPromptReplaceMigration({
     updated++;
   }
 
-  return { updated, alreadyCurrent, skipped };
+  return { updated, alreadyCurrent, skipped, created, retired };
 }
 
 /**
@@ -93,6 +146,8 @@ export function makePromptReplaceMigration({
   label,
   customizedHint,
   skipFooter,
+  createIfMissing = false,
+  retireOnSampleMissing = false,
 }) {
   const applyMigration = (opts = {}) =>
     applyPromptReplaceMigration({
@@ -100,14 +155,16 @@ export function makePromptReplaceMigration({
       current,
       label,
       customizedHint,
+      createIfMissing,
+      retireOnSampleMissing,
       ...opts,
     });
 
   const up = async ({ rootDir }) => {
-    const { updated, alreadyCurrent, skipped } = await applyMigration({ rootDir });
+    const { updated, alreadyCurrent, skipped, created, retired } = await applyMigration({ rootDir });
 
-    if (updated > 0) {
-      console.log(`📝 ${label} migration: ${updated} updated, ${alreadyCurrent} already current, ${skipped} skipped (customized)`);
+    if (updated > 0 || created > 0 || retired > 0) {
+      console.log(`📝 ${label} migration: ${updated} updated, ${created} created, ${retired} retired, ${alreadyCurrent} already current, ${skipped} skipped (customized)`);
     } else if (skipped > 0) {
       console.log(`📝 ${label} migration: all files either current or customized (${skipped} skipped)`);
     } else {
