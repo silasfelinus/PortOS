@@ -64,6 +64,39 @@ describe('buildPayload', () => {
     expect(out.line).toBe(1);
     expect(out.column).toBe(1);
   });
+
+  it('does not throw on the global-error path when error.stack is a non-serializable value (BigInt)', () => {
+    const err = new Error('boom');
+    err.stack = 1n;
+    expect(() => buildPayload({
+      type: 'error',
+      error: err,
+      message: 'boom',
+      filename: 'foo.js',
+      lineno: 1,
+      colno: 1,
+    })).not.toThrow();
+  });
+
+  it('reportClientError resolves cleanly even when JSON.stringify would throw (BigInt stack)', async () => {
+    const err = new Error('boom');
+    err.stack = 1n;
+    const result = await reportClientError({
+      type: 'error',
+      error: err,
+      message: 'boom',
+      filename: 'foo.js',
+      lineno: 1,
+      colno: 1,
+    });
+    // safeBody falls back to a degraded payload that is still POST-able, so
+    // the request goes through. The point of the test is that this resolves
+    // (no synchronous throw, no rejected promise) regardless of `sent`.
+    expect(typeof result.sent).toBe('boolean');
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(globalThis.fetch.mock.calls[0][1].body);
+    expect(body.stack === '[unserializable]' || typeof body.stack === 'string').toBe(true);
+  });
 });
 
 describe('reportClientError', () => {

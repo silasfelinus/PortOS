@@ -106,8 +106,8 @@ export function buildPayload(input) {
   if (input.error instanceof Error) {
     return {
       ...base,
-      message: input.error.message || input.message || 'Unknown error',
-      stack: input.error.stack,
+      message: safeGet(input.error, 'message') || input.message || 'Unknown error',
+      stack: coerceStack(safeGet(input.error, 'stack')),
       source: input.filename,
       line: input.lineno,
       column: input.colno,
@@ -121,6 +121,22 @@ export function buildPayload(input) {
     line: input.lineno,
     column: input.colno,
   };
+}
+
+// Build the request body so that any non-serializable value on `stack` /
+// `message` (BigInt, Symbol, throwing toJSON) can't slip past the try block
+// and reject inside the fetch call. Falls back to a degraded payload that
+// keeps the type + truncated message rather than dropping the report.
+function safeBody(payload) {
+  try {
+    return JSON.stringify(payload);
+  } catch {
+    return JSON.stringify({
+      type: payload.type,
+      message: safeToString(payload.message),
+      stack: '[unserializable]',
+    });
+  }
 }
 
 /**
@@ -165,7 +181,7 @@ export async function reportClientError(input) {
   const ok = await fetch(ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: safeBody(payload),
     keepalive: true,
   }).then(r => r.ok).catch(() => false);
 
