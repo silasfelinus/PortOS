@@ -18,7 +18,7 @@
  * is a no-op.
  */
 
-import { readFile, writeFile } from 'fs/promises';
+import { readFile, writeFile, unlink } from 'fs/promises';
 import { join } from 'path';
 import { createHash } from 'crypto';
 
@@ -56,6 +56,7 @@ export default {
     let updated = 0;
     let alreadyCurrent = 0;
     let skipped = 0;
+    let retired = 0;
 
     for (const filename of Object.keys(OLD_SHIPPED_MD5)) {
       const dataPath   = join(stagesDir, filename);
@@ -81,6 +82,33 @@ export default {
         continue;
       }
 
+      // Read the sample now so we can both compare and detect a retired
+      // file (sample missing = the prompt was renamed/retired in a later
+      // commit, e.g. pipeline-tv-script.md → pipeline-teleplay.md).
+      const sampleContent = await readFile(samplePath, 'utf-8').catch((err) => {
+        if (err.code !== 'ENOENT') throw err;
+        return null;
+      });
+
+      if (sampleContent === null) {
+        // Sample file no longer exists — the prompt was renamed/retired
+        // upstream. The replacement (if any) is already in data/ via
+        // setup-data.js. Treat as a soft delete: drop the obsolete file
+        // when unmodified; warn when customized.
+        if (existingMd5 === OLD_SHIPPED_MD5[filename]) {
+          await unlink(dataPath);
+          console.log(`🗑️  pipeline stage prompt ${filename} was renamed/retired upstream — removed unmodified copy from data/`);
+          retired++;
+        } else {
+          console.warn(
+            `⚠️  pipeline stage prompt ${filename} was renamed/retired upstream but your local copy has been customized.\n` +
+            `   Check data.sample/prompts/stages/ for the replacement file and merge any custom edits manually.`,
+          );
+          skipped++;
+        }
+        continue;
+      }
+
       if (existingMd5 !== OLD_SHIPPED_MD5[filename]) {
         // Diverged from the old shipped version — user has customized this file.
         // Warn and skip to avoid clobbering their edits.
@@ -97,14 +125,13 @@ export default {
       }
 
       // File matches the old shipped version — safe to replace.
-      const sampleContent = await readFile(samplePath, 'utf-8');
       await writeFile(dataPath, sampleContent);
       console.log(`✅ updated pipeline stage prompt: ${filename}`);
       updated++;
     }
 
-    if (updated > 0) {
-      console.log(`📝 pipeline stage prompt migration: ${updated} updated, ${alreadyCurrent} already current, ${skipped} skipped (customized)`);
+    if (updated > 0 || retired > 0) {
+      console.log(`📝 pipeline stage prompt migration: ${updated} updated, ${retired} retired, ${alreadyCurrent} already current, ${skipped} skipped (customized)`);
     } else if (skipped > 0) {
       console.log(`📝 pipeline stage prompt migration: all files either current or customized (${skipped} skipped)`);
     } else {
