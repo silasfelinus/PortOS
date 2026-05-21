@@ -83,6 +83,18 @@ describe('useAutoRefetch', () => {
     warn.mockRestore();
   });
 
+  it('skips the on-mount fetch when immediate is false', async () => {
+    const fetchFn = vi.fn().mockResolvedValue('x');
+    renderHook(() => useAutoRefetch(fetchFn, 60, { immediate: false }));
+
+    // Give the effect a chance to run; no fetch should fire yet.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fetchFn).not.toHaveBeenCalled();
+
+    // The interval still ticks after `intervalMs`.
+    await waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1), { timeout: 500 });
+  });
+
   it('exposes a refetch handle that fetches on demand and updates data', async () => {
     const fetchFn = vi.fn()
       .mockResolvedValueOnce('first')

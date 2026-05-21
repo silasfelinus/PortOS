@@ -76,8 +76,12 @@ export const useCityData = () => {
     return null;
   }, []);
 
-  useAutoRefetch(fetchRunningAgents, 10_000);
-  useAutoRefetch(fetchHealth, 15_000);
+  // `immediate: false` — `fetchAll()` (run from the socket-setup effect below
+  // and from agent socket events) already covers the initial fetch for both
+  // running agents and system health; the hook then takes over the polling
+  // cadence without double-fetching at mount.
+  useAutoRefetch(fetchRunningAgents, 10_000, { immediate: false });
+  useAutoRefetch(fetchHealth, 15_000, { immediate: false });
 
   const agentMap = useMemo(() => {
     const map = new Map();

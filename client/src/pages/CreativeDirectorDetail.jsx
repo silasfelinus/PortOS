@@ -42,16 +42,6 @@ export default function CreativeDirectorDetail() {
     return null;
   }, [id]);
 
-  // Reset state ONLY when the route id changes, so navigating between
-  // projects (or hitting an error fetch) clears the prior project — but
-  // the 5s poll interval below doesn't keep nulling-and-re-setting the
-  // same project (which previously coupled with the `project?.status`
-  // dep on the polling effect to produce a tight refetch loop).
-  useEffect(() => {
-    setLoading(true);
-    setProject(null);
-  }, [id]);
-
   // Poll CoS agents in parallel so the Segments tab can flag the scene that's
   // currently being worked on, even before the agent PATCHes its status.
   // Filter by `taskId` prefix `cd-<projectId>-` (agentBridge's id scheme).
@@ -70,7 +60,20 @@ export default function CreativeDirectorDetail() {
     await Promise.all([fetchProject(), fetchAgents()]);
     return null;
   }, [fetchProject, fetchAgents]);
-  useAutoRefetch(poll, 5000, { enabled: pollEnabled });
+  const { refetch: refetchPoll } = useAutoRefetch(poll, 5000, { enabled: pollEnabled });
+
+  // Reset state ONLY when the route id changes, so navigating between
+  // projects (or hitting an error fetch) clears the prior project — but
+  // the 5s poll interval below doesn't keep nulling-and-re-setting the
+  // same project (which previously coupled with the `project?.status`
+  // dep on the polling effect to produce a tight refetch loop). Refetch
+  // immediately on id change so a project swap doesn't leave the previous
+  // project on screen for up to one tick.
+  useEffect(() => {
+    setLoading(true);
+    setProject(null);
+    refetchPoll();
+  }, [id, refetchPoll]);
 
   const handleAction = async (kind) => {
     // Map action → past-tense label and optimistic status up-front.

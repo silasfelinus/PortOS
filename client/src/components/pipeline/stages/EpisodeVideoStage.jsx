@@ -37,15 +37,9 @@ export default function EpisodeVideoStage({ issue, series, onStageUpdate }) {
   const [aspectRatio, setAspectRatio] = useState(stage.aspectRatio || '16:9');
   const [quality, setQuality] = useState(stage.quality || 'standard');
 
-  // Clear the displayed project when the cdProjectId itself goes away
-  // (stage reset). Fresh project ids flow in via the poll below.
-  useEffect(() => {
-    if (!cdProjectId) setCdProject(null);
-  }, [cdProjectId]);
-
   // Poll while the project could still mutate. Pauses on hidden tab via
   // useAutoRefetch's visibility short-circuit and stops once status is terminal.
-  useAutoRefetch(
+  const { refetch: refetchCdProject } = useAutoRefetch(
     async () => {
       const p = await getCreativeDirectorProject(cdProjectId, { slim: true }).catch((err) => {
         console.log(`pipeline:episode poll error ${err.message}`);
@@ -62,6 +56,14 @@ export default function EpisodeVideoStage({ issue, series, onStageUpdate }) {
     POLL_INTERVAL_MS,
     { enabled: !!cdProjectId && !isTerminalProjectStatus(cdProject?.status) },
   );
+
+  // Clear the displayed project on stage reset; refetch immediately on id
+  // change so a project swap doesn't strand the previous project on screen
+  // until the next interval tick.
+  useEffect(() => {
+    if (!cdProjectId) setCdProject(null);
+    else refetchCdProject();
+  }, [cdProjectId, refetchCdProject]);
 
   const [runSubmit, submitting] = useAsyncAction(
     async ({ force }) => {

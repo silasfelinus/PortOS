@@ -5,19 +5,22 @@ import { useState, useEffect, useRef, useCallback } from 'react';
  * once when it becomes visible again. Replaces the per-component
  * useEffect + setInterval pattern for data-fetch polling.
  *
- * fetchFn should handle its own errors and return either the new data or
- * `null` (the documented "no change / use prior" sentinel — returning
- * `undefined` would set data to undefined and lose prior state).
- * Side-effect-only callers that manage their own state should `return null`.
+ * fetchFn should handle its own errors. Side-effect-only callers that manage
+ * their own state via setStates inside fetchFn typically `return null` and
+ * ignore the hook's `data` return; that's fine, but be aware the hook will
+ * still set `data = null` on each tick.
  *
- * @param {Function} fetchFn - async, returns the new data or null
+ * @param {Function} fetchFn - async, returns the new data
  * @param {number} intervalMs - poll cadence; changing restarts the interval
  * @param {Object} [options]
  * @param {boolean} [options.enabled=true] - when false, no interval and no fetch
+ * @param {boolean} [options.immediate=true] - when false, skip the on-mount fetch
+ *   and wait `intervalMs` before the first fetch. Use when the caller already
+ *   performs a one-shot fetch via another path (e.g. `useCityData.fetchAll`).
  * @returns {{ data: any, loading: boolean, refetch: Function }}
  */
 export function useAutoRefetch(fetchFn, intervalMs, options = {}) {
-  const { enabled = true } = options;
+  const { enabled = true, immediate = true } = options;
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const fetchRef = useRef(fetchFn);
@@ -27,7 +30,8 @@ export function useAutoRefetch(fetchFn, intervalMs, options = {}) {
   }, [fetchFn]);
 
   // Stable, unconditional refetch for callers (Refresh buttons, post-mutation
-  // refresh paths). Bypasses the visibility short-circuit — when a user
+  // refresh paths, and key-change effects that need an immediate fetch with
+  // the new closure). Bypasses the visibility short-circuit — when a user
   // clicks Refresh the tab is by definition visible.
   const refetch = useCallback(async () => {
     try {
@@ -64,7 +68,7 @@ export function useAutoRefetch(fetchFn, intervalMs, options = {}) {
       if (document.visibilityState === 'visible') loadData();
     };
 
-    loadData();
+    if (immediate) loadData();
     const interval = setInterval(loadData, intervalMs);
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -77,7 +81,7 @@ export function useAutoRefetch(fetchFn, intervalMs, options = {}) {
         document.removeEventListener('visibilitychange', handleVisibilityChange);
       }
     };
-  }, [intervalMs, enabled]);
+  }, [intervalMs, enabled, immediate]);
 
   return { data, loading, refetch };
 }
