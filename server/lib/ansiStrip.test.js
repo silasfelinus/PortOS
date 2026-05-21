@@ -145,6 +145,16 @@ describe('createStreamingAnsiStripper', () => {
     expect(strip('\x07Z')).toBe('Z');
   });
 
+  it('buffers an in-progress OSC whose body contains a bare ESC, split before the terminator', () => {
+    // The OSC opener anchor must use `\x1B]` (not `\x1B`) so a body byte
+    // doesn't masquerade as the start of the candidate fragment. Without
+    // this, `\x1B]0;foo\x1Bbar` then `\x07after` would leak the OSC body to
+    // the cleaned stream.
+    const strip = createStreamingAnsiStripper();
+    expect(strip('\x1B]0;foo\x1Bbar')).toBe('');
+    expect(strip('\x07after')).toBe('after');
+  });
+
   it('does NOT buffer an OSC body longer than 4096 bytes — it leaks instead of pinning memory', () => {
     const strip = createStreamingAnsiStripper();
     // OSC opens, then 4097 chars of body with no terminator. The 4096-byte

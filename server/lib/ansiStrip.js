@@ -26,7 +26,10 @@
 export const ANSI_PATTERN = /\x1B(?:\](?:[^\x07\x1B]|\x1B(?!\\))*(?:\x07|\x1B\\)|[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
 
 const INCOMPLETE_CSI = /^\x1B\[[0-?]*[ -/]*$/;
-const INCOMPLETE_OSC = /^\x1B\][^\x07\x1B]*$/;
+// Body grammar mirrors ANSI_PATTERN so an in-progress OSC whose body contains
+// a bare ESC (e.g. `\x1B]0;foo\x1Bbar`) is still recognised as incomplete and
+// buffered until its terminator arrives.
+const INCOMPLETE_OSC = /^\x1B\](?:[^\x07\x1B]|\x1B(?!\\))*$/;
 const INCOMPLETE_ESC_2BYTE = /^\x1B$/;
 
 // `[@-_]` (0x40-0x5F) is the byte range that legitimately follows an `\x1B`
@@ -44,17 +47,26 @@ export function createStreamingAnsiStripper() {
   return (text) => {
     const combined = tail + text;
     tail = '';
+    // OSC anchor must come first: an in-progress OSC body may contain a bare
+    // `\x1B` (allowed by ANSI_PATTERN's body grammar), and a plain
+    // `lastIndexOf('\x1B')` would land on that body byte instead of the
+    // `\x1B]` opener, missing the incomplete sequence. Bodies longer than
+    // 4096 bytes are treated as terminated — an unbounded OSC leaks its
+    // body to display rather than pinning memory forever.
+    const lastOsc = combined.lastIndexOf('\x1B]');
+    if (lastOsc !== -1 && combined.length - lastOsc <= 4096) {
+      const candidate = combined.slice(lastOsc);
+      if (INCOMPLETE_OSC.test(candidate)) {
+        tail = candidate;
+        return STRIP(combined.slice(0, lastOsc));
+      }
+    }
+    // Fall back to the rightmost `\x1B` for CSI / bare-ESC fragments that
+    // are unambiguous (CSI parameter bytes exclude `\x1B`).
     const lastEsc = combined.lastIndexOf('\x1B');
-    // Only consider the trailing fragment if it lives near the end — older
-    // unterminated bytes belong to a previous repaint and would never
-    // resolve. Bodies longer than 4096 bytes are treated as terminated; an
-    // unbounded OSC (e.g. very long hyperlink) would leak its body to
-    // display rather than buffer forever.
     if (lastEsc !== -1 && combined.length - lastEsc <= 4096) {
       const candidate = combined.slice(lastEsc);
-      if (INCOMPLETE_ESC_2BYTE.test(candidate)
-        || INCOMPLETE_CSI.test(candidate)
-        || INCOMPLETE_OSC.test(candidate)) {
+      if (INCOMPLETE_ESC_2BYTE.test(candidate) || INCOMPLETE_CSI.test(candidate)) {
         tail = candidate;
         return STRIP(combined.slice(0, lastEsc));
       }
