@@ -129,6 +129,15 @@ export const generatePipelineVisualImage = (issueId, stageId, opts) =>
     body: JSON.stringify(opts),
   });
 
+// Restore a prior `runHistory` snapshot as the active text-stage state. The
+// server snapshots the just-replaced version into runHistory automatically,
+// so restoring is reversible by clicking another snapshot.
+export const restorePipelineStageVersion = (issueId, stageId, runId) =>
+  request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/${encodeURIComponent(stageId)}/restore`, {
+    method: 'POST',
+    body: JSON.stringify({ runId }),
+  });
+
 // Auto-fill the storyboards stage's scenes[] from the issue's prose or
 // teleplay text stage. `from` defaults server-side to 'teleplay'. Pass
 // `force: true` to replace existing hand-curated scenes.
