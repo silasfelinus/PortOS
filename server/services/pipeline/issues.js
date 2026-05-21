@@ -218,6 +218,23 @@ export function snapshotRunHistory(prevStage, patch, stageId) {
   return [snapshot, ...dedupedPrior].slice(0, STAGE_RUN_HISTORY_MAX);
 }
 
+// Strip per-stage `runHistory` from a sanitized issue so list-shaped
+// endpoints can opt out of shipping each stage's full version history. Text
+// stages can hold up to STAGE_RUN_HISTORY_MAX (5) entries × ~600KB each, so
+// a maxed-out issue is ~12MB of payload that the sidebar + per-series list
+// never render. Opt-in via `withHistory: false` on `listIssues` /
+// `listRecentIssues` — the default is full-shape because internal callers
+// (notably `exportSeries`) round-trip every stored field through the bucket
+// export, and dropping history there would lose it on the receiving peer.
+const stripRunHistoryFromIssue = (issue) => {
+  if (!issue || typeof issue !== 'object' || !issue.stages) return issue;
+  const strippedStages = {};
+  for (const [stageId, stage] of Object.entries(issue.stages)) {
+    strippedStages[stageId] = stage?.runHistory?.length ? { ...stage, runHistory: [] } : stage;
+  }
+  return { ...issue, stages: strippedStages };
+};
+
 // Episode-video render settings the user chose at kickoff time. Persisted
 // on the stage so a page reload doesn't reset them to the defaults — the
 // restart flow can render the same pickers populated with the user's
@@ -407,19 +424,31 @@ async function writeState(state) {
   await atomicWrite(statePath(), state);
 }
 
-export async function listIssues({ seriesId = null, offset = 0, limit = ISSUES_PER_RESPONSE_MAX, paginated = false } = {}) {
+export async function listIssues({
+  seriesId = null,
+  offset = 0,
+  limit = ISSUES_PER_RESPONSE_MAX,
+  paginated = false,
+  withHistory = true,
+} = {}) {
   const { issues } = await readState();
   const filtered = seriesId ? issues.filter((i) => i.seriesId === seriesId) : issues;
   const sorted = [...filtered].sort((a, b) => {
     if (a.seriesId !== b.seriesId) return a.seriesId.localeCompare(b.seriesId);
     return (a.number || 0) - (b.number || 0);
   });
+  const project = withHistory ? (i) => i : stripRunHistoryFromIssue;
   const safeLimit = Math.min(Math.max(1, limit), ISSUES_PER_RESPONSE_MAX);
   const safeOffset = Math.max(0, offset);
   if (paginated) {
-    return { items: sorted.slice(safeOffset, safeOffset + safeLimit), total: sorted.length, offset: safeOffset, limit: safeLimit };
+    return {
+      items: sorted.slice(safeOffset, safeOffset + safeLimit).map(project),
+      total: sorted.length,
+      offset: safeOffset,
+      limit: safeLimit,
+    };
   }
-  return sorted.slice(0, ISSUES_PER_RESPONSE_MAX);
+  return sorted.slice(0, ISSUES_PER_RESPONSE_MAX).map(project);
 }
 
 /**
@@ -430,7 +459,7 @@ export async function listIssues({ seriesId = null, offset = 0, limit = ISSUES_P
  * beyond 1000, so the sidebar's recent-issues view needs this dedicated
  * helper.
  */
-export async function listRecentIssues({ limit = 10 } = {}) {
+export async function listRecentIssues({ limit = 10, withHistory = true } = {}) {
   const { issues } = await readState();
   // Coerce in two passes so non-finite inputs ('abc', undefined) fall to
   // the default rather than letting JS's `0 || 10` short-circuit return
@@ -438,9 +467,11 @@ export async function listRecentIssues({ limit = 10 } = {}) {
   const raw = Number(limit);
   const fallback = Number.isFinite(raw) ? Math.floor(raw) : 10;
   const clamped = Math.max(1, Math.min(50, fallback));
+  const project = withHistory ? (i) => i : stripRunHistoryFromIssue;
   return [...issues]
     .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
-    .slice(0, clamped);
+    .slice(0, clamped)
+    .map(project);
 }
 
 export async function getIssue(id) {
