@@ -8,6 +8,12 @@ import { WIDGETS } from './widgetRegistry.jsx';
 // catalog outgrows the 3 gated widgets we ship today.
 export default function WidgetSuggestions({ presentWidgetIds, dashboardState, onAdd }) {
   const [dismissed, setDismissed] = useState(() => new Set());
+  // Only one in-flight save at a time. Without this, two rapid clicks each
+  // compute their merge from the same stale `presentWidgetIds`, and the
+  // second PUT's payload drops the first added widget. Gating on submission
+  // forces the second click to wait for the parent's `presentWidgetIds` to
+  // refresh after the first save resolves.
+  const [submitting, setSubmitting] = useState(false);
 
   const suggestions = useMemo(() => {
     if (!Array.isArray(presentWidgetIds)) return [];
@@ -29,7 +35,11 @@ export default function WidgetSuggestions({ presentWidgetIds, dashboardState, on
   });
 
   const add = (id) => {
-    Promise.resolve(onAdd(id)).catch(() => {});
+    if (submitting) return;
+    setSubmitting(true);
+    Promise.resolve(onAdd(id))
+      .catch(() => {})
+      .finally(() => setSubmitting(false));
   };
 
   return (
@@ -41,7 +51,8 @@ export default function WidgetSuggestions({ presentWidgetIds, dashboardState, on
             <button
               type="button"
               onClick={() => add(w.id)}
-              className="inline-flex items-center gap-1 text-port-accent hover:text-white"
+              disabled={submitting}
+              className="inline-flex items-center gap-1 text-port-accent hover:text-white disabled:opacity-50 disabled:cursor-wait"
               aria-label={`Add ${w.label} to layout`}
             >
               <Plus size={12} aria-hidden="true" />
@@ -50,7 +61,8 @@ export default function WidgetSuggestions({ presentWidgetIds, dashboardState, on
             <button
               type="button"
               onClick={() => dismiss(w.id)}
-              className="p-0.5 rounded text-gray-500 hover:text-gray-300"
+              disabled={submitting}
+              className="p-0.5 rounded text-gray-500 hover:text-gray-300 disabled:opacity-50"
               aria-label={`Dismiss ${w.label} suggestion`}
               title="Hide this suggestion"
             >

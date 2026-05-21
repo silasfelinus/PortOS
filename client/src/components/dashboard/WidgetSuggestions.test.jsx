@@ -51,4 +51,20 @@ describe('WidgetSuggestions', () => {
     fireEvent.click(screen.getByLabelText('Dismiss Quick Stats suggestion'));
     expect(screen.queryByText(/Quick Stats/)).toBeNull();
   });
+
+  it('throttles to one in-flight add — rapid second click is dropped', async () => {
+    let resolveFirst;
+    const onAdd = vi.fn().mockImplementation(() => new Promise((resolve) => { resolveFirst = resolve; }));
+    render(<WidgetSuggestions presentWidgetIds={[]} dashboardState={populatedState} onAdd={onAdd} />);
+    // Both Quick Stats AND Activity Streak gate true on populatedState.
+    fireEvent.click(screen.getByLabelText('Add Quick Stats to layout'));
+    fireEvent.click(screen.getByLabelText('Add Activity Streak to layout'));
+    // Only the first click fired onAdd; without the throttle, both would
+    // fire with stale presentWidgetIds and the second PUT would drop the
+    // first added widget.
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    expect(onAdd).toHaveBeenCalledWith('quick-stats');
+    resolveFirst();
+    await Promise.resolve();
+  });
 });
