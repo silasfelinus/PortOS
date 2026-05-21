@@ -546,20 +546,41 @@ describe('spawnAgentForTask — cleanupOnError error recovery', () => {
     expect(outcome.jobSpawnFailedEmissions).toEqual([]);
   });
 
-  // Source-level assertions: the catch arm exists, calls cleanupOnError,
-  // AND emits job:spawn-failed when task.metadata?.jobId is set — so any
-  // future refactor that drops the autonomous-job retry contract breaks
-  // loudly here. The companion `finally` shape is asserted in the
+  // Source-level assertions: the pre-spawn catch arm exists, calls
+  // cleanupOnError, AND emits job:spawn-failed when task.metadata?.jobId
+  // is set — so any future refactor that drops the autonomous-job retry
+  // contract breaks loudly here. The companion inner `finally` shape
+  // (dedup-race guard around the spawn helpers) is asserted in the
   // "agentLifecycle source — spawningTasks delete placement" block above.
-  it('source: spawnAgentForTask catch arm calls cleanupOnError and re-emits job:spawn-failed', () => {
+  it('source: spawnAgentForTask pre-spawn catch calls cleanupOnError and re-emits job:spawn-failed', () => {
     const fnStart = AGENT_LIFECYCLE_SRC.indexOf('export async function spawnAgentForTask');
     const fnBody = AGENT_LIFECYCLE_SRC.slice(fnStart, fnStart + 60_000);
-    const catchMatch = fnBody.match(/catch\s*\(\s*err\s*\)\s*\{([\s\S]{0,2000}?)\}\s*finally/);
-    expect(catchMatch, 'spawnAgentForTask must have a catch arm before its finally').not.toBeNull();
+    const catchMatch = fnBody.match(/catch\s*\(\s*err\s*\)\s*\{([\s\S]{0,2000}?)\n\s{2}\}/);
+    expect(catchMatch, 'spawnAgentForTask must have a catch arm with cleanupOnError').not.toBeNull();
     const catchBody = catchMatch[1];
     expect(catchBody).toMatch(/cleanupOnError\(/);
     expect(catchBody).toMatch(/job:spawn-failed/);
     expect(catchBody).toMatch(/task\.metadata\??\.jobId/);
+  });
+
+  // Source-level assertion: the spawn-handoff calls (spawnTuiAgent /
+  // spawnViaRunner / spawnDirectly) must remain OUTSIDE the pre-spawn
+  // catch. Catching their rejections here would double-clean a partially
+  // launched live agent (lane release, execution-state error mark)
+  // alongside the spawn helper's own `on('error')` cleanup. The pre-spawn
+  // catch must close before the spawn `if (isTui)` branch.
+  it('source: spawn helpers are invoked outside the pre-spawn catch', () => {
+    const fnStart = AGENT_LIFECYCLE_SRC.indexOf('export async function spawnAgentForTask');
+    const fnBody = AGENT_LIFECYCLE_SRC.slice(fnStart, fnStart + 60_000);
+    const catchIdx = fnBody.indexOf('catch (err)');
+    const catchClose = fnBody.indexOf('return null;', catchIdx);
+    expect(catchIdx, 'pre-spawn catch must exist').toBeGreaterThan(-1);
+    expect(catchClose, 'pre-spawn catch must contain `return null;`').toBeGreaterThan(catchIdx);
+    // The spawn helper calls must appear AFTER the pre-spawn catch closes.
+    for (const helper of ['spawnTuiAgent(', 'spawnViaRunner(', 'spawnDirectly(']) {
+      const idx = fnBody.indexOf(helper, catchClose);
+      expect(idx, `${helper} must appear AFTER the pre-spawn catch arm`).toBeGreaterThan(-1);
+    }
   });
 });
 
