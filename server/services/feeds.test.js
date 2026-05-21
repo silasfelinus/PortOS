@@ -237,6 +237,39 @@ describe('addFeed', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('rejects when AAAA resolver fails (SERVFAIL) even if A is public (fail-closed)', async () => {
+    // Node's fetch may still happy-eyeballs to a private AAAA on its own
+    // lookup, so a resolver error on AAAA must reject — we cannot prove
+    // the family is safe to fall through to the A result alone.
+    const err = Object.assign(new Error('servfail'), { code: 'ESERVFAIL' });
+    dnsResolveMock.mockResolvedValue(['93.184.216.34']);
+    dnsResolve6Mock.mockRejectedValue(err);
+    const result = await feeds.addFeed('https://flaky-aaaa.example.com/rss');
+    expect(result).toEqual({ error: FETCH_ERROR });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts when AAAA returns NODATA and A is public (benign no-records miss)', async () => {
+    // ENODATA means "name exists, no records of this type" — the other
+    // family covers the hostname and we should not fail closed on it.
+    const err = Object.assign(new Error('no data'), { code: 'ENODATA' });
+    fetchMock.mockResolvedValue(makeResponse({ body: RSS_FIXTURE }));
+    dnsResolveMock.mockResolvedValue(['93.184.216.34']);
+    dnsResolve6Mock.mockRejectedValue(err);
+    const result = await feeds.addFeed('https://a-only.example.com/rss');
+    expect(result.error).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects when A resolver fails (TIMEOUT) even if AAAA is public (fail-closed)', async () => {
+    const err = Object.assign(new Error('timeout'), { code: 'ETIMEOUT' });
+    dnsResolveMock.mockRejectedValue(err);
+    dnsResolve6Mock.mockResolvedValue(['2606:4700:4700::1111']);
+    const result = await feeds.addFeed('https://flaky-a.example.com/rss');
+    expect(result).toEqual({ error: FETCH_ERROR });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('follows a single safe redirect to the new URL', async () => {
     fetchMock
       .mockResolvedValueOnce(makeResponse({ status: 302, headers: { location: 'https://example.com/final.xml' } }))
