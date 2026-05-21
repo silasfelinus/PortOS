@@ -304,66 +304,85 @@ export async function getState() {
   return { activeLayoutId, layouts, limits: LIMITS };
 }
 
-export async function setActiveLayout(id) {
-  const state = await getState();
-  if (!state.layouts.find((l) => l.id === id)) {
-    throw makeErr(`Unknown layout id: ${id}`, ERR_NOT_FOUND);
-  }
-  const next = { activeLayoutId: id, layouts: state.layouts };
-  await atomicWrite(STATE_PATH, next);
-  return { ...next, limits: LIMITS };
+// All mutations to dashboard-layouts.json funnel through this tail so two
+// concurrent writers (e.g. an auto-window-activate PUT + a manual layout
+// save firing from the same browser, or palette + dashboard tabs) can't
+// interleave load → modify → write and lose each other's changes. Mirrors
+// the `issueWriteTail` / `cacheWriteTails` pattern documented in CLAUDE.md
+// ("Async PATCH races on shared records — serialize writes server-side").
+let layoutsWriteTail = Promise.resolve();
+const queueLayoutsWrite = (fn) => {
+  const tail = layoutsWriteTail.then(fn, fn); // run even after a prior failure
+  layoutsWriteTail = tail.then(() => null, () => null); // tail keeps chaining
+  return tail;
+};
+
+export function setActiveLayout(id) {
+  return queueLayoutsWrite(async () => {
+    const state = await getState();
+    if (!state.layouts.find((l) => l.id === id)) {
+      throw makeErr(`Unknown layout id: ${id}`, ERR_NOT_FOUND);
+    }
+    const next = { activeLayoutId: id, layouts: state.layouts };
+    await atomicWrite(STATE_PATH, next);
+    return { ...next, limits: LIMITS };
+  });
 }
 
-export async function saveLayout(layout) {
-  const state = await getState();
-  const idx = state.layouts.findIndex((l) => l.id === layout.id);
-  // Derive `builtIn` from BUILTIN_IDS at write-time (not from the persisted
-  // flag) so a hand-edited JSON that deleted the default `ops` entry can't
-  // produce a new `ops` that sanitizeLayout() later treats as built-in while
-  // the write-path echoed `builtIn: false` to the client.
-  const builtIn = BUILTIN_IDS.has(layout.id);
-  // Partial-aware merge: `activateWindow` is preserved when the caller
-  // doesn't include the key, but cleared when the caller sends `null`. The
-  // existing editor's saveLayout() doesn't send activateWindow, so a vanilla
-  // widget edit must NOT wipe a previously-configured morning window.
-  // Mirrors the "absent vs intentionally empty" convention in CLAUDE.md.
-  const existing = idx >= 0 ? state.layouts[idx] : null;
-  const buildEntry = () => {
-    const entry = {
-      id: layout.id,
-      name: layout.name,
-      builtIn,
-      widgets: layout.widgets,
-      grid: layout.grid ?? [],
+export function saveLayout(layout) {
+  return queueLayoutsWrite(async () => {
+    const state = await getState();
+    const idx = state.layouts.findIndex((l) => l.id === layout.id);
+    // Derive `builtIn` from BUILTIN_IDS at write-time (not from the persisted
+    // flag) so a hand-edited JSON that deleted the default `ops` entry can't
+    // produce a new `ops` that sanitizeLayout() later treats as built-in while
+    // the write-path echoed `builtIn: false` to the client.
+    const builtIn = BUILTIN_IDS.has(layout.id);
+    // Partial-aware merge: `activateWindow` is preserved when the caller
+    // doesn't include the key, but cleared when the caller sends `null`. The
+    // existing editor's saveLayout() doesn't send activateWindow, so a vanilla
+    // widget edit must NOT wipe a previously-configured morning window.
+    // Mirrors the "absent vs intentionally empty" convention in CLAUDE.md.
+    const existing = idx >= 0 ? state.layouts[idx] : null;
+    const buildEntry = () => {
+      const entry = {
+        id: layout.id,
+        name: layout.name,
+        builtIn,
+        widgets: layout.widgets,
+        grid: layout.grid ?? [],
+      };
+      // `undefined` (key absent OR set undefined) means "preserve"; `null` is
+      // the explicit clear. Spread alone would clobber existing.activateWindow
+      // with undefined when the caller omits the key.
+      entry.activateWindow = layout.activateWindow !== undefined
+        ? layout.activateWindow
+        : (existing?.activateWindow ?? null);
+      return entry;
     };
-    // `undefined` (key absent OR set undefined) means "preserve"; `null` is
-    // the explicit clear. Spread alone would clobber existing.activateWindow
-    // with undefined when the caller omits the key.
-    entry.activateWindow = layout.activateWindow !== undefined
-      ? layout.activateWindow
-      : (existing?.activateWindow ?? null);
-    return entry;
-  };
-  const merged = idx >= 0
-    ? state.layouts.map((l, i) => i === idx ? buildEntry() : l)
-    : [...state.layouts, buildEntry()];
-  const next = { activeLayoutId: state.activeLayoutId, layouts: merged };
-  await atomicWrite(STATE_PATH, next);
-  return { ...next, limits: LIMITS };
+    const merged = idx >= 0
+      ? state.layouts.map((l, i) => i === idx ? buildEntry() : l)
+      : [...state.layouts, buildEntry()];
+    const next = { activeLayoutId: state.activeLayoutId, layouts: merged };
+    await atomicWrite(STATE_PATH, next);
+    return { ...next, limits: LIMITS };
+  });
 }
 
-export async function deleteLayout(id) {
-  const state = await getState();
-  const target = state.layouts.find((l) => l.id === id);
-  if (!target) throw makeErr(`Unknown layout id: ${id}`, ERR_NOT_FOUND);
-  if (target.builtIn) throw makeErr(`Cannot delete built-in layout: ${id}`, ERR_BUILTIN_PROTECTED);
-  const remaining = state.layouts.filter((l) => l.id !== id);
-  // Guard against the pathological case where the JSON was hand-edited to
-  // remove every built-in — fall back to reseeding defaults rather than
-  // indexing into an empty array.
-  const nextLayouts = remaining.length > 0 ? remaining : DEFAULT_LAYOUTS;
-  const activeLayoutId = state.activeLayoutId === id ? nextLayouts[0].id : state.activeLayoutId;
-  const next = { activeLayoutId, layouts: nextLayouts };
-  await atomicWrite(STATE_PATH, next);
-  return { ...next, limits: LIMITS };
+export function deleteLayout(id) {
+  return queueLayoutsWrite(async () => {
+    const state = await getState();
+    const target = state.layouts.find((l) => l.id === id);
+    if (!target) throw makeErr(`Unknown layout id: ${id}`, ERR_NOT_FOUND);
+    if (target.builtIn) throw makeErr(`Cannot delete built-in layout: ${id}`, ERR_BUILTIN_PROTECTED);
+    const remaining = state.layouts.filter((l) => l.id !== id);
+    // Guard against the pathological case where the JSON was hand-edited to
+    // remove every built-in — fall back to reseeding defaults rather than
+    // indexing into an empty array.
+    const nextLayouts = remaining.length > 0 ? remaining : DEFAULT_LAYOUTS;
+    const activeLayoutId = state.activeLayoutId === id ? nextLayouts[0].id : state.activeLayoutId;
+    const next = { activeLayoutId, layouts: nextLayouts };
+    await atomicWrite(STATE_PATH, next);
+    return { ...next, limits: LIMITS };
+  });
 }

@@ -110,6 +110,53 @@ describe('dashboardLayouts service', () => {
     });
   });
 
+  describe('write-tail serialization', () => {
+    const stateFile = () => STATE_FILE;
+
+    it('serializes concurrent setActiveLayout + saveLayout — both writes survive, no lost-update', async () => {
+      writeJson(stateFile(), {
+        activeLayoutId: 'default',
+        layouts: [
+          { id: 'default', name: 'Everything', builtIn: true, widgets: ['cos'], grid: [] },
+          { id: 'morning', name: 'Morning', builtIn: false, widgets: ['cos'], grid: [] },
+        ],
+      });
+      // Fire concurrently. Without serialization the second call's getState
+      // would read the file before the first call's atomicWrite, and the
+      // second call's atomicWrite would clobber the first.
+      const [resA, resB] = await Promise.all([
+        svc.setActiveLayout('morning'),
+        svc.saveLayout({ id: 'morning', name: 'Morning v2', widgets: ['cos', 'goal-progress'], grid: [] }),
+      ]);
+      // Last-queued result wins at the server.
+      const final = await svc.getState();
+      const m = final.layouts.find((l) => l.id === 'morning');
+      expect(m.name).toBe('Morning v2');
+      expect(m.widgets).toEqual(['cos', 'goal-progress']);
+      // Both writes' return shapes must be coherent (each saw committed state
+      // from its predecessor — second call's response reflects active='morning'
+      // because setActiveLayout committed first).
+      expect(resA.activeLayoutId).toBe('morning');
+      expect(resB.activeLayoutId).toBe('morning');
+    });
+
+    it('a failed write doesn\'t break the chain — subsequent writes still complete', async () => {
+      writeJson(stateFile(), {
+        activeLayoutId: 'default',
+        layouts: [{ id: 'default', name: 'Everything', builtIn: true, widgets: ['cos'], grid: [] }],
+      });
+      const [bad, good] = await Promise.allSettled([
+        svc.setActiveLayout('nonexistent'),
+        svc.saveLayout({ id: 'default', name: 'Everything v2', widgets: ['cos'], grid: [] }),
+      ]);
+      expect(bad.status).toBe('rejected');
+      expect(bad.reason?.code).toBe('NOT_FOUND');
+      expect(good.status).toBe('fulfilled');
+      const after = await svc.getState();
+      expect(after.layouts.find((l) => l.id === 'default').name).toBe('Everything v2');
+    });
+  });
+
   describe('built-in layouts ship with the three new intent variants', () => {
     it('seeds deep-work, health, agent-watch on first read', async () => {
       const state = await svc.getState();
