@@ -16,14 +16,22 @@ const causeSuffix = (error) =>
   error.context?.causeChain ? ` ← ${error.context.causeChain}` : '';
 
 /**
- * Strip the `?query` (and everything after) from a URL or request path so
- * tokens like `?access_token=…` don't leak into server logs or stored error
- * reports. Returns the input unchanged when there is no query string.
+ * Strip the `?query` and `#fragment` (whichever appears first, plus everything
+ * after) from a URL or request path so tokens like `?access_token=…` or
+ * `#access_token=…` from an OAuth implicit-grant callback don't leak into
+ * server logs or stored error reports. Returns the input unchanged when
+ * neither separator is present. Server-side `req.url` never carries a
+ * fragment (browsers don't send them), so the fragment strip is a no-op
+ * for the `routePath` caller — it's there for the client-error sanitizer.
  */
 export function stripQueryString(url) {
   if (typeof url !== 'string') return url;
   const qIndex = url.indexOf('?');
-  return qIndex === -1 ? url : url.slice(0, qIndex);
+  const hIndex = url.indexOf('#');
+  const cut = (qIndex === -1)
+    ? hIndex
+    : (hIndex === -1 ? qIndex : Math.min(qIndex, hIndex));
+  return cut === -1 ? url : url.slice(0, cut);
 }
 
 /**

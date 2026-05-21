@@ -34,6 +34,20 @@ describe('buildPayload', () => {
     expect(() => buildPayload({ type: 'unhandledrejection', reason: hostile })).not.toThrow();
   });
 
+  it('does not throw when the reason has a throwing `message` or `stack` getter', () => {
+    const hostile = {};
+    Object.defineProperty(hostile, 'message', { get() { throw new Error('msg'); } });
+    Object.defineProperty(hostile, 'stack', { get() { throw new Error('stk'); } });
+    expect(() => buildPayload({ type: 'unhandledrejection', reason: hostile })).not.toThrow();
+  });
+
+  it('coerces a non-string `stack` field to a string', () => {
+    const reason = new Error('oops');
+    reason.stack = { weird: true };
+    const out = buildPayload({ type: 'unhandledrejection', reason });
+    expect(typeof out.stack).toBe('string');
+  });
+
   it('extracts message + stack + filename/lineno/colno from an error event', () => {
     const err = new Error('boom');
     err.stack = 'Error: boom\n    at foo (foo.js:1:1)';

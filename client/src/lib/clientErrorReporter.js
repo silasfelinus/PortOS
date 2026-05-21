@@ -59,12 +59,30 @@ function safeToString(value) {
   try { return String(value); } catch { return '[unstringifiable]'; }
 }
 
+// Read a property from an unknown reason without trusting it not to throw —
+// a Proxy or hostile getter can throw on `.message` / `.stack` access.
+function safeGet(obj, key) {
+  try { return obj[key]; } catch { return undefined; }
+}
+
+function coerceStack(stack) {
+  if (stack == null) return undefined;
+  return typeof stack === 'string' ? stack : safeToString(stack);
+}
+
 function extractFromReason(reason) {
   if (reason instanceof Error) {
-    return { message: reason.message || safeToString(reason), stack: reason.stack };
+    return {
+      message: safeGet(reason, 'message') || safeToString(reason),
+      stack: coerceStack(safeGet(reason, 'stack')),
+    };
   }
   if (reason && typeof reason === 'object') {
-    return { message: safeToString(reason.message ?? safeStringify(reason)), stack: reason.stack };
+    const m = safeGet(reason, 'message');
+    return {
+      message: safeToString(m ?? safeStringify(reason)),
+      stack: coerceStack(safeGet(reason, 'stack')),
+    };
   }
   return { message: safeToString(reason ?? 'Unknown'), stack: undefined };
 }
@@ -108,28 +126,37 @@ export function buildPayload(input) {
 /**
  * Report a client-side error. Resolves to:
  *   - `{ sent: true }` — sent to the server.
- *   - `{ sent: false, reason: 'duplicate' | 'rate-limited' | 'no-fetch' | 'transport-error' }`
+ *   - `{ sent: false, reason: 'duplicate' | 'rate-limited' | 'no-fetch' | 'transport-error' | 'caught' | 'empty' }`
  *
- * Never throws.
+ * Never throws — any synchronous exception while building the payload or any
+ * fetch failure resolves to `{ sent: false, reason }`. This is critical because
+ * the reporter is wired from `unhandledrejection`, where any uncaught throw
+ * would itself become an unhandled rejection (infinite recursion).
  */
 export async function reportClientError(input) {
   if (typeof fetch !== 'function') return { sent: false, reason: 'no-fetch' };
 
-  const payload = buildPayload(input);
-  if (!payload.message) return { sent: false, reason: 'empty' };
-
+  let payload;
+  let hash;
   const now = Date.now();
-  if (now - lastSentAt < MIN_SEND_INTERVAL_MS) {
-    return { sent: false, reason: 'rate-limited' };
-  }
-  const hash = hashError(payload.message, payload.stack, payload.source);
-  if (recentHashes.has(hash)) {
-    return { sent: false, reason: 'duplicate' };
-  }
+  try {
+    payload = buildPayload(input);
+    if (!payload.message) return { sent: false, reason: 'empty' };
 
-  recentHashes.set(hash, now);
-  lastSentAt = now;
-  pruneRecent(now);
+    if (now - lastSentAt < MIN_SEND_INTERVAL_MS) {
+      return { sent: false, reason: 'rate-limited' };
+    }
+    hash = hashError(payload.message, payload.stack, payload.source);
+    if (recentHashes.has(hash)) {
+      return { sent: false, reason: 'duplicate' };
+    }
+
+    recentHashes.set(hash, now);
+    lastSentAt = now;
+    pruneRecent(now);
+  } catch {
+    return { sent: false, reason: 'caught' };
+  }
 
   // Raw `fetch` (not the shared `request()` helper) because we need
   // `keepalive: true` so the POST survives a tab unload triggered by the

@@ -151,4 +151,15 @@ describe('recordClientError', () => {
     expect(arg.description).not.toContain('token=keepout');
     expect(arg.metadata.source).toBe('/assets/index-abc.js');
   });
+
+  it('strips a `#fragment` from URL fields too (OAuth implicit-grant tokens)', async () => {
+    await recordClientError({
+      type: 'error',
+      message: 'boom',
+      url: 'https://portos/callback#access_token=keepout',
+    });
+    const arg = review.createItem.mock.calls[0][0];
+    expect(arg.description).toContain('URL: https://portos/callback');
+    expect(arg.description).not.toContain('access_token');
+  });
 });

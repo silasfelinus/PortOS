@@ -24,8 +24,11 @@ window.addEventListener('unhandledrejection', (event) => {
     event.preventDefault();
     return;
   }
-  console.error(`❌ Unhandled Promise Rejection: ${event.reason}`);
+  // Report first so a hostile `event.reason` (throwing toString / circular)
+  // can't take down the handler before `reportClientError` runs. Pass the
+  // reason as a separate console argument — no implicit String() coercion.
   reportClientError({ type: 'unhandledrejection', reason: event.reason });
+  console.error('❌ Unhandled Promise Rejection:', event.reason);
   event.preventDefault();
 });
 
