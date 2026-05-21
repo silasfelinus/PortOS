@@ -167,6 +167,7 @@ export default function TextStagePanel({
         currentOutput={stage.output || ''}
         currentRunId={stage.lastRunId}
         runHistory={runHistory}
+        restoreBlockedReason={dirty ? 'Save or discard your unsaved edits before restoring.' : null}
         onRestored={(restoredStage, restoredIssue) => {
           onStageUpdate?.(stageId, restoredStage, restoredIssue);
         }}

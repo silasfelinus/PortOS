@@ -23,6 +23,7 @@ export default function StageHistoryModal({
   currentOutput,
   currentRunId,
   runHistory = [],
+  restoreBlockedReason = null,
   onRestored,
 }) {
   const [selectedRunId, setSelectedRunId] = useState(null);
@@ -41,7 +42,7 @@ export default function StageHistoryModal({
   const [runRestore, restoring] = useAsyncAction(
     async () => {
       if (!selected) return null;
-      return restorePipelineStageVersion(issueId, stageId, selected.runId);
+      return restorePipelineStageVersion(issueId, stageId, selected.runId, { silent: true });
     },
     { errorMessage: 'Restore failed' },
   );
@@ -111,8 +112,8 @@ export default function StageHistoryModal({
 
             {/* Diff pane */}
             <div className="flex-1 flex flex-col min-w-0">
-              <div className="flex items-center justify-between px-4 py-2 border-b border-port-border bg-port-bg/40">
-                <div className="text-xs text-gray-500">
+              <div className="flex items-center justify-between px-4 py-2 border-b border-port-border bg-port-bg/40 gap-3">
+                <div className="text-xs text-gray-500 min-w-0">
                   {selected ? (
                     <>
                       <span className="text-red-400">prior</span>
@@ -120,11 +121,15 @@ export default function StageHistoryModal({
                       <span className="text-green-400">current{currentRunId ? ` (run ${currentRunId.slice(0, 8)})` : ''}</span>
                     </>
                   ) : 'Pick a version on the left to view the diff'}
+                  {restoreBlockedReason ? (
+                    <div className="mt-1 text-port-warning">{restoreBlockedReason}</div>
+                  ) : null}
                 </div>
                 <button
                   type="button"
                   onClick={handleRestore}
-                  disabled={!selected || restoring}
+                  disabled={!selected || restoring || !!restoreBlockedReason}
+                  title={restoreBlockedReason || undefined}
                   className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-port-accent text-white text-xs font-medium hover:bg-port-accent/80 disabled:opacity-40"
                 >
                   {restoring ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}

@@ -24,12 +24,12 @@ function lcs(a, b) {
   return seq;
 }
 
-// LCS is O(m·n) and allocates an (m+1)×(n+1) DP table — a 30K-word document
-// diffed against another 30K-word document would allocate ~3.6GB of array
-// cells and stall the browser. Bail to a plain side-by-side render when
-// either side exceeds this many split tokens (whitespace counts as a token,
-// so this is roughly 2× word count).
-const DIFF_TOKEN_CAP = 8000;
+// LCS allocates an (m+1)×(n+1) DP table; the product — not each side — is
+// what matters. Cap at ~4M cells (~16MB at 4 bytes/cell, well inside browser
+// memory for a per-modal computation). A 2000×2000 diff stays in budget;
+// a 4000×4000 (real-world comic script vs full rewrite) bails to the
+// side-by-side fallback below.
+const DIFF_CELL_CAP = 4_000_000;
 
 const InlineDiff = memo(function InlineDiff({ oldText, newText, emptyLabel = 'No changes.' }) {
   const oldStr = oldText || '';
@@ -44,7 +44,7 @@ const InlineDiff = memo(function InlineDiff({ oldText, newText, emptyLabel = 'No
       </div>
     );
   }
-  if (oldWords.length > DIFF_TOKEN_CAP || newWords.length > DIFF_TOKEN_CAP) {
+  if (oldWords.length * newWords.length > DIFF_CELL_CAP) {
     return (
       <div className="font-mono text-xs p-4 space-y-2 bg-port-bg">
         <div className="text-gray-500 text-[11px] uppercase tracking-wider">

@@ -131,11 +131,14 @@ export const generatePipelineVisualImage = (issueId, stageId, opts) =>
 
 // Restore a prior `runHistory` snapshot as the active text-stage state. The
 // server snapshots the just-replaced version into runHistory automatically,
-// so restoring is reversible by clicking another snapshot.
-export const restorePipelineStageVersion = (issueId, stageId, runId) =>
+// so restoring is reversible by clicking another snapshot. `options` accepts
+// `{ silent: true }` so callers that wrap the call in `useAsyncAction` (which
+// toasts on throw) don't double-toast when the request fails.
+export const restorePipelineStageVersion = (issueId, stageId, runId, options = {}) =>
   request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/${encodeURIComponent(stageId)}/restore`, {
     method: 'POST',
     body: JSON.stringify({ runId }),
+    ...options,
   });
 
 // Auto-fill the storyboards stage's scenes[] from the issue's prose or

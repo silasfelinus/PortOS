@@ -287,9 +287,26 @@ describe('pipeline issues service', () => {
       expect(restored.stage.input).toBe('seed');
       expect(restored.stage.lastRunId).toBe('run-1');
       expect(restored.stage.status).toBe('edited');
-      // Restore is itself a version event — the just-replaced run-2 should
-      // now sit at the top of history.
-      expect(restored.stage.runHistory.map((e) => e.runId)).toEqual(['run-2', 'run-1']);
+      // Restore snapshots the just-displaced run-2 and dedups run-1 out of
+      // the prior history (it's the new active runId, so leaving it in would
+      // create a duplicate after the next regenerate).
+      expect(restored.stage.runHistory.map((e) => e.runId)).toEqual(['run-2']);
+    });
+
+    it('restore → regenerate does not leave duplicate runIds in runHistory', async () => {
+      const i = await seedFirstRun();
+      await svc.updateStage(i.id, 'idea', { status: 'ready', output: 'v2', lastRunId: 'run-2' });
+      // History: [run-1], active: run-2.
+      await svc.restoreStageFromHistory(i.id, 'idea', 'run-1');
+      // History: [run-2], active: run-1 (run-1 filtered out of prior history when displaced).
+      await svc.updateStage(i.id, 'idea', { status: 'ready', output: 'v3', lastRunId: 'run-3' });
+      const fresh = await svc.getIssue(i.id);
+      const ids = fresh.stages.idea.runHistory.map((e) => e.runId);
+      // Must contain run-1 (just displaced) and run-2 (from earlier displacement),
+      // each exactly once. Active is run-3.
+      expect(fresh.stages.idea.lastRunId).toBe('run-3');
+      expect(ids).toEqual(['run-1', 'run-2']);
+      expect(new Set(ids).size).toBe(ids.length);
     });
 
     it('restoreStageFromHistory rejects when runId is not in current history', async () => {

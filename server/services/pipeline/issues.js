@@ -208,7 +208,14 @@ export function snapshotRunHistory(prevStage, patch, stageId) {
     input: prevStage.input || '',
     output: prevOutput,
   };
-  return [snapshot, ...prevHistory].slice(0, STAGE_RUN_HISTORY_MAX);
+  // Drop any prior entry whose runId matches the now-active runId. This is
+  // the restore case: snapshot r1 → user restores r1 → r1 becomes the active
+  // runId AND is still sitting in prevHistory. Without the filter the next
+  // regenerate would push the just-displaced state and leave a duplicate
+  // r1 in the list, breaking React keys and making restore-by-runId
+  // ambiguous (which r1 to apply?).
+  const dedupedPrior = prevHistory.filter((entry) => entry.runId !== nextRunId);
+  return [snapshot, ...dedupedPrior].slice(0, STAGE_RUN_HISTORY_MAX);
 }
 
 // Episode-video render settings the user chose at kickoff time. Persisted

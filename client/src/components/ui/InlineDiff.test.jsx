@@ -38,12 +38,20 @@ describe('InlineDiff', () => {
     expect(screen.getByText('No changes.')).toBeInTheDocument();
   });
 
-  it('bails to plain side-by-side render when either side exceeds the token cap', () => {
-    // Build a string with way more than DIFF_TOKEN_CAP (8000) tokens.
-    const huge = Array.from({ length: 5000 }, (_, i) => `word${i}`).join(' '); // 5000 words → ~10K tokens after split on whitespace
-    const { container } = render(<InlineDiff oldText={huge} newText="short" />);
+  it('bails to plain side-by-side render when m·n exceeds the DP-cell budget', () => {
+    // 2500 words on each side → 5000 tokens after whitespace split → 25M cells,
+    // well past the 4M budget; bail to the fallback.
+    const buildHuge = (prefix) => Array.from({ length: 2500 }, (_, i) => `${prefix}${i}`).join(' ');
+    const { container } = render(<InlineDiff oldText={buildHuge('a')} newText={buildHuge('b')} />);
     expect(screen.getByText(/Diff too large/i)).toBeInTheDocument();
     // No per-word highlight spans — just the two flat color blocks.
     expect(container.querySelectorAll('.bg-red-900\\/50, .bg-green-900\\/50')).toHaveLength(0);
+  });
+
+  it('stays within the LCS path when one side is short, even if the other is long', () => {
+    // 5000 words × 2 tokens = 10K, but other side has 1 token → 10K cells (in budget).
+    const long = Array.from({ length: 5000 }, (_, i) => `w${i}`).join(' ');
+    render(<InlineDiff oldText={long} newText="x" />);
+    expect(screen.queryByText(/Diff too large/i)).not.toBeInTheDocument();
   });
 });

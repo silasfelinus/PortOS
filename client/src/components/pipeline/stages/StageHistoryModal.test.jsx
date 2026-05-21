@@ -94,6 +94,24 @@ describe('StageHistoryModal', () => {
     expect(oldButton.className).toContain('border-port-accent');
   });
 
+  it('disables Restore and shows the warning banner when restoreBlockedReason is set', () => {
+    render(
+      <StageHistoryModal
+        open
+        onClose={() => {}}
+        issueId="iss-1"
+        stageId="idea"
+        currentOutput="current"
+        currentRunId="run-cur"
+        runHistory={[makeEntry('run-1', 'first', 1)]}
+        restoreBlockedReason="Save or discard your unsaved edits before restoring."
+      />,
+    );
+    const restoreBtn = screen.getByRole('button', { name: /Restore this version/i });
+    expect(restoreBtn).toBeDisabled();
+    expect(screen.getByText(/Save or discard your unsaved edits/i)).toBeInTheDocument();
+  });
+
   it('calls restorePipelineStageVersion and fires onRestored on success', async () => {
     restorePipelineStageVersion.mockResolvedValue({
       stage: { lastRunId: 'run-2', output: 'second version', runHistory: [] },
@@ -118,7 +136,7 @@ describe('StageHistoryModal', () => {
       />,
     );
     await user.click(screen.getByRole('button', { name: /Restore this version/i }));
-    expect(restorePipelineStageVersion).toHaveBeenCalledWith('iss-1', 'idea', 'run-2');
+    expect(restorePipelineStageVersion).toHaveBeenCalledWith('iss-1', 'idea', 'run-2', { silent: true });
     expect(onRestored).toHaveBeenCalled();
     expect(toast.success).toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
