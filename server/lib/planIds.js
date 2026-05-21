@@ -18,6 +18,7 @@
  * @property {string|null} id      slug if present, else null
  * @property {string} rest         everything after the `[id]` slot (or after `[x]/[ ]` if no id)
  * @property {boolean} needsInput  true if line carries the `<!-- NEEDS_INPUT -->` marker
+ * @property {boolean} drifted     true if the immediately-preceding line starts with `> ⚠️ DRIFT:`
  */
 
 import { execGit } from './execGit.js';
@@ -26,6 +27,7 @@ import { spawn } from 'child_process';
 const SLUG_MAX_LEN = 50;
 const CHECKBOX_RE = /^(?<indent>\s*)-\s+\[(?<box>[ xX])\]\s+(?:\[(?<id>[a-z0-9][a-z0-9-]*)\]\s+)?(?<rest>.*)$/;
 const NEEDS_INPUT_RE = /<!--\s*NEEDS_INPUT\s*-->/;
+const DRIFT_LINE_RE = /^\s*>\s*⚠️\s*DRIFT:/;
 
 /**
  * Strip common markdown wrappers from a title fragment.
@@ -106,7 +108,8 @@ export function parsePlanItems(markdown) {
       checked: box.toLowerCase() === 'x',
       id: id || null,
       rest: rest || '',
-      needsInput: NEEDS_INPUT_RE.test(rest || '')
+      needsInput: NEEDS_INPUT_RE.test(rest || ''),
+      drifted: DRIFT_LINE_RE.test(lines[i - 1] || '')
     });
   }
   return items;
@@ -169,6 +172,49 @@ export function assignMissingIds(markdown, extraIds = []) {
 }
 
 /**
+ * Classify why no PLAN.md item is currently dispatchable, for `plan-task`
+ * gating. Returns null when an agent dispatch should proceed (an item is
+ * pickable, or the state is recoverable — e.g. missing IDs that `do-replan`
+ * will fix on its own pass). Returns a human-readable reason string when
+ * the dispatch should be skipped entirely so the LLM isn't spun up just
+ * to exit cleanly.
+ *
+ * Skip cases:
+ *   - PLAN.md missing or empty.
+ *   - No `- [ ]` items at all.
+ *   - Every unchecked item is blocked on human input (`<!-- NEEDS_INPUT -->`
+ *     annotation, or the preceding line starts with `> ⚠️ DRIFT:`).
+ *   - Every unchecked item is either blocked on human input OR already
+ *     claimed by another agent (in-flight by branch/PR scan).
+ *
+ * Either `planMd` or `parsedItems` must be supplied. When the caller has
+ * already run `parsePlanItems(planMd)` (e.g. `applyPlanIdMetadata` does this
+ * for the pick step), passing `parsedItems` here avoids a redundant parse;
+ * `planMd` can then be passed as `null`.
+ *
+ * @param {string|null} planMd                 PLAN.md content, or null if parsedItems is supplied
+ * @param {Set<string>|string[]} inFlightIds   IDs currently claimed elsewhere
+ * @param {PlanItem[]|null} [parsedItems]      pre-parsed items, avoids re-parsing planMd
+ * @returns {string | null}                    skip reason, or null when dispatch should proceed
+ */
+export function diagnoseUnpickablePlan(planMd, inFlightIds = new Set(), parsedItems = null) {
+  if (!planMd && !parsedItems) return 'PLAN.md missing or empty';
+  const inFlight = inFlightIds instanceof Set ? inFlightIds : new Set(inFlightIds);
+  const items = parsedItems || parsePlanItems(planMd);
+  const unchecked = items.filter(i => !i.checked);
+  if (unchecked.length === 0) return 'PLAN.md has no unchecked items';
+
+  const isBlockedByHuman = (i) => i.needsInput || i.drifted;
+  if (unchecked.every(isBlockedByHuman)) {
+    return 'all PLAN.md items are blocked on human input (NEEDS_INPUT / DRIFT)';
+  }
+  if (unchecked.every(i => isBlockedByHuman(i) || (i.id && inFlight.has(i.id)))) {
+    return 'all PLAN.md items are claimed by other agents or blocked on human input';
+  }
+  return null;
+}
+
+/**
  * Pick the first `- [ ]` item that is not checked, not annotated NEEDS_INPUT,
  * not already in flight, and (if `requireId`) carries an ID.
  *
@@ -182,6 +228,7 @@ export function pickFirstAvailable(items, takenIds = new Set(), options = {}) {
   for (const item of items) {
     if (item.checked) continue;
     if (item.needsInput) continue;
+    if (item.drifted) continue;
     if (requireId && !item.id) continue;
     if (item.id && taken.has(item.id)) continue;
     return item;
@@ -214,8 +261,34 @@ function listOpenPullRequestHeadRefs(repoPath) {
 }
 
 /**
+ * Extract the PLAN.md slug from a git ref ONLY when the ref matches one of
+ * the two documented claim patterns:
+ *   - `claim/<slug>`                       (human / TUI / scheduler path)
+ *   - `cos/<task>/<slug>/<agent>`          (CoS sub-agent path)
+ * after stripping any single leading remote prefix (e.g. `origin/`).
+ *
+ * Returns null for refs that don't match — e.g. `feature/foo`, `main`,
+ * `release`, or `origin/HEAD`. Without this gate, the segment-walking
+ * approach would falsely flag any slug literally named `main`, `fix`,
+ * `feature`, `release`, `dev`, etc. as in-flight against virtually every
+ * branch in the repo, which would then suppress every plan-task dispatch.
+ */
+export function extractSlugFromRef(ref) {
+  if (typeof ref !== 'string' || !ref) return null;
+  const stripped = /^[^/]+\/(claim|cos)\//.test(ref)
+    ? ref.replace(/^[^/]+\//, '')
+    : ref;
+  const m1 = /^claim\/(.+)$/.exec(stripped);
+  if (m1) return m1[1];
+  const m2 = /^cos\/[^/]+\/([^/]+)\/[^/]+$/.exec(stripped);
+  if (m2) return m2[1];
+  return null;
+}
+
+/**
  * Find which of `knownIds` are currently in flight, as evidenced by an open
- * git branch (local or remote) or open PR with the slug as a path segment.
+ * git branch (local or remote) or open PR with the slug encoded into a
+ * documented claim ref pattern (`claim/<slug>` or `cos/<task>/<slug>/<agent>`).
  *
  * `repoPath` is the repository to query. Best-effort: missing git, missing gh,
  * or fetch failure all degrade silently and return what evidence is available.
@@ -247,10 +320,8 @@ export async function findInProgressIds(repoPath, knownIds) {
 
   const inFlight = new Set();
   for (const ref of refs) {
-    const segments = ref.split('/');
-    for (const seg of segments) {
-      if (known.has(seg)) inFlight.add(seg);
-    }
+    const slug = extractSlugFromRef(ref);
+    if (slug && known.has(slug)) inFlight.add(slug);
   }
   return inFlight;
 }
