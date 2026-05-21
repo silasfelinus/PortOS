@@ -5,6 +5,7 @@ import { Toaster } from './components/ui/Toast';
 import ErrorBoundary from './components/ErrorBoundary';
 import { ThemeProvider } from './components/ThemeContext';
 import { isStaleChunkError, reloadOnceForStaleChunk } from './utils/staleChunkReload';
+import { reportClientError } from './lib/clientErrorReporter';
 import App from './App';
 import './index.css';
 
@@ -24,12 +25,21 @@ window.addEventListener('unhandledrejection', (event) => {
     return;
   }
   console.error(`❌ Unhandled Promise Rejection: ${event.reason}`);
+  reportClientError({ type: 'unhandledrejection', reason: event.reason });
   event.preventDefault();
 });
 
 // Handle global errors
 window.addEventListener('error', (event) => {
   console.error(`💥 Global Error: ${event.message}`);
+  reportClientError({
+    type: 'error',
+    message: event.message,
+    error: event.error,
+    filename: event.filename,
+    lineno: event.lineno,
+    colno: event.colno,
+  });
 });
 
 ReactDOM.createRoot(document.getElementById('root')).render(

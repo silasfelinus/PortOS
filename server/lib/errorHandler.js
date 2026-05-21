@@ -16,15 +16,22 @@ const causeSuffix = (error) =>
   error.context?.causeChain ? ` ← ${error.context.causeChain}` : '';
 
 /**
- * Build the path portion of a request URL for logging — strips the query
- * string so tokens (e.g. `?access_token=…`) don't leak into server logs.
- * Falls back through `originalUrl` → `url` → '/'.
+ * Strip the `?query` (and everything after) from a URL or request path so
+ * tokens like `?access_token=…` don't leak into server logs or stored error
+ * reports. Returns the input unchanged when there is no query string.
  */
-const routePath = (req) => {
-  const raw = req.originalUrl || req.url || '/';
-  const qIndex = raw.indexOf('?');
-  return qIndex === -1 ? raw : raw.slice(0, qIndex);
-};
+export function stripQueryString(url) {
+  if (typeof url !== 'string') return url;
+  const qIndex = url.indexOf('?');
+  return qIndex === -1 ? url : url.slice(0, qIndex);
+}
+
+/**
+ * Build the path portion of a request URL for logging. Falls back through
+ * `originalUrl` → `url` → '/' and runs `stripQueryString` to keep tokens out
+ * of server logs.
+ */
+const routePath = (req) => stripQueryString(req.originalUrl || req.url || '/');
 
 /**
  * Enhanced error object with metadata

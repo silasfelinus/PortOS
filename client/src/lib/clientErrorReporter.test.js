@@ -1,0 +1,101 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { reportClientError, buildPayload, _resetForTests } from './clientErrorReporter';
+
+beforeEach(() => {
+  _resetForTests();
+  vi.restoreAllMocks();
+  globalThis.fetch = vi.fn(() => Promise.resolve({ ok: true }));
+});
+
+describe('buildPayload', () => {
+  it('extracts message + stack from an unhandledrejection Error reason', () => {
+    const err = new Error('rejected!');
+    err.stack = 'Error: rejected!\n    at foo (foo.js:1:1)';
+    const out = buildPayload({ type: 'unhandledrejection', reason: err });
+    expect(out.type).toBe('unhandledrejection');
+    expect(out.message).toBe('rejected!');
+    expect(out.stack).toContain('foo.js');
+  });
+
+  it('handles unhandledrejection with a string reason', () => {
+    const out = buildPayload({ type: 'unhandledrejection', reason: 'plain string' });
+    expect(out.message).toBe('plain string');
+    expect(out.stack).toBeUndefined();
+  });
+
+  it('extracts message + stack + filename/lineno/colno from an error event', () => {
+    const err = new Error('boom');
+    err.stack = 'Error: boom\n    at foo (foo.js:1:1)';
+    const out = buildPayload({
+      type: 'error',
+      error: err,
+      message: 'unhelpful',
+      filename: 'foo.js',
+      lineno: 1,
+      colno: 1,
+    });
+    expect(out.message).toBe('boom');
+    expect(out.source).toBe('foo.js');
+    expect(out.line).toBe(1);
+    expect(out.column).toBe(1);
+  });
+});
+
+describe('reportClientError', () => {
+  it('POSTs the payload to /api/client-errors and resolves with { sent: true }', async () => {
+    const result = await reportClientError({ type: 'error', message: 'boom' });
+    expect(result.sent).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).toBe('/api/client-errors');
+    expect(init.method).toBe('POST');
+    expect(init.headers['Content-Type']).toBe('application/json');
+    const body = JSON.parse(init.body);
+    expect(body.type).toBe('error');
+    expect(body.message).toBe('boom');
+  });
+
+  it('drops duplicate reports without re-sending', async () => {
+    const payload = {
+      type: 'error',
+      message: 'same',
+      error: Object.assign(new Error('same'), { stack: 'Error\n    at foo (foo.js:1:1)' }),
+    };
+    const first = await reportClientError(payload);
+    expect(first.sent).toBe(true);
+
+    const realNow = Date.now;
+    vi.spyOn(Date, 'now').mockReturnValue(realNow() + 2000);
+
+    const second = await reportClientError(payload);
+    expect(second.sent).toBe(false);
+    expect(second.reason).toBe('duplicate');
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+
+    Date.now = realNow;
+  });
+
+  it('rate-limits reports that arrive faster than once per second', async () => {
+    const first = await reportClientError({ type: 'error', message: 'a' });
+    expect(first.sent).toBe(true);
+
+    const second = await reportClientError({ type: 'error', message: 'b' });
+    expect(second.sent).toBe(false);
+    expect(second.reason).toBe('rate-limited');
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns transport-error when fetch rejects, never throws', async () => {
+    globalThis.fetch = vi.fn(() => Promise.reject(new Error('offline')));
+    const result = await reportClientError({ type: 'error', message: 'boom' });
+    expect(result.sent).toBe(false);
+    expect(result.reason).toBe('transport-error');
+  });
+
+  it('returns transport-error when fetch resolves with !ok', async () => {
+    globalThis.fetch = vi.fn(() => Promise.resolve({ ok: false }));
+    const result = await reportClientError({ type: 'error', message: 'boom' });
+    expect(result.sent).toBe(false);
+    expect(result.reason).toBe('transport-error');
+  });
+});

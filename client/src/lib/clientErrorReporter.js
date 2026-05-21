@@ -1,0 +1,138 @@
+/**
+ * Client error reporter — POSTs window.onerror + unhandledrejection events to
+ * `/api/client-errors` for aggregation in the Review Hub.
+ *
+ * In-memory dedup (60s window per message+stack hash) plus a 1/sec throttle
+ * to keep render storms from flooding the server; both mirror the server-side
+ * aggregator's behavior so identical guards exist on both ends. The reporter
+ * is fire-and-forget: it never throws, and any failure during fetch is
+ * swallowed so the unhandledrejection handler can't recurse into itself.
+ */
+
+const ENDPOINT = '/api/client-errors';
+const MIN_SEND_INTERVAL_MS = 1000;
+const DEDUP_WINDOW_MS = 60 * 1000;
+const MAX_RECENT = 64;
+
+const recentHashes = new Map(); // hash -> firstSentAt
+let lastSentAt = 0;
+
+function hashString(input) {
+  // Lightweight FNV-1a 32-bit, hex. Not cryptographic — only enough to
+  // collapse repeated render storms before they cross the network.
+  let h = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+function hashError(message, stack, source) {
+  const stackKey = (stack || '').split('\n').slice(0, 3).join('\n');
+  return hashString(`${message}\n${stackKey}\n${source || ''}`);
+}
+
+function pruneRecent(now) {
+  for (const [hash, sentAt] of recentHashes) {
+    if (now - sentAt > DEDUP_WINDOW_MS) recentHashes.delete(hash);
+  }
+  while (recentHashes.size > MAX_RECENT) {
+    const oldest = recentHashes.keys().next().value;
+    recentHashes.delete(oldest);
+  }
+}
+
+function extractFromReason(reason) {
+  if (reason instanceof Error) {
+    return { message: reason.message || String(reason), stack: reason.stack };
+  }
+  if (reason && typeof reason === 'object') {
+    return { message: String(reason.message ?? JSON.stringify(reason)), stack: reason.stack };
+  }
+  return { message: String(reason ?? 'Unknown'), stack: undefined };
+}
+
+/**
+ * Build the report payload from a raw browser event description. Exported for
+ * tests; production wires call `reportClientError` directly.
+ */
+export function buildPayload(input) {
+  const base = {
+    type: input.type === 'unhandledrejection' ? 'unhandledrejection' : 'error',
+    url: typeof window !== 'undefined' ? window.location.href : undefined,
+    userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+  };
+
+  if (input.type === 'unhandledrejection') {
+    const { message, stack } = extractFromReason(input.reason);
+    return { ...base, message, stack };
+  }
+
+  if (input.error instanceof Error) {
+    return {
+      ...base,
+      message: input.error.message || input.message || 'Unknown error',
+      stack: input.error.stack,
+      source: input.filename,
+      line: input.lineno,
+      column: input.colno,
+    };
+  }
+
+  return {
+    ...base,
+    message: input.message || 'Unknown error',
+    source: input.filename,
+    line: input.lineno,
+    column: input.colno,
+  };
+}
+
+/**
+ * Report a client-side error. Resolves to:
+ *   - `{ sent: true }` — sent to the server.
+ *   - `{ sent: false, reason: 'duplicate' | 'rate-limited' | 'no-fetch' | 'transport-error' }`
+ *
+ * Never throws.
+ */
+export async function reportClientError(input) {
+  if (typeof fetch !== 'function') return { sent: false, reason: 'no-fetch' };
+
+  const payload = buildPayload(input);
+  if (!payload.message) return { sent: false, reason: 'empty' };
+
+  const now = Date.now();
+  if (now - lastSentAt < MIN_SEND_INTERVAL_MS) {
+    return { sent: false, reason: 'rate-limited' };
+  }
+  const hash = hashError(payload.message, payload.stack, payload.source);
+  if (recentHashes.has(hash)) {
+    return { sent: false, reason: 'duplicate' };
+  }
+
+  recentHashes.set(hash, now);
+  lastSentAt = now;
+  pruneRecent(now);
+
+  // Raw `fetch` (not the shared `request()` helper) because we need
+  // `keepalive: true` so the POST survives a tab unload triggered by the
+  // crash itself, and we must never throw — an exception inside the
+  // `unhandledrejection` handler would itself become an unhandled rejection.
+  const ok = await fetch(ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    keepalive: true,
+  }).then(r => r.ok).catch(() => false);
+
+  return ok ? { sent: true } : { sent: false, reason: 'transport-error' };
+}
+
+/**
+ * Reset all in-memory state. Test-only.
+ */
+export function _resetForTests() {
+  recentHashes.clear();
+  lastSentAt = 0;
+}
