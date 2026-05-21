@@ -133,6 +133,26 @@ describe('reportClientError', () => {
     Date.now = realNow;
   });
 
+  it('accepts the same error again once its dedup window has expired', async () => {
+    const payload = {
+      type: 'error',
+      message: 'recurring',
+      error: Object.assign(new Error('recurring'), { stack: 'Error\n    at foo (foo.js:1:1)' }),
+    };
+    const first = await reportClientError(payload);
+    expect(first.sent).toBe(true);
+
+    // Jump past the 60s dedup window (and well past the 1s throttle).
+    const realNow = Date.now;
+    vi.spyOn(Date, 'now').mockReturnValue(realNow() + 90 * 1000);
+
+    const second = await reportClientError(payload);
+    expect(second.sent).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+
+    Date.now = realNow;
+  });
+
   it('rate-limits reports that arrive faster than once per second', async () => {
     const first = await reportClientError({ type: 'error', message: 'a' });
     expect(first.sent).toBe(true);

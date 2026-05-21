@@ -152,6 +152,27 @@ describe('recordClientError', () => {
     expect(arg.metadata.source).toBe('/assets/index-abc.js');
   });
 
+  it('accepts the same error again once its dedup window has expired', async () => {
+    const payload = {
+      type: 'error',
+      message: 'recurring error',
+      stack: 'Error: recurring\n    at foo (foo.js:1:1)',
+    };
+    const first = await recordClientError(payload);
+    expect(first.accepted).toBe(true);
+
+    // Jump past the 24h dedup window AND past the 1s throttle.
+    const realDateNow = Date.now;
+    const ONE_DAY_AND_CHANGE = 25 * 60 * 60 * 1000;
+    vi.spyOn(Date, 'now').mockReturnValue(realDateNow() + ONE_DAY_AND_CHANGE);
+
+    const second = await recordClientError(payload);
+    expect(second.accepted).toBe(true);
+    expect(review.createItem).toHaveBeenCalledTimes(2);
+
+    Date.now = realDateNow;
+  });
+
   it('strips a `#fragment` from URL fields too (OAuth implicit-grant tokens)', async () => {
     await recordClientError({
       type: 'error',

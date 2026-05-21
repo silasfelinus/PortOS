@@ -163,13 +163,17 @@ export async function reportClientError(input) {
       return { sent: false, reason: 'rate-limited' };
     }
     hash = hashError(payload.message, payload.stack, payload.source);
+    // Prune BEFORE the dedup check — otherwise an expired entry stays in
+    // the map until some unrelated accepted send triggers pruneRecent,
+    // silently suppressing recurrences past the 60s window for the rest
+    // of the tab's lifetime.
+    pruneRecent(now);
     if (recentHashes.has(hash)) {
       return { sent: false, reason: 'duplicate' };
     }
 
     recentHashes.set(hash, now);
     lastSentAt = now;
-    pruneRecent(now);
   } catch {
     return { sent: false, reason: 'caught' };
   }

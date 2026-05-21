@@ -138,6 +138,11 @@ export async function recordClientError(rawPayload) {
   const payload = sanitize(rawPayload);
   const hash = hashError(payload);
 
+  // Prune BEFORE the dedup check — otherwise an expired entry keeps
+  // suppressing the same error until some unrelated accepted write happens
+  // to trigger pruneRecent. A recurring error past the 24h window would
+  // never surface a fresh Review Hub alert.
+  pruneRecent(now);
   if (recentHashes.has(hash)) {
     return { accepted: false, reason: 'duplicate' };
   }
@@ -168,7 +173,6 @@ export async function recordClientError(rawPayload) {
   if (!item) return { accepted: false, reason: 'review-hub-write-failed' };
 
   recentHashes.set(hash, now);
-  pruneRecent(now);
   return { accepted: true, itemId: item.id };
 }
 
