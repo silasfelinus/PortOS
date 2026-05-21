@@ -154,269 +154,246 @@ export async function spawnAgentForTask(task) {
     completeExecution(toolExecution.id, { success: false });
   };
 
-  // Get configuration
-  const config = await getConfig();
-  let provider = await getActiveProvider();
+  // try/catch/finally wraps the whole spawn path so any uncaught throw
+  // from the async setup (buildAgentPrompt, writeFile, createAgentRun,
+  // registerAgent, etc.) still releases the dedup guard, the execution
+  // lane, and the tool-execution state. Without this, a throw mid-setup
+  // leaks `spawningTasks` and permanently blocks re-spawns of that task
+  // id until process restart.
+  try {
+    // Get configuration
+    const config = await getConfig();
+    let provider = await getActiveProvider();
 
-  if (!provider) {
-    cleanupOnError('No active AI provider configured');
-    cosEvents.emit('agent:error', { taskId: task.id, error: 'No active AI provider configured' });
-    return null;
-  }
-
-  // Check provider availability (usage limits, rate limits, etc.)
-  const providerAvailable = isProviderAvailable(provider.id);
-  if (!providerAvailable) {
-    const status = getProviderStatus(provider.id);
-    emitLog('warn', `Provider ${provider.id} unavailable: ${status.message}`, {
-      taskId: task.id,
-      providerId: provider.id,
-      reason: status.reason
-    });
-
-    // Try to get a fallback provider (check task-level, then provider-level, then system default)
-    const allProviders = await getAllProviders();
-    const taskFallbackId = task.metadata?.fallbackProvider;
-    const fallbackResult = await getFallbackProvider(provider.id, allProviders, taskFallbackId);
-
-    if (fallbackResult) {
-      emitLog('info', `Using fallback provider: ${fallbackResult.provider.id} (source: ${fallbackResult.source})`, {
-        taskId: task.id,
-        primaryProvider: provider.id,
-        fallbackProvider: fallbackResult.provider.id,
-        fallbackSource: fallbackResult.source
-      });
-      provider = fallbackResult.provider;
-    } else {
-      const errorMsg = `Provider ${provider.id} unavailable (${status.message}) and no fallback available`;
-      cleanupOnError(errorMsg);
-      cosEvents.emit('agent:error', {
-        taskId: task.id,
-        error: errorMsg,
-        providerId: provider.id,
-        providerStatus: status
-      });
+    if (!provider) {
+      cleanupOnError('No active AI provider configured');
+      cosEvents.emit('agent:error', { taskId: task.id, error: 'No active AI provider configured' });
       return null;
     }
-  }
 
-  // Check if user specified a different provider in task metadata
-  const userProviderId = task.metadata?.provider;
-  if (userProviderId && userProviderId !== provider.id) {
-    const userProvider = await getProviderById(userProviderId);
-    if (userProvider) {
-      emitLog('info', `Using user-specified provider: ${userProviderId}`, { taskId: task.id });
-      provider = userProvider;
-    } else {
-      emitLog('warn', `User-specified provider "${userProviderId}" not found, using active provider`, { taskId: task.id });
-    }
-  }
-
-  // Select optimal model for this task (async to allow learning-based suggestions)
-  const modelSelection = await selectModelForTask(task, provider);
-  let selectedModel = modelSelection.model;
-
-  // Validate model is compatible with provider
-  if (selectedModel && provider.models && provider.models.length > 0) {
-    const modelIsValid = provider.models.includes(selectedModel);
-    if (!modelIsValid) {
-      emitLog('warn', `Model "${selectedModel}" not valid for provider "${provider.id}", falling back to provider default`, {
+    // Check provider availability (usage limits, rate limits, etc.)
+    const providerAvailable = isProviderAvailable(provider.id);
+    if (!providerAvailable) {
+      const status = getProviderStatus(provider.id);
+      emitLog('warn', `Provider ${provider.id} unavailable: ${status.message}`, {
         taskId: task.id,
-        requestedModel: selectedModel,
         providerId: provider.id,
-        validModels: provider.models
-      });
-      selectedModel = modelSelection.tier === 'heavy' ? provider.heavyModel :
-                      modelSelection.tier === 'light' ? provider.lightModel :
-                      modelSelection.tier === 'medium' ? provider.mediumModel :
-                      provider.defaultModel;
-    }
-  }
-
-  const logMessage = modelSelection.learningReason
-    ? `Model selection: ${selectedModel} (${modelSelection.reason} - ${modelSelection.learningReason})`
-    : `Model selection: ${selectedModel} (${modelSelection.reason})`;
-  emitLog('info', logMessage, {
-    taskId: task.id,
-    model: selectedModel,
-    tier: modelSelection.tier,
-    reason: modelSelection.reason,
-    ...(modelSelection.learningReason && { learningReason: modelSelection.learningReason })
-  });
-
-  // Determine workspace path and resolve app name
-  const isReadOnly = isTruthyMeta(task.metadata?.readOnly);
-  let workspacePath = task.metadata?.app
-    ? await getAppWorkspace(task.metadata.app)
-    : ROOT_DIR;
-  const resolvedAppName = task.metadata?.app
-    ? (await getAppById(task.metadata.app).catch(() => null))?.name || null
-    : null;
-
-  let jiraTicket = null;
-  let jiraBranchName = null;
-  let worktreeInfo = null;
-  const explicitOpenPR = isTruthyMeta(task.metadata?.openPR);
-  const explicitWorktree = isTruthyMeta(task.metadata?.useWorktree) || explicitOpenPR;
-
-  if (!isReadOnly) {
-    // Pull latest from git before starting work
-    const pullResult = await git.ensureLatest(workspacePath).catch(err => {
-      emitLog('warn', `⚠️ Pre-task git pull failed for ${workspacePath}: ${err.message}`, { taskId: task.id, workspace: workspacePath });
-      return { success: false, error: err.message };
-    });
-
-    if (pullResult.skipped) {
-      emitLog('debug', `Pre-task git pull skipped: ${pullResult.skipped}`, { taskId: task.id, workspace: workspacePath });
-    } else if (pullResult.conflict) {
-      emitLog('warn', `🔀 Git conflict in ${workspacePath} (branch: ${pullResult.branch}): ${pullResult.error}`, {
-        taskId: task.id, workspace: workspacePath, branch: pullResult.branch
+        reason: status.reason
       });
 
-      const appId = task.metadata?.app || null;
-      const conflictDesc = `Resolve git conflict in ${resolvedAppName || workspacePath} on branch ${pullResult.branch}. `
-        + `The branch has diverged from origin and automatic rebase failed. `
-        + `Error: ${pullResult.error}`;
+      // Try to get a fallback provider (check task-level, then provider-level, then system default)
+      const allProviders = await getAllProviders();
+      const taskFallbackId = task.metadata?.fallbackProvider;
+      const fallbackResult = await getFallbackProvider(provider.id, allProviders, taskFallbackId);
 
-      await addTask({
-        description: conflictDesc,
-        priority: 'HIGH',
-        app: appId,
-        context: `This conflict is blocking task ${task.id}: "${task.description}". `
-          + `Resolve the conflict, commit, and push so the blocked task can proceed.`,
-        position: 'top'
-      }, 'internal').catch(err => {
-        emitLog('warn', `Failed to create conflict resolution task: ${err.message}`, { taskId: task.id });
-      });
-
-      await updateTask(task.id, { status: 'pending' }, task.taskType || 'user').catch(() => {});
-      cleanupOnError(`Git conflict blocks task — conflict resolution task created`);
-      cosEvents.emit('agent:deferred', { taskId: task.id, reason: 'git-conflict', branch: pullResult.branch });
-      return null;
-    } else if (pullResult.success && !pullResult.upToDate && !pullResult.skipped) {
-      emitLog('info', `📥 Pulled latest for ${resolvedAppName || 'workspace'} (branch: ${pullResult.branch})`, {
-        taskId: task.id, workspace: workspacePath, branch: pullResult.branch
-      });
-    } else if (!pullResult.success) {
-      emitLog('warn', `⚠️ Pre-task git pull error: ${pullResult.error}`, { taskId: task.id, workspace: workspacePath });
-    }
-
-    // JIRA integration: create ticket + feature branch if app has JIRA enabled and task opted in
-    const appData = await getAppDataForTask(task);
-
-    if (appData?.jira?.enabled && task.metadata?.createJiraTicket) {
-      jiraTicket = await createJiraTicketForTask(task, appData);
-
-      if (jiraTicket) {
-        const slug = (task.description || 'task')
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/^-|-$/g, '')
-          .substring(0, 40);
-        jiraBranchName = `feature/${jiraTicket.ticketId}-${slug}`;
-
-        if (task.metadata?.app) {
-          await git.fetchOrigin(workspacePath).catch(() => {});
-          const { baseBranch: defaultBranch } = await git.getRepoBranches(workspacePath).catch(() => ({ baseBranch: null }));
-          if (defaultBranch) {
-            await git.checkout(workspacePath, defaultBranch).catch(() => {});
-            await execGit(['merge', '--ff-only', `origin/${defaultBranch}`], workspacePath).catch(err => { emitLog('warn', `Fast-forward merge of ${defaultBranch} failed: ${err.message}`, { taskId: task.id }); });
-          }
-        }
-
-        await git.createBranch(workspacePath, jiraBranchName).catch(err => {
-          emitLog('warn', `Failed to create JIRA branch ${jiraBranchName}: ${err.message}`, { taskId: task.id });
-          jiraBranchName = null;
+      if (fallbackResult) {
+        emitLog('info', `Using fallback provider: ${fallbackResult.provider.id} (source: ${fallbackResult.source})`, {
+          taskId: task.id,
+          primaryProvider: provider.id,
+          fallbackProvider: fallbackResult.provider.id,
+          fallbackSource: fallbackResult.source
         });
-
-        if (jiraBranchName) {
-          emitLog('success', `Created feature branch ${jiraBranchName}`, { taskId: task.id, ticketId: jiraTicket.ticketId });
-        }
-
-        task.metadata = {
-          ...task.metadata,
-          jiraTicketId: jiraTicket.ticketId,
-          jiraTicketUrl: jiraTicket.ticketUrl,
-          jiraBranch: jiraBranchName,
-          jiraInstanceId: appData.jira.instanceId,
-          jiraCreatePR: appData.jira.createPR !== false
-        };
+        provider = fallbackResult.provider;
+      } else {
+        const errorMsg = `Provider ${provider.id} unavailable (${status.message}) and no fallback available`;
+        cleanupOnError(errorMsg);
+        cosEvents.emit('agent:error', {
+          taskId: task.id,
+          error: errorMsg,
+          providerId: provider.id,
+          providerStatus: status
+        });
+        return null;
       }
     }
 
-    // Feature agent tasks: use persistent worktree instead of creating a new one
-    if (task.metadata?.featureAgentRun && task.metadata?.featureAgentId) {
-      const { getFeatureAgent } = await import('./featureAgents.js');
-      const fa = await getFeatureAgent(task.metadata.featureAgentId).catch(() => null);
-      if (fa) {
-        const faWorktreePath = join(PATHS.cos, 'feature-agents', fa.id, 'worktree');
-        if (existsSync(faWorktreePath)) {
-          workspacePath = faWorktreePath;
-          worktreeInfo = {
-            worktreePath: faWorktreePath,
-            branchName: fa.git.branchName,
-            baseBranch: fa.git.baseBranch || 'main',
-            isPersistentWorktree: true
+    // Check if user specified a different provider in task metadata
+    const userProviderId = task.metadata?.provider;
+    if (userProviderId && userProviderId !== provider.id) {
+      const userProvider = await getProviderById(userProviderId);
+      if (userProvider) {
+        emitLog('info', `Using user-specified provider: ${userProviderId}`, { taskId: task.id });
+        provider = userProvider;
+      } else {
+        emitLog('warn', `User-specified provider "${userProviderId}" not found, using active provider`, { taskId: task.id });
+      }
+    }
+
+    // Select optimal model for this task (async to allow learning-based suggestions)
+    const modelSelection = await selectModelForTask(task, provider);
+    let selectedModel = modelSelection.model;
+
+    // Validate model is compatible with provider
+    if (selectedModel && provider.models && provider.models.length > 0) {
+      const modelIsValid = provider.models.includes(selectedModel);
+      if (!modelIsValid) {
+        emitLog('warn', `Model "${selectedModel}" not valid for provider "${provider.id}", falling back to provider default`, {
+          taskId: task.id,
+          requestedModel: selectedModel,
+          providerId: provider.id,
+          validModels: provider.models
+        });
+        selectedModel = modelSelection.tier === 'heavy' ? provider.heavyModel :
+                        modelSelection.tier === 'light' ? provider.lightModel :
+                        modelSelection.tier === 'medium' ? provider.mediumModel :
+                        provider.defaultModel;
+      }
+    }
+
+    const logMessage = modelSelection.learningReason
+      ? `Model selection: ${selectedModel} (${modelSelection.reason} - ${modelSelection.learningReason})`
+      : `Model selection: ${selectedModel} (${modelSelection.reason})`;
+    emitLog('info', logMessage, {
+      taskId: task.id,
+      model: selectedModel,
+      tier: modelSelection.tier,
+      reason: modelSelection.reason,
+      ...(modelSelection.learningReason && { learningReason: modelSelection.learningReason })
+    });
+
+    // Determine workspace path and resolve app name
+    const isReadOnly = isTruthyMeta(task.metadata?.readOnly);
+    let workspacePath = task.metadata?.app
+      ? await getAppWorkspace(task.metadata.app)
+      : ROOT_DIR;
+    const resolvedAppName = task.metadata?.app
+      ? (await getAppById(task.metadata.app).catch(() => null))?.name || null
+      : null;
+
+    let jiraTicket = null;
+    let jiraBranchName = null;
+    let worktreeInfo = null;
+    const explicitOpenPR = isTruthyMeta(task.metadata?.openPR);
+    const explicitWorktree = isTruthyMeta(task.metadata?.useWorktree) || explicitOpenPR;
+
+    if (!isReadOnly) {
+      // Pull latest from git before starting work
+      const pullResult = await git.ensureLatest(workspacePath).catch(err => {
+        emitLog('warn', `⚠️ Pre-task git pull failed for ${workspacePath}: ${err.message}`, { taskId: task.id, workspace: workspacePath });
+        return { success: false, error: err.message };
+      });
+
+      if (pullResult.skipped) {
+        emitLog('debug', `Pre-task git pull skipped: ${pullResult.skipped}`, { taskId: task.id, workspace: workspacePath });
+      } else if (pullResult.conflict) {
+        emitLog('warn', `🔀 Git conflict in ${workspacePath} (branch: ${pullResult.branch}): ${pullResult.error}`, {
+          taskId: task.id, workspace: workspacePath, branch: pullResult.branch
+        });
+
+        const appId = task.metadata?.app || null;
+        const conflictDesc = `Resolve git conflict in ${resolvedAppName || workspacePath} on branch ${pullResult.branch}. `
+          + `The branch has diverged from origin and automatic rebase failed. `
+          + `Error: ${pullResult.error}`;
+
+        await addTask({
+          description: conflictDesc,
+          priority: 'HIGH',
+          app: appId,
+          context: `This conflict is blocking task ${task.id}: "${task.description}". `
+            + `Resolve the conflict, commit, and push so the blocked task can proceed.`,
+          position: 'top'
+        }, 'internal').catch(err => {
+          emitLog('warn', `Failed to create conflict resolution task: ${err.message}`, { taskId: task.id });
+        });
+
+        await updateTask(task.id, { status: 'pending' }, task.taskType || 'user').catch(() => {});
+        cleanupOnError(`Git conflict blocks task — conflict resolution task created`);
+        cosEvents.emit('agent:deferred', { taskId: task.id, reason: 'git-conflict', branch: pullResult.branch });
+        return null;
+      } else if (pullResult.success && !pullResult.upToDate && !pullResult.skipped) {
+        emitLog('info', `📥 Pulled latest for ${resolvedAppName || 'workspace'} (branch: ${pullResult.branch})`, {
+          taskId: task.id, workspace: workspacePath, branch: pullResult.branch
+        });
+      } else if (!pullResult.success) {
+        emitLog('warn', `⚠️ Pre-task git pull error: ${pullResult.error}`, { taskId: task.id, workspace: workspacePath });
+      }
+
+      // JIRA integration: create ticket + feature branch if app has JIRA enabled and task opted in
+      const appData = await getAppDataForTask(task);
+
+      if (appData?.jira?.enabled && task.metadata?.createJiraTicket) {
+        jiraTicket = await createJiraTicketForTask(task, appData);
+
+        if (jiraTicket) {
+          const slug = (task.description || 'task')
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-|-$/g, '')
+            .substring(0, 40);
+          jiraBranchName = `feature/${jiraTicket.ticketId}-${slug}`;
+
+          if (task.metadata?.app) {
+            await git.fetchOrigin(workspacePath).catch(() => {});
+            const { baseBranch: defaultBranch } = await git.getRepoBranches(workspacePath).catch(() => ({ baseBranch: null }));
+            if (defaultBranch) {
+              await git.checkout(workspacePath, defaultBranch).catch(() => {});
+              await execGit(['merge', '--ff-only', `origin/${defaultBranch}`], workspacePath).catch(err => { emitLog('warn', `Fast-forward merge of ${defaultBranch} failed: ${err.message}`, { taskId: task.id }); });
+            }
+          }
+
+          await git.createBranch(workspacePath, jiraBranchName).catch(err => {
+            emitLog('warn', `Failed to create JIRA branch ${jiraBranchName}: ${err.message}`, { taskId: task.id });
+            jiraBranchName = null;
+          });
+
+          if (jiraBranchName) {
+            emitLog('success', `Created feature branch ${jiraBranchName}`, { taskId: task.id, ticketId: jiraTicket.ticketId });
+          }
+
+          task.metadata = {
+            ...task.metadata,
+            jiraTicketId: jiraTicket.ticketId,
+            jiraTicketUrl: jiraTicket.ticketUrl,
+            jiraBranch: jiraBranchName,
+            jiraInstanceId: appData.jira.instanceId,
+            jiraCreatePR: appData.jira.createPR !== false
           };
-          const { mergeBaseIntoFeatureWorktree } = await import('./worktreeManager.js');
-          if (fa.git.autoMergeBase) {
-            await mergeBaseIntoFeatureWorktree(fa.id, fa.git.baseBranch).catch(err => {
-              emitLog('warn', `🌳 Feature agent base merge failed: ${err.message}`, { featureAgentId: fa.id });
+        }
+      }
+
+      // Feature agent tasks: use persistent worktree instead of creating a new one
+      if (task.metadata?.featureAgentRun && task.metadata?.featureAgentId) {
+        const { getFeatureAgent } = await import('./featureAgents.js');
+        const fa = await getFeatureAgent(task.metadata.featureAgentId).catch(() => null);
+        if (fa) {
+          const faWorktreePath = join(PATHS.cos, 'feature-agents', fa.id, 'worktree');
+          if (existsSync(faWorktreePath)) {
+            workspacePath = faWorktreePath;
+            worktreeInfo = {
+              worktreePath: faWorktreePath,
+              branchName: fa.git.branchName,
+              baseBranch: fa.git.baseBranch || 'main',
+              isPersistentWorktree: true
+            };
+            const { mergeBaseIntoFeatureWorktree } = await import('./worktreeManager.js');
+            if (fa.git.autoMergeBase) {
+              await mergeBaseIntoFeatureWorktree(fa.id, fa.git.baseBranch).catch(err => {
+                emitLog('warn', `🌳 Feature agent base merge failed: ${err.message}`, { featureAgentId: fa.id });
+              });
+            }
+            emitLog('info', `🌳 Feature agent ${fa.name} using persistent worktree: ${fa.git.branchName}`, {
+              featureAgentId: fa.id, worktreePath: faWorktreePath
             });
           }
-          emitLog('info', `🌳 Feature agent ${fa.name} using persistent worktree: ${fa.git.branchName}`, {
-            featureAgentId: fa.id, worktreePath: faWorktreePath
-          });
         }
       }
-    }
 
-    if (explicitWorktree && !jiraBranchName) {
-      const existingBranch = task.metadata?.existingBranch || null;
-      const { baseBranch: detectedBase } = await git.getRepoBranches(workspacePath).catch(() => ({ baseBranch: null }));
-      if (existingBranch) {
-        emitLog('info', `🌳 Worktree requested for task ${task.id} on existing branch ${existingBranch}`, {
-          taskId: task.id, app: task.metadata?.app, branch: existingBranch
-        });
-      } else {
-        emitLog('info', `🌳 Worktree requested for task ${task.id} — creating isolated worktree from ${detectedBase || 'default branch'}`, {
-          taskId: task.id, app: task.metadata?.app, baseBranch: detectedBase
-        });
-      }
-
-      worktreeInfo = await createWorktree(agentId, workspacePath, task.id, {
-        baseBranch: detectedBase || undefined,
-        existingBranch: existingBranch || undefined,
-        planId: task.metadata?.planId || undefined
-      }).catch(err => {
-        emitLog('warn', `🌳 Worktree creation failed, using shared workspace: ${err.message}`, { taskId: task.id });
-        return null;
-      });
-
-      if (worktreeInfo) {
-        workspacePath = worktreeInfo.worktreePath;
-        emitLog('success', `🌳 Agent ${agentId} will work in worktree: ${worktreeInfo.branchName} (base: ${worktreeInfo.baseBranch})`, {
-          agentId, worktreePath: worktreeInfo.worktreePath, branchName: worktreeInfo.branchName, baseBranch: worktreeInfo.baseBranch
-        });
-      }
-    } else if (!jiraBranchName && !isFalsyMeta(task.metadata?.useWorktree)) {
-      const { getAgents } = await import('./cos.js');
-      const allAgents = await getAgents();
-      const runningAgents = allAgents.filter(a => a.status === 'running');
-
-      const conflictResult = await detectConflicts(task, workspacePath, runningAgents).catch(err => {
-        emitLog('warn', `Conflict detection failed: ${err.message}`, { taskId: task.id });
-        return { hasConflict: false, recommendation: 'proceed' };
-      });
-
-      if (conflictResult.recommendation === 'worktree') {
-        emitLog('info', `🌳 Conflict detected for task ${task.id}: ${conflictResult.reason} — creating worktree`, {
-          taskId: task.id,
-          conflictingAgents: conflictResult.conflictingAgents,
-          reason: conflictResult.reason
-        });
+      if (explicitWorktree && !jiraBranchName) {
+        const existingBranch = task.metadata?.existingBranch || null;
+        const { baseBranch: detectedBase } = await git.getRepoBranches(workspacePath).catch(() => ({ baseBranch: null }));
+        if (existingBranch) {
+          emitLog('info', `🌳 Worktree requested for task ${task.id} on existing branch ${existingBranch}`, {
+            taskId: task.id, app: task.metadata?.app, branch: existingBranch
+          });
+        } else {
+          emitLog('info', `🌳 Worktree requested for task ${task.id} — creating isolated worktree from ${detectedBase || 'default branch'}`, {
+            taskId: task.id, app: task.metadata?.app, baseBranch: detectedBase
+          });
+        }
 
         worktreeInfo = await createWorktree(agentId, workspacePath, task.id, {
+          baseBranch: detectedBase || undefined,
+          existingBranch: existingBranch || undefined,
           planId: task.metadata?.planId || undefined
         }).catch(err => {
           emitLog('warn', `🌳 Worktree creation failed, using shared workspace: ${err.message}`, { taskId: task.id });
@@ -425,128 +402,158 @@ export async function spawnAgentForTask(task) {
 
         if (worktreeInfo) {
           workspacePath = worktreeInfo.worktreePath;
-          emitLog('success', `🌳 Agent ${agentId} will work in worktree: ${worktreeInfo.branchName}`, {
-            agentId, worktreePath: worktreeInfo.worktreePath, branchName: worktreeInfo.branchName
+          emitLog('success', `🌳 Agent ${agentId} will work in worktree: ${worktreeInfo.branchName} (base: ${worktreeInfo.baseBranch})`, {
+            agentId, worktreePath: worktreeInfo.worktreePath, branchName: worktreeInfo.branchName, baseBranch: worktreeInfo.baseBranch
           });
         }
-      } else if (conflictResult.recommendation === 'proceed') {
-        emitLog('debug', `No conflicts for task ${task.id}, using shared workspace`, { taskId: task.id });
+      } else if (!jiraBranchName && !isFalsyMeta(task.metadata?.useWorktree)) {
+        const { getAgents } = await import('./cos.js');
+        const allAgents = await getAgents();
+        const runningAgents = allAgents.filter(a => a.status === 'running');
+
+        const conflictResult = await detectConflicts(task, workspacePath, runningAgents).catch(err => {
+          emitLog('warn', `Conflict detection failed: ${err.message}`, { taskId: task.id });
+          return { hasConflict: false, recommendation: 'proceed' };
+        });
+
+        if (conflictResult.recommendation === 'worktree') {
+          emitLog('info', `🌳 Conflict detected for task ${task.id}: ${conflictResult.reason} — creating worktree`, {
+            taskId: task.id,
+            conflictingAgents: conflictResult.conflictingAgents,
+            reason: conflictResult.reason
+          });
+
+          worktreeInfo = await createWorktree(agentId, workspacePath, task.id, {
+            planId: task.metadata?.planId || undefined
+          }).catch(err => {
+            emitLog('warn', `🌳 Worktree creation failed, using shared workspace: ${err.message}`, { taskId: task.id });
+            return null;
+          });
+
+          if (worktreeInfo) {
+            workspacePath = worktreeInfo.worktreePath;
+            emitLog('success', `🌳 Agent ${agentId} will work in worktree: ${worktreeInfo.branchName}`, {
+              agentId, worktreePath: worktreeInfo.worktreePath, branchName: worktreeInfo.branchName
+            });
+          }
+        } else if (conflictResult.recommendation === 'proceed') {
+          emitLog('debug', `No conflicts for task ${task.id}, using shared workspace`, { taskId: task.id });
+        }
       }
-    }
-  } // end !isReadOnly
+    } // end !isReadOnly
 
-  const isTui = isTuiProvider(provider);
+    const isTui = isTuiProvider(provider);
 
-  // Build the agent prompt. `provider.type` drives the light-vs-full split
-  // inside buildAgentPrompt — see its doc comment.
-  const prompt = await buildAgentPrompt(task, config, workspacePath, worktreeInfo, isTruthyMeta, {
-    providerType: provider.type,
-    providerId: provider.id
-  });
-
-  // Create agent directory
-  const agentDir = join(AGENTS_DIR, agentId);
-  if (!existsSync(agentDir)) {
-    await ensureDir(agentDir);
-  }
-
-  // Save prompt to file
-  await writeFile(join(agentDir, 'prompt.txt'), prompt);
-
-  // Create run entry for usage tracking
-  const { runId } = await createAgentRun(agentId, task, selectedModel, provider, workspacePath, resolvedAppName);
-  const executionMode = isTui ? 'tui' : useRunner ? 'runner' : 'direct';
-
-  // Register the agent with model info
-  await registerAgent(agentId, task.id, {
-    workspacePath,
-    sourceWorkspace: worktreeInfo ? (task.metadata?.app ? await getAppWorkspace(task.metadata.app) : ROOT_DIR) : null,
-    worktreeBranch: worktreeInfo?.branchName || null,
-    isWorktree: !!worktreeInfo,
-    isPersistentWorktree: !!worktreeInfo?.isPersistentWorktree,
-    taskDescription: task.description,
-    taskType: task.taskType,
-    priority: task.priority,
-    providerId: provider.id,
-    model: selectedModel,
-    modelTier: modelSelection.tier,
-    modelReason: modelSelection.reason,
-    runId,
-    phase: 'initializing',
-    useRunner: isTui ? false : useRunner,
-    executionMode,
-    taskAnalysisType: task.metadata?.analysisType || null,
-    taskReviewType: task.metadata?.reviewType || null,
-    taskApp: task.metadata?.app || null,
-    taskAppName: resolvedAppName,
-    selfImprovementType: task.metadata?.selfImprovementType || null,
-    jobId: task.metadata?.jobId || null,
-    missionName: task.metadata?.missionName || null,
-    missionId: task.metadata?.missionId || null,
-    jiraTicketId: task.metadata?.jiraTicketId || null,
-    jiraTicketUrl: task.metadata?.jiraTicketUrl || null,
-    jiraBranch: task.metadata?.jiraBranch || null,
-    jiraInstanceId: task.metadata?.jiraInstanceId || null,
-    jiraCreatePR: task.metadata?.jiraCreatePR ?? null,
-    configOpenPR: isTruthyMeta(task.metadata?.openPR),
-    configSimplify: isTruthyMeta(task.metadata?.simplify),
-    configReviewLoop: isTruthyMeta(task.metadata?.reviewLoop),
-    configReviewer: metaStringOr(task.metadata?.reviewer, null),
-    configUseWorktree: !!worktreeInfo,
-    configWorktreeAutoDetected: !!worktreeInfo && !explicitWorktree,
-    configCodingOnMain: !worktreeInfo && !jiraBranchName
-  });
-
-  emitLog('info', `Agent ${agentId} initializing...${worktreeInfo ? ' (worktree)' : ''}${jiraBranchName ? ` (JIRA: ${jiraTicket?.ticketId})` : ''}`, { agentId, taskId: task.id });
-
-  // Mark the task as in_progress and increment total spawn count
-  const newSpawnCount = (Number(task.metadata?.totalSpawnCount) || 0) + 1;
-  const updateResult = await updateTask(task.id, {
-    status: 'in_progress',
-    metadata: {
-      ...task.metadata,
-      totalSpawnCount: newSpawnCount,
-      lastSpawnedAt: new Date().toISOString()
-    }
-  }, task.taskType || 'user')
-    .catch(err => {
-      console.error(`❌ Failed to mark task ${task.id} as in_progress: ${err.message}`);
-      return null;
+    // Build the agent prompt. `provider.type` drives the light-vs-full split
+    // inside buildAgentPrompt — see its doc comment.
+    const prompt = await buildAgentPrompt(task, config, workspacePath, worktreeInfo, isTruthyMeta, {
+      providerType: provider.type,
+      providerId: provider.id
     });
-  if (!updateResult) {
-    cleanupOnError('Failed to update task status');
-    return null;
-  }
 
-  // Record autonomous job execution now that the task is confirmed spawning
-  if (task.metadata?.autonomousJob && task.metadata?.jobId) {
-    cosEvents.emit('job:spawned', { jobId: task.metadata.jobId });
-  }
+    // Create agent directory
+    const agentDir = join(AGENTS_DIR, agentId);
+    if (!existsSync(agentDir)) {
+      await ensureDir(agentDir);
+    }
 
-  const cliConfig = isTui
-    ? buildTuiSpawnConfig(provider, selectedModel)
-    : buildCliSpawnConfig(provider, selectedModel);
+    // Save prompt to file
+    await writeFile(join(agentDir, 'prompt.txt'), prompt);
 
-  emitLog('success', `Spawning agent for task ${task.id}`, {
-    agentId,
-    model: selectedModel,
-    mode: executionMode,
-    cli: cliConfig.command,
-    lane: laneName,
-    worktree: !!worktreeInfo
-  });
+    // Create run entry for usage tracking
+    const { runId } = await createAgentRun(agentId, task, selectedModel, provider, workspacePath, resolvedAppName);
+    const executionMode = isTui ? 'tui' : useRunner ? 'runner' : 'direct';
 
-  // Dedup-window fix: keep the `spawningTasks` guard active across the actual
-  // spawn call, not just up to the in_progress flip. Deleting between
-  // `updateTask` and `spawnViaRunner`/`spawnDirectly` opened a window where a
-  // concurrent `spawnAgentForTask(task)` call (e.g. a re-fired `task:ready`
-  // from a follow-up scheduler tick) saw an empty set and a task whose
-  // registered agent hadn't yet been queued to the runner, and proceeded to
-  // spawn a second agent for the same task id. Awaiting the spawn before
-  // releasing the guard — inside try/finally so a throw still releases —
-  // closes that race. release() must NOT run here on the success path; the
-  // lane is released by the agent-completion handler when the work finishes.
-  try {
+    // Register the agent with model info
+    await registerAgent(agentId, task.id, {
+      workspacePath,
+      sourceWorkspace: worktreeInfo ? (task.metadata?.app ? await getAppWorkspace(task.metadata.app) : ROOT_DIR) : null,
+      worktreeBranch: worktreeInfo?.branchName || null,
+      isWorktree: !!worktreeInfo,
+      isPersistentWorktree: !!worktreeInfo?.isPersistentWorktree,
+      taskDescription: task.description,
+      taskType: task.taskType,
+      priority: task.priority,
+      providerId: provider.id,
+      model: selectedModel,
+      modelTier: modelSelection.tier,
+      modelReason: modelSelection.reason,
+      runId,
+      phase: 'initializing',
+      useRunner: isTui ? false : useRunner,
+      executionMode,
+      taskAnalysisType: task.metadata?.analysisType || null,
+      taskReviewType: task.metadata?.reviewType || null,
+      taskApp: task.metadata?.app || null,
+      taskAppName: resolvedAppName,
+      selfImprovementType: task.metadata?.selfImprovementType || null,
+      jobId: task.metadata?.jobId || null,
+      missionName: task.metadata?.missionName || null,
+      missionId: task.metadata?.missionId || null,
+      jiraTicketId: task.metadata?.jiraTicketId || null,
+      jiraTicketUrl: task.metadata?.jiraTicketUrl || null,
+      jiraBranch: task.metadata?.jiraBranch || null,
+      jiraInstanceId: task.metadata?.jiraInstanceId || null,
+      jiraCreatePR: task.metadata?.jiraCreatePR ?? null,
+      configOpenPR: isTruthyMeta(task.metadata?.openPR),
+      configSimplify: isTruthyMeta(task.metadata?.simplify),
+      configReviewLoop: isTruthyMeta(task.metadata?.reviewLoop),
+      configReviewer: metaStringOr(task.metadata?.reviewer, null),
+      configUseWorktree: !!worktreeInfo,
+      configWorktreeAutoDetected: !!worktreeInfo && !explicitWorktree,
+      configCodingOnMain: !worktreeInfo && !jiraBranchName
+    });
+
+    emitLog('info', `Agent ${agentId} initializing...${worktreeInfo ? ' (worktree)' : ''}${jiraBranchName ? ` (JIRA: ${jiraTicket?.ticketId})` : ''}`, { agentId, taskId: task.id });
+
+    // Mark the task as in_progress and increment total spawn count
+    const newSpawnCount = (Number(task.metadata?.totalSpawnCount) || 0) + 1;
+    const updateResult = await updateTask(task.id, {
+      status: 'in_progress',
+      metadata: {
+        ...task.metadata,
+        totalSpawnCount: newSpawnCount,
+        lastSpawnedAt: new Date().toISOString()
+      }
+    }, task.taskType || 'user')
+      .catch(err => {
+        console.error(`❌ Failed to mark task ${task.id} as in_progress: ${err.message}`);
+        return null;
+      });
+    if (!updateResult) {
+      cleanupOnError('Failed to update task status');
+      return null;
+    }
+
+    // Record autonomous job execution now that the task is confirmed spawning
+    if (task.metadata?.autonomousJob && task.metadata?.jobId) {
+      cosEvents.emit('job:spawned', { jobId: task.metadata.jobId });
+    }
+
+    const cliConfig = isTui
+      ? buildTuiSpawnConfig(provider, selectedModel)
+      : buildCliSpawnConfig(provider, selectedModel);
+
+    emitLog('success', `Spawning agent for task ${task.id}`, {
+      agentId,
+      model: selectedModel,
+      mode: executionMode,
+      cli: cliConfig.command,
+      lane: laneName,
+      worktree: !!worktreeInfo
+    });
+
+    // Dedup-window fix: keep the `spawningTasks` guard active across the actual
+    // spawn call, not just up to the in_progress flip. Deleting between
+    // `updateTask` and `spawnViaRunner`/`spawnDirectly` opened a window where a
+    // concurrent `spawnAgentForTask(task)` call (e.g. a re-fired `task:ready`
+    // from a follow-up scheduler tick) saw an empty set and a task whose
+    // registered agent hadn't yet been queued to the runner, and proceeded to
+    // spawn a second agent for the same task id. The outer try/finally
+    // wrapping this whole function ensures the guard is released whether the
+    // spawn returns normally, throws, or any earlier step throws. release()
+    // must NOT run here on the success path; the lane is released by the
+    // agent-completion handler when the work finishes.
     if (isTui) {
       return await spawnTuiAgent({
         agentId,
@@ -583,6 +590,11 @@ export async function spawnAgentForTask(task) {
       cleanupWorktreeFn: cleanupAgentWorktree,
       isTruthyMetaFn: isTruthyMeta,
     });
+  } catch (err) {
+    emitLog('error', `Agent spawn failed: ${err.message}`, { taskId: task.id, error: err.message });
+    cleanupOnError(err.message);
+    cosEvents.emit('agent:error', { taskId: task.id, error: err.message });
+    return null;
   } finally {
     spawningTasks.delete(task.id);
   }
