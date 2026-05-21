@@ -2,7 +2,7 @@
 
 ## Added
 
-- **[codex5-client-error-reporter] Browser-side errors and unhandled promise rejections surface in Review Hub.** Crashes that used to vanish into the browser console now land as Review Hub alerts so they can be triaged alongside server errors and CoS work. Repeats of the same error inside an hour aggregate into a single entry, and bursty render storms are throttled so the hub stays readable.
+- **[codex5-client-error-reporter] Browser-side errors and unhandled promise rejections surface in Review Hub.** Crashes that used to vanish into the browser console now land as Review Hub alerts so they can be triaged alongside server errors and CoS work. Repeats of the same error within a day aggregate into a single entry, and bursty render storms are throttled so the hub stays readable.
 - **[versioning-diff-view-per-stage-persist-last-n] Pipeline text stages now keep a version history.** Each regenerate snapshots the prior draft (up to five back) and a new "History" button on the Idea / Prose / Comic Script / Teleplay editors opens a side-by-side word diff against the current version with one-click restore.
 
 ## Changed

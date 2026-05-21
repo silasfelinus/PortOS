@@ -43,14 +43,30 @@ function pruneRecent(now) {
   }
 }
 
+// Guarded stringify so a circular rejection reason or a value that throws
+// from its toString() can't itself throw out of the global error handler —
+// `reportClientError`'s "never throws" contract is critical because we wire
+// it from `unhandledrejection`.
+function safeStringify(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    try { return Object.prototype.toString.call(value); } catch { return '[unstringifiable]'; }
+  }
+}
+
+function safeToString(value) {
+  try { return String(value); } catch { return '[unstringifiable]'; }
+}
+
 function extractFromReason(reason) {
   if (reason instanceof Error) {
-    return { message: reason.message || String(reason), stack: reason.stack };
+    return { message: reason.message || safeToString(reason), stack: reason.stack };
   }
   if (reason && typeof reason === 'object') {
-    return { message: String(reason.message ?? JSON.stringify(reason)), stack: reason.stack };
+    return { message: safeToString(reason.message ?? safeStringify(reason)), stack: reason.stack };
   }
-  return { message: String(reason ?? 'Unknown'), stack: undefined };
+  return { message: safeToString(reason ?? 'Unknown'), stack: undefined };
 }
 
 /**

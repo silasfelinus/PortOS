@@ -19,9 +19,10 @@ const MAX_STACK_CHARS = 4000;
 const MAX_URL_CHARS = 500;
 const MAX_USER_AGENT_CHARS = 300;
 
-// Throttle: backstop against a buggy client that bypasses its own throttle.
-// At steady state the client is the primary limiter; this guarantees the
-// server can't be DoS'd into writing the Review Hub at line rate.
+// Throttle: backstop against a buggy or error-looping client that bypasses
+// its own throttle. At steady state the client is the primary limiter; this
+// guarantees a misbehaving build can't drive the Review Hub at line rate.
+// Not a DoS shield — this is a single-user app behind Tailscale.
 const MIN_ACCEPT_INTERVAL_MS = 1000;
 // Dedup window matches `reviewService.createItem`'s own alert-dedup window
 // (24h, keyed off `metadata.referenceId`) so an entry that evicts here
@@ -65,7 +66,9 @@ function sanitize(payload) {
   const stack = redactSecrets(truncate(payload.stack, MAX_STACK_CHARS));
   const url = truncate(stripQueryString(payload.url), MAX_URL_CHARS);
   const userAgent = truncate(payload.userAgent, MAX_USER_AGENT_CHARS);
-  const source = truncate(payload.source, MAX_URL_CHARS);
+  // `source` is a script URL (e.g. /assets/index-abc.js?v=…) — strip queries
+  // so cache-busted requests dedup together and tokens don't leak.
+  const source = truncate(stripQueryString(payload.source), MAX_URL_CHARS);
   return {
     type: payload.type,
     message,
@@ -139,6 +142,11 @@ export async function recordClientError(rawPayload) {
     return { accepted: false, reason: 'duplicate' };
   }
 
+  // Advance the throttle clock BEFORE the write so a sustained createItem
+  // failure (disk full, file lock, etc.) is rate-limited too — otherwise a
+  // looping client could attempt one write per call regardless of throughput.
+  lastAcceptedAt = now;
+
   const item = await reviewService.createItem({
     type: 'alert',
     title: buildTitle(payload),
@@ -160,7 +168,6 @@ export async function recordClientError(rawPayload) {
   if (!item) return { accepted: false, reason: 'review-hub-write-failed' };
 
   recentHashes.set(hash, now);
-  lastAcceptedAt = now;
   pruneRecent(now);
   return { accepted: true, itemId: item.id };
 }

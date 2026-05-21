@@ -120,4 +120,35 @@ describe('recordClientError', () => {
     expect(result.accepted).toBe(false);
     expect(result.reason).toBe('review-hub-write-failed');
   });
+
+  it('throttles subsequent calls even when the previous Review Hub write failed', async () => {
+    review.createItem.mockRejectedValueOnce(new Error('disk full'));
+    const first = await recordClientError({
+      type: 'error',
+      message: 'first failing error',
+      stack: 'Error: first\n    at foo (a.js:1:1)',
+    });
+    expect(first.reason).toBe('review-hub-write-failed');
+
+    const second = await recordClientError({
+      type: 'error',
+      message: 'second distinct error',
+      stack: 'Error: second\n    at bar (b.js:1:1)',
+    });
+    expect(second.accepted).toBe(false);
+    expect(second.reason).toBe('rate-limited');
+    expect(review.createItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('strips the query string from the source script URL', async () => {
+    await recordClientError({
+      type: 'error',
+      message: 'boom',
+      source: '/assets/index-abc.js?token=keepout',
+    });
+    const arg = review.createItem.mock.calls[0][0];
+    expect(arg.description).toContain('Source: /assets/index-abc.js');
+    expect(arg.description).not.toContain('token=keepout');
+    expect(arg.metadata.source).toBe('/assets/index-abc.js');
+  });
 });

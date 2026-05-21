@@ -23,6 +23,17 @@ describe('buildPayload', () => {
     expect(out.stack).toBeUndefined();
   });
 
+  it('does not throw when the rejection reason is a circular object', () => {
+    const circular = { name: 'oops' };
+    circular.self = circular;
+    expect(() => buildPayload({ type: 'unhandledrejection', reason: circular })).not.toThrow();
+  });
+
+  it('does not throw when the rejection reason has a hostile toString', () => {
+    const hostile = { toString() { throw new Error('nope'); } };
+    expect(() => buildPayload({ type: 'unhandledrejection', reason: hostile })).not.toThrow();
+  });
+
   it('extracts message + stack + filename/lineno/colno from an error event', () => {
     const err = new Error('boom');
     err.stack = 'Error: boom\n    at foo (foo.js:1:1)';
