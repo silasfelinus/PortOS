@@ -59,11 +59,12 @@ const pruneStaleUserPickKeys = (todayKey) => {
 
 export function recordManualLayoutPick(layoutId, now = new Date()) {
   if (typeof window === 'undefined' || !window.localStorage) return;
-  try {
-    const todayKey = userPickKey(now);
-    window.localStorage.setItem(todayKey, String(layoutId));
-    pruneStaleUserPickKeys(todayKey);
-  } catch { /* quota / disabled — auto-switch will fire next visit */ }
+  // Prune BEFORE set so a quota-exceeded setItem still frees space first —
+  // otherwise the catch swallows the throw and stale prior-day keys grow.
+  const todayKey = userPickKey(now);
+  pruneStaleUserPickKeys(todayKey);
+  try { window.localStorage.setItem(todayKey, String(layoutId)); }
+  catch { /* quota / disabled — auto-switch will fire next visit */ }
 }
 
 function readManualLayoutPick(now = new Date()) {

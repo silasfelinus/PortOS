@@ -5,9 +5,10 @@
  * list of widget ids; the client's widget registry decides how to render
  * each id. Persisted to data/dashboard-layouts.json.
  *
- * Seeded on first read with the "Everything" layout (id `default`, mirrors
- * the current hardcoded dashboard) plus "Focus", "Morning Review", and "Ops"
- * starter layouts so the feature has value out of the box.
+ * Built-ins seeded on first read: Everything, Focus, Morning Review, Ops,
+ * Deep Work, Health, Agent Watch. The intent-named trio (Deep Work / Health
+ * / Agent Watch) is also exported as INTENT_LAYOUTS so migration 030 can
+ * seed them into existing installs without forking the grid geometry.
  */
 
 import { join } from 'path';

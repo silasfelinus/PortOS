@@ -36,11 +36,13 @@ describe('WidgetSuggestions', () => {
     expect(screen.getByText(/Quick Stats/)).toBeDefined();
   });
 
-  it('calls onAdd with just the widget id (no layout shape leakage)', () => {
+  it('calls onAdd with only the widget id — no layout shape passed', () => {
     const onAdd = vi.fn().mockResolvedValue();
     render(<WidgetSuggestions presentWidgetIds={['cos']} dashboardState={populatedState} onAdd={onAdd} />);
     fireEvent.click(screen.getByLabelText('Add Quick Stats to layout'));
+    expect(onAdd).toHaveBeenCalledTimes(1);
     expect(onAdd).toHaveBeenCalledWith('quick-stats');
+    expect(onAdd.mock.calls[0]).toHaveLength(1);
   });
 
   it('dismissing a suggestion hides it for the lifetime of the mount', () => {
@@ -48,13 +50,5 @@ describe('WidgetSuggestions', () => {
     expect(screen.queryByText(/Quick Stats/)).not.toBeNull();
     fireEvent.click(screen.getByLabelText('Dismiss Quick Stats suggestion'));
     expect(screen.queryByText(/Quick Stats/)).toBeNull();
-  });
-
-  it('swallows gate-predicate exceptions without surfacing the widget', () => {
-    // Future widgets may add gate predicates that destructure partial state.
-    const { container } = render(
-      <WidgetSuggestions presentWidgetIds={[]} dashboardState={undefined} onAdd={() => {}} />
-    );
-    expect(container).toBeEmptyDOMElement();
   });
 });

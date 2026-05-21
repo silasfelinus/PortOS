@@ -69,10 +69,18 @@ export default function Dashboard() {
         if (cancelled) return;
         setLayouts(data.layouts);
         const desiredActiveId = pickActiveLayoutId(data.activeLayoutId, data.layouts, autoSwitchedRef.current);
-        autoSwitchedRef.current = true;
         setActiveLayoutId(desiredActiveId);
-        if (desiredActiveId !== data.activeLayoutId) {
-          api.setActiveDashboardLayout(desiredActiveId).catch(() => {});
+        if (desiredActiveId === data.activeLayoutId) {
+          autoSwitchedRef.current = true;
+        } else {
+          // Only mark "auto-switched" after the server confirms — a failing
+          // PUT would otherwise leave the UI on the window layout while the
+          // server still says the old one, with no retry path until reload.
+          api.setActiveDashboardLayout(desiredActiveId)
+            .then(() => { autoSwitchedRef.current = true; })
+            .catch(() => {
+              setActiveLayoutId((current) => (current === desiredActiveId ? data.activeLayoutId : current));
+            });
         }
         if (data.limits) setLayoutLimits(data.limits);
         setLayoutsError(null);
@@ -216,6 +224,9 @@ export default function Dashboard() {
     const result = await api.saveDashboardLayout(id, { name, widgets, grid, activateWindow });
     setLayouts(result.layouts);
     setActiveLayoutId(id);
+    // Lock in for the day so a window-driven auto-switch on the next mount
+    // doesn't bump the user off the brand-new layout they just created.
+    recordManualLayoutPick(id);
     // Mirror selectLayout's revert-on-failure so the picker doesn't
     // diverge from server state if the active-write fails. Only revert
     // if the UI still reflects the id we tried to set; a later selection

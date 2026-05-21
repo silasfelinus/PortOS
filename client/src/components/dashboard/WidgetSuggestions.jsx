@@ -16,11 +16,7 @@ export default function WidgetSuggestions({ presentWidgetIds, dashboardState, on
       if (!w.gate) return false;
       if (present.has(w.id)) return false;
       if (dismissed.has(w.id)) return false;
-      // Defensive: future gate predicates might destructure partial state.
-      let active;
-      try { active = w.gate(dashboardState); }
-      catch { return false; }
-      return Boolean(active);
+      return Boolean(w.gate(dashboardState));
     });
   }, [presentWidgetIds, dashboardState, dismissed]);
 
