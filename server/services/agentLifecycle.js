@@ -154,15 +154,26 @@ export async function spawnAgentForTask(task) {
     completeExecution(toolExecution.id, { success: false });
   };
 
-  // try/catch wraps the pre-spawn setup so any uncaught throw from
-  // buildAgentPrompt / writeFile / createAgentRun / registerAgent /
-  // worktree + JIRA provisioning releases the dedup guard, the execution
-  // lane, and the tool-execution state. Without this, a throw mid-setup
-  // leaks `spawningTasks` and permanently blocks re-spawns of that task
-  // id until process restart. Spawn-handoff failures (the helpers after
-  // this block) are handled separately because they may reject AFTER a
-  // live runner agent or child process exists; those helpers own their
-  // own cleanup via the child's `on('error')` handler.
+  // Single try wraps setup + the spawn handoff so all locals stay in
+  // scope. The `handedOff` flag tells the catch arm which kind of
+  // failure we're recovering from:
+  //
+  // - `handedOff === false` (pre-spawn): any uncaught throw from
+  //   buildAgentPrompt / writeFile / createAgentRun / registerAgent /
+  //   worktree + JIRA provisioning. Release the dedup guard, the
+  //   execution lane, and the tool-execution state; without this, a
+  //   throw mid-setup leaks `spawningTasks` and permanently blocks
+  //   re-spawns of that task id until process restart. Also re-emit
+  //   `job:spawn-failed` for autonomous-job tasks so cos.js can clear
+  //   its job-level guard immediately instead of waiting 5 minutes.
+  //
+  // - `handedOff === true` (post-handoff): the rejection came from
+  //   spawnTuiAgent / spawnViaRunner / spawnDirectly, which may have
+  //   created a live runner agent or child process. Re-throw so the
+  //   caller (subAgentSpawner's task:ready listener) handles it as
+  //   pre-fix; the spawn helper owns lane/execution cleanup via its
+  //   child's `on('error')` handler.
+  let handedOff = false;
   try {
     // Get configuration
     const config = await getConfig();
@@ -545,37 +556,19 @@ export async function spawnAgentForTask(task) {
       lane: laneName,
       worktree: !!worktreeInfo
     });
-  } catch (err) {
-    // Pre-spawn setup threw — the agent has NOT been handed to the runner /
-    // child process yet, so it's safe to release the lane, execution state,
-    // and the dedup guard here. Spawn-handoff failures (the helpers below)
-    // are deliberately NOT caught here because they may reject AFTER a live
-    // runner agent or child process exists; those helpers own their own
-    // cleanup via the child's `on('error')` handler.
-    emitLog('error', `Agent spawn setup failed: ${err.message}`, { taskId: task.id, error: err.message });
-    cleanupOnError(err.message);
-    cosEvents.emit('agent:error', { taskId: task.id, error: err.message });
-    // Preserve the autonomous-job retry contract. Pre-widening, an uncaught
-    // throw here propagated to subAgentSpawner's `task:ready` listener,
-    // which emitted `job:spawn-failed` so cos.js could clear
-    // `spawningJobIds` and re-register the cron schedule.
-    if (task.metadata?.jobId) {
-      cosEvents.emit('job:spawn-failed', { jobId: task.metadata.jobId });
-    }
-    return null;
-  }
 
-  // Dedup-window fix: keep the `spawningTasks` guard active across the actual
-  // spawn call, not just up to the in_progress flip. Deleting between
-  // `updateTask` and `spawnViaRunner`/`spawnDirectly` opened a window where a
-  // concurrent `spawnAgentForTask(task)` call (e.g. a re-fired `task:ready`
-  // from a follow-up scheduler tick) saw an empty set and a task whose
-  // registered agent hadn't yet been queued to the runner, and proceeded to
-  // spawn a second agent for the same task id. Awaiting the spawn before
-  // releasing the guard — inside try/finally so a throw still releases —
-  // closes that race. release() must NOT run here on the success path; the
-  // lane is released by the agent-completion handler when the work finishes.
-  try {
+    // Dedup-window fix: keep the `spawningTasks` guard active across the
+    // actual spawn call, not just up to the in_progress flip. Releasing
+    // between `updateTask` and `spawnViaRunner` / `spawnDirectly` opened a
+    // window where a concurrent `spawnAgentForTask(task)` call (e.g. a
+    // re-fired `task:ready` from a follow-up scheduler tick) saw an empty
+    // set and a task whose registered agent hadn't yet been queued to the
+    // runner, and proceeded to spawn a second agent for the same task id.
+    // The outer finally below releases the guard whether the spawn returns
+    // normally or rejects. release() must NOT run here on the success
+    // path; the lane is released by the agent-completion handler when the
+    // work finishes.
+    handedOff = true;
     if (isTui) {
       return await spawnTuiAgent({
         agentId,
@@ -612,6 +605,26 @@ export async function spawnAgentForTask(task) {
       cleanupWorktreeFn: cleanupAgentWorktree,
       isTruthyMetaFn: isTruthyMeta,
     });
+  } catch (err) {
+    if (handedOff) {
+      // Spawn helper rejected — may have created a live runner agent or
+      // child process. Re-throw so the caller (subAgentSpawner's
+      // task:ready listener) handles it as pre-fix; the spawn helper
+      // owns lane/execution cleanup via its child's `on('error')`
+      // handler. The finally still releases the dedup guard.
+      throw err;
+    }
+    emitLog('error', `Agent spawn setup failed: ${err.message}`, { taskId: task.id, error: err.message });
+    cleanupOnError(err.message);
+    cosEvents.emit('agent:error', { taskId: task.id, error: err.message });
+    // Preserve the autonomous-job retry contract. Pre-widening, an uncaught
+    // throw here propagated to subAgentSpawner's `task:ready` listener,
+    // which emitted `job:spawn-failed` so cos.js could clear
+    // `spawningJobIds` and re-register the cron schedule.
+    if (task.metadata?.jobId) {
+      cosEvents.emit('job:spawn-failed', { jobId: task.metadata.jobId });
+    }
+    return null;
   } finally {
     spawningTasks.delete(task.id);
   }

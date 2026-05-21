@@ -441,22 +441,32 @@ describe('spawnAgentForTask — cleanupOnError error recovery', () => {
   // the guard is released. They match the inline-replica convention used
   // throughout this file (see the file header).
 
-  async function simulateFixedSpawnPath({ taskId, agentId, throwAt, jobId = null }) {
+  async function simulateFixedSpawnPath({ taskId, agentId, throwAt, jobId = null, throwsAfterHandoff = false }) {
     spawningTasks.add(taskId);
     const harness = makeCleanupHarness(taskId, agentId);
     const jobSpawnFailedEmissions = [];
+    let handedOff = false;
     try {
-      // The injected step is the only thing inside the try. The production
-      // try wraps ~400 LOC; what matters here is that ANY throw lands in
-      // catch and the guard is cleared in finally.
+      // The injected step models the production flow: when
+      // `throwsAfterHandoff` is set, we flip `handedOff` before throwing
+      // to simulate a spawn-helper rejection (the helper may have already
+      // created a live agent). Otherwise we throw before handoff to model
+      // a pre-spawn setup failure (buildAgentPrompt / writeFile / etc.).
+      if (throwsAfterHandoff) handedOff = true;
       await throwAt();
+      handedOff = true;  // matches the production `handedOff = true` flip just before the spawn helper call
       return { result: 'spawned', harness, jobSpawnFailedEmissions };
     } catch (err) {
+      if (handedOff) {
+        // Spawn-helper rejection — re-throw to mirror production. Finally
+        // still releases the dedup guard; the spawn helper's own
+        // on('error') handler is responsible for lane/execution cleanup.
+        throw err;
+      }
       harness.cleanupOnError(err.message);
       // Mirror the production catch arm: when the task was queued by an
       // autonomous job, re-emit `job:spawn-failed` so cos.js clears its
-      // job-level spawn guard. Pre-widening, this fired indirectly via
-      // subAgentSpawner's outer catch on the propagated throw.
+      // job-level spawn guard.
       if (jobId) jobSpawnFailedEmissions.push({ jobId });
       return { result: null, harness, jobSpawnFailedEmissions };
     } finally {
@@ -546,40 +556,55 @@ describe('spawnAgentForTask — cleanupOnError error recovery', () => {
     expect(outcome.jobSpawnFailedEmissions).toEqual([]);
   });
 
-  // Source-level assertions: the pre-spawn catch arm exists, calls
-  // cleanupOnError, AND emits job:spawn-failed when task.metadata?.jobId
-  // is set — so any future refactor that drops the autonomous-job retry
-  // contract breaks loudly here. The companion inner `finally` shape
-  // (dedup-race guard around the spawn helpers) is asserted in the
-  // "agentLifecycle source — spawningTasks delete placement" block above.
-  it('source: spawnAgentForTask pre-spawn catch calls cleanupOnError and re-emits job:spawn-failed', () => {
-    const fnStart = AGENT_LIFECYCLE_SRC.indexOf('export async function spawnAgentForTask');
-    const fnBody = AGENT_LIFECYCLE_SRC.slice(fnStart, fnStart + 60_000);
-    const catchMatch = fnBody.match(/catch\s*\(\s*err\s*\)\s*\{([\s\S]{0,2000}?)\n\s{2}\}/);
-    expect(catchMatch, 'spawnAgentForTask must have a catch arm with cleanupOnError').not.toBeNull();
-    const catchBody = catchMatch[1];
-    expect(catchBody).toMatch(/cleanupOnError\(/);
-    expect(catchBody).toMatch(/job:spawn-failed/);
-    expect(catchBody).toMatch(/task\.metadata\??\.jobId/);
+  it('re-throws when a spawn helper rejects after handoff (live agent may exist)', async () => {
+    // Pre-fix: a spawn helper's rejection propagated to subAgentSpawner's
+    // task:ready catch, which logged + (if jobId) emitted job:spawn-failed.
+    // The widened structure preserves this — once `handedOff` flips true,
+    // the catch arm re-throws so the helper's own on('error') handler owns
+    // lane/execution cleanup. The dedup guard is still released in finally.
+    await expect(simulateFixedSpawnPath({
+      taskId: 'task-handoff-throw',
+      agentId: 'agent-handoff',
+      jobId: 'job-cron-99',
+      throwsAfterHandoff: true,
+      throwAt: async () => { throw new Error('runner rejected spawn'); },
+    })).rejects.toThrow('runner rejected spawn');
+    // Critically, after the re-throw, the dedup guard must still be cleared.
+    expect(spawningTasks.has('task-handoff-throw')).toBe(false);
   });
 
-  // Source-level assertion: the spawn-handoff calls (spawnTuiAgent /
-  // spawnViaRunner / spawnDirectly) must remain OUTSIDE the pre-spawn
-  // catch. Catching their rejections here would double-clean a partially
-  // launched live agent (lane release, execution-state error mark)
-  // alongside the spawn helper's own `on('error')` cleanup. The pre-spawn
-  // catch must close before the spawn `if (isTui)` branch.
-  it('source: spawn helpers are invoked outside the pre-spawn catch', () => {
+  // Source-level assertions: the catch arm distinguishes the two failure
+  // modes via the `handedOff` flag, calls cleanupOnError + emits
+  // job:spawn-failed on the pre-spawn branch, and rethrows on the
+  // post-handoff branch. Any future refactor that drops either branch
+  // breaks loudly here.
+  it('source: spawnAgentForTask uses handedOff flag to distinguish pre-spawn vs post-handoff failures', () => {
     const fnStart = AGENT_LIFECYCLE_SRC.indexOf('export async function spawnAgentForTask');
     const fnBody = AGENT_LIFECYCLE_SRC.slice(fnStart, fnStart + 60_000);
-    const catchIdx = fnBody.indexOf('catch (err)');
-    const catchClose = fnBody.indexOf('return null;', catchIdx);
-    expect(catchIdx, 'pre-spawn catch must exist').toBeGreaterThan(-1);
-    expect(catchClose, 'pre-spawn catch must contain `return null;`').toBeGreaterThan(catchIdx);
-    // The spawn helper calls must appear AFTER the pre-spawn catch closes.
+    // The flag is declared with `let` so we can mutate it inside the try.
+    expect(fnBody).toMatch(/let\s+handedOff\s*=\s*false\s*;/);
+    // The catch arm gates on the flag and rethrows for handoff failures.
+    expect(fnBody).toMatch(/if\s*\(\s*handedOff\s*\)\s*\{[\s\S]{0,800}?throw\s+err\s*;/);
+    // Pre-spawn branch (the else case) still calls cleanupOnError and
+    // re-emits job:spawn-failed for autonomous jobs.
+    expect(fnBody).toMatch(/cleanupOnError\(err\.message\)/);
+    expect(fnBody).toMatch(/job:spawn-failed/);
+    expect(fnBody).toMatch(/task\.metadata\??\.jobId/);
+  });
+
+  // Source-level assertion: `handedOff = true` must be set BEFORE the
+  // first spawn helper invocation (spawnTuiAgent / spawnViaRunner /
+  // spawnDirectly). Setting it after would mean a synchronous throw from
+  // building the helper's argument object falls into the pre-spawn cleanup
+  // branch, which is wrong if the helper has already begun work.
+  it('source: handedOff = true precedes the first spawn helper invocation', () => {
+    const fnStart = AGENT_LIFECYCLE_SRC.indexOf('export async function spawnAgentForTask');
+    const fnBody = AGENT_LIFECYCLE_SRC.slice(fnStart, fnStart + 60_000);
+    const flipIdx = fnBody.indexOf('handedOff = true');
+    expect(flipIdx, '`handedOff = true` must exist inside spawnAgentForTask').toBeGreaterThan(-1);
     for (const helper of ['spawnTuiAgent(', 'spawnViaRunner(', 'spawnDirectly(']) {
-      const idx = fnBody.indexOf(helper, catchClose);
-      expect(idx, `${helper} must appear AFTER the pre-spawn catch arm`).toBeGreaterThan(-1);
+      const idx = fnBody.indexOf(helper);
+      expect(idx, `${helper} must appear AFTER \`handedOff = true\``).toBeGreaterThan(flipIdx);
     }
   });
 });
