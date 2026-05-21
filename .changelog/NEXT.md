@@ -11,6 +11,7 @@
 - **[extract-shared-requiretoolkit-helper] Internal: consolidated three duplicated AI toolkit accessors into one shared module.** No behavior change; cuts ~30 lines and makes future toolkit-state changes one-touch.
 - **[codex5-bundle-lazy-routes] Dashboard widgets load on demand.** A dashboard layout now only downloads the widgets it actually uses — the first paint of a slimmed-down layout no longer drags in every widget in the registry, and slow widgets render their own placeholder while loading instead of blocking sibling cells. Also adds an `npm run build:analyze` script for inspecting bundle composition during development.
 - **[strip-stage-runhistory-from-list-payloads] Pipeline list views stay lean as version history grows.** The sidebar's recent-issues list and the per-series issue list no longer ship each stage's full draft history on every read — the History button on an issue's detail page still shows the full set, but list responses can no longer balloon to many megabytes once a series has many issues with deep histories.
+- **GOALS.md is now purely strategic; CoS runtime guidance lives in `docs/GOALS_OPERATIONAL.md`.** The per-domain operational goals, task-generation priorities, and core principles that the autonomous agent reads have been split out of GOALS.md so each file has a single concern. No behavior change — the Goal Progress dashboard still reads the same goals; only the file path moved.
 
 ## Fixed
 
