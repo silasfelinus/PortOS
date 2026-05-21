@@ -1,17 +1,17 @@
 /**
  * Goal Progress Service
  *
- * Tracks progress toward user goals defined in GOALS.md by analyzing
- * completed CoS tasks and mapping them to goal categories.
+ * Tracks progress toward CoS operational goals defined in OPERATIONAL.md by
+ * analyzing completed CoS tasks and mapping them to goal categories.
  *
- * Goals are extracted from GOALS.md's Operational Goals section.
+ * Goals are extracted from OPERATIONAL.md's Operational Goals section.
  * Task completions are categorized by keywords and mapped to goal progress.
  */
 
 import { join } from 'path'
 import { readJSONFile, PATHS, tryReadFile } from '../lib/fileUtils.js'
 
-const GOALS_FILE = join(PATHS.root, 'GOALS.md')
+const GOALS_FILE = join(PATHS.root, 'OPERATIONAL.md')
 const LEARNING_FILE = join(PATHS.cos, 'learning.json')
 
 /**
@@ -52,7 +52,7 @@ const GOAL_MAPPINGS = {
 }
 
 /**
- * Parse GOALS.md to extract active goals
+ * Parse OPERATIONAL.md to extract active goals
  * @returns {Promise<Array>} Parsed goals with titles and items
  */
 async function parseGoalsFile() {
@@ -120,7 +120,7 @@ async function getTaskStats() {
 
 /**
  * Calculate progress for each goal based on completed tasks
- * @param {Array} goals - Parsed goals from GOALS.md
+ * @param {Array} goals - Parsed goals from OPERATIONAL.md
  * @param {Object} taskStats - Task completion statistics
  * @returns {Array} Goals with progress metrics
  */
