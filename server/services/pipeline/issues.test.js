@@ -441,11 +441,14 @@ describe('pipeline issues service', () => {
     });
   });
 
-  describe('list endpoints strip runHistory', () => {
+  describe('list endpoints opt into runHistory strip', () => {
     // List payloads (sidebar, per-series list) never render runHistory,
-    // and each text stage can hold up to 5 × ~600KB entries. Strip them
-    // so a maxed-out issue doesn't ship ~12MB per read. Detail reads
-    // (`getIssue`) must keep the full shape so the diff modal still works.
+    // and each text stage can hold up to 5 × ~600KB entries. Routes
+    // pass `withHistory: false` so a maxed-out issue doesn't ship ~12MB
+    // per read. The default stays `true` because `exportSeries` (and
+    // other internal callers) round-trip the full record into bucket
+    // exports; defaulting to strip would silently lose history on
+    // receiving peers. Detail reads (`getIssue`) keep the full shape.
     const seedWithHistory = async () => {
       const i = await svc.createIssue({ seriesId: 'ser-1', title: 'With history' });
       await svc.updateStage(i.id, 'idea', { status: 'ready', input: 'seed', output: 'v1', lastRunId: 'r1' });
@@ -453,26 +456,43 @@ describe('pipeline issues service', () => {
       return i;
     };
 
-    it('listIssues returns empty runHistory even when history is persisted', async () => {
+    it('listIssues default preserves runHistory (regression guard for exportSeries)', async () => {
       await seedWithHistory();
       const list = await svc.listIssues({ seriesId: 'ser-1' });
       expect(list).toHaveLength(1);
+      expect(list[0].stages.idea.runHistory).toHaveLength(1);
+      expect(list[0].stages.idea.runHistory[0].runId).toBe('r1');
+    });
+
+    it('listIssues withHistory:false strips runHistory but keeps active stage fields', async () => {
+      await seedWithHistory();
+      const list = await svc.listIssues({ seriesId: 'ser-1', withHistory: false });
+      expect(list).toHaveLength(1);
       expect(list[0].stages.idea.runHistory).toEqual([]);
-      // Active stage fields still survive the strip.
+      // Active stage fields survive the strip.
       expect(list[0].stages.idea.output).toBe('v2');
       expect(list[0].stages.idea.lastRunId).toBe('r2');
     });
 
-    it('listIssues paginated:true strips runHistory from items', async () => {
+    it('listIssues paginated + withHistory:false strips runHistory from items', async () => {
       await seedWithHistory();
-      const result = await svc.listIssues({ seriesId: 'ser-1', offset: 0, limit: 10, paginated: true });
+      const result = await svc.listIssues({
+        seriesId: 'ser-1', offset: 0, limit: 10, paginated: true, withHistory: false,
+      });
       expect(result.items).toHaveLength(1);
       expect(result.items[0].stages.idea.runHistory).toEqual([]);
     });
 
-    it('listRecentIssues strips runHistory', async () => {
+    it('listRecentIssues default preserves runHistory', async () => {
       await seedWithHistory();
       const recent = await svc.listRecentIssues({ limit: 10 });
+      expect(recent).toHaveLength(1);
+      expect(recent[0].stages.idea.runHistory).toHaveLength(1);
+    });
+
+    it('listRecentIssues withHistory:false strips runHistory', async () => {
+      await seedWithHistory();
+      const recent = await svc.listRecentIssues({ limit: 10, withHistory: false });
       expect(recent).toHaveLength(1);
       expect(recent[0].stages.idea.runHistory).toEqual([]);
     });

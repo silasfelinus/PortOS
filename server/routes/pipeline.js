@@ -881,11 +881,14 @@ router.get('/series/:id/issues', asyncHandler(async (req, res) => {
   // confusing for the UI).
   await seriesSvc.getSeries(req.params.id).catch((err) => { throw mapServiceError(err); });
   const hasPagination = req.query.offset !== undefined || req.query.limit !== undefined;
+  // List endpoints strip per-stage runHistory; the UI never renders it on
+  // these views and a maxed-out issue can otherwise ship ~12MB of payload.
+  // Detail reads (`GET /issues/:id`) stay on the full shape.
   if (hasPagination) {
     const { offset, limit } = validateRequest(issuesListQuerySchema, req.query);
-    res.json(await issuesSvc.listIssues({ seriesId: req.params.id, offset, limit, paginated: true }));
+    res.json(await issuesSvc.listIssues({ seriesId: req.params.id, offset, limit, paginated: true, withHistory: false }));
   } else {
-    res.json(await issuesSvc.listIssues({ seriesId: req.params.id }));
+    res.json(await issuesSvc.listIssues({ seriesId: req.params.id, withHistory: false }));
   }
 }));
 
@@ -1233,7 +1236,10 @@ router.get('/issues/recent', asyncHandler(async (req, res) => {
   // via the route but clamps to 1 in the service). Pass through and let
   // listRecentIssues coerce.
   const [issues, series] = await Promise.all([
-    issuesSvc.listRecentIssues({ limit: req.query.limit }),
+    // The route's projection below drops `stages` entirely, but pass
+    // withHistory: false anyway so the service stays light on a sidebar
+    // refresh and the contract matches `GET /series/:id/issues`.
+    issuesSvc.listRecentIssues({ limit: req.query.limit, withHistory: false }),
     seriesSvc.listSeries(),
   ]);
   const seriesById = new Map(series.map((s) => [s.id, s.name]));
