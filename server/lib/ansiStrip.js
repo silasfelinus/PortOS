@@ -26,15 +26,12 @@
 export const ANSI_PATTERN = /\x1B(?:\](?:[^\x07\x1B]|\x1B(?!\\))*(?:\x07|\x1B\\)|[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
 
 const INCOMPLETE_CSI = /^\x1B\[[0-?]*[ -/]*$/;
-// Body grammar mirrors ANSI_PATTERN. Unanchored on the left so a single
-// `combined.match(INCOMPLETE_OSC_AT_TAIL)` finds the LEFTMOST `\x1B]` whose
-// suffix-to-end is a valid in-progress OSC body. This matters when the body
-// itself contains `\x1B]` (the grammar allows `\x1B(?!\\)` followed by `]`):
-// the outer opener is what we must buffer. Anchoring on the rightmost `\x1B]`
-// instead would strip the outer and leak the body prefix when the sequence
-// finally flushes.
-const INCOMPLETE_OSC_AT_TAIL = /\x1B\](?:[^\x07\x1B]|\x1B(?!\\))*$/;
 const INCOMPLETE_ESC_2BYTE = /^\x1B$/;
+// OSC terminators (BEL or ST). Used to locate the position right after the
+// last completed terminator so the streaming stripper can find the first
+// `\x1B]` that has NO terminator before end-of-string — the outermost
+// in-progress opener. Module-level `g`-regex; reset `lastIndex` per use.
+const OSC_TERMINATOR = /\x07|\x1B\\/g;
 
 // `[@-_]` (0x40-0x5F) is the byte range that legitimately follows an `\x1B`
 // in a complete sequence: covers `[` (0x5B) for CSI, `]` (0x5D) for OSC, plus
@@ -51,16 +48,31 @@ export function createStreamingAnsiStripper() {
   return (text) => {
     const combined = tail + text;
     tail = '';
-    // Find the LEFTMOST `\x1B]` whose suffix-to-end is a valid in-progress
-    // OSC. `String.match` iterates positions left-to-right and the `$`
-    // anchor demands end-of-string, so the first match is the outermost
-    // opener — even when the body legally contains another `\x1B]`. The
-    // 4096-byte window check caps memory: a runaway OSC body leaks to the
-    // display rather than pinning state forever.
-    const oscMatch = combined.match(INCOMPLETE_OSC_AT_TAIL);
-    if (oscMatch && combined.length - oscMatch.index <= 4096) {
-      tail = oscMatch[0];
-      return STRIP(combined.slice(0, oscMatch.index));
+    // Linear-time OSC tail detection:
+    //   1. Walk the string once to find the position right after the LAST
+    //      OSC terminator (`\x07` or `\x1B\\`). Anything after that
+    //      position is candidate territory for an in-progress OSC; by
+    //      construction it contains no terminator, so the body grammar
+    //      `[^\x07\x1B]|\x1B(?!\\)` matches every byte in it.
+    //   2. From there (clipped to the trailing 4096-byte window so an
+    //      unbounded body leaks instead of pinning memory), locate the
+    //      first `\x1B]` opener. That's the outermost in-progress OSC.
+    //
+    // An earlier `combined.match(/\x1B\]...$/)` implementation was elegant
+    // but went quadratic when many `\x1B]` candidates preceded a final
+    // terminator — each candidate ran a full-length body match before
+    // failing the `$` anchor. The scan below is strictly O(combined.length).
+    OSC_TERMINATOR.lastIndex = 0;
+    let lastTermEnd = 0;
+    let tMatch;
+    while ((tMatch = OSC_TERMINATOR.exec(combined)) !== null) {
+      lastTermEnd = tMatch.index + tMatch[0].length;
+    }
+    const oscSearchStart = Math.max(lastTermEnd, combined.length - 4096);
+    const oscOpen = combined.indexOf('\x1B]', oscSearchStart);
+    if (oscOpen !== -1) {
+      tail = combined.slice(oscOpen);
+      return STRIP(combined.slice(0, oscOpen));
     }
     // CSI parameter bytes exclude `\x1B`, so the rightmost `\x1B` is the
     // unambiguous anchor for incomplete CSI / bare-ESC tails.

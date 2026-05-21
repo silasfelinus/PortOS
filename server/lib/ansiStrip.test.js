@@ -165,6 +165,23 @@ describe('createStreamingAnsiStripper', () => {
     expect(strip('\x07after')).toBe('after');
   });
 
+  it('processes pathological input with many `\\x1B]` candidates in linear time', () => {
+    // Regression for a ReDoS path discovered in review: an unanchored
+    // `combined.match(/\x1B\]...$/)` ran the body match from each `\x1B]`
+    // starting position and the `$` anchor forced O(n) work per attempt,
+    // totalling O(n²). 15K reps + ST took ~2.3 s. The current scan is
+    // strictly O(n) — this input should resolve in milliseconds.
+    const strip = createStreamingAnsiStripper();
+    const pathological = '\x1B]x'.repeat(15000) + '\x1B\\';
+    const start = Date.now();
+    const out = strip(pathological);
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(250);
+    // The whole reassembled string is one valid OSC (body permits the
+    // inner `\x1B]` markers and ends at the ST), so nothing leaks.
+    expect(out).toBe('');
+  });
+
   it('does NOT buffer an OSC body longer than 4096 bytes — it leaks instead of pinning memory', () => {
     const strip = createStreamingAnsiStripper();
     // OSC opens, then 4097 chars of body with no terminator. The 4096-byte
