@@ -39,6 +39,23 @@ describe('stripAnsi (one-shot)', () => {
     expect(stripAnsi('\x1B]8;;https://example.com\x07link\x1B]8;;\x07')).toBe('link');
   });
 
+  it('does not swallow visible text between two adjacent ST-terminated OSC sequences', () => {
+    // Body alternation must stop at the FIRST `\x1B\\`. Without the
+    // `\x1B(?!\\)` guard, greedy `[^\x07]*` would match past the inner ST
+    // and consume `VISIBLE`.
+    expect(stripAnsi('\x1B]0;one\x1B\\VISIBLE\x1B]0;two\x1B\\after')).toBe('VISIBLEafter');
+  });
+
+  it('does not swallow visible text when an ST-OSC is followed by a BEL-OSC', () => {
+    expect(stripAnsi('\x1B]0;one\x1B\\VISIBLE\x1B]0;two\x07after')).toBe('VISIBLEafter');
+  });
+
+  it('treats a bare ESC inside an OSC body (not followed by `\\\\`) as part of the body', () => {
+    // `\x1B(?!\\)` lets a stray non-ST ESC stay in the body; the whole
+    // sequence still strips when a real terminator arrives.
+    expect(stripAnsi('\x1B]0;foo\x1Bbar\x07after')).toBe('after');
+  });
+
   it('strips a bare `\\x1B]` (single-byte path) when nothing follows', () => {
     expect(stripAnsi('a\x1B]b')).toBe('ab');
   });

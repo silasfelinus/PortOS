@@ -16,7 +16,14 @@
 // 0x5C-0x5F, which includes `]` (0x5D); if it ran first it would strip the
 // `\x1B]` opener only and leak the body+terminator. The bare `\x1B]` (no
 // terminator) case still falls through to the single-byte branch.
-export const ANSI_PATTERN = /\x1B(?:\][^\x07]*(?:\x07|\x1B\\)|[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
+//
+// Body alternation `[^\x07\x1B]|\x1B(?!\\)` stops greedy matching at the
+// FIRST `\x1B\\` (ST terminator). A naive `[^\x07]*` would otherwise prefer
+// the latest possible ST and swallow visible text between two adjacent
+// OSC sequences (e.g. `\x1B]a\x1B\\VISIBLE\x1B]b\x1B\\` → `` instead of
+// `VISIBLE`). Each character produces at most one alternative attempt, so
+// the alternation does not introduce catastrophic backtracking.
+export const ANSI_PATTERN = /\x1B(?:\](?:[^\x07\x1B]|\x1B(?!\\))*(?:\x07|\x1B\\)|[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
 
 const INCOMPLETE_CSI = /^\x1B\[[0-?]*[ -/]*$/;
 const INCOMPLETE_OSC = /^\x1B\][^\x07\x1B]*$/;
