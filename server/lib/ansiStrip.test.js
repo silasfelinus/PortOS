@@ -155,6 +155,16 @@ describe('createStreamingAnsiStripper', () => {
     expect(strip('\x07after')).toBe('after');
   });
 
+  it('buffers an in-progress OSC whose body contains another `\\x1B]`, split before the terminator', () => {
+    // The body grammar `\x1B(?!\\)` allows the body to contain `\x1B]`.
+    // The streaming anchor must therefore find the LEFTMOST `\x1B]` whose
+    // suffix is incomplete — anchoring on the rightmost would strip the
+    // outer opener as a single-byte escape and leak the body prefix.
+    const strip = createStreamingAnsiStripper();
+    expect(strip('\x1B]0;foo\x1B]bar')).toBe('');
+    expect(strip('\x07after')).toBe('after');
+  });
+
   it('does NOT buffer an OSC body longer than 4096 bytes — it leaks instead of pinning memory', () => {
     const strip = createStreamingAnsiStripper();
     // OSC opens, then 4097 chars of body with no terminator. The 4096-byte

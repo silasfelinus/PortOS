@@ -26,10 +26,14 @@
 export const ANSI_PATTERN = /\x1B(?:\](?:[^\x07\x1B]|\x1B(?!\\))*(?:\x07|\x1B\\)|[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
 
 const INCOMPLETE_CSI = /^\x1B\[[0-?]*[ -/]*$/;
-// Body grammar mirrors ANSI_PATTERN so an in-progress OSC whose body contains
-// a bare ESC (e.g. `\x1B]0;foo\x1Bbar`) is still recognised as incomplete and
-// buffered until its terminator arrives.
-const INCOMPLETE_OSC = /^\x1B\](?:[^\x07\x1B]|\x1B(?!\\))*$/;
+// Body grammar mirrors ANSI_PATTERN. Unanchored on the left so a single
+// `combined.match(INCOMPLETE_OSC_AT_TAIL)` finds the LEFTMOST `\x1B]` whose
+// suffix-to-end is a valid in-progress OSC body. This matters when the body
+// itself contains `\x1B]` (the grammar allows `\x1B(?!\\)` followed by `]`):
+// the outer opener is what we must buffer. Anchoring on the rightmost `\x1B]`
+// instead would strip the outer and leak the body prefix when the sequence
+// finally flushes.
+const INCOMPLETE_OSC_AT_TAIL = /\x1B\](?:[^\x07\x1B]|\x1B(?!\\))*$/;
 const INCOMPLETE_ESC_2BYTE = /^\x1B$/;
 
 // `[@-_]` (0x40-0x5F) is the byte range that legitimately follows an `\x1B`
@@ -47,22 +51,19 @@ export function createStreamingAnsiStripper() {
   return (text) => {
     const combined = tail + text;
     tail = '';
-    // OSC anchor must come first: an in-progress OSC body may contain a bare
-    // `\x1B` (allowed by ANSI_PATTERN's body grammar), and a plain
-    // `lastIndexOf('\x1B')` would land on that body byte instead of the
-    // `\x1B]` opener, missing the incomplete sequence. Bodies longer than
-    // 4096 bytes are treated as terminated — an unbounded OSC leaks its
-    // body to display rather than pinning memory forever.
-    const lastOsc = combined.lastIndexOf('\x1B]');
-    if (lastOsc !== -1 && combined.length - lastOsc <= 4096) {
-      const candidate = combined.slice(lastOsc);
-      if (INCOMPLETE_OSC.test(candidate)) {
-        tail = candidate;
-        return STRIP(combined.slice(0, lastOsc));
-      }
+    // Find the LEFTMOST `\x1B]` whose suffix-to-end is a valid in-progress
+    // OSC. `String.match` iterates positions left-to-right and the `$`
+    // anchor demands end-of-string, so the first match is the outermost
+    // opener — even when the body legally contains another `\x1B]`. The
+    // 4096-byte window check caps memory: a runaway OSC body leaks to the
+    // display rather than pinning state forever.
+    const oscMatch = combined.match(INCOMPLETE_OSC_AT_TAIL);
+    if (oscMatch && combined.length - oscMatch.index <= 4096) {
+      tail = oscMatch[0];
+      return STRIP(combined.slice(0, oscMatch.index));
     }
-    // Fall back to the rightmost `\x1B` for CSI / bare-ESC fragments that
-    // are unambiguous (CSI parameter bytes exclude `\x1B`).
+    // CSI parameter bytes exclude `\x1B`, so the rightmost `\x1B` is the
+    // unambiguous anchor for incomplete CSI / bare-ESC tails.
     const lastEsc = combined.lastIndexOf('\x1B');
     if (lastEsc !== -1 && combined.length - lastEsc <= 4096) {
       const candidate = combined.slice(lastEsc);
