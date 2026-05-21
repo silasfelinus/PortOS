@@ -14,6 +14,7 @@ import BrailleSpinner from './BrailleSpinner';
 import toast from './ui/Toast';
 import * as api from '../services/api';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
+import { useTimeTick } from '../hooks/useTimeTick';
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -200,9 +201,26 @@ function RestorePanel({ snapshot, onClose }) {
 // ---------------------------------------------------------------------------
 
 function SnapshotList() {
+  // Let errors throw — `useAutoRefetch` preserves the last-good data on
+  // transient failures. A `.catch(() => null)` here would wipe the snapshot
+  // list on every blip per the hook's documented gotcha.
   const { data: snapshots, loading } = useAutoRefetch(
-    () => api.getBackupSnapshots({ silent: true }).catch(() => null),
-    120000
+    () => api.getBackupSnapshots({ silent: true }),
+    120000,
+    {
+      // Snapshots only change when a new backup lands or the rotation prunes
+      // the oldest — walk every rendered tuple (id + fileCount) so a stale
+      // server-side fileCount recount or a middle-row mutation can't hide
+      // behind the head/tail id check.
+      compare: (prev, next) => {
+        if (prev.length !== next.length) return false;
+        for (let i = 0; i < prev.length; i++) {
+          if (prev[i]?.id !== next[i]?.id) return false;
+          if (prev[i]?.fileCount !== next[i]?.fileCount) return false;
+        }
+        return true;
+      },
+    },
   );
   const [selectedId, setSelectedId] = useState(null);
 
@@ -254,12 +272,33 @@ function SnapshotList() {
 // ---------------------------------------------------------------------------
 
 const BackupWidget = memo(function BackupWidget() {
+  // Let errors throw — `useAutoRefetch` preserves the last-good status on
+  // transient failures so a blip doesn't drop the widget to its loading state.
   const { data: status } = useAutoRefetch(
-    () => api.getBackupStatus({ silent: true }).catch(() => null),
-    60000
+    () => api.getBackupStatus({ silent: true }),
+    60000,
+    {
+      // Backup state only flips when a new run starts/finishes — comparing the
+      // monotonic timestamps + status + error + destPath captures every
+      // visible change at the widget's resolution. Avoids per-poll re-renders
+      // that would re-compute relative-time labels for no visual benefit.
+      compare: (prev, next) => (
+        prev.status === next.status
+          && prev.lastRun === next.lastRun
+          && prev.nextRun === next.nextRun
+          && prev.error === next.error
+          && prev.filesChanged === next.filesChanged
+          && prev.destPath === next.destPath
+      ),
+    },
   );
   const [triggering, setTriggering] = useState(false);
   const [snapshotsOpen, setSnapshotsOpen] = useState(false);
+  // Tick every minute so the dedup-skipped widget still recomputes
+  // `relativeTime(lastRun/nextRun)` labels and the `computeHealth` 25h/49h
+  // thresholds when wall-clock time crosses a boundary even though the poll
+  // payload is unchanged.
+  useTimeTick(60000);
 
   const health = computeHealth(status);
   const { dot, text, icon: HealthIcon } = HEALTH_STYLES[health];

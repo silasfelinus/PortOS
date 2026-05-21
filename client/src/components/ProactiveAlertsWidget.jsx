@@ -31,9 +31,33 @@ const TYPE_ICONS = {
 };
 
 const ProactiveAlertsWidget = memo(function ProactiveAlertsWidget() {
+  // Let errors throw — `useAutoRefetch` preserves the last-good alert
+  // snapshot on transient failures instead of dropping the widget.
   const { data, loading } = useAutoRefetch(
-    () => api.getAlertsSummary({ silent: true }).catch(() => null),
-    120000 // Refresh every 2 minutes
+    () => api.getAlertsSummary({ silent: true }),
+    120000, // Refresh every 2 minutes
+    {
+      // Skip the re-render when the summary counts and every rendered per-row
+      // field are unchanged. Each alert row renders title, detail, severity
+      // (style class), type (icon), and link (href), so all five participate
+      // in the comparison — keep this list in sync with the JSX below.
+      compare: (prev, next) => {
+        if (prev.counts?.total !== next.counts?.total
+          || prev.counts?.critical !== next.counts?.critical
+          || prev.counts?.high !== next.counts?.high
+          || prev.counts?.medium !== next.counts?.medium) return false;
+        const a = Array.isArray(prev.alerts) ? prev.alerts : null;
+        const b = Array.isArray(next.alerts) ? next.alerts : null;
+        if (a === null || b === null) return a === b;
+        return a.length === b.length && a.every((al, i) => (
+          al.title === b[i]?.title
+            && al.severity === b[i]?.severity
+            && al.detail === b[i]?.detail
+            && al.type === b[i]?.type
+            && al.link === b[i]?.link
+        ));
+      },
+    },
   );
 
   if (loading) return null;

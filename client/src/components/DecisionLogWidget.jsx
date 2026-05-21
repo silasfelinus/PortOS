@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import * as api from '../services/api';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
+import { useTimeTick } from '../hooks/useTimeTick';
 import { timeAgo } from '../utils/formatters';
 
 /**
@@ -25,11 +26,73 @@ import { timeAgo } from '../utils/formatters';
  * exactly why the CoS took (or didn't take) action.
  */
 const DecisionLogWidget = memo(function DecisionLogWidget() {
+  // Let errors throw — `useAutoRefetch` preserves the last-good summary on
+  // transient failures instead of dropping the widget back to its loading
+  // state on every blip.
   const { data: summary, loading } = useAutoRefetch(
-    () => api.getCosDecisionSummary({ silent: true }).catch(() => null),
-    60000
+    () => api.getCosDecisionSummary({ silent: true }),
+    60000,
+    {
+      // Decision stream is append-only; same 24h totals + same per-decision
+      // tuple of every rendered field means nothing visible advanced this
+      // minute. Comparator walks: id (key + dedup), type (icon + label),
+      // reason (body + tooltip), count (×N badge), and the context fields
+      // that renderContextDetails surfaces (running/max/project/limit, appId/
+      // cooldownMs, fromTask/toTask, attempts, runningAgents/awaitingApproval,
+      // taskType, successRate). The `timeAgo(decision.lastTimestamp ||
+      // decision.timestamp)` label is re-rendered by the useTimeTick(60000)
+      // below — including the timestamp fields in this comparator would
+      // pointlessly break dedup on every backend mtime nudge. Keep this tuple
+      // in sync with the JSX above.
+      compare: (prev, next) => {
+        if (prev.last24Hours?.total !== next.last24Hours?.total
+          || prev.last24Hours?.skipped !== next.last24Hours?.skipped
+          || prev.last24Hours?.switched !== next.last24Hours?.switched
+          || prev.last24Hours?.capacityFull !== next.last24Hours?.capacityFull
+          || prev.last24Hours?.cooldownActive !== next.last24Hours?.cooldownActive
+          || prev.last24Hours?.selected !== next.last24Hours?.selected
+          || prev.last24Hours?.adjusted !== next.last24Hours?.adjusted
+          || prev.transparencyScore !== next.transparencyScore) return false;
+        const a = Array.isArray(prev.impactfulDecisions) ? prev.impactfulDecisions : null;
+        const b = Array.isArray(next.impactfulDecisions) ? next.impactfulDecisions : null;
+        if (a === null || b === null) return a === b;
+        if (a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i++) {
+          const da = a[i];
+          const db = b[i];
+          if (
+            da.id !== db?.id
+            || da.type !== db?.type
+            || da.reason !== db?.reason
+            || (da.count ?? 1) !== (db?.count ?? 1)
+          ) return false;
+          const ca = da.context;
+          const cb = db?.context;
+          if (
+            ca?.running !== cb?.running
+            || ca?.max !== cb?.max
+            || ca?.project !== cb?.project
+            || ca?.limit !== cb?.limit
+            || ca?.appId !== cb?.appId
+            || ca?.cooldownMs !== cb?.cooldownMs
+            || ca?.fromTask !== cb?.fromTask
+            || ca?.toTask !== cb?.toTask
+            || ca?.attempts !== cb?.attempts
+            || ca?.runningAgents !== cb?.runningAgents
+            || ca?.awaitingApproval !== cb?.awaitingApproval
+            || ca?.taskType !== cb?.taskType
+            || ca?.successRate !== cb?.successRate
+          ) return false;
+        }
+        return true;
+      },
+    },
   );
   const [expanded, setExpanded] = useState(false);
+  // Tick every minute so the `timeAgo(...)` relative-time labels on each
+  // decision row roll over even when the poll payload is unchanged by the
+  // comparator.
+  useTimeTick(60000);
 
   // Don't render while loading or if no data
   if (loading || !summary) {

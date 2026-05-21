@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { ChevronRight, AlertTriangle, Target } from 'lucide-react';
 import * as api from '../services/api';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
+import { useTimeTick } from '../hooks/useTimeTick';
 import { CATEGORY_CONFIG, GOAL_TYPE_CONFIG } from './goals/GoalDetailPanel';
 
 const HORIZON_LABELS = {
@@ -24,10 +25,46 @@ const getDaysSince = (dateStr) => {
 };
 
 const GoalProgressWidget = memo(function GoalProgressWidget() {
+  // Let errors throw — `useAutoRefetch` preserves the last-good goal set on
+  // transient failures rather than wiping the widget.
   const { data: goalsData, loading } = useAutoRefetch(
-    () => api.getGoals({ silent: true }).catch(() => null),
-    300000
+    () => api.getGoals({ silent: true }),
+    300000,
+    {
+      // Goals rarely change at 5-minute cadence. Skip the re-render (and the
+      // useMemo recompute that re-derives stalled goals + avg progress) when
+      // the goal set and every rendered/derived per-goal field are unchanged.
+      // Covers: title, category, horizon, goalType (rendered as labels/icons),
+      // progress (bar + % label), status + parentId + urgency (filter/sort
+      // inputs), and the last-progress timestamp + createdAt fallback that
+      // drive `daysSinceUpdate` / `isStalled` (a backfilled or corrected
+      // progressHistory entry mutates the latest timestamp without changing
+      // array length).
+      compare: (prev, next) => {
+        const a = Array.isArray(prev.goals) ? prev.goals : null;
+        const b = Array.isArray(next.goals) ? next.goals : null;
+        if (a === null || b === null) return a === b;
+        return a.length === b.length && a.every((g, i) => (
+          g.id === b[i]?.id
+            && g.title === b[i]?.title
+            && g.category === b[i]?.category
+            && g.horizon === b[i]?.horizon
+            && g.goalType === b[i]?.goalType
+            && g.progress === b[i]?.progress
+            && g.status === b[i]?.status
+            && g.parentId === b[i]?.parentId
+            && g.urgency === b[i]?.urgency
+            && g.createdAt === b[i]?.createdAt
+            && getLastProgressDate(g) === getLastProgressDate(b[i])
+        ));
+      },
+    },
   );
+
+  // Tick hourly so `daysSinceUpdate` / `isStalled` derivations cross the
+  // 14-day stall boundary without waiting for an unrelated payload change to
+  // re-render. Day-level precision doesn't need a per-minute tick.
+  const tick = useTimeTick(3600000);
 
   const { goals, stalledCount, avgProgress } = useMemo(() => {
     if (!goalsData?.goals?.length) return { goals: [], stalledCount: 0, avgProgress: 0 };
@@ -49,7 +86,10 @@ const GoalProgressWidget = memo(function GoalProgressWidget() {
       stalledCount: topLevel.filter(g => g.isStalled).length,
       avgProgress: topLevel.length ? Math.round(topLevel.reduce((sum, g) => sum + (g.progress || 0), 0) / topLevel.length) : 0
     };
-  }, [goalsData]);
+    // `tick` is in the dep array on purpose — when the wall-clock hour rolls
+    // over the derivation re-runs so a goal can cross the stall threshold
+    // without needing a new poll payload.
+  }, [goalsData, tick]);
 
   if (loading || !goals.length) return null;
 

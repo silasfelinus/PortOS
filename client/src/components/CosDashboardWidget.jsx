@@ -16,6 +16,8 @@ import {
 } from 'lucide-react';
 import * as api from '../services/api';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
+import { useTimeTick } from '../hooks/useTimeTick';
+import { timeAgo } from '../utils/formatters';
 
 /**
  * CosDashboardWidget - Compact CoS status widget for the main Dashboard
@@ -23,18 +25,116 @@ import { useAutoRefetch } from '../hooks/useAutoRefetch';
  */
 const CosDashboardWidget = memo(function CosDashboardWidget() {
   const { data: dashData, loading } = useAutoRefetch(async () => {
+    // Let errors throw — `useAutoRefetch` preserves the last-good batch on
+    // transient failures. Without this, a per-endpoint `.catch(() => null)`
+    // could mix fresh and stale sections (e.g. summary=null but
+    // learningSummary holding its prior value) and the widget would flicker
+    // sections off-screen on every blip.
     const silent = { silent: true };
     const [summary, learningSummary, recentTasks, activityCalendar] = await Promise.all([
-      api.getCosQuickSummary(silent).catch(() => null),
-      api.getCosLearningSummary(silent).catch(() => null),
-      api.getCosRecentTasks(5, silent).catch(() => null),
-      api.getCosActivityCalendar(8, silent).catch(() => null)
+      api.getCosQuickSummary(silent),
+      api.getCosLearningSummary(silent),
+      api.getCosRecentTasks(5, silent),
+      api.getCosActivityCalendar(8, silent)
     ]);
     return { summary, learningSummary, recentTasks, activityCalendar };
-  }, 30000);
+  }, 30000, {
+    // Re-render only when one of the aggregated counts actually moves —
+    // running agents, completed/failed counts, streak, queue depth, learning
+    // success rate, every visible recent-task field, every per-day heatmap
+    // cell, and the heatmap summary. The poll fires every 30s; without this
+    // guard each tick re-renders the activity heatmap + recent tasks list
+    // even when nothing changed.
+    //
+    // Recent-tasks comparison walks every rendered field per row (id,
+    // description, taskType, app, durationFormatted, success). The relative-
+    // time label is rendered client-side from `task.completedAt` via timeAgo
+    // and refreshed by the useTimeTick(60000) below, so the server's
+    // `task.completedRelative` string is intentionally ignored — it ships in
+    // the payload but would freeze across deduped polls if we used it.
+    //
+    // Heatmap comparison walks every cell's (date, tasks, successRate) tuple
+    // plus summary totals — per-day tasks/successRate distribution can shift
+    // without changing top-level totals (e.g. a task moving from one day to
+    // another in late-arriving telemetry).
+    compare: (prev, next) => {
+      const prevTasks = prev.recentTasks?.tasks;
+      const nextTasks = next.recentTasks?.tasks;
+      const prevLen = prevTasks?.length ?? 0;
+      const nextLen = nextTasks?.length ?? 0;
+      if (prevLen !== nextLen) return false;
+      for (let i = 0; i < prevLen; i++) {
+        const a = prevTasks[i];
+        const b = nextTasks[i];
+        if (
+          a?.id !== b?.id
+          || a?.success !== b?.success
+          || a?.description !== b?.description
+          || a?.taskType !== b?.taskType
+          || a?.app !== b?.app
+          || a?.durationFormatted !== b?.durationFormatted
+          // completedAt is the input to timeAgo(...) below — if the server
+          // corrects a task's completion time without changing other fields
+          // (rare but possible) we want the relative-time label to refresh
+          // immediately, not on the next minute tick.
+          || a?.completedAt !== b?.completedAt
+        ) return false;
+      }
+      // Heatmap weeks: array of arrays of {date, tasks, successRate, isToday,
+      // isFuture}. Compare every cell — single boundary-cross (isToday rolls
+      // from one date to the next) flips the comparator naturally because
+      // (date, isToday) on the prior+next today differ.
+      const prevWeeks = prev.activityCalendar?.weeks;
+      const nextWeeks = next.activityCalendar?.weeks;
+      const prevWeeksLen = prevWeeks?.length ?? 0;
+      const nextWeeksLen = nextWeeks?.length ?? 0;
+      if (prevWeeksLen !== nextWeeksLen) return false;
+      for (let w = 0; w < prevWeeksLen; w++) {
+        const pw = prevWeeks[w];
+        const nw = nextWeeks[w];
+        if ((pw?.length ?? 0) !== (nw?.length ?? 0)) return false;
+        for (let d = 0; d < pw.length; d++) {
+          const pd = pw[d];
+          const nd = nw[d];
+          if (
+            pd?.date !== nd?.date
+            || pd?.tasks !== nd?.tasks
+            || pd?.successRate !== nd?.successRate
+            || pd?.isToday !== nd?.isToday
+          ) return false;
+        }
+      }
+      return (
+        prev.summary?.status?.running === next.summary?.status?.running
+          && prev.summary?.status?.paused === next.summary?.status?.paused
+          && prev.summary?.today?.succeeded === next.summary?.today?.succeeded
+          && prev.summary?.today?.failed === next.summary?.today?.failed
+          && prev.summary?.today?.running === next.summary?.today?.running
+          && prev.summary?.today?.completed === next.summary?.today?.completed
+          && prev.summary?.today?.timeWorked === next.summary?.today?.timeWorked
+          && prev.summary?.streak?.current === next.summary?.streak?.current
+          && prev.summary?.queue?.total === next.summary?.queue?.total
+          && prev.summary?.queue?.pendingApprovals === next.summary?.queue?.pendingApprovals
+          && prev.learningSummary?.overallSuccessRate === next.learningSummary?.overallSuccessRate
+          && prev.learningSummary?.skipped === next.learningSummary?.skipped
+          && prev.learningSummary?.status === next.learningSummary?.status
+          && prev.learningSummary?.totalCompleted === next.learningSummary?.totalCompleted
+          && prev.recentTasks?.summary?.total === next.recentTasks?.summary?.total
+          && prev.recentTasks?.summary?.succeeded === next.recentTasks?.summary?.succeeded
+          && prev.activityCalendar?.summary?.totalTasks === next.activityCalendar?.summary?.totalTasks
+          && prev.activityCalendar?.summary?.successRate === next.activityCalendar?.summary?.successRate
+          && prev.activityCalendar?.summary?.activeDays === next.activityCalendar?.summary?.activeDays
+          && prev.activityCalendar?.maxTasks === next.activityCalendar?.maxTasks
+          && prev.activityCalendar?.currentStreak === next.activityCalendar?.currentStreak
+      );
+    },
+  });
 
   const { summary, learningSummary, recentTasks, activityCalendar } = dashData ?? {};
   const [tasksExpanded, setTasksExpanded] = useState(false);
+  // Tick every minute so the client-side `timeAgo(task.completedAt)` labels
+  // recompute against the latest wall-clock time across deduped polls.
+  useTimeTick(60000);
 
   // Don't render while loading
   if (loading) {
@@ -228,7 +328,13 @@ const CosDashboardWidget = memo(function CosDashboardWidget() {
                       <span>•</span>
                       <span>{task.durationFormatted}</span>
                       <span>•</span>
-                      <span>{task.completedRelative}</span>
+                      {/* Compute relative time client-side from `completedAt`
+                          so the useTimeTick(60000) above can refresh the
+                          label without help from the server. The server's
+                          `completedRelative` string ships in the payload but
+                          we intentionally ignore it — it goes stale across
+                          deduped polls. */}
+                      <span>{timeAgo(task.completedAt)}</span>
                     </div>
                   </div>
                 </Link>
@@ -242,7 +348,7 @@ const CosDashboardWidget = memo(function CosDashboardWidget() {
                 <div
                   key={task.id}
                   className={`w-2 h-2 rounded-full ${task.success ? 'bg-port-success' : 'bg-port-error'}`}
-                  title={`${task.description.substring(0, 50)}... (${task.completedRelative})`}
+                  title={`${task.description.substring(0, 50)}... (${timeAgo(task.completedAt)})`}
                 />
               ))}
             </div>
