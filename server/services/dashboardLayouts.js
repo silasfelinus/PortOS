@@ -5,9 +5,10 @@
  * list of widget ids; the client's widget registry decides how to render
  * each id. Persisted to data/dashboard-layouts.json.
  *
- * Seeded on first read with the "Everything" layout (id `default`, mirrors
- * the current hardcoded dashboard) plus "Focus", "Morning Review", and "Ops"
- * starter layouts so the feature has value out of the box.
+ * Built-ins seeded on first read: Everything, Focus, Morning Review, Ops,
+ * Deep Work, Health, Agent Watch. The intent-named trio (Deep Work / Health
+ * / Agent Watch) is also exported as INTENT_LAYOUTS so migration 030 can
+ * seed them into existing installs without forking the grid geometry.
  */
 
 import { join } from 'path';
@@ -29,6 +30,49 @@ const makeErr = (message, code) => Object.assign(new Error(message), { code });
 // are designed for a typical desktop viewport (12 cols × ~80px rows): the
 // most useful widgets sit in rows 0–7 (~768px) so they're above the fold
 // without scrolling, and lower-priority widgets stack below.
+
+// Intent-named layouts shipped post-029. Exported so the migration that
+// seeds them into existing installs (scripts/migrations/030-…) imports
+// from this file rather than mirroring the grid by hand — fresh-install
+// and migrated-install layouts can't drift on a future tweak.
+export const INTENT_LAYOUTS = [
+  {
+    id: 'deep-work',
+    name: 'Deep Work',
+    widgets: ['quick-task', 'upcoming-tasks', 'cos', 'decision-log'],
+    grid: [
+      { id: 'quick-task',     x: 0, y: 0,  w: 6, h: 5 },
+      { id: 'upcoming-tasks', x: 6, y: 0,  w: 6, h: 10 },
+      { id: 'cos',            x: 0, y: 5,  w: 6, h: 3 },
+      { id: 'decision-log',   x: 0, y: 8,  w: 6, h: 3 },
+    ],
+  },
+  {
+    id: 'health',
+    name: 'Health',
+    widgets: ['death-clock', 'goal-progress', 'activity-streak', 'quick-brain', 'hourly-activity'],
+    grid: [
+      { id: 'death-clock',     x: 0, y: 0, w: 4, h: 3 },
+      { id: 'goal-progress',   x: 4, y: 0, w: 5, h: 5 },
+      { id: 'activity-streak', x: 9, y: 0, w: 3, h: 3 },
+      { id: 'quick-brain',     x: 0, y: 3, w: 4, h: 2 },
+      { id: 'hourly-activity', x: 0, y: 5, w: 12, h: 4 },
+    ],
+  },
+  {
+    id: 'agent-watch',
+    name: 'Agent Watch',
+    widgets: ['cos', 'proactive-alerts', 'review-hub', 'system-health', 'decision-log'],
+    grid: [
+      { id: 'cos',              x: 0, y: 0, w: 6, h: 5 },
+      { id: 'proactive-alerts', x: 6, y: 0, w: 3, h: 3 },
+      { id: 'review-hub',       x: 9, y: 0, w: 3, h: 3 },
+      { id: 'system-health',    x: 6, y: 3, w: 6, h: 5 },
+      { id: 'decision-log',     x: 0, y: 5, w: 6, h: 3 },
+    ],
+  },
+];
+
 const DEFAULT_LAYOUTS = [
   {
     id: 'default',
@@ -119,6 +163,7 @@ const DEFAULT_LAYOUTS = [
       { id: 'apps',             x: 0, y: 10, w: 12, h: 11 },
     ],
   },
+  ...INTENT_LAYOUTS.map((l) => ({ ...l, builtIn: true })),
 ];
 
 const DEFAULT_STATE = {
@@ -144,6 +189,26 @@ export const WIDGET_ID_MAX_LENGTH = 80;
 export const GRID_COLS = 12;
 export const GRID_ROW_MAX = 200;
 export const GRID_ITEM_H_MAX = 50;
+
+// Time-window auto-activation: HH:MM strings (24h). When a layout carries an
+// activateWindow and the local clock falls inside it, the dashboard
+// auto-selects that layout on a fresh visit (unless the user picked a
+// different one today). Stored as a literal "HH:MM" pair so a hand-edited
+// JSON is human-readable.
+export const TIME_STRING_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+// Sanitize a layout's activateWindow. Returns null for any malformed shape
+// (missing fields, non-string types, off-format strings). A null result
+// strips the field on read so a hand-edited JSON with garbage can't
+// accidentally drive an auto-switch. start === end collapses to null —
+// a zero-length window can never match.
+const sanitizeActivateWindow = (w) => {
+  if (!w || typeof w !== 'object') return null;
+  if (typeof w.start !== 'string' || typeof w.end !== 'string') return null;
+  if (!TIME_STRING_RE.test(w.start) || !TIME_STRING_RE.test(w.end)) return null;
+  if (w.start === w.end) return null;
+  return { start: w.start, end: w.end };
+};
 
 // Clamp a single grid item to valid bounds. Returns null when the entry is
 // unusable (missing id, non-numeric coords, etc.). Numeric fields are
@@ -203,7 +268,8 @@ const sanitizeLayout = (l) => {
       grid.push(item);
     }
   }
-  return { id: l.id, name, builtIn: BUILTIN_IDS.has(l.id), widgets, grid };
+  const activateWindow = sanitizeActivateWindow(l.activateWindow);
+  return { id: l.id, name, builtIn: BUILTIN_IDS.has(l.id), widgets, grid, activateWindow };
 };
 
 // Bundled so clients can enforce the same limits without duplicating magic
@@ -238,44 +304,85 @@ export async function getState() {
   return { activeLayoutId, layouts, limits: LIMITS };
 }
 
-export async function setActiveLayout(id) {
-  const state = await getState();
-  if (!state.layouts.find((l) => l.id === id)) {
-    throw makeErr(`Unknown layout id: ${id}`, ERR_NOT_FOUND);
-  }
-  const next = { activeLayoutId: id, layouts: state.layouts };
-  await atomicWrite(STATE_PATH, next);
-  return { ...next, limits: LIMITS };
+// All mutations to dashboard-layouts.json funnel through this tail so two
+// concurrent writers (e.g. an auto-window-activate PUT + a manual layout
+// save firing from the same browser, or palette + dashboard tabs) can't
+// interleave load → modify → write and lose each other's changes. Mirrors
+// the `issueWriteTail` / `cacheWriteTails` pattern documented in CLAUDE.md
+// ("Async PATCH races on shared records — serialize writes server-side").
+let layoutsWriteTail = Promise.resolve();
+const queueLayoutsWrite = (fn) => {
+  const tail = layoutsWriteTail.then(fn, fn); // run even after a prior failure
+  layoutsWriteTail = tail.then(() => null, () => null); // tail keeps chaining
+  return tail;
+};
+
+export function setActiveLayout(id) {
+  return queueLayoutsWrite(async () => {
+    const state = await getState();
+    if (!state.layouts.find((l) => l.id === id)) {
+      throw makeErr(`Unknown layout id: ${id}`, ERR_NOT_FOUND);
+    }
+    const next = { activeLayoutId: id, layouts: state.layouts };
+    await atomicWrite(STATE_PATH, next);
+    return { ...next, limits: LIMITS };
+  });
 }
 
-export async function saveLayout(layout) {
-  const state = await getState();
-  const idx = state.layouts.findIndex((l) => l.id === layout.id);
-  // Derive `builtIn` from BUILTIN_IDS at write-time (not from the persisted
-  // flag) so a hand-edited JSON that deleted the default `ops` entry can't
-  // produce a new `ops` that sanitizeLayout() later treats as built-in while
-  // the write-path echoed `builtIn: false` to the client.
-  const builtIn = BUILTIN_IDS.has(layout.id);
-  const merged = idx >= 0
-    ? state.layouts.map((l, i) => i === idx ? { ...l, ...layout, builtIn } : l)
-    : [...state.layouts, { ...layout, builtIn }];
-  const next = { activeLayoutId: state.activeLayoutId, layouts: merged };
-  await atomicWrite(STATE_PATH, next);
-  return { ...next, limits: LIMITS };
+export function saveLayout(layout) {
+  return queueLayoutsWrite(async () => {
+    const state = await getState();
+    const idx = state.layouts.findIndex((l) => l.id === layout.id);
+    // Derive `builtIn` from BUILTIN_IDS at write-time (not from the persisted
+    // flag) so a hand-edited JSON that deleted the default `ops` entry can't
+    // produce a new `ops` that sanitizeLayout() later treats as built-in while
+    // the write-path echoed `builtIn: false` to the client.
+    const builtIn = BUILTIN_IDS.has(layout.id);
+    // Partial-aware merge: `activateWindow` is preserved when the caller
+    // doesn't include the key, but cleared when the caller sends `null`. The
+    // existing editor's saveLayout() doesn't send activateWindow, so a vanilla
+    // widget edit must NOT wipe a previously-configured morning window.
+    // Mirrors the "absent vs intentionally empty" convention in CLAUDE.md.
+    const existing = idx >= 0 ? state.layouts[idx] : null;
+    const buildEntry = () => {
+      const entry = {
+        id: layout.id,
+        name: layout.name,
+        builtIn,
+        widgets: layout.widgets,
+        grid: layout.grid ?? [],
+      };
+      // `undefined` (key absent OR set undefined) means "preserve"; `null` is
+      // the explicit clear. Spread alone would clobber existing.activateWindow
+      // with undefined when the caller omits the key.
+      entry.activateWindow = layout.activateWindow !== undefined
+        ? layout.activateWindow
+        : (existing?.activateWindow ?? null);
+      return entry;
+    };
+    const merged = idx >= 0
+      ? state.layouts.map((l, i) => i === idx ? buildEntry() : l)
+      : [...state.layouts, buildEntry()];
+    const next = { activeLayoutId: state.activeLayoutId, layouts: merged };
+    await atomicWrite(STATE_PATH, next);
+    return { ...next, limits: LIMITS };
+  });
 }
 
-export async function deleteLayout(id) {
-  const state = await getState();
-  const target = state.layouts.find((l) => l.id === id);
-  if (!target) throw makeErr(`Unknown layout id: ${id}`, ERR_NOT_FOUND);
-  if (target.builtIn) throw makeErr(`Cannot delete built-in layout: ${id}`, ERR_BUILTIN_PROTECTED);
-  const remaining = state.layouts.filter((l) => l.id !== id);
-  // Guard against the pathological case where the JSON was hand-edited to
-  // remove every built-in — fall back to reseeding defaults rather than
-  // indexing into an empty array.
-  const nextLayouts = remaining.length > 0 ? remaining : DEFAULT_LAYOUTS;
-  const activeLayoutId = state.activeLayoutId === id ? nextLayouts[0].id : state.activeLayoutId;
-  const next = { activeLayoutId, layouts: nextLayouts };
-  await atomicWrite(STATE_PATH, next);
-  return { ...next, limits: LIMITS };
+export function deleteLayout(id) {
+  return queueLayoutsWrite(async () => {
+    const state = await getState();
+    const target = state.layouts.find((l) => l.id === id);
+    if (!target) throw makeErr(`Unknown layout id: ${id}`, ERR_NOT_FOUND);
+    if (target.builtIn) throw makeErr(`Cannot delete built-in layout: ${id}`, ERR_BUILTIN_PROTECTED);
+    const remaining = state.layouts.filter((l) => l.id !== id);
+    // Guard against the pathological case where the JSON was hand-edited to
+    // remove every built-in — fall back to reseeding defaults rather than
+    // indexing into an empty array.
+    const nextLayouts = remaining.length > 0 ? remaining : DEFAULT_LAYOUTS;
+    const activeLayoutId = state.activeLayoutId === id ? nextLayouts[0].id : state.activeLayoutId;
+    const next = { activeLayoutId, layouts: nextLayouts };
+    await atomicWrite(STATE_PATH, next);
+    return { ...next, limits: LIMITS };
+  });
 }

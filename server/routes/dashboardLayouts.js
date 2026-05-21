@@ -30,6 +30,16 @@ const gridItemSchema = z.object({
   h: z.number().int().min(1).max(svc.GRID_ITEM_H_MAX),
 });
 
+// Time-window strings (HH:MM, 24h). The route accepts `null` to clear an
+// existing window — clients send `activateWindow: null` to remove the
+// auto-activation. The service's sanitizer also drops malformed shapes on
+// read so unknown fields can never sneak through.
+const timeStringSchema = z.string().regex(svc.TIME_STRING_RE, 'must be HH:MM (24h)');
+const activateWindowSchema = z.object({
+  start: timeStringSchema,
+  end: timeStringSchema,
+}).refine((w) => w.start !== w.end, { message: 'start and end must differ' });
+
 const layoutSchema = z.object({
   id: idSchema,
   // Trim before min-length check so whitespace-only names are rejected.
@@ -51,6 +61,10 @@ const layoutSchema = z.object({
     .max(svc.WIDGETS_MAX)
     .optional()
     .default([]),
+  // Optional — when set, the dashboard auto-selects this layout on cold
+  // load if the local clock falls in the window. `null` is the explicit
+  // clear signal; `undefined` (key missing) preserves whatever's on disk.
+  activateWindow: activateWindowSchema.nullable().optional(),
 }).refine(
   (l) => l.grid.every((g) => l.widgets.includes(g.id)),
   { message: 'grid items must reference widgets in the layout', path: ['grid'] }

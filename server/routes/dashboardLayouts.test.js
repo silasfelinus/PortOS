@@ -14,6 +14,7 @@ vi.mock('../services/dashboardLayouts.js', () => ({
   GRID_COLS: 12,
   GRID_ROW_MAX: 200,
   GRID_ITEM_H_MAX: 50,
+  TIME_STRING_RE: /^([01]\d|2[0-3]):[0-5]\d$/,
   getState: vi.fn(),
   setActiveLayout: vi.fn(),
   saveLayout: vi.fn(),
@@ -182,6 +183,56 @@ describe('PUT /api/dashboard/layouts/:id', () => {
       widgets: ['apps'],
       grid: [],
     });
+  });
+
+  it('accepts a valid activateWindow', async () => {
+    svc.saveLayout.mockResolvedValue({ activeLayoutId: 'default', layouts: [] });
+    const res = await request(makeApp())
+      .put('/api/dashboard/layouts/morning')
+      .send({
+        name: 'Morning',
+        widgets: ['upcoming-tasks'],
+        activateWindow: { start: '06:00', end: '11:00' },
+      });
+    expect(res.status).toBe(200);
+    expect(svc.saveLayout).toHaveBeenCalledWith(expect.objectContaining({
+      activateWindow: { start: '06:00', end: '11:00' },
+    }));
+  });
+
+  it('accepts activateWindow=null as an explicit clear signal', async () => {
+    svc.saveLayout.mockResolvedValue({ activeLayoutId: 'default', layouts: [] });
+    const res = await request(makeApp())
+      .put('/api/dashboard/layouts/morning')
+      .send({ name: 'Morning', widgets: ['upcoming-tasks'], activateWindow: null });
+    expect(res.status).toBe(200);
+    expect(svc.saveLayout).toHaveBeenCalledWith(expect.objectContaining({
+      activateWindow: null,
+    }));
+  });
+
+  it('rejects activateWindow with off-format time strings', async () => {
+    const res = await request(makeApp())
+      .put('/api/dashboard/layouts/morning')
+      .send({
+        name: 'Morning',
+        widgets: ['upcoming-tasks'],
+        activateWindow: { start: '25:99', end: '11:00' },
+      });
+    expect(res.status).toBe(400);
+    expect(svc.saveLayout).not.toHaveBeenCalled();
+  });
+
+  it('rejects activateWindow with start === end', async () => {
+    const res = await request(makeApp())
+      .put('/api/dashboard/layouts/morning')
+      .send({
+        name: 'Morning',
+        widgets: ['upcoming-tasks'],
+        activateWindow: { start: '06:00', end: '06:00' },
+      });
+    expect(res.status).toBe(400);
+    expect(svc.saveLayout).not.toHaveBeenCalled();
   });
 });
 

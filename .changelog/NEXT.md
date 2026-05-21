@@ -3,6 +3,7 @@
 ## Added
 
 - **[codex5-client-error-reporter] Browser-side errors and unhandled promise rejections surface in Review Hub.** Crashes that used to vanish into the browser console now land as Review Hub alerts so they can be triaged alongside server errors and CoS work. Repeats of the same error within a day aggregate into a single entry, and bursty render storms are throttled so the hub stays readable.
+- **[codex5-dashboard-intent-layouts] Dashboard layouts for Deep Work, Health, and Agent Watch — plus a time-window "morning default."** Three new built-in layouts ship alongside Everything / Focus / Morning Review / Ops, picked for task-focus, health framing, and CoS monitoring respectively. Any layout can now carry an auto-activate window (e.g. 06:00–11:00) — when the dashboard opens during that window it loads with the matching layout selected, unless you manually picked something else today. The layout editor adds a one-click "Set as morning default" toggle and a custom time-window picker. The dashboard also surfaces inline "Add &lt;Widget&gt;?" suggestion chips when a layout omits a widget whose data is populated (e.g. Quick Stats shows up once you have apps registered).
 - **[versioning-diff-view-per-stage-persist-last-n] Pipeline text stages now keep a version history.** Each regenerate snapshots the prior draft (up to five back) and a new "History" button on the Idea / Prose / Comic Script / Teleplay editors opens a side-by-side word diff against the current version with one-click restore.
 
 ## Changed
