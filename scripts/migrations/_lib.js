@@ -83,26 +83,22 @@ export async function applyPromptReplaceMigration({
     }
 
     const existingMd5 = md5(existing);
-
-    if (existingMd5 === current[filename]) {
-      alreadyCurrent++;
-      continue;
-    }
-
     const acceptedOld = accepted[filename];
     const matchesAcceptedOld = acceptedOld.includes(existingMd5);
+    const matchesCurrent = existingMd5 === current[filename];
 
     if (retireOnSampleMissing) {
-      // Peek at the sample before the upgrade branch: a missing sample means
-      // the prompt was renamed or retired upstream, in which case the on-disk
-      // file is obsolete and should be removed (when unmodified) or flagged
-      // (when customized) rather than read-then-crash.
+      // Peek at the sample before any other branch: a missing sample means
+      // the prompt was renamed or retired upstream, so the on-disk file is
+      // obsolete regardless of which shipped version it matches. Unmodified
+      // copies (either accepted-old or current hash) are unlinked; customized
+      // copies warn and skip.
       const sampleExists = await readFile(samplePath, 'utf-8').then(() => true, (err) => {
         if (err.code === 'ENOENT') return false;
         throw err;
       });
       if (!sampleExists) {
-        if (matchesAcceptedOld) {
+        if (matchesAcceptedOld || matchesCurrent) {
           await unlink(dataPath);
           console.log(`🗑️  ${label} ${filename} was renamed/retired upstream — removed unmodified copy from data/`);
           retired++;
@@ -115,6 +111,11 @@ export async function applyPromptReplaceMigration({
         }
         continue;
       }
+    }
+
+    if (matchesCurrent) {
+      alreadyCurrent++;
+      continue;
     }
 
     if (!matchesAcceptedOld) {

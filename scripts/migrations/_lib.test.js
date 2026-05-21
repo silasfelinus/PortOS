@@ -81,6 +81,17 @@ describe('applyPromptReplaceMigration opt-ins', () => {
       expect(readFileSync(join(stagesDir, FILENAME), 'utf-8')).toBe(BODY_CUSTOM);
     });
 
+    it('retires even when data matches the current hash (sample renamed after the migration shipped)', async () => {
+      // Regression: a user who already ran the migration (data at NEW hash)
+      // and then pulled the rename should still get the now-obsolete file
+      // cleaned up. Without this branch the file would be classified as
+      // `alreadyCurrent` and left in `data/`.
+      writeFileSync(join(stagesDir, FILENAME), BODY_NEW);
+      const result = await applyPromptReplaceMigration({ rootDir, ...baseOpts, retireOnSampleMissing: true });
+      expect(result).toMatchObject({ retired: 1, alreadyCurrent: 0, skipped: 0 });
+      expect(existsSync(join(stagesDir, FILENAME))).toBe(false);
+    });
+
     it('still applies the normal upgrade when the sample is present', async () => {
       writeFileSync(join(stagesDir, FILENAME), BODY_OLD);
       writeFileSync(join(sampleDir, FILENAME), BODY_NEW);
