@@ -17,32 +17,24 @@
  *   character roster entirely. arcPlanner exposes `worldCanonText` to every
  *   arc context now, but a context field without a template reference is
  *   silently ignored — so every prompt that gets the field must render it.
- *   See PLAN.md → Phase B + the "arcPlanner prompt context — include canon"
- *   backlog item it folded in.
  *
- * Strategy — unmodified-only update, mirrors migration 003:
- *   - If the on-disk file matches the prior shipped MD5 (either the pre-005
- *     hash or the currently-shipped hash), replace with the data.sample
- *     version that includes {{worldCanonText}}.
- *   - If diverged (user customized), warn and skip.
+ * Strategy: hash-driven prompt-replace via `./_lib.js`. Idempotent.
  *
- * Idempotent: a re-run on the new hash is a no-op.
+ * NOTE on NEW_SHIPPED_MD5 — later migrations that further evolve any of these
+ * files (e.g. migration 023 amended `pipeline-arc-resolve.md`) must do TWO
+ * things:
+ *   1. Bump the corresponding entry in `NEW_SHIPPED_MD5` here so fresh
+ *      installs (whose `data/` was seeded from the latest sample) report
+ *      `alreadyCurrent` instead of a misleading "customized" warning, and so
+ *      the drift-catch test stays in lock-step with the live sample.
+ *   2. Append the OLD `NEW_SHIPPED_MD5` value (the hash this migration
+ *      originally produced) to `ACCEPTED_OLD_MD5` above so a re-run after a
+ *      `data/migrations.applied.json` reset still cleanly advances an
+ *      install at the intermediate state.
  */
 
-import { readFile, writeFile } from 'fs/promises';
-import { join } from 'path';
-import { createHash } from 'crypto';
+import { makePromptReplaceMigration } from './_lib.js';
 
-const md5 = (str) => {
-  const normalized = str.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  return createHash('md5').update(normalized).digest('hex');
-};
-
-// Hashes the file may have on disk pre-migration (per-file array — most
-// recent shipped hash first, then older). Any match is treated as
-// "unmodified by user → safe to replace."
-// Exported so the test suite can import these tables and detect drift without
-// maintaining local copies that can silently fall out of sync.
 export const ACCEPTED_OLD_MD5 = {
   'pipeline-arc-overview.md': [
     'd34d72b8e49ba303d38607845dd87f1c', // current (pre-Phase B) shipped
@@ -63,22 +55,6 @@ export const ACCEPTED_OLD_MD5 = {
   ],
 };
 
-// New shipped hashes — tracks the LIVE `data.sample` hash, not strictly the
-// post-019 commit-time hash. Later migrations that further evolve any of
-// these files (e.g. migration 023 amended `pipeline-arc-resolve.md`) must
-// do TWO things:
-//   1. Bump the corresponding entry in `NEW_SHIPPED_MD5` here so that fresh
-//      installs (whose `data/` was seeded from the latest sample) report
-//      `alreadyCurrent` instead of a misleading "customized" warning, and
-//      so the drift-catch test stays in lock-step with the live sample.
-//   2. Append the OLD `NEW_SHIPPED_MD5` value (the hash this migration
-//      originally produced) to `ACCEPTED_OLD_MD5` above so a re-run after a
-//      `data/migrations.applied.json` reset still cleanly advances an
-//      install at the intermediate state. Without this, re-running 019
-//      on a post-019 install would misclassify it as "customized."
-// Each entry comment records who last advanced it.
-// Exported so the test suite can import and assert against these tables
-// directly rather than maintaining local copies.
 export const NEW_SHIPPED_MD5 = {
   'pipeline-arc-overview.md':   '0a1f6ffa6908522e3690c5e9e53a6ee0', // post-019
   'pipeline-arc-verify.md':     '36aa70cdfc25d7549573a4d556e7702c', // post-019
@@ -86,80 +62,22 @@ export const NEW_SHIPPED_MD5 = {
   'pipeline-volume-verify.md':  '49458d36700cb94e34806d536ffe2940', // post-019
 };
 
-// Pure core — exposed for unit tests so the OLD→NEW upgrade branch can be
-// exercised with synthetic hash tables instead of pinning to a git commit.
-export async function applyMigration({ rootDir, accepted = ACCEPTED_OLD_MD5, current = NEW_SHIPPED_MD5 }) {
-  const stagesDir = join(rootDir, 'data', 'prompts', 'stages');
-  const sampleDir = join(rootDir, 'data.sample', 'prompts', 'stages');
+const { applyMigration, up } = makePromptReplaceMigration({
+  accepted: ACCEPTED_OLD_MD5,
+  current: NEW_SHIPPED_MD5,
+  label: 'arc-prompt canon-context',
+  customizedHint: (filename) =>
+    `   To pick up {{worldCanonText}} manually, diff:\n` +
+    `     data.sample/prompts/stages/${filename}\n` +
+    `   against your current:\n` +
+    `     data/prompts/stages/${filename}\n` +
+    `   and add the new "World canon" block in the same position as in the sample template.`,
+  skipFooter: (count) =>
+    `⚠️  ${count} arc/volume prompt(s) could not be auto-updated because they were customized.\n` +
+    `   The {{worldCanonText}} block will not render character names in arc-overview/\n` +
+    `   arc-verify/arc-resolve/volume-verify until the files are merged manually. See\n` +
+    `   data.sample/prompts/stages/.`,
+});
 
-  let updated = 0;
-  let alreadyCurrent = 0;
-  let skipped = 0;
-
-  for (const filename of Object.keys(accepted)) {
-    const dataPath = join(stagesDir, filename);
-    const samplePath = join(sampleDir, filename);
-
-    const existing = await readFile(dataPath, 'utf-8').catch((err) => {
-      if (err.code !== 'ENOENT') throw err;
-      return null;
-    });
-
-    if (existing === null) {
-      // setup-data.js will copy it on next run; nothing for us to do.
-      console.log(`📄 arc-prompt ${filename}: not present in data/, will be created by setup-data.js`);
-      continue;
-    }
-
-    const existingMd5 = md5(existing);
-
-    if (existingMd5 === current[filename]) {
-      alreadyCurrent++;
-      continue;
-    }
-
-    const acceptedOld = accepted[filename];
-    if (!acceptedOld.includes(existingMd5)) {
-      console.warn(
-        `⚠️  arc-prompt ${filename} has been customized — skipping auto-update.\n` +
-        `   To pick up {{worldCanonText}} manually, diff:\n` +
-        `     data.sample/prompts/stages/${filename}\n` +
-        `   against your current:\n` +
-        `     data/prompts/stages/${filename}\n` +
-        `   and add the new "World canon" block in the same position as in the sample template.`,
-      );
-      skipped++;
-      continue;
-    }
-
-    const sampleContent = await readFile(samplePath, 'utf-8');
-    await writeFile(dataPath, sampleContent);
-    console.log(`✅ updated arc-prompt: ${filename}`);
-    updated++;
-  }
-
-  return { updated, alreadyCurrent, skipped };
-}
-
-export default {
-  async up({ rootDir }) {
-    const { updated, alreadyCurrent, skipped } = await applyMigration({ rootDir });
-
-    if (updated > 0) {
-      console.log(`📝 arc-prompt canon-context migration: ${updated} updated, ${alreadyCurrent} already current, ${skipped} skipped (customized)`);
-    } else if (skipped > 0) {
-      console.log(`📝 arc-prompt canon-context migration: all files either current or customized (${skipped} skipped)`);
-    } else {
-      console.log(`📝 arc-prompt canon-context migration: all files already up to date`);
-    }
-
-    if (skipped > 0) {
-      console.warn(
-        `\n⚠️  ${skipped} arc/volume prompt(s) could not be auto-updated because they were customized.\n` +
-        `   The {{worldCanonText}} block will not render character names in arc-overview/\n` +
-        `   arc-verify/arc-resolve/volume-verify until the files are merged manually. See\n` +
-        `   data.sample/prompts/stages/.`,
-      );
-    }
-  },
-};
+export { applyMigration };
+export default { up };
