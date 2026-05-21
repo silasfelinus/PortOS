@@ -105,4 +105,4 @@ See [PLAN.md](./PLAN.md) for detailed milestone tracking and roadmap.
 
 ## Operational Guidance
 
-CoS task-generation rules, runtime priorities, and per-domain operational goals are tracked in [OPERATIONAL.md](./OPERATIONAL.md) — separate from the strategic goals above so this file stays focused on mission and direction.
+CoS task-generation rules, runtime priorities, and per-domain operational goals are tracked in [docs/GOALS_OPERATIONAL.md](./docs/GOALS_OPERATIONAL.md) — separate from the strategic goals above so this file stays focused on mission and direction.
