@@ -166,6 +166,31 @@ describe('addFeed', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['IPv6 loopback', '[::1]'],
+    ['IPv6 unspecified', '[::]'],
+    ['IPv6 ULA fc00::/7 (fc..)', '[fc00::1]'],
+    ['IPv6 ULA fc00::/7 (fd..)', '[fd12:3456:789a::1]'],
+    ['IPv6 link-local fe80::/10', '[fe80::1]'],
+    ['IPv4-mapped loopback', '[::ffff:127.0.0.1]'],
+    ['IPv4-mapped RFC1918', '[::ffff:192.168.1.1]'],
+  ])('rejects literal private IPv6 %s without DNS lookup', async (_label, host) => {
+    const result = await feeds.addFeed(`http://${host}/feed`);
+    expect(result).toEqual({ error: FETCH_ERROR });
+    expect(dnsResolveMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts a public IPv6 literal (covers stripped-brackets path)', async () => {
+    fetchMock.mockResolvedValue(makeResponse({ body: RSS_FIXTURE }));
+    const result = await feeds.addFeed('http://[2606:4700:4700::1111]/rss');
+    expect(result.error).toBeUndefined();
+    expect(dnsResolveMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Bracketed form must survive into the outbound fetch URL — stripping happened only inside isHostSafe
+    expect(fetchMock.mock.calls[0][0]).toContain('[2606:4700:4700::1111]');
+  });
+
   it('rejects hostnames that resolve to a private IP (DNS rebinding guard)', async () => {
     dnsResolveMock.mockResolvedValue(['10.0.0.42']);
     const result = await feeds.addFeed('https://evil.example.com/rss');
