@@ -24,6 +24,7 @@ export * from './wrImageDefaults.js';
 export * from './graphSimulation.js';
 
 // === Generic UI / collection utilities ===
+export * from './clientErrorReporter.js';
 export * from './clipboard.js';
 export * from './genUtils.js';
 export * from './joinInfluenceList.js';
