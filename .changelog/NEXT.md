@@ -6,6 +6,7 @@
 
 ## Changed
 
+- **GOALS.md now reflects the full app.** Added two missing core goals — **Creative Production Suite** (Writers Room, Universe Builder, Series Pipeline, Creative Director, Image/Video Gen, Timeline, LoRAs, Importer, Sharing) and **Cognitive Training & Lifelong Learning** (POST, Morse, Rapid Reader, Wiki). Reframed Purpose and tagline around "everything app," "create more than consume," and "interface with the world and with myself." Updated Status table and Secondary Goals (music/audio production, mood board, sketch canvas, federated sharing, cross-domain insights).
 - **[cover-prose-input-idea-input-in-canonusage-corpus] Universe canon cross-reference test suite now pins every stage the per-issue search reads** — a regression that silently drops a stage from the search now fails the test suite immediately.
 - **[extract-shared-requiretoolkit-helper] Internal: consolidated three duplicated AI toolkit accessors into one shared module.** No behavior change; cuts ~30 lines and makes future toolkit-state changes one-touch.
 - **[codex5-bundle-lazy-routes] Dashboard widgets load on demand.** A dashboard layout now only downloads the widgets it actually uses — the first paint of a slimmed-down layout no longer drags in every widget in the registry, and slow widgets render their own placeholder while loading instead of blocking sibling cells. Also adds an `npm run build:analyze` script for inspecting bundle composition during development.
