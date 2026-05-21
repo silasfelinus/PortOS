@@ -3,7 +3,15 @@ import { FileText, Variable, RefreshCw, Save, Plus, Trash2, Eye, Briefcase } fro
 import toast from '../components/ui/Toast';
 import BrailleSpinner from '../components/BrailleSpinner';
 import ProviderModelSelector from '../components/ProviderModelSelector';
-import { filterSelectableModels } from '../utils/providers';
+import { filterSelectableModels, getProviderTimeout } from '../utils/providers';
+import {
+  formatDurationMs,
+  parseTimeoutMs,
+  TIMEOUT_INPUT_MIN_MS,
+  TIMEOUT_INPUT_MAX_MS,
+  TIMEOUT_INPUT_STEP_MS,
+} from '../utils/formatters';
+import useFieldDraft from '../hooks/useFieldDraft';
 
 export default function PromptManager() {
   const [tab, setTab] = useState('stages');
@@ -48,6 +56,7 @@ export default function PromptManager() {
   const [jobSkillPreview, setJobSkillPreview] = useState('');
 
   const [providers, setProviders] = useState([]);
+  const [activeProviderId, setActiveProviderId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
 
@@ -67,6 +76,7 @@ export default function PromptManager() {
     setVariables(varsRes.variables || {});
     setJobSkills(jobSkillsRes.skills || []);
     setProviders((providersRes.providers || []).filter(p => p.enabled));
+    setActiveProviderId(providersRes.activeProvider || null);
     setLoading(false);
   };
 
@@ -74,7 +84,14 @@ export default function PromptManager() {
     setSelectedStage(name);
     const res = await fetch(`/api/prompts/${name}`).then(r => r.json());
     setStageTemplate(res.template || '');
-    setStageConfig({ name: res.name, description: res.description, model: res.model, provider: res.provider || null, variables: res.variables || [] });
+    // Normalize a server-returned timeout via parseTimeoutMs so the editor
+    // shares the validator's accept set: integers OR digit-only strings
+    // (e.g. legacy `'900000'` from pre-validation installs) round-trip
+    // through the UI, while non-positive / non-integer / garbage values
+    // (0, 'abc', undefined, 1.5) collapse to null so the input doesn't
+    // surface them as touched.
+    const timeout = parseTimeoutMs(res.timeout);
+    setStageConfig({ name: res.name, description: res.description, model: res.model, provider: res.provider || null, timeout, variables: res.variables || [] });
     setPreview('');
   };
 
@@ -412,6 +429,11 @@ export default function PromptManager() {
                         />
                       )}
                     </div>
+                    <StageTimeoutField
+                      timeout={stageConfig.timeout}
+                      providerFallback={getProviderTimeout(providers, stageConfig.provider, activeProviderId)}
+                      onCommit={(ms) => setStageConfig({ ...stageConfig, timeout: ms })}
+                    />
                     <div>
                       <label className="block text-sm text-gray-400 mb-1">Variables Used</label>
                       <div className="text-sm text-gray-300">
@@ -850,6 +872,45 @@ export default function PromptManager() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Buffered timeout input — typing "9" toward "900000" must NOT snap the field
+// to blank just because `parseTimeoutMs("9")` returns null (below the 1s
+// floor). useFieldDraft keeps the raw string locally and only invokes
+// onCommit on blur with the validated value (or null when the user clears
+// it / leaves it invalid).
+function StageTimeoutField({ timeout, providerFallback, onCommit }) {
+  const { value: draft, onChange, onBlur } = useFieldDraft(timeout, (raw) => {
+    const trimmed = raw.trim();
+    if (trimmed === '') { onCommit(null); return; }
+    const ms = parseTimeoutMs(raw);
+    // Non-null parse → commit. Null result on non-empty input means out-of-range
+    // or non-integer; leave persisted state untouched so the input snaps back.
+    if (ms != null) onCommit(ms);
+  });
+  return (
+    <div>
+      <label className="block text-sm text-gray-400 mb-1">Timeout override (ms)</label>
+      <input
+        type="number"
+        inputMode="numeric"
+        min={TIMEOUT_INPUT_MIN_MS}
+        max={TIMEOUT_INPUT_MAX_MS}
+        step={TIMEOUT_INPUT_STEP_MS}
+        value={draft}
+        onChange={onChange}
+        onBlur={onBlur}
+        onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+        placeholder={providerFallback != null ? String(providerFallback) : ''}
+        className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
+      />
+      <p className="text-xs text-gray-500 mt-1">
+        {timeout && timeout > 0
+          ? `≈ ${formatDurationMs(timeout)} per run`
+          : 'Leave blank to use the provider default'}
+      </p>
     </div>
   );
 }

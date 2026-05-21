@@ -181,6 +181,47 @@ export function formatDateShort(value) {
   return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+// Per-call LLM timeout bounds. Client-side mirror of the canonical
+// MIN_TIMEOUT / MAX_TIMEOUT in server/lib/aiToolkit/constants.js — the
+// client can't import across the server boundary (Vite vs Node, plus the
+// aiToolkit directory is kept self-contained per CLAUDE.md). The server
+// validators (validation.js, stageRunner.js) and aiToolkit's own
+// provider/run schemas all import from constants.js; this file is the
+// only known mirror. Bumping these here without the server constants —
+// or vice versa — would let a value through one validator that the
+// other rejects.
+export const TIMEOUT_INPUT_MIN_MS = 1000;
+export const TIMEOUT_INPUT_MAX_MS = 1800000;
+export const TIMEOUT_INPUT_STEP_MS = 1000;
+
+/**
+ * Parse a raw string from a timeout (ms) input into a stored value.
+ * Returns `null` for blank input (caller treats as "clear override") and
+ * for anything outside the validated [TIMEOUT_INPUT_MIN_MS,
+ * TIMEOUT_INPUT_MAX_MS] integer range — the caller is then responsible for
+ * snapping the input back to the persisted value. Clamping here keeps the
+ * client from emitting PUTs the server's Zod schema would 400 (e.g. a
+ * stray `1` that "looks positive" but is below the 1s floor).
+ *
+ * Accepts only digit-only strings (`^\d+$`), then parses via `Number(...)`
+ * + `Number.isInteger`. The digit-only gate is stricter than `Number(v)`
+ * alone — `Number("1e3")` is 1000 and `Number("1000.5")` is 1000.5 — and
+ * is mirrored in `stageConfigUpdateSchema`'s preprocess in
+ * server/lib/validation.js so client/server reject the same shapes. If
+ * you loosen this rule, loosen the server preprocess in lockstep.
+ */
+export function parseTimeoutMs(raw) {
+  if (raw == null) return null;
+  const trimmed = String(raw).trim();
+  if (trimmed === '') return null;
+  // Require an explicit digit-only string so "1e3" / "1.5" / "0x10" can't
+  // sneak past Number()'s permissive coercion.
+  if (!/^\d+$/.test(trimmed)) return null;
+  const ms = Number(trimmed);
+  if (!Number.isInteger(ms) || ms < TIMEOUT_INPUT_MIN_MS || ms > TIMEOUT_INPUT_MAX_MS) return null;
+  return ms;
+}
+
 /**
  * Format a duration in milliseconds as a human-readable string
  * @param {number} ms - Duration in milliseconds

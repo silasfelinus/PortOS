@@ -16,12 +16,13 @@
 
 import { ServerError } from './errorHandler.js';
 import { findBalancedBlocks, tryParseWithRepair } from './jsonExtract.js';
-import { resolveEffectiveModel, runPromptThroughProvider } from './promptRunner.js';
+import { resolveEffectiveModel, runPromptThroughProvider, DEFAULT_TIMEOUT_MS } from './promptRunner.js';
 import { stripCodeFences } from './aiProvider.js';
 import { extractCodexAssistant } from './codexAssistantExtract.js';
 import { getActiveProvider, getProviderById } from '../services/providers.js';
 import { buildPrompt, getStage } from '../services/promptService.js';
-import { createRun } from '../services/runner.js';
+import { createRun, patchRunMetadata } from '../services/runner.js';
+import { MIN_TIMEOUT as STAGE_TIMEOUT_MIN_MS, MAX_TIMEOUT as STAGE_TIMEOUT_MAX_MS } from './aiToolkit/constants.js';
 
 // Stage configs name a model by tier (PromptManager UI). Map each tier name
 // to the provider's per-tier model field; an unset tier falls through to
@@ -44,6 +45,36 @@ const providerFallbackModel = (provider) =>
   provider.defaultModel
   || (Array.isArray(provider.models) && provider.models[0])
   || null;
+
+// Per-call timeout bounds come from the canonical aiToolkit/constants.js
+// (imported at the top of the file). The runner, the route validator, and
+// the toolkit's own provider/run validation all reject the same shapes.
+// Internal callers (extractors, pipeline stages) hit the runner directly,
+// so it must enforce the same bounds as the HTTP boundary or a caller
+// could slip through a value the schema would reject.
+
+// Normalize a stage- or caller-supplied timeout into a positive integer
+// milliseconds value (or `undefined` to mean "fall through to provider
+// default"). Reject NaN, non-integer, exponent/hex string forms, and
+// anything outside [STAGE_TIMEOUT_MIN_MS, STAGE_TIMEOUT_MAX_MS] — matches
+// parseTimeoutMs on the client and the route validator's preprocess. The
+// digit-only string gate is critical: `Number('1e3')` is 1000 and
+// `Number.isInteger(1000)` is true, so without the gate an internal caller
+// passing `'1e3'` would be silently accepted here while the validator
+// rejects the same shape.
+function normalizeTimeout(raw) {
+  if (raw == null) return undefined;
+  let n;
+  if (typeof raw === 'number') {
+    n = raw;
+  } else if (typeof raw === 'string' && /^\d+$/.test(raw.trim())) {
+    n = Number(raw.trim());
+  } else {
+    return undefined;
+  }
+  if (!Number.isInteger(n) || n < STAGE_TIMEOUT_MIN_MS || n > STAGE_TIMEOUT_MAX_MS) return undefined;
+  return n;
+}
 
 export function resolveModel(provider, modelHint) {
   if (!modelHint) return providerFallbackModel(provider);
@@ -175,6 +206,7 @@ export function extractJson(text, { promptToStrip } = {}) {
  * Options:
  *   - providerOverride: explicit provider id, beats stage.provider
  *   - modelOverride: explicit model id, beats stage.model
+ *   - timeoutOverride: explicit ms timeout, beats stage.timeout and the provider default
  *   - returnsJson: parse `content` via `extractJson` before returning
  *   - source: free-form tag persisted on the run record (e.g. 'pipeline-text-stage',
  *     'writers-room-evaluate') so /runs is filterable
@@ -189,20 +221,67 @@ export async function runStagedLLM(stageName, variables, options = {}) {
   // args-pinned model id so the run record + log line reflect what
   // truly executes (rather than guessing from defaultModel, which can
   // diverge from the args-baked value).
-  const effectiveModel = resolveEffectiveModel(provider, resolvedModel);
+  let effectiveProvider = provider;
+  let effectiveModel = resolveEffectiveModel(effectiveProvider, resolvedModel);
 
-  const { runId } = await createRun({
+  // Per-stage timeout override; timeoutOverride from the caller beats
+  // stage.timeout, which beats the provider default. `normalizeTimeout`
+  // coerces via `Number(...)` (so legacy stringified values from
+  // pre-validation installs still resolve), rejects non-finite or ≤0
+  // (so a stray "0" can't silently instant-cancel), and caps at
+  // STAGE_TIMEOUT_MAX_MS — applied to BOTH stage.timeout and the caller
+  // override, since `runPromptThroughProvider`/`executeCliRun` treat `0`
+  // as "no timeout" and would happily run unbounded if we forwarded a
+  // garbage override.
+  const stageTimeout = normalizeTimeout(stage?.timeout);
+  const overrideTimeout = normalizeTimeout(options.timeoutOverride);
+  const effectiveTimeout = overrideTimeout ?? stageTimeout;
+
+  // createRun may pick a fallback provider when the requested one is marked
+  // unavailable by providerStatusService. Capture the full result and
+  // reconcile, mirroring the promptRunner.js#createRun caller-runId path —
+  // otherwise execution would proceed against the original provider while
+  // /runs metadata claims the fallback ran. Pass `timeout` with a fallback
+  // to `provider.timeout` so the run record's persisted timeout reflects
+  // what executeXxxRun actually enforces (the runner falls back to
+  // `effectiveProvider.timeout` when no override is set — mirror that here
+  // so the recorded value isn't a misleading `undefined`).
+  const runResult = await createRun({
     providerId: provider.id,
     model: effectiveModel,
     prompt,
     source: options.source || 'staged-llm',
+    // createRun.timeout is returned but not persisted into metadata.json
+    // by the toolkit (only providerId/model/source/etc. are written at
+    // creation time). We always patch below to record the effective
+    // timeout so /runs can show what executeXxxRun actually enforced.
+    timeout: effectiveTimeout ?? provider.timeout ?? DEFAULT_TIMEOUT_MS,
   });
-  console.log(`📝 stage: ${provider.id} / ${effectiveModel || '(default)'} / ${stageName} → ${runId.slice(0, 8)}`);
+  const { runId } = runResult;
+  const fellBack = runResult.provider && runResult.provider.id !== provider.id;
+  if (fellBack) {
+    effectiveProvider = runResult.provider;
+    effectiveModel = resolveEffectiveModel(effectiveProvider, resolvedModel);
+  }
+  // Always patch metadata with the effective timeout (the toolkit doesn't
+  // persist `timeout` in its initial metadata.json write). On fallback we
+  // also patch provider id/name/model so /runs attribution matches the
+  // provider that actually ran. Best-effort: attribution, not load-bearing.
+  const recordedTimeout = effectiveTimeout ?? effectiveProvider.timeout ?? DEFAULT_TIMEOUT_MS;
+  const metadataPatch = { timeout: recordedTimeout };
+  if (fellBack) {
+    metadataPatch.model = effectiveModel;
+    metadataPatch.providerId = effectiveProvider.id;
+    metadataPatch.providerName = effectiveProvider.name;
+  }
+  patchRunMetadata(runId, metadataPatch).catch(() => { /* best-effort */ });
+  console.log(`📝 stage: ${effectiveProvider.id} / ${effectiveModel || '(default)'} / ${stageName} → ${runId.slice(0, 8)}`);
 
   // Stage runs pre-create the run record (so the runId can be logged BEFORE
   // the LLM call starts), then thread that id through the shared runner.
   const { text } = await runPromptThroughProvider({
-    provider, model: effectiveModel, prompt, source: options.source || 'staged-llm', runId,
+    provider: effectiveProvider, model: effectiveModel, prompt, source: options.source || 'staged-llm', runId,
+    timeout: effectiveTimeout,
   });
   // Codex CLI dumps the full transcript (banner + metadata + echoed prompt +
   // `codex\n<reply>` + token-stats footer). Carve out the assistant reply
@@ -210,5 +289,5 @@ export async function runStagedLLM(stageName, variables, options = {}) {
   // providers — returns input unchanged when the banner isn't present.
   const cleaned = extractCodexAssistant(text);
   const content = options.returnsJson ? extractJson(cleaned, { promptToStrip: prompt }) : cleaned;
-  return { content, model: effectiveModel || null, providerId: provider.id, runId };
+  return { content, model: effectiveModel || null, providerId: effectiveProvider.id, runId };
 }

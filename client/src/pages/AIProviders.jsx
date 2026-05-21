@@ -3,6 +3,13 @@ import toast from '../components/ui/Toast';
 import * as api from '../services/api';
 import socket from '../services/socket';
 import { filterSelectableModels, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider } from '../utils/providers';
+import {
+  formatDurationMs,
+  parseTimeoutMs,
+  TIMEOUT_INPUT_MIN_MS,
+  TIMEOUT_INPUT_MAX_MS,
+  TIMEOUT_INPUT_STEP_MS,
+} from '../utils/formatters';
 
 export default function AIProviders() {
   const [providers, setProviders] = useState([]);
@@ -599,12 +606,29 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [] }) {
 
     const tuiPromptDelay = parseInt(formData.tuiPromptDelayMs, 10);
     const tuiIdleTimeout = parseInt(formData.tuiIdleTimeoutMs, 10);
+    // Three cases for the timeout field on submit:
+    //   1. valid integer within bounds → send the parsed number
+    //   2. blank/whitespace → omit so the server keeps the current value
+    //      (Number('') is 0, which would 400 against the min-1000 rule)
+    //   3. non-empty but invalid (e.g. '1e3', '500', 'abc') → send the
+    //      RAW STRING. Number() would accept '1e3' as 1000, silently
+    //      saving an exponent form the client/runner reject as invalid;
+    //      the server's digit-only preprocess will leave the string
+    //      alone and z.number() will produce a clear validation error.
+    const parsedTimeout = parseTimeoutMs(formData.timeout);
+    const timeoutInput = String(formData.timeout ?? '').trim();
     const data = {
       ...formData,
       args: formData.args ? formData.args.split(' ').filter(Boolean) : [],
       headlessArgs: formData.headlessArgs ? formData.headlessArgs.split(' ').filter(Boolean) : [],
-      timeout: parseInt(formData.timeout, 10)
     };
+    if (parsedTimeout != null) {
+      data.timeout = parsedTimeout;
+    } else if (timeoutInput === '') {
+      delete data.timeout;
+    } else {
+      data.timeout = formData.timeout;
+    }
     if (formData.type === 'tui') {
       if (Number.isFinite(tuiPromptDelay)) data.tuiPromptDelayMs = tuiPromptDelay;
       else delete data.tuiPromptDelayMs;
@@ -907,10 +931,26 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [] }) {
             <label className="block text-sm text-gray-400 mb-1">Timeout (ms)</label>
             <input
               type="number"
+              inputMode="numeric"
+              min={TIMEOUT_INPUT_MIN_MS}
+              max={TIMEOUT_INPUT_MAX_MS}
+              step={TIMEOUT_INPUT_STEP_MS}
               value={formData.timeout}
               onChange={(e) => setFormData(prev => ({ ...prev, timeout: e.target.value }))}
               className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-hidden"
             />
+            <p className="text-xs text-gray-500 mt-1">
+              {(() => {
+                // Same parser the submit path uses, so the displayed
+                // duration always matches what would be saved. parseTimeoutMs
+                // returns null for out-of-range/invalid → fall back to the
+                // generic cap message.
+                const ms = parseTimeoutMs(formData.timeout);
+                return ms != null
+                  ? `≈ ${formatDurationMs(ms)} per run`
+                  : `Per-call cap. Server max: ${TIMEOUT_INPUT_MAX_MS.toLocaleString()} ms (${formatDurationMs(TIMEOUT_INPUT_MAX_MS)}).`;
+              })()}
+            </p>
           </div>
 
           {/* Fallback Provider */}

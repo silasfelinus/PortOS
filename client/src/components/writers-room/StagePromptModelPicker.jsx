@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import toast from '../ui/Toast';
 import ProviderModelSelector from '../ProviderModelSelector';
-import { filterSelectableModels } from '../../utils/providers';
+import useFieldDraft from '../../hooks/useFieldDraft';
+import { filterSelectableModels, getProviderTimeout } from '../../utils/providers';
+import {
+  formatDurationMs,
+  parseTimeoutMs,
+  TIMEOUT_INPUT_MIN_MS,
+  TIMEOUT_INPUT_MAX_MS,
+  TIMEOUT_INPUT_STEP_MS,
+} from '../../utils/formatters';
 
 /**
  * Inline picker for a prompt stage's provider+model. Mirrors the Tier/Specific
@@ -12,6 +20,7 @@ import { filterSelectableModels } from '../../utils/providers';
 export default function StagePromptModelPicker({ stageName, label = 'Stage LLM', icon = null, hint = null }) {
   const [stage, setStage] = useState(null);
   const [providers, setProviders] = useState([]);
+  const [activeProviderId, setActiveProviderId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
@@ -22,8 +31,16 @@ export default function StagePromptModelPicker({ stageName, label = 'Stage LLM',
       fetch('/api/providers').then((r) => (r.ok ? r.json() : null)).catch(() => null),
     ]).then(([s, p]) => {
       if (cancelled) return;
-      setStage(s || null);
+      // Normalize stage.timeout through parseTimeoutMs so a legacy on-disk
+      // garbage value (e.g. `'abc'` from a pre-validation install) doesn't
+      // flow into the number input (where it would render blank / log
+      // controlled-component warnings) and doesn't poison the hint logic.
+      // Accepts integers AND digit-only strings within range; everything
+      // else becomes `null` (no override).
+      const normalizedStage = s ? { ...s, timeout: parseTimeoutMs(s.timeout) } : null;
+      setStage(normalizedStage);
       setProviders((p?.providers || []).filter((x) => x.enabled));
+      setActiveProviderId(p?.activeProvider || null);
       setLoaded(true);
     });
     return () => { cancelled = true; };
@@ -38,13 +55,17 @@ export default function StagePromptModelPicker({ stageName, label = 'Stage LLM',
     const prevStage = stage;
     setSaving(true);
     setStage((prev) => ({ ...prev, ...next }));
+    // Only include fields the caller actually wants to change. provider/model
+    // are sent together because the picker drives them as one switch;
+    // timeout is independent.
+    const body = {};
+    if ('provider' in next) body.provider = next.provider ?? null;
+    if ('model' in next) body.model = next.model;
+    if ('timeout' in next) body.timeout = next.timeout;
     const res = await fetch(`/api/prompts/${encodeURIComponent(stageName)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        provider: next.provider ?? null,
-        model: next.model,
-      }),
+      body: JSON.stringify(body),
     });
     setSaving(false);
     if (!res.ok) {
@@ -136,7 +157,67 @@ export default function StagePromptModelPicker({ stageName, label = 'Stage LLM',
         />
       )}
 
+      <StageTimeoutInput
+        value={stage.timeout}
+        providerFallback={getProviderTimeout(providers, stage.provider, activeProviderId)}
+        onCommit={(ms) => persist({ timeout: ms })}
+      />
+
       {hint && <div className="text-[10px] text-gray-500">{hint}</div>}
+    </div>
+  );
+}
+
+// Inline numeric input for stage.timeout (ms). Built on `useFieldDraft` so
+// the parent's optimistic state update doesn't race the user's keystrokes —
+// the hook returns the persisted value until the user actually types.
+function StageTimeoutInput({ value, providerFallback, onCommit }) {
+  const { value: draft, onChange, onBlur: hookBlur } = useFieldDraft(value, (raw) => {
+    const ms = parseTimeoutMs(raw);
+    // parseTimeoutMs returns null both for blank input (intentional clear)
+    // and for any non-positive/garbage value. Honor the clear; refuse the
+    // garbage by leaving `value` unchanged — useFieldDraft will snap the
+    // input back to persisted on the next render.
+    if (raw.trim() !== '' && ms == null) return;
+    if (ms !== value) onCommit(ms);
+  });
+
+  // Hint precedence: explicit override > provider fallback > nothing.
+  // Coerce to a finite number before formatting — a legacy on-disk garbage
+  // value (e.g. `timeout: "abc"` from a pre-validation install) reaches us
+  // as a string, and `formatDurationMs(NaN)` renders "NaNh NaNm".
+  const usingDefault = value == null || value <= 0;
+  const candidate = usingDefault ? providerFallback : value;
+  const effectiveMs = Number(candidate);
+  const haveValidEffective = Number.isFinite(effectiveMs) && effectiveMs > 0;
+  let hint;
+  if (!haveValidEffective) {
+    hint = 'No provider default set';
+  } else if (usingDefault) {
+    hint = `≈ ${formatDurationMs(effectiveMs)} · using provider default`;
+  } else {
+    hint = `≈ ${formatDurationMs(effectiveMs)}`;
+  }
+
+  return (
+    <div className="space-y-0.5">
+      <label className="block text-[9px] uppercase tracking-wider text-gray-500">
+        Timeout override (ms)
+      </label>
+      <input
+        type="number"
+        inputMode="numeric"
+        min={TIMEOUT_INPUT_MIN_MS}
+        max={TIMEOUT_INPUT_MAX_MS}
+        step={TIMEOUT_INPUT_STEP_MS}
+        value={draft}
+        onChange={onChange}
+        onBlur={hookBlur}
+        onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+        placeholder={providerFallback != null ? String(providerFallback) : ''}
+        className="w-full bg-port-bg border border-port-border rounded px-2 py-1 text-[11px] text-gray-200"
+      />
+      <div className="text-[10px] text-gray-500">{hint}</div>
     </div>
   );
 }

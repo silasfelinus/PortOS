@@ -5,6 +5,7 @@ import { WORK_KINDS, WORK_STATUSES, ANALYSIS_KINDS } from './writersRoomPresets.
 import { ALL_STYLE_IDS, STYLE_ID } from './writersRoomStylePresets.js';
 import { BIBLE_LIMITS } from './storyBible.js';
 import { ARC_SHAPE_IDS, ARC_ROLES } from './storyArc.js';
+import { MIN_TIMEOUT as STAGE_TIMEOUT_MIN_MS, MAX_TIMEOUT as STAGE_TIMEOUT_MAX_MS } from './aiToolkit/constants.js';
 
 // gpt-image-2 (codex backend) caps at 3840px per edge and 8,294,400 total
 // pixels. Mirror the ceiling for every image-gen route. Local mflux can
@@ -940,6 +941,57 @@ export function validate(schema, data) {
     }))
   };
 }
+
+// =============================================================================
+// PROMPT STAGE CONFIG (server/routes/prompts.js PUT /:stage body)
+// =============================================================================
+
+// Per-call timeout bounds: STAGE_TIMEOUT_MIN_MS / STAGE_TIMEOUT_MAX_MS are
+// imported (aliased) from aiToolkit/constants.js at the top of this file so
+// the route validator, the runner (server/lib/stageRunner.js), and the
+// toolkit's own provider/run validation all share one source of truth. The
+// client mirror in client/src/utils/formatters.js can't import across the
+// server boundary — comments on both sides flag the requirement to keep
+// them in lockstep.
+
+// Accept either a number or a numeric string (UI inputs frequently serialize
+// as strings) and validate the resulting integer. `nullable` lets the client
+// clear the override explicitly with `null`; absence leaves it untouched.
+export const stageConfigUpdateSchema = z.object({
+  name: z.string().optional(),
+  description: z.string().optional(),
+  model: z.string().nullable().optional(),
+  provider: z.string().nullable().optional(),
+  timeout: z.preprocess(
+    // Treat empty string as a "clear override" (null). Coerce digit-only
+    // strings to numbers so form clients that send "900000" still parse —
+    // but reject "1e3" / "1.5" / "0x10" by leaving them as the original
+    // string so the inner `.number()` check fails. The digit-only rule
+    // (and the `.trim()` before it) mirror `parseTimeoutMs` in
+    // client/src/utils/formatters.js and `normalizeTimeout` in
+    // server/lib/stageRunner.js so all three reject the same shapes.
+    (v) => {
+      if (v === '' || v === null) return null;
+      if (v === undefined) return undefined;
+      if (typeof v === 'number') return v;
+      if (typeof v === 'string') {
+        const trimmed = v.trim();
+        if (trimmed === '') return null;
+        if (/^\d+$/.test(trimmed)) return Number(trimmed);
+      }
+      return v;
+    },
+    z.number().int().min(STAGE_TIMEOUT_MIN_MS).max(STAGE_TIMEOUT_MAX_MS).nullable().optional()
+  ),
+  returnsJson: z.boolean().optional(),
+  variables: z.array(z.string()).optional(),
+}).strip();
+// `.strip()` (Zod default) silently drops unknown keys instead of letting
+// them flow into `updateStageConfig`'s `{...existing, ...updatedConfig}`
+// spread. Stripping prevents prototype-pollution shapes (`__proto__`,
+// `constructor`, `prototype`) and config-key squatting from a client that
+// sends an unmodelled field. If a future stage field is added, extend the
+// schema rather than reintroducing `.passthrough()`.
 
 /**
  * Validate data against a Zod schema, throwing on failure.
