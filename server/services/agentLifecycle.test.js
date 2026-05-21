@@ -22,11 +22,13 @@
  *
  * 2. `spawnAgentForTask` error recovery (`spawnAgentForTask — cleanupOnError`
  *    block). Documents which detected-error paths release the guard via
- *    `cleanupOnError`, plus a SKIPPED test that pins the partial-coverage
- *    gap: a throw between `spawningTasks.add(task.id)` (line 134) and the
- *    try/finally (line 536) leaks the guard forever. PLAN.md → Backlog has
- *    a separate item to widen the try/finally; the skip flips green once
- *    that fix lands.
+ *    `cleanupOnError`, plus a set of post-fix tests that simulate uncaught
+ *    throws from buildAgentPrompt / writeFile / createAgentRun /
+ *    registerAgent and assert the widened try/catch/finally releases the
+ *    guard regardless. The earlier partial-coverage gap (throws between
+ *    `spawningTasks.add` and the narrow spawn-only try/finally leaking the
+ *    guard forever) is closed by the outer try wrapping the whole spawn
+ *    path.
  *
  * 3. `handleAgentCompletion` error recovery (`handleAgentCompletion error
  *    recovery` block). The completion function has NO try/catch wrapping
@@ -422,71 +424,188 @@ describe('spawnAgentForTask — cleanupOnError error recovery', () => {
     expect(spawningTasks.has(task.id)).toBe(false);
   });
 
-  // ─── Deferred-fix coverage ──────────────────────────────────────────────
+  // ─── Widened try/catch/finally coverage ─────────────────────────────────
   //
-  // PLAN.md → Backlog has a separate item: "Widen `spawningTasks`
-  // try/finally in `agentLifecycle.js#spawnAgentForTask`". Today's
-  // try/finally only wraps the `spawnViaRunner` / `spawnDirectly` calls
-  // (lines 536–547). The ~400 LOC above (buildAgentPrompt, writeFile,
-  // createAgentRun, registerAgent, etc.) is NOT inside any try/catch. A
-  // throw on any of those paths leaves `spawningTasks` registered FOREVER,
-  // permanently blocking future spawns of that task id.
+  // Pre-fix, `spawnAgentForTask`'s try/finally only wrapped the final
+  // `spawnViaRunner` / `spawnDirectly` calls. The ~400 LOC above
+  // (buildAgentPrompt, writeFile, createAgentRun, registerAgent, etc.) was
+  // not inside any try/catch — an uncaught throw on any of those paths
+  // leaked `spawningTasks` forever, permanently blocking future spawns of
+  // that task id.
   //
-  // The detected-error paths above use `cleanupOnError` and are safe. The
-  // SKIPPED tests below pin the gap: an uncaught throw from one of those
-  // mid-spawn async steps leaks the guard. They flip green when the
-  // backlog widen-try-finally fix lands.
+  // The fix widens the try to wrap from just after `spawningTasks.add` all
+  // the way through the spawn call, with a `catch` arm that invokes
+  // `cleanupOnError` and a `finally` that releases the guard
+  // unconditionally. These tests replicate the post-fix flow with an
+  // injected throw at each of the four documented async steps and assert
+  // the guard is released. They match the inline-replica convention used
+  // throughout this file (see the file header).
 
-  it.skip('TODO(plan.md backlog): a throw from buildAgentPrompt leaves the guard set forever', async () => {
-    // PRE-FIX: throws from lines ~165–525 are NOT in a try/finally, so the
-    // guard leaks. Once the fix widens the try/finally up to the
-    // `spawningTasks.add(task.id)` line, this becomes pass-by-construction.
-    // Production reference: agentLifecycle.js:443 `buildAgentPrompt` call.
-    const task = { id: 'task-prompt-throw' };
-    async function simulateProductionPreFix() {
-      spawningTasks.add(task.id);
-      // The actual production code does not wrap this in a try/catch.
-      // We simulate a throw HERE — outside any guard.
-      throw new Error('prompt build failed (ENOSPC)');
+  async function simulateFixedSpawnPath({ taskId, agentId, throwAt, jobId = null, throwsAfterHandoff = false }) {
+    spawningTasks.add(taskId);
+    const harness = makeCleanupHarness(taskId, agentId);
+    const jobSpawnFailedEmissions = [];
+    let handedOff = false;
+    try {
+      // The injected step models the production flow: when
+      // `throwsAfterHandoff` is set, we flip `handedOff` before throwing
+      // to simulate a spawn-helper rejection (the helper may have already
+      // created a live agent). Otherwise we throw before handoff to model
+      // a pre-spawn setup failure (buildAgentPrompt / writeFile / etc.).
+      if (throwsAfterHandoff) handedOff = true;
+      await throwAt();
+      handedOff = true;  // matches the production `handedOff = true` flip just before the spawn helper call
+      return { result: 'spawned', harness, jobSpawnFailedEmissions };
+    } catch (err) {
+      if (handedOff) {
+        // Spawn-helper rejection — re-throw to mirror production. Finally
+        // still releases the dedup guard; the spawn helper's own
+        // on('error') handler is responsible for lane/execution cleanup.
+        throw err;
+      }
+      harness.cleanupOnError(err.message);
+      // Mirror the production catch arm: when the task was queued by an
+      // autonomous job, re-emit `job:spawn-failed` so cos.js clears its
+      // job-level spawn guard.
+      if (jobId) jobSpawnFailedEmissions.push({ jobId });
+      return { result: null, harness, jobSpawnFailedEmissions };
+    } finally {
+      spawningTasks.delete(taskId);
     }
-    await expect(simulateProductionPreFix()).rejects.toThrow('prompt build failed');
-    // BUG (today): guard leaks. After the backlog fix this becomes false.
-    expect(spawningTasks.has(task.id)).toBe(true);
+  }
+
+  function expectGuardReleased({ result, harness }, message) {
+    expect(result).toBeNull();
+    expect(harness.released).toHaveLength(1);
+    expect(harness.errored[0].message).toBe(message);
+    expect(harness.completed[0].success).toBe(false);
+  }
+
+  it('releases the dedup guard when buildAgentPrompt throws', async () => {
+    // Production reference: `buildAgentPrompt(task, ...)` call.
+    const msg = 'prompt build failed (ENOSPC)';
+    const outcome = await simulateFixedSpawnPath({
+      taskId: 'task-prompt-throw',
+      agentId: 'agent-prompt',
+      throwAt: async () => { throw new Error(msg); },
+    });
+    expect(spawningTasks.has('task-prompt-throw')).toBe(false);
+    expectGuardReleased(outcome, msg);
   });
 
-  it.skip('TODO(plan.md backlog): a throw from writeFile(prompt) leaves the guard set forever', async () => {
-    // Production reference: agentLifecycle.js:452 `writeFile(join(agentDir, 'prompt.txt'), prompt)`.
-    // Same shape as the buildAgentPrompt skip — separate test so the
-    // failure surface is easier to read after the fix lands.
-    const task = { id: 'task-writefile-throw' };
-    async function simulateProductionPreFix() {
-      spawningTasks.add(task.id);
-      throw new Error('writeFile failed (EACCES)');
-    }
-    await expect(simulateProductionPreFix()).rejects.toThrow();
-    expect(spawningTasks.has(task.id)).toBe(true);
+  it('releases the dedup guard when writeFile(prompt) throws', async () => {
+    // Production reference: `writeFile(join(agentDir, 'prompt.txt'), prompt)`.
+    const msg = 'writeFile failed (EACCES)';
+    const outcome = await simulateFixedSpawnPath({
+      taskId: 'task-writefile-throw',
+      agentId: 'agent-writefile',
+      throwAt: async () => { throw new Error(msg); },
+    });
+    expect(spawningTasks.has('task-writefile-throw')).toBe(false);
+    expectGuardReleased(outcome, msg);
   });
 
-  it.skip('TODO(plan.md backlog): a throw from createAgentRun leaves the guard set forever', async () => {
-    // Production reference: agentLifecycle.js:455 `createAgentRun(agentId, ...)`.
-    const task = { id: 'task-runs-throw' };
-    async function simulateProductionPreFix() {
-      spawningTasks.add(task.id);
-      throw new Error('createAgentRun failed (DB write)');
-    }
-    await expect(simulateProductionPreFix()).rejects.toThrow();
-    expect(spawningTasks.has(task.id)).toBe(true);
+  it('releases the dedup guard when createAgentRun throws', async () => {
+    // Production reference: `createAgentRun(agentId, task, ...)`.
+    const msg = 'createAgentRun failed (DB write)';
+    const outcome = await simulateFixedSpawnPath({
+      taskId: 'task-runs-throw',
+      agentId: 'agent-runs',
+      throwAt: async () => { throw new Error(msg); },
+    });
+    expect(spawningTasks.has('task-runs-throw')).toBe(false);
+    expectGuardReleased(outcome, msg);
   });
 
-  it.skip('TODO(plan.md backlog): a throw from registerAgent leaves the guard set forever', async () => {
-    // Production reference: agentLifecycle.js:458 `registerAgent(agentId, task.id, {...})`.
-    const task = { id: 'task-register-throw' };
-    async function simulateProductionPreFix() {
-      spawningTasks.add(task.id);
-      throw new Error('registerAgent failed (state mutex lost)');
+  it('releases the dedup guard when registerAgent throws', async () => {
+    // Production reference: `registerAgent(agentId, task.id, {...})`.
+    const msg = 'registerAgent failed (state mutex lost)';
+    const outcome = await simulateFixedSpawnPath({
+      taskId: 'task-register-throw',
+      agentId: 'agent-register',
+      throwAt: async () => { throw new Error(msg); },
+    });
+    expect(spawningTasks.has('task-register-throw')).toBe(false);
+    expectGuardReleased(outcome, msg);
+  });
+
+  it('emits job:spawn-failed when an autonomous-job task throws mid-setup', async () => {
+    // Pre-widening, the throw propagated to subAgentSpawner's `task:ready`
+    // catch (subAgentSpawner.js:158-168) which emitted `job:spawn-failed`
+    // so cos.js could clear `spawningJobIds` and re-register the cron
+    // schedule. The widened catch consumes the throw locally — without
+    // re-emitting that event here, the job-level guard would stick until
+    // its 5-minute safety timeout.
+    const outcome = await simulateFixedSpawnPath({
+      taskId: 'task-job-throw',
+      agentId: 'agent-job',
+      jobId: 'job-cron-42',
+      throwAt: async () => { throw new Error('writeFile failed (EACCES)'); },
+    });
+    expect(outcome.result).toBeNull();
+    expect(outcome.jobSpawnFailedEmissions).toEqual([{ jobId: 'job-cron-42' }]);
+  });
+
+  it('does not emit job:spawn-failed for non-autonomous-job tasks', async () => {
+    const outcome = await simulateFixedSpawnPath({
+      taskId: 'task-user-throw',
+      agentId: 'agent-user',
+      throwAt: async () => { throw new Error('prompt build failed'); },
+    });
+    expect(outcome.result).toBeNull();
+    expect(outcome.jobSpawnFailedEmissions).toEqual([]);
+  });
+
+  it('re-throws when a spawn helper rejects after handoff (live agent may exist)', async () => {
+    // Pre-fix: a spawn helper's rejection propagated to subAgentSpawner's
+    // task:ready catch, which logged + (if jobId) emitted job:spawn-failed.
+    // The widened structure preserves this — once `handedOff` flips true,
+    // the catch arm re-throws so the helper's own on('error') handler owns
+    // lane/execution cleanup. The dedup guard is still released in finally.
+    await expect(simulateFixedSpawnPath({
+      taskId: 'task-handoff-throw',
+      agentId: 'agent-handoff',
+      jobId: 'job-cron-99',
+      throwsAfterHandoff: true,
+      throwAt: async () => { throw new Error('runner rejected spawn'); },
+    })).rejects.toThrow('runner rejected spawn');
+    // Critically, after the re-throw, the dedup guard must still be cleared.
+    expect(spawningTasks.has('task-handoff-throw')).toBe(false);
+  });
+
+  // Source-level assertions: the catch arm distinguishes the two failure
+  // modes via the `handedOff` flag, calls cleanupOnError + emits
+  // job:spawn-failed on the pre-spawn branch, and rethrows on the
+  // post-handoff branch. Any future refactor that drops either branch
+  // breaks loudly here.
+  it('source: spawnAgentForTask uses handedOff flag to distinguish pre-spawn vs post-handoff failures', () => {
+    const fnStart = AGENT_LIFECYCLE_SRC.indexOf('export async function spawnAgentForTask');
+    const fnBody = AGENT_LIFECYCLE_SRC.slice(fnStart, fnStart + 60_000);
+    // The flag is declared with `let` so we can mutate it inside the try.
+    expect(fnBody).toMatch(/let\s+handedOff\s*=\s*false\s*;/);
+    // The catch arm gates on the flag and rethrows for handoff failures.
+    expect(fnBody).toMatch(/if\s*\(\s*handedOff\s*\)\s*\{[\s\S]{0,800}?throw\s+err\s*;/);
+    // Pre-spawn branch (the else case) still calls cleanupOnError and
+    // re-emits job:spawn-failed for autonomous jobs.
+    expect(fnBody).toMatch(/cleanupOnError\(err\.message\)/);
+    expect(fnBody).toMatch(/job:spawn-failed/);
+    expect(fnBody).toMatch(/task\.metadata\??\.jobId/);
+  });
+
+  // Source-level assertion: `handedOff = true` must be set BEFORE the
+  // first spawn helper invocation (spawnTuiAgent / spawnViaRunner /
+  // spawnDirectly). Setting it after would mean a synchronous throw from
+  // building the helper's argument object falls into the pre-spawn cleanup
+  // branch, which is wrong if the helper has already begun work.
+  it('source: handedOff = true precedes the first spawn helper invocation', () => {
+    const fnStart = AGENT_LIFECYCLE_SRC.indexOf('export async function spawnAgentForTask');
+    const fnBody = AGENT_LIFECYCLE_SRC.slice(fnStart, fnStart + 60_000);
+    const flipIdx = fnBody.indexOf('handedOff = true');
+    expect(flipIdx, '`handedOff = true` must exist inside spawnAgentForTask').toBeGreaterThan(-1);
+    for (const helper of ['spawnTuiAgent(', 'spawnViaRunner(', 'spawnDirectly(']) {
+      const idx = fnBody.indexOf(helper);
+      expect(idx, `${helper} must appear AFTER \`handedOff = true\``).toBeGreaterThan(flipIdx);
     }
-    await expect(simulateProductionPreFix()).rejects.toThrow();
-    expect(spawningTasks.has(task.id)).toBe(true);
   });
 });
 
