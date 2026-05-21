@@ -30,6 +30,7 @@ export * from './genUtils.js';
 export * from './joinInfluenceList.js';
 export * from './loopbackHost.js';
 export * from './mediaNavigation.js';
+export * from './sameJsonShape.js';
 export * from './unsorted.js';
 export * from './upsertByIdPrepend.js';
 export * from './voiceLabel.js';

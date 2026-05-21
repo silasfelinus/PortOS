@@ -44,36 +44,25 @@ export default function EpisodeVideoStage({ issue, series, onStageUpdate }) {
   // for an unstarted episodeVideo stage.
   const [aspectRatio, setAspectRatio] = useState(stage.aspectRatio || '16:9');
   const [quality, setQuality] = useState(stage.quality || 'standard');
-  // Tracked separately so the hook's `enabled` prop can reference the latest
-  // status without a TDZ on rawCdProject. Updated via an effect below.
-  const [isTerminal, setIsTerminal] = useState(false);
 
-  // Poll while the project could still mutate. Pauses on hidden tab via
-  // useAutoRefetch's visibility short-circuit and stops once status is terminal.
-  // The compare option skips re-renders when the monotonic snapshot is unchanged.
+  // Poll while a project id is bound. Pauses on hidden tab via the hook's
+  // visibility short-circuit; identical snapshots dedup via the compare option
+  // so terminal projects no longer trigger re-renders even though the poll
+  // continues. Single-user app on Tailscale — the small bandwidth cost of
+  // polling a complete project until the user navigates away is negligible.
   const { data: rawCdProject, refetch: refetchCdProject } = useAutoRefetch(
     () => getCreativeDirectorProject(cdProjectId, { slim: true }).catch((err) => {
       console.log(`pipeline:episode poll error ${err.message}`);
       return null;
     }),
     POLL_INTERVAL_MS,
-    {
-      enabled: !!cdProjectId && !isTerminal,
-      compare: sameProjectSnapshot,
-    },
+    { enabled: !!cdProjectId, compare: sameProjectSnapshot },
   );
 
   // After a restart the hook still holds the previous project's snapshot until
   // the next fetch lands; filter by id so the stale view doesn't paint into the
   // new context.
   const cdProject = rawCdProject?.id === cdProjectId ? rawCdProject : null;
-
-  // Mirror the project's terminal status into local state so the hook's
-  // enabled gate stops polling once the project is complete/failed, and
-  // resumes when a restart lands a fresh non-terminal project.
-  useEffect(() => {
-    setIsTerminal(isTerminalProjectStatus(cdProject?.status));
-  }, [cdProject?.status]);
 
   // Fire an immediate fetch on cdProjectId change so a project swap doesn't
   // wait a full poll interval before the new project appears.

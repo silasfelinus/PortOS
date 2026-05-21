@@ -5,6 +5,7 @@ import {Brain as BrainIcon} from 'lucide-react';
 import BrailleSpinner from '../components/BrailleSpinner';
 import TabPills from '../components/ui/TabPills';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
+import { sameJsonShape } from '../lib/sameJsonShape';
 
 import { TABS } from '../components/brain/constants';
 import { timeAgo } from '../utils/formatters';
@@ -21,14 +22,6 @@ import DailyLogTab from '../components/brain/tabs/DailyLogTab';
 import ConfigTab from '../components/brain/tabs/ConfigTab';
 import ImportTab from '../components/brain/tabs/ImportTab';
 
-// Brain summary + settings are stable JSON snapshots: counts, flags, and
-// timestamps. JSON.stringify is fine here because the payload is small and the
-// server returns keys in a deterministic order; skipping setData when the
-// stringified shape is unchanged avoids the 30s re-render churn that ripples
-// into the header + active tab.
-const sameBrainPayload = (prev, next) =>
-  JSON.stringify(prev) === JSON.stringify(next);
-
 export default function Brain() {
   const { tab } = useParams();
   const navigate = useNavigate();
@@ -43,7 +36,7 @@ export default function Brain() {
   }, []);
 
   const { data, loading, refetch } = useAutoRefetch(fetchData, 30_000, {
-    compare: sameBrainPayload,
+    compare: sameJsonShape,
   });
   const summary = data?.summary ?? null;
   const settings = data?.settings ?? null;

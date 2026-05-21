@@ -5,14 +5,9 @@ import { Heart } from 'lucide-react';
 import BrailleSpinner from '../components/BrailleSpinner';
 import TabPills from '../components/ui/TabPills';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
+import { sameJsonShape } from '../lib/sameJsonShape';
 
 import { TABS, getHealthColor, getHealthLabel } from '../components/digital-twin/constants';
-
-// Digital Twin status + settings are small stable snapshots (counts, scores,
-// last-test metadata). Identical 30s polls dominate; JSON.stringify on the
-// combined payload skips the setData when nothing changed.
-const sameTwinPayload = (prev, next) =>
-  JSON.stringify(prev) === JSON.stringify(next);
 
 import OverviewTab from '../components/digital-twin/tabs/OverviewTab';
 import DocumentsTab from '../components/digital-twin/tabs/DocumentsTab';
@@ -42,7 +37,7 @@ export default function DigitalTwin() {
   }, []);
 
   const { data, loading, refetch } = useAutoRefetch(fetchData, 30_000, {
-    compare: sameTwinPayload,
+    compare: sameJsonShape,
   });
   const status = data?.status ?? null;
   const settings = data?.settings ?? null;
