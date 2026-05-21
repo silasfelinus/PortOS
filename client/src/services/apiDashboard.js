@@ -8,11 +8,17 @@ export const setActiveDashboardLayout = (id) =>
     body: JSON.stringify({ id }),
   });
 
-export const saveDashboardLayout = (id, name, widgets, grid) =>
-  request(`/dashboard/layouts/${encodeURIComponent(id)}`, {
+// `activateWindow` is partial-aware: omit to preserve the existing value,
+// pass `null` to clear, pass `{ start, end }` to set. Mirrors the merge in
+// `server/services/dashboardLayouts.js#saveLayout`.
+export const saveDashboardLayout = (id, { name, widgets, grid, activateWindow }) => {
+  const body = { name, widgets, grid: grid ?? [] };
+  if (activateWindow !== undefined) body.activateWindow = activateWindow;
+  return request(`/dashboard/layouts/${encodeURIComponent(id)}`, {
     method: 'PUT',
-    body: JSON.stringify({ name, widgets, grid: grid ?? [] }),
+    body: JSON.stringify(body),
   });
+};
 
 export const deleteDashboardLayout = (id) =>
   request(`/dashboard/layouts/${encodeURIComponent(id)}`, { method: 'DELETE' });

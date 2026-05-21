@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, useMemo, Suspense } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from 'react';
 import { Link } from 'react-router-dom';
 import BrailleSpinner from '../components/BrailleSpinner';
 import LayoutPicker from '../components/dashboard/LayoutPicker';
 import LayoutEditor from '../components/dashboard/LayoutEditor';
+import WidgetSuggestions from '../components/dashboard/WidgetSuggestions';
 import DashboardGrid, { reconcileGrid, synthesizeGrid } from '../components/dashboard/DashboardGrid.jsx';
 import { WIDGETS_BY_ID, FALLBACK_LAYOUT } from '../components/dashboard/widgetRegistry.jsx';
 import WidgetSkeleton from '../components/dashboard/WidgetSkeleton';
@@ -12,6 +13,7 @@ import { Monitor, Move, Save, X } from 'lucide-react';
 import * as api from '../services/api';
 import socket from '../services/socket';
 import toast from '../components/ui/Toast';
+import { pickActiveLayoutId, recordManualLayoutPick } from '../utils/timeWindow.js';
 
 export default function Dashboard() {
   const [apps, setApps] = useState([]);
@@ -53,6 +55,9 @@ export default function Dashboard() {
     return () => socket.off('apps:changed', handleAppsChanged);
   }, [fetchData]);
 
+  // One-shot per mount — guards against re-evaluation stomping manual picks.
+  const autoSwitchedRef = useRef(false);
+
   useEffect(() => {
     // `cancelled` guard prevents setState-on-unmounted warnings (and
     // accidental state writes) when the user navigates away before the
@@ -63,7 +68,12 @@ export default function Dashboard() {
       .then((data) => {
         if (cancelled) return;
         setLayouts(data.layouts);
-        setActiveLayoutId(data.activeLayoutId);
+        const desiredActiveId = pickActiveLayoutId(data.activeLayoutId, data.layouts, autoSwitchedRef.current);
+        autoSwitchedRef.current = true;
+        setActiveLayoutId(desiredActiveId);
+        if (desiredActiveId !== data.activeLayoutId) {
+          api.setActiveDashboardLayout(desiredActiveId).catch(() => {});
+        }
         if (data.limits) setLayoutLimits(data.limits);
         setLayoutsError(null);
       })
@@ -160,7 +170,7 @@ export default function Dashboard() {
     if (!activeLayout || !draftGrid) return;
     setSavingGrid(true);
     const ok = await api
-      .saveDashboardLayout(activeLayout.id, activeLayout.name, activeLayout.widgets, draftGrid)
+      .saveDashboardLayout(activeLayout.id, { name: activeLayout.name, widgets: activeLayout.widgets, grid: draftGrid })
       .then((result) => { setLayouts(result.layouts); return true; }, () => false);
     setSavingGrid(false);
     if (!ok) return;
@@ -172,6 +182,7 @@ export default function Dashboard() {
   const selectLayout = async (id) => {
     const previousId = activeLayoutId;
     setActiveLayoutId(id);
+    recordManualLayoutPick(id);
     // Revert on failure. request() already surfaces the error via toast,
     // so swallow here to prevent an unhandled rejection from click handlers.
     // Guard the revert with a functional setState — if the user has since
@@ -186,23 +197,23 @@ export default function Dashboard() {
   // don't get wiped when the user toggles a widget in the LayoutEditor.
   // reconcileGrid drops removed widgets and appends any new ones at the
   // bottom, mirroring what the renderer does at view time.
-  const saveLayout = async ({ id, name, widgets }) => {
+  const saveLayout = async ({ id, name, widgets, activateWindow }) => {
     const existing = layouts.find((l) => l.id === id);
     const baseGrid = (existing?.grid && existing.grid.length > 0)
       ? existing.grid
       : synthesizeGrid(existing?.widgets ?? widgets);
     const nextGrid = reconcileGrid(baseGrid, widgets);
-    const result = await api.saveDashboardLayout(id, name, widgets, nextGrid);
+    const result = await api.saveDashboardLayout(id, { name, widgets, grid: nextGrid, activateWindow });
     setLayouts(result.layouts);
   };
 
-  const duplicateLayout = async ({ id, name, widgets }) => {
+  const duplicateLayout = async ({ id, name, widgets, activateWindow }) => {
     const previousId = activeLayoutId;
     // New layouts inherit the current renderGrid so "Save as new…" from a
     // visually-arranged dashboard captures what the user actually sees.
     const sourceGrid = renderGrid && renderGrid.length > 0 ? renderGrid : synthesizeGrid(widgets);
     const grid = reconcileGrid(sourceGrid, widgets);
-    const result = await api.saveDashboardLayout(id, name, widgets, grid);
+    const result = await api.saveDashboardLayout(id, { name, widgets, grid, activateWindow });
     setLayouts(result.layouts);
     setActiveLayoutId(id);
     // Mirror selectLayout's revert-on-failure so the picker doesn't
@@ -319,6 +330,19 @@ export default function Dashboard() {
         <div className="bg-port-card border border-port-border rounded-xl p-8 text-center text-gray-500">
           This layout has no widgets. Click the layout picker and choose &ldquo;Edit layouts…&rdquo; to add some.
         </div>
+      )}
+
+      {!editingGrid && activeLayout && activeLayout.id !== FALLBACK_LAYOUT.id && (
+        <WidgetSuggestions
+          presentWidgetIds={activeLayout.widgets}
+          dashboardState={dashboardState}
+          onAdd={(widgetId) => saveLayout({
+            id: activeLayout.id,
+            name: activeLayout.name,
+            widgets: [...activeLayout.widgets, widgetId],
+            activateWindow: activeLayout.activateWindow ?? null,
+          })}
+        />
       )}
 
       {visibleWidgets.length > 0 && (

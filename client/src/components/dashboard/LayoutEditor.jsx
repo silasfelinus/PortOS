@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { X, ArrowUp, ArrowDown, Trash2, Plus, Save } from 'lucide-react';
+import { X, ArrowUp, ArrowDown, Trash2, Plus, Save, Clock } from 'lucide-react';
 import { useScrollLock } from '../../hooks/useScrollLock';
 import { WIDGETS, WIDGETS_BY_ID } from './widgetRegistry.jsx';
+import { isValidTimeString, MORNING_DEFAULT_WINDOW } from '../../utils/timeWindow.js';
 import toast from '../ui/Toast';
 import Modal from '../ui/Modal';
 
@@ -23,6 +24,7 @@ export default function LayoutEditor({ layouts, activeLayoutId, limits, onClose,
   const editing = layouts.find((l) => l.id === editingId);
   const [widgets, setWidgets] = useState(editing?.widgets ?? []);
   const [name, setName] = useState(editing?.name ?? '');
+  const [activateWindow, setActivateWindow] = useState(editing?.activateWindow ?? null);
   const [dirty, setDirty] = useState(false);
   const [mode, setMode] = useState('idle'); // 'idle' | 'duplicate' | 'delete' | 'switch'
   const [dupName, setDupName] = useState('');
@@ -47,6 +49,7 @@ export default function LayoutEditor({ layouts, activeLayoutId, limits, onClose,
     if (dirty) return;
     setWidgets(cur.widgets);
     setName(cur.name);
+    setActivateWindow(cur.activateWindow ?? null);
     setMode('idle');
     setDupName('');
     setPendingSwitchId(null);
@@ -127,11 +130,26 @@ export default function LayoutEditor({ layouts, activeLayoutId, limits, onClose,
   const save = async () => {
     const trimmed = name.trim();
     if (!trimmed) { toast.error('Name required'); return; }
-    const ok = await onSave({ id: editingId, name: trimmed, widgets }).then(() => true, () => false);
+    if (activateWindow && !(isValidTimeString(activateWindow.start) && isValidTimeString(activateWindow.end) && activateWindow.start !== activateWindow.end)) {
+      toast.error('Time window: start and end must be HH:MM and differ');
+      return;
+    }
+    const ok = await onSave({ id: editingId, name: trimmed, widgets, activateWindow }).then(() => true, () => false);
     if (!ok) return;
     setDirty(false);
     toast.success('Layout saved');
   };
+
+  const updateWindowField = (field, value) => {
+    setActivateWindow((prev) => {
+      const next = { ...(prev ?? { start: '', end: '' }), [field]: value };
+      if (!next.start && !next.end) return null;
+      return next;
+    });
+    setDirty(true);
+  };
+  const clearWindow = () => { setActivateWindow(null); setDirty(true); };
+  const setMorningDefault = () => { setActivateWindow({ ...MORNING_DEFAULT_WINDOW }); setDirty(true); };
 
   const commitDuplicate = async () => {
     const trimmed = dupName.trim();
@@ -152,7 +170,8 @@ export default function LayoutEditor({ layouts, activeLayoutId, limits, onClose,
     let n = 1;
     let id = fitId(n);
     while (existingIds.has(id)) { n += 1; id = fitId(n); }
-    const ok = await onDuplicate({ id, name: trimmed, widgets }).then(() => true, () => false);
+    // Duplicate inherits the source's activateWindow — easier to clear post-duplicate than to re-enter.
+    const ok = await onDuplicate({ id, name: trimmed, widgets, activateWindow }).then(() => true, () => false);
     if (!ok) return;
     // The duplicate IS saved — clear dirty so the rehydrate effect runs
     // when the new layout lands in `layouts` props; otherwise the editor
@@ -216,14 +235,64 @@ export default function LayoutEditor({ layouts, activeLayoutId, limits, onClose,
 
           <div className="sm:col-span-2 p-4 overflow-y-auto space-y-4">
             <div>
-              <label className="block text-xs text-gray-400 mb-1">Name</label>
+              <label htmlFor="layout-editor-name" className="block text-xs text-gray-400 mb-1">Name</label>
               <input
+                id="layout-editor-name"
                 type="text"
                 value={name}
                 onChange={(e) => { setName(e.target.value); setDirty(true); }}
                 maxLength={nameMax}
                 className="w-full bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:border-port-accent outline-hidden"
               />
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label htmlFor="layout-editor-window-start" className="text-xs text-gray-400 flex items-center gap-1.5">
+                  <Clock size={12} aria-hidden="true" />
+                  Auto-activate window
+                </label>
+                {!activateWindow && (
+                  <button
+                    type="button"
+                    onClick={setMorningDefault}
+                    className="text-xs text-port-accent hover:text-port-accent/80"
+                  >
+                    Set as morning default
+                  </button>
+                )}
+                {activateWindow && (
+                  <button
+                    type="button"
+                    onClick={clearWindow}
+                    className="text-xs text-gray-500 hover:text-port-error"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              {activateWindow ? (
+                <div className="flex items-center gap-2 text-sm">
+                  <input
+                    id="layout-editor-window-start"
+                    type="time"
+                    value={activateWindow.start}
+                    onChange={(e) => updateWindowField('start', e.target.value)}
+                    className="bg-port-bg border border-port-border rounded-lg px-2 py-1.5 text-white focus:border-port-accent outline-hidden"
+                  />
+                  <span className="text-gray-500">to</span>
+                  <input
+                    id="layout-editor-window-end"
+                    type="time"
+                    value={activateWindow.end}
+                    onChange={(e) => updateWindowField('end', e.target.value)}
+                    className="bg-port-bg border border-port-border rounded-lg px-2 py-1.5 text-white focus:border-port-accent outline-hidden"
+                  />
+                  <span className="text-xs text-gray-500 ml-2">Activates on dashboard load if now is in this window.</span>
+                </div>
+              ) : (
+                <p className="text-xs text-gray-500">No auto-activation. Set a window to make this layout the default during specific hours.</p>
+              )}
             </div>
 
             <div>

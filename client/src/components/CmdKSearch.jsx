@@ -8,6 +8,7 @@ import { search, getPaletteManifest, runPaletteAction, getDashboardLayouts, setA
 import toast from './ui/Toast';
 import { modKey } from '../utils/platform';
 import { DASHBOARD_LAYOUT_CHANGED } from '../constants/events.js';
+import { recordManualLayoutPick } from '../utils/timeWindow.js';
 
 const ICON_MAP = { Brain, Cpu, Package, History, HeartPulse };
 
@@ -218,6 +219,9 @@ export default function CmdKSearch() {
       // navigate('/') is a no-op if the user is already there.
       const ok = await setActiveDashboardLayout(item.layoutId).then(() => true, () => false);
       if (!ok) { close(); return; }
+      // Lock in for the day so the next dashboard mount doesn't bump us
+      // back to a time-window layout — palette picks are intentional.
+      recordManualLayoutPick(item.layoutId);
       window.dispatchEvent(new CustomEvent(DASHBOARD_LAYOUT_CHANGED));
       navigate('/');
       toast.success(`Switched to "${item.layoutName}"`);

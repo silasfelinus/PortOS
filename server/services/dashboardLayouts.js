@@ -29,6 +29,49 @@ const makeErr = (message, code) => Object.assign(new Error(message), { code });
 // are designed for a typical desktop viewport (12 cols × ~80px rows): the
 // most useful widgets sit in rows 0–7 (~768px) so they're above the fold
 // without scrolling, and lower-priority widgets stack below.
+
+// Intent-named layouts shipped post-029. Exported so the migration that
+// seeds them into existing installs (scripts/migrations/030-…) imports
+// from this file rather than mirroring the grid by hand — fresh-install
+// and migrated-install layouts can't drift on a future tweak.
+export const INTENT_LAYOUTS = [
+  {
+    id: 'deep-work',
+    name: 'Deep Work',
+    widgets: ['quick-task', 'upcoming-tasks', 'cos', 'decision-log'],
+    grid: [
+      { id: 'quick-task',     x: 0, y: 0,  w: 6, h: 5 },
+      { id: 'upcoming-tasks', x: 6, y: 0,  w: 6, h: 10 },
+      { id: 'cos',            x: 0, y: 5,  w: 6, h: 3 },
+      { id: 'decision-log',   x: 0, y: 8,  w: 6, h: 3 },
+    ],
+  },
+  {
+    id: 'health',
+    name: 'Health',
+    widgets: ['death-clock', 'goal-progress', 'activity-streak', 'quick-brain', 'hourly-activity'],
+    grid: [
+      { id: 'death-clock',     x: 0, y: 0, w: 4, h: 3 },
+      { id: 'goal-progress',   x: 4, y: 0, w: 5, h: 5 },
+      { id: 'activity-streak', x: 9, y: 0, w: 3, h: 3 },
+      { id: 'quick-brain',     x: 0, y: 3, w: 4, h: 2 },
+      { id: 'hourly-activity', x: 0, y: 5, w: 12, h: 4 },
+    ],
+  },
+  {
+    id: 'agent-watch',
+    name: 'Agent Watch',
+    widgets: ['cos', 'proactive-alerts', 'review-hub', 'system-health', 'decision-log'],
+    grid: [
+      { id: 'cos',              x: 0, y: 0, w: 6, h: 5 },
+      { id: 'proactive-alerts', x: 6, y: 0, w: 3, h: 3 },
+      { id: 'review-hub',       x: 9, y: 0, w: 3, h: 3 },
+      { id: 'system-health',    x: 6, y: 3, w: 6, h: 5 },
+      { id: 'decision-log',     x: 0, y: 5, w: 6, h: 3 },
+    ],
+  },
+];
+
 const DEFAULT_LAYOUTS = [
   {
     id: 'default',
@@ -119,6 +162,7 @@ const DEFAULT_LAYOUTS = [
       { id: 'apps',             x: 0, y: 10, w: 12, h: 11 },
     ],
   },
+  ...INTENT_LAYOUTS.map((l) => ({ ...l, builtIn: true })),
 ];
 
 const DEFAULT_STATE = {
@@ -144,6 +188,26 @@ export const WIDGET_ID_MAX_LENGTH = 80;
 export const GRID_COLS = 12;
 export const GRID_ROW_MAX = 200;
 export const GRID_ITEM_H_MAX = 50;
+
+// Time-window auto-activation: HH:MM strings (24h). When a layout carries an
+// activateWindow and the local clock falls inside it, the dashboard
+// auto-selects that layout on a fresh visit (unless the user picked a
+// different one today). Stored as a literal "HH:MM" pair so a hand-edited
+// JSON is human-readable.
+export const TIME_STRING_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+// Sanitize a layout's activateWindow. Returns null for any malformed shape
+// (missing fields, non-string types, off-format strings). A null result
+// strips the field on read so a hand-edited JSON with garbage can't
+// accidentally drive an auto-switch. start === end collapses to null —
+// a zero-length window can never match.
+const sanitizeActivateWindow = (w) => {
+  if (!w || typeof w !== 'object') return null;
+  if (typeof w.start !== 'string' || typeof w.end !== 'string') return null;
+  if (!TIME_STRING_RE.test(w.start) || !TIME_STRING_RE.test(w.end)) return null;
+  if (w.start === w.end) return null;
+  return { start: w.start, end: w.end };
+};
 
 // Clamp a single grid item to valid bounds. Returns null when the entry is
 // unusable (missing id, non-numeric coords, etc.). Numeric fields are
@@ -203,7 +267,8 @@ const sanitizeLayout = (l) => {
       grid.push(item);
     }
   }
-  return { id: l.id, name, builtIn: BUILTIN_IDS.has(l.id), widgets, grid };
+  const activateWindow = sanitizeActivateWindow(l.activateWindow);
+  return { id: l.id, name, builtIn: BUILTIN_IDS.has(l.id), widgets, grid, activateWindow };
 };
 
 // Bundled so clients can enforce the same limits without duplicating magic
@@ -256,9 +321,31 @@ export async function saveLayout(layout) {
   // produce a new `ops` that sanitizeLayout() later treats as built-in while
   // the write-path echoed `builtIn: false` to the client.
   const builtIn = BUILTIN_IDS.has(layout.id);
+  // Partial-aware merge: `activateWindow` is preserved when the caller
+  // doesn't include the key, but cleared when the caller sends `null`. The
+  // existing editor's saveLayout() doesn't send activateWindow, so a vanilla
+  // widget edit must NOT wipe a previously-configured morning window.
+  // Mirrors the "absent vs intentionally empty" convention in CLAUDE.md.
+  const existing = idx >= 0 ? state.layouts[idx] : null;
+  const buildEntry = () => {
+    const entry = {
+      id: layout.id,
+      name: layout.name,
+      builtIn,
+      widgets: layout.widgets,
+      grid: layout.grid ?? [],
+    };
+    // `undefined` (key absent OR set undefined) means "preserve"; `null` is
+    // the explicit clear. Spread alone would clobber existing.activateWindow
+    // with undefined when the caller omits the key.
+    entry.activateWindow = layout.activateWindow !== undefined
+      ? layout.activateWindow
+      : (existing?.activateWindow ?? null);
+    return entry;
+  };
   const merged = idx >= 0
-    ? state.layouts.map((l, i) => i === idx ? { ...l, ...layout, builtIn } : l)
-    : [...state.layouts, { ...layout, builtIn }];
+    ? state.layouts.map((l, i) => i === idx ? buildEntry() : l)
+    : [...state.layouts, buildEntry()];
   const next = { activeLayoutId: state.activeLayoutId, layouts: merged };
   await atomicWrite(STATE_PATH, next);
   return { ...next, limits: LIMITS };
