@@ -10,5 +10,6 @@
 ## Fixed
 
 - **[feeds-ssrf-ipv6-bracket-hostname-gap] RSS feed subscriptions now reliably reject IPv6 loopback, link-local, and unique-local addresses** — previously the loopback `http://[::1]/feed` case was blocked only incidentally by DNS errors; subscribing to feeds at literal private IPv6 addresses is now refused outright, including IPv4-mapped variants like `[::ffff:192.168.1.1]`.
+- **[legacy-series-canon-orphan-universe-leak-on-throw] Retrying a failed peer-share import no longer leaves empty "(auto-migrated)" universes behind** — when a transient disk error interrupted importing a peer's series, each retry used to mint a fresh empty universe; the importer now reuses the same one across retries so the import either lands cleanly or is harmless to retry.
 
 ## Removed
