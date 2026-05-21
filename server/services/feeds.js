@@ -428,7 +428,17 @@ function isPrivateIP(ip) {
   return false;
 }
 
-// Resolve hostname and verify it doesn't point to a private IP
+// DNS error codes that mean "this record type does not exist" — safe to treat
+// as an empty result. Anything else (SERVFAIL, TIMEOUT, CONNREFUSED, …) is a
+// resolver failure that can't prove the family is safe; we must fail closed
+// because Node's fetch performs its own lookup and may still happy-eyeballs to
+// a private address we never got to inspect.
+const BENIGN_DNS_MISS_CODES = new Set(['ENOTFOUND', 'ENODATA', 'NODATA', 'NOTFOUND']);
+
+// Resolve hostname and verify it doesn't point to a private IP. Resolves A
+// and AAAA in parallel so a hostname with a public A but a private AAAA
+// (happy-eyeballs would prefer the AAAA in Node's fetch) is rejected; the
+// parallel AAAA lookup also lets AAAA-only feeds resolve.
 async function isHostSafe(hostname) {
   // URL.hostname preserves the [::1] bracketed form for IPv6 literals; strip
   // brackets so net.isIP recognizes the address before falling through to DNS.
@@ -436,8 +446,16 @@ async function isHostSafe(hostname) {
     ? hostname.slice(1, -1)
     : hostname;
   if (net.isIP(stripped)) return !isPrivateIP(stripped);
-  // DNS resolution: check all resolved addresses
-  const addresses = await dns.resolve4(stripped).catch(() => []);
+  const wrap = (p) => p.then(
+    addrs => ({ ok: true, addrs }),
+    err => BENIGN_DNS_MISS_CODES.has(err?.code) ? { ok: true, addrs: [] } : { ok: false, addrs: [] },
+  );
+  const [v4, v6] = await Promise.all([
+    wrap(dns.resolve4(stripped)),
+    wrap(dns.resolve6(stripped)),
+  ]);
+  if (!v4.ok || !v6.ok) return false;
+  const addresses = [...v4.addrs, ...v6.addrs];
   if (addresses.length === 0) return false;
   return addresses.every(addr => !isPrivateIP(addr));
 }
