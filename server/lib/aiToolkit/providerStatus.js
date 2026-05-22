@@ -163,9 +163,25 @@ export function createProviderStatusService(config = {}) {
       return status.available;
     },
 
-    async markUsageLimit(providerId, errorInfo = {}) {
+    // Generic unavailability marker. Each specific marker below (usage-limit,
+    // rate-limit) is now a thin wrapper that supplies its own cooldown +
+    // message defaults — keeps the persistence path in one place and lets
+    // ad-hoc callers (e.g. promptRunner.js on a failed run) mark a provider
+    // unavailable with a custom reason like 'network-error' without
+    // proliferating wrapper methods for every error category.
+    //
+    // `extras` is an optional object of category-specific fields to splat
+    // onto the persisted record (e.g. `waitTime: '5 hours'` for usage-limit
+    // displays). Splatting in this single write keeps `status:changed`
+    // listeners from observing a half-built record on the first emit.
+    async markUnavailable(providerId, options = {}) {
+      const {
+        reason = 'unknown',
+        message = 'Provider unavailable',
+        waitTimeMs = defaultRateLimitWait,
+        extras = null
+      } = options;
       const now = new Date();
-      const waitTimeMs = parseWaitTime(errorInfo.waitTime) || defaultUsageLimitWait;
       const estimatedRecovery = new Date(now.getTime() + waitTimeMs).toISOString();
 
       const previousStatus = statusCache.providers[providerId];
@@ -173,42 +189,39 @@ export function createProviderStatusService(config = {}) {
 
       statusCache.providers[providerId] = {
         available: false,
-        reason: 'usage-limit',
-        message: errorInfo.message || 'Usage limit exceeded',
-        waitTime: errorInfo.waitTime || null,
+        reason,
+        message,
         unavailableSince: now.toISOString(),
         estimatedRecovery,
         failureCount,
-        lastChecked: now.toISOString()
+        lastChecked: now.toISOString(),
+        ...(extras && typeof extras === 'object' ? extras : {})
       };
 
       await saveStatus(statusCache);
-      emitStatusChange(providerId, statusCache.providers[providerId], 'usage-limit');
+      emitStatusChange(providerId, statusCache.providers[providerId], reason);
 
       return statusCache.providers[providerId];
     },
 
+    async markUsageLimit(providerId, errorInfo = {}) {
+      return this.markUnavailable(providerId, {
+        reason: 'usage-limit',
+        message: errorInfo.message || 'Usage limit exceeded',
+        waitTimeMs: parseWaitTime(errorInfo.waitTime) || defaultUsageLimitWait,
+        // `waitTime` is a usage-limit-only display string ("resets 5pm") —
+        // pass via extras so it's part of the SAME persisted record and
+        // status:changed event, not a follow-up second write.
+        extras: errorInfo.waitTime ? { waitTime: errorInfo.waitTime } : null
+      });
+    },
+
     async markRateLimited(providerId) {
-      const now = new Date();
-      const estimatedRecovery = new Date(now.getTime() + defaultRateLimitWait).toISOString();
-
-      const previousStatus = statusCache.providers[providerId];
-      const failureCount = (previousStatus?.failureCount || 0) + 1;
-
-      statusCache.providers[providerId] = {
-        available: false,
+      return this.markUnavailable(providerId, {
         reason: 'rate-limit',
         message: 'Rate limit exceeded - temporary',
-        unavailableSince: now.toISOString(),
-        estimatedRecovery,
-        failureCount,
-        lastChecked: now.toISOString()
-      };
-
-      await saveStatus(statusCache);
-      emitStatusChange(providerId, statusCache.providers[providerId], 'rate-limit');
-
-      return statusCache.providers[providerId];
+        waitTimeMs: defaultRateLimitWait
+      });
     },
 
     async markAvailable(providerId) {
@@ -235,7 +248,11 @@ export function createProviderStatusService(config = {}) {
       }
 
       const primaryProvider = providers[primaryProviderId];
-      if (primaryProvider?.fallbackProvider) {
+      // Guard against `fallbackProvider === self` — a misconfigured provider
+      // would otherwise loop back to itself and silently retry the same
+      // broken endpoint. The system priority loop already excludes
+      // primaryProviderId; the configured-fallback path needs its own check.
+      if (primaryProvider?.fallbackProvider && primaryProvider.fallbackProvider !== primaryProviderId) {
         const configuredFallback = providers[primaryProvider.fallbackProvider];
         if (configuredFallback?.enabled && this.isAvailable(configuredFallback.id)) {
           return { provider: configuredFallback, source: 'provider' };

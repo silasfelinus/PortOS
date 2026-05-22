@@ -87,6 +87,77 @@ describe('Provider Status Service', () => {
     });
   });
 
+  describe('markUnavailable (generic)', () => {
+    it('marks a provider unavailable with an arbitrary reason and explicit waitTimeMs', async () => {
+      const status = await statusService.markUnavailable('test-provider', {
+        reason: 'network-error',
+        message: 'ECONNREFUSED to upstream',
+        waitTimeMs: 120000,
+      });
+
+      expect(status.available).toBe(false);
+      expect(status.reason).toBe('network-error');
+      expect(status.message).toBe('ECONNREFUSED to upstream');
+      const recoveryMs = new Date(status.estimatedRecovery).getTime() - Date.now();
+      // Cooldown ~= 120s (allow a small jitter for clock drift in CI).
+      expect(recoveryMs).toBeGreaterThan(110000);
+      expect(recoveryMs).toBeLessThanOrEqual(120000);
+    });
+
+    it('uses defaultRateLimitWait when no cooldown is supplied', async () => {
+      const status = await statusService.markUnavailable('test-provider', {
+        reason: 'unknown',
+        message: 'mystery failure',
+      });
+
+      const recoveryMs = new Date(status.estimatedRecovery).getTime() - Date.now();
+      // Test setup configures defaultRateLimitWait=500ms — within tolerance.
+      expect(recoveryMs).toBeGreaterThan(0);
+      expect(recoveryMs).toBeLessThanOrEqual(500);
+    });
+
+    it('emits status:changed with the reason as the event type', async () => {
+      const handler = vi.fn();
+      statusService.events.on('status:changed', handler);
+      await statusService.markUnavailable('test-provider', {
+        reason: 'network-error',
+        message: 'down',
+        waitTimeMs: 30000,
+      });
+      expect(handler).toHaveBeenCalledWith({
+        providerId: 'test-provider',
+        status: expect.objectContaining({ available: false, reason: 'network-error' }),
+        type: 'network-error',
+      });
+    });
+  });
+
+  describe('markUsageLimit — single emit with extras', () => {
+    it('includes waitTime in the status:changed event payload on the first emit', async () => {
+      // Regression: previously markUsageLimit did a second saveStatus after
+      // markUnavailable to stamp waitTime, so status:changed fired without
+      // the waitTime field — leaving Socket.IO clients with an incomplete
+      // usage-limit record until the second write landed.
+      const handler = vi.fn();
+      statusService.events.on('status:changed', handler);
+
+      await statusService.markUsageLimit('test-provider', {
+        message: 'Usage limit exceeded',
+        waitTime: '5 hours'
+      });
+
+      // Exactly one status:changed for the markUsageLimit call, and it
+      // already carries waitTime — no second emit needed.
+      const usageLimitCalls = handler.mock.calls.filter(c => c[0].type === 'usage-limit');
+      expect(usageLimitCalls).toHaveLength(1);
+      expect(usageLimitCalls[0][0].status).toMatchObject({
+        available: false,
+        reason: 'usage-limit',
+        waitTime: '5 hours',
+      });
+    });
+  });
+
   describe('markRateLimited', () => {
     it('should mark provider as rate limited', async () => {
       const status = await statusService.markRateLimited('test-provider');
@@ -200,6 +271,20 @@ describe('Provider Status Service', () => {
       // Should fall through to system fallback
       expect(result.provider.id).toBe('fallback-provider-1');
       expect(result.source).toBe('system');
+    });
+
+    it('should NOT loop back to the same provider when fallbackProvider points at self (misconfig guard)', () => {
+      const selfFallback = {
+        'self-pointer': { id: 'self-pointer', enabled: true, fallbackProvider: 'self-pointer' },
+        'fallback-provider-1': { id: 'fallback-provider-1', enabled: true },
+      };
+
+      const result = statusService.getFallbackProvider('self-pointer', selfFallback);
+
+      // Must fall through to the system priority list (which excludes the
+      // primary by id) rather than returning self.
+      expect(result?.provider.id).toBe('fallback-provider-1');
+      expect(result?.source).toBe('system');
     });
 
     it('should return null if no fallback available', async () => {
