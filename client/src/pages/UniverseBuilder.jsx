@@ -1753,7 +1753,13 @@ export default function UniverseBuilder() {
             from any tab. The Bible-tab actions (Generate / Refine, starter
             idea, story-bible fields) live inside the Bible tab itself, per
             Phase C "Bible is its own tab". */}
-        <header className="bg-port-card border border-port-border rounded p-3 flex items-center gap-2 flex-wrap">
+        {/* relative + z-30: themes that ship a non-none --port-backdrop-filter
+            (Lumen Glass, Blueprint Ops) turn every .bg-port-card.border.rounded
+            into its own stacking context, trapping the UniverseSelector's
+            dropdown beneath later sibling cards (TabPills, section cards).
+            Elevating this header lets its stacking context paint above those
+            siblings so the dropdown overlays them as intended. */}
+        <header className="relative z-30 bg-port-card border border-port-border rounded p-3 flex items-center gap-2 flex-wrap">
           <UniverseSelector
             universes={universes}
             selectedId={selectedId}
