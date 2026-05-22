@@ -69,9 +69,16 @@ export const useCityData = () => {
     });
   }, []);
 
+  // Only overwrite the running-agents HUD/list when a fresh fetch lands —
+  // a transient blip used to wipe the visible agents to `[]` until the
+  // next successful poll.
   const fetchRunningAgents = useCallback(async () => {
-    const agents = await api.getRunningAgents().catch(() => []);
-    setRunningAgents(agents);
+    try {
+      const agents = await api.getRunningAgents({ silent: true });
+      setRunningAgents(agents);
+    } catch {
+      // preserve last-good agents on transient blip
+    }
   }, []);
 
   // `immediate: false` — `fetchAll()` (run from the socket-setup effect below

@@ -8,7 +8,9 @@ export function AgentsPage() {
   const [expandedPid, setExpandedPid] = useState(null);
   const REFRESH_INTERVAL = 3;
 
-  const loadAgents = useCallback(() => api.getAgents().catch(() => []), []);
+  // Let errors throw — `useAutoRefetch` preserves the last-good agents list
+  // on transient failures. `silent: true` keeps the 3s poll quiet on blips.
+  const loadAgents = useCallback(() => api.getAgents({ silent: true }), []);
   const { data, loading, refetch } = useAutoRefetch(loadAgents, REFRESH_INTERVAL * 1000);
   const agents = data ?? [];
 

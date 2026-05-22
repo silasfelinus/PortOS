@@ -205,10 +205,16 @@ export default function AgentCard({ agent, onKill, onDelete, onResume, completed
     return () => clearInterval(interval);
   }, [completed]);
 
-  // Fetch process stats for running agents (skip for remote peers)
+  // Fetch process stats for running agents (skip for remote peers).
+  // Only overwrite prior stats on a successful response so a transient
+  // error doesn't blank out the previously displayed CPU/mem/PID.
   const fetchStats = useCallback(async () => {
-    const stats = await api.getCosAgentStats(agent.id).catch(() => null);
-    setProcessStats(stats);
+    try {
+      const stats = await api.getCosAgentStats(agent.id, { silent: true });
+      setProcessStats(stats);
+    } catch {
+      // preserve last-good stats on transient blip
+    }
   }, [agent.id]);
 
   useAutoRefetch(fetchStats, 5000, { enabled: !completed && !remote, pollOnly: true });

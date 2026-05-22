@@ -1,7 +1,7 @@
 import { request } from './apiCore.js';
 
 // Running Agents (Process Management)
-export const getRunningAgents = () => request('/agents');
+export const getRunningAgents = (options) => request('/agents', options);
 export const getRunningAgentInfo = (pid) => request(`/agents/${pid}`);
 export const killRunningAgent = (pid) => request(`/agents/${pid}`, { method: 'DELETE' });
 // Legacy aliases
@@ -82,7 +82,7 @@ export const getCosAgentsByDate = (date) => request(`/cos/agents/history/${date}
 export const getCosAgent = (id) => request(`/cos/agents/${id}`);
 export const terminateCosAgent = (id) => request(`/cos/agents/${id}/terminate`, { method: 'POST' });
 export const killCosAgent = (id) => request(`/cos/agents/${id}/kill`, { method: 'POST' });
-export const getCosAgentStats = (id) => request(`/cos/agents/${id}/stats`);
+export const getCosAgentStats = (id, options) => request(`/cos/agents/${id}/stats`, options);
 export const getCosAgentPrompt = (id) => request(`/cos/agents/${id}/prompt`);
 export const deleteCosAgent = (id) => request(`/cos/agents/${id}`, { method: 'DELETE' });
 export const clearCompletedCosAgents = () => request('/cos/agents/completed', { method: 'DELETE' });
