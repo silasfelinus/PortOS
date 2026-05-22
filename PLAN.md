@@ -18,7 +18,6 @@ For project goals, see [GOALS.md](./GOALS.md). For completed work, see [.changel
 - [ ] [voice-cos-tool-expansion-calendar-today-calendar] **Voice CoS tool expansion** — `calendar_today` / `calendar_next` (existing Google Calendar MCP), `meatspace_log_workout` (wraps `meatspaceHealth.js`), `weather_now` (pick API: OpenWeather / WeatherKit / NWS), `timer_set` (reuses `agentActionExecutor.js`).
 - [ ] [voice-agent-vision-fallback-ui-describe-visually] **Voice agent vision fallback** — `ui_describe_visually`: screenshot tab and send to a vision-capable model so "what's on this chart?" works on CyberCity / graph views.
 - [ ] [apple-health-integration-live-sync] **Apple Health integration for MeatSpace.** iOS live sync (HealthKit Shortcut → `POST /api/meatspace/apple-health` endpoint) plus a bulk historical import path for an exported `export.xml`. Wire into existing MeatSpace tabs so steps / sleep / heart rate / VO2 max / resting HR show alongside the alcohol / blood / body / epigenetic tracks already shipped. GOALS.md flags this as a documented Secondary Goal ("Apple Health integration planned") but no implementation tracking existed until this entry.
-
 ## Deferred Architecture (human-led planning)
 
 God-file decomposition candidates — none are bugs; pick up when touching the file for unrelated reasons.
