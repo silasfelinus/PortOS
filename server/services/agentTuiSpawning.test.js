@@ -543,6 +543,54 @@ describe('spawnTuiAgent runtime', () => {
     expect(closeMock).toHaveBeenCalled();
   });
 
+  // ── 8b. Disk safety valve at 256MB ──────────────────────────────────────────
+  // The raw spool truncates rather than appends once it crosses the cap so
+  // a runaway agent can't fill the volume. Test by feeding chunks that push
+  // past the threshold and asserting writeFile (truncate) is preferred over
+  // appendFile for the overflow batch, plus the rawSpoolTruncated metadata
+  // flag fires once.
+  it('raw spool: truncates instead of appending once it crosses the 256MB safety cap', async () => {
+    const fsPromises = await import('fs/promises');
+    runSpawn();
+    await flushMicrotasks();
+
+    // Push three 100MB chunks: total 300MB, well past the 256MB cap.
+    // Buffer.alloc(size, byte) keeps allocations cheap (single fill).
+    const HUNDRED_MB = 100 * 1024 * 1024;
+    await capturedOnData(Buffer.alloc(HUNDRED_MB, 0x61));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(300);
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.alloc(HUNDRED_MB, 0x62));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(300);
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.alloc(HUNDRED_MB, 0x63));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(300);
+    await flushMicrotasks();
+
+    // Third chunk should have crossed the 256MB threshold → writeFile, not
+    // appendFile. Earlier chunks went through appendFile.
+    const writeFileRawCalls = vi.mocked(fsPromises.writeFile).mock.calls.filter(
+      ([p]) => typeof p === 'string' && p.endsWith('raw.txt')
+    );
+    expect(writeFileRawCalls.length).toBeGreaterThan(0);
+
+    const truncWarns = warnSpy.mock.calls.filter(args =>
+      typeof args[0] === 'string' && args[0].includes('raw PTY spool reached')
+    );
+    expect(truncWarns).toHaveLength(1);
+
+    const truncMetaCalls = vi.mocked(cosAgents.updateAgent).mock.calls.filter(
+      ([_id, payload]) => payload?.metadata?.rawSpoolTruncated === true
+    );
+    expect(truncMetaCalls).toHaveLength(1);
+    expect(truncMetaCalls[0][0]).toBe('agent-1');
+  });
+
   // ── 9. Success-path skips the tail read ─────────────────────────────────────
   // Successful finalize must not touch raw.txt — that's what makes the
   // disk-spool's bounded-memory guarantee hold for healthy long runs.

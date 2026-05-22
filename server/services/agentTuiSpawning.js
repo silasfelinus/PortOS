@@ -8,7 +8,7 @@
 
 import { join } from 'path';
 import { existsSync } from 'fs';
-import { appendFile, readFile, rm, open, stat as fsStat } from 'fs/promises';
+import { appendFile, readFile, rm, open, stat as fsStat, writeFile } from 'fs/promises';
 import * as shellService from './shell.js';
 import { emitLog } from './cosEvents.js';
 import { appendAgentOutputLines, updateAgent } from './cosAgents.js';
@@ -44,6 +44,16 @@ const DEFAULT_TUI_MIN_RUNTIME_MS = 15000;
 // spool was meant to avoid. 1MB easily contains the last 200 lines of any
 // realistic PTY stream while keeping peak finalize memory bounded.
 const RAW_TAIL_ANALYSIS_BYTES = 1024 * 1024;
+
+// Disk safety valve for the raw PTY spool. A misbehaving (or compromised)
+// TUI agent could in principle emit MB/sec forever and fill the volume —
+// realistic agents idle out at 180s and emit <10MB total, but no operator
+// wants ONE runaway agent eating all disk. At this threshold the spool is
+// truncated (rewritten with the current batch) so the most-recent data
+// remains, which is what readFileTail at finalize needs anyway. Warn fires
+// once per agent run; the `rawSpoolTruncated` metadata flag persists in
+// the agent record so the operator can spot the affected runs after the fact.
+const RAW_SPOOL_MAX_BYTES = 256 * 1024 * 1024;
 
 /**
  * Read at most `maxBytes` from the end of a file. Returns null when the file
@@ -200,6 +210,8 @@ export async function spawnTuiAgent({
   let pendingRawChunks = [];
   let rawFlushTimer = null;
   let rawFlushing = null;
+  let rawBytesWritten = 0;
+  let rawSpoolTruncationWarned = false;
   let pasteEnterTimer = null;
 
   const streamingStrip = createStreamingAnsiStripper();
@@ -244,7 +256,24 @@ export async function spawnTuiAgent({
     if (pendingRawChunks.length === 0) return;
     const batch = pendingRawChunks.join('');
     pendingRawChunks = [];
+    if (rawBytesWritten + batch.length > RAW_SPOOL_MAX_BYTES) {
+      // Safety valve: rewrite the file with just this batch instead of
+      // appending. The tail-read at finalize wants the MOST RECENT bytes,
+      // not the oldest, so truncating preserves what analyzeAgentFailure
+      // actually uses while bounding disk usage at ~RAW_SPOOL_MAX_BYTES
+      // plus one debounce window.
+      if (!rawSpoolTruncationWarned) {
+        rawSpoolTruncationWarned = true;
+        console.warn(`⚠️ TUI agent ${agentId} raw PTY spool reached ${Math.round(RAW_SPOOL_MAX_BYTES / 1024 / 1024)}MB — truncating spool (oldest bytes dropped; tail-read still reflects most recent)`);
+        updateAgent(agentId, { metadata: { rawSpoolTruncated: true } })
+          .catch(err => console.error(`❌ TUI agent ${agentId} rawSpoolTruncated metadata write failed: ${err.message}`));
+      }
+      await writeFile(rawFile, batch).catch(() => {});
+      rawBytesWritten = batch.length;
+      return;
+    }
     await appendFile(rawFile, batch).catch(() => {});
+    rawBytesWritten += batch.length;
   };
 
   const scheduleRawFlush = () => {
@@ -394,10 +423,10 @@ export async function spawnTuiAgent({
   };
 
   const handleData = async (data) => {
-    // The PTY can emit chunks between finalize starting and the shell session
-    // actually being killed in the finally block. Once finalized, skip them —
-    // disk-spool would race the rm of raw.txt (if we did remove it), and the
-    // post-paste accumulator + state mutations are pointless after finish.
+    // node-pty can deliver chunks between finalize starting and the shell
+    // session being killed in finalize's finally block. Once finalized, drop
+    // them — appending to the spool, growing the post-paste accumulator, or
+    // mutating timing state is all pointless after finish has settled.
     if (finalized) return;
     // node-pty surfaces output as already-decoded UTF-8 strings via
     // shellService's onData hook (StringDecoder handles multi-byte
