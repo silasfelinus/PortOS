@@ -1,8 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { applyVolumeOrderedNumbers, UNSCOPED_ANCHOR } from './pipelineIssueOrder.js';
 
+// Deterministic counter for auto-generated ids — keeps test failures readable
+// (no randomized ids in error messages) and avoids any future test
+// accidentally depending on Math.random ordering.
+let _issueIdCounter = 0;
+beforeEach(() => { _issueIdCounter = 0; });
+
 const mkIssue = (over = {}) => ({
-  id: over.id || `i${Math.random().toString(36).slice(2, 7)}`,
+  id: over.id || `i${++_issueIdCounter}`,
   seriesId: 's1',
   seasonId: over.seasonId ?? null,
   arcPosition: over.arcPosition ?? 1,

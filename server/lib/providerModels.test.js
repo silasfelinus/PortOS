@@ -134,20 +134,33 @@ describe('providerModels', () => {
     });
   });
 
-  it('hasModelFlag and extractBakedModel stay consistent on common shapes', () => {
+  it('extractBakedModel returning a value implies hasModelFlag is true', () => {
+    // The sound direction: if extractBakedModel finds a real value, the args
+    // definitely contain a usable model flag. The reverse direction does NOT
+    // hold for adversarial argv shapes — extractBakedModel returns early on
+    // the first --model/-m it sees and may give up (returning null) on a
+    // valueless first flag even when a later --model has a real value.
     const shapes = [
       ['--model', 'gpt-5'],
       ['-m', 'gpt-5'],
       ['--model=gpt-5'],
       ['-m=gpt-5'],
       ['--model'],
-      ['--model=']
+      ['--model='],
+      // Adversarial: first flag has no value, second one does. Documents
+      // current early-exit behavior — extractBakedModel returns null on the
+      // first '--model' (because next is '--other'), so hasModelFlag may
+      // disagree with it. We only assert the sound direction.
+      ['--model', '--other', '--model', 'gpt-5'],
+      // Mixed argv with other tool flags before the model pin.
+      ['--temperature', '0.7', '--model', 'gpt-5']
     ];
     for (const args of shapes) {
       const has = hasModelFlag(args);
       const baked = extractBakedModel(args);
-      // If hasModelFlag says yes, extractBakedModel must produce a non-null value.
-      if (has) expect(baked, `args=${JSON.stringify(args)}`).not.toBeNull();
+      if (baked !== null) {
+        expect(has, `args=${JSON.stringify(args)}`).toBe(true);
+      }
     }
   });
 });

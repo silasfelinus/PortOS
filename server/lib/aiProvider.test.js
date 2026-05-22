@@ -30,6 +30,15 @@ describe('aiProvider pure helpers', () => {
       const raw = '{"src":"```foo```"}';
       expect(stripCodeFences(raw)).toBe('{"src":"```foo```"}');
     });
+
+    it('strips fences with surrounding whitespace (real LLM output shape)', () => {
+      // LLMs commonly emit a trailing newline after the closing fence — the
+      // strip helper must tolerate it so the closing ``` still goes away.
+      expect(stripCodeFences('```json\n{"a":1}\n```\n')).toBe('{"a":1}');
+      expect(stripCodeFences('```json\n{"a":1}\n```  ')).toBe('{"a":1}');
+      expect(stripCodeFences('  ```json\n{"a":1}\n```  ')).toBe('{"a":1}');
+      expect(stripCodeFences('\n\n```\n{"a":1}\n```\n\n')).toBe('{"a":1}');
+    });
   });
 
   describe('parseLLMJSON', () => {
