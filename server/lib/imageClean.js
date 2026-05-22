@@ -23,20 +23,20 @@ import { tryReadFile, safeJSONParse, atomicWrite } from './fileUtils.js';
  * "what did the user save" rule that resolver + Settings UI + ImageGen
  * page + test mocks all need to agree on).
  *
- * Migration: legacy `autoClean: true` (single boolean, pre-split) maps to
- * BOTH new flags. Users who opted into denoising before the split don't
- * silently lose it on upgrade. `cleanC2PA` defaults to true (safe, lossless);
- * `denoise` defaults to false (lossy, blurs text).
+ * Defaults: `cleanC2PA` defaults to true (safe, lossless); `denoise` defaults
+ * to false (lossy, blurs text — must be explicitly opted into). Legacy
+ * pre-split installs carrying `autoClean: true` keep `cleanC2PA` on (which
+ * defaults on anyway) but do NOT silently inherit denoise — upgrading users
+ * who never explicitly chose denoise get it off.
  *
  * Mirrored verbatim in `client/src/lib/imageCleaners.js` — keep the two
  * copies in sync; the client tree can't import from server/lib.
  */
 export function resolveCleanersFromConfig(modeCfg) {
   const cfg = modeCfg || {};
-  const legacy = cfg.autoClean === true;
   return {
     cleanC2PA: typeof cfg.cleanC2PA === 'boolean' ? cfg.cleanC2PA : true,
-    denoise: typeof cfg.denoise === 'boolean' ? cfg.denoise : legacy,
+    denoise: typeof cfg.denoise === 'boolean' ? cfg.denoise : false,
   };
 }
 

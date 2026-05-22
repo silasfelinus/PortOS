@@ -13,12 +13,12 @@ vi.mock('../services/imageGen/index.js', () => ({
   IMAGE_GEN_MODES: ['external', 'local', 'codex'],
   // Mirror the real precedence by delegating to the same helper the prod
   // resolver uses — keeps test mock and prod in lock-step automatically.
+  // Legacy `autoClean: true` no longer carries into denoise (lossy, opt-in only).
   resolveImageCleaners: (body, settings, mode) => {
     const cfg = settings?.imageGen?.[mode] || {};
-    const legacy = cfg.autoClean === true;
     const saved = {
       cleanC2PA: typeof cfg.cleanC2PA === 'boolean' ? cfg.cleanC2PA : true,
-      denoise: typeof cfg.denoise === 'boolean' ? cfg.denoise : legacy,
+      denoise: typeof cfg.denoise === 'boolean' ? cfg.denoise : false,
     };
     return {
       cleanC2PA: typeof body?.cleanC2PA === 'boolean' ? body.cleanC2PA : saved.cleanC2PA,
@@ -395,10 +395,11 @@ describe('Image Gen Routes', () => {
         expect(imageGen.generateImage).toHaveBeenCalledWith(expect.objectContaining({ cleanC2PA: true, denoise: false }));
       });
 
-      it('legacy autoClean=true on settings maps to BOTH new flags on read', async () => {
-        // Pre-split installs persisted `autoClean: true`. resolveImageCleaners
-        // maps that to cleanC2PA=true + denoise=true so the user's opt-in
-        // behavior is preserved through the upgrade.
+      it('legacy autoClean=true on settings does NOT silently enable denoise on read', async () => {
+        // Pre-split installs persisted `autoClean: true`. We no longer carry
+        // that into denoise — denoise is lossy (blurs text) and must be an
+        // explicit opt-in. Upgrading users get cleanC2PA on (it defaults on
+        // anyway) and denoise off until they explicitly toggle it.
         getSettings.mockResolvedValueOnce({
           imageGen: { mode: 'external', external: { autoClean: true } },
         });
@@ -406,7 +407,7 @@ describe('Image Gen Routes', () => {
 
         await request(app).post('/api/image-gen/generate').send({ prompt: 'p' });
 
-        expect(imageGen.generateImage).toHaveBeenCalledWith(expect.objectContaining({ cleanC2PA: true, denoise: true }));
+        expect(imageGen.generateImage).toHaveBeenCalledWith(expect.objectContaining({ cleanC2PA: true, denoise: false }));
       });
 
       it('legacy autoClean=true on body maps to BOTH new flags via the coerceFormFields shim', async () => {
