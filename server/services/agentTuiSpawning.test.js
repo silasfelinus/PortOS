@@ -497,4 +497,85 @@ describe('spawnTuiAgent runtime', () => {
     expect(truncMetaCalls).toHaveLength(1);
     expect(truncMetaCalls[0][0]).toBe('agent-1');
   });
+
+  // ── 8. Failure-path tail-read of raw.txt ────────────────────────────────────
+  // analyzeAgentFailure needs the recent PTY tail; finalize MUST read it from
+  // raw.txt via readFileTail (NOT readFile, which would load the whole spool).
+  // This test wires stat to report a >1MB spool and asserts the tail-read
+  // pattern: stat → open → read at offset (size - RAW_TAIL_ANALYSIS_BYTES).
+  it('failure finalize: reads only the tail of raw.txt for analyzeAgentFailure', async () => {
+    const fsPromises = await import('fs/promises');
+    const RAW_TAIL_BYTES = 1024 * 1024;
+    const SPOOL_SIZE = 5 * 1024 * 1024;   // 5MB on disk
+
+    vi.mocked(fsPromises.stat).mockResolvedValueOnce({ size: SPOOL_SIZE });
+    const readMock = vi.fn().mockResolvedValue({ bytesRead: RAW_TAIL_BYTES });
+    const closeMock = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(fsPromises.open).mockResolvedValueOnce({ read: readMock, close: closeMock });
+
+    const spawnPromise = runSpawn();
+    await flushMicrotasks();
+
+    // Trigger a failure finalize via the shell-exit path.
+    await capturedOnExit({ exitCode: 1, killed: false });
+    await flushMicrotasks();
+    await spawnPromise;
+
+    const statCalls = vi.mocked(fsPromises.stat).mock.calls.filter(
+      ([p]) => typeof p === 'string' && p.endsWith('raw.txt')
+    );
+    expect(statCalls.length).toBeGreaterThan(0);
+
+    const openCalls = vi.mocked(fsPromises.open).mock.calls.filter(
+      ([p]) => typeof p === 'string' && p.endsWith('raw.txt')
+    );
+    expect(openCalls.length).toBeGreaterThan(0);
+
+    // read() must be called with offset = size - tailBytes (5MB - 1MB = 4MB)
+    // so analyzeAgentFailure sees only the most-recent 1MB, not the full spool.
+    expect(readMock).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      0,
+      RAW_TAIL_BYTES,
+      SPOOL_SIZE - RAW_TAIL_BYTES
+    );
+    expect(closeMock).toHaveBeenCalled();
+  });
+
+  // ── 9. Success-path skips the tail read ─────────────────────────────────────
+  // Successful finalize must not touch raw.txt — that's what makes the
+  // disk-spool's bounded-memory guarantee hold for healthy long runs.
+  it('success finalize: skips raw.txt tail read entirely', async () => {
+    const fsPromises = await import('fs/promises');
+
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    runSpawn();
+    await flushMicrotasks();
+
+    // Drive the idle-complete success path (mirrors test 1).
+    await capturedOnData(Buffer.from('Codex booting...\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    await capturedOnData(Buffer.from('Agent post-paste activity\n'));
+    await vi.advanceTimersByTimeAsync(21000);
+    vi.useRealTimers();
+    await completeDone;
+
+    // No raw.txt stat / open should fire on the success path. (The mock
+    // for fs.promises.stat / open was reset between tests by clearAllMocks,
+    // so any calls here are from this run.)
+    const statCalls = vi.mocked(fsPromises.stat).mock.calls.filter(
+      ([p]) => typeof p === 'string' && p.endsWith('raw.txt')
+    );
+    expect(statCalls).toHaveLength(0);
+
+    const openCalls = vi.mocked(fsPromises.open).mock.calls.filter(
+      ([p]) => typeof p === 'string' && p.endsWith('raw.txt')
+    );
+    expect(openCalls).toHaveLength(0);
+  });
 });

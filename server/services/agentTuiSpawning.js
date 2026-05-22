@@ -49,7 +49,9 @@ const RAW_TAIL_ANALYSIS_BYTES = 1024 * 1024;
  * Read at most `maxBytes` from the end of a file. Returns null when the file
  * doesn't exist or can't be opened; an empty string for a zero-byte file.
  * Used to bound the memory footprint of failure-analysis reads against the
- * uncapped raw PTY spool.
+ * uncapped raw PTY spool. Non-throwing — any failure surfaces as null so
+ * the caller's failure-analysis path can fall back to outputBuffer instead
+ * of aborting `finish()` before finalizeAgent runs.
  */
 async function readFileTail(path, maxBytes) {
   const st = await fsStat(path).catch(() => null);
@@ -61,8 +63,11 @@ async function readFileTail(path, maxBytes) {
   if (!fh) return null;
   try {
     const buf = Buffer.alloc(length);
-    await fh.read(buf, 0, length, start);
-    return buf.toString('utf8');
+    // Honour bytesRead — the file can shrink between stat and read, or the
+    // OS can return a short read; decoding the whole `buf` would otherwise
+    // append NULs to the returned string.
+    const { bytesRead } = await fh.read(buf, 0, length, start).catch(() => ({ bytesRead: 0 }));
+    return buf.toString('utf8', 0, bytesRead);
   } finally {
     await fh.close().catch(() => {});
   }
@@ -222,12 +227,15 @@ export async function spawnTuiAgent({
   };
 
   // Raw PTY-bytes flush pipeline. Parallel to flushPendingLines but appends
-  // unprocessed chunks (no ANSI strip, no line semantics) to raw.txt. Joined
-  // once per batch, never accumulating in memory beyond a single 250ms tick.
+  // unprocessed chunks (no ANSI strip, no line semantics) to raw.txt. Chunks
+  // are queued as Node Buffers — NOT pre-decoded strings — so that a
+  // multi-byte UTF-8 sequence split across two PTY chunks doesn't get a
+  // U+FFFD replacement char in the persisted spool. Buffer.concat happens
+  // once per 250ms batch, never accumulating in memory beyond a single tick.
   const flushPendingRawChunks = async () => {
     if (rawFlushTimer) { clearTimeout(rawFlushTimer); rawFlushTimer = null; }
     if (pendingRawChunks.length === 0) return;
-    const batch = pendingRawChunks.join('');
+    const batch = Buffer.concat(pendingRawChunks);
     pendingRawChunks = [];
     await appendFile(rawFile, batch).catch(() => {});
   };
@@ -379,9 +387,14 @@ export async function spawnTuiAgent({
     // disk-spool would race the rm of raw.txt (if we did remove it), and the
     // post-paste accumulator + state mutations are pointless after finish.
     if (finalized) return;
-    const text = data.toString();
-    pendingRawChunks.push(text);
+    // Queue the raw Buffer so the disk spool preserves the exact PTY bytes —
+    // a multi-byte UTF-8 char split across two chunks would otherwise corrupt
+    // raw.txt with U+FFFD replacement chars at the boundary. The per-chunk
+    // decode below is only used for ASCII-byte marker matching, which is
+    // unaffected by boundary splits.
+    pendingRawChunks.push(Buffer.isBuffer(data) ? data : Buffer.from(data));
     scheduleRawFlush();
+    const text = data.toString();
     if (postPasteBuffer !== null) postPasteBuffer += text;
     lastOutputAt = Date.now();
     if (firstOutputAt === null) firstOutputAt = lastOutputAt;
