@@ -107,7 +107,17 @@ export default function ReferenceReposPanel({ appId, appName, compact = false, i
       return;
     }
     setSnapshots((prev) => ({ ...prev, [ref.id]: snap }));
-    toast.success(`${ref.name}: ${snap.commitCount} new commit${snap.commitCount === 1 ? '' : 's'}`);
+    const commitMsg = `${ref.name}: ${snap.commitCount} new commit${snap.commitCount === 1 ? '' : 's'}`;
+    if (snap.analysis?.queued) {
+      toast.success(`${commitMsg} — analysis task queued`);
+    } else if (snap.analysis?.reason === 'duplicate') {
+      toast.success(`${commitMsg} — analysis already queued`);
+    } else if (snap.analysis?.reason === 'analysis-trigger-failed') {
+      toast.success(commitMsg);
+      toast.error(`${ref.name}: failed to queue analysis task`);
+    } else {
+      toast.success(commitMsg);
+    }
     fetch();
   };
 

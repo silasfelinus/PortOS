@@ -20,7 +20,9 @@ import {
   deleteReferenceRepo,
   checkReferenceRepo,
   markReferenceRepoReviewed,
+  triggerReferenceAnalysis,
 } from '../services/referenceRepos.js';
+import { getAppById } from '../services/apps.js';
 
 const router = Router({ mergeParams: true });
 
@@ -48,13 +50,30 @@ router.delete('/:refId', asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
-// Run a check now — fetches the upstream repo and returns the commit list
-// since lastReviewedSha. Does NOT advance lastReviewedSha; that happens
-// via the explicit /reviewed endpoint after the user / agent has actually
-// processed the changes.
+// Run a check now — fetches the upstream repo, returns the commit list since
+// lastReviewedSha, and queues a CoS analysis task when new commits exist.
+// Does NOT advance lastReviewedSha; that happens via the explicit /reviewed
+// endpoint after the user / agent has actually processed the changes.
 router.post('/:refId/check', asyncHandler(async (req, res) => {
-  const snapshot = await checkReferenceRepo(req.params.appId, req.params.refId);
-  res.json(snapshot);
+  const { appId, refId } = req.params;
+  const snapshot = await checkReferenceRepo(appId, refId);
+  let analysis = { queued: false, reason: 'no-new-commits' };
+  if (snapshot.commitCount > 0) {
+    const app = await getAppById(appId);
+    const ref = app?.referenceRepos?.find((r) => r.id === refId);
+    if (!app) {
+      analysis = { queued: false, reason: 'app-not-found' };
+    } else if (!ref) {
+      analysis = { queued: false, reason: 'ref-not-found' };
+    } else {
+      analysis = await triggerReferenceAnalysis(app, ref, snapshot)
+        .catch((err) => {
+          console.error(`❌ Analysis trigger failed for ${refId}: ${err instanceof Error ? err.message : String(err)}`);
+          return { queued: false, reason: 'analysis-trigger-failed' };
+        });
+    }
+  }
+  res.json({ ...snapshot, analysis });
 }));
 
 router.post('/:refId/reviewed', asyncHandler(async (req, res) => {
