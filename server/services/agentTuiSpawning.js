@@ -131,8 +131,10 @@ export async function spawnTuiAgent({
   // rawBuffer is stored as an array of chunks (not `let rawBuffer = ''` with
   // `+=`) because a chatty TUI emits hundreds of chunks/sec and `string += x`
   // is O(n²) — every append reallocates and copies the full prior string.
-  // Joined only at finalize (single linear pass) and during the brief paste-
-  // marker polling window. See `getRawBuffer()` / `joinPostPaste()` helpers.
+  // The array is joined lazily: only on failure (analyzeAgentFailure needs
+  // a single string) and during the brief paste-marker polling window
+  // (`rawChunks.slice(pasteChunkStart).join('')`), so successful runs never
+  // pay the linear-time join.
   const rawChunks = [];
   let finalized = false;
   let hasStartedWorking = false;
@@ -239,9 +241,21 @@ export async function spawnTuiAgent({
     // do NOT writeFile() it from outputBuffer at finalize — outputBuffer is
     // capped at OUTPUT_BUFFER_CAP and would silently truncate the on-disk
     // record for long runs. The append-only stream is the authoritative copy.
-    const rawBuffer = rawChunks.length ? rawChunks.join('') : '';
-    const analysisBuffer = rawBuffer || outputBuffer;
-    const errorAnalysis = finalSuccess ? null : analyzeAgentFailure(analysisBuffer, task, model);
+    //
+    // The raw chunks are only joined when analyzeAgentFailure will actually
+    // run — successful runs skip the join entirely (large PTY streams can
+    // be tens of MB; joining + the analyzer's linear scan would double peak
+    // memory on every clean completion).
+    const errorAnalysis = finalSuccess
+      ? null
+      : analyzeAgentFailure(
+          rawChunks.length ? rawChunks.join('') : outputBuffer,
+          task,
+          model
+        );
+    // Drop chunk refs once the analyzer is done so GC can reclaim them
+    // before the heavier finalizeAgent / cleanupWorktreeFn chain runs.
+    rawChunks.length = 0;
 
     // try/finally so a throw from finalizeAgent (e.g. processAgentCompletion
     // hook crash) still runs the local cleanup — sentinel removal, worktree
