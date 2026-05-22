@@ -19,7 +19,11 @@ import { validateRequest, optionalBooleanMap } from '../lib/validation.js';
 import * as svc from '../services/universeBuilder.js';
 import * as canonSvc from '../services/universeCanon.js';
 import { expandUniverseCharacter } from '../services/universeCharacterExpand.js';
-import { renderCharacterReferenceSheet, deleteCharacterReferenceSheet } from '../services/universeCharacterSheet.js';
+import {
+  renderCharacterReferenceSheet,
+  deleteCharacterReferenceSheet,
+  listSheetVariants,
+} from '../services/universeCharacterSheet.js';
 import { BIBLE_KINDS, BIBLE_LIMITS, pruneStaleReferenceSheets } from '../lib/storyBible.js';
 import { getUniverseCanonUsage, listLinkedSeriesNames } from '../services/canonUsage.js';
 import { expandWorldTemplate, generateCategoryVariations } from '../services/universeBuilderExpand.js';
@@ -32,7 +36,7 @@ import { findOrCreateUniverseCollection } from '../services/mediaCollections.js'
 import { registerUniverseBuilderRun } from '../services/universeBuilderCollectionHook.js';
 import { getImageModels, isFlux2, isZImage, isErnie } from '../lib/mediaModels.js';
 import { IMAGE_GEN_MODE, IMAGE_GEN_MODES } from '../services/imageGen/modes.js';
-import { resolveAutoClean } from '../services/imageGen/index.js';
+import { resolveImageCleaners } from '../services/imageGen/index.js';
 import { getStylePresetById } from '../lib/writersRoomStylePresets.js';
 
 const router = Router();
@@ -372,6 +376,13 @@ router.post('/refine-prompts', asyncHandler(async (req, res) => {
   res.json(await refineWorldPrompts(body));
 }));
 
+// Static-path GETs must register BEFORE `/:id` so they aren't swallowed by
+// the parametric route. The catalog lists every registered reference-sheet
+// variant — the client renders one row per entry in CharacterReferenceSheetPanel.
+router.get('/reference-sheet-variants', asyncHandler(async (_req, res) => {
+  res.json({ variants: listSheetVariants() });
+}));
+
 router.get('/:id', asyncHandler(async (req, res) => {
   const w = await svc.getUniverse(req.params.id).catch((err) => { throw mapServiceError(err); });
   // Lazy stale-reference-sheet collapse: nulls out any character.referenceSheetImageRef
@@ -557,23 +568,23 @@ router.post('/:id/render', asyncHandler(async (req, res) => {
     };
     let queued;
     // The queue dispatches directly to imageGen/{codex,local}.generateImage,
-    // bypassing imageGen/index.js's dispatcher that resolves autoClean for
-    // direct callers. Resolve here so saved settings.imageGen[mode].autoClean
-    // applies to Universe Builder batch renders the same way it does for
-    // /api/image-gen/generate and pipeline renders.
-    const autoClean = resolveAutoClean(undefined, settings, mode);
+    // bypassing imageGen/index.js's dispatcher that resolves cleaners for
+    // direct callers. Resolve here so the per-mode cleanC2PA + denoise
+    // settings apply to Universe Builder batch renders the same way they
+    // do for /api/image-gen/generate and pipeline renders.
+    const { cleanC2PA, denoise } = resolveImageCleaners(undefined, settings, mode);
     if (mode === IMAGE_GEN_MODE.CODEX) {
       const c = settings.imageGen?.codex || {};
       queued = enqueueJob({
         kind: 'image',
-        params: { mode: IMAGE_GEN_MODE.CODEX, codexPath: c.codexPath, model: c.model, autoClean, ...params },
+        params: { mode: IMAGE_GEN_MODE.CODEX, codexPath: c.codexPath, model: c.model, cleanC2PA, denoise, ...params },
       });
     } else {
       // mode === IMAGE_GEN_MODE.LOCAL (validated upfront).
       const py = settings.imageGen?.local?.pythonPath || null;
       queued = enqueueJob({
         kind: 'image',
-        params: { pythonPath: py, modelId: body.modelId, autoClean, ...params },
+        params: { pythonPath: py, modelId: body.modelId, cleanC2PA, denoise, ...params },
       });
     }
     jobIds.push(queued.jobId);
@@ -669,30 +680,36 @@ router.post('/:id/characters/:entryId/expand', asyncHandler(async (req, res) => 
   res.json(result);
 }));
 
-// Generate a single dense artist reference sheet (turnaround + expressions +
-// palette + wardrobe + props + hand gestures) from a structured TEXT prompt
-// — no init image required, so it works across codex / local backends.
-// Returns immediately with `{ jobId, generationId }`; client subscribes to
-// SSE for progress, and the server-side completion handler stamps
-// `character.referenceSheetImageRef` on success.
+// Generate one of the character reference-sheet variants from a structured
+// TEXT prompt — no init image required, so it works across codex / local
+// backends. The `variant` field selects which prompt-builder + storage slot
+// the render targets (defaults to 'standard' = illustrated turnaround).
+// Returns immediately with `{ jobId, generationId, variant }`; client
+// subscribes to SSE for progress, and the server-side completion handler
+// stamps the variant's pointer on success.
 const renderReferenceSheetSchema = z.object({
+  variant: z.string().trim().min(1).max(48).optional(),
   overridePrompt: z.string().trim().max(8000).optional(),
   overrideNegativePrompt: z.string().trim().max(2000).optional(),
   modelId: z.string().trim().max(64).optional(),
 });
 router.post('/:id/characters/:entryId/render-reference-sheet', asyncHandler(async (req, res) => {
-  const body = validateRequest(renderReferenceSheetSchema, req.body ?? {});
-  const result = await renderCharacterReferenceSheet(req.params.id, req.params.entryId, body)
+  const options = validateRequest(renderReferenceSheetSchema, req.body ?? {});
+  const result = await renderCharacterReferenceSheet(req.params.id, req.params.entryId, options)
     .catch((err) => { throw mapServiceError(err); });
   res.json(result);
 }));
 
-// Delete the character's current reference sheet — unlinks the PNG from
-// `data/image-refs/` and nulls `referenceSheetImageRef` on every matching
-// character (via `purgeReferenceSheetFromAllUniverses`) so the UI clears
-// reactively without a refetch.
+// Delete a character's reference sheet — unlinks the PNG from
+// `data/image-refs/` and nulls the variant's pointer on every matching
+// character so the UI clears reactively without a refetch. `variant` is
+// passed via query string (DELETE bodies are awkward across HTTP clients).
+const deleteReferenceSheetQuerySchema = z.object({
+  variant: z.string().trim().min(1).max(48).optional(),
+});
 router.delete('/:id/characters/:entryId/reference-sheet', asyncHandler(async (req, res) => {
-  const result = await deleteCharacterReferenceSheet(req.params.id, req.params.entryId)
+  const opts = validateRequest(deleteReferenceSheetQuerySchema, req.query ?? {});
+  const result = await deleteCharacterReferenceSheet(req.params.id, req.params.entryId, opts)
     .catch((err) => { throw mapServiceError(err); });
   res.json(result);
 }));

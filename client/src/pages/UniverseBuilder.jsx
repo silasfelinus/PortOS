@@ -47,6 +47,7 @@ import TabPills from '../components/ui/TabPills';
 import { deriveAvailableBackends, IMAGE_GEN_MODE } from '../lib/imageGenBackends';
 import { PIPELINE_IMAGE_DEFAULTS, readPipelineImageSettings } from '../lib/pipelineImageDefaults';
 import { hasCanonDescriptorContent, descriptorForCanonEntry } from '../lib/canonPrompt';
+import { listSheetPointers } from '../lib/sheetPointers';
 import { upsertByIdPrepend } from '../lib/upsertByIdPrepend';
 import { BIBLE_LIMITS } from '../lib/bibleLimits';
 import {
@@ -726,10 +727,10 @@ export default function UniverseBuilder() {
         const fallbackLabel = `${entry.name}${descriptor ? `: ${descriptor}` : ''}`;
         const refs = Array.isArray(entry?.imageRefs) ? entry.imageRefs : [];
         for (const f of refs) pushFilename(f, fallbackLabel);
-        if (kind.key === 'characters' && typeof entry.referenceSheetImageRef === 'string' && entry.referenceSheetImageRef) {
-          const filename = entry.referenceSheetImageRef;
-          const sheetKey = `canon-sheet:${filename}`;
-          if (!seen.has(sheetKey)) {
+        if (kind.key === 'characters') {
+          for (const { variant, filename } of listSheetPointers(entry)) {
+            const sheetKey = `canon-sheet:${variant}:${filename}`;
+            if (seen.has(sheetKey)) continue;
             seen.add(sheetKey);
             out.push({
               key: sheetKey,
@@ -737,7 +738,7 @@ export default function UniverseBuilder() {
               filename,
               previewUrl: `/data/image-refs/${filename}`,
               downloadUrl: `/data/image-refs/${filename}`,
-              prompt: `${entry.name} — character reference sheet`,
+              prompt: `${entry.name} — character reference sheet (${variant})`,
             });
           }
         }
@@ -764,14 +765,19 @@ export default function UniverseBuilder() {
   // Generic filename → preview opener used by every clickable thumb on the
   // page (variation grids, composite sheets, canon entries, character
   // reference sheets). `opts.isSheet` forces a key match against the
-  // `canon-sheet:` prefix so a basename collision with a gallery image
-  // can't route the lightbox to `/data/images/` instead of
-  // `/data/image-refs/`.
+  // `canon-sheet:<variant>:` prefix so a basename collision with a gallery
+  // image can't route the lightbox to `/data/images/` instead of
+  // `/data/image-refs/`. The exact variant id isn't known at this callsite
+  // (the panel reads the field; the variant only lives inside the key),
+  // so match on the `canon-sheet:` prefix + filename suffix instead of an
+  // exact equality compare. Pre-variant keys (`canon-sheet:<filename>`)
+  // still match this prefix check.
   const openPreviewByFilename = useCallback((filename, opts) => {
     if (!filename) return;
-    const targetKey = opts?.isSheet ? `canon-sheet:${filename}` : null;
-    const match = (targetKey && previewItems.find((i) => i.key === targetKey))
-      || previewItems.find((i) => i.filename === filename);
+    const sheetMatch = opts?.isSheet
+      ? previewItems.find((i) => typeof i.key === 'string' && i.key.startsWith('canon-sheet:') && i.filename === filename)
+      : null;
+    const match = sheetMatch || previewItems.find((i) => i.filename === filename);
     if (match) setPreview(match);
   }, [previewItems, setPreview]);
   // Legacy name retained for the variation/composite call sites that pass a

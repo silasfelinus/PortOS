@@ -14,6 +14,7 @@
 
 import { getSettings } from '../settings.js';
 import { ServerError } from '../../lib/errorHandler.js';
+import { resolveCleanersFromConfig } from '../../lib/imageClean.js';
 import * as external from './external.js';
 import * as local from './local.js';
 import * as codex from './codex.js';
@@ -32,13 +33,18 @@ const sdapiUrl = (s) => cfg(s).external?.sdapiUrl || cfg(s).sdapiUrl || null;
 const pythonPath = (s) => cfg(s).local?.pythonPath || null;
 const codexCfg = (s) => cfg(s).codex || {};
 
-// Body wins when explicit (per-render checkbox); otherwise inherit the saved
-// per-mode default. Shared by `/generate` (stamps the resolved value onto the
-// request so all three dispatch paths agree) and `generateImage()` (safety net
-// for direct callers like `generateAvatar`).
-export function resolveAutoClean(bodyValue, settings, mode) {
-  if (typeof bodyValue === 'boolean') return bodyValue;
-  return cfg(settings)[mode]?.autoClean === true;
+// Resolve the cleaner flags from body overrides + saved per-mode settings.
+// Body fields win when explicit (per-render checkbox); otherwise inherit
+// the saved per-mode defaults (which include the legacy `autoClean: true`
+// → both-flags migration handled by `resolveCleanersFromConfig`). Shared
+// by `/generate` and `generateImage()` (safety net for direct callers
+// like `generateAvatar`).
+export function resolveImageCleaners(body, settings, mode) {
+  const saved = resolveCleanersFromConfig(cfg(settings)[mode]);
+  return {
+    cleanC2PA: typeof body?.cleanC2PA === 'boolean' ? body.cleanC2PA : saved.cleanC2PA,
+    denoise: typeof body?.denoise === 'boolean' ? body.denoise : saved.denoise,
+  };
 }
 
 export async function getMode() {
@@ -84,13 +90,14 @@ export async function generateImage(params) {
     delete normalized.initImagePath;
     delete normalized.initImageStrength;
   }
-  // Auto-clean is per-provider-mode, opt-in. The route layer already resolves
-  // this so the queue/route paths agree, but resolve here too for direct
-  // callers (e.g. `generateAvatar`) that skip the route. Strip from
-  // `normalized` so the explicit arg on each provider call isn't shadowed by
-  // the spread.
-  const autoClean = resolveAutoClean(normalized.autoClean, s, mode);
-  delete normalized.autoClean;
+  // Cleaners are per-provider-mode. The route layer already resolves them so
+  // the queue/route paths agree, but resolve here too for direct callers
+  // (e.g. `generateAvatar`) that skip the route. Strip from `normalized`
+  // so the explicit args on each provider call aren't shadowed by the spread.
+  const { cleanC2PA, denoise } = resolveImageCleaners(normalized, s, mode);
+  delete normalized.cleanC2PA;
+  delete normalized.denoise;
+  delete normalized.autoClean; // legacy body field — accept-and-ignore
   if (mode === IMAGE_GEN_MODE.CODEX) {
     const c = codexCfg(s);
     if (!c.enabled) {
@@ -99,12 +106,12 @@ export async function generateImage(params) {
         { status: 400, code: 'CODEX_IMAGEGEN_DISABLED' },
       );
     }
-    return codex.generateImage({ codexPath: c.codexPath, model: c.model, autoClean, ...normalized });
+    return codex.generateImage({ codexPath: c.codexPath, model: c.model, cleanC2PA, denoise, ...normalized });
   }
   if (mode === IMAGE_GEN_MODE.LOCAL) {
-    return local.generateImage({ pythonPath: pythonPath(s), autoClean, ...normalized });
+    return local.generateImage({ pythonPath: pythonPath(s), cleanC2PA, denoise, ...normalized });
   }
-  return external.generateImage({ sdapiUrl: sdapiUrl(s), autoClean, ...normalized });
+  return external.generateImage({ sdapiUrl: sdapiUrl(s), cleanC2PA, denoise, ...normalized });
 }
 
 const DEFAULT_NEGATIVE_PROMPT = 'blurry, low quality, distorted, deformed, ugly, watermark, text, signature';

@@ -8,10 +8,12 @@ export * from './cleanPlatePrompt.js';
 export * from './composeStyledPrompt.js';
 export * from './scenePrompt.js';
 export * from './seasonStructure.js';
+export * from './sheetPointers.js';
 export * from './universeStylePreset.js';
 
 // === Pipeline / image-gen defaults ===
 export * from './bibleLimits.js';
+export * from './imageCleaners.js';
 export * from './imageGenBackends.js';
 export * from './imageGenResolutions.js';
 export * from './issueLength.js';

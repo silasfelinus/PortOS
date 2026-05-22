@@ -28,8 +28,10 @@ grep -i "what you want to do" client/src/lib/README.md
 | `composeStyledPrompt.js` | Compose user prompt + negative with an optional style preset. |
 | `cleanPlatePrompt.js` | Clean-plate prompt builder for setting canon entries (Cluster A — A4). |
 | `seasonStructure.js` | Mirror of `server/lib/seasonStructure.js`. |
+| `sheetPointers.js` | Mirror of the character-sheet pointer helpers from `server/lib/storyBible.js`. `LEGACY_SHEET_VARIANT_ID` + `readSheetPointer` / `listSheetPointers` / `applySheetPointer` for traversing both the legacy `referenceSheetImageRef` field and the `referenceSheets` map. |
 | `universeStylePreset.js` | Build the client-side style preset that `composeStyledPrompt` layers on top. |
 | `bibleLimits.js` | Mirror of `server/lib/storyBible.js` `BIBLE_LIMITS`. |
+| `imageCleaners.js` | Mirror of `resolveCleanersFromConfig` from `server/lib/imageClean.js`. Reads `{cleanC2PA, denoise}` off a per-mode settings record + handles the legacy `autoClean: true` migration. |
 | `runnerFamilies.js` | Mirror of `server/lib/runners.js`. |
 | `issueLength.js` | Mirror of `server/lib/issueLength.js`. |
 

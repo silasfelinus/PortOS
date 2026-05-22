@@ -142,7 +142,8 @@ export async function generateImage({
   codexPath, model, prompt, width, height, negativePrompt,
   initImagePath, initImageStrength,
   jobId: providedJobId = null,
-  autoClean = false,
+  cleanC2PA = false,
+  denoise = false,
 }) {
   if (!prompt?.trim()) {
     throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
@@ -163,8 +164,9 @@ export async function generateImage({
   // Width/height/negative aren't first-class args for Codex's built-in
   // image_gen tool — pass them as natural-language hints inside the prompt.
   // Codex's imagegen skill is prompt-driven; the model decides resolution.
-  // gpt-image-2 honors a quality hint to escape its 1024 default and render
-  // at native hi-res (1024×1536 / 1536×1024 / 1536×1536).
+  // gpt-image-2 supports up to 4K output; the "(high quality)" suffix
+  // pushes it off its 1024 default toward whatever native size best fits
+  // the requested aspect ratio.
   const sizeHint = (width && height) ? ` (${width}x${height})` : '';
   const qualityHint = (width >= 1536 || height >= 1536) ? ' (high quality)' : '';
   const avoidHint = negativePrompt?.trim() ? `\nAvoid: ${negativePrompt.trim()}` : '';
@@ -200,7 +202,7 @@ export async function generateImage({
   // generateImage returns a job descriptor synchronously; the actual codex
   // child runs out-of-band so the HTTP response can ship while the client
   // attaches to the per-job SSE stream (mirrors local.js).
-  runCodex(job, jobId, bin, args, outputPath, filename, meta, { autoClean }).catch((err) => {
+  runCodex(job, jobId, bin, args, outputPath, filename, meta, { cleanC2PA, denoise }).catch((err) => {
     console.log(`❌ codex run failed [${jobId.slice(0, 8)}]: ${err?.message}`);
   });
 
@@ -213,7 +215,7 @@ export async function generateImage({
   };
 }
 
-async function runCodex(job, jobId, bin, args, outputPath, filename, meta, { autoClean = false } = {}) {
+async function runCodex(job, jobId, bin, args, outputPath, filename, meta, { cleanC2PA = false, denoise = false } = {}) {
   const proc = spawn(bin, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
   activeProcs.set(jobId, proc);
 
@@ -311,11 +313,11 @@ async function runCodex(job, jobId, bin, args, outputPath, filename, meta, { aut
       // useful for traceability even though it doesn't reproduce the output.
       const sidecar = join(PATHS.images, `${jobId}.metadata.json`);
       await writeFile(sidecar, JSON.stringify({ ...meta, codexSessionId: sessionId }, null, 2)).catch(() => {});
-      // Auto-clean (settings.imageGen.codex.autoClean) — runs BEFORE the
-      // SSE complete + completed events so subscribers see the cleaned bytes.
-      // codex output is the highest-value target for cleaning because gpt-image
-      // is the one provider that embeds C2PA provenance.
-      await autoCleanGeneratedImage({ enabled: autoClean, pngPath: outputPath, sidecarPath: sidecar, mode: IMAGE_GEN_MODE.CODEX });
+      // Cleaners run BEFORE the SSE complete + completed events so subscribers
+      // see the cleaned bytes. codex output is the highest-value target for
+      // C2PA stripping because gpt-image is the one provider that embeds
+      // provenance metadata.
+      await autoCleanGeneratedImage({ cleanC2PA, denoise, pngPath: outputPath, sidecarPath: sidecar, mode: IMAGE_GEN_MODE.CODEX });
       job.status = 'complete';
       if (activeProcs.get(jobId) === proc) activeProcs.delete(jobId);
       activeJobs.delete(jobId);
