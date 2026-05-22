@@ -24,11 +24,13 @@ vi.mock('../instances.js', async () => {
 vi.mock('../universeBuilder.js', async () => ({
   getUniverse: vi.fn(),
   mergeUniversesFromSync: vi.fn(),
+  listUniverses: vi.fn(),
 }));
 
 vi.mock('../pipeline/series.js', async () => ({
   getSeries: vi.fn(),
   mergeSeriesFromSync: vi.fn(),
+  listSeries: vi.fn(),
 }));
 
 vi.mock('../pipeline/issues.js', async () => ({
@@ -52,15 +54,18 @@ import {
   applyIncomingPush,
   diffAssetManifestAgainstLocal,
   buildAssetManifest,
+  autoSubscribeRecordToAllPeers,
+  autoSubscribePeerToAllRecords,
+  retryPendingPushesForPeer,
   __resetForTests,
 } from './peerSync.js';
 
 import { getInstanceId, getPeers } from '../instances.js';
-import { getUniverse, mergeUniversesFromSync } from '../universeBuilder.js';
-import { getSeries, mergeSeriesFromSync } from '../pipeline/series.js';
+import { getUniverse, mergeUniversesFromSync, listUniverses } from '../universeBuilder.js';
+import { getSeries, mergeSeriesFromSync, listSeries } from '../pipeline/series.js';
 import { listIssues, mergeIssuesFromSync } from '../pipeline/issues.js';
 import { peerFetch } from '../../lib/peerHttpClient.js';
-import { listCursors } from './peerTombstoneCursors.js';
+import { listCursors, __drainForTests as __drainCursors } from './peerTombstoneCursors.js';
 
 let originalDataPath;
 let originalImagesPath;
@@ -84,11 +89,28 @@ beforeEach(async () => {
   PATHS.data = tmp;
   PATHS.images = join(tmp, 'images');
 
-  // Reset mocks
+  // Reset mocks. The default peer fixture INTENTIONALLY INVERTS production
+  // defaults: `addPeer` in instances.js creates peers with `syncEnabled:
+  // false`, every `syncCategories.*` false, and `directions: ['outbound']`
+  // (the user has to explicitly opt them in via the Instances page).
+  // Tests in this file pre-enable everything so the new outbound/category
+  // gates in pushRecordToPeer don't short-circuit the broader push-pipeline
+  // assertions. Tests that exercise the gating paths explicitly override
+  // these mocks with the relevant flag flipped off.
   vi.mocked(getInstanceId).mockResolvedValue('local-instance');
   vi.mocked(getPeers).mockResolvedValue([
-    { instanceId: 'peer-a', name: 'Peer A', host: null, address: '10.0.0.2', port: 5555, directions: ['outbound', 'inbound'] },
-    { instanceId: 'peer-b-inbound-only', name: 'Peer B', host: null, address: '10.0.0.3', port: 5555, directions: ['inbound'] },
+    {
+      instanceId: 'peer-a', name: 'Peer A', host: null, address: '10.0.0.2', port: 5555,
+      enabled: true, syncEnabled: true,
+      directions: ['outbound', 'inbound'],
+      syncCategories: { universe: true, pipeline: true },
+    },
+    {
+      instanceId: 'peer-b-inbound-only', name: 'Peer B', host: null, address: '10.0.0.3', port: 5555,
+      enabled: true, syncEnabled: true,
+      directions: ['inbound'],
+      syncCategories: { universe: true, pipeline: true },
+    },
   ]);
   vi.mocked(peerFetch).mockReset();
   vi.mocked(mergeUniversesFromSync).mockResolvedValue({ applied: true, count: 1 });
@@ -104,7 +126,17 @@ beforeEach(async () => {
 afterEach(async () => {
   // Drain in-flight fire-and-forget pushes before tearing down the tmpdir —
   // otherwise persistPushSuccess can race the rm and leave ENOTEMPTY.
-  await __resetForTests();
+  // Drain BOTH writeTails (peerSync's subscription state AND the tombstone
+  // cursor module's separate writeTail, since initCursor writes happen
+  // outside peerSync's lock). Three drain cycles with a 5ms macrotask
+  // delay between them — pushes scheduled by an earlier drain (e.g.
+  // ackDeletesUpTo from a settled push) only enqueue on the next tick, so
+  // we need more than one pass to fully quiesce the writeTail chains.
+  for (let i = 0; i < 3; i++) {
+    await __resetForTests();
+    await __drainCursors();
+    await new Promise((r) => setTimeout(r, 5));
+  }
   await rm(tmp, { recursive: true, force: true });
   PATHS.data = originalDataPath;
   PATHS.images = originalImagesPath;
@@ -141,8 +173,32 @@ describe('peerSync', () => {
       const first = await subscribePeer({ peerId: 'peer-a', recordKind: 'universe', recordId: 'u1' });
       const second = await subscribePeer({ peerId: 'peer-a', recordKind: 'universe', recordId: 'u1' });
       expect(first.id).toBe(second.id);
+      // `created` distinguishes the first insert from the idempotent re-hit so
+      // auto-subscribe helpers can suppress duplicate "🔗 auto-subscribed" logs.
+      expect(first.created).toBe(true);
+      expect(second.created).toBe(false);
       const all = await listPeerSubscriptions();
       expect(all).toHaveLength(1);
+    });
+
+    it('does NOT re-push on idempotent re-subscribe (existing sub keeps its lastPushedAt)', async () => {
+      // Regression: subscribePeer used to fire pushRecordToPeer fire-and-
+      // forget on every call, even when the sub already existed. For the
+      // auto-subscribe paths that walk N records, that meant N
+      // buildAssetManifest sha-passes for already-pushed records — wasted
+      // work, since lastPushedHash short-circuits the wire I/O anyway.
+      vi.mocked(getUniverse).mockResolvedValue({ id: 'u1', name: 'Foo' });
+      vi.mocked(peerFetch).mockResolvedValue({ ok: true, json: async () => ({ missingAssets: [] }) });
+      await subscribePeer({ peerId: 'peer-a', recordKind: 'universe', recordId: 'u1' });
+      await new Promise((r) => setTimeout(r, 10));
+      // First subscribe DID push.
+      expect(vi.mocked(peerFetch).mock.calls.length).toBeGreaterThan(0);
+      vi.mocked(peerFetch).mockClear();
+      // Second subscribe is idempotent — no push should fire.
+      const second = await subscribePeer({ peerId: 'peer-a', recordKind: 'universe', recordId: 'u1' });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(second.created).toBe(false);
+      expect(vi.mocked(peerFetch)).not.toHaveBeenCalled();
     });
 
     it('rejects invalid kind', async () => {
@@ -216,6 +272,258 @@ describe('peerSync', () => {
       const result = await unsubscribeAllForPeer('peer-a');
       expect(result.removed).toHaveLength(2);
       expect(await findPeerSubscription('peer-a', 'universe', 'u1')).toBeNull();
+    });
+  });
+
+  describe('autoSubscribeRecordToAllPeers', () => {
+    beforeEach(() => {
+      // Default these so the push triggered by subscribePeer doesn't 500
+      // when the underlying buildPushPayload runs.
+      vi.mocked(getUniverse).mockResolvedValue({ id: 'u1' });
+      vi.mocked(getSeries).mockResolvedValue({ id: 's1' });
+      vi.mocked(listIssues).mockResolvedValue([]);
+      vi.mocked(peerFetch).mockResolvedValue({ ok: true, json: async () => ({}) });
+    });
+
+    it('subscribes the record to every peer with the matching category enabled', async () => {
+      vi.mocked(getPeers).mockResolvedValue([
+        { instanceId: 'peer-a', name: 'A', enabled: true, syncCategories: { universe: true } },
+        { instanceId: 'peer-b', name: 'B', enabled: true, syncCategories: { universe: true } },
+        { instanceId: 'peer-c', name: 'C', enabled: true, syncCategories: { universe: false } },
+      ]);
+      const created = await autoSubscribeRecordToAllPeers('universe', 'u1');
+      expect(created.map(c => c.peerId).sort()).toEqual(['peer-a', 'peer-b']);
+      expect(await findPeerSubscription('peer-a', 'universe', 'u1')).not.toBeNull();
+      expect(await findPeerSubscription('peer-c', 'universe', 'u1')).toBeNull();
+    });
+
+    it('skips disabled peers and inbound-only peers', async () => {
+      vi.mocked(getPeers).mockResolvedValue([
+        { instanceId: 'peer-a', name: 'A', enabled: false, syncCategories: { universe: true } },
+        { instanceId: 'peer-b', name: 'B', enabled: true, syncCategories: { universe: true }, directions: ['inbound'] },
+        { instanceId: 'peer-c', name: 'C', enabled: true, syncCategories: { universe: true }, directions: ['outbound'] },
+      ]);
+      const created = await autoSubscribeRecordToAllPeers('universe', 'u1');
+      expect(created.map(c => c.peerId)).toEqual(['peer-c']);
+    });
+
+    it('skips peers with syncEnabled=false (global toggle off)', async () => {
+      // Regression guard: the per-category bit is necessary but not sufficient
+      // — `syncEnabled` is the global "sync this peer at all" toggle. Without
+      // this check, a peer the user silenced would still be auto-subscribed
+      // and pushed to from createUniverse / createSeries.
+      vi.mocked(getPeers).mockResolvedValue([
+        { instanceId: 'peer-a', enabled: true, syncEnabled: false, syncCategories: { universe: true } },
+        { instanceId: 'peer-b', enabled: true, syncEnabled: true, syncCategories: { universe: true } },
+      ]);
+      const created = await autoSubscribeRecordToAllPeers('universe', 'u1');
+      expect(created.map(c => c.peerId)).toEqual(['peer-b']);
+      expect(await findPeerSubscription('peer-a', 'universe', 'u1')).toBeNull();
+    });
+
+    it('maps series records to the pipeline category', async () => {
+      vi.mocked(getPeers).mockResolvedValue([
+        { instanceId: 'peer-a', enabled: true, syncCategories: { universe: true, pipeline: false } },
+        { instanceId: 'peer-b', enabled: true, syncCategories: { universe: false, pipeline: true } },
+      ]);
+      const created = await autoSubscribeRecordToAllPeers('series', 's1');
+      expect(created.map(c => c.peerId)).toEqual(['peer-b']);
+    });
+
+    it('returns [] for invalid arguments', async () => {
+      expect(await autoSubscribeRecordToAllPeers('bogus', 'x')).toEqual([]);
+      expect(await autoSubscribeRecordToAllPeers('universe', '')).toEqual([]);
+    });
+
+    it('returns [] on re-run — only newly-created subs are reported', async () => {
+      // Idempotent re-subscribe must not re-log "🔗 auto-subscribed" or
+      // re-count existing subs as freshly created. This pins the
+      // `subscribePeer().created` plumbing.
+      vi.mocked(getPeers).mockResolvedValue([
+        { instanceId: 'peer-a', name: 'A', enabled: true, syncCategories: { universe: true } },
+      ]);
+      const first = await autoSubscribeRecordToAllPeers('universe', 'u1');
+      expect(first.map(c => c.peerId)).toEqual(['peer-a']);
+      const second = await autoSubscribeRecordToAllPeers('universe', 'u1');
+      expect(second).toEqual([]);
+    });
+  });
+
+  describe('autoSubscribePeerToAllRecords', () => {
+    beforeEach(() => {
+      vi.mocked(getUniverse).mockResolvedValue({ id: 'u1' });
+      vi.mocked(getSeries).mockResolvedValue({ id: 's1' });
+      vi.mocked(listIssues).mockResolvedValue([]);
+      vi.mocked(peerFetch).mockResolvedValue({ ok: true, json: async () => ({}) });
+      // Default: peer is registered + outbound-capable + has both categories
+      // enabled. Individual tests override to verify the gating paths.
+      vi.mocked(getPeers).mockResolvedValue([
+        { instanceId: 'peer-a', name: 'A', enabled: true, syncCategories: { universe: true, pipeline: true } },
+      ]);
+    });
+
+    it('subscribes every local non-deleted universe to the peer', async () => {
+      vi.mocked(listUniverses).mockResolvedValue([{ id: 'u1' }, { id: 'u2' }]);
+      const created = await autoSubscribePeerToAllRecords('peer-a', 'universe');
+      expect(created.map(c => c.recordId).sort()).toEqual(['u1', 'u2']);
+      expect(await findPeerSubscription('peer-a', 'universe', 'u1')).not.toBeNull();
+      expect(await findPeerSubscription('peer-a', 'universe', 'u2')).not.toBeNull();
+    });
+
+    it('subscribes every local non-deleted series to the peer', async () => {
+      vi.mocked(listSeries).mockResolvedValue([{ id: 's1' }, { id: 's2' }]);
+      const created = await autoSubscribePeerToAllRecords('peer-a', 'series');
+      expect(created.map(c => c.recordId).sort()).toEqual(['s1', 's2']);
+    });
+
+    it('returns [] when the peer is disabled', async () => {
+      // Guard against backfill pushing to a peer the user has explicitly
+      // disabled — the category bit can be stale even after `enabled: false`.
+      vi.mocked(getPeers).mockResolvedValue([
+        { instanceId: 'peer-a', enabled: false, syncCategories: { universe: true } },
+      ]);
+      vi.mocked(listUniverses).mockResolvedValue([{ id: 'u1' }]);
+      const created = await autoSubscribePeerToAllRecords('peer-a', 'universe');
+      expect(created).toEqual([]);
+      expect(await findPeerSubscription('peer-a', 'universe', 'u1')).toBeNull();
+    });
+
+    it('returns [] when syncEnabled is false (global toggle off)', async () => {
+      // Mirrors the autoSubscribeRecordToAllPeers test — both helpers go
+      // through `peerAllowsOutbound` which now consults syncEnabled.
+      vi.mocked(getPeers).mockResolvedValue([
+        { instanceId: 'peer-a', enabled: true, syncEnabled: false, syncCategories: { universe: true } },
+      ]);
+      vi.mocked(listUniverses).mockResolvedValue([{ id: 'u1' }]);
+      const created = await autoSubscribePeerToAllRecords('peer-a', 'universe');
+      expect(created).toEqual([]);
+      expect(await findPeerSubscription('peer-a', 'universe', 'u1')).toBeNull();
+    });
+
+    it('returns [] when the peer is inbound-only', async () => {
+      // Inbound-only peers must not get outbound subscriptions — that would
+      // trigger pushes in violation of the peer's configured directions.
+      vi.mocked(getPeers).mockResolvedValue([
+        { instanceId: 'peer-a', enabled: true, directions: ['inbound'], syncCategories: { universe: true } },
+      ]);
+      vi.mocked(listUniverses).mockResolvedValue([{ id: 'u1' }]);
+      const created = await autoSubscribePeerToAllRecords('peer-a', 'universe');
+      expect(created).toEqual([]);
+      expect(await findPeerSubscription('peer-a', 'universe', 'u1')).toBeNull();
+    });
+
+    it('returns [] when the matching category is no longer enabled', async () => {
+      // Race window: caller saw false→true flip, then the user toggled back
+      // to false before this helper ran. Re-check protects against that.
+      vi.mocked(getPeers).mockResolvedValue([
+        { instanceId: 'peer-a', enabled: true, syncCategories: { universe: false } },
+      ]);
+      vi.mocked(listUniverses).mockResolvedValue([{ id: 'u1' }]);
+      const created = await autoSubscribePeerToAllRecords('peer-a', 'universe');
+      expect(created).toEqual([]);
+    });
+
+    it('returns [] when the peer id is unknown', async () => {
+      vi.mocked(getPeers).mockResolvedValue([]);
+      vi.mocked(listUniverses).mockResolvedValue([{ id: 'u1' }]);
+      const created = await autoSubscribePeerToAllRecords('peer-ghost', 'universe');
+      expect(created).toEqual([]);
+    });
+
+    it('returns [] on re-run — only newly-created subs are reported', async () => {
+      // `subscribePeer` is idempotent; the helper must not double-count
+      // existing subs as freshly created on the second invocation.
+      vi.mocked(listUniverses).mockResolvedValue([{ id: 'u1' }]);
+      const first = await autoSubscribePeerToAllRecords('peer-a', 'universe');
+      expect(first.map(c => c.recordId)).toEqual(['u1']);
+      const second = await autoSubscribePeerToAllRecords('peer-a', 'universe');
+      expect(second).toEqual([]);
+    });
+
+    it('returns [] for invalid arguments', async () => {
+      expect(await autoSubscribePeerToAllRecords('', 'universe')).toEqual([]);
+      expect(await autoSubscribePeerToAllRecords('peer-a', 'bogus')).toEqual([]);
+    });
+
+    it('short-circuits the for-loop when every record is already subscribed', async () => {
+      // Regression: peer:online fires this helper on every online
+      // transition. Without the pre-computed set-diff, a steady-state peer
+      // with all records already subscribed would still iterate N records
+      // and pay N subscribePeer readState calls per online transition.
+      vi.mocked(listUniverses).mockResolvedValue([{ id: 'u1' }, { id: 'u2' }]);
+      await autoSubscribePeerToAllRecords('peer-a', 'universe');
+      await new Promise((r) => setTimeout(r, 10));
+      vi.mocked(peerFetch).mockClear();
+      // Re-run on steady state — no push should fire because the set-diff
+      // is empty and the for-loop body never runs.
+      const second = await autoSubscribePeerToAllRecords('peer-a', 'universe');
+      expect(second).toEqual([]);
+      expect(vi.mocked(peerFetch)).not.toHaveBeenCalled();
+    });
+
+    it('converges from peer:online when the toggle fired before instanceId was known', async () => {
+      // Regression for the addPeer→toggle→probe ordering: addPeer creates
+      // a peer with instanceId=null. The user can flip syncCategories on
+      // before the first probe lands, in which case instances.updatePeer's
+      // inline backfill silently no-ops (no instanceId to subscribe to).
+      // The peer:online listener (wired in installPeerSyncListener) must
+      // re-run autoSubscribePeerToAllRecords once the probe assigns the
+      // instanceId, otherwise the user's intent is lost forever.
+      const { instanceEvents } = await import('../instanceEvents.js');
+      const { installPeerSyncListener } = await import('./peerSync.js');
+      installPeerSyncListener();
+      vi.mocked(listUniverses).mockResolvedValue([{ id: 'u1' }]);
+      // Emit peer:online with a peer that has universe-sync turned on but
+      // was never seen by the inline backfill (the test never called
+      // updatePeer — that's the point).
+      instanceEvents.emit('peer:online', {
+        instanceId: 'peer-a',
+        name: 'A',
+        enabled: true,
+        syncEnabled: true,
+        directions: ['outbound'],
+        syncCategories: { universe: true },
+      });
+      // Allow the listener's fire-and-forget IIFE to settle.
+      await new Promise((r) => setTimeout(r, 30));
+      expect(await findPeerSubscription('peer-a', 'universe', 'u1')).not.toBeNull();
+    });
+  });
+
+  describe('retryPendingPushesForPeer', () => {
+    beforeEach(() => {
+      vi.mocked(getUniverse).mockResolvedValue({ id: 'u1' });
+      vi.mocked(listIssues).mockResolvedValue([]);
+    });
+
+    it('re-pushes subs with lastPushedAt=null and skips already-pushed subs', async () => {
+      // Create a sub with the initial push FAILING — leaves lastPushedAt=null.
+      vi.mocked(peerFetch).mockResolvedValueOnce(null);
+      await subscribePeer({ peerId: 'peer-a', recordKind: 'universe', recordId: 'u1' });
+      // Wait for the fire-and-forget initial push to settle so the
+      // persisted lastPushedAt is final before we re-check it.
+      await new Promise((r) => setTimeout(r, 10));
+      const stale = await findPeerSubscription('peer-a', 'universe', 'u1');
+      expect(stale.lastPushedAt).toBeNull();
+      // Peer comes back — retry must succeed and stamp lastPushedAt.
+      vi.mocked(peerFetch).mockResolvedValue({ ok: true, json: async () => ({}) });
+      const result = await retryPendingPushesForPeer('peer-a');
+      expect(result.retried).toBe(1);
+      const updated = await findPeerSubscription('peer-a', 'universe', 'u1');
+      expect(updated.lastPushedAt).toBeTruthy();
+      // Second retry must be a no-op now that lastPushedAt is set.
+      const second = await retryPendingPushesForPeer('peer-a');
+      expect(second.retried).toBe(0);
+    });
+
+    it('returns {retried: 0} when the peer has no subscriptions', async () => {
+      const result = await retryPendingPushesForPeer('peer-without-subs');
+      expect(result).toEqual({ retried: 0 });
+    });
+
+    it('returns {retried: 0} for invalid peerId', async () => {
+      expect(await retryPendingPushesForPeer('')).toEqual({ retried: 0 });
+      expect(await retryPendingPushesForPeer(null)).toEqual({ retried: 0 });
     });
   });
 
@@ -361,6 +669,60 @@ describe('peerSync', () => {
       });
       expect(result.pushed).toBe(false);
       expect(result.reason).toBe('peer-not-found');
+    });
+
+    it('refuses to push to a peer with syncEnabled=false (stale sub does not outlive the user toggle)', async () => {
+      // Regression: an existing subscription is not a license to keep pushing
+      // after the user has globally silenced the peer. Without this gate,
+      // every subsequent edit would still leak across the wire.
+      vi.mocked(getPeers).mockResolvedValue([
+        {
+          instanceId: 'peer-a', name: 'Peer A',
+          enabled: true, syncEnabled: false,
+          directions: ['outbound'],
+          syncCategories: { universe: true },
+        },
+      ]);
+      const result = await pushRecordToPeer({
+        id: 's', peerId: 'peer-a', recordKind: 'universe', recordId: 'u1',
+      });
+      expect(result.pushed).toBe(false);
+      expect(result.reason).toBe('peer-disallows-outbound');
+      expect(peerFetch).not.toHaveBeenCalled();
+    });
+
+    it('refuses to push to a peer that has been switched to inbound-only', async () => {
+      vi.mocked(getPeers).mockResolvedValue([
+        {
+          instanceId: 'peer-a', name: 'Peer A',
+          enabled: true, syncEnabled: true,
+          directions: ['inbound'],
+          syncCategories: { universe: true },
+        },
+      ]);
+      const result = await pushRecordToPeer({
+        id: 's', peerId: 'peer-a', recordKind: 'universe', recordId: 'u1',
+      });
+      expect(result.pushed).toBe(false);
+      expect(result.reason).toBe('peer-disallows-outbound');
+    });
+
+    it('refuses to push when the matching category has been toggled off', async () => {
+      // Stale sub on a universe but the user later toggled `syncCategories.universe`
+      // back off — stop pushing universes to this peer.
+      vi.mocked(getPeers).mockResolvedValue([
+        {
+          instanceId: 'peer-a', name: 'Peer A',
+          enabled: true, syncEnabled: true,
+          directions: ['outbound'],
+          syncCategories: { universe: false, pipeline: true },
+        },
+      ]);
+      const result = await pushRecordToPeer({
+        id: 's', peerId: 'peer-a', recordKind: 'universe', recordId: 'u1',
+      });
+      expect(result.pushed).toBe(false);
+      expect(result.reason).toBe('category-disabled');
     });
 
     it('returns record-not-found when the record id no longer exists', async () => {

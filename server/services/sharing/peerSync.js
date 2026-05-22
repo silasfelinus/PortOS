@@ -16,7 +16,8 @@
  * sender to allow GC of the tombstone once every subscribed peer has seen
  * it. Snapshot sync (`dataSync.js` 60s loop) remains the safety net for
  * (peer, kind) pairs that DON'T have per-record subscriptions; the
- * orchestrator skip-when-subscribed wiring lands in Stage 3.
+ * `syncOrchestrator` consults `listPeerSubscriptions` per cycle and skips
+ * the snapshot category for any kind a peer-sub already covers.
  *
  * State files (under `data/sharing/`):
  *   - `peer_subscriptions.json` — outgoing subscriptions FROM this instance.
@@ -24,11 +25,14 @@
  *   - `peer_tombstone_cursors.json` — per-peer tombstone ack water-marks
  *     (managed by `peerTombstoneCursors.js`, this module advances it).
  *
- * Stage 2 boundary: the push uses `peerFetch` (an HTTPS-or-HTTP client) and
- * targets a `/api/peer-sync/push` endpoint that doesn't exist yet — the
- * actual HTTP route + the orchestrator wiring land in Stage 3. Until then
- * pushes fail closed (logged + retried on next event), which is the right
- * behavior even in the deployed system.
+ * Transport: pushes POST to the peer's `/api/peer-sync/push` (wired in
+ * `server/routes/peerSync.js`) via `peerFetch` — an HTTPS-or-HTTP node-fetch
+ * variant that accepts the Tailnet's self-signed certs. Receiver pulls
+ * missing assets back over the sender's `/data/{images,image-refs,videos}/`
+ * static mounts (accept-ranges enabled). All five stages of the federated
+ * peer-sync project are live: subscription store + asset manifest (this
+ * module), HTTP routes (Stage 3), UI + receiver-side asset pull (Stage 4),
+ * and tombstone GC (Stage 5; `sharing/tombstoneGc.js`).
  */
 
 import { join, basename } from 'path';
@@ -44,6 +48,7 @@ import { sanitizeRecordForWire } from '../../lib/syncWire.js';
 import { collectAssetReferences } from './exporter.js';
 import { recordEvents } from './recordEvents.js';
 import { getInstanceId, getPeers, UNKNOWN_INSTANCE_ID } from '../instances.js';
+import { instanceEvents } from '../instanceEvents.js';
 import { getUniverse, mergeUniversesFromSync } from '../universeBuilder.js';
 import { getSeries, mergeSeriesFromSync } from '../pipeline/series.js';
 import { listIssues, mergeIssuesFromSync } from '../pipeline/issues.js';
@@ -145,11 +150,12 @@ export async function subscribePeer({ peerId, recordKind, recordId }, opts = {})
     throw makeErr('peerId and recordId are required', ERR_VALIDATION);
   }
 
-  const sub = await withStateLock(async () => {
+  const { sub, created } = await withStateLock(async () => {
     const state = await readState();
     const id = subscriptionId({ peerId, recordKind, recordId });
     const now = new Date().toISOString();
     let existing = state.subscriptions.find((s) => s.id === id);
+    let wasCreated = false;
     if (!existing) {
       existing = {
         id,
@@ -164,21 +170,36 @@ export async function subscribePeer({ peerId, recordKind, recordId }, opts = {})
       };
       state.subscriptions.push(existing);
       await writeState(state);
+      wasCreated = true;
     }
-    return existing;
+    return { sub: existing, created: wasCreated };
   });
   // initCursor manages its own state file; no need to hold the subscription
-  // lock across it.
-  await initCursor(peerId);
+  // lock across it. Callers that already initialized the cursor for this
+  // peerId (e.g. the backfill loop in `autoSubscribePeerToAllRecords`) can
+  // pass `skipCursorInit: true` to avoid N redundant cursor reads + lock
+  // acquisitions when subscribing many records to the same peer in sequence.
+  if (!opts.skipCursorInit) await initCursor(peerId);
 
-  // Trigger initial push unless this was auto-created by a reverse-subscribe
-  // (the peer just pushed us their latest, so pushing back is a no-op cycle).
-  if (!opts.adoptedFromReverse) {
+  // Trigger initial push ONLY on the first insert (created=true) — and not
+  // when this was auto-created by a reverse-subscribe (the peer just pushed
+  // us their latest, so pushing back is a no-op cycle). Idempotent re-hits
+  // (auto-subscribe paths walking N existing records, manual re-subscribe,
+  // peer:online convergence) MUST NOT re-push: the record's content hasn't
+  // moved, so buildPushPayload would burn an asset-manifest sha-pass for a
+  // result lastPushedHash will short-circuit anyway. Callers that need a
+  // forced re-push can call pushRecordToPeer(sub) directly.
+  if (created && !opts.adoptedFromReverse) {
     pushRecordToPeer(sub).catch((err) => {
       console.log(`⚠️ peerSync: initial push failed for ${sub.id}: ${err.message}`);
     });
   }
-  return sub;
+  // `created` distinguishes a freshly-inserted subscription from an idempotent
+  // hit on an existing one. Auto-subscribe helpers use this to suppress
+  // "🔗 ... auto-subscribed" log spam (and inflated return arrays) on re-runs.
+  // The HTTP route forwards this through `{ subscription }` so REST clients
+  // can also branch on it.
+  return { ...sub, created };
 }
 
 export async function unsubscribePeer(id) {
@@ -212,6 +233,128 @@ export async function unsubscribePeer(id) {
     await removeTombstoneCursor(sub.peerId).catch(() => {});
   }
   return { id, removed: true };
+}
+
+// Map a subscribable record kind to the per-peer `syncCategories` key that
+// controls whether auto-subscribe is allowed for that kind. Matches the
+// inverse mapping in syncOrchestrator.js `categoriesCoveredByPeerSync`.
+const KIND_TO_CATEGORY = Object.freeze({
+  universe: 'universe',
+  series: 'pipeline',
+});
+
+function peerAllowsOutbound(peer) {
+  if (!peer || peer.enabled === false) return false;
+  // `syncEnabled` is the global "sync this peer at all" toggle (separate from
+  // per-category `syncCategories.*`). When the user has globally disabled sync
+  // for a peer, auto-subscribe MUST NOT create subscriptions or fire pushes —
+  // doing so would leak records to a peer the user explicitly silenced. The
+  // per-category check (peerHasCategory) is necessary but not sufficient on
+  // its own, because syncCategories can be set independently.
+  if (peer.syncEnabled === false) return false;
+  const directions = Array.isArray(peer.directions) ? peer.directions : [];
+  if (directions.length > 0 && !directions.includes('outbound')) return false;
+  return true;
+}
+
+function peerHasCategory(peer, recordKind) {
+  const cat = KIND_TO_CATEGORY[recordKind];
+  if (!cat) return false;
+  const cats = peer?.syncCategories;
+  return !!(cats && cats[cat] === true);
+}
+
+/**
+ * When a new local record is created (universe / series), subscribe it to
+ * every peer that has the matching category enabled. Idempotent + best-effort
+ * — `subscribePeer` short-circuits if a sub already exists, and we swallow
+ * per-peer failures so a single offline peer can't block the creation path.
+ */
+export async function autoSubscribeRecordToAllPeers(recordKind, recordId) {
+  if (!PEER_SUBSCRIBABLE_KINDS.includes(recordKind) || !isNonEmptyStr(recordId)) return [];
+  const peers = await getPeers().catch(() => []);
+  const targets = peers.filter(p => isNonEmptyStr(p.instanceId) && peerAllowsOutbound(p) && peerHasCategory(p, recordKind));
+  if (targets.length === 0) return [];
+  // Only track + log subscriptions that were *newly created* on this call.
+  // `subscribePeer` is idempotent, so a re-run against already-subscribed
+  // peers would otherwise return the existing subs and emit misleading
+  // "🔗 auto-subscribed" lines on every retry / restart.
+  const created = [];
+  for (const peer of targets) {
+    const sub = await subscribePeer({ peerId: peer.instanceId, recordKind, recordId }).catch((err) => {
+      console.log(`⚠️ peerSync: auto-subscribe ${recordKind}/${recordId} → ${peer.name || peer.instanceId} failed: ${err.message}`);
+      return null;
+    });
+    if (sub && sub.created) {
+      created.push({ peerId: peer.instanceId, subscriptionId: sub.id });
+      console.log(`🔗 peerSync: auto-subscribed ${recordKind}/${recordId} → ${peer.name || peer.instanceId}`);
+    }
+  }
+  return created;
+}
+
+/**
+ * When a peer's syncCategories toggle flips false → true for a category,
+ * subscribe every existing local non-deleted record of the matching kind
+ * to that peer. Idempotent — re-running is safe.
+ *
+ * Dynamic imports for the listers avoid a static cycle (peerSync already
+ * imports merge entry points from universeBuilder / pipeline.series).
+ */
+export async function autoSubscribePeerToAllRecords(peerId, recordKind) {
+  if (!isNonEmptyStr(peerId) || !PEER_SUBSCRIBABLE_KINDS.includes(recordKind)) return [];
+  // Re-check the peer is enabled + outbound-capable + still has the category
+  // turned on. The caller (instances.updatePeer) already saw the false→true
+  // flip inside withData, but this helper is also reachable from other
+  // backfill paths and we don't want to push to an inbound-only peer just
+  // because the category bit was set. Snapshot read is good enough — peer
+  // edits are infrequent compared to subscription pushes.
+  const peers = await getPeers().catch(() => []);
+  const peer = peers.find(p => p.instanceId === peerId);
+  if (!peer || !peerAllowsOutbound(peer) || !peerHasCategory(peer, recordKind)) return [];
+  let records = [];
+  if (recordKind === 'universe') {
+    const { listUniverses } = await import('../universeBuilder.js');
+    records = await listUniverses({ includeDeleted: false }).catch(() => []);
+  } else if (recordKind === 'series') {
+    const { listSeries } = await import('../pipeline/series.js');
+    records = await listSeries({ includeDeleted: false }).catch(() => []);
+  }
+  if (records.length === 0) return [];
+  // Compute the set difference up front: which local records aren't yet
+  // subscribed to this peer? The peer:online convergence path fires this
+  // helper on every online transition, so the steady-state case (all
+  // records already subscribed) must NOT walk N records and N subscribePeer
+  // readState calls. A single listPeerSubscriptions + Set diff collapses
+  // it to O(K) where K = existing-sub count, with the for-loop body
+  // running only for records that genuinely need a new sub.
+  const existingSubs = await listPeerSubscriptions({ peerId, recordKind });
+  const existingIds = new Set(existingSubs.map(s => s.recordId));
+  const missing = records.filter(r => isNonEmptyStr(r.id) && !existingIds.has(r.id));
+  if (missing.length === 0) return [];
+  // Initialize the tombstone cursor for this peer ONCE up front. Each
+  // subsequent subscribePeer call passes `skipCursorInit: true` ONLY when
+  // this pre-init succeeded — otherwise we'd silently create subscriptions
+  // without a cursor, which breaks the tombstone horizon contract
+  // (`subscribedSince` would be unset, so historical deletes could replay).
+  // On failure we fall back to per-call initCursor inside subscribePeer,
+  // paying the cost of N file reads but preserving correctness.
+  const cursorInited = await initCursor(peerId).then(() => true).catch(() => false);
+  // Only track newly-created subscriptions so re-runs of this helper (e.g. a
+  // second toggle on the same category) don't double-report or noise the
+  // backfill log line with already-subscribed records.
+  const created = [];
+  for (const rec of missing) {
+    const sub = await subscribePeer({ peerId, recordKind, recordId: rec.id }, { skipCursorInit: cursorInited }).catch((err) => {
+      console.log(`⚠️ peerSync: backfill-subscribe ${recordKind}/${rec.id} → ${peerId} failed: ${err.message}`);
+      return null;
+    });
+    if (sub && sub.created) created.push({ recordId: rec.id, subscriptionId: sub.id });
+  }
+  if (created.length > 0) {
+    console.log(`🔗 peerSync: backfill-subscribed ${created.length} ${recordKind} record(s) → ${peerId}`);
+  }
+  return created;
 }
 
 /**
@@ -390,6 +533,15 @@ export async function pushRecordToPeer(sub) {
   }
   const peer = await findPeerById(sub.peerId);
   if (!peer) return { pushed: false, reason: 'peer-not-found' };
+  // Re-gate on the same peer flags the auto-subscribe path checks. An
+  // existing subscription is NOT a license to keep pushing after the user
+  // has globally disabled sync (`syncEnabled: false`), disabled the peer
+  // (`enabled: false`), switched the peer to inbound-only (`directions:
+  // ['inbound']`), or toggled the matching category off (`syncCategories.*
+  // === false`). Without these guards, stale subs would silently outlive
+  // the user's intent and leak records on the next edit.
+  if (!peerAllowsOutbound(peer)) return { pushed: false, reason: 'peer-disallows-outbound' };
+  if (!peerHasCategory(peer, sub.recordKind)) return { pushed: false, reason: 'category-disabled' };
 
   const ourInstanceId = await getInstanceId().catch(() => null);
   if (!isNonEmptyStr(ourInstanceId) || ourInstanceId === UNKNOWN_INSTANCE_ID) {
@@ -860,9 +1012,36 @@ async function getIssueSeriesId(issueId) {
   return found?.seriesId || null;
 }
 
-let onUpdated = null;
+/**
+ * Re-push every subscription targeting `peerId` whose initial push hasn't
+ * landed yet (`lastPushedAt == null`). Fires on `peer:online` so a record
+ * created while the peer was unreachable still reaches it the moment the
+ * peer comes back — without this retry, the new record would sit in limbo
+ * until the user edited it again (creation paths don't fire
+ * `recordEvents.updated`, so the existing debounce listener never sees it).
+ *
+ * Already-pushed subs are filtered out so this can't double-push under load.
+ * Failures stay non-fatal — the next `peer:online` (or the user's next edit)
+ * gets another attempt.
+ */
+export async function retryPendingPushesForPeer(peerId) {
+  if (!isNonEmptyStr(peerId)) return { retried: 0 };
+  const subs = await listPeerSubscriptions({ peerId });
+  const pending = subs.filter(s => !s.lastPushedAt);
+  if (pending.length === 0) return { retried: 0 };
+  console.log(`🔄 peerSync: retrying ${pending.length} pending push${pending.length === 1 ? '' : 'es'} → ${peerId}`);
+  for (const sub of pending) {
+    await pushRecordToPeer(sub).catch((err) => {
+      console.log(`⚠️ peerSync: retry push failed for ${sub.id}: ${err.message}`);
+    });
+  }
+  return { retried: pending.length };
+}
 
-/** Attach the `recordEvents` listener — call once during sharing init. */
+let onUpdated = null;
+let onPeerOnline = null;
+
+/** Attach the `recordEvents` + `peer:online` listeners — call once during sharing init. */
 export function installPeerSyncListener() {
   if (onUpdated) return;
   onUpdated = ({ recordKind, recordId }) => {
@@ -871,6 +1050,42 @@ export function installPeerSyncListener() {
     });
   };
   recordEvents.on('updated', onUpdated);
+  // On peer:online, drive the local subscription state to convergence with
+  // the user's intent. Two cases:
+  //
+  // (1) Backfill missed at toggle time. `instances.updatePeer` runs the
+  //     `autoSubscribePeerToAllRecords` backfill inline ONLY when the peer
+  //     already has a known instanceId; for a freshly-added peer that
+  //     hasn't been probed yet, instanceId is null and the inline backfill
+  //     silently no-ops. By re-running it here for every category the peer
+  //     has enabled, we recover that intent the moment the peer comes
+  //     online and we learn its instanceId.
+  //
+  // (2) Initial-push retry. Subscriptions whose `lastPushedAt == null`
+  //     (typically because the peer was offline when subscribePeer fired
+  //     the initial push) get a second attempt now that the peer is
+  //     reachable. Already-pushed subs are filtered inside the helper.
+  //
+  // Both helpers are idempotent: (1) calls subscribePeer which short-
+  // circuits on existing subs, (2) filters by lastPushedAt. Safe to fire
+  // both unconditionally per peer:online.
+  onPeerOnline = (peer) => {
+    if (!peer?.instanceId) return;
+    (async () => {
+      const cats = peer.syncCategories || {};
+      // KIND_TO_CATEGORY['universe']='universe', ['series']='pipeline'.
+      // Iterate the kind keys so the (kind, category) mapping stays single-
+      // sourced from KIND_TO_CATEGORY.
+      for (const kind of PEER_SUBSCRIBABLE_KINDS) {
+        const cat = KIND_TO_CATEGORY[kind];
+        if (cats[cat] === true) {
+          await autoSubscribePeerToAllRecords(peer.instanceId, kind).catch(() => {});
+        }
+      }
+      await retryPendingPushesForPeer(peer.instanceId).catch(() => {});
+    })().catch(() => {});
+  };
+  instanceEvents.on('peer:online', onPeerOnline);
 }
 
 /**
@@ -882,6 +1097,8 @@ export async function __resetForTests() {
   for (const t of pendingTimers.values()) clearTimeout(t);
   pendingTimers.clear();
   if (onUpdated) recordEvents.off('updated', onUpdated);
+  if (onPeerOnline) instanceEvents.off('peer:online', onPeerOnline);
   onUpdated = null;
+  onPeerOnline = null;
   await writeTail.catch(() => {});
 }
