@@ -682,6 +682,143 @@ describe('pipeline issues service', () => {
     await expect(svc.deleteIssue(i.id)).rejects.toMatchObject({ code: svc.ERR_NOT_FOUND });
   });
 
+  describe('soft-delete (tombstones for peer sync)', () => {
+    it('deleteIssue soft-deletes (record stays on disk with deleted=true)', async () => {
+      const i = await svc.createIssue({ seriesId: 'ser-1', title: 'First' });
+      await svc.deleteIssue(i.id);
+      expect((await svc.listIssues({ seriesId: 'ser-1' })).map((x) => x.id)).not.toContain(i.id);
+      const all = await svc.listIssues({ seriesId: 'ser-1', includeDeleted: true });
+      const tomb = all.find((x) => x.id === i.id);
+      expect(tomb).toMatchObject({ deleted: true });
+      expect(tomb.deletedAt).toBeTruthy();
+    });
+
+    it('getIssue 404s for tombstoned; includeDeleted exposes it', async () => {
+      const i = await svc.createIssue({ seriesId: 'ser-1', title: 'Hidden' });
+      await svc.deleteIssue(i.id);
+      await expect(svc.getIssue(i.id)).rejects.toMatchObject({ code: svc.ERR_NOT_FOUND });
+      const tomb = await svc.getIssue(i.id, { includeDeleted: true });
+      expect(tomb).toMatchObject({ id: i.id, deleted: true });
+    });
+
+    it('updateIssue 404s on a tombstone (no zombie edits)', async () => {
+      const i = await svc.createIssue({ seriesId: 'ser-1', title: 'Locked' });
+      await svc.deleteIssue(i.id);
+      await expect(svc.updateIssue(i.id, { title: 'Zombie' })).rejects.toMatchObject({
+        code: svc.ERR_NOT_FOUND,
+      });
+    });
+
+    it('insertIssueWithId overwrites a tombstoned record (re-import undeletes)', async () => {
+      const id = 'iss-550e8400-e29b-41d4-a716-44665544abce';
+      await svc.insertIssueWithId({ id, seriesId: 'ser-1', title: 'First' });
+      await svc.deleteIssue(id);
+      const restored = await svc.insertIssueWithId({ id, seriesId: 'ser-1', title: 'Restored' });
+      expect(restored).toMatchObject({ id, title: 'Restored', deleted: false });
+    });
+
+    it('insertIssueWithId still rejects DUPLICATE on a LIVE record', async () => {
+      const id = 'iss-550e8400-e29b-41d4-a716-44665544abcf';
+      await svc.insertIssueWithId({ id, seriesId: 'ser-1', title: 'First' });
+      await expect(svc.insertIssueWithId({ id, seriesId: 'ser-1', title: 'Second' }))
+        .rejects.toMatchObject({ code: svc.ERR_DUPLICATE });
+    });
+
+    it('renumberInline skips tombstones — surviving issues stay contiguous', async () => {
+      const a = await svc.createIssue({ seriesId: 'ser-renum', title: 'A' });
+      const b = await svc.createIssue({ seriesId: 'ser-renum', title: 'B' });
+      const c = await svc.createIssue({ seriesId: 'ser-renum', title: 'C' });
+      await svc.deleteIssue(b.id);
+      const live = await svc.listIssues({ seriesId: 'ser-renum' });
+      expect(live.map((i) => i.title)).toEqual(['A', 'C']);
+      expect(live.map((i) => i.number)).toEqual([1, 2]);
+      // Tombstone keeps its old number but is hidden from listIssues.
+      const all = await svc.listIssues({ seriesId: 'ser-renum', includeDeleted: true });
+      expect(all.find((i) => i.id === b.id).deleted).toBe(true);
+      // Adding a new issue picks up after the live tail (3), not 4 from the tombstone.
+      const d = await svc.createIssue({ seriesId: 'ser-renum', title: 'D' });
+      expect(d.number).toBe(3);
+    });
+
+    describe('mergeIssuesFromSync', () => {
+      it('applies an inbound soft-delete from a peer', async () => {
+        const i = await svc.createIssue({ seriesId: 'ser-1', title: 'Synced' });
+        const ts = new Date(Date.now() + 60_000).toISOString();
+        const r = await svc.mergeIssuesFromSync([{
+          ...i,
+          deleted: true,
+          deletedAt: ts,
+          updatedAt: ts,
+        }]);
+        expect(r).toEqual({ applied: true, count: 1 });
+        await expect(svc.getIssue(i.id)).rejects.toMatchObject({ code: svc.ERR_NOT_FOUND });
+      });
+
+      it('LWW: an inbound edit with later updatedAt resurrects over a local tombstone', async () => {
+        const i = await svc.createIssue({ seriesId: 'ser-1', title: 'Original' });
+        await svc.deleteIssue(i.id);
+        const editTs = new Date(Date.now() + 60_000).toISOString();
+        const r = await svc.mergeIssuesFromSync([{
+          ...i,
+          title: 'Edited After Delete',
+          deleted: false,
+          deletedAt: null,
+          updatedAt: editTs,
+        }]);
+        expect(r.applied).toBe(true);
+        const live = await svc.getIssue(i.id);
+        expect(live).toMatchObject({ title: 'Edited After Delete', deleted: false });
+      });
+
+      it('synced RESURRECTION compacts collisions — issue restored mid-series gets a unique number', async () => {
+        // Regression: local delete already compacts numbering (A=1, C=2 after
+        // deleting B). When B's tombstone is overridden by a later remote edit
+        // (B comes back to life), B re-enters with its OLD number (2) and
+        // collides with C. mergeIssuesFromSync must trigger a renumber on
+        // both delete-transitions AND resurrection-transitions.
+        const a = await svc.createIssue({ seriesId: 'ser-resurrect', title: 'A' });
+        const b = await svc.createIssue({ seriesId: 'ser-resurrect', title: 'B' });
+        const c = await svc.createIssue({ seriesId: 'ser-resurrect', title: 'C' });
+        expect([a.number, b.number, c.number]).toEqual([1, 2, 3]);
+        await svc.deleteIssue(b.id);
+        // Local compacts to A=1, C=2.
+        const afterDelete = await svc.listIssues({ seriesId: 'ser-resurrect' });
+        expect(afterDelete.map((i) => i.number)).toEqual([1, 2]);
+        // Remote sends B with a later updatedAt — resurrection.
+        const editTs = new Date(Date.now() + 60_000).toISOString();
+        await svc.mergeIssuesFromSync([{
+          ...b,
+          deleted: false,
+          deletedAt: null,
+          updatedAt: editTs,
+        }]);
+        const live = await svc.listIssues({ seriesId: 'ser-resurrect' });
+        // All three live, contiguous numbering, no duplicates.
+        expect(live.map((i) => i.title).sort()).toEqual(['A', 'B', 'C']);
+        const numbers = live.map((i) => i.number).sort((x, y) => x - y);
+        expect(numbers).toEqual([1, 2, 3]);
+        expect(new Set(numbers).size).toBe(3);
+      });
+
+      it('synced delete-transition compacts surviving issues for that series', async () => {
+        const a = await svc.createIssue({ seriesId: 'ser-sync-renum', title: 'A' });
+        const b = await svc.createIssue({ seriesId: 'ser-sync-renum', title: 'B' });
+        const c = await svc.createIssue({ seriesId: 'ser-sync-renum', title: 'C' });
+        expect([a.number, b.number, c.number]).toEqual([1, 2, 3]);
+        const ts = new Date(Date.now() + 60_000).toISOString();
+        await svc.mergeIssuesFromSync([{
+          ...b,
+          deleted: true,
+          deletedAt: ts,
+          updatedAt: ts,
+        }]);
+        const live = await svc.listIssues({ seriesId: 'ser-sync-renum' });
+        expect(live.map((i) => i.title)).toEqual(['A', 'C']);
+        expect(live.map((i) => i.number)).toEqual([1, 2]);
+      });
+    });
+  });
+
   describe('isStageReady', () => {
     it('returns true for ready/edited stages with non-empty output', () => {
       expect(svc.isStageReady({ status: 'ready', output: 'beats' })).toBe(true);
@@ -842,6 +979,29 @@ describe('pipeline issues service', () => {
       const { series } = await setup();
       const result = await svc.bulkReassignSeason(series.id, 'sea-ghost', null);
       expect(result.reassigned).toBe(0);
+    });
+
+    it('skips tombstoned issues — soft-deleted records keep their seasonId + updatedAt', async () => {
+      // Regression test: bulkReassignSeason must NOT bump a tombstone's
+      // `updatedAt`, otherwise the receiver's tombstone wins the LWW race
+      // against the originator's tombstone and the deleted issue can
+      // resurrect on every peer.
+      const { series, a, b } = await setup();
+      const list = await svc.listIssues({ seriesId: series.id });
+      const victim = list.find((i) => i.seasonId === a.id);
+      await svc.deleteIssue(victim.id);
+      const tombBefore = await svc.getIssue(victim.id, { includeDeleted: true });
+      const result = await svc.bulkReassignSeason(series.id, a.id, b.id);
+      // Live issues in season A moved (originally 3, one tombstoned → 2 live moved).
+      expect(result.reassigned).toBe(2);
+      // Tombstone preserved verbatim — seasonId unchanged, updatedAt unchanged,
+      // still tombstoned.
+      const tombAfter = await svc.getIssue(victim.id, { includeDeleted: true });
+      expect(tombAfter).toMatchObject({
+        seasonId: a.id,
+        deleted: true,
+        updatedAt: tombBefore.updatedAt,
+      });
     });
 
     it('only touches issues in the matching series — other series untouched', async () => {
