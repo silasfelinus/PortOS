@@ -93,10 +93,10 @@ describe('mediaItemKey', () => {
     });
 
     it('round-trips through itemKey', () => {
-      const it = { kind: 'video', ref: 'abc' };
-      const key = itemKey(it);
+      const mediaItem = { kind: 'video', ref: 'abc' };
+      const key = itemKey(mediaItem);
       expect(isValidKey(key)).toBe(true);
-      expect(parseKey(key)).toEqual(it);
+      expect(parseKey(key)).toEqual(mediaItem);
     });
   });
 });

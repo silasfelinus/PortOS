@@ -269,7 +269,7 @@ describe('identityValidation', () => {
   });
 
   describe('updateProgressSchema', () => {
-    it('clamps progress to 0..100', () => {
+    it('validates progress is within 0..100', () => {
       expect(updateProgressSchema.safeParse({ value: 0 }).success).toBe(true);
       expect(updateProgressSchema.safeParse({ value: 100 }).success).toBe(true);
       expect(updateProgressSchema.safeParse({ value: -1 }).success).toBe(false);

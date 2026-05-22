@@ -67,7 +67,7 @@ describe('writersRoomStylePresets', () => {
   describe('getStylePresetById', () => {
     it('returns the matching preset', () => {
       const cinematic = getStylePresetById('cinematic');
-      expect(cinematic).toBeDefined();
+      expect(cinematic).not.toBeNull();
       expect(cinematic.id).toBe('cinematic');
       expect(cinematic.label).toBe('Cinematic');
     });
@@ -87,7 +87,7 @@ describe('writersRoomStylePresets', () => {
   describe('findStylePreset', () => {
     it('returns the matching preset', () => {
       const noir = findStylePreset('noir');
-      expect(noir).toBeDefined();
+      expect(noir).not.toBeNull();
       expect(noir.id).toBe('noir');
     });
 
