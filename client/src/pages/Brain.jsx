@@ -27,10 +27,13 @@ export default function Brain() {
   const navigate = useNavigate();
   const activeTab = tab || 'inbox';
 
+  // Let errors throw — `useAutoRefetch` preserves the last-good data on
+  // transient failures. `silent: true` keeps the 30s poll from spamming
+  // toasts when a single blip would otherwise fire two of them.
   const fetchData = useCallback(async () => {
     const [summary, settings] = await Promise.all([
-      api.getBrainSummary().catch(() => null),
-      api.getBrainSettings().catch(() => null)
+      api.getBrainSummary({ silent: true }),
+      api.getBrainSettings({ silent: true })
     ]);
     return { summary, settings };
   }, []);

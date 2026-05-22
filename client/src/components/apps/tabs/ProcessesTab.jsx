@@ -39,8 +39,11 @@ export default function ProcessesTab({ pm2ProcessNames, filterFn }) {
   const logsRef = useRef(null);
   const fullscreenLogsRef = useRef(null);
 
+  // Let errors throw — `useAutoRefetch` preserves the last-good process list
+  // on transient failures. `silent: true` is essential here because the 5s
+  // poll would otherwise spit a toast every 5 seconds during any blip.
   const { data, loading } = useAutoRefetch(
-    () => api.getProcessesList().catch(() => []),
+    () => api.getProcessesList({ silent: true }),
     5000,
   );
   const processes = data ?? [];

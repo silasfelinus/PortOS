@@ -25,8 +25,10 @@ import { useAutoRefetch } from '../../hooks/useAutoRefetch';
  */
 export default function QuickSummary() {
   const [showAccomplishments, setShowAccomplishments] = useState(false);
+  // Let errors throw — `useAutoRefetch` preserves the last-good summary on
+  // transient failures. `silent: true` keeps the 30s poll quiet on blips.
   const { data: summary, loading } = useAutoRefetch(
-    () => api.getCosQuickSummary().catch(() => null),
+    () => api.getCosQuickSummary({ silent: true }),
     30_000,
   );
 

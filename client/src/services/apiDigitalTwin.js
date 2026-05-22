@@ -1,7 +1,7 @@
 import { request } from './apiCore.js';
 
 // Digital Twin - Status & Summary
-export const getDigitalTwinStatus = () => request('/digital-twin');
+export const getDigitalTwinStatus = (options) => request('/digital-twin', options);
 
 // Digital Twin - Documents
 export const getDigitalTwinDocuments = () => request('/digital-twin/documents');
@@ -48,7 +48,7 @@ export const exportDigitalTwin = (format, documentIds = null, includeDisabled = 
 });
 
 // Digital Twin - Settings
-export const getDigitalTwinSettings = () => request('/digital-twin/settings');
+export const getDigitalTwinSettings = (options) => request('/digital-twin/settings', options);
 export const updateDigitalTwinSettings = (settings) => request('/digital-twin/settings', {
   method: 'PUT',
   body: JSON.stringify(settings)

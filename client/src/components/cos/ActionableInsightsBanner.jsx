@@ -65,8 +65,10 @@ export default function ActionableInsightsBanner({ onTaskUnblocked }) {
   const [expanded, setExpanded] = useState({});
   const navigate = useNavigate();
 
+  // Let errors throw — `useAutoRefetch` preserves the last-good insights on
+  // transient failures. `silent: true` keeps the 60s poll quiet on blips.
   const { data, loading } = useAutoRefetch(
-    () => api.getCosActionableInsights().catch(() => null),
+    () => api.getCosActionableInsights({ silent: true }),
     60_000,
   );
 

@@ -61,9 +61,10 @@ function CyberCityInner() {
 
   const keysRef = useKeyboardControls(handleToggleExploration);
 
-  // Productivity data for HUD vitals and billboards
+  // Productivity data for HUD vitals and billboards. Let errors throw —
+  // `useAutoRefetch` preserves the last-good snapshot on transient failures.
   const { data: productivityData } = useAutoRefetch(
-    () => api.getCosQuickSummary().catch(() => null),
+    () => api.getCosQuickSummary({ silent: true }),
     60_000,
   );
 

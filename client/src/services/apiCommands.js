@@ -7,4 +7,4 @@ export const executeCommand = (command, workspacePath) => request('/commands/exe
 });
 export const stopCommand = (id) => request(`/commands/${id}/stop`, { method: 'POST' });
 export const getAllowedCommands = () => request('/commands/allowed');
-export const getProcessesList = () => request('/commands/processes');
+export const getProcessesList = (options) => request('/commands/processes', options);

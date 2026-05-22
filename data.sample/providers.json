@@ -12,7 +12,7 @@
       "lightModel": "claude-haiku-4-5-20251001",
       "mediumModel": "claude-sonnet-4-5-20250929",
       "heavyModel": "claude-opus-4-6",
-      "timeout": 300000,
+      "timeout": 900000,
       "enabled": true,
       "envVars": {}
     },
@@ -27,7 +27,7 @@
       "lightModel": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
       "mediumModel": "us.anthropic.claude-sonnet-4-6-v1:0",
       "heavyModel": "us.anthropic.claude-opus-4-6-v1:0",
-      "timeout": 300000,
+      "timeout": 900000,
       "enabled": false,
       "envVars": {
         "CLAUDE_CODE_USE_BEDROCK": "1",
@@ -94,7 +94,7 @@
       "lightModel": "claude-haiku-4-5-20251001",
       "mediumModel": "claude-sonnet-4-5-20250929",
       "heavyModel": "claude-opus-4-6",
-      "timeout": 600000,
+      "timeout": 900000,
       "enabled": true,
       "envVars": {},
       "tuiPromptDelayMs": 2500,

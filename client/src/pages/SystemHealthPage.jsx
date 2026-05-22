@@ -32,7 +32,7 @@ export default function SystemHealthPage() {
   const draftSeededRef = useRef(false);
 
   const { data: health, loading, refetch } = useAutoRefetch(
-    () => api.getSystemHealth({ silent: true }).catch(() => null),
+    () => api.getSystemHealth({ silent: true }),
     15_000,
   );
 

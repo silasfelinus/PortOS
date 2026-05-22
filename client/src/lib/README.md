@@ -31,7 +31,7 @@ grep -i "what you want to do" client/src/lib/README.md
 | `sheetPointers.js` | Mirror of the character-sheet pointer helpers from `server/lib/storyBible.js`. `LEGACY_SHEET_VARIANT_ID` + `readSheetPointer` / `listSheetPointers` / `applySheetPointer` for traversing both the legacy `referenceSheetImageRef` field and the `referenceSheets` map. |
 | `universeStylePreset.js` | Build the client-side style preset that `composeStyledPrompt` layers on top. |
 | `bibleLimits.js` | Mirror of `server/lib/storyBible.js` `BIBLE_LIMITS`. |
-| `imageCleaners.js` | Mirror of `resolveCleanersFromConfig` from `server/lib/imageClean.js`. Reads `{cleanC2PA, denoise}` off a per-mode settings record + handles the legacy `autoClean: true` migration. |
+| `imageCleaners.js` | Mirror of `resolveCleanersFromConfig` from `server/lib/imageClean.js`. Reads `{cleanC2PA, denoise}` off a per-mode settings record; `cleanC2PA` defaults on, `denoise` defaults off (legacy `autoClean: true` no longer silently enables denoise). |
 | `runnerFamilies.js` | Mirror of `server/lib/runners.js`. |
 | `issueLength.js` | Mirror of `server/lib/issueLength.js`. |
 

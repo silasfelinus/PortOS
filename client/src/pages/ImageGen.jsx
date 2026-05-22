@@ -243,8 +243,7 @@ export default function ImageGen() {
     return getSettings().then((s) => {
       const backends = deriveAvailableBackends(s);
       // Per-mode saved defaults via the shared helper (mirrored from
-      // server/lib/imageClean.js). Handles the legacy `autoClean: true` →
-      // both-flags migration. One pass per mode, then split into the
+      // server/lib/imageClean.js). One pass per mode, then split into the
       // parallel cleanC2PA / denoise maps the UI binds to.
       const perMode = {
         external: resolveCleanersFromConfig(s?.imageGen?.external),

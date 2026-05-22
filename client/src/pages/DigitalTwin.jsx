@@ -28,10 +28,13 @@ export default function DigitalTwin() {
   const navigate = useNavigate();
   const activeTab = tab || 'overview';
 
+  // Let errors throw — `useAutoRefetch` preserves the last-good data on
+  // transient failures. `silent: true` keeps the 30s poll from spamming
+  // toasts when a single blip would otherwise fire two of them.
   const fetchData = useCallback(async () => {
     const [status, settings] = await Promise.all([
-      api.getDigitalTwinStatus().catch(() => null),
-      api.getDigitalTwinSettings().catch(() => null)
+      api.getDigitalTwinStatus({ silent: true }),
+      api.getDigitalTwinSettings({ silent: true })
     ]);
     return { status, settings };
   }, []);

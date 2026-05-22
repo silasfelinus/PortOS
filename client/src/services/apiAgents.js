@@ -173,7 +173,7 @@ export const getCosProductivityTrends = (days = 30) => request(`/cos/productivit
 export const getCosActivityCalendar = (weeks = 12, options) => request(`/cos/productivity/calendar?weeks=${weeks}`, options);
 export const getCosQuickSummary = (options) => request('/cos/quick-summary', options);
 export const getCosRecentTasks = (limit = 10, options) => request(`/cos/recent-tasks?limit=${limit}`, options);
-export const getCosActionableInsights = () => request('/cos/actionable-insights');
+export const getCosActionableInsights = (options) => request('/cos/actionable-insights', options);
 export const getCosGoalProgress = () => request('/cos/goal-progress');
 export const getCosGoalProgressSummary = (options) => request('/cos/goal-progress/summary', options);
 

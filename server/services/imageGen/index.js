@@ -35,10 +35,9 @@ const codexCfg = (s) => cfg(s).codex || {};
 
 // Resolve the cleaner flags from body overrides + saved per-mode settings.
 // Body fields win when explicit (per-render checkbox); otherwise inherit
-// the saved per-mode defaults (which include the legacy `autoClean: true`
-// → both-flags migration handled by `resolveCleanersFromConfig`). Shared
-// by `/generate` and `generateImage()` (safety net for direct callers
-// like `generateAvatar`).
+// the saved per-mode defaults via `resolveCleanersFromConfig`. Shared by
+// `/generate` and `generateImage()` (safety net for direct callers like
+// `generateAvatar`).
 export function resolveImageCleaners(body, settings, mode) {
   const saved = resolveCleanersFromConfig(cfg(settings)[mode]);
   return {

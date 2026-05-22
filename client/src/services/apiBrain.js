@@ -1,8 +1,8 @@
 import { request } from './apiCore.js';
 
 // Brain - Second Brain Feature
-export const getBrainSummary = () => request('/brain/summary');
-export const getBrainSettings = () => request('/brain/settings');
+export const getBrainSummary = (options) => request('/brain/summary', options);
+export const getBrainSettings = (options) => request('/brain/settings', options);
 export const updateBrainSettings = (settings) => request('/brain/settings', {
   method: 'PUT',
   body: JSON.stringify(settings)

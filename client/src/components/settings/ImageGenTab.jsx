@@ -155,8 +155,7 @@ export function ImageGenTab() {
         setParallelBounds(bounds);
         const cxParallel = clampParallel(cx.parallelLimit, bounds);
         // Per-mode cleaner reads via the shared helper (mirrored from
-        // server/lib/imageClean.js). Handles the legacy `autoClean: true` →
-        // both-flags migration for users upgrading from before the split.
+        // server/lib/imageClean.js).
         const codexClean = resolveCleanersFromConfig(cx);
         const localClean = resolveCleanersFromConfig(ig.local);
         const externalClean = resolveCleanersFromConfig(ig.external);
