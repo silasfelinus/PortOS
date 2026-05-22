@@ -31,6 +31,7 @@ import {
   PASTE_DEADLINE_MS,
   OUTPUT_BUFFER_CAP,
   OUTPUT_BUFFER_HEADROOM,
+  RAW_SPOOL_MAX_BYTES,
   inferTuiCommand,
   applyCommandDefaults,
 } from '../lib/tuiHandshake.js';
@@ -45,15 +46,16 @@ const DEFAULT_TUI_MIN_RUNTIME_MS = 15000;
 // realistic PTY stream while keeping peak finalize memory bounded.
 const RAW_TAIL_ANALYSIS_BYTES = 1024 * 1024;
 
-// Disk safety valve for the raw PTY spool. A misbehaving (or compromised)
-// TUI agent could in principle emit MB/sec forever and fill the volume —
-// realistic agents idle out at 180s and emit <10MB total, but no operator
-// wants ONE runaway agent eating all disk. At this threshold the spool is
-// truncated (rewritten with the current batch) so the most-recent data
-// remains, which is what readFileTail at finalize needs anyway. Warn fires
-// once per agent run; the `rawSpoolTruncated` metadata flag persists in
-// the agent record so the operator can spot the affected runs after the fact.
-const RAW_SPOOL_MAX_BYTES = 256 * 1024 * 1024;
+// RAW_SPOOL_MAX_BYTES lives in tuiHandshake.js so the test suite can shrink
+// the cap via the same vi.mock pattern that overrides the output-buffer
+// thresholds — saves the truncation test from having to push hundreds of MB
+// through the spawner. A misbehaving (or compromised) TUI agent could in
+// principle emit MB/sec forever and fill the volume; realistic agents idle
+// out at 180s and emit <10MB total. At this threshold the spool is truncated
+// (rewritten with the current batch) so the most-recent data remains, which
+// is what readFileTail at finalize needs anyway. Warn fires once per agent
+// run; the `rawSpoolTruncated` metadata flag persists in the agent record
+// so the operator can spot the affected runs after the fact.
 
 /**
  * Read at most `maxBytes` from the end of a file. Returns null when the file
@@ -256,7 +258,11 @@ export async function spawnTuiAgent({
     if (pendingRawChunks.length === 0) return;
     const batch = pendingRawChunks.join('');
     pendingRawChunks = [];
-    if (rawBytesWritten + batch.length > RAW_SPOOL_MAX_BYTES) {
+    // Count UTF-8 bytes actually written to disk, NOT the UTF-16 code-unit
+    // length of the JS string — non-ASCII output would otherwise under-
+    // report and let the spool exceed the safety cap.
+    const batchBytes = Buffer.byteLength(batch, 'utf8');
+    if (rawBytesWritten + batchBytes > RAW_SPOOL_MAX_BYTES) {
       // Safety valve: rewrite the file with just this batch instead of
       // appending. The tail-read at finalize wants the MOST RECENT bytes,
       // not the oldest, so truncating preserves what analyzeAgentFailure
@@ -268,12 +274,15 @@ export async function spawnTuiAgent({
         updateAgent(agentId, { metadata: { rawSpoolTruncated: true } })
           .catch(err => console.error(`❌ TUI agent ${agentId} rawSpoolTruncated metadata write failed: ${err.message}`));
       }
-      await writeFile(rawFile, batch).catch(() => {});
-      rawBytesWritten = batch.length;
+      // Only update the byte counter on successful write — a failed write
+      // would otherwise inflate rawBytesWritten and make subsequent flush
+      // decisions race the actual on-disk state.
+      const wrote = await writeFile(rawFile, batch).then(() => true).catch(() => false);
+      if (wrote) rawBytesWritten = batchBytes;
       return;
     }
-    await appendFile(rawFile, batch).catch(() => {});
-    rawBytesWritten += batch.length;
+    const wrote = await appendFile(rawFile, batch).then(() => true).catch(() => false);
+    if (wrote) rawBytesWritten += batchBytes;
   };
 
   const scheduleRawFlush = () => {

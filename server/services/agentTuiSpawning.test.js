@@ -97,18 +97,21 @@ vi.mock('../lib/providerModels.js', () => ({
 }));
 
 // Shrink buffer thresholds so the truncation tests can trip them with tiny
-// inputs. Real values (10 MB output) would force tests to push millions of
-// bytes through the spawner; the wiring under test is identical.
-// OUTPUT_BUFFER_HEADROOM is intentionally 1 byte so ANY appendLine call
-// trips it — otherwise the output-buffer overflow test would assert on the
-// byte count of the two spawn-startup string literals (which would silently
-// stop tripping if those strings change).
+// inputs. Real values (10MB output, 256MB raw spool) would force tests to
+// push millions of bytes through the spawner; the wiring under test is
+// identical at any cap. OUTPUT_BUFFER_HEADROOM is intentionally 1 byte so
+// ANY appendLine call trips it — otherwise the output-buffer overflow test
+// would assert on the byte count of the two spawn-startup string literals
+// (which would silently stop tripping if those strings change). The raw
+// spool cap is shrunk to 100 bytes so the disk-safety-valve test exercises
+// the truncation path without allocating hundreds of MB.
 vi.mock('../lib/tuiHandshake.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
     OUTPUT_BUFFER_HEADROOM: 1,
     OUTPUT_BUFFER_CAP: 1,
+    RAW_SPOOL_MAX_BYTES: 100,
   };
 });
 
@@ -438,39 +441,41 @@ describe('spawnTuiAgent runtime', () => {
     );
   });
 
-  // ── 6. Raw PTY stream spools to disk (no in-memory cap, no warn) ───────────
+  // ── 6. Raw PTY stream spools to disk (no in-memory cap, no in-memory warn) ─
   // Raw chunks are written to raw.txt via the debounced flush pipeline so
   // memory stays bounded regardless of run length. analyzeAgentFailure
-  // reads the file on failure. No warn, no metadata flag, even when the
-  // chunk total dwarfs the previous 640KB in-memory cap.
-  it('raw PTY bytes spool to raw.txt without truncation warn or metadata flag', async () => {
+  // reads the file on failure. No "raw PTY buffer exceeded" warn and no
+  // rawBufferTruncated metadata flag — those were signals of the OLD
+  // in-memory cap. Disk-side truncation has its own warn / flag covered
+  // separately by test 8b.
+  it('raw PTY bytes spool to raw.txt without the old in-memory truncation signals', async () => {
     const { appendFile } = await import('fs/promises');
     runSpawn();
     await flushMicrotasks();
 
-    // Push well past the previous 640KB cap to prove growth is uncapped.
-    // Buffer.alloc(size, fillByte) avoids the multi-megabyte JS string
-    // intermediate that 'x'.repeat(...) would otherwise create.
-    await capturedOnData(Buffer.alloc(2 * 1024 * 1024, 0x78));   // 'x'
+    // Small chunks that stay under the mocked 100-byte raw-spool cap so this
+    // test exercises the normal appendFile path. The disk-safety-valve path
+    // (writeFile when over cap) is covered by test 8b.
+    await capturedOnData(Buffer.from('hello '));
     await flushMicrotasks();
-    await capturedOnData(Buffer.alloc(2 * 1024 * 1024, 0x79));   // 'y'
+    await capturedOnData(Buffer.from('world\n'));
     await flushMicrotasks();
 
     // Fire the 250ms debounced raw flush.
     await vi.advanceTimersByTimeAsync(300);
     await flushMicrotasks();
 
-    const truncWarns = warnSpy.mock.calls.filter(args =>
+    const inMemTruncWarns = warnSpy.mock.calls.filter(args =>
       typeof args[0] === 'string' && args[0].includes('raw PTY buffer exceeded')
     );
-    expect(truncWarns).toHaveLength(0);
+    expect(inMemTruncWarns).toHaveLength(0);
 
-    const truncMetaCalls = vi.mocked(cosAgents.updateAgent).mock.calls.filter(
+    const inMemTruncMetaCalls = vi.mocked(cosAgents.updateAgent).mock.calls.filter(
       ([_id, payload]) => payload?.metadata?.rawBufferTruncated === true
     );
-    expect(truncMetaCalls).toHaveLength(0);
+    expect(inMemTruncMetaCalls).toHaveLength(0);
 
-    // raw.txt got the chunks via the batched flush.
+    // raw.txt got the chunks via the batched appendFile flush.
     const rawAppendCalls = vi.mocked(appendFile).mock.calls.filter(
       ([path]) => typeof path === 'string' && path.endsWith('raw.txt')
     );
@@ -543,37 +548,30 @@ describe('spawnTuiAgent runtime', () => {
     expect(closeMock).toHaveBeenCalled();
   });
 
-  // ── 8b. Disk safety valve at 256MB ──────────────────────────────────────────
-  // The raw spool truncates rather than appends once it crosses the cap so
-  // a runaway agent can't fill the volume. Test by feeding chunks that push
-  // past the threshold and asserting writeFile (truncate) is preferred over
-  // appendFile for the overflow batch, plus the rawSpoolTruncated metadata
-  // flag fires once.
-  it('raw spool: truncates instead of appending once it crosses the 256MB safety cap', async () => {
+  // ── 8b. Disk safety valve ───────────────────────────────────────────────────
+  // The raw spool truncates rather than appends once it crosses
+  // RAW_SPOOL_MAX_BYTES so a runaway agent can't fill the volume. The mock
+  // above shrinks the cap to 100 bytes so we can trip it with two ~80-byte
+  // chunks instead of pushing hundreds of MB through the spawner. The wiring
+  // under test (Buffer.byteLength count, writeFile vs appendFile dispatch,
+  // once-per-run warn + metadata flag) is identical at any cap.
+  it('raw spool: truncates instead of appending once it crosses the cap', async () => {
     const fsPromises = await import('fs/promises');
     runSpawn();
     await flushMicrotasks();
 
-    // Push three 100MB chunks: total 300MB, well past the 256MB cap.
-    // Buffer.alloc(size, byte) keeps allocations cheap (single fill).
-    const HUNDRED_MB = 100 * 1024 * 1024;
-    await capturedOnData(Buffer.alloc(HUNDRED_MB, 0x61));
+    // First chunk (80 bytes) fits under the 100-byte cap → appendFile.
+    await capturedOnData(Buffer.alloc(80, 0x61));
     await flushMicrotasks();
     await vi.advanceTimersByTimeAsync(300);
     await flushMicrotasks();
 
-    await capturedOnData(Buffer.alloc(HUNDRED_MB, 0x62));
+    // Second chunk (80 bytes) would push total to 160 > 100 → writeFile.
+    await capturedOnData(Buffer.alloc(80, 0x62));
     await flushMicrotasks();
     await vi.advanceTimersByTimeAsync(300);
     await flushMicrotasks();
 
-    await capturedOnData(Buffer.alloc(HUNDRED_MB, 0x63));
-    await flushMicrotasks();
-    await vi.advanceTimersByTimeAsync(300);
-    await flushMicrotasks();
-
-    // Third chunk should have crossed the 256MB threshold → writeFile, not
-    // appendFile. Earlier chunks went through appendFile.
     const writeFileRawCalls = vi.mocked(fsPromises.writeFile).mock.calls.filter(
       ([p]) => typeof p === 'string' && p.endsWith('raw.txt')
     );
