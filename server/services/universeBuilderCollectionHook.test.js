@@ -264,6 +264,10 @@ describe('universeBuilderCollectionHook', () => {
       entryName: 'Original',
     });
 
+    // Pre-register the run so the drain-gate below can observe completion —
+    // a fixed 50ms sleep raced the IIFE finally under CI load (gh actions
+    // shared runners) even though the local run was always fast enough.
+    hook.registerUniverseBuilderRun({ runId: 'r-preserve', universeId: seeded.id, jobCount: 1 });
     mediaJobEvents.emit('completed', {
       kind: 'image',
       result: { filename },
@@ -278,7 +282,7 @@ describe('universeBuilderCollectionHook', () => {
         },
       },
     });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitFor(() => hook.__testing.getActiveRuns().size === 0);
     const sc = readSidecar(filename);
     // Existing values preserved.
     expect(sc.universeId).toBe('uni-existing');
