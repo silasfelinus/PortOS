@@ -45,23 +45,78 @@ export async function isMortalLoomEnabled() {
   return Boolean(s?.mortalloom?.enabled);
 }
 
-export async function readStore() {
-  const path = await resolvePath();
+/**
+ * Read + parse the store at `path`. Returns `null` for:
+ *  - file absent (ENOENT or `existsSync` false) — silently
+ *  - any other `readFile` failure (EAGAIN/EDEADLK/EACCES/unknown errno/etc.) —
+ *    with one warn. The intent is iCloud-ubiquity transients (mid-sync,
+ *    downloading, conflict resolution) but the catch is intentionally broad —
+ *    read consumers all treat null as "fall through to local data," and the
+ *    write side has its own overwrite guard, so suppressing a permission /
+ *    unexpected error here just loses the iCloud copy for one cycle, never
+ *    truncates the user's data.
+ *  - corrupt JSON — `safeJSONParse` falls back to null
+ *  - top-level JSON that isn't a plain object (array/string/number/boolean) —
+ *    every consumer treats the store as `{ alcoholDrinks: [...], goals: [...],
+ *    profile: {...}, … }` so an unexpected shape is just as "unavailable" as
+ *    a corrupt file. Returning null keeps callers from misreading an array as
+ *    a successful read and reporting empty counts to the UI.
+ */
+async function readStoreAtPath(path) {
   if (!existsSync(path)) return null;
-  const raw = await readFile(path, 'utf-8');
-  return safeJSONParse(raw, null, { context: path });
+  const raw = await readFile(path, 'utf-8').catch((err) => {
+    // existsSync→readFile race: file disappeared between the two calls.
+    // Treat as "absent" silently — no warning noise.
+    if (err.code === 'ENOENT') return null;
+    console.warn(`⚠️ MortalLoom store unavailable (${err.code || err.errno || 'unknown'}): ${path}`);
+    return null;
+  });
+  if (raw === null) return null;
+  const parsed = safeJSONParse(raw, null, { context: path });
+  return isPlainObject(parsed) ? parsed : null;
 }
 
-async function writeStore(data) {
-  await writeFile(await resolvePath(), JSON.stringify(data, null, 2));
+export async function readStore() {
+  return readStoreAtPath(await resolvePath());
+}
+
+async function writeStoreAtPath(path, data) {
+  await writeFile(path, JSON.stringify(data, null, 2));
 }
 
 /** Atomic read → mutate → write. Ensures all array keys are initialized. */
 export async function updateStore(mutator) {
-  const store = (await readStore()) || {};
-  for (const k of ARRAY_KEYS) if (!Array.isArray(store[k])) store[k] = [];
-  const result = await mutator(store);
-  await writeStore(store);
+  // Resolve the path once and pass it through to both read and write — settings
+  // could change mid-call, so we'd otherwise risk reading from one path and
+  // writing to another (or the overwrite-guard's existsSync looking at a
+  // different file than the read).
+  const path = await resolvePath();
+  const store = await readStoreAtPath(path);
+  // The overwrite guard is based solely on post-read state, not a pre-read
+  // snapshot. readStoreAtPath returns null for four reasons; we only care
+  // about the *currently observable* state when deciding whether it's safe
+  // to write:
+  //   (1) file does not exist now → safe to seed a fresh store (whether it
+  //       was absent the whole time, disappeared mid-call, or never appeared
+  //       in the first place).
+  //   (2) file exists now but parsed to a non-plain-object value → unreadable
+  //       (transient iCloud read failure, corrupt JSON, or unexpected shape
+  //       like a top-level array which JSON.stringify would silently drop).
+  //       Refuse to overwrite the user's iCloud data.
+  // Without this guard, the iCloud transient-failure tolerance in
+  // readStoreAtPath would let updateStore silently truncate a momentarily
+  // unreadable iCloud file.
+  if (existsSync(path) && !isPlainObject(store)) {
+    // Log the resolved path server-side for diagnostics; keep the thrown
+    // message path-free so it doesn't get echoed back to the UI (route
+    // errors serialize as `error: error.message`).
+    console.error(`❌ MortalLoom store at ${path} is unreadable; refusing to overwrite`);
+    throw new Error('MortalLoom store is unreadable; refusing to overwrite');
+  }
+  const base = store || {};
+  for (const k of ARRAY_KEYS) if (!Array.isArray(base[k])) base[k] = [];
+  const result = await mutator(base);
+  await writeStoreAtPath(path, base);
   return result;
 }
 
@@ -213,18 +268,44 @@ export async function getStatus() {
   const s = await getSettings();
   const path = s?.mortalloom?.path?.trim() || DEFAULT_ICLOUD_PATH;
   const enabled = Boolean(s?.mortalloom?.enabled);
-  const exists = existsSync(path);
-  if (!exists) {
-    return { enabled, path, usingDefault: path === DEFAULT_ICLOUD_PATH, defaultPath: DEFAULT_ICLOUD_PATH,
-             exists: false, size: 0, mtime: null, summary: null, appStoreUrl: MORTALLOOM_APP_STORE_URL };
-  }
-  const st = await stat(path);
-  const data = safeJSONParse(await readFile(path, 'utf-8'), null);
+  const missingResponse = {
+    enabled, path, usingDefault: path === DEFAULT_ICLOUD_PATH, defaultPath: DEFAULT_ICLOUD_PATH,
+    exists: false, size: 0, mtime: null, summary: null, appStoreUrl: MORTALLOOM_APP_STORE_URL,
+  };
+  if (!existsSync(path)) return missingResponse;
+  // Same transient-iCloud-failure tolerance as readStoreAtPath() — surface a
+  // null summary instead of 500ing the Settings status page. ENOENT (file
+  // disappeared between existsSync and stat/readFile) collapses back to the
+  // "missing" response; only genuinely transient errors keep `exists:true`.
+  let statTransient = false;
+  const st = await stat(path).catch((err) => {
+    if (err.code === 'ENOENT') return null;
+    statTransient = true;
+    console.warn(`⚠️ MortalLoom status stat unavailable (${err.code || err.errno || 'unknown'}): ${path}`);
+    return null;
+  });
+  if (!st && !statTransient) return missingResponse;
+  let readEnoent = false;
+  const raw = st ? await readFile(path, 'utf-8').catch((err) => {
+    if (err.code === 'ENOENT') { readEnoent = true; return null; }
+    console.warn(`⚠️ MortalLoom status read unavailable (${err.code || err.errno || 'unknown'}): ${path}`);
+    return null;
+  }) : null;
+  // readFile ENOENT after a successful stat means the file was deleted/moved
+  // between the two calls — collapse to the missing response so the endpoint
+  // doesn't advertise a phantom file with stale stat metadata.
+  if (readEnoent) return missingResponse;
+  const parsed = raw === null ? null : safeJSONParse(raw, null);
+  // Only compute a summary when the top-level JSON is a plain `{…}` shape.
+  // An unexpected top-level array would otherwise pass `typeof === 'object'`
+  // and we'd render a misleading 0-count summary instead of `null` (which
+  // the UI distinguishes as "store unavailable").
+  const data = isPlainObject(parsed) ? parsed : null;
   const count = k => Array.isArray(data?.[k]) ? data[k].length : 0;
   return {
     enabled, path, usingDefault: path === DEFAULT_ICLOUD_PATH, defaultPath: DEFAULT_ICLOUD_PATH,
-    exists: true, size: st.size, mtime: st.mtime.toISOString(),
-    summary: data && typeof data === 'object' ? {
+    exists: true, size: st?.size ?? 0, mtime: st?.mtime?.toISOString() ?? null,
+    summary: data ? {
       goals: count('goals'),
       alcoholDrinks: count('alcoholDrinks'),
       nicotineEntries: count('nicotineEntries'),
