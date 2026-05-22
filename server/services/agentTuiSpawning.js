@@ -65,9 +65,12 @@ async function readFileTail(path, maxBytes) {
     const buf = Buffer.alloc(length);
     // Honour bytesRead — the file can shrink between stat and read, or the
     // OS can return a short read; decoding the whole `buf` would otherwise
-    // append NULs to the returned string.
-    const { bytesRead } = await fh.read(buf, 0, length, start).catch(() => ({ bytesRead: 0 }));
-    return buf.toString('utf8', 0, bytesRead);
+    // append NULs to the returned string. Read failures surface as null so
+    // callers can distinguish "empty file" ('') from "read error" (null) —
+    // a `bytesRead: 0` fallback would conflate the two.
+    const readResult = await fh.read(buf, 0, length, start).catch(() => null);
+    if (readResult === null) return null;
+    return buf.toString('utf8', 0, readResult.bytesRead);
   } finally {
     await fh.close().catch(() => {});
   }
