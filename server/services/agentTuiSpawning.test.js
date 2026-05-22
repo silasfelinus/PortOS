@@ -71,6 +71,7 @@ vi.mock('./agentState.js', () => ({
 vi.mock('fs/promises', () => ({
   writeFile: vi.fn().mockResolvedValue(undefined),
   appendFile: vi.fn().mockResolvedValue(undefined),
+  readFile: vi.fn().mockResolvedValue(''),
   rm: vi.fn().mockResolvedValue(undefined)
 }));
 
@@ -427,12 +428,13 @@ describe('spawnTuiAgent runtime', () => {
     );
   });
 
-  // ── 6. Raw-buffer growth (no cap) ───────────────────────────────────────────
-  // rawBuffer feeds analyzeAgentFailure at finalize. Capping/slicing it would
-  // lose the earlier failure context once later chatty progress redraws push
-  // it past the retained tail, so the buffer is allowed to grow for the
-  // duration of the run. No warn, no metadata flag.
-  it('rawBuffer grows without truncation warn or metadata flag', async () => {
+  // ── 6. Raw PTY stream spools to disk (no in-memory cap, no warn) ───────────
+  // Raw chunks are written to raw.txt via the debounced flush pipeline so
+  // memory stays bounded regardless of run length. analyzeAgentFailure
+  // reads the file on failure. No warn, no metadata flag, even when the
+  // chunk total dwarfs the previous 640KB in-memory cap.
+  it('rawBuffer grows without truncation warn or metadata flag, spools to raw.txt', async () => {
+    const { appendFile } = await import('fs/promises');
     runSpawn();
     await flushMicrotasks();
 
@@ -444,6 +446,10 @@ describe('spawnTuiAgent runtime', () => {
     await capturedOnData(Buffer.alloc(2 * 1024 * 1024, 0x79));   // 'y'
     await flushMicrotasks();
 
+    // Fire the 250ms debounced raw flush.
+    await vi.advanceTimersByTimeAsync(300);
+    await flushMicrotasks();
+
     const truncWarns = warnSpy.mock.calls.filter(args =>
       typeof args[0] === 'string' && args[0].includes('raw PTY buffer exceeded')
     );
@@ -453,6 +459,12 @@ describe('spawnTuiAgent runtime', () => {
       ([_id, payload]) => payload?.metadata?.rawBufferTruncated === true
     );
     expect(truncMetaCalls).toHaveLength(0);
+
+    // raw.txt got the chunks via the batched flush.
+    const rawAppendCalls = vi.mocked(appendFile).mock.calls.filter(
+      ([path]) => typeof path === 'string' && path.endsWith('raw.txt')
+    );
+    expect(rawAppendCalls.length).toBeGreaterThan(0);
   });
 
   // ── 7. Output-buffer truncation warning + metadata flag ─────────────────────
