@@ -1213,8 +1213,23 @@ async function doPullOneAsset(peer, base, entry, urlPrefix, localDir, safeName) 
   const url = `${base}${urlPrefix}/${encodeURIComponent(safeName)}`;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), ASSET_PULL_TIMEOUT_MS);
-  const res = await peerFetch(url, { signal: controller.signal })
-    .finally(() => clearTimeout(timeoutId));
+  // maxBytes propagates into the HTTPS shim's streaming cap (see
+  // server/lib/httpClient.js) — without it, an oversized HTTPS asset
+  // buffers the whole body before the post-resolve content-length
+  // check fires. The plain-HTTP fetch path falls back to the
+  // post-resolve checks below (Node's fetch doesn't accept maxBytes,
+  // but Content-Length is universally set by serve-static).
+  const res = await peerFetch(url, { signal: controller.signal, maxBytes: ASSET_PULL_MAX_BYTES })
+    .finally(() => clearTimeout(timeoutId))
+    .catch((err) => {
+      // The HTTPS shim rejects with a thrown Error when maxBytes is
+      // exceeded — distinguish from network/abort errors so we don't
+      // spam the log on a normal abort.
+      if (err?.message?.includes('exceed')) {
+        console.log(`⚠️ peerSync: ${safeName} exceeded asset size cap — ${err.message}`);
+      }
+      return null;
+    });
   if (!res || !res.ok) return;
   // Size-cap enforcement: REQUIRE a trustworthy content-length header up
   // front and refuse the pull if missing or over-cap. Without the header

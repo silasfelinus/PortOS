@@ -7,7 +7,7 @@ import https from 'https';
 
 // Wraps https.request as fetch-compatible for self-signed cert support
 export function insecureFetch(agent) {
-  return async (url, { method = 'GET', headers = {}, body, signal } = {}) => {
+  return async (url, { method = 'GET', headers = {}, body, signal, maxBytes } = {}) => {
     const u = new URL(url);
     return new Promise((resolve, reject) => {
       // Declare cleanup before req so it can be called from res.on('end'),
@@ -23,8 +23,39 @@ export function insecureFetch(agent) {
         headers,
         agent
       }, (res) => {
+        // Streaming size cap. Without this, peer-sync asset pulls over HTTPS
+        // buffer the WHOLE response before the post-resolve content-length
+        // check fires — so an oversized or missing-header asset can exhaust
+        // memory before the cap kicks in. Two layers:
+        //   1. Early reject when the server-declared Content-Length already
+        //      exceeds the cap — no body bytes read.
+        //   2. Per-chunk accumulator that destroys the request if the actual
+        //      bytes-on-the-wire exceed the cap (server lied or omitted
+        //      header).
+        // Callers without a cap (everything except asset pull today) skip
+        // both layers — maxBytes only gates when provided.
+        if (typeof maxBytes === 'number' && maxBytes > 0) {
+          const declared = Number(res.headers['content-length']);
+          if (Number.isFinite(declared) && declared > maxBytes) {
+            cleanup();
+            req.destroy();
+            reject(new Error(`Response declared Content-Length ${declared} exceeds maxBytes ${maxBytes}`));
+            return;
+          }
+        }
         const chunks = [];
-        res.on('data', c => chunks.push(c));
+        let bytesSoFar = 0;
+        res.on('data', c => {
+          chunks.push(c);
+          if (typeof maxBytes === 'number' && maxBytes > 0) {
+            bytesSoFar += c.length;
+            if (bytesSoFar > maxBytes) {
+              cleanup();
+              req.destroy();
+              reject(new Error(`Response body exceeded maxBytes ${maxBytes} (got ${bytesSoFar})`));
+            }
+          }
+        });
         res.on('end', () => {
           cleanup();
           // Concat as a raw Buffer so the response can be projected to text

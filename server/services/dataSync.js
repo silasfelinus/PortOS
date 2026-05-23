@@ -483,19 +483,23 @@ async function applyMediaCollectionsRemote(remoteData) {
   // mutate item refs or scalars on a collection whose universe/series
   // the user explicitly marked private.
   const incoming = Array.isArray(remoteData.collections) ? remoteData.collections : [];
-  const ephemeralUniverseIds = new Set(
-    (await listUniverses({ includeDeleted: true }).catch(() => []))
-      .filter((u) => u?.ephemeral === true)
-      .map((u) => u.id),
+  // Build two filter sets per kind: ephemeral parents (privacy) AND
+  // tombstoned parents (cleanup integrity). The delete cascade unlinks
+  // its collection by clearing the parent id — a peer that still has
+  // the parent live could otherwise ship a newer collection snapshot
+  // with the old parent id and re-link the collection to our tombstone,
+  // undoing the cleanup.
+  const allUniverses = await listUniverses({ includeDeleted: true }).catch(() => []);
+  const allSeries = await listSeries({ includeDeleted: true }).catch(() => []);
+  const refusedUniverseIds = new Set(
+    allUniverses.filter((u) => u?.ephemeral === true || u?.deleted === true).map((u) => u.id),
   );
-  const ephemeralSeriesIds = new Set(
-    (await listSeries({ includeDeleted: true }).catch(() => []))
-      .filter((s) => s?.ephemeral === true)
-      .map((s) => s.id),
+  const refusedSeriesIds = new Set(
+    allSeries.filter((s) => s?.ephemeral === true || s?.deleted === true).map((s) => s.id),
   );
   const filtered = incoming.filter((c) => {
-    if (c?.universeId && ephemeralUniverseIds.has(c.universeId)) return false;
-    if (c?.seriesId && ephemeralSeriesIds.has(c.seriesId)) return false;
+    if (c?.universeId && refusedUniverseIds.has(c.universeId)) return false;
+    if (c?.seriesId && refusedSeriesIds.has(c.seriesId)) return false;
     return true;
   });
   // Routes through `mergeMediaCollectionsFromSync` so the read-modify-write
