@@ -39,7 +39,12 @@ echo ""
 # macOS Tailscale.app CLI is sandboxed (`tailscale cert` can't write outside its
 # container → EPERM). Detection delegates to server/lib/tailscale.js so the
 # candidate path list stays a single source of truth.
-if node -e "import('./server/lib/tailscale.js').then(m => process.exit(m.hasOnlySandboxedTailscale() ? 0 : 1)).catch(() => process.exit(1))" 2>/dev/null; then
+# --input-type=module is required: `node -e` defaults to CommonJS even when
+# the package.json declares "type":"module", so a top-level import() in the
+# command would be a syntax error and the detection would silently always
+# fail (suppressed by `2>/dev/null`). Without this flag the whole
+# auto-install branch never runs on macOS.
+if node --input-type=module -e "import('./server/lib/tailscale.js').then(m => process.exit(m.hasOnlySandboxedTailscale() ? 0 : 1)).catch(() => process.exit(1))" 2>/dev/null; then
     echo "Detected Tailscale.app without the unsandboxed CLI."
     echo "Installing tailscale via Homebrew so 'tailscale cert' can write to data/certs/..."
     brewInstalled=0

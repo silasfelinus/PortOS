@@ -173,6 +173,33 @@ describe('sweepTombstones — peers behind', () => {
     expect(firstCallArgs).toEqual(['peer-live']);
     expect(firstCallArgs).not.toContain('peer-ghost');
   });
+
+  it('ignores subscriptions for disabled or globally-silenced peers (cursor stall)', async () => {
+    // Regression: peerIdsSubscribedToKind must mirror snapshotPeerIdsForKind
+    // — disabled peers (enabled:false) and globally-silenced peers
+    // (syncEnabled:false) receive no pushes, so their ack cursor never
+    // advances. Including them in getMinAckAcrossPeers would freeze the
+    // cutoff at their last ack (often 0) and stall GC indefinitely.
+    listPeerSubscriptions.mockImplementation(async ({ recordKind }) => {
+      if (recordKind === 'universe') return [
+        { peerId: 'peer-disabled' },
+        { peerId: 'peer-silenced' },
+        { peerId: 'peer-active' },
+      ];
+      return [];
+    });
+    getPeers.mockResolvedValue([
+      { instanceId: 'peer-disabled', enabled: false },
+      { instanceId: 'peer-silenced', enabled: true, syncEnabled: false },
+      { instanceId: 'peer-active', enabled: true },
+    ]);
+    getMinAckAcrossPeers.mockResolvedValue(NOW - 1000);
+    await sweepTombstones({ now: NOW });
+    const firstCallArgs = getMinAckAcrossPeers.mock.calls[0][0];
+    expect(firstCallArgs).toEqual(['peer-active']);
+    expect(firstCallArgs).not.toContain('peer-disabled');
+    expect(firstCallArgs).not.toContain('peer-silenced');
+  });
 });
 
 describe('sweepTombstones — return shape', () => {

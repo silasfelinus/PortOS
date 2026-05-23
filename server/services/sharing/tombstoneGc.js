@@ -47,17 +47,25 @@ const GRACE_MS = 24 * 60 * 60 * 1000; // 24h grace
  */
 async function peerIdsSubscribedToKind(recordKind) {
   const subs = await listPeerSubscriptions({ recordKind });
-  // Filter against the live peer registry — peer_subscriptions.json rows
-  // outlive peer removal (no cleanup hook on instance delete), so a
-  // long-gone peer would otherwise be treated as an active subscriber.
-  // getMinAckAcrossPeers would then include it with its frozen-at-removal
-  // ack (often 0) and refuse to prune any tombstone for this kind. Bound
-  // to the peers we can actually reach so a removed peer doesn't
-  // permanently stall GC.
-  const livePeerIds = new Set(
-    (await getPeers().catch(() => [])).map((p) => p?.instanceId).filter(Boolean),
+  // Filter against the live peer registry — but only against peers
+  // ELIGIBLE TO SYNC. Three filters in lockstep with snapshotPeerIdsForKind:
+  //   (1) Live in the registry — peer_subscriptions.json rows outlive peer
+  //       removal (no cleanup hook on instance delete), so an unfiltered
+  //       removed peer would freeze the cursor at its last ack (often 0)
+  //       and refuse to prune.
+  //   (2) p.enabled — disabled peers receive no pushes; their cursor
+  //       never advances and would otherwise stall GC.
+  //   (3) p.syncEnabled !== false — globally-silenced peers same as (2).
+  // Without (2) and (3), a per-record subscription belonging to a
+  // disabled/silenced peer would treat it as an active blocker even
+  // though it can't move.
+  const eligiblePeerIds = new Set(
+    (await getPeers().catch(() => []))
+      .filter((p) => p?.enabled && p.syncEnabled !== false)
+      .map((p) => p.instanceId)
+      .filter(Boolean),
   );
-  return [...new Set(subs.map((s) => s.peerId).filter((id) => id && livePeerIds.has(id)))];
+  return [...new Set(subs.map((s) => s.peerId).filter((id) => id && eligiblePeerIds.has(id)))];
 }
 
 /**
