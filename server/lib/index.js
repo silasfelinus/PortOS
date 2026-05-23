@@ -82,6 +82,7 @@ export * from './zipStream.js';
 export * from './commandSecurity.js';
 export * from './execGit.js';
 export * from './ffmpeg.js';
+export * from './gitRemote.js';
 export * from './pythonSetup.js';
 
 // === Networking ===

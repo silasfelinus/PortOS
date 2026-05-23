@@ -179,13 +179,22 @@ export default function SyncToPeerButton({
                           ? 'Peer is inbound-only'
                           : `${categoryLabel} sync off`))
                   : null;
+                // Allow UNSUBSCRIBE even when the peer can no longer receive
+                // outbound pushes — the user may have a stranded subscription
+                // from when sync was on, and disabling the row would leave
+                // them unable to remove it. Subscribe-from-scratch still
+                // requires canSync.
+                const rowDisabled = busy || (!canSync && !subscribed);
+                const titleHint = subscribed && !canSync
+                  ? `Unsubscribe — pushes are currently blocked (${disabledReason || 'sync disabled'}), but you can still remove the subscription.`
+                  : (disabledReason ? `${disabledReason}. Enable on the Instances page first.` : undefined);
                 return (
                   <li key={p.instanceId}>
                     <button
                       type="button"
                       onClick={() => handleToggle(p)}
-                      disabled={busy || !canSync}
-                      title={disabledReason ? `${disabledReason}. Enable on the Instances page first.` : undefined}
+                      disabled={rowDisabled}
+                      title={titleHint}
                       className="w-full text-left px-3 py-2 hover:bg-port-bg disabled:opacity-50 disabled:cursor-not-allowed flex items-start gap-2"
                     >
                       <span className="mt-0.5 shrink-0">
