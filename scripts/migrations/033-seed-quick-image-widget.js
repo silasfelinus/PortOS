@@ -53,9 +53,16 @@ function applyToLayout(layout) {
   if (!Array.isArray(layout.widgets)) return false;
   if (layout.widgets.includes(WIDGET_ID)) return false;
   layout.widgets = [...layout.widgets, WIDGET_ID];
-  if (Array.isArray(layout.grid)) {
-    layout.grid = [...layout.grid, pickGridEntry(layout.grid, layout.id)];
-  }
+  // Always insert a grid entry, even for legacy/corrupted layouts whose
+  // `grid` is missing or non-array. Without this, the widget would be
+  // enabled but unplaced — the client's `synthesizeGrid` auto-flow CAN
+  // recover this at render time, but the on-disk state would be
+  // inconsistent (widgets includes quick-image, grid has no entry for
+  // it) and a subsequent "Save Arrangement" would persist the gap.
+  // Initialize grid to [] before picking so pickGridEntry's reduce
+  // starts from a clean slate.
+  const existingGrid = Array.isArray(layout.grid) ? layout.grid : [];
+  layout.grid = [...existingGrid, pickGridEntry(existingGrid, layout.id)];
   return true;
 }
 
