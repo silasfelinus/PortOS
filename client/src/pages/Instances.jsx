@@ -1038,18 +1038,34 @@ function TombstoneGcSection() {
   // sync category (or disabling it) re-evaluates the refusal status
   // without a page reload — otherwise the button stays stuck disabled
   // even after the user has resolved the underlying refusal condition.
+  //
+  // `instances:peers:updated` fires from `updatePeer` BEFORE the async
+  // `autoSubscribePeerToAllRecords` backfill creates per-record subs, so an
+  // immediate fetch sees the pre-backfill state. Schedule a follow-up fetch
+  // after a short delay to capture the post-backfill subs; debounce so a
+  // rapid burst of peer updates collapses to one delayed fetch.
   useEffect(() => {
     let cancelled = false;
+    let backfillTimer = null;
     const fetchStatus = () => {
       getTombstoneSweepStatus({ silent: true })
         .then((r) => { if (!cancelled && Array.isArray(r?.refused)) setRefused(r.refused); })
         .catch(() => { if (!cancelled) setRefused((prev) => prev ?? []); });
     };
+    const refreshAfterPeerChange = () => {
+      fetchStatus();
+      if (backfillTimer) clearTimeout(backfillTimer);
+      backfillTimer = setTimeout(() => {
+        backfillTimer = null;
+        if (!cancelled) fetchStatus();
+      }, 1500);
+    };
     fetchStatus();
-    socket.on('instances:peers:updated', fetchStatus);
+    socket.on('instances:peers:updated', refreshAfterPeerChange);
     return () => {
       cancelled = true;
-      socket.off('instances:peers:updated', fetchStatus);
+      if (backfillTimer) clearTimeout(backfillTimer);
+      socket.off('instances:peers:updated', refreshAfterPeerChange);
     };
   }, []);
 
