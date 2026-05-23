@@ -811,7 +811,16 @@ function mergeCollectionItems(localItems, remoteItems) {
     const earlier = cmp <= 0 ? existing : it;
     byKey.set(k, earlier);
   }
-  return Array.from(byKey.values());
+  // Sort by canonical itemKey so the merged output is deterministic
+  // regardless of insertion order. Without this, the same set of items
+  // arriving in different orders from a peer (or replayed from snapshot
+  // vs. push) produces a different array order — and the downstream
+  // collectionsEqual() JSON.stringify equality check then sees a diff
+  // and triggers a redundant write + checksum churn. The dataSync
+  // snapshot path already sorts collections by id and items by key for
+  // wire stability; aligning the in-memory merge keeps reads and writes
+  // self-consistent.
+  return Array.from(byKey.values()).sort((a, b) => itemKey(a).localeCompare(itemKey(b)));
 }
 
 // Parse a timestamp string to epoch ms, or null when unparseable. The
