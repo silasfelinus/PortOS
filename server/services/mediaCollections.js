@@ -563,8 +563,15 @@ const validateItemInput = (item) => {
   // Mirror sanitizeItem's path-traversal rejection so the write path can't
   // persist a ref that the next listCollections() read would silently drop
   // (which would also churn coverKey/updatedAt for the dangling-cover guard).
-  if (ref.includes('/') || ref.includes('\\') || ref.includes('..')) {
-    throw makeErr('item.ref invalid (contains path separators or "..")', ERR_VALIDATION);
+  // Reject separators and exact `.`/`..` segments only — `..` inside a
+  // basename (`my..render.png`) is a legitimate gallery filename. Must
+  // mirror sanitizeItem exactly or local addItem rejects refs that peer
+  // sync would accept (and vice versa).
+  if (ref.includes('/') || ref.includes('\\')) {
+    throw makeErr('item.ref invalid (contains path separators)', ERR_VALIDATION);
+  }
+  if (ref === '.' || ref === '..') {
+    throw makeErr('item.ref invalid (parent-directory segment)', ERR_VALIDATION);
   }
   return { kind: item.kind, ref };
 };

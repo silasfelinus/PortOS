@@ -45,16 +45,20 @@ describe('mediaCollections service', () => {
       .rejects.toMatchObject({ code: svc.ERR_DUPLICATE });
   });
 
-  it('addItem rejects refs with path-traversal tokens up-front', async () => {
+  it('addItem rejects refs with true path-traversal segments (but allows .. inside a basename)', async () => {
     // Mirrors sanitizeItem's path-traversal rejection on the write boundary.
-    // Without this, an API call could persist an unsafe ref that
-    // listCollections() would then silently drop on the next read
-    // (churning coverKey / updatedAt and making items disappear).
+    // Reject path SEPARATORS and exact `.`/`..` path segments — NOT every
+    // ref containing the substring `..`. Legitimate gallery filenames like
+    // `my..render.png` round-trip through reads + peer sync and must be
+    // addable through the API too.
     const c = await svc.createCollection({ name: 'A' });
-    for (const ref of ['../etc/passwd', 'subdir/file.png', 'a\\b.png', 'foo..bar.png']) {
+    for (const ref of ['../etc/passwd', 'subdir/file.png', 'a\\b.png', '..', '.']) {
       await expect(svc.addItem(c.id, { kind: 'image', ref }))
         .rejects.toMatchObject({ code: svc.ERR_VALIDATION });
     }
+    // And the inverse: refs with `..` in the basename SHOULD succeed.
+    await expect(svc.addItem(c.id, { kind: 'image', ref: 'foo..bar.png' }))
+      .resolves.toBeTruthy();
   });
 
   it('bulkUpdateCollectionItems rejects path-traversal refs up-front', async () => {

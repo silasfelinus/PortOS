@@ -42,13 +42,24 @@ echo ""
 if node -e "import('./server/lib/tailscale.js').then(m => process.exit(m.hasOnlySandboxedTailscale() ? 0 : 1)).catch(() => process.exit(1))" 2>/dev/null; then
     echo "Detected Tailscale.app without the unsandboxed CLI."
     echo "Installing tailscale via Homebrew so 'tailscale cert' can write to data/certs/..."
+    brewInstalled=0
     if command -v brew &> /dev/null; then
-        if ! brew install tailscale; then
+        if brew install tailscale; then
+            brewInstalled=1
+        else
             echo "⚠️  brew install tailscale failed — HTTPS via Tailscale won't work until you install it manually."
         fi
     else
         echo "⚠️  Homebrew not found. Install brew (https://brew.sh) then run: brew install tailscale"
         echo "    Without it, the 'Enable HTTPS' button on the Instances page will fail with EPERM."
+    fi
+    # Re-run cert setup now that the unsandboxed CLI is available. `npm run
+    # setup` already ran setup-cert.js with only the sandboxed CLI, falling
+    # back to self-signed; without this re-run the instance stays on the
+    # fallback cert until the user manually invokes `npm run setup:cert`.
+    if [ "$brewInstalled" = "1" ]; then
+        echo "Re-running cert provisioning with the freshly-installed Tailscale CLI..."
+        npm run setup:cert || echo "⚠️  setup:cert failed — re-run manually if needed."
     fi
     echo ""
 fi
