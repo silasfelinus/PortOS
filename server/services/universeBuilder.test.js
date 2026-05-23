@@ -36,6 +36,18 @@ vi.mock("../lib/fileUtils.js", async (importOriginal) => {
   };
 });
 
+// Stub instances.js so createUniverse's fire-and-forget autoSubscribeRecordToAllPeers
+// doesn't fan out to real peers. getPeers reads the live peer registry through a
+// dataPath closure that resolves to the REAL PATHS once the post-return microtask
+// runs outside this file's fileUtils mock window — so without this stub, creating a
+// non-ephemeral fixture (e.g. "Moebius SciFi") initial-pushes it across the
+// federation and the receiving instance persists it into the real data/universes/.
+// Mirrors the same guard in importer.test.js and writersRoom/promoteToPipeline.test.js.
+vi.mock("./instances.js", async () => {
+  const actual = await vi.importActual("./instances.js");
+  return { ...actual, getPeers: () => Promise.resolve([]) };
+});
+
 // Pre-seed state into the new per-record layout. Mirrors what migration 034
 // produces — each universe lands in `universes/<id>/index.json` and the
 // cross-record `runs[]` lives in `universes/index.json` under `config.runs`.

@@ -24,6 +24,15 @@ vi.mock('crypto', async () => {
   return { ...actual, randomUUID: () => mockUuid(++uuidCounter) };
 });
 
+// Stub instances.js so createUniverse's fire-and-forget autoSubscribeRecordToAllPeers
+// doesn't fan the fixture out to real peers (getPeers reads the live registry via a
+// dataPath closure to the real PATHS once the post-return microtask runs outside this
+// file's fileUtils mock window). Mirrors importer.test.js / promoteToPipeline.test.js.
+vi.mock('./instances.js', async () => {
+  const actual = await vi.importActual('./instances.js');
+  return { ...actual, getPeers: () => Promise.resolve([]) };
+});
+
 // Stub the LLM dispatch so tests don't need a live runner. The
 // `runPromptThroughProvider` mock is overridden per-test to return the
 // per-kind JSON shape we expect from the LLM. `resolveProviderAndModel`
