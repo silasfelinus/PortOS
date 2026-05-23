@@ -67,61 +67,71 @@ describe('assetHash', () => {
       const token = `portos-assethash-test-${Date.now()}-${Math.random()}.png`;
       const imagePath = join(PATHS.images, token);
       const sidecarPath = sidecarPathForImage(imagePath);
-      await mkdir(dirname(imagePath), { recursive: true });
-      await writeFile(imagePath, Buffer.from('hello world'));
-      const result = await getOrComputeImageSha256(imagePath);
-      expect(result).not.toBeNull();
-      // "hello world" sha256:
-      expect(result.hash).toBe(
-        'b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9',
-      );
-      const sidecarJson = JSON.parse(await readFile(sidecarPath, 'utf8'));
-      expect(sidecarJson.sha256.value).toBe(result.hash);
-      expect(sidecarJson.sha256.size).toBe(11);
-      // cleanup
-      await rm(imagePath, { force: true });
-      await rm(sidecarPath, { force: true });
+      try {
+        await mkdir(dirname(imagePath), { recursive: true });
+        await writeFile(imagePath, Buffer.from('hello world'));
+        const result = await getOrComputeImageSha256(imagePath);
+        expect(result).not.toBeNull();
+        // "hello world" sha256:
+        expect(result.hash).toBe(
+          'b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9',
+        );
+        const sidecarJson = JSON.parse(await readFile(sidecarPath, 'utf8'));
+        expect(sidecarJson.sha256.value).toBe(result.hash);
+        expect(sidecarJson.sha256.size).toBe(11);
+      } finally {
+        // try/finally so a thrown assertion above doesn't leave the
+        // portos-assethash-test-* fixture in PATHS.images.
+        await rm(imagePath, { force: true });
+        await rm(sidecarPath, { force: true });
+      }
     });
 
     it('reuses cached sha256 on second call (no recompute)', async () => {
       const token = `portos-assethash-test-${Date.now()}-${Math.random()}.png`;
       const imagePath = join(PATHS.images, token);
       const sidecarPath = sidecarPathForImage(imagePath);
-      await mkdir(dirname(imagePath), { recursive: true });
-      await writeFile(imagePath, Buffer.from('one'));
-      const first = await getOrComputeImageSha256(imagePath);
-      // Tamper with the sidecar to a known-wrong value but matching the size/mtime —
-      // the helper should trust the cached entry (proves it's reading sidecar first).
-      const tampered = JSON.parse(await readFile(sidecarPath, 'utf8'));
-      const fakeHash = 'a'.repeat(64);
-      tampered.sha256.value = fakeHash;
-      await writeFile(sidecarPath, JSON.stringify(tampered));
-      const second = await getOrComputeImageSha256(imagePath);
-      expect(second.hash).toBe(fakeHash);
-      expect(second.hash).not.toBe(first.hash);
-      await rm(imagePath, { force: true });
-      await rm(sidecarPath, { force: true });
+      try {
+        await mkdir(dirname(imagePath), { recursive: true });
+        await writeFile(imagePath, Buffer.from('one'));
+        const first = await getOrComputeImageSha256(imagePath);
+        // Tamper with the sidecar to a known-wrong value but matching the size/mtime —
+        // the helper should trust the cached entry (proves it's reading sidecar first).
+        const tampered = JSON.parse(await readFile(sidecarPath, 'utf8'));
+        const fakeHash = 'a'.repeat(64);
+        tampered.sha256.value = fakeHash;
+        await writeFile(sidecarPath, JSON.stringify(tampered));
+        const second = await getOrComputeImageSha256(imagePath);
+        expect(second.hash).toBe(fakeHash);
+        expect(second.hash).not.toBe(first.hash);
+      } finally {
+        await rm(imagePath, { force: true });
+        await rm(sidecarPath, { force: true });
+      }
     });
 
     it('recomputes when file changes (mtime+size invalidate cache)', async () => {
       const token = `portos-assethash-test-${Date.now()}-${Math.random()}.png`;
       const imagePath = join(PATHS.images, token);
       const sidecarPath = sidecarPathForImage(imagePath);
-      await mkdir(dirname(imagePath), { recursive: true });
-      await writeFile(imagePath, Buffer.from('one'));
-      const first = await getOrComputeImageSha256(imagePath);
-      // Ensure mtime advances on slow filesystems where atime granularity
-      // could match — wait a tick before the rewrite.
-      await new Promise((r) => setTimeout(r, 20));
-      await writeFile(imagePath, Buffer.from('two-different-bytes'));
-      const second = await getOrComputeImageSha256(imagePath);
-      expect(second.hash).not.toBe(first.hash);
-      // Sidecar reflects the new hash + size.
-      const sidecarJson = JSON.parse(await readFile(sidecarPath, 'utf8'));
-      expect(sidecarJson.sha256.value).toBe(second.hash);
-      expect(sidecarJson.sha256.size).toBe(19);
-      await rm(imagePath, { force: true });
-      await rm(sidecarPath, { force: true });
+      try {
+        await mkdir(dirname(imagePath), { recursive: true });
+        await writeFile(imagePath, Buffer.from('one'));
+        const first = await getOrComputeImageSha256(imagePath);
+        // Ensure mtime advances on slow filesystems where atime granularity
+        // could match — wait a tick before the rewrite.
+        await new Promise((r) => setTimeout(r, 20));
+        await writeFile(imagePath, Buffer.from('two-different-bytes'));
+        const second = await getOrComputeImageSha256(imagePath);
+        expect(second.hash).not.toBe(first.hash);
+        // Sidecar reflects the new hash + size.
+        const sidecarJson = JSON.parse(await readFile(sidecarPath, 'utf8'));
+        expect(sidecarJson.sha256.value).toBe(second.hash);
+        expect(sidecarJson.sha256.size).toBe(19);
+      } finally {
+        await rm(imagePath, { force: true });
+        await rm(sidecarPath, { force: true });
+      }
     });
   });
 });

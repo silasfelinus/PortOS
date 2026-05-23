@@ -107,8 +107,9 @@ export default function ReferenceReposPanel({ appId, appName }) {
     } else if (snap.analysis?.reason === 'duplicate') {
       toast.success(`${commitMsg} — analysis already queued`);
     } else if (snap.analysis?.reason === 'analysis-trigger-failed') {
-      toast.success(commitMsg);
-      toast.error(`${ref.name}: failed to queue analysis task`);
+      // Single combined toast — the prior two-toast pattern (success then
+      // error) made the failure easy to miss when both fired together.
+      toast.error(`${commitMsg} — but failed to queue analysis task`);
     } else {
       toast.success(commitMsg);
     }

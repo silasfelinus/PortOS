@@ -271,8 +271,15 @@ export async function updatePeer(id, updates) {
   // dodges a static cycle (peerSync.js statically imports getPeers from us).
   if (turnedOnKinds.length > 0 && backfillPeerInstanceId) {
     import('./sharing/peerSync.js').then(async ({ autoSubscribePeerToAllRecords }) => {
+      // Per-kind try/catch so a transient failure in one kind's backfill
+      // (e.g. universe) doesn't abort the loop and leave the peer with no
+      // series subscriptions either. Each kind is best-effort + logged
+      // independently; the next category-toggle PATCH or peer-online
+      // event re-fires the backfill for any kind that didn't land.
       for (const kind of turnedOnKinds) {
-        await autoSubscribePeerToAllRecords(backfillPeerInstanceId, kind);
+        await autoSubscribePeerToAllRecords(backfillPeerInstanceId, kind).catch((err) => {
+          console.log(`⚠️ peer: backfill-subscribe ${kind} after category toggle failed: ${err.message}`);
+        });
       }
     }).catch((err) => {
       console.log(`⚠️ peer: backfill-subscribe after category toggle failed: ${err.message}`);
