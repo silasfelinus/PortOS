@@ -36,15 +36,17 @@ $ARGUMENTS
 
 5. **Carry out the task.** Implement, test, and commit as appropriate. The originating checkout is untouched — its uncommitted changes, branch, and HEAD are all preserved.
 
-6. **After the task is complete**, *from inside the worktree directory*, always run:
+6. **After the task is complete**, *from inside the worktree directory*, always run, in this exact order:
    ```
    /simplify
-   /do:pr --review-with codex,gemini,copilot
+   /do:review --with codex,gemini
+   /do:pr --review-with copilot
    ```
-   - `/simplify` first — review the changed code for reuse, quality, and efficiency before opening the PR.
-   - Then `/do:pr --review-with codex,gemini,copilot` — commit, push the `worktree-<slug>` branch, and open the PR against `main` with the multi-reviewer loop.
+   - `/simplify` first — review the changed code for reuse, quality, and efficiency.
+   - Then `/do:review --with codex,gemini` — run the local codex + gemini reviews against the diff and address their findings *before* the PR is opened. Opening the PR first kicks Copilot into a review round against unreviewed code, which wastes Copilot cycles on issues codex/gemini would have caught locally.
+   - Finally `/do:pr --review-with copilot` — commit, push the `worktree-<slug>` branch, and open the PR against `main`. Copilot is the only reviewer in the loop here because codex/gemini already ran locally.
    - Run these even if the task description didn't explicitly ask for a PR. The point of the worktree is to land the work as a reviewed PR; skipping these steps defeats the purpose.
-   - Do NOT skip `/simplify` and jump straight to `/do:pr` — the simplify pass routinely catches issues that would otherwise burn extra Copilot-review rounds.
+   - Do NOT collapse these into a single `/do:pr --review-with codex,gemini,copilot` — opening the PR before the local reviews land triggers Copilot against unreviewed code.
 
 ## Guardrails
 
