@@ -77,6 +77,7 @@ import identityRoutes from './routes/identity.js';
 import instancesRoutes from './routes/instances.js';
 import meatspaceRoutes from './routes/meatspace.js';
 import mortallomRoutes from './routes/mortalloom.js';
+import { initMortalLoomStore } from './services/mortalLoomStore.js';
 import reviewRoutes from './routes/review.js';
 import githubRoutes from './routes/github.js';
 import settingsRoutes from './routes/settings.js';
@@ -599,6 +600,15 @@ ensureSelf()
     initComicPagesFilenameHook();
     initStoryboardsFilenameHook();
     initSeasonCoverFilenameHook();
+    // Best-effort pre-materialize the MortalLoom iCloud store so the
+    // dashboard's proactive-alerts poll (and other readers) don't trigger
+    // on-demand downloads that surface as EAGAIN. `brctl download` only
+    // materializes the file — it does not pin against future eviction, so
+    // the retry-on-EAGAIN path inside the store is what guarantees the
+    // hardening. Fire-and-forget — failures are logged.
+    initMortalLoomStore().catch((err) => {
+      console.warn(`⚠️ MortalLoom store init failed: ${err.message}`);
+    });
   })
   .then(() => {
     // Sharing: attach chokidar watchers to every registered share bucket so
