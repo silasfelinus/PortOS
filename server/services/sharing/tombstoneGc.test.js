@@ -74,6 +74,10 @@ describe('sweepTombstones — peers behind', () => {
       if (recordKind === 'universe') return [{ peerId: 'peer-a' }];
       return [];
     });
+    // peerIdsSubscribedToKind now filters against live peers (removed-peer
+    // subscriptions otherwise stall GC forever). Register peer-a so the
+    // sub passes the registry filter.
+    getPeers.mockResolvedValue([{ instanceId: 'peer-a', enabled: true }]);
     getMinAckAcrossPeers.mockImplementation(async (peerIds) => {
       if (peerIds.includes('peer-a')) return minAck;
       return Infinity;
@@ -95,6 +99,7 @@ describe('sweepTombstones — peers behind', () => {
       if (recordKind === 'series') return [{ peerId: 'peer-a' }];
       return [];
     });
+    getPeers.mockResolvedValue([{ instanceId: 'peer-a', enabled: true }]);
     getMinAckAcrossPeers.mockImplementation(async (peerIds) => {
       if (peerIds.includes('peer-a')) return seriesAck;
       return Infinity;
@@ -135,6 +140,10 @@ describe('sweepTombstones — peers behind', () => {
       }
       return [];
     });
+    getPeers.mockResolvedValue([
+      { instanceId: 'peer-a', enabled: true },
+      { instanceId: 'peer-b', enabled: true },
+    ]);
     getMinAckAcrossPeers.mockResolvedValue(NOW - 1000);
     await sweepTombstones({ now: NOW });
     expect(getMinAckAcrossPeers).toHaveBeenCalledWith(
@@ -143,6 +152,26 @@ describe('sweepTombstones — peers behind', () => {
     const firstCallArgs = getMinAckAcrossPeers.mock.calls[0][0];
     // De-dup invariant.
     expect(new Set(firstCallArgs).size).toBe(firstCallArgs.length);
+  });
+
+  it('ignores subscriptions for peers no longer in the registry (removed-peer GC stall)', async () => {
+    // Regression: peer_subscriptions.json rows outlive peer removal — no
+    // cleanup hook on instance delete. Without the live-registry filter,
+    // getMinAckAcrossPeers would receive a removed peer-id, return its
+    // frozen-at-removal ack (often 0), and the cutoff would clamp to
+    // `0 - GRACE` — refusing to prune any tombstone for this kind
+    // indefinitely.
+    listPeerSubscriptions.mockImplementation(async ({ recordKind }) => {
+      if (recordKind === 'universe') return [{ peerId: 'peer-ghost' }, { peerId: 'peer-live' }];
+      return [];
+    });
+    // peer-ghost was removed; only peer-live is still in the registry.
+    getPeers.mockResolvedValue([{ instanceId: 'peer-live', enabled: true }]);
+    getMinAckAcrossPeers.mockResolvedValue(NOW - 1000);
+    await sweepTombstones({ now: NOW });
+    const firstCallArgs = getMinAckAcrossPeers.mock.calls[0][0];
+    expect(firstCallArgs).toEqual(['peer-live']);
+    expect(firstCallArgs).not.toContain('peer-ghost');
   });
 });
 

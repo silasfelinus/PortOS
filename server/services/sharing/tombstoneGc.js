@@ -47,7 +47,17 @@ const GRACE_MS = 24 * 60 * 60 * 1000; // 24h grace
  */
 async function peerIdsSubscribedToKind(recordKind) {
   const subs = await listPeerSubscriptions({ recordKind });
-  return [...new Set(subs.map((s) => s.peerId).filter(Boolean))];
+  // Filter against the live peer registry — peer_subscriptions.json rows
+  // outlive peer removal (no cleanup hook on instance delete), so a
+  // long-gone peer would otherwise be treated as an active subscriber.
+  // getMinAckAcrossPeers would then include it with its frozen-at-removal
+  // ack (often 0) and refuse to prune any tombstone for this kind. Bound
+  // to the peers we can actually reach so a removed peer doesn't
+  // permanently stall GC.
+  const livePeerIds = new Set(
+    (await getPeers().catch(() => [])).map((p) => p?.instanceId).filter(Boolean),
+  );
+  return [...new Set(subs.map((s) => s.peerId).filter((id) => id && livePeerIds.has(id)))];
 }
 
 /**

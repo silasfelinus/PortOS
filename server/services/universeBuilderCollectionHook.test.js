@@ -20,6 +20,15 @@ vi.mock('../lib/fileUtils.js', async () => {
   });
 });
 
+// Stub instances.js so non-ephemeral createUniverse paths don't fan out
+// to real peers via peerSync's autoSubscribeRecordToAllPeers (instances.js
+// uses dataPath whose closure points at REAL PATHS, bypassing the mock
+// above).
+vi.mock('./instances.js', async () => {
+  const actual = await vi.importActual('./instances.js');
+  return { ...actual, getPeers: () => Promise.resolve([]) };
+});
+
 const { mediaJobEvents } = await import('./mediaJobQueue/index.js');
 const collections = await import('./mediaCollections.js');
 const recordEvents = await import('./sharing/recordEvents.js');
@@ -150,6 +159,11 @@ describe('universeBuilderCollectionHook', () => {
       name,
       characters,
       categories: { [categoryKey]: { variations } },
+      // Test uses a real tempdir but doesn't mock instances.js, so a
+      // non-ephemeral create would fire autoSubscribeRecordToAllPeers and
+      // initial-push a fixture universe to every real peer in
+      // data/instances.json — see series.js#createSeries auto-subscribe.
+      ephemeral: true,
     });
     return created;
   }

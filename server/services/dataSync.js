@@ -11,8 +11,8 @@ import { stat } from 'fs/promises';
 import { join } from 'path';
 import { atomicWrite, readJSONFile, PATHS } from '../lib/fileUtils.js';
 import { isPlainObject } from '../lib/objects.js';
-import { mergeUniversesFromSync } from './universeBuilder.js';
-import { mergeSeriesFromSync } from './pipeline/series.js';
+import { mergeUniversesFromSync, listUniverses } from './universeBuilder.js';
+import { mergeSeriesFromSync, listSeries } from './pipeline/series.js';
 import { mergeIssuesFromSync } from './pipeline/issues.js';
 import { mergeMediaCollectionsFromSync, listCollections, itemKey } from './mediaCollections.js';
 import { sanitizeStateForWire } from '../lib/syncWire.js';
@@ -434,6 +434,28 @@ async function getMediaCollectionsSnapshot() {
   // the checksum cache (`CHECKSUM_PATHS` fingerprint check) already short-
   // circuits the I/O when the file hasn't moved.
   const collections = await listCollections();
+  // Filter out collections whose linked record (universe or series) is marked
+  // ephemeral. Mirrors the per-record push pipeline's local-ephemeral guard
+  // (see peerSync.js applyIncomingPush) — without this filter, the
+  // mediaCollections snapshot category would still leak the collection name +
+  // item refs for records the user explicitly opted out of sync. Tombstoned
+  // ephemeral parents also drop their collection (sender wouldn't bundle them
+  // anyway, but the snapshot path is independent).
+  const ephemeralUniverseIds = new Set(
+    (await listUniverses({ includeDeleted: true }).catch(() => []))
+      .filter((u) => u?.ephemeral === true)
+      .map((u) => u.id),
+  );
+  const ephemeralSeriesIds = new Set(
+    (await listSeries({ includeDeleted: true }).catch(() => []))
+      .filter((s) => s?.ephemeral === true)
+      .map((s) => s.id),
+  );
+  const filtered = collections.filter((c) => {
+    if (c.universeId && ephemeralUniverseIds.has(c.universeId)) return false;
+    if (c.seriesId && ephemeralSeriesIds.has(c.seriesId)) return false;
+    return true;
+  });
   // Canonicalize ordering for the wire so two peers holding identical sets
   // produce identical checksums regardless of write history. Without this
   // sort, on-disk order is insertion-order — peer A and peer B can land the
@@ -442,7 +464,7 @@ async function getMediaCollectionsSnapshot() {
   // forever. Sort collections by id (stable, unique) and each collection's
   // items by `<kind>:<ref>` (the same key used for set membership in
   // `mergeCollectionItems`).
-  const canonical = collections
+  const canonical = filtered
     .map((c) => ({
       ...c,
       items: [...(c.items || [])].sort((a, b) => itemKey(a).localeCompare(itemKey(b))),
@@ -483,7 +505,12 @@ const CHECKSUM_PATHS = {
   meatspace: Object.keys(MEATSPACE_FILES).map((f) => join(MEATSPACE_DIR, f)),
   universe: [UNIVERSE_BUILDER_FILE],
   pipeline: [PIPELINE_SERIES_FILE, PIPELINE_ISSUES_FILE],
-  mediaCollections: [MEDIA_COLLECTIONS_FILE],
+  // mediaCollections invalidates on its own file AND on the parent record
+  // files — `getMediaCollectionsSnapshot` filters collections whose linked
+  // universe/series is ephemeral, so a "mark ephemeral" PATCH on a universe
+  // must re-checksum the collections snapshot even though
+  // media-collections.json itself didn't move. Same goes for un-ephemeral.
+  mediaCollections: [MEDIA_COLLECTIONS_FILE, UNIVERSE_BUILDER_FILE, PIPELINE_SERIES_FILE],
 };
 
 const CATEGORIES = {

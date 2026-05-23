@@ -37,7 +37,15 @@ export function insecureFetch(agent) {
           resolve({
             ok: res.statusCode >= 200 && res.statusCode < 300,
             status: res.statusCode,
-            headers: { get: n => res.headers[n.toLowerCase()] ?? null },
+            headers: {
+              get: n => res.headers[n.toLowerCase()] ?? null,
+              // has() mirrors Fetch's Headers API so consumers (peerSync's
+              // asset-pull cap check) can distinguish "header missing" from
+              // "header is '0'" without branching on transport. Without this
+              // the asset-pull `res.headers.has('content-length')` throws
+              // TypeError on every HTTPS pull.
+              has: n => Object.prototype.hasOwnProperty.call(res.headers, n.toLowerCase()),
+            },
             text: () => Promise.resolve(buffer.toString('utf-8')),
             json: () => Promise.resolve(JSON.parse(buffer.toString('utf-8'))),
             // ArrayBuffer view matching Fetch's Response so call sites can
