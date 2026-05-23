@@ -8,11 +8,38 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import * as dataSync from '../services/dataSync.js';
+import { sweepTombstones, getSweepStatus, TOMBSTONE_GRACE_MS } from '../services/sharing/tombstoneGc.js';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 
 const router = Router();
 
 const categoryParam = z.enum(['goals', 'character', 'digitalTwin', 'meatspace', 'universe', 'pipeline', 'mediaCollections']);
+
+// Tombstone GC manual trigger. Declared BEFORE `/:category/*` so the literal
+// "tombstones" segment wins Express's first-match lookup (categoryParam's
+// Zod enum would otherwise 400 before our handler runs). graceMs is clamped
+// to [0, 24h] — the trigger can only SHRINK the grace, never bypass the ack
+// horizon; the per-kind null-cutoff refusal still fires regardless.
+const tombstoneSweepBodySchema = z.object({
+  graceMs: z.number().int().min(0).max(TOMBSTONE_GRACE_MS).optional(),
+}).strict();
+
+router.get('/tombstones/status', asyncHandler(async (req, res) => {
+  const status = await getSweepStatus();
+  res.json(status);
+}));
+
+router.post('/tombstones/sweep', asyncHandler(async (req, res) => {
+  const parsed = tombstoneSweepBodySchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    throw new ServerError(
+      `Validation failed: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', ')}`,
+      { status: 400, code: 'VALIDATION_ERROR' },
+    );
+  }
+  const result = await sweepTombstones(parsed.data);
+  res.json(result);
+}));
 
 // GET /api/sync/:category/checksum — return checksum only (lightweight)
 router.get('/:category/checksum', asyncHandler(async (req, res) => {
