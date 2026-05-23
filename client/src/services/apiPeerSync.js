@@ -39,3 +39,17 @@ export const unsubscribeFromPeer = (subscriptionId, options) =>
     method: 'DELETE',
     ...options,
   });
+
+// Tombstone GC manual-trigger endpoints. The ack horizon used to decide
+// what's safe to prune comes from the per-record subscription cursors that
+// the rest of this file already manages — hence the colocation.
+
+export const getTombstoneSweepStatus = (options) =>
+  request('/sync/tombstones/status', options);
+
+export const sweepTombstonesNow = ({ graceMs } = {}, options) =>
+  request('/sync/tombstones/sweep', {
+    method: 'POST',
+    body: JSON.stringify(graceMs !== undefined ? { graceMs } : {}),
+    ...options,
+  });
