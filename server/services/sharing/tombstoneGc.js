@@ -86,14 +86,19 @@ function snapshotPeerIdsForKind(peers, recordKind) {
 // Returns null when ANY snapshot-mode peer for this kind isn't covered by
 // a per-record subscription — without an ack horizon, an offline peer could
 // resurrect a pruned tombstone via its next snapshot push. Otherwise the
-// cutoff is `min(now, minAck) - graceMs`.
+// cutoff is `min(now, minAck) - graceMs + 1`. The `+1` compensates for the
+// strict-less-than comparison the prune helpers use (`deletedAt < beforeMs`);
+// without it, a tombstone deleted at the same millisecond as `minAck`
+// survives forever under `graceMs:0` (the manual-trigger path). At
+// graceMs=24h the 1ms shift is invisible, so the orchestrator path is
+// unchanged in practice.
 async function cutoffForKind(recordKind, { peers, subs, now, graceMs }) {
   const peerIds = peerIdsSubscribedToKind(subs, peers, recordKind);
   const snapshotPeerIds = snapshotPeerIdsForKind(peers, recordKind);
   const subbed = new Set(peerIds);
   if (snapshotPeerIds.some((id) => !subbed.has(id))) return null;
   const minAck = await getMinAckAcrossPeers(peerIds);
-  return Math.min(minAck, now) - graceMs;
+  return Math.min(minAck, now) - graceMs + 1;
 }
 
 // Single point of disk I/O for peer registry + subscription rows. Both

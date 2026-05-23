@@ -65,7 +65,7 @@ describe('TOMBSTONE_GRACE_MS', () => {
 describe('sweepTombstones — no peers subscribed', () => {
   it('uses now-GRACE as the cutoff for all three kinds when nobody is subscribed', async () => {
     await sweepTombstones({ now: NOW });
-    const expectedCutoff = NOW - TOMBSTONE_GRACE_MS;
+    const expectedCutoff = NOW - TOMBSTONE_GRACE_MS + 1;
     expect(pruneTombstonedUniverses).toHaveBeenCalledWith(expectedCutoff);
     expect(pruneTombstonedSeries).toHaveBeenCalledWith(expectedCutoff);
     expect(pruneTombstonedIssues).toHaveBeenCalledWith(expectedCutoff);
@@ -89,10 +89,10 @@ describe('sweepTombstones — peers behind', () => {
       return Infinity;
     });
     await sweepTombstones({ now: NOW });
-    expect(pruneTombstonedUniverses).toHaveBeenCalledWith(minAck - TOMBSTONE_GRACE_MS);
+    expect(pruneTombstonedUniverses).toHaveBeenCalledWith(minAck - TOMBSTONE_GRACE_MS + 1);
     // series + issues still use now-GRACE since no series subs exist.
-    expect(pruneTombstonedSeries).toHaveBeenCalledWith(NOW - TOMBSTONE_GRACE_MS);
-    expect(pruneTombstonedIssues).toHaveBeenCalledWith(NOW - TOMBSTONE_GRACE_MS);
+    expect(pruneTombstonedSeries).toHaveBeenCalledWith(NOW - TOMBSTONE_GRACE_MS + 1);
+    expect(pruneTombstonedIssues).toHaveBeenCalledWith(NOW - TOMBSTONE_GRACE_MS + 1);
   });
 
   it('uses the same cutoff for issues as for series (issue tombstones ride series pushes)', async () => {
@@ -108,7 +108,7 @@ describe('sweepTombstones — peers behind', () => {
       return Infinity;
     });
     await sweepTombstones({ now: NOW });
-    const seriesCutoff = seriesAck - TOMBSTONE_GRACE_MS;
+    const seriesCutoff = seriesAck - TOMBSTONE_GRACE_MS + 1;
     expect(pruneTombstonedSeries).toHaveBeenCalledWith(seriesCutoff);
     expect(pruneTombstonedIssues).toHaveBeenCalledWith(seriesCutoff);
   });
@@ -124,7 +124,7 @@ describe('sweepTombstones — peers behind', () => {
     getPeers.mockResolvedValue([{ instanceId: 'peer-a', enabled: true }]);
     getMinAckAcrossPeers.mockImplementation(async () => ahead);
     await sweepTombstones({ now: NOW });
-    expect(pruneTombstonedUniverses).toHaveBeenCalledWith(NOW - TOMBSTONE_GRACE_MS);
+    expect(pruneTombstonedUniverses).toHaveBeenCalledWith(NOW - TOMBSTONE_GRACE_MS + 1);
   });
 
   it('passes the unique peer-id list to getMinAckAcrossPeers (no duplicate ids)', async () => {
@@ -225,14 +225,17 @@ describe('sweepTombstones — graceMs override (manual trigger / CLI path)', () 
     // records doesn't have to wait 24h. The cutoff math must use the
     // caller's graceMs, not the module-level GRACE_MS, when overridden.
     await sweepTombstones({ now: NOW, graceMs: 0 });
-    expect(pruneTombstonedUniverses).toHaveBeenCalledWith(NOW);
-    expect(pruneTombstonedSeries).toHaveBeenCalledWith(NOW);
-    expect(pruneTombstonedIssues).toHaveBeenCalledWith(NOW);
+    // cutoff is NOW+1 (the +1 compensates for the prune helpers' strict
+    // `deletedAt < beforeMs` comparison so a tombstone created at exactly
+    // NOW is still pruned — see cutoffForKind in tombstoneGc.js).
+    expect(pruneTombstonedUniverses).toHaveBeenCalledWith(NOW + 1);
+    expect(pruneTombstonedSeries).toHaveBeenCalledWith(NOW + 1);
+    expect(pruneTombstonedIssues).toHaveBeenCalledWith(NOW + 1);
   });
 
   it('defaults to TOMBSTONE_GRACE_MS when graceMs is omitted (orchestrator path unchanged)', async () => {
     await sweepTombstones({ now: NOW });
-    expect(pruneTombstonedUniverses).toHaveBeenCalledWith(NOW - TOMBSTONE_GRACE_MS);
+    expect(pruneTombstonedUniverses).toHaveBeenCalledWith(NOW - TOMBSTONE_GRACE_MS + 1);
   });
 
   it('still clamps to min-ack even with graceMs:0 (per-record sub safety preserved)', async () => {
@@ -244,7 +247,22 @@ describe('sweepTombstones — graceMs override (manual trigger / CLI path)', () 
     getPeers.mockResolvedValue([{ instanceId: 'peer-a', enabled: true }]);
     getMinAckAcrossPeers.mockResolvedValue(minAck);
     await sweepTombstones({ now: NOW, graceMs: 0 });
-    expect(pruneTombstonedUniverses).toHaveBeenCalledWith(minAck);
+    expect(pruneTombstonedUniverses).toHaveBeenCalledWith(minAck + 1);
+  });
+
+  it("prunes a tombstone whose deletedAt equals minAck exactly (inclusive-cutoff regression)", async () => {
+    // Regression for codex P2 finding: prune helpers compare with strict
+    // less-than (`deletedAt < beforeMs`), so before the +1 shift, a single
+    // delete at timestamp T where minAck == T would never prune — cutoff
+    // returned T and the comparison rejected `T < T`. With the shift the
+    // cutoff is T+1 and the tombstone is correctly pruned.
+    const t = NOW - 1000;
+    mockSubs({ universe: [{ peerId: 'peer-a' }] });
+    getPeers.mockResolvedValue([{ instanceId: 'peer-a', enabled: true }]);
+    getMinAckAcrossPeers.mockResolvedValue(t);
+    await sweepTombstones({ now: NOW, graceMs: 0 });
+    const cutoff = pruneTombstonedUniverses.mock.calls[0][0];
+    expect(cutoff).toBeGreaterThan(t); // tombstone at t passes `t < cutoff`
   });
 
   it('still refuses to prune snapshot-uncovered kinds even with graceMs:0', async () => {
@@ -293,8 +311,8 @@ describe('sweepTombstones — resurrection safety against snapshot-mode peers', 
     // Universe prune is skipped (no call); series + issues still run
     // because no peer has pipeline=true here.
     expect(pruneTombstonedUniverses).not.toHaveBeenCalled();
-    expect(pruneTombstonedSeries).toHaveBeenCalledWith(NOW - TOMBSTONE_GRACE_MS);
-    expect(pruneTombstonedIssues).toHaveBeenCalledWith(NOW - TOMBSTONE_GRACE_MS);
+    expect(pruneTombstonedSeries).toHaveBeenCalledWith(NOW - TOMBSTONE_GRACE_MS + 1);
+    expect(pruneTombstonedIssues).toHaveBeenCalledWith(NOW - TOMBSTONE_GRACE_MS + 1);
   });
 
   it('refuses to prune series + issue tombstones when a pipeline snapshot-mode peer exists', async () => {

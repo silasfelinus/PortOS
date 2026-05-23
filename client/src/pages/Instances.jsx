@@ -1034,12 +1034,23 @@ function PeerCard({ peer, onRefresh, syncStatus, tailnetInfo }) {
 function TombstoneGcSection() {
   const [refused, setRefused] = useState(null); // null = still loading
 
+  // Subscribe to peer-state changes so toggling a snapshot-mode peer's
+  // sync category (or disabling it) re-evaluates the refusal status
+  // without a page reload — otherwise the button stays stuck disabled
+  // even after the user has resolved the underlying refusal condition.
   useEffect(() => {
     let cancelled = false;
-    getTombstoneSweepStatus({ silent: true })
-      .then((r) => { if (!cancelled && Array.isArray(r?.refused)) setRefused(r.refused); })
-      .catch(() => { if (!cancelled) setRefused([]); });
-    return () => { cancelled = true; };
+    const fetchStatus = () => {
+      getTombstoneSweepStatus({ silent: true })
+        .then((r) => { if (!cancelled && Array.isArray(r?.refused)) setRefused(r.refused); })
+        .catch(() => { if (!cancelled) setRefused((prev) => prev ?? []); });
+    };
+    fetchStatus();
+    socket.on('instances:peers:updated', fetchStatus);
+    return () => {
+      cancelled = true;
+      socket.off('instances:peers:updated', fetchStatus);
+    };
   }, []);
 
   const [runSweep, sweeping] = useAsyncAction(async () => {
