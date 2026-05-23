@@ -1,6 +1,11 @@
 #!/bin/bash
 set -e
 
+# Anchor to the script's own directory so relative paths (e.g. the
+# `node -e import('./server/lib/tailscale.js')` detection below) work
+# regardless of where the user invokes ./setup.sh from.
+cd "$(dirname "$0")"
+
 echo "==================================="
 echo "  PortOS Setup"
 echo "==================================="
