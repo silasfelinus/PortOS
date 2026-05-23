@@ -895,9 +895,28 @@ export async function applyIncomingPush(payload) {
     throw makeErr('record must be an object with a string id', ERR_VALIDATION);
   }
 
+  // Look up the LOCAL record state BEFORE merging so we can detect the
+  // "local user marked this record ephemeral" case. The merge functions
+  // already silently drop ephemeral records, but the side effects below
+  // (linkedCollection merge, asset pull, reverse subscription) ran
+  // unconditionally — meaning a stale peer subscription could still
+  // mutate a local collection, download bytes the user opted out of, and
+  // auto-create a reverse sub the user explicitly torn down. Computing
+  // `localEphemeral` here is one extra read but closes the gap.
+  let localEphemeral = false;
+  if (kind === 'universe') {
+    const local = await getUniverse(record.id, { includeDeleted: true }).catch(() => null);
+    localEphemeral = local?.ephemeral === true;
+  } else if (kind === 'series') {
+    const local = await getSeries(record.id, { includeDeleted: true }).catch(() => null);
+    localEphemeral = local?.ephemeral === true;
+  }
+
   // Merge into local state via the existing LWW path. The merge functions
   // honor `deleted: true` + bump `updatedAt`, so this is the single
-  // tombstone-aware reconciliation point.
+  // tombstone-aware reconciliation point. (Local-ephemeral records are
+  // silently dropped inside the merge; we still call it so non-ephemeral
+  // siblings in the issues array land.)
   if (kind === 'universe') {
     await mergeUniversesFromSync([record]);
   } else if (kind === 'series') {
@@ -914,14 +933,18 @@ export async function applyIncomingPush(payload) {
   // sanitizer in mediaCollections strips a peer-supplied `id` that isn't a
   // string, so a bogus payload can't plant a malformed row.
   //
-  // Defense in depth on the peer-supplied envelope: require a plain object
-  // (arrays would get wrapped and the sanitizer would drop them, but
-  // skipping early avoids the wasted call) AND refuse to merge when the
-  // record we just applied is a tombstone (`record.deleted === true`). The
-  // sender already skips bundling for tombstones, so a present
-  // `linkedCollection` on a tombstone push is either a bug or a malicious
-  // peer trying to resurrect a collection during a delete propagation.
-  if (record.deleted !== true && isPlainObject(linkedCollection)) {
+  // Defense in depth on the peer-supplied envelope:
+  //   - plain-object check (arrays would get wrapped and the sanitizer
+  //     would drop them, but skipping early avoids the wasted call)
+  //   - refuse to merge when the record is a tombstone (`deleted === true`)
+  //     — the sender already skips bundling for tombstones, so a present
+  //     `linkedCollection` on a tombstone push is either a bug or a
+  //     malicious peer trying to resurrect a collection during delete
+  //     propagation.
+  //   - refuse to merge when the LOCAL record is ephemeral — the user
+  //     explicitly opted out of sync for this record, so peer-pushed
+  //     collection mutations must not land.
+  if (!localEphemeral && record.deleted !== true && isPlainObject(linkedCollection)) {
     await mergeMediaCollectionsFromSync([linkedCollection]).catch((err) => {
       console.log(`⚠️ peerSync: linkedCollection merge failed: ${err.message}`);
     });
@@ -933,7 +956,10 @@ export async function applyIncomingPush(payload) {
   // — the sender just needs to keep those files served, no action required
   // from it here. We return the list to the sender in the response so it
   // can surface progress in its UI ("N/M assets still syncing to peer X").
-  const missingAssets = await diffAssetManifestAgainstLocal(assetManifest);
+  // For local-ephemeral records, skip the diff entirely so we don't even
+  // report a non-empty missingAssets back to the sender (which would
+  // surface a "still syncing" UI for a record we silently refused).
+  const missingAssets = localEphemeral ? [] : await diffAssetManifestAgainstLocal(assetManifest);
 
   // Compute the deletedAt water-mark we can ack. Use the maximum across the
   // record + its issues (a single push can carry multiple tombstones).
@@ -946,7 +972,9 @@ export async function applyIncomingPush(payload) {
   // record is already merged and the response will tell the sender what
   // assets to push next. The reverse subscription only affects whether
   // future edits flow BACK; the user can also create one manually.
-  const reverseSubscriptionCreated = await maybeCreateReverseSubscription({
+  // Skip for local-ephemeral: the user said "don't sync this record"; we
+  // shouldn't auto-create a sub the next edit would push out to a peer.
+  const reverseSubscriptionCreated = localEphemeral ? false : await maybeCreateReverseSubscription({
     peerId: sourceInstanceId,
     recordKind: kind,
     recordId: record.id,
@@ -958,6 +986,8 @@ export async function applyIncomingPush(payload) {
   // Fire-and-forget so the push response isn't blocked on a slow pull; the
   // worker emits a socket event when each asset lands so the UI can swap
   // the MediaImage placeholder for the real bytes.
+  // (missingAssets is already [] for localEphemeral above, so the worker
+  // can never schedule pulls for opted-out records.)
   if (missingAssets.length > 0) {
     pullMissingAssetsFromPeer(sourceInstanceId, missingAssets).catch((err) => {
       console.log(`⚠️ peerSync: asset pull from ${sourceInstanceId} failed: ${err.message}`);
