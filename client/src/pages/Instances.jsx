@@ -1049,20 +1049,15 @@ export default function Instances() {
       setPeers(updatedPeers);
     };
     socket.on('instances:peers:updated', handlePeersUpdated);
-    // Per-record peer-sync subscription blocked / unblocked → re-fetch so
-    // the SchemaGapBadge picks up the new `blockedBySchema` field. The server
-    // mutates the subscription state directly; the only cross-tab signal is
-    // the socket event, so we refetch peers + their sub lists. Cheap because
-    // it's already throttled by the user's edit cadence.
-    const handleSchemaSubChange = () => { fetchData(); };
-    socket.on('peerSync:subscription-blocked', handleSchemaSubChange);
-    socket.on('peerSync:subscription-unblocked', handleSchemaSubChange);
+    // NOTE: `peerSync:subscription-blocked/unblocked` is intentionally NOT
+    // handled here. Those events only mutate per-record subscription state
+    // (`blockedBySchema`), which each PeerCard refetches for its own peer via
+    // its peerSubs effect. A page-level fetchData() on every such event would
+    // refetch all peers + syncStatus for a change that touches only one card.
 
     return () => {
       socket.emit('instances:unsubscribe');
       socket.off('instances:peers:updated', handlePeersUpdated);
-      socket.off('peerSync:subscription-blocked', handleSchemaSubChange);
-      socket.off('peerSync:subscription-unblocked', handleSchemaSubChange);
     };
   }, [fetchData]);
 

@@ -2,7 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import { rmSync, mkdirSync } from 'fs';
 import { mockPathsDataRoot } from '../lib/mockPathsDataRoot.js';
 
-const { tempRoot, makeProxy, cleanup } = mockPathsDataRoot({ prefix: 'portos-universe-promote-' });
+// `wrapExports: ['atomicWrite']` exposes a delegating vi.fn at
+// `spies.atomicWrite` so the atomicity test can count writes WITHOUT
+// vi.spyOn-ing the read-only ESM export (which throws in Vitest).
+const { tempRoot, makeProxy, cleanup, spies } = mockPathsDataRoot({
+  prefix: 'portos-universe-promote-',
+  wrapExports: ['atomicWrite'],
+  makeSpy: vi.fn,
+});
 afterAll(cleanup);
 
 vi.mock('../lib/fileUtils.js', async () => {
@@ -40,7 +47,6 @@ assertProvider: (provider, { message, code, status = 503 } = {}) => {
 // the mock chain.
 const svc = await import('./universeBuilder.js');
 const promoteSvc = await import('./universeBuilderPromote.js');
-const fileUtils = await import('../lib/fileUtils.js');
 
 const seedUniverseWithBucket = async (categories, canon = {}) => {
   const w = await svc.createUniverse({
@@ -440,16 +446,14 @@ describe('universeBuilderPromote — atomicity', () => {
     // index.json) — saveTypeIndex writes that happen elsewhere in the test's
     // setup are excluded.
     const recordIndexPath = `${tempRoot}/universes/${w.id}/index.json`;
-    const writeSpy = vi.spyOn(fileUtils, 'atomicWrite');
-    const beforeCalls = writeSpy.mock.calls.length;
+    const beforeCalls = spies.atomicWrite.mock.calls.length;
     await promoteSvc.promoteVariationToCanon(w.id, {
       category: 'landscapes',
       label: 'A',
     });
-    const recordWrites = writeSpy.mock.calls
+    const recordWrites = spies.atomicWrite.mock.calls
       .slice(beforeCalls)
       .filter(([path]) => path === recordIndexPath);
-    writeSpy.mockRestore();
     // Canon append AND variation removal must land in one persistence write
     // — not two. A two-write split would expose a half-state window where a
     // crash leaves the variation gone but the canon entry never written
