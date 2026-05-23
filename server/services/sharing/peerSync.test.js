@@ -1445,19 +1445,22 @@ describe('peerSync', () => {
       it('rejects when sender schemaVersions.universes is AHEAD of local code', async () => {
         // Local code is at universes:5 (see server/lib/schemaVersions.js).
         // A push from a sender on universes:6 must NOT touch local state.
-        await expect(applyIncomingPush({
+        const rejection = await applyIncomingPush({
           kind: 'universe',
           record: { id: 'u1', name: 'Foo' },
           assetManifest: [],
           sourceInstanceId: 'peer-a',
           portosMeta: { portosVersion: '99.0.0', schemaVersions: { universes: 6 } },
-        })).rejects.toMatchObject({
-          code: 'PEER_SYNC_SCHEMA_VERSION_AHEAD',
-          details: {
-            ahead: [{ category: 'universes', senderV: 6, receiverV: 5 }],
-            senderPortosVersion: '99.0.0',
-          },
-        });
+        }).catch((err) => err);
+        expect(rejection.code).toBe('PEER_SYNC_SCHEMA_VERSION_AHEAD');
+        expect(rejection.details.ahead).toEqual([{ category: 'universes', senderV: 6, receiverV: 5 }]);
+        expect(rejection.details.senderPortosVersion).toBe('99.0.0');
+        // Receiver MUST stamp its OWN PortOS version so the sender can show
+        // the user "peer X is on PortOS vY" — without this, the sender would
+        // fall back to its own version (the one it sent) and mislabel the
+        // peer in the SchemaGapBadge.
+        expect(typeof rejection.details.receiverPortosVersion).toBe('string');
+        expect(rejection.details.receiverPortosVersion.length).toBeGreaterThan(0);
         // mergeUniversesFromSync MUST NOT have been called — the gate runs
         // before the merge dispatch.
         expect(mergeUniversesFromSync).not.toHaveBeenCalled();
@@ -1524,6 +1527,8 @@ describe('peerSync', () => {
       it('records a blockedBySchema marker on the subscription when the peer responds 409', async () => {
         vi.mocked(getUniverse).mockResolvedValue({ id: 'u1', name: 'Foo' });
         // Receiver claims it's on universes:4 + PortOS 2.5.0; sender is at 5.
+        // `receiverPortosVersion` is the rejecting peer's version — that's
+        // the label the sender persists as `peerPortosVersion`.
         vi.mocked(peerFetch).mockResolvedValue({
           ok: false,
           status: 409,
@@ -1534,7 +1539,8 @@ describe('peerSync', () => {
               details: {
                 ahead: [{ category: 'universes', senderV: 5, receiverV: 4 }],
                 behind: [],
-                senderPortosVersion: '2.5.0',
+                senderPortosVersion: '3.0.0',
+                receiverPortosVersion: '2.5.0',
                 receiverSchemaVersions: { universes: 4 },
               },
             },
@@ -1633,6 +1639,63 @@ describe('peerSync', () => {
         const cleared = await findPeerSubscription('peer-a', 'universe', 'u1');
         expect(cleared.blockedBySchema).toBeUndefined();
         expect(cleared.lastPushedHash).toBeTruthy(); // succeeded → hash recorded
+      });
+
+      it('falls back without portosMeta when the peer is on a pre-version-gate PortOS (strict schema 400)', async () => {
+        // Pre-version-gate receiver: its `peerSyncPushSchema` is `.strict()`
+        // and has no `portosMeta` field, so it rejects our envelope as a
+        // generic VALIDATION_ERROR before any schema-gate logic. The sender
+        // must detect that specific shape, strip portosMeta, and retry —
+        // otherwise universe/series pushes to not-yet-upgraded peers fail
+        // hard and silently during a federation rollout.
+        vi.mocked(getUniverse).mockResolvedValue({ id: 'u1', name: 'Foo' });
+        const firstCallBody = { ok: false, status: 400, json: async () => ({
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          context: { details: [{ path: '', message: "Unrecognized key(s) in object: 'portosMeta'" }] },
+        }) };
+        firstCallBody.clone = () => firstCallBody;
+        const retryBody = { ok: true, status: 200, json: async () => ({}) };
+        vi.mocked(peerFetch)
+          .mockResolvedValueOnce(firstCallBody)
+          .mockResolvedValueOnce(retryBody);
+        const sub = await subscribePeer({
+          peerId: 'peer-a', recordKind: 'universe', recordId: 'u1',
+        }, { adoptedFromReverse: true });
+        const result = await pushRecordToPeer(sub);
+        expect(result.pushed).toBe(true);
+        // Two network calls: the failed validating one + the retry without portosMeta.
+        const calls = vi.mocked(peerFetch).mock.calls;
+        expect(calls.length).toBe(2);
+        const firstPayload = JSON.parse(calls[0][1].body);
+        const retryPayload = JSON.parse(calls[1][1].body);
+        expect(firstPayload.portosMeta).toBeDefined();
+        expect(retryPayload.portosMeta).toBeUndefined();
+        // Record content is preserved across the retry.
+        expect(retryPayload.record.id).toBe('u1');
+        expect(retryPayload.sourceInstanceId).toBe(firstPayload.sourceInstanceId);
+      });
+
+      it('does NOT retry on a 400 whose validation error is unrelated to portosMeta', async () => {
+        // The retry is keyed on the `portosMeta` mention in the validation
+        // details — any other 400 (oversized field, unknown record key, etc.)
+        // is a genuine bug we want to surface, not silently retry.
+        vi.mocked(getUniverse).mockResolvedValue({ id: 'u1', name: 'Foo' });
+        const errBody = { ok: false, status: 400, json: async () => ({
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          context: { details: [{ path: 'record.name', message: 'String too long' }] },
+        }) };
+        errBody.clone = () => errBody;
+        vi.mocked(peerFetch).mockResolvedValueOnce(errBody);
+        const sub = await subscribePeer({
+          peerId: 'peer-a', recordKind: 'universe', recordId: 'u1',
+        }, { adoptedFromReverse: true });
+        const result = await pushRecordToPeer(sub);
+        expect(result.pushed).toBe(false);
+        expect(result.reason).toBe('http-400');
+        // Only ONE call — no retry.
+        expect(vi.mocked(peerFetch).mock.calls.length).toBe(1);
       });
     });
   });

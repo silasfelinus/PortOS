@@ -836,7 +836,7 @@ function PeerCard({ peer, onRefresh, syncStatus, tailnetInfo }) {
     }
     let cancelled = false;
     setPeerSubsLoaded(false);
-    listPeerSubscriptions({ peerId: peer.instanceId }, { silent: true })
+    const refetch = () => listPeerSubscriptions({ peerId: peer.instanceId }, { silent: true })
       .then((r) => {
         if (!cancelled) setPeerSubs(r?.subscriptions || []);
       })
@@ -846,7 +846,22 @@ function PeerCard({ peer, onRefresh, syncStatus, tailnetInfo }) {
       .finally(() => {
         if (!cancelled) setPeerSubsLoaded(true);
       });
-    return () => { cancelled = true; };
+    refetch();
+    // When a per-record schema block is persisted server-side, the
+    // subscription's `blockedBySchema` field changes inside
+    // peer_subscriptions.json. The parent Instances component already
+    // refetches `peers` on this event, but its refresh doesn't re-run this
+    // card's `peerSubs` effect (deps are `peer.instanceId` only). Without
+    // a local subscription here, SchemaGapBadge keeps rendering the stale
+    // `blockedBySchema` value until a full page reload.
+    const handleSchemaSubChange = () => { refetch(); };
+    socket.on('peerSync:subscription-blocked', handleSchemaSubChange);
+    socket.on('peerSync:subscription-unblocked', handleSchemaSubChange);
+    return () => {
+      cancelled = true;
+      socket.off('peerSync:subscription-blocked', handleSchemaSubChange);
+      socket.off('peerSync:subscription-unblocked', handleSchemaSubChange);
+    };
   }, [peer.instanceId]);
 
   const StatusIcon = STATUS_ICONS[peer.status] || CircleDot;

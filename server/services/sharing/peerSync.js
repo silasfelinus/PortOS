@@ -52,6 +52,7 @@ import {
   buildPortosMeta,
   compareSchemaVersions,
   formatVersionGap,
+  getPortosVersion,
 } from '../../lib/schemaVersions.js';
 import { getInstanceId, getPeers, UNKNOWN_INSTANCE_ID } from '../instances.js';
 import { instanceEvents } from '../instanceEvents.js';
@@ -672,17 +673,41 @@ export async function pushRecordToPeer(sub, options = {}) {
   // hook), so the timeout is enforced inline with an AbortController so a
   // hung peer can't keep the push promise pending forever and block subsequent
   // debounced pushes for the same sub.
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), PUSH_TIMEOUT_MS);
-  const res = await peerFetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal: controller.signal,
-  }).catch((err) => {
-    console.log(`⚠️ peerSync: push to ${peer.name || peer.instanceId} failed: ${err.message}`);
-    return null;
-  }).finally(() => clearTimeout(timeoutId));
+  const postPayload = async (body) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), PUSH_TIMEOUT_MS);
+    return peerFetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    }).catch((err) => {
+      console.log(`⚠️ peerSync: push to ${peer.name || peer.instanceId} failed: ${err.message}`);
+      return null;
+    }).finally(() => clearTimeout(timeoutId));
+  };
+  let res = await postPayload(payload);
+  // MIXED-VERSION COMPAT: an older receiver's push schema is still `.strict()`
+  // without a `portosMeta` field, so it 400-rejects our envelope at Zod
+  // validation BEFORE its schema-version gate code (which doesn't exist on
+  // that version anyway) can run. Detect that specific rejection — Zod emits
+  // "Unrecognized key(s) in object: 'portosMeta'" — and retry once without
+  // the envelope so the push lands on the older peer. The older peer can't
+  // see schemaVersions, but until the user upgrades it that's the
+  // best-effort behavior we want (vs. permanently stranded pushes). Once
+  // they upgrade, the next push round naturally re-includes `portosMeta`.
+  if (res && res.status === 400 && payload.portosMeta) {
+    const errBody = await res.clone().json().catch(() => null);
+    const details = Array.isArray(errBody?.context?.details) ? errBody.context.details : [];
+    const mentionsMeta = details.some((d) => /portosMeta/.test(`${d?.path || ''} ${d?.message || ''}`));
+    if (errBody?.code === 'VALIDATION_ERROR' && mentionsMeta) {
+      console.log(
+        `ℹ️ peerSync: ${peer.name || peer.instanceId} is on a pre-version-gate PortOS — retrying push without portosMeta envelope`,
+      );
+      const { portosMeta: _strip, ...legacyPayload } = payload;
+      res = await postPayload(legacyPayload);
+    }
+  }
   // 409 with `code: SCHEMA_VERSION_AHEAD` means the receiver is on an OLDER
   // PortOS and can't parse our newer storage layout. Persist the gap on the
   // subscription so the Instances UI can surface "Peer X needs to update
@@ -698,10 +723,15 @@ export async function pushRecordToPeer(sub, options = {}) {
       // (see server/routes/peerSync.js `mapAndRethrow`), so reach in two levels
       // to get the original payload from the peerSync service.
       const details = isPlainObject(body.context?.details) ? body.context.details : {};
+      // `peerPortosVersion` describes the REJECTING peer's PortOS version
+      // (what we want to show in the SchemaGapBadge), so read
+      // `receiverPortosVersion` from the receiver-supplied details — NOT
+      // `senderPortosVersion`, which is our own version round-tripped from
+      // the payload we sent.
       await persistSchemaVersionBlock(sub.id, {
         ahead: Array.isArray(details.ahead) ? details.ahead : [],
         behind: Array.isArray(details.behind) ? details.behind : [],
-        peerPortosVersion: typeof details.senderPortosVersion === 'string' ? details.senderPortosVersion : null,
+        peerPortosVersion: typeof details.receiverPortosVersion === 'string' ? details.receiverPortosVersion : null,
         peerSchemaVersions: isPlainObject(details.receiverSchemaVersions) ? details.receiverSchemaVersions : null,
       });
       console.warn(
@@ -1069,6 +1099,11 @@ export async function applyIncomingPush(payload) {
     console.warn(
       `⚠️ peerSync: rejecting push from ${sourceInstanceId} — ${formatVersionGap(versionDiff)} (sender PortOS ${senderPortosVersion || 'unknown'})`,
     );
+    // Surface the receiver's PortOS version so the sender can show the user
+    // *which* version their peer is on (the label the user thinks of as "the
+    // peer's PortOS version"). Without this field the sender's UI would fall
+    // back to its own version, which is misleading.
+    const receiverPortosVersion = await getPortosVersion().catch(() => null);
     throw makeErr(
       `sender's schema is ahead — receiver cannot apply (${formatVersionGap(versionDiff)})`,
       ERR_SCHEMA_VERSION_AHEAD,
@@ -1076,6 +1111,7 @@ export async function applyIncomingPush(payload) {
         ahead: versionDiff.ahead,
         behind: versionDiff.behind,
         senderPortosVersion,
+        receiverPortosVersion,
         receiverSchemaVersions: PORTOS_SCHEMA_VERSIONS,
       },
     );
