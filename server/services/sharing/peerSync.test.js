@@ -50,6 +50,7 @@ import {
   subscribePeer,
   unsubscribePeer,
   unsubscribeAllForPeer,
+  unsubscribeAllForRecord,
   pushRecordToPeer,
   applyIncomingPush,
   diffAssetManifestAgainstLocal,
@@ -116,9 +117,18 @@ beforeEach(async () => {
   vi.mocked(mergeUniversesFromSync).mockResolvedValue({ applied: true, count: 1 });
   vi.mocked(mergeSeriesFromSync).mockResolvedValue({ applied: true, count: 1 });
   vi.mocked(mergeIssuesFromSync).mockResolvedValue({ applied: true, count: 1 });
-  vi.mocked(getUniverse).mockReset();
-  vi.mocked(getSeries).mockReset();
-  vi.mocked(listIssues).mockReset();
+  // Default getUniverse / getSeries / listIssues mocks to resolved promises
+  // so any callsite that doesn't override (e.g. the receiver-side
+  // `isLocalRecordEphemeral` lookup in maybeCreateReverseSubscription)
+  // doesn't blow up on `.catch` against a `vi.fn()` non-Promise return.
+  // Real getUniverse / getSeries / listIssues are `async` so they always
+  // return Promises; production code can assume this, but the test mock
+  // has to match — including the per-call default for listIssues so a
+  // buildPushPayload path that bundles child issues doesn't choke on an
+  // un-overridden mock.
+  vi.mocked(getUniverse).mockReset().mockResolvedValue(undefined);
+  vi.mocked(getSeries).mockReset().mockResolvedValue(undefined);
+  vi.mocked(listIssues).mockReset().mockResolvedValue([]);
 
   await __resetForTests();
 });
@@ -272,6 +282,74 @@ describe('peerSync', () => {
       const result = await unsubscribeAllForPeer('peer-a');
       expect(result.removed).toHaveLength(2);
       expect(await findPeerSubscription('peer-a', 'universe', 'u1')).toBeNull();
+    });
+  });
+
+  describe('unsubscribeAllForRecord', () => {
+    it('removes every subscription for a record across all peers', async () => {
+      // updateUniverse({ ephemeral: true }) fires this — when a record
+      // transitions ephemeral, every per-peer sub for that record must go
+      // away so the orphan-row state never materializes.
+      vi.mocked(getUniverse).mockResolvedValue({ id: 'u1' });
+      vi.mocked(peerFetch).mockResolvedValue({ ok: true, json: async () => ({}) });
+      await subscribePeer({ peerId: 'peer-a', recordKind: 'universe', recordId: 'u1' });
+      await subscribePeer({ peerId: 'peer-b-inbound-only', recordKind: 'universe', recordId: 'u1' });
+      // Different record on peer-a — must survive the unsubscribe.
+      await subscribePeer({ peerId: 'peer-a', recordKind: 'universe', recordId: 'u-other' });
+      const result = await unsubscribeAllForRecord('universe', 'u1');
+      expect(result.removed).toHaveLength(2);
+      expect(result.failed).toEqual([]);
+      expect(await findPeerSubscription('peer-a', 'universe', 'u1')).toBeNull();
+      expect(await findPeerSubscription('peer-b-inbound-only', 'universe', 'u1')).toBeNull();
+      // Untouched: u-other on peer-a.
+      expect(await findPeerSubscription('peer-a', 'universe', 'u-other')).not.toBeNull();
+    });
+
+    it('reports per-sub success vs failure separately when unsubscribePeer throws', async () => {
+      // Regression guard against the "always push to removed" bug: a sub
+      // whose unsubscribe call throws (concurrent teardown, malformed id)
+      // must NOT appear in `removed`. Callers reading `removed.length`
+      // need an honest count.
+      //
+      // We force the failure path by racing two `unsubscribeAllForRecord`
+      // calls in parallel. `listPeerSubscriptions` (line 401 of peerSync)
+      // is NOT inside withStateLock — so both calls take an identical
+      // snapshot containing sub1+sub2 before either's first
+      // `unsubscribePeer` runs. The first call's two `unsubscribePeer`
+      // invocations execute under the state lock and remove both subs.
+      // The second call's invocations then hit ERR_NOT_FOUND, so both
+      // ids land in its `failed` array — proving the per-sub catch
+      // honestly separates success from failure.
+      vi.mocked(getUniverse).mockResolvedValue({ id: 'u1' });
+      vi.mocked(peerFetch).mockResolvedValue({ ok: true, json: async () => ({}) });
+      const sub1 = await subscribePeer({ peerId: 'peer-a', recordKind: 'universe', recordId: 'u1' });
+      const sub2 = await subscribePeer({ peerId: 'peer-b-inbound-only', recordKind: 'universe', recordId: 'u1' });
+      const [resultA, resultB] = await Promise.all([
+        unsubscribeAllForRecord('universe', 'u1'),
+        unsubscribeAllForRecord('universe', 'u1'),
+      ]);
+      // Exactly one call wins each sub. Across the two results, every sub
+      // must appear in exactly one `removed` (success) and exactly one
+      // `failed` (the racing duplicate).
+      const allRemoved = [...resultA.removed, ...resultB.removed].sort();
+      const allFailed = [...resultA.failed, ...resultB.failed].sort();
+      expect(allRemoved).toEqual([sub1.id, sub2.id].sort());
+      expect(allFailed).toEqual([sub1.id, sub2.id].sort());
+      // No id appears in both removed AND failed of the same call.
+      for (const result of [resultA, resultB]) {
+        for (const id of result.removed) {
+          expect(result.failed).not.toContain(id);
+        }
+      }
+      // Both subs are actually gone from disk.
+      expect(await findPeerSubscription('peer-a', 'universe', 'u1')).toBeNull();
+      expect(await findPeerSubscription('peer-b-inbound-only', 'universe', 'u1')).toBeNull();
+    });
+
+    it('returns {removed: [], failed: []} for invalid arguments', async () => {
+      expect(await unsubscribeAllForRecord('', 'u1')).toEqual({ removed: [], failed: [] });
+      expect(await unsubscribeAllForRecord('universe', '')).toEqual({ removed: [], failed: [] });
+      expect(await unsubscribeAllForRecord('bogus', 'u1')).toEqual({ removed: [], failed: [] });
     });
   });
 
@@ -445,6 +523,21 @@ describe('peerSync', () => {
       expect(await autoSubscribePeerToAllRecords('peer-a', 'bogus')).toEqual([]);
     });
 
+    it('drops ephemeral records before computing the set-diff', async () => {
+      // Ephemeral universes/series are local-only — backfill must not
+      // create subscriptions for them, even when every other gate passes.
+      // Without the filter, the sub would be created and a later push would
+      // simply short-circuit via sanitizeRecordForWire — but the row would
+      // still live in peer_subscriptions.json forever, confusing unsubscribe-all.
+      vi.mocked(listUniverses).mockResolvedValue([
+        { id: 'live' },
+        { id: 'scratch', ephemeral: true },
+      ]);
+      const created = await autoSubscribePeerToAllRecords('peer-a', 'universe');
+      expect(created.map(c => c.recordId)).toEqual(['live']);
+      expect(await findPeerSubscription('peer-a', 'universe', 'scratch')).toBeNull();
+    });
+
     it('short-circuits the for-loop when every record is already subscribed', async () => {
       // Regression: peer:online fires this helper on every online
       // transition. Without the pre-computed set-diff, a steady-state peer
@@ -496,7 +589,7 @@ describe('peerSync', () => {
       vi.mocked(listIssues).mockResolvedValue([]);
     });
 
-    it('re-pushes subs with lastPushedAt=null and skips already-pushed subs', async () => {
+    it('re-pushes subs with lastPushedAt=null and walks all subs on subsequent retries (hash short-circuits unchanged ones)', async () => {
       // Create a sub with the initial push FAILING — leaves lastPushedAt=null.
       vi.mocked(peerFetch).mockResolvedValueOnce(null);
       await subscribePeer({ peerId: 'peer-a', recordKind: 'universe', recordId: 'u1' });
@@ -508,22 +601,33 @@ describe('peerSync', () => {
       // Peer comes back — retry must succeed and stamp lastPushedAt.
       vi.mocked(peerFetch).mockResolvedValue({ ok: true, json: async () => ({}) });
       const result = await retryPendingPushesForPeer('peer-a');
-      expect(result.retried).toBe(1);
+      expect(result.walked).toBe(1);
+      expect(result.pushed).toBe(1); // network call landed
       const updated = await findPeerSubscription('peer-a', 'universe', 'u1');
       expect(updated.lastPushedAt).toBeTruthy();
-      // Second retry must be a no-op now that lastPushedAt is set.
+      // Subsequent retry now walks every sub regardless of lastPushedAt
+      // (the lastPushedHash short-circuit inside pushRecordToPeer is what
+      // skips the actual HTTP call for unchanged records). This is the
+      // mechanism that lets out-of-band file edits (e.g., a cleanup script
+      // that wrote tombstones directly to disk + a server restart)
+      // re-propagate via peer:online without needing a per-record edit.
+      vi.mocked(peerFetch).mockClear();
       const second = await retryPendingPushesForPeer('peer-a');
-      expect(second.retried).toBe(0);
+      expect(second.walked).toBe(1); // walked, not skipped by the helper
+      expect(second.pushed).toBe(0); // hash short-circuited, no HTTP call
+      // The hash short-circuit inside pushRecordToPeer prevents the actual
+      // HTTP call because the record content is unchanged since the first push.
+      expect(vi.mocked(peerFetch)).not.toHaveBeenCalled();
     });
 
-    it('returns {retried: 0} when the peer has no subscriptions', async () => {
+    it('returns {walked: 0, pushed: 0} when the peer has no subscriptions', async () => {
       const result = await retryPendingPushesForPeer('peer-without-subs');
-      expect(result).toEqual({ retried: 0 });
+      expect(result).toEqual({ walked: 0, pushed: 0 });
     });
 
-    it('returns {retried: 0} for invalid peerId', async () => {
-      expect(await retryPendingPushesForPeer('')).toEqual({ retried: 0 });
-      expect(await retryPendingPushesForPeer(null)).toEqual({ retried: 0 });
+    it('returns {walked: 0, pushed: 0} for invalid peerId', async () => {
+      expect(await retryPendingPushesForPeer('')).toEqual({ walked: 0, pushed: 0 });
+      expect(await retryPendingPushesForPeer(null)).toEqual({ walked: 0, pushed: 0 });
     });
   });
 
@@ -827,6 +931,118 @@ describe('peerSync', () => {
       expect(captured.issues).toHaveLength(2);
       expect(captured.issues.map((i) => i.id)).toEqual(['i1', 'i2']);
     });
+
+    it('drops ephemeral child issues from both the bundled issues AND the asset manifest', async () => {
+      // Regression: an earlier version filtered ephemeral issues out of
+      // `sanitizedIssues` but still walked the unfiltered `childIssues`
+      // when building the asset manifest, leaking the ephemeral issue's
+      // image / video filenames onto the wire. The receiver would then
+      // background-fetch those bytes — defeating the "local-only" intent
+      // of ephemeral.
+      vi.mocked(getSeries).mockResolvedValue({ id: 's1', name: 'Series' });
+      vi.mocked(listIssues).mockResolvedValue([
+        // Live issue with a referenced image.
+        {
+          id: 'i1', seriesId: 's1', number: 1,
+          stages: { storyboards: { scenes: [{ imageJobId: 'job-live' }] } },
+        },
+        // Ephemeral issue — must NOT leak its image into the manifest.
+        {
+          id: 'i2', seriesId: 's1', number: 2, ephemeral: true,
+          stages: { storyboards: { scenes: [{ imageJobId: 'job-secret' }] } },
+        },
+      ]);
+      let captured = null;
+      vi.mocked(peerFetch).mockImplementation(async (_url, opts) => {
+        captured = JSON.parse(opts.body);
+        return { ok: true, json: async () => ({}) };
+      });
+      await pushRecordToPeer({
+        id: 's', peerId: 'peer-a', recordKind: 'series', recordId: 's1',
+      });
+      // Sanitized issues: only the live one.
+      expect(captured.issues).toHaveLength(1);
+      expect(captured.issues[0].id).toBe('i1');
+      // Asset manifest entries (if any) must not reference the ephemeral
+      // issue's assets. The manifest can be empty if buildAssetManifest
+      // didn't find any concrete filenames in the live issue's stages
+      // (which is the case here — imageJobId references aren't yet
+      // resolved to filenames in Stage 2's manifest builder). The
+      // critical invariant is that NOTHING from the ephemeral issue
+      // appears.
+      const manifestFilenames = (captured.assetManifest || []).map(a => a.filename);
+      expect(manifestFilenames.some(f => /secret/i.test(f))).toBe(false);
+    });
+
+    it('ships an empty asset manifest for tombstone pushes (deleted universe)', async () => {
+      // Tombstone pushes carry deleted=true + deletedAt so the receiver
+      // can converge its delete. They must NOT also ship asset filenames
+      // — the receiver would diff them as `missing`, schedule pulls, and
+      // download bytes for a record it's about to orphan. Privacy-
+      // sensitive (a record deleted to get its assets off-peer would
+      // still leak the bytes via this path) and wasteful.
+      vi.mocked(getUniverse).mockResolvedValue({
+        id: 'u1', name: 'Doomed', deleted: true, deletedAt: '2026-01-01T00:00:00Z',
+        // Force a referenced image filename that would otherwise hash into
+        // the manifest. The buildAssetManifest path skips entries whose
+        // file isn't readable, so a definitely-not-present filename is
+        // the cleanest "would have been emitted if not for the deleted
+        // gate" probe.
+        worldOverview: { sceneImageFilename: 'sentinel-doomed-asset.png' },
+      });
+      let captured = null;
+      vi.mocked(peerFetch).mockImplementation(async (_url, opts) => {
+        captured = JSON.parse(opts.body);
+        return { ok: true, json: async () => ({}) };
+      });
+      await pushRecordToPeer({
+        id: 'sub-tomb', peerId: 'peer-a', recordKind: 'universe', recordId: 'u1',
+      });
+      // Tombstone arrives — sanitizer keeps deleted records on the wire.
+      expect(captured.record.id).toBe('u1');
+      expect(captured.record.deleted).toBe(true);
+      // But the manifest is empty — no pull-trigger for the receiver.
+      expect(captured.assetManifest).toEqual([]);
+    });
+
+    it('drops deleted child issues from the asset manifest input', async () => {
+      // Deleted issues' tombstones must still ride along in `issues` (so
+      // the receiver's delete cascade runs), but their asset filenames
+      // must NOT appear in the manifest — the receiver would otherwise
+      // pull bytes for issues it's about to orphan.
+      vi.mocked(getSeries).mockResolvedValue({ id: 's1', name: 'Series' });
+      vi.mocked(listIssues).mockResolvedValue([
+        // Live issue (no manifest leak — buildAssetManifest doesn't yet
+        // resolve imageJobId → filename, that's a Stage 3 thing).
+        { id: 'i1', seriesId: 's1', number: 1 },
+        // Deleted issue with a sentinel filename that would surface
+        // through buildAssetManifest's directVideoFilenames path if it
+        // were fed to the manifest builder.
+        {
+          id: 'i2', seriesId: 's1', number: 2,
+          deleted: true, deletedAt: '2026-01-01T00:00:00Z',
+        },
+      ]);
+      let captured = null;
+      vi.mocked(peerFetch).mockImplementation(async (_url, opts) => {
+        captured = JSON.parse(opts.body);
+        return { ok: true, json: async () => ({}) };
+      });
+      await pushRecordToPeer({
+        id: 's', peerId: 'peer-a', recordKind: 'series', recordId: 's1',
+      });
+      // Both issues' tombstones/wire-records propagate.
+      expect(captured.issues.map(i => i.id).sort()).toEqual(['i1', 'i2']);
+      const deletedIssue = captured.issues.find(i => i.id === 'i2');
+      expect(deletedIssue.deleted).toBe(true);
+      // Manifest is empty (or at least carries nothing from i2). Stage-2
+      // manifest builder doesn't emit filenames for these stage shapes,
+      // so the manifest is empty in practice — but the invariant we're
+      // guarding is that deleted issues NEVER contribute manifest entries
+      // even when their stages happen to reference concrete assets.
+      const manifestFilenames = (captured.assetManifest || []).map(a => a.filename);
+      expect(manifestFilenames).toEqual([]);
+    });
   });
 
   describe('applyIncomingPush', () => {
@@ -921,6 +1137,13 @@ describe('peerSync', () => {
     });
 
     it('auto-creates a reverse subscription back to the sender', async () => {
+      // The merge path actually landed the record locally, so the
+      // classifyLocalRecord('universe', 'u1') call inside
+      // maybeCreateReverseSubscription will find a syncable record on
+      // disk. Mock the lookup explicitly — the tri-state gate refuses
+      // 'missing' to avoid orphan reverse-subs (e.g. for records the
+      // sanitizer dropped at the merge boundary).
+      vi.mocked(getUniverse).mockResolvedValue({ id: 'u1', name: 'Foo' });
       await applyIncomingPush({
         kind: 'universe',
         record: { id: 'u1' },
@@ -930,6 +1153,23 @@ describe('peerSync', () => {
       const sub = await findPeerSubscription('peer-a', 'universe', 'u1');
       expect(sub).not.toBeNull();
       expect(sub.adoptedFromReverse).toBe(true);
+    });
+
+    it('does NOT create a reverse subscription when the local record is missing (merge dropped it)', async () => {
+      // Regression: classifyLocalRecord must hard-stop on 'missing'.
+      // Previously the gate only checked `ephemeral === true`, so a
+      // record the sanitizer dropped during merge (missing name, schema
+      // mismatch, etc.) would still get an orphan reverse-sub that fires
+      // pushes against a nonexistent local record forever.
+      vi.mocked(getUniverse).mockResolvedValue(undefined);
+      await applyIncomingPush({
+        kind: 'universe',
+        record: { id: 'u-dropped' },
+        assetManifest: [],
+        sourceInstanceId: 'peer-a',
+      });
+      const sub = await findPeerSubscription('peer-a', 'universe', 'u-dropped');
+      expect(sub).toBeNull();
     });
 
     it('does NOT create a reverse subscription when the sender peer is configured as inbound-only', async () => {
@@ -945,6 +1185,23 @@ describe('peerSync', () => {
       expect(result.reverseSubscriptionCreated).toBe(false);
       const sub = await findPeerSubscription('peer-b-inbound-only', 'universe', 'u1');
       expect(sub).toBeNull();
+    });
+
+    it('does NOT create a reverse subscription when the local record is ephemeral', async () => {
+      // The user marked u1 local-only; the merge already refused the
+      // inbound edit (see mergeUniversesFromSync local-ephemeral guard).
+      // Creating a reverse sub here would accumulate an orphan row in
+      // peer_subscriptions.json that burns asset-manifest sha-passes on
+      // every future edit and never sends bytes.
+      vi.mocked(getUniverse).mockResolvedValue({ id: 'u1', ephemeral: true });
+      const result = await applyIncomingPush({
+        kind: 'universe',
+        record: { id: 'u1' },
+        assetManifest: [],
+        sourceInstanceId: 'peer-a',
+      });
+      expect(result.reverseSubscriptionCreated).toBe(false);
+      expect(await findPeerSubscription('peer-a', 'universe', 'u1')).toBeNull();
     });
 
     it('does NOT duplicate a reverse subscription on subsequent pushes', async () => {

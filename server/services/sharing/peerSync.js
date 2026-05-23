@@ -320,6 +320,11 @@ export async function autoSubscribePeerToAllRecords(peerId, recordKind) {
     const { listSeries } = await import('../pipeline/series.js');
     records = await listSeries({ includeDeleted: false }).catch(() => []);
   }
+  // Drop ephemeral records before the set-difference / sub creation. The wire
+  // sanitizer would short-circuit any push anyway, but creating a sub that
+  // can never push leaves an orphan row in peer_subscriptions.json that
+  // confuses unsubscribe-all / tombstone-cursor lifecycle assumptions.
+  records = records.filter(r => r?.ephemeral !== true);
   if (records.length === 0) return [];
   // Compute the set difference up front: which local records aren't yet
   // subscribed to this peer? The peer:online convergence path fires this
@@ -371,6 +376,43 @@ export async function unsubscribeAllForPeer(peerId) {
     removed.push(sub.id);
   }
   return { removed };
+}
+
+/**
+ * Drop every subscription tied to a single record (across all peers). Used
+ * when a record transitions to ephemeral via PATCH — the user just opted
+ * the record out of sync, so the existing subs (one per peer with the
+ * matching category enabled) need to go away. Peers keep their last-pushed
+ * copy on disk; this just stops future pushes. The user is responsible for
+ * any cross-peer cleanup beyond that (e.g., delete the record locally to
+ * tombstone-propagate, then mark a fresh record ephemeral).
+ *
+ * Returns `{ removed, failed }` where `removed` lists subscription ids the
+ * unsubscribe call actually completed for, and `failed` lists ids whose
+ * unsubscribePeer threw (race with another teardown path, malformed sub
+ * id, etc.). Callers can branch on `failed.length > 0` to surface partial
+ * failures; today nobody does, but the contract has to be honest so a
+ * future caller that DOES want to verify completion can.
+ */
+export async function unsubscribeAllForRecord(recordKind, recordId) {
+  if (!PEER_SUBSCRIBABLE_KINDS.includes(recordKind) || !isNonEmptyStr(recordId)) {
+    return { removed: [], failed: [] };
+  }
+  const matching = await listPeerSubscriptions({ recordKind, recordId });
+  const removed = [];
+  const failed = [];
+  for (const sub of matching) {
+    const ok = await unsubscribePeer(sub.id).then(() => true).catch((err) => {
+      console.log(`⚠️ peerSync: unsubscribe-for-record failed for ${sub.id}: ${err.message}`);
+      return false;
+    });
+    if (ok) {
+      removed.push(sub.id);
+    } else {
+      failed.push(sub.id);
+    }
+  }
+  return { removed, failed };
 }
 
 // --- Asset manifest -----------------------------------------------------
@@ -627,7 +669,14 @@ async function buildPushPayload(sub, sourceInstanceId) {
     if (!record) return null;
     const sanitized = sanitizeRecordForWire('universe', record);
     if (!sanitized) return null;
-    const assetManifest = await buildAssetManifest(record);
+    // Tombstone push: deleted records carry no on-disk assets the receiver
+    // should pull. Sending an empty manifest avoids triggering
+    // pullMissingAssetsFromPeer for a record we're telling the peer to
+    // delete — both wasteful (network + disk for bytes the receiver will
+    // immediately orphan) and privacy-sensitive (e.g. a record deleted
+    // BECAUSE the user wanted the assets off-peer would otherwise still
+    // ship them with the tombstone push).
+    const assetManifest = record.deleted === true ? [] : await buildAssetManifest(record);
     return { kind: 'universe', record: sanitized, assetManifest, sourceInstanceId };
   }
   if (sub.recordKind === 'series') {
@@ -642,7 +691,30 @@ async function buildPushPayload(sub, sourceInstanceId) {
     const sanitizedIssues = childIssues
       .map((i) => sanitizeRecordForWire('issue', i))
       .filter(Boolean);
-    const assetManifest = await buildAssetManifestForSeries(record, childIssues);
+    // Drop ephemeral child issues BEFORE feeding into the asset-manifest
+    // builder. sanitizedIssues above already filters them via
+    // sanitizeRecordForWire's ephemeral check, but the asset-manifest builder
+    // takes the raw `childIssues` array — without the parallel filter here,
+    // ephemeral issues' image / video / image-ref filenames would still
+    // appear in the manifest the receiver pulls. The user-visible effect:
+    // private/scratch image bytes for an issue the user said "don't sync"
+    // would land on every peer's disk via pullMissingAssetsFromPeer.
+    // ALSO drop deleted child issues from the manifest input — their
+    // tombstones still ride along in `sanitizedIssues` (so the receiver
+    // can finish its delete cascade), but shipping the deleted issues'
+    // asset filenames would trigger needless / privacy-sensitive pulls
+    // for bytes that are about to be orphaned on the receiver.
+    // Tombstoned ephemeral issues (deleted=true + ephemeral=true) ALSO
+    // stay out of the manifest input by this filter.
+    const manifestIssues = childIssues.filter(
+      (i) => i?.deleted !== true && i?.ephemeral !== true,
+    );
+    // Tombstone push at the series level: same reasoning as universe above.
+    // When the series itself is deleted, send an empty asset manifest so
+    // the receiver doesn't pull bytes for a record it's about to tombstone.
+    const assetManifest = record.deleted === true
+      ? []
+      : await buildAssetManifestForSeries(record, manifestIssues);
     return {
       kind: 'series',
       record: sanitized,
@@ -789,16 +861,78 @@ async function maybeCreateReverseSubscription({ peerId, recordKind, recordId }) 
   const existing = await findPeerSubscription(peerId, recordKind, recordId);
   if (existing) return false;
 
-  // Honor the per-peer `directions` flag. A peer marked inbound-only is one
-  // we accept pushes FROM but never push back TO — auto-creating a reverse
-  // subscription would break that explicit configuration.
+  // Cheap in-memory checks FIRST. Honor the per-peer `directions` flag — a
+  // peer marked inbound-only is one we accept pushes FROM but never push
+  // back TO — auto-creating a reverse subscription would break that
+  // explicit configuration. Doing this BEFORE the ephemeral-record disk
+  // read means inbound-only / unknown peers don't trigger an extra
+  // getUniverse / getSeries on every incoming push.
   const peer = await findPeerById(peerId);
   if (!peer) return false;
   const directions = Array.isArray(peer.directions) ? peer.directions : [];
   if (directions.length > 0 && !directions.includes('outbound')) return false;
 
+  // Now the disk read: only reverse-subscribe when the local record exists
+  // AND is non-ephemeral. Three reasons to hard-stop on missing/read-failed:
+  //
+  // 1. Ephemeral: auto-creating a reverse sub for a local-only record
+  //    would accumulate orphan rows in peer_subscriptions.json. Every
+  //    future edit on the local side fires recordEvents.updated →
+  //    triggerPushForRecord → pushRecordToPeer → buildPushPayload →
+  //    sanitizeRecordForWire returns null (ephemeral filter) → push
+  //    aborts with "record-not-found". The sub burns an asset-manifest
+  //    sha-pass on every edit and never sends bytes. The merge path
+  //    upstream already refused the inbound edit (local-ephemeral →
+  //    continue), so the sender's record state isn't reflected locally
+  //    anyway — there's nothing meaningful to push back.
+  //
+  // 2. Record-missing: the sender pushed a record that passed Zod but was
+  //    dropped by the service sanitizer (missing name, etc.). The merge
+  //    never created the local copy, so a reverse sub would point at a
+  //    nonexistent record and every push would resolve to null. Same
+  //    orphan-row dynamic as ephemeral, but worse because there's never
+  //    going to be a record to clear it via the ephemeral lifecycle
+  //    transition.
+  //
+  // 3. Read-failed: a transient IO error reading the record file —
+  //    treating it as "non-ephemeral, go ahead and subscribe" can create
+  //    a sub for a record that turns out to be ephemeral once the IO
+  //    settles. Conservative default: don't subscribe.
+  const localState = await classifyLocalRecord(recordKind, recordId);
+  if (localState !== 'syncable') return false;
+
   await subscribePeer({ peerId, recordKind, recordId }, { adoptedFromReverse: true });
   return true;
+}
+
+/**
+ * Look up the local record (live or tombstoned) and tri-state-classify it
+ * for the reverse-subscribe gate. Returns one of:
+ *
+ *   'syncable'   — record exists, is non-ephemeral; safe to reverse-subscribe.
+ *   'ephemeral'  — record exists but is local-only; reverse-subscribe would
+ *                  accumulate an orphan sub that never sends bytes.
+ *   'missing'    — record is not on disk OR a read error occurred; can't
+ *                  classify, so the conservative default is to skip the
+ *                  reverse-subscribe (callers treat anything other than
+ *                  'syncable' as a no-go).
+ *
+ * Includes deleted records on the lookup so a tombstone-as-state record
+ * still gets classified as 'syncable' (we WANT peer pushes to converge
+ * a deleted record's tombstone if they're targeting it).
+ */
+async function classifyLocalRecord(recordKind, recordId) {
+  if (recordKind === 'universe') {
+    const u = await getUniverse(recordId, { includeDeleted: true }).catch(() => undefined);
+    if (!u) return 'missing';
+    return u.ephemeral === true ? 'ephemeral' : 'syncable';
+  }
+  if (recordKind === 'series') {
+    const s = await getSeries(recordId, { includeDeleted: true }).catch(() => undefined);
+    if (!s) return 'missing';
+    return s.ephemeral === true ? 'ephemeral' : 'syncable';
+  }
+  return 'missing';
 }
 
 // --- Receiver-side asset pull worker ------------------------------------
@@ -1013,32 +1147,53 @@ async function getIssueSeriesId(issueId) {
 }
 
 /**
- * Re-push every subscription targeting `peerId` whose initial push hasn't
- * landed yet (`lastPushedAt == null`). Fires on `peer:online` so a record
- * created while the peer was unreachable still reaches it the moment the
- * peer comes back — without this retry, the new record would sit in limbo
- * until the user edited it again (creation paths don't fire
- * `recordEvents.updated`, so the existing debounce listener never sees it).
+ * Re-fire `pushRecordToPeer` for every subscription targeting `peerId`.
+ * Fires on `peer:online` so the federation converges after offline edits
+ * or out-of-band file changes (e.g., a cleanup script that wrote tombstones
+ * directly to disk while PM2 was offline). The `lastPushedHash` short-
+ * circuit inside `pushRecordToPeer` skips the network call for any sub
+ * whose record content is byte-identical to what was last pushed, so a
+ * steady-state peer:online with N converged records pays N hash passes but
+ * zero HTTP requests.
  *
- * Already-pushed subs are filtered out so this can't double-push under load.
- * Failures stay non-fatal — the next `peer:online` (or the user's next edit)
- * gets another attempt.
+ * Originally this only retried subs with `lastPushedAt == null` (initial
+ * push never landed). That left a gap: any state change recorded directly
+ * on disk (a CLI cleanup script, a hand-edit, a recovered backup) AFTER an
+ * initial push succeeded would never re-push because `lastPushedAt` was
+ * set. The unconditional retry + hash short-circuit covers both the
+ * "initial push" and "out-of-band drift" cases with the same code path.
+ *
+ * Failures stay non-fatal — the next `peer:online` (or the user's next
+ * edit) gets another attempt.
  */
 export async function retryPendingPushesForPeer(peerId) {
-  if (!isNonEmptyStr(peerId)) return { retried: 0 };
+  if (!isNonEmptyStr(peerId)) return { walked: 0, pushed: 0 };
   const subs = await listPeerSubscriptions({ peerId });
-  const pending = subs.filter(s => !s.lastPushedAt);
-  if (pending.length === 0) return { retried: 0 };
-  console.log(`🔄 peerSync: retrying ${pending.length} pending push${pending.length === 1 ? '' : 'es'} → ${peerId}`);
-  for (const sub of pending) {
-    await pushRecordToPeer(sub).catch((err) => {
-      console.log(`⚠️ peerSync: retry push failed for ${sub.id}: ${err.message}`);
-    });
+  if (subs.length === 0) return { walked: 0, pushed: 0 };
+  // Separate counter for the log line — only count subs that were never
+  // pushed (genuine retries) so steady-state convergence runs stay quiet.
+  const neverPushedCount = subs.filter(s => !s.lastPushedAt).length;
+  if (neverPushedCount > 0) {
+    console.log(`🔄 peerSync: retrying ${neverPushedCount} pending push${neverPushedCount === 1 ? '' : 'es'} → ${peerId}`);
   }
-  return { retried: pending.length };
+  // Track `walked` (subs we iterated) and `pushed` (HTTP call landed)
+  // separately. `walked === pushed` would be misleading at steady state
+  // because the lastPushedHash short-circuit inside pushRecordToPeer skips
+  // the network call for any sub whose content is unchanged — we still
+  // "walked" the sub but never pushed it.
+  let pushed = 0;
+  for (const sub of subs) {
+    const result = await pushRecordToPeer(sub).catch((err) => {
+      console.log(`⚠️ peerSync: retry push failed for ${sub.id}: ${err.message}`);
+      return null;
+    });
+    if (result?.pushed) pushed += 1;
+  }
+  return { walked: subs.length, pushed };
 }
 
 let onUpdated = null;
+let onDeleted = null;
 let onPeerOnline = null;
 
 /** Attach the `recordEvents` + `peer:online` listeners — call once during sharing init. */
@@ -1050,6 +1205,23 @@ export function installPeerSyncListener() {
     });
   };
   recordEvents.on('updated', onUpdated);
+  // ALSO listen for `deleted` events so soft-deletes propagate via the
+  // per-record push pipeline. Without this, `deleteUniverse` /
+  // `deleteSeries` (which emit `recordEvents.deleted`, NOT `updated`) only
+  // reached peers via the 60s snapshot loop — and that loop is skipped for
+  // any (peer, kind) pair covered by a per-record sub
+  // (syncOrchestrator.categoriesCoveredByPeerSync). The result was that
+  // every soft-delete on a record with active peer subs got stranded
+  // locally. Route delete events through the same `triggerPushForRecord`
+  // path: pushRecordToPeer reads the record with `includeDeleted: true`
+  // and the wire sanitizer (now updated) lets tombstones cross even for
+  // ephemeral records.
+  onDeleted = ({ recordKind, recordId }) => {
+    triggerPushForRecord(recordKind, recordId).catch((err) => {
+      console.log(`⚠️ peerSync: delete listener error for ${recordKind}/${recordId}: ${err.message}`);
+    });
+  };
+  recordEvents.on('deleted', onDeleted);
   // On peer:online, drive the local subscription state to convergence with
   // the user's intent. Two cases:
   //
@@ -1097,8 +1269,10 @@ export async function __resetForTests() {
   for (const t of pendingTimers.values()) clearTimeout(t);
   pendingTimers.clear();
   if (onUpdated) recordEvents.off('updated', onUpdated);
+  if (onDeleted) recordEvents.off('deleted', onDeleted);
   if (onPeerOnline) instanceEvents.off('peer:online', onPeerOnline);
   onUpdated = null;
+  onDeleted = null;
   onPeerOnline = null;
   await writeTail.catch(() => {});
 }
