@@ -461,20 +461,28 @@ export async function buildAssetManifest(record) {
 }
 
 async function hashImageForManifest(filename) {
-  if (!isStr(filename)) return null;
-  const fullPath = join(PATHS.images, filename);
+  // Sanitize before join — a record with `imageRefs` containing a path-
+  // traversal filename (peer-pushed via linkedCollection, hand-edited,
+  // or import bug) would otherwise let us stat/hash files outside
+  // PATHS.images. The share exporter has the same `base !== filename`
+  // posture (services/sharing/exporter.js); peer-sync needs to match.
+  const safeName = sanitizeAssetFilename(filename);
+  if (!safeName) return null;
+  const fullPath = join(PATHS.images, safeName);
   const result = await getOrComputeImageSha256(fullPath);
   if (!result) return null;
-  return { filename, kind: 'image', sha256: result.hash };
+  return { filename: safeName, kind: 'image', sha256: result.hash };
 }
 
 async function hashSimpleAsset(filename, kind, sourceDir) {
-  if (!isStr(filename) || !isStr(sourceDir)) return null;
-  const fullPath = join(sourceDir, filename);
+  if (!isStr(sourceDir)) return null;
+  const safeName = sanitizeAssetFilename(filename);
+  if (!safeName) return null;
+  const fullPath = join(sourceDir, safeName);
   if (!existsSync(fullPath)) return null;
   const hash = await sha256File(fullPath).catch(() => null);
   if (!hash) return null;
-  return { filename, kind, sha256: hash };
+  return { filename: safeName, kind, sha256: hash };
 }
 
 // --- Receiver-side asset diff -------------------------------------------
@@ -547,7 +555,12 @@ function directoryForAssetKind(kind) {
  */
 function sanitizeAssetFilename(name) {
   if (typeof name !== 'string' || !name) return null;
-  if (name.includes('/') || name.includes('\\') || name.includes('..')) return null;
+  // Reject separators and exact parent-directory segments (`.` / `..`
+  // as the whole basename). A basename like `my..render.png` is
+  // legitimate (the gallery filename validator permits `..` inside a
+  // basename) — only the path-segment forms are traversal.
+  if (name.includes('/') || name.includes('\\')) return null;
+  if (name === '.' || name === '..') return null;
   if (basename(name) !== name) return null;
   return name;
 }
@@ -967,10 +980,18 @@ export async function applyIncomingPush(payload) {
 
   // Compute the deletedAt water-mark we can ack. Use the maximum across the
   // record + its issues (a single push can carry multiple tombstones).
+  // We return this to the sender so THEY can advance THEIR cursor (which
+  // tracks what we — the receiver — have acked of THEIR pushes). We do
+  // NOT call ackDeletesUpTo here: that would write
+  // `localCursors[sourceInstanceId] = ackedDeletesUpTo`, which is
+  // mis-directional. Our cursors track "what peer X has acked of OUR
+  // local deletions" so tombstoneGc can prune our local tombstones once
+  // every subscribed peer has confirmed receipt. The receive-side ack
+  // here would let GC prune OUR older local tombstones as if peer-A had
+  // seen them — even though peer-A is just telling us about ITS own
+  // tombstones. In bidirectional sync, that lets peer-A's stale live
+  // records resurrect after GC drops our tombstones.
   const ackedDeletesUpTo = computeAckedDeletesFromPayload(record, issues);
-  if (ackedDeletesUpTo > 0) {
-    await ackDeletesUpTo(sourceInstanceId, ackedDeletesUpTo).catch(() => {});
-  }
 
   // Best-effort reverse subscription. Failures don't fail the push — the
   // record is already merged and the response will tell the sender what

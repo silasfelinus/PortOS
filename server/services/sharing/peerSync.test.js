@@ -1302,23 +1302,30 @@ describe('peerSync', () => {
       expect(result.missingAssets).toHaveLength(1);
     });
 
-    it('advances the sender cursor when the payload carries a tombstone', async () => {
-      await applyIncomingPush({
+    it('returns ackedDeletesUpTo for the sender (does NOT advance the local cursor on receive)', async () => {
+      // Cursors track "what peer X has acked of OUR local deletions" so
+      // tombstoneGc can prune our local tombstones once every subscribed
+      // peer has confirmed receipt. Advancing the cursor for sourceInstanceId
+      // on receive would mis-credit the sender's tombstones as our own pushed-
+      // and-acked ones, letting GC prune local tombstones the sender never
+      // saw — and resurrecting them on the sender's next push.
+      const result = await applyIncomingPush({
         kind: 'universe',
         record: { id: 'u1', deleted: true, deletedAt: '2026-01-01T00:00:00Z' },
         assetManifest: [],
         sourceInstanceId: 'peer-a',
       });
+      expect(result.ackedDeletesUpTo).toBe(Date.parse('2026-01-01T00:00:00Z'));
       const cursors = await listCursors();
-      expect(cursors['peer-a'].lastAckedDeleteAt).toBe(Date.parse('2026-01-01T00:00:00Z'));
+      expect(cursors['peer-a']).toBeUndefined();
     });
 
-    it('picks the MAX deletedAt across record + bundled issues for the cursor advance', async () => {
-      // Regression: if only `record.deletedAt` is considered, a series push
-      // bundling multiple tombstoned issues would advance the cursor only
-      // by the series' own deletion time — newer issue tombstones in the
-      // same push would never be acknowledged until a separate push lands.
-      await applyIncomingPush({
+    it('returns the MAX deletedAt across record + bundled issues so the sender can ack all in one round-trip', async () => {
+      // Regression: if only `record.deletedAt` is returned, a series push
+      // bundling multiple tombstoned issues would only ack the series'
+      // own deletion time — newer issue tombstones in the same push would
+      // never be acknowledged until a separate push lands.
+      const result = await applyIncomingPush({
         kind: 'series',
         record: { id: 's1', deleted: true, deletedAt: '2026-01-01T00:00:00Z' },
         issues: [
@@ -1328,8 +1335,7 @@ describe('peerSync', () => {
         assetManifest: [],
         sourceInstanceId: 'peer-a',
       });
-      const cursors = await listCursors();
-      expect(cursors['peer-a'].lastAckedDeleteAt).toBe(Date.parse('2026-03-01T00:00:00Z'));
+      expect(result.ackedDeletesUpTo).toBe(Date.parse('2026-03-01T00:00:00Z'));
     });
 
     it('auto-creates a reverse subscription back to the sender', async () => {

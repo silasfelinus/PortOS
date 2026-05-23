@@ -61,9 +61,15 @@ const sanitizeItem = (raw) => {
   // carries the whole file), and downstream code joins the ref onto a
   // PATHS dir to hash / pull the asset. A peer-supplied ref like
   // `../etc/passwd` would otherwise let one peer make another peer hash
-  // (and leak the hash of) arbitrary local files. Same posture as
-  // `sanitizeAssetFilename` in `server/services/sharing/peerSync.js`.
-  if (ref.includes('/') || ref.includes('\\') || ref.includes('..')) return null;
+  // (and leak the hash of) arbitrary local files.
+  //
+  // Reject separators and parent-directory PATH SEGMENTS (exact `.` or
+  // `..` between slashes, or as the whole basename). Do NOT reject the
+  // substring `..` in general — gallery filenames like `my..render.png`
+  // are valid basenames that the rest of the system stores and serves,
+  // and dropping them would silently disappear existing collection items.
+  if (ref.includes('/') || ref.includes('\\')) return null;
+  if (ref === '.' || ref === '..') return null;
   // A hand-edited or corrupted `addedAt` would feed NaN into the cover
   // resolver's Date sort — replace anything unparseable with now().
   const parsed = typeof raw.addedAt === 'string' ? Date.parse(raw.addedAt) : NaN;
