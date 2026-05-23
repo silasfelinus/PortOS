@@ -91,18 +91,30 @@ export function sanitizeRecordForWire(kind, record) {
       // EPHEMERAL TOMBSTONES — minimize the payload. If a record was
       // created ephemeral and never shared, deleting it would otherwise
       // ship the full content to peers that never had it (just because
-      // tombstones cross the wire). Minimize to `{ id, updatedAt }` plus
-      // the tombstone fields — enough for an ack on a peer that DID
-      // have the live copy (no-op for one that didn't), no content
-      // leakage either way.
+      // tombstones cross the wire). Minimize to the structural fields
+      // the receiver's sanitizers REQUIRE (otherwise sanitizeTemplate /
+      // sanitizeSeries / sanitizeIssue drops the record on the floor
+      // and the tombstone never lands) plus the tombstone fields.
+      //
+      // Required fields by kind, derived from sanitizeTemplate /
+      // sanitizeSeries / sanitizeIssue:
+      //   universe → name (non-empty string)
+      //   series   → name (non-empty string)
+      //   issue    → seriesId + title
+      // We send a placeholder when the on-disk value is missing — the
+      // receiver only uses these to pass the sanitizer; the tombstone
+      // fields drive everything downstream.
       if (record.ephemeral === true) {
         const minimized = {
           id: record.id,
           ...(record.updatedAt ? { updatedAt: record.updatedAt } : {}),
-          // Issues need their parent linkage so mergeIssuesFromSync can
-          // route the tombstone to the right series cascade.
-          ...(kind === 'issue' && record.seriesId ? { seriesId: record.seriesId } : {}),
         };
+        if (kind === 'universe' || kind === 'series') {
+          minimized.name = isNonEmptyStr(record.name) ? record.name : '_';
+        } else if (kind === 'issue') {
+          if (record.seriesId) minimized.seriesId = record.seriesId;
+          minimized.title = isNonEmptyStr(record.title) ? record.title : '_';
+        }
         return { ...minimized, ...sanitizeSoftDeleteFields(record) };
       }
       return { ...rest, ...sanitizeSoftDeleteFields(record) };
