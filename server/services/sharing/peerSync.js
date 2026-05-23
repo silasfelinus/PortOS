@@ -914,14 +914,18 @@ export async function applyIncomingPush(payload) {
 
   // Merge into local state via the existing LWW path. The merge functions
   // honor `deleted: true` + bump `updatedAt`, so this is the single
-  // tombstone-aware reconciliation point. (Local-ephemeral records are
-  // silently dropped inside the merge; we still call it so non-ephemeral
-  // siblings in the issues array land.)
+  // tombstone-aware reconciliation point.
   if (kind === 'universe') {
     await mergeUniversesFromSync([record]);
   } else if (kind === 'series') {
     await mergeSeriesFromSync([record]);
-    if (Array.isArray(issues) && issues.length > 0) {
+    // Bundled issues: skip the entire batch if the LOCAL series is
+    // ephemeral. mergeSeriesFromSync already refused the parent record on
+    // its own, but child issue merges are a separate code path —
+    // `updateSeries` doesn't auto-flip child issues' `ephemeral` flag when
+    // the parent is marked ephemeral, so without this gate a stale reverse
+    // subscription could overwrite the private fork's issue stages.
+    if (!localEphemeral && Array.isArray(issues) && issues.length > 0) {
       await mergeIssuesFromSync(issues);
     }
   }

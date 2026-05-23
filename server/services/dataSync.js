@@ -476,11 +476,33 @@ async function getMediaCollectionsSnapshot() {
 
 async function applyMediaCollectionsRemote(remoteData) {
   if (!remoteData) return { applied: false, count: 0 };
+  // Symmetric receiver-side guard. The sender filters collections linked
+  // to local-ephemeral parents in getMediaCollectionsSnapshot, but a
+  // peer running an older PortOS (or any non-conformant client) could
+  // still ship them. Without this filter, an incoming snapshot could
+  // mutate item refs or scalars on a collection whose universe/series
+  // the user explicitly marked private.
+  const incoming = Array.isArray(remoteData.collections) ? remoteData.collections : [];
+  const ephemeralUniverseIds = new Set(
+    (await listUniverses({ includeDeleted: true }).catch(() => []))
+      .filter((u) => u?.ephemeral === true)
+      .map((u) => u.id),
+  );
+  const ephemeralSeriesIds = new Set(
+    (await listSeries({ includeDeleted: true }).catch(() => []))
+      .filter((s) => s?.ephemeral === true)
+      .map((s) => s.id),
+  );
+  const filtered = incoming.filter((c) => {
+    if (c?.universeId && ephemeralUniverseIds.has(c.universeId)) return false;
+    if (c?.seriesId && ephemeralSeriesIds.has(c.seriesId)) return false;
+    return true;
+  });
   // Routes through `mergeMediaCollectionsFromSync` so the read-modify-write
   // runs INSIDE `serializeFileWrite` (same tail as addItem / removeItem /
   // bulkUpdateCollectionItems) — a sync-driven write can't interleave with a
   // concurrent local mutation on the same JSON file.
-  const result = await mergeMediaCollectionsFromSync(remoteData.collections || []);
+  const result = await mergeMediaCollectionsFromSync(filtered);
   if (result.applied) {
     console.log(`🔄 MediaCollections sync: merged ${result.count} collection(s)`);
   }

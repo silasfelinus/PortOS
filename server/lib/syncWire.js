@@ -131,8 +131,21 @@ export function sanitizeStateForWire(kind, state) {
             .map((s) => sanitizeRecordForWire('series', s))
             .filter(Boolean)
         : [];
+      // Cascade ephemeral protection from series to their child issues.
+      // `updateSeries` doesn't auto-flip every child issue's `ephemeral` flag
+      // when the parent is marked ephemeral, so an unfiltered issues array
+      // would leak private issue stages (prose, comic pages, render
+      // metadata) even though the parent series itself is filtered out.
+      // Build the set of locally-ephemeral series ids by inspecting the
+      // raw state.series (NOT the sanitized array — `sanitizeRecordForWire`
+      // strips the ephemeral flag on the way out so it can't be used as
+      // the gate).
+      const ephemeralSeriesIds = Array.isArray(state.series)
+        ? new Set(state.series.filter((s) => s?.ephemeral === true).map((s) => s.id))
+        : new Set();
       const issues = Array.isArray(state.issues)
         ? state.issues
+            .filter((i) => !ephemeralSeriesIds.has(i?.seriesId))
             .map((i) => sanitizeRecordForWire('issue', i))
             .filter(Boolean)
         : [];
