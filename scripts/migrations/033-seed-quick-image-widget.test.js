@@ -87,6 +87,34 @@ describe('migration 033 — seed quick-image widget into default layout', () => 
     expect(result.reason).toBe('unreadable');
   });
 
+  it('heals legacy state where widget id is in widgets[] but missing from grid[]', async () => {
+    // Regression: an earlier shape of migration 033 (or any out-of-band
+    // 'widgets'-only edit) could leave the widget id in widgets[] without
+    // the corresponding placement entry in grid[]. Without the heal, the
+    // widget renders only via client-side synthesizeGrid auto-flow, and
+    // any subsequent "Save Arrangement" persists the gap. The migration
+    // should add the missing grid entry on the next run.
+    writeJson(layoutsPath, {
+      activeLayoutId: 'default',
+      layouts: [
+        {
+          id: 'default',
+          name: 'Everything',
+          builtIn: true,
+          widgets: ['quick-brain', 'quick-image'],
+          grid: [{ id: 'quick-brain', x: 0, y: 0, w: 3, h: 2 }],
+        },
+      ],
+    });
+    const result = await migration.up({ rootDir });
+    expect(result.updated).toBe(1);
+    const after = readJson(layoutsPath);
+    const entry = after.layouts[0].grid.find((g) => g.id === 'quick-image');
+    expect(entry).toBeDefined();
+    // widgets[] should not duplicate the id (still exactly one occurrence).
+    expect(after.layouts[0].widgets.filter((w) => w === 'quick-image')).toHaveLength(1);
+  });
+
   it('appends below existing items when the preferred slot is occupied by user rearrangement', async () => {
     writeJson(layoutsPath, {
       activeLayoutId: 'default',

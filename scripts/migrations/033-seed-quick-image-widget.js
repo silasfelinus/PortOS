@@ -51,19 +51,34 @@ function pickGridEntry(grid, layoutId) {
 function applyToLayout(layout) {
   if (!layout || typeof layout !== 'object') return false;
   if (!Array.isArray(layout.widgets)) return false;
-  if (layout.widgets.includes(WIDGET_ID)) return false;
-  layout.widgets = [...layout.widgets, WIDGET_ID];
-  // Always insert a grid entry, even for legacy/corrupted layouts whose
-  // `grid` is missing or non-array. Without this, the widget would be
-  // enabled but unplaced — the client's `synthesizeGrid` auto-flow CAN
-  // recover this at render time, but the on-disk state would be
-  // inconsistent (widgets includes quick-image, grid has no entry for
-  // it) and a subsequent "Save Arrangement" would persist the gap.
-  // Initialize grid to [] before picking so pickGridEntry's reduce
-  // starts from a clean slate.
+
+  let changed = false;
+  // 1) Insert into widgets if absent.
+  if (!layout.widgets.includes(WIDGET_ID)) {
+    layout.widgets = [...layout.widgets, WIDGET_ID];
+    changed = true;
+  }
+  // 2) Heal the grid entry independently. The previous early-return on
+  // widgets.includes() skipped the realistic legacy/corrupted case where
+  // the widget id was present in `widgets` but missing from `grid` —
+  // either because an older migration only seeded one side, or because
+  // a `widgets`-only edit landed without an arrange-and-save pass. We
+  // detect that here and add the placement entry, so the on-disk state
+  // is always self-consistent. Treat non-array grid as [] (same shape
+  // the client's `synthesizeGrid` would auto-create at render time).
   const existingGrid = Array.isArray(layout.grid) ? layout.grid : [];
-  layout.grid = [...existingGrid, pickGridEntry(existingGrid, layout.id)];
-  return true;
+  const hasGridEntry = existingGrid.some((it) => it?.id === WIDGET_ID);
+  if (!hasGridEntry) {
+    layout.grid = [...existingGrid, pickGridEntry(existingGrid, layout.id)];
+    changed = true;
+  } else if (!Array.isArray(layout.grid)) {
+    // Defensive: widget had an entry in a non-array grid (impossible by
+    // the some() check above unless the grid is itself weird) — normalize
+    // to the existingGrid we just synthesized.
+    layout.grid = existingGrid;
+    changed = true;
+  }
+  return changed;
 }
 
 export default {
