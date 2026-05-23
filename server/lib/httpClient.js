@@ -45,18 +45,30 @@ export function insecureFetch(agent) {
         }
         const chunks = [];
         let bytesSoFar = 0;
+        let capTripped = false;
         res.on('data', c => {
-          chunks.push(c);
+          // Once the cap is tripped we both destroy the request AND stop
+          // accumulating; the socket teardown isn't instantaneous and
+          // additional 'data' events can fire before 'close' / 'end'.
+          // Push-and-reject-on-every-chunk would otherwise (a) keep
+          // growing `chunks` past the cap and (b) call reject() multiple
+          // times (Promise resolves once; the dropped rejections are
+          // harmless but the unbounded buffering isn't).
+          if (capTripped) return;
           if (typeof maxBytes === 'number' && maxBytes > 0) {
             bytesSoFar += c.length;
             if (bytesSoFar > maxBytes) {
+              capTripped = true;
               cleanup();
               req.destroy();
               reject(new Error(`Response body exceeded maxBytes ${maxBytes} (got ${bytesSoFar})`));
+              return;
             }
           }
+          chunks.push(c);
         });
         res.on('end', () => {
+          if (capTripped) return;
           cleanup();
           // Concat as a raw Buffer so the response can be projected to text
           // (UTF-8 decode), JSON (parse), or arrayBuffer (binary). Pre-
@@ -87,7 +99,7 @@ export function insecureFetch(agent) {
             ),
           });
         });
-        res.on('error', (err) => { cleanup(); reject(err); });
+        res.on('error', (err) => { if (capTripped) return; cleanup(); reject(err); });
       });
       req.on('error', (err) => { cleanup(); reject(err); });
       if (body) req.write(body);
