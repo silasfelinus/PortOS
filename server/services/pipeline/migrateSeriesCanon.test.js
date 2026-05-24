@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { mockNoPeers } from '../../lib/mockPathsDataRoot.js';
 
 const ERR_DUPLICATE = 'DUPLICATE';
 const ERR_NOT_FOUND = 'NOT_FOUND';
@@ -41,6 +42,7 @@ vi.mock('../../lib/fileUtils.js', () => ({
   PATHS: { data: '/mock/data' },
   readJSONFile: vi.fn(async (_p, fallback) => fallback),
 }));
+vi.mock('../instances.js', () => mockNoPeers());
 
 const { applyLegacySeriesCanonToUniverse, deriveOrphanUniverseId } = await import('./migrateSeriesCanon.js');
 const universeBuilder = await import('../universeBuilder.js');

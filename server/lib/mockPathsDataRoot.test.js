@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { existsSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createTempDataRoot, makePathsProxy, mockPathsDataRoot } from './mockPathsDataRoot.js';
+import { createTempDataRoot, makePathsProxy, mockNoPeers, mockPathsDataRoot } from './mockPathsDataRoot.js';
 
 describe('mockPathsDataRoot', () => {
   describe('createTempDataRoot', () => {
@@ -82,6 +82,18 @@ describe('mockPathsDataRoot', () => {
       expect(proxy.PATHS.logs).toBe('l');
       cleanup();
       expect(existsSync(tempRoot)).toBe(false);
+    });
+  });
+
+  describe('mockNoPeers', () => {
+    it('preserves instances exports while forcing getPeers to []', async () => {
+      const mock = mockNoPeers(
+        { getPeers: async () => [{ instanceId: 'real-peer' }], getInstanceId: async () => 'real-id' },
+        { getInstanceId: async () => 'test-id' },
+      );
+
+      await expect(mock.getPeers()).resolves.toEqual([]);
+      await expect(mock.getInstanceId()).resolves.toBe('test-id');
     });
   });
 });

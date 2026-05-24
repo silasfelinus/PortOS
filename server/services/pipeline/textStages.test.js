@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mockNoPeers } from '../../lib/mockPathsDataRoot.js';
 
 const fileStore = new Map();
 
@@ -15,6 +16,8 @@ vi.mock('crypto', async () => {
   const actual = await vi.importActual('crypto');
   return { ...actual, randomUUID: () => `uuid-${++uuidCounter}` };
 });
+
+vi.mock('../instances.js', () => mockNoPeers());
 
 const llmCalls = [];
 
