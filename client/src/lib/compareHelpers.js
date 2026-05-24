@@ -23,12 +23,12 @@ export const equalByKeys = (a, b, keys) =>
   keys.every((key) => valueAt(a, key) === valueAt(b, key));
 
 // True when `a` and `b` are arrays of equal length whose items are pairwise
-// equal on every key. Non-arrays fall back to identity (`a === b`), matching
-// the `Array.isArray(x) ? x : null` guard the inline callers used.
+// equal on every key. When either input is not an array, falls back to
+// reference identity (`a === b`) — so two distinct non-array values (e.g.
+// `{}` vs `{}`) read as changed and are never silently deduped; only `null`
+// vs `null` / the same reference vs itself read as equal.
 export const equalListByKeys = (a, b, keys) => {
-  const aArr = Array.isArray(a) ? a : null;
-  const bArr = Array.isArray(b) ? b : null;
-  if (aArr === null || bArr === null) return aArr === bArr;
-  if (aArr.length !== bArr.length) return false;
-  return aArr.every((item, i) => equalByKeys(item, bArr[i], keys));
+  if (!Array.isArray(a) || !Array.isArray(b)) return a === b;
+  if (a.length !== b.length) return false;
+  return a.every((item, i) => equalByKeys(item, b[i], keys));
 };

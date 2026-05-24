@@ -90,11 +90,18 @@ describe('equalListByKeys', () => {
     )).toBe(false);
   });
 
-  it('falls back to identity for non-arrays', () => {
+  it('falls back to reference identity for non-arrays', () => {
     expect(equalListByKeys(null, null, ['id'])).toBe(true);
     expect(equalListByKeys(undefined, undefined, ['id'])).toBe(true);
     expect(equalListByKeys(null, [{ id: 'a' }], ['id'])).toBe(false);
     expect(equalListByKeys([{ id: 'a' }], null, ['id'])).toBe(false);
+    // distinct non-array objects are NOT structurally equal — identity only,
+    // so a real change can't be silently deduped away
+    expect(equalListByKeys({}, {}, ['id'])).toBe(false);
+    expect(equalListByKeys({ id: 'a' }, { id: 'a' }, ['id'])).toBe(false);
+    // the same reference compares equal
+    const shared = { id: 'a' };
+    expect(equalListByKeys(shared, shared, ['id'])).toBe(true);
   });
 
   it('treats two empty arrays as equal', () => {
