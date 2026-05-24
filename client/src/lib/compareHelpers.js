@@ -4,10 +4,10 @@
 // reach for these when only a known subset of fields drives the render, so a
 // monotonic mtime/timestamp nudge or an unrendered field can't break dedup.
 //
-// A "key" is either:
-//   - a string property name (`'status'`),
-//   - a dotted path (`'context.running'`) — each segment is read with
-//     optional chaining, so a missing intermediate object reads as undefined, or
+// A "key" is one of:
+//   - a string property name (`'status'`);
+//   - a dotted path (`'context.running'`) — each segment is read with optional
+//     chaining, so a missing intermediate object reads as undefined;
 //   - a function `(item) => value` for derived comparisons (e.g. a normalized
 //     `(d) => d?.count ?? 1`, or a helper like `getLastProgressDate`).
 
