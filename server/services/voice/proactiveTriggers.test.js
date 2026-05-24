@@ -191,21 +191,26 @@ describe('wireProactiveTriggers', () => {
     const onUnhandled = (reason) => { unhandled = reason; };
     process.on('unhandledRejection', onUnhandled);
 
-    unwire = wireProactiveTriggers({ io: {}, speak, limits: { error: 60_000 } });
-    errorEvents.emit('error', { severity: 'critical', message: 'boom' });
+    // try/finally so a failed assertion can't leak the process-level listener
+    // into later tests (cross-test flakiness).
+    try {
+      unwire = wireProactiveTriggers({ io: {}, speak, limits: { error: 60_000 } });
+      errorEvents.emit('error', { severity: 'critical', message: 'boom' });
 
-    // Give the rejected promise time to surface as an unhandled rejection
-    // if the guard ever regresses.
-    await new Promise((r) => setTimeout(r, 50));
-    process.off('unhandledRejection', onUnhandled);
+      // Give the rejected promise time to surface as an unhandled rejection
+      // if the guard ever regresses.
+      await new Promise((r) => setTimeout(r, 50));
 
-    expect(unhandled).toBeNull(); // load-bearing: locks in the no-leak guard
-    expect(errorLog).toHaveBeenCalled();
+      expect(unhandled).toBeNull(); // load-bearing: locks in the no-leak guard
+      expect(errorLog).toHaveBeenCalled();
 
-    // Bucket did not advance — a later critical can still try.
-    errorEvents.emit('error', { severity: 'critical', message: 'again' });
-    await flush();
-    expect(speak).toHaveBeenCalledTimes(2);
+      // Bucket did not advance — a later critical can still try.
+      errorEvents.emit('error', { severity: 'critical', message: 'again' });
+      await flush();
+      expect(speak).toHaveBeenCalledTimes(2);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 
   it('default RATE_LIMIT_MS covers all three wired sources', () => {

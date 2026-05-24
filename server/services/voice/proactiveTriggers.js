@@ -20,10 +20,11 @@
 //
 // EventEmitter does NOT await async listeners: a rejection from the synthesis
 // path inside `speakProactive` would surface as an unhandled rejection
-// (process-killing on Node ≥15). Listeners here stay synchronous and route the
-// awaited work through `dispatch`, which try/catches internally (sanctioned
-// out-of-request-lifecycle boundary per CLAUDE.md) and never rejects; a `.catch`
-// backstop on the call site guards the rest.
+// (process-killing on Node ≥15). Listeners here stay synchronous and call the
+// async `dispatch` fire-and-forget; the single `.catch` on that call site
+// (`fire`) is the rejection boundary. `dispatch` itself uses only try/finally
+// (to release a rate-limit reservation), so a synthesis rejection propagates
+// out to that `.catch` rather than being swallowed.
 
 import { errorEvents } from '../../lib/errorHandler.js';
 import { cosEvents } from '../cosEvents.js';
