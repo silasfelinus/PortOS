@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { mockNoPeers } from '../lib/mockPathsDataRoot.js';
+import { mockNoPeerSync, mockNoPeers } from '../lib/mockPathsDataRoot.js';
 
 const tempData = mkdtempSync(join(tmpdir(), 'portos-ubhook-test-data-'));
 
@@ -26,6 +26,7 @@ vi.mock('../lib/fileUtils.js', async () => {
 // uses dataPath whose closure points at REAL PATHS, bypassing the mock
 // above).
 vi.mock('./instances.js', () => mockNoPeers());
+vi.mock('./sharing/peerSync.js', () => mockNoPeerSync());
 
 const { mediaJobEvents } = await import('./mediaJobQueue/index.js');
 const collections = await import('./mediaCollections.js');

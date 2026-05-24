@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mockNoPeers } from '../../lib/mockPathsDataRoot.js';
+import { mockNoPeerSync, mockNoPeers } from '../../lib/mockPathsDataRoot.js';
 
 const fileStore = new Map();
 
@@ -18,6 +18,7 @@ vi.mock('crypto', async () => {
 });
 
 vi.mock('../instances.js', () => mockNoPeers());
+vi.mock('../sharing/peerSync.js', () => mockNoPeerSync());
 
 // Inline generator that flips the stage to ready without doing any real work.
 // We're testing the coordinator, not the LLM call site.

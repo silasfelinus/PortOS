@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { mockNoPeers } from '../../lib/mockPathsDataRoot.js';
+import { mockNoPeerSync, mockNoPeers } from '../../lib/mockPathsDataRoot.js';
 
 const fileStore = new Map();
 
@@ -20,6 +20,7 @@ vi.mock('crypto', async () => {
 });
 
 vi.mock('../instances.js', () => mockNoPeers());
+vi.mock('../sharing/peerSync.js', () => mockNoPeerSync());
 
 const collections = await import('../mediaCollections.js');
 const seriesSvc = await import('./series.js');

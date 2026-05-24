@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import { rmSync, mkdirSync } from 'fs';
-import { mockNoPeers, mockPathsDataRoot } from '../lib/mockPathsDataRoot.js';
+import { mockNoPeerSync, mockNoPeers, mockPathsDataRoot } from '../lib/mockPathsDataRoot.js';
 
 // `wrapExports: ['atomicWrite']` exposes a delegating vi.fn at
 // `spies.atomicWrite` so the atomicity test can count writes WITHOUT
@@ -29,6 +29,7 @@ vi.mock('crypto', async () => {
 // dataPath closure to the real PATHS once the post-return microtask runs outside this
 // file's fileUtils mock window). Mirrors importer.test.js / promoteToPipeline.test.js.
 vi.mock('./instances.js', () => mockNoPeers());
+vi.mock('./sharing/peerSync.js', () => mockNoPeerSync());
 
 // Stub the LLM dispatch so tests don't need a live runner. The
 // `runPromptThroughProvider` mock is overridden per-test to return the

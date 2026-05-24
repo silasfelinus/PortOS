@@ -30,6 +30,8 @@
  *   - `createTempDataRoot()` — returns `{ tempRoot }` allocated under os.tmpdir().
  *   - `mockNoPeers(actual?, overrides?)` — shared `instances.js` mock guard
  *     for record-creating tests that should never auto-subscribe to live peers.
+ *   - `mockNoPeerSync(actual?, overrides?)` — shared `peerSync.js` mock guard
+ *     that makes fire-and-forget record auto-subscribe a clean no-op in tests.
  *
  * Migration: tests that need MULTIPLE PATHS members redirected
  * (e.g. `images`, `videos`) can pass `extraOverrides` (object or function)
@@ -101,6 +103,23 @@ export function mockNoPeers(actual = {}, overrides = {}) {
     getInstanceId: () => Promise.resolve('test-instance'),
     ...actual,
     getPeers: () => Promise.resolve([]),
+    ...overrides,
+  };
+}
+
+/**
+ * Build a `sharing/peerSync.js` mock that disables create-time peer fan-out.
+ *
+ * This is intentionally separate from `mockNoPeers`: stubbing `getPeers → []`
+ * prevents live registry reads once `peerSync.js` loads, while this helper
+ * prevents record-creating tests from loading the peer-sync module graph at
+ * all through the fire-and-forget dynamic import.
+ */
+export function mockNoPeerSync(actual = {}, overrides = {}) {
+  return {
+    ...actual,
+    autoSubscribeRecordToAllPeers: () => Promise.resolve([]),
+    unsubscribeAllForRecord: () => Promise.resolve({ removed: [], failed: [] }),
     ...overrides,
   };
 }

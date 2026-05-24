@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { existsSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createTempDataRoot, makePathsProxy, mockNoPeers, mockPathsDataRoot } from './mockPathsDataRoot.js';
+import { createTempDataRoot, makePathsProxy, mockNoPeers, mockNoPeerSync, mockPathsDataRoot } from './mockPathsDataRoot.js';
 
 describe('mockPathsDataRoot', () => {
   describe('createTempDataRoot', () => {
@@ -94,6 +94,20 @@ describe('mockPathsDataRoot', () => {
 
       await expect(mock.getPeers()).resolves.toEqual([]);
       await expect(mock.getInstanceId()).resolves.toBe('test-id');
+    });
+  });
+
+  describe('mockNoPeerSync', () => {
+    it('preserves peerSync exports while forcing autoSubscribeRecordToAllPeers to []', async () => {
+      const mock = mockNoPeerSync(
+        { autoSubscribeRecordToAllPeers: async () => [{ peerId: 'real-peer' }], otherExport: 1 },
+        { custom: true },
+      );
+
+      await expect(mock.autoSubscribeRecordToAllPeers()).resolves.toEqual([]);
+      await expect(mock.unsubscribeAllForRecord()).resolves.toEqual({ removed: [], failed: [] });
+      expect(mock.otherExport).toBe(1);
+      expect(mock.custom).toBe(true);
     });
   });
 });

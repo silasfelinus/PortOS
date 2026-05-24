@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mockNoPeers } from '../lib/mockPathsDataRoot.js';
+import { mockNoPeerSync, mockNoPeers } from '../lib/mockPathsDataRoot.js';
 
 // In-memory file store mirrors universeBuilderPromote.test.js so a single
 // readState/writeState path roundtrips through the same code the real
@@ -21,6 +21,7 @@ vi.mock('crypto', async () => {
 });
 
 vi.mock('./instances.js', () => mockNoPeers());
+vi.mock('./sharing/peerSync.js', () => mockNoPeerSync());
 
 const resolveProviderAndModelMock = vi.fn();
 const runPromptThroughProviderMock = vi.fn();

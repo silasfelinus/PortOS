@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync, readdirSync, unlinkSync, existsSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { mockNoPeers } from '../lib/mockPathsDataRoot.js';
+import { mockNoPeerSync, mockNoPeers } from '../lib/mockPathsDataRoot.js';
 
 // Create the tempRoot at top-level so PATHS.data resolves before any
 // service module runs its `const STATE_PATH = join(PATHS.data, ...)` at
@@ -52,6 +52,7 @@ vi.mock('../lib/fileUtils.js', async () => {
 // ephemeral:true on the direct fixtures, downstream production code may
 // still create non-ephemeral records.
 vi.mock('./instances.js', () => mockNoPeers());
+vi.mock('./sharing/peerSync.js', () => mockNoPeerSync());
 
 // Mock runStagedLLM so tests never hit a real provider — every importer
 // LLM call resolves to a canned JSON shape we control per-test.

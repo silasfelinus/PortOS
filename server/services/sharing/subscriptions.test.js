@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { mockNoPeers } from '../../lib/mockPathsDataRoot.js';
+import { mockNoPeerSync, mockNoPeers } from '../../lib/mockPathsDataRoot.js';
 
 // Universe builder evaluates PATHS.data at module top, so allocate a stable
 // temp dir before any service imports. beforeEach wipes + reseeds inside.
@@ -27,6 +27,7 @@ vi.mock('../instances.js', () => mockNoPeers({}, {
   getInstanceId: () => Promise.resolve('inst-test'),
   UNKNOWN_INSTANCE_ID: 'unknown',
 }));
+vi.mock('./peerSync.js', () => mockNoPeerSync());
 vi.mock('../mediaJobQueue/index.js', () => ({ getJob: () => null }));
 
 const buckets = await import('./buckets.js');
