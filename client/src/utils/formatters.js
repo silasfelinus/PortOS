@@ -240,16 +240,40 @@ export function formatDurationMs(ms) {
 /**
  * Format a duration in minutes as a human-readable string
  * @param {number} minutes - Duration in minutes
- * @returns {string} Formatted duration (e.g., "30m", "1h 30m", "2h")
+ * @param {object} [options]
+ * @param {boolean} [options.approximate=false] - Prefix the result with `~`
+ *   to signal an estimate (e.g., "~1h 30m") for predicted/averaged durations.
+ * @returns {string} Formatted duration (e.g., "30m", "1h 30m", "2h", "~2h")
  */
-export function formatDurationMin(minutes) {
+export function formatDurationMin(minutes, { approximate = false } = {}) {
   if (minutes == null) return '';
+  const prefix = approximate ? '~' : '';
   if (minutes >= 60) {
     const h = Math.floor(minutes / 60);
     const m = minutes % 60;
-    return m ? `${h}h ${m}m` : `${h}h`;
+    return m ? `${prefix}${h}h ${m}m` : `${prefix}${h}h`;
   }
-  return `${minutes}m`;
+  return `${prefix}${minutes}m`;
+}
+
+/**
+ * Format a calendar event's date+time, with a distinct all-day rendering.
+ * Tuned for the event-detail panel: timed events show a short weekday plus
+ * time (e.g. "Sat, Apr 1, 1:30 PM"); all-day events show a full weekday and
+ * year (e.g. "Saturday, April 1, 2026"). Kept separate from `formatDateTime`
+ * because the weekday-led shape is event-specific.
+ * @param {string|Date|null} dateStr - ISO timestamp or Date object
+ * @param {object} [options]
+ * @param {boolean} [options.allDay=false] - Render date-only (all-day event).
+ * @returns {string} Formatted event date/time, or '' for missing/invalid input
+ */
+export function formatEventDateTime(dateStr, { allDay = false } = {}) {
+  if (!dateStr) return '';
+  const date = new Date(dateStr);
+  if (Number.isNaN(date.getTime())) return '';
+  // All-day events render exactly like `formatDateFull` (full weekday + year).
+  if (allDay) return formatDateFull(date);
+  return date.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
 /**
