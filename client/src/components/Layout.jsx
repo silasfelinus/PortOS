@@ -200,7 +200,7 @@ const navItems = [
       { to: '/media', label: 'Media Gen', icon: Layers },
       { to: '/pipeline', label: 'Series Pipeline', icon: WorkflowIcon, dynamic: 'pipelineSeries' },
       { to: '/sharing', label: 'Sharing', icon: Share2 },
-      { to: '/universe-builder', label: 'Universe', icon: Globe },
+      { to: '/universes', label: 'Universes', icon: Globe },
       { to: '/writers-room', label: 'Writers Room', icon: NotebookPen }
     ]
   },
@@ -990,7 +990,11 @@ export default function Layout() {
             location.pathname === '/review' ||
             location.pathname.startsWith('/settings') ||
             location.pathname.startsWith('/wiki') ||
-            location.pathname.startsWith('/universe-builder') ||
+            // Only the universe EDITOR (/universes/:id, /universes/new) is
+            // full-width — it manages its own scroll. The /universes index
+            // (list/table) takes the normal padded+scrolling main, mirroring
+            // the Series Pipeline index (/pipeline is not full-width either).
+            location.pathname.startsWith('/universes/') ||
             location.pathname.startsWith('/writers-room') ||
             location.pathname.startsWith('/agents') ||
             location.pathname === '/shell' ||
