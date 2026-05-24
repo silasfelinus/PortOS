@@ -264,13 +264,18 @@ export default function Dashboard() {
   };
 
   const duplicateLayout = async ({ id, name, widgets, activateWindow }) => {
-    const switchGen = ++switchGenerationRef.current;
     // New layouts inherit the current renderGrid so "Save as new…" from a
     // visually-arranged dashboard captures what the user actually sees.
     const sourceGrid = renderGrid && renderGrid.length > 0 ? renderGrid : synthesizeGrid(widgets);
     const grid = reconcileGrid(sourceGrid, widgets);
     const result = await api.saveDashboardLayout(id, { name, widgets, grid, activateWindow });
     setLayouts(result.layouts);
+    // Bump the switch generation only now — AFTER the save resolved and right
+    // before the actual active-layout switch. Bumping at function entry would
+    // let a still-in-flight save prematurely supersede (and thus suppress the
+    // failure revert of) an unrelated in-flight selectLayout that fails in the
+    // meantime — and if the save itself rejects, no switch happens at all.
+    const switchGen = ++switchGenerationRef.current;
     setActiveLayoutId(id);
     // Lock in for the day so a window-driven auto-switch on the next mount
     // doesn't bump the user off the brand-new layout they just created.

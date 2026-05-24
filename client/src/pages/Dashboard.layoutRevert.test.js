@@ -39,8 +39,25 @@ function createLayoutSwitcher(serverActiveId) {
       });
   };
 
+  // Mirrors duplicateLayout: a save step (savePut) precedes the active-layout
+  // switch. The generation must bump only AFTER savePut resolves — at the real
+  // switch — so a save in flight (or one that rejects) can't prematurely
+  // supersede an in-flight selectLayout's failure revert.
+  const duplicateLayout = (id, savePut, setActivePut) =>
+    savePut.then(() => {
+      const myGen = ++generation.current;
+      displayed = id;
+      return setActivePut
+        .then(() => { serverConfirmed.current = id; })
+        .catch(() => {
+          if (generation.current !== myGen) return;
+          displayed = displayed === id ? serverConfirmed.current : displayed;
+        });
+    });
+
   return {
     selectLayout,
+    duplicateLayout,
     get displayed() { return displayed; },
     get confirmed() { return serverConfirmed.current; },
   };
@@ -123,5 +140,24 @@ describe('Dashboard active-layout revert', () => {
     await pB1;
     expect(sw.displayed).toBe('B'); // NOT reverted to A
     expect(sw.confirmed).toBe('B');
+  });
+
+  it('a duplicate-layout save in flight does not prematurely supersede an in-flight switch failure', async () => {
+    // duplicateLayout saves the new layout BEFORE switching to it, so the
+    // generation must bump only at that later switch — not at function entry.
+    // While the save is in flight, an unrelated selectLayout that fails must
+    // still revert (it's still the latest switch until the duplicate commits).
+    const sw = createLayoutSwitcher('A');
+    let failX;
+    let resolveSave;
+    const pX = sw.selectLayout('X', new Promise((_, reject) => { failX = reject; })); // gen 1, displayed X
+    const pDup = sw.duplicateLayout('D', new Promise((r) => { resolveSave = r; }), Promise.resolve()); // save pending — no gen bump yet
+    failX(new Error('boom')); // X fails while the duplicate's save is still in flight
+    await pX;
+    expect(sw.displayed).toBe('A'); // X's failure still reverts (no premature gen bump)
+    resolveSave(); // duplicate's save resolves → only now does it switch
+    await pDup;
+    expect(sw.displayed).toBe('D');
+    expect(sw.confirmed).toBe('D');
   });
 });
