@@ -24,6 +24,10 @@ describe('formatDurationMin', () => {
     expect(formatDurationMin(60, { approximate: true })).toBe('~1h');
     expect(formatDurationMin(210, { approximate: true })).toBe('~3h 30m');
   });
+
+  it('tolerates a null options argument', () => {
+    expect(formatDurationMin(90, null)).toBe('1h 30m');
+  });
 });
 
 describe('formatEventDateTime', () => {
@@ -51,5 +55,9 @@ describe('formatEventDateTime', () => {
 
   it('all-day and timed renderings differ', () => {
     expect(formatEventDateTime(sample, { allDay: true })).not.toBe(formatEventDateTime(sample));
+  });
+
+  it('tolerates a null options argument', () => {
+    expect(formatEventDateTime(sample, null)).toBe(formatEventDateTime(sample));
   });
 });

@@ -245,8 +245,9 @@ export function formatDurationMs(ms) {
  *   to signal an estimate (e.g., "~1h 30m") for predicted/averaged durations.
  * @returns {string} Formatted duration (e.g., "30m", "1h 30m", "2h", "~2h")
  */
-export function formatDurationMin(minutes, { approximate = false } = {}) {
+export function formatDurationMin(minutes, options = {}) {
   if (minutes == null) return '';
+  const { approximate = false } = options ?? {};
   const prefix = approximate ? '~' : '';
   if (minutes >= 60) {
     const h = Math.floor(minutes / 60);
@@ -267,8 +268,9 @@ export function formatDurationMin(minutes, { approximate = false } = {}) {
  * @param {boolean} [options.allDay=false] - Render date-only (all-day event).
  * @returns {string} Formatted event date/time, or '' for missing/invalid input
  */
-export function formatEventDateTime(dateStr, { allDay = false } = {}) {
+export function formatEventDateTime(dateStr, options = {}) {
   if (!dateStr) return '';
+  const { allDay = false } = options ?? {};
   const date = new Date(dateStr);
   if (Number.isNaN(date.getTime())) return '';
   // All-day events render exactly like `formatDateFull` (full weekday + year).
