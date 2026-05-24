@@ -232,6 +232,14 @@ export async function findOrCreateCollectionByName({ name, description = '', uni
   const trimmedDescription = typeof description === 'string'
     ? description.trim().slice(0, DESCRIPTION_MAX_LENGTH)
     : '';
+  // Normalize the universe id (trim whitespace, then cap length) so the
+  // presence guard and the stored/derived value operate on the SAME string —
+  // a padded id can't yield `uc- u1 ` while the guard saw a non-empty value.
+  // Whitespace-only is treated as "no universe". Keeps the derived deterministic
+  // id under the peer-sync id length cap.
+  const normalizedUniverseId = typeof universeId === 'string' && universeId.trim()
+    ? universeId.trim().slice(0, UNIVERSE_ID_MAX)
+    : null;
   let createdId = null;
   const result = await serializeFileWrite(async () => {
     const all = await listCollections({ includeDeleted: true });
@@ -240,29 +248,47 @@ export async function findOrCreateCollectionByName({ name, description = '', uni
     // should not be resurrected by name.
     const existing = all.find((c) => !c.deleted && c.name.toLowerCase() === needle);
     if (existing) {
-      if (universeId && !existing.universeId) {
-        // Lazy backfill so legacy "Universe: <name>" collections gain the
-        // link the first time a universe-builder render references them.
-        const idx = all.findIndex((c) => c.id === existing.id);
-        all[idx] = { ...existing, universeId, updatedAt: new Date().toISOString() };
-        await writeAll(all);
-        return all[idx];
+      if (normalizedUniverseId && !existing.universeId) {
+        // Lazy backfill so legacy "Universe: <name>" collections gain the link
+        // the first time a universe-builder render references them. Adopt the
+        // DETERMINISTIC id at the same time — keeping the old random id would
+        // leave a universe-linked collection that can't converge across peers
+        // (the very bug deterministic ids fix).
+        const canonId = linkedCollectionId({ universeId: normalizedUniverseId });
+        // If the universe ALREADY has its canonical collection, don't promote a
+        // same-named orphan over it (that would clobber the canonical record's
+        // items) — return the canonical one; the orphan is a duplicate the merge
+        // / migration 038 reconciles.
+        const liveCanonical = all.find((c) => c.id === canonId && !c.deleted);
+        if (liveCanonical) return liveCanonical;
+        // No live canonical — rename the orphan to the deterministic id,
+        // reclaiming a tombstone at that id if one exists.
+        const linked = { ...existing, id: canonId, universeId: normalizedUniverseId, updatedAt: new Date().toISOString() };
+        await writeAll([...all.filter((c) => c.id !== existing.id && c.id !== canonId), linked]);
+        if (canonId !== existing.id) createdId = canonId; // announce the newly-linked record
+        return linked;
       }
       return existing;
     }
     const now = new Date().toISOString();
     const next = {
-      id: randomUUID(),
+      // Deterministic id when universe-linked (cross-machine convergence);
+      // standalone (no link) keeps a random id. See linkedCollectionId.
+      id: linkedCollectionId({ universeId: normalizedUniverseId }) || randomUUID(),
       name: trimmed,
       description: trimmedDescription,
       coverKey: null,
-      universeId: universeId || null,
+      universeId: normalizedUniverseId,
       items: [],
       createdAt: now,
       updatedAt: now,
     };
     createdId = next.id;
-    await writeAll([...all, next]);
+    // Reclaim the deterministic id if a tombstone already holds it (re-creating
+    // a previously-deleted universe/series collection). A plain append would
+    // leave two records at the same id and listCollections' dedup keeps the
+    // tombstone (it's first), silently dropping this fresh live record.
+    await writeAll([...all.filter((c) => c.id !== next.id), next]);
     return next;
   });
   if (createdId) announceNewCollection(createdId);
@@ -276,6 +302,24 @@ export async function findOrCreateCollectionByName({ name, description = '', uni
 // sanitizeCollection's slice and silently mismatch.
 export const universeCollectionNameFor = (universeName) =>
   `Universe: ${typeof universeName === 'string' ? universeName : ''}`.slice(0, NAME_MAX_LENGTH);
+
+// Deterministic id for a universe/series-LINKED collection. Every federated
+// machine derives the SAME id from the same universe/series id — so per-record
+// collection sync (which keys on `id`) treats both machines' copies as ONE
+// record and converges, instead of each minting a random UUID and duplicating
+// the collection on every peer. Standalone (unlinked) collections keep a random
+// id — they have no stable cross-machine identity. Migration 038 canonicalizes
+// existing linked-collection ids to this scheme. Mirror any change here in that
+// migration. `uc-`/`sc-` prefixes keep linked ids visually distinct from the
+// random UUIDs of standalone collections. The owner id is sliced to the same cap
+// storage uses so the derived id is bounded by construction — callers can pass a
+// raw owner id without first slicing it and still converge on the canonical id
+// (and stay under the peer-sync id length cap).
+export const linkedCollectionId = ({ universeId = null, seriesId = null } = {}) => {
+  if (universeId) return `uc-${String(universeId).slice(0, UNIVERSE_ID_MAX)}`;
+  if (seriesId) return `sc-${String(seriesId).slice(0, SERIES_ID_MAX)}`;
+  return null;
+};
 
 // Look up an existing collection by its universeId stamp. Returns null if no
 // collection has ever been linked to this universe — callers fall back to
@@ -351,7 +395,9 @@ export async function findOrCreateUniverseCollection({ universeId, universeName,
     // migration belong to "ambiguous, leave it" rather than "auto-adopt."
     const now = new Date().toISOString();
     const next = {
-      id: randomUUID(),
+      // Deterministic id so this universe's collection has the SAME id on every
+      // peer (per-record sync keys on id) — see linkedCollectionId.
+      id: linkedCollectionId({ universeId: normalizedUniverseId }),
       name: desiredName,
       description: trimmedDescription,
       coverKey: null,
@@ -361,7 +407,11 @@ export async function findOrCreateUniverseCollection({ universeId, universeName,
       updatedAt: now,
     };
     createdId = next.id;
-    await writeAll([...all, next]);
+    // Reclaim the deterministic id if a tombstone already holds it (re-creating
+    // a previously-deleted universe/series collection). A plain append would
+    // leave two records at the same id and listCollections' dedup keeps the
+    // tombstone (it's first), silently dropping this fresh live record.
+    await writeAll([...all.filter((c) => c.id !== next.id), next]);
     return next;
   });
   // Announce only when a NEW record was persisted (not a find-existing hit), so
@@ -406,7 +456,8 @@ export async function findOrCreateSeriesCollection({ seriesId, seriesName, descr
     if (linked) return linked;
     const now = new Date().toISOString();
     const next = {
-      id: randomUUID(),
+      // Deterministic id — same series collection id on every peer (see linkedCollectionId).
+      id: linkedCollectionId({ seriesId: normalizedSeriesId }),
       name: desiredName,
       description: trimmedDescription,
       coverKey: null,
@@ -416,7 +467,11 @@ export async function findOrCreateSeriesCollection({ seriesId, seriesName, descr
       updatedAt: now,
     };
     createdId = next.id;
-    await writeAll([...all, next]);
+    // Reclaim the deterministic id if a tombstone already holds it (re-creating
+    // a previously-deleted universe/series collection). A plain append would
+    // leave two records at the same id and listCollections' dedup keeps the
+    // tombstone (it's first), silently dropping this fresh live record.
+    await writeAll([...all.filter((c) => c.id !== next.id), next]);
     return next;
   });
   if (createdId) announceNewCollection(createdId);

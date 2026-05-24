@@ -13,6 +13,7 @@ const mockGetMediaCollection = vi.fn();
 const mockGetUniverse = vi.fn();
 const mockGetPipelineSeries = vi.fn();
 const mockSyncRecordToPeer = vi.fn();
+const mockPullRecordFromPeer = vi.fn();
 const mockPullMissingMetadata = vi.fn();
 
 vi.mock('../../services/api', () => ({
@@ -20,6 +21,7 @@ vi.mock('../../services/api', () => ({
   getUniverse: (...args) => mockGetUniverse(...args),
   getPipelineSeries: (...args) => mockGetPipelineSeries(...args),
   syncRecordToPeer: (...args) => mockSyncRecordToPeer(...args),
+  pullRecordFromPeer: (...args) => mockPullRecordFromPeer(...args),
   pullMissingMetadata: (...args) => mockPullMissingMetadata(...args),
 }));
 
@@ -84,6 +86,7 @@ beforeEach(() => {
   mockGetUniverse.mockImplementation(pendingPromise);
   mockGetPipelineSeries.mockImplementation(pendingPromise);
   mockSyncRecordToPeer.mockResolvedValue({ pushed: true });
+  mockPullRecordFromPeer.mockResolvedValue({ pulled: true, missingAssets: 0 });
   mockPullMissingMetadata.mockResolvedValue({ recovered: 2, attempted: 2 });
 });
 
@@ -100,6 +103,29 @@ describe('SyncDetailDrawer', () => {
     expect(mockGetMediaCollection).not.toHaveBeenCalled();
   });
 
+  it('shows ONLY "Pull from peer" for a peer-only record and calls pullRecordFromPeer', async () => {
+    mockUseSyncIntegrity.mockReturnValue(defaultHookState({
+      byPeer: buildByPeer([{ peerId: 'peer-a', peerName: 'void', status: 'peer-only' }]),
+    }));
+    render(<SyncDetailDrawer kind="mediaCollection" recordId={RECORD_ID} onClose={() => {}} />);
+    expect(screen.queryByRole('button', { name: /sync to peer/i })).not.toBeInTheDocument();
+    const pullBtn = screen.getByRole('button', { name: /pull from peer/i });
+    fireEvent.click(pullBtn);
+    await waitFor(() => expect(mockPullRecordFromPeer).toHaveBeenCalledWith(
+      'peer-a', 'mediaCollection', RECORD_ID, { silent: true },
+    ));
+    await waitFor(() => expect(mockRefresh).toHaveBeenCalled());
+  });
+
+  it('offers BOTH pull and push for an assets-missing record (ambiguous direction)', async () => {
+    mockUseSyncIntegrity.mockReturnValue(defaultHookState({
+      byPeer: buildByPeer([{ peerId: 'peer-a', peerName: 'void', status: 'assets-missing' }]),
+    }));
+    render(<SyncDetailDrawer kind="universe" recordId={RECORD_ID} onClose={() => {}} />);
+    expect(screen.getByRole('button', { name: /pull from peer/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /sync to peer/i })).toBeInTheDocument();
+  });
+
   it('drops a stale in-flight fetch when recordId changes mid-flight (latest wins)', async () => {
     let resolveFirst;
     mockGetMediaCollection
@@ -114,6 +140,20 @@ describe('SyncDetailDrawer', () => {
     resolveFirst();
     await waitFor(() => expect(screen.queryAllByText('Alpha Collection')).toHaveLength(0));
     expect(screen.getAllByText('Beta Collection').length).toBeGreaterThan(0);
+  });
+
+  it('clears the prior record while switching to a different recordId (no stale metadata)', async () => {
+    let resolveB;
+    mockGetMediaCollection
+      .mockImplementationOnce(() => Promise.resolve({ id: 'col-A', name: 'Alpha Collection', items: [] }))
+      .mockImplementationOnce(() => new Promise((r) => { resolveB = () => r({ id: 'col-B', name: 'Beta Collection', items: [] }); }));
+    const { rerender } = render(<SyncDetailDrawer kind="mediaCollection" recordId="col-A" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getAllByText('Alpha Collection').length).toBeGreaterThan(0));
+    // Switch to col-B (still loading) — Alpha must clear immediately, not linger.
+    rerender(<SyncDetailDrawer kind="mediaCollection" recordId="col-B" onClose={() => {}} />);
+    await waitFor(() => expect(screen.queryAllByText('Alpha Collection')).toHaveLength(0));
+    resolveB();
+    await waitFor(() => expect(screen.getAllByText('Beta Collection').length).toBeGreaterThan(0));
   });
 
   it('clears a previously-loaded record when recordId becomes empty (no stale name/preview)', async () => {
@@ -190,6 +230,45 @@ describe('SyncDetailDrawer', () => {
     expect(screen.getByText('2 items')).toBeInTheDocument();
     const thumbs = screen.getAllByTestId('media-image');
     expect(thumbs.length).toBeGreaterThan(0);
+  });
+
+  it('shows an error state (not a stuck spinner) when the collection fetch rejects', async () => {
+    mockGetMediaCollection.mockRejectedValue(new Error('boom'));
+    render(<SyncDetailDrawer kind="mediaCollection" recordId={RECORD_ID} onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText(/couldn.t load this collection/i)).toBeInTheDocument());
+  });
+
+  it('times out a hung collection fetch into an error state (no permanent Loading…)', async () => {
+    vi.useFakeTimers();
+    try {
+      mockGetMediaCollection.mockImplementation(() => new Promise(() => {})); // never settles
+      render(<SyncDetailDrawer kind="mediaCollection" recordId={RECORD_ID} onClose={() => {}} />);
+      await vi.advanceTimersByTimeAsync(12001);
+      expect(screen.getByText(/couldn.t load this collection/i)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the latest load timeout armed when an earlier fetch settles after a re-load (no stuck Loading…)', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveA;
+      mockGetMediaCollection
+        .mockImplementationOnce(() => new Promise((r) => { resolveA = () => r({ id: 'col-A', name: 'Alpha Collection', items: [] }); }))
+        .mockImplementationOnce(() => new Promise(() => {})); // col-B hangs forever
+      const { rerender } = render(<SyncDetailDrawer kind="mediaCollection" recordId="col-A" onClose={() => {}} />);
+      // Switch to col-B (its fetch hangs) before col-A settles.
+      rerender(<SyncDetailDrawer kind="mediaCollection" recordId="col-B" onClose={() => {}} />);
+      // Now the stale col-A fetch settles — its cleanup must clear ONLY its own
+      // timer, NOT col-B's. If it cleared the ref blindly, col-B's hard timeout
+      // would be disabled and the drawer would hang on "Loading…" forever.
+      resolveA();
+      await vi.advanceTimersByTimeAsync(12001);
+      expect(screen.getByText(/couldn.t load this collection/i)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('calls pullMissingMetadata and refresh when "Pull missing metadata" is clicked', async () => {

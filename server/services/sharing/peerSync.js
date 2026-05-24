@@ -57,6 +57,7 @@ import {
   getPortosVersion,
 } from '../../lib/schemaVersions.js';
 import { getInstanceId, getPeers, UNKNOWN_INSTANCE_ID } from '../instances.js';
+import { peerSyncPushSchema } from '../../lib/validation.js';
 import { instanceEvents } from '../instanceEvents.js';
 import { getUniverse, mergeUniversesFromSync } from '../universeBuilder.js';
 import { getSeries, mergeSeriesFromSync } from '../pipeline/series.js';
@@ -1447,6 +1448,10 @@ const ASSET_KIND_TO_URL_PREFIX = Object.freeze({
 
 const ASSET_PULL_TIMEOUT_MS = 60000;
 const ASSET_PULL_MAX_BYTES = 100 * 1024 * 1024; // 100MB hard cap per asset
+// A record pull returns JSON (the record + its asset *manifest* of hashes, not
+// the bytes). Even a large series+issues record is metadata, so 16MB is a
+// generous ceiling that still caps a buggy/runaway peer's response.
+const RECORD_PAYLOAD_MAX_BYTES = 16 * 1024 * 1024;
 
 // In-flight pull dedup. A peer can push multiple records that reference the
 // same asset in quick succession (universe edit → child collection re-link
@@ -1766,6 +1771,93 @@ export async function forcePushRecord(peerId, recordKind, recordId) {
   // Null the lastPushedHash to bypass the unchanged short-circuit in pushRecordToPeer.
   console.log(`🔄 peerSync: force-push ${recordKind}/${recordId} → ${peerId}`);
   return pushRecordToPeer({ ...sub, lastPushedHash: null }, { bypassSchemaCooldown: true });
+}
+
+/**
+ * Build the push-payload for a single record WITHOUT a subscription — backs the
+ * peer-facing `GET /api/peer-sync/record` endpoint so a peer can PULL this
+ * record (and its assets) from us. Returns null when the record doesn't exist
+ * locally. Same shape `pushRecordToPeer` sends, so the puller reuses
+ * `applyIncomingPush` verbatim.
+ */
+export async function getRecordPayloadForPeer(recordKind, recordId) {
+  // Mirror pushRecordToPeer's identity guard: if our self-identity can't be read
+  // or isn't initialized yet, do NOT emit a payload — a missing/UNKNOWN
+  // sourceInstanceId would 500 here or poison the puller (applyIncomingPush
+  // rejects sourceInstanceId='unknown'). Return null → the route 404s.
+  const instanceId = await getInstanceId().catch(() => null);
+  if (!isNonEmptyStr(instanceId) || instanceId === UNKNOWN_INSTANCE_ID) return null;
+  return buildPushPayload({ recordKind, recordId }, instanceId);
+}
+
+/**
+ * Receiver-initiated PULL — the mirror of forcePushRecord. Fetch a record's
+ * push-payload from `peerId` and apply it locally (merging the record + its
+ * bundled collection and background-pulling missing asset bytes via
+ * applyIncomingPush). Lets a machine that is BEHIND on a record fix itself,
+ * instead of "Sync to peer" being the only (push-only) action — which can't
+ * help when the LOCAL side is the one missing data. Best-effort: returns
+ * `{ pulled, reason?, missingAssets? }`.
+ */
+export async function pullRecordFromPeer(peerId, recordKind, recordId) {
+  const peers = await getPeers().catch(() => []);
+  const peer = peers.find((p) => p.instanceId === peerId) || null;
+  if (!peer) return { pulled: false, reason: 'peer-not-found' };
+
+  const url = `${peerBaseUrl(peer)}/api/peer-sync/record?kind=${encodeURIComponent(recordKind)}&id=${encodeURIComponent(recordId)}`;
+  // Abort a hung peer after PUSH_TIMEOUT_MS — peerFetch has no built-in timeout,
+  // so without this a stalled peer would hang the pull (and the UI action)
+  // indefinitely. Mirrors the push path; an abort rejects → caught as null →
+  // 'peer-unreachable'.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), PUSH_TIMEOUT_MS);
+  // maxBytes caps the HTTPS shim's in-memory buffering (see lib/httpClient.js);
+  // a buggy/misbehaving peer streaming an oversized body is aborted mid-stream
+  // rather than buffered whole. The shim rejects with an "exceed" Error.
+  let tooLarge = false;
+  const res = await peerFetch(url, { signal: controller.signal, maxBytes: RECORD_PAYLOAD_MAX_BYTES })
+    .finally(() => clearTimeout(timeoutId))
+    .catch((err) => {
+      if (err?.message?.includes('exceed')) {
+        tooLarge = true; // HTTPS shim tripped the cap — same condition as the Content-Length check
+        console.log(`⚠️ peerSync: pull-record ${recordKind}/${recordId} exceeded payload cap — ${err.message}`);
+      }
+      return null;
+    });
+  if (tooLarge) return { pulled: false, reason: 'payload-too-large' };
+  if (!res) return { pulled: false, reason: 'peer-unreachable' };
+  if (res.status === 404) return { pulled: false, reason: 'not-on-peer' };
+  if (!res.ok) return { pulled: false, reason: `http-${res.status}` };
+  // Plain-HTTP path: Node's fetch ignores maxBytes, but Express sets
+  // Content-Length on JSON — reject an oversized declared body before buffering.
+  const declaredLen = Number(res.headers?.get?.('content-length'));
+  if (Number.isFinite(declaredLen) && declaredLen > RECORD_PAYLOAD_MAX_BYTES) {
+    console.log(`⚠️ peerSync: pull-record ${recordKind}/${recordId} declared ${declaredLen} bytes > cap`);
+    return { pulled: false, reason: 'payload-too-large' };
+  }
+
+  const body = await res.json().catch(() => null);
+  // The peer response is untrusted — validate with the SAME schema the inbound
+  // /push route uses before handing it to applyIncomingPush.
+  const parsed = peerSyncPushSchema.safeParse(body);
+  if (!parsed.success) return { pulled: false, reason: 'invalid-payload' };
+  // The payload self-reports its origin via `sourceInstanceId`; applyIncomingPush
+  // uses it to wire the reverse subscription + pull asset bytes. We fetched from
+  // `peer`, so the origin MUST be that peer — a record claiming to originate
+  // elsewhere (misconfigured/buggy peer returning the wrong record) would bind
+  // our subscription/asset-pull to a peer we never contacted. Reject the mismatch.
+  if (parsed.data.sourceInstanceId !== peer.instanceId) {
+    return { pulled: false, reason: 'invalid-payload' };
+  }
+  // Likewise, the payload must be the record we asked for — a buggy peer that
+  // returns a different kind/id would otherwise merge unexpected data locally.
+  if (parsed.data.kind !== recordKind || parsed.data.record?.id !== recordId) {
+    return { pulled: false, reason: 'invalid-payload' };
+  }
+
+  console.log(`🔄 peerSync: pull-record ${recordKind}/${recordId} ← ${peer.name || peerId}`);
+  const result = await applyIncomingPush(parsed.data);
+  return { pulled: true, missingAssets: result?.missingAssets?.length ?? 0 };
 }
 
 /**

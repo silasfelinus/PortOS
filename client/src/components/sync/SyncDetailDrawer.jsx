@@ -18,7 +18,7 @@ import { X, RefreshCw, ArrowUpCircle, Download, CheckCircle2, AlertTriangle, Wif
 import toast from '../ui/Toast';
 import { useSyncIntegrity } from '../../hooks/useSyncIntegrity';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
-import { getMediaCollection, getUniverse, getPipelineSeries, syncRecordToPeer, pullMissingMetadata } from '../../services/api';
+import { getMediaCollection, getUniverse, getPipelineSeries, syncRecordToPeer, pullRecordFromPeer, pullMissingMetadata } from '../../services/api';
 import MediaImage from '../MediaImage';
 
 // ── Per-kind record fetcher ──────────────────────────────────────────────────
@@ -29,6 +29,10 @@ const KIND_FETCHER = {
   universe: getUniverse,
   series: getPipelineSeries,
 };
+
+// Cap how long the drawer waits on the record fetch before surfacing an error
+// state — guarantees the "Loading…" spinner can't hang forever if a request stalls.
+const RECORD_LOAD_TIMEOUT_MS = 12000;
 
 // ── Per-status display config ────────────────────────────────────────────────
 const STATUS_CONFIG = {
@@ -75,12 +79,20 @@ function StatusPill({ status }) {
 // Presentational only — the collection state is owned by the drawer (fetched
 // once there) and passed down, so the "Pull missing metadata" action can read
 // the same already-loaded record without a second fetch.
-function CollectionPreview({ collection, loading }) {
+function CollectionPreview({ collection, loading, error }) {
   if (loading) {
     return (
       <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
         <Loader2 className="w-4 h-4 animate-spin" />
         Loading…
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="flex items-center gap-2 text-port-warning text-sm py-2">
+        <AlertTriangle className="w-4 h-4" />
+        Couldn’t load this collection — try Refresh.
       </div>
     );
   }
@@ -132,10 +144,25 @@ const PUSH_SKIP_LABELS = {
   network: 'network error reaching the peer',
 };
 
+// Friendly labels for the `{ pulled:false, reason }` shapes pullRecordFromPeer
+// can return. Unmapped reasons (e.g. `http-500`) fall back to the raw string.
+const PULL_SKIP_LABELS = {
+  'peer-not-found': 'peer not found',
+  'peer-unreachable': 'peer offline or unreachable',
+  'not-on-peer': 'record not on that peer (or peer on an older PortOS)',
+  'invalid-payload': 'peer returned an unexpected response',
+};
+
 // ── Peer row with per-peer sync action ───────────────────────────────────────
 function PeerRow({ entry, kind, recordId, onRefresh }) {
   const { peerId, peerName, status } = entry;
-  const needsAction = status !== 'in-parity';
+  // Direction-aware actions. local-only → we have it, peer doesn't → PUSH.
+  // peer-only → peer has it, we don't → PULL. diverged / assets-missing are
+  // ambiguous (either side could be ahead) → offer BOTH so the fix is always
+  // reachable from the machine you're on. (Pre-fix, only push existed, which
+  // couldn't resolve a record the LOCAL side was behind on.)
+  const canPush = ['local-only', 'diverged', 'assets-missing'].includes(status);
+  const canPull = ['peer-only', 'diverged', 'assets-missing'].includes(status);
 
   const [syncToPeer, syncing] = useAsyncAction(async () => {
     // The endpoint returns 200 even when nothing was pushed ({ pushed:false,
@@ -151,25 +178,50 @@ function PeerRow({ entry, kind, recordId, onRefresh }) {
     onRefresh();
   }, { errorMessage: `Failed to sync to ${peerName}` });
 
+  const [pullFromPeer, pulling] = useAsyncAction(async () => {
+    const result = await pullRecordFromPeer(peerId, kind, recordId, { silent: true });
+    if (result?.pulled) {
+      const n = result?.missingAssets ?? 0;
+      toast.success(`Pulled from ${peerName}${n > 0 ? ` — fetching ${n} asset${n === 1 ? '' : 's'}` : ''}`);
+    } else {
+      const detail = result?.reason ? ` — ${PULL_SKIP_LABELS[result.reason] ?? result.reason}` : '';
+      toast.error(`Nothing pulled from ${peerName}${detail}`);
+    }
+    onRefresh();
+  }, { errorMessage: `Failed to pull from ${peerName}` });
+
   return (
     <div className="flex items-center justify-between gap-2 py-2 border-b border-port-border/60 last:border-0">
       <div className="min-w-0">
         <p className="text-sm text-white truncate">{peerName}</p>
         <StatusPill status={status} />
       </div>
-      {needsAction && (
-        <button
-          type="button"
-          onClick={() => syncToPeer()}
-          disabled={syncing}
-          className="flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded text-xs bg-port-accent/20 hover:bg-port-accent/40 text-port-accent disabled:opacity-40"
-        >
-          {syncing
-            ? <Loader2 className="w-3 h-3 animate-spin" />
-            : <ArrowUpCircle className="w-3 h-3" />}
-          Sync to peer
-        </button>
-      )}
+      <div className="flex-shrink-0 flex items-center gap-1.5">
+        {canPull && (
+          <button
+            type="button"
+            onClick={() => pullFromPeer()}
+            disabled={pulling || syncing}
+            className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-port-success/15 hover:bg-port-success/30 text-port-success disabled:opacity-40"
+            title="Fetch this record + its assets from the peer (fixes when this machine is behind)"
+          >
+            {pulling ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+            Pull from peer
+          </button>
+        )}
+        {canPush && (
+          <button
+            type="button"
+            onClick={() => syncToPeer()}
+            disabled={syncing || pulling}
+            className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-port-accent/20 hover:bg-port-accent/40 text-port-accent disabled:opacity-40"
+            title="Push this record + its assets to the peer"
+          >
+            {syncing ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowUpCircle className="w-3 h-3" />}
+            Sync to peer
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -187,6 +239,10 @@ export default function SyncDetailDrawer({ kind, recordId, onClose }) {
   const fetcher = KIND_FETCHER[kind] ?? null;
   const [record, setRecord] = useState(null);
   const [recordLoading, setRecordLoading] = useState(!!fetcher);
+  // True when the record fetch failed or timed out (distinct from "loaded but
+  // empty"). Drives an explicit error state so the drawer can never sit on a
+  // permanent "Loading…" spinner if the request hangs.
+  const [recordError, setRecordError] = useState(false);
 
   // Drop async results that resolve after the drawer unmounts (fast route
   // change / close while a fetch is in flight) to avoid setState-on-unmounted
@@ -198,28 +254,64 @@ export default function SyncDetailDrawer({ kind, recordId, onClose }) {
   // that resolves afterward fails the equality check and is dropped, instead
   // of overwriting the newer record with a stale name/preview.
   const loadGenRef = useRef(0);
+  // Hold the in-flight load timeout so it can be cleared on unmount or on a
+  // rapid re-load — not only when the fetch settles. Without this, closing the
+  // drawer (or switching records) mid-fetch leaves the 12s timer scheduled.
+  const loadTimeoutRef = useRef(null);
+  // Last recordId we began loading — lets us clear stale metadata only when
+  // SWITCHING records (not on a same-id refresh, which should keep the current
+  // record visible while it reloads).
+  const lastRecordIdRef = useRef(null);
 
   const loadRecord = useCallback(() => {
     if (!fetcher) return;
     const gen = ++loadGenRef.current; // invalidates any prior in-flight fetch
     const fresh = () => mountedRef.current && gen === loadGenRef.current;
+    if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current); // drop a prior timer on rapid re-load
+    // Switching to a DIFFERENT record: drop the old record up front so the
+    // header/preview never shows the prior record's name while the new one
+    // loads — and can't stay stuck on it if the new fetch errors/times out.
+    if (recordId !== lastRecordIdRef.current) {
+      setRecord(null);
+      lastRecordIdRef.current = recordId;
+    }
     // An empty recordId (e.g. a param-less route mount) would fetch
     // `/media/collections/` and 404/toast — skip the request, and clear any
     // previously-loaded record so a stale name/preview can't linger.
-    if (!recordId) { setRecord(null); setRecordLoading(false); return; }
+    if (!recordId) { setRecord(null); setRecordError(false); setRecordLoading(false); return; }
+    setRecordError(false);
     setRecordLoading(true);
+    // Hard timeout so a hung request can never leave the drawer on a permanent
+    // "Loading…" spinner. Bumping the generation also drops a late response.
+    // Capture THIS invocation's timer locally: a later loadRecord() overwrites
+    // loadTimeoutRef.current, so clearing the ref here would kill the newer
+    // request's timeout. Clear only our own timer, and null the ref only while
+    // it still points at us (so unmount/rapid-reload cleanup stays correct).
+    const timeout = setTimeout(() => {
+      if (fresh()) { loadGenRef.current += 1; setRecordError(true); setRecordLoading(false); }
+    }, RECORD_LOAD_TIMEOUT_MS);
+    loadTimeoutRef.current = timeout;
     fetcher(recordId)
-      .then((data) => { if (fresh()) setRecord(data); })
-      .catch(() => { if (fresh()) setRecord(null); })
-      .finally(() => { if (fresh()) setRecordLoading(false); });
+      .then((data) => { if (fresh()) { setRecord(data); setRecordError(false); } })
+      .catch(() => { if (fresh()) { setRecord(null); setRecordError(true); } })
+      .finally(() => {
+        clearTimeout(timeout);
+        if (loadTimeoutRef.current === timeout) loadTimeoutRef.current = null;
+        if (fresh()) setRecordLoading(false);
+      });
   }, [fetcher, recordId]);
 
-  useEffect(() => { loadRecord(); }, [loadRecord]);
+  // Run on mount/recordId change; clear any pending load timer on unmount.
+  useEffect(() => {
+    loadRecord();
+    return () => { if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current); };
+  }, [loadRecord]);
 
   // Keep the mediaCollection-specific alias in scope so the pull action below
   // can read it without changing its reference to `collection`.
   const collection = kind === 'mediaCollection' ? record : null;
   const collectionLoading = kind === 'mediaCollection' ? recordLoading : false;
+  const collectionError = kind === 'mediaCollection' ? recordError : false;
 
   // Convenience alias so the header can show `record?.name` regardless of kind.
   const recordName = record?.name ?? null;
@@ -306,7 +398,7 @@ export default function SyncDetailDrawer({ kind, recordId, onClose }) {
           {kind === 'mediaCollection' && (
             <section>
               <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Collection</h3>
-              <CollectionPreview collection={collection} loading={collectionLoading} />
+              <CollectionPreview collection={collection} loading={collectionLoading} error={collectionError} />
             </section>
           )}
 
@@ -316,8 +408,8 @@ export default function SyncDetailDrawer({ kind, recordId, onClose }) {
               <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Peer Status</h3>
               <button
                 type="button"
-                onClick={refresh}
-                title="Refresh sync status"
+                onClick={() => { refresh(); loadRecord(); }}
+                title="Refresh sync status + reload record"
                 className="p-1 text-gray-500 hover:text-gray-300 rounded"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
@@ -368,7 +460,7 @@ export default function SyncDetailDrawer({ kind, recordId, onClose }) {
                     entry={entry}
                     kind={kind}
                     recordId={recordId}
-                    onRefresh={refresh}
+                    onRefresh={() => { refresh(); loadRecord(); }}
                   />
                 ))}
               </div>

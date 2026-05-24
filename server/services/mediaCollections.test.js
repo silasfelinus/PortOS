@@ -417,6 +417,72 @@ describe('mediaCollections service', () => {
     });
 
     describe('findOrCreateUniverseCollection', () => {
+      it('mints a DETERMINISTIC id (uc-<universeId>) so federated peers converge, not a random UUID', async () => {
+        const c = await svc.findOrCreateUniverseCollection({ universeId: 'u-1', universeName: 'Foo' });
+        expect(c.id).toBe('uc-u-1');
+        expect(svc.linkedCollectionId({ universeId: 'u-1' })).toBe('uc-u-1');
+        // Series mirror.
+        const s = await svc.findOrCreateSeriesCollection({ seriesId: 's-9', seriesName: 'Bar' });
+        expect(s.id).toBe('sc-s-9');
+      });
+
+      it('findOrCreateCollectionByName canonicalizes the id when backfilling a universe link onto an orphan', async () => {
+        const orphan = await svc.findOrCreateCollectionByName({ name: 'Universe: Legacy' });
+        expect(orphan.id).not.toMatch(/^uc-/); // standalone → random id
+        // Referencing it WITH a universeId must adopt the deterministic id, not
+        // keep the random one (which couldn't converge across peers).
+        const linked = await svc.findOrCreateCollectionByName({ name: 'Universe: Legacy', universeId: 'u-legacy' });
+        expect(linked.id).toBe('uc-u-legacy');
+        expect(linked.universeId).toBe('u-legacy');
+        const all = await svc.listCollections();
+        expect(all.filter((c) => c.name === 'Universe: Legacy')).toHaveLength(1);
+        expect(all.some((c) => c.id === orphan.id)).toBe(false); // old random id gone
+      });
+
+      it('backfill prefers an existing live canonical collection over promoting a same-named orphan', async () => {
+        // Universe already has its canonical collection (with items)…
+        const canonical = await svc.findOrCreateUniverseCollection({ universeId: 'u-x', universeName: 'X' });
+        await svc.addItem(canonical.id, { kind: 'image', ref: 'keep.png' });
+        // …plus a same-named orphan. A name-first backfill must NOT clobber the
+        // canonical record's items — it returns the canonical one.
+        const result = await svc.findOrCreateCollectionByName({ name: 'Universe: X', universeId: 'u-x' });
+        expect(result.id).toBe('uc-u-x');
+        expect(result.items.map((i) => i.ref)).toContain('keep.png');
+      });
+
+      it('findOrCreateCollectionByName slices an overlong universeId for both the id and the stored field', async () => {
+        // An overlong owner id must yield the same canonical id the universeId-first
+        // path computes (it slices to UNIVERSE_ID_MAX=80) — otherwise the backfill/
+        // create here and findOrCreateUniverseCollection would diverge and duplicate.
+        const overlong = 'u-' + 'x'.repeat(200);
+        const sliced = overlong.slice(0, 80);
+        const c = await svc.findOrCreateCollectionByName({ name: 'Universe: Big', universeId: overlong });
+        expect(c.id).toBe(`uc-${sliced}`);
+        expect(c.universeId).toBe(sliced);
+        expect(svc.linkedCollectionId({ universeId: overlong })).toBe(`uc-${sliced}`);
+      });
+
+      it('findOrCreateCollectionByName trims a padded universeId so it converges (no uc- u1 -style ids)', async () => {
+        // A padded id must normalize to the same canonical id an unpadded caller
+        // gets — the presence guard and the slice operate on the trimmed value.
+        const c = await svc.findOrCreateCollectionByName({ name: 'Universe: Padded', universeId: '  u-pad  ' });
+        expect(c.id).toBe('uc-u-pad');
+        expect(c.universeId).toBe('u-pad');
+      });
+
+      it('revives the deterministic id after delete instead of duplicating it (tombstone reclaim)', async () => {
+        const c = await svc.findOrCreateUniverseCollection({ universeId: 'u-1', universeName: 'Foo' });
+        await svc.addItem(c.id, { kind: 'image', ref: 'x.png' });
+        await svc.deleteCollection(c.id); // tombstone at uc-u-1
+        const revived = await svc.findOrCreateUniverseCollection({ universeId: 'u-1', universeName: 'Foo' });
+        expect(revived.id).toBe('uc-u-1');
+        expect(revived.deleted).toBeFalsy();
+        // Exactly one live collection at the deterministic id — the tombstone was
+        // reclaimed, not left to shadow the fresh record in listCollections' dedup.
+        const live = await svc.listCollections();
+        expect(live.filter((x) => x.id === 'uc-u-1')).toHaveLength(1);
+      });
+
       it('returns the existing universeId-linked collection on second call', async () => {
         const first = await svc.findOrCreateUniverseCollection({
           universeId: 'u-1', universeName: 'Foo',
