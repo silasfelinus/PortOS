@@ -35,7 +35,7 @@
  * and tombstone GC (Stage 5; `sharing/tombstoneGc.js`).
  */
 
-import { join, basename } from 'path';
+import { join } from 'path';
 import { existsSync } from 'fs';
 import { EventEmitter } from 'events';
 import { PATHS, atomicWrite, readJSONFile, ensureDir, sha256File } from '../../lib/fileUtils.js';
@@ -43,9 +43,11 @@ import { isStr } from '../../lib/storyBible.js';
 import { isPlainObject } from '../../lib/objects.js';
 import { peerBaseUrl } from '../../lib/peerUrl.js';
 import { peerFetch } from '../../lib/peerHttpClient.js';
-import { getOrComputeImageSha256 } from '../../lib/assetHash.js';
+import { getOrComputeImageSha256, sidecarGenParamsHash } from '../../lib/assetHash.js';
 import { sanitizeRecordForWire } from '../../lib/syncWire.js';
 import { collectAssetReferences } from './exporter.js';
+import { imageSidecarName, sanitizeAssetFilename } from './buckets.js';
+import { pullSidecarForImage } from './sidecarSync.js';
 import { recordEvents } from './recordEvents.js';
 import {
   PORTOS_SCHEMA_VERSIONS,
@@ -60,6 +62,8 @@ import { getUniverse, mergeUniversesFromSync } from '../universeBuilder.js';
 import { getSeries, mergeSeriesFromSync } from '../pipeline/series.js';
 import { listIssues, mergeIssuesFromSync } from '../pipeline/issues.js';
 import {
+  getCollection,
+  listCollections,
   findCollectionByUniverseId,
   findCollectionBySeriesId,
   mergeMediaCollectionsFromSync,
@@ -70,7 +74,7 @@ import {
   removeCursor as removeTombstoneCursor,
 } from './peerTombstoneCursors.js';
 
-export const PEER_SUBSCRIBABLE_KINDS = Object.freeze(['universe', 'series']);
+export const PEER_SUBSCRIBABLE_KINDS = Object.freeze(['universe', 'series', 'mediaCollection']);
 
 /**
  * Cross-cutting event bus for the peer-sync receiver. The asset-pull worker
@@ -264,6 +268,7 @@ export async function unsubscribePeer(id) {
 const KIND_TO_CATEGORY = Object.freeze({
   universe: 'universe',
   series: 'pipeline',
+  mediaCollection: 'mediaCollections',
 });
 
 function peerAllowsOutbound(peer) {
@@ -342,6 +347,8 @@ export async function autoSubscribePeerToAllRecords(peerId, recordKind) {
   } else if (recordKind === 'series') {
     const { listSeries } = await import('../pipeline/series.js');
     records = await listSeries({ includeDeleted: false }).catch(() => []);
+  } else if (recordKind === 'mediaCollection') {
+    records = await listCollections({ includeDeleted: false }).catch(() => []);
   }
   // Drop ephemeral records before the set-difference / sub creation. The wire
   // sanitizer would short-circuit any push anyway, but creating a sub that
@@ -478,6 +485,67 @@ export async function buildAssetManifest(record) {
   return out;
 }
 
+/**
+ * Map a collection's items array to the `{ directImageFilenames,
+ * directImageRefFilenames, directVideoFilenames }` shape consumed by the
+ * per-item manifest hashers. Collections store items as
+ * `{ kind:'image'|'video', ref, addedAt }` and carry no image-ref kind.
+ */
+export function collectCollectionAssetReferences(collection) {
+  const items = Array.isArray(collection?.items) ? collection.items : [];
+  const directImageFilenames = [];
+  const directVideoFilenames = [];
+  for (const it of items) {
+    if (it?.kind === 'image' && typeof it.ref === 'string') directImageFilenames.push(it.ref);
+    else if (it?.kind === 'video' && typeof it.ref === 'string') directVideoFilenames.push(it.ref);
+  }
+  return { directImageFilenames, directImageRefFilenames: [], directVideoFilenames };
+}
+
+// Video collection items store the BARE video id (e.g. a UUID), while the
+// on-disk file is `<id>.mp4` (today every PortOS-managed video is mp4 —
+// confirmed by inspecting video-history.json). The image side stores refs
+// WITH the extension already. Append `.mp4` unless the ref already carries an
+// extension (defensive — older state may have stamped a filename instead of an
+// id, and a future video format would land as `.webm` etc.). Shared by BOTH
+// collection manifest builders (`buildCollectionAssetManifest` for standalone
+// mediaCollection pushes, `buildAssetManifestForCollection` for the
+// linkedCollection bundle) so the two can't diverge on the extension rule.
+function collectionVideoRefToFilename(ref) {
+  return /\.[a-z0-9]+$/i.test(ref) ? ref : `${ref}.mp4`;
+}
+
+async function buildCollectionAssetManifest(collection) {
+  const refs = collectCollectionAssetReferences(collection);
+  const out = [];
+  for (const filename of refs.directImageFilenames) {
+    const entry = await hashImageForManifest(filename);
+    if (entry) out.push(entry);
+  }
+  for (const ref of refs.directVideoFilenames) {
+    const entry = await hashSimpleAsset(collectionVideoRefToFilename(ref), 'video', PATHS.videos);
+    if (entry) out.push(entry);
+  }
+  return out;
+}
+
+/**
+ * Returns sorted sha256 hashes for a record's own assets (used by the
+ * integrity manifest builder). For `series` this captures the series' OWN
+ * asset refs only — child-issue assets are not yet included (v1 limitation;
+ * full issue-level integrity is deferred to a future pass).
+ *
+ * @param {'universe'|'series'|'mediaCollection'} kind
+ * @param {object} record
+ * @returns {Promise<string[]>} sorted sha256 strings (falsy hashes omitted)
+ */
+export async function assetShaListForRecord(kind, record) {
+  const manifest = kind === 'mediaCollection'
+    ? await buildCollectionAssetManifest(record)
+    : await buildAssetManifest(record);
+  return manifest.map((e) => e.sha256).filter(Boolean).sort();
+}
+
 async function hashImageForManifest(filename) {
   // Sanitize before join — a record with `imageRefs` containing a path-
   // traversal filename (peer-pushed via linkedCollection, hand-edited,
@@ -489,7 +557,17 @@ async function hashImageForManifest(filename) {
   const fullPath = join(PATHS.images, safeName);
   const result = await getOrComputeImageSha256(fullPath);
   if (!result) return null;
-  return { filename: safeName, kind: 'image', sha256: result.hash };
+  // Advertise a sidecarSha256 only when the sidecar carries gen-params beyond
+  // the `sha256` cache block. CRITICAL: we hash the GEN-PARAMS ONLY (sorted-key
+  // canonical form, `sha256` cache key stripped) via `sidecarGenParamsHash` —
+  // NOT the raw sidecar file. The `sha256` block embeds the LOCAL image's
+  // mtime+size, so hashing the whole file would never converge across machines
+  // (the receiver re-stamps its own mtime after every pull and re-diverges,
+  // re-pulling the sidecar every sync cycle). `sidecarGenParamsHash` returns
+  // null when there are no gen-params, so we never advertise a hash for a
+  // pure cache-only sidecar.
+  const sidecarSha256 = sidecarGenParamsHash(result.sidecar);
+  return { filename: safeName, kind: 'image', sha256: result.hash, ...(sidecarSha256 ? { sidecarSha256 } : {}) };
 }
 
 async function hashSimpleAsset(filename, kind, sourceDir) {
@@ -526,8 +604,8 @@ export async function diffAssetManifestAgainstLocal(manifest) {
     // entry. Reject anything that isn't a bare basename before any FS op.
     const safeName = sanitizeAssetFilename(entry.filename);
     if (!safeName) continue;
-    // Build a sanitized projection: only the three fields the sender needs
-    // back to pull. Echoing the raw peer-supplied entry would amplify any
+    // Build a sanitized projection: only the known fields the receiver needs
+    // to pull. Echoing the raw peer-supplied entry would amplify any
     // junk fields it shipped (large strings, extra kinds, prototype-pollution
     // attempts) into the response — wire-symmetry should not let untrusted
     // input round-trip through our process untouched.
@@ -535,11 +613,21 @@ export async function diffAssetManifestAgainstLocal(manifest) {
       filename: safeName,
       kind: entry.kind,
       ...(isStr(entry.sha256) ? { sha256: entry.sha256 } : {}),
+      ...(isStr(entry.sidecarSha256) ? { sidecarSha256: entry.sidecarSha256 } : {}),
     };
     const fullPath = join(dir, safeName);
     if (!existsSync(fullPath)) {
       missing.push(sanitizedEntry);
       continue;
+    }
+    // For images, compute the hash result once up front: it carries both the
+    // sha256 AND the parsed sidecar JSON, so the sidecarSha256 comparison below
+    // reuses it instead of re-reading the same file (one sidecar read per image
+    // instead of two). Only touch the cache machinery when a comparison will
+    // actually use it (sha256 or sidecarSha256 advertised by the peer).
+    let imageHashResult = null;
+    if (entry.kind === 'image' && (isStr(entry.sha256) || isStr(entry.sidecarSha256))) {
+      imageHashResult = await getOrComputeImageSha256(fullPath);
     }
     // Compare SHA when the manifest carries one — for ALL kinds, not just
     // images. The image path uses the sidecar cache (fast for the common
@@ -549,9 +637,30 @@ export async function diffAssetManifestAgainstLocal(manifest) {
     // ONLY thing that would catch it 60s later — better to detect on push.
     if (isStr(entry.sha256)) {
       const localHash = entry.kind === 'image'
-        ? (await getOrComputeImageSha256(fullPath))?.hash ?? null
+        ? imageHashResult?.hash ?? null
         : await sha256File(fullPath).catch(() => null);
-      if (localHash !== entry.sha256) missing.push(sanitizedEntry);
+      if (localHash !== entry.sha256) {
+        missing.push(sanitizedEntry);
+        continue;
+      }
+    }
+    // Sidecar-only divergence: image bytes are already present and hash-match,
+    // but the peer has a gen-params sidecar we're missing or have stale.
+    // Pull the entry so the worker can fetch ONLY the sidecar (it checks the
+    // image hash before deciding whether to re-pull the image bytes).
+    //
+    // We MUST recompute the local sidecar hash the SAME way the sender did
+    // (`sidecarGenParamsHash` — gen-params only, sorted-key canonical, `sha256`
+    // cache block stripped). Hashing the raw sidecar file would never match the
+    // sender's gen-params-only hash and would re-flag the image every cycle.
+    if (entry.kind === 'image' && isStr(entry.sidecarSha256)) {
+      // Reuse the sidecar already loaded by getOrComputeImageSha256; only fall
+      // back to a direct read if that result was unavailable (e.g. the image
+      // became unreadable between the existsSync check and the stat).
+      const localSidecar = imageHashResult?.sidecar
+        ?? await readJSONFile(join(PATHS.images, imageSidecarName(safeName)), null, { logError: false });
+      const localSidecarHash = sidecarGenParamsHash(localSidecar);
+      if (localSidecarHash !== entry.sidecarSha256) missing.push(sanitizedEntry);
     }
   }
   return missing;
@@ -562,25 +671,6 @@ function directoryForAssetKind(kind) {
   if (kind === 'image-ref') return PATHS.imageRefs;
   if (kind === 'video') return PATHS.videos;
   return null;
-}
-
-/**
- * Returns the filename if it's safe to use as a path segment under the asset
- * directory, otherwise null. Rejects path separators, parent-directory
- * tokens, and any value that doesn't match its own basename — same posture
- * as `jobFromSidecar` in services/sharing/exporter.js for symmetry with
- * how the share-bucket importer validates inbound asset filenames.
- */
-function sanitizeAssetFilename(name) {
-  if (typeof name !== 'string' || !name) return null;
-  // Reject separators and exact parent-directory segments (`.` / `..`
-  // as the whole basename). A basename like `my..render.png` is
-  // legitimate (the gallery filename validator permits `..` inside a
-  // basename) — only the path-segment forms are traversal.
-  if (name.includes('/') || name.includes('\\')) return null;
-  if (name === '.' || name === '..') return null;
-  if (basename(name) !== name) return null;
-  return name;
 }
 
 // --- Push pipeline (sender side) ----------------------------------------
@@ -937,6 +1027,14 @@ async function buildPushPayload(sub, sourceInstanceId) {
       ...(linkedCollection ? { linkedCollection } : {}),
     };
   }
+  if (sub.recordKind === 'mediaCollection') {
+    const record = await getCollection(sub.recordId, { includeDeleted: true }).catch(() => null);
+    if (!record) return null;
+    const sanitized = sanitizeRecordForWire('mediaCollection', record);
+    if (!sanitized) return null;
+    const assetManifest = record.deleted === true ? [] : await buildCollectionAssetManifest(record);
+    return { kind: 'mediaCollection', record: sanitized, assetManifest, sourceInstanceId, portosMeta };
+  }
   return null;
 }
 
@@ -1003,15 +1101,10 @@ async function buildAssetManifestForCollection(collection) {
     const safeName = sanitizeAssetFilename(it.ref);
     if (!safeName) continue;
     if (it.kind === 'video') {
-      // Video collection items store the bare video id (e.g. a UUID), while
-      // the on-disk file is `<id>.mp4` (today every PortOS-managed video is
-      // mp4 — confirmed by inspecting video-history.json). The image side
-      // stores refs WITH the extension already, so it works as-is. Append
-      // `.mp4` here unless the ref already carries an extension (defensive
-      // — older state may have stamped a filename instead of an id, and a
-      // future video format would land as `.webm` etc.).
-      const filename = /\.[a-z0-9]+$/i.test(safeName) ? safeName : `${safeName}.mp4`;
-      const entry = await hashSimpleAsset(filename, 'video', PATHS.videos);
+      // Bare videoId → `<id>.mp4` via the shared helper (see
+      // collectionVideoRefToFilename). `sanitizeAssetFilename` already ran on
+      // `it.ref` above; the extension append is purely the on-disk naming rule.
+      const entry = await hashSimpleAsset(collectionVideoRefToFilename(safeName), 'video', PATHS.videos);
       if (entry) out.push(entry);
     } else {
       // Treat 'image' (and any unknown kind that isn't 'video') as a gallery
@@ -1156,6 +1249,8 @@ export async function applyIncomingPush(payload) {
     if (!localEphemeral && Array.isArray(issues) && issues.length > 0) {
       await mergeIssuesFromSync(issues);
     }
+  } else if (kind === 'mediaCollection') {
+    await mergeMediaCollectionsFromSync([record]);
   }
 
   // Apply the bundled collection (if any) — same LWW + union-of-items
@@ -1329,6 +1424,16 @@ async function classifyLocalRecord(recordKind, recordId) {
     if (!s) return 'missing';
     return s.ephemeral === true ? 'ephemeral' : 'syncable';
   }
+  if (recordKind === 'mediaCollection') {
+    // Collections have no `ephemeral` concept, so a found record is always
+    // 'syncable'. Without this branch, maybeCreateReverseSubscription's
+    // `localState !== 'syncable'` guard would never bootstrap bidirectional
+    // collection sync from an inbound push. No ping-pong risk — the
+    // lastPushedHash short-circuit + LWW same-`updatedAt` no-op merge prevent
+    // it, same as universe/series.
+    const c = await getCollection(recordId, { includeDeleted: true }).catch(() => null);
+    return c ? 'syncable' : 'missing';
+  }
   return 'missing';
 }
 
@@ -1425,6 +1530,23 @@ async function pullOneAsset(peer, base, entry) {
 }
 
 async function doPullOneAsset(peer, base, entry, urlPrefix, localDir, safeName) {
+  // Sidecar-only divergence: image bytes are already present and hash-match
+  // the sender's manifest (diffAssetManifestAgainstLocal still returned this
+  // entry because the local sidecar is absent or stale). Skip the image
+  // re-pull and go straight to the sidecar fetch — avoids re-downloading a
+  // potentially large PNG for a metadata-only update.
+  if (entry.kind === 'image' && isStr(entry.sha256)) {
+    const localFullPath = join(localDir, safeName);
+    if (existsSync(localFullPath)) {
+      const localHash = (await getOrComputeImageSha256(localFullPath))?.hash ?? null;
+      if (localHash === entry.sha256) {
+        // Image bytes already up-to-date — pull sidecar only.
+        await pullSidecarForImage(peer, base, safeName).catch(() => {});
+        return;
+      }
+    }
+  }
+
   const url = `${base}${urlPrefix}/${encodeURIComponent(safeName)}`;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), ASSET_PULL_TIMEOUT_MS);
@@ -1492,6 +1614,12 @@ async function doPullOneAsset(peer, base, entry, urlPrefix, localDir, safeName) 
     peerId: peer.instanceId,
   });
   console.log(`📥 peerSync: pulled ${entry.kind}/${safeName} from ${peer.name || peer.instanceId} (${buffer.length} bytes)`);
+  // After a successful image pull, also fetch the gen-params sidecar if present
+  // on the sender. Best-effort: the image is already safely written above;
+  // a missing sidecar just means the image lands in Unsorted without a prompt.
+  if (entry.kind === 'image') {
+    await pullSidecarForImage(peer, base, safeName).catch(() => {});
+  }
 }
 
 // --- Listener install + debounced trigger -------------------------------
@@ -1546,8 +1674,14 @@ async function pushFromFreshSubscription(subId) {
  *   - For issue updates, the subscription on the parent series (resolved
  *     via `getIssueSeriesId` — see below).
  */
-async function collectSubscriptionsForUpdate(recordKind, recordId) {
-  if (recordKind === 'universe' || recordKind === 'series') {
+export async function collectSubscriptionsForUpdate(recordKind, recordId) {
+  // Direct-subscription kinds: a peer subscribes to the record itself, so an
+  // edit/delete fires a push to exactly those subs. mediaCollection belongs
+  // here (standalone collections sync per-record) — omitting it would make
+  // mediaCollections.js's emitRecordUpdated('mediaCollection', …) inert, so
+  // collection edits would only reach peers via initial subscribe / manual
+  // force-push, never on subsequent edits.
+  if (recordKind === 'universe' || recordKind === 'series' || recordKind === 'mediaCollection') {
     return listPeerSubscriptions({ recordKind, recordId });
   }
   if (recordKind === 'issue') {
@@ -1614,6 +1748,45 @@ export async function retryPendingPushesForPeer(peerId) {
     if (result?.pushed) pushed += 1;
   }
   return { walked: subs.length, pushed };
+}
+
+/**
+ * Force a push for a specific (peer, kind, record) regardless of the
+ * unchanged-hash short-circuit. Resolves or creates the subscription first,
+ * then pushes with lastPushedHash nulled so pushRecordToPeer always fires a
+ * network call (idempotent LWW on the receiver).
+ *
+ * `subscribePeer` fires its own initial push on first insert; `forcePushRecord`
+ * then force-pushes again. The double-push is acceptable — the receiver's
+ * merge*FromSync paths are LWW and the second push is a no-op content-wise.
+ */
+export async function forcePushRecord(peerId, recordKind, recordId) {
+  const existing = await findPeerSubscription(peerId, recordKind, recordId);
+  const sub = existing || await subscribePeer({ peerId, recordKind, recordId });
+  // Null the lastPushedHash to bypass the unchanged short-circuit in pushRecordToPeer.
+  console.log(`🔄 peerSync: force-push ${recordKind}/${recordId} → ${peerId}`);
+  return pushRecordToPeer({ ...sub, lastPushedHash: null }, { bypassSchemaCooldown: true });
+}
+
+/**
+ * Trigger an immediate full-sync for a single peer: backfill subscriptions for
+ * every enabled category and then retry all pending/stale pushes. Best-effort
+ * — per-kind failures are swallowed so one bad kind doesn't block the rest.
+ */
+export async function syncNowForPeer(peerId) {
+  const peer = await findPeerById(peerId);
+  if (!peer?.instanceId) return { ok: false };
+  for (const kind of PEER_SUBSCRIBABLE_KINDS) {
+    if (peerHasCategory(peer, kind)) {
+      await autoSubscribePeerToAllRecords(peer.instanceId, kind).catch((err) => {
+        console.log(`⚠️ peerSync: syncNow backfill ${kind} → ${peerId} failed: ${err.message}`);
+      });
+    }
+  }
+  await retryPendingPushesForPeer(peer.instanceId).catch((err) => {
+    console.log(`⚠️ peerSync: syncNow retry pushes → ${peerId} failed: ${err.message}`);
+  });
+  return { ok: true };
 }
 
 let onUpdated = null;

@@ -25,7 +25,7 @@ import { PATHS, atomicWrite, readJSONFile, ensureDir } from '../lib/fileUtils.js
 import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { ITEM_KIND, REF_MAX_LENGTH, itemKey } from '../lib/mediaItemKey.js';
 import { sanitizeOrigin } from '../lib/sharingOrigin.js';
-import { emitRecordUpdated } from './sharing/recordEvents.js';
+import { emitRecordUpdated, emitRecordDeleted } from './sharing/recordEvents.js';
 
 // Lazy resolution — PATHS.data may not be available at module-load time
 // (e.g. tests that swap it through a Proxy mock so different cases get
@@ -125,10 +125,16 @@ const sanitizeCollection = (raw) => {
     : null;
   const createdAt = typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString();
   const updatedAt = typeof raw.updatedAt === 'string' ? raw.updatedAt : createdAt;
-  return { id: raw.id, name, description, coverKey, universeId, seriesId, items, createdAt, updatedAt };
+  const deleted = raw.deleted === true;
+  // When a tombstone is missing its explicit deletedAt, fall back to updatedAt
+  // (the most-recent timestamp we have) rather than createdAt — the deletion
+  // happened at or after the last edit, so createdAt would make the tombstone
+  // look far older than it is and skew LWW merges + the GC cutoff window.
+  const deletedAt = deleted && typeof raw.deletedAt === 'string' ? raw.deletedAt : (deleted ? updatedAt : null);
+  return { id: raw.id, name, description, coverKey, universeId, seriesId, items, createdAt, updatedAt, deleted, deletedAt };
 };
 
-export async function listCollections() {
+export async function listCollections({ includeDeleted = false } = {}) {
   await ensureDir(PATHS.data);
   const raw = await readJSONFile(statePath(), DEFAULT_STATE, { logError: false });
   if (!Array.isArray(raw.collections)) return [];
@@ -138,13 +144,14 @@ export async function listCollections() {
     const s = sanitizeCollection(c);
     if (!s || seen.has(s.id)) continue;
     seen.add(s.id);
+    if (!includeDeleted && s.deleted === true) continue;
     out.push(s);
   }
   return out;
 }
 
-export async function getCollection(id) {
-  const all = await listCollections();
+export async function getCollection(id, { includeDeleted = false } = {}) {
+  const all = await listCollections({ includeDeleted });
   const c = all.find((x) => x.id === id);
   if (!c) throw makeErr(`Collection not found: ${id}`, ERR_NOT_FOUND);
   return c;
@@ -160,6 +167,21 @@ const writeAll = async (collections) => {
   return collections;
 };
 
+// Announce a newly-created collection to the per-record peer-sync pipeline:
+// emit the 'updated' event so any existing subscription pushes it, AND
+// auto-subscribe every mediaCollections-enabled peer so brand-new collections
+// (and their later tombstones) propagate even when that peer has universe/series
+// sync disabled. Dynamic import avoids a module cycle — peerSync imports
+// mergeMediaCollectionsFromSync from here, so a static import would close one.
+// Call ONLY when a brand-new record was persisted — never on a find-existing
+// hit, or every render would re-announce and churn the pipeline.
+const announceNewCollection = (id) => {
+  emitRecordUpdated('mediaCollection', id);
+  import('./sharing/peerSync.js')
+    .then(({ autoSubscribeRecordToAllPeers }) => autoSubscribeRecordToAllPeers('mediaCollection', id))
+    .catch(() => {});
+};
+
 export async function createCollection({ name, description = '' }) {
   // Service-layer guards mirror sanitizeCollection so a direct caller
   // (tests, future internal usage) can't persist a record that the next
@@ -171,8 +193,8 @@ export async function createCollection({ name, description = '' }) {
   const trimmedDescription = typeof description === 'string'
     ? description.trim().slice(0, DESCRIPTION_MAX_LENGTH)
     : '';
-  return serializeFileWrite(async () => {
-    const all = await listCollections();
+  const created = await serializeFileWrite(async () => {
+    const all = await listCollections({ includeDeleted: true });
     const now = new Date().toISOString();
     const next = {
       id: randomUUID(),
@@ -186,6 +208,8 @@ export async function createCollection({ name, description = '' }) {
     await writeAll([...all, next]);
     return next;
   });
+  announceNewCollection(created.id);
+  return created;
 }
 
 // Find an existing collection by case-insensitive trimmed name, else create
@@ -208,10 +232,13 @@ export async function findOrCreateCollectionByName({ name, description = '', uni
   const trimmedDescription = typeof description === 'string'
     ? description.trim().slice(0, DESCRIPTION_MAX_LENGTH)
     : '';
-  return serializeFileWrite(async () => {
-    const all = await listCollections();
+  let createdId = null;
+  const result = await serializeFileWrite(async () => {
+    const all = await listCollections({ includeDeleted: true });
     const needle = trimmed.toLowerCase();
-    const existing = all.find((c) => c.name.toLowerCase() === needle);
+    // Do not match (or reuse) tombstoned records — a deleted collection
+    // should not be resurrected by name.
+    const existing = all.find((c) => !c.deleted && c.name.toLowerCase() === needle);
     if (existing) {
       if (universeId && !existing.universeId) {
         // Lazy backfill so legacy "Universe: <name>" collections gain the
@@ -234,9 +261,12 @@ export async function findOrCreateCollectionByName({ name, description = '', uni
       createdAt: now,
       updatedAt: now,
     };
+    createdId = next.id;
     await writeAll([...all, next]);
     return next;
   });
+  if (createdId) announceNewCollection(createdId);
+  return result;
 }
 
 // Naming convention for the auto-managed universe collection. Single source
@@ -302,9 +332,11 @@ export async function findOrCreateUniverseCollection({ universeId, universeName,
   const trimmedDescription = typeof description === 'string'
     ? description.trim().slice(0, DESCRIPTION_MAX_LENGTH)
     : '';
-  return serializeFileWrite(async () => {
-    const all = await listCollections();
-    const linked = all.find((c) => c.universeId === normalizedUniverseId);
+  let createdId = null;
+  const result = await serializeFileWrite(async () => {
+    const all = await listCollections({ includeDeleted: true });
+    // Do not adopt a tombstoned universe-linked collection — deleted means gone.
+    const linked = all.find((c) => !c.deleted && c.universeId === normalizedUniverseId);
     if (linked) return linked;
     // No universeId match — always create fresh. The runtime intentionally
     // does NOT adopt a same-named unlinked collection here: it can't tell
@@ -328,9 +360,15 @@ export async function findOrCreateUniverseCollection({ universeId, universeName,
       createdAt: now,
       updatedAt: now,
     };
+    createdId = next.id;
     await writeAll([...all, next]);
     return next;
   });
+  // Announce only when a NEW record was persisted (not a find-existing hit), so
+  // a mediaCollections-enabled peer receives universe-linked collections even
+  // with universe sync off.
+  if (createdId) announceNewCollection(createdId);
+  return result;
 }
 
 // Series-side mirror of the universe collection helpers above
@@ -360,9 +398,11 @@ export async function findOrCreateSeriesCollection({ seriesId, seriesName, descr
   const trimmedDescription = typeof description === 'string'
     ? description.trim().slice(0, DESCRIPTION_MAX_LENGTH)
     : '';
-  return serializeFileWrite(async () => {
-    const all = await listCollections();
-    const linked = all.find((c) => c.seriesId === normalizedSeriesId);
+  let createdId = null;
+  const result = await serializeFileWrite(async () => {
+    const all = await listCollections({ includeDeleted: true });
+    // Do not adopt a tombstoned series-linked collection — deleted means gone.
+    const linked = all.find((c) => !c.deleted && c.seriesId === normalizedSeriesId);
     if (linked) return linked;
     const now = new Date().toISOString();
     const next = {
@@ -375,16 +415,19 @@ export async function findOrCreateSeriesCollection({ seriesId, seriesName, descr
       createdAt: now,
       updatedAt: now,
     };
+    createdId = next.id;
     await writeAll([...all, next]);
     return next;
   });
+  if (createdId) announceNewCollection(createdId);
+  return result;
 }
 
 export async function unlinkCollectionsForSeries(seriesId) {
   if (typeof seriesId !== 'string' || !seriesId) return [];
   const needle = seriesId.slice(0, SERIES_ID_MAX);
   return serializeFileWrite(async () => {
-    const all = await listCollections();
+    const all = await listCollections({ includeDeleted: true });
     const matches = all
       .map((c, i) => (c.seriesId === needle ? i : -1))
       .filter((i) => i >= 0);
@@ -405,7 +448,7 @@ export async function renameCollectionForSeries(seriesId, newSeriesName) {
   if (typeof seriesId !== 'string' || !seriesId) return null;
   const needle = seriesId.slice(0, SERIES_ID_MAX);
   return serializeFileWrite(async () => {
-    const all = await listCollections();
+    const all = await listCollections({ includeDeleted: true });
     const matchIdxs = all
       .map((c, i) => (c.seriesId === needle ? i : -1))
       .filter((i) => i >= 0);
@@ -435,7 +478,7 @@ export async function unlinkCollectionsForUniverse(universeId) {
   if (typeof universeId !== 'string' || !universeId) return [];
   const needle = universeId.slice(0, UNIVERSE_ID_MAX);
   return serializeFileWrite(async () => {
-    const all = await listCollections();
+    const all = await listCollections({ includeDeleted: true });
     const matches = all
       .map((c, i) => (c.universeId === needle ? i : -1))
       .filter((i) => i >= 0);
@@ -465,7 +508,7 @@ export async function renameCollectionForUniverse(universeId, newUniverseName) {
   if (typeof universeId !== 'string' || !universeId) return null;
   const needle = universeId.slice(0, UNIVERSE_ID_MAX);
   return serializeFileWrite(async () => {
-    const all = await listCollections();
+    const all = await listCollections({ includeDeleted: true });
     const matchIdxs = all
       .map((c, i) => (c.universeId === needle ? i : -1))
       .filter((i) => i >= 0);
@@ -487,11 +530,12 @@ export async function renameCollectionForUniverse(universeId, newUniverseName) {
 }
 
 export async function updateCollection(id, patch) {
-  return serializeFileWrite(async () => {
-    const all = await listCollections();
+  const merged = await serializeFileWrite(async () => {
+    const all = await listCollections({ includeDeleted: true });
     const idx = all.findIndex((c) => c.id === id);
     if (idx < 0) throw makeErr(`Collection not found: ${id}`, ERR_NOT_FOUND);
     const cur = all[idx];
+    if (cur.deleted === true) throw makeErr(`Collection not found: ${id}`, ERR_NOT_FOUND);
     // Product/UI constraint: universe-linked collections own their visible
     // name. The name is the user-facing identity of a universe's bucket, so
     // renaming it independent of the universe is confusing — the supported
@@ -529,16 +573,37 @@ export async function updateCollection(id, patch) {
     await writeAll(next);
     return merged;
   });
+  // A standalone collection (no universe/series link) reaches peers ONLY via a
+  // direct per-record mediaCollection subscription — without this emit a
+  // rename/description/cover edit never propagates. For linked collections the
+  // universe/series emit nudges the share-bucket re-export. Emit outside the
+  // serialized critical section so subscribers' own reads don't deadlock the tail.
+  emitRecordUpdated('mediaCollection', merged.id);
+  if (merged.universeId) emitRecordUpdated('universe', merged.universeId);
+  if (merged.seriesId) emitRecordUpdated('series', merged.seriesId);
+  return merged;
 }
 
 export async function deleteCollection(id) {
-  const { universeId: deletedUniverseId, seriesId: deletedSeriesId } = await serializeFileWrite(async () => {
-    const all = await listCollections();
-    const target = all.find((c) => c.id === id);
-    if (!target) throw makeErr(`Collection not found: ${id}`, ERR_NOT_FOUND);
-    await writeAll(all.filter((c) => c.id !== id));
-    return { universeId: target.universeId || null, seriesId: target.seriesId || null };
+  const { universeId: deletedUniverseId, seriesId: deletedSeriesId, alreadyDeleted } = await serializeFileWrite(async () => {
+    const all = await listCollections({ includeDeleted: true });
+    const idx = all.findIndex((c) => c.id === id);
+    if (idx < 0) throw makeErr(`Collection not found: ${id}`, ERR_NOT_FOUND);
+    const target = all[idx];
+    // Idempotent on an already-tombstoned record: re-stamping deletedAt/
+    // updatedAt would make an old tombstone look "newer" to a peer's LWW (and
+    // re-emitting churns the sync pipeline). Return without rewriting or
+    // re-emitting.
+    if (target.deleted === true) return { universeId: null, seriesId: null, alreadyDeleted: true };
+    const now = new Date().toISOString();
+    const next = [...all];
+    // Clear coverKey too — with items emptied it would otherwise dangle
+    // (point at a non-existent item) and leak into the tombstone's wire payload.
+    next[idx] = { ...target, deleted: true, deletedAt: now, updatedAt: now, items: [], coverKey: null, universeId: null, seriesId: null };
+    await writeAll(next);
+    return { universeId: target.universeId || null, seriesId: target.seriesId || null, alreadyDeleted: false };
   });
+  if (alreadyDeleted) return { id };
   // Mirror addItem/removeItem/bulkUpdateCollectionItems — universe-linked
   // shares need to know membership changed so the subscriber doesn't keep
   // publishing the deleted collection's contents until an unrelated edit
@@ -546,6 +611,7 @@ export async function deleteCollection(id) {
   // own reads don't deadlock the tail.
   if (deletedUniverseId) emitRecordUpdated('universe', deletedUniverseId);
   if (deletedSeriesId) emitRecordUpdated('series', deletedSeriesId);
+  emitRecordDeleted('mediaCollection', id);
   return { id };
 }
 
@@ -579,10 +645,13 @@ const validateItemInput = (item) => {
 export async function addItem(id, item) {
   const { kind, ref } = validateItemInput(item);
   const merged = await serializeFileWrite(async () => {
-    const all = await listCollections();
+    const all = await listCollections({ includeDeleted: true });
     const idx = all.findIndex((c) => c.id === id);
     if (idx < 0) throw makeErr(`Collection not found: ${id}`, ERR_NOT_FOUND);
     const cur = all[idx];
+    // A soft-deleted collection behaves as not-found for mutations (matches
+    // updateCollection) — never resurrect a tombstone or churn its timestamps.
+    if (cur.deleted === true) throw makeErr(`Collection not found: ${id}`, ERR_NOT_FOUND);
     const key = `${kind}:${ref}`;
     if (cur.items.find((it) => itemKey(it) === key)) {
       throw makeErr(`Item already in collection: ${key}`, ERR_DUPLICATE);
@@ -602,6 +671,9 @@ export async function addItem(id, item) {
   });
   // Emit outside the serialized critical section — subscribers may issue
   // their own collection reads and we don't want to deadlock the tail.
+  // mediaCollection covers standalone direct subscriptions; universe/series
+  // nudge the bundled share-bucket re-export for linked collections.
+  emitRecordUpdated('mediaCollection', merged.id);
   if (merged.universeId) emitRecordUpdated('universe', merged.universeId);
   if (merged.seriesId) emitRecordUpdated('series', merged.seriesId);
   return merged;
@@ -639,10 +711,13 @@ export async function bulkUpdateCollectionItems(id, { add = [], remove = [] } = 
   }
 
   const result = await serializeFileWrite(async () => {
-    const all = await listCollections();
+    const all = await listCollections({ includeDeleted: true });
     const idx = all.findIndex((c) => c.id === id);
     if (idx < 0) throw makeErr(`Collection not found: ${id}`, ERR_NOT_FOUND);
     const cur = all[idx];
+    // A soft-deleted collection behaves as not-found for mutations (matches
+    // updateCollection) — never resurrect a tombstone or churn its timestamps.
+    if (cur.deleted === true) throw makeErr(`Collection not found: ${id}`, ERR_NOT_FOUND);
 
     const removeSet = new Set(remove);
     const remainingItems = cur.items.filter((it) => !removeSet.has(itemKey(it)));
@@ -683,6 +758,7 @@ export async function bulkUpdateCollectionItems(id, { add = [], remove = [] } = 
     return { collection: merged, added: additions.length, removed };
   });
   if (result.added || result.removed) {
+    emitRecordUpdated('mediaCollection', result.collection.id);
     if (result.collection.universeId) emitRecordUpdated('universe', result.collection.universeId);
     if (result.collection.seriesId) emitRecordUpdated('series', result.collection.seriesId);
   }
@@ -691,10 +767,13 @@ export async function bulkUpdateCollectionItems(id, { add = [], remove = [] } = 
 
 export async function removeItem(id, key) {
   const merged = await serializeFileWrite(async () => {
-    const all = await listCollections();
+    const all = await listCollections({ includeDeleted: true });
     const idx = all.findIndex((c) => c.id === id);
     if (idx < 0) throw makeErr(`Collection not found: ${id}`, ERR_NOT_FOUND);
     const cur = all[idx];
+    // A soft-deleted collection behaves as not-found for mutations (matches
+    // updateCollection) — never resurrect a tombstone or churn its timestamps.
+    if (cur.deleted === true) throw makeErr(`Collection not found: ${id}`, ERR_NOT_FOUND);
     const before = cur.items.length;
     const items = cur.items.filter((it) => itemKey(it) !== key);
     if (items.length === before) throw makeErr(`Item not in collection: ${key}`, ERR_NOT_FOUND);
@@ -712,9 +791,27 @@ export async function removeItem(id, key) {
     await writeAll(next);
     return updated;
   });
+  emitRecordUpdated('mediaCollection', merged.id);
   if (merged.universeId) emitRecordUpdated('universe', merged.universeId);
   if (merged.seriesId) emitRecordUpdated('series', merged.seriesId);
   return merged;
+}
+
+// Hard-remove tombstoned collections whose deletedAt is older than the cutoff.
+// Called by tombstoneGc once every subscribed peer has acked the deletion.
+export async function pruneTombstonedCollections(olderThanMs) {
+  if (!Number.isFinite(olderThanMs)) return { pruned: 0 };
+  return serializeFileWrite(async () => {
+    const all = await listCollections({ includeDeleted: true });
+    const keep = all.filter((c) => {
+      if (c.deleted !== true) return true;
+      const ms = Date.parse(c.deletedAt || '');
+      return !(Number.isFinite(ms) && ms < olderThanMs);
+    });
+    if (keep.length === all.length) return { pruned: 0 };
+    await writeAll(keep);
+    return { pruned: all.length - keep.length };
+  });
 }
 
 /**
@@ -738,7 +835,7 @@ export async function removeItem(id, key) {
 export async function mergeMediaCollectionsFromSync(remoteCollections) {
   if (!Array.isArray(remoteCollections)) return { applied: false, count: 0 };
   return serializeFileWrite(async () => {
-    const all = await listCollections();
+    const all = await listCollections({ includeDeleted: true });
     const localById = new Map(all.map((c) => [c.id, c]));
     let changed = 0;
     for (const remote of remoteCollections) {
@@ -767,19 +864,22 @@ export async function mergeMediaCollectionsFromSync(remoteCollections) {
       // Cover key: only adopt the scalar source's coverKey if it points at an
       // item that survives the union — otherwise sanitizeCollection on next
       // read would drop it back to null and we'd churn updatedAt forever.
+      const scalarDeleted = scalarSource.deleted === true;
       const presentKeys = new Set(mergedItems.map(itemKey));
-      const coverKey = scalarSource.coverKey && presentKeys.has(scalarSource.coverKey)
+      const coverKey = !scalarDeleted && scalarSource.coverKey && presentKeys.has(scalarSource.coverKey)
         ? scalarSource.coverKey
         : null;
       const next = {
         ...local,
         name: scalarSource.name,
         description: scalarSource.description,
-        coverKey,
-        universeId: scalarSource.universeId,
-        seriesId: scalarSource.seriesId,
-        items: mergedItems,
+        coverKey: scalarDeleted ? null : coverKey,
+        universeId: scalarDeleted ? null : scalarSource.universeId,
+        seriesId: scalarDeleted ? null : scalarSource.seriesId,
+        items: scalarDeleted ? [] : mergedItems,
         updatedAt: remoteWins ? remoteTs : localTs,
+        deleted: scalarDeleted,
+        deletedAt: scalarDeleted ? (scalarSource.deletedAt || (remoteWins ? remoteTs : localTs)) : null,
       };
       if (collectionsEqual(local, next)) continue;
       localById.set(sanitized.id, next);

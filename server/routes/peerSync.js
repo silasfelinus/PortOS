@@ -28,16 +28,23 @@ import {
   validateRequest,
   peerSubscribeSchema,
   peerSyncPushSchema,
+  peerSyncRecordSchema,
+  peerSyncNowSchema,
+  peerPullMetadataSchema,
 } from '../lib/validation.js';
 import {
   listPeerSubscriptions,
   subscribePeer,
   unsubscribePeer,
   applyIncomingPush,
+  forcePushRecord,
+  syncNowForPeer,
   ERR_NOT_FOUND,
   ERR_VALIDATION,
   ERR_SCHEMA_VERSION_AHEAD,
+  PEER_SUBSCRIBABLE_KINDS,
 } from '../services/sharing/peerSync.js';
+import { buildLocalManifest, getPeerIntegrity } from '../services/sharing/integrity.js';
 
 const router = Router();
 
@@ -116,6 +123,73 @@ router.post('/subscriptions', asyncHandler(async (req, res) => {
 router.delete('/subscriptions/:id', asyncHandler(async (req, res) => {
   const result = await unsubscribePeer(req.params.id).catch(mapAndRethrow);
   res.json(result);
+}));
+
+// Guard: only accept record kinds that the peer-sync pipeline actually handles.
+const validKind = (k) => typeof k === 'string' && PEER_SUBSCRIBABLE_KINDS.includes(k);
+
+// --- GET /manifest --- advertise this instance's record manifest for a kind.
+//
+// Called by peers running `getPeerIntegrity` to compare their local state
+// against ours. The response is a flat list of rows — one per record —
+// including tombstones so deletes diff correctly. Asset hashes are sorted
+// sha256 strings so the diff is order-independent.
+router.get('/manifest', asyncHandler(async (req, res) => {
+  // Trim once and validate/use the trimmed value — a padded `?kind= universe `
+  // should resolve like `universe`, not 400 on whitespace.
+  const kind = typeof req.query.kind === 'string' ? req.query.kind.trim() : '';
+  if (!validKind(kind)) {
+    throw new ServerError('invalid kind', { status: 400, code: 'VALIDATION_ERROR' });
+  }
+  res.json({ records: await buildLocalManifest(kind) });
+}));
+
+// --- GET /integrity --- compare this instance's records against a peer's.
+//
+// Fetches the peer's /manifest, runs the pure diff, and returns
+// `{ available, reason?, records: [{ id, name, status }] }`.
+router.get('/integrity', asyncHandler(async (req, res) => {
+  // Trim ONCE and use the trimmed values for both validation AND the service
+  // call. Validating the trimmed value but passing the raw one let
+  // `?peerId=%20peer-a%20` pass the emptiness check yet fail to match the peer
+  // registry, returning a confusing `peer-not-found`.
+  const peerId = typeof req.query.peerId === 'string' ? req.query.peerId.trim() : '';
+  const kind = typeof req.query.kind === 'string' ? req.query.kind.trim() : '';
+  if (!peerId) {
+    throw new ServerError('peerId required', { status: 400, code: 'VALIDATION_ERROR' });
+  }
+  if (!validKind(kind)) {
+    throw new ServerError('invalid kind', { status: 400, code: 'VALIDATION_ERROR' });
+  }
+  res.json(await getPeerIntegrity({ peerId, kind }));
+}));
+
+// --- POST /sync-record --- force a push for a specific record to a specific peer.
+//
+// Bypasses the unchanged-hash short-circuit so the receiver always gets the
+// latest state. Creates the subscription if it doesn't exist yet.
+router.post('/sync-record', asyncHandler(async (req, res) => {
+  const { peerId, recordKind, recordId } = validateRequest(peerSyncRecordSchema, req.body || {});
+  res.json(await forcePushRecord(peerId, recordKind, recordId).catch(mapAndRethrow));
+}));
+
+// --- POST /sync-now --- trigger an immediate full-sync for a peer.
+//
+// Backfills subscriptions for every enabled category then retries all pending
+// pushes. Best-effort — per-kind failures are swallowed server-side.
+router.post('/sync-now', asyncHandler(async (req, res) => {
+  const { peerId } = validateRequest(peerSyncNowSchema, req.body || {});
+  res.json(await syncNowForPeer(peerId).catch(mapAndRethrow));
+}));
+
+// --- POST /pull-metadata --- backfill missing sidecar metadata for images.
+//
+// Accepts a list of image filenames and attempts to pull their .metadata.json
+// sidecar from any peer that has a copy. Delegates to sidecarSync.js.
+router.post('/pull-metadata', asyncHandler(async (req, res) => {
+  const { filenames } = validateRequest(peerPullMetadataSchema, req.body || {});
+  const { backfillMissingSidecars } = await import('../services/sharing/sidecarSync.js');
+  res.json(await backfillMissingSidecars({ filenames }));
 }));
 
 export default router;

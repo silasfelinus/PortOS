@@ -1255,7 +1255,7 @@ export const subscriptionCreateSchema = z.object({
 // subscriptions target another PortOS instance over Tailnet.
 export const peerSubscribeSchema = z.object({
   peerId: z.string().trim().min(1).max(120),
-  recordKind: z.enum(['universe', 'series']),
+  recordKind: z.enum(['universe', 'series', 'mediaCollection']),
   recordId: z.string().trim().min(1).max(120),
 }).strict();
 
@@ -1263,11 +1263,25 @@ export const peerSubscribeSchema = z.object({
 // second-pass scrub against path separators inside the service layer; this
 // schema just constrains shape + caps so a malformed manifest doesn't bypass
 // validation entirely. SHA-256 is hex-64 when present.
-const peerAssetManifestEntrySchema = z.object({
-  filename: z.string().trim().min(1).max(255),
-  kind: z.enum(['image', 'image-ref', 'video']),
-  sha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
-}).strict();
+//
+// Discriminated on `kind` because `sidecarSha256` (the gen-params sidecar hash)
+// is ONLY meaningful for images — image-ref/video entries carry no sidecar, so
+// `.strict()` on the non-image branch rejects a stray `sidecarSha256` instead
+// of silently accepting a malformed sender payload.
+const hex64 = z.string().regex(/^[a-f0-9]{64}$/i);
+const peerAssetManifestEntrySchema = z.discriminatedUnion('kind', [
+  z.object({
+    filename: z.string().trim().min(1).max(255),
+    kind: z.literal('image'),
+    sha256: hex64.optional(),
+    sidecarSha256: hex64.optional(),
+  }).strict(),
+  z.object({
+    filename: z.string().trim().min(1).max(255),
+    kind: z.enum(['image-ref', 'video']),
+    sha256: hex64.optional(),
+  }).strict(),
+]);
 
 // One sanitized record on the wire. Mirrors sanitizeRecordForWire's output:
 // id is required, soft-delete fields are tail-canonical, and the receiver's
@@ -1312,28 +1326,59 @@ const peerSyncPushBase = {
   assetManifest: z.array(peerAssetManifestEntrySchema).max(2000),
   sourceInstanceId: z.string().trim().min(1).max(120),
   portosMeta: portosMetaSchema,
-  // Optional bundled media collection — Stage 5 media-collections sync
-  // attaches the universe / series's linked collection so collection-only
-  // edits propagate via the per-record push pipeline. Same shape as a
-  // record on the wire (id required, sanitizer handles the rest); without
-  // this field on both push branches the strict() rejection drops every
-  // production push from a universe / series with images. See
-  // peerSync.js buildPushPayload and applyIncomingPush.
-  linkedCollection: peerWireRecordSchema.optional(),
 };
+// Optional bundled media collection — Stage 5 media-collections sync attaches
+// the universe / series's linked collection so collection-only edits propagate
+// via the per-record push pipeline. Same shape as a record on the wire (id
+// required, sanitizer handles the rest). ONLY valid on universe/series pushes:
+// a mediaCollection push IS the collection, so accepting linkedCollection there
+// would let a sender smuggle an arbitrary EXTRA collection that the receiver's
+// applyIncomingPush merges — a side-channel to overwrite collections outside the
+// explicit per-record subscription. The mediaCollection branch's .strict()
+// therefore rejects it. See peerSync.js buildPushPayload (never sets it for the
+// mediaCollection kind) and applyIncomingPush.
+const linkedCollectionField = { linkedCollection: peerWireRecordSchema.optional() };
 const universePushSchema = z.object({
   kind: z.literal('universe'),
   ...peerSyncPushBase,
+  ...linkedCollectionField,
 }).strict();
 const seriesPushSchema = z.object({
   kind: z.literal('series'),
   ...peerSyncPushBase,
+  ...linkedCollectionField,
   issues: z.array(peerWireRecordSchema).max(1000).optional(),
+}).strict();
+const mediaCollectionPushSchema = z.object({
+  kind: z.literal('mediaCollection'),
+  ...peerSyncPushBase,
 }).strict();
 export const peerSyncPushSchema = z.discriminatedUnion('kind', [
   universePushSchema,
   seriesPushSchema,
+  mediaCollectionPushSchema,
 ]);
+
+// Manual sync action schemas — used by POST /sync-record, /sync-now, /pull-metadata.
+
+export const peerSyncRecordSchema = z.object({
+  peerId: z.string().trim().min(1).max(120),
+  recordKind: z.enum(['universe', 'series', 'mediaCollection']),
+  recordId: z.string().trim().min(1).max(200),
+}).strict();
+
+export const peerSyncNowSchema = z.object({
+  peerId: z.string().trim().min(1).max(120),
+}).strict();
+
+export const peerPullMetadataSchema = z.object({
+  // Backfill tries every online peer; no per-peer scoping field today.
+  // .trim() so a stray-whitespace filename ('  a.png  ') normalizes to the real
+  // name instead of passing validation and then failing sanitization/disk
+  // lookup (a confusing 200 with attempted>0, recovered=0). Matches the
+  // manifest-entry filename handling.
+  filenames: z.array(z.string().trim().min(1).max(300)).max(5000),
+}).strict();
 
 // =============================================================================
 // CREATIVE DIRECTOR SCHEMAS
