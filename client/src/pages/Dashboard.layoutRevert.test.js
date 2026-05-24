@@ -10,7 +10,8 @@ import { describe, it, expect } from 'vitest';
 //   - optimistic setActiveLayoutId(id)
 //   - on PUT success: stamp serverConfirmedLayoutIdRef = id ONLY if this is
 //     still the latest generation (guards against out-of-order resolution)
-//   - on PUT failure: revert via functional setState, current === id ? confirmed : current
+//   - on PUT failure: revert ONLY if still the latest generation (a newer
+//     switch — even to the same id — owns the display) AND current === id
 function createLayoutSwitcher(serverActiveId) {
   let displayed = serverActiveId;                       // activeLayoutId
   const serverConfirmed = { current: serverActiveId };  // serverConfirmedLayoutIdRef
@@ -27,6 +28,9 @@ function createLayoutSwitcher(serverActiveId) {
         if (generation.current === myGen) serverConfirmed.current = id;
       })
       .catch(() => {
+        // only the latest switch may revert — a newer switch (even to the
+        // same id) supersedes this one and owns the displayed state
+        if (generation.current !== myGen) return;
         // functional setState — only revert if still showing the failed id
         displayed = displayed === id ? serverConfirmed.current : displayed;
       });
@@ -96,5 +100,22 @@ describe('Dashboard active-layout revert', () => {
     await pB;
     expect(sw.displayed).toBe('C'); // functional-setState guard preserves C
     expect(sw.confirmed).toBe('C');
+  });
+
+  it('an earlier failed switch does not revert a newer switch to the SAME id', async () => {
+    // Copilot scenario: the user re-selects the layout that is already
+    // optimistically displayed while the first PUT is still in flight. The
+    // first PUT then fails. `current === id` is still true (same id shown), so
+    // the `current === id` guard alone would wrongly revert — but the newer
+    // switch (higher generation) owns the display and its PUT may yet succeed.
+    const sw = createLayoutSwitcher('A');
+    let failB1;
+    const pB1 = sw.selectLayout('B', new Promise((_, reject) => { failB1 = reject; })); // gen 1
+    const pB2 = sw.selectLayout('B', Promise.resolve()); // gen 2, re-select same id
+    await pB2; // newer switch confirms B
+    failB1(new Error('boom')); // older switch's PUT fails late
+    await pB1;
+    expect(sw.displayed).toBe('B'); // NOT reverted to A
+    expect(sw.confirmed).toBe('B');
   });
 });

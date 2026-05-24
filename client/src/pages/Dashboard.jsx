@@ -113,6 +113,9 @@ export default function Dashboard() {
             })
             .catch(() => {
               if (cancelled) return;
+              // A user switch (even to this same id) supersedes the auto-switch
+              // and owns the displayed state — don't revert out from under it.
+              if (switchGenerationRef.current !== switchGen) return;
               setActiveLayoutId((current) => (current === desiredActiveId ? data.activeLayoutId : current));
             });
         }
@@ -235,6 +238,10 @@ export default function Dashboard() {
     await api.setActiveDashboardLayout(id)
       .then(() => { if (switchGenerationRef.current === switchGen) serverConfirmedLayoutIdRef.current = id; })
       .catch(() => {
+        // Only the latest switch may revert. A newer switch — even to this
+        // SAME id (which leaves `current === id` true) — supersedes this one
+        // and owns the displayed state; its own resolution will settle it.
+        if (switchGenerationRef.current !== switchGen) return;
         setActiveLayoutId((current) => (current === id ? serverConfirmedLayoutIdRef.current : current));
       });
   };
@@ -273,6 +280,10 @@ export default function Dashboard() {
     await api.setActiveDashboardLayout(id)
       .then(() => { if (switchGenerationRef.current === switchGen) serverConfirmedLayoutIdRef.current = id; })
       .catch(() => {
+        // Only the latest switch may revert. A newer switch — even to this
+        // SAME id (which leaves `current === id` true) — supersedes this one
+        // and owns the displayed state; its own resolution will settle it.
+        if (switchGenerationRef.current !== switchGen) return;
         setActiveLayoutId((current) => (current === id ? serverConfirmedLayoutIdRef.current : current));
       });
   };
