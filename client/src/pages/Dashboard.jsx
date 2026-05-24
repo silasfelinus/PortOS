@@ -37,13 +37,16 @@ export default function Dashboard() {
   // never needs to trigger a re-render on its own.
   const serverConfirmedLayoutIdRef = useRef(null);
   // Monotonic counter incremented on every active-layout switch attempt
-  // (initial auto-switch, selectLayout, duplicateLayout). A setActive PUT's
-  // success only advances the confirmed-id ref when its captured generation
-  // is still the latest — so an earlier switch resolving after a later one
-  // can't stamp the ref with a superseded id. The displayed-state path
-  // already has the equivalent protection via its `current === id` functional
-  // setState guard; this gives the ref the same staleness immunity (mirrors
-  // the `{ target, generation }` pending-request convention used elsewhere).
+  // (initial auto-switch, selectLayout, duplicateLayout). It gates only the
+  // FAILURE revert: a switch reverts the displayed layout on PUT failure only
+  // when it's still the latest switch — so an earlier switch's late failure
+  // can't yank the display out from under a newer switch (even one targeting
+  // the same id, where `current === id` alone would wrongly match). The
+  // SUCCESS path does NOT gate on generation: the server's layoutsWriteTail
+  // serializes PUTs and their responses, so the last success to resolve is the
+  // server's final active layout — every acceptance must be recorded, even a
+  // superseded one, or a later failure could revert to a stale id. Mirrors the
+  // `{ target, generation }` pending-request convention used elsewhere.
   const switchGenerationRef = useRef(0);
   const [editorOpen, setEditorOpen] = useState(false);
   // Grid edit mode is local — entered via the "Arrange" button. Holds an
@@ -106,10 +109,10 @@ export default function Dashboard() {
             .then(() => {
               if (cancelled) return;
               autoSwitchedRef.current = true;
-              // Skip if a user switch superseded this auto-switch mid-flight.
-              if (switchGenerationRef.current === switchGen) {
-                serverConfirmedLayoutIdRef.current = desiredActiveId;
-              }
+              // Always record the server's acceptance: even if a user switch
+              // superseded this one, the server did accept desiredActiveId, and
+              // the write-tail guarantees the last success to resolve wins.
+              serverConfirmedLayoutIdRef.current = desiredActiveId;
             })
             .catch(() => {
               if (cancelled) return;
@@ -229,14 +232,14 @@ export default function Dashboard() {
     setActiveLayoutId(id);
     recordManualLayoutPick(id);
     // Server-side write tail serializes against any in-flight auto-window
-    // PUT so this write always lands after it. On success the id is the
-    // server-confirmed baseline — but only stamp the ref when this is still
-    // the latest switch, so an earlier switch resolving late can't clobber it.
-    // On failure revert (functional setState so a later selection isn't
-    // clobbered) to that baseline — not to a local snapshot, which after a
-    // prior failed switch may be an id the server never accepted.
+    // PUT so this write always lands after it. On success record the id as the
+    // server-confirmed baseline (always — the write-tail makes the last success
+    // to resolve the server's final state). On failure revert (functional
+    // setState so a later selection isn't clobbered) to that baseline — not to
+    // a local snapshot, which after a prior failed switch may be an id the
+    // server never accepted — and only when this is still the latest switch.
     await api.setActiveDashboardLayout(id)
-      .then(() => { if (switchGenerationRef.current === switchGen) serverConfirmedLayoutIdRef.current = id; })
+      .then(() => { serverConfirmedLayoutIdRef.current = id; })
       .catch(() => {
         // Only the latest switch may revert. A newer switch — even to this
         // SAME id (which leaves `current === id` true) — supersedes this one
@@ -273,12 +276,12 @@ export default function Dashboard() {
     // doesn't bump the user off the brand-new layout they just created.
     recordManualLayoutPick(id);
     // Server-side write tail serializes against any in-flight auto-window
-    // PUT. On success the new layout is the server-confirmed baseline (stamped
-    // only when this is still the latest switch); on failure revert (functional
-    // setState) to the prior confirmed baseline rather than a possibly-
-    // uncommitted local snapshot.
+    // PUT. On success record the new layout as the server-confirmed baseline
+    // (always); on failure revert (functional setState) to the prior confirmed
+    // baseline rather than a possibly-uncommitted local snapshot — and only
+    // when this is still the latest switch.
     await api.setActiveDashboardLayout(id)
-      .then(() => { if (switchGenerationRef.current === switchGen) serverConfirmedLayoutIdRef.current = id; })
+      .then(() => { serverConfirmedLayoutIdRef.current = id; })
       .catch(() => {
         // Only the latest switch may revert. A newer switch — even to this
         // SAME id (which leaves `current === id` true) — supersedes this one

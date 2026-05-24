@@ -8,8 +8,9 @@ import { describe, it, expect } from 'vitest';
 // with Dashboard.jsx:
 //   - increment switchGenerationRef and capture the generation up front
 //   - optimistic setActiveLayoutId(id)
-//   - on PUT success: stamp serverConfirmedLayoutIdRef = id ONLY if this is
-//     still the latest generation (guards against out-of-order resolution)
+//   - on PUT success: ALWAYS stamp serverConfirmedLayoutIdRef = id (the
+//     write-tail serializes PUTs + responses, so the last success to resolve
+//     is the server's final active layout — superseded successes still count)
 //   - on PUT failure: revert ONLY if still the latest generation (a newer
 //     switch — even to the same id — owns the display) AND current === id
 function createLayoutSwitcher(serverActiveId) {
@@ -24,8 +25,10 @@ function createLayoutSwitcher(serverActiveId) {
     displayed = id; // optimistic
     return put
       .then(() => {
-        // only stamp the ref when this is still the latest switch
-        if (generation.current === myGen) serverConfirmed.current = id;
+        // always record the server's acceptance — the write-tail serializes
+        // PUTs + responses, so the last success to resolve is the server's
+        // final active layout (a superseded success must still be recorded)
+        serverConfirmed.current = id;
       })
       .catch(() => {
         // only the latest switch may revert — a newer switch (even to the
@@ -73,21 +76,24 @@ describe('Dashboard active-layout revert', () => {
     expect(sw.confirmed).toBe('B');
   });
 
-  it('an out-of-order successful resolution does not stamp the ref with a superseded id', async () => {
-    // B then C both succeed, but B's PUT resolves AFTER C's. Without the
-    // generation guard, B's late success would overwrite the ref back to B
-    // even though C is the displayed + latest layout.
+  it('a superseded-but-successful switch still records the server confirmation (B succeeds while C is in flight, then C fails)', async () => {
+    // The server accepted B even though C is the newer switch. Because the
+    // success path does NOT gate on generation, the confirmed baseline must
+    // advance to B — so when C then fails, the display reverts to B, not back
+    // to the stale A. (If the success path were generation-gated, B's success
+    // would be dropped and C's failure would wrongly revert to A.)
     const sw = createLayoutSwitcher('A');
     let resolveB;
-    let resolveC;
-    const pB = sw.selectLayout('B', new Promise((r) => { resolveB = r; })); // gen 1
-    const pC = sw.selectLayout('C', new Promise((r) => { resolveC = r; })); // gen 2
-    resolveC();
-    await pC;
-    resolveB(); // late
+    let failC;
+    const pB = sw.selectLayout('B', new Promise((r) => { resolveB = r; }));            // gen 1
+    const pC = sw.selectLayout('C', new Promise((_, reject) => { failC = reject; }));  // gen 2
+    resolveB(); // B's PUT succeeds even though C is the latest switch
     await pB;
-    expect(sw.confirmed).toBe('C'); // B's stale success is generation-guarded out
-    expect(sw.displayed).toBe('C');
+    expect(sw.confirmed).toBe('B'); // superseded success still recorded
+    failC(new Error('boom'));
+    await pC;
+    expect(sw.displayed).toBe('B'); // C's failure reverts to the confirmed B, not A
+    expect(sw.confirmed).toBe('B');
   });
 
   it('a stale failure does not clobber a later in-flight selection', async () => {
