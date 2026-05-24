@@ -239,7 +239,7 @@ export function formatDurationMs(ms) {
 
 /**
  * Format a duration in minutes as a human-readable string
- * @param {number} minutes - Duration in minutes
+ * @param {number|null|undefined} minutes - Duration in minutes; nullish → ''
  * @param {object} [options]
  * @param {boolean} [options.approximate=false] - Prefix the result with `~`
  *   to signal an estimate (e.g., "~1h 30m") for predicted/averaged durations.
