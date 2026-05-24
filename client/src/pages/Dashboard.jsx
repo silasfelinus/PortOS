@@ -27,6 +27,15 @@ export default function Dashboard() {
   const [layoutsLoading, setLayoutsLoading] = useState(true);
   const [layoutLimits, setLayoutLimits] = useState(null);
   const [activeLayoutId, setActiveLayoutId] = useState(null);
+  // Last active-layout id the SERVER confirmed (initial GET, a successful
+  // setActive PUT, or a delete response). Failed optimistic switches revert
+  // to this — never to a `previousId` snapshot, which can itself be an
+  // optimistic-but-uncommitted id when two switches fail back-to-back (the
+  // 2nd switch's `previousId` is the 1st's never-landed value). A ref, not
+  // state: it's read inside async `.catch` revert callbacks, so it must
+  // always reflect current truth without stale-closure capture, and it
+  // never needs to trigger a re-render on its own.
+  const serverConfirmedLayoutIdRef = useRef(null);
   const [editorOpen, setEditorOpen] = useState(false);
   // Grid edit mode is local — entered via the "Arrange" button. Holds an
   // in-flight grid snapshot the user can Save/Cancel without touching the
@@ -71,6 +80,9 @@ export default function Dashboard() {
       .then((data) => {
         if (cancelled) return;
         setLayouts(data.layouts);
+        // The server's stored active id is the confirmed baseline until/unless
+        // the auto-switch PUT below lands.
+        serverConfirmedLayoutIdRef.current = data.activeLayoutId;
         const desiredActiveId = pickActiveLayoutId(data.activeLayoutId, data.layouts, autoSwitchedRef.current);
         setActiveLayoutId(desiredActiveId);
         if (desiredActiveId === data.activeLayoutId) {
@@ -81,7 +93,11 @@ export default function Dashboard() {
           // mark "auto-switched" after the PUT settles so a failing server
           // gets retried on the next mount.
           api.setActiveDashboardLayout(desiredActiveId)
-            .then(() => { if (!cancelled) autoSwitchedRef.current = true; })
+            .then(() => {
+              if (cancelled) return;
+              autoSwitchedRef.current = true;
+              serverConfirmedLayoutIdRef.current = desiredActiveId;
+            })
             .catch(() => {
               if (cancelled) return;
               setActiveLayoutId((current) => (current === desiredActiveId ? data.activeLayoutId : current));
@@ -193,15 +209,19 @@ export default function Dashboard() {
   };
 
   const selectLayout = async (id) => {
-    const previousId = activeLayoutId;
     setActiveLayoutId(id);
     recordManualLayoutPick(id);
     // Server-side write tail serializes against any in-flight auto-window
-    // PUT so this write always lands after it. Revert via functional
-    // setState so a later selection isn't clobbered.
-    await api.setActiveDashboardLayout(id).catch(() => {
-      setActiveLayoutId((current) => (current === id ? previousId : current));
-    });
+    // PUT so this write always lands after it. On success the id is now the
+    // server-confirmed baseline; on failure revert (via functional setState
+    // so a later selection isn't clobbered) to that baseline — not to a
+    // local snapshot, which after a prior failed switch may be an id the
+    // server never accepted.
+    await api.setActiveDashboardLayout(id)
+      .then(() => { serverConfirmedLayoutIdRef.current = id; })
+      .catch(() => {
+        setActiveLayoutId((current) => (current === id ? serverConfirmedLayoutIdRef.current : current));
+      });
   };
 
   // Preserve the existing grid on widget add/remove so positional edits
@@ -219,7 +239,6 @@ export default function Dashboard() {
   };
 
   const duplicateLayout = async ({ id, name, widgets, activateWindow }) => {
-    const previousId = activeLayoutId;
     // New layouts inherit the current renderGrid so "Save as new…" from a
     // visually-arranged dashboard captures what the user actually sees.
     const sourceGrid = renderGrid && renderGrid.length > 0 ? renderGrid : synthesizeGrid(widgets);
@@ -231,16 +250,23 @@ export default function Dashboard() {
     // doesn't bump the user off the brand-new layout they just created.
     recordManualLayoutPick(id);
     // Server-side write tail serializes against any in-flight auto-window
-    // PUT. Revert via functional setState so a later selection isn't clobbered.
-    await api.setActiveDashboardLayout(id).catch(() => {
-      setActiveLayoutId((current) => (current === id ? previousId : current));
-    });
+    // PUT. On success the new layout is the server-confirmed baseline; on
+    // failure revert (functional setState) to the prior confirmed baseline
+    // rather than a possibly-uncommitted local snapshot.
+    await api.setActiveDashboardLayout(id)
+      .then(() => { serverConfirmedLayoutIdRef.current = id; })
+      .catch(() => {
+        setActiveLayoutId((current) => (current === id ? serverConfirmedLayoutIdRef.current : current));
+      });
   };
 
   const deleteLayoutById = async (id) => {
     const result = await api.deleteDashboardLayout(id);
     setLayouts(result.layouts);
     setActiveLayoutId(result.activeLayoutId);
+    // The server chose the post-delete active layout — it's now the
+    // confirmed baseline a later failed switch should revert to.
+    serverConfirmedLayoutIdRef.current = result.activeLayoutId;
     toast.success('Layout deleted');
   };
 
