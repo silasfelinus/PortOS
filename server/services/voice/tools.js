@@ -220,10 +220,12 @@ const GROUP_INTENT = {
   // for/on a … run" phrasing and the "ran …" branch below, which requires a
   // fitness OBJECT — a distance/race ("ran a 5k", "ran 3 miles", "ran a
   // marathon"), a route ("ran my usual route", "ran my loop"), or a duration
-  // ("ran for 30 minutes") — so "I ran a report", "ran an errand", and "ran my
-  // mouth" no longer match. The other activity nouns (jog/yoga/cardio/gym/…)
-  // rarely collide in voice commands.
-  meatspace: /\b(drink|drank|beer|wine|whiskey|shot|cocktail|cigarette|vape|pouch|nicotine|weigh|pound|kilo|kg|smoke|smoking|workout|exercise|exercised|jog|yoga|lift(?:ed|ing)?|cardio|gym|cycling|cycled|swim|swam|how am I|summary today|log (?:a|my) (?:drink|weight|nicotine|workout|run|exercise))\b|\bwent (?:for|on) (?:a |an )?(?:\w+ ){0,2}(?:run|jog|swim|ride|walk|hike|workout)\b|\bran (?:a |an |my )?(?:\w+ ){0,2}(?:\d+\s?k\b|\d+\s?km\b|miles?\b|marathons?\b|half[- ]?marathons?\b|5k\b|10k\b|loops?\b|routes?\b|trails?\b|laps?\b)|\bran for (?:about |around |roughly )?(?:\d|an? |half|the )/i,
+  // WITH a time unit ("ran for 30 minutes", "ran for an hour"). The duration
+  // branch insists on a minute/hour/second unit so "ran for a report", "ran for
+  // office", and "ran for president" no longer match, just as "I ran a report",
+  // "ran an errand", and "ran my mouth" don't. Other activity nouns
+  // (jog/yoga/cardio/gym/…) rarely collide in voice commands.
+  meatspace: /\b(drink|drank|beer|wine|whiskey|shot|cocktail|cigarette|vape|pouch|nicotine|weigh|pound|kilo|kg|smoke|smoking|workout|exercise|exercised|jog|yoga|lift(?:ed|ing)?|cardio|gym|cycling|cycled|swim|swam|how am I|summary today|log (?:a|my) (?:drink|weight|nicotine|workout|run|exercise))\b|\bwent (?:for|on) (?:a |an )?(?:\w+ ){0,2}(?:run|jog|swim|ride|walk|hike|workout)\b|\bran (?:a |an |my )?(?:\w+ ){0,2}(?:\d+\s?k\b|\d+\s?km\b|miles?\b|marathons?\b|half[- ]?marathons?\b|5k\b|10k\b|loops?\b|routes?\b|trails?\b|laps?\b)|\bran for (?:\w+ ){0,3}(?:hours?|hrs?|mins?|minutes?|seconds?|secs?)\b/i,
   // Calendar reads — "what's on my calendar", "what do I have today",
   // "next meeting", "what's next", "upcoming", "any appointments". Tight-ish
   // so plain "open calendar" still routes to ui_navigate, not calendar_today.

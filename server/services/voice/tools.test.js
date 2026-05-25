@@ -1116,6 +1116,7 @@ describe('new tool intent routing', () => {
     expect(classifyIntent('ran a marathon yesterday').has('meatspace')).toBe(true);
     expect(classifyIntent('ran my usual route').has('meatspace')).toBe(true);
     expect(classifyIntent('ran for 30 minutes').has('meatspace')).toBe(true);
+    expect(classifyIntent('ran for an hour').has('meatspace')).toBe(true);
     expect(classifyIntent('did some cardio at the gym').has('meatspace')).toBe(true);
   });
   it('does NOT route command phrasings of run/ran to the meatspace group', () => {
@@ -1129,6 +1130,10 @@ describe('new tool intent routing', () => {
     expect(classifyIntent('ran an errand').has('meatspace')).toBe(false);
     expect(classifyIntent('ran my mouth').has('meatspace')).toBe(false);
     expect(classifyIntent('ran for office').has('meatspace')).toBe(false);
+    // The duration branch requires a real time unit — "for a/the X" without a
+    // minute/hour/second unit must NOT route to the workout tool.
+    expect(classifyIntent('ran for a report').has('meatspace')).toBe(false);
+    expect(classifyIntent('ran for president').has('meatspace')).toBe(false);
   });
   it('routes visual-description utterances to the vision group', () => {
     expect(classifyIntent("what's on this chart?").has('vision')).toBe(true);
