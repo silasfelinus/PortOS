@@ -361,15 +361,9 @@ export async function deleteModel(backend, modelId) {
   if (backend === 'ollama') {
     return ollamaManager.deleteModel(modelId)
   }
-  // LM Studio has no delete in its REST API — use the `lms` CLI if present.
-  if (await commandExists('lms', ['version'])) {
-    const r = await execFileAsync('lms', ['rm', modelId, '-y'], { timeout: 30_000 })
-      .then(() => ({ ok: true })).catch((err) => ({ _err: err.stderr || err.message }))
-    if (r._err) return { success: false, error: r._err, modelId }
-    lmStudioManager.resetCache()
-    return { success: true, modelId }
-  }
-  return { success: false, error: 'Deleting LM Studio models requires the `lms` CLI. Remove it from the LM Studio app instead.', modelId }
+  // LM Studio has no delete in its REST API and the `lms` CLI has no `rm`
+  // command — deleteModel removes the model's on-disk folder directly.
+  return lmStudioManager.deleteModel(modelId)
 }
 
 // ---- switch / migrate --------------------------------------------------------

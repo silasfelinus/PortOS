@@ -6,9 +6,9 @@
  */
 
 import { homedir } from 'os'
-import { join, basename } from 'path'
+import { join, basename, resolve, relative, isAbsolute, sep } from 'path'
 import { existsSync } from 'fs'
-import { readdir, stat, mkdir, copyFile, link } from 'fs/promises'
+import { readdir, stat, mkdir, copyFile, link, rm, rmdir } from 'fs/promises'
 import { cosEvents } from './cosEvents.js'
 import { fetchWithTimeout } from '../lib/fetchWithTimeout.js'
 import {
@@ -540,6 +540,84 @@ async function resolveLocalModel(modelId) {
 }
 
 /**
+ * Resolve which on-disk folder(s) a delete request maps to. Unlike
+ * resolveLocalModel (a best-effort fuzzy first-match for READS), deletion is
+ * destructive (`rm -rf`), so this is deliberately stricter: it only ever returns
+ * concrete `<publisher>/<repo>` folders (LM Studio's invariant layout), rejects
+ * `.`/`..` traversal segments, and returns ALL normalized-scan matches so an
+ * ambiguous id (e.g. a `-GGUF` and a `-MLX-*` variant that normalize to the same
+ * key) can refuse instead of guessing the wrong one.
+ * @returns {Promise<string[]|null>} matched dirs, or null for an invalid id
+ */
+async function findDeletableModelDirs(modelsDir, modelId) {
+  const segments = String(modelId || '').split('/').map((s) => s.trim()).filter(Boolean)
+  if (segments.some((s) => s === '.' || s === '..')) return null
+  // Exact `<publisher>/<repo>` match takes precedence over the fuzzy scan.
+  if (segments.length === 2) {
+    const direct = join(modelsDir, segments[0], segments[1])
+    if (await dirExists(direct)) return [direct]
+  }
+  const wanted = normalizeRepoKey(modelId)
+  if (!wanted) return []
+  const matches = []
+  const publishers = await readdir(modelsDir).catch(() => [])
+  for (const publisher of publishers) {
+    const publisherDir = join(modelsDir, publisher)
+    if (!(await dirExists(publisherDir))) continue
+    const repos = await readdir(publisherDir).catch(() => [])
+    for (const name of repos) {
+      const repoDir = join(publisherDir, name)
+      if (normalizeRepoKey(name) === wanted && await dirExists(repoDir)) matches.push(repoDir)
+    }
+  }
+  return matches
+}
+
+/** True only when `dir` is a `<publisher>/<repo>` folder strictly under modelsDir. */
+function isModelLeafDir(modelsDir, dir) {
+  const rel = relative(resolve(modelsDir), resolve(dir))
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return false
+  return rel.split(sep).length === 2
+}
+
+/**
+ * Delete an installed LM Studio model. The `lms` CLI has no remove command, and
+ * LM Studio's REST API exposes no delete — so we remove the model's on-disk
+ * `<publisher>/<repo>/` folder directly and prune the publisher dir if empty.
+ * Best-effort unloads the model first so the running app isn't left serving
+ * files that no longer exist.
+ * @returns {Promise<{ success: boolean, modelId: string, error?: string }>}
+ */
+async function deleteModel(modelId) {
+  const modelsDir = await getModelsDir()
+  const matches = await findDeletableModelDirs(modelsDir, modelId)
+  if (matches === null) return { success: false, error: `Invalid model id "${modelId}".`, modelId }
+  if (matches.length === 0) {
+    return { success: false, error: `Model files not found on disk for "${modelId}".`, modelId }
+  }
+  if (matches.length > 1) {
+    return { success: false, error: `Ambiguous model id "${modelId}" matches ${matches.length} folders — delete by exact "publisher/repo".`, modelId }
+  }
+  const dir = matches[0]
+  // Defense-in-depth: never rm the models root, a publisher dir, or anything
+  // outside modelsDir — only a concrete `<publisher>/<repo>` leaf.
+  if (!isModelLeafDir(modelsDir, dir)) {
+    return { success: false, error: `Refusing to delete "${dir}" — not a model folder under ${modelsDir}.`, modelId }
+  }
+  // Unload first if the app is up and holding it (no-op/harmless otherwise).
+  if (await checkLMStudioAvailable()) await unloadModel(modelId).catch(() => {})
+  const removed = await rm(dir, { recursive: true, force: true })
+    .then(() => ({ ok: true })).catch((err) => ({ _err: err.message }))
+  resetCache() // disk may have changed even on a partial failure — re-list fresh
+  if (removed._err) return { success: false, error: removed._err, modelId }
+  // Prune the now-empty publisher dir (rmdir fails harmlessly if not empty).
+  await rmdir(join(dir, '..')).catch(() => {})
+  console.log(`🗑️ LM Studio deleted: ${modelId} (${dir})`)
+  cosEvents.emit('lmstudio:modelDeleted', { modelId })
+  return { success: true, modelId }
+}
+
+/**
  * Place a local GGUF into LM Studio's model tree (no download). LM Studio indexes
  * loose GGUF files dropped under `<publisher>/<repo>/` on its next scan. In `link`
  * mode the file is hardlinked (shared on disk with the source backend's copy);
@@ -598,5 +676,6 @@ export {
   getLastListError,
   resolveLocalModel,
   importModelFromGguf,
+  deleteModel,
   DEFAULT_CONFIG
 }
