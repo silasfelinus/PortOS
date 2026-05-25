@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Square } from 'lucide-react';
+import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Square, Power, PowerOff } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
 import { formatBytes } from '../../utils/formatters';
@@ -54,6 +54,8 @@ function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAc
   const otherData = status?.[other];
   const statusLabel = data?.available ? 'Running' : data?.installed ? 'Installed (stopped)' : 'Not installed';
   const statusColor = data?.available ? 'bg-port-success' : data?.installed ? 'bg-port-warning' : 'bg-gray-600';
+  const startupService = backend.id === 'ollama' ? data?.service : null;
+  const runsAtStartup = Boolean(startupService?.runAtStartup);
 
   return (
     <div className="bg-port-bg border border-port-border rounded-lg p-3 space-y-2">
@@ -79,6 +81,7 @@ function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAc
       <div className="text-xs text-gray-400">
         {data?.modelCount ?? 0} model{(data?.modelCount ?? 0) === 1 ? '' : 's'} installed
         {data?.version && <> · v{data.version}</>}
+        {startupService?.supported && <> · {runsAtStartup ? 'runs at login' : 'startup off'}</>}
       </div>
 
       {!data?.installed && (
@@ -128,6 +131,23 @@ function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAc
                 ? <BrailleSpinner />
                 : data.available ? <Square size={12} /> : <Play size={12} />}
               {data.available ? 'Stop' : 'Start'} Ollama
+            </button>
+          )}
+          {backend.id === 'ollama' && startupService?.supported && (
+            <button
+              onClick={() => runAction(
+                `ollama-service-${runsAtStartup ? 'disable' : 'enable'}`,
+                () => controlOllamaService(runsAtStartup ? 'disable' : 'enable'),
+                runsAtStartup ? 'Ollama background service disabled' : 'Ollama will run at login'
+              )}
+              disabled={busy}
+              className={`${btnClass} ${runsAtStartup ? 'bg-port-warning/20 hover:bg-port-warning/30 text-port-warning' : 'bg-port-accent/20 hover:bg-port-accent/30 text-port-accent'}`}
+              title={runsAtStartup ? 'Stop the Homebrew service and remove the launch-at-login registration' : 'Start Ollama with Homebrew services so it runs in the background at login'}
+            >
+              {actionInProgress === `ollama-service-${runsAtStartup ? 'disable' : 'enable'}`
+                ? <BrailleSpinner />
+                : runsAtStartup ? <PowerOff size={12} /> : <Power size={12} />}
+              {runsAtStartup ? 'Disable Startup' : 'Run at Startup'}
             </button>
           )}
           {!isDefault && (
@@ -258,6 +278,8 @@ export function LocalLlmTab() {
 
   const busy = actionInProgress != null;
   const selectedData = status?.[selected];
+  const selectedOllamaStartupAction = selectedData?.service?.supported ? 'enable' : 'start';
+  const selectedOllamaStartupLabel = selectedData?.service?.supported ? 'Run at Startup' : 'Start Ollama';
   const installedModels = selectedData?.models || [];
   const catalogCategories = useMemo(() => {
     const counts = new Map();
@@ -376,17 +398,21 @@ export function LocalLlmTab() {
           <div className="flex items-center gap-2 flex-wrap text-xs text-port-warning">
             <span>
               {labelFor(selected)} isn't running — {selectedData.installed
-                ? (selected === 'ollama' ? 'start it to install or manage models.' : 'launch the app and enable the local server.')
+                ? (selected === 'ollama' ? 'use the controls to start it or keep it running at login.' : 'launch the app and enable the local server.')
                 : 'install it first (Settings → Local LLMs prompts at setup, or run `npm run setup:llm`).'}
             </span>
             {selected === 'ollama' && selectedData.installed && selectedData.canControl && (
               <button
-                onClick={() => runAction('ollama-service-start-models', () => controlOllamaService('start'), 'Ollama is running')}
+                onClick={() => runAction(
+                  `ollama-service-${selectedOllamaStartupAction}-models`,
+                  () => controlOllamaService(selectedOllamaStartupAction),
+                  selectedOllamaStartupAction === 'enable' ? 'Ollama will run at login' : 'Ollama is running'
+                )}
                 disabled={busy}
                 className={`${btnClass} bg-port-accent/20 hover:bg-port-accent/30 text-port-accent`}
               >
-                {actionInProgress === 'ollama-service-start-models' ? <BrailleSpinner /> : <Play size={12} />}
-                Start Ollama
+                {actionInProgress === `ollama-service-${selectedOllamaStartupAction}-models` ? <BrailleSpinner /> : <Play size={12} />}
+                {selectedOllamaStartupLabel}
               </button>
             )}
           </div>

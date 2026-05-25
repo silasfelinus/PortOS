@@ -209,12 +209,31 @@ export async function installBackend(backend, onProgress = () => {}) {
   const r = await runStreaming('brew', args, emit, BACKEND_INSTALL_TIMEOUT_MS)
   if (!r.success) return { success: false, error: `Homebrew install failed: ${r.error}` }
   console.log(`🍺 Installed ${label} via Homebrew`)
+  if (backend === 'ollama') {
+    emit('Starting Ollama as a Homebrew service…')
+    const service = await ollamaManager.startPersistentService().catch((err) => ({ success: false, error: err.message }))
+    if (service.success) {
+      return {
+        success: true,
+        backend,
+        service: service.service,
+        note: 'Started as a Homebrew service; it will run in the background at login.'
+      }
+    }
+    const fallback = await ollamaManager.startServer().catch((err) => ({ success: false, error: err.message }))
+    return {
+      success: true,
+      backend,
+      service: service.service,
+      note: fallback.success
+        ? `Installed, but Homebrew services could not register Ollama (${service.error}). Started it for this session.`
+        : `Installed, but PortOS could not start Ollama automatically (${service.error || fallback.error}). Use Run at Startup from this screen.`
+    }
+  }
   return {
     success: true,
     backend,
-    note: backend === 'ollama'
-      ? 'Start it with `ollama serve` (or `brew services start ollama`), then refresh.'
-      : 'Launch LM Studio, enable the local server (Developer tab), then run `lms bootstrap`.'
+    note: 'Launch LM Studio, enable the local server (Developer tab), then run `lms bootstrap`.'
   }
 }
 
@@ -226,6 +245,8 @@ export async function installBackend(backend, onProgress = () => {}) {
 export async function controlOllamaServer(action) {
   if (action === 'start') return ollamaManager.startServer()
   if (action === 'stop') return ollamaManager.stopServer()
+  if (action === 'enable') return ollamaManager.startPersistentService()
+  if (action === 'disable') return ollamaManager.stopPersistentService()
   return { success: false, error: `Unknown Ollama action: ${action}` }
 }
 
@@ -281,6 +302,7 @@ export async function getStatus() {
       modelCount: ollamaStatus.modelCount,
       models: normalizeModels('ollama', ollamaStatus.models),
       canControl: ollamaCli || ollamaStatus.available,
+      service: ollamaStatus.service,
       canAutoInstall: canAutoInstall('ollama'),
       downloadUrl: DOWNLOAD_URL.ollama
     },

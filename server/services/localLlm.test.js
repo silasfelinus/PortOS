@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
     getStatus: vi.fn(async () => ({ available: true, baseUrl: 'x', version: '1', modelCount: 0, models: [] })),
     startServer: vi.fn(async () => ({ success: true, running: true })),
     stopServer: vi.fn(async () => ({ success: true, running: false })),
+    startPersistentService: vi.fn(async () => ({ success: true, running: true, persistent: true })),
+    stopPersistentService: vi.fn(async () => ({ success: true, running: false, persistent: false })),
     // No local GGUF found by default → migrate falls back to re-pull.
     resolveLocalModel: vi.fn(async () => null),
     // Echo the requested mode as the real outcome (link mode "succeeds" in tests).
@@ -121,11 +123,20 @@ describe('localLlm', () => {
       expect(mocks.ollama.stopServer).toHaveBeenCalledTimes(1);
     });
 
+    it('enables and disables Ollama as a persistent service', async () => {
+      expect(await svc.controlOllamaServer('enable')).toEqual({ success: true, running: true, persistent: true });
+      expect(await svc.controlOllamaServer('disable')).toEqual({ success: true, running: false, persistent: false });
+      expect(mocks.ollama.startPersistentService).toHaveBeenCalledTimes(1);
+      expect(mocks.ollama.stopPersistentService).toHaveBeenCalledTimes(1);
+    });
+
     it('rejects unknown Ollama service actions', async () => {
       const r = await svc.controlOllamaServer('restart');
       expect(r.success).toBe(false);
       expect(mocks.ollama.startServer).not.toHaveBeenCalled();
       expect(mocks.ollama.stopServer).not.toHaveBeenCalled();
+      expect(mocks.ollama.startPersistentService).not.toHaveBeenCalled();
+      expect(mocks.ollama.stopPersistentService).not.toHaveBeenCalled();
     });
   });
 

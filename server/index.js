@@ -70,6 +70,7 @@ import backupRoutes from './routes/backup.js';
 import databaseRoutes from './routes/database.js';
 import localLlmRoutes from './routes/localLlm.js';
 import { ensureBackendProvider, getBackend as getLocalLlmBackend } from './services/localLlm.js';
+import { ensureRunning as ensureOllamaRunning } from './services/ollamaManager.js';
 import searchRoutes from './routes/search.js';
 import paletteRoutes from './routes/palette.js';
 import dashboardLayoutsRoutes from './routes/dashboardLayouts.js';
@@ -274,8 +275,13 @@ try {
 // Ensure the provider paired with the active local-LLM backend (LLM_BACKEND in
 // .env, chosen at setup time) is enabled, so a fresh install can use Ollama /
 // LM Studio for runs without hand-toggling it in the Providers UI.
-ensureBackendProvider(getLocalLlmBackend()).catch((err) =>
+const activeLocalLlmBackend = getLocalLlmBackend();
+ensureBackendProvider(activeLocalLlmBackend).catch((err) =>
   console.error(`⚠️ Failed to enable local LLM backend provider: ${err.message}`));
+if (activeLocalLlmBackend === 'ollama') {
+  ensureOllamaRunning({ preferPersistent: true }).catch((err) =>
+    console.error(`⚠️ Failed to start Ollama for active local LLM backend: ${err.message}`));
+}
 
 // Swap the toolkit's generic executeCliRun for PortOS's variant that adds
 // CLI-provider-specific args building (Codex `exec -`, Gemini stdin piping,

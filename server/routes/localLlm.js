@@ -67,7 +67,13 @@ router.post('/install-backend', asyncHandler(async (req, res) => {
 router.post('/ollama-service', asyncHandler(async (req, res) => {
   const { action } = validateRequest(localLlmOllamaServiceSchema, req.body)
   const emit = emitter(req)
-  emit('start', `${action === 'start' ? 'Starting' : 'Stopping'} Ollama…`)
+  const actionLabel = {
+    start: 'Starting Ollama…',
+    stop: 'Stopping Ollama…',
+    enable: 'Registering Ollama as a background service…',
+    disable: 'Disabling Ollama background service…'
+  }[action]
+  emit('start', actionLabel)
   const result = await controlOllamaServer(action).catch((err) => {
     emit('error', `Ollama ${action} failed: ${err.message}`)
     throw err
@@ -76,7 +82,13 @@ router.post('/ollama-service', asyncHandler(async (req, res) => {
     emit('error', result.error || `Ollama ${action} failed`)
     return res.status(502).json({ error: result.error || `Ollama ${action} failed` })
   }
-  emit('complete', action === 'start' ? 'Ollama is running' : 'Ollama stopped')
+  const completeLabel = {
+    start: 'Ollama is running',
+    stop: 'Ollama stopped',
+    enable: 'Ollama will run in the background at login',
+    disable: 'Ollama background service disabled'
+  }[action]
+  emit('complete', completeLabel)
   res.json(result)
 }))
 

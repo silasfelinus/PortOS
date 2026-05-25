@@ -32,6 +32,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
 const AVAILABILITY_PROBE_TIMEOUT_MS = 5_000
 const START_TIMEOUT_MS = 12_000
 const STOP_TIMEOUT_MS = 8_000
+const SERVICE_COMMAND_TIMEOUT_MS = 20_000
 
 const DEFAULT_CONFIG = {
   // Ollama uses OLLAMA_HOST (host:port, no scheme) by convention; also accept
@@ -57,6 +58,70 @@ let managedProcess = null
 let managedProcessPid = null
 
 const status = { lastError: null, lastSuccessAt: null, consecutiveErrors: 0 }
+
+async function commandExists(cmd, args = ['--version']) {
+  return execFileAsync(cmd, args, { timeout: 5_000 }).then(() => true).catch(() => false)
+}
+
+async function getServiceController() {
+  if (process.platform === 'darwin' && await commandExists('brew', ['--version'])) {
+    return {
+      supported: true,
+      manager: 'homebrew',
+      start: ['brew', ['services', 'start', 'ollama']],
+      stop: ['brew', ['services', 'stop', 'ollama']],
+      list: ['brew', ['services', 'list']]
+    }
+  }
+  if (process.platform === 'linux' && await commandExists('systemctl', ['--version'])) {
+    return {
+      supported: true,
+      manager: 'systemd',
+      start: ['systemctl', ['start', 'ollama']],
+      stop: ['systemctl', ['stop', 'ollama']],
+      list: ['systemctl', ['is-active', 'ollama']]
+    }
+  }
+  return { supported: false, manager: null }
+}
+
+async function getServiceStatus() {
+  const controller = await getServiceController()
+  if (!controller.supported) {
+    return { supported: false, manager: null, running: false, runAtStartup: false, status: null }
+  }
+
+  if (controller.manager === 'homebrew') {
+    const [cmd, args] = controller.list
+    const { stdout } = await execFileAsync(cmd, args, { timeout: SERVICE_COMMAND_TIMEOUT_MS }).catch(() => ({ stdout: '' }))
+    const line = stdout.split('\n').find((entry) => entry.trim().startsWith('ollama '))
+    const serviceStatus = line?.trim().split(/\s+/)[1] || 'none'
+    const running = serviceStatus === 'started'
+    return {
+      supported: true,
+      manager: 'homebrew',
+      running,
+      runAtStartup: running,
+      status: serviceStatus
+    }
+  }
+
+  if (controller.manager === 'systemd') {
+    const [cmd, args] = controller.list
+    const { stdout } = await execFileAsync(cmd, args, { timeout: SERVICE_COMMAND_TIMEOUT_MS }).catch(() => ({ stdout: '' }))
+    const serviceStatus = stdout.trim() || 'inactive'
+    const running = serviceStatus === 'active'
+    return {
+      supported: true,
+      manager: 'systemd',
+      running,
+      runAtStartup: running,
+      status: serviceStatus
+    }
+  }
+
+  return { supported: false, manager: null, running: false, runAtStartup: false, status: null }
+}
 
 async function ollamaRequest(endpoint, options = {}) {
   const { timeout, headers, ...rest } = options
@@ -171,6 +236,100 @@ async function startServer() {
   }
 }
 
+async function startPersistentService() {
+  const controller = await getServiceController()
+  if (!controller.supported) {
+    return { success: false, running: await checkOllamaAvailable(true), error: 'No supported Ollama background service manager found.' }
+  }
+
+  const [cmd, args] = controller.start
+  resetAvailabilityCache()
+  const result = await execFileAsync(cmd, args, { timeout: SERVICE_COMMAND_TIMEOUT_MS })
+    .then(() => ({ success: true }))
+    .catch((err) => ({ success: false, error: err.stderr?.trim() || err.stdout?.trim() || err.message }))
+
+  const running = await waitForAvailability(true, START_TIMEOUT_MS)
+  const service = await getServiceStatus().catch(() => ({
+    supported: true,
+    manager: controller.manager,
+    running,
+    runAtStartup: running,
+    status: running ? 'started' : 'unknown'
+  }))
+
+  if (result.success && running) {
+    console.log(`▶️ Started Ollama via ${controller.manager} service`)
+    return { success: true, running: true, persistent: true, service }
+  }
+
+  return {
+    success: false,
+    running,
+    persistent: false,
+    service,
+    error: result.error || 'Ollama service started, but the API did not become reachable.'
+  }
+}
+
+async function stopPersistentService() {
+  const controller = await getServiceController()
+  if (!controller.supported) {
+    return { success: false, running: await checkOllamaAvailable(true), error: 'No supported Ollama background service manager found.' }
+  }
+
+  const [cmd, args] = controller.stop
+  const result = await execFileAsync(cmd, args, { timeout: SERVICE_COMMAND_TIMEOUT_MS })
+    .then(() => ({ success: true }))
+    .catch((err) => ({ success: false, error: err.stderr?.trim() || err.stdout?.trim() || err.message }))
+
+  const stopped = await waitForAvailability(false, STOP_TIMEOUT_MS)
+  if (stopped) resetAvailabilityCache()
+  const service = await getServiceStatus().catch(() => ({
+    supported: true,
+    manager: controller.manager,
+    running: !stopped,
+    runAtStartup: !stopped,
+    status: stopped ? 'stopped' : 'unknown'
+  }))
+
+  if (result.success && stopped) {
+    console.log(`⏹️ Stopped Ollama ${controller.manager} service`)
+    return { success: true, running: false, persistent: false, service }
+  }
+
+  return {
+    success: false,
+    running: !stopped,
+    persistent: service.runAtStartup,
+    service,
+    error: result.error || 'Ollama service stopped, but the API still appears reachable.'
+  }
+}
+
+async function ensureRunning({ preferPersistent = false } = {}) {
+  if (await checkOllamaAvailable(true)) {
+    return { success: true, running: true, alreadyRunning: true, service: await getServiceStatus().catch(() => null) }
+  }
+  if (preferPersistent) {
+    const serviceResult = await startPersistentService()
+    if (serviceResult.success) return serviceResult
+    console.warn(`⚠️ Failed to start Ollama as a background service: ${serviceResult.error}`)
+  }
+  return startServer()
+}
+
+function isOllamaProvider(provider) {
+  const endpoint = String(provider?.endpoint || '')
+  return provider?.id === 'ollama' ||
+    /ollama/i.test(provider?.name || '') ||
+    /(^|[/:])(?:localhost|127\.0\.0\.1|\[::1\]):11434\b/i.test(endpoint)
+}
+
+async function ensureProviderReady(provider, options = {}) {
+  if (!isOllamaProvider(provider)) return { success: true, skipped: true }
+  return ensureRunning({ preferPersistent: options.preferPersistent !== false })
+}
+
 /**
  * Stop the Ollama HTTP server. Prefer the PortOS-managed process when we
  * started it; otherwise terminate the local `ollama` process by executable name.
@@ -178,6 +337,12 @@ async function startServer() {
 async function stopServer() {
   if (!(await checkOllamaAvailable(true))) {
     return { success: true, running: false, alreadyStopped: true }
+  }
+
+  const service = await getServiceStatus().catch(() => null)
+  if (service?.runAtStartup) {
+    const stoppedService = await stopPersistentService()
+    if (stoppedService.success || !(await checkOllamaAvailable(true))) return stoppedService
   }
 
   await terminateManagedProcess()
@@ -455,12 +620,14 @@ async function importModelFromGguf({ name, ggufPath, mode = 'copy' }) {
 async function getStatus(forceRefresh = false) {
   const available = await checkOllamaAvailable(forceRefresh)
   const models = available ? await getInstalledModels(true) : []
+  const service = await getServiceStatus().catch(() => ({ supported: false, manager: null, running: false, runAtStartup: false, status: null }))
   return {
     available,
     baseUrl: config.baseUrl,
     version: available ? await getVersion() : null,
     modelCount: models.length,
     models,
+    service,
     lastError: status.lastError,
     consecutiveErrors: status.consecutiveErrors
   }
@@ -474,5 +641,11 @@ export {
   resolveLocalModel,
   importModelFromGguf,
   startServer,
-  stopServer
+  stopServer,
+  startPersistentService,
+  stopPersistentService,
+  ensureRunning,
+  ensureProviderReady,
+  isOllamaProvider,
+  getServiceStatus
 }
