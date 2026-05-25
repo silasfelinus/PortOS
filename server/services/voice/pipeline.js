@@ -14,7 +14,10 @@ import { getToolSpecsForIntent, classifyIntent, dispatchTool, getAllToolNames, U
 import { isEchoOfRecentTts, rememberTtsSentence } from './echo.js';
 import { appendJournal, getToday } from '../brainJournal.js';
 import { resolvePending, isExpired } from './confirmGate.js';
-import { getRelevantMemories } from '../memoryRetriever.js';
+// getRelevantMemories is imported lazily inside buildMemoryContext — it only
+// runs for retrieval-shaped turns, so keep its memory-backend + embeddings
+// dependency graph out of voice startup / non-retrieval turns (same rationale
+// as the lazy visionTest import in describeScreenshot).
 
 // Compact per-page UI summary the LLM uses to drive ui_* tools. Keep it
 // short — every turn pays the token cost. Groups elements by kind and shows
@@ -294,6 +297,9 @@ const MEMORY_INJECT_LIMIT = 5;
 //
 // Exported for unit testing.
 export const buildMemoryContext = async (userText, { limit = MEMORY_INJECT_LIMIT } = {}) => {
+  // Lazy import (see the note at the top): only retrieval-shaped turns reach
+  // here, so the memory-retriever dependency graph stays out of the hot path.
+  const { getRelevantMemories } = await import('../memoryRetriever.js');
   // getRelevantMemories → generateQueryEmbedding does a bare `await fetch` that
   // REJECTS (not returns null) when the embeddings backend is unreachable, so
   // catch here to honor the "zero memories rather than killing the turn"
