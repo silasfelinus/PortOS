@@ -95,7 +95,8 @@ router.post('/switch', asyncHandler(async (req, res) => {
   res.json(result)
 }))
 
-// POST /api/local-llm/migrate — re-provision models on target, then switch
+// POST /api/local-llm/migrate — provision models on target (copy GGUF locally
+// where possible, else re-pull), then switch the active backend
 router.post('/migrate', asyncHandler(async (req, res) => {
   const { to } = validateRequest(localLlmSwitchSchema, req.body)
   const emit = emitter(req)

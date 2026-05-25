@@ -14,7 +14,13 @@
  *   DELETE /api/delete   → { name }
  */
 
+import { homedir } from 'os'
+import { join } from 'path'
+import { readFile, readdir, stat } from 'fs/promises'
 import { fetchWithTimeout } from '../lib/fetchWithTimeout.js'
+import {
+  parseOllamaManifest, parseOllamaModelRef, ollamaManifestRelPath, digestToBlobFilename, buildModelfile
+} from '../lib/localLlmDisk.js'
 
 const AVAILABILITY_CACHE_TTL_MS = 30_000
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
@@ -132,6 +138,35 @@ async function pullModel(modelId, onProgress) {
     return { success: false, error, modelId }
   }
 
+  const lastError = await streamNdjson(response, (frame) => {
+    if (typeof onProgress === 'function') {
+      const percent = frame.total > 0 && frame.completed >= 0
+        ? Math.round((frame.completed / frame.total) * 100)
+        : null
+      onProgress({ status: frame.status || '', percent, completed: frame.completed, total: frame.total })
+    }
+  })
+
+  if (lastError) {
+    return { success: false, error: lastError, modelId }
+  }
+  installedModels = []  // bust cache so the new model shows on next list
+  console.log(`✅ Ollama pull complete: ${modelId}`)
+  return { success: true, modelId }
+}
+
+/**
+ * Consume an Ollama NDJSON progress stream (used by /api/pull and /api/create).
+ * Returns the last `{ error }` seen, or null on a clean stream. Reads via
+ * getReader() to match the codebase's streaming convention; try/finally releases
+ * the reader even if a read rejects mid-stream (avoids leaking the connection).
+ * Flushes the decoder + trailing buffer so a final frame that wasn't newline-
+ * terminated (notably a terminal `{"error":...}`) isn't silently dropped.
+ * @param {Response} response - a fetch Response with a readable body
+ * @param {(frame: object) => void} [onFrame]
+ * @returns {Promise<string|null>} last error message, or null
+ */
+async function streamNdjson(response, onFrame) {
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
@@ -143,18 +178,9 @@ async function pullModel(modelId, onProgress) {
     const frame = safeParse(trimmed)
     if (!frame) return
     if (frame.error) lastError = frame.error
-    if (typeof onProgress === 'function') {
-      const percent = frame.total > 0 && frame.completed >= 0
-        ? Math.round((frame.completed / frame.total) * 100)
-        : null
-      onProgress({ status: frame.status || '', percent, completed: frame.completed, total: frame.total })
-    }
+    if (typeof onFrame === 'function') onFrame(frame)
   }
 
-  // Ollama streams newline-delimited JSON progress frames. Read via getReader()
-  // to match the rest of the codebase's streaming-fetch convention. try/finally
-  // releases the reader even if a read rejects mid-pull (avoids leaking the
-  // underlying connection).
   try {
     while (true) {
       const { value, done } = await reader.read()
@@ -166,21 +192,12 @@ async function pullModel(modelId, onProgress) {
         buffer = buffer.slice(nl + 1)
       }
     }
-    // Flush the decoder and process any final frame that wasn't newline-
-    // terminated — otherwise a terminal `{"error":...}` (or "success") frame
-    // would be dropped and a failed pull silently reported as success.
     buffer += decoder.decode()
     handleFrame(buffer)
   } finally {
     reader.releaseLock()
   }
-
-  if (lastError) {
-    return { success: false, error: lastError, modelId }
-  }
-  installedModels = []  // bust cache so the new model shows on next list
-  console.log(`✅ Ollama pull complete: ${modelId}`)
-  return { success: true, modelId }
+  return lastError
 }
 
 function safeParse(line) {
@@ -208,6 +225,83 @@ async function deleteModel(modelId) {
   return { success: true, modelId }
 }
 
+// ---- local-disk introspection / import (migrate fast-path) ------------------
+
+/** Ollama's models root: `$OLLAMA_MODELS` or `~/.ollama/models`. */
+function getModelsDir() {
+  return process.env.OLLAMA_MODELS || join(homedir(), '.ollama', 'models')
+}
+
+const fileExists = (p) => stat(p).then((s) => s.isFile()).catch(() => false)
+const readJson = (p) => readFile(p, 'utf8').then((t) => JSON.parse(t)).catch(() => null)
+
+// The canonical manifest path covers registry-pulled models; fall back to a
+// shallow scan of manifests/<registry>/<namespace>/<name>/<tag> for custom
+// registries/namespaces we didn't guess.
+async function findManifest(modelsDir, ref) {
+  const direct = await readJson(join(modelsDir, ...ollamaManifestRelPath(ref).split('/')))
+  if (direct) return direct
+  const manifestsDir = join(modelsDir, 'manifests')
+  const registries = await readdir(manifestsDir).catch(() => [])
+  for (const registry of registries) {
+    const namespaces = await readdir(join(manifestsDir, registry)).catch(() => [])
+    for (const ns of namespaces) {
+      const candidate = join(manifestsDir, registry, ns, ref.name, ref.tag)
+      const m = await readJson(candidate)
+      if (m) return m
+    }
+  }
+  return null
+}
+
+/**
+ * Locate an installed Ollama model's weight files on disk (no network).
+ * @returns {Promise<{ ggufPath: string, projectorPath: string|null, isMlx: false, isSharded: false }|null>}
+ */
+async function resolveLocalModel(modelId) {
+  const modelsDir = getModelsDir()
+  const manifest = await findManifest(modelsDir, parseOllamaModelRef(modelId))
+  if (!manifest) return null
+  const { modelDigest, projectorDigest } = parseOllamaManifest(manifest)
+  if (!modelDigest) return null
+  const ggufPath = join(modelsDir, 'blobs', digestToBlobFilename(modelDigest))
+  if (!(await fileExists(ggufPath))) return null
+  return {
+    ggufPath,
+    projectorPath: projectorDigest ? join(modelsDir, 'blobs', digestToBlobFilename(projectorDigest)) : null,
+    isMlx: false,
+    isSharded: false
+  }
+}
+
+/**
+ * Register a local GGUF file as an Ollama model via `/api/create` (no download).
+ * @param {{ name: string, ggufPath: string }} args
+ * @returns {Promise<{ success: boolean, modelId?: string, error?: string }>}
+ */
+async function importModelFromGguf({ name, ggufPath }) {
+  if (!(await checkOllamaAvailable())) {
+    return { success: false, error: 'Ollama not available' }
+  }
+  console.log(`📦 Ollama import (local): ${name} ← ${ggufPath}`)
+  // No timeout — create copies the (multi-GB) blob into the store.
+  const response = await fetchWithTimeout(`${config.baseUrl}/api/create`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, modelfile: buildModelfile(ggufPath), stream: true })
+  }, 0).catch((err) => ({ _err: err.message }))
+
+  if (response._err || !response.ok || !response.body) {
+    const error = response._err || `create failed: ${response.status} ${response.statusText}`
+    return { success: false, error }
+  }
+  const lastError = await streamNdjson(response)
+  if (lastError) return { success: false, error: lastError }
+  installedModels = []
+  console.log(`✅ Ollama import complete: ${name}`)
+  return { success: true, modelId: name }
+}
+
 /**
  * Aggregate status for the unified local-LLM UI.
  */
@@ -229,5 +323,8 @@ export {
   getInstalledModels,
   pullModel,
   deleteModel,
-  getStatus
+  getStatus,
+  getModelsDir,
+  resolveLocalModel,
+  importModelFromGguf
 }

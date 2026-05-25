@@ -1,13 +1,14 @@
 // Curated cross-backend catalog of popular local LLMs.
 //
-// PortOS supports two local-LLM backends — Ollama (native blob format) and
-// LM Studio (raw GGUF). Their model identifiers differ (`llama3.2` vs
-// `lmstudio-community/Llama-3.2-3B-Instruct-GGUF`) and the weights are NOT
-// interchangeable on disk, so "migrating" between them means re-provisioning
-// the equivalent model on the other backend. This catalog is the mapping
-// table that makes both the in-UI install picker and the migrate flow work
-// without guessing: each entry carries the canonical id for whichever
-// backend(s) ship a well-known build of that model.
+// PortOS supports two local-LLM backends — Ollama (content-addressed blob
+// store) and LM Studio (plain GGUF files). Their model identifiers differ
+// (`llama3.2` vs `lmstudio-community/Llama-3.2-3B-Instruct-GGUF`). The GGUF
+// weights themselves ARE portable; only the on-disk layout differs, so the
+// migrate flow copies the weights across locally when it can (see
+// `localLlmDisk.js`) and re-pulls the equivalent only when it can't. This
+// catalog is the mapping table that makes both the in-UI install picker and
+// the migrate re-pull fallback work without guessing: each entry carries the
+// canonical id for whichever backend(s) ship a well-known build of that model.
 //
 // This module is pure (no I/O, no network) so it can be unit-tested and
 // imported anywhere. The installed-state overlay is applied by the caller

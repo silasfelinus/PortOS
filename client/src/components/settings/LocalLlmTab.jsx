@@ -49,7 +49,7 @@ function BackendCard({ backend, status, isActive, busy, actionInProgress, runAct
             onClick={() => setConfirmAction({
               type: 'migrate',
               label: `Migrate to ${backend.label}?`,
-              detail: `Re-installs the models you have on ${labelFor(other)} onto ${backend.label} (local model weights aren't portable between backends), then makes ${backend.label} the active backend. Large pulls can take a while.`,
+              detail: `Provisions the models you have on ${labelFor(other)} onto ${backend.label}, then makes ${backend.label} the active backend. GGUF weights are copied locally (no re-download) where possible; anything that can't be copied (LM Studio MLX-format, sharded, or multimodal models) is re-pulled, which can take a while.`,
               action: () => runAction(`migrate-${backend.id}`, () => migrateLocalLlmBackend(backend.id), `Migrated to ${backend.label}`)
             })}
             disabled={busy}

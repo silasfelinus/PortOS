@@ -5,8 +5,14 @@
  * Provides model discovery, loading, unloading, and downloading.
  */
 
+import { homedir } from 'os'
+import { join } from 'path'
+import { readdir, stat, mkdir, copyFile } from 'fs/promises'
 import { cosEvents } from './cosEvents.js'
 import { fetchWithTimeout } from '../lib/fetchWithTimeout.js'
+import {
+  dirIsMlx, selectPrimaryGguf, selectProjectorGguf, isShardedGguf, lmStudioPublisherRepo
+} from '../lib/localLlmDisk.js'
 
 const AVAILABILITY_CACHE_TTL_MS = 30_000
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
@@ -435,6 +441,75 @@ function resetCache() {
   lastCheckAt = null
 }
 
+// ---- local-disk introspection / import (migrate fast-path) ------------------
+
+const dirExists = (p) => stat(p).then((s) => s.isDirectory()).catch(() => false)
+
+/** LM Studio's models root — first of the two known locations that exists. */
+async function getModelsDir() {
+  const candidates = [
+    process.env.LM_STUDIO_MODELS_DIR,
+    join(homedir(), '.lmstudio', 'models'),
+    join(homedir(), '.cache', 'lm-studio', 'models')
+  ].filter(Boolean)
+  for (const dir of candidates) {
+    if (await dirExists(dir)) return dir
+  }
+  return candidates[1] // sensible default even if it doesn't exist yet
+}
+
+/**
+ * Locate an installed LM Studio model's files on disk (no network). The model
+ * id maps directly onto the `<publisher>/<repo>` folder. MLX models (safetensors,
+ * no GGUF) return `{ isMlx: true, ggufPath: null }` so the caller routes them to
+ * re-pull instead of a (impossible) file copy.
+ * @returns {Promise<{ ggufPath: string|null, projectorPath: string|null, isMlx: boolean, isSharded: boolean }|null>}
+ */
+async function resolveLocalModel(modelId) {
+  const modelsDir = await getModelsDir()
+  const dir = join(modelsDir, ...String(modelId || '').split('/'))
+  if (!(await dirExists(dir))) return null
+  const files = await readdir(dir).catch(() => [])
+  if (dirIsMlx(files)) return { ggufPath: null, projectorPath: null, isMlx: true, isSharded: false }
+  const primary = selectPrimaryGguf(files)
+  if (!primary) return null
+  const projector = selectProjectorGguf(files)
+  return {
+    ggufPath: join(dir, primary),
+    projectorPath: projector ? join(dir, projector) : null,
+    isMlx: false,
+    isSharded: isShardedGguf(primary)
+  }
+}
+
+/**
+ * Copy a local GGUF into LM Studio's model tree (no download). LM Studio indexes
+ * loose GGUF files dropped under `<publisher>/<repo>/` on its next scan.
+ * @param {{ lmstudioId: string, ggufPath: string, projectorPath?: string|null }} args
+ * @returns {Promise<{ success: boolean, modelId?: string, error?: string }>}
+ */
+async function importModelFromGguf({ lmstudioId, ggufPath, projectorPath }) {
+  const modelsDir = await getModelsDir()
+  const { publisher, repo } = lmStudioPublisherRepo(lmstudioId)
+  const destDir = join(modelsDir, publisher, repo)
+  const r = await mkdir(destDir, { recursive: true })
+    .then(async () => {
+      const base = ggufPath.split('/').pop()
+      const destName = /\.gguf$/i.test(base) ? base : `${repo}.gguf`
+      await copyFile(ggufPath, join(destDir, destName))
+      if (projectorPath) {
+        const projBase = projectorPath.split('/').pop()
+        await copyFile(projectorPath, join(destDir, /\.gguf$/i.test(projBase) ? projBase : `${repo}-mmproj.gguf`))
+      }
+    })
+    .then(() => ({ ok: true }))
+    .catch((err) => ({ _err: err.message }))
+  if (r._err) return { success: false, error: r._err, modelId: lmstudioId }
+  resetCache()
+  console.log(`📦 LM Studio import (local): ${lmstudioId} ← ${ggufPath}`)
+  return { success: true, modelId: lmstudioId }
+}
+
 export {
   checkLMStudioAvailable,
   getLoadedModels,
@@ -448,5 +523,8 @@ export {
   getStatus,
   updateConfig,
   resetCache,
+  getModelsDir,
+  resolveLocalModel,
+  importModelFromGguf,
   DEFAULT_CONFIG
 }
