@@ -25,7 +25,10 @@ async function resolveEmbeddingProviderConfigured() {
   const cosConfig = await getCosConfig().catch(() => ({}));
   const providerId = cosConfig?.embeddingProviderId || 'lmstudio';
   const provider = await getProviderById(providerId).catch(() => null);
-  return !!(provider && provider.endpoint && provider.enabled !== false);
+  // Mirror memoryEmbeddings.initConfig exactly: it keys off `endpoint` alone and
+  // does NOT gate on `enabled`, so embeddings still generate from a disabled-but-
+  // endpoint'd provider. Checking `enabled` here would misreport that as "off".
+  return !!provider?.endpoint;
 }
 
 async function resolveTelegram() {
