@@ -595,6 +595,11 @@ async function applyMediaCollectionsRemote(remoteData) {
 // categories' `readJSONFile`+`atomicWrite` pattern) rather than importing
 // videoGen/local.js — that module drags in ffmpeg/spawn machinery we don't
 // need on the sync read path, and the on-disk shape is a plain array.
+// A video-history row is syncable only if it carries a non-empty string `id`.
+// Shared by the snapshot (wire) side and the apply (merge) side so the two can
+// never disagree on which rows are keyable — see the convergence note below.
+const hasVideoRowId = (r) => typeof r?.id === 'string' && r.id;
+
 async function getVideoHistorySnapshot() {
   const raw = await readJSONFile(VIDEO_HISTORY_FILE, []);
   // Exclude rows the user hid from their own gallery (`hidden: true`) — hiding
@@ -602,14 +607,18 @@ async function getVideoHistorySnapshot() {
   // or a clip the user tucked away) and must NOT propagate to peers. The whole
   // point of this category is to render a SHARED collection's video items, and
   // a hidden row is by definition not part of that shared surface.
-  const rows = (Array.isArray(raw) ? raw : []).filter((r) => r && !r.hidden);
+  //
+  // Also exclude rows without a string `id`: applyVideoHistoryRemote can only
+  // merge id-keyed rows, so an id-less row in the wire snapshot/checksum would
+  // be un-appliable on the receiver — its recomputed checksum would never match
+  // the sender's and the two peers would re-download this category forever.
+  // Treat id-less rows as strictly local-only on BOTH sides.
+  const rows = (Array.isArray(raw) ? raw : []).filter((r) => r && !r.hidden && hasVideoRowId(r));
   // Canonicalize ordering for the wire so two peers holding identical sets
   // produce identical checksums regardless of insertion (newest-first) order.
-  // Mirrors getMediaCollectionsSnapshot's sort-by-id rationale. Rows without a
-  // string id sort last (and won't merge — see applyVideoHistoryRemote's guard).
+  // Mirrors getMediaCollectionsSnapshot's sort-by-id rationale.
   const data = {
-    videos: [...rows].sort((a, b) =>
-      String(a?.id ?? '').localeCompare(String(b?.id ?? ''))),
+    videos: [...rows].sort((a, b) => a.id.localeCompare(b.id)),
   };
   return { data, checksum: computeChecksum(data) };
 }
@@ -627,8 +636,8 @@ async function applyVideoHistoryRemote(remoteData) {
   // `createdAt` is a sufficient (and the only) freshness signal — there's no
   // `updatedAt`. A row with no string id can't be keyed and is skipped (a
   // hand-edited or corrupt entry shouldn't clobber a real row at key
-  // `undefined`).
-  const hasId = (r) => typeof r?.id === 'string' && r.id;
+  // `undefined`); the snapshot side excludes the same rows so checksums agree.
+  const hasId = hasVideoRowId;
   const keyed = local.filter(hasId);
   const before = new Map(keyed.map((r) => [r.id, r]));
   const { merged, changed } = mergeArraysByKey(

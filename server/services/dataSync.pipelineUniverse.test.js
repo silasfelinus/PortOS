@@ -705,6 +705,24 @@ describe('dataSync — videoHistory category', () => {
     expect(snap.data.videos.map((v) => v.id).sort()).toEqual(['v1', 'v2']);
   });
 
+  it('snapshot excludes id-less rows so checksums converge (apply side drops them too)', async () => {
+    // An id-less local row can't be merged by applyVideoHistoryRemote, so it
+    // MUST be kept off the wire snapshot/checksum — otherwise a receiver that
+    // drops it recomputes a different checksum and the peers re-download forever.
+    writeJSON(VIDEO_HISTORY_PATH, [row('v1'), { prompt: 'legacy no-id', filename: 'legacy.mp4' }, row('v2')]);
+    const snap = await dataSync.getSnapshot('videoHistory');
+    expect(snap.data.videos.map((v) => v.id)).toEqual(['v1', 'v2']);
+    // Convergence: a fresh receiver applies the wire snapshot onto an empty
+    // store, then recomputes its OWN snapshot checksum — it must equal the
+    // sender's. If an id-less row had leaked onto the wire, the receiver (which
+    // drops it on apply) would compute a different checksum and never converge.
+    writeJSON(VIDEO_HISTORY_PATH, []);
+    const applied = await dataSync.applyRemote('videoHistory', snap.data);
+    expect(applied.applied).toBe(true);
+    const receiverSnap = await dataSync.getSnapshot('videoHistory');
+    expect(receiverSnap.checksum).toBe(snap.checksum);
+  });
+
   it('snapshot checksum is order-insensitive (rows sorted by id on the wire)', async () => {
     writeJSON(VIDEO_HISTORY_PATH, [row('v-b'), row('v-a')]);
     const a = await dataSync.getSnapshot('videoHistory');
