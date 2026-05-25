@@ -137,6 +137,20 @@ async function pullModel(modelId, onProgress) {
   let buffer = ''
   let lastError = null
 
+  const handleFrame = (line) => {
+    const trimmed = line.trim()
+    if (!trimmed) return
+    const frame = safeParse(trimmed)
+    if (!frame) return
+    if (frame.error) lastError = frame.error
+    if (typeof onProgress === 'function') {
+      const percent = frame.total > 0 && frame.completed >= 0
+        ? Math.round((frame.completed / frame.total) * 100)
+        : null
+      onProgress({ status: frame.status || '', percent, completed: frame.completed, total: frame.total })
+    }
+  }
+
   // Ollama streams newline-delimited JSON progress frames. Read via getReader()
   // to match the rest of the codebase's streaming-fetch convention. try/finally
   // releases the reader even if a read rejects mid-pull (avoids leaking the
@@ -148,20 +162,15 @@ async function pullModel(modelId, onProgress) {
       buffer += decoder.decode(value, { stream: true })
       let nl
       while ((nl = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, nl).trim()
+        handleFrame(buffer.slice(0, nl))
         buffer = buffer.slice(nl + 1)
-        if (!line) continue
-        const frame = safeParse(line)
-        if (!frame) continue
-        if (frame.error) lastError = frame.error
-        if (typeof onProgress === 'function') {
-          const percent = frame.total > 0 && frame.completed >= 0
-            ? Math.round((frame.completed / frame.total) * 100)
-            : null
-          onProgress({ status: frame.status || '', percent, completed: frame.completed, total: frame.total })
-        }
       }
     }
+    // Flush the decoder and process any final frame that wasn't newline-
+    // terminated — otherwise a terminal `{"error":...}` (or "success") frame
+    // would be dropped and a failed pull silently reported as success.
+    buffer += decoder.decode()
+    handleFrame(buffer)
   } finally {
     reader.releaseLock()
   }

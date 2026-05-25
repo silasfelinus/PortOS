@@ -27,6 +27,11 @@ const execFileAsync = promisify(execFile)
 const ENV_PATH = join(PATHS.root, '.env')
 const DEFAULT_BACKEND = 'ollama'
 
+// `lms get` blocks until the download finishes — generous but finite so a
+// stalled connection (or an unexpected interactive prompt) can't hang the
+// request forever. Large models on a slow link still fit comfortably.
+const LMS_INSTALL_TIMEOUT_MS = 60 * 60 * 1000
+
 // aiToolkit provider id that pairs with each backend.
 const PROVIDER_ID = { ollama: 'ollama', lmstudio: 'lmstudio' }
 
@@ -109,11 +114,17 @@ function normalizeModels(backend, models) {
   }))
 }
 
-/** Installed models for a backend, normalized. */
-export async function listModels(backend) {
+/**
+ * Installed models for a backend, normalized.
+ * @param {boolean} [forceRefresh] - bypass the Ollama installed-models cache.
+ *   Default false so the catalog-overlay path (hit on every debounced keystroke)
+ *   reuses the cache instead of spamming `/api/tags`. The cache is busted on
+ *   pull/delete, so it stays accurate; force only for explicit refresh/migrate.
+ */
+export async function listModels(backend, forceRefresh = false) {
   if (!isBackend(backend)) return []
   const raw = backend === 'ollama'
-    ? await ollamaManager.getInstalledModels(true)
+    ? await ollamaManager.getInstalledModels(forceRefresh)
     : await lmStudioManager.getAvailableModels()
   return normalizeModels(backend, raw)
 }
@@ -127,7 +138,9 @@ export async function getStatus() {
     commandExists('ollama', ['--version']),
     lmStudioManager.getStatus(),
     commandExists('lms', ['version']),
-    listModels('lmstudio').catch(() => [])  // already normalized
+    // already normalized; capture (don't swallow) a list failure so the UI can
+    // distinguish "no models" from "couldn't read the model list".
+    listModels('lmstudio').then((models) => ({ models, error: null })).catch((err) => ({ models: [], error: err.message }))
   ])
 
   return {
@@ -145,8 +158,9 @@ export async function getStatus() {
       available: lmStudioStatus.available,
       hasCli: lmsCli,
       baseUrl: lmStudioStatus.baseUrl,
-      modelCount: lmStudioModels.length,
-      models: lmStudioModels
+      modelCount: lmStudioModels.models.length,
+      models: lmStudioModels.models,
+      modelsError: lmStudioModels.error
     }
   }
 }
@@ -162,18 +176,23 @@ export async function installModel(backend, modelId, onProgress) {
   if (backend === 'ollama') {
     return ollamaManager.pullModel(modelId, onProgress)
   }
-  // LM Studio: prefer the `lms` CLI (real download), fall back to the REST hook.
+  // LM Studio: prefer the `lms` CLI (real, blocking download), fall back to the
+  // REST hook.
   if (await commandExists('lms', ['version'])) {
     // `lms get` streams substantial progress to stdout; the default 1MB
     // maxBuffer overflows and surfaces as a false install failure (see
     // voice/bootstrap.js which uses the same 64MB ceiling for `lms get`).
-    const r = await execFileAsync('lms', ['get', '-y', modelId], { timeout: 0, maxBuffer: 64 * 1024 * 1024 })
+    const r = await execFileAsync('lms', ['get', '-y', modelId], { timeout: LMS_INSTALL_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 })
       .then(() => ({ ok: true })).catch((err) => ({ _err: err.stderr || err.message }))
     if (r._err) return { success: false, error: r._err, modelId }
     lmStudioManager.resetCache()
     return { success: true, modelId }
   }
-  return lmStudioManager.downloadModel(modelId)
+  // REST fallback only *queues* the download — LM Studio pulls it in the
+  // background and the call returns immediately. Flag it `pending` so callers
+  // don't claim the model is installed before it actually is.
+  const r = await lmStudioManager.downloadModel(modelId)
+  return r.success ? { ...r, pending: true } : r
 }
 
 /**
@@ -218,10 +237,15 @@ export async function switchBackend(to) {
  */
 export async function migrateBackend(to, onProgress = () => {}) {
   if (!isBackend(to)) return { success: false, error: `Unknown backend: ${to}` }
-  const from = to === 'ollama' ? 'lmstudio' : 'ollama'
+  // Source is whatever's active now — we're moving away from it. Migrating to
+  // the already-active backend is a no-op, not "re-provision from the other".
+  const from = getBackend()
+  if (from === to) {
+    return { success: false, error: `${to} is already the active backend — nothing to migrate.` }
+  }
 
   onProgress({ event: 'start', message: `Reading models installed on ${from}…` })
-  const sourceModels = await listModels(from)
+  const sourceModels = await listModels(from, true) // fresh source list for an accurate migration
 
   const results = []
   for (const model of sourceModels) {
@@ -235,15 +259,21 @@ export async function migrateBackend(to, onProgress = () => {}) {
     const r = await installModel(to, targetId, (p) => {
       if (p?.percent != null) onProgress({ event: 'start', message: `Pulling ${targetId}: ${p.percent}%` })
     })
-    results.push({ source: model.id, target: targetId, status: r.success ? 'installed' : 'failed', reason: r.error })
+    // `pending` (LM Studio REST fallback) means the download was queued, not
+    // finished — don't report it as a completed install.
+    const status = r.success ? (r.pending ? 'started' : 'installed') : 'failed'
+    results.push({ source: model.id, target: targetId, status, reason: r.error })
   }
 
   writeBackend(to)
   await ensureBackendProvider(to)
 
   const installed = results.filter((r) => r.status === 'installed').length
+  const started = results.filter((r) => r.status === 'started').length
   const failed = results.filter((r) => r.status === 'failed').length
-  onProgress({ event: 'complete', message: `Migrated to ${to} — ${installed} installed, ${failed} failed, ${results.length - installed - failed} skipped` })
+  const skipped = results.length - installed - started - failed
+  const startedNote = started ? `, ${started} downloading` : ''
+  onProgress({ event: 'complete', message: `Migrated to ${to} — ${installed} installed${startedNote}, ${failed} failed, ${skipped} skipped` })
   console.log(`🔀 Migrated local LLM backend → ${to} (${installed} installed, ${failed} failed)`)
   return { success: true, backend: to, results }
 }

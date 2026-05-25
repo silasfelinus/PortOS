@@ -1047,7 +1047,7 @@ export const localLlmBackendSchema = z.enum(['ollama', 'lmstudio']);
 // a leading dash (would be parsed as a flag) and control chars (NUL / newline).
 export const localLlmModelIdSchema = z.string().min(1).max(256)
   .refine((v) => !v.startsWith('-'), { message: 'modelId may not start with "-"' })
-  .refine((v) => !/[ \r\n]/.test(v), { message: 'modelId may not contain control characters' });
+  .refine((v) => !/[\0\r\n]/.test(v), { message: 'modelId may not contain control characters (NUL, CR, LF)' });
 export const localLlmInstallSchema = z.object({
   backend: localLlmBackendSchema,
   modelId: localLlmModelIdSchema,

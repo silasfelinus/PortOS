@@ -240,20 +240,22 @@ export function LocalLlmTab() {
         <div className="flex flex-col sm:flex-row gap-2">
           <div className="flex-1 flex items-center gap-2 bg-port-bg border border-port-border rounded-lg px-3">
             <Search size={14} className="text-gray-500" />
+            <label htmlFor="llm-catalog-search" className="sr-only">{`Search the ${labelFor(selected)} model catalog`}</label>
             <input
+              id="llm-catalog-search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={`Search the ${labelFor(selected)} catalog…`}
-              aria-label={`Search the ${labelFor(selected)} model catalog`}
               className="flex-1 bg-transparent py-2 text-sm text-white placeholder-gray-600 focus:outline-none"
             />
           </div>
           <div className="flex items-center gap-2">
+            <label htmlFor="llm-manual-install" className="sr-only">{`Install a ${labelFor(selected)} model by id`}</label>
             <input
+              id="llm-manual-install"
               value={manualId}
               onChange={(e) => setManualId(e.target.value)}
               placeholder={selected === 'ollama' ? 'pull by name e.g. llama3.2' : 'publisher/Model-GGUF'}
-              aria-label={`Install a ${labelFor(selected)} model by id`}
               className="flex-1 sm:w-56 bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-port-accent"
             />
             <button

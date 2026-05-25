@@ -54,14 +54,22 @@ router.post('/install', asyncHandler(async (req, res) => {
   const { backend, modelId } = validateRequest(localLlmInstallSchema, req.body)
   const emit = emitter(req)
   emit('start', `Installing ${modelId} on ${backend}…`)
+  // A thrown rejection (e.g. the pull stream dropping mid-download) would 500
+  // via asyncHandler but never emit a terminal progress frame, leaving the
+  // client's progress banner stuck on the last 'start'. Surface it as 'error'.
   const result = await installModel(backend, modelId, (p) => {
     if (p?.percent != null) emit('start', `${modelId}: ${p.status || 'downloading'} ${p.percent}%`)
+  }).catch((err) => {
+    emit('error', `Install failed: ${err.message}`)
+    throw err
   })
   if (!result.success) {
     emit('error', result.error || 'Install failed')
     return res.status(502).json({ error: result.error || 'Install failed', modelId })
   }
-  emit('complete', `${modelId} installed on ${backend}`)
+  emit('complete', result.pending
+    ? `${modelId} download started in LM Studio — it'll finish in the background`
+    : `${modelId} installed on ${backend}`)
   res.json({ success: true, ...result })
 }))
 

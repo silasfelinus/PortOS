@@ -122,5 +122,15 @@ describe('localLlm', () => {
       expect(r.results.find((x) => x.source === 'custom-unlisted:latest').status).toBe('skipped');
       expect(mocks.lmstudio.downloadModel).not.toHaveBeenCalled();
     });
+
+    it('rejects migrating to the already-active backend (no-op)', async () => {
+      writeEnv('LLM_BACKEND=ollama\n');
+      const r = await svc.migrateBackend('ollama');
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/already the active backend/);
+      // No source read, no installs attempted.
+      expect(mocks.ollama.getInstalledModels).not.toHaveBeenCalled();
+      expect(mocks.lmstudio.getAvailableModels).not.toHaveBeenCalled();
+    });
   });
 });
