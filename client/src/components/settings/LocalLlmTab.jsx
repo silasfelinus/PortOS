@@ -4,7 +4,7 @@ import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
 import { formatBytes } from '../../utils/formatters';
 import {
-  getLocalLlmStatus, getLocalLlmCatalog, installLocalLlmModel,
+  getLocalLlmStatus, getLocalLlmCatalog, getLocalLlmHuggingFaceSearch, installLocalLlmModel,
   deleteLocalLlmModel, switchLocalLlmBackend, migrateLocalLlmBackend, installLocalLlmBackend, controlOllamaService
 } from '../../services/api';
 import socket from '../../services/socket';
@@ -188,7 +188,10 @@ export function LocalLlmTab() {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState('ollama');
+  const [catalogSource, setCatalogSource] = useState('recommended');
   const [catalog, setCatalog] = useState([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState('');
   const [activeCategory, setActiveCategory] = useState('all');
   const [query, setQuery] = useState('');
   const [manualId, setManualId] = useState('');
@@ -197,6 +200,7 @@ export function LocalLlmTab() {
   const [confirmAction, setConfirmAction] = useState(null);
   const progressTimer = useRef(null);
   const statusRequestId = useRef(0);
+  const catalogRequestId = useRef(0);
   const selectedInitialized = useRef(false);
 
   const loadStatus = useCallback(() => {
@@ -220,18 +224,34 @@ export function LocalLlmTab() {
       });
   }, []);
 
-  const loadCatalog = useCallback((backend, q) => {
-    getLocalLlmCatalog(backend, q)
-      .then((r) => setCatalog(r.models || []))
-      .catch(() => setCatalog([]));
-  }, []);
+  const loadCatalog = useCallback((backend, q, source = catalogSource, category = activeCategory) => {
+    const requestId = ++catalogRequestId.current;
+    setCatalogLoading(true);
+    setCatalogError('');
+    const request = source === 'huggingface'
+      ? getLocalLlmHuggingFaceSearch(backend, q, category, 18)
+      : getLocalLlmCatalog(backend, q);
+    return request
+      .then((r) => {
+        if (requestId !== catalogRequestId.current) return;
+        setCatalog(r.models || []);
+      })
+      .catch((err) => {
+        if (requestId !== catalogRequestId.current) return;
+        setCatalog([]);
+        setCatalogError(source === 'huggingface' ? (err?.message || 'Hugging Face search failed') : '');
+      })
+      .finally(() => {
+        if (requestId === catalogRequestId.current) setCatalogLoading(false);
+      });
+  }, [activeCategory, catalogSource]);
 
   useEffect(() => { loadStatus(); }, [loadStatus]);
   // Debounce so typing in the search box doesn't fire a request per keystroke.
   useEffect(() => {
-    const t = setTimeout(() => loadCatalog(selected, query), 250);
+    const t = setTimeout(() => loadCatalog(selected, query, catalogSource, activeCategory), catalogSource === 'huggingface' ? 450 : 250);
     return () => clearTimeout(t);
-  }, [selected, query, loadCatalog]);
+  }, [selected, query, catalogSource, activeCategory, loadCatalog]);
 
   useEffect(() => {
     const handleProgress = (data) => {
@@ -240,7 +260,7 @@ export function LocalLlmTab() {
       if (data.event === 'complete') {
         progressTimer.current = setTimeout(() => setProgressMsg(''), 3000);
         loadStatus();
-        loadCatalog(selected, query);
+        loadCatalog(selected, query, catalogSource, activeCategory);
       }
       if (data.event === 'error') {
         progressTimer.current = setTimeout(() => setProgressMsg(''), 5000);
@@ -251,7 +271,7 @@ export function LocalLlmTab() {
       socket.off('localLlm:progress', handleProgress);
       clearTimeout(progressTimer.current);
     };
-  }, [loadStatus, loadCatalog, selected, query]);
+  }, [loadStatus, loadCatalog, selected, query, catalogSource, activeCategory]);
 
   const runAction = useCallback((key, fn, successMsg) => {
     setConfirmAction(null);
@@ -270,11 +290,11 @@ export function LocalLlmTab() {
           }) : prev);
         }
         loadStatus();
-        loadCatalog(selected, query);
+        loadCatalog(selected, query, catalogSource, activeCategory);
       })
       .catch(() => { /* request() surfaces API errors as a toast */ })
       .finally(() => setActionInProgress(null));
-  }, [loadStatus, loadCatalog, selected, query]);
+  }, [loadStatus, loadCatalog, selected, query, catalogSource, activeCategory]);
 
   const busy = actionInProgress != null;
   const selectedData = status?.[selected];
@@ -289,9 +309,10 @@ export function LocalLlmTab() {
       .map((id) => ({ id, label: categoryLabel(id), count: counts.get(id) }));
   }, [catalog]);
   const visibleCatalogGroups = useMemo(() => {
-    const categoryIds = activeCategory === 'all'
+    const filterCategory = catalogSource === 'huggingface' ? 'all' : activeCategory;
+    const categoryIds = filterCategory === 'all'
       ? catalogCategories.map((c) => c.id)
-      : [activeCategory];
+      : [filterCategory];
     return categoryIds
       .map((category) => ({
         category,
@@ -299,7 +320,7 @@ export function LocalLlmTab() {
         models: catalog.filter((model) => (model.category || 'chat') === category)
       }))
       .filter((group) => group.models.length > 0);
-  }, [activeCategory, catalog, catalogCategories]);
+  }, [activeCategory, catalog, catalogCategories, catalogSource]);
 
   // LM Studio's REST fallback returns { pending: true } — the download was only
   // queued, not finished — so don't claim "installed" in that case.
@@ -381,16 +402,29 @@ export function LocalLlmTab() {
       <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-4">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h2 className="text-sm font-medium text-gray-300">Models</h2>
-          <div className="flex items-center gap-1.5">
-            {BACKENDS.map((b) => (
-              <button
-                key={b.id}
-                onClick={() => { setSelected(b.id); setActiveCategory('all'); }}
-                className={`px-2.5 py-1 text-xs rounded transition-colors ${selected === b.id ? 'bg-port-accent/20 text-port-accent' : 'bg-port-bg text-gray-400 hover:text-white'}`}
-              >
-                {b.label}
-              </button>
-            ))}
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <div className="flex items-center gap-1.5">
+              {['recommended', 'huggingface'].map((source) => (
+                <button
+                  key={source}
+                  onClick={() => { setCatalogSource(source); setActiveCategory('all'); }}
+                  className={`px-2.5 py-1 text-xs rounded transition-colors ${catalogSource === source ? 'bg-port-accent/20 text-port-accent' : 'bg-port-bg text-gray-400 hover:text-white'}`}
+                >
+                  {source === 'recommended' ? 'Recommended' : 'Hugging Face'}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-1.5">
+              {BACKENDS.map((b) => (
+                <button
+                  key={b.id}
+                  onClick={() => { setSelected(b.id); setActiveCategory('all'); }}
+                  className={`px-2.5 py-1 text-xs rounded transition-colors ${selected === b.id ? 'bg-port-accent/20 text-port-accent' : 'bg-port-bg text-gray-400 hover:text-white'}`}
+                >
+                  {b.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -432,7 +466,7 @@ export function LocalLlmTab() {
               id="llm-catalog-search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder={`Search the ${labelFor(selected)} catalog…`}
+              placeholder={catalogSource === 'huggingface' ? 'Search Hugging Face GGUF models…' : `Search the ${labelFor(selected)} catalog…`}
               className="flex-1 bg-transparent py-2 text-sm text-white placeholder-gray-600 focus:outline-none"
             />
           </div>
@@ -475,6 +509,16 @@ export function LocalLlmTab() {
           </div>
         )}
 
+        {catalogLoading && (
+          <div className="flex items-center gap-2 text-xs text-gray-400">
+            <BrailleSpinner />
+            {catalogSource === 'huggingface' ? 'Searching Hugging Face' : 'Loading recommendations'}
+          </div>
+        )}
+        {catalogError && (
+          <p className="text-xs text-port-warning">{catalogError}</p>
+        )}
+
         {/* Catalog cards */}
         <div className="space-y-4">
           {visibleCatalogGroups.map((group) => (
@@ -492,6 +536,8 @@ export function LocalLlmTab() {
                       <div className="flex items-center gap-1.5 flex-wrap text-[11px] text-gray-600 mt-1">
                         <span className="text-gray-500">{categoryLabel(m.category)}</span>
                         <span>{m.size}</span>
+                        {m.source === 'huggingface' && <span>{m.downloads?.toLocaleString?.() || 0} downloads</span>}
+                        {m.source === 'huggingface' && m.license && <span>{m.license}</span>}
                         {(m.capabilities || []).map((capability) => (
                           <span key={capability} className="px-1.5 py-0.5 bg-port-border/60 rounded">{capability}</span>
                         ))}

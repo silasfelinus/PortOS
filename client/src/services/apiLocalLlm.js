@@ -7,6 +7,9 @@ export const getLocalLlmStatus = () => request('/local-llm/status');
 export const getLocalLlmCatalog = (backend, q = '') =>
   request(`/local-llm/catalog?backend=${encodeURIComponent(backend)}${q ? `&q=${encodeURIComponent(q)}` : ''}`);
 
+export const getLocalLlmHuggingFaceSearch = (backend, q = '', category = 'all', limit = 12) =>
+  request(`/local-llm/huggingface-search?backend=${encodeURIComponent(backend)}&category=${encodeURIComponent(category)}&limit=${encodeURIComponent(limit)}${q ? `&q=${encodeURIComponent(q)}` : ''}`);
+
 export const installLocalLlmModel = (backend, modelId) =>
   request('/local-llm/install', { method: 'POST', body: JSON.stringify({ backend, modelId }) });
 

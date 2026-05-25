@@ -1063,6 +1063,12 @@ export const localLlmMigrateSchema = z.object({
 });
 export const localLlmInstallBackendSchema = z.object({ backend: localLlmBackendSchema });
 export const localLlmOllamaServiceSchema = z.object({ action: z.enum(['start', 'stop', 'enable', 'disable']) });
+export const localLlmHuggingFaceSearchSchema = z.object({
+  backend: localLlmBackendSchema,
+  q: z.string().max(160).optional().default(''),
+  category: z.string().max(40).optional().default('all'),
+  limit: z.coerce.number().int().min(1).max(30).optional().default(12),
+});
 
 /**
  * Validate data against a Zod schema, throwing on failure.

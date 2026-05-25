@@ -17,9 +17,11 @@ import {
   localLlmSwitchSchema,
   localLlmMigrateSchema,
   localLlmInstallBackendSchema,
-  localLlmOllamaServiceSchema
+  localLlmOllamaServiceSchema,
+  localLlmHuggingFaceSearchSchema
 } from '../lib/validation.js'
 import { getCatalog, searchCatalog, isBackend } from '../lib/localLlmCatalog.js'
+import { searchHuggingFaceModels } from '../services/huggingFaceCatalog.js'
 import {
   getStatus, listModels, installModel, deleteModel, switchBackend, migrateBackend, installBackend, controlOllamaServer
 } from '../services/localLlm.js'
@@ -43,6 +45,15 @@ router.get('/catalog', asyncHandler(async (req, res) => {
   const installed = (await listModels(backend)).map((m) => m.id)
   const models = q ? searchCatalog(backend, q, installed) : getCatalog(backend, installed)
   res.json({ backend, models })
+}))
+
+// GET /api/local-llm/huggingface-search?backend=ollama&q=qwen&category=coding
+// Live Hub discovery for GGUF-compatible community models.
+router.get('/huggingface-search', asyncHandler(async (req, res) => {
+  const { backend, q, category, limit } = validateRequest(localLlmHuggingFaceSearchSchema, req.query)
+  const installed = (await listModels(backend)).map((m) => m.id)
+  const models = await searchHuggingFaceModels({ backend, query: q, category, limit, installedIds: installed })
+  res.json({ backend, source: 'huggingface', models })
 }))
 
 // POST /api/local-llm/install-backend — install the backend app/binary itself
