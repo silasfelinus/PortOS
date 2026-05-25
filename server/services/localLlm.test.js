@@ -62,6 +62,16 @@ describe('localLlm', () => {
       writeEnv('LLM_BACKEND=garbage\n');
       expect(svc.getBackend()).toBe('ollama');
     });
+    it('lets a valid process.env override win over an invalid .env marker', () => {
+      writeEnv('LLM_BACKEND=garbage\n');
+      process.env.LLM_BACKEND = 'lmstudio'; // cleared by beforeEach
+      expect(svc.getBackend()).toBe('lmstudio');
+    });
+    it('prefers a valid .env marker over a process.env override', () => {
+      writeEnv('LLM_BACKEND=ollama\n');
+      process.env.LLM_BACKEND = 'lmstudio';
+      expect(svc.getBackend()).toBe('ollama');
+    });
   });
 
   describe('switchBackend', () => {

@@ -74,10 +74,17 @@ function readEnv() {
   return result
 }
 
-/** The active local-LLM backend, read fresh from `.env` each call. */
+/**
+ * The active local-LLM backend, read fresh from `.env` each call. `.env` wins
+ * when valid; otherwise a valid `process.env` override wins (a stale/invalid
+ * `.env` marker must not mask a valid runtime env override — validate each
+ * source before falling through, don't `||` on mere presence).
+ */
 export function getBackend() {
-  const fromEnv = readEnv().LLM_BACKEND || process.env.LLM_BACKEND
-  return isBackend(fromEnv) ? fromEnv : DEFAULT_BACKEND
+  const fromFile = readEnv().LLM_BACKEND
+  if (isBackend(fromFile)) return fromFile
+  if (isBackend(process.env.LLM_BACKEND)) return process.env.LLM_BACKEND
+  return DEFAULT_BACKEND
 }
 
 function writeBackend(backend) {
