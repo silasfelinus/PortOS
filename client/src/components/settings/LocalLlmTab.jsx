@@ -160,7 +160,7 @@ export function LocalLlmTab() {
       <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-medium text-gray-300">Local LLM Backends</h2>
-          <button onClick={loadStatus} disabled={loading} className="p-1.5 text-gray-400 hover:text-white transition-colors" title="Refresh">
+          <button onClick={loadStatus} disabled={loading} className="p-1.5 text-gray-400 hover:text-white transition-colors" title="Refresh" aria-label="Refresh local LLM status">
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
@@ -244,6 +244,7 @@ export function LocalLlmTab() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={`Search the ${labelFor(selected)} catalog…`}
+              aria-label={`Search the ${labelFor(selected)} model catalog`}
               className="flex-1 bg-transparent py-2 text-sm text-white placeholder-gray-600 focus:outline-none"
             />
           </div>
@@ -252,6 +253,7 @@ export function LocalLlmTab() {
               value={manualId}
               onChange={(e) => setManualId(e.target.value)}
               placeholder={selected === 'ollama' ? 'pull by name e.g. llama3.2' : 'publisher/Model-GGUF'}
+              aria-label={`Install a ${labelFor(selected)} model by id`}
               className="flex-1 sm:w-56 bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-port-accent"
             />
             <button
