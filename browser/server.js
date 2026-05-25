@@ -26,14 +26,28 @@ let downloadWsReconnectTimer = null;
 let downloadDirCurrent = null;
 let shuttingDown = false;
 
-function getChromePath() {
+const DEFAULT_MAC_CHROME_APP = '/Applications/Google Chrome.app';
+
+function defaultChromeBinary() {
   const os = platform();
   if (os === 'darwin') return '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
   if (os === 'win32') return 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
   return 'google-chrome';
 }
 
-const MAC_CHROME_APP = '/Applications/Google Chrome.app';
+function getChromePath(config) {
+  if (typeof config?.chromePath === 'string' && config.chromePath.trim()) {
+    return config.chromePath;
+  }
+  return defaultChromeBinary();
+}
+
+function getMacAppBundle(config) {
+  if (typeof config?.macAppBundle === 'string' && config.macAppBundle.trim()) {
+    return config.macAppBundle;
+  }
+  return DEFAULT_MAC_CHROME_APP;
+}
 
 async function loadConfig() {
   const raw = await readFile(CONFIG_FILE, 'utf-8').catch(() => null);
@@ -155,7 +169,8 @@ async function launchBrowser() {
 
   headlessMode = config.headless === true;
   const profileDir = config.userDataDir || DEFAULT_PROFILE_DIR;
-  const chromePath = getChromePath();
+  const chromePath = getChromePath(config);
+  const macAppBundle = getMacAppBundle(config);
 
   await mkdir(profileDir, { recursive: true });
   await mkdir(downloadDir, { recursive: true });
@@ -176,7 +191,7 @@ async function launchBrowser() {
     args.push('--headless=new');
   }
 
-  console.log(`🌐 Launching Chrome (headless=${headlessMode}, profile=${profileDir}) CDP on ${CDP_HOST}:${CDP_PORT}`);
+  console.log(`🌐 Launching Chrome (headless=${headlessMode}, profile=${profileDir}, binary=${platform() === 'darwin' && !headlessMode ? macAppBundle : chromePath}) CDP on ${CDP_HOST}:${CDP_PORT}`);
 
   // macOS headed mode: launch via LaunchServices (`open -na`) so Chrome owns
   // its own TCC identity. As a direct subprocess of node/PM2, Chrome inherits
@@ -190,7 +205,7 @@ async function launchBrowser() {
   // Headless mode skips this (no UI to click) and non-darwin platforms don't
   // have the TCC-responsibility problem at all.
   if (platform() === 'darwin' && !headlessMode) {
-    chromeProcess = spawn('/usr/bin/open', ['-na', MAC_CHROME_APP, '--args', ...args], { stdio: 'ignore' });
+    chromeProcess = spawn('/usr/bin/open', ['-na', macAppBundle, '--args', ...args], { stdio: 'ignore' });
     chromeProcess.on('exit', () => {
       // `open` returns ~immediately once Chrome is handed off to launchd; that
       // exit is not Chrome's death. Chrome-exit detection happens via the
