@@ -1043,9 +1043,14 @@ export const stageConfigUpdateSchema = z.object({
 
 // === Local LLM backends (Ollama / LM Studio) ===
 export const localLlmBackendSchema = z.enum(['ollama', 'lmstudio']);
+// modelId is passed positionally to the `lms` CLI (execFile, no shell) — reject
+// a leading dash (would be parsed as a flag) and control chars (NUL / newline).
+export const localLlmModelIdSchema = z.string().min(1).max(256)
+  .refine((v) => !v.startsWith('-'), { message: 'modelId may not start with "-"' })
+  .refine((v) => !/[ \r\n]/.test(v), { message: 'modelId may not contain control characters' });
 export const localLlmInstallSchema = z.object({
   backend: localLlmBackendSchema,
-  modelId: z.string().min(1).max(256),
+  modelId: localLlmModelIdSchema,
 });
 export const localLlmDeleteSchema = localLlmInstallSchema;
 export const localLlmSwitchSchema = z.object({ to: localLlmBackendSchema });

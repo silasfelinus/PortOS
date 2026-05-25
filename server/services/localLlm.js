@@ -77,9 +77,13 @@ export async function ensureBackendProvider(backend) {
   if (!id) return
   const provider = await getProviderById(id).catch(() => null)
   if (provider && !provider.enabled) {
-    await updateProvider(id, { enabled: true }).catch((err) =>
-      console.error(`⚠️ Failed to enable ${id} provider: ${err.message}`))
-    console.log(`🔌 Enabled ${id} provider for active local LLM backend`)
+    const enabled = await updateProvider(id, { enabled: true })
+      .then(() => true)
+      .catch((err) => {
+        console.error(`⚠️ Failed to enable ${id} provider: ${err.message}`)
+        return false
+      })
+    if (enabled) console.log(`🔌 Enabled ${id} provider for active local LLM backend`)
   }
 }
 
@@ -160,7 +164,10 @@ export async function installModel(backend, modelId, onProgress) {
   }
   // LM Studio: prefer the `lms` CLI (real download), fall back to the REST hook.
   if (await commandExists('lms', ['version'])) {
-    const r = await execFileAsync('lms', ['get', '-y', modelId], { timeout: 0 })
+    // `lms get` streams substantial progress to stdout; the default 1MB
+    // maxBuffer overflows and surfaces as a false install failure (see
+    // voice/bootstrap.js which uses the same 64MB ceiling for `lms get`).
+    const r = await execFileAsync('lms', ['get', '-y', modelId], { timeout: 0, maxBuffer: 64 * 1024 * 1024 })
       .then(() => ({ ok: true })).catch((err) => ({ _err: err.stderr || err.message }))
     if (r._err) return { success: false, error: r._err, modelId }
     lmStudioManager.resetCache()
