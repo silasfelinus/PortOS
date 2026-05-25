@@ -511,13 +511,35 @@ export async function mergeSeriesFromSync(remoteSeries) {
  */
 export async function pruneTombstonedSeries(beforeMs) {
   if (!Number.isFinite(beforeMs)) return { pruned: 0 };
-  const series = await store().loadAll();
-  const prunable = series.filter((s) => {
-    if (!s?.deleted) return false;
-      const t = Date.parse(s.deletedAt || '');
-    if (!Number.isFinite(t)) return false;
-    return t < beforeMs;
-  });
-  await Promise.all(prunable.map((s) => store().deleteOne(s.id)));
-  return { pruned: prunable.length };
+  const s = store();
+  const series = await s.loadAll();
+  const candidates = [];
+  for (const rec of series) {
+    if (!rec?.deleted) continue;
+    const t = Date.parse(rec.deletedAt || '');
+    if (!Number.isFinite(t)) continue;
+    if (t < beforeMs) candidates.push(rec.id);
+  }
+  // Re-check the tombstone status INSIDE each per-id queue. A concurrent
+  // mergeSeriesFromSync could have un-deleted the record (newer remote
+  // `updatedAt`, `deleted: false`) between our out-of-queue snapshot and the
+  // queued delete; without the re-check we'd rm -rf a freshly un-deleted
+  // record. Mirrors pruneTombstonedUniverses. Uses deleteOneNow (not deleteOne —
+  // that re-enters queueRecordWrite for the same id and would deadlock).
+  const results = await Promise.allSettled(candidates.map((id) =>
+    s.queueRecordWrite(id, async () => {
+      const fresh = await s.loadOne(id);
+      if (!fresh?.deleted) return false; // un-deleted between snapshot and queue
+      const t = Date.parse(fresh.deletedAt || '');
+      if (!Number.isFinite(t) || t >= beforeMs) return false;
+      await s.deleteOneNow(id);
+      return true;
+    })
+  ));
+  let pruned = 0;
+  for (const r of results) {
+    if (r.status === 'fulfilled' && r.value === true) pruned += 1;
+    else if (r.status === 'rejected') console.log(`⚠️ pruneTombstonedSeries: delete failed: ${r.reason?.message || r.reason}`);
+  }
+  return { pruned };
 }

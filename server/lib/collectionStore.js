@@ -283,6 +283,23 @@ export function createCollectionStore({
   }
 
   /**
+   * Hard-delete a record WITHOUT the per-id queue. Removes the entire
+   * `{dir}/{id}/` subtree AND drops the id from `knownIds` (the readdir-ENOENT
+   * fallback source). The delete-side counterpart to `saveOneNow`: call it
+   * INSIDE a `queueRecordWrite(id, …)` block when an external recheck must span
+   * the load→delete boundary atomically (e.g. tombstone GC re-checking that the
+   * record is still deleted before removing it). Idempotent — missing dir is a
+   * no-op. Outside a queue, prefer `deleteOne`.
+   */
+  async function deleteOneNow(id) {
+    if (!isValidId(id)) {
+      throw new Error(`collectionStore[${type}]: invalid record id "${id}" — must match ${idPattern}`);
+    }
+    await rm(recordDir(id), { recursive: true, force: true });
+    knownIds.delete(id);
+  }
+
+  /**
    * Hard-delete a record. Removes the entire `{dir}/{id}/` subtree so any
    * sidecar files (per-record images, derived assets) go with it. Serialized
    * on the per-record queue so a delete can't race with an in-flight write.
@@ -292,10 +309,7 @@ export function createCollectionStore({
     if (!isValidId(id)) {
       throw new Error(`collectionStore[${type}]: invalid record id "${id}" — must match ${idPattern}`);
     }
-    return queueRecordWrite(id, async () => {
-      await rm(recordDir(id), { recursive: true, force: true });
-      knownIds.delete(id);
-    });
+    return queueRecordWrite(id, () => deleteOneNow(id));
   }
 
   /**
@@ -361,6 +375,7 @@ export function createCollectionStore({
     loadAll,
     saveOneNow,
     saveOne,
+    deleteOneNow,
     deleteOne,
     // Concurrency primitives
     queueRecordWrite,
