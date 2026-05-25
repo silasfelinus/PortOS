@@ -299,12 +299,15 @@ export const registerVoiceHandlers = (socket) => {
     if (!payload || typeof payload !== 'object') return;
     const { requestId, text } = payload;
     const capped = typeof text === 'string' ? truncateOnWordBoundary(text, MAX_UI_TEXT_CHARS) : null;
-    // Cache on the current ui snapshot too, so a follow-up read in the same
-    // turn (same page) doesn't need another round-trip.
-    if (state.ui && capped !== null) state.ui.text = capped;
     const resolve = state.uiTextWaiters.get(requestId);
     if (resolve) {
       state.uiTextWaiters.delete(requestId);
+      // Cache on the current ui snapshot too, so a follow-up read in the same
+      // turn (same page) doesn't need another round-trip. Only cache for a
+      // MATCHED response — a late/unmatched reply (after the read timed out or
+      // the user navigated) must not overwrite the live snapshot with stale
+      // text that a subsequent ui_read would then return.
+      if (state.ui && capped !== null) state.ui.text = capped;
       resolve(capped);
     }
   });
