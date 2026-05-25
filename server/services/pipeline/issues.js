@@ -753,15 +753,21 @@ function mergeIssuePatch(cur, patch = {}) {
 export function updateIssue(id, patch = {}, { skipRenumber = false } = {}) {
   const needsRenumber = !skipRenumber && ('seasonId' in patch || 'arcPosition' in patch);
   if (!needsRenumber) {
-    return store().queueRecordWrite(id, async () => {
-      const cur = await store().loadOne(id);
-      if (!cur) throw makeErr(`Issue not found: ${id}`, ERR_NOT_FOUND);
-      if (cur.deleted) throw makeErr(`Issue not found: ${id}`, ERR_NOT_FOUND);
-      const merged = mergeIssuePatch(cur, patch);
-      await saveIssueNow(merged);
-      emitRecordUpdated('series', merged.seriesId);
-      return merged;
-    });
+    // Route through the SERIES tail (see updateStageWithLatest) so a plain
+    // field update can't race a concurrent series-wide renumber rewriting this
+    // issue. seriesId is immutable, so read it outside the lock to pick the
+    // queue, then re-read the issue inside.
+    return getIssue(id, { includeDeleted: true }).then((existing) =>
+      queueSeriesIssuesWrite(existing.seriesId, async () => {
+        const cur = await store().loadOne(id);
+        if (!cur) throw makeErr(`Issue not found: ${id}`, ERR_NOT_FOUND);
+        if (cur.deleted) throw makeErr(`Issue not found: ${id}`, ERR_NOT_FOUND);
+        const merged = mergeIssuePatch(cur, patch);
+        await saveIssueNow(merged);
+        emitRecordUpdated('series', merged.seriesId);
+        return merged;
+      }),
+    );
   }
 
   return getIssue(id, { includeDeleted: true }).then((existing) =>
@@ -876,7 +882,15 @@ export function updateStageWithLatest(issueId, stageId, computeFn) {
     // rather than waiting in line for an error it already knows about.
     return Promise.reject(makeErr(`Unknown stage: ${stageId}`, ERR_VALIDATION));
   }
-  return store().queueRecordWrite(issueId, async () => {
+  // Serialize on the SERIES tail (not the per-id queue) so a stage save can't
+  // interleave with a series-wide renumber/bulk write that rewrites this same
+  // issue — both share one mutex per series. The per-record split (migrations
+  // 035/036) otherwise left renumbers on the series queue and stage saves on
+  // the per-id queue (two independent mutexes over the same shared resource);
+  // see CLAUDE.md "single tail per shared file". seriesId is immutable, so read
+  // it outside the lock to pick the queue, then re-read the issue INSIDE the
+  // lock for the freshest stage.
+  const work = async () => {
     const cur = await store().loadOne(issueId);
     if (!cur) throw makeErr(`Issue not found: ${issueId}`, ERR_NOT_FOUND);
     if (cur.deleted) throw makeErr(`Issue not found: ${issueId}`, ERR_NOT_FOUND);
@@ -913,7 +927,10 @@ export function updateStageWithLatest(issueId, stageId, computeFn) {
     await saveIssueNow(mergedIssue);
     emitRecordUpdated('series', mergedIssue.seriesId);
     return { issue: mergedIssue, stage: mergedIssue.stages[stageId] };
-  });
+  };
+  return getIssue(issueId, { includeDeleted: true }).then((existing) =>
+    queueSeriesIssuesWrite(existing.seriesId, work),
+  );
 }
 
 /**
