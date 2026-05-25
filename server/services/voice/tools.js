@@ -1056,7 +1056,19 @@ const TOOLS = [
     },
     execute: async ({ summarize = false } = {}, ctx = {}) => {
       const ui = ctx?.state?.ui;
-      if (!ui || typeof ui.text !== 'string' || !ui.text.trim()) {
+      // The client no longer ships the visible-text blob with every index —
+      // it sets `textOnDemand` and we fetch it lazily here, only when ui_read
+      // actually runs. Resolution order:
+      //   1. Eager/legacy text already on the snapshot (older client, or a
+      //      prior ui_read in this turn cached it) → use it directly.
+      //   2. textOnDemand client → request it now via ctx.requestUiText().
+      //   3. Neither (very old / no widget) → "no text available".
+      let text = typeof ui?.text === 'string' && ui.text.trim() ? ui.text : null;
+      if (!text && ui?.textOnDemand && typeof ctx?.requestUiText === 'function') {
+        const fetched = await ctx.requestUiText();
+        if (typeof fetched === 'string' && fetched.trim()) text = fetched;
+      }
+      if (!text) {
         return {
           ok: false,
           error: 'No page text available',
@@ -1065,14 +1077,14 @@ const TOOLS = [
       }
       return {
         ok: true,
-        path: ui.path,
-        title: ui.title,
-        content: ui.text,
-        chars: ui.text.length,
+        path: ui?.path,
+        title: ui?.title,
+        content: text,
+        chars: text.length,
         summarize: !!summarize,
         // Keep `summary` short so the LLM message history isn't doubled — the
         // full body lives in `content`.
-        summary: `Read page "${ui.title || ui.path || 'current page'}" (${ui.text.length} chars).`,
+        summary: `Read page "${ui?.title || ui?.path || 'current page'}" (${text.length} chars).`,
       };
     },
   },

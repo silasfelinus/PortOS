@@ -94,7 +94,39 @@ const waitForUiRefresh = (state, timeoutMs, signal) => new Promise((resolve) => 
   state.uiWaiters.push(finish);
 });
 
-export { summarizeUi, shouldIncludeUi };
+// Lazily fetch the page's visible text from the client. The client ships the
+// UI index WITHOUT the heavy visible-text blob by default (textOnDemand:true);
+// when ui_read actually needs it we emit voice:ui:read-request and await a
+// voice:ui:read-response (the socket handler resolves the matching waiter).
+// Resolves with the text string, or null on timeout / abort / no-waiter-infra
+// (e.g. tests). Falls back gracefully: if the client never replies (legacy
+// client that doesn't understand read-request) the timeout fires and the
+// caller treats it as "no text available".
+const UI_TEXT_READ_TIMEOUT_MS = 1500;
+let uiTextRequestSeq = 0;
+const requestUiText = (state, emit, signal, timeoutMs = UI_TEXT_READ_TIMEOUT_MS) => new Promise((resolve) => {
+  if (!state || typeof emit !== 'function') { resolve(null); return; }
+  if (!(state.uiTextWaiters instanceof Map)) state.uiTextWaiters = new Map();
+  const requestId = `uitext_${++uiTextRequestSeq}`;
+  let done = false;
+  const finish = (value) => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    signal?.removeEventListener?.('abort', onAbort);
+    // Drop our own waiter so a late response (after timeout/abort) is a no-op
+    // rather than resolving a stale promise.
+    state.uiTextWaiters.delete(requestId);
+    resolve(value);
+  };
+  const onAbort = () => finish(null);
+  const timer = setTimeout(() => finish(null), timeoutMs);
+  signal?.addEventListener?.('abort', onAbort, { once: true });
+  state.uiTextWaiters.set(requestId, finish);
+  emit('voice:ui:read-request', { requestId });
+});
+
+export { summarizeUi, shouldIncludeUi, requestUiText };
 
 const buildSystemPrompt = (cfg) => {
   if (!cfg.llm.usePersonality) return cfg.llm.systemPrompt;
@@ -514,7 +546,15 @@ export const runTurn = async ({ audio, text, mimeType, source, history = [], emi
       const t0 = Date.now();
       let result;
       let args = {};
-      const ctx = { sideEffects: [], state, signal };
+      // ctx.requestUiText lets ui_read pull the visible-text blob on demand
+      // (the client omits it from the index now). Bind state/emit/signal here
+      // so the tool just calls ctx.requestUiText() with no plumbing.
+      const ctx = {
+        sideEffects: [],
+        state,
+        signal,
+        requestUiText: () => requestUiText(state, emit, signal),
+      };
       try {
         args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
         const argSummary = Object.keys(args).length ? Object.entries(args).map(([k, v]) => `${k}=${JSON.stringify(v).slice(0, 40)}`).join(' ') : '—';

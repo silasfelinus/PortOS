@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { splitSentences, isNonSpeechMarker, detectNarrationWithoutCall } from './pipeline.js';
+import { splitSentences, isNonSpeechMarker, detectNarrationWithoutCall, requestUiText } from './pipeline.js';
 
 describe('splitSentences', () => {
   it('returns empty when no terminator is present', () => {
@@ -131,5 +131,64 @@ describe('detectNarrationWithoutCall', () => {
   it('tolerates missing inputs without throwing', () => {
     expect(detectNarrationWithoutCall({ finalText: undefined, toolRuns: undefined })).toBe(false);
     expect(detectNarrationWithoutCall({})).toBe(false);
+  });
+});
+
+describe('requestUiText (lazy visible-text fetch)', () => {
+  it('emits voice:ui:read-request with a requestId and resolves on matching response', async () => {
+    const state = {};
+    const emitted = [];
+    const emit = (event, payload) => emitted.push({ event, payload });
+
+    const p = requestUiText(state, emit, undefined);
+
+    // The helper emitted the request and parked a waiter keyed by requestId.
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].event).toBe('voice:ui:read-request');
+    const { requestId } = emitted[0].payload;
+    expect(typeof requestId).toBe('string');
+    expect(state.uiTextWaiters.has(requestId)).toBe(true);
+
+    // Simulate the socket handler delivering the client's read-response.
+    state.uiTextWaiters.get(requestId)('the page body');
+
+    await expect(p).resolves.toBe('the page body');
+    // Waiter cleared after resolution — no stale entries.
+    expect(state.uiTextWaiters.has(requestId)).toBe(false);
+  });
+
+  it('resolves null on timeout (legacy client never replies)', async () => {
+    const state = {};
+    const emit = () => {};
+    // Tiny timeout so the test is fast.
+    const out = await requestUiText(state, emit, undefined, 5);
+    expect(out).toBeNull();
+    expect(state.uiTextWaiters.size).toBe(0);
+  });
+
+  it('resolves null and never emits when no state/emit available (test/abort safety)', async () => {
+    await expect(requestUiText(null, () => {}, undefined)).resolves.toBeNull();
+    await expect(requestUiText({}, null, undefined)).resolves.toBeNull();
+  });
+
+  it('aborts via signal — resolves null and drops the waiter', async () => {
+    const state = {};
+    const ac = new AbortController();
+    const emitted = [];
+    const p = requestUiText(state, (e, d) => emitted.push(d), ac.signal, 10000);
+    expect(state.uiTextWaiters.size).toBe(1);
+    ac.abort();
+    await expect(p).resolves.toBeNull();
+    expect(state.uiTextWaiters.size).toBe(0);
+  });
+
+  it('a late response after timeout is a no-op (waiter already dropped)', async () => {
+    const state = {};
+    const emitted = [];
+    const p = requestUiText(state, (e, d) => emitted.push(d), undefined, 5);
+    const { requestId } = emitted[0];
+    await expect(p).resolves.toBeNull();
+    // No resolver remains, so a late delivery just finds nothing.
+    expect(state.uiTextWaiters.get(requestId)).toBeUndefined();
   });
 });
