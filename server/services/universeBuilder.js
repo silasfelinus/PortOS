@@ -958,7 +958,7 @@ export async function insertUniverseWithId(input = {}) {
   const name = trimTo(input.name, NAME_MAX_LENGTH);
   if (!name) throw makeErr(`Universe name is required (1..${NAME_MAX_LENGTH} chars)`, ERR_VALIDATION);
   const s = store();
-  return s.queueRecordWrite(input.id, async () => {
+  const { next, wasResurrection } = await s.queueRecordWrite(input.id, async () => {
     // Tombstone-overwrite: a previously-deleted record with the same id is
     // overwritten (effectively undeleted) — this keeps the share-bucket
     // re-import flow idempotent (deleting then re-importing the same manifest
@@ -969,15 +969,27 @@ export async function insertUniverseWithId(input = {}) {
     if (existing && !existing.deleted) {
       throw makeErr(`Universe id already exists: ${input.id}`, ERR_DUPLICATE);
     }
+    const wasResurrection = !!existing;
     const next = sanitizeTemplate({ ...input, name });
     if (!next) throw makeErr('Invalid universe payload', ERR_VALIDATION);
-    if (existing) {
+    if (wasResurrection) {
       console.warn(`♻️  insertUniverseWithId: overwriting tombstone for ${input.id}`);
     }
     await ensureDir(s.recordDir(next.id));
     await atomicWrite(s.recordPath(next.id), next);
-    return next;
+    return { next, wasResurrection };
   });
+  // Mirror createUniverse's federation side-effects on tombstone-overwrite:
+  // peers that still have the deleted record need the resurrection propagated.
+  if (wasResurrection && !next.ephemeral) {
+    emitRecordUpdated('universe', next.id);
+    import('./sharing/peerSync.js').then(({ autoSubscribeRecordToAllPeers }) =>
+      autoSubscribeRecordToAllPeers('universe', next.id)
+    ).catch((err) => {
+      console.log(`⚠️ universe: auto-subscribe after resurrection failed: ${err.message}`);
+    });
+  }
+  return next;
 }
 
 export async function updateUniverse(id, patchOrMutator = {}) {
