@@ -488,17 +488,44 @@ async function getModelsDir() {
   return candidates[1] // sensible default even if it doesn't exist yet
 }
 
+const normalizeRepoKey = (s) => String(s || '')
+  .split('/').pop()
+  .trim()
+  .toLowerCase()
+  .replace(/[-.]gguf$/i, '')
+  .replace(/[-.]mlx[-.].*$/i, '')
+
+async function findModelDir(modelsDir, modelId) {
+  const direct = join(modelsDir, ...String(modelId || '').split('/'))
+  if (await dirExists(direct)) return direct
+
+  const wanted = normalizeRepoKey(modelId)
+  if (!wanted) return null
+  const publishers = await readdir(modelsDir).catch(() => [])
+  for (const publisher of publishers) {
+    const publisherDir = join(modelsDir, publisher)
+    if (!(await dirExists(publisherDir))) continue
+    const repos = await readdir(publisherDir).catch(() => [])
+    const repo = repos.find((name) => normalizeRepoKey(name) === wanted)
+    if (repo) return join(publisherDir, repo)
+  }
+  return null
+}
+
 /**
  * Locate an installed LM Studio model's files on disk (no network). The model
- * id maps directly onto the `<publisher>/<repo>` folder. MLX models (safetensors,
- * no GGUF) return `{ isMlx: true, ggufPath: null }` so the caller routes them to
+ * id usually maps directly onto the `<publisher>/<repo>` folder, but LM Studio
+ * can report an API id that differs from the downloaded repo. Fall back to a
+ * normalized repo-name scan so `openai/gpt-oss-20b` can still resolve the local
+ * `lmstudio-community/gpt-oss-20b-GGUF` folder. MLX models (safetensors, no
+ * GGUF) return `{ isMlx: true, ggufPath: null }` so the caller routes them to
  * re-pull instead of a (impossible) file copy.
  * @returns {Promise<{ ggufPath: string|null, projectorPath: string|null, isMlx: boolean, isSharded: boolean }|null>}
  */
 async function resolveLocalModel(modelId) {
   const modelsDir = await getModelsDir()
-  const dir = join(modelsDir, ...String(modelId || '').split('/'))
-  if (!(await dirExists(dir))) return null
+  const dir = await findModelDir(modelsDir, modelId)
+  if (!dir) return null
   const files = await readdir(dir).catch(() => [])
   if (dirIsMlx(files)) return { ggufPath: null, projectorPath: null, isMlx: true, isSharded: false }
   const primary = selectPrimaryGguf(files)
