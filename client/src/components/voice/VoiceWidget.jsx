@@ -6,7 +6,7 @@ import {
   startContinuous, stopContinuous, isContinuous, whenPlaybackDrained, getVadLevel,
   webSpeechSupported, startWebSpeechCapture, stopWebSpeechCapture, isWebSpeechCapturing,
   onProactiveSpeech, captureScreenForVision, sendScreenshotResult,
-  enableVisionCapture, disableVisionCapture, isVisionCaptureEnabled,
+  enableVisionCapture, disableVisionCapture, isVisionCaptureEnabled, onVisionCaptureEnded,
 } from '../../services/voiceClient';
 import { getVoiceConfig } from '../../services/apiVoice';
 import toast from '../ui/Toast';
@@ -250,9 +250,16 @@ export default function VoiceWidget() {
     return () => offs.forEach((off) => off());
   }, [enabled, navigate]);
 
-  // Release the authorized screen-capture stream when the widget unmounts so a
-  // forgotten "vision ON" doesn't keep the browser's sharing indicator lit.
-  useEffect(() => () => disableVisionCapture(), []);
+  // Keep the vision toggle in sync with the actual capture stream, and release
+  // it on unmount. When the user clicks "Stop sharing" in the browser's own
+  // chrome the track ends asynchronously — onVisionCaptureEnded flips the toggle
+  // back to OFF so the button doesn't lie. Unmount unsubscribes first (so the
+  // caller-initiated disable below doesn't try to setState after teardown) then
+  // releases the stream so a forgotten "vision ON" doesn't keep sharing lit.
+  useEffect(() => {
+    const off = onVisionCaptureEnded(() => setVisionEnabled(false));
+    return () => { off(); disableVisionCapture(); };
+  }, []);
 
   // Auto-scroll to bottom on new content
   useEffect(() => {

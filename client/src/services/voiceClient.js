@@ -471,14 +471,28 @@ export const onVoiceEvent = (event, handler) => {
 // the VoiceWidget wires to a button), we keep that stream alive, and
 // captureScreenForVision grabs a frame from it on demand without re-prompting.
 let visionStream = null;
+// Optional callback invoked whenever the authorized stream ends — either via
+// disableVisionCapture() or because the user clicked "Stop sharing" in the
+// browser's own chrome (track 'ended'). Lets the UI sync its toggle state
+// instead of going stale until the next screenshot request.
+let onVisionEndedCb = null;
 
-const clearVisionStream = () => {
+const clearVisionStream = ({ notify = true } = {}) => {
   if (visionStream) visionStream.getTracks().forEach((t) => t.stop());
   visionStream = null;
+  if (notify && typeof onVisionEndedCb === 'function') onVisionEndedCb();
 };
 
 // True when a live, user-authorized capture stream is available to grab frames.
 export const isVisionCaptureEnabled = () => !!(visionStream && visionStream.active);
+
+// Register a callback fired when the capture stream ends (user stops sharing via
+// the browser, or disableVisionCapture runs). Pass null to clear. Returns an
+// unsubscribe fn for symmetry with the other subscribe helpers.
+export const onVisionCaptureEnded = (cb) => {
+  onVisionEndedCb = typeof cb === 'function' ? cb : null;
+  return () => { onVisionEndedCb = null; };
+};
 
 // Authorize a screen-capture stream. MUST be called from within a user gesture
 // (a click handler) — getDisplayMedia rejects outside transient activation,
@@ -495,12 +509,15 @@ export const enableVisionCapture = async () => {
   }).catch(() => null);
   if (!stream) return false;
   visionStream = stream;
-  stream.getVideoTracks().forEach((t) => t.addEventListener('ended', clearVisionStream, { once: true }));
+  // User-stopped (browser chrome) → clear + notify the UI so the toggle flips.
+  stream.getVideoTracks().forEach((t) => t.addEventListener('ended', () => clearVisionStream(), { once: true }));
   return true;
 };
 
-// Stop and release the authorized capture stream (widget teardown / user toggle-off).
-export const disableVisionCapture = () => clearVisionStream();
+// Stop and release the authorized capture stream (widget teardown / user
+// toggle-off). Caller-initiated, so it does NOT fire onVisionCaptureEnded — the
+// caller already owns the state change (and on unmount the cb is gone).
+export const disableVisionCapture = () => clearVisionStream({ notify: false });
 
 // Grab one frame from the authorized vision stream as a JPEG data URL. Returns
 // null when no stream is authorized yet (the caller prompts the user to enable

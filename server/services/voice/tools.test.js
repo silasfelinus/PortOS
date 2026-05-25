@@ -960,6 +960,29 @@ describe('calendar_next', () => {
     expect(r.found).toBe(false);
     expect(r.summary).toMatch(/Nothing coming up/);
   });
+
+  it('returns an in-progress meeting (started before now, ends after) as "next"', async () => {
+    // A meeting that's currently happening must count — startTime is in the
+    // past but endTime is in the future, matching calendarSync's range.
+    const startedAgo = new Date(Date.now() - 1800_000).toISOString();
+    const endsSoon = new Date(Date.now() + 1800_000).toISOString();
+    calendarEventsRef.value = [{ title: 'Standup (in progress)', startTime: startedAgo, endTime: endsSoon, allDay: false }];
+    const r = await dispatchTool('calendar_next', {});
+    expect(r.found).toBe(true);
+    expect(r.title).toBe('Standup (in progress)');
+  });
+
+  it('returns an all-day event occurring today (start at past midnight, end later today)', async () => {
+    // All-day events begin at local midnight (already past mid-day), but with an
+    // endTime later today they must still surface as "next".
+    const pastMidnight = new Date(Date.now() - 8 * 3600_000).toISOString();
+    const endOfDay = new Date(Date.now() + 8 * 3600_000).toISOString();
+    calendarEventsRef.value = [{ title: 'Conference Day', startTime: pastMidnight, endTime: endOfDay, allDay: true }];
+    const r = await dispatchTool('calendar_next', {});
+    expect(r.found).toBe(true);
+    expect(r.title).toBe('Conference Day');
+    expect(r.allDay).toBe(true);
+  });
 });
 
 describe('anchorLocalMidnightUtc (DST-safe local-midnight anchor)', () => {

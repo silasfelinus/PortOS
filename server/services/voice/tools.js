@@ -1555,9 +1555,15 @@ const TOOLS = [
         endDate: horizon,
         limit: 50,
       });
+      // Match calendarSync.getEvents' range semantics (it keeps events whose
+      // endTime >= startDate), so an in-progress meeting and an all-day event
+      // that began at local midnight today both still count as "next" — a
+      // strict startTime >= now would drop them. Use endTime when present,
+      // falling back to startTime for events that carry only a start.
+      const nowMs = Date.now();
       const next = events.find((e) => {
-        const start = new Date(e?.startTime);
-        return !Number.isNaN(start.getTime()) && start.getTime() >= Date.now();
+        const ref = new Date(e?.endTime || e?.startTime);
+        return !Number.isNaN(ref.getTime()) && ref.getTime() >= nowMs;
       });
       if (!next) {
         return { ok: true, found: false, summary: 'Nothing coming up on your calendar in the next 30 days.' };
