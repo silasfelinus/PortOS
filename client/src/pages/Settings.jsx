@@ -1,6 +1,7 @@
 import { useParams, Navigate } from 'react-router-dom';
 import { BackupTab } from '../components/settings/BackupTab';
 import { DatabaseTab } from '../components/settings/DatabaseTab';
+import { LocalLlmTab } from '../components/settings/LocalLlmTab';
 import { TelegramTab } from '../components/settings/TelegramTab';
 import { GeneralTab } from '../components/settings/GeneralTab';
 import { MortalLoomTab } from '../components/settings/MortalLoomTab';
@@ -28,6 +29,7 @@ export default function Settings() {
       case 'general': return <GeneralTab />;
       case 'backup': return <BackupTab />;
       case 'database': return <DatabaseTab />;
+      case 'local-llm': return <LocalLlmTab />;
       case 'sharing': return <SharingTab />;
       case 'voice': return <VoiceTab />;
       case 'telegram': return <TelegramTab />;

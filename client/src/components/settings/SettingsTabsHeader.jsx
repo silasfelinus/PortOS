@@ -13,6 +13,7 @@ const TABS = [
   { id: 'backup', label: 'Backup', to: '/settings/backup' },
   { id: 'database', label: 'Database', to: '/settings/database' },
   { id: 'general', label: 'General', to: '/settings/general' },
+  { id: 'local-llm', label: 'Local LLMs', to: '/settings/local-llm' },
   { id: 'mortalloom', label: 'MortalLoom', to: '/settings/mortalloom' },
   { id: 'prompts', label: 'Prompts', to: '/prompts' },
   { id: 'providers', label: 'Providers', to: '/ai' },
