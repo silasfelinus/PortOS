@@ -71,16 +71,16 @@ export const LOCAL_LLM_CATALOG = [
     lmstudio: 'lmstudio-community/Qwen2.5-7B-Instruct-GGUF'
   },
   {
-    key: 'qwen2.5-coder',
-    name: 'Qwen2.5 Coder 7B',
+    key: 'qwen3.6-35b-a3b',
+    name: 'Qwen3.6 35B-A3B',
     category: 'coding',
-    params: '7B',
-    size: '4.7 GB',
+    params: '35B / 3B active',
+    size: '24 GB',
     family: 'qwen',
-    description: 'Code-specialised Qwen2.5 — strong at completion and refactors.',
-    capabilities: ['chat', 'code'],
-    ollama: 'qwen2.5-coder',
-    lmstudio: 'lmstudio-community/Qwen2.5-Coder-7B-Instruct-GGUF'
+    description: 'Current Qwen coding model with agentic coding, repository reasoning, vision, and tool-use upgrades.',
+    capabilities: ['chat', 'code', 'tools', 'vision'],
+    ollama: 'qwen3.6:35b',
+    lmstudio: 'unsloth/Qwen3.6-35B-A3B-GGUF'
   },
   {
     key: 'mistral',

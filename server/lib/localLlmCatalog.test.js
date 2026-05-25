@@ -55,7 +55,7 @@ describe('localLlmCatalog', () => {
       expect(searchCatalog('ollama', '').length).toBe(getCatalog('ollama').length);
     });
     it('filters by name, family, and description', () => {
-      expect(searchCatalog('ollama', 'coder').some((m) => m.key === 'qwen2.5-coder')).toBe(true);
+      expect(searchCatalog('ollama', 'coding').some((m) => m.key === 'qwen3.6-35b-a3b')).toBe(true);
       expect(searchCatalog('ollama', 'vision').some((m) => m.key === 'llava')).toBe(true);
       expect(searchCatalog('ollama', 'embedding').some((m) => m.key === 'nomic-embed-text-v2-moe')).toBe(true);
       expect(searchCatalog('ollama', 'zzzznotamodel')).toEqual([]);
