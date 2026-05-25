@@ -168,8 +168,11 @@ export const LOCAL_LLM_CATALOG = [
   }
 ];
 
-// Strip an Ollama tag suffix (`llama3.2:latest` → `llama3.2`) and lowercase.
-const normalizeOllamaId = (id) => String(id || '').split(':')[0].trim().toLowerCase();
+// Strip only the implicit `:latest` tag (`llama3.2:latest` → `llama3.2`) and
+// lowercase. Meaningful tags (`gpt-oss:20b`, `qwen2.5:7b`) are preserved so a
+// `7b` build can't normalize onto — and be mistaken for — a `20b` catalog entry.
+const normalizeOllamaId = (id) =>
+  String(id || '').trim().toLowerCase().replace(/:latest$/, '');
 
 // Reduce an LM Studio / HuggingFace id to a comparable stem:
 // `lmstudio-community/Llama-3.2-3B-Instruct-GGUF` → `llama-3.2-3b-instruct`.

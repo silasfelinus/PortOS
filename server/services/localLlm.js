@@ -160,7 +160,7 @@ export async function installModel(backend, modelId, onProgress) {
   }
   // LM Studio: prefer the `lms` CLI (real download), fall back to the REST hook.
   if (await commandExists('lms', ['version'])) {
-    const r = await execFileAsync('lms', ['get', modelId, '--yes'], { timeout: 0 })
+    const r = await execFileAsync('lms', ['get', '-y', modelId], { timeout: 0 })
       .then(() => ({ ok: true })).catch((err) => ({ _err: err.stderr || err.message }))
     if (r._err) return { success: false, error: r._err, modelId }
     lmStudioManager.resetCache()
@@ -179,7 +179,7 @@ export async function deleteModel(backend, modelId) {
   }
   // LM Studio has no delete in its REST API — use the `lms` CLI if present.
   if (await commandExists('lms', ['version'])) {
-    const r = await execFileAsync('lms', ['rm', modelId, '--yes'], { timeout: 30_000 })
+    const r = await execFileAsync('lms', ['rm', modelId, '-y'], { timeout: 30_000 })
       .then(() => ({ ok: true })).catch((err) => ({ _err: err.stderr || err.message }))
     if (r._err) return { success: false, error: r._err, modelId }
     lmStudioManager.resetCache()
