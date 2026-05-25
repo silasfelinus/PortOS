@@ -150,6 +150,12 @@ const requestUiText = (state, emit, signal, timeoutMs = UI_TEXT_READ_TIMEOUT_MS)
   if (!state || typeof emit !== 'function') { resolve(null); return; }
   if (!(state.uiTextWaiters instanceof Map)) state.uiTextWaiters = new Map();
   const requestId = `uitext_${++uiTextRequestSeq}`;
+  // Capture the snapshot this read is FOR. state.ui is replaced wholesale on
+  // every voice:ui:index, so a reference change means the user navigated (or a
+  // new index arrived) between request and response — in that case we must NOT
+  // cache the now-stale text onto the current snapshot (a later same-turn
+  // ui_read would otherwise read the wrong page's text).
+  const snapshotAtRequest = state.ui;
   let done = false;
   const finish = (value) => {
     if (done) return;
@@ -159,6 +165,10 @@ const requestUiText = (state, emit, signal, timeoutMs = UI_TEXT_READ_TIMEOUT_MS)
     // Drop our own waiter so a late response (after timeout/abort) is a no-op
     // rather than resolving a stale promise.
     state.uiTextWaiters.delete(requestId);
+    // Cache onto the snapshot only when it's STILL the one we requested for, so
+    // a follow-up same-turn ui_read on the same page skips another round-trip
+    // without risking a stale-page overwrite.
+    if (value !== null && state.ui && state.ui === snapshotAtRequest) state.ui.text = value;
     resolve(value);
   };
   const onAbort = () => finish(null);

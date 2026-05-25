@@ -922,8 +922,8 @@ describe('pipeline stage navigation tools', () => {
 describe('calendar_today', () => {
   it('summarizes today\'s events', async () => {
     calendarEventsRef.value = [
-      { title: 'Standup', startTime: '2026-04-17T17:00:00Z', location: 'Zoom', allDay: false },
-      { title: 'All-hands', startTime: '2026-04-17T20:00:00Z', allDay: false },
+      { title: 'Standup', startTime: '2026-04-17T17:00:00Z', location: 'Zoom', isAllDay: false },
+      { title: 'All-hands', startTime: '2026-04-17T20:00:00Z', isAllDay: false },
     ];
     const r = await dispatchTool('calendar_today', {});
     expect(r.ok).toBe(true);
@@ -945,7 +945,7 @@ describe('calendar_today', () => {
 describe('calendar_next', () => {
   it('returns the soonest future event', async () => {
     const soon = new Date(Date.now() + 3600_000).toISOString();
-    calendarEventsRef.value = [{ title: 'Dentist', startTime: soon, allDay: false }];
+    calendarEventsRef.value = [{ title: 'Dentist', startTime: soon, isAllDay: false }];
     const r = await dispatchTool('calendar_next', {});
     expect(r.ok).toBe(true);
     expect(r.found).toBe(true);
@@ -966,7 +966,7 @@ describe('calendar_next', () => {
     // past but endTime is in the future, matching calendarSync's range.
     const startedAgo = new Date(Date.now() - 1800_000).toISOString();
     const endsSoon = new Date(Date.now() + 1800_000).toISOString();
-    calendarEventsRef.value = [{ title: 'Standup (in progress)', startTime: startedAgo, endTime: endsSoon, allDay: false }];
+    calendarEventsRef.value = [{ title: 'Standup (in progress)', startTime: startedAgo, endTime: endsSoon, isAllDay: false }];
     const r = await dispatchTool('calendar_next', {});
     expect(r.found).toBe(true);
     expect(r.title).toBe('Standup (in progress)');
@@ -977,7 +977,7 @@ describe('calendar_next', () => {
     // endTime later today they must still surface as "next".
     const pastMidnight = new Date(Date.now() - 8 * 3600_000).toISOString();
     const endOfDay = new Date(Date.now() + 8 * 3600_000).toISOString();
-    calendarEventsRef.value = [{ title: 'Conference Day', startTime: pastMidnight, endTime: endOfDay, allDay: true }];
+    calendarEventsRef.value = [{ title: 'Conference Day', startTime: pastMidnight, endTime: endOfDay, isAllDay: true }];
     const r = await dispatchTool('calendar_next', {});
     expect(r.found).toBe(true);
     expect(r.title).toBe('Conference Day');

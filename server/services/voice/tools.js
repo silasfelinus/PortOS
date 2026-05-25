@@ -24,6 +24,16 @@ import { isDestructiveLabel, buildPending } from './confirmGate.js';
 
 const DAILY_LOG_PATH = '/brain/daily-log';
 
+// Clamp an LLM-supplied `limit` to [1, hi]. Tool-call args can arrive as
+// strings ("10") or non-numeric junk; `Math.min(hi, "abc")` is NaN, which would
+// silently slice an empty result. Coerce with Number() and fall back to
+// `fallback` when the value isn't a finite positive number (preserving the old
+// `limit || fallback` behavior for 0 / blank).
+const clampLimit = (raw, fallback, hi) => {
+  const n = Number(raw);
+  return Math.max(1, Math.min(hi, Number.isFinite(n) && n > 0 ? n : fallback));
+};
+
 // ----- Pipeline stage navigation helpers (used by pipeline_next_stage etc) -----
 const PIPELINE_STAGE_LABELS = {
   idea: 'Idea',
@@ -367,8 +377,10 @@ const findGoalByQuery = (goals, query) => {
 
 // ----- Calendar helpers (calendar_today / calendar_next) -----
 // The calendar cache stores ISO `startTime`/`endTime` (UTC or with offset) plus
-// `title`, `location`, and `allDay`. We format times in the user's TZ so a
-// spoken "10 AM" matches the wall clock, not the server's UTC.
+// `title`, `location`, and `isAllDay` (the cache field name — see
+// calendarGoogleSync.js / calendarApiSync.js; the tool's own output uses
+// `allDay`). We format times in the user's TZ so a spoken "10 AM" matches the
+// wall clock, not the server's UTC.
 const formatEventTime = (iso, tz) => {
   if (typeof iso !== 'string' || !iso) return null;
   const d = new Date(iso);
@@ -377,7 +389,7 @@ const formatEventTime = (iso, tz) => {
 };
 const summarizeEvent = (e, tz) => {
   const start = formatEventTime(e?.startTime, tz);
-  const when = e?.allDay ? 'all day' : (start || 'time TBD');
+  const when = e?.isAllDay ? 'all day' : (start || 'time TBD');
   const loc = e?.location ? ` at ${e.location}` : '';
   return `${e?.title || 'Untitled event'} (${when})${loc}`;
 };
@@ -473,7 +485,7 @@ const TOOLS = [
       // `String.includes('')` matches everything, so an all-whitespace query
       // would return unrelated entries — reject instead of surprising the user.
       if (!q) throw new Error('query must not be empty');
-      const max = Math.max(1, Math.min(10, limit || 5));
+      const max = clampLimit(limit, 5, 10);
       // Load a reasonable window — the brain inbox is small enough that an
       // in-memory filter is fine and avoids a second storage pass for ranking.
       const records = await getInboxLog({ limit: 200 });
@@ -613,7 +625,7 @@ const TOOLS = [
       },
     },
     execute: async ({ limit = 5 } = {}) => {
-      const max = Math.max(1, Math.min(10, limit || 5));
+      const max = clampLimit(limit, 5, 10);
       const records = await getInboxLog({ limit: max });
       const items = records.map((r) => ({
         date: (r.capturedAt || '').slice(0, 10),
@@ -676,7 +688,7 @@ const TOOLS = [
       },
     },
     execute: async ({ limit = 10 } = {}) => {
-      const max = Math.max(1, Math.min(20, limit || 10));
+      const max = clampLimit(limit, 10, 20);
       const data = await getGoals();
       const active = (data.goals || []).filter((g) => g.status === 'active' || !g.status);
       active.sort((a, b) => (b.urgency ?? 0) - (a.urgency ?? 0));
@@ -840,7 +852,7 @@ const TOOLS = [
       },
     },
     execute: async ({ limit = 5 } = {}) => {
-      const max = Math.max(1, Math.min(10, limit || 5));
+      const max = clampLimit(limit, 5, 10);
       const [items, feeds] = await Promise.all([getItems({ unreadOnly: true }), getFeeds()]);
       const feedName = (id) => feeds.find((f) => f.id === id)?.title || 'feed';
       const picks = items.slice(0, max).map((i) => ({
@@ -1503,7 +1515,7 @@ const TOOLS = [
       },
     },
     execute: async ({ limit = 10 } = {}) => {
-      const max = Math.max(1, Math.min(20, limit || 10));
+      const max = clampLimit(limit, 10, 20);
       const tz = await getUserTimezone();
       const today = todayInTimezone(tz); // YYYY-MM-DD in the user's TZ
       // The server runs TZ=UTC and event startTimes carry an offset/Z, so the
@@ -1522,9 +1534,9 @@ const TOOLS = [
       const items = events.map((e) => ({
         title: e.title,
         startTime: e.startTime,
-        time: e.allDay ? 'all day' : formatEventTime(e.startTime, tz),
+        time: e.isAllDay ? 'all day' : formatEventTime(e.startTime, tz),
         location: e.location || null,
-        allDay: !!e.allDay,
+        allDay: !!e.isAllDay,
       }));
       return {
         ok: true,
@@ -1570,7 +1582,7 @@ const TOOLS = [
       }
       const startDate = new Date(next.startTime);
       const dayLabel = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'long', month: 'long', day: 'numeric' }).format(startDate);
-      const timeLabel = next.allDay ? 'all day' : (formatEventTime(next.startTime, tz) || 'time TBD');
+      const timeLabel = next.isAllDay ? 'all day' : (formatEventTime(next.startTime, tz) || 'time TBD');
       const loc = next.location ? ` at ${next.location}` : '';
       return {
         ok: true,
@@ -1578,7 +1590,7 @@ const TOOLS = [
         title: next.title,
         startTime: next.startTime,
         location: next.location || null,
-        allDay: !!next.allDay,
+        allDay: !!next.isAllDay,
         summary: `Next up: ${next.title || 'Untitled event'} — ${dayLabel}, ${timeLabel}${loc}.`,
       };
     },

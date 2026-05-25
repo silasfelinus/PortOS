@@ -302,12 +302,10 @@ export const registerVoiceHandlers = (socket) => {
     const resolve = state.uiTextWaiters.get(requestId);
     if (resolve) {
       state.uiTextWaiters.delete(requestId);
-      // Cache on the current ui snapshot too, so a follow-up read in the same
-      // turn (same page) doesn't need another round-trip. Only cache for a
-      // MATCHED response — a late/unmatched reply (after the read timed out or
-      // the user navigated) must not overwrite the live snapshot with stale
-      // text that a subsequent ui_read would then return.
-      if (state.ui && capped !== null) state.ui.text = capped;
+      // Resolve only — caching onto state.ui.text happens inside requestUiText
+      // (pipeline.js), which captured the snapshot this read was issued for and
+      // caches only if it's still current. Caching here couldn't tell whether
+      // the snapshot changed (navigation) between request and response.
       resolve(capped);
     }
   });
