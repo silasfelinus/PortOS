@@ -551,6 +551,40 @@ describe('sharing round-trip', () => {
     expect(hasBeenProcessed(cursor, exp.filename, exp.manifestId)).toBe(true);
   });
 
+  it('keeps a manifest retryable (does not advance the cursor) when a record insert fails unexpectedly', async () => {
+    // A non-duplicate insert failure (disk error, transient fs error) must NOT
+    // advance the cursor — otherwise the manifest is marked processed and the
+    // record is silently dropped. It must stay pending and retry.
+    const bucket = await buckets.createBucket({ name: 'InsertFailBucket', path: tempBucket, mode: 'auto-merge' });
+    const universeBuilder = await import('../universeBuilder.js');
+    const { readCursor, hasBeenProcessed } = await import('./manifest.js');
+    const u = await universeBuilder.createUniverse({ name: 'Fails To Insert Once' });
+
+    const exp = await exporter.exportUniverse(u.id, bucket.id);
+    simulateRemoteSender(tempBucket, exp.filename);
+    await universeBuilder.deleteUniverse(u.id);
+
+    // Force the first insert to throw a non-duplicate error (not a *_DUPLICATE).
+    const spy = vi.spyOn(universeBuilder, 'insertUniverseWithId')
+      .mockRejectedValueOnce(new Error('simulated transient disk failure'));
+
+    const first = await importer.processManifest(bucket.id, exp.filename);
+    expect(first.pending).toBe(true);
+    expect(first.outcome.pendingRecordImportFailures).toEqual([`universe:${u.id}`]);
+    let cursor = await readCursor(bucket.id);
+    expect(hasBeenProcessed(cursor, exp.filename, exp.manifestId)).toBe(false);
+    await expect(universeBuilder.getUniverse(u.id)).rejects.toThrow();
+
+    // Insert succeeds on retry → manifest finally marked processed.
+    spy.mockRestore();
+    const retry = await importer.processBacklog(bucket.id);
+    expect(retry.processed).toBe(1);
+    const restored = await universeBuilder.getUniverse(u.id);
+    expect(restored.name).toBe('Fails To Insert Once');
+    cursor = await readCursor(bucket.id);
+    expect(hasBeenProcessed(cursor, exp.filename, exp.manifestId)).toBe(true);
+  });
+
   it('keeps series manifests retryable while issue record files are still syncing', async () => {
     const bucket = await buckets.createBucket({ name: 'SlowIssueSync', path: tempBucket, mode: 'auto-merge' });
     const { readCursor, hasBeenProcessed } = await import('./manifest.js');

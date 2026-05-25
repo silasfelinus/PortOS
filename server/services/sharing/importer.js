@@ -402,6 +402,11 @@ async function readReferencedRecords(bucketPath, manifest) {
 async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = null } = {}) {
   let applied = 0;
   const overridden = [];
+  // Records whose insert threw an UNEXPECTED (non-duplicate) error — they did
+  // NOT land. Surfaced as a pending condition (like legacyCanonPendingFailures)
+  // so processManifest leaves the cursor un-advanced and the watcher retries,
+  // instead of marking the manifest processed and silently dropping the record.
+  const failedInserts = [];
   const inboundSub = manifest.subscription?.recordKind && manifest.subscription?.recordId
     ? { bucketId: bucket.id, recordKind: manifest.subscription.recordKind, recordId: manifest.subscription.recordId }
     : null;
@@ -422,12 +427,20 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
       // into the bucket we're importing from. The peer-sync propagation that
       // resurrection ALSO triggers (autoSubscribeRecordToAllPeers) is a separate
       // mechanism and stays intact — only the bucket re-export is suppressed.
-      await withReexportSuppressed(suppressKind, suppressId, () => insertFn(record)).catch((err) => {
-        // Duplicate id is benign — a parallel manifest already inserted it.
-        if (err?.code?.endsWith('_DUPLICATE')) return null;
-        console.log(`⚠️ sharing.importer: insertWithId(${kind}=${record.id}) failed: ${err.message}`);
-      });
-      applied++;
+      const insertOk = await withReexportSuppressed(suppressKind, suppressId, () => insertFn(record))
+        .then(() => true)
+        .catch((err) => {
+          // Duplicate id is benign — a parallel manifest already inserted it, so
+          // the record IS present; count it as applied.
+          if (err?.code?.endsWith('_DUPLICATE')) return true;
+          // Unexpected failure: the record did NOT land. Record it so the
+          // manifest stays pending and retries — incrementing `applied` and
+          // advancing the cursor here would silently drop the record.
+          console.log(`⚠️ sharing.importer: insertWithId(${kind}=${record.id}) failed: ${err.message}`);
+          failedInserts.push(`${kind}:${record.id}`);
+          return false;
+        });
+      if (insertOk) applied++;
       return;
     }
     if (remoteWins(existing.updatedAt, record.updatedAt)) {
@@ -583,6 +596,7 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
     collectionTombstonedUniverse,
     legacyCanonPendingUniverses: legacyCanonPendingUniverses.length > 0 ? legacyCanonPendingUniverses : null,
     legacyCanonPendingFailures: legacyCanonPendingFailures.length > 0 ? legacyCanonPendingFailures : null,
+    recordImportFailures: failedInserts.length > 0 ? failedInserts : null,
     adoptedSubscription: adoptedSubscription
       ? { id: adoptedSubscription.id, bucketId: adoptedSubscription.bucketId, recordKind: adoptedSubscription.recordKind, recordId: adoptedSubscription.recordId }
       : null,
@@ -838,6 +852,7 @@ export async function processManifest(bucketId, manifestFilename) {
   const collectionTombstonedUniverse = outcome?.collectionTombstonedUniverse || null;
   const legacyCanonPendingUniverses = outcome?.legacyCanonPendingUniverses || null;
   const legacyCanonPendingFailures = outcome?.legacyCanonPendingFailures || null;
+  const recordImportFailures = outcome?.recordImportFailures || null;
   // Tombstoned universe: the collection owner IS on disk but locally deleted.
   // Unlike the truly-missing case this will never self-resolve via sync, so we
   // advance the cursor (no infinite pending loop) and emit a clear signal. The
@@ -848,15 +863,16 @@ export async function processManifest(bucketId, manifestFilename) {
     console.log(`⚠️ sharing: bucket=${bucket.name} manifest=${manifest.id} kind=${manifest.kind} collectionUniverse=${collectionTombstonedUniverse} is deleted locally — ${outcome.collectionItemsDeferred ?? 0} item(s) skipped; restore universe to import`);
     return { processed: true, manifest, outcome };
   }
-  if (assetCopy.missing.length > 0 || missingRecords.length > 0 || collectionPendingUniverse || collectionPendingSeries || legacyCanonPendingUniverses || legacyCanonPendingFailures) {
+  if (assetCopy.missing.length > 0 || missingRecords.length > 0 || collectionPendingUniverse || collectionPendingSeries || legacyCanonPendingUniverses || legacyCanonPendingFailures || recordImportFailures) {
     if (assetCopy.missing.length > 0) outcome.pendingAssets = assetCopy.missing;
     if (missingRecords.length > 0) outcome.pendingRecords = missingRecords;
     if (collectionPendingUniverse) outcome.pendingCollectionUniverse = collectionPendingUniverse;
     if (collectionPendingSeries) outcome.pendingCollectionSeries = collectionPendingSeries;
     if (legacyCanonPendingUniverses) outcome.pendingLegacyCanonUniverses = legacyCanonPendingUniverses;
     if (legacyCanonPendingFailures) outcome.pendingLegacyCanonFailures = legacyCanonPendingFailures;
+    if (recordImportFailures) outcome.pendingRecordImportFailures = recordImportFailures;
     sharingEvents.emit('manifest-processed', { bucketId, manifestId: manifest.id, manifestFilename, outcome });
-    console.log(`⏳ sharing: bucket=${bucket.name} manifest=${manifest.id} kind=${manifest.kind} mode=${bucket.mode} waitingForAssets=${assetCopy.missing.length} waitingForRecords=${missingRecords.length}${collectionPendingUniverse ? ` waitingForUniverse=${collectionPendingUniverse}` : ''}${collectionPendingSeries ? ` waitingForSeries=${collectionPendingSeries}` : ''}${legacyCanonPendingUniverses ? ` waitingForLegacyCanonUniverses=${legacyCanonPendingUniverses.join(',')}` : ''}${legacyCanonPendingFailures ? ` legacyCanonFailures=${legacyCanonPendingFailures.join(',')}` : ''}`);
+    console.log(`⏳ sharing: bucket=${bucket.name} manifest=${manifest.id} kind=${manifest.kind} mode=${bucket.mode} waitingForAssets=${assetCopy.missing.length} waitingForRecords=${missingRecords.length}${collectionPendingUniverse ? ` waitingForUniverse=${collectionPendingUniverse}` : ''}${collectionPendingSeries ? ` waitingForSeries=${collectionPendingSeries}` : ''}${legacyCanonPendingUniverses ? ` waitingForLegacyCanonUniverses=${legacyCanonPendingUniverses.join(',')}` : ''}${legacyCanonPendingFailures ? ` legacyCanonFailures=${legacyCanonPendingFailures.join(',')}` : ''}${recordImportFailures ? ` recordImportFailures=${recordImportFailures.join(',')}` : ''}`);
     return { processed: true, pending: true, manifest, outcome };
   }
   await markProcessed(bucketId, manifestFilename, manifest.id);

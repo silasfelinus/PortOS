@@ -806,7 +806,6 @@ async function resolveExcludeSet(category, forPeerId) {
 export async function getChecksum(category, { forPeerId } = {}) {
   const cat = CATEGORIES[category];
   if (!cat) return null;
-  const exclude = await resolveExcludeSet(category, forPeerId);
   const paths = CHECKSUM_PATHS[category];
   if (paths) {
     const fingerprints = await readFingerprintMap(paths);
@@ -819,10 +818,16 @@ export async function getChecksum(category, { forPeerId } = {}) {
     if (cached && fingerprintsEqual(cached.fingerprints, fingerprints)) {
       return { checksum: cached.checksum };
     }
+    // Cache miss only: resolve the per-peer exclude-set (a dynamic peerSync
+    // import + subscription read) and build the fresh scoped snapshot. The
+    // cache-hit path above never uses `exclude`, so deferring it here saves
+    // that I/O on every poll that hits the cache.
+    const exclude = await resolveExcludeSet(category, forPeerId);
     const snapshot = await cat.getSnapshot({ exclude });
     checksumCache.set(cacheKey, { fingerprints, checksum: snapshot.checksum });
     return { checksum: snapshot.checksum };
   }
+  const exclude = await resolveExcludeSet(category, forPeerId);
   const snapshot = await cat.getSnapshot({ exclude });
   return { checksum: snapshot.checksum };
 }
