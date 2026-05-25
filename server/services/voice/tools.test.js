@@ -531,6 +531,51 @@ describe('ui_read', () => {
     const names = specs.map((s) => s.function.name);
     expect(names).toContain('ui_read');
   });
+
+  // Lazy text path: the client no longer ships `text` on every index; it sets
+  // textOnDemand and ui_read pulls the blob via ctx.requestUiText().
+  it('lazily fetches text via ctx.requestUiText when index omits text', async () => {
+    const text = 'Lazily fetched page body.';
+    let requested = 0;
+    const ctx = {
+      state: { ui: { textOnDemand: true, path: '/tasks', title: 'Tasks' } },
+      requestUiText: async () => { requested += 1; return text; },
+    };
+    const r = await dispatchTool('ui_read', {}, ctx);
+    expect(requested).toBe(1);
+    expect(r.ok).toBe(true);
+    expect(r.content).toBe(text);
+    expect(r.title).toBe('Tasks');
+    expect(r.chars).toBe(text.length);
+  });
+
+  it('does not request lazily when text is already present (eager/legacy)', async () => {
+    let requested = 0;
+    const ctx = {
+      state: { ui: { text: 'already here', textOnDemand: true } },
+      requestUiText: async () => { requested += 1; return 'should-not-be-used'; },
+    };
+    const r = await dispatchTool('ui_read', {}, ctx);
+    expect(requested).toBe(0);
+    expect(r.content).toBe('already here');
+  });
+
+  it('returns ok:false when lazy fetch times out / returns null', async () => {
+    const ctx = {
+      state: { ui: { textOnDemand: true } },
+      requestUiText: async () => null,
+    };
+    const r = await dispatchTool('ui_read', {}, ctx);
+    expect(r.ok).toBe(false);
+    expect(r.summary).toMatch(/can't see/i);
+  });
+
+  it('returns ok:false when client neither ships text nor advertises textOnDemand', async () => {
+    // Very old client / no widget — no eager text, no lazy capability.
+    const ctx = { state: { ui: { path: '/tasks' } }, requestUiText: async () => 'x' };
+    const r = await dispatchTool('ui_read', {}, ctx);
+    expect(r.ok).toBe(false);
+  });
 });
 
 describe('ui_click — destructive confirmation gate', () => {
