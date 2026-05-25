@@ -233,6 +233,19 @@ export async function subscribePeer({ peerId, recordKind, recordId }, opts = {})
         updatedAt: now,
         lastPushedAt: null,
         lastPushedHash: null,
+        // Per-(peer,record) confirmed-delivery water-mark (ms epoch). Set ONLY
+        // when a push to this peer for THIS record lands successfully (the
+        // receiver returned 2xx). Distinct from the per-peer tombstone ack
+        // cursor (`peer_tombstone_cursors.json`) which advances to the MAX
+        // acked deletedAt across ALL of a peer's pushes — a later record-B
+        // success would otherwise advance that cursor past a failed record-A,
+        // letting GC prune A's tombstone before A's delete-push was ever
+        // confirmed. tombstoneGc clamps its prune cutoff to the MIN of this
+        // field across a kind's subscription rows, so an unconfirmed record
+        // (still `null`, or stuck at a pre-delete success time) holds the
+        // line. Lives on the row → cleaned up for free when the row is
+        // removed (`unsubscribePeer`), no separate storage to leak.
+        lastConfirmedPushedAt: null,
         adoptedFromReverse: opts.adoptedFromReverse === true,
       };
       state.subscriptions.push(existing);
@@ -903,7 +916,16 @@ export async function pushRecordToPeer(sub, options = {}) {
   // merge LWW path; only cost is one redundant POST per push cycle
   // until the receiver finishes pulling).
   const missingCount = Array.isArray(body?.missingAssets) ? body.missingAssets.length : 0;
-  await persistPushSuccess(sub.id, missingCount > 0 ? null : hash);
+  // This push landed (receiver returned 2xx). Stamp the per-record confirmed-
+  // delivery water-mark so tombstoneGc won't prune THIS record's tombstone
+  // until its delete-push has been confirmed — even if a later push for a
+  // DIFFERENT record advances the per-peer ack cursor past it. We stamp on
+  // every confirmed push (not just deletes): a successful pre-delete push
+  // establishes the floor, and the subsequent delete-push raises it above
+  // the tombstone's deletedAt once it lands. The `missingAssets` case still
+  // counts as confirmed delivery of the RECORD (merge ran on the receiver);
+  // only the asset-stranded hash is withheld, not the confirmation mark.
+  await persistPushSuccess(sub.id, missingCount > 0 ? null : hash, { confirmedAtMs: Date.now() });
   if (Number.isFinite(body?.ackedDeletesUpTo) && body.ackedDeletesUpTo > 0) {
     await ackDeletesUpTo(sub.peerId, body.ackedDeletesUpTo).catch(() => {});
   }
@@ -915,7 +937,7 @@ export async function pushRecordToPeer(sub, options = {}) {
   };
 }
 
-async function persistPushSuccess(subId, hash) {
+async function persistPushSuccess(subId, hash, { confirmedAtMs = Date.now() } = {}) {
   await withStateLock(async () => {
     const state = await readState();
     const sub = state.subscriptions.find((s) => s.id === subId);
@@ -924,6 +946,13 @@ async function persistPushSuccess(subId, hash) {
     sub.lastPushedAt = now;
     sub.lastPushedHash = hash;
     sub.updatedAt = now;
+    // Advance the per-record confirmed-delivery water-mark monotonically — an
+    // out-of-order retry must not retract it (mirrors ackDeletesUpTo's
+    // never-move-backward guarantee). tombstoneGc reads MIN-of-this across a
+    // kind's rows, so a regression here would let a stale tombstone prune.
+    if (Number.isFinite(confirmedAtMs) && confirmedAtMs > (sub.lastConfirmedPushedAt ?? 0)) {
+      sub.lastConfirmedPushedAt = confirmedAtMs;
+    }
     // A successful push (or even a no-asset-stranded push) clears any prior
     // schema-version block — the peer can receive again.
     if (sub.blockedBySchema) delete sub.blockedBySchema;

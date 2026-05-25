@@ -73,6 +73,7 @@ import {
   pullRecordFromPeer,
   syncNowForPeer,
   collectSubscriptionsForUpdate,
+  peerSyncEvents,
   __resetForTests,
   __drainForTests,
 } from './peerSync.js';
@@ -1249,6 +1250,47 @@ describe('peerSync', () => {
       expect(cursors['peer-a'].lastAckedDeleteAt).toBe(5000);
     });
 
+    it('stamps the per-record lastConfirmedPushedAt on a confirmed push (per-record tombstone-ack clamp)', async () => {
+      // The per-peer cursor advances to the MAX deletedAt across all pushes;
+      // the per-record water-mark must additionally record THIS record's
+      // confirmed delivery so tombstoneGc won't prune its tombstone before
+      // its own (delete-)push lands. See tombstoneGc.minConfirmedPushedAtForKind.
+      vi.mocked(getUniverse).mockResolvedValue({ id: 'u1', name: 'Foo' });
+      vi.mocked(peerFetch).mockResolvedValue({ ok: true, json: async () => ({ missingAssets: [] }) });
+      const before = Date.now();
+      const sub = await subscribePeer(
+        { peerId: 'peer-a', recordKind: 'universe', recordId: 'u1' },
+        { adoptedFromReverse: true },
+      );
+      expect(sub.lastConfirmedPushedAt).toBeNull(); // not set until a push lands
+      await pushRecordToPeer(sub);
+      const refreshed = await findPeerSubscription('peer-a', 'universe', 'u1');
+      expect(refreshed.lastConfirmedPushedAt).toBeGreaterThanOrEqual(before);
+    });
+
+    it('does NOT advance lastConfirmedPushedAt on a failed push (no false confirmation)', async () => {
+      // A network failure must leave the per-record water-mark untouched —
+      // otherwise GC would treat an undelivered record's tombstone as safe.
+      vi.mocked(getUniverse).mockResolvedValue({ id: 'u1', name: 'Foo' });
+      vi.mocked(peerFetch).mockResolvedValue({ ok: true, json: async () => ({ missingAssets: [] }) });
+      const sub = await subscribePeer(
+        { peerId: 'peer-a', recordKind: 'universe', recordId: 'u1' },
+        { adoptedFromReverse: true },
+      );
+      await pushRecordToPeer(sub); // first push confirms
+      const afterFirst = await findPeerSubscription('peer-a', 'universe', 'u1');
+      const stamped = afterFirst.lastConfirmedPushedAt;
+      expect(stamped).toBeTruthy();
+      // Now a later push to the SAME sub fails at the network — content must
+      // differ so the unchanged-hash short-circuit doesn't skip the wire.
+      vi.mocked(getUniverse).mockResolvedValue({ id: 'u1', name: 'Bar' });
+      vi.mocked(peerFetch).mockRejectedValue(new Error('ECONNREFUSED'));
+      const result = await pushRecordToPeer({ ...afterFirst });
+      expect(result.pushed).toBe(false);
+      const afterFail = await findPeerSubscription('peer-a', 'universe', 'u1');
+      expect(afterFail.lastConfirmedPushedAt).toBe(stamped); // unchanged
+    });
+
     it('handles a network-level failure without throwing (returns pushed:false)', async () => {
       vi.mocked(getUniverse).mockResolvedValue({ id: 'u1', name: 'Foo' });
       vi.mocked(peerFetch).mockRejectedValue(new Error('ECONNREFUSED'));
@@ -1898,6 +1940,62 @@ describe('peerSync', () => {
       });
       const all = await listPeerSubscriptions({ peerId: 'peer-a' });
       expect(all).toHaveLength(1);
+    });
+
+    it('emits peerSyncEvents "subscription-created" ONLY when a reverse sub is genuinely created', async () => {
+      // The Instances UI listens on the relayed `peerSync:subscription:created`
+      // socket event to re-fetch a peer's subs without a manual reload. It must
+      // fire exactly once — on the first push that creates the reverse sub —
+      // and NOT on every subsequent push to the same (already-subscribed) record.
+      vi.mocked(getUniverse).mockResolvedValue({ id: 'u1', name: 'Foo' });
+      const events = [];
+      const handler = (payload) => events.push(payload);
+      peerSyncEvents.on('subscription-created', handler);
+      try {
+        await applyIncomingPush({
+          kind: 'universe',
+          record: { id: 'u1' },
+          assetManifest: [],
+          sourceInstanceId: 'peer-a',
+        });
+        // Second push — sub already exists, so no new event.
+        await applyIncomingPush({
+          kind: 'universe',
+          record: { id: 'u1', updatedAt: '2026-01-02T00:00:00Z' },
+          assetManifest: [],
+          sourceInstanceId: 'peer-a',
+        });
+      } finally {
+        peerSyncEvents.off('subscription-created', handler);
+      }
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        peerId: 'peer-a',
+        recordKind: 'universe',
+        recordId: 'u1',
+      });
+      expect(typeof events[0].subId).toBe('string');
+    });
+
+    it('does NOT emit "subscription-created" when the reverse-sub gate refuses (inbound-only peer)', async () => {
+      // No reverse sub is created for an inbound-only peer, so the UI signal
+      // must stay silent — emitting on every push would trigger needless
+      // peerSubs refetches across all cards.
+      vi.mocked(getUniverse).mockResolvedValue({ id: 'u1', name: 'Foo' });
+      const events = [];
+      const handler = (payload) => events.push(payload);
+      peerSyncEvents.on('subscription-created', handler);
+      try {
+        await applyIncomingPush({
+          kind: 'universe',
+          record: { id: 'u1' },
+          assetManifest: [],
+          sourceInstanceId: 'peer-b-inbound-only',
+        });
+      } finally {
+        peerSyncEvents.off('subscription-created', handler);
+      }
+      expect(events).toHaveLength(0);
     });
   });
 
