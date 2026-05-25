@@ -462,6 +462,51 @@ export const onVoiceEvent = (event, handler) => {
   return () => socket.off(event, handler);
 };
 
+// Capture the current screen/tab as a JPEG data URL for the voice agent's
+// ui_describe_visually tool. Uses getDisplayMedia — the only browser-native way
+// to grab WebGL/canvas content (CyberCity, charts) without a heavy DOM-to-canvas
+// dependency. The browser prompts for screen-capture permission; the user picks
+// the tab/window. Returns null on denial or any failure so the caller can
+// gracefully tell the user it couldn't see the screen.
+export const captureScreenForVision = async () => {
+  if (!navigator.mediaDevices?.getDisplayMedia || typeof document === 'undefined') return null;
+  let mediaStream = null;
+  try {
+    mediaStream = await navigator.mediaDevices.getDisplayMedia({
+      video: { displaySurface: 'browser' },
+      audio: false,
+    });
+    const video = document.createElement('video');
+    video.srcObject = mediaStream;
+    video.muted = true;
+    await video.play();
+    // One frame is enough; give the decoder a tick to paint dimensions.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const w = video.videoWidth || 1280;
+    const h = video.videoHeight || 720;
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const cctx = canvas.getContext('2d');
+    if (!cctx) return null;
+    cctx.drawImage(video, 0, 0, w, h);
+    video.pause();
+    // JPEG @ 0.8 keeps the payload well under the server's 16 MB cap even at 4K.
+    return canvas.toDataURL('image/jpeg', 0.8);
+  } catch {
+    // User denied the prompt, or capture isn't available in this context.
+    return null;
+  } finally {
+    if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+  }
+};
+
+// Reply to a server voice:screenshot:request. Always emits a result (data URL
+// or null) so the server-side waiter resolves instead of timing out.
+export const sendScreenshotResult = (dataUrl) => {
+  socket.emit('voice:screenshot:result', { dataUrl: dataUrl || null });
+};
+
 export const playWav = (arrayBuffer) => enqueuePlay(arrayBuffer);
 
 // Resolves once every currently-queued TTS chunk has finished playing locally.

@@ -94,6 +94,41 @@ const waitForUiRefresh = (state, timeoutMs, signal) => new Promise((resolve) => 
   state.uiWaiters.push(finish);
 });
 
+// Ask the client to screenshot the active tab and await the data URL. Mirrors
+// waitForUiRefresh's waiter pattern: emit voice:screenshot:request, then resolve
+// when the client posts voice:screenshot:result (handled in sockets/voice.js).
+// Resolves with the data URL or null on timeout/abort/denied-capture.
+const requestScreenshot = (emit, state, timeoutMs, signal) => new Promise((resolve) => {
+  if (!state) { resolve(null); return; }
+  if (!Array.isArray(state.screenshotWaiters)) state.screenshotWaiters = [];
+  let done = false;
+  const finish = (value) => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    signal?.removeEventListener?.('abort', onAbort);
+    const i = state.screenshotWaiters.indexOf(finish);
+    if (i !== -1) state.screenshotWaiters.splice(i, 1);
+    resolve(value);
+  };
+  const onAbort = () => finish(null);
+  const timer = setTimeout(() => finish(null), timeoutMs);
+  signal?.addEventListener?.('abort', onAbort, { once: true });
+  state.screenshotWaiters.push(finish);
+  emit('voice:screenshot:request', {});
+});
+
+// Send a captured image (base64 data URL) to the voice LLM provider's vision
+// endpoint and return the description text. Reuses visionTest's provider-aware
+// OpenAI-compatible /chat/completions call so we don't reimplement the request
+// shape. Lazy import keeps tools.js / the pipeline free of a hard vision dep.
+const describeScreenshot = async (dataUrl, prompt, cfg) => {
+  const { describeImageDataUrl } = await import('../visionTest.js');
+  const providerId = cfg?.llm?.provider || 'lmstudio';
+  const model = cfg?.llm?.model && cfg.llm.model !== 'auto' ? cfg.llm.model : undefined;
+  return describeImageDataUrl({ dataUrl, prompt, providerId, model });
+};
+
 export { summarizeUi, shouldIncludeUi };
 
 const buildSystemPrompt = (cfg) => {
@@ -514,7 +549,16 @@ export const runTurn = async ({ audio, text, mimeType, source, history = [], emi
       const t0 = Date.now();
       let result;
       let args = {};
-      const ctx = { sideEffects: [], state, signal };
+      const ctx = {
+        sideEffects: [],
+        state,
+        signal,
+        // ui_describe_visually: capture the active tab (client round-trip) and
+        // describe it via the voice provider's vision endpoint. Provided here
+        // so tools.js stays free of socket/vision coupling.
+        captureScreenshot: () => requestScreenshot(emit, state, 15000, signal),
+        describeImage: (dataUrl, prompt) => describeScreenshot(dataUrl, prompt, cfg),
+      };
       try {
         args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
         const argSummary = Object.keys(args).length ? Object.entries(args).map(([k, v]) => `${k}=${JSON.stringify(v).slice(0, 40)}`).join(' ') : '—';
