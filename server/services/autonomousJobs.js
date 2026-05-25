@@ -29,7 +29,7 @@ import { validateCommand, redactOutput, ALLOWED_COMMANDS_SORTED } from '../lib/c
 import { getUserTimezone, getLocalParts, nextLocalTime } from '../lib/timezone.js'
 import { parseCronToNextRun } from './eventScheduler.js'
 import { cleanupOrphanedWorktrees } from './worktreeManager.js'
-import { activeAgents, runnerAgents } from './agentState.js'
+import { getActiveAgentIds } from './agentState.js'
 
 /**
  * Run the moltworld-explore.mjs script as a child process (no AI agent needed).
@@ -86,11 +86,10 @@ function runMoltworldExploration() {
  */
 async function agentDataCleanup() {
   // Active agent IDs so we never delete data / worktrees for running agents.
-  // Read straight from the side-effect-free `agentState.js` maps rather than
-  // importing `subAgentSpawner.js` (which runs `initSpawner()` + schedules
-  // orphan cleanup at module load) — this is exactly what `getActiveAgentIds()`
-  // returns, minus the import-time side effects.
-  const activeIds = new Set([...activeAgents.keys(), ...runnerAgents.keys()])
+  // `getActiveAgentIds` lives in the side-effect-free `agentState.js`, so this
+  // script job doesn't pull in `subAgentSpawner.js` (and its module-load
+  // `initSpawner()` + scheduled orphan cleanup) just to read the maps.
+  const activeIds = new Set(getActiveAgentIds())
 
   const agentsDir = join(PATHS.cos, 'agents')
   let cleaned = 0
