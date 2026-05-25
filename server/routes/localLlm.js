@@ -16,11 +16,12 @@ import {
   localLlmDeleteSchema,
   localLlmSwitchSchema,
   localLlmMigrateSchema,
-  localLlmInstallBackendSchema
+  localLlmInstallBackendSchema,
+  localLlmOllamaServiceSchema
 } from '../lib/validation.js'
 import { getCatalog, searchCatalog, isBackend } from '../lib/localLlmCatalog.js'
 import {
-  getStatus, listModels, installModel, deleteModel, switchBackend, migrateBackend, installBackend
+  getStatus, listModels, installModel, deleteModel, switchBackend, migrateBackend, installBackend, controlOllamaServer
 } from '../services/localLlm.js'
 
 const router = Router()
@@ -59,6 +60,23 @@ router.post('/install-backend', asyncHandler(async (req, res) => {
     return res.status(502).json({ error: result.error || 'Install failed', backend })
   }
   emit('complete', `${backend === 'ollama' ? 'Ollama' : 'LM Studio'} installed${result.note ? ` — ${result.note}` : ''}`)
+  res.json(result)
+}))
+
+// POST /api/local-llm/ollama-service — start/stop the local Ollama server
+router.post('/ollama-service', asyncHandler(async (req, res) => {
+  const { action } = validateRequest(localLlmOllamaServiceSchema, req.body)
+  const emit = emitter(req)
+  emit('start', `${action === 'start' ? 'Starting' : 'Stopping'} Ollama…`)
+  const result = await controlOllamaServer(action).catch((err) => {
+    emit('error', `Ollama ${action} failed: ${err.message}`)
+    throw err
+  })
+  if (!result.success) {
+    emit('error', result.error || `Ollama ${action} failed`)
+    return res.status(502).json({ error: result.error || `Ollama ${action} failed` })
+  }
+  emit('complete', action === 'start' ? 'Ollama is running' : 'Ollama stopped')
   res.json(result)
 }))
 

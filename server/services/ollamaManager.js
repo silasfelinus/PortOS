@@ -17,16 +17,21 @@
 import { homedir } from 'os'
 import { join, dirname } from 'path'
 import { readdir, stat, link, mkdir } from 'fs/promises'
+import { execFile, spawn } from 'child_process'
+import { promisify } from 'util'
 import { fetchWithTimeout } from '../lib/fetchWithTimeout.js'
 import { readJSONFile, sha256File } from '../lib/fileUtils.js'
 import {
   parseOllamaManifest, parseOllamaModelRef, ollamaManifestRelPath, digestToBlobFilename, buildModelfile
 } from '../lib/localLlmDisk.js'
 
+const execFileAsync = promisify(execFile)
 const AVAILABILITY_CACHE_TTL_MS = 30_000
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
 // Short probe — degrade to "no Ollama" fast rather than block on a cold check.
 const AVAILABILITY_PROBE_TIMEOUT_MS = 5_000
+const START_TIMEOUT_MS = 12_000
+const STOP_TIMEOUT_MS = 8_000
 
 const DEFAULT_CONFIG = {
   // Ollama uses OLLAMA_HOST (host:port, no scheme) by convention; also accept
@@ -48,6 +53,8 @@ let isAvailable = null
 // too — otherwise the catalog-overlay path re-hits /api/tags on every keystroke.
 let installedModels = null
 let lastCheckAt = null
+let managedProcess = null
+let managedProcessPid = null
 
 const status = { lastError: null, lastSuccessAt: null, consecutiveErrors: 0 }
 
@@ -67,9 +74,9 @@ async function ollamaRequest(endpoint, options = {}) {
 /**
  * Check if Ollama is reachable (cached for AVAILABILITY_CACHE_TTL_MS).
  */
-async function checkOllamaAvailable() {
+async function checkOllamaAvailable(forceRefresh = false) {
   const now = Date.now()
-  if (lastCheckAt && now - lastCheckAt < AVAILABILITY_CACHE_TTL_MS && isAvailable !== null) {
+  if (!forceRefresh && lastCheckAt && now - lastCheckAt < AVAILABILITY_CACHE_TTL_MS && isAvailable !== null) {
     return isAvailable
   }
   try {
@@ -86,6 +93,115 @@ async function checkOllamaAvailable() {
     status.consecutiveErrors++
     lastCheckAt = now
     return false
+  }
+}
+
+function resetAvailabilityCache() {
+  isAvailable = null
+  lastCheckAt = null
+  installedModels = null
+}
+
+async function waitForAvailability(expected, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if ((await checkOllamaAvailable(true)) === expected) return true
+    await new Promise((resolve) => setTimeout(resolve, 400))
+  }
+  return (await checkOllamaAvailable(true)) === expected
+}
+
+function rememberManagedProcess(child) {
+  managedProcess = child
+  managedProcessPid = child.pid
+  child.on('exit', () => {
+    if (managedProcessPid === child.pid) {
+      managedProcess = null
+      managedProcessPid = null
+    }
+  })
+}
+
+async function terminateManagedProcess() {
+  const pid = managedProcessPid
+  if (!pid) return false
+  try {
+    process.kill(-pid, 'SIGTERM')
+  } catch {
+    try { process.kill(pid, 'SIGTERM') } catch { return false }
+  }
+  return true
+}
+
+/**
+ * Start the Ollama HTTP server via the local CLI.
+ * @returns {Promise<{ success: boolean, running?: boolean, alreadyRunning?: boolean, pid?: number, error?: string }>}
+ */
+async function startServer() {
+  if (await checkOllamaAvailable(true)) {
+    return { success: true, running: true, alreadyRunning: true }
+  }
+
+  let spawnError = null
+  const stderr = []
+  const child = spawn('ollama', ['serve'], {
+    detached: true,
+    stdio: ['ignore', 'ignore', 'pipe'],
+    env: process.env
+  })
+  rememberManagedProcess(child)
+  child.stderr?.on('data', (chunk) => {
+    stderr.push(chunk.toString())
+    if (stderr.join('').length > 2000) stderr.shift()
+  })
+  child.on('error', (err) => { spawnError = err })
+  child.unref()
+
+  const running = await waitForAvailability(true, START_TIMEOUT_MS)
+  if (running) {
+    console.log(`▶️ Started Ollama server (pid ${child.pid})`)
+    return { success: true, running: true, pid: child.pid }
+  }
+
+  const detail = spawnError?.message || stderr.join('').trim()
+  return {
+    success: false,
+    running: false,
+    error: `Ollama did not become reachable${detail ? `: ${detail}` : ''}`
+  }
+}
+
+/**
+ * Stop the Ollama HTTP server. Prefer the PortOS-managed process when we
+ * started it; otherwise terminate the local `ollama` process by executable name.
+ */
+async function stopServer() {
+  if (!(await checkOllamaAvailable(true))) {
+    return { success: true, running: false, alreadyStopped: true }
+  }
+
+  await terminateManagedProcess()
+  if (await waitForAvailability(false, STOP_TIMEOUT_MS)) {
+    resetAvailabilityCache()
+    console.log('⏹️ Stopped PortOS-managed Ollama server')
+    return { success: true, running: false }
+  }
+
+  if (process.platform === 'darwin' || process.platform === 'linux') {
+    const killed = await execFileAsync('pkill', ['-TERM', '-x', 'ollama'], { timeout: 5_000 })
+      .then(() => true)
+      .catch(() => false)
+    if (killed && await waitForAvailability(false, STOP_TIMEOUT_MS)) {
+      resetAvailabilityCache()
+      console.log('⏹️ Stopped Ollama server')
+      return { success: true, running: false }
+    }
+  }
+
+  return {
+    success: false,
+    running: true,
+    error: 'Ollama is running, but PortOS could not stop the local process automatically.'
   }
 }
 
@@ -356,5 +472,7 @@ export {
   deleteModel,
   getStatus,
   resolveLocalModel,
-  importModelFromGguf
+  importModelFromGguf,
+  startServer,
+  stopServer
 }

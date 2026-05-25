@@ -16,6 +16,9 @@ export const deleteLocalLlmModel = (backend, modelId) =>
 export const installLocalLlmBackend = (backend) =>
   request('/local-llm/install-backend', { method: 'POST', body: JSON.stringify({ backend }) });
 
+export const controlOllamaService = (action) =>
+  request('/local-llm/ollama-service', { method: 'POST', body: JSON.stringify({ action }) });
+
 // Set the default backend (which one PortOS routes local runs to) — does not move models.
 export const switchLocalLlmBackend = (to) =>
   request('/local-llm/switch', { method: 'POST', body: JSON.stringify({ to }) });

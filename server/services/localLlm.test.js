@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
     pullModel: vi.fn(async (id) => ({ success: true, modelId: id })),
     deleteModel: vi.fn(async (id) => ({ success: true, modelId: id })),
     getStatus: vi.fn(async () => ({ available: true, baseUrl: 'x', version: '1', modelCount: 0, models: [] })),
+    startServer: vi.fn(async () => ({ success: true, running: true })),
+    stopServer: vi.fn(async () => ({ success: true, running: false })),
     // No local GGUF found by default → migrate falls back to re-pull.
     resolveLocalModel: vi.fn(async () => null),
     // Echo the requested mode as the real outcome (link mode "succeeds" in tests).
@@ -108,6 +110,22 @@ describe('localLlm', () => {
     });
     it('rejects an unknown backend', async () => {
       expect((await svc.installModel('nope', 'x')).success).toBe(false);
+    });
+  });
+
+  describe('controlOllamaServer', () => {
+    it('starts and stops Ollama through the Ollama manager', async () => {
+      expect(await svc.controlOllamaServer('start')).toEqual({ success: true, running: true });
+      expect(await svc.controlOllamaServer('stop')).toEqual({ success: true, running: false });
+      expect(mocks.ollama.startServer).toHaveBeenCalledTimes(1);
+      expect(mocks.ollama.stopServer).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects unknown Ollama service actions', async () => {
+      const r = await svc.controlOllamaServer('restart');
+      expect(r.success).toBe(false);
+      expect(mocks.ollama.startServer).not.toHaveBeenCalled();
+      expect(mocks.ollama.stopServer).not.toHaveBeenCalled();
     });
   });
 

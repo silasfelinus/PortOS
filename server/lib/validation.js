@@ -1062,6 +1062,7 @@ export const localLlmMigrateSchema = z.object({
   mode: z.enum(['link', 'copy']).optional().default('link'),
 });
 export const localLlmInstallBackendSchema = z.object({ backend: localLlmBackendSchema });
+export const localLlmOllamaServiceSchema = z.object({ action: z.enum(['start', 'stop']) });
 
 /**
  * Validate data against a Zod schema, throwing on failure.

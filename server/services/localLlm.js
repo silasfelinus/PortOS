@@ -218,6 +218,17 @@ export async function installBackend(backend, onProgress = () => {}) {
   }
 }
 
+/**
+ * Start/stop the Ollama HTTP server from the UI. LM Studio is app-controlled,
+ * so keep this intentionally narrow instead of inventing unreliable app-launch
+ * behavior for every platform.
+ */
+export async function controlOllamaServer(action) {
+  if (action === 'start') return ollamaManager.startServer()
+  if (action === 'stop') return ollamaManager.stopServer()
+  return { success: false, error: `Unknown Ollama action: ${action}` }
+}
+
 /** Normalize each backend's installed-model shape into one card shape. */
 function normalizeModels(backend, models) {
   if (backend === 'ollama') {
@@ -269,6 +280,7 @@ export async function getStatus() {
       baseUrl: ollamaStatus.baseUrl,
       modelCount: ollamaStatus.modelCount,
       models: normalizeModels('ollama', ollamaStatus.models),
+      canControl: ollamaCli || ollamaStatus.available,
       canAutoInstall: canAutoInstall('ollama'),
       downloadUrl: DOWNLOAD_URL.ollama
     },

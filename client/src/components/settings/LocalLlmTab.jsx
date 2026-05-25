@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy } from 'lucide-react';
+import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Square } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
 import { formatBytes } from '../../utils/formatters';
 import {
   getLocalLlmStatus, getLocalLlmCatalog, installLocalLlmModel,
-  deleteLocalLlmModel, switchLocalLlmBackend, migrateLocalLlmBackend, installLocalLlmBackend
+  deleteLocalLlmModel, switchLocalLlmBackend, migrateLocalLlmBackend, installLocalLlmBackend, controlOllamaService
 } from '../../services/api';
 import socket from '../../services/socket';
 
@@ -101,6 +101,23 @@ function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAc
 
       {data?.installed && (
         <div className="flex flex-wrap gap-1.5 pt-1 border-t border-port-border/50">
+          {backend.id === 'ollama' && data?.canControl && (
+            <button
+              onClick={() => runAction(
+                `ollama-service-${data.available ? 'stop' : 'start'}`,
+                () => controlOllamaService(data.available ? 'stop' : 'start'),
+                data.available ? 'Ollama stopped' : 'Ollama is running'
+              )}
+              disabled={busy}
+              className={`${btnClass} ${data.available ? 'bg-port-warning/20 hover:bg-port-warning/30 text-port-warning' : 'bg-port-accent/20 hover:bg-port-accent/30 text-port-accent'}`}
+              title={data.available ? 'Stop the local Ollama server' : 'Start the local Ollama server'}
+            >
+              {actionInProgress === `ollama-service-${data.available ? 'stop' : 'start'}`
+                ? <BrailleSpinner />
+                : data.available ? <Square size={12} /> : <Play size={12} />}
+              {data.available ? 'Stop' : 'Start'} Ollama
+            </button>
+          )}
           {!isDefault && (
             <button
               onClick={() => runAction(`switch-${backend.id}`, () => switchLocalLlmBackend(backend.id), `${backend.label} is now the default backend`)}
@@ -307,11 +324,23 @@ export function LocalLlmTab() {
         </div>
 
         {selectedData && !selectedData.available && (
-          <p className="text-xs text-port-warning">
-            {labelFor(selected)} isn't running — {selectedData.installed
-              ? `start it to install or manage models${selected === 'ollama' ? ' (run \`ollama serve\`)' : ' (launch the app and enable the local server)'}.`
-              : 'install it first (Settings → Local LLMs prompts at setup, or run `npm run setup:llm`).'}
-          </p>
+          <div className="flex items-center gap-2 flex-wrap text-xs text-port-warning">
+            <span>
+              {labelFor(selected)} isn't running — {selectedData.installed
+                ? (selected === 'ollama' ? 'start it to install or manage models.' : 'launch the app and enable the local server.')
+                : 'install it first (Settings → Local LLMs prompts at setup, or run `npm run setup:llm`).'}
+            </span>
+            {selected === 'ollama' && selectedData.installed && selectedData.canControl && (
+              <button
+                onClick={() => runAction('ollama-service-start-models', () => controlOllamaService('start'), 'Ollama is running')}
+                disabled={busy}
+                className={`${btnClass} bg-port-accent/20 hover:bg-port-accent/30 text-port-accent`}
+              >
+                {actionInProgress === 'ollama-service-start-models' ? <BrailleSpinner /> : <Play size={12} />}
+                Start Ollama
+              </button>
+            )}
+          </div>
         )}
         {selectedData?.available && selectedData?.modelsError && (
           <p className="text-xs text-port-warning">
