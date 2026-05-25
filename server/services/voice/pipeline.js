@@ -263,7 +263,11 @@ const MEMORY_INJECT_LIMIT = 5;
 //
 // Exported for unit testing.
 export const buildMemoryContext = async (userText, { limit = MEMORY_INJECT_LIMIT } = {}) => {
-  const memories = await getRelevantMemories({ description: userText }, { limit });
+  // getRelevantMemories → generateQueryEmbedding does a bare `await fetch` that
+  // REJECTS (not returns null) when the embeddings backend is unreachable, so
+  // catch here to honor the "zero memories rather than killing the turn"
+  // contract above — otherwise a down embed server errors every recall turn.
+  const memories = await getRelevantMemories({ description: userText }, { limit }).catch(() => null);
   if (!Array.isArray(memories) || !memories.length) return null;
   const top = memories.slice(0, limit).filter((m) => m && typeof m.content === 'string' && m.content.trim());
   if (!top.length) return null;

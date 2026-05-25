@@ -1086,6 +1086,15 @@ describe('new tool intent routing', () => {
   it('routes workout utterances to the meatspace group', () => {
     expect(classifyIntent('log a workout').has('meatspace')).toBe(true);
     expect(classifyIntent('I went for a run').has('meatspace')).toBe(true);
+    expect(classifyIntent('went for a 30 minute run').has('meatspace')).toBe(true);
+    expect(classifyIntent('I ran a 5k this morning').has('meatspace')).toBe(true);
+    expect(classifyIntent('did some cardio at the gym').has('meatspace')).toBe(true);
+  });
+  it('does NOT route command phrasings of run/ran to the meatspace group', () => {
+    // Bare run/ran collide with common commands — must not expose the workout tool.
+    expect(classifyIntent('run the pipeline render').has('meatspace')).toBe(false);
+    expect(classifyIntent('I ran the report again').has('meatspace')).toBe(false);
+    expect(classifyIntent('run it one more time').has('meatspace')).toBe(false);
   });
   it('routes visual-description utterances to the vision group', () => {
     expect(classifyIntent("what's on this chart?").has('vision')).toBe(true);

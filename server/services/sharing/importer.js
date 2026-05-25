@@ -412,9 +412,17 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
   };
 
   const mergeOne = async ({ kind, record, getFn, insertFn, updateFn, label }) => {
+    const suppressKind = kind === 'issue' ? 'series' : kind;
+    const suppressId = kind === 'issue' ? record.seriesId : record.id;
     const existing = await getFn(record.id).catch(() => null);
     if (!existing) {
-      await insertFn(record).catch((err) => {
+      // Suppress re-export around the insert exactly like the UPDATE branch:
+      // insertXxxWithId now fires emitRecordUpdated on the tombstone-resurrection
+      // path, which would otherwise echo the just-imported record straight back
+      // into the bucket we're importing from. The peer-sync propagation that
+      // resurrection ALSO triggers (autoSubscribeRecordToAllPeers) is a separate
+      // mechanism and stays intact — only the bucket re-export is suppressed.
+      await withReexportSuppressed(suppressKind, suppressId, () => insertFn(record)).catch((err) => {
         // Duplicate id is benign — a parallel manifest already inserted it.
         if (err?.code?.endsWith('_DUPLICATE')) return null;
         console.log(`⚠️ sharing.importer: insertWithId(${kind}=${record.id}) failed: ${err.message}`);
@@ -423,8 +431,6 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
       return;
     }
     if (remoteWins(existing.updatedAt, record.updatedAt)) {
-      const suppressKind = kind === 'issue' ? 'series' : kind;
-      const suppressId = kind === 'issue' ? record.seriesId : record.id;
       await withReexportSuppressed(suppressKind, suppressId, () => updateFn(existing.id, record));
       overridden.push({ kind, id: record.id, label });
       applied++;

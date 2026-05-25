@@ -285,4 +285,11 @@ describe('buildMemoryContext', () => {
     getRelevantMemories.mockResolvedValueOnce(null);
     expect(await buildMemoryContext('what did I say about X?')).toBeNull();
   });
+
+  it('returns null (does NOT throw) when retrieval rejects — embeddings backend down', async () => {
+    // generateEmbedding does a bare `await fetch` that REJECTS on a network
+    // failure; buildMemoryContext must degrade to no-memories, not kill the turn.
+    getRelevantMemories.mockRejectedValueOnce(new Error('ECONNREFUSED embeddings'));
+    await expect(buildMemoryContext('what did I decide about X?')).resolves.toBeNull();
+  });
 });

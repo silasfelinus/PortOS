@@ -87,4 +87,11 @@ describe('upsertEnvKey', () => {
     upsertEnvKey(envPath, 'LLM_BACKEND', 'lmstudio');
     expect(parseEnvFile(envPath)).toMatchObject({ LLM_BACKEND: 'lmstudio' });
   });
+
+  it('writes values containing $ literally (no String.replace pattern interpretation)', () => {
+    upsertEnvKey(envPath, 'PGPASSWORD', 'placeholder');
+    // $$ , $& , $1 would all be mangled by a string replacement arg.
+    upsertEnvKey(envPath, 'PGPASSWORD', 'p$$ass$&w$1ord');
+    expect(parseEnvFile(envPath)).toMatchObject({ PGPASSWORD: 'p$$ass$&w$1ord' });
+  });
 });

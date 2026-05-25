@@ -214,7 +214,12 @@ const GROUP_INTENT = {
   // "jot", "file" — without which moving brain_capture out of the always-on
   // set would break "remember to buy milk" style turns.
   brain: /\b(search|find|look ?up|recall|what did I (?:say|write|note)|brain|inbox|capture|remember|remind me|jot|note (?:that|to|down)|save (?:this|that)|file (?:this|that|it)|add (?:this|that|it) to (?:my )?(?:brain|inbox|notes?))\b/i,
-  meatspace: /\b(drink|drank|beer|wine|whiskey|shot|cocktail|cigarette|vape|pouch|nicotine|weigh|pound|kilo|kg|smoke|smoking|workout|exercise|exercised|run|ran|jog|yoga|lift(?:ed|ing)?|cardio|gym|cycling|cycled|swim|swam|how am I|summary today|log (?:a|my) (?:drink|weight|nicotine|workout))\b/i,
+  // Bare `run`/`ran` were dropped — they collide with common command phrasing
+  // ("run the pipeline", "I ran the report") and would expose the workout tool
+  // on non-fitness turns. Genuine run-logging is recovered via the "went
+  // for/on a … run" and "ran a/N/for/my …" phrasings below; the other activity
+  // nouns (jog/yoga/cardio/gym/cycling/swim/…) rarely collide in voice commands.
+  meatspace: /\b(drink|drank|beer|wine|whiskey|shot|cocktail|cigarette|vape|pouch|nicotine|weigh|pound|kilo|kg|smoke|smoking|workout|exercise|exercised|jog|yoga|lift(?:ed|ing)?|cardio|gym|cycling|cycled|swim|swam|how am I|summary today|log (?:a|my) (?:drink|weight|nicotine|workout|run|exercise))\b|\bwent (?:for|on) (?:a |an )?(?:\w+ ){0,2}(?:run|jog|swim|ride|walk|hike|workout)\b|\bran (?:a |an |\d|for |my )/i,
   // Calendar reads — "what's on my calendar", "what do I have today",
   // "next meeting", "what's next", "upcoming", "any appointments". Tight-ish
   // so plain "open calendar" still routes to ui_navigate, not calendar_today.

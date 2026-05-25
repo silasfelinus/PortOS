@@ -51,7 +51,10 @@ export function upsertEnvKey(filePath, key, value) {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const pattern = new RegExp(`^${escaped}=.*`, 'm');
   if (pattern.test(content)) {
-    content = content.replace(pattern, `${key}=${value}`);
+    // Replacer FUNCTION (not a string) so `$`-sequences in `value` (e.g. a
+    // password like `p$$word` or `$&`) are written literally instead of being
+    // interpreted as String.replace special patterns.
+    content = content.replace(pattern, () => `${key}=${value}`);
   } else {
     content = `${key}=${value}\n${content}`;
   }
