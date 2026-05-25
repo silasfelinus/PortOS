@@ -417,14 +417,27 @@ export async function migrateBackend(to, onProgress = () => {}) {
     results.push({ source: model.id, target: targetId, status, reason: r.error })
   }
 
-  writeBackend(to)
-  await ensureBackendProvider(to)
-
   const imported = results.filter((r) => r.status === 'imported').length
   const installed = results.filter((r) => r.status === 'installed').length
   const started = results.filter((r) => r.status === 'started').length
   const failed = results.filter((r) => r.status === 'failed').length
   const skipped = results.length - imported - installed - started - failed
+  const succeeded = imported + installed + started
+
+  // Don't flip the active marker onto a backend we couldn't provision anything
+  // on — if every attempt failed (target not installed/running), switching would
+  // leave PortOS pointed at an unusable backend. All-skipped is fine (the target
+  // itself works; we just had no equivalent to move).
+  if (failed > 0 && succeeded === 0) {
+    const error = `Migration to ${to} failed — no models could be provisioned (is ${to} installed and running?). Active backend left unchanged.`
+    onProgress({ event: 'error', message: error })
+    console.error(`⚠️ Migration to ${to} aborted: ${failed} failed, 0 succeeded — marker unchanged`)
+    return { success: false, error, results }
+  }
+
+  writeBackend(to)
+  await ensureBackendProvider(to)
+
   const parts = [
     imported ? `${imported} copied locally` : null,
     installed ? `${installed} downloaded` : null,

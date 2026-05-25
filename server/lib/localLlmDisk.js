@@ -117,14 +117,21 @@ export function isShardedGguf(basename) {
   return isShardName(String(basename || ''));
 }
 
+// Make one id segment safe to use as a directory name on every platform —
+// anything outside [A-Za-z0-9._-] (notably `:` from Ollama tags like
+// `model:latest`, and `\` on Windows) collapses to `-`.
+const fsSafeSegment = (s) => String(s || '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'model';
+
 /**
- * Split an LM Studio model id into its on-disk `<publisher>/<repo>` parts.
+ * Split an LM Studio model id into its on-disk `<publisher>/<repo>` parts,
+ * sanitized into filesystem-safe path components (the id may be migration-
+ * generated, e.g. `imported/llama3.2:latest`, not just a clean LM Studio id).
  * Bare ids (no `/`) land under an `imported` publisher.
  */
 export function lmStudioPublisherRepo(lmstudioId) {
   const parts = String(lmstudioId || '').split('/').filter(Boolean);
-  if (parts.length >= 2) return { publisher: parts[0], repo: parts.slice(1).join('-') };
-  return { publisher: 'imported', repo: parts[0] || 'model' };
+  if (parts.length >= 2) return { publisher: fsSafeSegment(parts[0]), repo: fsSafeSegment(parts.slice(1).join('-')) };
+  return { publisher: 'imported', repo: fsSafeSegment(parts[0] || 'model') };
 }
 
 /** A `FROM <gguf>` Modelfile body for importing a local GGUF into Ollama. */

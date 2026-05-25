@@ -98,6 +98,11 @@ describe('localLlmDisk', () => {
         .toEqual({ publisher: 'lmstudio-community', repo: 'Llama-3.2-3B-Instruct-GGUF' });
       expect(lmStudioPublisherRepo('justaname')).toEqual({ publisher: 'imported', repo: 'justaname' });
     });
+    it('sanitizes path-unsafe chars (e.g. Ollama tag colons) into filesystem-safe segments', () => {
+      // a migration-generated id like `imported/llama3.2:latest` must not put `:` in a dir name
+      expect(lmStudioPublisherRepo('imported/llama3.2:latest')).toEqual({ publisher: 'imported', repo: 'llama3.2-latest' });
+      expect(lmStudioPublisherRepo('gpt-oss:20b')).toEqual({ publisher: 'imported', repo: 'gpt-oss-20b' });
+    });
   });
 
   describe('buildModelfile', () => {

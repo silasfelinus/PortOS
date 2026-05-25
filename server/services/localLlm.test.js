@@ -174,6 +174,21 @@ describe('localLlm', () => {
       expect(r.results[0].status).toBe('installed');
     });
 
+    it('does not flip the marker when every provision fails (target unusable)', async () => {
+      writeEnv('LLM_BACKEND=lmstudio\n');
+      mocks.lmstudio.getAvailableModels.mockResolvedValueOnce([
+        { id: 'lmstudio-community/Llama-3.2-3B-Instruct-GGUF' }
+      ]);
+      mocks.lmstudio.resolveLocalModel.mockResolvedValueOnce(null); // no local copy → re-pull
+      mocks.ollama.pullModel.mockResolvedValueOnce({ success: false, error: 'Ollama not available' });
+
+      const r = await svc.migrateBackend('ollama');
+      expect(r.success).toBe(false);
+      expect(r.error).toMatch(/no models could be provisioned/);
+      expect(svc.getBackend()).toBe('lmstudio'); // marker left unchanged
+      expect(mocks.providers.updateProvider).not.toHaveBeenCalled(); // provider not flipped either
+    });
+
     it('rejects migrating to the already-active backend (no-op)', async () => {
       writeEnv('LLM_BACKEND=ollama\n');
       const r = await svc.migrateBackend('ollama');
