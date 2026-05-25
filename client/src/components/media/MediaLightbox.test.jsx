@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, waitFor } from '@testing-library/react';
 import MediaLightbox from './MediaLightbox';
 
 // The footer's AddToCollectionMenu and the (closed) PromptRefineModal pull the
@@ -21,7 +21,18 @@ const videoItem = {
 };
 
 describe('MediaLightbox video element (mobile playback)', () => {
-  it('renders the <video> with a poster + muted + playsInline so it loads/autoplays on mobile', () => {
+  // jsdom doesn't implement HTMLMediaElement.play; stub it per-test so we can
+  // drive the unmute-on-open effect down both the granted and blocked paths.
+  let playMock;
+  beforeEach(() => {
+    playMock = vi.fn(() => Promise.resolve());
+    HTMLMediaElement.prototype.play = playMock;
+  });
+  afterEach(() => {
+    delete HTMLMediaElement.prototype.play;
+  });
+
+  it('renders the <video> with a poster + playsInline + muted autoplay baseline so it loads on mobile', () => {
     const { container } = render(<MediaLightbox item={videoItem} onClose={() => {}} />);
     const video = container.querySelector('video');
     expect(video).toBeTruthy();
@@ -30,12 +41,31 @@ describe('MediaLightbox video element (mobile playback)', () => {
     // poster = thumbnail so a blank box never shows while the clip buffers,
     // and the frame is visible even if mobile autoplay is deferred.
     expect(video.getAttribute('poster')).toBe('/data/video-thumbnails/abc.jpg');
-    // muted is required for autoplay under mobile media-engagement policy.
-    expect(video.muted).toBe(true);
+    // muted autoplay is the baseline that lets the clip start under the mobile
+    // media-engagement policy; the effect then unmutes for sound.
+    expect(video.hasAttribute('autoplay')).toBe(true);
     // playsInline keeps iOS from promoting to a native fullscreen player.
     expect(video.hasAttribute('playsinline')).toBe(true);
     expect(video.hasAttribute('loop')).toBe(true);
     expect(video.hasAttribute('controls')).toBe(true);
+  });
+
+  it('unmutes and plays for sound when the opening gesture allows audible playback', async () => {
+    const { container } = render(<MediaLightbox item={videoItem} onClose={() => {}} />);
+    const video = container.querySelector('video');
+    await waitFor(() => expect(playMock).toHaveBeenCalled());
+    // play() resolved (gesture activation present) → stays unmuted for sound.
+    expect(video.muted).toBe(false);
+  });
+
+  it('falls back to muted playback when audible autoplay is blocked', async () => {
+    playMock.mockImplementation(() => Promise.reject(new Error('NotAllowedError')));
+    const { container } = render(<MediaLightbox item={videoItem} onClose={() => {}} />);
+    const video = container.querySelector('video');
+    // First (unmuted) play rejects → effect re-mutes and re-plays so the clip
+    // still runs; the user can unmute via the controls.
+    await waitFor(() => expect(video.muted).toBe(true));
+    expect(playMock.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it('omits poster when the video has no thumbnail rather than rendering an empty poster', () => {
