@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Square } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
@@ -16,6 +16,18 @@ const BACKENDS = [
 const labelFor = (id) => BACKENDS.find((b) => b.id === id)?.label || id;
 
 const btnClass = 'flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded transition-colors disabled:opacity-50';
+
+const CATEGORY_LABELS = {
+  chat: 'Chat',
+  reasoning: 'Reasoning',
+  coding: 'Coding',
+  vision: 'Image Analysis',
+  embedding: 'Text Embeddings',
+  lightweight: 'Small & Fast',
+  multilingual: 'Multilingual'
+};
+const CATEGORY_ORDER = ['reasoning', 'coding', 'vision', 'embedding', 'chat', 'lightweight', 'multilingual'];
+const categoryLabel = (id) => CATEGORY_LABELS[id] || id;
 
 // Summarize a migrate result for the success toast (per-model statuses → counts).
 function summarizeMigrate(r) {
@@ -157,6 +169,7 @@ export function LocalLlmTab() {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState('ollama');
   const [catalog, setCatalog] = useState([]);
+  const [activeCategory, setActiveCategory] = useState('all');
   const [query, setQuery] = useState('');
   const [manualId, setManualId] = useState('');
   const [actionInProgress, setActionInProgress] = useState(null);
@@ -246,6 +259,25 @@ export function LocalLlmTab() {
   const busy = actionInProgress != null;
   const selectedData = status?.[selected];
   const installedModels = selectedData?.models || [];
+  const catalogCategories = useMemo(() => {
+    const counts = new Map();
+    for (const model of catalog) counts.set(model.category || 'chat', (counts.get(model.category || 'chat') || 0) + 1);
+    return CATEGORY_ORDER
+      .filter((id) => counts.has(id))
+      .map((id) => ({ id, label: categoryLabel(id), count: counts.get(id) }));
+  }, [catalog]);
+  const visibleCatalogGroups = useMemo(() => {
+    const categoryIds = activeCategory === 'all'
+      ? catalogCategories.map((c) => c.id)
+      : [activeCategory];
+    return categoryIds
+      .map((category) => ({
+        category,
+        label: categoryLabel(category),
+        models: catalog.filter((model) => (model.category || 'chat') === category)
+      }))
+      .filter((group) => group.models.length > 0);
+  }, [activeCategory, catalog, catalogCategories]);
 
   // LM Studio's REST fallback returns { pending: true } — the download was only
   // queued, not finished — so don't claim "installed" in that case.
@@ -331,7 +363,7 @@ export function LocalLlmTab() {
             {BACKENDS.map((b) => (
               <button
                 key={b.id}
-                onClick={() => setSelected(b.id)}
+                onClick={() => { setSelected(b.id); setActiveCategory('all'); }}
                 className={`px-2.5 py-1 text-xs rounded transition-colors ${selected === b.id ? 'bg-port-accent/20 text-port-accent' : 'bg-port-bg text-gray-400 hover:text-white'}`}
               >
                 {b.label}
@@ -397,32 +429,70 @@ export function LocalLlmTab() {
           </div>
         </div>
 
+        {catalogCategories.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              onClick={() => setActiveCategory('all')}
+              className={`px-2.5 py-1 text-xs rounded transition-colors ${activeCategory === 'all' ? 'bg-port-accent/20 text-port-accent' : 'bg-port-bg text-gray-400 hover:text-white'}`}
+            >
+              All ({catalog.length})
+            </button>
+            {catalogCategories.map((category) => (
+              <button
+                key={category.id}
+                onClick={() => setActiveCategory(category.id)}
+                className={`px-2.5 py-1 text-xs rounded transition-colors ${activeCategory === category.id ? 'bg-port-accent/20 text-port-accent' : 'bg-port-bg text-gray-400 hover:text-white'}`}
+              >
+                {category.label} ({category.count})
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* Catalog cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-          {catalog.map((m) => (
-            <div key={m.id} className="flex items-start gap-3 bg-port-bg border border-port-border rounded-lg p-3">
-              <div className="flex-1 min-w-0">
-                <div className="text-sm text-white truncate">{m.name} <span className="text-xs text-gray-500">· {m.params}</span></div>
-                <div className="text-xs text-gray-500 truncate">{m.id}</div>
-                <div className="text-xs text-gray-500 mt-0.5">{m.description}</div>
-                <div className="text-[11px] text-gray-600 mt-0.5">{m.size} · {(m.capabilities || []).join(', ')}</div>
-              </div>
-              {m.installed ? (
-                <span className="text-xs px-2 py-1 text-port-success shrink-0">Installed</span>
-              ) : (
-                <button
-                  onClick={() => install(m.id)}
-                  disabled={busy}
-                  className="px-2.5 py-1 text-xs bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded disabled:opacity-50 flex items-center gap-1 shrink-0"
-                >
-                  {actionInProgress === `install-${m.id}` ? <BrailleSpinner /> : <Download size={12} />}
-                  Install
-                </button>
+        <div className="space-y-4">
+          {visibleCatalogGroups.map((group) => (
+            <div key={group.category} className="space-y-2">
+              {activeCategory === 'all' && (
+                <h3 className="text-xs font-medium text-gray-400">{group.label}</h3>
               )}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {group.models.map((m) => (
+                  <div key={m.id} className="flex items-start gap-3 bg-port-bg border border-port-border rounded-lg p-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm text-white truncate">{m.name} <span className="text-xs text-gray-500">· {m.params}</span></div>
+                      <div className="text-xs text-gray-500 truncate">{m.id}</div>
+                      <div className="text-xs text-gray-500 mt-0.5">{m.description}</div>
+                      <div className="flex items-center gap-1.5 flex-wrap text-[11px] text-gray-600 mt-1">
+                        <span className="text-gray-500">{categoryLabel(m.category)}</span>
+                        <span>{m.size}</span>
+                        {(m.capabilities || []).map((capability) => (
+                          <span key={capability} className="px-1.5 py-0.5 bg-port-border/60 rounded">{capability}</span>
+                        ))}
+                      </div>
+                    </div>
+                    {m.installed ? (
+                      <span className="text-xs px-2 py-1 text-port-success shrink-0">Installed</span>
+                    ) : (
+                      <button
+                        onClick={() => install(m.id)}
+                        disabled={busy}
+                        className="px-2.5 py-1 text-xs bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded disabled:opacity-50 flex items-center gap-1 shrink-0"
+                      >
+                        {actionInProgress === `install-${m.id}` ? <BrailleSpinner /> : <Download size={12} />}
+                        Install
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           ))}
           {catalog.length === 0 && (
             <p className="text-xs text-gray-500">No catalog matches{query ? ` for "${query}"` : ''}.</p>
+          )}
+          {catalog.length > 0 && visibleCatalogGroups.length === 0 && (
+            <p className="text-xs text-gray-500">No {categoryLabel(activeCategory)} matches{query ? ` for "${query}"` : ''}.</p>
           )}
         </div>
 

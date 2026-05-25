@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  BACKENDS, isBackend, LOCAL_LLM_CATALOG, getCatalog, searchCatalog, mapModelToBackend
+  BACKENDS, isBackend, LOCAL_LLM_CATALOG, LOCAL_LLM_CATEGORIES, getCatalog, searchCatalog, mapModelToBackend
 } from './localLlmCatalog.js';
 
 describe('localLlmCatalog', () => {
@@ -19,14 +19,19 @@ describe('localLlmCatalog', () => {
       const ollama = getCatalog('ollama');
       const llama = ollama.find((m) => m.key === 'llama3.2');
       expect(llama.id).toBe('llama3.2');
+      expect(llama.category).toBe('chat');
       const lms = getCatalog('lmstudio');
       const llamaLms = lms.find((m) => m.key === 'llama3.2');
       expect(llamaLms.id).toBe('lmstudio-community/Llama-3.2-3B-Instruct-GGUF');
     });
 
     it('only includes entries that ship a build for the backend', () => {
-      // Every catalog entry currently has both ids, so counts match the catalog.
       expect(getCatalog('ollama').length).toBe(LOCAL_LLM_CATALOG.filter((e) => e.ollama).length);
+    });
+
+    it('keeps every entry in a known category', () => {
+      const categories = new Set(LOCAL_LLM_CATEGORIES.map((c) => c.id));
+      expect(LOCAL_LLM_CATALOG.every((entry) => categories.has(entry.category))).toBe(true);
     });
 
     it('marks installed models (tag-insensitive for Ollama)', () => {
@@ -52,6 +57,7 @@ describe('localLlmCatalog', () => {
     it('filters by name, family, and description', () => {
       expect(searchCatalog('ollama', 'coder').some((m) => m.key === 'qwen2.5-coder')).toBe(true);
       expect(searchCatalog('ollama', 'vision').some((m) => m.key === 'llava')).toBe(true);
+      expect(searchCatalog('ollama', 'embedding').some((m) => m.key === 'nomic-embed-text-v2-moe')).toBe(true);
       expect(searchCatalog('ollama', 'zzzznotamodel')).toEqual([]);
     });
   });

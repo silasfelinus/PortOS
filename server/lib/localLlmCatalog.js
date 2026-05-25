@@ -18,7 +18,17 @@ export const BACKENDS = ['ollama', 'lmstudio'];
 
 export const isBackend = (b) => BACKENDS.includes(b);
 
-// Each entry: { key, name, params, size, family, description, capabilities,
+export const LOCAL_LLM_CATEGORIES = [
+  { id: 'chat', label: 'Chat' },
+  { id: 'reasoning', label: 'Reasoning' },
+  { id: 'coding', label: 'Coding' },
+  { id: 'vision', label: 'Image Analysis' },
+  { id: 'embedding', label: 'Text Embeddings' },
+  { id: 'lightweight', label: 'Small & Fast' },
+  { id: 'multilingual', label: 'Multilingual' }
+];
+
+// Each entry: { key, name, category, params, size, family, description, capabilities,
 //               ollama?, lmstudio? }
 // `ollama` / `lmstudio` are the exact pull/download ids for that backend.
 // A missing id means there is no well-known build of that model for that
@@ -27,6 +37,7 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'llama3.2',
     name: 'Llama 3.2 3B',
+    category: 'chat',
     params: '3B',
     size: '2.0 GB',
     family: 'llama',
@@ -38,6 +49,7 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'llama3.1',
     name: 'Llama 3.1 8B',
+    category: 'chat',
     params: '8B',
     size: '4.7 GB',
     family: 'llama',
@@ -49,6 +61,7 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'qwen2.5',
     name: 'Qwen2.5 7B',
+    category: 'multilingual',
     params: '7B',
     size: '4.7 GB',
     family: 'qwen',
@@ -60,6 +73,7 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'qwen2.5-coder',
     name: 'Qwen2.5 Coder 7B',
+    category: 'coding',
     params: '7B',
     size: '4.7 GB',
     family: 'qwen',
@@ -71,6 +85,7 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'mistral',
     name: 'Mistral 7B',
+    category: 'chat',
     params: '7B',
     size: '4.1 GB',
     family: 'mistral',
@@ -82,6 +97,7 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'gemma2',
     name: 'Gemma 2 9B',
+    category: 'chat',
     params: '9B',
     size: '5.4 GB',
     family: 'gemma',
@@ -93,6 +109,7 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'phi3',
     name: 'Phi-3 Mini',
+    category: 'lightweight',
     params: '3.8B',
     size: '2.3 GB',
     family: 'phi',
@@ -104,6 +121,7 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'deepseek-r1',
     name: 'DeepSeek-R1 Distill 7B',
+    category: 'reasoning',
     params: '7B',
     size: '4.7 GB',
     family: 'deepseek',
@@ -115,6 +133,7 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'gpt-oss-20b',
     name: 'GPT-OSS 20B',
+    category: 'reasoning',
     params: '20B',
     size: '12 GB',
     family: 'gpt-oss',
@@ -126,6 +145,7 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'llava',
     name: 'LLaVA 7B (vision)',
+    category: 'vision',
     params: '7B',
     size: '4.5 GB',
     family: 'llava',
@@ -137,6 +157,7 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'codellama',
     name: 'Code Llama 7B',
+    category: 'coding',
     params: '7B',
     size: '3.8 GB',
     family: 'llama',
@@ -148,6 +169,7 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'smollm2',
     name: 'SmolLM2 1.7B',
+    category: 'lightweight',
     params: '1.7B',
     size: '1.1 GB',
     family: 'smollm',
@@ -159,6 +181,7 @@ export const LOCAL_LLM_CATALOG = [
   {
     key: 'nomic-embed-text',
     name: 'Nomic Embed Text',
+    category: 'embedding',
     params: '137M',
     size: '274 MB',
     family: 'embedding',
@@ -166,6 +189,89 @@ export const LOCAL_LLM_CATALOG = [
     capabilities: ['embeddings'],
     ollama: 'nomic-embed-text',
     lmstudio: 'nomic-ai/nomic-embed-text-v1.5-GGUF'
+  },
+  {
+    key: 'nomic-embed-text-v2-moe',
+    name: 'Nomic Embed Text v2 MoE',
+    category: 'embedding',
+    params: '0.5B',
+    size: '344 MB',
+    family: 'embedding',
+    description: 'Newer multilingual text-embedding MoE for semantic search and recall.',
+    capabilities: ['embeddings', 'multilingual'],
+    ollama: 'hf.co/nomic-ai/nomic-embed-text-v2-moe-GGUF:Q4_K_M',
+    lmstudio: 'nomic-ai/nomic-embed-text-v2-moe-GGUF'
+  },
+  {
+    key: 'qwen3-4b-instruct-2507',
+    name: 'Qwen3 4B Instruct 2507',
+    category: 'lightweight',
+    params: '4B',
+    size: '2.6 GB',
+    family: 'qwen',
+    description: 'Compact current Qwen3 instruct model for fast local chat and tool workflows.',
+    capabilities: ['chat', 'tools', 'multilingual'],
+    ollama: 'hf.co/lmstudio-community/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M',
+    lmstudio: 'lmstudio-community/Qwen3-4B-Instruct-2507-GGUF'
+  },
+  {
+    key: 'granite-3.2-8b-instruct',
+    name: 'Granite 3.2 8B Instruct',
+    category: 'reasoning',
+    params: '8B',
+    size: '4.9 GB',
+    family: 'granite',
+    description: 'Apache-licensed IBM Granite instruct model with long context and thinking controls.',
+    capabilities: ['chat', 'reasoning', 'multilingual'],
+    ollama: 'hf.co/lmstudio-community/granite-3.2-8b-instruct-GGUF:Q4_K_M',
+    lmstudio: 'lmstudio-community/granite-3.2-8b-instruct-GGUF'
+  },
+  {
+    key: 'gemma-3-270m-it',
+    name: 'Gemma 3 270M IT',
+    category: 'lightweight',
+    params: '270M',
+    size: '253 MB',
+    family: 'gemma',
+    description: 'Tiny instruction model for cheap classification, routing, and quick local utilities.',
+    capabilities: ['chat', 'classification'],
+    ollama: 'hf.co/lmstudio-community/gemma-3-270m-it-GGUF:Q4_K_M',
+    lmstudio: 'lmstudio-community/gemma-3-270m-it-GGUF'
+  },
+  {
+    key: 'ministral-3-14b-instruct-2512',
+    name: 'Ministral 3 14B Instruct 2512',
+    category: 'reasoning',
+    params: '14B',
+    size: '8.6 GB',
+    family: 'mistral',
+    description: 'Current Mistral-family instruct model for strong local reasoning and general work.',
+    capabilities: ['chat', 'reasoning', 'tools'],
+    ollama: 'hf.co/lmstudio-community/Ministral-3-14B-Instruct-2512-GGUF:Q4_K_M',
+    lmstudio: 'lmstudio-community/Ministral-3-14B-Instruct-2512-GGUF'
+  },
+  {
+    key: 'devstral-small-2-24b',
+    name: 'Devstral Small 2 24B',
+    category: 'coding',
+    params: '24B',
+    size: '14 GB',
+    family: 'mistral',
+    description: 'Agentic coding model for repo navigation, edits, and software-engineering tasks.',
+    capabilities: ['chat', 'code', 'tools', 'vision'],
+    ollama: 'hf.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF:UD-Q4_K_XL',
+    lmstudio: 'unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF'
+  },
+  {
+    key: 'glm-4.6v-flash',
+    name: 'GLM-4.6V Flash',
+    category: 'vision',
+    params: 'Vision',
+    size: '7.1 GB',
+    family: 'glm',
+    description: 'MLX vision-language model for image analysis on Apple Silicon.',
+    capabilities: ['chat', 'vision'],
+    lmstudio: 'lmstudio-community/GLM-4.6V-Flash-MLX-4bit'
   }
 ];
 
@@ -204,6 +310,7 @@ export function getCatalog(backend, installedIds = []) {
       id: entry[backend],
       key: entry.key,
       name: entry.name,
+      category: entry.category,
       params: entry.params,
       size: entry.size,
       family: entry.family,
@@ -215,7 +322,7 @@ export function getCatalog(backend, installedIds = []) {
 
 /**
  * Filter the per-backend catalog by a free-text query against name, id,
- * family, and description. Empty query returns the full catalog.
+ * family, category, and description. Empty query returns the full catalog.
  */
 export function searchCatalog(backend, query, installedIds = []) {
   const all = getCatalog(backend, installedIds);
@@ -224,6 +331,7 @@ export function searchCatalog(backend, query, installedIds = []) {
   return all.filter((m) =>
     m.name.toLowerCase().includes(q) ||
     m.id.toLowerCase().includes(q) ||
+    m.category.toLowerCase().includes(q) ||
     m.family.toLowerCase().includes(q) ||
     m.description.toLowerCase().includes(q));
 }
