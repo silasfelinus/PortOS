@@ -1041,6 +1041,15 @@ export const stageConfigUpdateSchema = z.object({
 // sends an unmodelled field. If a future stage field is added, extend the
 // schema rather than reintroducing `.passthrough()`.
 
+// === Local LLM backends (Ollama / LM Studio) ===
+export const localLlmBackendSchema = z.enum(['ollama', 'lmstudio']);
+export const localLlmInstallSchema = z.object({
+  backend: localLlmBackendSchema,
+  modelId: z.string().min(1).max(256),
+});
+export const localLlmDeleteSchema = localLlmInstallSchema;
+export const localLlmSwitchSchema = z.object({ to: localLlmBackendSchema });
+
 /**
  * Validate data against a Zod schema, throwing on failure.
  * Returns parsed data on success, throws ServerError on failure.

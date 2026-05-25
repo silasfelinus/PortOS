@@ -284,6 +284,7 @@ const navItems = [
       { to: '/settings/backup', label: 'Backup', icon: Download },
       { to: '/settings/database', label: 'Database', icon: Database },
       { to: '/settings/general', label: 'General', icon: Settings },
+      { to: '/settings/local-llm', label: 'Local LLMs', icon: Cpu },
       { to: '/settings/mortalloom', label: 'MortalLoom', icon: Activity },
       { to: '/prompts', label: 'Prompts', icon: FileText },
       { to: '/ai', label: 'Providers', icon: Bot },

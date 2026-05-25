@@ -1,0 +1,126 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import os from 'os';
+import path from 'path';
+import fs from 'fs';
+
+// vi.mock factories are hoisted above the module body, so the mutable holder
+// and the mock objects must come from vi.hoisted (which runs first). The
+// service captures ENV_PATH = join(PATHS.root, '.env') at import time, so each
+// test sets `state.root` to a fresh temp dir and re-imports under resetModules.
+const state = vi.hoisted(() => ({ root: '' }));
+vi.mock('../lib/fileUtils.js', () => ({ PATHS: state }));
+
+const mocks = vi.hoisted(() => ({
+  ollama: {
+    getInstalledModels: vi.fn(async () => []),
+    pullModel: vi.fn(async (id) => ({ success: true, modelId: id })),
+    deleteModel: vi.fn(async (id) => ({ success: true, modelId: id })),
+    getStatus: vi.fn(async () => ({ available: true, baseUrl: 'x', version: '1', modelCount: 0, models: [] }))
+  },
+  lmstudio: {
+    getAvailableModels: vi.fn(async () => []),
+    downloadModel: vi.fn(async (id) => ({ success: true, modelId: id })),
+    getStatus: vi.fn(async () => ({ available: false, baseUrl: 'y', loadedModels: 0 })),
+    resetCache: vi.fn()
+  },
+  providers: {
+    getProviderById: vi.fn(async () => ({ id: 'ollama', enabled: false })),
+    updateProvider: vi.fn(async () => ({}))
+  }
+}));
+vi.mock('./ollamaManager.js', () => mocks.ollama);
+vi.mock('./lmStudioManager.js', () => mocks.lmstudio);
+vi.mock('./providers.js', () => mocks.providers);
+
+const writeEnv = (content) => fs.writeFileSync(path.join(state.root, '.env'), content);
+
+let svc;
+beforeEach(async () => {
+  vi.clearAllMocks(); // clears calls, keeps the default impls defined above
+  delete process.env.LLM_BACKEND;
+  state.root = fs.mkdtempSync(path.join(os.tmpdir(), 'portos-llm-svc-'));
+  vi.resetModules();
+  svc = await import('./localLlm.js');
+});
+
+describe('localLlm', () => {
+  describe('getBackend', () => {
+    it('defaults to ollama when .env has no marker', () => {
+      expect(svc.getBackend()).toBe('ollama');
+    });
+    it('reads LLM_BACKEND fresh from .env', () => {
+      writeEnv('LLM_BACKEND=lmstudio\nPGMODE=docker\n');
+      expect(svc.getBackend()).toBe('lmstudio');
+    });
+    it('ignores an invalid marker', () => {
+      writeEnv('LLM_BACKEND=garbage\n');
+      expect(svc.getBackend()).toBe('ollama');
+    });
+  });
+
+  describe('switchBackend', () => {
+    it('writes the marker and enables the paired (disabled) provider', async () => {
+      const r = await svc.switchBackend('lmstudio');
+      expect(r).toEqual({ success: true, backend: 'lmstudio' });
+      expect(svc.getBackend()).toBe('lmstudio');
+      expect(mocks.providers.updateProvider).toHaveBeenCalledWith('lmstudio', { enabled: true });
+    });
+    it('rejects an unknown backend', async () => {
+      const r = await svc.switchBackend('nope');
+      expect(r.success).toBe(false);
+    });
+  });
+
+  describe('ensureBackendProvider', () => {
+    it('does not re-enable an already-enabled provider', async () => {
+      mocks.providers.getProviderById.mockResolvedValueOnce({ id: 'ollama', enabled: true });
+      await svc.ensureBackendProvider('ollama');
+      expect(mocks.providers.updateProvider).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('installModel / deleteModel dispatch', () => {
+    it('routes Ollama install to pullModel', async () => {
+      await svc.installModel('ollama', 'llama3.2');
+      expect(mocks.ollama.pullModel).toHaveBeenCalledWith('llama3.2', undefined);
+    });
+    it('routes Ollama delete to deleteModel', async () => {
+      await svc.deleteModel('ollama', 'llama3.2');
+      expect(mocks.ollama.deleteModel).toHaveBeenCalledWith('llama3.2');
+    });
+    it('rejects an unknown backend', async () => {
+      expect((await svc.installModel('nope', 'x')).success).toBe(false);
+    });
+  });
+
+  describe('migrateBackend', () => {
+    it('re-provisions known source models on the target and flips the marker', async () => {
+      writeEnv('LLM_BACKEND=lmstudio\n');
+      mocks.lmstudio.getAvailableModels.mockResolvedValueOnce([
+        { id: 'lmstudio-community/Llama-3.2-3B-Instruct-GGUF' },
+        { id: 'someorg/Totally-Unknown-GGUF' } // best-effort → ollama bare name
+      ]);
+
+      const events = [];
+      const r = await svc.migrateBackend('ollama', (e) => events.push(e));
+
+      expect(r.success).toBe(true);
+      expect(r.backend).toBe('ollama');
+      expect(mocks.ollama.pullModel).toHaveBeenCalledWith('llama3.2', expect.any(Function));
+      expect(r.results.find((x) => x.target === 'llama3.2').status).toBe('installed');
+      expect(svc.getBackend()).toBe('ollama');
+      expect(events.at(-1).event).toBe('complete');
+    });
+
+    it('skips a model with no known target equivalent (→ LM Studio)', async () => {
+      writeEnv('LLM_BACKEND=ollama\n');
+      mocks.ollama.getInstalledModels.mockResolvedValueOnce([
+        { id: 'custom-unlisted:latest', name: 'custom-unlisted:latest' }
+      ]);
+
+      const r = await svc.migrateBackend('lmstudio');
+      expect(r.results.find((x) => x.source === 'custom-unlisted:latest').status).toBe('skipped');
+      expect(mocks.lmstudio.downloadModel).not.toHaveBeenCalled();
+    });
+  });
+});

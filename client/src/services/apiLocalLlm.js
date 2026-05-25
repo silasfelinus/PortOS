@@ -1,0 +1,22 @@
+import { request } from './apiCore.js';
+
+// Local LLM backends (Ollama / LM Studio) — status, model management, migrate.
+export const getLocalLlmStatus = () => request('/local-llm/status');
+
+export const getLocalLlmModels = (backend) =>
+  request(`/local-llm/models?backend=${encodeURIComponent(backend)}`);
+
+export const getLocalLlmCatalog = (backend, q = '') =>
+  request(`/local-llm/catalog?backend=${encodeURIComponent(backend)}${q ? `&q=${encodeURIComponent(q)}` : ''}`);
+
+export const installLocalLlmModel = (backend, modelId) =>
+  request('/local-llm/install', { method: 'POST', body: JSON.stringify({ backend, modelId }) });
+
+export const deleteLocalLlmModel = (backend, modelId) =>
+  request('/local-llm/delete', { method: 'POST', body: JSON.stringify({ backend, modelId }) });
+
+export const switchLocalLlmBackend = (to) =>
+  request('/local-llm/switch', { method: 'POST', body: JSON.stringify({ to }) });
+
+export const migrateLocalLlmBackend = (to) =>
+  request('/local-llm/migrate', { method: 'POST', body: JSON.stringify({ to }) });
