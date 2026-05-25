@@ -173,7 +173,11 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/`\/simplify`/);
       expect(prompt).toMatch(/`\/do:pr`/);
       expect(prompt).toMatch(/\.agent-done/);
-      expect(prompt).toMatch(/\/quit/);
+      // The sentinel is the done signal — the agent must NOT be told to RUN
+      // /quit (it's a UI command it can't invoke; PortOS closes the session on
+      // poll). The prompt only mentions /quit to tell the agent NOT to run it.
+      expect(prompt).not.toMatch(/^\s*\d+\.\s*`\/quit`/m);
+      expect(prompt).toMatch(/NOT run `\/quit`/);
       // After /do:pr drives the Copilot review loop clean, the agent must
       // merge and verify — otherwise the PR sits open after the agent exits.
       expect(prompt).toMatch(/gh pr merge "<PR_URL>" --squash --delete-branch/);

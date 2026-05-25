@@ -359,7 +359,7 @@ export function buildCompletionGuidelineBullet({
     return '**This is a read-only task.** Do NOT commit, push, or modify any files in the repository. Only read data and generate reports.';
   }
   if (isTui) {
-    return `On successful completion, YOU run the Completion Workflow above (\`${tuiCompletionCommand}\`, write the sentinel, \`/quit\`).`;
+    return `On successful completion, YOU run the Completion Workflow above (\`${tuiCompletionCommand}\`, then write the sentinel and stop — PortOS closes the session once it sees the sentinel; do NOT run \`/quit\`).`;
   }
   if (worktreeInfo && willOpenPR) {
     const reviewSuffix = willReviewLoop
@@ -483,9 +483,11 @@ After completing your work and before committing, ${simplifyInstruction}. Fix an
 
   // TUI completion section — delegate to the shared light-path builder so
   // both prompt paths emit byte-identical workflows. (Background: TUI owns
-  // its own `/simplify` → `/do:pr|/do:push` → sentinel → `/quit` sequence
-  // because the slashdo submodule mounts those commands at project level —
-  // see `buildTuiCompletionSection` below for the full contract.)
+  // its own `/simplify` → `/do:pr|/do:push` → sentinel sequence because the
+  // slashdo submodule mounts those commands at project level. Writing the
+  // sentinel is the done signal — PortOS finalizes via the 2s poll and kills
+  // the session, so the prompt does NOT ask the agent to `/quit` (it's a UI
+  // command the agent can't invoke). See `buildTuiCompletionSection` below.)
   const tuiCompletionCommand = willOpenPR ? '/do:pr' : '/do:push';
   const tuiCompletionSection = isTui
     ? buildTuiCompletionSection({
@@ -856,7 +858,6 @@ function buildTuiCompletionSection({ willOpenPR, willReviewLoop, simplifyEnabled
   const sentinelTail = willOpenPR ? '   ## PR\n   <PR URL>' : '   ## Branch\n   <branch name>';
   const merge = willOpenPR ? buildPostPRMergeSteps(3, { reviewers, reviewStopMode }) : { lines: [], nextStep: 3 };
   const sentinelStep = merge.nextStep;
-  const quitStep = sentinelStep + 1;
 
   return [
     '## Completion Workflow',
@@ -865,7 +866,7 @@ function buildTuiCompletionSection({ willOpenPR, willReviewLoop, simplifyEnabled
     simplifyStep,
     `2. \`${cmd}${reviewerArg}\`${reviewSuffix}`,
     ...merge.lines,
-    `${sentinelStep}. Write a short markdown summary (~5–15 lines) to the completion sentinel — PortOS polls this every 2s; without it the agent sits idle until a 3-minute fallback fires.`,
+    `${sentinelStep}. Write a short markdown summary (~5–15 lines) to the completion sentinel, then stop — this sentinel is the done signal. PortOS polls it every 2s, finalizes the run, and closes the session for you. Do NOT run \`/quit\` (it's a UI command, not something you can invoke) and do NOT wait for anything after writing the sentinel.`,
     '',
     '   ```bash',
     `   cat > "${sentinelPath}" <<'EOF'`,
@@ -877,8 +878,7 @@ function buildTuiCompletionSection({ willOpenPR, willReviewLoop, simplifyEnabled
     '',
     sentinelTail,
     '   EOF',
-    '   ```',
-    `${quitStep}. \`/quit\`.`
+    '   ```'
   ].join('\n');
 }
 
