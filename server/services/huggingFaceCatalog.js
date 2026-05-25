@@ -258,7 +258,10 @@ const repoSizeCache = new Map()
 
 async function fetchRepoSizeBytes(repoId) {
   if (repoSizeCache.has(repoId)) return repoSizeCache.get(repoId)
-  const model = await fetchWithTimeout(`${HF_API_BASE}/${repoId}?blobs=true`, { headers: hfHeaders() }, HF_TIMEOUT_MS)
+  // repoId comes from the HF search response (untrusted upstream) — encode each
+  // path segment so a `?`/`#`/`..` in the id can't reshape the request path/query.
+  const safeRepoPath = String(repoId).split('/').map(encodeURIComponent).join('/')
+  const model = await fetchWithTimeout(`${HF_API_BASE}/${safeRepoPath}?blobs=true`, { headers: hfHeaders() }, HF_TIMEOUT_MS)
     .then((res) => (res.ok ? res.json() : null))
     .catch(() => null)
   // Re-run the same quant picker against the now-sized siblings.

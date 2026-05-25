@@ -31,7 +31,10 @@ const DEFAULT_CONFIG = {
 // Cached state
 let config = { ...DEFAULT_CONFIG }
 let isAvailable = null
-let loadedModels = []
+// null = not yet fetched; any array (even empty) = a cached result — mirrors
+// availableModels below so an idle LM Studio (server up, 0 models loaded)
+// doesn't re-hit /api/v0/models on every status poll.
+let loadedModels = null
 // null = not yet fetched; any array (even empty) = a cached result. Lets the
 // catalog-overlay path (queried per keystroke) reuse the list instead of
 // re-hitting /api/v0/models each time. Busted to null by resetCache().
@@ -109,12 +112,13 @@ async function checkLMStudioAvailable() {
  * @returns {Promise<Array>} - Loaded models
  */
 async function getLoadedModels(forceRefresh = false) {
-  if (!forceRefresh && loadedModels.length > 0) {
+  if (!forceRefresh && loadedModels !== null) {
     return loadedModels
   }
 
   const available = await checkLMStudioAvailable()
   if (!available) {
+    // Don't cache — unavailable is transient, so the next call re-probes.
     return []
   }
 
@@ -145,8 +149,12 @@ async function getLoadedModels(forceRefresh = false) {
       created: model.created,
       ownedBy: model.owned_by
     }))
+    return loadedModels
   }
-  return loadedModels
+
+  // Both list endpoints failed — return empty WITHOUT caching (loadedModels
+  // stays null) so the next call retries instead of pinning a bogus empty.
+  return []
 }
 
 /**
@@ -458,7 +466,7 @@ function updateConfig(newConfig) {
  */
 function resetCache() {
   isAvailable = null
-  loadedModels = []
+  loadedModels = null
   availableModels = null
   lastListError = null
   lastCheckAt = null
