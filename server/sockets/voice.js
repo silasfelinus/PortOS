@@ -1,10 +1,11 @@
 // Per-socket voice handlers.
 // Inbound:  voice:turn | voice:text | voice:interrupt | voice:reset
-//           | voice:dictation:set | voice:ui:index
+//           | voice:dictation:set | voice:ui:index | voice:screenshot:result
 // Outbound: voice:transcript | voice:llm:delta | voice:llm:done | voice:tts:audio
 //           | voice:tool | voice:dictation | voice:navigate
 //           | voice:ui:click | voice:ui:fill | voice:ui:select | voice:ui:check
 //           | voice:dailyLog:appended | voice:error | voice:idle
+//           | voice:screenshot:request
 
 import { runTurn } from '../services/voice/pipeline.js';
 import { getVoiceConfig } from '../services/voice/config.js';
@@ -63,6 +64,10 @@ export const registerVoiceHandlers = (socket) => {
     // ui:click, wait for the client's fresh index before the next tool
     // runs so the LLM can see the modal/new content it just opened.
     uiWaiters: [],
+    // Promises awaiting a voice:screenshot:result for an in-flight
+    // ui_describe_visually capture. The server emits voice:screenshot:request,
+    // the client captures the active tab and replies with a data URL.
+    screenshotWaiters: [],
     // Ring of recently-spoken TTS sentences (with cached trigrams). The
     // pipeline uses this to detect the bot's own voice being echoed back
     // through the user's mic when laptop speakers are in play. The buffer is
@@ -252,12 +257,32 @@ export const registerVoiceHandlers = (socket) => {
     }
   });
 
+  // Client replies to a voice:screenshot:request with a base64 data URL of the
+  // captured tab (or null if capture failed / the user denied permission).
+  // Cap the payload to bound memory from a runaway/malicious client — a
+  // full-screen PNG data URL is typically a few MB, so 16 MB is generous.
+  const MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024;
+  socket.on('voice:screenshot:result', (payload) => {
+    if (!state.screenshotWaiters.length) return;
+    const raw = payload && typeof payload === 'object' ? payload.dataUrl : null;
+    const dataUrl = (typeof raw === 'string' && raw.startsWith('data:image/') && raw.length <= MAX_SCREENSHOT_BYTES)
+      ? raw
+      : null;
+    const waiters = state.screenshotWaiters;
+    state.screenshotWaiters = [];
+    waiters.forEach((resolve) => resolve(dataUrl));
+  });
+
   socket.on('disconnect', () => {
     state.ctrl?.abort();
     // Abort any pending UI refresh waiters so their turns don't hang.
     const waiters = state.uiWaiters;
     state.uiWaiters = [];
     waiters.forEach((resolve) => resolve(null));
+    // Same for any pending screenshot capture.
+    const shotWaiters = state.screenshotWaiters;
+    state.screenshotWaiters = [];
+    shotWaiters.forEach((resolve) => resolve(null));
     unregisterEchoBuffer(state.recentTts);
   });
 };

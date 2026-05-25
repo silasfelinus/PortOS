@@ -5,7 +5,7 @@ import {
   startCapture, stopCapture, interrupt, resetConversation, sendText, onVoiceEvent, isCapturing,
   startContinuous, stopContinuous, isContinuous, whenPlaybackDrained, getVadLevel,
   webSpeechSupported, startWebSpeechCapture, stopWebSpeechCapture, isWebSpeechCapturing,
-  onProactiveSpeech,
+  onProactiveSpeech, captureScreenForVision, sendScreenshotResult,
 } from '../../services/voiceClient';
 import { getVoiceConfig } from '../../services/apiVoice';
 import toast from '../ui/Toast';
@@ -219,6 +219,15 @@ export default function VoiceWidget() {
         const res = doSetCheckbox(d?.target, d?.checked);
         if (!res.ok) toast.error(`Voice: couldn't toggle "${d?.target?.label}"`);
         else pushUiIndexAfterAction();
+      }),
+      // ui_describe_visually: server asks the client to screenshot the active
+      // tab. captureScreenForVision prompts for screen-capture permission and
+      // returns a data URL (or null on denial/failure); always reply so the
+      // server-side waiter resolves rather than timing out.
+      onVoiceEvent('voice:screenshot:request', async () => {
+        const dataUrl = await captureScreenForVision();
+        if (!dataUrl) toast('Voice: screen capture was blocked or unavailable.', { icon: '📷' });
+        sendScreenshotResult(dataUrl);
       }),
     ];
     return () => offs.forEach((off) => off());

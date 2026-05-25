@@ -14,8 +14,40 @@ vi.mock('../meatspaceNicotine.js', () => ({
   logNicotine: vi.fn(async () => ({ totalMg: 1, dayTotal: 1 })),
   getNicotineSummary: vi.fn(async () => ({ today: 0 })),
 }));
+const addWorkoutMock = vi.fn(async ({ date, type, durationMinutes, intensity, notes }) => ({
+  date: date || '2026-04-17',
+  type,
+  durationMinutes: durationMinutes ?? null,
+  intensity: intensity ?? null,
+  notes: notes ?? null,
+}));
 vi.mock('../meatspaceHealth.js', () => ({
   addBodyEntry: vi.fn(async () => ({ date: '2026-04-17' })),
+  addWorkout: (...args) => addWorkoutMock(...args),
+}));
+// Calendar events — controllable per-test via calendarEventsRef.
+const calendarEventsRef = { value: [] };
+vi.mock('../calendarSync.js', () => ({
+  getEvents: vi.fn(async () => ({ events: calendarEventsRef.value, total: calendarEventsRef.value.length })),
+}));
+const addNotificationMock = vi.fn(async () => ({ id: 'notif-1' }));
+vi.mock('../notifications.js', () => ({
+  addNotification: (...args) => addNotificationMock(...args),
+  NOTIFICATION_TYPES: { AGENT_WARNING: 'agent_warning' },
+  PRIORITY_LEVELS: { HIGH: 'high' },
+}));
+// Open-Meteo fetch — controllable per-test via weatherFetchRef.
+const weatherFetchRef = { value: { ok: true, json: async () => ({ current: { temperature_2m: 64, weather_code: 3 } }) } };
+vi.mock('../../lib/fetchWithTimeout.js', () => ({
+  fetchWithTimeout: vi.fn(async () => weatherFetchRef.value),
+}));
+// Timezone — pin to deterministic values so calendar/time tests don't depend
+// on the host TZ or settings file.
+vi.mock('../../lib/timezone.js', () => ({
+  getUserTimezone: vi.fn(async () => 'America/Los_Angeles'),
+  todayInTimezone: vi.fn(() => '2026-04-17'),
+  getLocalParts: vi.fn(() => ({ year: 2026, month: 4, day: 17 })),
+  getUtcOffsetMs: vi.fn(() => -7 * 3600 * 1000), // PDT
 }));
 vi.mock('../identity.js', () => ({
   getGoals: vi.fn(async () => ({ goals: [] })),
@@ -838,5 +870,180 @@ describe('pipeline stage navigation tools', () => {
       expect(classifyIntent('open video').has('pipeline')).toBe(true);
       expect(classifyIntent('back to story').has('pipeline')).toBe(true);
     });
+  });
+});
+
+describe('calendar_today', () => {
+  it('summarizes today\'s events', async () => {
+    calendarEventsRef.value = [
+      { title: 'Standup', startTime: '2026-04-17T17:00:00Z', location: 'Zoom', allDay: false },
+      { title: 'All-hands', startTime: '2026-04-17T20:00:00Z', allDay: false },
+    ];
+    const r = await dispatchTool('calendar_today', {});
+    expect(r.ok).toBe(true);
+    expect(r.count).toBe(2);
+    expect(r.date).toBe('2026-04-17');
+    expect(r.events[0].title).toBe('Standup');
+    expect(r.summary).toMatch(/2 events today/);
+  });
+
+  it('reports an empty day cleanly', async () => {
+    calendarEventsRef.value = [];
+    const r = await dispatchTool('calendar_today', {});
+    expect(r.ok).toBe(true);
+    expect(r.count).toBe(0);
+    expect(r.summary).toMatch(/Nothing on your calendar today/);
+  });
+});
+
+describe('calendar_next', () => {
+  it('returns the soonest future event', async () => {
+    const soon = new Date(Date.now() + 3600_000).toISOString();
+    calendarEventsRef.value = [{ title: 'Dentist', startTime: soon, allDay: false }];
+    const r = await dispatchTool('calendar_next', {});
+    expect(r.ok).toBe(true);
+    expect(r.found).toBe(true);
+    expect(r.title).toBe('Dentist');
+    expect(r.summary).toMatch(/Next up: Dentist/);
+  });
+
+  it('reports nothing upcoming when the list is empty', async () => {
+    calendarEventsRef.value = [];
+    const r = await dispatchTool('calendar_next', {});
+    expect(r.ok).toBe(true);
+    expect(r.found).toBe(false);
+    expect(r.summary).toMatch(/Nothing coming up/);
+  });
+});
+
+describe('meatspace_log_workout', () => {
+  it('rejects missing type', async () => {
+    await expect(dispatchTool('meatspace_log_workout', {})).rejects.toThrow(/type is required/);
+  });
+  it('rejects absurd duration', async () => {
+    await expect(dispatchTool('meatspace_log_workout', { type: 'run', durationMinutes: 5000 }))
+      .rejects.toThrow(/durationMinutes must be a positive number/);
+  });
+  it('rejects invalid intensity', async () => {
+    await expect(dispatchTool('meatspace_log_workout', { type: 'run', intensity: 'extreme' }))
+      .rejects.toThrow(/intensity must be/);
+  });
+  it('logs a workout via addWorkout', async () => {
+    addWorkoutMock.mockClear();
+    const r = await dispatchTool('meatspace_log_workout', { type: 'yoga', durationMinutes: 30, intensity: 'moderate' });
+    expect(r.ok).toBe(true);
+    expect(r.type).toBe('yoga');
+    expect(addWorkoutMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'yoga', durationMinutes: 30, intensity: 'moderate' }));
+    expect(r.summary).toMatch(/Logged yoga \(30 min\)/);
+  });
+});
+
+describe('weather_now', () => {
+  it('returns temperature + mapped conditions', async () => {
+    weatherFetchRef.value = { ok: true, json: async () => ({ current: { temperature_2m: 71.4, weather_code: 3 } }) };
+    const r = await dispatchTool('weather_now', { lat: 40, lon: -74 });
+    expect(r.ok).toBe(true);
+    expect(r.temperatureF).toBe(71);
+    expect(r.conditions).toBe('overcast');
+    expect(r.summary).toMatch(/71°F and overcast/);
+  });
+  it('rejects out-of-range coordinates', async () => {
+    const r = await dispatchTool('weather_now', { lat: 200, lon: 0 });
+    expect(r.ok).toBe(false);
+    expect(r.summary).toMatch(/Latitude must be/);
+  });
+  it('handles an unreachable weather service', async () => {
+    weatherFetchRef.value = { ok: false };
+    const r = await dispatchTool('weather_now', { lat: 1, lon: 1 });
+    expect(r.ok).toBe(false);
+    expect(r.summary).toMatch(/Couldn't reach the weather service/);
+  });
+});
+
+describe('timer_set', () => {
+  it('rejects a missing/zero duration', async () => {
+    const r = await dispatchTool('timer_set', { label: 'tea' });
+    expect(r.ok).toBe(false);
+    expect(r.summary).toMatch(/Tell me how long/);
+  });
+  it('rejects durations over 24 hours', async () => {
+    const r = await dispatchTool('timer_set', { minutes: 2000 });
+    expect(r.ok).toBe(false);
+    expect(r.summary).toMatch(/capped at 24 hours/);
+  });
+  it('sets a timer and schedules a notification', async () => {
+    vi.useFakeTimers();
+    addNotificationMock.mockClear();
+    const r = await dispatchTool('timer_set', { minutes: 10, label: 'call mom' });
+    expect(r.ok).toBe(true);
+    expect(r.durationMs).toBe(600000);
+    expect(r.summary).toMatch(/Timer set for 10 minutes/);
+    await vi.advanceTimersByTimeAsync(600000);
+    expect(addNotificationMock).toHaveBeenCalledWith(expect.objectContaining({ title: expect.stringMatching(/call mom/) }));
+    vi.useRealTimers();
+  });
+});
+
+describe('ui_describe_visually', () => {
+  it('fails gracefully without a screenshot channel', async () => {
+    const r = await dispatchTool('ui_describe_visually', { question: 'what is this?' }, { sideEffects: [] });
+    expect(r.ok).toBe(false);
+    expect(r.summary).toMatch(/can't capture the screen/);
+  });
+  it('returns null-capture as a friendly failure', async () => {
+    const ctx = { sideEffects: [], captureScreenshot: async () => null, describeImage: async () => 'x' };
+    const r = await dispatchTool('ui_describe_visually', {}, ctx);
+    expect(r.ok).toBe(false);
+    expect(r.summary).toMatch(/couldn't capture the screen/i);
+  });
+  it('captures + describes the screen and returns the description', async () => {
+    const ctx = {
+      sideEffects: [],
+      state: { ui: { path: '/cybercity' } },
+      captureScreenshot: async () => 'data:image/jpeg;base64,abc',
+      describeImage: async (dataUrl, prompt) => {
+        expect(dataUrl).toBe('data:image/jpeg;base64,abc');
+        expect(prompt).toMatch(/chart/i);
+        return 'A neon skyline with three towers.';
+      },
+    };
+    const r = await dispatchTool('ui_describe_visually', { question: 'what is on this chart?' }, ctx);
+    expect(r.ok).toBe(true);
+    expect(r.content).toBe('A neon skyline with three towers.');
+    expect(r.path).toBe('/cybercity');
+  });
+  it('surfaces a vision-model error', async () => {
+    const ctx = {
+      sideEffects: [],
+      captureScreenshot: async () => 'data:image/jpeg;base64,abc',
+      describeImage: async () => { throw new Error('model offline'); },
+    };
+    const r = await dispatchTool('ui_describe_visually', {}, ctx);
+    expect(r.ok).toBe(false);
+    expect(r.summary).toMatch(/model offline/);
+  });
+});
+
+describe('new tool intent routing', () => {
+  it('routes calendar utterances to the calendar group', () => {
+    expect(classifyIntent("what's on my calendar today?").has('calendar')).toBe(true);
+    expect(classifyIntent("what's my next meeting?").has('calendar')).toBe(true);
+    expect(classifyIntent('any appointments today').has('calendar')).toBe(true);
+  });
+  it('routes weather utterances to the weather group', () => {
+    expect(classifyIntent("what's the weather?").has('weather')).toBe(true);
+    expect(classifyIntent('is it raining outside').has('weather')).toBe(true);
+  });
+  it('routes timer utterances to the timer group', () => {
+    expect(classifyIntent('set a timer for 10 minutes').has('timer')).toBe(true);
+    expect(classifyIntent('remind me in 30 minutes to call mom').has('timer')).toBe(true);
+  });
+  it('routes workout utterances to the meatspace group', () => {
+    expect(classifyIntent('log a workout').has('meatspace')).toBe(true);
+    expect(classifyIntent('I went for a run').has('meatspace')).toBe(true);
+  });
+  it('routes visual-description utterances to the vision group', () => {
+    expect(classifyIntent("what's on this chart?").has('vision')).toBe(true);
+    expect(classifyIntent('describe the cybercity').has('vision')).toBe(true);
   });
 });
