@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
     downloadModel: vi.fn(async (id) => ({ success: true, modelId: id })),
     getStatus: vi.fn(async () => ({ available: false, baseUrl: 'y', loadedModels: 0 })),
     resetCache: vi.fn(),
+    isAppInstalled: vi.fn(() => false),
     resolveLocalModel: vi.fn(async () => null),
     importModelFromGguf: vi.fn(async ({ lmstudioId }) => ({ success: true, modelId: lmstudioId }))
   },

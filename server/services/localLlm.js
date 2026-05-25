@@ -232,7 +232,7 @@ export async function listModels(backend, forceRefresh = false) {
   if (!isBackend(backend)) return []
   const raw = backend === 'ollama'
     ? await ollamaManager.getInstalledModels(forceRefresh)
-    : await lmStudioManager.getAvailableModels()
+    : await lmStudioManager.getAvailableModels(forceRefresh)
   return normalizeModels(backend, raw)
 }
 
@@ -245,9 +245,10 @@ export async function getStatus() {
     commandExists('ollama', ['--version']),
     lmStudioManager.getStatus(),
     commandExists('lms', ['version']),
+    // forceRefresh: this is the status/refresh path, so bypass the list cache.
     // already normalized; capture (don't swallow) a list failure so the UI can
     // distinguish "no models" from "couldn't read the model list".
-    listModels('lmstudio').then((models) => ({ models, error: null })).catch((err) => ({ models: [], error: err.message }))
+    listModels('lmstudio', true).then((models) => ({ models, error: null })).catch((err) => ({ models: [], error: err.message }))
   ])
 
   return {
@@ -263,7 +264,8 @@ export async function getStatus() {
       downloadUrl: DOWNLOAD_URL.ollama
     },
     lmstudio: {
-      installed: lmsCli || lmStudioStatus.available,
+      // macOS app bundle counts as installed even with no CLI / server stopped.
+      installed: lmsCli || lmStudioStatus.available || lmStudioManager.isAppInstalled(),
       available: lmStudioStatus.available,
       hasCli: lmsCli,
       baseUrl: lmStudioStatus.baseUrl,

@@ -7,6 +7,7 @@
 
 import { homedir } from 'os'
 import { join, basename } from 'path'
+import { existsSync } from 'fs'
 import { readdir, stat, mkdir, copyFile } from 'fs/promises'
 import { cosEvents } from './cosEvents.js'
 import { fetchWithTimeout } from '../lib/fetchWithTimeout.js'
@@ -31,7 +32,10 @@ const DEFAULT_CONFIG = {
 let config = { ...DEFAULT_CONFIG }
 let isAvailable = null
 let loadedModels = []
-let availableModels = []
+// null = not yet fetched; any array (even empty) = a cached result. Lets the
+// catalog-overlay path (queried per keystroke) reuse the list instead of
+// re-hitting /api/v0/models each time. Busted to null by resetCache().
+let availableModels = null
 let lastCheckAt = null
 
 // Status tracking
@@ -142,10 +146,13 @@ async function getLoadedModels(forceRefresh = false) {
 }
 
 /**
- * Get all downloaded models (loaded and not-loaded)
+ * Get all downloaded models (loaded and not-loaded).
+ * @param {boolean} [forceRefresh] - bypass the cache (callers that read live
+ *   per-model `state`, e.g. embedding-model discovery, should force).
  * @returns {Promise<Array>} - All downloaded models with state info
  */
-async function getAvailableModels() {
+async function getAvailableModels(forceRefresh = false) {
+  if (!forceRefresh && availableModels !== null) return availableModels
   const available = await checkLMStudioAvailable()
   if (!available) {
     return []
@@ -353,7 +360,7 @@ async function getEmbeddings(text, options = {}) {
   // Auto-discover an embedding model if none specified
   let model = options.model
   if (!model) {
-    const models = await getAvailableModels()
+    const models = await getAvailableModels(true) // need live per-model state
     const embeddingModel = models.find(m => m.type === 'embeddings' && m.state === 'loaded')
       || models.find(m => m.type === 'embeddings')
     if (embeddingModel) {
@@ -437,8 +444,15 @@ function updateConfig(newConfig) {
 function resetCache() {
   isAvailable = null
   loadedModels = []
-  availableModels = []
+  availableModels = null
   lastCheckAt = null
+}
+
+// LM Studio can be installed as a macOS app without the `lms` CLI on PATH and
+// without the local server running — mirror scripts/setup-llm.js so status
+// doesn't report "Not installed" (and offer a redundant install) in that case.
+function isAppInstalled() {
+  return process.platform === 'darwin' && existsSync('/Applications/LM Studio.app')
 }
 
 // ---- local-disk introspection / import (migrate fast-path) ------------------
@@ -523,6 +537,7 @@ export {
   getStatus,
   updateConfig,
   resetCache,
+  isAppInstalled,
   resolveLocalModel,
   importModelFromGguf,
   DEFAULT_CONFIG
