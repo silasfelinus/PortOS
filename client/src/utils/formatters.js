@@ -80,7 +80,9 @@ export function formatRuntime(ms) {
  */
 export function timeAgo(dateStr, fallback = 'never') {
   if (!dateStr) return fallback;
-  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  const time = new Date(dateStr).getTime();
+  if (!Number.isFinite(time)) return fallback; // Invalid Date → fallback, not "NaNy ago"
+  const seconds = Math.floor((Date.now() - time) / 1000);
   if (seconds < 0) return 'just now';
   if (seconds < 60) return seconds < 10 ? 'just now' : `${seconds}s ago`;
   const mins = Math.floor(seconds / 60);

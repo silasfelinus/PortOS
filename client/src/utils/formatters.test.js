@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatDurationMin, formatEventDateTime } from './formatters.js';
+import { formatDurationMin, formatEventDateTime, timeAgo } from './formatters.js';
 
 describe('formatDurationMin', () => {
   it('formats sub-hour, exact-hour, and hour+min durations', () => {
@@ -63,5 +63,22 @@ describe('formatEventDateTime', () => {
     expect(formatEventDateTime('not-a-date')).toBe(
       new Date('not-a-date').toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
     );
+  });
+});
+
+describe('timeAgo', () => {
+  it('returns the fallback for null/empty', () => {
+    expect(timeAgo(null)).toBe('never');
+    expect(timeAgo('', 'n/a')).toBe('n/a');
+  });
+
+  it('returns the fallback for an unparseable date instead of "NaNy ago"', () => {
+    expect(timeAgo('not-a-date')).toBe('never');
+    expect(timeAgo('not-a-date', '—')).toBe('—');
+  });
+
+  it('formats a recent past date in days', () => {
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
+    expect(timeAgo(threeDaysAgo)).toBe('3d ago');
   });
 });

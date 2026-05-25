@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Square, Power, PowerOff } from 'lucide-react';
+import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Square, Power, PowerOff, Eye, Wrench, Brain, Code2, MessageSquare, Boxes } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
-import { formatBytes } from '../../utils/formatters';
+import { formatBytes, timeAgo } from '../../utils/formatters';
 import {
   getLocalLlmStatus, getLocalLlmCatalog, getLocalLlmHuggingFaceSearch, installLocalLlmModel,
   deleteLocalLlmModel, switchLocalLlmBackend, migrateLocalLlmBackend, installLocalLlmBackend, controlOllamaService
@@ -28,6 +28,34 @@ const CATEGORY_LABELS = {
 };
 const CATEGORY_ORDER = ['reasoning', 'coding', 'vision', 'embedding', 'chat', 'lightweight', 'multilingual'];
 const categoryLabel = (id) => CATEGORY_LABELS[id] || id;
+
+// Render model capabilities as colored icons (LM Studio style) instead of text.
+// `cls` is the icon color; the bordered chip uses the same hue at low opacity.
+const CAPABILITY_META = {
+  chat: { Icon: MessageSquare, label: 'Chat', cls: 'text-gray-400 border-gray-500/50' },
+  code: { Icon: Code2, label: 'Code', cls: 'text-sky-400 border-sky-400/50' },
+  reasoning: { Icon: Brain, label: 'Reasoning', cls: 'text-emerald-400 border-emerald-400/50' },
+  vision: { Icon: Eye, label: 'Vision', cls: 'text-amber-400 border-amber-400/50' },
+  embeddings: { Icon: Boxes, label: 'Embeddings', cls: 'text-violet-400 border-violet-400/50' },
+  tools: { Icon: Wrench, label: 'Tool use', cls: 'text-blue-400 border-blue-400/50' },
+};
+
+// Parse a human size string ("4.7 GB", "512 MB") back to GB for the RAM hint.
+function parseSizeGb(sizeStr) {
+  const match = /([\d.]+)\s*(TB|GB|MB|KB)/i.exec(String(sizeStr || ''));
+  if (!match) return null;
+  const val = parseFloat(match[1]);
+  if (!Number.isFinite(val)) return null;
+  return val * ({ TB: 1024, GB: 1, MB: 1 / 1024, KB: 1 / (1024 * 1024) }[match[2].toUpperCase()]);
+}
+
+// Rough RAM/VRAM to run a model: weights + ~20% overhead (KV cache/runtime),
+// rounded up to whole GB with a 1 GB floor. Prefers exact bytes when known.
+function recommendedRamGb(m) {
+  const gb = Number.isFinite(m?.sizeBytes) ? m.sizeBytes / 1024 ** 3 : parseSizeGb(m?.size);
+  if (!gb || gb <= 0) return null;
+  return Math.max(1, Math.ceil(gb * 1.2));
+}
 
 // Summarize a migrate result for the success toast (per-model statuses → counts).
 function summarizeMigrate(r) {
@@ -527,7 +555,12 @@ export function LocalLlmTab() {
                 <h3 className="text-xs font-medium text-gray-400">{group.label}</h3>
               )}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                {group.models.map((m) => (
+                {group.models.map((m) => {
+                  const ram = recommendedRamGb(m);
+                  const isHf = m.source === 'huggingface';
+                  const createdMs = new Date(m.createdAt).getTime();
+                  const updatedMs = new Date(m.updatedAt).getTime();
+                  return (
                   <div key={m.id} className="flex items-start gap-3 bg-port-bg border border-port-border rounded-lg p-3">
                     <div className="flex-1 min-w-0">
                       <div className="text-sm text-white truncate">{m.name} <span className="text-xs text-gray-500">· {m.params}</span></div>
@@ -536,11 +569,37 @@ export function LocalLlmTab() {
                       <div className="flex items-center gap-1.5 flex-wrap text-[11px] text-gray-600 mt-1">
                         <span className="text-gray-500">{categoryLabel(m.category)}</span>
                         <span>{m.size}</span>
-                        {m.source === 'huggingface' && <span>{m.downloads?.toLocaleString?.() || 0} downloads</span>}
-                        {m.source === 'huggingface' && m.license && <span>{m.license}</span>}
-                        {(m.capabilities || []).map((capability) => (
-                          <span key={capability} className="px-1.5 py-0.5 bg-port-border/60 rounded">{capability}</span>
-                        ))}
+                        {ram && (
+                          <span title="Approx RAM/VRAM to run this model — weights + ~20% overhead">
+                            ~{ram} GB RAM
+                          </span>
+                        )}
+                        {isHf && <span>{m.downloads?.toLocaleString?.() || 0} downloads</span>}
+                        {isHf && Number.isFinite(createdMs) && (
+                          <span
+                            title={`Published ${new Date(createdMs).toLocaleDateString()}${Number.isFinite(updatedMs) ? ` · updated ${timeAgo(m.updatedAt)}` : ''}`}
+                          >
+                            published {timeAgo(m.createdAt)}
+                          </span>
+                        )}
+                        {isHf && m.license && <span>{m.license}</span>}
+                        {(m.capabilities || []).map((capability) => {
+                          const meta = CAPABILITY_META[capability];
+                          if (!meta) {
+                            return <span key={capability} className="px-1.5 py-0.5 bg-port-border/60 rounded">{capability}</span>;
+                          }
+                          const Icon = meta.Icon;
+                          return (
+                            <span
+                              key={capability}
+                              title={meta.label}
+                              aria-label={meta.label}
+                              className={`inline-flex items-center justify-center w-5 h-5 rounded border ${meta.cls}`}
+                            >
+                              <Icon size={12} />
+                            </span>
+                          );
+                        })}
                       </div>
                     </div>
                     {m.installed ? (
@@ -556,7 +615,8 @@ export function LocalLlmTab() {
                       </button>
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           ))}

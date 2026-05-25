@@ -212,6 +212,8 @@ function toResult(model, backend, requestedCategory, installedIds) {
     publisher: publisherOf(repoId),
     downloads: Number(model?.downloads || 0),
     likes: Number(model?.likes || 0),
+    sizeBytes: Number.isFinite(file?.size) ? file.size : null,
+    createdAt: model?.createdAt || model?.created_at || null,
     updatedAt: model?.lastModified || model?.last_modified || model?.updatedAt || null,
     license: licenseOf(model),
     quant: file?.quant || null,
@@ -219,6 +221,13 @@ function toResult(model, backend, requestedCategory, installedIds) {
   }
   result.installed = isInstalled(backend, result, installedIds)
   return result
+}
+
+function hfHeaders() {
+  const headers = { Accept: 'application/json' }
+  const token = process.env.HUGGINGFACE_TOKEN || process.env.HF_TOKEN
+  if (token) headers.Authorization = `Bearer ${token}`
+  return headers
 }
 
 async function fetchModels(search, limit, useGgufFilter) {
@@ -231,17 +240,45 @@ async function fetchModels(search, limit, useGgufFilter) {
   })
   if (useGgufFilter) params.set('filter', 'gguf')
 
-  const headers = { Accept: 'application/json' }
-  const token = process.env.HUGGINGFACE_TOKEN || process.env.HF_TOKEN
-  if (token) headers.Authorization = `Bearer ${token}`
-
-  const response = await fetchWithTimeout(`${HF_API_BASE}?${params.toString()}`, { headers }, HF_TIMEOUT_MS)
+  const response = await fetchWithTimeout(`${HF_API_BASE}?${params.toString()}`, { headers: hfHeaders() }, HF_TIMEOUT_MS)
   if (!response.ok) {
     const text = await response.text().catch(() => '')
     throw new Error(`Hugging Face search failed: ${response.status}${text ? ` — ${text.slice(0, 160)}` : ''}`)
   }
   const data = await response.json()
   return Array.isArray(data) ? data : []
+}
+
+// The search endpoint returns siblings WITHOUT per-file sizes; only the
+// per-model endpoint (?blobs=true) carries them. Cache by repo so repeated
+// searches (the box is debounced per keystroke) don't re-fetch. `undefined` =
+// not fetched, `null` = fetched-but-no-size (sentinel, per the absent-vs-empty
+// rule) so a sizeless repo isn't probed on every search.
+const repoSizeCache = new Map()
+
+async function fetchRepoSizeBytes(repoId) {
+  if (repoSizeCache.has(repoId)) return repoSizeCache.get(repoId)
+  const model = await fetchWithTimeout(`${HF_API_BASE}/${repoId}?blobs=true`, { headers: hfHeaders() }, HF_TIMEOUT_MS)
+    .then((res) => (res.ok ? res.json() : null))
+    .catch(() => null)
+  // Re-run the same quant picker against the now-sized siblings.
+  const picked = pickGgufFile(model)
+  const bytes = Number.isFinite(picked?.size) ? picked.size : null
+  repoSizeCache.set(repoId, bytes)
+  return bytes
+}
+
+// Backfill real file sizes for results the search endpoint left sizeless.
+async function enrichWithSizes(results) {
+  await Promise.allSettled(results.map(async (result) => {
+    if (Number.isFinite(result.sizeBytes)) return
+    const bytes = await fetchRepoSizeBytes(result.repository)
+    if (Number.isFinite(bytes)) {
+      result.sizeBytes = bytes
+      result.size = formatBytes(bytes) || result.size
+    }
+  }))
+  return results
 }
 
 export async function searchHuggingFaceModels({ backend, query = '', category = 'all', limit = 12, installedIds = [] }) {
@@ -253,7 +290,7 @@ export async function searchHuggingFaceModels({ backend, query = '', category = 
   if (models.length === 0) models = await fetchModels(search, fetchLimit, false)
 
   const seen = new Set()
-  return models
+  const results = models
     .filter(hasGgufSignal)
     .map((model) => toResult(model, backend, requestedCategory, installedIds))
     .filter(Boolean)
@@ -264,4 +301,6 @@ export async function searchHuggingFaceModels({ backend, query = '', category = 
     })
     .sort((a, b) => b.score - a.score || b.downloads - a.downloads)
     .slice(0, limit)
+
+  return enrichWithSizes(results)
 }

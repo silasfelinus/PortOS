@@ -71,6 +71,27 @@ describe('huggingFaceCatalog', () => {
     expect(results[0].installed).toBe(true)
   })
 
+  it('backfills file sizes from the per-model blobs endpoint when the search omits them', async () => {
+    fetch
+      .mockResolvedValueOnce(response([
+        {
+          modelId: 'nomic-ai/nomic-embed-text-v1.5-GGUF',
+          downloads: 50,
+          tags: ['gguf'],
+          siblings: [{ rfilename: 'nomic-embed-text-v1.5.Q4_K_M.gguf' }] // search returns no size
+        }
+      ]))
+      .mockResolvedValueOnce(response({
+        id: 'nomic-ai/nomic-embed-text-v1.5-GGUF',
+        siblings: [{ rfilename: 'nomic-embed-text-v1.5.Q4_K_M.gguf', size: 84_106_624 }]
+      }))
+
+    const results = await searchHuggingFaceModels({ backend: 'ollama', query: 'nomic-embed' })
+
+    expect(results[0].sizeBytes).toBe(84_106_624)
+    expect(results[0].size).toMatch(/\d+(\.\d+)?\s(MB|GB)/)
+  })
+
   it('filters out non-GGUF results even if Hugging Face returns them', async () => {
     fetch.mockResolvedValue(response([
       { modelId: 'org/Plain-Safetensors', tags: ['safetensors'], siblings: [] },
