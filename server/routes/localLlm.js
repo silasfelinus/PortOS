@@ -34,13 +34,6 @@ router.get('/status', asyncHandler(async (req, res) => {
   res.json(await getStatus())
 }))
 
-// GET /api/local-llm/models?backend=ollama — installed models for a backend
-router.get('/models', asyncHandler(async (req, res) => {
-  const { backend } = req.query
-  if (!isBackend(backend)) return res.status(400).json({ error: 'backend must be "ollama" or "lmstudio"' })
-  res.json({ backend, models: await listModels(backend) })
-}))
-
 // GET /api/local-llm/catalog?backend=ollama&q=llama — curated install picker
 router.get('/catalog', asyncHandler(async (req, res) => {
   const { backend, q } = req.query
