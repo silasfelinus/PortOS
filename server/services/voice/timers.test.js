@@ -73,13 +73,19 @@ describe('scheduleTimer', () => {
     vi.useRealTimers();
   });
 
-  it('dedups a re-issued identical timer but keeps a distinct label / out-of-window one', () => {
+  it('dedups a re-issued identical timer but keeps a distinct label / out-of-window one', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-05-26T12:00:00Z'));
     const a = scheduleTimer({ totalMs: 600000, label: 'tea' });
     const b = scheduleTimer({ totalMs: 600000, label: 'tea' });
     expect(b.deduped).toBe(true);
     expect(b.id).toBe(a.id);
+
+    // Behavioral effect, not just the return value: the dup must NOT arm or
+    // persist a second timer — exactly one 'tea' is on disk.
+    await tick(); await tick();
+    const snap = atomicWriteMock.mock.calls.at(-1)[1];
+    expect(snap.timers.filter((t) => t.label === 'tea')).toHaveLength(1);
 
     // Different label → not a duplicate.
     expect(scheduleTimer({ totalMs: 600000, label: 'eggs' }).deduped).toBe(false);
@@ -102,7 +108,10 @@ describe('initVoiceTimers', () => {
       timers: [
         { id: 'past', label: 'overdue', fireAt: now - 1000, createdAt: now - 600000 },
         { id: 'future', label: 'soon', fireAt: now + 300000, createdAt: now },
-        { id: 'bad', label: 42, fireAt: now + 1000 }, // malformed label → skipped
+        { id: 'bad', label: 42, fireAt: now + 1000 },        // malformed label → skipped
+        { id: 'nan', label: 'nan', fireAt: Number.NaN },     // NaN fireAt → skipped (not armed-now)
+        { id: 'inf', label: 'inf', fireAt: Infinity },       // Infinity fireAt → skipped
+        { id: 'huge', label: 'huge', fireAt: now + 40 * 24 * 60 * 60 * 1000 }, // > 24h cap → skipped
       ],
     };
     const res = await initVoiceTimers();

@@ -68,9 +68,12 @@ async function fire(timer) {
   await notify(timer);
 }
 
-// Arm a Node timer for a still-pending record. Durations are capped at 24h, well
-// within setTimeout's max delay. `unref` so a lone pending timer never keeps the
-// process (or a test runner) alive on its own.
+// Arm a Node timer for a still-pending record. Both callers bound `fireAt` to at
+// most MAX_DURATION_MS out (scheduleTimer validates the duration; initVoiceTimers
+// drops implausible records), so the delay is always within setTimeout's int32
+// max — never the silent clamp-to-1ms-and-fire-now that an overflowing delay
+// triggers. `unref` so a lone pending timer never keeps the process (or a test
+// runner) alive on its own.
 function arm(timer) {
   const delay = Math.max(0, timer.fireAt - Date.now());
   timer.handle = setTimeout(() => {
@@ -122,7 +125,14 @@ export async function initVoiceTimers() {
   let armed = 0;
   let fired = 0;
   for (const rec of list) {
-    if (!rec || typeof rec.fireAt !== 'number' || typeof rec.label !== 'string') continue;
+    // The store is an untrusted read boundary (hand-edited / partial write).
+    // `Number.isFinite` rejects NaN/Infinity that `typeof === 'number'` lets
+    // through; the upper bound rejects a corrupt far-future `fireAt` — the write
+    // path caps every timer at MAX_DURATION_MS out, so anything farther can't be
+    // a real timer and must not reach arm() (an overflowing setTimeout delay
+    // silently clamps to ~0 and fires a phantom reminder).
+    if (!rec || !Number.isFinite(rec.fireAt) || typeof rec.label !== 'string') continue;
+    if (rec.fireAt - now > MAX_DURATION_MS) continue;
     const timer = {
       id: typeof rec.id === 'string' && rec.id ? rec.id : randomUUID(),
       label: rec.label,
