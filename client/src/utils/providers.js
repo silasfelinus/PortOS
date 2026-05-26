@@ -60,6 +60,20 @@ export const enabledApiProviderFilter = (provider) => Boolean(provider?.enabled)
 export const isProcessProvider = (provider) => isCliProvider(provider) || isTuiProvider(provider);
 
 /**
+ * Check if a provider is the headless Claude Code CLI (`claude --print`) running
+ * against a Claude Code subscription plan — i.e. NOT routed through Bedrock or
+ * Vertex (those bill via the cloud account, not the plan). Used to surface the
+ * billing-change warning: starting 2026-06-15 Anthropic clocks this non-interactive
+ * usage under API billing (consuming API credits) instead of the Claude Code plan,
+ * so it should be avoided in favor of the interactive Claude Code TUI provider.
+ */
+export const isClaudeCodePlanCli = (provider) =>
+  isCliProvider(provider) &&
+  provider?.command === 'claude' &&
+  !provider?.envVars?.CLAUDE_CODE_USE_BEDROCK &&
+  !provider?.envVars?.CLAUDE_CODE_USE_VERTEX;
+
+/**
  * Resolve the provider whose timeout is the "fallback" for a stage — the
  * stage's pinned provider when set, otherwise the active provider. Used to
  * power the placeholder + hint on stage-timeout UIs in PromptManager and
