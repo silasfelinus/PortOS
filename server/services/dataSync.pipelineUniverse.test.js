@@ -22,6 +22,7 @@ vi.mock('../lib/fileUtils.js', async () => {
 afterAll(cleanup);
 
 const dataSync = await import('./dataSync.js');
+const { PORTOS_SCHEMA_VERSIONS } = await import('../lib/schemaVersions.js');
 
 const SERIES_DIR = join(tempRoot, 'pipeline-series');
 const ISSUES_DIR = join(tempRoot, 'pipeline-issues');
@@ -889,5 +890,24 @@ describe('dataSync — per-category schema gate (cross-key isolation)', () => {
       { category: 'pipelineSeries', senderV: 2, receiverV: 1 },
     ]);
     expect(readSeriesState()).toEqual([]); // nothing written
+  });
+
+  // ---- gate-map completeness (fail-open guard) -------------------------
+  it('every snapshot category has a deliberate schema-key mapping', () => {
+    // No `|| []` fallthrough surprises: a future category must be mapped
+    // explicitly (even to []) so the gate decision for it is intentional.
+    const map = dataSync.getSnapshotCategorySchemaKeys();
+    for (const category of dataSync.getSupportedCategories()) {
+      expect(Array.isArray(map[category])).toBe(true);
+    }
+  });
+
+  it('every versioned PORTOS_SCHEMA_VERSIONS key is reachable from some snapshot category', () => {
+    // A newly-versioned category can't ship without being wired into the
+    // per-category snapshot gate — otherwise its snapshot transfer is ungated.
+    const covered = new Set(Object.values(dataSync.getSnapshotCategorySchemaKeys()).flat());
+    for (const key of Object.keys(PORTOS_SCHEMA_VERSIONS)) {
+      expect(covered.has(key)).toBe(true);
+    }
   });
 });

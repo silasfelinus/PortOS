@@ -399,11 +399,16 @@ async function readReferencedRecords(bucketPath, manifest) {
  * reading the record files (the gate runs before any record read, and a
  * manifest delivered ahead of its records still declares what it carries).
  *
- * Id-prefix → kind mirrors `readReferencedRecords` above (`ser-`/`iss-`/
- * bible-prefixed); a UUID is a universe record EXCEPT on a `media` manifest,
- * where UUIDs are media-job records (flat re-render metadata, unversioned).
- * `media-annotations` manifests bypass the records pipeline entirely and carry
- * no versioned layout → never gated.
+ * Id-prefix → kind mirrors `readReferencedRecords` above (`ser-` → series,
+ * `iss-` → issue, `chr-`/`set-`/`obj-` → universe bible sub-records); a UUID is
+ * a universe record EXCEPT on a `media` manifest, where UUIDs are media-job
+ * records. Media-job records are intentionally NOT gated: they have no
+ * versioned storage layout, and `mergeMediaJobRecords` is insert-only by id
+ * (never overwrites, stores the record verbatim, readers use optional
+ * chaining) — so a future-shape job degrades gracefully rather than corrupting,
+ * exactly like the unlisted `videoHistory` category. `media-annotations`
+ * manifests bypass the records pipeline entirely and carry no versioned layout
+ * → never gated.
  */
 function relevantSchemaCategoriesForManifest(manifest) {
   if (manifest?.kind === 'media-annotations') return [];
@@ -619,7 +624,12 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
   let collectionPendingUniverse = null;
   let collectionPendingSeries = null;
   let collectionTombstonedUniverse = null;
-  if (manifest.collection) {
+  // `isPlainObject` (not bare truthiness) so this apply path agrees exactly
+  // with the schema gate's `relevantSchemaCategoriesForManifest`, which only
+  // counts a plain-object `collection` as carrying the mediaCollections
+  // category. A truthy non-object (corrupt/hand-crafted manifest) must not
+  // slip past the gate yet still reach the merge.
+  if (isPlainObject(manifest.collection)) {
     // Suppress re-export of the owner record while the collection items
     // land — the items themselves drive recordEvents, which would loop
     // back through the receiver's own subscriptions if not gated.
