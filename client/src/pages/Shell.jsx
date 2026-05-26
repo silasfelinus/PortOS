@@ -781,7 +781,7 @@ export default function Shell() {
                 title={`${s.label || s.cwd || shortId(s.sessionId)} — ${formatAge(s.createdAt)} old`}
               >
                 <TerminalIcon size={12} className="shrink-0" />
-                <span>{label}</span>
+                <span className="min-w-0 break-all">{label}</span>
                 <span className="text-[10px] opacity-60 shrink-0">{formatAge(s.createdAt)}</span>
                 <button
                   onClick={(e) => { e.stopPropagation(); killOtherSession(s.sessionId); }}
