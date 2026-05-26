@@ -14,6 +14,9 @@ const router = Router();
 const SERVICE_ERROR_STATUS = {
   [resolver.ERR_NOT_FOUND]: 404,
   [resolver.ERR_VALIDATION]: 400,
+  // Target record was deleted since the conflict was archived — the entry is
+  // still actionable via discard, so surface 409 rather than a generic 500.
+  [resolver.ERR_TARGET_GONE]: 409,
 };
 const mapServiceError = (err) => {
   const status = SERVICE_ERROR_STATUS[err?.code];

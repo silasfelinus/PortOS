@@ -246,7 +246,11 @@ export async function executeCliRun(runId, provider, prompt, workspacePath, onDa
     metadata.endTime = new Date().toISOString();
     metadata.duration = Date.now() - startTime;
     metadata.exitCode = code;
-    metadata.success = code === 0;
+    // A mid-stream fallback signal (e.g. usage-limit hit) SIGTERM-kills the
+    // child; if it happens to exit 0 in that race, don't record the run as
+    // successful — the fallback path (onRunFailed) must fire. Mirrors the TUI
+    // finish({ success: false }) handling of the same signal.
+    metadata.success = code === 0 && !immediateFallbackAnalysis;
     metadata.outputSize = Buffer.byteLength(output);
 
     // Analyze errors if the run failed (delegate to toolkit's error detection)

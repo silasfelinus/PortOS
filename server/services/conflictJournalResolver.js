@@ -25,11 +25,14 @@
  */
 
 import { conflictJournalStore, RESTORABLE_FIELDS } from '../lib/conflictJournal.js';
-import { updateUniverse } from './universeBuilder.js';
-import { updateSeries } from './pipeline/series.js';
+import { updateUniverse, ERR_NOT_FOUND as UNIVERSE_NOT_FOUND } from './universeBuilder.js';
+import { updateSeries, ERR_NOT_FOUND as SERIES_NOT_FOUND } from './pipeline/series.js';
 
 export const ERR_NOT_FOUND = 'CONFLICT_JOURNAL_NOT_FOUND';
 export const ERR_VALIDATION = 'CONFLICT_JOURNAL_VALIDATION';
+// The conflict entry exists but the record it targets was tombstoned between
+// archive time and resolution — distinct from ERR_NOT_FOUND (the entry itself).
+export const ERR_TARGET_GONE = 'CONFLICT_TARGET_GONE';
 const makeErr = (message, code) => Object.assign(new Error(message), { code });
 
 // RESTORABLE_FIELDS (the user-authored content fields a restore/merge may write
@@ -58,12 +61,21 @@ export async function getConflict(id) {
 
 // Apply a content patch through the right service's normal update path.
 async function applyToRecord(kind, recordId, patch) {
+  // The target record may have been tombstoned between conflict-archive time and
+  // resolution. Translate the services' not-found codes into ERR_TARGET_GONE so
+  // the route maps it to a clean 409 ("discard the entry") instead of a 500.
+  const translateGone = (err) => {
+    if (err?.code === UNIVERSE_NOT_FOUND || err?.code === SERIES_NOT_FOUND) {
+      throw makeErr(`The ${kind} this conflict targets no longer exists — discard the entry.`, ERR_TARGET_GONE);
+    }
+    throw err;
+  };
   if (kind === 'universe') {
     // Mutator form bypasses the literal-patch reference-sheet preservation
     // guard — the restored snapshot is the trusted writer here.
-    await updateUniverse(recordId, () => patch);
+    await updateUniverse(recordId, () => patch).catch(translateGone);
   } else if (kind === 'series') {
-    await updateSeries(recordId, patch);
+    await updateSeries(recordId, patch).catch(translateGone);
   } else {
     throw makeErr(`Unsupported conflict kind: ${kind}`, ERR_VALIDATION);
   }

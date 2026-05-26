@@ -6,6 +6,7 @@ import { errorMiddleware } from '../lib/errorHandler.js';
 const resolverMock = {
   ERR_NOT_FOUND: 'CONFLICT_JOURNAL_NOT_FOUND',
   ERR_VALIDATION: 'CONFLICT_JOURNAL_VALIDATION',
+  ERR_TARGET_GONE: 'CONFLICT_TARGET_GONE',
   listConflicts: vi.fn(),
   getConflict: vi.fn(),
   resolveConflict: vi.fn(),
@@ -53,6 +54,15 @@ describe('conflict-journal routes', () => {
     resolverMock.getConflict.mockRejectedValue(Object.assign(new Error('nope'), { code: resolverMock.ERR_NOT_FOUND }));
     const res = await request(makeApp()).get('/api/conflict-journal/missing');
     expect(res.status).toBe(404);
+  });
+
+  it('maps ERR_TARGET_GONE to 409 (record deleted since the conflict was archived)', async () => {
+    resolverMock.resolveConflict.mockRejectedValue(
+      Object.assign(new Error('The universe this conflict targets no longer exists — discard the entry.'), { code: resolverMock.ERR_TARGET_GONE }),
+    );
+    const res = await request(makeApp()).post('/api/conflict-journal/e1/resolve').send({ action: 'restore-all' });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('CONFLICT_TARGET_GONE');
   });
 
   it('DELETE /:id removes an entry', async () => {

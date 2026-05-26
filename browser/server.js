@@ -51,7 +51,17 @@ function getMacAppBundle(config) {
 
 async function loadConfig() {
   const raw = await readFile(CONFIG_FILE, 'utf-8').catch(() => null);
-  return raw ? JSON.parse(raw) : {};
+  if (!raw) return {};
+  // Guard against a partially-written / corrupt config (now user-editable via
+  // the Browser settings UI). An unguarded JSON.parse here throws on boot —
+  // loadConfig is awaited from launchBrowser()→main() with no catch, so a bad
+  // file would crash the PM2 child into a restart-loop. Fall back to defaults.
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error(`⚠️ Corrupt browser-config.json, using defaults: ${err.message}`);
+    return {};
+  }
 }
 
 async function checkCdp() {
@@ -212,10 +222,28 @@ async function launchBrowser() {
       // download keep-alive WS close event + reconnect loop instead.
       chromeProcess = null;
     });
+    // A bad macAppBundle (user-editable via the Browser settings UI) emits
+    // 'error'; with no listener that becomes an uncaughtException → PM2
+    // restart-loop. Log and null out so the CDP-wait loop reports unreachable.
+    chromeProcess.on('error', (err) => {
+      console.error(`❌ Failed to spawn Chrome via open: ${err.message}`);
+      chromeProcess = null;
+    });
   } else {
     chromeProcess = spawn(chromePath, args, { stdio: 'ignore', windowsHide: true });
     chromeProcess.on('exit', (code) => {
       console.log(`⚠️ Chrome exited with code ${code}`);
+      chromeProcess = null;
+      if (downloadWs) {
+        try { downloadWs.close(); } catch {}
+        downloadWs = null;
+      }
+    });
+    // A bad chromePath (user-editable via the Browser settings UI) emits
+    // 'error'; with no listener that becomes an uncaughtException → PM2
+    // restart-loop. Log and null out so the CDP-wait loop reports unreachable.
+    chromeProcess.on('error', (err) => {
+      console.error(`❌ Failed to spawn Chrome (${chromePath}): ${err.message}`);
       chromeProcess = null;
       if (downloadWs) {
         try { downloadWs.close(); } catch {}

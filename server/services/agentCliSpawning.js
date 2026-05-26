@@ -542,21 +542,9 @@ export async function spawnDirectly({
     const finalSuccess = terminatedByUser ? false : success;
     const finalError = terminatedByUser ? 'Agent terminated by user' : null;
 
-    // Release lane + complete execution tracking BEFORE the writeFile +
-    // error-analysis + state-write chain — neither call blocks on I/O, but
-    // lanes serialize related work. Fall back to outer scope when
-    // activeAgents was cleared by killAgent before close fired.
-    releaseAgentLane({
-      agentId,
-      success: finalSuccess,
-      duration,
-      exitCode: code,
-      executionId: agentData?.executionId || executionId,
-      laneName: agentData?.laneName || laneName,
-      errorExecutionMessage: finalError || undefined,
-    });
-
-    // Flush remaining stream parser data
+    // Flush remaining stream parser data (persists the tail of the transcript
+    // before any early-return, so a paused agent's output.txt is complete for
+    // the resume modal).
     if (streamParser) {
       const remaining = streamParser.flush();
       for (const line of remaining) {
@@ -578,12 +566,30 @@ export async function spawnDirectly({
 
     await writeFile(outputFile, outputBuffer).catch(() => {});
 
+    // Paused agents are finalized in `markAgentPaused` (which already released
+    // the lane + execution). Return BEFORE `releaseAgentLane` below — re-running
+    // it on the same executionId logs a spurious "Invalid state transition".
+    // Mirrors the TUI path's pause-check-before-releaseAgentLane ordering.
     if (pausedAgents.has(agentId)) {
       pausedAgents.delete(agentId);
       if (agentData?.pid) unregisterSpawnedAgent(agentData.pid);
       activeAgents.delete(agentId);
       return;
     }
+
+    // Release lane + complete execution tracking BEFORE the error-analysis +
+    // state-write chain — neither call blocks on I/O, but lanes serialize
+    // related work. Fall back to outer scope when activeAgents was cleared by
+    // killAgent before close fired.
+    releaseAgentLane({
+      agentId,
+      success: finalSuccess,
+      duration,
+      exitCode: code,
+      executionId: agentData?.executionId || executionId,
+      laneName: agentData?.laneName || laneName,
+      errorExecutionMessage: finalError || undefined,
+    });
 
     // Use raw stream buffer for error analysis (contains full JSON with error details)
     const analysisBuffer = rawStreamBuffer || outputBuffer;

@@ -36,9 +36,17 @@ if (!existsSync(profileDir)) {
   console.log('📁 Created browser profile directory');
 }
 
+// Returns {} when the file is absent, the parsed object when readable, or null
+// when it exists but is corrupt — so callers can avoid overwriting (and wiping
+// the user's other keys: cdpPort, userDataDir, etc.) on a transient corruption.
 function loadConfig() {
   if (!existsSync(configFile)) return {};
-  try { return JSON.parse(readFileSync(configFile, 'utf-8')); } catch { return {}; }
+  try {
+    return JSON.parse(readFileSync(configFile, 'utf-8'));
+  } catch (err) {
+    console.warn(`⚠️  browser-config.json is unreadable (${err.message}); leaving it untouched.`);
+    return null;
+  }
 }
 
 function saveConfig(config) {
@@ -80,6 +88,10 @@ function canaryInstallCommand() {
 
 function applyCanaryToConfig(found) {
   const config = loadConfig();
+  if (config === null) {
+    console.warn('   Skipping Canary config write — fix the corrupt browser-config.json first.');
+    return;
+  }
   config.chromePath = found.bin;
   if (found.app) config.macAppBundle = found.app;
   saveConfig(config);
@@ -108,7 +120,7 @@ async function runCanarySetup() {
   }
 
   const config = loadConfig();
-  if (typeof config.chromePath === 'string' && config.chromePath.trim()) {
+  if (typeof config?.chromePath === 'string' && config.chromePath.trim()) {
     // Already configured — don't re-prompt on subsequent setup/update runs.
     return;
   }
@@ -160,6 +172,8 @@ async function runCanarySetup() {
   else console.log('⚠️  Canary installed but the binary was not found at the expected path. You can set chromePath manually in Settings → Browser.');
 }
 
-await runCanarySetup();
+// A throw here (EACCES writing the config, install subprocess failure, etc.)
+// must not abort the larger `npm run setup` / update.sh step it's chained into.
+await runCanarySetup().catch((err) => console.warn(`⚠️  Browser Canary setup skipped: ${err.message}`));
 
 console.log('✅ Browser setup complete');

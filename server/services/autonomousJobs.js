@@ -91,6 +91,20 @@ async function agentDataCleanup() {
   // `initSpawner()` + scheduled orphan cleanup) just to read the maps.
   const activeIds = new Set(getActiveAgentIds())
 
+  // Also protect PAUSED agents. Pausing intentionally preserves the agent's
+  // worktree + data dir as resume context, but a paused agent is removed from
+  // the in-memory active/runner maps (so `getActiveAgentIds()` omits it) and —
+  // critically — those maps are empty after a server restart while the agent's
+  // `status: 'paused'` survives in state.json. Read the persisted status so a
+  // paused agent's worktree/transcript is never reaped or rm'd out from under a
+  // later resume. (readJSONFile keeps this off the subAgentSpawner import path.)
+  const cosState = await readJSONFile(join(PATHS.cos, 'state.json'), null)
+  if (cosState?.agents && typeof cosState.agents === 'object') {
+    for (const [id, agent] of Object.entries(cosState.agents)) {
+      if (agent?.status === 'paused') activeIds.add(id)
+    }
+  }
+
   const agentsDir = join(PATHS.cos, 'agents')
   let cleaned = 0
   if (existsSync(agentsDir)) {

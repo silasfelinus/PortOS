@@ -89,6 +89,15 @@ describe('conflictJournalResolver', () => {
       .rejects.toMatchObject({ code: resolver.ERR_VALIDATION });
   });
 
+  it('translates a deleted target record into ERR_TARGET_GONE (not the raw NOT_FOUND)', async () => {
+    // Entry points at a universe id that no longer exists (tombstoned between
+    // archive and resolution). updateUniverse throws NOT_FOUND; the resolver
+    // must surface ERR_TARGET_GONE so the route maps it to 409, not 500.
+    const entryId = await seedEntry('does-not-exist', { id: 'does-not-exist', name: 'Ghost', starterPrompt: 'local' });
+    await expect(resolver.resolveConflict(entryId, { action: 'restore-all' }))
+      .rejects.toMatchObject({ code: resolver.ERR_TARGET_GONE });
+  });
+
   it('listConflicts filters by status; deleteConflict removes the entry', async () => {
     const u = await universeSvc.createUniverse({ name: 'X' });
     const e1 = await seedEntry(u.id, { id: u.id, name: 'X' });

@@ -134,6 +134,32 @@ describe('executeCliRun — Codex sentinel suppression', () => {
       }),
     });
   });
+
+  it('records failure (not success) when the fallback-killed child exits 0 in the race', async () => {
+    const child = makeChild();
+    spawn.mockReturnValue(child);
+    setAIToolkit(fakeToolkit({ analyzeError }), { dataDir: '/tmp/test-runner' });
+
+    const provider = {
+      id: 'claude-code', name: 'Claude Code', command: 'claude', args: [],
+      defaultModel: 'claude-opus-4-7', timeout: 60000,
+    };
+
+    const completed = new Promise((resolve) => {
+      executeCliRun('run-fallback-exit0', provider, 'test prompt', '/workspace', undefined, resolve, 60000);
+    });
+
+    await Promise.resolve();
+    child.stderr.emit('data', Buffer.from('Now using extra usage\n'));
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+
+    // SIGTERM races and the child happens to exit 0 — must NOT be recorded as
+    // success, or the usage-limit fallback (onRunFailed) silently never fires.
+    child.emit('close', 0);
+    const metadata = await completed;
+    expect(metadata.success).toBe(false);
+    expect(metadata.errorAnalysis).toMatchObject({ requiresFallback: true });
+  });
 });
 
 describe('buildCliArgs — claude-code defaultModel honoring', () => {

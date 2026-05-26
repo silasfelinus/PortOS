@@ -34,7 +34,7 @@ import { extractCodexAssistantTail } from '../lib/codexAssistantExtract.js';
 import { buildTuiSpawnConfig, spawnTuiAgent } from './agentTuiSpawning.js';
 import { selectModelForTask } from './agentModelSelection.js';
 import { processAgentCompletion } from './agentCompletion.js';
-import { activeAgents, runnerAgents, spawningTasks, useRunner, isTruthyMeta, isFalsyMeta } from './agentState.js';
+import { activeAgents, runnerAgents, pausedAgents, spawningTasks, useRunner, isTruthyMeta, isFalsyMeta } from './agentState.js';
 import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, normalizeReviewers } from '../lib/validation.js';
 import { resolveReviewLoopOptions } from './codeReview.js';
 import { v4 as uuidv4 } from '../lib/uuid.js';
@@ -1043,6 +1043,14 @@ export async function handlePipelineProgression(task, agentId, success) {
  * Handle agent completion (from runner events).
  */
 export async function handleAgentCompletion(agentId, exitCode, success, duration) {
+  // Paused agents are finalized by markAgentPaused, not here — skip so a stray
+  // completion event can't clean the worktree / complete the task out from
+  // under a later resume. Mirrors the CLI/TUI close-handler pause guards.
+  if (pausedAgents.has(agentId)) {
+    pausedAgents.delete(agentId);
+    runnerAgents.delete(agentId);
+    return;
+  }
   const agent = runnerAgents.get(agentId);
   if (!agent) {
     // Agent not in memory map (server restarted). Check cos state for context.
@@ -1054,6 +1062,12 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
     }
     if (cosAgent.status === 'completed') {
       console.log(`✅ Agent ${agentId} already completed (handled by orphan cleanup)`);
+      return;
+    }
+    // Post-restart the in-memory pausedAgents map is empty, but the persisted
+    // status still says paused — don't finalize a paused agent on a stray event.
+    if (cosAgent.status === 'paused') {
+      console.log(`⏸️ Ignoring completion for paused agent ${agentId} (awaiting resume)`);
       return;
     }
     console.log(`🔄 Completing untracked agent ${agentId} from cos state (post-restart)`);
