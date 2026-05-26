@@ -147,18 +147,32 @@ export const unionInfluences = (survivor = {}, loser = {}) => {
 };
 
 // Union series seasons by `number`: survivor seasons first; loser seasons whose
-// number isn't already present get appended.
+// number isn't already present get appended. On a number collision the loser
+// season is NOT dropped — its non-empty fields gap-fill the survivor season (the
+// survivor wins real conflicts) so a colliding season's summary/episodes/cover
+// can't be silently lost when the loser series is tombstoned. Seasons are
+// cloned so the gap-fill never mutates the input survivor record.
 const unionSeasons = (survivor = [], loser = []) => {
   const out = [];
-  const numbers = new Set();
+  const byNumber = new Map();
   for (const s of Array.isArray(survivor) ? survivor : []) {
-    out.push(s);
-    if (Number.isFinite(s?.number)) numbers.add(s.number);
+    const clone = (s && typeof s === 'object') ? { ...s } : s;
+    out.push(clone);
+    if (Number.isFinite(clone?.number)) byNumber.set(clone.number, clone);
   }
   for (const l of Array.isArray(loser) ? loser : []) {
-    if (Number.isFinite(l?.number) && numbers.has(l.number)) continue;
+    if (Number.isFinite(l?.number) && byNumber.has(l.number)) {
+      const sv = byNumber.get(l.number);
+      if (sv && typeof sv === 'object' && l && typeof l === 'object') {
+        for (const [k, v] of Object.entries(l)) {
+          if (k === 'number') continue;
+          if (isEmptyScalar(sv[k]) && !isEmptyScalar(v)) sv[k] = v;
+        }
+      }
+      continue;
+    }
     out.push(l);
-    if (Number.isFinite(l?.number)) numbers.add(l.number);
+    if (Number.isFinite(l?.number)) byNumber.set(l.number, l);
   }
   return out;
 };
@@ -219,6 +233,10 @@ const UNIVERSE_SCALARS = ['name', 'starterPrompt', 'logline', 'premise', 'styleN
 const SERIES_SCALARS = [
   'name', 'logline', 'premise', 'styleNotes', 'titleLogo', 'author',
   'stylePromptOverride', 'stylePromptOverrideMode', 'targetFormat', 'issueCountTarget', 'arc',
+  // Preserve a Writers Room promotion link: if only the loser is linked it must
+  // be carried to the survivor (else the link is lost when the loser is
+  // tombstoned); if both are linked differently it's surfaced as a conflict.
+  'writersRoomWorkId',
 ];
 
 /** Build the unioned universe patch + conflict report from survivor + loser. */

@@ -539,7 +539,10 @@ export async function spawnDirectly({
     // process happened to exit 0 in the race window — otherwise the run is
     // recorded as successful while the task remains blocked. Mirrors the TUI
     // `finish` path's `finalSuccess = terminatedByUser ? false : success`.
-    const finalSuccess = terminatedByUser ? false : success;
+    // A mid-stream fallback signal (e.g. usage-limit hit) kills the CLI; if it
+    // races to exit 0, don't record success or the fallback/retry never fires.
+    // Mirrors the runner path (`runner.js`) and the TUI finish() handling.
+    const finalSuccess = terminatedByUser ? false : (success && !immediateFallbackAnalysis);
     const finalError = terminatedByUser ? 'Agent terminated by user' : null;
 
     // Flush remaining stream parser data (persists the tail of the transcript

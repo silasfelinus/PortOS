@@ -89,6 +89,28 @@ describe('recordMerge — pure union helpers', () => {
     expect(autoResolved).toContainEqual({ field: 'logline', from: 'loser' });
   });
 
+  it('buildSeriesUnion gap-fills a number-colliding loser season instead of dropping it', () => {
+    const { record } = merge.buildSeriesUnion(
+      { name: 'S', seasons: [{ number: 1, title: 'S1', summary: '' }] },
+      { name: 'S', seasons: [{ number: 1, title: 'loser-title', summary: 'loser summary', episodes: ['e1'] }] },
+    );
+    // Survivor's season 1 kept (one entry, no duplicate number) but its empty
+    // fields are filled from the loser — no silent data loss.
+    expect(record.seasons).toHaveLength(1);
+    expect(record.seasons[0].title).toBe('S1');            // survivor wins non-empty
+    expect(record.seasons[0].summary).toBe('loser summary'); // gap-filled
+    expect(record.seasons[0].episodes).toEqual(['e1']);      // gap-filled
+  });
+
+  it('buildSeriesUnion preserves a loser-only Writers Room link', () => {
+    const { record, autoResolved } = merge.buildSeriesUnion(
+      { name: 'S', seasons: [], writersRoomWorkId: '' },
+      { name: 'S', seasons: [], writersRoomWorkId: 'wr-123' },
+    );
+    expect(record.writersRoomWorkId).toBe('wr-123');
+    expect(autoResolved).toContainEqual({ field: 'writersRoomWorkId', from: 'loser' });
+  });
+
   it('buildUniverseUnion applies fieldChoices to resolve conflicts', () => {
     const { conflicts, record } = merge.buildUniverseUnion(
       { name: 'Dup', starterPrompt: 'A', categories: {}, influences: {}, characters: [], places: [], objects: [] },
