@@ -466,6 +466,7 @@ export function VoiceTab() {
               type="button"
               onClick={() => handleRefreshModels(llmProvider)}
               disabled={refreshingModels || providerMissing || apiProviders.length === 0}
+              aria-label="Refresh model list from the provider"
               title="Refresh model list from the provider"
               className="shrink-0 p-2 rounded-lg bg-port-border hover:bg-port-border/70 text-white disabled:opacity-50"
             >
