@@ -269,6 +269,20 @@ vi.mock('../lib/multipart.js', () => ({
   uploadFields: () => (_req, _res, next) => next(),
 }));
 
+// Controllable mergeSeries for series merge route contract tests.
+const mergeSeriesMock = vi.fn();
+vi.mock('../services/recordMerge.js', async () => {
+  const actual = await vi.importActual('../services/recordMerge.js');
+  return { ...actual, mergeSeries: (...args) => mergeSeriesMock(...args) };
+});
+
+// Controllable mergeFieldsWithAI for series/merge/ai-resolve error contracts.
+const mergeFieldsWithAIMock = vi.fn();
+vi.mock('../services/recordMergeAI.js', async () => {
+  const actual = await vi.importActual('../services/recordMergeAI.js');
+  return { ...actual, mergeFieldsWithAI: (...args) => mergeFieldsWithAIMock(...args) };
+});
+
 const pipelineRouter = (await import('./pipeline.js')).default;
 const universeSvc = await import('../services/universeBuilder.js');
 
@@ -288,6 +302,8 @@ describe('pipeline routes', () => {
     fileStore.clear();
     uuidCounter = 0;
     vi.clearAllMocks();
+    mergeSeriesMock.mockReset();
+    mergeFieldsWithAIMock.mockReset();
   });
 
   it('POST /series → 201 with created series', async () => {
@@ -328,12 +344,113 @@ describe('pipeline routes', () => {
     expect(res.body).toHaveProperty('orphans');
   });
 
-  it('POST /series/merge rejects identical survivor/loser ids with 400', async () => {
+  it('POST /series/merge rejects identical survivor/loser ids with 400 (Zod refine)', async () => {
+    // Zod catches same-id at schema level → 400 with generic validation code.
     const app = makeApp();
     const res = await request(app)
       .post('/api/pipeline/series/merge')
       .send({ survivorId: 'ser-1', loserId: 'ser-1' });
     expect(res.status).toBe(400);
+  });
+
+  it('POST /series/merge returns { merged: true, cascade } on success', async () => {
+    const app = makeApp();
+    mergeSeriesMock.mockResolvedValueOnce({
+      survivorId: 'ser-uuid-1',
+      loserId: 'ser-uuid-2',
+      merged: true,
+      cascade: { issuesToRepoint: 0, loserCollectionItemCount: 0 },
+    });
+
+    const res = await request(app)
+      .post('/api/pipeline/series/merge')
+      .send({ survivorId: 'ser-uuid-1', loserId: 'ser-uuid-2' });
+    expect(res.status).toBe(200);
+    expect(res.body.merged).toBe(true);
+    expect(res.body).toHaveProperty('cascade');
+    expect(res.body.survivorId).toBe('ser-uuid-1');
+    expect(mergeSeriesMock).toHaveBeenCalledWith(
+      'ser-uuid-1', 'ser-uuid-2', {}, expect.objectContaining({ fieldOverrides: {} }),
+    );
+  });
+
+  describe('POST /series/merge/ai-resolve error contracts', () => {
+    it('400 when survivorId === loserId (Zod schema guard)', async () => {
+      const res = await request(makeApp())
+        .post('/api/pipeline/series/merge/ai-resolve')
+        .send({ survivorId: 'ser-1', loserId: 'ser-1', fields: ['logline'] });
+      expect(res.status).toBe(400);
+      expect(mergeFieldsWithAIMock).not.toHaveBeenCalled();
+    });
+
+    it('400 when survivorId does not match ser-<uuid> pattern', async () => {
+      const res = await request(makeApp())
+        .post('/api/pipeline/series/merge/ai-resolve')
+        .send({ survivorId: 'u-1', loserId: 'ser-uuid-2', fields: ['logline'] });
+      expect(res.status).toBe(400);
+      expect(mergeFieldsWithAIMock).not.toHaveBeenCalled();
+    });
+
+    it('422 MERGE_AI_NO_MERGEABLE_FIELDS when fields are not non-empty strings on both sides', async () => {
+      const { ServerError } = await import('../lib/errorHandler.js');
+      mergeFieldsWithAIMock.mockRejectedValueOnce(
+        new ServerError('No mergeable text fields', { status: 422, code: 'MERGE_AI_NO_MERGEABLE_FIELDS' }),
+      );
+
+      // Pre-populate series so the route can fetch them.
+      const app = makeApp();
+      await request(app).post('/api/pipeline/series').send({ name: 'AI-A', universeId: 'u-1' });
+      await request(app).post('/api/pipeline/series').send({ name: 'AI-B', universeId: 'u-1' });
+      const seriesSvc = await import('../services/pipeline/series.js');
+      const all = await seriesSvc.listSeries();
+      const [serA, serB] = all;
+
+      const res = await request(app)
+        .post('/api/pipeline/series/merge/ai-resolve')
+        .send({ survivorId: serA.id, loserId: serB.id, fields: ['logline'] });
+      expect(res.status).toBe(422);
+      expect(res.body.code).toBe('MERGE_AI_NO_MERGEABLE_FIELDS');
+    });
+
+    it('503 MERGE_AI_NO_PROVIDER when no AI provider is configured', async () => {
+      const { ServerError } = await import('../lib/errorHandler.js');
+      mergeFieldsWithAIMock.mockRejectedValueOnce(
+        new ServerError('No AI provider available', { status: 503, code: 'MERGE_AI_NO_PROVIDER' }),
+      );
+
+      const app = makeApp();
+      await request(app).post('/api/pipeline/series').send({ name: 'P-A', universeId: 'u-1', logline: 'x' });
+      await request(app).post('/api/pipeline/series').send({ name: 'P-B', universeId: 'u-1', logline: 'y' });
+      const seriesSvc = await import('../services/pipeline/series.js');
+      const all = await seriesSvc.listSeries();
+      const [serA, serB] = all;
+
+      const res = await request(app)
+        .post('/api/pipeline/series/merge/ai-resolve')
+        .send({ survivorId: serA.id, loserId: serB.id, fields: ['logline'] });
+      expect(res.status).toBe(503);
+      expect(res.body.code).toBe('MERGE_AI_NO_PROVIDER');
+    });
+
+    it('502 LLM_INVALID_JSON when the LLM returns unparseable JSON', async () => {
+      const { ServerError } = await import('../lib/errorHandler.js');
+      mergeFieldsWithAIMock.mockRejectedValueOnce(
+        new ServerError('LLM returned invalid JSON', { status: 502, code: 'LLM_INVALID_JSON' }),
+      );
+
+      const app = makeApp();
+      await request(app).post('/api/pipeline/series').send({ name: 'J-A', universeId: 'u-1', logline: 'x' });
+      await request(app).post('/api/pipeline/series').send({ name: 'J-B', universeId: 'u-1', logline: 'y' });
+      const seriesSvc = await import('../services/pipeline/series.js');
+      const all = await seriesSvc.listSeries();
+      const [serA, serB] = all;
+
+      const res = await request(app)
+        .post('/api/pipeline/series/merge/ai-resolve')
+        .send({ survivorId: serA.id, loserId: serB.id, fields: ['logline'] });
+      expect(res.status).toBe(502);
+      expect(res.body.code).toBe('LLM_INVALID_JSON');
+    });
   });
 
   it('PATCH /series/:id 404s for unknown id', async () => {

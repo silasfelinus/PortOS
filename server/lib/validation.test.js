@@ -14,6 +14,7 @@ import {
   buildReviewWithArgs,
   createCosTaskSchema,
   featureProviderConfigSchema,
+  codeReviewSettingsSchema,
   locationSettingsSchema
 } from './validation.js';
 
@@ -40,6 +41,39 @@ describe('validation.js', () => {
       expect(featureProviderConfigSchema.safeParse({ providerId: 42 }).success).toBe(false);
     });
   });
+
+  describe('codeReviewSettingsSchema', () => {
+    it('accepts a valid full payload', () => {
+      const r = codeReviewSettingsSchema.safeParse({
+        reviewers: ['copilot', 'lmstudio'],
+        stopMode: 'on-clean',
+        reviewerApplies: true,
+        lmstudioModel: 'qwen2.5-coder:7b',
+        ollamaModel: 'codellama',
+      })
+      expect(r.success).toBe(true)
+    })
+
+    it('accepts an empty object (all fields optional)', () => {
+      expect(codeReviewSettingsSchema.safeParse({}).success).toBe(true)
+    })
+
+    it('rejects unknown keys (strict mode)', () => {
+      const r = codeReviewSettingsSchema.safeParse({
+        reviewers: ['copilot'],
+        unknownField: 'oops',
+      })
+      expect(r.success).toBe(false)
+    })
+
+    it('rejects an unknown reviewer enum value', () => {
+      expect(codeReviewSettingsSchema.safeParse({ reviewers: ['bogus'] }).success).toBe(false)
+    })
+
+    it('rejects an unknown stopMode', () => {
+      expect(codeReviewSettingsSchema.safeParse({ stopMode: 'nope' }).success).toBe(false)
+    })
+  })
 
   describe('processSchema', () => {
     it('should validate a complete process object', () => {

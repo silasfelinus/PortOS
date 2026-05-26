@@ -30,7 +30,7 @@ import {
   VARIATIONS_PER_CATEGORY_MAX, COMPOSITE_SHEETS_MAX, INFLUENCES_PER_LIST_MAX, IMAGE_REFS_PER_ENTRY_MAX,
 } from './universeBuilder.js';
 import { mergeExtractedBible, BIBLE_KIND } from '../lib/storyBible.js';
-import { canonicalStringify } from '../lib/objects.js';
+import { canonicalStringify, isEmptyScalar } from '../lib/objects.js';
 import { getSeries, updateSeries, deleteSeries, listSeries } from './pipeline/series.js';
 import { reassignIssuesToSeries, listIssues } from './pipeline/issues.js';
 import {
@@ -176,9 +176,6 @@ const unionSeasons = (survivor = [], loser = []) => {
   }
   return out;
 };
-
-const isEmptyScalar = (v) => v === null || v === undefined || (typeof v === 'string' && v.trim() === '')
-  || (Array.isArray(v) && v.length === 0);
 
 /**
  * Resolve a set of scalar fields between survivor + loser.
