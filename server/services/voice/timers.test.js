@@ -135,4 +135,23 @@ describe('initVoiceTimers', () => {
     const second = await initVoiceTimers();
     expect(second).toEqual({ skipped: true });
   });
+
+  it('re-arming a timer already in memory does not double-fire (boot race)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-26T12:00:00Z'));
+    // Simulate the race: a timer_set is scheduled (and persisted) while boot
+    // init is still reading the store, so init reads the same record back and
+    // re-arms its id. Idempotent arm() must keep it to a single fire.
+    const scheduled = scheduleTimer({ totalMs: 300000, label: 'overlap' });
+    await tick(); await tick(); // let scheduleTimer's persist write the store
+    const res = await initVoiceTimers();          // reads the just-persisted record
+    expect(res).toEqual({ armed: 1, fired: 0 });  // re-armed the same id
+    addNotificationMock.mockClear();
+    await vi.advanceTimersByTimeAsync(300000);
+    expect(addNotificationMock).toHaveBeenCalledTimes(1); // not 2
+    expect(addNotificationMock).toHaveBeenCalledWith(
+      expect.objectContaining({ title: '⏰ overlap', metadata: expect.objectContaining({ timerId: scheduled.id }) })
+    );
+    vi.useRealTimers();
+  });
 });

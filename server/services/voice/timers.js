@@ -75,6 +75,14 @@ async function fire(timer) {
 // triggers. `unref` so a lone pending timer never keeps the process (or a test
 // runner) alive on its own.
 function arm(timer) {
+  // Idempotent per id: clear any handle already armed for this id before
+  // replacing the map entry, so re-arming the same id never leaves a second
+  // live setTimeout behind. This closes a boot race — `initVoiceTimers` runs
+  // fire-and-forget while routes are already up, so a `timer_set` that persists
+  // a record before init's read resolves would otherwise be armed twice (once
+  // by scheduleTimer, once by init re-reading the same id) and double-fire.
+  const existing = active.get(timer.id);
+  if (existing) clearTimeout(existing.handle);
   const delay = Math.max(0, timer.fireAt - Date.now());
   timer.handle = setTimeout(() => {
     fire(timer).catch((err) => console.error(`❌ voice-timer fire failed: ${err.message}`));
