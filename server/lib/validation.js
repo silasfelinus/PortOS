@@ -1315,6 +1315,20 @@ export const sharingSettingsPatchSchema = z.object({
   sharingBio: z.string().trim().max(2000).optional(),
 }).strict();
 
+// Geographic home location for location-aware features — the `weather_now`
+// voice tool today, any future location-dependent surface tomorrow. Stored on
+// `settings.location`. lat/lon are nullable so the user can clear a saved
+// location and fall the consuming tool back to its default. The refine enforces
+// both-or-neither so a half-set pair can't pin a nonsensical coordinate
+// (e.g. a custom latitude with a default longitude).
+export const locationSettingsSchema = z.object({
+  lat: z.number().min(-90).max(90).nullable().optional(),
+  lon: z.number().min(-180).max(180).nullable().optional(),
+}).strict().refine(
+  (d) => (d.lat == null) === (d.lon == null),
+  { message: 'Provide both lat and lon, or neither.' },
+);
+
 // Subscription creation: persistent (bucket, record) tuple. Series + universe
 // are the subscribable kinds (records that change over time and benefit from
 // auto-re-export). Media is one-shot via /buckets/:id/export.

@@ -70,6 +70,8 @@ vi.mock('../feeds.js', () => ({
 // 'completed' event the real providers emit on imageGenEvents — without
 // that, the tool's await would hang for 5 minutes.
 const codexEnabledRef = { value: false };
+// Drives settings.location for the weather_now configured-location tests.
+const settingsLocationRef = { value: null };
 
 // Hoisting note: vi.mock factories run before the module under test loads,
 // so we can't import imageGenEvents up here. Instead, do the import lazily
@@ -100,7 +102,10 @@ vi.mock('../imageGen/index.js', () => ({
   IMAGE_GEN_MODES: ['external', 'local', 'codex'],
 }));
 vi.mock('../settings.js', () => ({
-  getSettings: vi.fn(async () => ({ imageGen: { codex: { enabled: codexEnabledRef.value } } })),
+  getSettings: vi.fn(async () => ({
+    imageGen: { codex: { enabled: codexEnabledRef.value } },
+    location: settingsLocationRef.value,
+  })),
 }));
 
 // askService.runAsk is an async generator. Default mock yields a small
@@ -1049,6 +1054,35 @@ describe('weather_now', () => {
     const r = await dispatchTool('weather_now', { lat: 1, lon: 1 });
     expect(r.ok).toBe(false);
     expect(r.summary).toMatch(/Couldn't reach the weather service/);
+  });
+  it('uses the configured settings.location when no coordinates are passed', async () => {
+    weatherFetchRef.value = { ok: true, json: async () => ({ current: { temperature_2m: 55, weather_code: 0 } }) };
+    settingsLocationRef.value = { lat: 51.5074, lon: -0.1278 };
+    const r = await dispatchTool('weather_now', {});
+    expect(r.ok).toBe(true);
+    expect(r.lat).toBe(51.5074);
+    expect(r.lon).toBe(-0.1278);
+    settingsLocationRef.value = null;
+  });
+  it('lets explicit coordinates override the configured location', async () => {
+    weatherFetchRef.value = { ok: true, json: async () => ({ current: { temperature_2m: 55, weather_code: 0 } }) };
+    settingsLocationRef.value = { lat: 51.5074, lon: -0.1278 };
+    const r = await dispatchTool('weather_now', { lat: 40, lon: -74 });
+    expect(r.ok).toBe(true);
+    expect(r.lat).toBe(40);
+    expect(r.lon).toBe(-74);
+    settingsLocationRef.value = null;
+  });
+  it('falls back to the default location when settings.location is null-cleared', async () => {
+    weatherFetchRef.value = { ok: true, json: async () => ({ current: { temperature_2m: 55, weather_code: 0 } }) };
+    // Number(null) is 0, so a naive resolver would pin 0,0 — assert the helper
+    // treats a null coordinate as absent and falls through to the default.
+    settingsLocationRef.value = { lat: null, lon: null };
+    const r = await dispatchTool('weather_now', {});
+    expect(r.ok).toBe(true);
+    expect(r.lat).toBe(37.7749);
+    expect(r.lon).toBe(-122.4194);
+    settingsLocationRef.value = null;
   });
 });
 
