@@ -53,8 +53,10 @@ import { pullSidecarForImage } from './sidecarSync.js';
 import { recordEvents } from './recordEvents.js';
 import {
   PORTOS_SCHEMA_VERSIONS,
+  RECORD_KIND_SCHEMA_CATEGORIES,
   buildPortosMeta,
   compareSchemaVersions,
+  scopeVersionDiff,
   formatVersionGap,
   getPortosVersion,
 } from '../../lib/schemaVersions.js';
@@ -1274,15 +1276,39 @@ export async function applyIncomingPush(payload) {
   // directions for that purpose.
   const senderSchemaVersions = isPlainObject(portosMeta?.schemaVersions) ? portosMeta.schemaVersions : {};
   const senderPortosVersion = typeof portosMeta?.portosVersion === 'string' ? portosMeta.portosVersion : null;
-  const versionDiff = compareSchemaVersions(senderSchemaVersions, PORTOS_SCHEMA_VERSIONS);
-  // Tombstone payloads carry only id+deleted+deletedAt+updatedAt — fields
-  // that exist at EVERY schema version and cannot corrupt local state. Gating
-  // them on the schema-version comparator would strand federated deletes
-  // whenever any peer upgrades faster than another (sender writes
-  // blockedBySchema → edit-triggered pushes go into cooldown → delete never
-  // reaches receivers until both peers reconnect AND the receiver upgrades).
-  // Exempt tombstones from the gate so soft-deletes always converge.
-  if (versionDiff.ahead.length > 0 && record.deleted !== true) {
+  // Per-category gate, scoped to the categories THIS push actually writes a
+  // LIVE (non-tombstone) record into. A sender ahead on an unrelated category
+  // no longer rejects this push; the full union diff stays for diagnostics.
+  //
+  // Tombstones are folded INTO the per-category scoping rather than exempted
+  // wholesale. A tombstone payload carries only id+deleted+deletedAt+updatedAt
+  // — fields that exist at EVERY schema version and can't corrupt local state
+  // — so its category needn't gate, and exempting it keeps federated deletes
+  // converging even when one peer upgrades ahead (otherwise blockedBySchema →
+  // edit-push cooldown → the delete never lands). BUT a deleted `series` push
+  // still bundles its LIVE child issues (deleteSeries does not cascade-
+  // tombstone them; buildPushPayload ships every child so the receiver can
+  // finish its cascade), and those live, full-shape issue records WOULD
+  // corrupt an older receiver. So gate a category only when it carries at
+  // least one live record:
+  const relevantCategories = new Set();
+  if (record.deleted !== true) {
+    for (const c of (RECORD_KIND_SCHEMA_CATEGORIES[kind] || [])) relevantCategories.add(c);
+  }
+  if (kind === 'series' && Array.isArray(issues) && issues.some((i) => i?.deleted !== true)) {
+    for (const c of RECORD_KIND_SCHEMA_CATEGORIES.issue) relevantCategories.add(c);
+  }
+  // A linked collection only rides a non-deleted push (buildPushPayload drops
+  // it for tombstones) and is itself a live record when present. Mirror the
+  // merge predicate at the linkedCollection apply below exactly — it refuses
+  // the collection when the OWNER record is a tombstone — so the gate never
+  // blocks `mediaCollections` over a collection the merge would ignore.
+  if (record.deleted !== true && isPlainObject(linkedCollection) && linkedCollection.deleted !== true) {
+    for (const c of RECORD_KIND_SCHEMA_CATEGORIES.mediaCollection) relevantCategories.add(c);
+  }
+  const fullDiff = compareSchemaVersions(senderSchemaVersions, PORTOS_SCHEMA_VERSIONS);
+  const versionDiff = scopeVersionDiff(fullDiff, [...relevantCategories]);
+  if (versionDiff.ahead.length > 0) {
     console.warn(
       `⚠️ peerSync: rejecting push from ${sourceInstanceId} — ${formatVersionGap(versionDiff)} (sender PortOS ${senderPortosVersion || 'unknown'})`,
     );
