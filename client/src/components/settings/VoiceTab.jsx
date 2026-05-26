@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useId, Children, cloneElement, isValidElement } from 'react';
-import { Save, Mic, Play, Zap } from 'lucide-react';
+import { Save, Mic, Play, Zap, RefreshCw } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
 import {
   getVoiceStatus, getVoiceConfig, updateVoiceConfig, listVoices, testTts, fetchPiperVoice,
 } from '../../services/apiVoice';
+import { getProviders, refreshProviderModels } from '../../services/apiProviders';
 import { playWav, webSpeechSupported } from '../../services/voiceClient';
 import { readVoiceHidden, writeVoiceHidden } from '../../services/voiceVisibility';
 import { formatVoiceLabel } from '../../lib/voiceLabel';
@@ -14,7 +15,7 @@ const SERVICE_LABELS = {
   'web-speech': 'Web Speech API (STT)',
   piper: 'Piper (TTS)',
   kokoro: 'Kokoro (TTS)',
-  lmstudio: 'LM Studio (LLM)',
+  llm: 'LLM provider',
 };
 
 const STT_ENGINES = [
@@ -87,6 +88,10 @@ export function VoiceTab() {
   const [previewingVoice, setPreviewingVoice] = useState(null);
   const [downloadingVoice, setDownloadingVoice] = useState(null);
   const [widgetHidden, setWidgetHidden] = useState(readVoiceHidden);
+  // API-type providers only — voice needs low-latency streaming chat, which
+  // CLI/TUI providers can't deliver.
+  const [apiProviders, setApiProviders] = useState([]);
+  const [refreshingModels, setRefreshingModels] = useState(false);
 
   const toggleWidgetHidden = (next) => {
     writeVoiceHidden(next);
@@ -109,6 +114,11 @@ export function VoiceTab() {
       .then(([config, s]) => { setCfg(config); setStatus(s); })
       .catch(() => toast.error('Failed to load voice settings'))
       .finally(() => setLoading(false));
+    // Load the provider registry for the LLM provider picker. Voice can only
+    // stream through `api`-type providers — filter the rest out here.
+    getProviders()
+      .then((data) => setApiProviders((data?.providers || []).filter((p) => p.type === 'api')))
+      .catch(() => setApiProviders([]));
   }, []);
 
   // Refetch the voice catalog whenever the user flips TTS engine so the picker
@@ -194,12 +204,42 @@ export function VoiceTab() {
     patch('stt.modelPath', `~/.portos/voice/models/${m.file}`);
   };
 
+  // Re-query the selected provider's /models endpoint and refresh the dropdown
+  // (LM Studio / Ollama load models on demand, so the list goes stale).
+  const handleRefreshModels = async (providerId) => {
+    if (!providerId || refreshingModels) return;
+    setRefreshingModels(true);
+    try {
+      const updated = await refreshProviderModels(providerId);
+      if (updated) {
+        setApiProviders((prev) => prev.map((p) => (p.id === providerId ? { ...p, models: updated.models || [] } : p)));
+        toast.success(`Refreshed models for ${updated.name || providerId} (${updated.models?.length || 0})`);
+      } else {
+        toast.error('No models returned — is the provider running and reachable?');
+      }
+    } catch (err) {
+      toast.error(`Failed to refresh models: ${err.message}`);
+    } finally {
+      setRefreshingModels(false);
+    }
+  };
+
   if (loading || !cfg) return <BrailleSpinner text="Loading voice settings" />;
 
   const engine = cfg.tts.engine || 'kokoro';
   const sttEngine = cfg.stt.engine || 'whisper';
   const activeVoice = engine === 'kokoro' ? cfg.tts.kokoro?.voice : cfg.tts.piper?.voice;
   const voices = voiceList.voices || [];
+
+  // LLM provider/model pickers. The saved provider/model are always shown even
+  // when missing from the registry (e.g. provider deleted, or a model not in
+  // the cached list) so the select never silently drops the user's choice.
+  const llmProvider = cfg.llm.provider || 'lmstudio';
+  const llmModel = cfg.llm.model || 'auto';
+  const selectedProvider = apiProviders.find((p) => p.id === llmProvider);
+  const providerMissing = apiProviders.length > 0 && !selectedProvider;
+  const providerModels = selectedProvider?.models || [];
+  const modelMissing = llmModel !== 'auto' && !providerModels.includes(llmModel);
 
   return (
     <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-6">
@@ -208,9 +248,10 @@ export function VoiceTab() {
         <h2 className="text-lg font-semibold">Local Voice Chief-of-Staff</h2>
       </div>
       <p className="text-xs text-gray-500 -mt-4">
-        Hands-free or push-to-talk voice. Whisper (STT) + Kokoro/Piper (TTS) + LM Studio (LLM)
-        with tool calling for real actions (brain capture, goal updates, PM2 control, feed
-        digests, time, and more). Everything runs on this machine — no external API calls.
+        Hands-free or push-to-talk voice. Whisper (STT) + Kokoro/Piper (TTS) + your chosen LLM
+        provider with tool calling for real actions (brain capture, goal updates, PM2 control, feed
+        digests, time, and more). Pick a local provider (LM Studio, Ollama) to keep everything on
+        this machine, or any OpenAI-compatible API.
       </p>
 
       <label className="flex items-start gap-3 cursor-pointer">
@@ -385,13 +426,52 @@ export function VoiceTab() {
           </>
         )}
 
-        <Field label="LLM model" hint="'auto' picks the first loaded LM Studio model">
-          <input
-            type="text"
-            value={cfg.llm.model}
-            onChange={(e) => patch('llm.model', e.target.value)}
+        <Field label="LLM provider" hint="Voice streams tokens, so only API providers (LM Studio, Ollama, OpenAI-compatible) are listed. Configure providers under Settings → Providers.">
+          <select
+            value={llmProvider}
+            onChange={(e) => {
+              // Switching provider invalidates the old model — reset to 'auto'
+              // so we don't send a model the new provider doesn't have.
+              patch('llm.provider', e.target.value);
+              patch('llm.model', 'auto');
+            }}
             className={inputCls}
-          />
+          >
+            {providerMissing && (
+              <option value={llmProvider}>{llmProvider} (not an API provider)</option>
+            )}
+            {apiProviders.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}{p.enabled === false ? ' (disabled)' : ''}
+              </option>
+            ))}
+            {apiProviders.length === 0 && <option value={llmProvider}>{llmProvider}</option>}
+          </select>
+        </Field>
+
+        <Field label="LLM model" hint="'auto' uses the provider's default model, or the fastest loaded model for LM Studio / Ollama.">
+          <div className="flex items-center gap-2">
+            <select
+              value={llmModel}
+              onChange={(e) => patch('llm.model', e.target.value)}
+              className={`${inputCls} flex-1`}
+            >
+              <option value="auto">auto</option>
+              {modelMissing && <option value={llmModel}>{llmModel} (current)</option>}
+              {providerModels.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => handleRefreshModels(llmProvider)}
+              disabled={refreshingModels || providerMissing || apiProviders.length === 0}
+              title="Refresh model list from the provider"
+              className="shrink-0 p-2 rounded-lg bg-port-border hover:bg-port-border/70 text-white disabled:opacity-50"
+            >
+              {refreshingModels ? <BrailleSpinner /> : <RefreshCw size={14} />}
+            </button>
+          </div>
         </Field>
 
         <label className="flex items-start gap-3 cursor-pointer md:col-span-2">
