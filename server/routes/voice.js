@@ -59,7 +59,10 @@ const voiceConfigPatchSchema = z.object({
     }).partial().optional(),
   }).partial().optional(),
   llm: z.object({
-    provider: z.string().max(32).optional(),
+    // 80 matches the provider-registry id cap (providerSchema.id in
+    // aiToolkit/validation.js) — a shorter cap here would reject a valid
+    // custom provider the voice picker happily lets the user select.
+    provider: z.string().max(80).optional(),
     model: z.string().max(128).optional(),
     systemPrompt: z.string().max(4000).optional(),
     usePersonality: z.boolean().optional(),
