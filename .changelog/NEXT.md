@@ -12,6 +12,7 @@ TBD
 
 ## Changed
 
+- **Pick any AI provider for the voice assistant.** The voice Chief-of-Staff's language model was hard-wired to LM Studio. Settings → Voice now has an "LLM provider" picker listing every API provider you've configured (LM Studio, Ollama, NVIDIA, or any OpenAI-compatible endpoint) plus a model dropdown with a refresh button that re-queries the provider's available models. Local-only setups are unchanged out of the box — LM Studio stays the default and the `LM_STUDIO_URL` override still applies — but you can now point voice at a hosted model. The voice service-health badge probes whichever provider you select.
 - **Consistent inline badge styling.** The peer relationship and connection-scheme labels on the Instances page and the length-target cards in the Writers Room Guide now render through one shared badge component, so their look stays consistent as more badges are added.
 
 ## Fixed

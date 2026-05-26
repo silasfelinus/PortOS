@@ -642,8 +642,9 @@ export const runTurn = async ({ audio, text, mimeType, source, history = [], emi
     const iterStart = Date.now();
     let firstDeltaAt = null;
     let deltaChars = 0;
-    tlog(`llm.start iter=${iter + 1}/${maxIterations} model=${cfg.llm.model} tools=${toolSpecs?.length || 0} msgs=${messages.length}`);
+    tlog(`llm.start iter=${iter + 1}/${maxIterations} provider=${cfg.llm.provider || 'lmstudio'} model=${cfg.llm.model} tools=${toolSpecs?.length || 0} msgs=${messages.length}`);
     const llm = await streamChat(messages, {
+      provider: cfg.llm.provider,
       model: cfg.llm.model,
       signal,
       tools: toolSpecs,
