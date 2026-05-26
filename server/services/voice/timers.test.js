@@ -136,19 +136,26 @@ describe('initVoiceTimers', () => {
     expect(second).toEqual({ skipped: true });
   });
 
-  it('re-arming a timer already in memory does not double-fire (boot race)', async () => {
+  it('skips a persisted record whose id is already live in memory (boot race, both branches)', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-05-26T12:00:00Z'));
+    const now = Date.now();
     // Simulate the race: a timer_set is scheduled (and persisted) while boot
-    // init is still reading the store, so init reads the same record back and
-    // re-arms its id. Idempotent arm() must keep it to a single fire.
+    // init is still mid-read, so init reads the same id back. Mark the persisted
+    // copy OVERDUE to exercise the overdue branch — the in-memory timer is
+    // authoritative, so init must skip the record entirely (neither fire it as
+    // overdue nor re-arm a second handle), leaving exactly one live timer.
     const scheduled = scheduleTimer({ totalMs: 300000, label: 'overlap' });
-    await tick(); await tick(); // let scheduleTimer's persist write the store
-    const res = await initVoiceTimers();          // reads the just-persisted record
-    expect(res).toEqual({ armed: 1, fired: 0 });  // re-armed the same id
+    await tick(); await tick(); // let scheduleTimer's persist settle first
+    storeRef.value = {
+      version: 1,
+      timers: [{ id: scheduled.id, label: 'overlap', fireAt: now - 1000, createdAt: now }],
+    };
+    const res = await initVoiceTimers();
+    expect(res).toEqual({ armed: 0, fired: 0 }); // skipped — not fired-as-overdue, not re-armed
     addNotificationMock.mockClear();
     await vi.advanceTimersByTimeAsync(300000);
-    expect(addNotificationMock).toHaveBeenCalledTimes(1); // not 2
+    expect(addNotificationMock).toHaveBeenCalledTimes(1); // the one live timer fires once
     expect(addNotificationMock).toHaveBeenCalledWith(
       expect.objectContaining({ title: '⏰ overlap', metadata: expect.objectContaining({ timerId: scheduled.id }) })
     );
