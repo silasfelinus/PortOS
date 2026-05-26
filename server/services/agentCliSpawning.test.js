@@ -45,6 +45,10 @@ vi.mock('fs', () => ({ existsSync: vi.fn().mockReturnValue(false) }));
 let fakeProcess;
 vi.mock('child_process', () => ({
   spawn: vi.fn(() => fakeProcess),
+  // `execFile` is pulled in transitively by codeReview.js → lmStudioManager
+  // (via `resolveReviewLoopOptions`'s dependency graph), even though this
+  // test never spawns one directly.
+  execFile: vi.fn(),
 }));
 
 import { buildCliSpawnConfig, createStreamJsonParser, spawnDirectly } from './agentCliSpawning.js';

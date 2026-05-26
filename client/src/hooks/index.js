@@ -51,6 +51,9 @@ export * from './useMediaAnnotations.js';
 export * from './useMediaCompletionRefresh.js';
 export * from './useOpenClawAttachments.js';
 
+// === Settings-derived shared state ===
+export * from './useCodeReviewDefaults.jsx';
+
 // === Sockets & lifecycle ===
 export * from './useSocket.js';
 export * from './useTimeTick.js';

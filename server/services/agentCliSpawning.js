@@ -19,7 +19,8 @@ import { analyzeAgentFailure } from './agentErrorAnalysis.js';
 import { completeAgentRun } from './agentRunTracking.js';
 import { finalizeAgent, releaseAgentLane } from './agentLifecycle.js';
 import { activeAgents, userTerminatedAgents } from './agentState.js';
-import { normalizeReviewers, DEFAULT_REVIEW_STOP_MODE } from '../lib/validation.js';
+import { normalizeReviewers } from '../lib/validation.js';
+import { resolveReviewLoopOptions } from './codeReview.js';
 import { safeJSONParse, PATHS } from '../lib/fileUtils.js';
 import { createCodexStderrFormatter } from '../lib/codexCliOutput.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
@@ -608,12 +609,11 @@ export async function spawnDirectly({
       const directOpenPR = isTruthyMetaFn(task.metadata?.openPR);
       const directReviewLoopFollowUp = isTruthyMetaFn(task.metadata?.reviewLoopFollowUp);
       const directAgentOwnsPR = directOpenPR && (provider?.id === 'claude-code' || provider?.id === 'claude-code-bedrock');
+      const reviewOptions = await resolveReviewLoopOptions(task.metadata, { normalize: normalizeReviewers, isTruthyMeta: isTruthyMetaFn });
       await cleanupWorktreeFn(agentId, finalSuccess, {
         openPR: directAgentOwnsPR ? false : directOpenPR,
         requestCopilotReview: !directAgentOwnsPR && directOpenPR && isTruthyMetaFn(task.metadata?.reviewLoop),
-        reviewers: normalizeReviewers(task.metadata),
-        reviewStopMode: task.metadata?.reviewStopMode || DEFAULT_REVIEW_STOP_MODE,
-        reviewerApplies: isTruthyMetaFn(task.metadata?.reviewerApplies),
+        ...reviewOptions,
         skipMerge: directReviewLoopFollowUp || directAgentOwnsPR,
         description: task.description,
         agentOutput: outputBuffer,

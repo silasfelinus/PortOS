@@ -339,8 +339,9 @@ describe('buildLightContextPrompt', () => {
         { branchName: 'b', worktreePath: '/tmp/wt' },
         isTruthyMeta);
       expect(prompt).toMatch(/--review-with claude/);
-      // The Copilot-specific pre-request wording must be replaced for CLI reviewers.
-      expect(prompt).toMatch(/CLI-based/);
+      // The Copilot-specific pre-request wording must be replaced when no
+      // Copilot reviewer leads the order (the agent invokes the reviewers itself).
+      expect(prompt).toMatch(/invoke each configured reviewer yourself/);
     });
 
     it('threads an ordered multi-reviewer list + flags into the follow-up block', () => {
@@ -363,6 +364,27 @@ describe('buildLightContextPrompt', () => {
       expect(prompt).toMatch(/--reviewer-applies/);
       // Ordered run instruction.
       expect(prompt).toMatch(/For EACH reviewer in order/);
+    });
+
+    it('emits the local-LLM POST instruction when a local-LLM reviewer is configured', () => {
+      const prompt = buildLightContextPrompt(
+        makeTask({ metadata: {
+          reviewLoopFollowUp: true,
+          reviewLoopPRUrl: 'https://github.com/o/r/pull/9',
+          reviewLoopPRBranch: 'b',
+          reviewLoopPRNumber: 9,
+          reviewLoopReviewers: ['lmstudio'],
+          sourceTaskId: 'task-src-llm',
+        }}),
+        '/r',
+        { branchName: 'b', worktreePath: '/tmp/wt' },
+        isTruthyMeta);
+      // The agent gets a copy-pasteable curl pipeline pointing at PortOS's
+      // loopback API — without it the lmstudio/ollama reviewer kinds have no
+      // way to actually run a review.
+      expect(prompt).toMatch(/POST the diff to PortOS's local reviewer endpoint/);
+      expect(prompt).toMatch(/http:\/\/localhost:5555\/api\/code-review\/local/);
+      expect(prompt).toMatch(/gh pr diff 9 \| jq/);
     });
 
     it('threads reviewer into the TUI Completion Workflow as `/do:pr --review-with <reviewer>`', () => {

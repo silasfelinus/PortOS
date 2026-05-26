@@ -11,6 +11,7 @@ import {
   TIMEOUT_INPUT_STEP_MS,
 } from '../utils/formatters';
 import SettingsTabsHeader from '../components/settings/SettingsTabsHeader';
+import CodeReviewDefaultsPanel from '../components/providers/CodeReviewDefaultsPanel';
 
 export default function AIProviders() {
   const [providers, setProviders] = useState([]);
@@ -207,6 +208,7 @@ export default function AIProviders() {
       <SettingsTabsHeader activeTab="providers" />
 
       <div className="flex-1 overflow-auto p-4 space-y-6">
+      <CodeReviewDefaultsPanel />
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <h1 className="text-2xl font-bold text-white">AI Providers</h1>
         <div className="flex flex-wrap gap-2">

@@ -16,7 +16,7 @@ import { getToolsSummaryForPrompt } from './tools.js';
 import { getActiveProvider } from './providers.js';
 import { runPromptThroughProvider } from '../lib/promptRunner.js';
 import { readJSONFile, loadSlashdoFile, PATHS, tryReadFile } from '../lib/fileUtils.js';
-import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, normalizeReviewers, buildReviewWithArgs } from '../lib/validation.js';
+import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, LOCAL_LLM_REVIEWERS, normalizeReviewers, buildReviewWithArgs } from '../lib/validation.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import * as jiraService from './jira.js';
 import { emitLog } from './cosEvents.js';
@@ -227,7 +227,8 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   const stopMode = metadata.reviewLoopStopMode || DEFAULT_REVIEW_STOP_MODE;
   const reviewerApplies = metadata.reviewLoopReviewerApplies === true;
   const hasCopilot = reviewers.includes(DEFAULT_REVIEWER);
-  const hasCli = reviewers.some(r => r !== DEFAULT_REVIEWER);
+  const hasLocalLlm = reviewers.some(r => LOCAL_LLM_REVIEWERS.includes(r));
+  const hasCli = reviewers.some(r => r !== DEFAULT_REVIEWER && !LOCAL_LLM_REVIEWERS.includes(r));
   const multi = reviewers.length > 1;
   // The system pre-requests the initial Copilot review only when copilot LEADS the
   // order; otherwise the agent must request it at copilot's turn (so Copilot reviews
@@ -240,17 +241,26 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   // First step: how to obtain a review. For a single copilot/CLI reviewer keep the
   // focused wording; for a list, dispatch each reviewer in order. Only emit the
   // per-reviewer-kind bullet that actually applies to the configured list.
+  // `lmstudio`/`ollama` don't have CLIs the agent can spawn — PortOS exposes
+  // `POST /api/code-review/local` which runs the configured local model against
+  // the diff and returns findings text. The agent always reaches it via
+  // `http://localhost:5555` (the canonical loopback API port).
+  const localLlmInvocation = `POST the diff to PortOS's local reviewer endpoint: \`gh pr diff ${prNumber || '<PR_NUMBER>'} | jq -Rs '{ backend: "<lmstudio|ollama>", diff: . }' | curl -sS -X POST http://localhost:5555/api/code-review/local -H 'Content-Type: application/json' -d @-\`. Substitute the active reviewer name for \`<lmstudio|ollama>\`. The response \`.findings\` field is the review text — treat it like any other reviewer's findings.`;
   const multiBullets = [
     hasCopilot ? `**copilot**: ${copilotIsFirst
       ? 'wait for the initial Copilot review the system already pre-requested (Copilot leads the list)'
       : 'request a Copilot review when you reach its turn'} (poll every 5–15s, max 5 min/round), then re-request on later rounds.` : null,
     hasCli ? `**codex / gemini / claude**: invoke that CLI to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff <base-branch>...HEAD\`; on GitHub \`gh pr diff ${prNumber || ''}\` also works).` : null,
+    hasLocalLlm ? `**lmstudio / ollama**: ${localLlmInvocation}` : null,
   ].filter(Boolean).join(' ');
-  const waitOrInvokeStep = multi
-    ? `For EACH reviewer in order — ${reviewerLabel} — run a full review-and-fix sub-loop before advancing to the next. ${multiBullets}`
-    : (hasCopilot
-        ? 'Wait for the latest Copilot review to complete (poll every 5–15s, max 5 minutes per round); the system already requested the initial review.'
-        : `Invoke the ${reviewerLabel} CLI to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff <base-branch>...HEAD\`; on GitHub \`gh pr diff ${prNumber || ''}\` also works). Capture its findings as concrete issues to address.`);
+  const singleCliInvocation = `Invoke the ${reviewerLabel} CLI to review this branch's diff against its base (use the CLI's own base-diff mode or \`git diff <base-branch>...HEAD\`; on GitHub \`gh pr diff ${prNumber || ''}\` also works). Capture its findings as concrete issues to address.`;
+  // Resolved sequentially so a future reviewer kind only adds one branch
+  // instead of deepening the nested ternary.
+  let waitOrInvokeStep;
+  if (multi) waitOrInvokeStep = `For EACH reviewer in order — ${reviewerLabel} — run a full review-and-fix sub-loop before advancing to the next. ${multiBullets}`;
+  else if (hasCopilot) waitOrInvokeStep = 'Wait for the latest Copilot review to complete (poll every 5–15s, max 5 minutes per round); the system already requested the initial review.';
+  else if (hasLocalLlm) waitOrInvokeStep = localLlmInvocation;
+  else waitOrInvokeStep = singleCliInvocation;
 
   const stopModeNote = stopMode === 'on-findings'
     ? '**Stop mode (on-findings):** stop after the FIRST reviewer whose findings you actually fixed and committed; skip the remaining reviewers.'
@@ -267,8 +277,8 @@ export function buildReviewLoopFollowUpSection(metadata = {}, { verbose = false,
   const initialReviewState = (hasCopilot && copilotIsFirst)
     ? 'The system has already requested the initial Copilot code review (Copilot leads the order).'
     : hasCopilot
-      ? 'Copilot is configured after a CLI reviewer, so the system did NOT pre-request it — request the Copilot review yourself when you reach its turn (after the earlier reviewers’ fixes are pushed), and invoke the CLI reviewers yourself.'
-      : 'The system did NOT pre-request a reviewer because the configured reviewers are CLI-based — you must invoke them yourself against the PR diff.';
+      ? 'Copilot is configured after another reviewer, so the system did NOT pre-request it — request the Copilot review yourself when you reach its turn (after the earlier reviewers’ fixes are pushed), and invoke the other reviewers yourself.'
+      : 'The system did NOT pre-request a reviewer because no Copilot review leads the order — you must invoke each configured reviewer yourself against the PR diff.';
   const repeatedCommentsNote = '**Repeated comments:** If a fresh review round only re-raises feedback you intentionally rejected (with a reply explaining why), treat that round as clean and move on.';
   const extraNotes = [stopModeNote, applyNote].filter(Boolean);
 

@@ -7,7 +7,7 @@ import {
   CODEX_PARALLEL_DEFAULT,
 } from '../services/mediaJobQueue/index.js';
 import { asyncHandler } from '../lib/errorHandler.js';
-import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, validateRequest } from '../lib/validation.js';
+import { backupConfigSchema, sharingSettingsPatchSchema, featureProviderConfigSchema, codeReviewSettingsSchema, validateRequest } from '../lib/validation.js';
 
 const router = Router();
 
@@ -59,6 +59,9 @@ router.put('/', asyncHandler(async (req, res) => {
   }
   if (req.body?.calendarSync !== undefined) {
     validateRequest(featureProviderConfigSchema.partial(), req.body.calendarSync);
+  }
+  if (req.body?.codeReview !== undefined) {
+    validateRequest(codeReviewSettingsSchema.partial(), req.body.codeReview);
   }
   const merged = await updateSettings(req.body);
   // The queue caches codex.parallelLimit in-process; sync it from the
