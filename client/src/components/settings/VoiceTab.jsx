@@ -115,8 +115,9 @@ export function VoiceTab() {
       .catch(() => toast.error('Failed to load voice settings'))
       .finally(() => setLoading(false));
     // Load the provider registry for the LLM provider picker. Voice can only
-    // stream through `api`-type providers — filter the rest out here.
-    getProviders()
+    // stream through `api`-type providers — filter the rest out here. Silent:
+    // the empty-list fallback is the error UI, so don't also pop a toast.
+    getProviders({ silent: true })
       .then((data) => setApiProviders((data?.providers || []).filter((p) => p.type === 'api')))
       .catch(() => setApiProviders([]));
   }, []);
@@ -210,13 +211,11 @@ export function VoiceTab() {
     if (!providerId || refreshingModels) return;
     setRefreshingModels(true);
     try {
-      const updated = await refreshProviderModels(providerId);
-      if (updated) {
-        setApiProviders((prev) => prev.map((p) => (p.id === providerId ? { ...p, models: updated.models || [] } : p)));
-        toast.success(`Refreshed models for ${updated.name || providerId} (${updated.models?.length || 0})`);
-      } else {
-        toast.error('No models returned — is the provider running and reachable?');
-      }
+      // Silent: the route 404s when the provider returns no models, so the
+      // catch below owns the error toast (avoids a double toast).
+      const updated = await refreshProviderModels(providerId, { silent: true });
+      setApiProviders((prev) => prev.map((p) => (p.id === providerId ? { ...p, models: updated.models || [] } : p)));
+      toast.success(`Refreshed models for ${updated.name || providerId} (${updated.models?.length || 0})`);
     } catch (err) {
       toast.error(`Failed to refresh models: ${err.message}`);
     } finally {
@@ -449,9 +448,15 @@ export function VoiceTab() {
           </select>
         </Field>
 
-        <Field label="LLM model" hint="'auto' uses the provider's default model, or the fastest loaded model for LM Studio / Ollama.">
+        {/* Not wrapped in <Field>: the select sits beside a refresh button, so
+            the id must land on the <select> (Field injects it onto the first
+            child, which would be the flex wrapper — orphaning the label). */}
+        <div className="space-y-1">
+          <label htmlFor="voice-llm-model" className="block text-sm text-gray-400">LLM model</label>
+          <p className="text-xs text-gray-500">'auto' uses the provider's default model, or the fastest loaded model for LM Studio / Ollama.</p>
           <div className="flex items-center gap-2">
             <select
+              id="voice-llm-model"
               value={llmModel}
               onChange={(e) => patch('llm.model', e.target.value)}
               className={`${inputCls} flex-1`}
@@ -473,7 +478,7 @@ export function VoiceTab() {
               {refreshingModels ? <BrailleSpinner /> : <RefreshCw size={14} />}
             </button>
           </div>
-        </Field>
+        </div>
 
         <label className="flex items-start gap-3 cursor-pointer md:col-span-2">
           <input
