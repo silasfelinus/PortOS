@@ -40,6 +40,7 @@ import { getInstanceId, UNKNOWN_INSTANCE_ID } from '../instances.js';
 import { mergePeerAnnotations } from '../mediaAnnotations.js';
 import { isStr } from '../../lib/storyBible.js';
 import { isPlainObject } from '../../lib/objects.js';
+import { maybeJournalBeforeOverwrite, flushBaseHashes, setSyncBaseHash, contentHashForRecord } from '../../lib/conflictJournal.js';
 
 function isSelfAuthored(senderInstanceId, localInstanceId) {
   return !!localInstanceId
@@ -440,10 +441,41 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
           failedInserts.push(`${kind}:${record.id}`);
           return false;
         });
-      if (insertOk) applied++;
+      if (insertOk) {
+        applied++;
+        // Seed the conflict-journal base hash for a freshly-imported record so
+        // its FIRST cross-install divergence is journaled (the sync merge paths
+        // seed on their insert branch too; without this a bucket-imported
+        // record has base==null and the first conflict would be missed). Hash
+        // the STORED record so the base matches a future `local` hash exactly.
+        if (kind === 'universe' || kind === 'series') {
+          const stored = await getFn(record.id).catch(() => null);
+          if (stored) await setSyncBaseHash(kind, record.id, contentHashForRecord(kind, stored));
+        }
+      }
       return;
     }
     if (remoteWins(existing.updatedAt, record.updatedAt)) {
+      // A remote series that arrived without a universe link (an orphan on the
+      // sender — older peer, or a record whose link was cleared before the
+      // hierarchy rule shipped) must NOT clear the local link: updateSeries now
+      // refuses to unlink a linked series and would throw, aborting the whole
+      // manifest. Preserve the existing link (a *move* to a different non-empty
+      // universe still applies). Mirrors the legacy-canon re-stamp above, but
+      // for every series — not just ones carrying legacy canon arrays.
+      if (kind === 'series' && !record.universeId && existing.universeId) {
+        record = { ...record, universeId: existing.universeId };
+      }
+      // Non-blocking conflict journal for the two synced top-level kinds — a
+      // share-bucket import that LWW-overwrites a locally-diverged record
+      // archives the losing local version first. Issues ride LWW silently
+      // (child-issue conflict journaling is a v1 follow-up).
+      if (kind === 'universe' || kind === 'series') {
+        await maybeJournalBeforeOverwrite({
+          kind, id: record.id, local: existing, remote: record,
+          source: { via: 'share-bucket', bucketId: bucket.id, peerId: manifest.senderInstanceId ?? null },
+        });
+      }
       await withReexportSuppressed(suppressKind, suppressId, () => updateFn(existing.id, record));
       overridden.push({ kind, id: record.id, label });
       applied++;
@@ -585,6 +617,9 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
       return null;
     });
   }
+
+  // Persist the batched conflict-journal base-hash updates accumulated above.
+  await flushBaseHashes();
 
   return {
     applied,
