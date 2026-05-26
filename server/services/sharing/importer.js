@@ -422,7 +422,13 @@ function relevantSchemaCategoriesForManifest(manifest) {
     else if (id.startsWith('chr-') || id.startsWith('set-') || id.startsWith('obj-')) add(RECORD_KIND_SCHEMA_CATEGORIES.universe);
     else if (manifest?.kind !== 'media') add(RECORD_KIND_SCHEMA_CATEGORIES.universe);
   }
-  if (isPlainObject(manifest?.collection)) add(RECORD_KIND_SCHEMA_CATEGORIES.mediaCollection);
+  // Mirror peerSync's gate predicate: a bundled collection only counts as a
+  // mediaCollections transfer when it's a live record (a tombstone collection
+  // carries only delete fields, safe at any version). Today's exporter never
+  // bundles a deleted collection, so this is defensive consistency.
+  if (isPlainObject(manifest?.collection) && manifest.collection.deleted !== true) {
+    add(RECORD_KIND_SCHEMA_CATEGORIES.mediaCollection);
+  }
   return [...categories];
 }
 

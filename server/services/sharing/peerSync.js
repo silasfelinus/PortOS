@@ -1299,8 +1299,11 @@ export async function applyIncomingPush(payload) {
     for (const c of RECORD_KIND_SCHEMA_CATEGORIES.issue) relevantCategories.add(c);
   }
   // A linked collection only rides a non-deleted push (buildPushPayload drops
-  // it for tombstones) and is itself a live record when present.
-  if (isPlainObject(linkedCollection) && linkedCollection.deleted !== true) {
+  // it for tombstones) and is itself a live record when present. Mirror the
+  // merge predicate at the linkedCollection apply below exactly — it refuses
+  // the collection when the OWNER record is a tombstone — so the gate never
+  // blocks `mediaCollections` over a collection the merge would ignore.
+  if (record.deleted !== true && isPlainObject(linkedCollection) && linkedCollection.deleted !== true) {
     for (const c of RECORD_KIND_SCHEMA_CATEGORIES.mediaCollection) relevantCategories.add(c);
   }
   const fullDiff = compareSchemaVersions(senderSchemaVersions, PORTOS_SCHEMA_VERSIONS);
