@@ -13,7 +13,8 @@ import {
   normalizeReviewers,
   buildReviewWithArgs,
   createCosTaskSchema,
-  featureProviderConfigSchema
+  featureProviderConfigSchema,
+  locationSettingsSchema
 } from './validation.js';
 
 describe('validation.js', () => {
@@ -705,6 +706,42 @@ describe('validation.js', () => {
       // must be stripped so updateStageConfig's `{...existing, ...updated}`
       // spread can never see them.
       expect(out).toEqual({ name: 'x' });
+    });
+  });
+
+  describe('locationSettingsSchema', () => {
+    it('accepts a valid lat/lon pair', () => {
+      const r = locationSettingsSchema.safeParse({ lat: 37.7749, lon: -122.4194 });
+      expect(r.success).toBe(true);
+      expect(r.data).toEqual({ lat: 37.7749, lon: -122.4194 });
+    });
+
+    it('accepts an empty object (no location set)', () => {
+      expect(locationSettingsSchema.safeParse({}).success).toBe(true);
+    });
+
+    it('accepts both fields null (cleared location)', () => {
+      expect(locationSettingsSchema.safeParse({ lat: null, lon: null }).success).toBe(true);
+    });
+
+    it('rejects only one coordinate set (both-or-neither)', () => {
+      expect(locationSettingsSchema.safeParse({ lat: 37.7749 }).success).toBe(false);
+      expect(locationSettingsSchema.safeParse({ lat: 37.7749, lon: null }).success).toBe(false);
+      expect(locationSettingsSchema.safeParse({ lon: -122.4194 }).success).toBe(false);
+    });
+
+    it('rejects out-of-range coordinates', () => {
+      expect(locationSettingsSchema.safeParse({ lat: 91, lon: 0 }).success).toBe(false);
+      expect(locationSettingsSchema.safeParse({ lat: 0, lon: 181 }).success).toBe(false);
+      expect(locationSettingsSchema.safeParse({ lat: -91, lon: 0 }).success).toBe(false);
+    });
+
+    it('rejects non-number coordinates', () => {
+      expect(locationSettingsSchema.safeParse({ lat: '37.7', lon: '-122.4' }).success).toBe(false);
+    });
+
+    it('rejects unknown keys (strict)', () => {
+      expect(locationSettingsSchema.safeParse({ lat: 1, lon: 1, alt: 100 }).success).toBe(false);
     });
   });
 });

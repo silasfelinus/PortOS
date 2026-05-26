@@ -1654,16 +1654,20 @@ const TOOLS = [
     },
     execute: async ({ lat, lon } = {}) => {
       // Resolve location: explicit params > settings.location > default.
-      const settings = await getSettings().catch(() => ({}));
-      const cfgLat = Number(settings?.location?.lat);
-      const cfgLon = Number(settings?.location?.lon);
+      // numOrNull guards both paths so a null/empty/cleared coordinate falls
+      // through to the default — `Number(null)` is 0 (a valid-but-wrong 0,0
+      // coordinate), so reusing this helper for the config values is what keeps
+      // a cleared `settings.location` from pinning the Gulf of Guinea.
       const numOrNull = (v) => {
         if (v === undefined || v === null || v === '') return null;
         const n = Number(v);
         return Number.isFinite(n) ? n : null;
       };
-      const resolvedLat = numOrNull(lat) ?? (Number.isFinite(cfgLat) ? cfgLat : null) ?? DEFAULT_LAT;
-      const resolvedLon = numOrNull(lon) ?? (Number.isFinite(cfgLon) ? cfgLon : null) ?? DEFAULT_LON;
+      const settings = await getSettings().catch(() => ({}));
+      const cfgLat = numOrNull(settings?.location?.lat);
+      const cfgLon = numOrNull(settings?.location?.lon);
+      const resolvedLat = numOrNull(lat) ?? cfgLat ?? DEFAULT_LAT;
+      const resolvedLon = numOrNull(lon) ?? cfgLon ?? DEFAULT_LON;
       if (resolvedLat < -90 || resolvedLat > 90 || resolvedLon < -180 || resolvedLon > 180) {
         return { ok: false, summary: 'Latitude must be -90..90 and longitude -180..180.' };
       }
