@@ -36,6 +36,7 @@ import { selectModelForTask } from './agentModelSelection.js';
 import { processAgentCompletion } from './agentCompletion.js';
 import { activeAgents, runnerAgents, spawningTasks, useRunner, isTruthyMeta, isFalsyMeta } from './agentState.js';
 import { DEFAULT_REVIEWER, DEFAULT_REVIEWERS, DEFAULT_REVIEW_STOP_MODE, normalizeReviewers } from '../lib/validation.js';
+import { resolveReviewLoopOptions } from './codeReview.js';
 import { v4 as uuidv4 } from '../lib/uuid.js';
 import { writeFile } from 'fs/promises';
 
@@ -1308,12 +1309,15 @@ export async function handleAgentCompletion(agentId, exitCode, success, duration
       // so PortOS doesn't double-fire `gh pr create` ("a pull request already
       // exists" would preserve the worktree as a false-positive failure).
       const agentOwnsPR = taskOpenPR && (agent.providerId === 'claude-code' || agent.providerId === 'claude-code-bedrock');
+      // Merge per-task reviewer metadata with the user's Code Review Defaults
+      // (AI Providers → Code Review Defaults panel). Settings I/O is cached
+      // inside the resolver, so this is effectively free even when invoked
+      // from a tight CoS sweep.
+      const reviewOptions = await resolveReviewLoopOptions(agent.task?.metadata, { normalize: normalizeReviewers, isTruthyMeta });
       const cleanupWarnings = await cleanupAgentWorktree(agentId, effectiveSuccess, {
         openPR: agentOwnsPR ? false : taskOpenPR,
         requestCopilotReview: !agentOwnsPR && taskOpenPR && taskReviewLoop,
-        reviewers: normalizeReviewers(agent.task?.metadata),
-        reviewStopMode: agent.task?.metadata?.reviewStopMode || DEFAULT_REVIEW_STOP_MODE,
-        reviewerApplies: isTruthyMeta(agent.task?.metadata?.reviewerApplies),
+        ...reviewOptions,
         skipMerge: taskReviewLoopFollowUp || agentOwnsPR,
         description: task?.description,
         agentOutput: outputBuffer,

@@ -546,23 +546,33 @@ export const searchQuerySchema = z.object({
 // COS TASK SCHEMAS
 // =============================================================================
 
-// Reviewer choices for the Review Loop. `copilot` is the default and requests a
-// native GitHub Copilot review; the others instruct the review-loop follow-up
-// agent to invoke the named CLI to critique the PR diff. Mirrored in
-// client/src/components/cos/constants.js → REVIEWER_OPTIONS.
-export const REVIEWER_VALUES = ['copilot', 'claude', 'gemini', 'codex'];
+// Reviewer choices for the Review Loop. `copilot` requests a native GitHub
+// Copilot review; `claude`/`gemini`/`codex` instruct the review-loop follow-up
+// agent to invoke the named CLI to critique the PR diff; `lmstudio`/`ollama`
+// route the diff through PortOS's local code-review endpoint
+// (`POST /api/code-review/local`) which runs the configured local LLM model.
+// Mirrored in client/src/components/cos/constants.js → REVIEWER_OPTIONS.
+export const REVIEWER_VALUES = ['copilot', 'claude', 'gemini', 'codex', 'lmstudio', 'ollama'];
 export const DEFAULT_REVIEWER = 'copilot';
 export const DEFAULT_REVIEWERS = ['copilot'];
+// Reviewers that resolve to a local-LLM backend (rather than a CLI or GitHub
+// bot). Used by the code-review endpoint, settings panel, and prompt builder
+// to gate model-id resolution.
+export const LOCAL_LLM_REVIEWERS = ['lmstudio', 'ollama'];
 // Stop-mode for the multi-reviewer loop (slashdo `--review-stop-on-*`).
 export const REVIEW_STOP_MODES = ['all', 'on-findings', 'on-clean'];
 export const DEFAULT_REVIEW_STOP_MODE = 'all';
 
 /**
  * Resolve task metadata to an ordered, deduped reviewer list. Prefers the new
- * `reviewers` array; falls back to the legacy single `reviewer` string; defaults
- * to `['copilot']`. Filters to known reviewers and preserves first-occurrence order.
+ * `reviewers` array; falls back to the legacy single `reviewer` string. When
+ * the metadata yields nothing, returns `fallback` (default `['copilot']`) —
+ * pass the settings-resolved defaults here so a Review Loop run picks up the
+ * user's Code Review Defaults instead of the hardcoded copilot when the task
+ * itself didn't pin reviewers. Filters to known reviewers and preserves
+ * first-occurrence order.
  */
-export function normalizeReviewers(meta) {
+export function normalizeReviewers(meta, fallback = DEFAULT_REVIEWERS) {
   const raw = meta && typeof meta === 'object' && !Array.isArray(meta) ? meta : {};
   const source = Array.isArray(raw.reviewers)
     ? raw.reviewers
@@ -572,7 +582,9 @@ export function normalizeReviewers(meta) {
   for (const r of source) {
     if (REVIEWER_VALUES.includes(r) && !seen.has(r)) { seen.add(r); out.push(r); }
   }
-  return out.length ? out : [...DEFAULT_REVIEWERS];
+  if (out.length) return out;
+  const fallbackList = Array.isArray(fallback) ? fallback.filter((r) => REVIEWER_VALUES.includes(r)) : [];
+  return fallbackList.length ? [...fallbackList] : [...DEFAULT_REVIEWERS];
 }
 
 /**
@@ -749,6 +761,20 @@ export const featureProviderConfigSchema = z.object({
   providerId: z.preprocess(emptyToUndefined, z.string().optional()),
   model: z.preprocess(emptyToUndefined, z.string().optional()),
 });
+
+// Global Code Review Loop defaults (settings.codeReview). Surfaced on the AI
+// Providers page; TaskAddForm + ScheduleTab seed from this when the user
+// hasn't already chosen a per-task / per-task-type reviewer list. The follow-
+// up spawner reads it as the fallback for `reviewers` when none are passed in.
+// `lmstudioModel` / `ollamaModel` are the installed model ids the local-LLM
+// reviewer should run with (empty/undefined = pick the active default model).
+export const codeReviewSettingsSchema = z.object({
+  reviewers: z.array(z.enum(REVIEWER_VALUES)).optional(),
+  stopMode: z.enum(REVIEW_STOP_MODES).optional(),
+  reviewerApplies: z.boolean().optional(),
+  lmstudioModel: z.preprocess(emptyToUndefined, z.string().optional()),
+  ollamaModel: z.preprocess(emptyToUndefined, z.string().optional()),
+}).strict();
 
 // =============================================================================
 // WRITERS ROOM SCHEMAS

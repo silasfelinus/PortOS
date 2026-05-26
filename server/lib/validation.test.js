@@ -568,6 +568,20 @@ describe('validation.js', () => {
       // `reviewers` wins over legacy `reviewer`.
       expect(normalizeReviewers({ reviewers: ['claude'], reviewer: 'codex' })).toEqual(['claude']);
     });
+
+    it('accepts local-LLM reviewer kinds (lmstudio / ollama)', () => {
+      expect(normalizeReviewers({ reviewers: ['lmstudio', 'ollama'] })).toEqual(['lmstudio', 'ollama']);
+      expect(normalizeReviewers({ reviewer: 'lmstudio' })).toEqual(['lmstudio']);
+    });
+
+    it('uses the fallback when metadata is empty and falls back to copilot when the fallback is invalid', () => {
+      // Settings-derived defaults flow through when the task didn't pin reviewers.
+      expect(normalizeReviewers({}, ['gemini', 'codex'])).toEqual(['gemini', 'codex']);
+      // An all-bogus fallback collapses to the hardcoded copilot, never an empty list.
+      expect(normalizeReviewers({}, ['bogus', null])).toEqual(['copilot']);
+      // Explicit task metadata still wins over the fallback.
+      expect(normalizeReviewers({ reviewers: ['claude'] }, ['gemini'])).toEqual(['claude']);
+    });
   });
 
   describe('buildReviewWithArgs', () => {

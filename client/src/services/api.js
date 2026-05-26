@@ -22,6 +22,7 @@ export * from './apiMessages.js';
 export * from './apiCalendar.js';
 export * from './apiGoals.js';
 export * from './apiReview.js';
+export * from './apiCodeReview.js';
 export * from './apiDatabase.js';
 export * from './apiLocalLlm.js';
 export * from './apiGSD.js';

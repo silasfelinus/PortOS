@@ -688,6 +688,15 @@ async function importModelFromGguf({ name, ggufPath, mode = 'copy' }) {
 }
 
 /**
+ * Live base URL — reflects runtime config patches, not just startup env.
+ * Used by sibling services (e.g. the local code-review endpoint) so the
+ * catalog UI and the code-review path can't desync.
+ */
+function getBaseUrl() {
+  return config.baseUrl
+}
+
+/**
  * Aggregate status for the unified local-LLM UI.
  */
 async function getStatus(forceRefresh = false) {
@@ -711,6 +720,7 @@ export {
   pullModel,
   deleteModel,
   getStatus,
+  getBaseUrl,
   resolveLocalModel,
   importModelFromGguf,
   startServer,
