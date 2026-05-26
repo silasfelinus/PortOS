@@ -167,9 +167,9 @@ export default function WritersRoomGuide() {
                 <div key={item.id} className="bg-port-card border border-port-border rounded-lg p-4">
                   <div className="flex items-center justify-between gap-2 mb-1">
                     <h3 className="text-sm font-semibold text-white">{item.title}</h3>
-                    <span className="text-[10px] uppercase tracking-wide text-port-warning border border-port-warning/30 bg-port-warning/10 rounded px-1.5 py-0.5">
+                    <Pill tone="bare" size="xs" className="uppercase tracking-wide text-port-warning border-port-warning/30 bg-port-warning/10">
                       {item.status}
-                    </span>
+                    </Pill>
                   </div>
                   <p className="text-xs text-gray-400 leading-relaxed">{item.summary}</p>
                 </div>

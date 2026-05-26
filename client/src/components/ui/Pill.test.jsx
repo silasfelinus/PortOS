@@ -12,7 +12,8 @@ describe('Pill', () => {
     expect(el.className).toContain('bg-port-bg');
     expect(el.className).toContain('text-xs');
     expect(el.className).toContain('px-2');
-    expect(el.className).toContain('border');
+    // Token membership, not substring — `border-port-border` also contains "border".
+    expect(el.className.split(/\s+/)).toContain('border');
     expect(el.className).toContain('border-port-border');
   });
 
@@ -61,6 +62,13 @@ describe('Pill', () => {
     expect(el.className).toContain('text-green-500');
     expect(el.className).toContain('bg-green-900');
     expect(el.className).not.toContain('text-gray-300');
+  });
+
+  it('tone="bare" keeps the default border width so a className border-color paints it', () => {
+    render(<Pill tone="bare" className="border-port-warning/30">x</Pill>);
+    const el = screen.getByText('x');
+    expect(el.className.split(/\s+/)).toContain('border');
+    expect(el.className).toContain('border-port-warning/30');
   });
 
   it('passes through arbitrary props like title', () => {

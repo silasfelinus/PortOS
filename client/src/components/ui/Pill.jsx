@@ -6,7 +6,9 @@
 // Knobs map to real call-site shapes — nothing speculative:
 //   tone     — semantic color trio (text + bg-tint + border). `context` is the
 //              uppercase no-bg variant; `note` is muted + italic; `bare` emits no
-//              color so a data-driven badge can supply its own via `className`.
+//              color, so a data-driven badge must supply ALL colors via `className`
+//              (including a `border-<color>` when it keeps the default border, else
+//              the bare `border` width paints Tailwind's default color).
 //   size     — `sm` (text-xs / px-2, default) or `xs` (text-[10px] / px-1.5).
 //   icon     — optional leading lucide glyph (renders inline-flex + gap).
 //   bordered — default true (the WritersRoom bordered look); pass false for the
