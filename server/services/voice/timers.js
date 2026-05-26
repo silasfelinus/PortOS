@@ -124,6 +124,7 @@ export async function initVoiceTimers() {
   const now = Date.now();
   let armed = 0;
   let fired = 0;
+  const seen = new Set(); // ids already handled this init (dedup a corrupt store)
   for (const rec of list) {
     // The store is an untrusted read boundary (hand-edited / partial write).
     // `Number.isFinite` rejects NaN/Infinity that `typeof === 'number'` lets
@@ -139,12 +140,15 @@ export async function initVoiceTimers() {
       fireAt: rec.fireAt,
       createdAt: typeof rec.createdAt === 'number' ? rec.createdAt : now,
     };
-    // A timer already live in memory is authoritative — it was scheduled
-    // post-boot (during init's async read; routes are up before this
-    // fire-and-forget init settles) OR is a duplicate id in a corrupt store.
-    // Skip the persisted copy entirely so we neither re-fire it as overdue nor
-    // arm a second handle for it (both would double-notify).
-    if (active.has(timer.id)) continue;
+    // Skip a record already handled, so it can't double-notify:
+    //   - `active.has` — a timer_set scheduled post-boot (during init's async
+    //     read; routes are up before this fire-and-forget init settles) is live
+    //     in memory and authoritative.
+    //   - `seen.has` — a duplicate id earlier in a corrupt/hand-edited store.
+    //     `active` alone misses this when the records are OVERDUE, since overdue
+    //     timers fire-and-drop without being added to `active`.
+    if (active.has(timer.id) || seen.has(timer.id)) continue;
+    seen.add(timer.id);
     if (timer.fireAt <= now) {
       // Overdue — notify once. Not added to `active`, so the post-loop persist
       // drops it from the store.

@@ -129,6 +129,23 @@ describe('initVoiceTimers', () => {
     vi.useRealTimers();
   });
 
+  it('does not double-notify on duplicate ids in a corrupt store (both overdue)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-26T12:00:00Z'));
+    const now = Date.now();
+    storeRef.value = {
+      version: 1,
+      timers: [
+        { id: 'dup', label: 'dup', fireAt: now - 1000, createdAt: now },
+        { id: 'dup', label: 'dup', fireAt: now - 2000, createdAt: now }, // duplicate overdue id
+      ],
+    };
+    const res = await initVoiceTimers();
+    expect(res).toEqual({ armed: 0, fired: 1 }); // fired once, not twice
+    expect(addNotificationMock).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
   it('is idempotent — a second init is skipped', async () => {
     const first = await initVoiceTimers();
     expect(first).toEqual({ armed: 0, fired: 0 });
