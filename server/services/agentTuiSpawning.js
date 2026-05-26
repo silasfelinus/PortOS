@@ -19,6 +19,7 @@ import { activeAgents, userTerminatedAgents } from './agentState.js';
 import { PATHS } from '../lib/fileUtils.js';
 import { resolveCliModel } from '../lib/providerModels.js';
 import { createStreamingAnsiStripper } from '../lib/ansiStrip.js';
+import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
 import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
   DEFAULT_TUI_IDLE_TIMEOUT_MS,
@@ -194,6 +195,8 @@ export async function spawnTuiAgent({
 
   let outputBuffer = '';
   let finalized = false;
+  let immediateFallbackAnalysis = null;
+  const detectImmediateFallbackSignal = createImmediateFallbackSignalDetector();
   // Guards ingestDoneSentinel to a single read. finish() is its only caller and
   // is itself guarded by `finalized`, so this is defensive — it pins the
   // read-at-most-once invariant at the helper.
@@ -439,7 +442,7 @@ export async function spawnTuiAgent({
     // fall back to outputBuffer (which has the spawn-startup notices).
     const errorAnalysis = finalSuccess
       ? null
-      : analyzeAgentFailure(rawAnalysisText ?? outputBuffer, task, model);
+      : (immediateFallbackAnalysis || analyzeAgentFailure(rawAnalysisText ?? outputBuffer, task, model));
 
     // try/finally so a throw from finalizeAgent (e.g. processAgentCompletion
     // hook crash) still runs the local cleanup — sentinel removal, worktree
@@ -503,6 +506,7 @@ export async function spawnTuiAgent({
       // The String(...) coerces defensively in case a future caller wires
       // a Buffer-emitting encoding.
       const text = typeof data === 'string' ? data : String(data);
+      const stripped = streamingStrip(text);
       pendingRawChunks.push(text);
       scheduleRawFlush();
       if (postPasteBuffer !== null) postPasteBuffer += text;
@@ -522,8 +526,21 @@ export async function spawnTuiAgent({
       // path. We still spool the raw stream to raw.txt for error analysis
       // on failure, and we detect early "command not found" so a missing
       // binary fails fast instead of idling.
+      const fallbackSignal = detectImmediateFallbackSignal(stripped);
+      if (fallbackSignal) {
+        immediateFallbackAnalysis = fallbackSignal;
+        appendLine(`⚡ Provider fallback signal: ${fallbackSignal.message}`);
+        await finish({
+          success: false,
+          exitCode: 1,
+          error: fallbackSignal.message || 'Provider requires fallback',
+          reason: 'fallback-signal'
+        });
+        return;
+      }
+
       if (!promptSentAt) {
-        const lowerStripped = streamingStrip(text).toLowerCase();
+        const lowerStripped = stripped.toLowerCase();
         if (lowerStripped.includes('command not found') && lowerStripped.includes(commandName.toLowerCase())) {
           // finish() uses try/finally internally: finalizeAgent errors re-throw after
           // cleanup, so finish() can reject. The outer try/catch in handleData already

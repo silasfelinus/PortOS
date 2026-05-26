@@ -23,6 +23,7 @@ import { normalizeReviewers, DEFAULT_REVIEW_STOP_MODE } from '../lib/validation.
 import { safeJSONParse, PATHS } from '../lib/fileUtils.js';
 import { createCodexStderrFormatter } from '../lib/codexCliOutput.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
+import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
 
 const AGENTS_DIR = PATHS.cosAgents;
 
@@ -411,6 +412,22 @@ export async function spawnDirectly({
   const isStreamJson = cliConfig.streamFormat === 'stream-json';
   const streamParser = isStreamJson ? createStreamJsonParser() : null;
   const codexStderrFormatter = provider.id === 'codex' ? createCodexStderrFormatter(prompt) : null;
+  let immediateFallbackAnalysis = null;
+  const detectImmediateFallbackSignal = createImmediateFallbackSignalDetector();
+
+  const stopForImmediateFallbackSignal = (text) => {
+    if (immediateFallbackAnalysis || claudeProcess.killed) return;
+    const analysis = detectImmediateFallbackSignal(text);
+    if (!analysis) return;
+    immediateFallbackAnalysis = analysis;
+    emitLog('warn', `Agent ${agentId} detected provider fallback signal (${analysis.category}); stopping ${provider.name || provider.id}`, {
+      agentId,
+      taskId: task.id,
+      providerId: provider.id,
+      category: analysis.category
+    });
+    claudeProcess.kill('SIGTERM');
+  };
 
   // If no output after 3 seconds, transition from initializing to working to show progress
   const initializationTimeout = setTimeout(async () => {
@@ -424,6 +441,7 @@ export async function spawnDirectly({
   claudeProcess.stdout.on('data', async (data) => {
     try {
       const text = data.toString();
+      stopForImmediateFallbackSignal(text);
 
       if (!hasStartedWorking) {
         hasStartedWorking = true;
@@ -455,6 +473,7 @@ export async function spawnDirectly({
   claudeProcess.stderr.on('data', async (data) => {
     try {
       const text = data.toString();
+      stopForImmediateFallbackSignal(`[stderr] ${text}`);
       // Codex stderr: show thinking + tool names, skip config dump and command output
       if (codexStderrFormatter) {
         const lines = codexStderrFormatter.processChunk(text);
@@ -560,7 +579,7 @@ export async function spawnDirectly({
 
     // Use raw stream buffer for error analysis (contains full JSON with error details)
     const analysisBuffer = rawStreamBuffer || outputBuffer;
-    const errorAnalysis = finalSuccess ? null : analyzeAgentFailure(analysisBuffer, task, model);
+    const errorAnalysis = finalSuccess ? null : (immediateFallbackAnalysis || analyzeAgentFailure(analysisBuffer, task, model));
 
     // try/finally so a throw from finalizeAgent still runs the local
     // cleanup (worktree, pid unregister, activeAgents delete). Mirrors the

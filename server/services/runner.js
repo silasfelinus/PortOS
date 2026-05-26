@@ -8,6 +8,7 @@ import { join } from 'path';
 import { ensureDir, tryReadFile } from '../lib/fileUtils.js';
 import { hasModelFlag, extractBakedModel } from '../lib/providerModels.js';
 import { buildCliArgs } from '../lib/cliProviderArgs.js';
+import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
 import {
   setAIToolkitInstance,
   getAIToolkitInstance,
@@ -153,12 +154,24 @@ export async function executeCliRun(runId, provider, prompt, workspacePath, onDa
 
   const startTime = Date.now();
   let output = '';
+  let immediateFallbackAnalysis = null;
+  let childProcess = null;
+  const detectImmediateFallbackSignal = createImmediateFallbackSignalDetector();
+
+  const abortForImmediateFallbackSignal = (text) => {
+    if (immediateFallbackAnalysis || childProcess.killed) return;
+    const analysis = detectImmediateFallbackSignal(text);
+    if (!analysis) return;
+    immediateFallbackAnalysis = analysis;
+    console.log(`⚡ Run ${runId} detected fallback signal (${analysis.category}); stopping ${provider.name || provider.id || provider.command}`);
+    childProcess.kill('SIGTERM');
+  };
 
   // Build provider-specific args for stdin-based prompt delivery
   const args = buildCliArgs(provider);
   console.log(`🚀 Executing CLI: ${provider.command} (${prompt.length} chars via stdin)`);
 
-  const childProcess = spawn(provider.command, args, {
+  childProcess = spawn(provider.command, args, {
     cwd: workspacePath,
     env: (() => { const e = { ...process.env, ...provider.envVars }; delete e.CLAUDECODE; return e; })(),
     windowsHide: true
@@ -190,12 +203,14 @@ export async function executeCliRun(runId, provider, prompt, workspacePath, onDa
     const text = data.toString();
     output += text;
     onData?.(text);
+    abortForImmediateFallbackSignal(text);
   });
 
   childProcess.stderr?.on('data', (data) => {
     const text = data.toString();
     output += text;
     onData?.(text);
+    abortForImmediateFallbackSignal(text);
   });
 
   childProcess.on('error', async (err) => {
@@ -236,7 +251,7 @@ export async function executeCliRun(runId, provider, prompt, workspacePath, onDa
 
     // Analyze errors if the run failed (delegate to toolkit's error detection)
     if (!metadata.success && toolkit.services.errorDetection) {
-      const errorAnalysis = toolkit.services.errorDetection.analyzeError(output, code);
+      const errorAnalysis = immediateFallbackAnalysis || toolkit.services.errorDetection.analyzeError(output, code);
       metadata.error = errorAnalysis.message || `Process exited with code ${code}`;
       metadata.errorCategory = errorAnalysis.category;
       metadata.errorAnalysis = errorAnalysis;
