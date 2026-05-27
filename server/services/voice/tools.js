@@ -20,6 +20,7 @@ import { runAsk, VALID_MODES as ASK_VALID_MODES } from '../askService.js';
 import * as imageGen from '../imageGen/index.js';
 import { createImageGenWaiter } from '../imageGenWaiter.js';
 import { getSettings } from '../settings.js';
+import { getVoiceConfig } from './config.js';
 import { isDestructiveLabel, buildPending } from './confirmGate.js';
 
 const DAILY_LOG_PATH = '/brain/daily-log';
@@ -201,6 +202,7 @@ const TOOL_GROUPS = {
   pipeline_next_stage: 'pipeline',
   pipeline_prev_stage: 'pipeline',
   pipeline_open_stage: 'pipeline',
+  dispatch_code_agent: 'code',
   // UNGROUPED = always-on: time_now, daily_log_append, ui_navigate.
   // brain_capture used to be always-on, but that caused form-fill turns
   // ("fill description with X") to be misrouted to brain_capture because
@@ -284,6 +286,15 @@ const GROUP_INTENT = {
   // Alias list must mirror PIPELINE_STAGE_ALIASES below so any alias
   // accepted by pipeline_open_stage actually triggers the group.
   pipeline: /\b(?:next stage|previous stage|prev stage|stage (?:advance|forward|back)|(?:open|go to|back to)(?: the)? (?:idea|prose|story|comic ?script|comicscript|comics|tv ?script|tvscript|teleplay|comic ?pages?|comicpages|pages?|storyboards?|scenes|episode ?video|episodevideo|episode|video)(?: stage)?)\b/i,
+  // Code-agent delegation — software-engineering requests and explicit
+  // "have <agent> …" phrasing. The ambiguous verbs (implement/debug/rewrite/
+  // patch) require a following code-domain object within ~40 chars, so
+  // "implement my morning routine" / "debug my relationship" / "add a feature
+  // to my calendar" do NOT match; `refactor` stays standalone (rarely non-code
+  // in speech). A false positive only OFFERS the tool to the LLM (which still
+  // has to choose it), and the tool is a no-op unless codeAgent.enabled
+  // (pipeline.js strips it from the spec list when off).
+  code: /\b(?:have (?:claude|codex|gemini|the agent|an agent)\b|dispatch (?:a |an )?(?:coding |code )?agent|spin up an agent|code (?:it )?up|open a pr|pull request|refactor|(?:implement|debug|rewrite|patch)\b[^.!?\n]{0,40}\b(?:bug|tests?|function|method|build|lint|type ?error|error|code|file|module|endpoint|route|component|class|api|schema|migration|script|flag|regression|handler|parser|service|hook|query|registry|config)\b|fix (?:the |a |an |my )?(?:bug|test|tests|failing|function|method|build|lint|type|error|code|file|module|endpoint|route|component)|write (?:a |the |some )?(?:unit |integration )?tests?|add (?:a |an |the )?(?:flag|function|method|endpoint|route|test|migration)\b)/i,
   ui: UI_INTENT_RE,
 };
 
@@ -1789,6 +1800,86 @@ const TOOLS = [
         // to speak verbatim (mirrors ui_read / ui_ask).
         summary: `Described the current screen (${text.length} chars).`,
       };
+    },
+  },
+
+  {
+    name: 'dispatch_code_agent',
+    description:
+      'Hand a software-engineering task to an autonomous coding agent that works in an isolated git worktree and opens a pull request for review. Use when the user asks you to write, fix, refactor, debug, or test CODE — e.g. "fix the failing test in X", "add a --dry-run flag to the backup script", "refactor the widget registry". Do NOT use for capturing notes/ideas (that is brain_capture) or for clicking/navigating the UI. The work runs in the background and the user is told when it finishes — do not wait for it. State the task in the user\'s own words with enough detail to act on it. The coding agent and model come from the user\'s configured default; never put a provider or model in this call.',
+    parameters: {
+      type: 'object',
+      properties: {
+        task: {
+          type: 'string',
+          description: 'The coding task to perform, phrased as a clear, self-contained instruction (file/feature names, the desired outcome). The agent reads this verbatim as its prompt.',
+        },
+      },
+      required: ['task'],
+    },
+    execute: async ({ task } = {}) => {
+      const text = typeof task === 'string' ? task.trim() : '';
+      if (!text) {
+        return { ok: false, error: 'task is required', summary: "I didn't catch what you want the coding agent to do." };
+      }
+
+      // Backstop for the palette path — pipeline.js already strips this tool
+      // from the LLM's spec list when codeAgent is disabled, but the command
+      // palette dispatches by id regardless, so re-check here.
+      const cfg = await getVoiceConfig();
+      const codeAgent = cfg?.llm?.codeAgent || {};
+      if (!codeAgent.enabled) {
+        return { ok: false, error: 'code-agent disabled', summary: 'Coding-agent dispatch is off — turn it on under Settings, Voice, Coding agent.' };
+      }
+
+      // Dynamic import: cos.js is a large module with its own import graph;
+      // importing it lazily keeps tools.js load-time light and dodges any
+      // cos → voice cycle.
+      const { addTask, isRunning } = await import('../cos.js');
+      const provider = typeof codeAgent.provider === 'string' ? codeAgent.provider.trim() : '';
+      const model = typeof codeAgent.model === 'string' ? codeAgent.model.trim() : '';
+
+      const created = await addTask({
+        description: text,
+        priority: 'HIGH',
+        position: 'top',
+        voiceDispatch: true,
+        // The promise of this tool (and the changelog / spoken copy) is
+        // isolated work that opens a PR and never touches the user's working
+        // tree. spawnAgentForTask only honors that when the task explicitly
+        // opts in — without these flags it runs in the shared workspace and
+        // auto-merges. Set both so the dispatched agent always works in a
+        // worktree and surfaces a PR for review.
+        useWorktree: true,
+        openPR: true,
+        // Pin only when configured. Omitting provider/model lets the CoS
+        // spawner fall back to the system default (providers.json
+        // activeProvider) + selectModelForTask — the "default to system AI
+        // provider → model" behavior.
+        ...(provider ? { provider } : {}),
+        ...(model ? { model } : {}),
+      }, 'user');
+
+      // addTask auto-spawns user tasks, but only while the CoS runner is up.
+      // isRunning() is a synchronous daemon-state check. Surface a stopped
+      // runner on BOTH paths so a re-issue of an already-queued task isn't
+      // falsely reassuring when nothing is actually running it.
+      const running = isRunning();
+      const stoppedNote = ' — but the Chief-of-Staff runner is stopped, so start it to run it';
+
+      if (created?.duplicate) {
+        return {
+          ok: true,
+          taskId: created.id,
+          duplicate: true,
+          summary: `That coding task is already queued${running ? ', so I left it as is.' : `${stoppedNote}.`}`,
+        };
+      }
+
+      const summary = running
+        ? "Queued a coding task — I'll let you know when it's done."
+        : `Queued the coding task${stoppedNote}.`;
+      return { ok: true, taskId: created?.id, running, summary };
     },
   },
 ];

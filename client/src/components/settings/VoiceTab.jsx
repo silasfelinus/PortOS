@@ -91,6 +91,7 @@ export function VoiceTab() {
   // API-type providers only — voice needs low-latency streaming chat, which
   // CLI/TUI providers can't deliver.
   const [apiProviders, setApiProviders] = useState([]);
+  const [codeProviders, setCodeProviders] = useState([]);
   const [refreshingModels, setRefreshingModels] = useState(false);
 
   const toggleWidgetHidden = (next) => {
@@ -114,12 +115,18 @@ export function VoiceTab() {
       .then(([config, s]) => { setCfg(config); setStatus(s); })
       .catch(() => toast.error('Failed to load voice settings'))
       .finally(() => setLoading(false));
-    // Load the provider registry for the LLM provider picker. Voice can only
-    // stream through `api`-type providers — filter the rest out here. Silent:
-    // the empty-list fallback is the error UI, so don't also pop a toast.
+    // Load the provider registry once. The conversational brain can only
+    // stream through `api`-type providers (filtered here); the code-agent
+    // picker draws from `cli`/`tui` providers (Claude Code, Codex, Gemini) —
+    // those are the ones that can actually edit code. Silent: the empty-list
+    // fallback is the error UI, so don't also pop a toast.
     getProviders({ silent: true })
-      .then((data) => setApiProviders((data?.providers || []).filter((p) => p.type === 'api')))
-      .catch(() => setApiProviders([]));
+      .then((data) => {
+        const all = data?.providers || [];
+        setApiProviders(all.filter((p) => p.type === 'api'));
+        setCodeProviders(all.filter((p) => p.type === 'cli' || p.type === 'tui'));
+      })
+      .catch(() => { setApiProviders([]); setCodeProviders([]); });
   }, []);
 
   // Refetch the voice catalog whenever the user flips TTS engine so the picker
@@ -239,6 +246,20 @@ export function VoiceTab() {
   const providerMissing = apiProviders.length > 0 && !selectedProvider;
   const providerModels = selectedProvider?.models || [];
   const modelMissing = llmModel !== 'auto' && !providerModels.includes(llmModel);
+
+  // Code-agent delegation picker. Empty provider/model = "system default" (the
+  // CoS spawner's activeProvider + selectModelForTask). The saved choice is
+  // shown even when absent from the registry so the select never drops it.
+  const codeAgentCfg = cfg.llm.codeAgent || {};
+  const codeProvider = codeAgentCfg.provider || '';
+  const codeModel = codeAgentCfg.model || '';
+  const selectedCodeProvider = codeProviders.find((p) => p.id === codeProvider);
+  // Only flag a missing provider AFTER the registry loads — otherwise a saved
+  // agent is briefly mislabeled "(not a coding agent)" during the fetch (or if
+  // it fails and codeProviders stays []). Mirrors providerMissing above.
+  const codeProviderMissing = codeProviders.length > 0 && !!codeProvider && !selectedCodeProvider;
+  const codeProviderModels = selectedCodeProvider?.models || [];
+  const codeModelMissing = !!codeModel && !codeProviderModels.includes(codeModel);
 
   return (
     <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-6">
@@ -564,6 +585,74 @@ export function VoiceTab() {
             </span>
           </div>
         </label>
+
+        <label className="flex items-start gap-3 cursor-pointer md:col-span-2">
+          <input
+            type="checkbox"
+            checked={cfg.llm.codeAgent?.enabled === true}
+            onChange={(e) => patch('llm.codeAgent.enabled', e.target.checked)}
+            className="w-4 h-4 mt-0.5 shrink-0"
+          />
+          <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-baseline gap-x-3 gap-y-0.5 min-w-0 flex-1">
+            <span className="text-sm text-white">Enable coding-agent delegation</span>
+            <span className="text-xs text-gray-500">
+              Lets you say "have the agent fix X" — dispatches a CLI coding agent in an isolated worktree that opens a PR. Needs tools enabled above.
+            </span>
+          </div>
+        </label>
+
+        {cfg.llm.codeAgent?.enabled === true && (
+          <div className="md:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3 pl-7">
+            <Field label="Coding agent" hint="Which CLI/TUI agent runs the task. 'System default' uses your active AI provider (Settings → Providers).">
+              <select
+                value={codeProvider}
+                onChange={(e) => {
+                  // Switching agent invalidates the old model — reset to default.
+                  patch('llm.codeAgent.provider', e.target.value);
+                  patch('llm.codeAgent.model', '');
+                }}
+                className={inputCls}
+              >
+                <option value="">System default</option>
+                {codeProviderMissing && (
+                  <option value={codeProvider}>{codeProvider} (not a coding agent)</option>
+                )}
+                {codeProviders.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}{p.enabled === false ? ' (disabled)' : ''}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Model" hint="'System default' lets the agent pick per task complexity.">
+              <select
+                value={codeModel}
+                onChange={(e) => patch('llm.codeAgent.model', e.target.value)}
+                className={inputCls}
+              >
+                <option value="">System default</option>
+                {codeModelMissing && <option value={codeModel}>{codeModel} (current)</option>}
+                {codeProviderModels.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </Field>
+            <label className="flex items-start gap-3 cursor-pointer sm:col-span-2">
+              <input
+                type="checkbox"
+                checked={cfg.llm.codeAgent?.announceOnComplete !== false}
+                onChange={(e) => patch('llm.codeAgent.announceOnComplete', e.target.checked)}
+                className="w-4 h-4 mt-0.5 shrink-0"
+              />
+              <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-baseline gap-x-3 gap-y-0.5 min-w-0 flex-1">
+                <span className="text-sm text-white">Announce when a dispatched task finishes</span>
+                <span className="text-xs text-gray-500">
+                  Speaks the result when the agent completes. Still honors quiet hours.
+                </span>
+              </div>
+            </label>
+          </div>
+        )}
 
         <label className="flex items-start gap-3 cursor-pointer md:col-span-2">
           <input
