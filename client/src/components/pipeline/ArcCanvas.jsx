@@ -49,6 +49,8 @@ import {
 } from '../../services/api';
 import useMediaJobProgress from '../../hooks/useMediaJobProgress';
 import { usePipelineVolumeBeatsProgress } from '../../hooks/usePipelineVolumeBeatsProgress';
+import { useSeriesEditorial } from '../../hooks/useSeriesEditorial';
+import { dominant } from '../../lib/editorialRoadmap';
 import SeriesLlmPicker from './SeriesLlmPicker';
 import { ArcShapePicker, ArcShapeSparkline, getStoryShape } from './StoryShapes';
 
@@ -351,96 +353,156 @@ function VolumeNavigator({ seasons, issuesBySeason, activeSeasonId, onSelect }) 
 }
 
 function EditorialRoadmapPanel({ series, seasons, issues }) {
-  const points = useMemo(() => buildRoadmapPoints(issues), [issues]);
   const seasonCount = seasons.length;
   const issueCount = issues.length;
-  const arcReady = !!(series.arc?.summary || series.arc?.protagonistArc || issueCount);
+  const {
+    aggregate, loading, running, starting,
+    startAnalysis, cancelAnalysis, coverage, analyzedPoints, progressText,
+  } = useSeriesEditorial(series.id);
+
+  const hasData = analyzedPoints.length > 0;
+  const plotVals = analyzedPoints.map((p) => p.plot);
+  const avgPlot = plotVals.length ? Math.round(plotVals.reduce((a, b) => a + b, 0) / plotVals.length) : null;
+  const peakPlot = plotVals.length ? Math.max(...plotVals) : null;
+  const peakAt = peakPlot != null ? analyzedPoints.find((p) => p.plot === peakPlot)?.label : '';
+  const protagonist = aggregate?.protagonist || null;
+  const supportingCount = aggregate?.supportingArcs?.length || 0;
+  const readerEmotion = dominant(analyzedPoints.map((p) => p.primaryEmotion));
 
   return (
     <section className="bg-port-card border border-port-border rounded-lg p-4 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-xs uppercase tracking-wider text-gray-500">Editorial roadmap</h2>
-          <p className="text-[11px] text-gray-600">{seasonCount} volumes, {issueCount} issues</p>
+          <h2 className="text-xs uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
+            Editorial roadmap
+            <Info
+              size={12}
+              className="text-gray-600"
+              title="Plot = narrative tension (stakes/pace). Character = how far the protagonist's arc advances. Reader = the reader's emotional journey (low = bleak, high = joyful). All three are read from each issue's actual content by an LLM."
+            />
+          </h2>
+          <p className="text-[11px] text-gray-600">
+            {seasonCount} volume{seasonCount === 1 ? '' : 's'}, {issueCount} issue{issueCount === 1 ? '' : 's'}
+            {' · '}
+            <span className={coverage.stale ? 'text-port-warning' : ''}>
+              {coverage.analyzed}/{coverage.total} analyzed{coverage.stale ? ` · ${coverage.stale} stale` : ''}
+            </span>
+          </p>
         </div>
         <ChartSpline size={18} className="text-port-accent" />
       </div>
+
       <div className="h-48 rounded border border-port-border bg-port-bg/70 p-3">
-        {arcReady ? (
-          <ArcRoadmapChart points={points} />
+        {loading ? (
+          <div className="h-full flex items-center justify-center text-xs text-gray-500">
+            <Loader2 size={14} className="animate-spin mr-1.5" /> Loading roadmap…
+          </div>
+        ) : hasData ? (
+          <ArcRoadmapChart points={analyzedPoints} />
         ) : (
-          <div className="h-full flex items-center justify-center text-xs text-gray-500 italic">
-            Generate the arc to populate the roadmap.
+          <div className="h-full flex flex-col items-center justify-center text-center gap-2 px-3">
+            <p className="text-xs text-gray-500 italic">
+              {coverage.withContent === 0
+                ? 'No drafted content yet — write or generate prose/scripts, then run analysis.'
+                : 'Not analyzed yet. Run the reader analysis to map plot, character, and reader emotion from the actual content.'}
+            </p>
           </div>
         )}
       </div>
+
       <div className="grid grid-cols-3 gap-2">
-        <RoadmapMetric label="Plot" value={points.length ? `${Math.round(points[points.length - 1].plot)}%` : 'Pending'} tone="text-port-accent" />
-        <RoadmapMetric label="Character" value={series.arc?.protagonistArc ? 'Mapped' : 'Pending'} tone="text-emerald-300" />
-        <RoadmapMetric label="Reader" value="Draft eval pending" tone="text-amber-300" />
+        <RoadmapMetric
+          label="Plot"
+          value={avgPlot != null ? `avg ${avgPlot}` : 'Run analysis'}
+          sub={peakPlot != null ? `peak ${peakPlot}${peakAt ? ` @ ${peakAt}` : ''}` : 'narrative tension'}
+          tone="text-port-accent"
+          title="Narrative tension across analyzed issues (0–100): stakes, danger, pace."
+        />
+        <RoadmapMetric
+          label="Character"
+          value={protagonist ? protagonist.name : 'Run analysis'}
+          sub={protagonist ? `${protagonist.arcDirection || 'arc'}${supportingCount ? ` · +${supportingCount} arc${supportingCount === 1 ? '' : 's'}` : ''}` : 'protagonist arc'}
+          tone="text-emerald-300"
+          title="The detected protagonist and arc direction, plus how many supporting characters have arcs."
+        />
+        <RoadmapMetric
+          label="Reader"
+          value={readerEmotion || 'Run analysis'}
+          sub={hasData ? 'dominant emotion' : 'emotional journey'}
+          tone="text-amber-300"
+          title="The reader's emotional journey, read section-by-section from the content. Open the reader map for the full log."
+        />
+      </div>
+
+      <div className="flex items-center justify-between gap-2">
+        {running ? (
+          <button
+            type="button"
+            onClick={cancelAnalysis}
+            className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded border border-port-border text-gray-300 hover:border-port-error/50"
+          >
+            <Loader2 size={13} className="animate-spin" />
+            {progressText || 'Analyzing…'} (cancel)
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={startAnalysis}
+            disabled={starting || coverage.withContent === 0}
+            className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded bg-port-accent/15 border border-port-accent/40 text-port-accent hover:bg-port-accent/25 disabled:opacity-40 disabled:cursor-not-allowed"
+            title={coverage.withContent === 0 ? 'No drafted content to analyze yet' : 'Run an LLM pass over each issue to map reader emotion, plot tension, and character arcs'}
+          >
+            {starting ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+            {coverage.analyzed > 0 ? 'Re-run reader map' : 'Interpret reader map'}
+          </button>
+        )}
+        <Link
+          to={`/pipeline/series/${series.id}/roadmap`}
+          className="text-xs text-gray-400 hover:text-port-accent underline-offset-2 hover:underline"
+        >
+          View reader map →
+        </Link>
       </div>
     </section>
   );
 }
 
-function RoadmapMetric({ label, value, tone }) {
+function RoadmapMetric({ label, value, sub, tone, title }) {
   return (
-    <div className="rounded border border-port-border bg-port-bg/60 px-2 py-2 min-w-0">
+    <div className="rounded border border-port-border bg-port-bg/60 px-2 py-2 min-w-0" title={title}>
       <div className="text-[10px] uppercase tracking-wider text-gray-500">{label}</div>
       <div className={`mt-1 text-xs font-medium truncate ${tone}`}>{value}</div>
+      {sub ? <div className="text-[10px] text-gray-600 truncate">{sub}</div> : null}
     </div>
   );
 }
 
-function buildRoadmapPoints(issues) {
-  const ordered = [...issues].sort((a, b) => (a.number || 0) - (b.number || 0));
-  const count = Math.max(ordered.length, 1);
-  return ordered.map((issue, idx) => {
-    const t = count === 1 ? 1 : idx / (count - 1);
-    const role = String(issue.arcRole || '').toLowerCase();
-    const roleBoost = role.includes('finale') ? 18
-      : role.includes('midpoint') ? 12
-      : role.includes('pilot') ? -4
-      : role.includes('climax') ? 16
-      : 0;
-    const statusBoost = issue.status === 'shipped' ? 5 : issue.status === 'needs-review' ? -6 : 0;
-    return {
-      label: issue.arcPosition ? `E${issue.arcPosition}` : `#${issue.number || idx + 1}`,
-      title: issue.title || 'Untitled',
-      plot: Math.max(8, Math.min(98, 18 + (t * 68) + (Math.sin(t * Math.PI * 2) * 7) + roleBoost + statusBoost)),
-      character: Math.max(10, Math.min(94, 24 + (t * 58) + (Math.sin((t + 0.18) * Math.PI) * 12))),
-      reader: Math.max(12, Math.min(92, 34 + (Math.sin((t * 2.5 + 0.2) * Math.PI) * 22) + (t * 18))),
-    };
-  });
-}
-
-function ArcRoadmapChart({ points }) {
+// Real roadmap chart. `points` are the analyzed issues only, each carrying a
+// `frac` (0..1) x-position within the full ordered issue list so spacing
+// reflects arc position; unanalyzed gaps are skipped (the line bridges them).
+export function ArcRoadmapChart({ points }) {
   const width = 320;
   const height = 132;
-  const chartPoints = points.length > 0 ? points : [{ plot: 0, character: 0, reader: 0, label: '' }];
-  const toPolyline = (key) => chartPoints.map((point, idx) => {
-    const x = chartPoints.length === 1 ? width : (idx / (chartPoints.length - 1)) * width;
+  const toPolyline = (key) => points.map((point) => {
+    const x = point.frac * width;
     const y = height - ((point[key] / 100) * height);
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
 
   return (
     <div className="h-full grid grid-rows-[1fr_auto] gap-2">
-      <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full overflow-visible" role="img" aria-label="Arc roadmap chart">
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full overflow-visible" role="img" aria-label="Editorial roadmap chart">
         {[0.25, 0.5, 0.75].map((n) => (
           <line key={n} x1="0" x2={width} y1={height * n} y2={height * n} stroke="rgba(148,163,184,0.16)" strokeWidth="1" />
         ))}
         <polyline points={toPolyline('plot')} fill="none" stroke="rgb(96,165,250)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
         <polyline points={toPolyline('character')} fill="none" stroke="rgb(110,231,183)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-        <polyline points={toPolyline('reader')} fill="none" stroke="rgb(251,191,36)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="6 5" opacity="0.75" />
-        {chartPoints.map((point, idx) => {
-          const x = chartPoints.length === 1 ? width : (idx / (chartPoints.length - 1)) * width;
-          return (
-            <circle key={`${point.label}-${idx}`} cx={x} cy={height - ((point.plot / 100) * height)} r="2.5" fill="rgb(96,165,250)">
-              <title>{point.label}: {point.title}</title>
-            </circle>
-          );
-        })}
+        <polyline points={toPolyline('reader')} fill="none" stroke="rgb(251,191,36)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="6 5" opacity="0.85" />
+        {points.map((point, idx) => (
+          <circle key={`${point.label}-${idx}`} cx={point.frac * width} cy={height - ((point.plot / 100) * height)} r={point.stale ? 3 : 2.5} fill={point.stale ? 'rgb(245,158,11)' : 'rgb(96,165,250)'} stroke={point.stale ? 'rgb(245,158,11)' : 'none'}>
+            <title>{point.label}: {point.title}{point.primaryEmotion ? ` — reader feels ${point.primaryEmotion}` : ''}{point.stale ? ' (stale — content changed since analysis)' : ''}</title>
+          </circle>
+        ))}
       </svg>
       <div className="flex items-center gap-3 text-[10px] uppercase tracking-wider text-gray-500">
         <span className="inline-flex items-center gap-1"><span className="w-3 h-0.5 bg-blue-400 rounded" /> Plot</span>
