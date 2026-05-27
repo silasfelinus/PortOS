@@ -420,6 +420,29 @@ export async function spawnAgentForTask(task) {
           emitLog('success', `🌳 Agent ${agentId} will work in worktree: ${worktreeInfo.branchName} (base: ${worktreeInfo.baseBranch})`, {
             agentId, worktreePath: worktreeInfo.worktreePath, branchName: worktreeInfo.branchName, baseBranch: worktreeInfo.baseBranch
           });
+        } else {
+          // Isolation was EXPLICITLY requested (useWorktree/openPR) but the
+          // worktree couldn't be created. Falling back to the shared workspace
+          // would run the agent against the live checkout and — with openPR —
+          // auto-commit to the current branch, exactly the isolation the
+          // caller opted into. Fail closed: block the task rather than touch
+          // the working tree behind the user's back. (The auto-detected
+          // conflict branch below keeps its lenient shared-workspace fallback,
+          // since there the worktree was only a recommendation, not a request.)
+          const reason = `Worktree creation failed for task ${task.id}; refusing to run in the shared workspace because isolation was explicitly requested`;
+          emitLog('warn', `🌳 ${reason}`, { taskId: task.id });
+          await updateTask(task.id, {
+            status: 'blocked',
+            metadata: {
+              ...task.metadata,
+              blockedReason: 'Worktree creation failed — isolation was explicitly requested',
+              blockedCategory: 'worktree-failed',
+              blockedAt: new Date().toISOString(),
+            },
+          }, task.taskType || 'user').catch(() => {});
+          cleanupOnError(reason);
+          cosEvents.emit('agent:error', { taskId: task.id, error: reason });
+          return null;
         }
       } else if (!jiraBranchName && !isFalsyMeta(task.metadata?.useWorktree)) {
         const { getAgents } = await import('./cos.js');

@@ -8,6 +8,7 @@ TBD
 
 ## Added
 
+- **Hand coding tasks to an agent by voice.** Settings → Voice has a new "Enable coding-agent delegation" toggle (under Tools). With it on, you can say things like "have the agent fix the failing backup test" or "refactor the widget registry and open a PR" — the voice Chief-of-Staff hands the task to a CLI coding agent (Claude Code, Codex, Gemini) that works in an isolated git worktree and opens a pull request for review. Your fast local voice model stays the conversational layer; only the heavy coding work delegates out, so the chat stays snappy. Pick which coding agent runs the task (defaults to your active AI provider → model from Settings → Providers), and the assistant speaks the result when the task finishes (this completion announcement still respects quiet hours, and you can turn it off). The work runs in the background — your working tree is never touched; you review the PR.
 - **Set your home location in Settings → General.** Enter a latitude and longitude and the voice assistant's weather command ("what's the weather?") reports conditions for where you are instead of a default city. Leave both fields blank to fall back to the default location.
 
 ## Changed

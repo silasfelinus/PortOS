@@ -133,8 +133,21 @@ vi.mock('../askService.js', () => ({
   }),
 }));
 
+// dispatch_code_agent reads voice config (codeAgent gate + provider/model) and
+// lazily imports cos.js for addTask/isRunning. Mock both so the tool can be
+// exercised without a real settings file or CoS daemon.
+vi.mock('./config.js', () => ({
+  getVoiceConfig: vi.fn(async () => ({ llm: { codeAgent: { enabled: true, provider: '', model: '' } } })),
+}));
+vi.mock('../cos.js', () => ({
+  addTask: vi.fn(async (data) => ({ id: 'task-test', ...data })),
+  isRunning: vi.fn(() => true),
+}));
+
 const { dispatchTool, getToolSpecs, getToolSpecsForIntent, classifyIntent, anchorLocalMidnightUtc } = await import('./tools.js');
 const { getUtcOffsetMs: mockedGetUtcOffsetMs } = await import('../../lib/timezone.js');
+const { getVoiceConfig: mockedGetVoiceConfig } = await import('./config.js');
+const { addTask: mockedAddTask, isRunning: mockedIsRunning } = await import('../cos.js');
 
 describe('getToolSpecs', () => {
   it('returns OpenAI-format function specs', () => {
@@ -151,6 +164,72 @@ describe('getToolSpecs', () => {
 describe('dispatchTool unknown tool', () => {
   it('throws when tool name is unknown', async () => {
     await expect(dispatchTool('nope_tool', {})).rejects.toThrow(/Unknown tool/);
+  });
+});
+
+describe('dispatch_code_agent', () => {
+  afterEach(() => {
+    mockedAddTask.mockClear();
+    mockedIsRunning.mockReturnValue(true);
+    mockedGetVoiceConfig.mockResolvedValue({ llm: { codeAgent: { enabled: true, provider: '', model: '' } } });
+  });
+
+  it('rejects an empty task without creating a CoS task', async () => {
+    const r = await dispatchTool('dispatch_code_agent', { task: '   ' });
+    expect(r.ok).toBe(false);
+    expect(mockedAddTask).not.toHaveBeenCalled();
+  });
+
+  it('refuses when codeAgent is disabled', async () => {
+    mockedGetVoiceConfig.mockResolvedValue({ llm: { codeAgent: { enabled: false } } });
+    const r = await dispatchTool('dispatch_code_agent', { task: 'fix the build' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/disabled/);
+    expect(mockedAddTask).not.toHaveBeenCalled();
+  });
+
+  it('creates a voice-dispatched user task without pinning provider/model by default', async () => {
+    const r = await dispatchTool('dispatch_code_agent', { task: 'fix the failing backup test' });
+    expect(r.ok).toBe(true);
+    expect(r.taskId).toBe('task-test');
+    expect(mockedAddTask).toHaveBeenCalledTimes(1);
+    const [data, taskType] = mockedAddTask.mock.calls[0];
+    expect(taskType).toBe('user');
+    // Contract: isolated worktree + PR (never edits the working tree in place).
+    expect(data).toMatchObject({ description: 'fix the failing backup test', voiceDispatch: true, useWorktree: true, openPR: true });
+    // System-default behavior: no provider/model keys when none configured.
+    expect(data).not.toHaveProperty('provider');
+    expect(data).not.toHaveProperty('model');
+  });
+
+  it('pins provider/model when configured', async () => {
+    mockedGetVoiceConfig.mockResolvedValue({ llm: { codeAgent: { enabled: true, provider: 'codex-cli', model: 'gpt-5' } } });
+    await dispatchTool('dispatch_code_agent', { task: 'add a flag' });
+    expect(mockedAddTask.mock.calls[0][0]).toMatchObject({ provider: 'codex-cli', model: 'gpt-5' });
+  });
+
+  it('warns in the summary when the CoS runner is stopped', async () => {
+    mockedIsRunning.mockReturnValue(false);
+    const r = await dispatchTool('dispatch_code_agent', { task: 'refactor X' });
+    expect(r.ok).toBe(true);
+    expect(r.summary).toMatch(/stopped/i);
+  });
+});
+
+describe('code intent classification', () => {
+  it('routes coding requests to the code group', () => {
+    expect([...classifyIntent('have the agent fix the failing test')]).toContain('code');
+    expect([...classifyIntent('refactor the widget registry')]).toContain('code');
+    expect([...classifyIntent('write a unit test for the echo filter')]).toContain('code');
+  });
+
+  it('does not route plain reminders/notes/ambiguous-verb phrases to the code group', () => {
+    expect([...classifyIntent('remind me to call mom')]).not.toContain('code');
+    expect([...classifyIntent('what is on my calendar today')]).not.toContain('code');
+    // Ambiguous verbs require a code-domain object — these must NOT match.
+    expect([...classifyIntent('implement my morning routine')]).not.toContain('code');
+    expect([...classifyIntent('debug my relationship with my mom')]).not.toContain('code');
+    expect([...classifyIntent('add a feature to my calendar')]).not.toContain('code');
   });
 });
 

@@ -77,6 +77,16 @@ const voiceConfigPatchSchema = z.object({
       enabled: z.boolean().optional(),
       maxIterations: z.number().int().min(1).max(10).optional(),
     }).partial().optional(),
+    // Code-agent delegation. provider/model default to '' (= system default);
+    // tolerate the UI's empty-string sentinel rather than forcing undefined.
+    // 80-char provider cap matches the provider-registry id cap (same as the
+    // llm.provider field above).
+    codeAgent: z.object({
+      enabled: z.boolean().optional(),
+      provider: z.string().max(80).optional(),
+      model: z.string().max(128).optional(),
+      announceOnComplete: z.boolean().optional(),
+    }).partial().optional(),
     proactive: z.object({
       enabled: z.boolean().optional(),
       quietHours: z.object({
