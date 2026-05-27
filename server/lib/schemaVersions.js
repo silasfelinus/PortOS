@@ -34,7 +34,12 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // v1 = post-split. Migrations 035/036 introduced the pipeline collection
   // layout for issues and series.
   pipelineIssues: 1,
-  pipelineSeries: 1,
+  // v2 = `series.arc.readerMap` added (Unified Story Builder). Additive +
+  // gracefully-degrading, but version-gated so a not-yet-upgraded peer can't
+  // round-trip a series through its readerMap-unaware sanitizer and LWW-strip
+  // the field back onto a newer peer. Per-category gate → only series sync
+  // pauses with old peers; issues/universes keep flowing.
+  pipelineSeries: 2,
   mediaCollections: 1,
   // NOTE: `videoHistory` is intentionally NOT listed here. The version gate
   // rejects the ENTIRE snapshot/push payload on ANY ahead-mismatch (the

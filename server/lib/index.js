@@ -40,6 +40,8 @@ export * from './sceneExtractor.js';
 export * from './scenePrompt.js';
 export * from './seasonStructure.js';
 export * from './storyArc.js';
+export * from './storyBuilderIntegrity.js';
+export * from './storyBuilderSteps.js';
 // `storyBible.js` re-exports `normalizeSlugline` from `scenePrompt.js` for
 // back-compat — namespace it so the canonical scenePrompt export wins flat.
 export * as storyBible from './storyBible.js';

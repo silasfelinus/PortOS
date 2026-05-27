@@ -1769,3 +1769,46 @@ export const issuesListQuerySchema = z.object({
   offset: z.preprocess((v) => (v === undefined ? 0 : Number(v)), z.number().int().min(0)).default(0),
   limit: z.preprocess((v) => (v === undefined ? 1000 : Number(v)), z.number().int().min(1).max(1000)).default(1000),
 });
+
+// =============================================================================
+// UNIFIED STORY BUILDER SCHEMAS
+// =============================================================================
+
+const storyProviderField = z.preprocess(emptyToUndefined, z.string().trim().max(120).optional());
+const storyModelField = z.preprocess(emptyToUndefined, z.string().trim().max(200).optional());
+
+export const storySessionCreateSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  intakeMode: z.enum(['seed', 'import']).optional().default('seed'),
+  seedIdea: z.string().trim().max(4000).optional().default(''),
+  // Import mode supplies pre-created ids; seed mode mints shells server-side.
+  universeId: z.preprocess(emptyToUndefined, z.string().trim().max(64).optional()),
+  seriesId: z.preprocess(emptyToUndefined, z.string().trim().max(64).optional()),
+}).strict();
+
+export const storySessionUpdateSchema = z.object({
+  title: z.string().trim().min(1).max(200).optional(),
+  seedIdea: z.string().trim().max(4000).optional(),
+  currentStep: z.string().trim().max(40).optional(),
+  llm: z.object({
+    provider: z.string().trim().max(80).nullable().optional(),
+    model: z.string().trim().max(200).nullable().optional(),
+  }).optional(),
+}).strict();
+
+export const storyStepGenerateSchema = z.object({
+  providerId: storyProviderField,
+  model: storyModelField,
+}).strict();
+
+export const storyStepRefineSchema = z.object({
+  feedback: z.string().trim().max(4000).optional().default(''),
+  // For per-entry refine (e.g. a single character on the characters step).
+  entryId: z.preprocess(emptyToUndefined, z.string().trim().max(64).optional()),
+  providerId: storyProviderField,
+  model: storyModelField,
+}).strict();
+
+export const storyIssueLockSchema = z.object({
+  locked: z.boolean(),
+}).strict();

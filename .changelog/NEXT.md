@@ -8,6 +8,9 @@ TBD
 
 ## Added
 
+- **Unified Story Builder** (`/story-builder`): a new guided page that walks a story from idea → universe aesthetic → plot arc → reader map → characters → issues → production as one linear flow. Each step is LLM-assisted with an AI-refinement affordance and ends with an explicit lock before the next unlocks; going back to revise an earlier step soft-flags the downstream locked steps as "stale" (integrity gate) so nothing silently drifts — without destroying their content. The builder is a thin conductor over the existing Universe / Series / Issue records (no data duplication); heavy per-issue production hands off to the existing Pipeline issue page. Reachable from the sidebar (Create → Story Builder), ⌘K, and voice. (Seed-mode v1; import-mode intake + a few refinements tracked in PLAN.md.)
+- **Reader Map** on a series arc (`series.arc.readerMap`): a distinct audience-experience roadmap — hooks, payoffs, emotional beats, and cliffhangers across the arc — built on top of the Vonnegut story shape, separate from the protagonist arc. Generated and refined via the new Story Builder reader-map step (also preserved by arc regeneration).
+
 ## Changed
 
 ## Fixed

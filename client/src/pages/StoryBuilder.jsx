@@ -1,0 +1,517 @@
+import { useState, useEffect, useCallback } from 'react';
+import { useParams, useNavigate, Link } from 'react-router-dom';
+import {
+  Sparkles, Lock, Unlock, Check, ChevronRight, ChevronLeft, AlertTriangle,
+  Plus, RefreshCw, Loader2, ExternalLink, Wand2,
+} from 'lucide-react';
+import toast from '../components/ui/Toast';
+import { useLockToggle } from '../hooks/useLockToggle';
+import {
+  getStoryBuilderSteps, listStorySessions, getStorySession, createStorySession,
+  setStoryCurrentStep, lockStoryStep, unlockStoryStep,
+  generateStoryStep, refineStoryStep, setStoryIssueLock,
+  getUniverse, getPipelineSeries, listPipelineIssues,
+} from '../services/api';
+
+// ── Index view: list existing sessions + create a new one ──────────────────
+
+function StoryBuilderIndex() {
+  const navigate = useNavigate();
+  const [sessions, setSessions] = useState([]);
+  const [title, setTitle] = useState('');
+  const [seedIdea, setSeedIdea] = useState('');
+  const [creating, setCreating] = useState(false);
+
+  useEffect(() => {
+    listStorySessions({ silent: true }).then(setSessions).catch(() => setSessions([]));
+  }, []);
+
+  const create = async () => {
+    if (!title.trim()) { toast.error('Give your story a working title'); return; }
+    setCreating(true);
+    const created = await createStorySession({ title: title.trim(), seedIdea: seedIdea.trim() })
+      .catch((err) => { toast.error(err?.message || 'Failed to create'); return null; });
+    setCreating(false);
+    if (created) navigate(`/story-builder/${created.id}/idea`);
+  };
+
+  return (
+    <div className="max-w-3xl mx-auto space-y-6">
+      <header>
+        <h1 className="text-2xl font-bold flex items-center gap-2">
+          <Sparkles className="w-6 h-6 text-port-accent" /> Story Builder
+        </h1>
+        <p className="text-gray-400 mt-1">
+          One guided path from idea to video — name a universe, capture an idea, then review and lock each
+          stage (aesthetic → plot arc → reader map → characters → issues) before moving on.
+        </p>
+      </header>
+
+      <section className="bg-port-card border border-port-border rounded-lg p-4 space-y-3">
+        <h2 className="font-semibold">Start a new story</h2>
+        <div>
+          <label htmlFor="stb-title" className="block text-sm text-gray-400 mb-1">Universe / story name</label>
+          <input
+            id="stb-title" type="text" value={title} onChange={(e) => setTitle(e.target.value)}
+            placeholder="e.g. The Salt Run"
+            className="w-full bg-port-bg border border-port-border rounded px-3 py-2"
+          />
+        </div>
+        <div>
+          <label htmlFor="stb-seed" className="block text-sm text-gray-400 mb-1">Starter idea</label>
+          <textarea
+            id="stb-seed" value={seedIdea} onChange={(e) => setSeedIdea(e.target.value)} rows={3}
+            placeholder="A one-line or one-paragraph seed. You'll expand it with AI in the first step."
+            className="w-full bg-port-bg border border-port-border rounded px-3 py-2"
+          />
+        </div>
+        <button
+          onClick={create} disabled={creating}
+          className="inline-flex items-center gap-2 bg-port-accent hover:bg-blue-600 disabled:opacity-50 text-white px-4 py-2 rounded"
+        >
+          {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+          Create &amp; begin
+        </button>
+      </section>
+
+      {sessions.length > 0 && (
+        <section className="space-y-2">
+          <h2 className="font-semibold text-gray-300">Continue a story</h2>
+          {sessions.map((s) => (
+            <Link
+              key={s.id} to={`/story-builder/${s.id}/${s.currentStep || 'idea'}`}
+              className="flex items-center justify-between bg-port-card border border-port-border rounded-lg px-4 py-3 hover:border-port-accent"
+            >
+              <span className="font-medium">{s.title}</span>
+              <span className="text-xs text-gray-500">at “{s.currentStep}” <ChevronRight className="w-4 h-4 inline" /></span>
+            </Link>
+          ))}
+        </section>
+      )}
+    </div>
+  );
+}
+
+// ── Stale / status helpers ─────────────────────────────────────────────────
+
+const STATUS_BADGE = {
+  pending: { label: 'Not started', cls: 'text-gray-500' },
+  'in-progress': { label: 'In progress', cls: 'text-port-warning' },
+  ready: { label: 'Ready', cls: 'text-port-accent' },
+  locked: { label: 'Locked', cls: 'text-port-success' },
+};
+
+// ── Per-step content panels ────────────────────────────────────────────────
+
+function FieldBlock({ label, value }) {
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-wide text-gray-500 mb-0.5">{label}</div>
+      <div className="text-sm text-gray-200 whitespace-pre-wrap">{value || <span className="text-gray-600 italic">— empty —</span>}</div>
+    </div>
+  );
+}
+
+function ReaderMapView({ readerMap }) {
+  if (!readerMap) return <p className="text-gray-600 italic text-sm">No reader map yet. Generate one to plan the audience experience.</p>;
+  const Section = ({ title, items, render }) => (
+    items?.length ? (
+      <div>
+        <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">{title} ({items.length})</div>
+        <ul className="space-y-1">{items.map((it) => <li key={it.id} className="text-sm text-gray-300">{render(it)}</li>)}</ul>
+      </div>
+    ) : null
+  );
+  return (
+    <div className="space-y-3">
+      <Section title="Hooks" items={readerMap.hooks} render={(h) => `${h.atArcPosition != null ? `@${h.atArcPosition} · ` : ''}${h.label}${h.note ? ` — ${h.note}` : ''}`} />
+      <Section title="Payoffs" items={readerMap.payoffs} render={(p) => `${p.atArcPosition != null ? `@${p.atArcPosition} · ` : ''}${p.label}`} />
+      <Section title="Beats" items={readerMap.beats} render={(b) => `[${b.kind}${b.intensity != null ? ` ${Math.round(b.intensity * 100)}%` : ''}] ${b.note || ''}`} />
+      <Section title="Cliffhangers" items={readerMap.cliffhangers} render={(c) => `after #${c.atIssueBoundary ?? '?'} — ${c.note || ''}`} />
+    </div>
+  );
+}
+
+function RefineBox({ onRefine, busy, disabled }) {
+  const [feedback, setFeedback] = useState('');
+  return (
+    <div className="border-t border-port-border pt-3 mt-3">
+      <label className="block text-xs text-gray-500 mb-1">AI refinement feedback</label>
+      <div className="flex gap-2">
+        <input
+          type="text" value={feedback} onChange={(e) => setFeedback(e.target.value)}
+          placeholder="e.g. make the midpoint reveal land harder"
+          disabled={disabled}
+          className="flex-1 bg-port-bg border border-port-border rounded px-3 py-1.5 text-sm disabled:opacity-50"
+        />
+        <button
+          onClick={() => onRefine(feedback)} disabled={busy || disabled}
+          className="inline-flex items-center gap-1 bg-port-card border border-port-border hover:border-port-accent px-3 py-1.5 rounded text-sm disabled:opacity-50"
+        >
+          {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />} Refine
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function StepPanel({ session, universe, series, issues, stepId, locked, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const arc = series?.arc || {};
+
+  const runGenerate = async () => {
+    setBusy(true);
+    const res = await generateStoryStep(session.id, stepId, {}, { silent: true })
+      .catch((err) => { toast.error(err?.message || 'Generation failed'); return null; });
+    setBusy(false);
+    if (res) { toast.success('Generated'); onChanged(); }
+  };
+  const runRefine = async (feedback, entryId) => {
+    setBusy(true);
+    const res = await refineStoryStep(session.id, stepId, { feedback, entryId }, { silent: true })
+      .catch((err) => { toast.error(err?.message || 'Refine failed'); return null; });
+    setBusy(false);
+    if (res) {
+      toast.success(res.changes?.length ? `Refined — ${res.changes.length} change(s)` : 'Refined');
+      onChanged();
+    }
+  };
+
+  const genButton = (label = 'Generate with AI') => (
+    <button
+      onClick={runGenerate} disabled={busy || locked}
+      className="inline-flex items-center gap-2 bg-port-accent hover:bg-blue-600 disabled:opacity-50 text-white px-3 py-1.5 rounded text-sm"
+    >
+      {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />} {label}
+    </button>
+  );
+
+  if (stepId === 'idea') {
+    return (
+      <div className="space-y-3">
+        <FieldBlock label="Working title" value={session.title} />
+        <FieldBlock label="Starter idea" value={session.seedIdea} />
+        {!locked && genButton('Expand idea with AI')}
+        <p className="text-xs text-gray-500">Expanding seeds the universe starter prompt and series premise for the next steps.</p>
+      </div>
+    );
+  }
+  if (stepId === 'universeAesthetic') {
+    return (
+      <div className="space-y-3">
+        <FieldBlock label="Logline" value={universe?.logline} />
+        <FieldBlock label="Premise" value={universe?.premise} />
+        <FieldBlock label="Style notes" value={universe?.styleNotes} />
+        <FieldBlock label="Influences — embrace" value={(universe?.influences?.embrace || []).join(', ')} />
+        <FieldBlock label="Influences — avoid" value={(universe?.influences?.avoid || []).join(', ')} />
+        <div className="flex items-center gap-2">
+          {!locked && genButton('Expand aesthetic')}
+          {universe?.id && (
+            <Link to={`/universes/${universe.id}`} className="inline-flex items-center gap-1 text-sm text-gray-400 hover:text-port-accent">
+              <ExternalLink className="w-4 h-4" /> Deep-edit in Universe Builder
+            </Link>
+          )}
+        </div>
+        {!locked && <RefineBox onRefine={(fb) => runRefine(fb)} busy={busy} />}
+      </div>
+    );
+  }
+  if (stepId === 'plotArc') {
+    return (
+      <div className="space-y-3">
+        <FieldBlock label="Arc logline" value={arc.logline} />
+        <FieldBlock label="Arc summary" value={arc.summary} />
+        <FieldBlock label="Protagonist arc" value={arc.protagonistArc} />
+        <FieldBlock label="Themes" value={(arc.themes || []).join(', ')} />
+        <FieldBlock label="Emotional shape (Vonnegut)" value={arc.shape} />
+        <div className="flex items-center gap-2">
+          {!locked && genButton('Generate plot arc')}
+          {series?.id && (
+            <Link to={`/pipeline/series/${series.id}`} className="inline-flex items-center gap-1 text-sm text-gray-400 hover:text-port-accent">
+              <ExternalLink className="w-4 h-4" /> Deep-edit on the Arc Canvas
+            </Link>
+          )}
+        </div>
+      </div>
+    );
+  }
+  if (stepId === 'readerMap') {
+    return (
+      <div className="space-y-3">
+        <ReaderMapView readerMap={arc.readerMap} />
+        {!locked && genButton('Generate reader map')}
+        {!locked && arc.readerMap && <RefineBox onRefine={(fb) => runRefine(fb)} busy={busy} />}
+      </div>
+    );
+  }
+  if (stepId === 'characters') {
+    const cast = universe?.characters || [];
+    return (
+      <div className="space-y-3">
+        {cast.length === 0 && (
+          <p className="text-gray-600 italic text-sm">
+            No characters yet. Add them in the <Link to={universe?.id ? `/universes/${universe.id}` : '/universes'} className="text-port-accent">Universe Builder</Link> or after generating the arc.
+          </p>
+        )}
+        {cast.map((c) => (
+          <div key={c.id} className="bg-port-bg border border-port-border rounded p-2 flex items-start justify-between gap-2">
+            <div>
+              <div className="font-medium text-sm">{c.name} {c.locked && <Lock className="w-3 h-3 inline text-port-success" />}</div>
+              <div className="text-xs text-gray-400">{c.physicalDescription || (Array.isArray(c.descriptor) ? c.descriptor.map((d) => d.value).join(', ') : '')}</div>
+            </div>
+            {!locked && (
+              <button
+                onClick={() => runRefine('', c.id)} disabled={busy}
+                className="text-xs inline-flex items-center gap-1 border border-port-border rounded px-2 py-1 hover:border-port-accent disabled:opacity-50"
+              >
+                <Wand2 className="w-3 h-3" /> Refine
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (stepId === 'issues') {
+    return <IssuesPanel session={session} series={series} issues={issues} onChanged={onChanged} />;
+  }
+  if (stepId === 'production') {
+    const locks = session.steps?.issues?.issueLocks || {};
+    const done = (issues || []).filter((i) => locks[i.id]?.locked);
+    return (
+      <div className="space-y-3">
+        <p className="text-sm text-gray-400">Render each completed issue. Production happens on the Pipeline issue page.</p>
+        {done.length === 0 && <p className="text-gray-600 italic text-sm">Lock at least one issue on the previous step first.</p>}
+        {done.map((i) => (
+          <div key={i.id} className="flex items-center justify-between bg-port-bg border border-port-border rounded px-3 py-2">
+            <span className="text-sm">#{i.number} {i.title}</span>
+            <Link to={`/pipeline/issues/${i.id}/storyboards`} className="text-sm text-port-accent inline-flex items-center gap-1">
+              Open production <ExternalLink className="w-4 h-4" />
+            </Link>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return null;
+}
+
+function IssuesPanel({ session, series, issues, onChanged }) {
+  const locks = session.steps?.issues?.issueLocks || {};
+  const [busyId, setBusyId] = useState(null);
+
+  const toggleIssue = async (issueId, next) => {
+    setBusyId(issueId);
+    const res = await setStoryIssueLock(session.id, issueId, next, { silent: true })
+      .catch((err) => { toast.error(err?.message || 'Failed'); return null; });
+    setBusyId(null);
+    if (res) { toast.success(next ? 'Issue marked done' : 'Issue reopened'); onChanged(); }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-gray-400">Complete issues one at a time. Lock issue #1 before moving to #2.</p>
+        {series?.id && (
+          <Link to={`/pipeline/series/${series.id}`} className="text-sm text-port-accent inline-flex items-center gap-1">
+            Plan issues in Pipeline <ExternalLink className="w-4 h-4" />
+          </Link>
+        )}
+      </div>
+      {(!issues || issues.length === 0) && (
+        <p className="text-gray-600 italic text-sm">No issues yet — generate seasons on the plot-arc step, then plan issues in the Pipeline.</p>
+      )}
+      {(issues || []).map((i) => {
+        const isLocked = locks[i.id]?.locked;
+        return (
+          <div key={i.id} className="flex items-center justify-between bg-port-bg border border-port-border rounded px-3 py-2">
+            <div className="flex items-center gap-2">
+              {isLocked ? <Check className="w-4 h-4 text-port-success" /> : <span className="w-4 h-4" />}
+              <span className="text-sm">#{i.number} {i.title}</span>
+              <span className="text-xs text-gray-500">{i.status}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Link to={`/pipeline/issues/${i.id}/idea`} className="text-xs text-gray-400 hover:text-port-accent inline-flex items-center gap-1">
+                Open <ExternalLink className="w-3 h-3" />
+              </Link>
+              <button
+                onClick={() => toggleIssue(i.id, !isLocked)} disabled={busyId === i.id}
+                className={`text-xs inline-flex items-center gap-1 border rounded px-2 py-1 disabled:opacity-50 ${isLocked ? 'border-port-success text-port-success' : 'border-port-border hover:border-port-accent'}`}
+              >
+                {busyId === i.id ? <Loader2 className="w-3 h-3 animate-spin" /> : (isLocked ? <Unlock className="w-3 h-3" /> : <Lock className="w-3 h-3" />)}
+                {isLocked ? 'Reopen' : 'Mark done'}
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Detail view: stepper + active panel ─────────────────────────────────────
+
+function StoryBuilderDetail({ storyId, stepParam }) {
+  const navigate = useNavigate();
+  const [steps, setSteps] = useState([]);
+  const [session, setSession] = useState(null);
+  const [staleSteps, setStaleSteps] = useState([]);
+  const [universe, setUniverse] = useState(null);
+  const [series, setSeries] = useState(null);
+  const [issues, setIssues] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const reload = useCallback(async () => {
+    const s = await getStorySession(storyId, { silent: true }).catch(() => null);
+    if (!s) { setSession(null); setLoading(false); return; }
+    setSession(s);
+    setStaleSteps(s.staleSteps || []);
+    const [u, ser] = await Promise.all([
+      s.universeId ? getUniverse(s.universeId).catch(() => null) : Promise.resolve(null),
+      s.seriesId ? getPipelineSeries(s.seriesId).catch(() => null) : Promise.resolve(null),
+    ]);
+    setUniverse(u);
+    setSeries(ser);
+    if (s.seriesId) {
+      const iss = await listPipelineIssues(s.seriesId).catch(() => []);
+      setIssues(Array.isArray(iss) ? iss : (iss?.items || []));
+    }
+    setLoading(false);
+  }, [storyId]);
+
+  useEffect(() => { getStoryBuilderSteps({ silent: true }).then((r) => setSteps(r.steps || [])).catch(() => {}); }, []);
+  useEffect(() => { setLoading(true); reload(); }, [reload]);
+
+  const stepIds = steps.map((s) => s.id);
+  const activeStepId = stepIds.includes(stepParam) ? stepParam : (session?.currentStep || 'idea');
+  const activeIdx = stepIds.indexOf(activeStepId);
+  const activeStep = steps[activeIdx];
+  const stepState = session?.steps?.[activeStepId] || { status: 'pending', locked: false };
+  const isStale = staleSteps.includes(activeStepId);
+
+  // A step is reachable when every earlier step is locked AND not stale.
+  const reachable = useCallback((idx) => {
+    if (idx <= 0) return true;
+    for (let i = 0; i < idx; i++) {
+      const id = stepIds[i];
+      if (session?.steps?.[id]?.locked !== true) return false;
+      if (staleSteps.includes(id)) return false;
+    }
+    return true;
+  }, [stepIds, session, staleSteps]);
+
+  const lock = useLockToggle({
+    patchFn: (next) => (next ? lockStoryStep(storyId, activeStepId, { silent: true }) : unlockStoryStep(storyId, activeStepId, { silent: true })),
+    onSuccess: () => reload(),
+    lockedMessage: `${activeStep?.label || 'Step'} locked`,
+    unlockedMessage: `${activeStep?.label || 'Step'} unlocked`,
+    errorMessage: 'Failed to update lock',
+  });
+
+  const goToStep = async (id, idx) => {
+    if (!reachable(idx)) { toast.error('Lock the earlier steps first'); return; }
+    // Persist the current-step pointer (server re-gates); navigate optimistically.
+    await setStoryCurrentStep(storyId, id, { silent: true }).catch(() => {});
+    navigate(`/story-builder/${storyId}/${id}`);
+  };
+
+  if (loading) return <div className="p-6 text-gray-400 flex items-center gap-2"><Loader2 className="w-5 h-5 animate-spin" /> Loading…</div>;
+  if (!session) return <div className="p-6 text-gray-400">Session not found. <Link to="/story-builder" className="text-port-accent">Back to Story Builder</Link></div>;
+
+  return (
+    <div className="h-full overflow-y-auto p-4 md:p-6">
+      <div className="max-w-5xl mx-auto">
+        <header className="mb-4">
+          <Link to="/story-builder" className="text-xs text-gray-500 hover:text-port-accent">← All stories</Link>
+          <h1 className="text-2xl font-bold flex items-center gap-2 mt-1">
+            <Sparkles className="w-6 h-6 text-port-accent" /> {session.title}
+          </h1>
+        </header>
+
+        <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-6">
+          {/* Step rail */}
+          <nav className="space-y-1">
+            {steps.map((s, idx) => {
+              const st = session.steps?.[s.id] || { status: 'pending', locked: false };
+              const stale = staleSteps.includes(s.id);
+              const isActive = s.id === activeStepId;
+              const canGo = reachable(idx);
+              return (
+                <button
+                  key={s.id} onClick={() => goToStep(s.id, idx)} disabled={!canGo}
+                  className={`w-full text-left px-3 py-2 rounded border flex items-center justify-between gap-2 ${
+                    isActive ? 'border-port-accent bg-port-card' : 'border-transparent hover:bg-port-card'
+                  } ${!canGo ? 'opacity-40 cursor-not-allowed' : ''}`}
+                >
+                  <span className="flex items-center gap-2 text-sm">
+                    {st.locked ? <Lock className="w-3.5 h-3.5 text-port-success" /> : <span className="w-3.5 h-3.5 rounded-full border border-gray-600 inline-block" />}
+                    {s.label}
+                  </span>
+                  {stale && <AlertTriangle className="w-3.5 h-3.5 text-port-warning" title="Stale — re-review" />}
+                </button>
+              );
+            })}
+          </nav>
+
+          {/* Active step */}
+          <section className="bg-port-card border border-port-border rounded-lg p-4 space-y-3">
+            <div className="flex items-start justify-between">
+              <div>
+                <h2 className="text-lg font-semibold">{activeStep?.label}</h2>
+                <p className="text-sm text-gray-400">{activeStep?.description}</p>
+              </div>
+              <span className={`text-xs ${STATUS_BADGE[stepState.status]?.cls}`}>{STATUS_BADGE[stepState.status]?.label}</span>
+            </div>
+
+            {isStale && (
+              <div className="flex items-center gap-2 text-sm text-port-warning bg-port-warning/10 border border-port-warning/30 rounded px-3 py-2">
+                <AlertTriangle className="w-4 h-4" /> An earlier step changed after you locked this — re-review and re-lock to continue.
+              </div>
+            )}
+
+            <StepPanel
+              session={session} universe={universe} series={series} issues={issues}
+              stepId={activeStepId} locked={stepState.locked} onChanged={reload}
+            />
+
+            {/* Footer: lock + navigation */}
+            <div className="flex items-center justify-between border-t border-port-border pt-3 mt-3">
+              <button
+                onClick={() => lock.toggle(stepState.locked)} disabled={lock.busy}
+                className={`inline-flex items-center gap-2 px-3 py-1.5 rounded text-sm disabled:opacity-50 ${
+                  stepState.locked ? 'bg-port-card border border-port-success text-port-success' : 'bg-port-success hover:bg-green-600 text-white'
+                }`}
+              >
+                {lock.busy ? <Loader2 className="w-4 h-4 animate-spin" /> : (stepState.locked ? <Unlock className="w-4 h-4" /> : <Check className="w-4 h-4" />)}
+                {stepState.locked ? 'Unlock to revise' : 'Lock & continue'}
+              </button>
+
+              <div className="flex items-center gap-2">
+                {activeIdx > 0 && (
+                  <button onClick={() => goToStep(stepIds[activeIdx - 1], activeIdx - 1)} className="inline-flex items-center gap-1 text-sm text-gray-400 hover:text-white">
+                    <ChevronLeft className="w-4 h-4" /> Back
+                  </button>
+                )}
+                {activeIdx < steps.length - 1 && (
+                  <button
+                    onClick={() => goToStep(stepIds[activeIdx + 1], activeIdx + 1)}
+                    disabled={!stepState.locked || isStale}
+                    className="inline-flex items-center gap-1 text-sm bg-port-accent hover:bg-blue-600 disabled:opacity-40 text-white px-3 py-1.5 rounded"
+                  >
+                    Next <ChevronRight className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function StoryBuilder() {
+  const { storyId, step } = useParams();
+  if (!storyId) return <StoryBuilderIndex />;
+  return <StoryBuilderDetail storyId={storyId} stepParam={step} />;
+}

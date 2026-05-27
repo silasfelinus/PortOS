@@ -106,6 +106,7 @@ import { initStoryboardsFilenameHook } from './services/pipeline/storyboardsFile
 import { initSeasonCoverFilenameHook } from './services/pipeline/seasonCoverFilenameHook.js';
 import pipelineRoutes from './routes/pipeline.js';
 import importerRoutes from './routes/importer.js';
+import storyBuilderRoutes from './routes/storyBuilder.js';
 import { initMediaJobQueue } from './services/mediaJobQueue/index.js';
 import { recoverInFlightProjects } from './services/creativeDirector/recovery.js';
 import imageVideoModelsRoutes from './routes/imageVideoModels.js';
@@ -453,6 +454,7 @@ app.use('/api/universe-builder', universeBuilderRoutes);
 app.use('/api/pipeline', pipelineRoutes);
 app.use('/api/conflict-journal', conflictJournalRoutes);
 app.use('/api/importer', importerRoutes);
+app.use('/api/story-builder', storyBuilderRoutes);
 app.use('/api/image-video/models', imageVideoModelsRoutes);
 app.use('/api/loras', lorasRoutes);
 // AUTOMATIC1111-compatible surface for tailnet clients — gated by

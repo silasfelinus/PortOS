@@ -1340,3 +1340,84 @@ describe('arcPlanner — generateComicCoverConcepts', () => {
     expect(stored.stages.comicPages.backCover.script).toBe('LLM back');
   });
 });
+
+describe('arcPlanner — generateReaderMap', () => {
+  beforeEach(() => {
+    fileStore.clear();
+    uuidCounter = 0;
+    stageRunnerSpy = undefined;
+  });
+
+  it('runs the reader-map prompt and returns a sanitized readerMap', async () => {
+    const s = await setupSeries({ arc: { logline: 'rise', summary: 'spine', shape: 'man-in-hole' } });
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        hooks: [{ label: 'Who silenced the foundry?', atArcPosition: 0, note: 'opening' }],
+        payoffs: [{ label: 'It was the guild', atArcPosition: 6 }],
+        beats: [{ kind: 'bogus', note: 'dropped' }, { kind: 'reveal', atArcPosition: 3, intensity: 9 }],
+        cliffhangers: [{ atIssueBoundary: 1, note: 'door opens' }],
+      },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.generateReaderMap(s.id);
+    expect(stageRunnerSpy).toHaveBeenCalledWith('story-builder-reader-map', expect.any(Object), expect.objectContaining({ returnsJson: true }));
+    expect(out.readerMap.hooks).toHaveLength(1);
+    expect(out.readerMap.payoffs[0].atArcPosition).toBe(6);
+    // bogus-kind beat dropped, intensity clamped
+    expect(out.readerMap.beats).toHaveLength(1);
+    expect(out.readerMap.beats[0].intensity).toBe(1);
+    expect(out.readerMap.cliffhangers[0].note).toBe('door opens');
+  });
+
+  it('is NOT blocked by a locked arc (reader map is authored after the arc is approved)', async () => {
+    const s = await setupSeries({ locked: { arc: true }, arc: { logline: 'x', summary: 'y' } });
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { hooks: [{ label: 'h' }], payoffs: [], beats: [], cliffhangers: [] },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+    const out = await planner.generateReaderMap(s.id);
+    expect(out.readerMap.hooks).toHaveLength(1);
+  });
+
+  it('throws only when the readerMap field itself is locked', async () => {
+    const s = await setupSeries({ locked: { arcFields: { readerMap: true } } });
+    await expect(planner.generateReaderMap(s.id)).rejects.toMatchObject({ code: 'PIPELINE_ARC_VALIDATION' });
+  });
+});
+
+describe('arcPlanner — refineReaderMap', () => {
+  beforeEach(() => {
+    fileStore.clear();
+    uuidCounter = 0;
+    stageRunnerSpy = undefined;
+  });
+
+  it('returns the revised readerMap plus changes and rationale', async () => {
+    const s = await setupSeries({
+      arc: { logline: 'rise', summary: 'spine', readerMap: { hooks: [{ label: 'old hook' }] } },
+    });
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        hooks: [{ label: 'sharper hook', atArcPosition: 0 }],
+        payoffs: [],
+        beats: [{ kind: 'emotional', intensity: 0.5 }],
+        cliffhangers: [],
+        changes: ['rewrote the opening hook'],
+        rationale: 'tightened the front',
+      },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+
+    const out = await planner.refineReaderMap(s.id, 'make the first hook sharper');
+    expect(stageRunnerSpy).toHaveBeenCalledWith('story-builder-reader-map-refine', expect.any(Object), expect.objectContaining({ returnsJson: true }));
+    expect(out.readerMap.hooks[0].label).toBe('sharper hook');
+    expect(out.changes).toEqual(['rewrote the opening hook']);
+    expect(out.rationale).toBe('tightened the front');
+  });
+
+  it('throws when the readerMap field is locked', async () => {
+    const s = await setupSeries({ locked: { arcFields: { readerMap: true } } });
+    await expect(planner.refineReaderMap(s.id, 'x')).rejects.toMatchObject({ code: 'PIPELINE_ARC_VALIDATION' });
+  });
+});
