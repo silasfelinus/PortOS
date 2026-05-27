@@ -39,10 +39,12 @@ export const RATE_LIMIT_MS = {
   error: 90_000,
   'task:ready': 60_000,
   notification: 60_000,
-  // Completion of a voice-dispatched coding task. A 30s floor keeps two
-  // tasks finishing back-to-back from talking over each other while still
-  // letting the user hear about each within a normal review cadence.
-  'task-complete': 30_000,
+  // NOTE: there is intentionally NO 'task-complete' entry. Completions of
+  // voice-dispatched tasks are solicited (the user asked for each one), so a
+  // drop-based throttle would silently lose the second of two tasks finishing
+  // close together. Instead the wiring serializes completion lines onto a
+  // queue (see taskCompleteTail) so they are spoken one after another without
+  // dropping or overlapping.
 };
 
 // Spoken lines should be short — synthesis is capped at MAX_PROACTIVE_TEXT_LEN
@@ -180,9 +182,14 @@ export const wireProactiveTriggers = ({ io, speak = defaultSpeak, limits = RATE_
   // before the config read. A user-cancelled task lands as blocked with
   // blockedCategory 'user-terminated' — suppress it (the user stopped it on
   // purpose; "didn't finish cleanly" would be wrong). Solicited: bypasses
-  // proactive-enabled but not voice-disabled / quiet hours. dispatch() (not
-  // fire) so we can await the config read and still route the rejection
-  // through the same catch.
+  // proactive-enabled but not voice-disabled / quiet hours.
+  //
+  // Completions are SERIALIZED onto this tail promise rather than going
+  // through the per-source rate limit: each completion is solicited, so a
+  // drop-based throttle would silently lose the second of two tasks that
+  // finish close together. Chaining makes two near-simultaneous completions
+  // speak one after the other (no drop, no overlapping audio).
+  let taskCompleteTail = Promise.resolve();
   const onTaskUpdated = (evt) => {
     if (evt?.action !== 'updated') return;
     const task = evt.task;
@@ -190,12 +197,12 @@ export const wireProactiveTriggers = ({ io, speak = defaultSpeak, limits = RATE_
     if (status !== 'completed' && status !== 'blocked') return;
     if (!isMetaTrue(task.metadata?.voiceDispatch)) return;
     if (status === 'blocked' && task.metadata?.blockedCategory === 'user-terminated') return;
-    (async () => {
+    taskCompleteTail = taskCompleteTail.then(async () => {
       const cfg = await getVoiceConfig();
       if (cfg?.llm?.codeAgent?.announceOnComplete === false) return;
       const priority = status === 'completed' ? 'normal' : 'high';
       await dispatch('task-complete', formatTaskCompletionLine(task), priority, { solicited: true });
-    })().catch((err) =>
+    }).catch((err) =>
       console.error(`🔕 voice: proactive task-complete trigger failed: ${err?.message || err}`),
     );
   };

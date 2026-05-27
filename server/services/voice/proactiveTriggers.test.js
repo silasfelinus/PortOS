@@ -246,11 +246,25 @@ describe('wireProactiveTriggers', () => {
     }
   });
 
-  it('default RATE_LIMIT_MS covers all wired sources', () => {
+  it('rate-limits the throttled sources but NOT solicited task completions', () => {
     expect(RATE_LIMIT_MS).toHaveProperty('error');
     expect(RATE_LIMIT_MS).toHaveProperty('task:ready');
     expect(RATE_LIMIT_MS).toHaveProperty('notification');
-    expect(RATE_LIMIT_MS).toHaveProperty('task-complete');
+    // Solicited completions are serialized (queued), not drop-throttled.
+    expect(RATE_LIMIT_MS).not.toHaveProperty('task-complete');
+  });
+
+  it('announces BOTH of two back-to-back completions (no drop-based throttle)', async () => {
+    unwire = wireProactiveTriggers({ io: {}, speak });
+    const upd = (id) => ({ type: 'user', action: 'updated', task: { id, status: 'completed', description: `task ${id}`, metadata: { voiceDispatch: true } } });
+    cosEvents.emit('tasks:changed', upd('a'));
+    cosEvents.emit('tasks:changed', upd('b'));
+    await flush();
+    await flush();
+    expect(speak).toHaveBeenCalledTimes(2);
+    const spoken = speak.mock.calls.map((c) => c[0].text).join(' | ');
+    expect(spoken).toMatch(/task a/);
+    expect(spoken).toMatch(/task b/);
   });
 
   // Helper: a tasks:changed 'updated' event payload for a voice-dispatched task.
