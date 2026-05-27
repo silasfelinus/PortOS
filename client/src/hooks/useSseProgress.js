@@ -25,7 +25,15 @@ export function useSseProgress(url, { enabled = true } = {}) {
   const esRef = useRef(null);
 
   useEffect(() => {
-    if (!url || !enabled) return undefined;
+    if (!url || !enabled) {
+      // Clear terminal/open state when disabled so a later re-enable starts
+      // clean. Without this, a stale `closed=true` from a finished run makes a
+      // consumer's "is the stream over?" check fire immediately on the NEXT
+      // subscribe, tearing down the new stream before it can deliver progress.
+      setIsOpen(false);
+      setClosed(false);
+      return undefined;
+    }
     setFrames([]);
     setLatest(null);
     setIsOpen(false);
