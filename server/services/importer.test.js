@@ -289,6 +289,22 @@ describe('analyzeImport', () => {
     }
   });
 
+  it('forwards providerOverride + modelOverride to every analyze stage call', async () => {
+    // Regression-pin: the importer UI lets the user pin a specific provider +
+    // model for extraction (mirrors universe/series). Both must reach every
+    // staged LLM call (canon, arc, issues) — a one-sided drop would silently
+    // ignore the user's model choice on one of the three extractions.
+    wireDefaultLLMResponses();
+    await importerSvc.analyzeImport({
+      universeName: 'U', seriesName: 'S', contentType: 'short-story', source: 'x',
+      providerOverride: 'anthropic', modelOverride: 'claude-opus-4-7',
+    });
+    expect(mockRunStagedLLM).toHaveBeenCalled();
+    for (const call of mockRunStagedLLM.mock.calls) {
+      expect(call[2]).toMatchObject({ providerOverride: 'anthropic', modelOverride: 'claude-opus-4-7' });
+    }
+  });
+
   it('forwards Mustache section-guard flags so per-content-type prompt blocks render', async () => {
     // Regression-pin: PortOS's template engine is Mustache-only — the prompts
     // use `{{#isShortStory}}…{{/isShortStory}}` blocks, so the orchestrator
@@ -380,6 +396,23 @@ describe('classifyImportContent', () => {
     expect(result.confidence).toBe('high');
     expect(result.reasoning).toBe('has FADE IN markers');
     expect(result.runId).toBe('run-classify-1');
+  });
+
+  it('forwards providerOverride + modelOverride to the classify stage call', async () => {
+    mockRunStagedLLM.mockResolvedValueOnce({
+      content: { contentType: 'novel', confidence: 'high', reasoning: 'chapters' },
+      model: 'mock',
+      providerId: 'mock',
+      runId: 'run-classify-override',
+    });
+    await importerSvc.classifyImportContent({
+      source: 'some prose', providerOverride: 'anthropic', modelOverride: 'claude-opus-4-7',
+    });
+    expect(mockRunStagedLLM).toHaveBeenCalledWith(
+      'importer-classify',
+      expect.any(Object),
+      expect.objectContaining({ providerOverride: 'anthropic', modelOverride: 'claude-opus-4-7' }),
+    );
   });
 
   it('drops a hallucinated contentType not in IMPORTER_CONTENT_TYPES to null', async () => {

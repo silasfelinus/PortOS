@@ -344,7 +344,7 @@ export const CLASSIFY_SOURCE_HEAD_CHARS = 4_000;
  * gated similarly. The reasoning string is passed through verbatim so the
  * UI can show it in a tooltip beside the auto-pick.
  */
-export async function classifyImportContent({ source, providerOverride } = {}) {
+export async function classifyImportContent({ source, providerOverride, modelOverride } = {}) {
   if (!isStr(source) || !source.trim()) {
     throw makeErr('source is required', ERR_VALIDATION);
   }
@@ -357,6 +357,7 @@ export async function classifyImportContent({ source, providerOverride } = {}) {
   const sourceHead = source.slice(0, CLASSIFY_SOURCE_HEAD_CHARS);
   const run = await runStagedLLM('importer-classify', { sourceHead }, {
     providerOverride,
+    modelOverride,
     source: 'importer-classify',
     returnsJson: true,
   });
@@ -396,6 +397,7 @@ export async function analyzeImport({
   contentType,
   source,
   providerOverride,
+  modelOverride,
   targetIssueCount,
 } = {}) {
   if (!isStr(universeName) || !universeName.trim()) {
@@ -449,7 +451,7 @@ export async function analyzeImport({
   // option). Helper returns a FRESH object each call so a future runner
   // that decides to add bookkeeping (`opts.attempt`, `opts.startedAt`)
   // can't leak state across our parallel canon + arc invocations.
-  const buildLlmOpts = () => ({ providerOverride, source: 'importer-analyze', returnsJson: true });
+  const buildLlmOpts = () => ({ providerOverride, modelOverride, source: 'importer-analyze', returnsJson: true });
 
   const userRequestedCount = Number.isFinite(targetIssueCount) && targetIssueCount > 0;
   const issueCountHint = userRequestedCount
