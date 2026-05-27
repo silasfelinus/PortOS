@@ -62,10 +62,14 @@ export function useSeriesEditorial(seriesId) {
     }
   }, [closed, analysisEnabled, reload]);
 
+  // Force a recompute: this is an explicit user action ("Interpret reader map"
+  // / "Re-run all"). On a first run nothing is cached so force is a no-op; on a
+  // re-run it bypasses the unchanged-content cache short-circuit so the button
+  // actually re-analyzes (e.g. after a prompt/model change or a bad result).
   const startAnalysis = useCallback(() => {
     if (!seriesId) return;
     setStarting(true);
-    analyzeSeriesEditorial(seriesId, {}, { silent: true })
+    analyzeSeriesEditorial(seriesId, { force: true }, { silent: true })
       .then(() => setAnalysisEnabled(true))
       .catch((err) => toast.error(err?.message || 'Failed to start analysis'))
       .finally(() => setStarting(false));
