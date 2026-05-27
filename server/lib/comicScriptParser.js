@@ -80,13 +80,24 @@ const isNoneValue = (s) => !s || NONE_RE.test(s.trim());
 // what a header looks like. Roman numerals are excluded: under `/i` the class
 // matches prose words ("mild", "civic").
 export const COMIC_NUM = '(?:\\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)';
+// What may legitimately follow the number in a STANDALONE PAGE/PANEL header:
+// end-of-line, or a punctuation-led suffix (`(5 panels)`, `: Title`, `-2`,
+// `/3`). Anything else after the number — most importantly a space + a word —
+// means it's a prose CONTENT line that merely starts with the keyword
+// (e.g. "Page 1 of the ancient book lies open."), which must NOT be treated as
+// a header or the panel it belongs to gets dropped. Shared with the splitter.
+export const COMIC_HEADER_TAIL = '\\s*(?:[(:.\\-–—/].*)?$';
 // Case-INSENSITIVE so a Title Case `Page 1` / `Panel 1` script (which the
 // splitter already accepts and seeds into stages.comicScript) also parses into
 // pages/panels here — otherwise the import succeeds but renders zero panels.
-const BARE_PAGE_LINE = new RegExp(`^\\s*pages?\\b\\s*#?\\s*${COMIC_NUM}\\b`, 'i');   // PAGE 1 / Page 1 / PAGES 2
-const BARE_PANEL_LINE = new RegExp(`^\\s*panels?\\b\\s*#?\\s*${COMIC_NUM}\\b`, 'i'); // PANEL 1 / Panel 1
-const BARE_CAPTION_LINE = /^\s*caption\b/i;    // CAPTION / Caption / CAPTION 2:
-const BARE_SFX_LINE = /^\s*sfx\b/i;            // SFX / Sfx
+const BARE_PAGE_LINE = new RegExp(`^\\s*pages?\\b\\s*#?\\s*${COMIC_NUM}\\b${COMIC_HEADER_TAIL}`, 'i');   // PAGE 1 / Page 1 / PAGES 2-3
+const BARE_PANEL_LINE = new RegExp(`^\\s*panels?\\b\\s*#?\\s*${COMIC_NUM}\\b${COMIC_HEADER_TAIL}`, 'i'); // PANEL 1 / Panel 1 (DPS)
+// Standalone CAPTION/SFX LABEL lines only (text on following lines). An inline
+// "Caption: text" / "SFX: Thud!" is left for the canonical FIELD_RE to parse,
+// and a prose line that merely starts with the word ("Caption this image.")
+// is not matched.
+const BARE_CAPTION_LINE = /^\s*caption(?:\s+\d+)?\s*:?\s*$/i;  // CAPTION / Caption / CAPTION 2:
+const BARE_SFX_LINE = /^\s*sfx\s*:?\s*$/i;                     // SFX / Sfx / SFX:
 // A standalone dialogue speaker cue: a short, NAME-like all-caps token,
 // optionally with a parenthetical (`GIANT`, `KESSA (WHISPERED)`). It must NOT
 // contain sentence punctuation (`. , ! ? :`) so a terse all-caps panel
@@ -187,8 +198,10 @@ function normalizeBareComicScript(script) {
       field = null; dialogueSpeaker = null; // end any in-progress dialogue
       continue;
     }
-    // First content line after a PANEL opens the Description field.
-    if (awaitingFirst && t && field === 'description') {
+    // First content line after a PANEL opens the Description field — unless
+    // it's already a canonical field label (e.g. an inline "Caption: …" first
+    // line), which is passed through for the main parser's FIELD_RE to handle.
+    if (awaitingFirst && t && field === 'description' && !FIELD_RE.test(t)) {
       out.push(`Description: ${t}`);
       awaitingFirst = false;
       continue;

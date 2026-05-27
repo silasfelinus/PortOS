@@ -396,6 +396,23 @@ Thud!`;
     expect(parseComicScript('Pages turned slowly through the long evening as she read.').pages).toHaveLength(0);
   });
 
+  it('does NOT treat a content line that starts with "Page N …" as a new page header', () => {
+    // A panel description like "Page 1 of the ancient book lies open." must stay
+    // description — prefix-only markers used to consume it as a PAGE header and
+    // drop the panel. Standalone-header anchoring (number then EOL/punct only).
+    const { pages } = parseComicScript('PAGE 1\nPANEL 1\nPage 1 of the ancient book lies open.\nCAPTION\nThe end.');
+    expect(pages).toHaveLength(1);
+    expect(pages[0].panels).toHaveLength(1);
+    expect(pages[0].panels[0].description).toBe('Page 1 of the ancient book lies open.');
+    expect(pages[0].panels[0].caption).toBe('The end.');
+  });
+
+  it('leaves an inline "Caption: text" first line for FIELD_RE (not forced to description)', () => {
+    const { pages } = parseComicScript('PAGE 1\nPANEL 1\nCaption: It was night.\nPANEL 2\nA wide shot.');
+    expect(pages[0].panels[0].caption).toBe('It was night.');
+    expect(pages[0].panels[1].description).toBe('A wide shot.');
+  });
+
   it('leaves canonical Markdown scripts untouched (no false bare-detection)', () => {
     const { pages } = parseComicScript(SAMPLE);
     // Same result the canonical-format tests assert — normalization skipped.

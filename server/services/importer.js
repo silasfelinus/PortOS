@@ -32,7 +32,7 @@ import {
 } from './pipeline/series.js';
 import { createIssue, deleteIssue, listIssues } from './pipeline/issues.js';
 import { sanitizeArc, sanitizeSeasonList, buildSeason, ARC_SHAPE_IDS, ARC_ROLES } from '../lib/storyArc.js';
-import { COMIC_NUM } from '../lib/comicScriptParser.js';
+import { COMIC_NUM, COMIC_HEADER_TAIL } from '../lib/comicScriptParser.js';
 import { IMPORTER_CONTENT_TYPES, IMPORTER_PROSE_EXCERPT_MAX } from '../lib/validation.js';
 // Re-export the per-issue excerpt ceiling so callers/tests can reference the
 // same value the mechanical comic split validates against.
@@ -424,14 +424,15 @@ const COMIC_PAGES_PER_ISSUE = 22;
 // marker (the LLM fallback still covers genuinely header-less scripts).
 const COMIC_HEADER_MAX_LEN = 80;
 // `ISSUE #3`, `ISSUE 3`, `ISSUE THREE`, `ISSUE 3: TITLE`, `ISSUE THREE - TITLE`.
-// `COMIC_NUM` (shared with the render-time parser via comicScriptParser.js)
-// restricts the number token to digits/spelled-numbers so prose like
-// "Issue resolved." / "Pages turned slowly" isn't mis-split; the `\b` after
-// the keyword also stops "ISSUES with the plan…" from matching. Sharing the
-// token keeps the import-time split and the render-time parse in agreement.
-const ISSUE_HEADER_RE = new RegExp(`^issue\\b\\s*#?\\s*(${COMIC_NUM})\\b\\s*[:.\\-–—]?\\s*(.*)$`, 'i');
+// `COMIC_NUM` + `COMIC_HEADER_TAIL` (shared with the render-time parser via
+// comicScriptParser.js) restrict the number token to digits/spelled-numbers
+// AND require a standalone header form — so prose like "Issue resolved." or
+// "Issue 1 of the saga lay open" (content that merely starts with the keyword)
+// isn't mis-split. A title is captured only after a separator. Sharing the
+// grammar keeps the import-time split and the render-time parse in agreement.
+const ISSUE_HEADER_RE = new RegExp(`^issue\\b\\s*#?\\s*(${COMIC_NUM})\\b\\s*(?:[:.\\-–—]\\s*(.*))?\\s*$`, 'i');
 // `PAGE 1`, `PAGE ONE`, `PAGES 2-3`, `PAGE ONE (FIVE PANELS)`
-const PAGE_HEADER_RE = new RegExp(`^pages?\\b\\s*#?\\s*(${COMIC_NUM})\\b`, 'i');
+const PAGE_HEADER_RE = new RegExp(`^pages?\\b\\s*#?\\s*(${COMIC_NUM})\\b${COMIC_HEADER_TAIL}`, 'i');
 
 // Locate header lines matching `re`. Returns `[{ idx, title }]` where `idx`
 // is the 0-based line index and `title` is the trailing text after the

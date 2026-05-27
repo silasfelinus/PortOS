@@ -282,6 +282,16 @@ describe('splitComicScriptIssues (mechanical comic split)', () => {
     const out = importerSvc.splitComicScriptIssues('ISSUE ONE\nstuff\nISSUE TWO\nmore');
     expect(out).toHaveLength(2);
   });
+
+  it('does not mis-split a content line that starts with "Page N …" / "Issue N …" (standalone-header anchor)', () => {
+    // The number-token gate alone passed these (they DO contain a number); the
+    // standalone-header anchor (number then EOL/punct only) rejects the trailing
+    // prose so the mechanical path falls back to the LLM split.
+    expect(importerSvc.splitComicScriptIssues('Page 1 of the ancient book lies open and the dust settles.')).toBeNull();
+    expect(importerSvc.splitComicScriptIssues('Issue 1 of the saga had long been forgotten by the elders.')).toBeNull();
+    // Real standalone headers (incl. a parenthetical suffix) still split.
+    expect(importerSvc.splitComicScriptIssues('PAGE 1 (FIVE PANELS)\nart\nPAGE 2\nmore')).toHaveLength(1);
+  });
 });
 
 describe('importer cap invariants', () => {
