@@ -12,15 +12,30 @@
  */
 
 import { randomUUID } from 'crypto';
-import { broadcastSse, attachSseClient, closeJobAfterDelay } from '../../lib/sseUtils.js';
+import { broadcastSse, attachSseClient, SSE_CLEANUP_DELAY_MS } from '../../lib/sseUtils.js';
 import { listIssues } from './issues.js';
 import { analyzeIssue, pickAnalyzableContent } from './editorialAnalysis.js';
 
-// runs: Map<seriesId, { runId, clients[], lastPayload, cancelRequested, startedAt }>
+// runs: Map<seriesId, { runId, clients[], lastPayload, cancelRequested, finished, cleanupTimer, startedAt }>
+// A finished run lingers in the map for SSE_CLEANUP_DELAY_MS so late-attaching
+// clients can replay its terminal frame — but `finished` lets `isActive` and
+// the restart guard treat it as done, so an immediate re-run isn't swallowed.
 const runs = new Map();
 
 export function isSeriesAnalysisActive(seriesId) {
-  return runs.has(seriesId);
+  const run = runs.get(seriesId);
+  return !!run && !run.finished;
+}
+
+// Hold a finished run open briefly for terminal-frame replay, then evict it —
+// but only if THIS record is still the one mapped, so a restart that replaced
+// it within the window isn't clobbered by the prior run's timer.
+function scheduleCleanup(seriesId, record) {
+  record.cleanupTimer = setTimeout(() => {
+    if (runs.get(seriesId) !== record) return;
+    for (const c of record.clients) c.end();
+    runs.delete(seriesId);
+  }, SSE_CLEANUP_DELAY_MS);
 }
 
 export function attachClient(seriesId, res) {
@@ -46,13 +61,24 @@ function broadcast(seriesId, payload) {
  * existing runId.
  */
 export async function startSeriesAnalysis(seriesId, options = {}) {
-  if (runs.has(seriesId)) return { runId: runs.get(seriesId).runId, alreadyRunning: true };
+  const existing = runs.get(seriesId);
+  if (existing && !existing.finished) {
+    return { runId: existing.runId, alreadyRunning: true };
+  }
+  if (existing) {
+    // A finished run still in its replay window — cancel its pending eviction
+    // and drop its replay clients so this fresh run fully replaces it.
+    if (existing.cleanupTimer) clearTimeout(existing.cleanupTimer);
+    for (const c of existing.clients) c.end();
+  }
   const runId = randomUUID();
   const record = {
     runId,
     clients: [],
     lastPayload: null,
     cancelRequested: false,
+    finished: false,
+    cleanupTimer: null,
     startedAt: new Date().toISOString(),
   };
   runs.set(seriesId, record);
@@ -109,7 +135,8 @@ export async function startSeriesAnalysis(seriesId, options = {}) {
       console.error(`❌ editorial batch failed — series=${seriesId.slice(0, 12)} ${message}`);
       broadcast(seriesId, { type: 'error', runId, error: message, failedAt: new Date().toISOString() });
     } finally {
-      closeJobAfterDelay(runs, seriesId);
+      record.finished = true;
+      scheduleCleanup(seriesId, record);
     }
   })();
 

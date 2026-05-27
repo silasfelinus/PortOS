@@ -78,7 +78,12 @@ export function useSeriesEditorial(seriesId) {
   const cancelAnalysis = useCallback(() => {
     if (seriesId) cancelSeriesEditorial(seriesId).catch(() => {});
     setAnalysisEnabled(false);
-  }, [seriesId]);
+    // Disabling the SSE means we won't see the server's `canceled` frame, so
+    // pull the aggregate to surface snapshots already written for issues that
+    // finished before the cancel (otherwise the roadmap shows pre-run coverage
+    // until a manual reload).
+    reload();
+  }, [seriesId, reload]);
 
   const coverage = aggregate?.coverage || EMPTY_COVERAGE;
   const roadmap = aggregate?.roadmap || [];
