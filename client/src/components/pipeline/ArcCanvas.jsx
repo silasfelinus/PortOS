@@ -23,7 +23,7 @@
  * responsive without a refetch.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Plus, Trash2, Loader2, Sparkles, ShieldCheck, ChevronRight, ChevronDown,
@@ -47,6 +47,7 @@ import {
   generatePipelineVolumeCoverConcepts,
   pipelineVolumePdfUrl,
 } from '../../services/api';
+import useMediaJobProgress from '../../hooks/useMediaJobProgress';
 import { usePipelineVolumeBeatsProgress } from '../../hooks/usePipelineVolumeBeatsProgress';
 import SeriesLlmPicker from './SeriesLlmPicker';
 import { ArcShapePicker, ArcShapeSparkline, getStoryShape } from './StoryShapes';
@@ -164,6 +165,35 @@ function pickCoverJobId(record) {
 
 function issueCoverRecord(issue) {
   return issue?.stages?.comicPages?.cover || null;
+}
+
+function updateVolumeCoverSlot(season, coverKey, slotKey, filename) {
+  if (!season || !filename) return season;
+  const coverRecord = season[coverKey] || {};
+  const slot = coverRecord[slotKey] || {};
+  if (slot.filename === filename) return season;
+  return {
+    ...season,
+    [coverKey]: {
+      ...coverRecord,
+      [slotKey]: {
+        ...slot,
+        filename,
+      },
+    },
+  };
+}
+
+function updateSeriesVolumeCoverSlot(series, seasonId, coverKey, slotKey, filename) {
+  if (!series || !seasonId || !filename) return series;
+  let changed = false;
+  const nextSeasons = (series.seasons || []).map((season) => {
+    if (season.id !== seasonId) return season;
+    const nextSeason = updateVolumeCoverSlot(season, coverKey, slotKey, filename);
+    if (nextSeason !== season) changed = true;
+    return nextSeason;
+  });
+  return changed ? { ...series, seasons: nextSeasons } : series;
 }
 
 function CoverArt({ record, label, className = '', placeholderClassName = '' }) {
@@ -860,6 +890,7 @@ function ArcContent({ series, onSeriesUpdate }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(arc);
   const [saving, setSaving] = useState(false);
+  const [arcDetailsOpen, setArcDetailsOpen] = useState(false);
 
   const startEdit = () => {
     setDraft({ ...arc });
@@ -965,7 +996,11 @@ function ArcContent({ series, onSeriesUpdate }) {
         ) : null}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
           {arc.summary ? (
-            <details className="text-xs text-gray-400 rounded border border-port-border bg-port-bg/50 px-2 py-1.5">
+            <details
+              open={arcDetailsOpen}
+              onToggle={(e) => setArcDetailsOpen(e.currentTarget.open)}
+              className="text-xs text-gray-400 rounded border border-port-border bg-port-bg/50 px-2 py-1.5"
+            >
               <summary className="cursor-pointer hover:text-white inline-flex items-center gap-1.5">
                 Summary
                 <FieldLockToggle series={series} field="summary" label="Summary" onSeriesUpdate={onSeriesUpdate} />
@@ -974,7 +1009,11 @@ function ArcContent({ series, onSeriesUpdate }) {
             </details>
           ) : null}
           {arc.protagonistArc ? (
-            <details className="text-xs text-gray-400 rounded border border-port-border bg-port-bg/50 px-2 py-1.5">
+            <details
+              open={arcDetailsOpen}
+              onToggle={(e) => setArcDetailsOpen(e.currentTarget.open)}
+              className="text-xs text-gray-400 rounded border border-port-border bg-port-bg/50 px-2 py-1.5"
+            >
               <summary className="cursor-pointer hover:text-white inline-flex items-center gap-1.5">
                 Protagonist arc
                 <FieldLockToggle series={series} field="protagonistArc" label="Protagonist arc" onSeriesUpdate={onSeriesUpdate} />
@@ -1228,6 +1267,11 @@ function SeasonRow({ series, season, seasons, issues, onSeriesUpdate, onIssuesUp
 
   return (
     <li className="bg-port-card border border-port-border rounded-lg">
+      <VolumeCoverLiveUpdates
+        series={series}
+        season={season}
+        onSeriesUpdate={onSeriesUpdate}
+      />
       <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3 p-3">
         <button
           type="button"
@@ -1413,12 +1457,66 @@ function SeasonRow({ series, season, seasons, issues, onSeriesUpdate, onIssuesUp
   );
 }
 
-// Tiny thumb cell — shows the rendered image when present, an empty-state
-// dashed box otherwise. Smaller and dependency-free vs ComicScriptStage's
-// MediaJobThumb (which tracks live job status); for the Arc canvas's at-a-
-// glance row we only need the persisted-filename render.
+function VolumeCoverLiveUpdates({ series, season, onSeriesUpdate }) {
+  const latestSeriesRef = useRef(series);
+  useEffect(() => { latestSeriesRef.current = series; }, [series]);
+
+  const handleFilename = useCallback((coverKey, slotKey, filename) => {
+    const current = latestSeriesRef.current;
+    const next = updateSeriesVolumeCoverSlot(current, season.id, coverKey, slotKey, filename);
+    if (next === current) return;
+    latestSeriesRef.current = next;
+    onSeriesUpdate(next);
+  }, [onSeriesUpdate, season.id]);
+
+  return (
+    <>
+      <VolumeCoverSlotWatcher
+        slot={season.cover?.proofImage}
+        coverKey="cover"
+        slotKey="proofImage"
+        onFilename={handleFilename}
+      />
+      <VolumeCoverSlotWatcher
+        slot={season.cover?.finalImage}
+        coverKey="cover"
+        slotKey="finalImage"
+        onFilename={handleFilename}
+      />
+      <VolumeCoverSlotWatcher
+        slot={season.backCover?.proofImage}
+        coverKey="backCover"
+        slotKey="proofImage"
+        onFilename={handleFilename}
+      />
+      <VolumeCoverSlotWatcher
+        slot={season.backCover?.finalImage}
+        coverKey="backCover"
+        slotKey="finalImage"
+        onFilename={handleFilename}
+      />
+    </>
+  );
+}
+
+function VolumeCoverSlotWatcher({ slot, coverKey, slotKey, onFilename }) {
+  const jobId = slot?.filename ? null : slot?.jobId || null;
+  const { filename } = useMediaJobProgress(jobId, { kind: 'image' });
+
+  useEffect(() => {
+    if (!filename || slot?.filename) return;
+    onFilename(coverKey, slotKey, filename);
+  }, [coverKey, filename, onFilename, slot?.filename, slotKey]);
+
+  return null;
+}
+
+// Tiny thumb cell — shows the rendered image when present, and keeps the
+// queued/rendering state visible while VolumeCoverLiveUpdates waits for the
+// completed filename socket event.
 function VolumeCoverThumb({ slot, label, emptyHint }) {
   const filename = slot?.filename || null;
+  const inFlight = !filename && !!slot?.jobId;
   return (
     <div className="space-y-1">
       <div className="text-[10px] uppercase tracking-wider text-gray-500">{label}</div>
@@ -1433,7 +1531,7 @@ function VolumeCoverThumb({ slot, label, emptyHint }) {
         </a>
       ) : (
         <div className="aspect-[3/4] bg-port-bg border border-dashed border-port-border rounded flex items-center justify-center text-[10px] text-gray-500 text-center p-2">
-          {emptyHint}
+          {inFlight ? 'Rendering...' : emptyHint}
         </div>
       )}
     </div>
