@@ -28,12 +28,13 @@ import { Link } from 'react-router-dom';
 import {
   Plus, Trash2, Loader2, Sparkles, ShieldCheck, ChevronRight, ChevronDown,
   ChevronsUpDown, AlertCircle, Wand2, Info, ListChecks, X, Lock, Unlock,
-  ImageIcon, Layers, FileDown,
+  ImageIcon, Layers, FileDown, BookOpen, ChartSpline,
 } from 'lucide-react';
 import toast from '../ui/Toast';
 import { timeAgo } from '../../utils/formatters';
 import { useArmedAction } from '../../hooks/useArmedAction';
 import { useLockToggle } from '../../hooks/useLockToggle';
+import MediaImage from '../MediaImage';
 import {
   createPipelineIssue, deletePipelineIssue, updatePipelineIssue,
   createPipelineSeason, updatePipelineSeason, deletePipelineSeason,
@@ -62,6 +63,17 @@ const SEVERITY_COLORS = {
   medium: 'text-port-warning border-port-warning/40 bg-port-warning/10',
   low: 'text-gray-400 border-gray-500/30 bg-gray-700/20',
 };
+
+const THEME_COLORS = [
+  'border-sky-400/40 bg-sky-500/10 text-sky-200',
+  'border-emerald-400/40 bg-emerald-500/10 text-emerald-200',
+  'border-amber-400/40 bg-amber-500/10 text-amber-200',
+  'border-rose-400/40 bg-rose-500/10 text-rose-200',
+  'border-cyan-400/40 bg-cyan-500/10 text-cyan-200',
+  'border-fuchsia-400/40 bg-fuchsia-500/10 text-fuchsia-200',
+  'border-lime-400/40 bg-lime-500/10 text-lime-200',
+  'border-orange-400/40 bg-orange-500/10 text-orange-200',
+];
 
 // What each verify pass actually checks. Surfaced as a `<details>` next to
 // the button so the editor knows what they're getting (and what they're NOT
@@ -135,8 +147,55 @@ function VerifyScopeTooltip({ scope, id }) {
   );
 }
 
+function pickRenderedFilename(record) {
+  if (!record) return null;
+  return record.finalImage?.filename
+    || record.proofImage?.filename
+    || (typeof record.filename === 'string' && record.filename ? record.filename : null);
+}
+
+function pickCoverJobId(record) {
+  if (!record) return null;
+  return record.finalImage?.jobId
+    || record.proofImage?.jobId
+    || record.imageJobId
+    || null;
+}
+
+function issueCoverRecord(issue) {
+  return issue?.stages?.comicPages?.cover || null;
+}
+
+function CoverArt({ record, label, className = '', placeholderClassName = '' }) {
+  const filename = pickRenderedFilename(record);
+  const inFlight = !filename && !!pickCoverJobId(record);
+  const hasConcept = !!(record?.script || '').trim();
+
+  if (filename) {
+    return (
+      <MediaImage
+        src={`/data/images/${filename}`}
+        alt={label}
+        className={`w-full h-full object-cover ${className}`}
+        placeholderClassName={`w-full h-full ${placeholderClassName}`}
+        loading="lazy"
+      />
+    );
+  }
+
+  return (
+    <div className={`w-full h-full bg-port-bg border border-dashed border-port-border flex flex-col items-center justify-center text-center p-3 ${className}`}>
+      <BookOpen size={18} className={inFlight ? 'text-port-accent' : hasConcept ? 'text-gray-400' : 'text-gray-600'} />
+      <span className="mt-2 text-[10px] uppercase tracking-wider text-gray-500">
+        {inFlight ? 'Rendering' : hasConcept ? 'Cover queued' : 'No cover'}
+      </span>
+    </div>
+  );
+}
+
 export default function ArcCanvas({ series, issues, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
-  const seasons = series.seasons || [];
+  const seasons = useMemo(() => series.seasons || [], [series.seasons]);
+  const [activeSeasonId, setActiveSeasonId] = useState(seasons[0]?.id || null);
   // Stale seasonIds (e.g. after a verify-resolve season rewrite) bucket under
   // null so they show as ungrouped instead of vanishing into an un-iterated key.
   const validSeasonIds = new Set(seasons.map((s) => s.id));
@@ -150,30 +209,52 @@ export default function ArcCanvas({ series, issues, onSeriesUpdate, onIssuesUpda
     list.sort((a, b) => (a.arcPosition ?? 9999) - (b.arcPosition ?? 9999) || (a.number || 0) - (b.number || 0));
   }
   const ungroupedIssues = issuesBySeason.get(null) || [];
+  const activeSeason = seasons.find((s) => s.id === activeSeasonId) || seasons[0] || null;
+
+  useEffect(() => {
+    if (seasons.length === 0) {
+      if (activeSeasonId !== null) setActiveSeasonId(null);
+      return;
+    }
+    if (!activeSeasonId || !seasons.some((s) => s.id === activeSeasonId)) {
+      setActiveSeasonId(seasons[0].id);
+    }
+  }, [activeSeasonId, seasons]);
 
   return (
     <div className="space-y-4">
-      <ArcHeader
-        series={series}
-        onSeriesUpdate={onSeriesUpdate}
-        onIssuesUpdate={onIssuesUpdate}
-        onFlushPending={onFlushPending}
-      />
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.45fr)_minmax(360px,0.55fr)] gap-4 items-start">
+        <ArcHeader
+          series={series}
+          onSeriesUpdate={onSeriesUpdate}
+          onIssuesUpdate={onIssuesUpdate}
+          onFlushPending={onFlushPending}
+        />
+        <EditorialRoadmapPanel series={series} seasons={seasons} issues={issues} />
+      </div>
 
       {seasons.length > 0 ? (
-        <ul className="space-y-3">
-          {seasons.map((season) => (
-            <SeasonRow
-              key={season.id}
-              series={series}
-              season={season}
-              seasons={seasons}
-              issues={issuesBySeason.get(season.id) || []}
-              onSeriesUpdate={onSeriesUpdate}
-              onIssuesUpdate={onIssuesUpdate}
-            />
-          ))}
-        </ul>
+        <section className="space-y-3">
+          <VolumeNavigator
+            seasons={seasons}
+            issuesBySeason={issuesBySeason}
+            activeSeasonId={activeSeason?.id || null}
+            onSelect={setActiveSeasonId}
+          />
+          {activeSeason ? (
+            <ul className="space-y-3">
+              <SeasonRow
+                key={activeSeason.id}
+                series={series}
+                season={activeSeason}
+                seasons={seasons}
+                issues={issuesBySeason.get(activeSeason.id) || []}
+                onSeriesUpdate={onSeriesUpdate}
+                onIssuesUpdate={onIssuesUpdate}
+              />
+            </ul>
+          ) : null}
+        </section>
       ) : null}
 
       {ungroupedIssues.length > 0 ? (
@@ -185,6 +266,157 @@ export default function ArcCanvas({ series, issues, onSeriesUpdate, onIssuesUpda
       ) : null}
 
       <AddSeasonRow series={series} onSeriesUpdate={onSeriesUpdate} />
+    </div>
+  );
+}
+
+function VolumeNavigator({ seasons, issuesBySeason, activeSeasonId, onSelect }) {
+  return (
+    <div className="bg-port-card border border-port-border rounded-lg p-3">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <div>
+          <h2 className="text-xs uppercase tracking-wider text-gray-500">Volumes</h2>
+          <p className="text-[11px] text-gray-600">{seasons.length} volume{seasons.length === 1 ? '' : 's'} in this arc</p>
+        </div>
+      </div>
+      <div className="flex gap-3 overflow-x-auto pb-1 snap-x">
+        {seasons.map((season) => {
+          const active = season.id === activeSeasonId;
+          const issueCount = issuesBySeason.get(season.id)?.length || 0;
+          return (
+            <button
+              key={season.id}
+              type="button"
+              onClick={() => onSelect(season.id)}
+              aria-pressed={active}
+              className={`snap-start shrink-0 w-44 text-left rounded border overflow-hidden bg-port-bg transition-colors ${
+                active
+                  ? 'border-port-accent shadow-[0_0_0_1px_rgba(59,130,246,0.35)]'
+                  : 'border-port-border hover:border-port-accent/50'
+              }`}
+            >
+              <div className="aspect-[3/4] bg-port-bg">
+                <CoverArt
+                  record={season.cover}
+                  label={`Volume ${season.number} cover`}
+                  className="rounded-none border-0"
+                  placeholderClassName="rounded-none border-0"
+                />
+              </div>
+              <div className="p-2 min-h-[72px]">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-mono text-gray-500">V{season.number}</span>
+                  <span className="text-[10px] uppercase tracking-wider text-gray-500">
+                    {issueCount}/{season.episodeCountTarget || '?'}
+                  </span>
+                </div>
+                <p className="mt-1 text-sm font-medium text-white line-clamp-2">{season.title || '(untitled)'}</p>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function EditorialRoadmapPanel({ series, seasons, issues }) {
+  const points = useMemo(() => buildRoadmapPoints(issues), [issues]);
+  const seasonCount = seasons.length;
+  const issueCount = issues.length;
+  const arcReady = !!(series.arc?.summary || series.arc?.protagonistArc || issueCount);
+
+  return (
+    <section className="bg-port-card border border-port-border rounded-lg p-4 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xs uppercase tracking-wider text-gray-500">Editorial roadmap</h2>
+          <p className="text-[11px] text-gray-600">{seasonCount} volumes, {issueCount} issues</p>
+        </div>
+        <ChartSpline size={18} className="text-port-accent" />
+      </div>
+      <div className="h-48 rounded border border-port-border bg-port-bg/70 p-3">
+        {arcReady ? (
+          <ArcRoadmapChart points={points} />
+        ) : (
+          <div className="h-full flex items-center justify-center text-xs text-gray-500 italic">
+            Generate the arc to populate the roadmap.
+          </div>
+        )}
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <RoadmapMetric label="Plot" value={points.length ? `${Math.round(points[points.length - 1].plot)}%` : 'Pending'} tone="text-port-accent" />
+        <RoadmapMetric label="Character" value={series.arc?.protagonistArc ? 'Mapped' : 'Pending'} tone="text-emerald-300" />
+        <RoadmapMetric label="Reader" value="Draft eval pending" tone="text-amber-300" />
+      </div>
+    </section>
+  );
+}
+
+function RoadmapMetric({ label, value, tone }) {
+  return (
+    <div className="rounded border border-port-border bg-port-bg/60 px-2 py-2 min-w-0">
+      <div className="text-[10px] uppercase tracking-wider text-gray-500">{label}</div>
+      <div className={`mt-1 text-xs font-medium truncate ${tone}`}>{value}</div>
+    </div>
+  );
+}
+
+function buildRoadmapPoints(issues) {
+  const ordered = [...issues].sort((a, b) => (a.number || 0) - (b.number || 0));
+  const count = Math.max(ordered.length, 1);
+  return ordered.map((issue, idx) => {
+    const t = count === 1 ? 1 : idx / (count - 1);
+    const role = String(issue.arcRole || '').toLowerCase();
+    const roleBoost = role.includes('finale') ? 18
+      : role.includes('midpoint') ? 12
+      : role.includes('pilot') ? -4
+      : role.includes('climax') ? 16
+      : 0;
+    const statusBoost = issue.status === 'shipped' ? 5 : issue.status === 'needs-review' ? -6 : 0;
+    return {
+      label: issue.arcPosition ? `E${issue.arcPosition}` : `#${issue.number || idx + 1}`,
+      title: issue.title || 'Untitled',
+      plot: Math.max(8, Math.min(98, 18 + (t * 68) + (Math.sin(t * Math.PI * 2) * 7) + roleBoost + statusBoost)),
+      character: Math.max(10, Math.min(94, 24 + (t * 58) + (Math.sin((t + 0.18) * Math.PI) * 12))),
+      reader: Math.max(12, Math.min(92, 34 + (Math.sin((t * 2.5 + 0.2) * Math.PI) * 22) + (t * 18))),
+    };
+  });
+}
+
+function ArcRoadmapChart({ points }) {
+  const width = 320;
+  const height = 132;
+  const chartPoints = points.length > 0 ? points : [{ plot: 0, character: 0, reader: 0, label: '' }];
+  const toPolyline = (key) => chartPoints.map((point, idx) => {
+    const x = chartPoints.length === 1 ? width : (idx / (chartPoints.length - 1)) * width;
+    const y = height - ((point[key] / 100) * height);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+
+  return (
+    <div className="h-full grid grid-rows-[1fr_auto] gap-2">
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full overflow-visible" role="img" aria-label="Arc roadmap chart">
+        {[0.25, 0.5, 0.75].map((n) => (
+          <line key={n} x1="0" x2={width} y1={height * n} y2={height * n} stroke="rgba(148,163,184,0.16)" strokeWidth="1" />
+        ))}
+        <polyline points={toPolyline('plot')} fill="none" stroke="rgb(96,165,250)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+        <polyline points={toPolyline('character')} fill="none" stroke="rgb(110,231,183)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+        <polyline points={toPolyline('reader')} fill="none" stroke="rgb(251,191,36)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="6 5" opacity="0.75" />
+        {chartPoints.map((point, idx) => {
+          const x = chartPoints.length === 1 ? width : (idx / (chartPoints.length - 1)) * width;
+          return (
+            <circle key={`${point.label}-${idx}`} cx={x} cy={height - ((point.plot / 100) * height)} r="2.5" fill="rgb(96,165,250)">
+              <title>{point.label}: {point.title}</title>
+            </circle>
+          );
+        })}
+      </svg>
+      <div className="flex items-center gap-3 text-[10px] uppercase tracking-wider text-gray-500">
+        <span className="inline-flex items-center gap-1"><span className="w-3 h-0.5 bg-blue-400 rounded" /> Plot</span>
+        <span className="inline-flex items-center gap-1"><span className="w-3 h-0.5 bg-emerald-300 rounded" /> Character</span>
+        <span className="inline-flex items-center gap-1"><span className="w-3 h-0.5 border-t border-dashed border-amber-300" /> Reader</span>
+      </div>
     </div>
   );
 }
@@ -528,7 +760,7 @@ function ThemeChips({ series, arc, onSeriesUpdate }) {
       ) : (
         <span
           key={`${i}-${t}`}
-          className="group inline-flex items-center text-[10px] uppercase tracking-wider rounded bg-port-bg border border-port-border text-gray-300 hover:border-port-accent/40"
+          className={`group inline-flex items-center text-[10px] uppercase tracking-wider rounded border ${THEME_COLORS[i % THEME_COLORS.length]} hover:border-white/40`}
         >
           <button
             type="button"
@@ -711,16 +943,16 @@ function ArcContent({ series, onSeriesUpdate }) {
   const shapeDef = arc.shape ? getStoryShape(arc.shape) : null;
 
   return (
-    <div className="space-y-2">
-      {arc.logline ? (
-        <div className="flex items-start gap-2">
-          <p className="text-sm text-white flex-1">{arc.logline}</p>
-          <FieldLockToggle series={series} field="logline" label="Logline" onSeriesUpdate={onSeriesUpdate} />
-        </div>
-      ) : null}
-      <div className="flex flex-wrap items-center gap-1.5">
+    <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_260px] gap-4">
+      <div className="space-y-2 min-w-0">
+        {arc.logline ? (
+          <div className="flex items-start gap-2">
+            <p className="text-sm text-white flex-1 leading-relaxed">{arc.logline}</p>
+            <FieldLockToggle series={series} field="logline" label="Logline" onSeriesUpdate={onSeriesUpdate} />
+          </div>
+        ) : null}
         {shapeDef ? (
-          <>
+          <div className="flex items-center gap-1.5">
             <span
               className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded bg-port-bg border border-port-accent/40 text-port-accent"
               title={shapeDef.description}
@@ -729,38 +961,47 @@ function ArcContent({ series, onSeriesUpdate }) {
               {shapeDef.label}
             </span>
             <FieldLockToggle series={series} field="shape" label="Shape" onSeriesUpdate={onSeriesUpdate} />
-          </>
+          </div>
         ) : null}
-        <ThemeChips series={series} arc={arc} onSeriesUpdate={onSeriesUpdate} />
-        {(arc.themes?.length ?? 0) > 0 ? (
-          <FieldLockToggle series={series} field="themes" label="Themes" onSeriesUpdate={onSeriesUpdate} />
-        ) : null}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          {arc.summary ? (
+            <details className="text-xs text-gray-400 rounded border border-port-border bg-port-bg/50 px-2 py-1.5">
+              <summary className="cursor-pointer hover:text-white inline-flex items-center gap-1.5">
+                Summary
+                <FieldLockToggle series={series} field="summary" label="Summary" onSeriesUpdate={onSeriesUpdate} />
+              </summary>
+              <p className="mt-2 whitespace-pre-wrap max-h-36 overflow-y-auto pr-1">{arc.summary}</p>
+            </details>
+          ) : null}
+          {arc.protagonistArc ? (
+            <details className="text-xs text-gray-400 rounded border border-port-border bg-port-bg/50 px-2 py-1.5">
+              <summary className="cursor-pointer hover:text-white inline-flex items-center gap-1.5">
+                Protagonist arc
+                <FieldLockToggle series={series} field="protagonistArc" label="Protagonist arc" onSeriesUpdate={onSeriesUpdate} />
+              </summary>
+              <p className="mt-2 whitespace-pre-wrap max-h-36 overflow-y-auto pr-1">{arc.protagonistArc}</p>
+            </details>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          onClick={startEdit}
+          className="text-xs text-port-accent hover:underline"
+        >
+          Edit arc
+        </button>
       </div>
-      {arc.summary ? (
-        <details className="text-xs text-gray-400">
-          <summary className="cursor-pointer hover:text-white inline-flex items-center gap-1.5">
-            Summary
-            <FieldLockToggle series={series} field="summary" label="Summary" onSeriesUpdate={onSeriesUpdate} />
-          </summary>
-          <p className="mt-2 whitespace-pre-wrap">{arc.summary}</p>
-        </details>
-      ) : null}
-      {arc.protagonistArc ? (
-        <details className="text-xs text-gray-400">
-          <summary className="cursor-pointer hover:text-white inline-flex items-center gap-1.5">
-            Protagonist arc
-            <FieldLockToggle series={series} field="protagonistArc" label="Protagonist arc" onSeriesUpdate={onSeriesUpdate} />
-          </summary>
-          <p className="mt-2 whitespace-pre-wrap">{arc.protagonistArc}</p>
-        </details>
-      ) : null}
-      <button
-        type="button"
-        onClick={startEdit}
-        className="text-xs text-port-accent hover:underline"
-      >
-        Edit arc
-      </button>
+      <aside className="rounded border border-port-border bg-port-bg/60 p-3 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-[10px] uppercase tracking-wider text-gray-500">Themes</h3>
+          {(arc.themes?.length ?? 0) > 0 ? (
+            <FieldLockToggle series={series} field="themes" label="Themes" onSeriesUpdate={onSeriesUpdate} />
+          ) : null}
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          <ThemeChips series={series} arc={arc} onSeriesUpdate={onSeriesUpdate} />
+        </div>
+      </aside>
     </div>
   );
 }
@@ -987,88 +1228,113 @@ function SeasonRow({ series, season, seasons, issues, onSeriesUpdate, onIssuesUp
 
   return (
     <li className="bg-port-card border border-port-border rounded-lg">
-      <div className="flex items-center gap-2 p-3">
+      <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-3 p-3">
         <button
           type="button"
           onClick={() => setCollapsed(!collapsed)}
-          className="text-gray-500 hover:text-white p-0.5"
+          className="aspect-[3/4] rounded overflow-hidden bg-port-bg border border-port-border hover:border-port-accent/50 transition-colors"
           aria-label={collapsed ? 'Expand volume / season' : 'Collapse volume / season'}
         >
-          {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+          <CoverArt
+            record={season.cover}
+            label={`Volume ${season.number} cover`}
+            className="rounded-none border-0"
+            placeholderClassName="rounded-none border-0"
+          />
         </button>
-        <span className="text-xs text-gray-500 font-mono" title="Volume / Season">V{season.number}</span>
-        <span className="text-sm text-white font-medium truncate">{season.title || '(untitled)'}</span>
-        <span className="text-[10px] uppercase tracking-wider text-gray-500" title="Issues / Episodes">
-          {issues.length} / {season.episodeCountTarget || '?'} issues
-        </span>
-        <div className="ml-auto flex items-center gap-2">
-          {deleteMode === 'idle' && (
-            <>
-              <button
-                type="button"
-                onClick={() => toggleSeasonLock(seasonLocked)}
-                disabled={lockBusy}
-                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs border disabled:opacity-50 ${
-                  seasonLocked
-                    ? 'border-port-warning/40 text-port-warning hover:bg-port-warning/10'
-                    : 'border-port-border text-gray-400 hover:text-white'
-                }`}
-                title={seasonLocked
-                  ? 'Volume is locked — click to unlock and allow regeneration, delete, and content edits'
-                  : 'Lock this volume to prevent regeneration, delete, and content edits'}
-                aria-pressed={seasonLocked}
-              >
-                {lockBusy
-                  ? <Loader2 size={12} className="animate-spin" />
-                  : (seasonLocked ? <Lock size={12} /> : <Unlock size={12} />)}
-                {seasonLocked ? 'Locked' : 'Lock'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setEditing(!editing)}
-                className="text-xs text-gray-400 hover:text-white"
-              >
-                {editing ? 'Done' : 'Edit'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setDeleteMode('confirm')}
-                disabled={seasonLocked}
-                className="p-1.5 text-gray-500 hover:text-port-error disabled:opacity-40 disabled:hover:text-gray-500"
-                aria-label={`Delete volume / season ${season.title}`}
-                title={seasonLocked
-                  ? 'Volume is locked — unlock to delete'
-                  : 'Delete volume / season'}
-              >
-                <Trash2 size={12} />
-              </button>
-            </>
-          )}
-          {deleteMode === 'confirm' && (
-            <>
-              <span className="text-xs text-port-error">Delete volume?</span>
-              <button
-                type="button"
-                onClick={() => setDeleteMode('idle')}
-                className="px-2 py-0.5 text-xs text-gray-300 hover:text-white rounded border border-port-border"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={runDeleteSeason}
-                className="px-2 py-0.5 text-xs rounded bg-port-error text-white hover:bg-port-error/80"
-              >
-                Delete
-              </button>
-            </>
-          )}
-          {deleteMode === 'deleting' && (
-            <span className="flex items-center gap-1.5 text-xs text-gray-400">
-              <Loader2 size={12} className="animate-spin" />
-              Deleting…
+        <div className="min-w-0 space-y-2">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setCollapsed(!collapsed)}
+              className="text-gray-500 hover:text-white p-0.5"
+              aria-label={collapsed ? 'Expand volume / season' : 'Collapse volume / season'}
+            >
+              {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+            </button>
+            <span className="text-xs text-gray-500 font-mono" title="Volume / Season">V{season.number}</span>
+            <span className="text-sm text-white font-medium truncate">{season.title || '(untitled)'}</span>
+            <span className="text-[10px] uppercase tracking-wider text-gray-500" title="Issues / Episodes">
+              {issues.length} / {season.episodeCountTarget || '?'} issues
             </span>
-          )}
+            <div className="ml-auto flex items-center gap-2">
+              {deleteMode === 'idle' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => toggleSeasonLock(seasonLocked)}
+                    disabled={lockBusy}
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs border disabled:opacity-50 ${
+                      seasonLocked
+                        ? 'border-port-warning/40 text-port-warning hover:bg-port-warning/10'
+                        : 'border-port-border text-gray-400 hover:text-white'
+                    }`}
+                    title={seasonLocked
+                      ? 'Volume is locked — click to unlock and allow regeneration, delete, and content edits'
+                      : 'Lock this volume to prevent regeneration, delete, and content edits'}
+                    aria-pressed={seasonLocked}
+                  >
+                    {lockBusy
+                      ? <Loader2 size={12} className="animate-spin" />
+                      : (seasonLocked ? <Lock size={12} /> : <Unlock size={12} />)}
+                    {seasonLocked ? 'Locked' : 'Lock'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditing(!editing)}
+                    className="text-xs text-gray-400 hover:text-white"
+                  >
+                    {editing ? 'Done' : 'Edit'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteMode('confirm')}
+                    disabled={seasonLocked}
+                    className="p-1.5 text-gray-500 hover:text-port-error disabled:opacity-40 disabled:hover:text-gray-500"
+                    aria-label={`Delete volume / season ${season.title}`}
+                    title={seasonLocked
+                      ? 'Volume is locked — unlock to delete'
+                      : 'Delete volume / season'}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </>
+              )}
+              {deleteMode === 'confirm' && (
+                <>
+                  <span className="text-xs text-port-error">Delete volume?</span>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteMode('idle')}
+                    className="px-2 py-0.5 text-xs text-gray-300 hover:text-white rounded border border-port-border"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={runDeleteSeason}
+                    className="px-2 py-0.5 text-xs rounded bg-port-error text-white hover:bg-port-error/80"
+                  >
+                    Delete
+                  </button>
+                </>
+              )}
+              {deleteMode === 'deleting' && (
+                <span className="flex items-center gap-1.5 text-xs text-gray-400">
+                  <Loader2 size={12} className="animate-spin" />
+                  Deleting…
+                </span>
+              )}
+            </div>
+          </div>
+          {!editing && !collapsed && (season.logline || season.endingHook) ? (
+            <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(180px,0.45fr)] gap-2 text-xs">
+              {season.logline ? <p className="text-gray-300 italic line-clamp-2">{season.logline}</p> : <span />}
+              {season.endingHook ? (
+                <p className="text-port-accent/80 line-clamp-2">↪ {season.endingHook}</p>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -1082,14 +1348,12 @@ function SeasonRow({ series, season, seasons, issues, onSeriesUpdate, onIssuesUp
         />
       ) : !collapsed && (season.logline || season.synopsis) ? (
         <div className="px-3 pb-2 text-xs text-gray-400 space-y-1">
-          {season.logline ? <p className="italic">{season.logline}</p> : null}
           {season.synopsis ? (
             <details>
               <summary className="cursor-pointer hover:text-white">Synopsis</summary>
-              <p className="mt-1 whitespace-pre-wrap">{season.synopsis}</p>
+              <p className="mt-1 whitespace-pre-wrap max-h-32 overflow-y-auto pr-1">{season.synopsis}</p>
             </details>
           ) : null}
-          {season.endingHook ? <p className="text-port-accent/80">↪ {season.endingHook}</p> : null}
         </div>
       ) : null}
 
@@ -1101,7 +1365,7 @@ function SeasonRow({ series, season, seasons, issues, onSeriesUpdate, onIssuesUp
 
       {!collapsed ? (
         <>
-          <ul className="px-3 pb-2 space-y-1.5">
+          <ul className="px-3 pb-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-6 gap-3">
             {issues.map((iss) => (
               <IssueRow
                 key={iss.id}
@@ -1727,6 +1991,7 @@ function SeasonActions({
 
 function IssueRow({ issue, seasons, onIssuesUpdate }) {
   const [reassigning, setReassigning] = useState(false);
+  const cover = issueCoverRecord(issue);
 
   const runDelete = async () => {
     const ok = await deletePipelineIssue(issue.id).catch((err) => {
@@ -1758,41 +2023,55 @@ function IssueRow({ issue, seasons, onIssuesUpdate }) {
   };
 
   return (
-    <li className="group flex items-center gap-2 p-2 rounded hover:bg-port-bg/40">
+    <li className="group rounded border border-port-border bg-port-bg/50 overflow-hidden hover:border-port-accent/50 transition-colors">
       <Link
         to={`/pipeline/issues/${issue.id}/idea`}
-        className="flex items-center gap-2 flex-1 min-w-0"
+        className="block"
       >
-        <span className="text-[10px] text-gray-500 font-mono w-8 shrink-0">
-          {issue.arcPosition ? `E${issue.arcPosition}` : `#${issue.number}`}
-        </span>
-        <span className="text-sm text-white truncate">{issue.title || 'Untitled'}</span>
-        <span className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded ${ISSUE_STATUS_COLORS[issue.status] || ISSUE_STATUS_COLORS.draft}`}>
-          {issue.status}
-        </span>
-        <span className="text-[10px] text-gray-600">updated {timeAgo(issue.updatedAt)}</span>
+        <div className="aspect-[3/4] bg-port-bg">
+          <CoverArt
+            record={cover}
+            label={`${issue.title || 'Untitled'} cover`}
+            className="rounded-none border-0"
+            placeholderClassName="rounded-none border-0"
+          />
+        </div>
+        <div className="p-2 space-y-1 min-h-[86px]">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-gray-500 font-mono">
+              {issue.arcPosition ? `E${issue.arcPosition}` : `#${issue.number}`}
+            </span>
+            <span className={`text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded ${ISSUE_STATUS_COLORS[issue.status] || ISSUE_STATUS_COLORS.draft}`}>
+              {issue.status}
+            </span>
+          </div>
+          <p className="text-sm text-white font-medium line-clamp-2">{issue.title || 'Untitled'}</p>
+          <p className="text-[10px] text-gray-600">updated {timeAgo(issue.updatedAt)}</p>
+        </div>
       </Link>
-      <select
-        value={issue.seasonId || ''}
-        onChange={(e) => handleReassign(e.target.value)}
-        disabled={reassigning}
-        title="Move to a different season"
-        className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-[10px] bg-port-bg border border-port-border rounded text-gray-300 max-w-[100px]"
-      >
-        <option value="">— ungrouped —</option>
-        {seasons.map((s) => (
-          <option key={s.id} value={s.id}>V{s.number}: {s.title}</option>
-        ))}
-      </select>
-      <button
-        type="button"
-        onClick={handleDelete}
-        className={`p-1 ${armDelete ? 'text-port-error opacity-100' : 'text-gray-500 hover:text-port-error opacity-0 group-hover:opacity-100 focus:opacity-100'}`}
-        aria-label={armDelete ? `Confirm delete ${issue.title}` : `Delete ${issue.title}`}
-        title={armDelete ? 'Click again to confirm' : 'Delete issue / episode'}
-      >
-        <Trash2 size={12} />
-      </button>
+      <div className="px-2 pb-2 flex items-center gap-1.5">
+        <select
+          value={issue.seasonId || ''}
+          onChange={(e) => handleReassign(e.target.value)}
+          disabled={reassigning}
+          title="Move to a different season"
+          className="min-w-0 flex-1 text-[10px] bg-port-card border border-port-border rounded text-gray-300 opacity-70 group-hover:opacity-100 focus:opacity-100"
+        >
+          <option value="">— ungrouped —</option>
+          {seasons.map((s) => (
+            <option key={s.id} value={s.id}>V{s.number}: {s.title}</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={handleDelete}
+          className={`p-1 rounded border border-port-border bg-port-card ${armDelete ? 'text-port-error opacity-100' : 'text-gray-500 hover:text-port-error opacity-70 group-hover:opacity-100 focus:opacity-100'}`}
+          aria-label={armDelete ? `Confirm delete ${issue.title}` : `Delete ${issue.title}`}
+          title={armDelete ? 'Click again to confirm' : 'Delete issue / episode'}
+        >
+          <Trash2 size={12} />
+        </button>
+      </div>
     </li>
   );
 }
@@ -1806,7 +2085,7 @@ function UngroupedIssues({ issues, seasons, onIssuesUpdate }) {
           Un-grouped issues / episodes ({issues.length})
         </h3>
       </div>
-      <ul className="px-3 py-2 space-y-1.5">
+      <ul className="px-3 py-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-6 gap-3">
         {issues.map((iss) => (
           <IssueRow
             key={iss.id}
