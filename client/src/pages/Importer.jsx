@@ -349,6 +349,7 @@ export default function Importer() {
       {phase === 'review' && preview && (
         <ReviewPanel
           preview={preview}
+          contentType={intake.contentType}
           canonSelections={canonSelections}
           selectedCanon={selectedCanon}
           setSelectedCanon={setSelectedCanon}
@@ -606,7 +607,7 @@ function ImporterProgress({ stages }) {
 }
 
 function ReviewPanel({
-  preview, canonSelections,
+  preview, contentType, canonSelections,
   selectedCanon, setSelectedCanon,
   arcDraft, setArcDraft, seasonsDraft, setSeasonsDraft,
   issuesDraft, setIssuesDraft,
@@ -623,6 +624,11 @@ function ReviewPanel({
     });
   };
 
+  // A comic-script import seeds the verbatim excerpt into stages.comicScript
+  // (not stages.prose) — keep the Review copy + per-issue label accurate.
+  const isComic = contentType === 'comic-script';
+  const excerptLabel = isComic ? 'Comic script excerpt' : 'Prose excerpt';
+
   return (
     <div className="space-y-6">
       <div className="bg-port-card border border-port-border rounded-lg p-4 flex items-start gap-3 text-sm">
@@ -637,7 +643,8 @@ function ReviewPanel({
           </div>
           <p className="text-xs text-port-text-muted mt-1">
             Review the canon below, edit any issue titles or synopses, then click Commit to seed
-            the pipeline. The verbatim prose excerpt for each issue lands in <code>stages.prose.output</code>.
+            the pipeline. The verbatim excerpt for each issue lands in{' '}
+            <code>{isComic ? 'stages.comicScript.output' : 'stages.prose.output'}</code>.
           </p>
           {preview.isExistingSeries && (
             <label className={`text-xs mt-2 flex items-center gap-2 cursor-pointer ${replaceMode ? 'text-port-error' : 'text-port-text-muted'}`}>
@@ -708,7 +715,7 @@ function ReviewPanel({
         </div>
       )}
 
-      <IssuesReviewSection issues={issuesDraft} setIssues={setIssuesDraft} seasons={seasonsDraft} arcRoles={arcRoles} />
+      <IssuesReviewSection issues={issuesDraft} setIssues={setIssuesDraft} seasons={seasonsDraft} arcRoles={arcRoles} excerptLabel={excerptLabel} />
 
       <div className="sticky bottom-4 flex items-center justify-end gap-2 bg-port-card border border-port-border rounded-lg p-3 shadow-lg">
         <button
@@ -910,7 +917,7 @@ const SeasonCard = memo(function SeasonCard({ idx, season, onPatch }) {
   );
 });
 
-const IssueCard = memo(function IssueCard({ idx, issue, onPatch, arcRoles, seasonOptions }) {
+const IssueCard = memo(function IssueCard({ idx, issue, onPatch, arcRoles, seasonOptions, excerptLabel }) {
   // Local state, not lifted — keeps the collapse toggle off the issues array
   // so a card-internal click doesn't broadcast to every memoized sibling.
   const [proseExpanded, setProseExpanded] = useState(false);
@@ -992,7 +999,7 @@ const IssueCard = memo(function IssueCard({ idx, issue, onPatch, arcRoles, seaso
           aria-controls={`iss-${idx}-prose`}
         >
           {proseExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-          Prose excerpt: {proseLen.toLocaleString()} chars
+          {excerptLabel}: {proseLen.toLocaleString()} chars
           <span className="text-port-text-muted/70">— {proseExpanded ? 'click to collapse' : 'click to edit (verbatim from source)'}</span>
         </button>
         {proseExpanded && (
@@ -1015,7 +1022,7 @@ const IssueCard = memo(function IssueCard({ idx, issue, onPatch, arcRoles, seaso
   );
 });
 
-function IssuesReviewSection({ issues, setIssues, seasons, arcRoles }) {
+function IssuesReviewSection({ issues, setIssues, seasons, arcRoles, excerptLabel }) {
   const patchIssueAt = useMemo(() => makePatcher(setIssues), [setIssues]);
   // Memo'd so `seasonOptions`'s identity is stable across issue-only edits
   // — otherwise every keystroke would break React.memo on every IssueCard.
@@ -1054,6 +1061,7 @@ function IssuesReviewSection({ issues, setIssues, seasons, arcRoles }) {
             onPatch={patchIssueAt}
             arcRoles={arcRoles}
             seasonOptions={seasonOptions}
+            excerptLabel={excerptLabel}
           />
         ))}
       </div>
