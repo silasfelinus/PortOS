@@ -1621,10 +1621,11 @@ const importerSourceField = z.string().min(1).max(5_000_000);
 // LLM only consumes the head, so the schema is intentionally minimal.
 export const importerClassifySchema = z.object({
   source: importerSourceField,
-  providerOverride: z.preprocess(
-    (v) => (v === '' ? undefined : v),
-    z.string().trim().max(120).optional(),
-  ),
+  providerOverride: z.preprocess(emptyToUndefined, z.string().trim().max(120).optional()),
+  // Pinned model id for the chosen provider; '' from the UI ("Default model")
+  // coerces to undefined so runStagedLLM falls back to the stage/provider
+  // default model.
+  modelOverride: z.preprocess(emptyToUndefined, z.string().trim().max(200).optional()),
 }).strict();
 
 export const importerAnalyzeSchema = z.object({
@@ -1634,10 +1635,11 @@ export const importerAnalyzeSchema = z.object({
   source: importerSourceField,
   // UI sends `''` for "no override picked"; coerce to undefined so the
   // server's `await getProviderById(undefined)` short-circuit kicks in.
-  providerOverride: z.preprocess(
-    (v) => (v === '' ? undefined : v),
-    z.string().trim().max(120).optional(),
-  ),
+  providerOverride: z.preprocess(emptyToUndefined, z.string().trim().max(120).optional()),
+  // Pinned model id for the chosen provider; '' from the UI ("Default model")
+  // coerces to undefined so runStagedLLM falls back to the stage/provider
+  // default model.
+  modelOverride: z.preprocess(emptyToUndefined, z.string().trim().max(200).optional()),
   targetIssueCount: z.number().int().min(1).max(50).optional(),
 }).strict();
 
