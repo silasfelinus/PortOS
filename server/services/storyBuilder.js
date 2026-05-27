@@ -325,12 +325,14 @@ async function applyUnderlyingLock(session, stepId, locked) {
     await updateSeries(session.seriesId, { locked: nextLocked });
   } else if (stepId === 'readerMap' && session.seriesId) {
     await setArcFieldLock(session.seriesId, 'readerMap', locked);
-  } else if (stepId === 'characters' && session.universeId) {
-    const universe = await getUniverse(session.universeId).catch(() => null);
-    if (!universe || !Array.isArray(universe.characters)) return;
-    const characters = universe.characters.map((c) => ({ ...c, locked }));
-    await updateUniverse(session.universeId, { characters });
   }
+  // NOTE: the 'characters' step deliberately has NO underlying record lock.
+  // Universe canon is shared across series, and per-entry character locks are
+  // user-managed (in the Universe Builder / via this step's per-entry Refine).
+  // Blanket-toggling locked on every character would clobber those individual
+  // locks and mutate a universe other series depend on. The session-level step
+  // lock alone gates the wizard; the UI hides the per-character Refine when the
+  // step is locked.
 }
 
 export async function lockStep(id, stepId) {
@@ -463,6 +465,9 @@ export async function generateStep(id, stepId, options = {}) {
     const { arc, seasons, runId, providerId, model } = await generateArcOverview(session.seriesId, {
       providerOverride: options.providerId, modelOverride: options.model,
     });
+    // A null arc means the LLM returned nothing identifying — refuse rather
+    // than wiping a previously-generated arc with `updateSeries({ arc: null })`.
+    if (!arc) throw makeErr('LLM returned an empty arc — try regenerating', ERR_VALIDATION);
     const updated = await updateSeries(session.seriesId, { arc, seasons });
     return { result: updated, runId, providerId, model };
   }

@@ -1420,4 +1420,26 @@ describe('arcPlanner — refineReaderMap', () => {
     const s = await setupSeries({ locked: { arcFields: { readerMap: true } } });
     await expect(planner.refineReaderMap(s.id, 'x')).rejects.toMatchObject({ code: 'PIPELINE_ARC_VALIDATION' });
   });
+
+  it('preserves the existing reader map when the LLM returns an empty refinement (non-destructive)', async () => {
+    const s = await setupSeries({
+      arc: { logline: 'rise', summary: 'spine', readerMap: { hooks: [{ label: 'keep me' }] } },
+    });
+    // LLM returns nothing usable (only meta) — must NOT null out the map.
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { hooks: [], payoffs: [], beats: [], cliffhangers: [], changes: [], rationale: 'no change' },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+    const out = await planner.refineReaderMap(s.id, 'tweak');
+    expect(out.readerMap.hooks[0].label).toBe('keep me');
+  });
+
+  it('throws (rather than returns null) when generateReaderMap yields an empty map', async () => {
+    const s = await setupSeries({ arc: { logline: 'x', summary: 'y' } });
+    stageRunnerSpy = vi.fn(async () => ({
+      content: { hooks: [], payoffs: [], beats: [], cliffhangers: [] },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+    await expect(planner.generateReaderMap(s.id)).rejects.toMatchObject({ code: 'PIPELINE_ARC_VALIDATION' });
+  });
 });

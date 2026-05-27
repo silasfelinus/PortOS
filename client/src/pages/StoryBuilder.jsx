@@ -366,21 +366,30 @@ function StoryBuilderDetail({ storyId, stepParam }) {
     if (!s) { setSession(null); setLoading(false); return; }
     setSession(s);
     setStaleSteps(s.staleSteps || []);
+    // These GETs own their fallback (.catch → null/[]), so silence the helper's
+    // default error toast — otherwise a transient failure double-toasts.
     const [u, ser] = await Promise.all([
-      s.universeId ? getUniverse(s.universeId).catch(() => null) : Promise.resolve(null),
-      s.seriesId ? getPipelineSeries(s.seriesId).catch(() => null) : Promise.resolve(null),
+      s.universeId ? getUniverse(s.universeId, { silent: true }).catch(() => null) : Promise.resolve(null),
+      s.seriesId ? getPipelineSeries(s.seriesId, { silent: true }).catch(() => null) : Promise.resolve(null),
     ]);
     setUniverse(u);
     setSeries(ser);
     if (s.seriesId) {
-      const iss = await listPipelineIssues(s.seriesId).catch(() => []);
+      const iss = await listPipelineIssues(s.seriesId, { silent: true }).catch(() => []);
       setIssues(Array.isArray(iss) ? iss : (iss?.items || []));
     }
     setLoading(false);
   }, [storyId]);
 
-  useEffect(() => { getStoryBuilderSteps({ silent: true }).then((r) => setSteps(r.steps || [])).catch(() => {}); }, []);
-  useEffect(() => { setLoading(true); reload(); }, [reload]);
+  // Load the step manifest first; gate the loading spinner on BOTH it and the
+  // session so the detail view never renders with an empty step rail.
+  useEffect(() => {
+    setLoading(true);
+    getStoryBuilderSteps({ silent: true })
+      .then((r) => setSteps(r.steps || []))
+      .catch(() => {})
+      .finally(reload);
+  }, [reload]);
 
   const stepIds = steps.map((s) => s.id);
   const activeStepId = stepIds.includes(stepParam) ? stepParam : (session?.currentStep || 'idea');
@@ -470,6 +479,7 @@ function StoryBuilderDetail({ storyId, stepParam }) {
             )}
 
             <StepPanel
+              key={activeStepId}
               session={session} universe={universe} series={series} issues={issues}
               stepId={activeStepId} locked={stepState.locked} onChanged={reload}
             />

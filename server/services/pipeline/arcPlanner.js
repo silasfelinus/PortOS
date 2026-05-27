@@ -358,6 +358,12 @@ export async function generateReaderMap(seriesId, options = {}) {
     cliffhangers: content?.cliffhangers,
     status: 'draft',
   });
+  // A null sanitize means the LLM returned nothing usable — surface an error
+  // rather than letting the caller persist `readerMap: null` over an existing
+  // map (silent data loss).
+  if (!readerMap) {
+    throw makeErr('LLM returned an empty reader map — try regenerating', ERR_VALIDATION);
+  }
   return { readerMap, raw: content, runId, providerId, model };
 }
 
@@ -385,10 +391,17 @@ export async function refineReaderMap(seriesId, feedback, options = {}) {
     logTag: `Story Builder reader-map refine series=${seriesId.slice(0, 8)}`,
   });
   const readerMap = sanitizeReaderMap({ ...content, status: 'draft' });
+  // Refine is meant to PRESERVE — never let an empty LLM payload null out the
+  // existing map. Fall back to the current reader map when the refine produced
+  // nothing usable (mirrors the CLAUDE.md absent-vs-empty rule).
+  const safeReaderMap = readerMap || arc.readerMap || null;
+  if (!safeReaderMap) {
+    throw makeErr('LLM returned an empty reader map and there is none to preserve', ERR_VALIDATION);
+  }
   const changes = Array.isArray(content.changes)
     ? content.changes.map((c) => String(c).slice(0, 240)).filter(Boolean).slice(0, 12)
     : [];
-  return { readerMap, changes, rationale, runId, providerId, model };
+  return { readerMap: safeReaderMap, changes, rationale, runId, providerId, model };
 }
 
 /**
