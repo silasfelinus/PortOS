@@ -11,13 +11,28 @@ import {
   setStoryCurrentStep, lockStoryStep, unlockStoryStep,
   generateStoryStep, refineStoryStep, setStoryIssueLock,
   getUniverse, getPipelineSeries, listPipelineIssues,
+  analyzeImport, commitImport, retryImporterIssues, IMPORTER_CONTENT_TYPES,
 } from '../services/api';
+
+// Mirror Importer.jsx's commit picker — only these arc fields are sent on commit.
+const ARC_FIELDS_TO_COMMIT = ['logline', 'summary', 'protagonistArc', 'themes', 'shape'];
+const pickArcFields = (arc) => {
+  if (!arc) return null;
+  const out = {};
+  for (const k of ARC_FIELDS_TO_COMMIT) if (arc[k] !== undefined) out[k] = arc[k];
+  return out;
+};
+
+const CONTENT_TYPE_LABELS = {
+  'short-story': 'Short story', novel: 'Novel', screenplay: 'Screenplay', 'comic-script': 'Comic script',
+};
 
 // ── Index view: list existing sessions + create a new one ──────────────────
 
 function StoryBuilderIndex() {
   const navigate = useNavigate();
   const [sessions, setSessions] = useState([]);
+  const [mode, setMode] = useState('seed');
   const [title, setTitle] = useState('');
   const [seedIdea, setSeedIdea] = useState('');
   const [creating, setCreating] = useState(false);
@@ -29,11 +44,17 @@ function StoryBuilderIndex() {
   const create = async () => {
     if (!title.trim()) { toast.error('Give your story a working title'); return; }
     setCreating(true);
-    const created = await createStorySession({ title: title.trim(), seedIdea: seedIdea.trim() })
+    const created = await createStorySession({ title: title.trim(), seedIdea: seedIdea.trim() }, { silent: true })
       .catch((err) => { toast.error(err?.message || 'Failed to create'); return null; });
     setCreating(false);
     if (created) navigate(`/story-builder/${created.id}/idea`);
   };
+
+  const onCreated = (session) => navigate(`/story-builder/${session.id}/idea`);
+
+  const tabClass = (id) => `px-4 py-2 text-sm rounded-t border-b-2 ${
+    mode === id ? 'border-port-accent text-white' : 'border-transparent text-gray-400 hover:text-gray-200'
+  }`;
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -42,36 +63,46 @@ function StoryBuilderIndex() {
           <Sparkles className="w-6 h-6 text-port-accent" /> Story Builder
         </h1>
         <p className="text-gray-400 mt-1">
-          One guided path from idea to video — name a universe, capture an idea, then review and lock each
-          stage (aesthetic → plot arc → reader map → characters → issues) before moving on.
+          One guided path from idea to video — start from a seed idea or import a finished work, then review and
+          lock each stage (aesthetic → plot arc → reader map → characters → issues) before moving on.
         </p>
       </header>
 
-      <section className="bg-port-card border border-port-border rounded-lg p-4 space-y-3">
-        <h2 className="font-semibold">Start a new story</h2>
-        <div>
-          <label htmlFor="stb-title" className="block text-sm text-gray-400 mb-1">Universe / story name</label>
-          <input
-            id="stb-title" type="text" value={title} onChange={(e) => setTitle(e.target.value)}
-            placeholder="e.g. The Salt Run"
-            className="w-full bg-port-bg border border-port-border rounded px-3 py-2"
-          />
+      <section className="bg-port-card border border-port-border rounded-lg">
+        <div className="flex gap-1 border-b border-port-border px-2 pt-2">
+          <button onClick={() => setMode('seed')} className={tabClass('seed')}>Start from an idea</button>
+          <button onClick={() => setMode('import')} className={tabClass('import')}>Import a finished work</button>
         </div>
-        <div>
-          <label htmlFor="stb-seed" className="block text-sm text-gray-400 mb-1">Starter idea</label>
-          <textarea
-            id="stb-seed" value={seedIdea} onChange={(e) => setSeedIdea(e.target.value)} rows={3}
-            placeholder="A one-line or one-paragraph seed. You'll expand it with AI in the first step."
-            className="w-full bg-port-bg border border-port-border rounded px-3 py-2"
-          />
-        </div>
-        <button
-          onClick={create} disabled={creating}
-          className="inline-flex items-center gap-2 bg-port-accent hover:bg-blue-600 disabled:opacity-50 text-white px-4 py-2 rounded"
-        >
-          {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-          Create &amp; begin
-        </button>
+
+        {mode === 'seed' ? (
+          <div className="p-4 space-y-3">
+            <div>
+              <label htmlFor="stb-title" className="block text-sm text-gray-400 mb-1">Universe / story name</label>
+              <input
+                id="stb-title" type="text" value={title} onChange={(e) => setTitle(e.target.value)}
+                placeholder="e.g. The Salt Run"
+                className="w-full bg-port-bg border border-port-border rounded px-3 py-2"
+              />
+            </div>
+            <div>
+              <label htmlFor="stb-seed" className="block text-sm text-gray-400 mb-1">Starter idea</label>
+              <textarea
+                id="stb-seed" value={seedIdea} onChange={(e) => setSeedIdea(e.target.value)} rows={3}
+                placeholder="A one-line or one-paragraph seed. You'll expand it with AI in the first step."
+                className="w-full bg-port-bg border border-port-border rounded px-3 py-2"
+              />
+            </div>
+            <button
+              onClick={create} disabled={creating}
+              className="inline-flex items-center gap-2 bg-port-accent hover:bg-blue-600 disabled:opacity-50 text-white px-4 py-2 rounded"
+            >
+              {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+              Create &amp; begin
+            </button>
+          </div>
+        ) : (
+          <ImportPanel onCreated={onCreated} />
+        )}
       </section>
 
       {sessions.length > 0 && (
@@ -87,6 +118,156 @@ function StoryBuilderIndex() {
             </Link>
           ))}
         </section>
+      )}
+    </div>
+  );
+}
+
+// ── Import intake (reuses the Importer's analyze → commit) ──────────────────
+
+function ImportPanel({ onCreated }) {
+  const [universeName, setUniverseName] = useState('');
+  const [seriesName, setSeriesName] = useState('');
+  const [contentType, setContentType] = useState('comic-script');
+  const [source, setSource] = useState('');
+  const [analyzing, setAnalyzing] = useState(false);
+  const [preview, setPreview] = useState(null);
+  const [retrying, setRetrying] = useState(false);
+  const [committing, setCommitting] = useState(false);
+
+  const types = IMPORTER_CONTENT_TYPES || ['short-story', 'novel', 'screenplay', 'comic-script'];
+
+  const analyze = async () => {
+    if (!universeName.trim() || !seriesName.trim() || !source.trim()) {
+      toast.error('Universe name, series name, and source text are required'); return;
+    }
+    setAnalyzing(true); setPreview(null);
+    const res = await analyzeImport(
+      { universeName: universeName.trim(), seriesName: seriesName.trim(), contentType, source },
+      { silent: true },
+    ).catch((err) => { toast.error(err?.message || 'Analyze failed'); return null; });
+    setAnalyzing(false);
+    if (res) setPreview(res);
+  };
+
+  const retryIssues = async () => {
+    setRetrying(true);
+    const res = await retryImporterIssues(
+      { contentType, source, seriesName: seriesName.trim(), arcSummary: preview?.arcPreview?.summary || '' },
+      { silent: true },
+    ).catch((err) => { toast.error(err?.message || 'Retry failed'); return null; });
+    setRetrying(false);
+    if (res) setPreview((p) => ({ ...p, issueProposals: res.issueProposals || [], issueSplitFailed: false }));
+  };
+
+  const importAndBuild = async () => {
+    if (!preview) return;
+    const issues = preview.issueProposals || [];
+    if (issues.length === 0) { toast.error('No issues were extracted — retry the issue split or adjust the source'); return; }
+    setCommitting(true);
+    const committed = await commitImport({
+      universeId: preview.universe.id,
+      seriesId: preview.series.id,
+      issues,
+      contentType,
+      canonSelections: {
+        characters: preview.canonPreview?.characters || [],
+        places: preview.canonPreview?.places || [],
+        objects: preview.canonPreview?.objects || [],
+      },
+      arc: pickArcFields(preview.arcPreview),
+      seasons: preview.seasonsPreview || [],
+    }, { silent: true }).catch((err) => { toast.error(err?.message || 'Import failed'); return null; });
+    if (!committed) { setCommitting(false); return; }
+    const session = await createStorySession({
+      intakeMode: 'import',
+      title: seriesName.trim() || universeName.trim(),
+      // Seed from the extracted arc so the idea step has context and the
+      // universe-aesthetic expand has a real starter (the imported universe
+      // otherwise only has a name).
+      seedIdea: (preview.arcPreview?.summary || preview.arcPreview?.logline || '').slice(0, 4000),
+      universeId: preview.universe.id,
+      seriesId: preview.series.id,
+    }, { silent: true }).catch((err) => { toast.error(err?.message || 'Failed to start the builder'); return null; });
+    setCommitting(false);
+    if (session) onCreated(session);
+  };
+
+  const canon = preview?.canonPreview || {};
+  const issueCount = preview?.issueProposals?.length || 0;
+
+  return (
+    <div className="p-4 space-y-3">
+      <p className="text-sm text-gray-400">
+        Paste a finished story (comic script, screenplay, novel, or short story). It's reverse-engineered into a
+        universe, plot arc, characters, and issues — then you review and lock each stage in the builder.
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label htmlFor="imp-uni" className="block text-sm text-gray-400 mb-1">Universe name</label>
+          <input id="imp-uni" type="text" value={universeName} onChange={(e) => setUniverseName(e.target.value)}
+            placeholder="e.g. Giant" className="w-full bg-port-bg border border-port-border rounded px-3 py-2" />
+        </div>
+        <div>
+          <label htmlFor="imp-ser" className="block text-sm text-gray-400 mb-1">Series name</label>
+          <input id="imp-ser" type="text" value={seriesName} onChange={(e) => setSeriesName(e.target.value)}
+            placeholder="e.g. Giant" className="w-full bg-port-bg border border-port-border rounded px-3 py-2" />
+        </div>
+      </div>
+      <div>
+        <label htmlFor="imp-type" className="block text-sm text-gray-400 mb-1">Content type</label>
+        <select id="imp-type" value={contentType} onChange={(e) => setContentType(e.target.value)}
+          className="w-full bg-port-bg border border-port-border rounded px-3 py-2">
+          {types.map((t) => <option key={t} value={t}>{CONTENT_TYPE_LABELS[t] || t}</option>)}
+        </select>
+      </div>
+      <div>
+        <label htmlFor="imp-src" className="block text-sm text-gray-400 mb-1">
+          Source text <span className="text-gray-600">({source.length.toLocaleString()} chars)</span>
+        </label>
+        <textarea id="imp-src" value={source} onChange={(e) => setSource(e.target.value)} rows={8}
+          placeholder="Paste the full script / manuscript here…"
+          className="w-full bg-port-bg border border-port-border rounded px-3 py-2 font-mono text-xs" />
+      </div>
+
+      {!preview ? (
+        <button onClick={analyze} disabled={analyzing}
+          className="inline-flex items-center gap-2 bg-port-accent hover:bg-blue-600 disabled:opacity-50 text-white px-4 py-2 rounded">
+          {analyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+          {analyzing ? 'Analyzing… (this can take a minute)' : 'Analyze'}
+        </button>
+      ) : (
+        <div className="border border-port-border rounded p-3 space-y-2 bg-port-bg">
+          <div className="text-sm font-medium">
+            Extracted “{preview.universe?.name}”
+            {preview.isExistingUniverse && <span className="text-xs text-port-warning ml-2">(existing universe — will merge)</span>}
+          </div>
+          <div className="text-xs text-gray-400 flex flex-wrap gap-x-4 gap-y-1">
+            <span>{(canon.characters || []).length} characters</span>
+            <span>{(canon.places || []).length} places</span>
+            <span>{(canon.objects || []).length} objects</span>
+            <span>{(preview.seasonsPreview || []).length} volumes</span>
+            <span className={issueCount === 0 ? 'text-port-error' : ''}>{issueCount} issues</span>
+          </div>
+          {preview.arcPreview?.logline && <div className="text-xs text-gray-300 italic">“{preview.arcPreview.logline}”</div>}
+          {(preview.issueSplitFailed || issueCount === 0) && (
+            <div className="text-xs text-port-warning flex items-center gap-2">
+              <AlertTriangle className="w-3.5 h-3.5" /> Issue split didn’t produce issues.
+              <button onClick={retryIssues} disabled={retrying} className="underline hover:text-port-accent disabled:opacity-50">
+                {retrying ? 'Retrying…' : 'Retry issue split'}
+              </button>
+            </div>
+          )}
+          <div className="flex items-center gap-2 pt-1">
+            <button onClick={importAndBuild} disabled={committing || issueCount === 0}
+              className="inline-flex items-center gap-2 bg-port-success hover:bg-green-600 disabled:opacity-50 text-white px-4 py-2 rounded text-sm">
+              {committing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+              Import &amp; start building
+            </button>
+            <button onClick={() => setPreview(null)} disabled={committing}
+              className="text-sm text-gray-400 hover:text-white px-2">Re-analyze</button>
+          </div>
+        </div>
       )}
     </div>
   );

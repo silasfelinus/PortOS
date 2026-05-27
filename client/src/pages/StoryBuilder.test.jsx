@@ -31,6 +31,10 @@ const api = vi.hoisted(() => ({
   getUniverse: vi.fn(),
   getPipelineSeries: vi.fn(),
   listPipelineIssues: vi.fn(),
+  analyzeImport: vi.fn(),
+  commitImport: vi.fn(),
+  retryImporterIssues: vi.fn(),
+  IMPORTER_CONTENT_TYPES: ['short-story', 'novel', 'screenplay', 'comic-script'],
 }));
 vi.mock('../services/api', () => api);
 
@@ -49,6 +53,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   api.getStoryBuilderSteps.mockResolvedValue({ steps: STEPS });
   api.listStorySessions.mockResolvedValue([]);
+  // Benign default so a post-import navigation that mounts the detail view
+  // (which calls getStorySession) doesn't reject; the detail tests override it.
+  api.getStorySession.mockResolvedValue({
+    id: 'stb-x', title: 'X', currentStep: 'idea', steps: mkSteps(), staleSteps: [], universeId: null, seriesId: null,
+  });
   api.setStoryCurrentStep.mockResolvedValue({});
   api.lockStoryStep.mockResolvedValue({});
   api.unlockStoryStep.mockResolvedValue({});
@@ -61,10 +70,71 @@ beforeEach(() => {
 });
 
 describe('StoryBuilder — index', () => {
-  it('renders the create form', async () => {
+  it('renders the seed create form by default', async () => {
     renderAt('/story-builder');
-    expect(await screen.findByText('Start a new story')).toBeTruthy();
-    expect(screen.getByLabelText('Universe / story name')).toBeTruthy();
+    expect(await screen.findByLabelText('Universe / story name')).toBeTruthy();
+    expect(screen.getByText('Start from an idea')).toBeTruthy();
+    expect(screen.getByText('Import a finished work')).toBeTruthy();
+  });
+
+  it('import tab: analyze → preview → import & build creates an import-mode session', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    api.analyzeImport.mockResolvedValue({
+      universe: { id: 'u9', name: 'Giant' },
+      series: { id: 's9' },
+      canonPreview: { characters: [{ name: 'Kessa' }], places: [], objects: [] },
+      arcPreview: { logline: 'A giant wakes.', summary: 'spine' },
+      seasonsPreview: [{ number: 1, title: 'Vol 1' }],
+      issueProposals: [{ title: 'Issue 1' }],
+      issueSplitFailed: false,
+    });
+    api.commitImport.mockResolvedValue({ universe: { id: 'u9' }, series: { id: 's9' }, createdIssueIds: ['iss-1'] });
+    api.createStorySession.mockResolvedValue({ id: 'stb-import', currentStep: 'idea' });
+
+    renderAt('/story-builder');
+    fireEvent.click(await screen.findByText('Import a finished work'));
+    fireEvent.change(await screen.findByLabelText('Universe name'), { target: { value: 'Giant' } });
+    fireEvent.change(screen.getByLabelText('Series name'), { target: { value: 'Giant' } });
+    fireEvent.change(screen.getByLabelText(/Source text/), { target: { value: 'PAGE ONE...' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Analyze$/ }));
+
+    await waitFor(() => expect(screen.getByText(/Extracted/)).toBeTruthy());
+    expect(api.analyzeImport).toHaveBeenCalledWith(
+      expect.objectContaining({ universeName: 'Giant', contentType: 'comic-script', source: 'PAGE ONE...' }),
+      expect.objectContaining({ silent: true }),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Import & start building/ }));
+    await waitFor(() => expect(api.createStorySession).toHaveBeenCalledWith(
+      expect.objectContaining({ intakeMode: 'import', universeId: 'u9', seriesId: 's9', title: 'Giant' }),
+      expect.objectContaining({ silent: true }),
+    ));
+    // commit included all extracted canon + the arc + seasons + issues
+    expect(api.commitImport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        universeId: 'u9', seriesId: 's9', contentType: 'comic-script',
+        issues: [{ title: 'Issue 1' }],
+      }),
+      expect.objectContaining({ silent: true }),
+    );
+  });
+
+  it('import tab: blocks "Import & build" when no issues were extracted, offers retry', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    api.analyzeImport.mockResolvedValue({
+      universe: { id: 'u9', name: 'Giant' }, series: { id: 's9' },
+      canonPreview: { characters: [], places: [], objects: [] },
+      arcPreview: { logline: 'x' }, seasonsPreview: [],
+      issueProposals: [], issueSplitFailed: true,
+    });
+    renderAt('/story-builder');
+    fireEvent.click(await screen.findByText('Import a finished work'));
+    fireEvent.change(await screen.findByLabelText('Universe name'), { target: { value: 'Giant' } });
+    fireEvent.change(screen.getByLabelText('Series name'), { target: { value: 'Giant' } });
+    fireEvent.change(screen.getByLabelText(/Source text/), { target: { value: 'x' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Analyze$/ }));
+    await waitFor(() => expect(screen.getByText(/Retry issue split/)).toBeTruthy());
+    expect(screen.getByRole('button', { name: /Import & start building/ }).disabled).toBe(true);
   });
 });
 
