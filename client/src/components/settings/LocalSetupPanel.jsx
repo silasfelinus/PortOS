@@ -12,6 +12,25 @@ export default function LocalSetupPanel({ pythonPath, onPythonPathChange, onPack
   const [creatingVenv, setCreatingVenv] = useState(false);
   const logRef = useRef(null);
   const installEsRef = useRef(null);
+  // Decouple the input from the parent's persisted path. The VideoGen
+  // consumer saves on every onPythonPathChange, so wiring the input to the
+  // prop directly fires a settings PATCH + ~1-2s status re-probe per
+  // keystroke. Typed edits commit on debounce/blur; programmatic updates
+  // (Detect, Switch-to-arm64, Create-venv) still call onPythonPathChange
+  // directly so they take effect immediately.
+  const [draftPath, setDraftPath] = useState(pythonPath || '');
+  const commitTimerRef = useRef(null);
+  useEffect(() => { setDraftPath(pythonPath || ''); }, [pythonPath]);
+  useEffect(() => () => clearTimeout(commitTimerRef.current), []);
+  const commitDraft = (value) => {
+    clearTimeout(commitTimerRef.current);
+    if (value !== (pythonPath || '')) onPythonPathChange(value);
+  };
+  const handleDraftChange = (value) => {
+    setDraftPath(value);
+    clearTimeout(commitTimerRef.current);
+    commitTimerRef.current = setTimeout(() => commitDraft(value), 800);
+  };
 
   // Closing the install EventSource on unmount stops setInstalling /
   // setInstallLog calls firing on a torn-down component if the user
@@ -143,8 +162,9 @@ export default function LocalSetupPanel({ pythonPath, onPythonPathChange, onPack
       <div className="flex items-center gap-2">
         <input
           type="text"
-          value={pythonPath || ''}
-          onChange={(e) => onPythonPathChange(e.target.value)}
+          value={draftPath}
+          onChange={(e) => handleDraftChange(e.target.value)}
+          onBlur={() => commitDraft(draftPath)}
           className="flex-1 bg-port-bg border border-port-border rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-port-accent"
           placeholder="/usr/local/bin/python3"
         />

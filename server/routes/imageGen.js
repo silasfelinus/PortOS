@@ -685,7 +685,13 @@ router.get('/setup/check', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'pythonPath must be a python interpreter (basename python/python3/python3.NN)' });
   }
   const health = await probePythonHealth(pythonPath);
-  const archMismatch = !!(health.interpreterArch && health.interpreterArch !== HOST_ARCH);
+  // The arch warning is specifically about mlx wheels (arm64-only) on Apple
+  // Silicon. A generic interpreterArch !== HOST_ARCH compare would false-
+  // positive on Windows (Python reports `AMD64`, Node reports `x86_64`) and
+  // on hypothetical arm64 Linux — where mlx isn't even in REQUIRED_PACKAGES.
+  const archMismatch = process.platform === 'darwin'
+    && HOST_ARCH === 'arm64'
+    && health.interpreterArch === 'x86_64';
   const suggestedArm64Python = archMismatch ? await detectArm64Python() : null;
   res.json({
     pythonPath,
