@@ -145,6 +145,101 @@ if [[ "$INSTALL_LTX2" == "1" ]]; then
   echo "✅ ltx-2-mlx venv ready: ${LTX2_PY}"
 fi
 
+INSTALL_WAN22="${INSTALL_WAN22:-0}"
+if [[ "$INSTALL_WAN22" == "1" ]]; then
+  # osama-ata/Wan2.2-mlx — pure-MLX port of Alibaba's Wan 2.2 video model.
+  # MoE-A14B: 14B active params at inference, ~28 GB resident at bf16. The
+  # PortOS helper at scripts/generate_wan22.py subprocesses upstream's
+  # generate.py from the cloned repo, so PortOS releases own the arg
+  # translation layer (PortOS arg stability) while upstream owns the
+  # actual inference (upstream-tracked changes).
+  #
+  # EXPERIMENTAL — upstream CLI hasn't been pinned across releases; if a
+  # commit reshapes --task / --ckpt_dir, set `broken: true` on the
+  # wan22_* entries in data/media-models.json until generate_wan22.py is
+  # updated to match.
+  if ! have uv; then
+    echo "❌ INSTALL_WAN22=1 requires the 'uv' Python installer." >&2
+    echo "   curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+    exit 1
+  fi
+  if ! have git; then
+    echo "❌ INSTALL_WAN22=1 requires git." >&2
+    exit 1
+  fi
+  WAN22_PIN="${WAN22_PIN:-main}"
+  WAN22_DIR="${HOME}/.portos/wan2.2-mlx"
+  WAN22_PY="${WAN22_DIR}/.venv/bin/python3"
+  mkdir -p "${HOME}/.portos"
+  if [[ ! -d "${WAN22_DIR}/.git" ]]; then
+    echo "📦 Cloning osama-ata/Wan2.2-mlx..."
+    git clone https://github.com/osama-ata/Wan2.2-mlx.git "${WAN22_DIR}"
+  else
+    echo "📦 Fetching Wan2.2-mlx updates..."
+    (cd "${WAN22_DIR}" && git fetch origin)
+  fi
+  (cd "${WAN22_DIR}" && git checkout --quiet "${WAN22_PIN}")
+  if [[ ! -x "${WAN22_PY}" ]]; then
+    echo "📦 Creating Wan2.2-mlx venv with Python 3.11..."
+    (cd "${WAN22_DIR}" && uv venv --python 3.11)
+  fi
+  # Upstream uses pyproject + requirements rather than a lockfile. Use
+  # `uv pip install -r requirements.txt` when present; otherwise `uv sync`
+  # falls back to the project config.
+  if [[ -f "${WAN22_DIR}/requirements.txt" ]]; then
+    echo "📦 Installing Wan2.2-mlx requirements..."
+    (cd "${WAN22_DIR}" && uv pip install -r requirements.txt)
+  else
+    echo "📦 Syncing Wan2.2-mlx packages..."
+    (cd "${WAN22_DIR}" && uv sync)
+  fi
+  echo "✅ Wan2.2-mlx venv ready: ${WAN22_PY}"
+fi
+
+INSTALL_HUNYUAN="${INSTALL_HUNYUAN:-0}"
+if [[ "$INSTALL_HUNYUAN" == "1" ]]; then
+  # gaurav-nelson/HunyuanVideo_MLX — community MLX port of Tencent's
+  # HunyuanVideo (13B). ~60 GB resident at bf16. Practical only with the
+  # 4-bit Gemma text encoder + everything else evicted (see the Memory
+  # Management panel under Settings → Local LLMs).
+  #
+  # EXPERIMENTAL — same caveat as Wan 2.2: upstream CLI isn't pinned. If
+  # sample_video.py args drift, flip `hunyuan_video` broken in
+  # data/media-models.json and update scripts/generate_hunyuan.py.
+  if ! have uv; then
+    echo "❌ INSTALL_HUNYUAN=1 requires the 'uv' Python installer." >&2
+    exit 1
+  fi
+  if ! have git; then
+    echo "❌ INSTALL_HUNYUAN=1 requires git." >&2
+    exit 1
+  fi
+  HUNYUAN_PIN="${HUNYUAN_PIN:-main}"
+  HUNYUAN_DIR="${HOME}/.portos/hunyuan-video-mlx"
+  HUNYUAN_PY="${HUNYUAN_DIR}/.venv/bin/python3"
+  mkdir -p "${HOME}/.portos"
+  if [[ ! -d "${HUNYUAN_DIR}/.git" ]]; then
+    echo "📦 Cloning gaurav-nelson/HunyuanVideo_MLX..."
+    git clone https://github.com/gaurav-nelson/HunyuanVideo_MLX.git "${HUNYUAN_DIR}"
+  else
+    echo "📦 Fetching HunyuanVideo_MLX updates..."
+    (cd "${HUNYUAN_DIR}" && git fetch origin)
+  fi
+  (cd "${HUNYUAN_DIR}" && git checkout --quiet "${HUNYUAN_PIN}")
+  if [[ ! -x "${HUNYUAN_PY}" ]]; then
+    echo "📦 Creating HunyuanVideo_MLX venv with Python 3.11..."
+    (cd "${HUNYUAN_DIR}" && uv venv --python 3.11)
+  fi
+  if [[ -f "${HUNYUAN_DIR}/requirements.txt" ]]; then
+    echo "📦 Installing HunyuanVideo_MLX requirements..."
+    (cd "${HUNYUAN_DIR}" && uv pip install -r requirements.txt)
+  else
+    echo "📦 Syncing HunyuanVideo_MLX packages..."
+    (cd "${HUNYUAN_DIR}" && uv sync)
+  fi
+  echo "✅ HunyuanVideo_MLX venv ready: ${HUNYUAN_PY}"
+fi
+
 INSTALL_FLUX2="${INSTALL_FLUX2:-$(is_macos && echo 1 || echo 0)}"
 
 if [[ "$INSTALL_FLUX2" == "1" ]]; then

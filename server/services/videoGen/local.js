@@ -32,6 +32,22 @@ import { findFfmpeg, safeUnder, generateThumbnail, optimizeForStreaming, upscale
 const LTX2_VENV_PYTHON = join(homedir(), '.portos', 'ltx-2-mlx', '.venv', 'bin', 'python3');
 const LTX2_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_ltx2.py');
 
+// Wan 2.2 MLX runtime — osama-ata/Wan2.2-mlx cloned at
+// ~/.portos/wan2.2-mlx/. The wrapper at scripts/generate_wan22.py
+// subprocesses upstream generate.py so PortOS releases don't drift from
+// upstream's CLI. Provisioned via `INSTALL_WAN22=1 bash scripts/setup-image-video.sh`.
+const WAN22_VENV_PYTHON = join(homedir(), '.portos', 'wan2.2-mlx', '.venv', 'bin', 'python3');
+const WAN22_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_wan22.py');
+const WAN22_REPO_DIR = join(homedir(), '.portos', 'wan2.2-mlx');
+
+// HunyuanVideo MLX runtime — gaurav-nelson/HunyuanVideo_MLX cloned at
+// ~/.portos/hunyuan-video-mlx/. ~60 GB resident at bf16 so practical only
+// with the 4-bit Gemma text encoder + everything else evicted. Provisioned
+// via `INSTALL_HUNYUAN=1 bash scripts/setup-image-video.sh`.
+const HUNYUAN_VENV_PYTHON = join(homedir(), '.portos', 'hunyuan-video-mlx', '.venv', 'bin', 'python3');
+const HUNYUAN_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_hunyuan.py');
+const HUNYUAN_REPO_DIR = join(homedir(), '.portos', 'hunyuan-video-mlx');
+
 const execFileAsync = promisify(execFile);
 
 const IS_WIN = process.platform === 'win32';
@@ -242,12 +258,72 @@ const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames
   return { bin: LTX2_VENV_PYTHON, args };
 };
 
+// Build args for the Wan 2.2 MLX helper. The helper subprocesses upstream
+// `generate.py` from the cloned osama-ata/Wan2.2-mlx repo. The wrapper
+// translates PortOS's stable arg surface (prompt, output, image) into
+// upstream's --task / --size / --ckpt_dir form so PortOS releases don't
+// fight upstream CLI changes.
+const buildWan22Args = ({ model, prompt, width, height, numFrames, steps, guidance, seed, sourceImagePath, mode, outputPath }) => {
+  if (!existsSync(WAN22_VENV_PYTHON)) {
+    throw new ServerError(
+      `wan2.2-mlx venv not found at ${WAN22_VENV_PYTHON}. Run \`INSTALL_WAN22=1 bash scripts/setup-image-video.sh\` to install.`,
+      { status: 500, code: 'WAN22_VENV_MISSING' },
+    );
+  }
+  const args = [
+    WAN22_HELPER_SCRIPT,
+    '--repo-dir', WAN22_REPO_DIR,
+    '--task', model.mode === 'i2v' ? 'i2v-A14B' : 't2v-A14B',
+    '--model-repo', model.repo,
+    '--prompt', prompt,
+    '--width', String(width),
+    '--height', String(height),
+    '--num-frames', String(numFrames),
+    '--steps', String(steps),
+    '--guidance', String(guidance ?? 5.0),
+    '--seed', String(seed),
+    '--output', outputPath,
+  ];
+  if (mode === 'i2v' && sourceImagePath) args.push('--image', sourceImagePath);
+  return { bin: WAN22_VENV_PYTHON, args };
+};
+
+// Build args for the HunyuanVideo MLX helper. Mirror of the Wan 2.2 path.
+const buildHunyuanArgs = ({ model, prompt, width, height, numFrames, steps, guidance, seed, outputPath }) => {
+  if (!existsSync(HUNYUAN_VENV_PYTHON)) {
+    throw new ServerError(
+      `hunyuan-video-mlx venv not found at ${HUNYUAN_VENV_PYTHON}. Run \`INSTALL_HUNYUAN=1 bash scripts/setup-image-video.sh\` to install.`,
+      { status: 500, code: 'HUNYUAN_VENV_MISSING' },
+    );
+  }
+  const args = [
+    HUNYUAN_HELPER_SCRIPT,
+    '--repo-dir', HUNYUAN_REPO_DIR,
+    '--model-repo', model.repo,
+    '--prompt', prompt,
+    '--width', String(width),
+    '--height', String(height),
+    '--num-frames', String(numFrames),
+    '--steps', String(steps),
+    '--guidance', String(guidance ?? 6.0),
+    '--seed', String(seed),
+    '--output', outputPath,
+  ];
+  return { bin: HUNYUAN_VENV_PYTHON, args };
+};
+
 const buildArgs = ({ pythonPath, modelId, model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, mode, imageStrength, textEncoderRepo, outputPath }) => {
   // Route to the dgrauet/ltx-2-mlx helper when the model declares the new
   // runtime. Existing notapalindrome models default to runtime: 'mlx_video'
   // (or undefined in legacy registries — see backfillRuntime in mediaModels.js).
   if (model.runtime === 'ltx2') {
     return buildLtx2Args({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, mode, imageStrength, disableAudio, outputPath, textEncoderRepo });
+  }
+  if (model.runtime === 'wan22') {
+    return buildWan22Args({ model, prompt, width, height, numFrames, steps, guidance, seed, sourceImagePath, mode, outputPath });
+  }
+  if (model.runtime === 'hunyuan') {
+    return buildHunyuanArgs({ model, prompt, width, height, numFrames, steps, guidance, seed, outputPath });
   }
   if (Array.isArray(keyframes) && keyframes.length >= 2) {
     throw new ServerError(
