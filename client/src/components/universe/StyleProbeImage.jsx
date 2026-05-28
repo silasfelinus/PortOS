@@ -9,7 +9,7 @@
  * universe's `styleImageRefs[]` so it survives reload and shows in both the
  * Universe Builder and the Story Builder aesthetic step.
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { generateImage, getSettings, updateUniverse } from '../../services/api';
 import { universeStylePreset } from '../../lib/universeStylePreset';
 import { pipelineImageCfgToRenderOpts, readPipelineImageSettings, PIPELINE_IMAGE_DEFAULTS } from '../../lib/pipelineImageDefaults';
@@ -33,6 +33,9 @@ export function hasStyleForProbe(universe) {
 export default function StyleProbeImage({ universe, onUniverseChange, canRender = true }) {
   const [imageCfg, setImageCfg] = useState(PIPELINE_IMAGE_DEFAULTS);
   const [jobId, setJobId] = useState(null);
+  // MediaJobThumb's onFilename effect can fire more than once — process each
+  // completed filename's persist exactly once.
+  const processedRef = useRef(new Set());
 
   useEffect(() => {
     getSettings({ silent: true })
@@ -57,10 +60,16 @@ export default function StyleProbeImage({ universe, onUniverseChange, canRender 
   const onComplete = async (filename) => {
     setJobId(null);
     if (!filename || !universe?.id) return;
-    const next = [...(Array.isArray(universe.styleImageRefs) ? universe.styleImageRefs : []), filename];
+    if (processedRef.current.has(filename)) return; // multi-fire guard
+    processedRef.current.add(filename);
+    const existing = Array.isArray(universe.styleImageRefs) ? universe.styleImageRefs : [];
+    if (existing.includes(filename)) return;
+    const next = [...existing, filename];
     const updated = await updateUniverse(universe.id, { styleImageRefs: next }, { silent: true })
       .catch(() => null);
-    onUniverseChange?.(updated || { ...universe, styleImageRefs: next });
+    // Only reflect the new ref when the save actually succeeded — otherwise the
+    // draft would show an image the server never persisted.
+    if (updated) onUniverseChange?.(updated);
   };
 
   return (

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { filterSelectableModels } from '../utils/providers';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt';
@@ -532,6 +532,10 @@ function StepCharacters({ session, universe, locked, onChanged }) {
   const [imageCfg, setImageCfg] = useState(PIPELINE_IMAGE_DEFAULTS);
   const [renderingJobs, setRenderingJobs] = useState({});
   const [refiningId, setRefiningId] = useState(null);
+  // MediaJobThumb's onFilename effect can fire more than once (StrictMode +
+  // the unstable per-render onComplete arrow); guard so each (char, filename)
+  // append runs exactly once.
+  const processedRef = useRef(new Set());
 
   useEffect(() => {
     getSettings({ silent: true })
@@ -557,13 +561,22 @@ function StepCharacters({ session, universe, locked, onChanged }) {
   };
 
   // Section-local renders don't carry a universeRun tag, so the server's
-  // imageRef append hook never fires — persist the filename ourselves (mirrors
-  // UniverseCanonSection.handleRefCompleted).
+  // imageRef append hook never fires — persist the filename ourselves. Refetch
+  // the freshest universe before appending so a sibling character's just-
+  // persisted imageRef isn't clobbered by a stale full-array PATCH.
   const onCharRendered = async (charId, filename) => {
     setRenderingJobs((p) => { if (!p[charId]) return p; const n = { ...p }; delete n[charId]; return n; });
     if (!filename || !universe?.id) return;
-    const list = (universe.characters || []).map((e) =>
-      e.id === charId ? { ...e, imageRefs: [...(e.imageRefs || []), filename] } : e);
+    const key = `${charId}:${filename}`;
+    if (processedRef.current.has(key)) return; // multi-fire guard
+    processedRef.current.add(key);
+    const fresh = await getUniverse(universe.id, { silent: true }).catch(() => null);
+    const chars = (fresh?.characters) || universe.characters || [];
+    const list = chars.map((e) => (
+      e.id === charId
+        ? { ...e, imageRefs: (e.imageRefs || []).includes(filename) ? e.imageRefs : [...(e.imageRefs || []), filename] }
+        : e
+    ));
     await updateUniverse(universe.id, { characters: list }, { silent: true }).catch(() => {});
     onChanged();
   };
@@ -732,12 +745,15 @@ function StoryBuilderDetail({ storyId, stepParam }) {
     onSuccess: (_updated, next) => {
       reload();
       // "Lock & continue" should actually continue — on a successful LOCK,
-      // auto-advance to the next step (the just-locked step makes it reachable;
-      // the server re-gates the pointer move). Unlocking stays put.
-      if (next && activeIdx >= 0 && activeIdx < stepIds.length - 1) {
+      // auto-advance to the next step. Skip if the current step is stale (the
+      // user must re-review, not advance) and only navigate AFTER the server
+      // accepts the pointer move, so a rejected gate doesn't strand the URL
+      // ahead of the persisted currentStep. Unlocking stays put.
+      if (next && !isStale && activeIdx >= 0 && activeIdx < stepIds.length - 1) {
         const nextId = stepIds[activeIdx + 1];
-        setStoryCurrentStep(storyId, nextId, { silent: true }).catch(() => {});
-        navigate(`/story-builder/${storyId}/${nextId}`);
+        setStoryCurrentStep(storyId, nextId, { silent: true })
+          .then(() => navigate(`/story-builder/${storyId}/${nextId}`))
+          .catch(() => {});
       }
     },
     lockedMessage: `${activeStep?.label || 'Step'} locked`,
@@ -756,10 +772,13 @@ function StoryBuilderDetail({ storyId, stepParam }) {
   // default provider/model for every generate/refine, so one selection drives
   // the whole wizard.
   const saveLlm = async (next) => {
-    await updateStorySession(storyId, {
+    const updated = await updateStorySession(storyId, {
       llm: { provider: next.provider || null, model: next.model || null },
-    }, { silent: true }).catch(() => {});
-    reload();
+    }, { silent: true }).catch(() => null);
+    // An llm-only change touches nothing else — merge it locally instead of a
+    // full reload() (which would refetch session + universe + series + issues
+    // and briefly flicker the view).
+    if (updated) setSession((prev) => (prev ? { ...prev, llm: updated.llm } : prev));
   };
 
   if (loading) return <div className="p-6 text-gray-400 flex items-center gap-2"><Loader2 className="w-5 h-5 animate-spin" /> Loading…</div>;
