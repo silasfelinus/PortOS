@@ -28,6 +28,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSearchParams, useNavigate, Link } from 'react-router-dom';
 import Drawer from '../components/Drawer';
 import { ImageGenTab } from '../components/settings/ImageGenTab';
+import LocalSetupPanel from '../components/settings/LocalSetupPanel';
 import MediaCard from '../components/media/MediaCard';
 import MediaPreview from '../components/media/MediaPreview';
 import StylePresetPicker from '../components/media/StylePresetPicker';
@@ -51,6 +52,7 @@ import {
   listVideoHistory, deleteVideoHistoryItem, setVideoHidden, extractLastFrame,
   upscaleVideo,
   listImageGallery,
+  getSettings, updateSettings,
 } from '../services/api';
 import { randomSeed, safeParseJSON } from '../lib/genUtils';
 import { VIDEO_RESOLUTIONS } from '../lib/videoGenResolutions';
@@ -424,6 +426,24 @@ export default function VideoGen() {
   useEffect(() => {
     refreshStatus();
     return () => eventSourceRef.current?.close();
+  }, [refreshStatus]);
+
+  // Settings PUT shallow-merges top-level keys, so the full imageGen slice
+  // must round-trip — otherwise mode/external/codex/expose get clobbered.
+  const handleSavePythonPath = useCallback(async (path) => {
+    const current = await getSettings({ silent: true }).catch(() => ({}));
+    const imageGen = current?.imageGen || {};
+    await updateSettings(
+      {
+        imageGen: {
+          ...imageGen,
+          local: { ...(imageGen.local || {}), pythonPath: path || undefined },
+        },
+      },
+      { silent: true },
+    )
+      .then(() => refreshStatus())
+      .catch((err) => toast.error(`Failed to save: ${err.message}`));
   }, [refreshStatus]);
 
   // Validate `modelId` once models are loaded. A Remix URL (or hand-edited
@@ -938,8 +958,7 @@ export default function VideoGen() {
             ) : (
               <>
                 <AlertTriangle className="w-3 h-3" />
-                {status.reason || 'Local Python not configured'} —
-                <button type="button" onClick={openSettings} className="underline">Settings</button>
+                {status.reason || 'Local Python not configured — set one up below'}
               </>
             )}
           </span>
@@ -965,6 +984,30 @@ export default function VideoGen() {
           </button>
         </div>
       </div>
+
+      {status && status.connected === false && (() => {
+        const missingCount = status.missingPackages?.length || 0;
+        const hasPath = !!status.pythonPath;
+        return (
+          <div className="bg-port-card border border-port-border rounded-xl p-4">
+            <div className="mb-3">
+              <h3 className="text-sm font-medium text-gray-200">
+                {hasPath ? 'Install missing Python packages' : 'Set up Local Python'}
+              </h3>
+              <p className="text-[11px] text-gray-500 mt-0.5">
+                {hasPath
+                  ? `Your Python is selected (${status.pythonPath}), but ${missingCount} required ${missingCount === 1 ? "package isn't" : "packages aren't"} installed. Click "Install" below — PortOS will pip-install them into this interpreter.`
+                  : 'Pick a Python 3.10+ interpreter — PortOS auto-detects venvs and conda installs and can install missing packages directly.'}
+              </p>
+            </div>
+            <LocalSetupPanel
+              pythonPath={status.pythonPath || ''}
+              onPythonPathChange={handleSavePythonPath}
+              onPackagesChanged={refreshStatus}
+            />
+          </div>
+        );
+      })()}
 
       {/* Mode switch — segmented control above the form. Sets state that
           both the form rendering and the submit payload react to.

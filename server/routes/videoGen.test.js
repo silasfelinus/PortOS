@@ -6,6 +6,11 @@ vi.mock('../services/settings.js', () => ({
   getSettings: vi.fn(async () => ({ imageGen: { local: { pythonPath: '/usr/bin/python3' } } })),
 }));
 
+vi.mock('../lib/pythonSetup.js', () => ({
+  checkPackages: vi.fn(async () => ({ installed: ['mflux', 'mlx'], missing: [], missingPip: [] })),
+  isAllowedPython: vi.fn(() => true),
+}));
+
 vi.mock('../services/videoGen/local.js', () => ({
   // The route checks `runtime` on the default model when validating a2v —
   // include it so the a2v happy-path tests don't trip the A2V_REQUIRES_LTX2
@@ -154,12 +159,28 @@ describe('videoGen routes', () => {
   });
 
   describe('GET /status', () => {
-    it('reports connected when pythonPath is set', async () => {
+    it('reports connected when pythonPath is set AND required packages all import', async () => {
       const r = await request(app).get('/api/video-gen/status');
       expect(r.status).toBe(200);
       expect(r.body.connected).toBe(true);
       expect(r.body.pythonPath).toBe('/usr/bin/python3');
+      expect(r.body.missingPackages).toEqual([]);
       expect(r.body.defaultModel).toBe('ltx2_unified');
+    });
+
+    it('reports disconnected with reason + missingPackages when packages fail to import', async () => {
+      const { checkPackages } = await import('../lib/pythonSetup.js');
+      checkPackages.mockResolvedValueOnce({
+        installed: ['numpy', 'tqdm'],
+        missing: ['mflux', 'mlx', 'mlx_video'],
+        missingPip: ['mflux', 'mlx', 'mlx_video'],
+      });
+      const r = await request(app).get('/api/video-gen/status');
+      expect(r.status).toBe(200);
+      expect(r.body.connected).toBe(false);
+      expect(r.body.pythonPath).toBe('/usr/bin/python3');
+      expect(r.body.missingPackages).toEqual(['mflux', 'mlx', 'mlx_video']);
+      expect(r.body.reason).toMatch(/3 python packages missing/);
     });
   });
 
