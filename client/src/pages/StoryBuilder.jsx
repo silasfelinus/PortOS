@@ -730,12 +730,16 @@ function StoryBuilderDetail({ storyId, stepParam }) {
   const isStale = staleSteps.includes(activeStepId);
 
   // A step is reachable when every earlier step is locked AND not stale.
+  // Returns `true` (reachable) or a discriminator string identifying the
+  // first blocking earlier step's reason, so the caller can render the
+  // matching toast ("Lock the earlier steps first" vs "Re-review the
+  // stale earlier step first" — same boolean truthiness, different copy).
   const reachable = useCallback((idx) => {
     if (idx <= 0) return true;
     for (let i = 0; i < idx; i++) {
       const id = stepIds[i];
-      if (session?.steps?.[id]?.locked !== true) return false;
-      if (staleSteps.includes(id)) return false;
+      if (session?.steps?.[id]?.locked !== true) return 'unlocked';
+      if (staleSteps.includes(id)) return 'stale';
     }
     return true;
   }, [stepIds, session, staleSteps]);
@@ -762,7 +766,13 @@ function StoryBuilderDetail({ storyId, stepParam }) {
   });
 
   const goToStep = async (id, idx) => {
-    if (!reachable(idx)) { toast.error('Lock the earlier steps first'); return; }
+    const why = reachable(idx);
+    if (why !== true) {
+      toast.error(why === 'stale'
+        ? 'Re-review the stale earlier step first'
+        : 'Lock the earlier steps first');
+      return;
+    }
     // Persist the current-step pointer (server re-gates); navigate optimistically.
     await setStoryCurrentStep(storyId, id, { silent: true }).catch(() => {});
     navigate(`/story-builder/${storyId}/${id}`);
@@ -810,7 +820,10 @@ function StoryBuilderDetail({ storyId, stepParam }) {
               const st = session.steps?.[s.id] || { status: 'pending', locked: false };
               const stale = staleSteps.includes(s.id);
               const isActive = s.id === activeStepId;
-              const canGo = reachable(idx);
+              // `reachable` returns `true` or a string discriminator ('unlocked' / 'stale');
+              // canGo must be strictly boolean — `disabled={!canGo}` would otherwise
+              // treat the truthy string as "reachable" and re-enable a blocked button.
+              const canGo = reachable(idx) === true;
               return (
                 <button
                   key={s.id} onClick={() => goToStep(s.id, idx)} disabled={!canGo}

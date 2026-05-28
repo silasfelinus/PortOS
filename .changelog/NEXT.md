@@ -16,6 +16,17 @@ TBD
 
 ## Fixed
 
+- **Story Builder data-loss fixes** surfaced by the local-review pass on the unified-story-builder branch:
+  - `generateStep('plotArc')` was wholesale-replacing `series.arc` and `series.seasons` via a plain `updateSeries({ arc, seasons })`, which silently dropped per-field arc locks, locked seasons, and orphaned every child issue attached to a renamed/removed season. Route through `commitSeasonsWithRemap` (same helper the Arc Canvas regenerator uses) so locks are honored and orphaned issues are remapped via normalized title → number → positional fallback.
+  - `resolveVerifyIssues` (the auto-resolve path off the Arc Canvas verify panel) was silently wiping `series.arc.readerMap`: the LLM payload doesn't author the reader map, so omitting it from the sanitizeArc call defaulted the field to `null` and `commitSeasonsWithRemap`'s `mergeArcWithLocks` only restores fields when their per-field lock is `true`. A user who'd generated a reader map without locking it lost the entire map the first time they auto-resolved a finding. The sibling `generateArcOverview` already had this fix; `resolveVerifyIssues` drifted from it despite the "Mirrors `resolveVerifyIssues`" comment.
+  - Reader-map prompt JSON example used a pipe-separated enum string for `kind` (`"hook|reveal|payoff|emotional|cliffhanger"`), which LLMs reproduced literally; `sanitizeReaderBeat` then dropped every beat because the joined string isn't in `READER_MAP_BEAT_KINDS`, leaving `beats: []` and tripping the empty-payload check. Replaced with a single valid example (`"hook"`); the earlier `{{beatKindsCsv}}` line still enumerates the controlled vocabulary.
+  - Story Builder `currentStep` PATCH schema was `z.string().max(40)` and the sanitizer silently coerced unknown values to `STEP_IDS[0]` — a stale client that posted a removed step id would land on the first step with no error. Now `z.enum(STEP_IDS)`; the sanitizer's coerce-on-load fallback stays for resilience against pre-existing corrupted files.
+  - `styleImageRefs` route caps (`.max(50)` on POST and PATCH) were 4× the sanitizer cap (`IMAGE_REFS_PER_ENTRY_MAX` = 12), so a 40-entry POST silently 200'd with 28 entries dropped. Aligned to the shared `entryImageRefsField` so over-the-cap requests get a loud 400.
+  - Boot-time `verifyCollectionVersions` array didn't include the Story Builder store; type-level schema drift would have gone unnoticed.
+  - "Lock the earlier steps first" toast misfired when the step was blocked by upstream-staleness (every earlier step IS locked, but one is stale). Discriminated `reachable()` → `'unlocked' | 'stale' | true` so the toast says "Re-review the stale earlier step first" in that case.
+
+  Dev machines that already ran migration 043 with the buggy reader-map prompts keep the bad copies in `data/prompts/stages/` — delete `story-builder-reader-map.md` and `story-builder-reader-map-refine.md` from that directory, then restart, and migration 043 will re-copy the fixed versions from `data.reference/`. Fresh installs are unaffected.
+
 - Series detail page: when the Story Bible drawer is open, the Series Arc + Editorial Roadmap split and the inner text + 260px Themes panel split now respond to the actual content-area width instead of viewport width. Switched to Tailwind v4 container queries — Roadmap drops below Arc when the content area is < 1024px, and Themes stacks below the logline/summary column when the Arc card is < 672px, preventing the text column from being squeezed into an unreadable strip.
 
 ## Removed

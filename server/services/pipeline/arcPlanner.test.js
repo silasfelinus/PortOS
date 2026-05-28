@@ -732,6 +732,40 @@ describe('arcPlanner — resolveVerifyIssues', () => {
     const finalI1 = await issuesSvc.getIssue(i1.id);
     expect(finalI1.seasonId).toBeNull();
   });
+
+  it('preserves series.arc.readerMap when the resolve LLM does not author one', async () => {
+    // Regression for the drift between generateArcOverview (which preserves
+    // readerMap) and resolveVerifyIssues (which silently wiped it pre-fix).
+    const s = await setupSeries();
+    const priorReaderMap = {
+      hooks: [{ id: 'rm-h-1', label: 'why is the foundry silent', atArcPosition: 0.1, note: '' }],
+      payoffs: [],
+      beats: [],
+      cliffhangers: [],
+      status: 'draft',
+    };
+    await seriesSvc.updateSeries(s.id, {
+      arc: { logline: 'L', summary: 'S', shape: 'man-in-hole', readerMap: priorReaderMap },
+    });
+    stageRunnerSpy = vi.fn(async () => ({
+      content: {
+        // The resolve prompt doesn't ask the LLM for a reader map — make sure
+        // omitting it doesn't wipe the user's existing one.
+        arc: { logline: 'L2', summary: 'S2', themes: [], protagonistArc: '' },
+        seasons: [],
+        notes: '',
+      },
+      runId: 'r', providerId: 'p', model: 'm',
+    }));
+    const out = await planner.resolveVerifyIssues(s.id, {
+      findings: [{ severity: 'medium', problem: 'X', suggestion: 'Y' }],
+    });
+    expect(out.applied).toBe(true);
+    expect(out.series.arc.logline).toBe('L2');
+    // shape and readerMap come from the prior series.arc and must survive.
+    expect(out.series.arc.shape).toBe('man-in-hole');
+    expect(out.series.arc.readerMap?.hooks?.[0]?.label).toBe('why is the foundry silent');
+  });
 });
 
 describe('arcPlanner — commitSeasonsWithRemap', () => {

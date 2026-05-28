@@ -57,7 +57,7 @@ Return ONLY a JSON object (no prose, no code fence):
 {
   "hooks": [{ "label": "string", "atArcPosition": 0, "note": "string" }],
   "payoffs": [{ "label": "string", "atArcPosition": 0, "resolvesHookId": null, "note": "string" }],
-  "beats": [{ "kind": "hook|reveal|payoff|emotional|cliffhanger", "atArcPosition": 0, "intensity": 0.5, "note": "string" }],
+  "beats": [{ "kind": "hook", "atArcPosition": 0, "intensity": 0.5, "note": "string" }],
   "cliffhangers": [{ "atIssueBoundary": 1, "note": "string" }]
 }
 ```

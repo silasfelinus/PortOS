@@ -36,7 +36,9 @@ import { refineUniverseCharacter } from './universeCanon.js';
 import {
   createSeries, getSeries, updateSeries, setArcFieldLock,
 } from './pipeline/series.js';
-import { generateArcOverview, generateReaderMap, refineReaderMap } from './pipeline/arcPlanner.js';
+import {
+  generateArcOverview, generateReaderMap, refineReaderMap, commitSeasonsWithRemap,
+} from './pipeline/arcPlanner.js';
 
 const TYPE_SCHEMA_VERSION = 1;
 
@@ -473,7 +475,13 @@ export async function generateStep(id, stepId, options = {}) {
     // A null arc means the LLM returned nothing identifying — refuse rather
     // than wiping a previously-generated arc with `updateSeries({ arc: null })`.
     if (!arc) throw makeErr('LLM returned an empty arc — try regenerating', ERR_VALIDATION);
-    const updated = await updateSeries(session.seriesId, { arc, seasons });
+    // Route through commitSeasonsWithRemap so per-field arc locks, per-season
+    // locks, and orphaned child issues are all honored — same path the Arc
+    // Canvas's regenerate uses. A plain updateSeries({ arc, seasons }) would
+    // bypass mergeArcWithLocks / mergeSeasonsWithLocks / buildSeasonRemap and
+    // silently wipe locked seasons and orphan their issues.
+    const series = await getSeries(session.seriesId);
+    const { series: updated } = await commitSeasonsWithRemap(series, { arc, seasons });
     return { result: updated, runId, providerId, model };
   }
   if (stepId === 'readerMap') {

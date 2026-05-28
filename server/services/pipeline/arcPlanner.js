@@ -1041,6 +1041,10 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
     themes: content?.arc?.themes ?? series.arc.themes,
     protagonistArc: content?.arc?.protagonistArc ?? series.arc.protagonistArc ?? '',
     shape: content?.arc?.shape ?? series.arc.shape ?? null,
+    // The resolve prompt doesn't author the reader map — preserve any existing
+    // one so auto-resolve never silently wipes a reader map the user already
+    // built on the next step. Mirrors `generateArcOverview` above.
+    readerMap: series.arc?.readerMap ?? null,
     status: 'draft',
   });
 

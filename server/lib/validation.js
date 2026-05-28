@@ -5,6 +5,7 @@ import { WORK_KINDS, WORK_STATUSES, ANALYSIS_KINDS } from './writersRoomPresets.
 import { ALL_STYLE_IDS, STYLE_ID } from './writersRoomStylePresets.js';
 import { BIBLE_LIMITS } from './storyBible.js';
 import { ARC_SHAPE_IDS, ARC_ROLES } from './storyArc.js';
+import { STEP_IDS as STORY_STEP_IDS } from './storyBuilderSteps.js';
 import { MIN_TIMEOUT as STAGE_TIMEOUT_MIN_MS, MAX_TIMEOUT as STAGE_TIMEOUT_MAX_MS } from './aiToolkit/constants.js';
 
 // gpt-image-2 (codex backend) caps at 3840px per edge and 8,294,400 total
@@ -1795,7 +1796,10 @@ export const storySessionCreateSchema = z.object({
 export const storySessionUpdateSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   seedIdea: z.string().trim().max(4000).optional(),
-  currentStep: z.string().trim().max(40).optional(),
+  // Reject removed/unknown step ids loudly — the sanitizer would otherwise
+  // silently coerce them to STEP_IDS[0], landing a stale client on the first
+  // step with no error.
+  currentStep: z.enum(STORY_STEP_IDS).optional(),
   llm: z.object({
     provider: z.string().trim().max(80).nullable().optional(),
     model: z.string().trim().max(200).nullable().optional(),
