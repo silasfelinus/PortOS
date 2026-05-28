@@ -17,6 +17,7 @@ import { uploadFields } from '../lib/multipart.js';
 import { PATHS, ensureDir, resolveGalleryImage } from '../lib/fileUtils.js';
 import { safeUnder } from '../lib/ffmpeg.js';
 import { getSettings } from '../services/settings.js';
+import { checkPackages, isAllowedPython } from '../lib/pythonSetup.js';
 import {
   listVideoModels,
   defaultVideoModelId,
@@ -140,16 +141,38 @@ const generateBodySchema = z.object({
   ),
 });
 
+// Probes required-package imports on each call so a half-installed Python
+// can't masquerade as connected. /status isn't polled (mount + manual
+// refresh only), so the ~1-2s subprocess cost is acceptable.
 router.get('/status', asyncHandler(async (_req, res) => {
   const s = await getSettings();
   const py = s.imageGen?.local?.pythonPath || null;
+  const { connected, reason, missing } = await resolveLocalPythonHealth(py);
   res.json({
-    connected: !!py,
+    connected,
     pythonPath: py,
+    reason,
+    missingPackages: missing,
     models: listVideoModels(),
     defaultModel: defaultVideoModelId(),
   });
 }));
+
+async function resolveLocalPythonHealth(py) {
+  if (!py) return { connected: false, reason: 'Local Python not configured', missing: [] };
+  if (!isAllowedPython(py)) return { connected: false, reason: 'Saved pythonPath is not a python interpreter', missing: [] };
+  try {
+    const { missing } = await checkPackages(py);
+    if (missing.length === 0) return { connected: true, reason: null, missing };
+    return {
+      connected: false,
+      reason: `${missing.length} python package${missing.length === 1 ? '' : 's'} missing: ${missing.join(', ')}`,
+      missing,
+    };
+  } catch (err) {
+    return { connected: false, reason: `Python probe failed: ${err.message || err}`, missing: [] };
+  }
+}
 
 router.get('/models', (_req, res) => {
   res.json(listVideoModels());

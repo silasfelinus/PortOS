@@ -25,9 +25,10 @@ import { getSettings, saveSettings } from '../services/settings.js';
 import { getHfToken, getHfTokenInfo, HF_TOKEN_REGEX } from '../lib/hfToken.js';
 import { getImageModels, isFlux2, isZImage, isErnie } from '../lib/mediaModels.js';
 import {
-  REQUIRED_PACKAGES, detectPython, checkPackages, installPackages,
-  isExternallyManaged, createVenv, isAllowedPython, pipNameFor,
+  REQUIRED_PACKAGES, detectPython, installPackages,
+  createVenv, isAllowedPython, pipNameFor,
   resolveFlux2Python, FLUX2_VENV_DEFAULT, installFlux2Venv, isFlux2VenvHealthy,
+  detectArm64Python, HOST_ARCH, probePythonHealth,
 } from '../lib/pythonSetup.js';
 import { PATHS, ensureDir, resolveGalleryImage } from '../lib/fileUtils.js';
 import { join } from 'node:path';
@@ -683,15 +684,22 @@ router.get('/setup/check', asyncHandler(async (req, res) => {
   if (!isAllowedPython(pythonPath)) {
     return res.status(400).json({ error: 'pythonPath must be a python interpreter (basename python/python3/python3.NN)' });
   }
-  const [pkgs, externallyManaged] = await Promise.all([
-    checkPackages(pythonPath),
-    isExternallyManaged(pythonPath),
-  ]);
+  const health = await probePythonHealth(pythonPath);
+  // The arch warning is specifically about mlx wheels (arm64-only) on Apple
+  // Silicon. A generic interpreterArch !== HOST_ARCH compare would false-
+  // positive on Windows (Python reports `AMD64`, Node reports `x86_64`) and
+  // on hypothetical arm64 Linux — where mlx isn't even in REQUIRED_PACKAGES.
+  const archMismatch = process.platform === 'darwin'
+    && HOST_ARCH === 'arm64'
+    && health.interpreterArch === 'x86_64';
+  const suggestedArm64Python = archMismatch ? await detectArm64Python() : null;
   res.json({
     pythonPath,
-    externallyManaged,
     required: REQUIRED_PACKAGES,
-    ...pkgs,
+    hostArch: HOST_ARCH,
+    archMismatch,
+    suggestedArm64Python,
+    ...health,
   });
 }));
 
