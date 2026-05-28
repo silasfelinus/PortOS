@@ -162,6 +162,11 @@ const createSchema = z.object({
   categories: categoriesSchema.optional(),
   compositeSheets: z.array(compositeSheetSchema).max(svc.COMPOSITE_SHEETS_MAX).optional(),
   influences: influencesSchema.optional(),
+  // Base "style probe" render filenames — sanitized + capped server-side.
+  // Match the sanitizer cap so over-the-cap requests get a loud 400 instead
+  // of a silent 200 with N entries dropped (sanitizer keeps the most recent
+  // IMAGE_REFS_PER_ENTRY_MAX). Per-element filename cap is shared too.
+  styleImageRefs: entryImageRefsField,
   locked: lockedSchema.optional(),
   llm: llmSchema,
   // Canon registries on POST (Phase B.4): writers-room promote, share-bucket
@@ -190,6 +195,11 @@ const patchSchema = z.object({
   categories: categoriesSchema.optional(),
   compositeSheets: z.array(compositeSheetSchema).max(svc.COMPOSITE_SHEETS_MAX).optional(),
   influences: influencesSchema.optional(),
+  // Base "style probe" render filenames — sanitized + capped server-side.
+  // Match the sanitizer cap so over-the-cap requests get a loud 400 instead
+  // of a silent 200 with N entries dropped (sanitizer keeps the most recent
+  // IMAGE_REFS_PER_ENTRY_MAX). Per-element filename cap is shared too.
+  styleImageRefs: entryImageRefsField,
   locked: lockedSchema.optional(),
   llm: llmSchema,
   // Canon writes — these flow through sanitizeBibleList server-side so
