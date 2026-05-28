@@ -18,12 +18,28 @@ import {
   ShieldCheck,
   Search,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  FolderClosed
 } from 'lucide-react';
 import BrailleSpinner from '../../BrailleSpinner';
 import toast from '../../ui/Toast';
 import { timeAgo } from '../../../utils/formatters';
 import { useAutoRefetch } from '../../../hooks/useAutoRefetch';
+import BucketBoard from '../links/BucketBoard';
+
+/** Normalize a user-entered URL the way the quick-add form does. */
+function normalizeUrl(raw) {
+  let url = raw.trim();
+  if (!url) return null;
+  if (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('git@')) {
+    if (url.includes('github.com') || url.includes('.')) {
+      url = 'https://' + url;
+    } else {
+      return null;
+    }
+  }
+  return url;
+}
 
 const LINK_TYPE_COLORS = {
   github: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
@@ -49,9 +65,9 @@ export default function LinksTab({ onRefresh }) {
   const [showDetails, setShowDetails] = useState(false);
   const [sending, setSending] = useState(false);
   const [links, setLinks] = useState([]);
-  const [total, setTotal] = useState(0);
+  const [buckets, setBuckets] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState('all'); // all, github, other
+  const [filter, setFilter] = useState('all'); // all, github, other, ungrouped
   const [search, setSearch] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({});
@@ -59,32 +75,37 @@ export default function LinksTab({ onRefresh }) {
   const [scanningId, setScanningId] = useState(null);
   const inputRef = useRef(null);
 
+  // Fetch the full link set; filtering happens client-side so the bucket board
+  // always sees every link regardless of the list filter.
   const fetchLinks = useCallback(async () => {
-    const options = {};
-    if (filter === 'github') {
-      options.isGitHubRepo = true;
-    } else if (filter === 'other') {
-      options.isGitHubRepo = false;
-    }
-
-    const data = await api.getBrainLinks(options).catch(() => ({ links: [], total: 0 }));
+    const data = await api.getBrainLinks({ limit: 100, silent: true }).catch(() => ({ links: [] }));
     setLinks(data.links || []);
-    setTotal(data.total || 0);
     setLoading(false);
-  }, [filter]);
+  }, []);
 
   useEffect(() => {
     fetchLinks();
+    api.getBrainBuckets({ silent: true })
+      .then(data => setBuckets(data.buckets || []))
+      .catch(() => setBuckets([]));
   }, [fetchLinks]);
 
   // Poll for clone status updates while at least one link is in flight.
   const hasInFlightClone = links.some(l => l.cloneStatus === 'cloning' || l.cloneStatus === 'pending');
   useAutoRefetch(fetchLinks, 3000, { enabled: hasInFlightClone, pollOnly: true });
 
-  // Client-side keyword search across title, url, description, and tags.
+  // Client-side filter (type / bucket membership) then keyword search.
+  const matchesFilter = (link) => {
+    if (filter === 'github') return link.isGitHubRepo;
+    if (filter === 'other') return !link.isGitHubRepo;
+    if (filter === 'ungrouped') return !link.bucketId;
+    return true;
+  };
+  const filteredLinks = links.filter(matchesFilter);
+
   const query = search.trim().toLowerCase();
   const visibleLinks = query
-    ? links.filter(link => {
+    ? filteredLinks.filter(link => {
         const haystack = [
           link.title,
           link.url,
@@ -93,22 +114,16 @@ export default function LinksTab({ onRefresh }) {
         ].filter(Boolean).join(' ').toLowerCase();
         return haystack.includes(query);
       })
-    : links;
+    : filteredLinks;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!inputUrl.trim() || sending) return;
 
-    // Basic URL validation
-    let url = inputUrl.trim();
-    if (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('git@')) {
-      // Try adding https://
-      if (url.includes('github.com') || url.includes('.')) {
-        url = 'https://' + url;
-      } else {
-        toast.error('Please enter a valid URL');
-        return;
-      }
+    const url = normalizeUrl(inputUrl);
+    if (!url) {
+      toast.error('Please enter a valid URL');
+      return;
     }
 
     const payload = { url };
@@ -138,6 +153,52 @@ export default function LinksTab({ onRefresh }) {
       fetchLinks();
       onRefresh?.();
     }
+  };
+
+  // Next bucketOrder for a target bucket (append to the end).
+  const nextBucketOrder = (bucketId) => links
+    .filter(l => l.bucketId === bucketId)
+    .reduce((max, l) => Math.max(max, l.bucketOrder ?? 0), -1) + 1;
+
+  // Assign (or, with bucketId === null, unassign) a link to a bucket.
+  const handleAssignLink = async (link, bucketId) => {
+    const patch = bucketId
+      ? { bucketId, bucketOrder: nextBucketOrder(bucketId) }
+      : { bucketId: null };
+    // Optimistic update so chips move instantly.
+    setLinks(prev => prev.map(l => (l.id === link.id ? { ...l, ...patch } : l)));
+    const updated = await api.updateBrainLink(link.id, patch).catch(err => {
+      toast.error(err.message || 'Failed to update link');
+      return null;
+    });
+    if (updated) {
+      setLinks(prev => prev.map(l => (l.id === updated.id ? updated : l)));
+    } else {
+      fetchLinks(); // revert optimistic change on failure
+    }
+  };
+
+  // Quick-add a URL directly into a bucket. Returns true on success.
+  const handleAddLinkToBucket = async (rawUrl, bucketId) => {
+    const url = normalizeUrl(rawUrl);
+    if (!url) {
+      toast.error('Please enter a valid URL');
+      return false;
+    }
+    const result = await api.createBrainLink({ url, bucketId, bucketOrder: nextBucketOrder(bucketId) }).catch(err => {
+      if (err.message?.includes('already exists')) {
+        toast.error('This URL is already saved');
+      } else {
+        toast.error(err.message || 'Failed to add link');
+      }
+      return null;
+    });
+    if (result) {
+      setLinks(prev => [result, ...prev]);
+      onRefresh?.();
+      return true;
+    }
+    return false;
   };
 
   const handleEdit = (link) => {
@@ -252,7 +313,15 @@ export default function LinksTab({ onRefresh }) {
   }
 
   return (
-    <div className="flex flex-col h-full max-w-4xl mx-auto">
+    <div className="flex flex-col h-full">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(340px,440px)] gap-6 items-start">
+        {/* Left column: entry form, filters, and the full link list */}
+        <div className="min-w-0 flex flex-col">
+          <div className="flex items-center gap-2 mb-3">
+            <Link2 size={16} className="text-gray-400 shrink-0" />
+            <h2 className="text-sm font-semibold text-gray-300">All Links</h2>
+          </div>
+
       {/* Quick-add input */}
       <form onSubmit={handleSubmit} className="mb-6">
         <div className="flex gap-2">
@@ -322,11 +391,12 @@ export default function LinksTab({ onRefresh }) {
       </form>
 
       {/* Filter tabs */}
-      <div className="flex gap-2 mb-4">
+      <div className="flex gap-2 mb-4 flex-wrap">
         {[
-          { id: 'all', label: 'All', count: total },
-          { id: 'github', label: 'GitHub Repos', icon: GitBranch },
-          { id: 'other', label: 'Other Links', icon: Link2 }
+          { id: 'all', label: 'All', count: links.length },
+          { id: 'github', label: 'GitHub Repos', icon: GitBranch, count: links.filter(l => l.isGitHubRepo).length },
+          { id: 'other', label: 'Other Links', icon: Link2, count: links.filter(l => !l.isGitHubRepo).length },
+          { id: 'ungrouped', label: 'Ungrouped', icon: FolderClosed, count: links.filter(l => !l.bucketId).length }
         ].map(tab => {
           const Icon = tab.icon;
           const isActive = filter === tab.id;
@@ -534,6 +604,21 @@ export default function LinksTab({ onRefresh }) {
                   {link.linkType}
                 </span>
 
+                {/* Bucket assignment */}
+                <label htmlFor={`link-bucket-${link.id}`} className="sr-only">Assign to bucket</label>
+                <select
+                  id={`link-bucket-${link.id}`}
+                  value={link.bucketId || ''}
+                  onChange={(e) => handleAssignLink(link, e.target.value || null)}
+                  className="px-1.5 py-1 text-xs rounded border border-port-border bg-port-bg text-gray-300 focus:outline-hidden focus:border-port-accent"
+                  title="Assign to a bucket"
+                >
+                  <option value="">＋ Bucket…</option>
+                  {buckets.map(b => (
+                    <option key={b.id} value={b.id}>{b.icon ? `${b.icon} ` : ''}{b.name}</option>
+                  ))}
+                </select>
+
                 {/* Tags */}
                 {link.tags?.length > 0 && (
                   <div className="flex items-center gap-1">
@@ -659,6 +744,38 @@ export default function LinksTab({ onRefresh }) {
             <p className="text-sm mt-1">Paste a URL above to get started.</p>
           </div>
         )}
+
+        {links.length > 0 && visibleLinks.length === 0 && !query && (
+          <div className="text-center py-12 text-gray-500">
+            <FolderClosed className="w-12 h-12 mx-auto mb-3 opacity-30" />
+            <p>No links in this view.</p>
+            <button
+              onClick={() => setFilter('all')}
+              className="text-sm mt-1 text-port-accent hover:underline"
+            >
+              Show all links
+            </button>
+          </div>
+        )}
+          </div>
+        </div>
+
+        {/* Right column: bucket boards as a vertical grid */}
+        <aside className="min-w-0">
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            <FolderClosed size={16} className="text-port-accent shrink-0" />
+            <h2 className="text-sm font-semibold text-gray-300">Buckets</h2>
+            <span className="text-xs text-gray-500">Group links — drag chips between buckets.</span>
+          </div>
+          <BucketBoard
+            links={links}
+            buckets={buckets}
+            setBuckets={setBuckets}
+            onAssignLink={handleAssignLink}
+            onAddLinkToBucket={handleAddLinkToBucket}
+            onBucketDeleted={(bucketId) => setLinks(prev => prev.map(l => (l.bucketId === bucketId ? { ...l, bucketId: null } : l)))}
+          />
+        </aside>
       </div>
     </div>
   );

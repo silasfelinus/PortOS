@@ -343,6 +343,9 @@ export const linkRecordSchema = z.object({
   localPath: z.string().max(500).optional(),
   cloneStatus: z.enum(['pending', 'cloning', 'cloned', 'failed', 'none']).default('none'),
   cloneError: z.string().max(500).optional(),
+  // Bucket grouping (nullable = ungrouped)
+  bucketId: z.string().uuid().nullable().optional(),
+  bucketOrder: z.number().int().optional(),
   // Metadata
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
@@ -355,6 +358,8 @@ export const linkInputSchema = z.object({
   description: z.string().max(2000).optional(),
   linkType: linkTypeEnum.optional(),
   tags: z.array(z.string().max(50)).optional(),
+  bucketId: z.string().uuid().nullable().optional(),
+  bucketOrder: z.number().int().optional(),
   autoClone: z.boolean().optional().default(true)
 });
 
@@ -364,7 +369,9 @@ export const linkUpdateInputSchema = z.object({
   title: z.string().min(1).max(500).optional(),
   description: z.string().max(2000).optional(),
   linkType: linkTypeEnum.optional(),
-  tags: z.array(z.string().max(50)).optional()
+  tags: z.array(z.string().max(50)).optional(),
+  bucketId: z.string().uuid().nullable().optional(),
+  bucketOrder: z.number().int().optional()
 });
 
 // Links query schema
@@ -378,6 +385,46 @@ export const linksQuerySchema = z.object({
   ).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional().default(50),
   offset: z.coerce.number().int().min(0).optional().default(0)
+});
+
+// =============================================================================
+// BUCKET SCHEMAS (bookmark groups for links)
+// =============================================================================
+
+// A small preset palette keyed to the port design tokens (plus a neutral default)
+export const bucketColorEnum = z.enum([
+  'accent', 'success', 'warning', 'error', 'purple', 'pink', 'cyan', 'slate'
+]);
+
+// Bucket Record schema
+export const bucketRecordSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1).max(100),
+  color: bucketColorEnum.default('accent'),
+  icon: z.string().max(50).optional().default(''),
+  order: z.number().int().default(0),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime()
+});
+
+// Create Bucket input schema
+export const bucketInputSchema = z.object({
+  name: z.string().min(1).max(100),
+  color: bucketColorEnum.optional(),
+  icon: z.string().max(50).optional()
+});
+
+// Update Bucket input schema (partial)
+export const bucketUpdateInputSchema = z.object({
+  name: z.string().min(1).max(100).optional(),
+  color: bucketColorEnum.optional(),
+  icon: z.string().max(50).optional(),
+  order: z.number().int().optional()
+});
+
+// Reorder buckets input schema (ordered list of bucket ids)
+export const bucketReorderSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1)
 });
 
 // =============================================================================
