@@ -29,7 +29,8 @@ import { IMAGE_GEN_MODE } from './modes.js';
 
 const IS_WIN = process.platform === 'win32';
 
-import { getImageModels, isFlux2, isZImage, isErnie } from '../../lib/mediaModels.js';
+import { getImageModels, isFlux2, isZImage, isErnie, isHiDream, isQwen } from '../../lib/mediaModels.js';
+import { usesDiffusersRunner } from '../../lib/runners.js';
 
 // Read the registry lazily — callers below hit getImageModels() at request
 // time. A prior `IMAGE_MODELS = Object.fromEntries(getImageModels()...)`
@@ -71,20 +72,28 @@ export const cancel = () => {
 
 export const buildArgs = ({ pythonPath, model, prompt, negativePrompt, width, height, steps, guidance, seed, quantize, outputPath, loraPaths = [], loraScales = [], stepwiseDir, initImagePath, initImageStrength, referenceImagePaths = [], referenceImageStrengths = [] }) => {
   const modelId = model?.id;
-  if (isZImage(model) || isErnie(model)) {
+  if (usesDiffusersRunner(model)) {
+    const runnerLabel = isErnie(model) ? 'ERNIE' : isHiDream(model) ? 'HiDream' : isQwen(model) ? 'Qwen' : 'Z-Image';
+    const errCode = isErnie(model)
+      ? 'IMAGE_GEN_ERNIE_MISCONFIGURED'
+      : isHiDream(model)
+        ? 'IMAGE_GEN_HIDREAM_MISCONFIGURED'
+        : isQwen(model)
+          ? 'IMAGE_GEN_QWEN_MISCONFIGURED'
+          : 'IMAGE_GEN_Z_IMAGE_MISCONFIGURED';
     if (!model.repo) {
       throw new ServerError(
-        `${isErnie(model) ? 'ERNIE' : 'Z-Image'} model "${modelId}" is missing the 'repo' field in data/media-models.json`,
-        { status: 500, code: isErnie(model) ? 'IMAGE_GEN_ERNIE_MISCONFIGURED' : 'IMAGE_GEN_Z_IMAGE_MISCONFIGURED' },
+        `${runnerLabel} model "${modelId}" is missing the 'repo' field in data/media-models.json`,
+        { status: 500, code: errCode },
       );
     }
-    // Z-Image / ERNIE both reuse the FLUX.2 venv (same diffusers + torch
-    // stack, no extra setup). Same not-installed error code so the UI's
-    // existing "run setup" CTA fires for any of these runners.
+    // Z-Image / ERNIE / HiDream / Qwen all reuse the FLUX.2 venv (same
+    // diffusers + torch stack, no extra setup). Same not-installed error code
+    // so the UI's existing "run setup" CTA fires for any of these runners.
     const torchPython = resolveFlux2Python();
     if (!torchPython) {
       throw new ServerError(
-        `Image-gen torch venv not found. Run \`INSTALL_FLUX2=1 bash scripts/setup-image-video.sh\` to bootstrap it (expected at ${FLUX2_VENV_DEFAULT}). FLUX.2, Z-Image, and ERNIE share this venv.`,
+        `Image-gen torch venv not found. Run \`INSTALL_FLUX2=1 bash scripts/setup-image-video.sh\` to bootstrap it (expected at ${FLUX2_VENV_DEFAULT}). FLUX.2, Z-Image, ERNIE, HiDream, and Qwen share this venv.`,
         { status: 400, code: 'IMAGE_GEN_FLUX2_NOT_INSTALLED' },
       );
     }
@@ -109,6 +118,13 @@ export const buildArgs = ({ pythonPath, model, prompt, negativePrompt, width, he
     if (loraScales?.length) args.push('--lora-scales', ...loraScales.map(String));
     if (model.pipelineClass) args.push('--pipeline-class', String(model.pipelineClass));
     if (model.usePromptEnhancer) args.push('--use-pe');
+    // HiDream needs a 4th text encoder loaded separately (Llama-3.1-8B) —
+    // the Diffusers HiDreamImagePipeline expects `text_encoder_4` /
+    // `tokenizer_4` kwargs at from_pretrained() time. The runner script
+    // branches on these flags; Z-Image / ERNIE / Qwen leave them unset.
+    if (model.textEncoderRepo) args.push('--text-encoder-repo', String(model.textEncoderRepo));
+    if (model.textEncoderClass) args.push('--text-encoder-class', String(model.textEncoderClass));
+    if (model.tokenizerClass) args.push('--tokenizer-class', String(model.tokenizerClass));
     return { bin: torchPython, args };
   }
   if (isFlux2(model)) {
@@ -119,9 +135,9 @@ export const buildArgs = ({ pythonPath, model, prompt, negativePrompt, width, he
       );
     }
     const quantization = model.quantization || 'sdnq';
-    if (quantization !== 'sdnq' && quantization !== 'int8') {
+    if (quantization !== 'sdnq' && quantization !== 'int8' && quantization !== 'none') {
       throw new ServerError(
-        `FLUX.2 model "${modelId}" has unsupported quantization "${quantization}" (supported: sdnq, int8)`,
+        `FLUX.2 model "${modelId}" has unsupported quantization "${quantization}" (supported: sdnq, int8, none)`,
         { status: 500, code: 'IMAGE_GEN_FLUX2_MISCONFIGURED' },
       );
     }
@@ -137,6 +153,8 @@ export const buildArgs = ({ pythonPath, model, prompt, negativePrompt, width, he
         { status: 500, code: 'IMAGE_GEN_FLUX2_MISCONFIGURED' },
       );
     }
+    // quantization=none uses model.repo directly (gated base repo). No
+    // sibling-repo flag required, but the repo must be the gated base.
     const flux2Python = resolveFlux2Python();
     if (!flux2Python) {
       throw new ServerError(
@@ -232,7 +250,7 @@ export async function generateImage({ pythonPath, prompt, negativePrompt = '', m
   // Both flux2 and z-image runners resolve their own Python via the FLUX.2
   // venv — only the legacy mflux/imagine_win path needs the user-configured
   // Settings > Image Gen pythonPath.
-  if (!isFlux2(model) && !isZImage(model) && !isErnie(model) && !pythonPath) {
+  if (!isFlux2(model) && !usesDiffusersRunner(model) && !pythonPath) {
     throw new ServerError('Python path not configured — set it in Settings > Image Gen', { status: 400, code: 'IMAGE_GEN_NOT_CONFIGURED' });
   }
   // FLUX.2 and Z-Image runners now load LoRAs via diffusers'

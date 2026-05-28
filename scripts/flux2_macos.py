@@ -77,6 +77,26 @@ def probe_hf_auth(repo: str) -> None:
         print(f"⚠️ HF probe non-fatal error: {err}", file=sys.stderr)
 
 
+def load_pipeline_bf16(repo: str, device: str, dtype):
+    """Native bf16 load — no SDNQ, no Int8. Pipeline + tokenizer come from
+    the gated base repo (e.g. black-forest-labs/FLUX.2-klein-9B). Practical
+    only with ~64+ GB unified memory for the 9B variant."""
+    from diffusers import Flux2KleinPipeline
+
+    print(f"STAGE:download-pipeline:{repo}", file=sys.stderr, flush=True)
+    print(f"🔧 bf16: pipeline ← {repo}", file=sys.stderr)
+    with heartbeat("loading-pipeline"):
+        pipe = Flux2KleinPipeline.from_pretrained(
+            repo,
+            torch_dtype=dtype,
+            low_cpu_mem_usage=True,
+        )
+    print("STAGE:move-to-device", file=sys.stderr, flush=True)
+    with heartbeat("move-to-device"):
+        pipe.to(device)
+    return pipe
+
+
 def load_pipeline_sdnq(repo: str, tokenizer_repo: str, device: str, dtype):
     # `sdnq` registers a custom config type at import-time. The Flux2KleinPipeline
     # `from_pretrained` call below pulls a config that references it, so the
@@ -193,7 +213,7 @@ def _unpack_flux2_latents(latents, height: int, width: int, vae_scale: int = 8, 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="PortOS FLUX.2-klein runner")
     p.add_argument("--model", required=True, help="model id (e.g. flux2-klein-4b)")
-    p.add_argument("--quantization", required=True, choices=["sdnq", "int8"])
+    p.add_argument("--quantization", required=True, choices=["sdnq", "int8", "none"])
     p.add_argument("--repo", required=True, help="HF repo for the quantized weights")
     p.add_argument("--tokenizer-repo", default=None, help="HF repo for tokenizer (sdnq variants)")
     p.add_argument("--base-pipeline-repo", default=None, help="HF repo for VAE/scheduler (int8 variant)")
@@ -242,6 +262,10 @@ def main() -> None:
             sys.exit(64)
         probe_hf_auth(args.base_pipeline_repo)
         pipe = load_pipeline_int8(args.repo, args.base_pipeline_repo, device, dtype)
+    elif args.quantization == "none":
+        # Native bf16 — `repo` is the gated base repo itself.
+        probe_hf_auth(args.repo)
+        pipe = load_pipeline_bf16(args.repo, device, dtype)
     else:
         print(f"❌ unknown quantization: {args.quantization}", file=sys.stderr)
         sys.exit(64)
