@@ -15,7 +15,8 @@ import {
   AlertCircle,
   FolderOpen,
   Tag,
-  ShieldCheck
+  ShieldCheck,
+  Search
 } from 'lucide-react';
 import BrailleSpinner from '../../BrailleSpinner';
 import toast from '../../ui/Toast';
@@ -46,6 +47,7 @@ export default function LinksTab({ onRefresh }) {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all'); // all, github, other
+  const [search, setSearch] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [confirmingDeleteId, setConfirmingDeleteId] = useState(null);
@@ -73,6 +75,20 @@ export default function LinksTab({ onRefresh }) {
   // Poll for clone status updates while at least one link is in flight.
   const hasInFlightClone = links.some(l => l.cloneStatus === 'cloning' || l.cloneStatus === 'pending');
   useAutoRefetch(fetchLinks, 3000, { enabled: hasInFlightClone, pollOnly: true });
+
+  // Client-side keyword search across title, url, description, and tags.
+  const query = search.trim().toLowerCase();
+  const visibleLinks = query
+    ? links.filter(link => {
+        const haystack = [
+          link.title,
+          link.url,
+          link.description,
+          ...(link.tags || [])
+        ].filter(Boolean).join(' ').toLowerCase();
+        return haystack.includes(query);
+      })
+    : links;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -270,9 +286,30 @@ export default function LinksTab({ onRefresh }) {
         })}
       </div>
 
+      {/* Search */}
+      <div className="relative mb-4">
+        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search links by title, URL, description, or tag..."
+          className="w-full pl-9 pr-9 py-2 bg-port-card border border-port-border rounded-lg text-white text-sm placeholder-gray-500 focus:outline-hidden focus:border-port-accent"
+        />
+        {search && (
+          <button
+            onClick={() => setSearch('')}
+            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-white transition-colors"
+            title="Clear search"
+          >
+            <X size={14} />
+          </button>
+        )}
+      </div>
+
       {/* Links list */}
       <div className="space-y-3">
-        {links.map(link => (
+        {visibleLinks.map(link => (
           <div
             key={link.id}
             className="p-4 bg-port-card border border-port-border rounded-lg"
@@ -522,6 +559,19 @@ export default function LinksTab({ onRefresh }) {
             )}
           </div>
         ))}
+
+        {visibleLinks.length === 0 && query && (
+          <div className="text-center py-12 text-gray-500">
+            <Search className="w-12 h-12 mx-auto mb-3 opacity-30" />
+            <p>No links match "{search.trim()}".</p>
+            <button
+              onClick={() => setSearch('')}
+              className="text-sm mt-1 text-port-accent hover:underline"
+            >
+              Clear search
+            </button>
+          </div>
+        )}
 
         {links.length === 0 && (
           <div className="text-center py-12 text-gray-500">
