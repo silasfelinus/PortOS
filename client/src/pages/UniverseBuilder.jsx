@@ -1850,6 +1850,7 @@ export default function UniverseBuilder() {
             categoryKeyCount={categoryKeys.length}
             totalSheets={totalSheets}
             onPreview={openPreviewByFilename}
+            onStyleProbeRenderComplete={bumpGalleryRefresh}
           />
         )}
 
@@ -2948,6 +2949,7 @@ function BibleTab({
   refine,
   totalVariations, categoryKeyCount, totalSheets,
   onPreview,
+  onStyleProbeRenderComplete = null,
 }) {
   const { providers, providerModels, providerLabel, activeProviderId } = llm;
   const {
@@ -3144,6 +3146,7 @@ function BibleTab({
             universe={draft}
             onUniverseChange={(updated) => updateDraft({ styleImageRefs: updated?.styleImageRefs || [] })}
             onPreview={onPreview}
+            onRenderComplete={() => onStyleProbeRenderComplete?.()}
           />
         </div>
       </section>
