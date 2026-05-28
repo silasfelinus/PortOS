@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Square, Power, PowerOff, Eye, Wrench, Brain, Code2, MessageSquare, Boxes } from 'lucide-react';
+import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Square, Power, PowerOff, Eye, Wrench, Brain, Code2, MessageSquare, Boxes, AlertTriangle } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
 import { formatBytes, timeAgo } from '../../utils/formatters';
@@ -361,10 +361,15 @@ export function LocalLlmTab() {
       .filter((group) => group.models.length > 0);
   }, [activeCategory, catalog, catalogCategories, catalogSource]);
 
+  // Active auto-upgrade flow (Ollama outdated → 412 on pull). Stays set while we
+  // download / install / relaunch so the warning banner can show live status.
+  // `{ modelId, phase: 'upgrading' | 'retrying' | 'failed', error? }`.
+  const [upgradeFlow, setUpgradeFlow] = useState(null);
+
   // LM Studio's REST fallback returns { pending: true } — the download was only
   // queued, not finished — so don't claim "installed" in that case. Install is
-  // silent so an OLLAMA_OUTDATED failure replaces the default toast with an
-  // inline confirm row offering to auto-upgrade Ollama and retry.
+  // silent so an OLLAMA_OUTDATED failure can take over the UI with the upgrade
+  // banner instead of stacking a useless toast with the auto-upgrade flow.
   const install = (modelId) => runAction(
     `install-${modelId}`,
     () => installLocalLlmModel(selected, modelId, { silent: true }),
@@ -372,12 +377,10 @@ export function LocalLlmTab() {
     {
       onError: (err) => {
         if (err?.code === 'OLLAMA_OUTDATED' && selected === 'ollama') {
-          setConfirmAction({
-            type: 'upgrade-ollama',
-            modelId,
-            label: 'Ollama is out of date for this model.',
-            detail: `${modelId} needs a newer Ollama than the one installed. PortOS can upgrade Ollama in place (Homebrew on macOS, the official Ollama installer on Linux), restart the service, and retry the download.`
-          });
+          // Don't wait for a click — just upgrade. The user already said "install
+          // this model"; needing a newer Ollama to do it is an implementation
+          // detail, not a separate decision.
+          upgradeOllamaAndRetry(modelId);
         } else {
           // Any other failure: restore the default toast we suppressed.
           toast.error(err?.message || 'Install failed');
@@ -388,17 +391,30 @@ export function LocalLlmTab() {
   );
   const remove = (modelId) => runAction(`delete-${modelId}`, () => deleteLocalLlmModel(selected, modelId), `${modelId} deleted`);
 
+  // Upgrade Ollama in place (direct .app download on macOS; brew elsewhere) and
+  // retry the original model install once Ollama is back online. `upgradeFlow`
+  // drives the prominent warning banner so the user sees what's happening; the
+  // socket-driven `progressMsg` provides per-step detail inside the same banner.
   const upgradeOllamaAndRetry = (modelId) => {
     setConfirmAction(null);
-    // runAction resolves with the server result on success and undefined when
-    // its internal catch consumed the error — gate the retry on a truthy
-    // result so a failed upgrade doesn't loop straight back into the same 412.
+    setUpgradeFlow({ modelId, phase: 'upgrading' });
     runAction(
       'upgrade-ollama',
       () => upgradeLocalLlmBackend('ollama'),
       (r) => r?.note ? `Ollama upgraded — ${r.note}` : 'Ollama upgraded'
     ).then((r) => {
-      if (r?.success && modelId) install(modelId);
+      if (r?.success && modelId) {
+        setUpgradeFlow({ modelId, phase: 'retrying' });
+        install(modelId);
+        // install() either succeeds (its own success toast + status reload covers
+        // it) or re-enters the OLLAMA_OUTDATED branch above and resets the flow.
+        // Clear after a beat so the banner doesn't linger past the retry kickoff.
+        setTimeout(() => setUpgradeFlow((cur) => (cur?.phase === 'retrying' ? null : cur)), 1500);
+      } else if (!r?.success) {
+        setUpgradeFlow({ modelId, phase: 'failed', error: r?.error });
+      }
+    }).catch((err) => {
+      setUpgradeFlow({ modelId, phase: 'failed', error: err?.message });
     });
   };
 
@@ -430,7 +446,40 @@ export function LocalLlmTab() {
               ))}
             </div>
 
-            {progressMsg && (
+            {upgradeFlow && (
+              <div className="bg-port-warning/10 border-2 border-port-warning/60 rounded-lg p-4 space-y-2" role="alert">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle size={20} className="text-port-warning mt-0.5 shrink-0" />
+                  <div className="flex-1 min-w-0 space-y-1">
+                    <p className="text-sm font-semibold text-port-warning">
+                      {upgradeFlow.phase === 'failed' ? 'Ollama upgrade failed' : 'Upgrading Ollama'}
+                    </p>
+                    <p className="text-xs text-gray-300">
+                      {upgradeFlow.phase === 'upgrading' && `${upgradeFlow.modelId} needs a newer Ollama than the one installed. Downloading the latest Ollama and replacing the installed app — this can take a minute.`}
+                      {upgradeFlow.phase === 'retrying' && `Ollama is up to date — retrying the ${upgradeFlow.modelId} download now.`}
+                      {upgradeFlow.phase === 'failed' && (upgradeFlow.error || 'See the server logs for details.')}
+                    </p>
+                    {progressMsg && upgradeFlow.phase !== 'failed' && (
+                      <p className="text-xs text-port-warning/90 flex items-center gap-2 pt-1">
+                        <BrailleSpinner /> {progressMsg}
+                      </p>
+                    )}
+                    {upgradeFlow.phase === 'failed' && (
+                      <p className="text-xs text-gray-400 pt-1">
+                        You can also upgrade manually from <a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer" className="text-port-accent hover:underline inline-flex items-center gap-1">ollama.com/download <ExternalLink size={10} /></a>.
+                      </p>
+                    )}
+                  </div>
+                  {upgradeFlow.phase === 'failed' && (
+                    <button onClick={() => setUpgradeFlow(null)} className="text-xs text-gray-400 hover:text-white transition-colors" aria-label="Dismiss">
+                      Dismiss
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {progressMsg && !upgradeFlow && (
               <div className="flex items-center gap-2 text-sm text-port-accent bg-port-accent/10 border border-port-accent/20 rounded-lg px-3 py-2">
                 <BrailleSpinner />
                 {progressMsg}
@@ -442,38 +491,24 @@ export function LocalLlmTab() {
                 <p className="text-sm text-white">{confirmAction.label}</p>
                 {confirmAction.detail && <p className="text-xs text-gray-400">{confirmAction.detail}</p>}
                 <div className="flex items-center gap-2 flex-wrap">
-                  {confirmAction.type === 'upgrade-ollama' ? (
-                    <button
-                      onClick={() => upgradeOllamaAndRetry(confirmAction.modelId)}
-                      disabled={busy}
-                      className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 bg-port-accent/20 hover:bg-port-accent/30 text-port-accent"
-                      title="Run brew upgrade ollama (macOS) or the official Ollama install script (Linux), then retry the model download"
-                    >
-                      {actionInProgress === 'upgrade-ollama' ? <BrailleSpinner /> : <Download size={14} />}
-                      Upgrade Ollama & Retry
-                    </button>
-                  ) : (
-                    <>
-                      <button
-                        onClick={() => runAction(`migrate-${confirmAction.to}-link`, () => migrateLocalLlmBackend(confirmAction.to, 'link'), summarizeMigrate)}
-                        disabled={busy}
-                        className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 bg-port-accent/20 hover:bg-port-accent/30 text-port-accent"
-                        title="Hardlink each GGUF so both backends share one file on disk (no extra space; falls back to a copy across filesystems)"
-                      >
-                        {actionInProgress === `migrate-${confirmAction.to}-link` ? <BrailleSpinner /> : <Link2 size={14} />}
-                        Link (share disk)
-                      </button>
-                      <button
-                        onClick={() => runAction(`migrate-${confirmAction.to}-copy`, () => migrateLocalLlmBackend(confirmAction.to, 'copy'), summarizeMigrate)}
-                        disabled={busy}
-                        className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 bg-port-border hover:bg-port-border/70 text-white"
-                        title="Make an independent duplicate on the target (uses extra disk; survives deleting the source backend's copy)"
-                      >
-                        {actionInProgress === `migrate-${confirmAction.to}-copy` ? <BrailleSpinner /> : <Copy size={14} />}
-                        Copy (independent)
-                      </button>
-                    </>
-                  )}
+                  <button
+                    onClick={() => runAction(`migrate-${confirmAction.to}-link`, () => migrateLocalLlmBackend(confirmAction.to, 'link'), summarizeMigrate)}
+                    disabled={busy}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 bg-port-accent/20 hover:bg-port-accent/30 text-port-accent"
+                    title="Hardlink each GGUF so both backends share one file on disk (no extra space; falls back to a copy across filesystems)"
+                  >
+                    {actionInProgress === `migrate-${confirmAction.to}-link` ? <BrailleSpinner /> : <Link2 size={14} />}
+                    Link (share disk)
+                  </button>
+                  <button
+                    onClick={() => runAction(`migrate-${confirmAction.to}-copy`, () => migrateLocalLlmBackend(confirmAction.to, 'copy'), summarizeMigrate)}
+                    disabled={busy}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 bg-port-border hover:bg-port-border/70 text-white"
+                    title="Make an independent duplicate on the target (uses extra disk; survives deleting the source backend's copy)"
+                  >
+                    {actionInProgress === `migrate-${confirmAction.to}-copy` ? <BrailleSpinner /> : <Copy size={14} />}
+                    Copy (independent)
+                  </button>
                   <button onClick={() => setConfirmAction(null)} className="px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors">
                     Cancel
                   </button>
