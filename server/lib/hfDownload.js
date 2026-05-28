@@ -11,7 +11,10 @@
 //   STAGE:list                                  -> { type: 'stage', stage: 'list' }
 //   STAGE:download:<n>/<total>:<file>           -> stage + progress n/total
 //   STAGE:complete:<bytes>                      -> { type: 'complete', sizeBytes }
-//   USER_ERROR:<kind>:<repo>                    -> typed-error capture
+//   USER_ERROR:<kind>:<detail>                  -> typed-error capture; <detail>
+//                                                  is the repo id for list/auth
+//                                                  failures and the filename
+//                                                  for per-file download errors
 //   ❌ <prose>                                   -> errorMessage
 // Unknown lines fall through as raw `{ type: 'log', message }`.
 

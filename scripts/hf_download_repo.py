@@ -5,8 +5,10 @@ PortOS HuggingFace snapshot pre-fetch.
 Downloads a full HF repo into the standard `~/.cache/huggingface/hub/` cache
 so the image / video gen forms can show a model as "Available" instead of
 forcing the user to discover a multi-GB pull mid-render. Spawned over SSE
-from `server/routes/imageGen.js#/models/:repoId/download` and the matching
-video route.
+from `GET /api/image-gen/models/:id/download` and the matching
+`GET /api/video-gen/models/:id/download` (model-id-keyed; the route maps
+the id to an HF repo before invoking this helper), plus
+`GET /api/video-gen/text-encoder/download` for the Gemma encoder.
 
 Wire protocol (matches the STAGE:/DOWNLOAD: convention the rest of the
 image-gen runners use, so the existing SSE bridge picks it up unchanged):

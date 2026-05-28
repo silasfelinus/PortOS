@@ -573,15 +573,26 @@ export const repoForModel = (model) => {
 
 // `getTextEncoderRepo()` can return either an HF repo id (`org/name`) or a
 // resolved local filesystem path when the registry entry has a `localPath`
-// override. Anything that starts with `/` or `~` is a local path; only
-// `org/name` is a valid input to HF-cache inspection / download endpoints.
-export const isHfRepoId = (value) => (
-  typeof value === 'string'
-  && value.length > 0
-  && !value.startsWith('/')
-  && !value.startsWith('~')
-  && value.includes('/')
-);
+// override. Only `org/name` is a valid input to HF-cache inspection /
+// download endpoints.
+//
+// Reject local-path shapes across platforms:
+//  - POSIX absolute / home-relative: `/foo/bar`, `~/foo`
+//  - Windows drive paths (both backslash and forward-slash style): `C:\…`,
+//    `C:/Users/…` — without this check, a Windows install with a
+//    forward-slash-style localPath text encoder would be misclassified as
+//    an HF repo, triggering bogus cache inspection / download requests.
+//  - Windows UNC paths: `\\server\share\…`
+//  - Any path containing a backslash (Windows separator)
+// Then require exactly one `/` separator — standard HF repo ids are the
+// `org/name` shape; zero (`legacy-bare-name`) and multiple (a path) are not.
+export const isHfRepoId = (value) => {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  if (value.startsWith('/') || value.startsWith('~')) return false;
+  if (value.includes('\\')) return false;
+  if (/^[A-Za-z]:/.test(value)) return false;
+  return (value.match(/\//g) || []).length === 1;
+};
 
 // Resolve the active text encoder to a path mlx_video can pass via
 // --text-encoder-repo. Prefers `localPath` (e.g. an existing LM Studio
