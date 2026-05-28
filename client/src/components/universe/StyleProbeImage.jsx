@@ -30,7 +30,7 @@ export function hasStyleForProbe(universe) {
   return Boolean(prompt.trim());
 }
 
-export default function StyleProbeImage({ universe, onUniverseChange, canRender = true }) {
+export default function StyleProbeImage({ universe, onUniverseChange, canRender = true, onPreview = null }) {
   const [imageCfg, setImageCfg] = useState(PIPELINE_IMAGE_DEFAULTS);
   const [jobId, setJobId] = useState(null);
   // MediaJobThumb's onFilename effect can fire more than once — process each
@@ -79,9 +79,10 @@ export default function StyleProbeImage({ universe, onUniverseChange, canRender 
         inFlightJobId={jobId}
         onRender={render}
         onComplete={onComplete}
+        onPreview={onPreview}
         canRender={canRender && Boolean(universe?.id) && styleReady}
         alt="Base style"
-        size="lg"
+        size="xl"
       />
       <div className="text-xs text-gray-500 max-w-sm">
         <div className="text-gray-300 font-medium mb-0.5">Base style image</div>

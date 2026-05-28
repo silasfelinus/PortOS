@@ -713,6 +713,10 @@ export default function UniverseBuilder() {
       const refs = Array.isArray(s?.imageRefs) ? s.imageRefs : [];
       for (const f of refs) pushFilename(f, `Composite · ${s.label}`);
     }
+    // Base style probe renders — same `image:<filename>` namespace so the
+    // lightbox finds them and reuses the gallery sidecar metadata.
+    const styleRefs = Array.isArray(draft?.styleImageRefs) ? draft.styleImageRefs : [];
+    for (const f of styleRefs) pushFilename(f, 'Base style');
     // Canon refs — characters / places / objects. Hydrate from the gallery
     // sidecar so the modal shows the ACTUAL render prompt (the same one the
     // History page sees), not just the character description. The descriptor
@@ -1845,6 +1849,7 @@ export default function UniverseBuilder() {
             totalVariations={totalVariations}
             categoryKeyCount={categoryKeys.length}
             totalSheets={totalSheets}
+            onPreview={openPreviewByFilename}
           />
         )}
 
@@ -2942,6 +2947,7 @@ function BibleTab({
   handleExpand, expanding, saving,
   refine,
   totalVariations, categoryKeyCount, totalSheets,
+  onPreview,
 }) {
   const { providers, providerModels, providerLabel, activeProviderId } = llm;
   const {
@@ -3137,6 +3143,7 @@ function BibleTab({
           <StyleProbeImage
             universe={draft}
             onUniverseChange={(updated) => updateDraft({ styleImageRefs: updated?.styleImageRefs || [] })}
+            onPreview={onPreview}
           />
         </div>
       </section>
