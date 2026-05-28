@@ -23,6 +23,7 @@ import { videoGenEvents } from './events.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay, PYTHON_NOISE_RE } from '../../lib/sseUtils.js';
 import { getVideoModels, getDefaultVideoModelId, getTextEncoderRepo } from '../../lib/mediaModels.js';
 import { findFfmpeg, safeUnder, generateThumbnail, optimizeForStreaming, upscaleVideo2x, extractEvaluationFrames } from '../../lib/ffmpeg.js';
+import { hfTokenEnv } from '../../lib/hfToken.js';
 
 // Path to the dgrauet/ltx-2-mlx venv populated by `INSTALL_LTX2=1
 // scripts/setup-image-video.sh`. Used when a model entry has
@@ -32,6 +33,22 @@ import { findFfmpeg, safeUnder, generateThumbnail, optimizeForStreaming, upscale
 const LTX2_VENV_PYTHON = join(homedir(), '.portos', 'ltx-2-mlx', '.venv', 'bin', 'python3');
 const LTX2_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_ltx2.py');
 
+// Wan 2.2 MLX runtime — osama-ata/Wan2.2-mlx cloned at
+// ~/.portos/wan2.2-mlx/. The wrapper at scripts/generate_wan22.py
+// subprocesses upstream generate.py so PortOS releases don't drift from
+// upstream's CLI. Provisioned via `INSTALL_WAN22=1 bash scripts/setup-image-video.sh`.
+const WAN22_VENV_PYTHON = join(homedir(), '.portos', 'wan2.2-mlx', '.venv', 'bin', 'python3');
+const WAN22_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_wan22.py');
+const WAN22_REPO_DIR = join(homedir(), '.portos', 'wan2.2-mlx');
+
+// HunyuanVideo MLX runtime — gaurav-nelson/HunyuanVideo_MLX cloned at
+// ~/.portos/hunyuan-video-mlx/. ~60 GB resident at bf16 so practical only
+// with the 4-bit Gemma text encoder + everything else evicted. Provisioned
+// via `INSTALL_HUNYUAN=1 bash scripts/setup-image-video.sh`.
+const HUNYUAN_VENV_PYTHON = join(homedir(), '.portos', 'hunyuan-video-mlx', '.venv', 'bin', 'python3');
+const HUNYUAN_HELPER_SCRIPT = join(PATHS.root, 'scripts', 'generate_hunyuan.py');
+const HUNYUAN_REPO_DIR = join(homedir(), '.portos', 'hunyuan-video-mlx');
+
 const execFileAsync = promisify(execFile);
 
 const IS_WIN = process.platform === 'win32';
@@ -39,6 +56,14 @@ const IS_WIN = process.platform === 'win32';
 // Catalog comes from data/media-models.json (see server/lib/mediaModels.js).
 // Cached as a plain object at boot for O(1) lookup by id, matching the prior shape.
 export const VIDEO_MODELS = Object.fromEntries(getVideoModels().map((m) => [m.id, m]));
+
+// "Bring-your-own-venv" video runtimes — runtimes that resolve their own
+// Python interpreter inside buildArgs (LTX2_VENV_PYTHON / WAN22_VENV_PYTHON
+// / HUNYUAN_VENV_PYTHON), so the legacy mlx_video `settings.imageGen.local.
+// pythonPath` is irrelevant. Used by BOTH services/videoGen/local.js and
+// routes/videoGen.js to decide when to enforce the pythonPath gate — keep
+// the two in sync via this single export.
+export const BYOV_VIDEO_RUNTIMES = Object.freeze(new Set(['ltx2', 'wan22', 'hunyuan']));
 
 export const listVideoModels = () => getVideoModels();
 
@@ -242,12 +267,80 @@ const buildLtx2Args = ({ model, prompt, negativePrompt, width, height, numFrames
   return { bin: LTX2_VENV_PYTHON, args };
 };
 
+// Build args for the Wan 2.2 MLX helper. The helper subprocesses upstream
+// `generate.py` from the cloned osama-ata/Wan2.2-mlx repo. The wrapper
+// translates PortOS's stable arg surface (prompt, output, image) into
+// upstream's --task / --size / --ckpt_dir form so PortOS releases don't
+// fight upstream CLI changes.
+const buildWan22Args = ({ model, prompt, width, height, numFrames, steps, guidance, seed, sourceImagePath, mode, outputPath }) => {
+  if (!existsSync(WAN22_VENV_PYTHON)) {
+    throw new ServerError(
+      `wan2.2-mlx venv not found at ${WAN22_VENV_PYTHON}. Run \`INSTALL_WAN22=1 bash scripts/setup-image-video.sh\` to install.`,
+      { status: 500, code: 'WAN22_VENV_MISSING' },
+    );
+  }
+  const args = [
+    WAN22_HELPER_SCRIPT,
+    '--repo-dir', WAN22_REPO_DIR,
+    '--task', model.mode === 'i2v' ? 'i2v-A14B' : 't2v-A14B',
+    '--model-repo', model.repo,
+    '--prompt', prompt,
+    '--width', String(width),
+    '--height', String(height),
+    '--num-frames', String(numFrames),
+    '--steps', String(steps),
+    '--guidance', String(guidance ?? 5.0),
+    '--seed', String(seed),
+    '--output', outputPath,
+  ];
+  if (model.mode === 'i2v') {
+    if (!sourceImagePath) {
+      throw new ServerError(
+        'Wan 2.2 i2v requires a source image — upload one before running this model.',
+        { status: 400, code: 'WAN22_I2V_REQUIRES_IMAGE' },
+      );
+    }
+    args.push('--image', sourceImagePath);
+  }
+  return { bin: WAN22_VENV_PYTHON, args };
+};
+
+// Build args for the HunyuanVideo MLX helper. Mirror of the Wan 2.2 path.
+const buildHunyuanArgs = ({ model, prompt, width, height, numFrames, steps, guidance, seed, outputPath }) => {
+  if (!existsSync(HUNYUAN_VENV_PYTHON)) {
+    throw new ServerError(
+      `hunyuan-video-mlx venv not found at ${HUNYUAN_VENV_PYTHON}. Run \`INSTALL_HUNYUAN=1 bash scripts/setup-image-video.sh\` to install.`,
+      { status: 500, code: 'HUNYUAN_VENV_MISSING' },
+    );
+  }
+  const args = [
+    HUNYUAN_HELPER_SCRIPT,
+    '--repo-dir', HUNYUAN_REPO_DIR,
+    '--model-repo', model.repo,
+    '--prompt', prompt,
+    '--width', String(width),
+    '--height', String(height),
+    '--num-frames', String(numFrames),
+    '--steps', String(steps),
+    '--guidance', String(guidance ?? 6.0),
+    '--seed', String(seed),
+    '--output', outputPath,
+  ];
+  return { bin: HUNYUAN_VENV_PYTHON, args };
+};
+
 const buildArgs = ({ pythonPath, modelId, model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, tiling, disableAudio, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, mode, imageStrength, textEncoderRepo, outputPath }) => {
   // Route to the dgrauet/ltx-2-mlx helper when the model declares the new
   // runtime. Existing notapalindrome models default to runtime: 'mlx_video'
   // (or undefined in legacy registries — see backfillRuntime in mediaModels.js).
   if (model.runtime === 'ltx2') {
     return buildLtx2Args({ model, prompt, negativePrompt, width, height, numFrames, fps, steps, guidance, seed, sourceImagePath, lastImagePath, keyframes, extendFromVideoPath, audioFilePath, mode, imageStrength, disableAudio, outputPath, textEncoderRepo });
+  }
+  if (model.runtime === 'wan22') {
+    return buildWan22Args({ model, prompt, width, height, numFrames, steps, guidance, seed, sourceImagePath, mode, outputPath });
+  }
+  if (model.runtime === 'hunyuan') {
+    return buildHunyuanArgs({ model, prompt, width, height, numFrames, steps, guidance, seed, outputPath });
   }
   if (Array.isArray(keyframes) && keyframes.length >= 2) {
     throw new ServerError(
@@ -321,7 +414,6 @@ export const DEFAULT_NUM_FRAMES = 121;
 
 export async function generateVideo({ pythonPath, prompt, negativePrompt = '', modelId = defaultVideoModelId(), width = 768, height = 512, numFrames = DEFAULT_NUM_FRAMES, fps = 24, steps, guidanceScale, seed, tiling = 'auto', disableAudio = false, sourceImagePath = null, uploadedTempPath = null, uploadedTempPaths = [], lastImagePath = null, keyframes = null, extendFromVideoPath = null, audioFilePath = null, mode = null, imageStrength = null, hidden = false, jobId: providedJobId = null }) {
   uploadedTempPaths = Array.isArray(uploadedTempPaths) ? uploadedTempPaths : [];
-  if (!pythonPath) throw new ServerError('Python path not configured — set it in Settings > Image Gen', { status: 400, code: 'VIDEO_GEN_NOT_CONFIGURED' });
   if (!prompt?.trim()) throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
   // Single-flight is now enforced by the mediaJobQueue worker upstream — only
   // one job is dequeued at a time, so we don't need a BUSY guard here. Direct
@@ -330,6 +422,14 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
 
   const model = VIDEO_MODELS[modelId];
   if (!model) throw new ServerError(`Unknown video model: ${modelId}`, { status: 400, code: 'VALIDATION_ERROR' });
+  // Only require the legacy mlx_video pythonPath when the chosen runtime
+  // actually uses it. ltx2/wan22/hunyuan resolve their own venv path inside
+  // buildArgs — gating them on the unrelated mlx_video setting locks users
+  // out of the runtimes they just installed via INSTALL_WAN22 / INSTALL_LTX2
+  // / INSTALL_HUNYUAN. Routes/videoGen.js reads the same module-level set.
+  if (!pythonPath && !BYOV_VIDEO_RUNTIMES.has(model.runtime)) {
+    throw new ServerError('Python path not configured — set it in Settings > Image Gen', { status: 400, code: 'VIDEO_GEN_NOT_CONFIGURED' });
+  }
   // macOS/mlx_video requires a HuggingFace repo id — Windows doesn't (the
   // diffusers wrapper hardcodes Lightricks/LTX-Video). A user-edited registry
   // entry missing `repo` would otherwise pass `undefined` into spawn args.
@@ -502,7 +602,11 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // of the parent shell's PYTHONPATH. Setting to `undefined` in a spread does
   // NOT unset the var — Node coerces it to the literal string "undefined" —
   // so build the env explicitly and `delete`.
-  const childEnv = { ...process.env };
+  // Merge HF_TOKEN/HF_HOME via hfTokenEnv() so the Wan 2.2 / HunyuanVideo
+  // python helpers can authenticate snapshot_download() against gated repos
+  // (mirrors the imageGen child-spawn pattern). LTX-2 doesn't currently use
+  // a gated repo, but the merge is harmless when no token is configured.
+  const childEnv = { ...process.env, ...(await hfTokenEnv()) };
   delete childEnv.PYTHONPATH;
   const proc = spawn(bin, args, { env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
   activeProcess = proc;
