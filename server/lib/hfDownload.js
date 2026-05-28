@@ -137,18 +137,32 @@ export function downloadHfRepo({ repo, revision = null, onEvent }) {
         onEvent({ type: 'log', message: line });
       };
 
-      proc.stderr.on('data', (chunk) => {
-        for (const l of chunk.toString().split(/[\r\n]+/)) handleLine(l);
-      });
-      proc.stdout.on('data', (chunk) => {
-        for (const l of chunk.toString().split(/[\r\n]+/)) handleLine(l);
-      });
+      // Line-buffer across chunks so a STAGE:/USER_ERROR: marker split across
+      // pipe boundaries isn't truncated and routed to the generic log path
+      // (which loses the typed-error / progress wire shape).
+      let stdoutBuf = '';
+      let stderrBuf = '';
+      const flushChunk = (chunk, key) => {
+        const buf = (key === 'stdout' ? stdoutBuf : stderrBuf) + chunk.toString();
+        const lines = buf.split(/\r?\n/);
+        const trailing = lines.pop();
+        if (key === 'stdout') stdoutBuf = trailing;
+        else stderrBuf = trailing;
+        for (const l of lines) handleLine(l);
+      };
+      proc.stderr.on('data', (chunk) => flushChunk(chunk, 'stderr'));
+      proc.stdout.on('data', (chunk) => flushChunk(chunk, 'stdout'));
       proc.on('error', (err) => {
         const msg = `Failed to spawn python: ${err.message}`;
         onEvent({ type: 'error', message: msg, kind: 'spawn_failed' });
         resolve({ ok: false, errorKind: 'spawn_failed', errorMessage: msg });
       });
       proc.on('close', (code, signal) => {
+        // Flush any trailing partial line the python helper emitted without a
+        // newline before exit (rare with line-buffered stderr but possible
+        // when the process is SIGKILL'd mid-write).
+        if (stdoutBuf) { handleLine(stdoutBuf); stdoutBuf = ''; }
+        if (stderrBuf) { handleLine(stderrBuf); stderrBuf = ''; }
         if (killed) {
           onEvent({ type: 'error', message: 'Cancelled', kind: 'cancelled' });
           return resolve({ ok: false, errorKind: 'cancelled', errorMessage: 'Cancelled' });

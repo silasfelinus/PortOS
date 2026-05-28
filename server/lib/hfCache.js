@@ -113,10 +113,11 @@ export async function inspectModelCache(repoId) {
   // Each snapshot file is a symlink into ../../blobs/<hash>; a stat that
   // follows the link surfaces dangling-symlink failures (interrupted
   // download) as a throw. One stat per file covers both broken-link
-  // detection and size accounting.
+  // detection and size accounting. Parallelize across weights — large FLUX
+  // / HiDream snapshots have hundreds of shards and sequential stats add up.
+  const stats = await Promise.all(weights.map((f) => fs.stat(f.path).catch(() => null)));
   let sizeBytes = 0;
-  for (const file of weights) {
-    const s = await fs.stat(file.path).catch(() => null);
+  for (const s of stats) {
     if (!s || s.size === 0) {
       return { cached: false, sizeBytes: 0, snapshotPath };
     }
