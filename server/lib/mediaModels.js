@@ -36,14 +36,56 @@ const DEFAULT_REGISTRY = {
     macos: [
       // notapalindrome's mlx-video-with-audio runtime — single PyPI package,
       // T2V/I2V only, FFLF degrades to last-frame conditioning (one --image arg).
+      // LTX-2 (the older 42 GB model) stays deprecated — superseded by 2.3.
+      // The 2.3 Unified Beta and Distilled Q4 are no longer deprecated:
+      // 2.3 Unified bf16 is the quality ceiling for the mlx_video runtime, and
+      // is now practical on 128 GB unified-memory hardware. Distilled Q4 is
+      // still the shipped default because it works on smaller boxes.
       { id: 'ltx2_unified',       name: 'LTX-2 Unified (~42 GB)',          repo: 'notapalindrome/ltx2-mlx-av',     runtime: 'mlx_video', steps: 30, guidance: 3.0, deprecated: true },
-      { id: 'ltx23_unified',      name: 'LTX-2.3 Unified Beta (~48 GB)',   repo: 'notapalindrome/ltx23-mlx-av',    runtime: 'mlx_video', steps: 25, guidance: 3.0, deprecated: true },
-      { id: 'ltx23_distilled_q4', name: 'LTX-2.3 Distilled Q4 (~22 GB)',   repo: 'notapalindrome/ltx23-mlx-av-q4', runtime: 'mlx_video', steps: 25, guidance: 3.0, deprecated: true },
+      { id: 'ltx23_unified',      name: 'LTX-2.3 Unified Beta (~48 GB, bf16 quality ceiling)', repo: 'notapalindrome/ltx23-mlx-av',    runtime: 'mlx_video', steps: 25, guidance: 3.0 },
+      { id: 'ltx23_distilled_q4', name: 'LTX-2.3 Distilled Q4 (~22 GB)',   repo: 'notapalindrome/ltx23-mlx-av-q4', runtime: 'mlx_video', steps: 25, guidance: 3.0 },
       // dgrauet's ltx-2-mlx runtime — true KeyframeInterpolationPipeline,
       // native video Extend, audio→video. Requires a separate venv synced
       // via `INSTALL_LTX2=1 bash scripts/setup-image-video.sh`.
       { id: 'ltx23_dgrauet_q4',   name: 'LTX-2.3 dgrauet Q4 (~16 GB, true keyframes)', repo: 'dgrauet/ltx-2.3-mlx-q4', runtime: 'ltx2', steps: 8, guidance: 3.0 },
       { id: 'ltx23_dgrauet_q8',   name: 'LTX-2.3 dgrauet Q8 (~25 GB, true keyframes)', repo: 'dgrauet/ltx-2.3-mlx-q8', runtime: 'ltx2', steps: 8, guidance: 3.0 },
+      // Wan 2.2 (Alibaba) — pure-MLX port at osama-ata/Wan2.2-mlx, weights
+      // at Wan-AI/Wan2.2-T2V-A14B. Requires a dedicated venv synced via
+      // `INSTALL_WAN22=1 bash scripts/setup-image-video.sh` (clones the
+      // runtime repo into ~/.portos/wan2.2-mlx). MoE-A14B = 14B active
+      // params at inference, ~28 GB resident at bf16.
+      {
+        id: 'wan22_t2v_a14b',
+        name: 'Wan 2.2 T2V A14B (~28 GB, MoE-14B-active)',
+        repo: 'Wan-AI/Wan2.2-T2V-A14B',
+        runtime: 'wan22',
+        mode: 't2v',
+        steps: 25,
+        guidance: 5.0,
+      },
+      {
+        id: 'wan22_i2v_a14b',
+        name: 'Wan 2.2 I2V A14B (~28 GB, image-to-video)',
+        repo: 'Wan-AI/Wan2.2-I2V-A14B',
+        runtime: 'wan22',
+        mode: 'i2v',
+        steps: 25,
+        guidance: 5.0,
+      },
+      // HunyuanVideo (Tencent) — MLX port at gaurav-nelson/HunyuanVideo_MLX,
+      // weights at tencent/HunyuanVideo. 13B params, ~60 GB resident at bf16.
+      // Practical only with Gemma 4-bit text encoder (not bf16) + nothing else
+      // in unified memory. Provisioned via `INSTALL_HUNYUAN=1 bash
+      // scripts/setup-image-video.sh`.
+      {
+        id: 'hunyuan_video',
+        name: 'HunyuanVideo (13B, ~60 GB — swap text encoder to 4-bit Gemma)',
+        repo: 'tencent/HunyuanVideo',
+        runtime: 'hunyuan',
+        mode: 't2v',
+        steps: 30,
+        guidance: 6.0,
+      },
     ],
     windows: [
       { id: 'ltx_video', name: 'LTX-Video 0.9.5 — T2V + I2V (~9.5 GB, auto-downloads)', runtime: 'mlx_video', steps: 25, guidance: 3.0 },
@@ -91,6 +133,79 @@ const DEFAULT_REGISTRY = {
       steps: 8,
       guidance: 3.5,
       cfgDisabled: true,
+    },
+    // FLUX.2 9B at native bf16 — no quantization, full quality. Needs ~36 GB
+    // resident for the transformer alone, plus ~8 GB for the text encoder.
+    // Practical on 128GB unified-memory hardware; will OOM on smaller boxes.
+    // Uses the gated black-forest-labs/FLUX.2-klein-9B repo directly (same
+    // license as flux2-klein-9b SDNQ variant — accept once at huggingface.co).
+    {
+      id: 'flux2-klein-9b-bf16',
+      name: 'Flux 2 Klein 9B (bf16, ~36 GB — 64+ GB RAM)',
+      runner: 'flux2',
+      quantization: 'none',
+      repo: 'black-forest-labs/FLUX.2-klein-9B',
+      steps: 20,
+      guidance: 3.5,
+      cfgDisabled: true,
+      requiresHfToken: true,
+      licenseUrl: 'https://huggingface.co/black-forest-labs/FLUX.2-klein-9B',
+    },
+    // hidream runner — HiDream-I1 17B MoE DiT, Apache 2.0 weights but needs
+    // meta-llama/Meta-Llama-3.1-8B-Instruct (gated) as text-encoder-4.
+    // Pipeline class isn't auto-detected so passed explicitly. Reuses the
+    // FLUX.2 venv (diffusers >= 0.32 has HiDreamImagePipeline).
+    {
+      id: 'hidream-i1-full',
+      name: 'HiDream-I1 Full (17B, ~34 GB @ bf16, 50 steps)',
+      runner: 'hidream',
+      repo: 'HiDream-ai/HiDream-I1-Full',
+      pipelineClass: 'HiDreamImagePipeline',
+      textEncoderRepo: 'meta-llama/Meta-Llama-3.1-8B-Instruct',
+      textEncoderClass: 'LlamaForCausalLM',
+      tokenizerClass: 'PreTrainedTokenizerFast',
+      steps: 50,
+      guidance: 5.0,
+      requiresHfToken: true,
+      licenseUrl: 'https://huggingface.co/meta-llama/Meta-Llama-3.1-8B-Instruct',
+    },
+    {
+      id: 'hidream-i1-fast',
+      name: 'HiDream-I1 Fast (17B distilled, ~34 GB, 16 steps)',
+      runner: 'hidream',
+      repo: 'HiDream-ai/HiDream-I1-Fast',
+      pipelineClass: 'HiDreamImagePipeline',
+      textEncoderRepo: 'meta-llama/Meta-Llama-3.1-8B-Instruct',
+      textEncoderClass: 'LlamaForCausalLM',
+      tokenizerClass: 'PreTrainedTokenizerFast',
+      steps: 16,
+      guidance: 0,
+      cfgDisabled: true,
+      requiresHfToken: true,
+      licenseUrl: 'https://huggingface.co/meta-llama/Meta-Llama-3.1-8B-Instruct',
+    },
+    // qwen runner — Qwen-Image 20B MMDiT, Apache 2.0, ungated. Uses
+    // Qwen/Qwen2.5-VL-7B-Instruct as the bundled text encoder (also Apache).
+    // Diffusers >= 0.31 ships QwenImagePipeline (autodetectable via
+    // AutoPipelineForText2Image, but pinned explicitly so registry edits
+    // don't fight pipeline-class auto-resolution).
+    {
+      id: 'qwen-image',
+      name: 'Qwen-Image (20B MMDiT, ~40 GB @ bf16, best text rendering)',
+      runner: 'qwen',
+      repo: 'Qwen/Qwen-Image',
+      pipelineClass: 'QwenImagePipeline',
+      steps: 30,
+      guidance: 4.0,
+    },
+    {
+      id: 'qwen-image-edit',
+      name: 'Qwen-Image-Edit (20B, image-to-image + text-rewrite)',
+      runner: 'qwen',
+      repo: 'Qwen/Qwen-Image-Edit',
+      pipelineClass: 'QwenImageEditPipeline',
+      steps: 30,
+      guidance: 4.0,
     },
     // z-image runner — Apache 2.0, ungated, reuses the FLUX.2 venv. Turbo
     // distillation runs ~8 steps with CFG disabled (guidance 1.0).
@@ -221,10 +336,12 @@ const CFG_DISABLED_IDS = new Set([
   'schnell',
   'flux2-klein-4b',
   'flux2-klein-9b',
+  'flux2-klein-9b-bf16',
   'flux2-klein-4b-int8',
   'z-image-turbo-bf16',
   'z-image-turbo-quant',
   'ernie-image-turbo',
+  'hidream-i1-fast',
 ]);
 
 const backfillCfgDisabled = (list) => {
@@ -240,6 +357,8 @@ const backfillCfgDisabled = (list) => {
 export const isFlux2 = (model) => model?.runner === RUNNER_FAMILIES.FLUX2;
 export const isZImage = (model) => model?.runner === RUNNER_FAMILIES.Z_IMAGE;
 export const isErnie = (model) => model?.runner === RUNNER_FAMILIES.ERNIE;
+export const isHiDream = (model) => model?.runner === RUNNER_FAMILIES.HIDREAM;
+export const isQwen = (model) => model?.runner === RUNNER_FAMILIES.QWEN;
 export const isCfgDisabled = (model) => model?.cfgDisabled === true;
 
 // Append models that are genuinely new in this release (not in
