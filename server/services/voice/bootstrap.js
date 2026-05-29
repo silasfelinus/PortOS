@@ -211,24 +211,32 @@ export const stopWhisper = async () => {
 // Default tool-capable model to auto-install via `lms get` when the user has
 // voice.enabled + tools.enabled + model='auto' but LM Studio has no model that
 // speaks OpenAI structured tool_calls. We try a small list in order — first
-// one resolved successfully wins. Picks favor: small (≤7B), explicitly
+// one resolved successfully wins. Picks favor: small (≤8B), explicitly
 // non-reasoning ("instruct"/"2507" non-thinking variants), and currently
-// available in the LM Studio Hub catalog (the catalog evolves, so we try
-// newer slugs first and keep older ones as fallbacks). Override the entire
-// chain with PORTOS_VOICE_DEFAULT_TOOL_MODEL (single id).
+// available in the LM Studio Hub catalog under the un-gated
+// `lmstudio-community/...-GGUF` form (`lms get` needs an actual fetchable HF
+// repo; gated repos like `meta-llama/*` and MLX-only ids fail silently).
+// Ids mirror the curated catalog in `server/lib/localLlmCatalog.js` so the
+// "recommended installs" UI stays consistent with what voice auto-installs.
+// Override the entire chain with PORTOS_VOICE_DEFAULT_TOOL_MODEL (single id).
 const DEFAULT_TOOL_MODEL_CHAIN = () => {
   const override = process.env.PORTOS_VOICE_DEFAULT_TOOL_MODEL;
   if (override) return [override];
   return [
-    'qwen/qwen3-4b-2507',                             // 4B, non-thinking, ~2.3 GB MLX, fast TTFT
-    'qwen/qwen3.5-9b',                                // 9B, current Qwen3.5 line
-    'lmstudio-community/Qwen2.5-7B-Instruct-GGUF',    // older, kept for older catalogs
-    'meta-llama/Llama-3.1-8B-Instruct',               // Llama fallback
+    'lmstudio-community/Qwen3-4B-Instruct-2507-GGUF',     // 4B, ~2.6 GB, current non-thinking Qwen3
+    'lmstudio-community/Llama-3.2-3B-Instruct-GGUF',      // 3B, ~2 GB, smaller fallback
+    'lmstudio-community/Qwen2.5-7B-Instruct-GGUF',        // 7B, ~4.7 GB, classic workhorse
+    'lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF', // 8B, ~4.7 GB, Llama fallback
   ];
 };
 
 const LMS_BASE = () => (process.env.LM_STUDIO_URL || 'http://localhost:1234')
   .replace(/\/+$/, '').replace(/\/v1$/, '');
+
+// The auto-install + preload paths only know how to talk to LM Studio
+// (`lms get`, `lms load`, `/v1/models`). Default to `lmstudio` for installs
+// that pre-date `voice.llm.provider`, where the field is absent.
+const isLmStudioVoiceProvider = (cfg) => (cfg?.llm?.provider || 'lmstudio') === 'lmstudio';
 
 const listLmStudioModels = async () => {
   const res = await fetch(`${LMS_BASE()}/v1/models`, { signal: AbortSignal.timeout(5000) }).catch(() => null);
@@ -260,6 +268,7 @@ export const ensureToolCapableModel = async (cfg) => {
   // if incompatible.
   if (!cfg?.llm?.tools?.enabled) return { skipped: 'tools-disabled' };
   if (cfg?.llm?.model && cfg.llm.model !== 'auto') return { skipped: 'explicit-model' };
+  if (!isLmStudioVoiceProvider(cfg)) return { skipped: 'non-lmstudio-provider', provider: cfg?.llm?.provider };
 
   const installed = await listLmStudioModels();
   // Tool-capable AND non-reasoning AND under the size cap. The size cap is
@@ -302,11 +311,12 @@ export const ensureToolCapableModel = async (cfg) => {
       console.log(`🎙️  voice: fast tool-capable model ready — ${fastNew}`);
       return { installed: fastNew };
     }
-    if (stderr && /not exist|not found|permission|failed/i.test(stderr)) {
-      console.warn(`🎙️  voice: ${target} unavailable (${stderr.split('\n').pop().slice(0, 160)}) — trying next`);
-      continue;
-    }
-    console.warn(`🎙️  voice: lms get ${target} returned but no new fast model detected — trying next`);
+    // Pick the last non-empty line from stderr (LM Studio CLI trails newlines)
+    // so the warning is actionable instead of an empty `()`. Combine with
+    // stdout when stderr is empty — `lms` sometimes routes errors to stdout.
+    const lastMeaningfulLine = (s) => String(s || '').split('\n').map((l) => l.trim()).filter(Boolean).pop() || '';
+    const reason = lastMeaningfulLine(stderr) || lastMeaningfulLine(stdout) || 'unknown';
+    console.warn(`🎙️  voice: ${target} unavailable (${reason.slice(0, 160)}) — trying next`);
   }
   console.warn(`🎙️  voice: exhausted install chain ${chain.join(', ')} — set voice.llm.model explicitly in Settings`);
   return { failed: chain };
@@ -338,6 +348,7 @@ const listLoadedModelKeys = async () => {
 export const preloadModel = async (cfg) => {
   if (!cfg?.enabled) return { skipped: 'voice-disabled' };
   if (cfg?.llm?.model && cfg.llm.model !== 'auto') return { skipped: 'explicit-model' };
+  if (!isLmStudioVoiceProvider(cfg)) return { skipped: 'non-lmstudio-provider', provider: cfg?.llm?.provider };
   const lms = await which('lms');
   if (!lms) return { skipped: 'no-lms-cli' };
   const installed = await listLmStudioModels();
