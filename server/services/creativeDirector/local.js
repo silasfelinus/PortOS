@@ -30,16 +30,30 @@ const MAX_PERSISTED_RUNS = 200;
 const TERMINAL_RUN_STATUSES = new Set(['completed', 'failed']);
 
 export function trimRuns(runs) {
-  if (!Array.isArray(runs) || runs.length <= MAX_PERSISTED_RUNS) return runs || [];
-  const inflight = [];
-  const terminal = [];
+  if (!Array.isArray(runs)) return [];
+  if (runs.length <= MAX_PERSISTED_RUNS) return runs;
+  let inflightCount = 0;
   for (const r of runs) {
-    if (r && TERMINAL_RUN_STATUSES.has(r.status)) terminal.push(r);
-    else inflight.push(r);
+    if (!(r && TERMINAL_RUN_STATUSES.has(r.status))) inflightCount += 1;
   }
-  const keepTerminal = Math.max(0, MAX_PERSISTED_RUNS - inflight.length);
-  const trimmedTerminal = keepTerminal === 0 ? [] : terminal.slice(-keepTerminal);
-  return [...inflight, ...trimmedTerminal];
+  const terminalBudget = Math.max(0, MAX_PERSISTED_RUNS - inflightCount);
+  // Walk backwards keeping every in-flight run + the most-recent `terminalBudget`
+  // terminal runs, then reverse the result so original chronological order is
+  // preserved (RunsTab sorts by startedAt, but recovery scans + completionHook
+  // predicates iterate runs[] directly and stay readable when it reads chronologically).
+  const kept = [];
+  let terminalsKept = 0;
+  for (let i = runs.length - 1; i >= 0; i -= 1) {
+    const r = runs[i];
+    const isTerminal = r && TERMINAL_RUN_STATUSES.has(r.status);
+    if (!isTerminal) {
+      kept.push(r);
+    } else if (terminalsKept < terminalBudget) {
+      kept.push(r);
+      terminalsKept += 1;
+    }
+  }
+  return kept.reverse();
 }
 
 async function loadAll() {
@@ -51,6 +65,12 @@ async function saveAll(projects) {
   // Defense for first-run on a fresh checkout where data/ may not exist yet.
   // Mirrors videoTimeline/local.js#saveProjects.
   await ensureDir(PATHS.data);
+  // Enforce the runs[] cap at the single write chokepoint so every mutator
+  // (recordRun, updateRun, updateProject, setTreatment, updateScene) shrinks
+  // legacy over-cap arrays on first save without each having to remember.
+  for (const p of projects) {
+    if (Array.isArray(p?.runs)) p.runs = trimRuns(p.runs);
+  }
   await atomicWrite(PROJECTS_FILE, projects);
 }
 
@@ -181,7 +201,7 @@ export async function recordRun(id, runEntry) {
   if (idx < 0) throw new ServerError('Project not found', { status: 404, code: 'NOT_FOUND' });
   const project = all[idx];
   const run = { startedAt: new Date().toISOString(), ...runEntry, runId: runEntry.runId || randomUUID() };
-  project.runs = trimRuns([...(project.runs || []), run]);
+  project.runs = [...(project.runs || []), run];
   project.updatedAt = new Date().toISOString();
   all[idx] = project;
   await saveAll(all);
