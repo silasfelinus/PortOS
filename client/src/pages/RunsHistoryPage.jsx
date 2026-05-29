@@ -412,8 +412,9 @@ export function RunsHistoryPage() {
                             )}
                             {/* Show suggested fix if available, or fallback to exit code info */}
                             {(run.suggestedFix || (!run.error && exitInfo.description)) && (
-                              <Banner tone="warning" size="md" className="mt-2" title="Suggested Fix">
-                                <div className="text-sm text-gray-300 mt-1">
+                              <Banner tone="warning" size="md" className="mt-2">
+                                <div className="text-xs font-medium mb-1">Suggested Fix</div>
+                                <div className="text-sm text-gray-300">
                                   {run.suggestedFix || 'Check the output above for specific error details. If the output is empty, the process may have been terminated before producing output.'}
                                 </div>
                               </Banner>

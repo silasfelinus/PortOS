@@ -12,7 +12,6 @@ import {Upload,
   Sparkles} from 'lucide-react';
 import * as api from '../../../services/api';
 import toast from '../../ui/Toast';
-import Banner from '../../ui/Banner';
 import BrailleSpinner from '../../BrailleSpinner';
 import { formatBytes, formatDateShort } from '../../../utils/formatters';
 
@@ -199,19 +198,13 @@ function ChatGPTWizard({ onExit, navigate }) {
       <Header onExit={onExit} />
       <Stepper steps={STEPS} activeIdx={stepIdx} />
       {error && (
-        <Banner
-          tone="error"
-          size="md"
-          icon={AlertCircle}
-          className="mb-4"
-          actions={(
-            <button className="text-gray-400 hover:text-white" onClick={() => setError(null)} aria-label="Dismiss">
-              <X size={14} />
-            </button>
-          )}
-        >
-          {error}
-        </Banner>
+        <div className="mb-4 p-3 rounded border border-port-error/30 bg-port-error/10 text-sm text-port-error flex items-start gap-2">
+          <AlertCircle size={16} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+          <span>{error}</span>
+          <button className="ml-auto text-gray-400 hover:text-white" onClick={() => setError(null)} aria-label="Dismiss">
+            <X size={14} />
+          </button>
+        </div>
       )}
 
       {step.id === 'instructions' && <StepInstructions onNext={goNext} />}

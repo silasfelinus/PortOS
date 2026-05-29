@@ -386,6 +386,7 @@ export default function DigestTab() {
                       key={idx}
                       tone="error"
                       size="md"
+                      align="center"
                       actions={<span className="text-xs text-gray-500">{issue.count}x</span>}
                     >
                       <span className="font-medium">{issue.error}</span>
