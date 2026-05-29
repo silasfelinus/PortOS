@@ -461,7 +461,7 @@ export async function generateStep(id, stepId, options = {}) {
       if (logline && !universe?.locked?.logline) patch.logline = logline;
       await updateUniverse(session.universeId, patch);
     }
-    if (session.seriesId) {
+    if (session.seriesId && (logline || expandedIdea)) {
       await updateSeries(session.seriesId, { ...(logline ? { logline } : {}), ...(expandedIdea ? { premise: expandedIdea } : {}) });
     }
     return { result: content, runId, providerId, model };

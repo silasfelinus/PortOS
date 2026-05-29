@@ -236,16 +236,24 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
     send({ type: 'error', message: `Unknown runtime: ${runtime}` });
     return safeEnd();
   }
+  // Claim the in-flight slot SYNCHRONOUSLY, before any await. Two near-
+  // simultaneous SSE requests would otherwise both reach the readiness await
+  // on line below, both observe `!ready`, and both spawn `setup-image-video.sh`
+  // against the same target dir — racing two git clones / pip installs.
+  // Placeholder (`null`) gets replaced with the real child handle once spawned;
+  // every early-return path below releases the slot.
+  if (runtimeInstallInFlight.has(info.id)) {
+    send({ type: 'error', message: `Another ${info.label} install is already running. Wait for it to finish or restart PortOS.` });
+    return safeEnd();
+  }
+  runtimeInstallInFlight.set(info.id, null);
   // Skip ONLY when both the binary AND the import probe pass. A venv with a
   // python binary but no torch is the partial-install case the user is
   // explicitly re-triggering us to fix — short-circuiting would strand them.
   if (isByovRuntimeInstalled(info.id) && await isByovRuntimeReady(info.id)) {
+    runtimeInstallInFlight.delete(info.id);
     send({ type: 'log', message: `${info.label} already installed at ${info.venvPython}` });
     send({ type: 'complete', message: 'Already installed — nothing to do.' });
-    return safeEnd();
-  }
-  if (runtimeInstallInFlight.has(info.id)) {
-    send({ type: 'error', message: `Another ${info.label} install is already running. Wait for it to finish or restart PortOS.` });
     return safeEnd();
   }
   // The install may add/remove packages; drop any cached "ready" so the
@@ -255,6 +263,7 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
 
   const scriptPath = join(PATHS.root, 'scripts', 'setup-image-video.sh');
   if (!existsSync(scriptPath)) {
+    runtimeInstallInFlight.delete(info.id);
     send({ type: 'error', message: `Installer script not found at ${scriptPath}` });
     return safeEnd();
   }

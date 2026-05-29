@@ -35,8 +35,17 @@ export function hostnameOf(url) {
   }
 }
 
-/** Google favicon service URL for a link (64px), or null if no hostname. */
+/**
+ * Favicon URL for a link — fetched from the link's own origin so we don't leak
+ * the user's saved-link hostnames to a third party (e.g. Google's favicon
+ * service) on every render. The `LinkChip` already has an `onError` fallback
+ * to a generic icon when `/favicon.ico` is missing.
+ */
 export function faviconUrl(url) {
-  const host = hostnameOf(url);
-  return host ? `https://www.google.com/s2/favicons?domain=${host}&sz=64` : null;
+  try {
+    const u = new URL(url);
+    return `${u.protocol}//${u.host}/favicon.ico`;
+  } catch {
+    return null;
+  }
 }
