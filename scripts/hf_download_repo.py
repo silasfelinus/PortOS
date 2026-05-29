@@ -46,6 +46,8 @@ def main() -> int:
     parser.add_argument("--repo", required=True, help="HF repo id, e.g. 'org/name'.")
     parser.add_argument("--revision", default=None, help="Optional revision (branch / tag / sha).")
     parser.add_argument("--token-env", default=None, help="Env var name to read the HF token from (e.g. HF_TOKEN).")
+    parser.add_argument("--local-dir", default=None, help="If set, materialize the repo as a flat copy at this dir instead of relying on the standard HF cache symlinks (used by BYOV installers like HiDream-O1 that need a real on-disk repo).")
+    parser.add_argument("--ignore", action="append", default=[], help="Glob pattern (fnmatch) to skip from the file list. Repeat for multiple patterns. e.g. --ignore 'scripts/**' --ignore 'docs/**' to skip non-weight subdirs.")
     args = parser.parse_args()
 
     token = None
@@ -81,6 +83,9 @@ def main() -> int:
     # as part of a snapshot (`.gitattributes` is, but `LICENSE` and similar
     # are — we keep them; the only true skip is the `.huggingface` folder).
     files = [f for f in files if not f.startswith(".huggingface/")]
+    if args.ignore:
+        import fnmatch
+        files = [f for f in files if not any(fnmatch.fnmatch(f, pat) for pat in args.ignore)]
     total = len(files)
     if total == 0:
         print(f"USER_ERROR:repo_empty:{args.repo}", file=sys.stderr, flush=True)
@@ -100,6 +105,7 @@ def main() -> int:
                 filename=filename,
                 revision=args.revision,
                 token=token,
+                local_dir=args.local_dir,
             )
         except GatedRepoError:
             print(f"USER_ERROR:gated_repo:{args.repo}", file=sys.stderr, flush=True)

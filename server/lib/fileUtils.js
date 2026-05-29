@@ -182,6 +182,15 @@ export function dataPath(...segments) {
   return join(PATHS.data, ...segments);
 }
 
+// `path.join(homedir(), '/.foo')` discards the homedir prefix because of
+// the leading slash, so strip the `~/` (or bare `~`) before joining.
+export function expandHome(p) {
+  if (typeof p !== 'string' || !p) return p;
+  if (p === '~') return homedir();
+  if (p.startsWith('~/')) return join(homedir(), p.slice(2));
+  return p;
+}
+
 /**
  * Check if a string is potentially valid JSON.
  * Performs quick structural validation before parsing.
