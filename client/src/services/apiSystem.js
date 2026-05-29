@@ -39,6 +39,32 @@ export const updateSettings = (data, options) => request('/settings', {
   ...options
 });
 
+// PUT /api/settings shallow-merges top-level keys only — patching
+// `{ imageGen: { local: { pythonPath } } }` directly clobbers the rest of
+// `imageGen`. patchSettingsSlice fetches current settings, walks to the slice
+// at a dotted path, shallow-merges `partial` into it, and PUTs the rebuilt
+// top-level key so sibling subkeys survive. `options` flows through to the
+// final updateSettings (e.g. `{ silent: true }`).
+export const patchSettingsSlice = async (slicePath, partial, options = {}) => {
+  if (typeof slicePath !== 'string' || !slicePath) {
+    throw new Error('patchSettingsSlice: slicePath required');
+  }
+  if (partial == null || typeof partial !== 'object' || Array.isArray(partial)) {
+    throw new Error('patchSettingsSlice: partial must be a plain object');
+  }
+  const segments = slicePath.split('.');
+  const current = await getSettings({ silent: true }).catch(() => ({}));
+  let existing = current;
+  for (const seg of segments) existing = existing?.[seg];
+  let updated = { ...(existing || {}), ...partial };
+  for (let i = segments.length - 1; i > 0; i--) {
+    let parent = current;
+    for (let j = 0; j < i; j++) parent = parent?.[segments[j]];
+    updated = { ...(parent || {}), [segments[i]]: updated };
+  }
+  return updateSettings({ [segments[0]]: updated }, options);
+};
+
 // Usage
 export const getUsage = () => request('/usage');
 export const getUsageRaw = () => request('/usage/raw');
