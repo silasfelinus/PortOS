@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import { request } from '../lib/testHelper.js';
 import { errorMiddleware } from '../lib/errorHandler.js';
+import { mockNoPeers, mockNoPeerSync } from '../lib/mockPathsDataRoot.js';
 
 const fileStore = new Map();
 
@@ -12,6 +13,10 @@ tryReadFile: vi.fn().mockResolvedValue(null),
   atomicWrite: vi.fn(async (path, data) => { fileStore.set(path, data); }),
   readJSONFile: vi.fn(async (path, fallback) => (fileStore.has(path) ? fileStore.get(path) : fallback)),
 }));
+
+// Full-replace OK: this route graph doesn't statically import either module.
+vi.mock('../services/instances.js', () => mockNoPeers());
+vi.mock('../services/sharing/peerSync.js', () => mockNoPeerSync());
 
 let uuidCounter = 0;
 vi.mock('crypto', async () => {
