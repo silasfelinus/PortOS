@@ -139,9 +139,21 @@ vi.mock('../askService.js', () => ({
 vi.mock('./config.js', () => ({
   getVoiceConfig: vi.fn(async () => ({ llm: { codeAgent: { enabled: true, provider: '', model: '' } } })),
 }));
+// code_agent_status reads agent state and indexes all tasks by id. loadState
+// comes from cosState.js; getAllTasks comes from cos.js; isTruthyMeta from
+// agentState.js. Default to empty so tests that don't care can ignore it.
+const cosStateRef = { value: { agents: {} } };
+const tasksRef = { value: [] };
+vi.mock('../cosState.js', () => ({
+  loadState: vi.fn(async () => cosStateRef.value),
+}));
+vi.mock('../agentState.js', () => ({
+  isTruthyMeta: (v) => v === true || v === 'true',
+}));
 vi.mock('../cos.js', () => ({
   addTask: vi.fn(async (data) => ({ id: 'task-test', ...data })),
   isRunning: vi.fn(() => true),
+  getAllTasks: vi.fn(async () => ({ user: { tasks: tasksRef.value }, cos: { tasks: [] } })),
 }));
 // dispatch_code_agent fuzzy-resolves the optional `app` parameter against the
 // user's configured managed apps; default to two apps so the resolve / not-
@@ -319,11 +331,98 @@ describe('dispatch_code_agent', () => {
   });
 });
 
+describe('code_agent_status', () => {
+  afterEach(() => {
+    cosStateRef.value = { agents: {} };
+    tasksRef.value = [];
+  });
+
+  it('reports zero tasks when no agents are running', async () => {
+    const r = await dispatchTool('code_agent_status', {});
+    expect(r.ok).toBe(true);
+    expect(r.count).toBe(0);
+    expect(r.summary).toMatch(/no coding tasks/i);
+  });
+
+  it('ignores running agents whose task is NOT voice-dispatched', async () => {
+    cosStateRef.value = { agents: { 'a1': { id: 'a1', taskId: 't1', status: 'running', startedAt: new Date().toISOString(), metadata: { phase: 'working' } } } };
+    tasksRef.value = [{ id: 't1', description: 'manual task', metadata: {} }];
+    const r = await dispatchTool('code_agent_status', {});
+    expect(r.count).toBe(0);
+  });
+
+  it('ignores agents that are not in running status', async () => {
+    cosStateRef.value = { agents: { 'a1': { id: 'a1', taskId: 't1', status: 'completed', startedAt: new Date().toISOString() } } };
+    tasksRef.value = [{ id: 't1', description: 'done', metadata: { voiceDispatch: true } }];
+    const r = await dispatchTool('code_agent_status', {});
+    expect(r.count).toBe(0);
+  });
+
+  it('reports a single voice-dispatched running task with phase, app, and elapsed', async () => {
+    const startedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    cosStateRef.value = { agents: { 'a1': { id: 'a1', taskId: 't1', status: 'running', startedAt, metadata: { phase: 'working', taskAppName: 'BookLoom' } } } };
+    tasksRef.value = [{ id: 't1', description: 'fix the failing backup test\nmore detail', metadata: { voiceDispatch: true } }];
+    const r = await dispatchTool('code_agent_status', {});
+    expect(r.ok).toBe(true);
+    expect(r.count).toBe(1);
+    expect(r.agents[0]).toMatchObject({ taskId: 't1', phase: 'working', app: 'BookLoom' });
+    expect(r.agents[0].description).toBe('fix the failing backup test');
+    expect(r.summary).toMatch(/working in BookLoom/);
+    expect(r.summary).toMatch(/5 minutes/);
+    expect(r.summary).toMatch(/fix the failing backup test/);
+  });
+
+  it('accepts the string "true" voiceDispatch flag (TASKS.md round-trip)', async () => {
+    cosStateRef.value = { agents: { 'a1': { id: 'a1', taskId: 't1', status: 'running', startedAt: new Date().toISOString() } } };
+    tasksRef.value = [{ id: 't1', description: 'x', metadata: { voiceDispatch: 'true' } }];
+    const r = await dispatchTool('code_agent_status', {});
+    expect(r.count).toBe(1);
+  });
+
+  it('reports "spinning up" while phase=initializing', async () => {
+    cosStateRef.value = { agents: { 'a1': { id: 'a1', taskId: 't1', status: 'running', startedAt: new Date().toISOString(), metadata: { phase: 'initializing' } } } };
+    tasksRef.value = [{ id: 't1', description: 'add a flag', metadata: { voiceDispatch: true } }];
+    const r = await dispatchTool('code_agent_status', {});
+    expect(r.summary).toMatch(/spinning up/);
+  });
+
+  it('summarizes multiple running voice-dispatched tasks', async () => {
+    const t = (sec) => new Date(Date.now() - sec * 1000).toISOString();
+    cosStateRef.value = { agents: {
+      a1: { id: 'a1', taskId: 't1', status: 'running', startedAt: t(120), metadata: { phase: 'working' } },
+      a2: { id: 'a2', taskId: 't2', status: 'running', startedAt: t(30), metadata: { phase: 'initializing', taskAppName: 'BookLoom' } },
+    } };
+    tasksRef.value = [
+      { id: 't1', description: 'fix the build', metadata: { voiceDispatch: true } },
+      { id: 't2', description: 'add a flag', metadata: { voiceDispatch: true } },
+    ];
+    const r = await dispatchTool('code_agent_status', {});
+    expect(r.count).toBe(2);
+    expect(r.summary).toMatch(/^2 coding tasks/);
+    expect(r.summary).toMatch(/fix the build/);
+    expect(r.summary).toMatch(/add a flag/);
+  });
+
+  it('reports "less than a minute" for fresh starts', async () => {
+    cosStateRef.value = { agents: { a1: { id: 'a1', taskId: 't1', status: 'running', startedAt: new Date(Date.now() - 5_000).toISOString(), metadata: { phase: 'working' } } } };
+    tasksRef.value = [{ id: 't1', description: 'x', metadata: { voiceDispatch: true } }];
+    const r = await dispatchTool('code_agent_status', {});
+    expect(r.summary).toMatch(/less than a minute/);
+  });
+});
+
 describe('code intent classification', () => {
   it('routes coding requests to the code group', () => {
     expect([...classifyIntent('have the agent fix the failing test')]).toContain('code');
     expect([...classifyIntent('refactor the widget registry')]).toContain('code');
     expect([...classifyIntent('write a unit test for the echo filter')]).toContain('code');
+  });
+
+  it('routes status-check phrasings to the code group (so code_agent_status reaches the LLM)', () => {
+    expect([...classifyIntent("how's that coding task going?")]).toContain('code');
+    expect([...classifyIntent('status of the agent')]).toContain('code');
+    expect([...classifyIntent('is the agent still running')]).toContain('code');
+    expect([...classifyIntent("what's happening with the PR")]).toContain('code');
   });
 
   it('does not route plain reminders/notes/ambiguous-verb phrases to the code group', () => {
