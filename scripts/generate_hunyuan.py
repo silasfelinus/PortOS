@@ -40,10 +40,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--guidance", type=float, default=6.0, help="embedded_guidance_scale for the cfg-distilled model")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--precision", default="fp32", choices=["fp16", "bf16", "fp32"],
-                   help="dtype for DiT + VAE + text encoder. fp32 matches upstream's "
-                        "sample_video_mps.py — fp16/bf16 trip an MPS matmul assertion "
-                        "(`Destination NDArray and Accumulator NDArray cannot have "
-                        "different datatype`) at the first text-encoder forward pass.")
+                   help="dtype for DiT + VAE + text encoder. fp32 is the ONLY working "
+                        "value on Apple Silicon MPS — verified empirically that both fp16 "
+                        "and bf16 trip `MPSNDArrayMatrixMultiplication.mm:5799 failed "
+                        "assertion: Destination NDArray and Accumulator NDArray cannot "
+                        "have different datatype` within ~2s of the first forward pass. "
+                        "MPS matmul kernels always use an fp32 accumulator internally, so "
+                        "a non-fp32 output dtype guarantees a mismatch. Upstream's "
+                        "sample_video_mps.py reaches the same conclusion. The choices list "
+                        "keeps fp16/bf16 selectable in case a future PyTorch/MPS release "
+                        "fixes this, but DO NOT switch the default without re-testing.")
     p.add_argument("--output", required=True)
     return p.parse_args()
 
@@ -160,9 +166,20 @@ def stage_hunyuan_model_base(repo_dir, snapshot_dir):
 
     te2 = base / "text_encoder_2"
     if not (te2 / "config.json").is_file():
+        # Stage into `.partial` and atomic-rename so an interrupted snapshot
+        # (Ctrl-C, network drop) can't satisfy the `config.json`-only
+        # idempotency gate above with a half-downloaded directory — without
+        # this, the next run would skip the download and fail deep inside
+        # hyvideo with a confusing missing-weights error. Mirrors the
+        # text_encoder branch below.
+        te2_staging = te2.with_name(te2.name + ".partial")
+        shutil.rmtree(te2_staging, ignore_errors=True)
+        te2_staging.mkdir(parents=True)
         print(f"STAGE:download-clip:{CLIP_REPO}", file=sys.stderr, flush=True)
         with heartbeat("download-clip"):
-            _snap(CLIP_REPO, local_dir=str(te2), allow_patterns=list(CLIP_FILES))
+            _snap(CLIP_REPO, local_dir=str(te2_staging), allow_patterns=list(CLIP_FILES))
+        shutil.rmtree(te2, ignore_errors=True)
+        os.replace(te2_staging, te2)
 
     te = base / "text_encoder"
     if not (te / "config.json").is_file():

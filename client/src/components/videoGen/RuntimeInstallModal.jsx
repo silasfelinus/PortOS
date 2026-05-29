@@ -28,6 +28,11 @@ export default function RuntimeInstallModal({ open, runtime, label, onClose, onC
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const logsEndRef = useRef(null);
   const esRef = useRef(null);
+  // Mirror `done` into a ref so es.onerror can read the latest value — the
+  // effect's closure captures the initial `done=false` and never refreshes,
+  // so without this the modal flashes "Connection to installer lost" when
+  // the server cleanly closes the SSE socket right after sending `complete`.
+  const doneRef = useRef(false);
   // Stash onComplete in a ref so the EventSource effect doesn't tear down
   // mid-install on every parent re-render with a fresh inline arrow.
   const onCompleteRef = useRef(onComplete);
@@ -62,6 +67,7 @@ export default function RuntimeInstallModal({ open, runtime, label, onClose, onC
       setLogs([]);
       setStreamStarted(false);
       setDone(false);
+      doneRef.current = false;
       setError(null);
       setConfirmingCancel(false);
       pendingRef.current = [];
@@ -81,6 +87,7 @@ export default function RuntimeInstallModal({ open, runtime, label, onClose, onC
         appendLog({ kind: 'log', text: msg.message });
       } else if (msg.type === 'complete') {
         setDone(true);
+        doneRef.current = true;
         appendLog({ kind: 'success', text: msg.message });
         flush();
         es.close();
@@ -96,7 +103,7 @@ export default function RuntimeInstallModal({ open, runtime, label, onClose, onC
     };
 
     es.onerror = () => {
-      setError((prev) => prev ?? (done ? null : 'Connection to installer lost. Restart PortOS or try again.'));
+      setError((prev) => prev ?? (doneRef.current ? null : 'Connection to installer lost. Restart PortOS or try again.'));
       es.close();
       esRef.current = null;
     };

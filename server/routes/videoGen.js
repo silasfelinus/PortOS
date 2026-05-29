@@ -248,9 +248,15 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
   }
 
   send({ type: 'log', message: `▸ Starting ${info.label} install via ${info.installEnvVar}=1 bash scripts/setup-image-video.sh` });
+  // `detached: true` puts bash in its own process group so a cancel from the
+  // client can take down uv / pip / git children too. Without it, SIGTERM on
+  // bash leaves a multi-GB `git clone` (and any subsequent pip downloads)
+  // orphaned to init — the user sees the modal close but the bandwidth keeps
+  // burning until the network drops or the snapshot completes.
   const child = spawn('bash', [scriptPath], {
     env: { ...process.env, [info.installEnvVar]: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
   });
   runtimeInstallInFlight.set(info.id, child);
 
@@ -289,7 +295,16 @@ router.get('/setup/runtime-install', asyncHandler(async (req, res) => {
   });
 
   req.on('close', () => {
-    if (!child.killed) child.kill('SIGTERM');
+    if (!child.killed && child.pid) {
+      // Negative pid signals the whole process group — required because
+      // `setup-image-video.sh` shells out to `uv pip install` / `git clone`,
+      // and a plain `child.kill('SIGTERM')` only signals bash itself, leaving
+      // the slow children running in the background. Wrap in try/catch so an
+      // already-dead group (race with the close handler) doesn't crash the
+      // server with ESRCH.
+      try { process.kill(-child.pid, 'SIGTERM'); }
+      catch { child.kill('SIGTERM'); }
+    }
     safeEnd();
   });
 }));
