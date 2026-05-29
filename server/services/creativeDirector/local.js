@@ -21,6 +21,27 @@ import { createCollection } from '../mediaCollections.js';
 
 const PROJECTS_FILE = join(PATHS.data, 'creative-director-projects.json');
 
+// Without a cap, runs[] grows unbounded and every loadAll/saveAll (≈10 per
+// scene render) parses + serializes a file whose size scales with cumulative
+// renders — turning per-scene orchestration into O(N²) wall-clock. In-flight
+// runs are load-bearing for orphan/dedup detection in completionHook and the
+// boot recovery scan, so trim only preserves the most-recent terminal entries.
+const MAX_PERSISTED_RUNS = 200;
+const TERMINAL_RUN_STATUSES = new Set(['completed', 'failed']);
+
+export function trimRuns(runs) {
+  if (!Array.isArray(runs) || runs.length <= MAX_PERSISTED_RUNS) return runs || [];
+  const inflight = [];
+  const terminal = [];
+  for (const r of runs) {
+    if (r && TERMINAL_RUN_STATUSES.has(r.status)) terminal.push(r);
+    else inflight.push(r);
+  }
+  const keepTerminal = Math.max(0, MAX_PERSISTED_RUNS - inflight.length);
+  const trimmedTerminal = keepTerminal === 0 ? [] : terminal.slice(-keepTerminal);
+  return [...inflight, ...trimmedTerminal];
+}
+
 async function loadAll() {
   const raw = await readJSONFile(PROJECTS_FILE, []);
   return Array.isArray(raw) ? raw : [];
@@ -160,7 +181,7 @@ export async function recordRun(id, runEntry) {
   if (idx < 0) throw new ServerError('Project not found', { status: 404, code: 'NOT_FOUND' });
   const project = all[idx];
   const run = { startedAt: new Date().toISOString(), ...runEntry, runId: runEntry.runId || randomUUID() };
-  project.runs = [...(project.runs || []), run];
+  project.runs = trimRuns([...(project.runs || []), run]);
   project.updatedAt = new Date().toISOString();
   all[idx] = project;
   await saveAll(all);
