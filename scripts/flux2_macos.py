@@ -258,6 +258,20 @@ def main() -> None:
     dtype = torch.bfloat16 if device in ("mps", "cuda") else torch.float32
 
     use_kv = bool(args.reference_images)
+    # The int8 path attaches a quanto-rehydrated transformer to the pipeline
+    # directly; the KV pipeline's reference-token attention hooks aren't
+    # guaranteed to fire correctly through that wrapper. Refuse early with a
+    # clear message rather than crash mid-inference. No shipped int8 model
+    # surfaces multi-ref via the UI today, but a curl caller could hit this.
+    if use_kv and args.quantization == "int8":
+        print(
+            "❌ Multi-reference editing (--reference-images) is not supported on "
+            "int8 quantization — Flux2KleinKVPipeline's reference-attention path "
+            "doesn't compose with the requantize'd transformer. Use the sdnq or "
+            "bf16 variant for multi-reference renders.",
+            file=sys.stderr,
+        )
+        sys.exit(64)
     pipeline_cls = _resolve_pipeline_cls(use_kv)
     if use_kv:
         # Warn — but don't fail — when the per-ref strength array carries
@@ -411,7 +425,11 @@ def main() -> None:
         if use_kv:
             sidecar["pipelineClass"] = pipeline_cls.__name__
             sidecar["referenceImageFilenames"] = [Path(p).name for p in args.reference_images]
-            sidecar["referenceStrengths"] = [float(s) for s in (args.reference_strengths or [])]
+            # "Requested" — the KV pipeline doesn't expose per-reference attention
+            # weighting today (a non-1.0 entry only logs a warning), so the
+            # sidecar must not pretend these strengths were applied. Rename when
+            # diffusers exposes a real per-ref weighting knob.
+            sidecar["referenceStrengthsRequested"] = [float(s) for s in (args.reference_strengths or [])]
         write_sidecar(args.output, sidecar)
 
     # Free VRAM eagerly so a back-to-back generation in the same process
