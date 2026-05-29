@@ -203,6 +203,7 @@ const TOOL_GROUPS = {
   pipeline_prev_stage: 'pipeline',
   pipeline_open_stage: 'pipeline',
   dispatch_code_agent: 'code',
+  code_agent_status: 'code',
   // UNGROUPED = always-on: time_now, daily_log_append, ui_navigate.
   // brain_capture used to be always-on, but that caused form-fill turns
   // ("fill description with X") to be misrouted to brain_capture because
@@ -294,7 +295,7 @@ const GROUP_INTENT = {
   // in speech). A false positive only OFFERS the tool to the LLM (which still
   // has to choose it), and the tool is a no-op unless codeAgent.enabled
   // (pipeline.js strips it from the spec list when off).
-  code: /\b(?:have (?:claude|codex|gemini|the agent|an agent)\b|dispatch (?:a |an )?(?:coding |code )?agent|spin up an agent|code (?:it )?up|open a pr|pull request|refactor|(?:implement|debug|rewrite|patch)\b[^.!?\n]{0,40}\b(?:bug|tests?|function|method|build|lint|type ?error|error|code|file|module|endpoint|route|component|class|api|schema|migration|script|flag|regression|handler|parser|service|hook|query|registry|config)\b|fix (?:the |a |an |my )?(?:bug|test|tests|failing|function|method|build|lint|type|error|code|file|module|endpoint|route|component)|write (?:a |the |some )?(?:unit |integration )?tests?|add (?:a |an |the )?(?:flag|function|method|endpoint|route|test|migration)\b)/i,
+  code: /\b(?:have (?:claude|codex|gemini|the agent|an agent)\b|dispatch (?:a |an )?(?:coding |code )?agent|spin up an agent|code (?:it )?up|open a pr|pull request|refactor|(?:implement|debug|rewrite|patch)\b[^.!?\n]{0,40}\b(?:bug|tests?|function|method|build|lint|type ?error|error|code|file|module|endpoint|route|component|class|api|schema|migration|script|flag|regression|handler|parser|service|hook|query|registry|config)\b|fix (?:the |a |an |my )?(?:bug|test|tests|failing|function|method|build|lint|type|error|code|file|module|endpoint|route|component)|write (?:a |the |some )?(?:unit |integration )?tests?|add (?:a |an |the )?(?:flag|function|method|endpoint|route|test|migration)\b|(?:how(?:'s| is| are)?|status of|progress on|what(?:'s| is)? happening (?:with|on)|where (?:are|is) (?:we|it|that|the))\b[^.!?\n]{0,40}\b(?:coding (?:task|agent|job)|code agent|coding|agent|pr|pull request|dispatched (?:task|job))\b|\bis (?:the |that |my )?(?:coding |code )?(?:agent|task) (?:still |yet )?(?:running|going|working|done|finished))/i,
   ui: UI_INTENT_RE,
 };
 
@@ -1952,6 +1953,83 @@ const TOOLS = [
         ? `Queued a coding task${appSuffix} — I'll let you know when it's done.`
         : `Queued the coding task${appSuffix}${stoppedNote}.`;
       return { ok: true, taskId: created?.id, running, app: resolvedAppId, summary };
+    },
+  },
+
+  {
+    name: 'code_agent_status',
+    description:
+      "Report the status of in-flight coding tasks the user dispatched by voice (via dispatch_code_agent). Use when the user asks how a coding agent / dispatched task is doing — e.g. \"how's that coding task going?\", \"is the agent still running?\", \"status of the PR\", \"what's happening with the refactor?\". Reads live agent state and reports phase + elapsed per running task. The completion announcement covers the done case proactively; this tool is for mid-task check-ins. Returns an empty-but-ok result when nothing is running — speak the summary verbatim.",
+    parameters: {
+      type: 'object',
+      properties: {},
+    },
+    execute: async () => {
+      const { loadState } = await import('../cosState.js');
+      const { getTaskById } = await import('../cos.js');
+
+      const state = await loadState();
+      const runningAgents = Object.values(state?.agents || {}).filter((a) => a?.status === 'running');
+
+      // task.metadata.voiceDispatch round-trips through TASKS.md, so it can
+      // be either boolean true or the literal string 'true'. Mirror the
+      // proactiveTriggers convention rather than coupling to it.
+      const isMetaTrue = (v) => v === true || v === 'true';
+      const matched = [];
+      for (const agent of runningAgents) {
+        if (!agent?.taskId) continue;
+        const task = await getTaskById(agent.taskId).catch(() => null);
+        if (!task) continue;
+        if (!isMetaTrue(task.metadata?.voiceDispatch)) continue;
+        const startedAt = agent.startedAt ? Date.parse(agent.startedAt) : NaN;
+        const elapsedMs = Number.isFinite(startedAt) ? Math.max(0, Date.now() - startedAt) : null;
+        matched.push({
+          taskId: task.id,
+          agentId: agent.id,
+          description: (task.description || '').split('\n')[0].trim(),
+          phase: agent.metadata?.phase || 'working',
+          app: agent.metadata?.taskAppName || agent.metadata?.taskApp || null,
+          elapsedMs,
+        });
+      }
+
+      if (matched.length === 0) {
+        return {
+          ok: true,
+          count: 0,
+          agents: [],
+          summary: 'No coding tasks are running right now.',
+        };
+      }
+
+      const phaseText = (phase) => (phase === 'initializing' ? 'spinning up' : 'working');
+      const elapsedSpoken = (ms) => {
+        if (!Number.isFinite(ms) || ms < 60_000) return 'less than a minute';
+        const mins = Math.floor(ms / 60_000);
+        if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'}`;
+        const hours = Math.floor(mins / 60);
+        const rem = mins % 60;
+        const h = `${hours} hour${hours === 1 ? '' : 's'}`;
+        return rem === 0 ? h : `${h} ${rem} minute${rem === 1 ? '' : 's'}`;
+      };
+      const clipDesc = (s) => (s.length > 80 ? `${s.slice(0, 77)}…` : s);
+
+      let summary;
+      if (matched.length === 1) {
+        const a = matched[0];
+        const appSuffix = a.app ? ` in ${a.app}` : '';
+        const descPart = a.description ? `: ${clipDesc(a.description)}` : '';
+        summary = `One coding task is ${phaseText(a.phase)}${appSuffix} — ${elapsedSpoken(a.elapsedMs)} in${descPart}.`;
+      } else {
+        const lines = matched.map((a) => {
+          const appSuffix = a.app ? ` in ${a.app}` : '';
+          const descPart = a.description ? ` "${clipDesc(a.description)}"` : '';
+          return `${phaseText(a.phase)}${appSuffix}${descPart}, ${elapsedSpoken(a.elapsedMs)} in`;
+        });
+        summary = `${matched.length} coding tasks are running: ${lines.join('; ')}.`;
+      }
+
+      return { ok: true, count: matched.length, agents: matched, summary };
     },
   },
 ];
