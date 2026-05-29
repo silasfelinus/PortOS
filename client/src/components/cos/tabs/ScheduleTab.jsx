@@ -7,6 +7,7 @@ import AppIcon from '../../AppIcon';
 import CronInput from '../../CronInput';
 import { AGENT_OPTIONS, DEFAULT_REVIEW_STOP_MODE, toggleAppMetadataOverride, agentOptionButtonClass } from '../constants';
 import ReviewerPicker from '../ReviewerPicker';
+import Banner from '../../ui/Banner';
 import { CodeReviewDefaultsProvider, useCodeReviewDefaults } from '../../../hooks/useCodeReviewDefaults';
 import { isCronExpression, describeCron } from '../../../utils/cronHelpers';
 import ToggleSwitch from '../../ToggleSwitch';
@@ -381,10 +382,9 @@ function GlobalConfigControls({ taskType, config, onUpdate, onTrigger, onReset, 
         />
       </div>
       {isPaused && (
-        <div className="flex items-center gap-2 px-3 py-2 bg-port-warning/10 border border-port-warning/30 rounded text-xs text-port-warning">
-          <AlertCircle size={14} className="shrink-0" />
+        <Banner icon={AlertCircle} className="items-center">
           All scheduled runs are paused for this task
-        </div>
+        </Banner>
       )}
 
       <div>
@@ -1117,16 +1117,12 @@ export default function ScheduleTab({ apps }) {
       </div>
 
       {improvementDisabled && (
-        <div className="flex items-start gap-2 px-4 py-3 bg-port-warning/10 border border-port-warning/30 rounded-lg text-sm text-port-warning">
-          <AlertCircle size={16} className="shrink-0 mt-0.5" />
-          <div>
-            <div className="font-medium">Improvement is disabled</div>
-            <div className="text-xs text-port-warning/80 mt-1">
-              No scheduled or on-demand improvement tasks will run. Enable the <span className="font-mono">Improve</span> toggle in
-              {' '}<a href="/cos/config" className="underline hover:text-port-warning">CoS → Config</a> to use this page.
-            </div>
+        <Banner size="md" icon={AlertCircle} title="Improvement is disabled">
+          <div className="text-xs text-port-warning/80 mt-1">
+            No scheduled or on-demand improvement tasks will run. Enable the <span className="font-mono">Improve</span> toggle in
+            {' '}<a href="/cos/config" className="underline hover:text-port-warning">CoS → Config</a> to use this page.
           </div>
-        </div>
+        </Banner>
       )}
 
       {schedule.onDemandRequests?.length > 0 && (
