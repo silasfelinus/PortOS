@@ -56,6 +56,7 @@ import {
   upscaleVideo,
   listImageGallery,
   getSettings, updateSettings,
+  getActiveVideoJob,
 } from '../services/api';
 import { randomSeed, safeParseJSON } from '../lib/genUtils';
 import { VIDEO_RESOLUTIONS } from '../lib/videoGenResolutions';
@@ -431,6 +432,108 @@ export default function VideoGen() {
     return () => eventSourceRef.current?.close();
   }, [refreshStatus]);
 
+  // SSE subscriber shared by the in-flight POST path and the mount-time
+  // resume path. `withToast: false` on resume suppresses the success/error
+  // toast — the user already saw it the first time and a page reload
+  // shouldn't replay it.
+  const attachJobEvents = (jobId, { isCurrent = () => true, settleResolve = () => {}, settleReject = () => {}, withToast = true } = {}) => {
+    const es = new EventSource(`/api/video-gen/${jobId}/events`);
+    eventSourceRef.current = es;
+    es.onmessage = (ev) => {
+      if (!isCurrent()) { es.close(); return; }
+      const msg = safeParseJSON(ev.data);
+      if (!msg) return;
+      if (msg.type === 'queued') {
+        setStatusMsg(typeof msg.position === 'number' ? `Queued (position ${msg.position})` : 'Queued');
+      }
+      if (msg.type === 'started') setStatusMsg('Starting render…');
+      if (msg.type === 'status') setStatusMsg(msg.message);
+      if (msg.type === 'progress') {
+        setProgress({ progress: msg.progress });
+        // A bare tqdm percentage shouldn't blank the STATUS line that just
+        // preceded it; only overwrite when the progress event carries text.
+        if (msg.message) setStatusMsg(msg.message);
+      }
+      if (msg.type === 'complete') {
+        setResult(msg.result);
+        setGenerating(false);
+        setProgress({ progress: 1 });
+        setStatusMsg('Complete');
+        es.close();
+        if (withToast) toast.success('Video generated');
+        refreshHistory();
+        settleResolve(msg.result);
+      }
+      if (msg.type === 'error') {
+        setError(msg.error);
+        setGenerating(false);
+        es.close();
+        if (withToast) toast.error(msg.error);
+        settleReject(new Error(msg.error));
+      }
+      if (msg.type === 'canceled') {
+        setGenerating(false);
+        setStatusMsg(msg.reason || 'Canceled');
+        es.close();
+        if (withToast) toast(msg.reason || 'Render canceled');
+        settleReject(new Error(msg.reason || 'Canceled'));
+      }
+    };
+    es.onerror = () => {
+      if (!isCurrent()) { es.close(); return; }
+      setError('Lost connection to server');
+      setGenerating(false);
+      es.close();
+      settleReject(new Error('Lost connection to server'));
+    };
+    return es;
+  };
+
+  // Resume an in-flight (or queued) render so a page reload doesn't lose
+  // the preview/progress display. Server holds the job's last SSE payload,
+  // so re-attaching replays the most recent status/progress immediately.
+  // Mirrors the ImageGen `getActiveImageJob` mount path.
+  useEffect(() => {
+    getActiveVideoJob().then((data) => {
+      const job = data?.activeJob;
+      if (!job?.jobId) return;
+      // Bail if the user already started a render in this tab. `generating`
+      // would be stale here (effect deps are []), so gate on the live ref:
+      // runTokenRef is bumped at the top of every runGeneration() and stays
+      // > 0 for the session afterward. eventSourceRef is also checked as a
+      // belt-and-suspenders signal for the in-flight POST window before
+      // attachJobEvents runs.
+      if (runTokenRef.current > 0 || eventSourceRef.current) return;
+      const p = job.params || {};
+      if (p.prompt) setPrompt(p.prompt);
+      if (p.negativePrompt) setNegativePrompt(p.negativePrompt);
+      if (p.modelId) setModelId(p.modelId);
+      if (p.width) setWidth(p.width);
+      if (p.height) setHeight(p.height);
+      if (p.numFrames) setNumFrames(p.numFrames);
+      if (p.fps) setFps(p.fps);
+      if (p.steps != null) setSteps(String(p.steps));
+      if (p.guidanceScale != null) setGuidanceScale(String(p.guidanceScale));
+      if (p.seed != null) setSeed(String(p.seed));
+      if (p.tiling) setTiling(p.tiling);
+      if (typeof p.disableAudio === 'boolean') setDisableAudio(p.disableAudio);
+      if (p.mode) setMode(p.mode);
+      if (p.chunks && p.chunks > 1) setChunks(p.chunks);
+      setGenerating(true);
+      // Skip a forced setProgress(0) here — attachJobEvents will replay the
+      // server's last SSE payload synchronously after EventSource open, and
+      // a job mid-render would otherwise visibly flash 0% before jumping
+      // back to its real progress.
+      setStatusMsg(job.status === 'queued'
+        ? (typeof job.position === 'number' ? `Queued (position ${job.position})` : 'Queued')
+        : 'Resuming…');
+      const myToken = ++runTokenRef.current;
+      const isCurrent = () => myToken === runTokenRef.current;
+      attachJobEvents(job.jobId, { isCurrent, withToast: false });
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Settings PUT shallow-merges top-level keys, so the full imageGen slice
   // must round-trip — otherwise mode/external/codex/expose get clobbered.
   const handleSavePythonPath = useCallback(async (path) => {
@@ -731,55 +834,7 @@ export default function VideoGen() {
       // earlier handleCancel() already settled the Promise via runRejectRef.
       if (!isCurrent()) return;
       const jobId = data.jobId || data.generationId;
-      const es = new EventSource(`/api/video-gen/${jobId}/events`);
-      eventSourceRef.current = es;
-
-      es.onmessage = (ev) => {
-        // A cancel that landed after the EventSource opened would have closed
-        // it, but a stray buffered message could still fire — bail before
-        // touching component state for a run we no longer own.
-        if (!isCurrent()) { es.close(); return; }
-        const msg = safeParseJSON(ev.data);
-        if (!msg) return;
-        if (msg.type === 'status') setStatusMsg(msg.message);
-        if (msg.type === 'progress') {
-          setProgress({ progress: msg.progress });
-          setStatusMsg(msg.message);
-        }
-        if (msg.type === 'complete') {
-          setResult(msg.result);
-          setGenerating(false);
-          setProgress({ progress: 1 });
-          setStatusMsg('Complete');
-          es.close();
-          toast.success('Video generated');
-          refreshHistory();
-          settleResolve(msg.result);
-        }
-        if (msg.type === 'error') {
-          setError(msg.error);
-          setGenerating(false);
-          es.close();
-          toast.error(msg.error);
-          settleReject(new Error(msg.error));
-        }
-        if (msg.type === 'canceled') {
-          // Queue-driven cancellation (different from gen-side error). Mark
-          // the UI terminal so the spinner clears and the user can resubmit.
-          setGenerating(false);
-          setStatusMsg(msg.reason || 'Canceled');
-          es.close();
-          toast(msg.reason || 'Render canceled');
-          settleReject(new Error(msg.reason || 'Canceled'));
-        }
-      };
-      es.onerror = () => {
-        if (!isCurrent()) { es.close(); return; }
-        setError('Lost connection to server');
-        setGenerating(false);
-        es.close();
-        settleReject(new Error('Lost connection to server'));
-      };
+      attachJobEvents(jobId, { isCurrent, settleResolve, settleReject, withToast: true });
     }).catch((err) => {
       if (!isCurrent()) return;
       setError(err.message || 'Video generation failed');

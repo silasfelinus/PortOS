@@ -706,6 +706,52 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
   res.json({ jobId, generationId: jobId, filename: `${jobId}.mp4`, model: effectiveModelId, mode: 'local', status, position });
 }));
 
+// Currently-running video job (if any) so the page can re-attach after a
+// reload — the SSE replay of `lastPayload` then resumes progress display.
+// Mirrors GET /api/image-gen/active. Returns `{ activeJob: null }` when no
+// video render is in flight. Queued-but-not-yet-running jobs are returned
+// too so the user lands on a "Queued (position N)" state instead of an
+// empty form. Selection order MUST match /cancel below: newest queued is
+// what cancelVideoGen() targets when nothing is running, so resuming the
+// oldest queued would leave the resumed page's Cancel button hitting a
+// different job.
+//
+// Whitelist the params the UI form actually consumes — `job.params`
+// carries server-internal absolute file paths (sourceImagePath,
+// audioFilePath, uploadedTempPath(s), extendFromVideoPath) and the
+// resolved pythonPath, none of which belong on a client surface.
+const ACTIVE_JOB_PARAM_FIELDS = [
+  'prompt', 'negativePrompt', 'modelId',
+  'width', 'height', 'numFrames', 'fps',
+  'steps', 'guidanceScale', 'seed',
+  'tiling', 'disableAudio', 'mode', 'chunks', 'imageStrength',
+];
+const pickJobParams = (params) => {
+  if (!params || typeof params !== 'object') return {};
+  const out = {};
+  for (const k of ACTIVE_JOB_PARAM_FIELDS) {
+    if (params[k] !== undefined) out[k] = params[k];
+  }
+  return out;
+};
+
+router.get('/active', (_req, res) => {
+  const running = listJobs({ kind: 'video', status: 'running' })[0];
+  const queuedList = !running ? listJobs({ kind: 'video', status: 'queued' }) : [];
+  const queued = queuedList.length ? queuedList[queuedList.length - 1] : null;
+  const job = running || queued;
+  if (!job) return res.json({ activeJob: null });
+  res.json({
+    activeJob: {
+      jobId: job.id,
+      generationId: job.id,
+      status: job.status,
+      position: job.position,
+      params: pickJobParams(job.params),
+    },
+  });
+});
+
 router.get('/:jobId/events', (req, res) => {
   const ok = attachSseClient(req.params.jobId, res);
   if (!ok) res.status(404).json({ error: 'Job not found or expired' });

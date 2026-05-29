@@ -763,7 +763,13 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     // Heartbeat for the queue's idle watchdog (see imageGen/local.js).
     videoGenEvents.emit('activity', { generationId: jobId });
     if (line.startsWith('STATUS:')) {
-      broadcastSse(job, { type: 'status', message: line.slice(7) });
+      const message = line.slice(7);
+      broadcastSse(job, { type: 'status', message });
+      // Mirror status to videoGenEvents so the mediaJobQueue SSE dispatcher
+      // forwards it to the client. Without this, only STAGE: progress
+      // reaches the UI and long pre-render phases ("Loading pipeline…",
+      // "Generating I2V…") display nothing.
+      videoGenEvents.emit('status', { generationId: jobId, message });
       return true;
     }
     if (line.startsWith('STAGE:')) {
@@ -780,30 +786,47 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
       const tag = (parts[2] || '').toLowerCase();
       if (tag === 'heartbeat') {
         // Surface as a status message; the activity emit above already
-        // resets the queue watchdog.
-        broadcastSse(job, { type: 'status', message: `${parts[1]}: heartbeat ${parts[3] || ''}` });
+        // resets the queue watchdog. Mirror to videoGenEvents so the
+        // mediaJobQueue SSE dispatcher forwards it to the client.
+        const message = `${parts[1]}: heartbeat ${parts[3] || ''}`;
+        broadcastSse(job, { type: 'status', message });
+        videoGenEvents.emit('status', { generationId: jobId, message });
         return true;
       }
       if (tag === 'step') {
         const step = parseInt(parts[3], 10) || 0;
         const total = parseInt(parts[4], 10) || 1;
-        broadcastSse(job, { type: 'progress', progress: step / total, message: parts.slice(5).join(':') });
-        videoGenEvents.emit('progress', { generationId: jobId, progress: step / total, step, totalSteps: total });
+        const label = parts.slice(5).join(':');
+        broadcastSse(job, { type: 'progress', progress: step / total, message: label });
+        // Pass the python-side label as `message` so the dispatcher surfaces
+        // it to the client instead of falling back to the synthesized
+        // "Rendering step X/Y" (which hides useful labels like "Loading
+        // model" emitted at stage boundaries).
+        videoGenEvents.emit('progress', { generationId: jobId, progress: step / total, step, totalSteps: total, message: label || undefined });
         return true;
       }
       // Bare phase marker (e.g. STAGE:load-pipeline, STAGE:from-pretrained) —
       // surface as a status line. No progress %, no division-by-undefined.
-      broadcastSse(job, { type: 'status', message: parts.slice(1).join(':') });
+      // Mirror to videoGenEvents for client forwarding.
+      const message = parts.slice(1).join(':');
+      broadcastSse(job, { type: 'status', message });
+      videoGenEvents.emit('status', { generationId: jobId, message });
       return true;
     }
     if (line.startsWith('DOWNLOAD:')) {
-      broadcastSse(job, { type: 'status', message: `Downloading model... ${line.slice(9)}` });
+      const message = `Downloading model... ${line.slice(9)}`;
+      broadcastSse(job, { type: 'status', message });
+      videoGenEvents.emit('status', { generationId: jobId, message });
       return true;
     }
     const m = line.match(/(\d+)%\|/);
     if (m) {
       const pct = parseInt(m[1], 10) / 100;
       broadcastSse(job, { type: 'progress', progress: pct, message: line });
+      // Omit `message` on the queue-dispatcher emit: the raw tqdm bar
+      // (`60%|██████    | 6/10 [00:30<00:20, ...]`) is terminal noise that
+      // would clobber the last meaningful STATUS/STAGE line on every
+      // percent update. Client renders the percentage separately.
       videoGenEvents.emit('progress', { generationId: jobId, progress: pct });
       return true;
     }
