@@ -42,6 +42,7 @@ from _runner_common import (  # noqa: E402
     make_generator,
     make_stepwise_callback,
     pick_device,
+    suppress_cosmetic_clip_truncation,
     write_sidecar,
 )
 from lora_utils import apply_loras  # noqa: E402
@@ -269,6 +270,7 @@ def main() -> None:
     else:
         print(f"❌ unknown quantization: {args.quantization}", file=sys.stderr)
         sys.exit(64)
+    suppress_cosmetic_clip_truncation()
 
     apply_memory_optimizations(pipe)
     apply_loras(pipe, args.lora_paths or [], args.lora_scales or [])

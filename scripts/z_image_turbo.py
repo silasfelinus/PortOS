@@ -32,6 +32,7 @@ from _runner_common import (  # noqa: E402
     make_generator,
     make_stepwise_callback,
     pick_device,
+    suppress_cosmetic_clip_truncation,
     write_sidecar,
 )
 from lora_utils import apply_loras  # noqa: E402
@@ -89,6 +90,7 @@ def load_pipeline(
     # to AutoPipelineForText2Image so Z-Image-Turbo and any future registered
     # model continues to work without a flag.
     import diffusers
+    suppress_cosmetic_clip_truncation()
 
     # HiDream needs a 4th text encoder + tokenizer loaded externally and
     # passed as kwargs. The text-encoder-repo flag is the trigger; if it's
@@ -213,6 +215,7 @@ def main() -> None:
     # mismatch ([32,32,1,1] weight vs 128-ch input). When the loaded pipeline
     # exposes both hooks, pass an ERNIE-aware preview decoder.
     preview_decoder = None
+    unpack_latents = None
     pipe_vae = getattr(pipe, "vae", None)
     if hasattr(pipe, "_unpatchify_latents") and pipe_vae is not None and hasattr(pipe_vae, "bn"):
         def preview_decoder(p, latents):  # noqa: E306 — local closure on purpose
@@ -221,12 +224,50 @@ def main() -> None:
             std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + 1e-5).to(device=latents.device, dtype=latents.dtype)
             unpacked = p._unpatchify_latents(latents * std + mean)
             return vae.decode(unpacked, return_dict=False)[0]
+    # Qwen-Image (and its Img2Img / Edit siblings) packs latents to 3D
+    # `(B, num_patches, C*4)` like Flux, then unpacks to a 5-D video-VAE
+    # layout `(B, C, 1, H, W)` and unnormalizes with per-channel
+    # latents_mean/latents_std lists from vae.config before decoding. The
+    # generic `latents/scaling + shift` path doesn't match either step, so
+    # we wire both an unpack helper (3D→5D) and a Qwen-specific decoder.
+    elif hasattr(pipe, "_unpack_latents") and getattr(getattr(pipe_vae, "config", None), "latents_mean", None) is not None:
+        vae_scale_factor = getattr(pipe, "vae_scale_factor", 8)
+        z_dim = getattr(pipe_vae.config, "z_dim", len(pipe_vae.config.latents_mean))
+        # Pipeline config holds these as plain Python lists; build the CPU
+        # tensors once here and lazily migrate to (device, dtype) per call —
+        # the diffusion loop fires this closure ~30-50 times per render, and
+        # rebuilding from a list every step is pure waste (mirrors how the
+        # ERNIE branch above pulls vae.bn directly, not from a list).
+        qwen_mean_cpu = torch.tensor(pipe_vae.config.latents_mean).view(1, z_dim, 1, 1, 1)
+        qwen_inv_std_cpu = (1.0 / torch.tensor(pipe_vae.config.latents_std)).view(1, z_dim, 1, 1, 1)
+        qwen_norm_cache = {}
+
+        def unpack_latents(latents, height, width):  # noqa: E306
+            return pipe._unpack_latents(latents, height, width, vae_scale_factor)
+
+        def preview_decoder(p, latents):  # noqa: E306
+            key = (latents.device, latents.dtype)
+            cached = qwen_norm_cache.get(key)
+            if cached is None:
+                cached = (
+                    qwen_mean_cpu.to(device=latents.device, dtype=latents.dtype),
+                    qwen_inv_std_cpu.to(device=latents.device, dtype=latents.dtype),
+                )
+                qwen_norm_cache[key] = cached
+            mean, inv_std = cached
+            unnorm = latents * inv_std + mean
+            decoded = p.vae.decode(unnorm, return_dict=False)[0]
+            # Qwen's image VAE returns `(B, C, T, H, W)` with T=1 for stills.
+            # Slice the temporal dim out so the generic post-decode path's
+            # `decoded[0].permute(1, 2, 0)` receives the expected 4-D shape.
+            return decoded[:, :, 0]
 
     callback = make_stepwise_callback(
         args.stepwise_image_output_dir,
         pipe,
         int(args.height),
         int(args.width),
+        unpack_latents=unpack_latents,
         preview_decoder=preview_decoder,
     )
 

@@ -252,9 +252,9 @@ export default function ImageGen() {
       // server/lib/imageClean.js). One pass per mode, then split into the
       // parallel cleanC2PA / denoise maps the UI binds to.
       const perMode = {
-        external: resolveCleanersFromConfig(s?.imageGen?.external),
-        local: resolveCleanersFromConfig(s?.imageGen?.local),
-        codex: resolveCleanersFromConfig(s?.imageGen?.codex),
+        external: resolveCleanersFromConfig(s?.imageGen?.external, IMAGE_GEN_MODE.EXTERNAL),
+        local: resolveCleanersFromConfig(s?.imageGen?.local, IMAGE_GEN_MODE.LOCAL),
+        codex: resolveCleanersFromConfig(s?.imageGen?.codex, IMAGE_GEN_MODE.CODEX),
       };
       const c2 = { external: perMode.external.cleanC2PA, local: perMode.local.cleanC2PA, codex: perMode.codex.cleanC2PA };
       const dn = { external: perMode.external.denoise, local: perMode.local.denoise, codex: perMode.codex.denoise };
@@ -1290,6 +1290,14 @@ export default function ImageGen() {
               </div>
             )}
           </div>
+
+          {generating && progress?.totalSteps != null && (
+            <div className="flex items-center justify-center gap-2 text-[11px] text-gray-400 tabular-nums">
+              <span>step {progress.step ?? 0}/{progress.totalSteps}</span>
+              {progressPct != null && <span className="text-gray-600">·</span>}
+              {progressPct != null && <span>{progressPct}%</span>}
+            </div>
+          )}
 
           {result && !generating && (
             <div className="flex flex-wrap items-center gap-2 text-xs text-gray-400">
