@@ -697,6 +697,82 @@ describe('videoGen routes', () => {
     });
   });
 
+  describe('GET /active', () => {
+    const listJobsByFilter = (jobs) => ({ status, kind } = {}) => jobs.filter((j) => {
+      if (status && j.status !== status) return false;
+      if (kind && j.kind !== kind) return false;
+      return true;
+    });
+
+    it('returns { activeJob: null } when no video jobs exist', async () => {
+      mediaJobQueue.listJobs.mockReturnValue([]);
+      const r = await request(app).get('/api/video-gen/active');
+      expect(r.status).toBe(200);
+      expect(r.body).toEqual({ activeJob: null });
+    });
+
+    it('prefers the running job over queued jobs', async () => {
+      mediaJobQueue.listJobs.mockImplementation(listJobsByFilter([
+        { id: 'running-1', kind: 'video', status: 'running', position: 1, params: { prompt: 'P running' } },
+        { id: 'queued-1',  kind: 'video', status: 'queued',  position: 2, params: { prompt: 'P queued' } },
+      ]));
+      const r = await request(app).get('/api/video-gen/active');
+      expect(r.status).toBe(200);
+      expect(r.body.activeJob.jobId).toBe('running-1');
+      expect(r.body.activeJob.status).toBe('running');
+      expect(r.body.activeJob.params.prompt).toBe('P running');
+    });
+
+    // Selection of the newest queued (not oldest) matches /cancel's fallback
+    // selection — see the surrounding comment in routes/videoGen.js. Diverging
+    // would mean Cancel from a resumed-queued page targets a different job.
+    it('returns newest queued when nothing is running (matches /cancel order)', async () => {
+      mediaJobQueue.listJobs.mockImplementation(listJobsByFilter([
+        { id: 'queued-old', kind: 'video', status: 'queued', position: 1, params: { prompt: 'P old' } },
+        { id: 'queued-new', kind: 'video', status: 'queued', position: 2, params: { prompt: 'P new' } },
+      ]));
+      const r = await request(app).get('/api/video-gen/active');
+      expect(r.status).toBe(200);
+      expect(r.body.activeJob.jobId).toBe('queued-new');
+      expect(r.body.activeJob.status).toBe('queued');
+    });
+
+    // params is a whitelist — never leak server-internal absolute file paths
+    // (sourceImagePath, audioFilePath, uploadedTempPath(s), extendFromVideoPath)
+    // or the resolved pythonPath to the browser.
+    it('whitelists params and never leaks server-internal file paths', async () => {
+      mediaJobQueue.listJobs.mockImplementation(listJobsByFilter([
+        { id: 'running-1', kind: 'video', status: 'running', position: 1, params: {
+          prompt: 'safe prompt',
+          modelId: 'ltx2_unified',
+          width: 768, height: 512,
+          numFrames: 121, fps: 24,
+          steps: 25, guidanceScale: 3, seed: 42,
+          tiling: 'auto', disableAudio: false, mode: 'text', chunks: 1,
+          // sensitive fields that must NOT round-trip:
+          pythonPath: '/Users/secret/venv/bin/python',
+          sourceImagePath: '/Users/secret/data/uploads/source.png',
+          audioFilePath: '/Users/secret/data/uploads/voice.wav',
+          uploadedTempPath: '/tmp/upload-xyz',
+          uploadedTempPaths: ['/tmp/last-abc'],
+          extendFromVideoPath: '/Users/secret/data/videos/prev.mp4',
+        } },
+      ]));
+      const r = await request(app).get('/api/video-gen/active');
+      expect(r.status).toBe(200);
+      const p = r.body.activeJob.params;
+      expect(p.prompt).toBe('safe prompt');
+      expect(p.modelId).toBe('ltx2_unified');
+      expect(p.width).toBe(768);
+      expect(p.pythonPath).toBeUndefined();
+      expect(p.sourceImagePath).toBeUndefined();
+      expect(p.audioFilePath).toBeUndefined();
+      expect(p.uploadedTempPath).toBeUndefined();
+      expect(p.uploadedTempPaths).toBeUndefined();
+      expect(p.extendFromVideoPath).toBeUndefined();
+    });
+  });
+
   describe('GET /:jobId/events', () => {
     it('returns 404 when the job is unknown', async () => {
       mediaJobQueue.attachSseClient.mockReturnValue(false);

@@ -715,6 +715,26 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
 // what cancelVideoGen() targets when nothing is running, so resuming the
 // oldest queued would leave the resumed page's Cancel button hitting a
 // different job.
+//
+// Whitelist the params the UI form actually consumes — `job.params`
+// carries server-internal absolute file paths (sourceImagePath,
+// audioFilePath, uploadedTempPath(s), extendFromVideoPath) and the
+// resolved pythonPath, none of which belong on a client surface.
+const ACTIVE_JOB_PARAM_FIELDS = [
+  'prompt', 'negativePrompt', 'modelId',
+  'width', 'height', 'numFrames', 'fps',
+  'steps', 'guidanceScale', 'seed',
+  'tiling', 'disableAudio', 'mode', 'chunks', 'imageStrength',
+];
+const pickJobParams = (params) => {
+  if (!params || typeof params !== 'object') return {};
+  const out = {};
+  for (const k of ACTIVE_JOB_PARAM_FIELDS) {
+    if (params[k] !== undefined) out[k] = params[k];
+  }
+  return out;
+};
+
 router.get('/active', (_req, res) => {
   const running = listJobs({ kind: 'video', status: 'running' })[0];
   const queuedList = !running ? listJobs({ kind: 'video', status: 'queued' }) : [];
@@ -727,7 +747,7 @@ router.get('/active', (_req, res) => {
       generationId: job.id,
       status: job.status,
       position: job.position,
-      params: job.params || {},
+      params: pickJobParams(job.params),
     },
   });
 });

@@ -815,7 +815,11 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     if (m) {
       const pct = parseInt(m[1], 10) / 100;
       broadcastSse(job, { type: 'progress', progress: pct, message: line });
-      videoGenEvents.emit('progress', { generationId: jobId, progress: pct, message: line });
+      // Omit `message` on the queue-dispatcher emit: the raw tqdm bar
+      // (`60%|██████    | 6/10 [00:30<00:20, ...]`) is terminal noise that
+      // would clobber the last meaningful STATUS/STAGE line on every
+      // percent update. Client renders the percentage separately.
+      videoGenEvents.emit('progress', { generationId: jobId, progress: pct });
       return true;
     }
     return false;

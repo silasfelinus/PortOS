@@ -497,7 +497,13 @@ export default function VideoGen() {
     getActiveVideoJob().then((data) => {
       const job = data?.activeJob;
       if (!job?.jobId) return;
-      if (generating || eventSourceRef.current) return;
+      // Bail if the user already started a render in this tab. `generating`
+      // would be stale here (effect deps are []), so gate on the live ref:
+      // runTokenRef is bumped at the top of every runGeneration() and stays
+      // > 0 for the session afterward. eventSourceRef is also checked as a
+      // belt-and-suspenders signal for the in-flight POST window before
+      // attachJobEvents runs.
+      if (runTokenRef.current > 0 || eventSourceRef.current) return;
       const p = job.params || {};
       if (p.prompt) setPrompt(p.prompt);
       if (p.negativePrompt) setNegativePrompt(p.negativePrompt);
