@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import socket from '../services/socket';
 import { getMediaJob } from '../services/apiMediaJobs';
+import { usePrevious } from './usePrevious.js';
 
 /**
  * Subscribe to live progress for a single mediaJobQueue job (image-gen
@@ -33,19 +34,14 @@ const INITIAL_STATE = Object.freeze({
 export default function useMediaJobProgress(jobId, { kind = 'image' } = {}) {
   const [state, setState] = useState(INITIAL_STATE);
   // SYNCHRONOUS reset when `jobId` changes — React's "adjusting state on
-  // prop change" pattern. Doing this in a `useEffect` (as we used to)
-  // means the FIRST render after `jobId` flips still returns the previous
+  // prop change" pattern. The setState below runs DURING render (guarded by
+  // the prev !== current check), so React discards the in-progress render
+  // and re-runs with INITIAL_STATE before consumers ever observe the prior
   // job's `status` / `filename`. Consumers that fire `onJobCompleted` on
-  // status='completed' would mis-attribute the prior job's filename to the
-  // NEW jobId and prematurely clear the rest of a queued batch. With this
-  // pattern React discards the in-progress render and re-runs the
-  // component immediately, so the new jobId is never observed against
-  // stale state.
-  const prevJobIdRef = useRef(jobId);
-  if (prevJobIdRef.current !== jobId) {
-    prevJobIdRef.current = jobId;
-    setState(INITIAL_STATE);
-  }
+  // status='completed' would otherwise mis-attribute the prior job's
+  // filename to the NEW jobId and prematurely clear a queued batch.
+  const prevJobId = usePrevious(jobId, jobId);
+  if (prevJobId !== jobId) setState(INITIAL_STATE);
   // Track mount so the initial fetch's setState doesn't fire after unmount
   // (the panel could be removed while the GET is in flight).
   //
