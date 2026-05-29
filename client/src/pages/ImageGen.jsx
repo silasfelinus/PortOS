@@ -1070,20 +1070,15 @@ export default function ImageGen() {
                 Reference images <span className="text-gray-500 font-normal">(up to 4 images for FLUX.2 multi-reference edit)</span>
               </label>
               {/*
-                FLUX.2 multi-reference editing — references are now conditioned
-                via diffusers' Flux2KleinKVPipeline (K/V-cache reference-token
+                FLUX.2 multi-reference editing — references are conditioned via
+                diffusers' Flux2KleinKVPipeline (K/V-cache reference-token
                 attention). First-time use prompts the user to accept the
                 FLUX.2-klein-9B-kv license on Hugging Face. Per-reference
-                strengths are submitted but not honored — the KV pipeline
-                doesn't expose per-ref attention weighting today, so any
-                non-1.0 value logs a warning and is treated as 1.0.
+                strengths are honored end-to-end: scripts/flux2_macos.py
+                patches Flux2KVLayerCache.store + _flux2_kv_causal_attention
+                so each reference's V slice is scaled by its strength
+                (1.0 = full influence, 0.0 = ignored).
               */}
-              <div className="mb-2 px-2 py-1.5 text-[11px] text-port-warning/90 bg-port-warning/10 border border-port-warning/30 rounded">
-                <strong className="font-semibold">Per-reference strengths not honored yet:</strong> uploads
-                condition the output via diffusers' KV-cache multi-reference pipeline, but the strength sliders
-                are advisory — the pipeline doesn't expose per-reference attention weighting in its current
-                release, so all references are applied at full influence.
-              </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 {referenceImages.map((slot, i) => {
                   const slotId = `ref-image-${i}`;

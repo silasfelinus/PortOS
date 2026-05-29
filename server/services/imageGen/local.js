@@ -189,8 +189,8 @@ export const buildArgs = ({ pythonPath, model, prompt, negativePrompt, width, he
     // scripts/flux2_macos.py loads Flux2KleinKVPipeline (instead of the
     // single-image Flux2KleinPipeline) and passes the refs as image=[PIL...].
     // The route always emits parallel referenceImageStrengths (defaulting to
-    // 1.0 per ref); the runner warns on non-default values today because the
-    // KV pipeline doesn't yet expose per-reference attention weighting.
+    // 1.0 per ref); the runner honors them per-reference via a runtime patch
+    // on Flux2KVLayerCache.store + _flux2_kv_causal_attention.
     if (referenceImagePaths?.length) {
       args.push('--reference-images', ...referenceImagePaths);
       if (referenceImageStrengths?.length) {
@@ -339,13 +339,11 @@ export async function generateImage({ pythonPath, prompt, negativePrompt = '', m
     .filter(Boolean);
   const validReferenceImagePaths = validReferences.map((r) => r.path);
   const validReferenceImageStrengths = validReferences.map((r) => r.strength);
-  // `referenceImageStrengthsRequested` (not `…Strengths`) because the KV
-  // pipeline doesn't yet expose per-reference attention weighting — non-1.0
-  // values come through the route but the runner only warns, so the sidecar
-  // must not claim they were applied. Mirror with the Python sidecar's
-  // `referenceStrengthsRequested` field. Rename to `…Strengths` when
-  // diffusers exposes a real per-ref knob.
-  const meta = { id: jobId, prompt, negativePrompt, modelId, seed: actualSeed, width: Number(width), height: Number(height), steps: actualSteps, guidance: actualGuidance, quantize, filename, loraFilenames: validLoraFilenames, loraPaths: validLoras, loraScales, initImageFilename: validInitImagePath ? basename(validInitImagePath) : null, initImageStrength: validInitImageStrength, referenceImageFilenames: validReferenceImagePaths.map((p) => basename(p)), referenceImageStrengthsRequested: validReferenceImageStrengths, createdAt: new Date().toISOString() };
+  // `referenceImageStrengths` is honored end-to-end: the FLUX.2 runner installs
+  // a Flux2KVLayerCache.store + _flux2_kv_causal_attention patch that scales
+  // each reference's V slice by the corresponding strength (1.0 = upstream
+  // baseline, 0.0 = ignored). Mirrors the Python sidecar's `referenceStrengths`.
+  const meta = { id: jobId, prompt, negativePrompt, modelId, seed: actualSeed, width: Number(width), height: Number(height), steps: actualSteps, guidance: actualGuidance, quantize, filename, loraFilenames: validLoraFilenames, loraPaths: validLoras, loraScales, initImageFilename: validInitImagePath ? basename(validInitImagePath) : null, initImageStrength: validInitImageStrength, referenceImageFilenames: validReferenceImagePaths.map((p) => basename(p)), referenceImageStrengths: validReferenceImageStrengths, createdAt: new Date().toISOString() };
   const job = { ...meta, clients: [], status: 'running' };
   jobs.set(jobId, job);
 

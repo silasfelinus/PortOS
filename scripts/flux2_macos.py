@@ -260,12 +260,100 @@ def parse_args() -> argparse.Namespace:
     # Multi-reference editing. When at least one reference image is provided,
     # the runner loads `Flux2KleinKVPipeline` instead of `Flux2KleinPipeline`
     # and forwards the list of PIL refs as the pipeline's `image=` kwarg.
-    # `--reference-strengths` is plumbed end-to-end but the KV pipeline doesn't
-    # expose per-reference weighting today — non-1.0 values log a warning and
-    # are otherwise treated as 1.0. Up to 4 references (route-side cap).
+    # `--reference-strengths` is honored per-reference via a runtime patch on
+    # Flux2KVLayerCache.store + the extract-mode causal-attention helper — see
+    # `_install_per_ref_strength_patch` below. Up to 4 references (route-side cap).
     p.add_argument("--reference-images", nargs="*", default=[], help="absolute paths to reference images (multi-reference KV editing)")
-    p.add_argument("--reference-strengths", nargs="*", default=[], help="0..1 strength per reference image, parallel to --reference-images (reserved — not honored per-ref by the KV pipeline yet)")
+    p.add_argument("--reference-strengths", nargs="*", default=[], help="0..1 strength per reference image, parallel to --reference-images (1.0 = full influence, 0.0 = ignore)")
     return p.parse_args()
+
+
+# Per-call config consumed by the monkey-patched KV-cache + attention helper.
+# Populated immediately before `pipe(...)` and cleared in `finally` so that a
+# subsequent generation without reference strengths runs unscaled. The patch
+# itself is installed once per process (idempotent).
+_PORTOS_KV_REF_STRENGTHS: list[float] = []
+
+
+def _install_per_ref_strength_patch() -> None:
+    """Monkey-patch diffusers' Flux2 KV path to honor per-reference strengths.
+
+    The upstream `Flux2KleinKVPipeline` concatenates all reference latents into
+    a single token sequence and caches their attention K/V on step 0; subsequent
+    steps reuse the cached tensors. Upstream does not expose per-reference
+    weighting, so this patch scales each reference's V slice by its strength —
+    in both (a) the step-0 extract-mode attention (`_flux2_kv_causal_attention`,
+    txt/img → ref path) and (b) the cache that feeds steps 1+
+    (`Flux2KVLayerCache.store`). K is left unscaled so softmax still allocates
+    attention budget across all reference tokens; only the per-token V
+    contribution is attenuated. This matches the IP-Adapter-style "ref scale"
+    convention: 1.0 reproduces upstream behavior, 0.0 zeros that reference's
+    contribution.
+    """
+    from diffusers.models.transformers import transformer_flux2 as _t2
+
+    if getattr(_t2.Flux2KVLayerCache, "_portos_per_ref_patched", False):
+        return
+
+    # One-shot warning gate — divisibility mismatch is a misuse signal
+    # (the route always sends a parallel array; only a curl caller would
+    # land here), so log once instead of spamming per-layer per-step.
+    _warned = {"divisibility": False}
+
+    def _scale_v_inplace(v_tensor, num_ref_tokens: int, offset: int):
+        """Scale `v_tensor[:, offset:offset+num_ref_tokens]` in-place per ref.
+
+        Caller is responsible for owning the tensor (either fresh via `.clone()`
+        or an already-cloned view from upstream). All-1.0 strengths short-
+        circuit before touching the tensor.
+        """
+        strengths = _PORTOS_KV_REF_STRENGTHS
+        num_refs = len(strengths)
+        if num_ref_tokens % num_refs != 0:
+            if not _warned["divisibility"]:
+                print(
+                    f"⚠️ --reference-strengths count ({num_refs}) doesn't divide "
+                    f"ref-token count ({num_ref_tokens}); applying full influence.",
+                    file=sys.stderr,
+                )
+                _warned["divisibility"] = True
+            return
+        if all(float(s) == 1.0 for s in strengths):
+            return
+        tokens_per_ref = num_ref_tokens // num_refs
+        for i, s in enumerate(strengths):
+            sf = float(s)
+            if sf == 1.0:
+                continue
+            start = offset + i * tokens_per_ref
+            end = start + tokens_per_ref
+            v_tensor[:, start:end].mul_(sf)
+
+    # Cache patch — upstream already passes a fresh clone (see
+    # `Flux2KVAttnProcessor` / `Flux2KVParallelSelfAttnProcessor`), so we
+    # mutate it directly instead of cloning a second time per layer.
+    _original_store = _t2.Flux2KVLayerCache.store
+
+    def _store_scaled(self, k_ref, v_ref):
+        if _PORTOS_KV_REF_STRENGTHS and v_ref.shape[1] > 0:
+            _scale_v_inplace(v_ref, v_ref.shape[1], offset=0)
+        _original_store(self, k_ref, v_ref)
+
+    _t2.Flux2KVLayerCache.store = _store_scaled
+
+    # Attention patch — extract mode only (cached mode reuses the already-
+    # scaled cache). `value` here is the live combined sequence used by
+    # other tokens' attention downstream, so clone before mutating.
+    _original_attn = _t2._flux2_kv_causal_attention
+
+    def _attn_scaled(query, key, value, num_txt_tokens, num_ref_tokens, kv_cache=None, backend=None):
+        if num_ref_tokens > 0 and kv_cache is None and _PORTOS_KV_REF_STRENGTHS:
+            value = value.clone()
+            _scale_v_inplace(value, num_ref_tokens, offset=num_txt_tokens)
+        return _original_attn(query, key, value, num_txt_tokens, num_ref_tokens, kv_cache=kv_cache, backend=backend)
+
+    _t2._flux2_kv_causal_attention = _attn_scaled
+    _t2.Flux2KVLayerCache._portos_per_ref_patched = True
 
 
 @install_hf_error_handler
@@ -295,18 +383,6 @@ def main() -> None:
         sys.exit(64)
     pipeline_cls = _resolve_pipeline_cls(use_kv)
     if use_kv:
-        # Warn — but don't fail — when the per-ref strength array carries
-        # non-default values. The route always sends 1.0 for slots that
-        # didn't ship an explicit weight; only a curl/test caller would land
-        # here with a non-1.0 today.
-        non_default = [(i, s) for i, s in enumerate(args.reference_strengths) if s and float(s) != 1.0]
-        if non_default:
-            entries = ", ".join(f"ref{i + 1}={s}" for i, s in non_default)
-            print(
-                f"⚠️ --reference-strengths {entries} — Flux2KleinKVPipeline does not expose "
-                f"per-reference weighting; treating each as 1.0.",
-                file=sys.stderr,
-            )
         if args.image_path:
             print(
                 "⚠️ --image-path supplied alongside --reference-images; the KV pipeline "
@@ -426,8 +502,25 @@ def main() -> None:
         file=sys.stderr,
     )
 
-    with torch.inference_mode():
-        result = pipe(**pipe_kwargs)
+    # Activate per-reference V-scaling for the duration of this pipe call.
+    # Padded to len(reference_pils) with 1.0 (the route always sends a full
+    # parallel array, but a curl/test caller might omit trailing slots).
+    honored_strengths: list[float] = []
+    if use_kv and reference_pils:
+        _install_per_ref_strength_patch()
+        honored_strengths = [float(s) for s in (args.reference_strengths or [])][: len(reference_pils)]
+        while len(honored_strengths) < len(reference_pils):
+            honored_strengths.append(1.0)
+        if any(s != 1.0 for s in honored_strengths):
+            entries = ", ".join(f"ref{i + 1}={s:.2f}" for i, s in enumerate(honored_strengths))
+            print(f"🎚️ per-ref strengths honored: {entries}", file=sys.stderr)
+        _PORTOS_KV_REF_STRENGTHS[:] = honored_strengths
+
+    try:
+        with torch.inference_mode():
+            result = pipe(**pipe_kwargs)
+    finally:
+        _PORTOS_KV_REF_STRENGTHS.clear()
     image = result.images[0]
     image.save(args.output)
 
@@ -454,11 +547,10 @@ def main() -> None:
         if use_kv:
             sidecar["pipelineClass"] = pipeline_cls.__name__
             sidecar["referenceImageFilenames"] = [Path(p).name for p in args.reference_images]
-            # "Requested" — the KV pipeline doesn't expose per-reference attention
-            # weighting today (a non-1.0 entry only logs a warning), so the
-            # sidecar must not pretend these strengths were applied. Rename when
-            # diffusers exposes a real per-ref weighting knob.
-            sidecar["referenceStrengthsRequested"] = [float(s) for s in (args.reference_strengths or [])]
+            # Honored end-to-end: the runtime patch on Flux2KVLayerCache.store +
+            # _flux2_kv_causal_attention scales each reference's V slice by the
+            # corresponding strength (1.0 = upstream baseline, 0.0 = ignored).
+            sidecar["referenceStrengths"] = honored_strengths
         write_sidecar(args.output, sidecar)
 
     # Free VRAM eagerly so a back-to-back generation in the same process
