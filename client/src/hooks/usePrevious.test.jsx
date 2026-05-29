@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { renderHook } from '@testing-library/react';
-import { usePrevious, usePreviousSync } from './usePrevious';
+import { usePrevious, usePreviousSync } from './usePrevious.js';
 
 describe('usePrevious', () => {
   it('returns the initial value on the first render', () => {
