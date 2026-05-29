@@ -382,7 +382,7 @@ function GlobalConfigControls({ taskType, config, onUpdate, onTrigger, onReset, 
         />
       </div>
       {isPaused && (
-        <Banner icon={AlertCircle} className="items-center">
+        <Banner icon={AlertCircle} align="center">
           All scheduled runs are paused for this task
         </Banner>
       )}

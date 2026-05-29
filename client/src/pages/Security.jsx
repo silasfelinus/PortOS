@@ -279,9 +279,10 @@ export default function Security() {
       {audioNeedsInteraction && streaming && audioEnabled && (
         <Banner
           size="lg"
+          align="center"
           icon={Volume2}
           title="Audio requires interaction"
-          className="mb-6 items-center"
+          className="mb-6"
           actions={
             <button
               onClick={enableAudio}

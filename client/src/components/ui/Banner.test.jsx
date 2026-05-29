@@ -59,4 +59,21 @@ describe('Banner', () => {
     expect(wrapper.className).toContain('mb-6');
     expect(wrapper.className).toContain('custom-flag');
   });
+
+  it('defaults to items-start alignment and drops the icon nudge at center', () => {
+    const { container, rerender } = render(<Banner icon={AlertTriangle}>x</Banner>);
+    let wrapper = container.querySelector('div.flex');
+    expect(wrapper.className.split(/\s+/)).toContain('items-start');
+    let svg = container.querySelector('svg');
+    expect(svg.getAttribute('class')).toContain('mt-0.5');
+
+    rerender(<Banner align="center" icon={AlertTriangle}>x</Banner>);
+    wrapper = container.querySelector('div.flex');
+    expect(wrapper.className.split(/\s+/)).toContain('items-center');
+    // Tailwind resolves duplicate items-* by CSS source order, so the
+    // component must emit exactly one — no items-start leaking through.
+    expect(wrapper.className.split(/\s+/)).not.toContain('items-start');
+    svg = container.querySelector('svg');
+    expect(svg.getAttribute('class')).not.toContain('mt-0.5');
+  });
 });
