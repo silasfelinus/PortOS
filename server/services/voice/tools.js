@@ -295,7 +295,7 @@ const GROUP_INTENT = {
   // in speech). A false positive only OFFERS the tool to the LLM (which still
   // has to choose it), and the tool is a no-op unless codeAgent.enabled
   // (pipeline.js strips it from the spec list when off).
-  code: /\b(?:have (?:claude|codex|gemini|the agent|an agent)\b|dispatch (?:a |an )?(?:coding |code )?agent|spin up an agent|code (?:it )?up|open a pr|pull request|refactor|(?:implement|debug|rewrite|patch)\b[^.!?\n]{0,40}\b(?:bug|tests?|function|method|build|lint|type ?error|error|code|file|module|endpoint|route|component|class|api|schema|migration|script|flag|regression|handler|parser|service|hook|query|registry|config)\b|fix (?:the |a |an |my )?(?:bug|test|tests|failing|function|method|build|lint|type|error|code|file|module|endpoint|route|component)|write (?:a |the |some )?(?:unit |integration )?tests?|add (?:a |an |the )?(?:flag|function|method|endpoint|route|test|migration)\b|(?:how(?:'s| is| are)?|status of|progress on|what(?:'s| is)? happening (?:with|on)|where (?:are|is) (?:we|it|that|the))\b[^.!?\n]{0,40}\b(?:coding (?:task|agent|job)|code agent|coding|agent|pr|pull request|dispatched (?:task|job))\b|\bis (?:the |that |my )?(?:coding |code )?(?:agent|task) (?:still |yet )?(?:running|going|working|done|finished))/i,
+  code: /\b(?:have (?:claude|codex|gemini|the agent|an agent)\b|dispatch (?:a |an )?(?:coding |code )?agent|spin up an agent|code (?:it )?up|open a pr|pull request|refactor|(?:implement|debug|rewrite|patch)\b[^.!?\n]{0,40}\b(?:bug|tests?|function|method|build|lint|type ?error|error|code|file|module|endpoint|route|component|class|api|schema|migration|script|flag|regression|handler|parser|service|hook|query|registry|config)\b|fix (?:the |a |an |my )?(?:bug|test|tests|failing|function|method|build|lint|type|error|code|file|module|endpoint|route|component)|write (?:a |the |some )?(?:unit |integration )?tests?|add (?:a |an |the )?(?:flag|function|method|endpoint|route|test|migration)\b|(?:how(?:'s| is| are)?|status of|progress on|what(?:'s| is)? happening (?:with|on)|where (?:are|is) (?:we|it|that|the))\b[^.!?\n]{0,40}\b(?:coding (?:task|agent|job)|code agent|dispatched (?:task|job|agent)|pull request|the agent|the pr|that pr|my pr|the task)\b|\bis (?:the |that |my )?(?:coding |code )?(?:agent|task) (?:still |yet )?(?:running|going|working|done|finished))/i,
   ui: UI_INTENT_RE,
 };
 
@@ -1966,21 +1966,28 @@ const TOOLS = [
     },
     execute: async () => {
       const { loadState } = await import('../cosState.js');
-      const { getTaskById } = await import('../cos.js');
+      const { getAllTasks } = await import('../cos.js');
+      const { isTruthyMeta } = await import('../agentState.js');
 
       const state = await loadState();
       const runningAgents = Object.values(state?.agents || {}).filter((a) => a?.status === 'running');
+      if (runningAgents.length === 0) {
+        return { ok: true, count: 0, agents: [], summary: 'No coding tasks are running right now.' };
+      }
 
-      // task.metadata.voiceDispatch round-trips through TASKS.md, so it can
-      // be either boolean true or the literal string 'true'. Mirror the
-      // proactiveTriggers convention rather than coupling to it.
-      const isMetaTrue = (v) => v === true || v === 'true';
+      // Read TASKS.md once and index by id, not getTaskById in a loop — that
+      // re-reads both task files per call.
+      const { user, cos } = await getAllTasks();
+      const tasksById = new Map();
+      for (const t of user.tasks || []) tasksById.set(t.id, t);
+      for (const t of cos.tasks || []) tasksById.set(t.id, t);
+
       const matched = [];
       for (const agent of runningAgents) {
         if (!agent?.taskId) continue;
-        const task = await getTaskById(agent.taskId).catch(() => null);
+        const task = tasksById.get(agent.taskId);
         if (!task) continue;
-        if (!isMetaTrue(task.metadata?.voiceDispatch)) continue;
+        if (!isTruthyMeta(task.metadata?.voiceDispatch)) continue;
         const startedAt = agent.startedAt ? Date.parse(agent.startedAt) : NaN;
         const elapsedMs = Number.isFinite(startedAt) ? Math.max(0, Date.now() - startedAt) : null;
         matched.push({
@@ -1994,12 +2001,7 @@ const TOOLS = [
       }
 
       if (matched.length === 0) {
-        return {
-          ok: true,
-          count: 0,
-          agents: [],
-          summary: 'No coding tasks are running right now.',
-        };
+        return { ok: true, count: 0, agents: [], summary: 'No coding tasks are running right now.' };
       }
 
       const phaseText = (phase) => (phase === 'initializing' ? 'spinning up' : 'working');

@@ -139,18 +139,21 @@ vi.mock('../askService.js', () => ({
 vi.mock('./config.js', () => ({
   getVoiceConfig: vi.fn(async () => ({ llm: { codeAgent: { enabled: true, provider: '', model: '' } } })),
 }));
-// code_agent_status reads agent state and looks up each agent's task by id.
-// loadState comes from cosState.js; getTaskById comes from cos.js. Default to
-// empty/no-op so tests that don't care can ignore it.
+// code_agent_status reads agent state and indexes all tasks by id. loadState
+// comes from cosState.js; getAllTasks comes from cos.js; isTruthyMeta from
+// agentState.js. Default to empty so tests that don't care can ignore it.
 const cosStateRef = { value: { agents: {} } };
 const tasksRef = { value: [] };
 vi.mock('../cosState.js', () => ({
   loadState: vi.fn(async () => cosStateRef.value),
 }));
+vi.mock('../agentState.js', () => ({
+  isTruthyMeta: (v) => v === true || v === 'true',
+}));
 vi.mock('../cos.js', () => ({
   addTask: vi.fn(async (data) => ({ id: 'task-test', ...data })),
   isRunning: vi.fn(() => true),
-  getTaskById: vi.fn(async (id) => tasksRef.value.find((t) => t.id === id) || null),
+  getAllTasks: vi.fn(async () => ({ user: { tasks: tasksRef.value }, cos: { tasks: [] } })),
 }));
 // dispatch_code_agent fuzzy-resolves the optional `app` parameter against the
 // user's configured managed apps; default to two apps so the resolve / not-
