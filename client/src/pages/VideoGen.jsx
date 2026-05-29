@@ -520,6 +520,13 @@ export default function VideoGen() {
   const { matched: matchedResolution, label: resolutionLabel } = resolveResolutionLabel(VIDEO_RESOLUTIONS, width, height);
   const progressPct = progress?.progress != null ? Math.round(progress.progress * 100) : null;
 
+  // Explicit px sizing — maxWidth + maxHeight + aspectRatio together resolves
+  // inconsistently across browsers for mixed orientations.
+  const previewBudget = 420;
+  const previewRatio = (width > 0 && height > 0) ? width / height : 16 / 9;
+  const previewWidth = previewRatio >= 1 ? previewBudget : Math.round(previewBudget * previewRatio);
+  const previewHeight = previewRatio >= 1 ? Math.round(previewBudget / previewRatio) : previewBudget;
+
   const handleResolutionChange = (e) => {
     const r = VIDEO_RESOLUTIONS.find((r) => r.label === e.target.value);
     if (r) { setWidth(r.w); setHeight(r.h); }
@@ -1520,7 +1527,10 @@ export default function VideoGen() {
               </a>
             )}
           </div>
-          <div className="aspect-video max-w-[420px] mx-auto bg-port-bg border border-port-border rounded-lg overflow-hidden flex items-center justify-center relative">
+          <div
+            className="mx-auto bg-port-bg border border-port-border rounded-lg overflow-hidden flex items-center justify-center relative max-w-full"
+            style={{ width: previewWidth, height: previewHeight }}
+          >
             {result ? (
               // muted so the clip autoplays under the mobile media-engagement
               // policy (iOS/Android block unmuted autoplay outside a user

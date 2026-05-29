@@ -53,6 +53,8 @@ const execFileAsync = promisify(execFile);
 
 const IS_WIN = process.platform === 'win32';
 
+const MODULE_NOT_FOUND_RE = /ModuleNotFoundError: No module named ['"]([^'"]+)['"]/;
+
 // Catalog comes from data/media-models.json (see server/lib/mediaModels.js).
 // Cached as a plain object at boot for O(1) lookup by id, matching the prior shape.
 export const VIDEO_MODELS = Object.fromEntries(getVideoModels().map((m) => [m.id, m]));
@@ -77,7 +79,9 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     repoDir: HUNYUAN_REPO_DIR,
     installEnvVar: 'INSTALL_HUNYUAN',
     repoUrl: 'https://github.com/gaurav-nelson/HunyuanVideo_MLX',
-    importProbe: 'import torch, huggingface_hub, transformers',
+    // `hyvideo` isn't pip-installed — mirror the runner's sys.path prepend so
+    // the probe walks the same transitive import chain (loguru, diffusers, …).
+    importProbe: `import sys; sys.path.insert(0, ${JSON.stringify(HUNYUAN_REPO_DIR)}); import hyvideo.inference`,
   },
   wan22: {
     id: 'wan22',
@@ -86,7 +90,10 @@ export const BYOV_RUNTIME_INFO = Object.freeze({
     repoDir: WAN22_REPO_DIR,
     installEnvVar: 'INSTALL_WAN22',
     repoUrl: 'https://github.com/osama-ata/Wan2.2-mlx',
-    importProbe: 'import torch, transformers, huggingface_hub',
+    // Walks the package's __init__ chain so transitive deps absent from
+    // upstream's pyproject.toml (e.g. einops, imported by wan/modules/vae2_1.py)
+    // fail the probe instead of slipping past a flat torch/transformers check.
+    importProbe: 'import wan',
   },
   ltx2: {
     id: 'ltx2',
@@ -744,6 +751,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   });
 
   let outputBuf = '';
+  let missingPyModule = null;
 
   // Returns true when the line was a known progress/status message (already
   // broadcast over SSE) or python-noise — caller should suppress logging.
@@ -822,6 +830,12 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
 
   proc.stderr.on('data', (chunk) => {
     for (const raw of chunk.toString().split(/[\n\r]+/)) {
+      // Record the root-cause module only — downstream imports in the same
+      // traceback raise the same error against later names.
+      if (!missingPyModule) {
+        const m = raw.match(MODULE_NOT_FOUND_RE);
+        if (m) missingPyModule = m[1];
+      }
       if (!handleLine(raw)) console.log(`🐍 [${jobId.slice(0, 8)}] ${raw.trim()}`);
     }
   });
@@ -847,9 +861,25 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
 
     if (code !== 0) {
       job.status = 'error';
-      const reason = signal === 'SIGKILL'
-        ? 'Process killed (likely out of memory — try a smaller model or resolution)'
-        : signal ? `Killed by signal ${signal}` : `Exit code ${code}`;
+      let reason;
+      if (missingPyModule) {
+        const runtimeInfo = BYOV_RUNTIME_INFO[model.runtime];
+        if (runtimeInfo) {
+          // The probe believed the venv was ready but a runtime import
+          // disagreed — drop the cached "ready" so the next /runtime-status
+          // re-probes and the install banner re-appears.
+          invalidateByovReadyCache(runtimeInfo.id);
+          reason = `Python module '${missingPyModule}' is missing from the ${runtimeInfo.label} venv. Re-run the installer via Settings → Video (or \`${runtimeInfo.installEnvVar}=1 bash scripts/setup-image-video.sh\`).`;
+        } else {
+          reason = `Python module '${missingPyModule}' is missing. Install it into the configured Python environment and retry.`;
+        }
+      } else if (signal === 'SIGKILL') {
+        reason = 'Process killed (likely out of memory — try a smaller model or resolution)';
+      } else if (signal) {
+        reason = `Killed by signal ${signal}`;
+      } else {
+        reason = `Exit code ${code}`;
+      }
       console.log(`❌ Video generation failed [${jobId.slice(0, 8)}]: ${reason}`);
       broadcastSse(job, { type: 'error', error: `Generation failed: ${reason}` });
       videoGenEvents.emit('failed', { generationId: jobId, error: reason });
