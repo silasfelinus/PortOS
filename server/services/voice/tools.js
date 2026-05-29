@@ -2026,7 +2026,7 @@ const TOOLS = [
         const lines = matched.map((a) => {
           const appSuffix = a.app ? ` in ${a.app}` : '';
           const descPart = a.description ? ` "${clipDesc(a.description)}"` : '';
-          return `${phaseText(a.phase)}${appSuffix}${descPart}, ${elapsedSpoken(a.elapsedMs)} in`;
+          return `${phaseText(a.phase)}${appSuffix}${descPart}, ${elapsedSpoken(a.elapsedMs)} elapsed`;
         });
         summary = `${matched.length} coding tasks are running: ${lines.join('; ')}.`;
       }
