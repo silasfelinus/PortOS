@@ -48,6 +48,13 @@ describe('resolveAppByPhrase', () => {
     expect(resolveAppByPhrase('aim higher', APPS)).toBeNull();
   });
 
+  it('reverse-prefix matches when the target is longer than a candidate id/name', () => {
+    // Spoken phrases occasionally pick up a stray suffix — "bookloom abc"
+    // should still resolve to BookLoom, not 404.
+    expect(resolveAppByPhrase('bookloom-abc-extra', APPS)?.id).toBe('bookloom-abc');
+    expect(resolveAppByPhrase('finance-tracker-xyz-extra', APPS)?.id).toBe('finance-tracker-xyz');
+  });
+
   it('picks the longest candidate on substring overlap', () => {
     const apps = [
       { id: 'book', name: 'Book' },

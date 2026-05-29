@@ -1842,11 +1842,8 @@ const TOOLS = [
         return { ok: false, error: 'code-agent disabled', summary: 'Coding-agent dispatch is off — turn it on under Settings, Voice, Coding agent.' };
       }
 
-      // Optional spoken target: fuzzy-resolve "in BookLoom" to a managed-app
-      // id so the spawner runs the agent in that app's workspace (cos.js
-      // `metadata.app` → agentLifecycle prepareAgentWorkspace). Reject an
-      // explicit-but-unknown target rather than silently falling through to
-      // the PortOS workspace, so the user hears "I don't see that app."
+      // Reject an explicit-but-unknown app rather than silently falling
+      // through to the PortOS workspace — that's the whole point of asking.
       let resolvedAppId = null;
       let resolvedAppName = null;
       if (appPhrase) {
