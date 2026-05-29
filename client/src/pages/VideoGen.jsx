@@ -514,7 +514,10 @@ export default function VideoGen() {
       if (p.mode) setMode(p.mode);
       if (p.chunks && p.chunks > 1) setChunks(p.chunks);
       setGenerating(true);
-      setProgress({ progress: 0 });
+      // Skip a forced setProgress(0) here — attachJobEvents will replay the
+      // server's last SSE payload synchronously after EventSource open, and
+      // a job mid-render would otherwise visibly flash 0% before jumping
+      // back to its real progress.
       setStatusMsg(job.status === 'queued'
         ? (typeof job.position === 'number' ? `Queued (position ${job.position})` : 'Queued')
         : 'Resuming…');
