@@ -394,6 +394,11 @@ describe('triggerReferenceAnalysis', () => {
     // Task type markers
     expect(addTaskMock.mock.calls[0][1]).toBe('internal');
     expect(addTaskMock.mock.calls[0][2]).toEqual({ raw: true });
+    // readOnly must be false: the v2 reference-watch prompt appends slug-tagged
+    // [ref-watch-…] items to PLAN.md and commits them. readOnly:true would inject
+    // the "## Read-Only Task" guard into the system prompt and the agent would
+    // refuse to write the PLAN entries — defeating the whole flow.
+    expect(taskArg.metadata.readOnly).toBe(false);
   });
 
   it('returns duplicate when addTask signals a duplicate', async () => {
