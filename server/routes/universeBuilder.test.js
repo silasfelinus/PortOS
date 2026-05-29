@@ -15,7 +15,7 @@ tryReadFile: vi.fn().mockResolvedValue(null),
   readJSONFile: vi.fn(async (path, fallback) => (fileStore.has(path) ? fileStore.get(path) : fallback)),
 }));
 
-// Full-replace OK: this route graph doesn't statically import either module.
+// Both mocks needed: vitest.setup.js's global `instances.js` mock uses importOriginal, which leaves the per-file `peerSync.js` mock unable to suppress the createUniverse dynamic-import hoist error alone.
 vi.mock('../services/instances.js', () => mockNoPeers());
 vi.mock('../services/sharing/peerSync.js', () => mockNoPeerSync());
 
