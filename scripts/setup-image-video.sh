@@ -43,9 +43,15 @@ ANY_BYOV="${INSTALL_LTX2:-0}${INSTALL_WAN22:-0}${INSTALL_HUNYUAN:-0}"
 if [[ "$ANY_BYOV" == "000" ]]; then
   DEFAULT_INSTALL_MFLUX=1
   DEFAULT_INSTALL_VIDEO=$(is_macos && echo 1 || echo 0)
+  DEFAULT_INSTALL_FLUX2=$(is_macos && echo 1 || echo 0)
 else
   DEFAULT_INSTALL_MFLUX=0
   DEFAULT_INSTALL_VIDEO=0
+  # An in-app "install LTX-2" click must NOT silently run the multi-GB
+  # FLUX.2 setup too — gate flux2 off the same BYOV-only signal as mflux /
+  # mlx_video. A bare `bash setup-image-video.sh` (no env) still installs
+  # flux2 on macOS as before.
+  DEFAULT_INSTALL_FLUX2=0
 fi
 INSTALL_MFLUX="${INSTALL_MFLUX:-$DEFAULT_INSTALL_MFLUX}"
 INSTALL_VIDEO="${INSTALL_VIDEO:-$DEFAULT_INSTALL_VIDEO}"
@@ -267,7 +273,7 @@ if [[ "$INSTALL_HUNYUAN" == "1" ]]; then
   echo "✅ HunyuanVideo_MLX venv ready: ${HUNYUAN_PY}"
 fi
 
-INSTALL_FLUX2="${INSTALL_FLUX2:-$(is_macos && echo 1 || echo 0)}"
+INSTALL_FLUX2="${INSTALL_FLUX2:-$DEFAULT_INSTALL_FLUX2}"
 
 if [[ "$INSTALL_FLUX2" == "1" ]]; then
   # FLUX.2-klein needs torch>=2.5 + diffusers-from-git + sdnq + optimum-quanto.

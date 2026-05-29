@@ -798,12 +798,12 @@ export default function VideoGen() {
     // Without these guards the user could press Enter in the prompt
     // textarea and fire a request the disabled button would otherwise
     // have prevented.
-    if (!prompt.trim() || generating || (status && status.connected === false) || extendModeBlocked || a2vModeBlocked || byovRuntimeMissing) return;
+    if (!prompt.trim() || generating || notConnected || extendModeBlocked || a2vModeBlocked || byovRuntimeMissing) return;
     await runGeneration(buildGeneratePayload()).catch(() => {});
   };
 
   const handleEnqueue = () => {
-    if (!prompt.trim() || (status && status.connected === false) || extendModeBlocked || a2vModeBlocked) return;
+    if (!prompt.trim() || notConnected || extendModeBlocked || a2vModeBlocked) return;
     const payload = buildGeneratePayload();
     // Strip File blobs for snapshot — re-using a File across multiple queued
     // submissions is fine, but we need a stable JSON-ish summary for the
@@ -903,7 +903,13 @@ export default function VideoGen() {
     }
   };
 
-  const notConnected = status && status.connected === false;
+  // `status.connected` reflects the LEGACY mlx_video pythonPath health. BYOV
+  // runtimes (ltx2/wan22/hunyuan) resolve their own venv inside the service
+  // layer, so a missing legacy pythonPath must NOT block them — gate only on
+  // `byovRuntimeMissing` for those models. Without this, a user who installed
+  // ONLY a BYOV runtime via the modal would stay stuck behind a "not
+  // configured" error from the unrelated legacy probe.
+  const notConnected = !!status && status.connected === false && !needsByovProbe;
   const canEnqueue = prompt.trim() && !notConnected && !extendModeBlocked && !a2vModeBlocked;
 
   // Symmetric frame picker for the FFLF + image modes. Each slot accepts
