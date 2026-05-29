@@ -244,7 +244,7 @@ export default function StoryboardPanel({
 
   const persistCfg = useCallback(async (next) => {
     setImageCfg(next);
-    await patchSettingsSlice('writersRoom', { imageGen: next })
+    await patchSettingsSlice('writersRoom', { imageGen: next }, { silent: true })
       .catch((err) => toast.error(`Settings save failed: ${err.message}`));
   }, []);
 

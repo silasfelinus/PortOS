@@ -247,7 +247,7 @@ export default function ComicScriptStage({ issue, series, onStageUpdate, actions
 
   const persistImageCfg = useCallback(async (next) => {
     setImageCfg(next);
-    await patchSettingsSlice('pipeline', { imageGen: next })
+    await patchSettingsSlice('pipeline', { imageGen: next }, { silent: true })
       .catch((err) => toast.error(`Settings save failed: ${err.message}`));
   }, []);
 
