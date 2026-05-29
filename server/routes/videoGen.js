@@ -706,6 +706,28 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
   res.json({ jobId, generationId: jobId, filename: `${jobId}.mp4`, model: effectiveModelId, mode: 'local', status, position });
 }));
 
+// Currently-running video job (if any) so the page can re-attach after a
+// reload — the SSE replay of `lastPayload` then resumes progress display.
+// Mirrors GET /api/image-gen/active. Returns `{ activeJob: null }` when no
+// video render is in flight. Queued-but-not-yet-running jobs are returned
+// too so the user lands on a "Queued (position N)" state instead of an
+// empty form.
+router.get('/active', (_req, res) => {
+  const running = listJobs({ kind: 'video', status: 'running' })[0];
+  const queued = !running ? listJobs({ kind: 'video', status: 'queued' })[0] : null;
+  const job = running || queued;
+  if (!job) return res.json({ activeJob: null });
+  res.json({
+    activeJob: {
+      jobId: job.id,
+      generationId: job.id,
+      status: job.status,
+      position: job.position,
+      params: job.params || {},
+    },
+  });
+});
+
 router.get('/:jobId/events', (req, res) => {
   const ok = attachSseClient(req.params.jobId, res);
   if (!ok) res.status(404).json({ error: 'Job not found or expired' });

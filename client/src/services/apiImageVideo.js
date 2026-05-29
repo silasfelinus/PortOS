@@ -44,6 +44,10 @@ export const listVideoModels = () => request('/video-gen/models');
 // encoder is a separate multi-GB pull.
 export const getVideoModelStatuses = () => request('/video-gen/models/status', { silent: true });
 export const cancelVideoGen = () => request('/video-gen/cancel', { method: 'POST' });
+// Currently-running (or next-queued) video job — used on VideoGen mount to
+// resume progress display after a page reload. Silent so a 5xx during status
+// poll doesn't double-toast on every navigation.
+export const getActiveVideoJob = () => request('/video-gen/active', { silent: true });
 export const listVideoHistory = () => request('/video-gen/history');
 export const deleteVideoHistoryItem = (id) => request(`/video-gen/history/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const setVideoHidden = (id, hidden) => request(`/video-gen/history/${encodeURIComponent(id)}/visibility`, {
