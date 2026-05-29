@@ -4,6 +4,7 @@
 
 - **[patch-settings-slice-helper] Nested settings edits no longer risk clobbering sibling fields.** Saving a Python path from Video Gen, or an image-gen config from a pipeline / Writers Room stage, used to round-trip the entire current settings object — leaving unrelated top-level keys exposed to drift if the read raced a concurrent write elsewhere. These edits now scope themselves to the slice being changed.
 - **[client-use-previous-hook] Shared `usePrevious` hook.** Internal refactor: collapses two ad-hoc previous-render comparisons into one shared hook. No user-visible behavior change.
+- **[warning-banner-component] Shared `Banner` component.** Internal refactor: introduces a tone-variant Banner primitive and replaces five hand-rolled warning banners (LoRA manager, Security audio prompt, scheduled-runs paused / improvement-disabled callouts, local Python arch / externally-managed notices, CoS memory-backend status). Two of those banners pick up a minor visual unification — the LoRA download message body now uses the standard warning amber instead of a cream variant, and the local Python notices gain a few pixels of horizontal padding to match the rest of the warning banner family.
 
 ## Added
 

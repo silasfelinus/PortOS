@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {Trash2, X, Check, XCircle, Pencil, AlertTriangle, Brain, Bot} from 'lucide-react';
 import toast from '../../ui/Toast';
+import Banner from '../../ui/Banner';
 import * as api from '../../../services/api';
 import { MEMORY_TYPES, MEMORY_TYPE_COLORS } from '../constants';
 import { getAppName } from '../../../utils/formatters';
@@ -129,22 +130,24 @@ export default function MemoryTab({ apps = [] }) {
     <div className="space-y-6">
       {/* Backend status banner */}
       {backendStatus?.backend === 'file' && (
-        <div className="bg-port-warning/10 border border-port-warning/30 rounded-lg p-4 flex items-start gap-3">
-          <AlertTriangle className="text-port-warning shrink-0 mt-0.5" size={20} />
-          <div className="flex-1">
-            <p className="text-port-warning font-medium">PostgreSQL unavailable — using file storage</p>
-            {backendStatus.db?.error && (
-              <p className="text-sm text-gray-400 mt-1">{backendStatus.db.error}</p>
-            )}
-            <p className="text-sm text-gray-500 mt-1">Some PostgreSQL-only features like cross-instance sync and DB snapshots are unavailable.</p>
-          </div>
-          <button
-            onClick={fetchData}
-            className="px-3 py-1.5 text-sm bg-port-warning/20 text-port-warning hover:bg-port-warning/30 rounded-lg transition-colors shrink-0"
-          >
-            Retry
-          </button>
-        </div>
+        <Banner
+          size="lg"
+          icon={AlertTriangle}
+          title="PostgreSQL unavailable — using file storage"
+          actions={
+            <button
+              onClick={fetchData}
+              className="px-3 py-1.5 text-sm bg-port-warning/20 text-port-warning hover:bg-port-warning/30 rounded-lg transition-colors"
+            >
+              Retry
+            </button>
+          }
+        >
+          {backendStatus.db?.error && (
+            <p className="text-sm text-gray-400 mt-1">{backendStatus.db.error}</p>
+          )}
+          <p className="text-sm text-gray-500 mt-1">Some PostgreSQL-only features like cross-instance sync and DB snapshots are unavailable.</p>
+        </Banner>
       )}
 
       {/* Header */}

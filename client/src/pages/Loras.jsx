@@ -12,6 +12,7 @@ import { Link } from 'react-router-dom';
 import { Trash2, Download, ExternalLink, Sparkles, AlertTriangle, KeyRound, Check, X, RefreshCw, Wand2 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import Modal from '../components/ui/Modal';
+import Banner from '../components/ui/Banner';
 import { formatBytes } from '../utils/formatters';
 import { RUNNER_FAMILIES } from '../lib/runnerFamilies';
 import {
@@ -498,10 +499,7 @@ function CivitaiAuthModal({ pendingUrl, message, auth, onClose, onSaved, onRetry
       </div>
 
       {message && (
-        <div className="text-xs bg-port-warning/10 border border-port-warning/30 rounded px-3 py-2 text-amber-100 flex items-start gap-2">
-          <AlertTriangle size={14} className="shrink-0 mt-0.5 text-port-warning" />
-          <span>{message}</span>
-        </div>
+        <Banner icon={AlertTriangle}>{message}</Banner>
       )}
 
       <p className="text-xs text-gray-400 leading-relaxed">
