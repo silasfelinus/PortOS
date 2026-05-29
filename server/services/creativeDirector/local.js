@@ -215,9 +215,13 @@ export async function updateRun(id, runId, patch) {
   const project = all[idx];
   const runIdx = (project.runs || []).findIndex((r) => r.runId === runId);
   if (runIdx < 0) return null;
-  project.runs[runIdx] = { ...project.runs[runIdx], ...patch };
+  const updated = { ...project.runs[runIdx], ...patch };
+  project.runs[runIdx] = updated;
   project.updatedAt = new Date().toISOString();
   all[idx] = project;
+  // saveAll rewrites project.runs in place via trimRuns when over-cap, so
+  // runIdx may not point at the patched run afterwards — return the local
+  // reference captured pre-save instead.
   await saveAll(all);
-  return project.runs[runIdx];
+  return updated;
 }

@@ -158,6 +158,23 @@ describe('runs[] cap enforced at saveAll chokepoint', () => {
     expect(saved[0].runs).toHaveLength(11);
   });
 
+  it('updateRun returns the patched run even when saveAll trim shifts indices', async () => {
+    // Legacy project where trim will drop the patched run's index. The patched
+    // run survives trim (it's in-flight when patched, terminal after — and most-
+    // recent), but the *index* it lives at shifts because earlier terminal
+    // entries get dropped. completionHook treats a falsy return as "not found"
+    // and recordRuns a duplicate, so this must return the patched object.
+    const existing = [
+      ...Array.from({ length: 300 }, (_, i) => ({ runId: `old-${i}`, status: 'completed' })),
+      { runId: 'live-1', status: 'running', kind: 'evaluate', sceneId: 'scene-1' },
+    ];
+    mockReadJSONFile.mockResolvedValue([{ id: 'cd-1', status: 'rendering', name: 'Test', runs: existing }]);
+    const result = await updateRun('cd-1', 'live-1', { status: 'completed', completedAt: '2026-05-29T12:00:00.000Z' });
+    expect(result).toBeTruthy();
+    expect(result.runId).toBe('live-1');
+    expect(result.status).toBe('completed');
+  });
+
   it('updateRun also shrinks a legacy over-cap array (not just recordRun)', async () => {
     // Legacy bloated project — 500 terminal + 1 in-flight. The in-flight one
     // is what updateRun is going to patch. Without saveAll-side trim, the
