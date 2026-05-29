@@ -92,6 +92,17 @@ const videoModelMemoryGb = (model) => {
   return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
 };
 
+// Mode-compatibility predicate for the Model dropdown. a2v requires the
+// ltx2 runtime (dgrauet's pipeline) — the legacy mlx_video pipeline has no
+// audio-conditioned mode, and Wan/Hunyuan don't either. Server enforces the
+// same rule in routes/videoGen.js (A2V_REQUIRES_LTX2); filtering client-side
+// keeps the dropdown honest so the user can't pick a doomed model.
+const isModelAllowedForMode = (model, mode) => {
+  if (!model) return false;
+  if (mode === 'a2v') return model.runtime === 'ltx2';
+  return true;
+};
+
 const ImagePreview = ({ src, alt, label }) => (
   <div className="space-y-1">
     <img src={src} alt={alt} className="w-full max-h-48 object-contain rounded border border-port-border bg-port-bg" />
@@ -552,27 +563,64 @@ export default function VideoGen() {
       .catch((err) => toast.error(`Failed to save: ${err.message}`));
   }, [refreshStatus]);
 
-  // Validate `modelId` once models are loaded. A Remix URL (or hand-edited
-  // link) can carry a `modelId` that no longer exists in the catalog — that
-  // leaves <ModelSelect> showing nothing and `currentModel` undefined, which
-  // then breaks resolution suggestions and submit. When we detect that, fall
-  // back to status.defaultModel (preferred) or the first available model so
-  // the form stays in a usable state.
+  // Models filtered to the current mode's compatibility. Drives the
+  // <ModelSelect> options and the auto-select fallback so the user can't
+  // land on a model the server will reject.
+  const visibleModels = useMemo(
+    () => models.filter((m) => isModelAllowedForMode(m, mode)),
+    [models, mode],
+  );
+
+  // Validate `modelId` once models are loaded. Two failure modes covered:
+  //  1. A Remix URL (or hand-edited link) carries a `modelId` that no longer
+  //     exists in the catalog — <ModelSelect> shows nothing and `currentModel`
+  //     is undefined, which then breaks resolution suggestions and submit.
+  //  2. The picked model exists but isn't compatible with the current mode
+  //     (e.g. switching into a2v while an mlx_video model is selected). The
+  //     server would 400 on submit; we proactively swap to a compatible model.
+  // a2v fallback preference: highest-memory model that fits this machine
+  // (leaving headroom for the OS + text encoder) > the largest if none fit.
+  // Other modes: status.defaultModel (if compatible) > first compatible model.
   useEffect(() => {
     if (!modelId || models.length === 0) return;
-    if (models.some((m) => m.id === modelId)) return;
-    const fallback = status?.defaultModel || models[0]?.id || '';
-    if (fallback) {
-      // Notify the user once per unique stale id so a Remix of an uninstalled
-      // model doesn't silently drop to default. staleModelToastRef prevents
-      // re-firing when the effect re-runs with the same stale modelId.
-      if (staleModelToastRef.current !== modelId) {
-        staleModelToastRef.current = modelId;
-        toast(`Original model "${modelId}" is no longer available — using default`);
+    const current = models.find((m) => m.id === modelId);
+    const currentCompatible = current && isModelAllowedForMode(current, mode);
+    if (currentCompatible) return;
+    let fallback = '';
+    if (mode === 'a2v') {
+      // Reserve ~16 GB headroom for the OS + text encoder + working set.
+      // Anything that fits within `systemMemoryGb - reserveGb` is "runnable"
+      // on this machine; among those, pick the largest (highest quality).
+      // If nothing fits (constrained box), fall back to the smallest model
+      // so the user can at least try, and the install banner / OOM surfaces
+      // the real constraint instead of a silent dropdown change.
+      const reserveGb = 16;
+      const budget = status?.systemMemoryGb
+        ? Math.max(0, status.systemMemoryGb - reserveGb)
+        : Number.POSITIVE_INFINITY;
+      const sortedDesc = [...visibleModels].sort(
+        (a, b) => videoModelMemoryGb(b) - videoModelMemoryGb(a),
+      );
+      const fits = sortedDesc.find((m) => videoModelMemoryGb(m) <= budget);
+      fallback = (fits || sortedDesc[sortedDesc.length - 1])?.id || '';
+    } else {
+      const defaultModel = models.find((m) => m.id === status?.defaultModel);
+      if (defaultModel && isModelAllowedForMode(defaultModel, mode)) {
+        fallback = defaultModel.id;
+      } else {
+        fallback = visibleModels[0]?.id || status?.defaultModel || models[0]?.id || '';
       }
-      setModelId(fallback);
     }
-  }, [modelId, models, status?.defaultModel]);
+    if (!fallback || fallback === modelId) return;
+    // Toast only for the stale-id case (model removed from catalog). The
+    // mode-incompatibility swap is expected behavior after a mode change —
+    // no need to surface it.
+    if (!current && staleModelToastRef.current !== modelId) {
+      staleModelToastRef.current = modelId;
+      toast(`Original model "${modelId}" is no longer available — using default`);
+    }
+    setModelId(fallback);
+  }, [modelId, models, status?.defaultModel, status?.systemMemoryGb, mode, visibleModels]);
 
   const currentModel = models.find((m) => m.id === modelId);
 
@@ -693,16 +741,8 @@ export default function VideoGen() {
       setDisableAudio(false);
       setNoMusic(false);
       setChunks(1);
-      // Auto-select the lowest-memory ltx2-runtime model so the user
-      // doesn't land on a blocked state. Only fires when the current model
-      // can't handle a2v — if they already have a dgrauet model selected
-      // we leave it alone.
-      if (currentModel?.runtime !== 'ltx2') {
-        const ltx2Model = models
-          .filter((m) => m.runtime === 'ltx2')
-          .sort((a, b) => videoModelMemoryGb(a) - videoModelMemoryGb(b))[0];
-        if (ltx2Model) setModelId(ltx2Model.id);
-      }
+      // Auto-select to a compatible ltx2-runtime model is handled by the
+      // modelId-validation effect, which re-runs on every mode change.
     }
   };
 
@@ -1290,9 +1330,12 @@ export default function VideoGen() {
               <p className="text-[10px] text-gray-500 leading-snug">
                 Audio length should match {`${(numFrames / fps).toFixed(1)}s`} (frames ÷ fps). Longer clips are trimmed to fit; shorter clips fail.
               </p>
-              {currentModel?.runtime !== 'ltx2' && (
+              {visibleModels.length === 0 && (
                 <p className="text-[11px] text-port-warning">
-                  a2v requires an ltx2-runtime model — switch the Model dropdown to one of the dgrauet entries.
+                  a2v requires an ltx2-runtime model, but none are installed. Add a dgrauet entry to{' '}
+                  <code>data/media-models.json</code> (or restore <code>ltx23_dgrauet_q4</code> / <code>_q8</code>{' '}
+                  from the built-in defaults), then provision the runtime via{' '}
+                  <code>INSTALL_LTX2=1 bash scripts/setup-image-video.sh</code>.
                 </p>
               )}
             </div>
@@ -1337,7 +1380,7 @@ export default function VideoGen() {
               <div className="col-span-2 sm:col-span-3">
                 <label className="block text-xs font-medium text-gray-400 mb-1">Model</label>
                 <ModelSelect
-                  models={models}
+                  models={visibleModels}
                   value={modelId}
                   onChange={(e) => { setModelId(e.target.value); setSteps(''); setGuidanceScale(''); }}
                 />
