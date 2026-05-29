@@ -3,6 +3,7 @@
 ## Added
 
 - **Voice coding agent can target a managed app.** When you dispatch a coding task by voice, you can now name a managed app ("fix the failing test in BookLoom") and the agent runs against that app's workspace instead of PortOS itself. The app name is fuzzy-matched, so "book loom", "BookLoom", and "bookloom" all resolve to the same app; if no app matches what you said, the agent refuses with a short list of valid names rather than silently running against PortOS.
+- **[voice-code-agent-status-query] Ask voice how a dispatched coding task is going.** A new voice query — "how's that coding task going?", "status of the agent", "is the agent still working?" — reports each in-flight voice-dispatched coding task with its current phase, target app, elapsed time, and a snippet of the task description. Until now you could only learn the outcome from the completion announcement; this is the mid-task check-in. Also available as "Coding agent status" in the command palette.
 
 ## Fixed
 
