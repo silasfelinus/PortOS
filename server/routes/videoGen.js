@@ -12,6 +12,7 @@ import { copyFile, unlink } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { join, extname } from 'path';
 import { spawn } from 'child_process';
+import os from 'os';
 import { z } from 'zod';
 import { asyncHandler, ServerError, failValidation } from '../lib/errorHandler.js';
 import { uploadFields } from '../lib/multipart.js';
@@ -167,6 +168,11 @@ router.get('/status', asyncHandler(async (_req, res) => {
     // Authoritative list of bring-your-own-venv runtimes — lets the client
     // gate the install-banner probe without hardcoding the same Set.
     byovRuntimes: Object.keys(BYOV_RUNTIME_INFO),
+    // Total system memory in GB — the client uses this to auto-select the
+    // highest-memory mode-compatible model that fits on this machine.
+    // Rounded to nearest GB; sub-GB precision isn't useful for the
+    // model-size comparison and reads more cleanly in the UI.
+    systemMemoryGb: Math.round(os.totalmem() / 1024 ** 3),
   });
 }));
 
