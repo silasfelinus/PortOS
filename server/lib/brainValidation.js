@@ -383,7 +383,11 @@ export const linksQuerySchema = z.object({
     v => (typeof v === 'string' ? v === 'true' : v),
     z.boolean()
   ).optional(),
-  limit: z.coerce.number().int().min(1).max(100).optional().default(50),
+  // LinksTab does its own filtering, search, and bucket assignment client-side
+  // over the full set — so the upper cap has to be large enough to return every
+  // saved link in one round-trip. 5000 is plenty of headroom for a single-user
+  // bookmark collection without being unbounded.
+  limit: z.coerce.number().int().min(1).max(5000).optional().default(50),
   offset: z.coerce.number().int().min(0).optional().default(0)
 });
 

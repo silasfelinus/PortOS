@@ -691,6 +691,21 @@ export const repoForModel = (model) => {
   return null;
 };
 
+// Full list of HF repos a model needs cached on disk before the runner can
+// inference. For HiDream entries this includes the separate Llama-3.1 text
+// encoder (`textEncoderRepo`) the Diffusers pipeline loads as `text_encoder_4`
+// — otherwise the cache-status badge says "Available" while the renderer
+// silently kicks off a second multi-GB gated download at start-up. Result is
+// `null` when the main repo itself isn't known (model is misconfigured / a
+// custom mflux third-party entry).
+export const requiredReposForModel = (model) => {
+  const main = repoForModel(model);
+  if (!main) return null;
+  const aux = [];
+  if (isNonEmptyString(model?.textEncoderRepo)) aux.push(model.textEncoderRepo);
+  return [main, ...aux];
+};
+
 // `getTextEncoderRepo()` can return either an HF repo id (`org/name`) or a
 // resolved local filesystem path when the registry entry has a `localPath`
 // override. Only `org/name` is a valid input to HF-cache inspection /

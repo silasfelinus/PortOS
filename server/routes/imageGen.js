@@ -23,7 +23,7 @@ import { local, IMAGE_GEN_MODE, IMAGE_GEN_MODES, resolveImageCleaners } from '..
 import { enqueueJob, attachSseClient as attachQueueSseClient, cancelJob, listJobs } from '../services/mediaJobQueue/index.js';
 import { getSettings, saveSettings } from '../services/settings.js';
 import { getHfToken, getHfTokenInfo, HF_TOKEN_REGEX } from '../lib/hfToken.js';
-import { getImageModels, isFlux2, repoForModel } from '../lib/mediaModels.js';
+import { getImageModels, isFlux2, repoForModel, requiredReposForModel } from '../lib/mediaModels.js';
 import { usesDiffusersRunner } from '../lib/runners.js';
 import { inspectModelCache } from '../lib/hfCache.js';
 import { startHfDownloadStream } from '../lib/sseDownload.js';
@@ -391,10 +391,17 @@ router.get('/models', (_req, res) => {
 // "not downloaded" state. Lazy generation still works regardless of badge.
 router.get('/models/status', asyncHandler(async (_req, res) => {
   const statuses = await Promise.all(getImageModels().map(async (m) => {
-    const repo = repoForModel(m);
-    if (!repo) return { id: m.id, repo: null, cached: null, sizeBytes: 0 };
-    const { cached, sizeBytes } = await inspectModelCache(repo);
-    return { id: m.id, repo, cached, sizeBytes };
+    const required = requiredReposForModel(m);
+    if (!required) return { id: m.id, repo: null, cached: null, sizeBytes: 0 };
+    // Inspect every required repo (main + any aux text encoders). The badge
+    // is `cached: true` only when ALL are cached; sizeBytes is the sum. The
+    // `pendingRepos` field lets the UI explain WHICH repos still need a pull
+    // so the user isn't surprised when clicking "Download" triggers >1 fetch.
+    const inspections = await Promise.all(required.map((r) => inspectModelCache(r)));
+    const cached = inspections.every((i) => i.cached);
+    const sizeBytes = inspections.reduce((sum, i) => sum + (i.sizeBytes || 0), 0);
+    const pendingRepos = required.filter((_, i) => !inspections[i].cached);
+    return { id: m.id, repo: required[0], cached, sizeBytes, requiredRepos: required, pendingRepos };
   }));
   res.json(statuses);
 }));
@@ -408,14 +415,17 @@ router.get('/models/:modelId/download', asyncHandler(async (req, res) => {
   if (!model) {
     return res.status(404).json({ error: `Unknown model id: ${req.params.modelId}` });
   }
-  const repo = repoForModel(model);
-  if (!repo) {
+  const repos = requiredReposForModel(model);
+  if (!repos) {
     return res.status(400).json({
       error: `Model "${model.id}" has no HuggingFace repo on file — cannot pre-download.`,
       code: 'NO_REPO_FOR_MODEL',
     });
   }
-  await startHfDownloadStream({ req, res, repo });
+  // Sequentially fetch every required repo (main + aux text encoders for
+  // HiDream). The SSE stream tags each event with `repo` so the client can
+  // show per-repo progress / log lines.
+  await startHfDownloadStream({ req, res, repos });
 }));
 
 router.get('/loras', asyncHandler(async (_req, res) => {

@@ -77,10 +77,13 @@ export default function LinksTab({ onRefresh }) {
   const [scanningId, setScanningId] = useState(null);
   const inputRef = useRef(null);
 
-  // Fetch the full link set; filtering happens client-side so the bucket board
-  // always sees every link regardless of the list filter.
+  // Fetch the full link set; filtering, search, and bucket membership are all
+  // computed client-side, so we need every link in one round-trip — the prior
+  // `limit: 100` silently truncated power-user collections (>100 links lost
+  // from list views, search, and bucket boards). The server schema caps at
+  // 5000, which is ample headroom for a single-user bookmark collection.
   const fetchLinks = useCallback(async () => {
-    const data = await api.getBrainLinks({ limit: 100, silent: true }).catch(() => ({ links: [] }));
+    const data = await api.getBrainLinks({ limit: 5000, silent: true }).catch(() => ({ links: [] }));
     setLinks(data.links || []);
     setLoading(false);
   }, []);

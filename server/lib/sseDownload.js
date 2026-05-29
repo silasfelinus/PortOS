@@ -17,39 +17,80 @@ const SSE_HEADERS = {
   Connection: 'keep-alive',
 };
 
-export async function startHfDownloadStream({ req, res, repo, alreadyDownloadedMessage }) {
+export async function startHfDownloadStream({ req, res, repo, repos, alreadyDownloadedMessage }) {
+  // Caller passes either `repo` (single string, legacy callers) OR `repos`
+  // (ordered array, used when a model has auxiliary repos that must be
+  // present alongside the main weights — e.g. HiDream's separate Llama-3.1
+  // text encoder). Multi-repo runs are sequential and short-circuit on any
+  // single-repo error.
+  const targets = Array.isArray(repos)
+    ? repos.filter((r) => typeof r === 'string' && r.length > 0)
+    : (typeof repo === 'string' && repo.length > 0 ? [repo] : []);
   res.writeHead(200, SSE_HEADERS);
   const send = (event) => {
     if (!res.writableEnded) res.write(`data: ${JSON.stringify(event)}\n\n`);
   };
   const safeEnd = () => { if (!res.writableEnded) res.end(); };
 
+  if (targets.length === 0) {
+    send({ type: 'error', message: 'No repo specified for download.' });
+    return safeEnd();
+  }
+
   // Disconnect bookkeeping wired BEFORE the cache-inspection await. The
   // inspection can take double-digit ms on a cold cache; without this the
   // client closing mid-await would land after spawn with no kill path.
-  let handle = null;
+  let currentHandle = null;
   let aborted = false;
   req.on('close', () => {
     aborted = true;
-    if (handle) handle.kill();
+    if (currentHandle) currentHandle.kill();
     safeEnd();
   });
 
-  const existing = await inspectModelCache(repo);
-  if (aborted) return;
-  if (existing.cached) {
-    send({ type: 'complete', message: alreadyDownloadedMessage || `${repo} already downloaded.`, repo, sizeBytes: existing.sizeBytes });
-    return safeEnd();
-  }
-  if (inFlight.has(repo)) {
-    send({ type: 'error', message: `Another download for ${repo} is already running.`, kind: 'already_running' });
-    return safeEnd();
+  let downloadedAny = false;
+  let totalSize = 0;
+  for (let i = 0; i < targets.length; i += 1) {
+    const r = targets[i];
+    if (aborted) return;
+    const existing = await inspectModelCache(r);
+    if (aborted) return;
+    if (existing.cached) {
+      totalSize += existing.sizeBytes || 0;
+      send({ type: 'log', message: `${r} already cached (${existing.sizeBytes} bytes).`, repo: r, sizeBytes: existing.sizeBytes });
+      continue;
+    }
+    if (inFlight.has(r)) {
+      send({ type: 'error', message: `Another download for ${r} is already running.`, kind: 'already_running', repo: r });
+      return safeEnd();
+    }
+    const handle = downloadHfRepo({ repo: r, onEvent: (ev) => send({ ...ev, repo: r }) });
+    currentHandle = handle;
+    inFlight.set(r, handle);
+    try {
+      await handle.promise;
+      downloadedAny = true;
+    } finally {
+      inFlight.delete(r);
+      currentHandle = null;
+    }
   }
 
-  handle = downloadHfRepo({ repo, onEvent: send });
-  inFlight.set(repo, handle);
-  handle.promise.finally(() => {
-    inFlight.delete(repo);
-    safeEnd();
-  });
+  if (!aborted) {
+    let message;
+    if (targets.length === 1) {
+      // Preserve legacy single-repo `complete` message semantics: if it was
+      // already cached on entry, surface the caller's `alreadyDownloadedMessage`
+      // (or the default already-downloaded line).
+      message = !downloadedAny
+        ? (alreadyDownloadedMessage || `${targets[0]} already downloaded.`)
+        : `${targets[0]} downloaded.`;
+    } else {
+      message = downloadedAny
+        ? `Downloaded ${targets.length} repos: ${targets.join(', ')}`
+        : `All ${targets.length} repos already cached: ${targets.join(', ')}`;
+    }
+    send({ type: 'complete', message, repos: targets, sizeBytes: totalSize });
+  }
+  safeEnd();
 }
