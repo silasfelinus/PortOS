@@ -339,7 +339,13 @@ export async function generateImage({ pythonPath, prompt, negativePrompt = '', m
     .filter(Boolean);
   const validReferenceImagePaths = validReferences.map((r) => r.path);
   const validReferenceImageStrengths = validReferences.map((r) => r.strength);
-  const meta = { id: jobId, prompt, negativePrompt, modelId, seed: actualSeed, width: Number(width), height: Number(height), steps: actualSteps, guidance: actualGuidance, quantize, filename, loraFilenames: validLoraFilenames, loraPaths: validLoras, loraScales, initImageFilename: validInitImagePath ? basename(validInitImagePath) : null, initImageStrength: validInitImageStrength, referenceImageFilenames: validReferenceImagePaths.map((p) => basename(p)), referenceImageStrengths: validReferenceImageStrengths, createdAt: new Date().toISOString() };
+  // `referenceImageStrengthsRequested` (not `…Strengths`) because the KV
+  // pipeline doesn't yet expose per-reference attention weighting — non-1.0
+  // values come through the route but the runner only warns, so the sidecar
+  // must not claim they were applied. Mirror with the Python sidecar's
+  // `referenceStrengthsRequested` field. Rename to `…Strengths` when
+  // diffusers exposes a real per-ref knob.
+  const meta = { id: jobId, prompt, negativePrompt, modelId, seed: actualSeed, width: Number(width), height: Number(height), steps: actualSteps, guidance: actualGuidance, quantize, filename, loraFilenames: validLoraFilenames, loraPaths: validLoras, loraScales, initImageFilename: validInitImagePath ? basename(validInitImagePath) : null, initImageStrength: validInitImageStrength, referenceImageFilenames: validReferenceImagePaths.map((p) => basename(p)), referenceImageStrengthsRequested: validReferenceImageStrengths, createdAt: new Date().toISOString() };
   const job = { ...meta, clients: [], status: 'running' };
   jobs.set(jobId, job);
 

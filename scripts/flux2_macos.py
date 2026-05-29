@@ -82,10 +82,28 @@ def _resolve_pipeline_cls(use_kv: bool):
     """Pick the diffusers pipeline class. `Flux2KleinKVPipeline` uses K/V-cached
     reference-token attention for multi-reference editing; both classes share
     the same component init signature (scheduler/vae/text_encoder/tokenizer/
-    transformer/is_distilled), so any flux2-klein repo loads into either."""
-    from diffusers import Flux2KleinKVPipeline, Flux2KleinPipeline
+    transformer/is_distilled), so any flux2-klein repo loads into either.
 
-    return Flux2KleinKVPipeline if use_kv else Flux2KleinPipeline
+    Imports are lazy + branch-specific so a venv whose diffusers pin predates
+    the KV pipeline (i.e. before `Flux2KleinKVPipeline` was added upstream)
+    still serves single-image renders. The KV branch fails loudly with a clear
+    upgrade hint instead of an opaque ImportError mid-load."""
+    if use_kv:
+        try:
+            from diffusers import Flux2KleinKVPipeline
+        except ImportError:
+            print(
+                "❌ Multi-reference editing requires diffusers with "
+                "Flux2KleinKVPipeline. Re-run "
+                "`INSTALL_FLUX2=1 FLUX2_FORCE_REINSTALL=1 bash scripts/setup-image-video.sh` "
+                "to pick up the latest diffusers HEAD.",
+                file=sys.stderr,
+            )
+            sys.exit(65)
+        return Flux2KleinKVPipeline
+    from diffusers import Flux2KleinPipeline
+
+    return Flux2KleinPipeline
 
 
 def load_pipeline_bf16(repo: str, device: str, dtype, pipeline_cls):
