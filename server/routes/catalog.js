@@ -197,14 +197,31 @@ router.get('/sync', asyncHandler(async (req, res) => {
   // The four `sync_sequence` columns are independent — accept either
   // `?since=N` (uniform; only meaningful on the first pull where everyone's
   // at 0) or `?since[scraps]=A&since[ingredients]=B&...` for subsequent
-  // pulls. Express's `qs` parser turns the bracket form into a nested object.
+  // pulls.
+  //
+  // Express 5 defaults `query parser` to `simple` (Node's querystring),
+  // which leaves `since[scraps]=10` as a flat key `'since[scraps]': '10'`
+  // instead of nesting it. We reconstruct the per-kind object ourselves so
+  // the documented bracket protocol survives regardless of parser config —
+  // otherwise peers would silently keep pulling page 1 and loop on hasMore.
   const sinceRaw = req.query.since;
-  const isCursorObj = sinceRaw && typeof sinceRaw === 'object' && !Array.isArray(sinceRaw);
-  // Reject arrays (`?since=1&since=2`) — coerce to '0' rather than letting
-  // them silently re-pull the whole sync log.
-  const since = isCursorObj
-    ? sinceRaw
-    : (typeof sinceRaw === 'string' && /^\d+$/.test(sinceRaw) ? sinceRaw : '0');
+  let since;
+  if (sinceRaw && typeof sinceRaw === 'object' && !Array.isArray(sinceRaw)) {
+    since = sinceRaw;
+  } else {
+    const bracket = {};
+    for (const [k, v] of Object.entries(req.query)) {
+      const m = /^since\[([a-z]+)\]$/.exec(k);
+      if (m && typeof v === 'string') bracket[m[1]] = v;
+    }
+    if (Object.keys(bracket).length > 0) {
+      since = bracket;
+    } else {
+      // Reject arrays (`?since=1&since=2`) — coerce to '0' rather than letting
+      // them silently re-pull the whole sync log.
+      since = (typeof sinceRaw === 'string' && /^\d+$/.test(sinceRaw)) ? sinceRaw : '0';
+    }
+  }
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 1000);
   const changes = await catalogSync.getChangesSince(since, limit);
   res.json({

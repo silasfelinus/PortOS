@@ -103,23 +103,14 @@ export async function ensureSchema() {
     await pool.query(sql);
   }
 
-  // Catalog block: probe ALL four tables. A previous boot that crashed
-  // mid-DDL (network blip, OOM) could leave catalog_ingredients present but
-  // catalog_ingredient_sources / _refs missing; gating only on the lead
-  // table would silently freeze the install in that half-applied state.
-  // Every catalogDDL statement is idempotent (CREATE IF NOT EXISTS / OR
-  // REPLACE), so re-running on a fully-applied install is a no-op anyway.
-  const catalogReady = await pool.query(
-    `SELECT
-       to_regclass('public.catalog_ingredients') IS NOT NULL
-       AND to_regclass('public.catalog_scraps') IS NOT NULL
-       AND to_regclass('public.catalog_ingredient_sources') IS NOT NULL
-       AND to_regclass('public.catalog_ingredient_refs') IS NOT NULL AS ready`,
-  );
-  if (catalogReady.rows?.[0]?.ready) {
-    console.log('🗄️ Database schema upgrades applied');
-    return;
-  }
+  // Catalog block: every statement below is idempotent (CREATE IF NOT EXISTS
+  // / CREATE OR REPLACE FUNCTION / DROP TRIGGER IF EXISTS + CREATE TRIGGER),
+  // so we run the whole list on every boot rather than gating on table
+  // presence. A previous probe that early-returned on "all four tables exist"
+  // would skip the indexes / functions / triggers if the prior boot crashed
+  // between the table CREATEs and the artifact CREATEs — leaving the schema
+  // marked ready while update triggers and HNSW indexes were never installed.
+  // Cost on a fully-applied install is ~30 Postgres no-op parses (<10ms).
 
   const catalogDDL = [
     `CREATE TABLE IF NOT EXISTS catalog_scraps (
