@@ -30,6 +30,19 @@ const TYPES = [
 
 const TYPE_BY_ID = Object.fromEntries(TYPES.map((t) => [t.id, t]));
 
+// Per-type primary content key used by the inline "New" form, so users can
+// capture the body in one step instead of bouncing into the editor. Mirrors
+// the labels in CatalogIngredient.jsx — characters land in `physicalDescription`
+// (canon shape), place/object in `description`, light types in `summary`.
+const PRIMARY_CONTENT_KEY = {
+  character: 'physicalDescription',
+  place: 'description',
+  object: 'description',
+  idea: 'summary',
+  scene: 'summary',
+  concept: 'summary',
+};
+
 // Pull a short snippet from the type-specific payload — first hit wins,
 // trimmed and ellipsised to ~120 chars. Characters use `physicalDescription`
 // (canon shape), so check it first to avoid rendering empty rows for
@@ -61,9 +74,12 @@ export default function Catalog() {
   // debounced value that actually drives the list fetch. 300ms gap.
   const [searchInput, setSearchInput] = useState('');
   const [q, setQ] = useState('');
-  // Inline create form
+  // Inline create form. `content` is a single freeform textarea that lands in
+  // the per-type primary content field on submit (physicalDescription for
+  // character, description for place/object, summary for idea/scene/concept)
+  // so users don't have to navigate to the editor just to capture the body.
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ type: 'character', name: '' });
+  const [form, setForm] = useState({ type: 'character', name: '', content: '' });
   const [creating, setCreating] = useState(false);
   // Armed-row id for two-click delete (no window.confirm).
   const [armedId, setArmedId] = useState(null);
@@ -111,11 +127,16 @@ export default function Catalog() {
     e.preventDefault();
     const name = form.name.trim();
     if (!name) return;
+    const content = form.content.trim();
+    const payload = {};
+    if (content) {
+      payload[PRIMARY_CONTENT_KEY[form.type] || 'description'] = content;
+    }
     setCreating(true);
     const created = await createCatalogIngredient({
       type: form.type,
       name,
-      payload: {},
+      payload,
       tags: [],
     }, { silent: true }).catch((err) => {
       toast.error(err?.message || 'Failed to create ingredient');
@@ -124,7 +145,7 @@ export default function Catalog() {
     setCreating(false);
     if (!created) return;
     toast.success(`Created ${form.type} "${name}"`);
-    setForm({ type: form.type, name: '' });
+    setForm({ type: form.type, name: '', content: '' });
     setShowForm(false);
     // Update list locally (CLAUDE.md: prefer state update over refetch) but
     // still refresh stats so the type-chip counts move.
@@ -221,8 +242,8 @@ export default function Catalog() {
       </div>
 
       {showForm && (
-        <form onSubmit={handleCreate} className="mb-6 p-4 bg-port-card border border-port-border rounded-lg">
-          <div className="grid grid-cols-1 sm:grid-cols-[180px_1fr_auto] gap-3 items-end">
+        <form onSubmit={handleCreate} className="mb-6 p-4 bg-port-card border border-port-border rounded-lg space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-[180px_1fr] gap-3">
             <div>
               <label htmlFor="catalog-new-type" className="block text-xs uppercase tracking-wider text-gray-500 mb-1">
                 Type
@@ -253,23 +274,39 @@ export default function Catalog() {
                 className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm"
               />
             </div>
-            <div className="flex gap-2">
-              <button
-                type="submit"
-                disabled={creating || !form.name.trim()}
-                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
-              >
-                {creating ? <Loader2 size={14} className="animate-spin" /> : null}
-                Create
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowForm(false)}
-                className="px-3 py-2 rounded-lg text-gray-400 hover:text-white text-sm"
-              >
-                Cancel
-              </button>
-            </div>
+          </div>
+          <div>
+            <label htmlFor="catalog-new-content" className="block text-xs uppercase tracking-wider text-gray-500 mb-1">
+              {form.type === 'character' ? 'Physical Description'
+                : (form.type === 'idea' || form.type === 'scene' || form.type === 'concept') ? 'Summary'
+                : 'Description'}
+              <span className="normal-case text-gray-500"> (optional)</span>
+            </label>
+            <textarea
+              id="catalog-new-content"
+              rows={4}
+              value={form.content}
+              onChange={(e) => setForm((f) => ({ ...f, content: e.target.value }))}
+              placeholder="Capture the idea here — you can flesh it out in the editor."
+              className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm focus:outline-none focus:border-port-accent"
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setShowForm(false)}
+              className="px-3 py-2 rounded-lg text-gray-400 hover:text-white text-sm"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={creating || !form.name.trim()}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
+            >
+              {creating ? <Loader2 size={14} className="animate-spin" /> : null}
+              Create
+            </button>
           </div>
         </form>
       )}
@@ -289,28 +326,43 @@ export default function Catalog() {
           {items.map((it) => {
             const armed = armedId === it.id;
             const name = it.name || '(untitled)';
+            // The card is one big Link so clicking anywhere (name, badge, tags,
+            // snippet, empty body) opens the editor. The delete control sits in
+            // absolute-positioned overlay so it intercepts clicks before they
+            // bubble to the link.
             return (
-              <li key={it.id} className="bg-port-card border border-port-border rounded-lg p-3 flex flex-col gap-2">
-                <div className="flex items-start justify-between gap-2">
-                  <Link
-                    to={`/catalog/${encodeURIComponent(it.type)}/${encodeURIComponent(it.id)}`}
-                    className="text-white font-medium hover:text-port-accent transition-colors min-w-0 flex-1 truncate"
-                  >
-                    {name}
-                  </Link>
+              <li key={it.id} className="relative bg-port-card border border-port-border rounded-lg hover:border-port-accent/60 transition-colors">
+                <Link
+                  to={`/catalog/${encodeURIComponent(it.type)}/${encodeURIComponent(it.id)}`}
+                  className="flex flex-col gap-2 p-3 pr-10 min-h-[88px]"
+                >
+                  <span className="block text-white font-medium truncate">{name}</span>
+                  <span className="flex items-center gap-1.5 flex-wrap">
+                    <TypeBadge type={it.type} />
+                    {(it.tags || []).slice(0, 4).map((tag) => (
+                      <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded bg-port-bg border border-port-border text-gray-400">
+                        {tag}
+                      </span>
+                    ))}
+                  </span>
+                  {payloadSnippet(it.payload) ? (
+                    <span className="text-xs text-gray-400 line-clamp-3">{payloadSnippet(it.payload)}</span>
+                  ) : null}
+                </Link>
+                <div className="absolute top-2 right-2">
                   {armed ? (
-                    <span className="inline-flex items-center gap-1 text-xs">
-                      <span className="text-gray-400">Delete?</span>
+                    <span className="inline-flex items-center gap-1 text-xs bg-port-card border border-port-border rounded px-1 py-0.5">
+                      <span className="text-gray-400 pl-1">Delete?</span>
                       <button
                         type="button"
-                        onClick={() => confirmDelete(it)}
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); confirmDelete(it); }}
                         className="px-2 py-0.5 rounded bg-port-error/20 text-port-error hover:bg-port-error/30 font-medium"
                       >
                         Yes
                       </button>
                       <button
                         type="button"
-                        onClick={() => setArmedId(null)}
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setArmedId(null); }}
                         className="px-2 py-0.5 rounded text-gray-400 hover:text-white"
                       >
                         No
@@ -319,8 +371,8 @@ export default function Catalog() {
                   ) : (
                     <button
                       type="button"
-                      onClick={() => setArmedId(it.id)}
-                      className="p-1.5 rounded text-gray-500 hover:text-port-error"
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); setArmedId(it.id); }}
+                      className="p-1.5 rounded text-gray-500 hover:text-port-error bg-port-card"
                       aria-label={`Delete ${name}`}
                       title="Delete ingredient"
                     >
@@ -328,17 +380,6 @@ export default function Catalog() {
                     </button>
                   )}
                 </div>
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <TypeBadge type={it.type} />
-                  {(it.tags || []).slice(0, 4).map((tag) => (
-                    <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded bg-port-bg border border-port-border text-gray-400">
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-                {payloadSnippet(it.payload) ? (
-                  <p className="text-xs text-gray-400 line-clamp-3">{payloadSnippet(it.payload)}</p>
-                ) : null}
               </li>
             );
           })}
