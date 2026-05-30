@@ -14,45 +14,34 @@
  * is sufficient per the CLAUDE.md record-creating-tests rule.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import { checkHealth, ensureSchema, close } from '../lib/db.js';
 import * as catalogDB from './catalogDB.js';
 
-// Probe the DB once before the suite. `dbReady` gates every test: when false
-// we register the suite with `describe.skip` so the runner reports them as
-// skipped (with the reason logged) instead of erroring on a missing socket.
+// Probe the DB ONCE at module load via top-level await, so the suite is
+// registered with `describe.skipIf(!dbReady)` below and the runner reports
+// its tests as SKIPPED when Postgres is unreachable — rather than as
+// zero-assertion green, which would silently mask a broken connection in CI.
 let dbReady = false;
 let skipReason = '';
-
-beforeAll(async () => {
-  const health = await checkHealth();
+{
+  const health = await checkHealth().catch((e) => ({ connected: false, error: e?.message }));
   if (!health.connected) {
     skipReason = `Postgres not reachable (${health.error || 'no connection'})`;
-    return;
+  } else {
+    // ensureSchema is idempotent: creates the catalog tables when absent and
+    // ALTERs an older DB (missing newer tombstone columns) up to current.
+    await ensureSchema().catch(() => {});
+    const recheck = await checkHealth().catch(() => ({ hasCatalogSchema: false }));
+    if (recheck.hasCatalogSchema) dbReady = true;
+    else skipReason = 'catalog schema not present (ensureSchema did not create catalog tables)';
   }
-  // Always run the idempotent ensureSchema upgrades before the suite: a DB
-  // provisioned by an older PortOS may have the catalog tables but be missing
-  // newer columns (e.g. the ref tombstone `deleted`/`deleted_at`). ensureSchema
-  // creates the tables when absent and ALTERs them up to current when present.
-  await ensureSchema().catch(() => {});
-  const recheck = await checkHealth();
-  if (!recheck.hasCatalogSchema) {
-    skipReason = 'catalog schema not present (ensureSchema did not create catalog tables)';
-    return;
-  }
-  dbReady = true;
-});
-
-// Vitest evaluates describe bodies eagerly, before beforeAll runs, so we can't
-// branch on `dbReady` at registration time. Instead each test no-ops with a
-// console note when the DB is unavailable — keeping the suite green and loud.
-function requireDb(t) {
-  if (!dbReady) {
-    console.log(`⏭️ catalogDB.test: skipping "${t}" — ${skipReason || 'no database'}`);
-    return false;
-  }
-  return true;
 }
+if (!dbReady) console.log(`⏭️ catalogDB.test: skipping suite — ${skipReason || 'no database'}`);
+
+// Secondary guard for the (registered) tests: when the suite runs, dbReady is
+// always true here, so this is a no-op; describe.skipIf is the real gate.
+function requireDb() { return dbReady; }
 
 // Track ids created across tests so end-of-suite cleanup hard-deletes them
 // even when an assertion throws mid-test. Cleanup runs BEFORE the pool is
@@ -71,7 +60,7 @@ afterAll(async () => {
   await close();
 });
 
-describe('catalogDB (Postgres CRUD round-trip)', () => {
+describe.skipIf(!dbReady)('catalogDB (Postgres CRUD round-trip)', () => {
   it('creates and reads back an ingredient with payload + tags', async () => {
     if (!requireDb('create/get ingredient')) return;
     const created = await catalogDB.createIngredient({
@@ -166,16 +155,28 @@ describe('catalogDB (Postgres CRUD round-trip)', () => {
     expect(noop).toBeNull();
   });
 
-  it('lists ingredients filtered by type', async () => {
+  it('lists by type and strips the embedding on the light path (but getIngredient returns it)', async () => {
     if (!requireDb('list by type')) return;
-    const scene = await catalogDB.createIngredient({ type: 'scene', name: 'Rooftop Standoff' });
+    // 768-dim to match the catalog_ingredients.embedding vector(768) column —
+    // the row genuinely HAS an embedding, so a null on the list path proves the
+    // light-column projection strips it (not merely an absent vector).
+    const vec = Array.from({ length: 768 }, (_, i) => (i % 7) * 0.01);
+    const scene = await catalogDB.createIngredient({
+      type: 'scene', name: 'Rooftop Standoff', embedding: vec, embeddingModel: 'test-model',
+    });
     createdIngredientIds.add(scene.id);
 
     const { items } = await catalogDB.listIngredients({ type: 'scene', limit: 200 });
     expect(items.every((i) => i.type === 'scene')).toBe(true);
-    expect(items.some((i) => i.id === scene.id)).toBe(true);
-    // The light list path strips the embedding column.
-    expect(items[0].embedding).toBeNull();
+    const listed = items.find((i) => i.id === scene.id);
+    expect(listed).toBeTruthy();
+    // Light list path omits the embedding column → null.
+    expect(listed.embedding).toBeNull();
+
+    // The full read returns the populated 768-vector — the divergence is the contract.
+    const full = await catalogDB.getIngredient(scene.id);
+    expect(Array.isArray(full.embedding)).toBe(true);
+    expect(full.embedding).toHaveLength(768);
   });
 
   it('links an ingredient to a ref, lists both directions, then soft-unlinks', async () => {

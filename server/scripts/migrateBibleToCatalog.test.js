@@ -20,7 +20,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 let universes = [];
 
 vi.mock('../services/universeBuilder.js', () => ({
-  listUniverses: vi.fn(async () => universes.filter((u) => !u.deleted)),
+  // Honor `includeDeleted` like the real service (the migration calls it with
+  // `{ includeDeleted: false }`), so the in-source `if (universe.deleted)`
+  // guard can be exercised independently by overriding this mock per-test.
+  listUniverses: vi.fn(async ({ includeDeleted = true } = {}) =>
+    (includeDeleted ? universes : universes.filter((u) => !u.deleted))),
   updateUniverse: vi.fn(async (id, patchOrMutator) => {
     const u = universes.find((x) => x.id === id);
     if (!u) return null;
@@ -88,6 +92,7 @@ vi.mock('fs/promises', () => ({
 }));
 
 import { migrateBibleToCatalog } from './migrateBibleToCatalog.js';
+import { listUniverses } from '../services/universeBuilder.js';
 
 function makeUniverse(overrides = {}) {
   return {
@@ -168,8 +173,14 @@ describe('migrateBibleToCatalog', () => {
     expect(ingredients.size).toBe(4);
   });
 
-  it('skips universes flagged deleted', async () => {
+  it('skips a soft-deleted universe via the in-source guard even if listUniverses leaks it', async () => {
     universes = [makeUniverse({ deleted: true })];
+    // Force listUniverses to RETURN the deleted universe (simulating a stale
+    // service that ignores includeDeleted, or a peer-synced delete flag) so the
+    // migration's own `if (universe.deleted) continue` is the thing under test —
+    // not the listUniverses filter. Without this override the mock would honor
+    // includeDeleted:false and the guard would never be reached.
+    listUniverses.mockResolvedValueOnce(universes);
     const result = await migrateBibleToCatalog();
     expect(result.stats.universesScanned).toBe(0);
     expect(result.stats.promoted).toBe(0);
