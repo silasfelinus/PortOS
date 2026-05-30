@@ -271,10 +271,14 @@ export async function getScrap(id) {
   return rowToScrap(result.rows[0]);
 }
 
+// `parent_scrap_id IS NULL` hides child chunk rows from the user-facing list —
+// a long paste that chunked into a parent + N children should surface as ONE
+// scrap (the parent carries the full text), not N+1 entries. Children are an
+// internal extraction detail reached only via listChildScraps.
 export async function listScraps({ limit = 50, offset = 0 } = {}) {
   const result = await query(
     `SELECT * FROM catalog_scraps
-     WHERE deleted = false
+     WHERE deleted = false AND parent_scrap_id IS NULL
      ORDER BY created_at DESC
      LIMIT $1 OFFSET $2`,
     [limit, offset],
@@ -1515,7 +1519,9 @@ export async function getCatalogBundleForRef(refKind, refId) {
 export async function getCatalogStats() {
   const [byTypeResult, scrapResult, withEmb] = await Promise.all([
     query(`SELECT type, COUNT(*) AS count FROM catalog_ingredients WHERE deleted = false GROUP BY type`),
-    query(`SELECT COUNT(*) AS count FROM catalog_scraps WHERE deleted = false`),
+    // Count only parent/standalone scraps — child chunk rows are an internal
+    // extraction detail and would inflate the user-facing scrap count.
+    query(`SELECT COUNT(*) AS count FROM catalog_scraps WHERE deleted = false AND parent_scrap_id IS NULL`),
     query(`SELECT COUNT(*) AS count FROM catalog_ingredients WHERE deleted = false AND embedding IS NOT NULL`),
   ]);
   const byType = {};

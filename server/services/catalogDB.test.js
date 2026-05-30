@@ -277,6 +277,15 @@ describe.skipIf(!dbReady)('catalogDB (Postgres CRUD round-trip)', () => {
     });
     // Lossless: concatenating child slices reproduces the original text.
     expect(children.map((c) => c.rawText).join('')).toBe(rawText);
+
+    // The user-facing list hides child chunks — the parent appears, the
+    // children do not (they're an internal extraction detail).
+    const { items } = await catalogDB.listScraps({ limit: 200 });
+    const listedIds = new Set(items.map((s) => s.id));
+    expect(listedIds.has(parent.id)).toBe(true);
+    for (const child of children) {
+      expect(listedIds.has(child.id), `child ${child.id} leaked into listScraps`).toBe(false);
+    }
   });
 
   it('exportSliceForRef bundles ingredients + scraps + refs for a ref', async () => {
