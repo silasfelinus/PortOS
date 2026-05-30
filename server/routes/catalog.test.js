@@ -193,3 +193,32 @@ describe.skipIf(!dbReady)('POST /api/catalog/ingredients/:id/revisions/:revision
     expect(r.status).toBe(404);
   });
 });
+
+describe.skipIf(!dbReady)('GET /api/catalog/ingredients/:id/details — batched hydration', () => {
+  it('returns ingredient + refs + sources + relations + revisions + media + missingMedia in one response', async () => {
+    const a = await catalogDB.createIngredient({ type: 'character', name: `Details A ${NONCE}`, payload: { physicalDescription: 'lead' } });
+    const b = await catalogDB.createIngredient({ type: 'place', name: `Details B ${NONCE}`, payload: { description: 'a place' } });
+    createdIngredientIds.add(a.id);
+    createdIngredientIds.add(b.id);
+    await catalogDB.linkIngredientRelation(a.id, b.id, 'lives-in');
+    await catalogDB.updateIngredient(a.id, { payload: { physicalDescription: 'lead, edited' } }); // → a revision
+
+    const r = await request(makeApp()).get(`/api/catalog/ingredients/${a.id}/details`);
+    expect(r.status).toBe(200);
+    expect(r.body.ingredient.id).toBe(a.id);
+    expect(r.body.ingredient).not.toHaveProperty('embedding'); // stripped by default
+    expect(Array.isArray(r.body.refs)).toBe(true);
+    expect(Array.isArray(r.body.sources)).toBe(true);
+    expect(Array.isArray(r.body.media)).toBe(true);
+    expect(Array.isArray(r.body.missingMedia)).toBe(true);
+    expect(Array.isArray(r.body.revisions)).toBe(true);
+    expect(r.body.revisions.length).toBeGreaterThan(0);          // the edit above
+    // The relation A→B shows up as an outbound edge to B.
+    expect(r.body.relations.outbound.some((e) => e.toId === b.id && e.kind === 'lives-in')).toBe(true);
+  });
+
+  it('404s for an unknown ingredient id', async () => {
+    const r = await request(makeApp()).get(`/api/catalog/ingredients/cat-chr-does-not-exist-${NONCE}/details`);
+    expect(r.status).toBe(404);
+  });
+});

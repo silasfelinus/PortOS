@@ -10,10 +10,9 @@ import { useNavigate, useParams, Link } from 'react-router-dom';
 import { Sparkles, Save, Trash2, ArrowLeft, Loader2, ExternalLink, Plus, X, History, RotateCcw, Image as ImageIcon, Star, ChevronDown } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import {
-  getCatalogIngredient,
+  getCatalogIngredientDetails,
   updateCatalogIngredient,
   deleteCatalogIngredient,
-  listCatalogIngredientRelations,
   linkCatalogIngredientRelation,
   unlinkCatalogIngredientRelation,
   listCatalogIngredientRevisions,
@@ -85,45 +84,44 @@ export default function CatalogIngredient() {
       .catch(() => { /* history is non-critical — leave the panel empty */ });
   }, [id]);
 
+  // One batched request hydrates the whole page on mount: ingredient + refs +
+  // sources + relations + revisions + media + missing-media. Post-mutation
+  // updates still use the granular refreshRevisions / refreshMedia callbacks +
+  // optimistic relation state, so a single edit doesn't re-pull everything.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    getCatalogIngredient(id, { silent: true })
-      .then((r) => {
+    getCatalogIngredientDetails(id, { silent: true })
+      .then((d) => {
         if (cancelled) return;
-        if (!r) {
+        if (!d?.ingredient) {
+          setLoading(false);
           toast.error('Ingredient not found');
           navigate('/catalog');
           return;
         }
-        setRecord(r);
+        const r = d.ingredient;
+        setRecord({ ...r, refs: d.refs, sources: d.sources });
         setName(r.name || '');
         setTags(Array.isArray(r.tags) ? r.tags : []);
         setPayload(r.payload && typeof r.payload === 'object' ? { ...r.payload } : {});
+        setRelations({
+          outbound: Array.isArray(d.relations?.outbound) ? d.relations.outbound : [],
+          inbound: Array.isArray(d.relations?.inbound) ? d.relations.inbound : [],
+        });
+        setRevisions(Array.isArray(d.revisions) ? d.revisions : []);
+        setMedia(Array.isArray(d.media) ? d.media : []);
+        setMissingMedia(new Set(Array.isArray(d.missingMedia) ? d.missingMedia.map((m) => m.mediaKey) : []));
         setLoading(false);
-        refreshRevisions();
       })
       .catch((err) => {
         if (cancelled) return;
+        setLoading(false);
         toast.error(err?.message || 'Failed to load ingredient');
         navigate('/catalog');
       });
     return () => { cancelled = true; };
-  }, [id, navigate, refreshRevisions]);
-
-  useEffect(() => {
-    let cancelled = false;
-    listCatalogIngredientRelations(id, { silent: true })
-      .then((data) => {
-        if (cancelled) return;
-        setRelations({
-          outbound: Array.isArray(data?.outbound) ? data.outbound : [],
-          inbound: Array.isArray(data?.inbound) ? data.inbound : [],
-        });
-      })
-      .catch(() => { if (!cancelled) setRelations({ outbound: [], inbound: [] }); });
-    return () => { cancelled = true; };
-  }, [id]);
+  }, [id, navigate]);
 
   // Add an outbound edge (this ingredient → picked target). Optimistically
   // appends to local state so the panel updates without a refetch.
@@ -175,8 +173,8 @@ export default function CatalogIngredient() {
       .then((r) => setMissingMedia(new Set(Array.isArray(r?.missing) ? r.missing.map((m) => m.mediaKey) : [])))
       .catch(() => { /* integrity overlay is best-effort */ });
   }, [id]);
-
-  useEffect(() => { refreshMedia(); }, [refreshMedia]);
+  // Initial media/relations/revisions are seeded by the batched details load
+  // above; refreshMedia / refreshRevisions only run after a mutation.
 
   // Attach a media key (gallery filename) as a typed attachment. `kind` defaults
   // to 'reference' for drag-drop / picker; the "set portrait" path routes

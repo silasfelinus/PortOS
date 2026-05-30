@@ -198,6 +198,36 @@ router.get('/ingredients/:id', asyncHandler(async (req, res) => {
   });
 }));
 
+// Batched detail hydration: ONE round-trip for everything the detail page loads
+// on mount — refs + sources + relations + revisions + media + missing-media —
+// replacing five separate client requests. Post-mutation refreshes still hit the
+// granular endpoints (revisions / media) so a single attach or restore doesn't
+// re-pull the whole record. Embedding is stripped like the single-ingredient
+// route (opt in with `?includeEmbedding=true`).
+router.get('/ingredients/:id/details', asyncHandler(async (req, res) => {
+  const ing = await catalogDB.getIngredient(req.params.id);
+  if (!ing) throw new ServerError('Ingredient not found', { status: 404 });
+  const [refs, sources, relations, revisions, media, missingMedia] = await Promise.all([
+    catalogDB.listRefsForIngredient(req.params.id),
+    catalogDB.listSourcesForIngredient(req.params.id),
+    catalogDB.listRelationsForIngredient(req.params.id),
+    catalogDB.listIngredientRevisions(req.params.id, { limit: 50 }),
+    catalogDB.listMediaForIngredient(req.params.id),
+    catalogDB.getMissingMediaForIngredient(req.params.id),
+  ]);
+  const includeEmbedding = req.query.includeEmbedding === 'true';
+  const { embedding, ...rest } = ing;
+  res.json({
+    ingredient: includeEmbedding ? { ...rest, embedding } : rest,
+    refs,
+    sources,
+    relations,                                 // { outbound, inbound }
+    revisions: Array.isArray(revisions?.items) ? revisions.items : [],
+    media,                                      // array of attachments
+    missingMedia,                               // array of { mediaKey, ... }
+  });
+}));
+
 router.post('/ingredients', asyncHandler(async (req, res) => {
   validateRequest(catalogIngredientCreateSchema, req.body);
   const ing = await catalogDB.createIngredient({
