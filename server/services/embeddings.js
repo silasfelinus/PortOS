@@ -98,14 +98,24 @@ export async function embedText(text, options = {}) {
  */
 export function ingredientEmbedSeed({ name, payload } = {}) {
   const p = payload || {};
+  // Include every narrative-weight field across the six ingredient types:
+  // character → role/physicalDescription/personality/background/motivations;
+  // place → slugline/era/description; object → description/significance;
+  // light types (idea/scene/concept) → summary/description/notes. Missing any
+  // of these leaves an ingredient effectively name-only in vector search.
   return [
     name,
+    p.role,
     p.description,
-    p.summary,
-    p.notes,
-    p.background,
     p.physicalDescription,
     p.personality,
+    p.background,
+    p.motivations,
+    p.summary,
+    p.notes,
+    p.slugline,
+    p.era,
+    p.significance,
   ]
     .filter(Boolean)
     .join(' ')

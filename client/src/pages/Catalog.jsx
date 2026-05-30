@@ -52,12 +52,22 @@ const PRIMARY_CONTENT_LABEL = {
 };
 
 // Pull a short snippet from the type-specific payload — first hit wins,
-// trimmed and ellipsised to ~120 chars. Characters use `physicalDescription`
-// (canon shape), so check it first to avoid rendering empty rows for
-// bible-backfilled characters whose only narrative text lives there.
+// trimmed and ellipsised to ~120 chars. Fallback chain covers every canon
+// narrative field across the six ingredient types: characters
+// (physicalDescription / personality / role), places/objects (description /
+// significance), light types (summary / notes). Without the broader fallback,
+// objects-with-only-significance and characters-with-only-personality render
+// as snippet-less rows.
 function payloadSnippet(payload) {
   if (!payload || typeof payload !== 'object') return '';
-  const raw = payload.physicalDescription || payload.description || payload.summary || payload.notes || '';
+  const raw = payload.physicalDescription
+    || payload.description
+    || payload.summary
+    || payload.personality
+    || payload.significance
+    || payload.role
+    || payload.notes
+    || '';
   const text = String(raw).trim().replace(/\s+/g, ' ');
   if (text.length <= 120) return text;
   return `${text.slice(0, 117)}…`;
@@ -154,9 +164,17 @@ export default function Catalog() {
     if (!created) return;
     toast.success(`Created ${form.type} "${name}"`);
     closeForm();
-    // Update list locally (CLAUDE.md: prefer state update over refetch) but
-    // still refresh stats so the type-chip counts move.
-    setItems((prev) => [created, ...prev]);
+    // Only prepend optimistically if the new row would actually pass the
+    // current filter — otherwise it appears in a filtered view it doesn't
+    // match and lingers until the next refetch. Search-text gating is best-
+    // effort (string includes vs server-side full-text); when in doubt, skip
+    // the optimistic insert so the user just sees a clean view + accurate stats.
+    const matchesType = !selectedType || created.type === selectedType;
+    const matchesSearch = !q
+      || (created.name || '').toLowerCase().includes(q.toLowerCase());
+    if (matchesType && matchesSearch) {
+      setItems((prev) => [created, ...prev]);
+    }
     loadStats();
   };
 
