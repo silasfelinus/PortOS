@@ -403,7 +403,10 @@ describe('syncOrchestrator', () => {
           ok: true,
           json: async () => ({
             ingredients: [],
-            maxSequences: { scraps: '0', ingredients: '5', sources: '0', refs: '0', relations: '0', tags: '0', media: '0' },
+            // No rows for the stale cursor → maxSequences ECHOES the inbound
+            // cursor (999), but tableMaxSequences reports the TRUE max (5).
+            maxSequences: { scraps: '0', ingredients: '999', sources: '0', refs: '0', relations: '0', tags: '0', media: '0' },
+            tableMaxSequences: { scraps: '0', ingredients: '5', sources: '0', refs: '0', relations: '0', tags: '0', media: '0' },
             hasMore: true,
             portosMeta: { schemaVersions: { catalog: 1 } },
           }),
@@ -413,6 +416,7 @@ describe('syncOrchestrator', () => {
           json: async () => ({
             ingredients: [{ id: 'a' }],
             maxSequences: { scraps: '0', ingredients: '5', sources: '0', refs: '0', relations: '0', tags: '0', media: '0' },
+            tableMaxSequences: { scraps: '0', ingredients: '5', sources: '0', refs: '0', relations: '0', tags: '0', media: '0' },
             hasMore: false,
             portosMeta: { schemaVersions: { catalog: 1 } },
           }),

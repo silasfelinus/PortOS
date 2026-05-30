@@ -86,6 +86,13 @@ export async function getChangesSince(since = '0', limit = 100) {
   const maxOf = (items, fallback) =>
     items.length > 0 ? items[items.length - 1].syncSequence : fallback;
 
+  // True per-table maxima, INDEPENDENT of the inbound cursor. `maxSequences`
+  // (below) falls back to the inbound cursor on a quiet kind, so it can't be
+  // used to detect a peer rebuild/restore — it would just echo the caller's
+  // cursor. `tableMaxSequences` reports the real MAX(sync_sequence) so the
+  // receiver can spot `savedCursor > tableMax` and rewind. One cheap MAX query.
+  const tableMaxSequences = await getMaxSequences();
+
   return {
     scraps: scraps.items,
     ingredients: ingredients.items,
@@ -103,6 +110,7 @@ export async function getChangesSince(since = '0', limit = 100) {
       tags:        maxOf(tags.items,        cursors.tags),
       media:       maxOf(media.items,       cursors.media),
     },
+    tableMaxSequences,
     hasMore,
   };
 }

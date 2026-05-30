@@ -215,25 +215,28 @@ async function syncCatalogFromPeer(peer, peerId, cursor) {
     if (!data) break;
 
     // Detect a peer catalog rebuild/restore: if our saved cursor for a kind
-    // exceeds the peer's reported maximum, that table's sequence was reset, so
-    // our `since[kind]=<high>` would skip every row forever. Rewind the
+    // exceeds the peer's TRUE table maximum, that table's sequence was reset,
+    // so our `since[kind]=<high>` would skip every row forever. Rewind the
     // affected kinds to 0 and re-fetch from scratch before applying — safe
-    // because catalog apply is idempotent (LWW / ON CONFLICT dedup). Mirrors
-    // the brain/memory `detectCursorReset` path, but uses the sync response's
-    // own maxSequences so it needs no separate peer probe.
-    if (firstFetch && isPlainObjectShallow(data.maxSequences)) {
+    // because catalog apply is idempotent (LWW / ON CONFLICT dedup). We compare
+    // against `tableMaxSequences` (real MAX per table), NOT `maxSequences`,
+    // which falls back to our own inbound cursor on a quiet kind and so could
+    // never signal a reset. Absent on a pre-this-version peer → detection is
+    // skipped (backward-compatible).
+    if (firstFetch && isPlainObjectShallow(data.tableMaxSequences)) {
       let rewound = false;
       for (const kind of CATALOG_CURSOR_KINDS) {
         const ours = catalogSeqs[kind];
-        const peerMax = data.maxSequences[kind];
+        const peerMax = data.tableMaxSequences[kind];
         if (typeof ours === 'string' && /^\d+$/.test(ours)
             && typeof peerMax === 'string' && /^\d+$/.test(peerMax)
             && BigInt(ours) > BigInt(peerMax)) {
-          console.log(`🔄 Catalog cursor reset for ${peer.name} (${kind}): cursor ${ours} > peer max ${peerMax}`);
+          console.log(`🔄 Catalog cursor reset for ${peer.name} (${kind}): cursor ${ours} > peer table max ${peerMax}`);
           catalogSeqs[kind] = '0';
           rewound = true;
         }
-      }      if (rewound) continue; // re-fetch with the rewound cursors before applying
+      }
+      if (rewound) continue; // re-fetch with the rewound cursors before applying
     }
     firstFetch = false;
 

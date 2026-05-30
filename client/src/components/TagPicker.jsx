@@ -107,7 +107,15 @@ export default function TagPicker({
           onChange={(e) => { setInput(e.target.value); setOpen(true); }}
           onKeyDown={handleKeyDown}
           onFocus={() => setOpen(true)}
-          onBlur={() => setTimeout(() => { if (mountedRef.current) setOpen(false); }, 120)}
+          onBlur={() => {
+            // Commit a typed-but-uncommitted tag on blur so clicking Save/Send
+            // (which blurs this input) doesn't silently drop it. addTag dedups
+            // and guards empty/max, so it's a no-op for a blank or duplicate
+            // input. Suggestion picks use onMouseDown+preventDefault and never
+            // blur, so they can't double-add here.
+            if (input.trim()) addTag(input);
+            setTimeout(() => { if (mountedRef.current) setOpen(false); }, 120);
+          }}
           placeholder={value.length >= maxTags ? `Max ${maxTags} tags` : placeholder}
           disabled={value.length >= maxTags}
           maxLength={maxTagChars}

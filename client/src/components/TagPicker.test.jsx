@@ -32,6 +32,25 @@ describe('TagPicker', () => {
     expect(onChange).toHaveBeenCalledWith(['Noir']);
   });
 
+  it('commits a typed-but-uncommitted tag on blur (so clicking Save does not drop it)', () => {
+    const onChange = vi.fn();
+    render(<TagPicker value={[]} onChange={onChange} />);
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'noir' } });
+    // No Enter/comma — the user clicks elsewhere (e.g. Save), blurring the input.
+    fireEvent.blur(input);
+    expect(onChange).toHaveBeenCalledWith(['noir']);
+  });
+
+  it('does not commit a blank input on blur', () => {
+    const onChange = vi.fn();
+    render(<TagPicker value={['noir']} onChange={onChange} />);
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: '   ' } });
+    fireEvent.blur(input);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it('commits the input as a tag on comma', () => {
     const onChange = vi.fn();
     render(<TagPicker value={[]} onChange={onChange} />);
