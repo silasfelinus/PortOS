@@ -12,15 +12,12 @@
 
 import { z } from 'zod';
 import { BIBLE_LIMITS } from './storyBible.js';
+import { INGREDIENT_TYPE_IDS } from './catalogTypes.js';
 
-export const INGREDIENT_TYPES = Object.freeze([
-  'character',
-  'place',
-  'object',
-  'idea',
-  'scene',
-  'concept',
-]);
+// Derived from the shared type registry (`catalogTypes.js`) — adding a type
+// there flows through to every Zod enum below automatically. Kept as a frozen
+// re-export so existing `import { INGREDIENT_TYPES }` callers are unaffected.
+export const INGREDIENT_TYPES = INGREDIENT_TYPE_IDS;
 
 export const REF_KINDS = Object.freeze([
   'universe',

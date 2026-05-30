@@ -14,52 +14,11 @@ import {
   updateCatalogIngredient,
   deleteCatalogIngredient,
 } from '../services/apiCatalog';
+import { getCatalogType, CATALOG_BADGE_BY_ID } from '../lib/catalogTypes';
 
-// Per-type payload field list. Each entry is `[key, label, kind]` where `kind`
-// is 'text' (single line) or 'textarea' (multi-line). idea/scene/concept all
-// share the lightweight shape.
-const LIGHT_FIELDS = [
-  ['summary',     'Summary',     'textarea'],
-  ['description', 'Description', 'textarea'],
-  ['notes',       'Notes',       'textarea'],
-];
-const PAYLOAD_FIELDS = {
-  character: [
-    ['role',                'Role',                  'text'],
-    // Canon character shape uses `physicalDescription` (matches
-    // sanitizeCharacter and the writers-room/bible extractor). A plain
-    // `description` here would render empty for backfill-promoted characters
-    // and edits would land in a sibling field the canon doesn't read.
-    ['physicalDescription', 'Physical Description',  'textarea'],
-    ['personality',         'Personality',           'textarea'],
-    ['background',          'Background',            'textarea'],
-    ['motivations',         'Motivations',           'textarea'],
-    ['notes',               'Notes',                 'textarea'],
-  ],
-  place: [
-    ['slugline',     'Slugline',     'text'],
-    ['era',          'Era',          'text'],
-    ['description',  'Description',  'textarea'],
-    ['notes',        'Notes',        'textarea'],
-  ],
-  object: [
-    ['description',  'Description',  'textarea'],
-    ['significance', 'Significance', 'textarea'],
-    ['notes',        'Notes',        'textarea'],
-  ],
-  idea: LIGHT_FIELDS,
-  scene: LIGHT_FIELDS,
-  concept: LIGHT_FIELDS,
-};
-
-const TYPE_BADGE = {
-  character: 'bg-blue-500/20 text-blue-300 border-blue-500/40',
-  place:     'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
-  object:    'bg-amber-500/20 text-amber-300 border-amber-500/40',
-  idea:      'bg-purple-500/20 text-purple-300 border-purple-500/40',
-  scene:     'bg-pink-500/20 text-pink-300 border-pink-500/40',
-  concept:   'bg-cyan-500/20 text-cyan-300 border-cyan-500/40',
-};
+// Per-type editor field list + badge color now come from the shared registry
+// (`client/src/lib/catalogTypes.js`). Each editor entry is `[key, label, kind]`
+// where `kind` is 'text' (single line) or 'textarea' (multi-line).
 
 // Map a refKind onto a click-through route. Returns null for kinds we don't
 // know how to deep-link to, so callers can render the chip without a link.
@@ -166,8 +125,8 @@ export default function CatalogIngredient() {
     );
   }
 
-  const fields = PAYLOAD_FIELDS[record.type] || PAYLOAD_FIELDS.idea;
-  const badgeClass = TYPE_BADGE[record.type] || 'bg-gray-500/20 text-gray-300 border-gray-500/40';
+  const fields = getCatalogType(record.type)?.editorFields || getCatalogType('idea').editorFields;
+  const badgeClass = CATALOG_BADGE_BY_ID[record.type] || 'bg-gray-500/20 text-gray-300 border-gray-500/40';
 
   // Group refs by kind for the "Appears in" panel. Tolerates either an array
   // of `{ refKind, refId, role }` or a server-grouped shape.

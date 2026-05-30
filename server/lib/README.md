@@ -51,6 +51,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `seasonStructure.js` | Season/episode structure recommendation. |
 | `bibleExtractor.js` | LLM bible-extraction stage + sanitization. |
 | `catalogBulkParsers.js` | Dependency-free markdown/CSV/JSON parsers for `POST /api/catalog/bulk-import` and YAML/markdown serializers for `GET /api/catalog/export`. |
+| `catalogTypes.js` | Shared catalog ingredient TYPE REGISTRY — one entry per type drives validation enum, ID prefix, FTS field set, extraction shape, per-record `payloadSchemaVersion` + upgraders. Mirrored on the client at `client/src/lib/catalogTypes.js`. |
 | `comicScriptParser.js` | Marvel/DC-format comic script parser. |
 | `composeStyledPrompt.js` | Compose user prompt + negative with an optional style preset. |
 | `creativeDirectorPresets.js` | Locked-at-creation aspect ratio + quality presets for the Creative Director. |

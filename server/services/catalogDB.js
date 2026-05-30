@@ -11,21 +11,14 @@
 
 import { randomUUID } from 'crypto';
 import { query, withTransaction, pgvectorToArray, arrayToPgvector } from '../lib/db.js';
+import {
+  getCatalogType,
+  ingredientIdPrefix,
+} from '../lib/catalogTypes.js';
 import { getInstanceId } from './instances.js';
 
-const TYPE_PREFIX = {
-  character: 'chr',
-  place: 'plc',
-  object: 'obj',
-  idea: 'idea',
-  scene: 'scn',
-  concept: 'cnc',
-};
-
 function newIngredientId(type) {
-  const prefix = TYPE_PREFIX[type];
-  if (!prefix) throw new Error(`Unknown ingredient type: ${type}`);
-  return `cat-${prefix}-${randomUUID()}`;
+  return `cat-${ingredientIdPrefix(type)}-${randomUUID()}`;
 }
 
 function newScrapId() {
@@ -195,7 +188,7 @@ export async function deleteScrap(id, { hard = false } = {}) {
 // See `POST /api/catalog/scraps/:id/commit` for the scrap-commit batch that
 // needs every per-draft ingredient + source-link to commit-or-rollback together.
 export async function createIngredient({ id: explicitId, type, name, payload = {}, tags = [], embedding = null, embeddingModel = null } = {}, { client } = {}) {
-  if (!type || !TYPE_PREFIX[type]) throw new Error(`Invalid ingredient type: ${type}`);
+  if (!type || !getCatalogType(type)) throw new Error(`Invalid ingredient type: ${type}`);
   if (!name || !String(name).trim()) throw new Error('name is required');
 
   // `explicitId` is used by the backfill when a universe arrives from a peer
