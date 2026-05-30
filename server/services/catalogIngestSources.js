@@ -46,6 +46,21 @@ const clampText = (s) => (typeof s === 'string' ? s.slice(0, RAW_TEXT_MAX) : '')
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * Shared tail for every source: create a typed scrap and run the SAME
+ * extraction pipeline the textarea-paste flow uses, returning `{ scrap, draft }`
+ * (the exact shape the existing /scraps/:id/extract route returns, so the
+ * client review flow is identical). The three source functions differ only in
+ * how they PRODUCE rawText / title / metadata; this codifies the "one pipeline"
+ * contract the module header describes. `log` receives the created scrap.
+ */
+async function createScrapAndExtract({ title, rawText, sourceKind, metadata, providerOverride, log }) {
+  const scrap = await catalogDB.createScrap({ title, rawText, sourceKind, metadata });
+  const draft = await extractIngredients({ rawText, scrapId: scrap.id, providerOverride });
+  if (log) console.log(log(scrap));
+  return { scrap, draft };
+}
+
+/**
  * Fetch a URL through the browser service and return its main text + title.
  * Uses CDP (the same headed/headless Chrome the rest of PortOS drives) so
  * JS-rendered pages and login-walled content the user is already signed into
@@ -94,15 +109,14 @@ export async function fetchUrlMainText(url, { settleMs = PAGE_SETTLE_MS } = {}) 
  */
 export async function ingestFromUrl({ url, providerOverride, settleMs } = {}) {
   const { text, title, finalUrl } = await fetchUrlMainText(url, settleMs !== undefined ? { settleMs } : {});
-  const scrap = await catalogDB.createScrap({
+  return createScrapAndExtract({
     title: title || finalUrl,
     rawText: text,
     sourceKind: 'url',
     metadata: { url: finalUrl, title: title || null },
+    providerOverride,
+    log: (s) => `🌐 Catalog URL ingest: ${finalUrl} → scrap ${s.id} (${text.length} chars)`,
   });
-  const draft = await extractIngredients({ rawText: text, scrapId: scrap.id, providerOverride });
-  console.log(`🌐 Catalog URL ingest: ${finalUrl} → scrap ${scrap.id} (${text.length} chars)`);
-  return { scrap, draft };
 }
 
 /**
@@ -113,15 +127,14 @@ export async function ingestFromUrl({ url, providerOverride, settleMs } = {}) {
 export async function ingestFromFile({ text, filename, mime, providerOverride } = {}) {
   const rawText = clampText(text);
   if (!rawText.trim()) throw new Error('file contained no extractable text');
-  const scrap = await catalogDB.createScrap({
+  return createScrapAndExtract({
     title: filename,
     rawText,
     sourceKind: 'file',
     metadata: { filename, mime: mime || null },
+    providerOverride,
+    log: (s) => `📄 Catalog file ingest: ${filename} → scrap ${s.id} (${rawText.length} chars)`,
   });
-  const draft = await extractIngredients({ rawText, scrapId: scrap.id, providerOverride });
-  console.log(`📄 Catalog file ingest: ${filename} → scrap ${scrap.id} (${rawText.length} chars)`);
-  return { scrap, draft };
 }
 
 /**
@@ -164,13 +177,13 @@ export async function ingestFromVoice(
   // doesn't litter data/audio with orphan files.
   const mediaKey = await persistFn(audioBuffer, mimeType);
 
-  const scrap = await catalogDB.createScrap({
+  const { scrap, draft } = await createScrapAndExtract({
     title: title?.trim() || 'Voice memo',
     rawText: transcript,
     sourceKind: 'voice-memo',
     metadata: { mediaKey, mimeType },
+    providerOverride,
+    log: (s) => `🎙️ Catalog voice ingest: ${mediaKey} → scrap ${s.id} (${transcript.length} chars)`,
   });
-  const draft = await extractIngredients({ rawText: transcript, scrapId: scrap.id, providerOverride });
-  console.log(`🎙️ Catalog voice ingest: ${mediaKey} → scrap ${scrap.id} (${transcript.length} chars)`);
   return { scrap, draft, mediaKey };
 }
