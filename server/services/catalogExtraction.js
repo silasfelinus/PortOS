@@ -296,11 +296,18 @@ export async function scanProseForIngredientRefs(text, scope = {}) {
   }
   if (byId.size === 0) return [];
 
-  const haystack = text.toLowerCase();
   const matched = [];
   for (const [id, name] of byId) {
-    const needle = String(name).trim().toLowerCase();
-    if (needle && haystack.includes(needle)) matched.push(id);
+    const needle = String(name).trim();
+    if (!needle) continue;
+    // Word-boundary match (not bare substring) so a short name like "Sun"
+    // doesn't false-positive inside "Sunday" or "Al" inside "always". Names
+    // are user-controlled, so escape regex metacharacters; the \p{L}\p{N}
+    // lookarounds keep multi-word phrases ("The Drowned Harbor") matching as a
+    // unit while still treating the whole name as one token boundary-wise.
+    const esc = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])`, 'iu');
+    if (re.test(text)) matched.push(id);
   }
   return matched.sort();
 }

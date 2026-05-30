@@ -272,7 +272,7 @@ describe('catalogExtraction — scanProseForIngredientRefs', () => {
     expect(catalogDB.listIngredientsForRef).not.toHaveBeenCalled();
   });
 
-  it('matches ingredient names as case-insensitive substrings of the prose', async () => {
+  it('matches ingredient names as case-insensitive word-boundary matches (incl. multi-word phrases)', async () => {
     catalogDB.listIngredientsForRef.mockResolvedValue([
       row('cat-chr-mira', 'Mira'),
       row('cat-chr-tomas', 'Tomas'),
@@ -280,9 +280,27 @@ describe('catalogExtraction — scanProseForIngredientRefs', () => {
     ]);
     const prose = 'mira crossed the drowned harbor at dawn, alone.';
     const ids = await scanProseForIngredientRefs(prose, { workId: 'wr-work-1' });
-    // Mira (lowercased) + The Drowned Harbor match; Tomas does not. Sorted.
+    // Mira (lowercased) + the multi-word phrase "The Drowned Harbor" match;
+    // Tomas does not. Sorted.
     expect(ids).toEqual(['cat-chr-mira', 'cat-plc-harbor'].sort());
     expect(catalogDB.listIngredientsForRef).toHaveBeenCalledWith('work', 'wr-work-1');
+  });
+
+  it('does not false-positive a short name embedded inside a larger word', async () => {
+    catalogDB.listIngredientsForRef.mockResolvedValue([
+      row('cat-chr-sun', 'Sun'),
+      row('cat-chr-al', 'Al'),
+    ]);
+    // "Sunday" contains "Sun" and "always" contains "Al", but neither is a
+    // real reference — word-boundary matching must reject both.
+    const ids = await scanProseForIngredientRefs('On Sunday she always waited.', { workId: 'wr-work-1' });
+    expect(ids).toEqual([]);
+  });
+
+  it('matches a short name when it appears as a whole word', async () => {
+    catalogDB.listIngredientsForRef.mockResolvedValue([row('cat-chr-sun', 'Sun')]);
+    const ids = await scanProseForIngredientRefs('The Sun rose over the bay.', { workId: 'wr-work-1' });
+    expect(ids).toEqual(['cat-chr-sun']);
   });
 
   it('scopes candidates to the linked refs — never an arbitrary catalog row', async () => {
