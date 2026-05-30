@@ -4,6 +4,7 @@
 import { Router } from 'express';
 import * as catalogDB from '../services/catalogDB.js';
 import * as catalogSync from '../services/catalogSync.js';
+import { withTransaction } from '../lib/db.js';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { validateRequest } from '../lib/validation.js';
 import {
@@ -88,25 +89,35 @@ router.post('/scraps/:id/commit', asyncHandler(async (req, res) => {
   if (!scrap) throw new ServerError('Scrap not found', { status: 404 });
 
   // Embed all drafts in parallel (concurrency-4 inside embedBatch) before
-  // sequentially writing — LLM round-trips dominate, DB inserts don't.
+  // sequentially writing — LLM round-trips dominate, DB inserts don't. Embeds
+  // stay OUTSIDE the transaction: they're network round-trips to the provider,
+  // not DB writes, and a half-embedded batch is fine (failed embeds just land
+  // as null `embedding` on the row, same as today).
   const seeds = req.body.accepted.map((d) => ingredientEmbedSeed(d));
   const embeds = await embedBatch(seeds);
 
-  const created = [];
-  for (let i = 0; i < req.body.accepted.length; i++) {
-    const draft = req.body.accepted[i];
-    const e = embeds[i];
-    const ing = await catalogDB.createIngredient({
-      type: draft.type,
-      name: draft.name,
-      payload: draft.payload || {},
-      tags: draft.tags || [],
-      embedding: e?.embedding ?? null,
-      embeddingModel: e?.model ?? null,
-    });
-    await catalogDB.linkIngredientToSource(ing.id, scrap.id, draft.span || null);
-    created.push(ing);
-  }
+  // Wrap the per-draft loop in a transaction so a mid-loop failure (DB
+  // timeout, future unique-constraint violation, span shape error) rolls back
+  // the whole batch instead of leaving some ingredients persisted without
+  // their source-link rows.
+  const created = await withTransaction(async (client) => {
+    const out = [];
+    for (let i = 0; i < req.body.accepted.length; i++) {
+      const draft = req.body.accepted[i];
+      const e = embeds[i];
+      const ing = await catalogDB.createIngredient({
+        type: draft.type,
+        name: draft.name,
+        payload: draft.payload || {},
+        tags: draft.tags || [],
+        embedding: e?.embedding ?? null,
+        embeddingModel: e?.model ?? null,
+      }, { client });
+      await catalogDB.linkIngredientToSource(ing.id, scrap.id, draft.span || null, { client });
+      out.push(ing);
+    }
+    return out;
+  });
 
   res.status(201).json({ scrap, ingredients: created });
 }));

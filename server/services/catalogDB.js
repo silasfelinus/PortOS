@@ -187,7 +187,12 @@ export async function deleteScrap(id, { hard = false } = {}) {
 }
 
 
-export async function createIngredient({ id: explicitId, type, name, payload = {}, tags = [], embedding = null, embeddingModel = null } = {}) {
+// `{ client }` is optional — when supplied, SQL runs on the caller's transaction
+// client (so the write rolls back if a later step in the same `withTransaction`
+// block throws). Absent, falls through to the pool-level `query` as before.
+// See `POST /api/catalog/scraps/:id/commit` for the scrap-commit batch that
+// needs every per-draft ingredient + source-link to commit-or-rollback together.
+export async function createIngredient({ id: explicitId, type, name, payload = {}, tags = [], embedding = null, embeddingModel = null } = {}, { client } = {}) {
   if (!type || !TYPE_PREFIX[type]) throw new Error(`Invalid ingredient type: ${type}`);
   if (!name || !String(name).trim()) throw new Error('name is required');
 
@@ -197,7 +202,8 @@ export async function createIngredient({ id: explicitId, type, name, payload = {
   // user-initiated creates omit it and we mint a fresh prefix:uuid.
   const id = explicitId || newIngredientId(type);
   const originInstanceId = await getInstanceId();
-  const result = await query(
+  const exec = client ? client.query.bind(client) : query;
+  const result = await exec(
     `INSERT INTO catalog_ingredients
        (id, type, name, payload, tags, embedding, embedding_model, origin_instance_id)
      VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
@@ -393,8 +399,12 @@ export async function searchIngredientsByText(q, { type, limit = 20 } = {}) {
 }
 
 
-export async function linkIngredientToSource(ingredientId, scrapId, span = null) {
-  await query(
+// `{ client }` is optional — see the createIngredient comment above. Passing
+// the same client used to insert the ingredient row keeps the source-link row
+// in the same transaction so a mid-batch failure rolls back both halves.
+export async function linkIngredientToSource(ingredientId, scrapId, span = null, { client } = {}) {
+  const exec = client ? client.query.bind(client) : query;
+  await exec(
     `INSERT INTO catalog_ingredient_sources (ingredient_id, scrap_id, span)
      VALUES ($1, $2, $3::jsonb)
      ON CONFLICT (ingredient_id, scrap_id) DO UPDATE SET span = EXCLUDED.span`,
