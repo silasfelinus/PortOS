@@ -98,7 +98,9 @@ function normalizeEntry(input, index) {
 }
 
 /**
- * JSON: must be a non-empty array of objects.
+ * JSON: accepts either a bare array of entries OR a full export bundle
+ * (`{ version, ref, ingredients: [...] }`) so the export → edit → re-import
+ * round trip works without the user having to strip the wrapper.
  */
 export function parseJsonBulk(payload) {
   if (typeof payload !== 'string') {
@@ -110,10 +112,13 @@ export function parseJsonBulk(payload) {
   } catch (err) {
     throw new Error(`invalid JSON: ${err.message}`);
   }
-  if (!Array.isArray(parsed)) {
-    throw new Error('json payload must be an array of objects');
+  const entries = Array.isArray(parsed)
+    ? parsed
+    : (parsed && Array.isArray(parsed.ingredients) ? parsed.ingredients : null);
+  if (!entries) {
+    throw new Error('json payload must be an array of entries or an export bundle with an `ingredients` array');
   }
-  return parsed.map((entry, i) => normalizeEntry(entry, i));
+  return entries.map((entry, i) => normalizeEntry(entry, i));
 }
 
 /**

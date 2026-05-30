@@ -157,7 +157,14 @@ export default function CatalogIngest() {
     setBulkSubmitting(false);
     if (!result) return;
     const n = result.count || 0;
+    const warnings = Array.isArray(result.warnings) ? result.warnings : [];
     toast.success(`Bulk imported ${n} ingredient${n === 1 ? '' : 's'}.`);
+    // Surface parser warnings (e.g. `## Plce: …` typos in markdown) before
+    // navigating away — otherwise the user has no signal that some sections
+    // were silently skipped.
+    if (warnings.length > 0) {
+      toast.error(`${warnings.length} section${warnings.length === 1 ? '' : 's'} skipped: ${warnings.join('; ')}`, { duration: 8000 });
+    }
     setBulkText('');
     setBulkOpen(false);
     navigate('/catalog');

@@ -67,6 +67,20 @@ describe('parseJsonBulk', () => {
   it('throws on missing name', () => {
     expect(() => parseJsonBulk(JSON.stringify([{ type: 'idea', name: '   ' }]))).toThrow(/name is required/);
   });
+
+  it('accepts an export-bundle wrapper with an ingredients array (round-trip)', () => {
+    const bundle = JSON.stringify({
+      version: 1,
+      ref: { kind: 'universe', id: 'u1' },
+      ingredients: [{ type: 'idea', name: 'X', payload: { summary: 'hi' } }],
+    });
+    const out = parseJsonBulk(bundle);
+    expect(out).toEqual([{ type: 'idea', name: 'X', payload: { summary: 'hi' }, tags: [] }]);
+  });
+
+  it('rejects an object root without an ingredients array', () => {
+    expect(() => parseJsonBulk(JSON.stringify({ version: 1, ref: { kind: 'universe', id: 'u1' } }))).toThrow(/array of entries or an export bundle/);
+  });
 });
 
 describe('parseCsvBulk', () => {
