@@ -470,6 +470,12 @@ export async function generateStep(id, stepId, options = {}) {
     // user started downstream. Rendered only when present, so the forward path
     // (seed-only) is byte-for-byte unchanged.
     const sourceMaterial = options.fromDownstream ? await collectIssueSourceText(session.seriesId) : '';
+    if (options.fromDownstream && !sourceMaterial) {
+      throw makeErr(
+        'No issue content to backfill the idea from — write a comic script, teleplay, or prose on at least one issue first',
+        ERR_VALIDATION,
+      );
+    }
     const { content, runId, providerId, model } = await runStagedLLM(
       'story-builder-idea-expand',
       { universeName: session.title, seedIdea: session.seedIdea || '', sourceMaterial },

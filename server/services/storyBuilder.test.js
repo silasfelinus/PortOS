@@ -320,4 +320,11 @@ describe('generateStep backfill (fromDownstream)', () => {
     expect(seenStage).toBe('story-builder-idea-expand');
     expect(seenVars.sourceMaterial).toBe('');
   });
+
+  it('idea backfill refuses when no issue has content', async () => {
+    installSpy();
+    const s = await sb.createStorySession({ title: 'Empty' });
+    await expect(sb.generateStep(s.id, 'idea', { fromDownstream: true }))
+      .rejects.toThrow(/No issue content/);
+  });
 });

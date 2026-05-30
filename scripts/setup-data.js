@@ -179,6 +179,10 @@ const SHIPPED_PROMPT_OLD_MD5 = {
   // universe-character-expand: pre-027 shipped, auto-updatable to the post-027
   // (`speechPattern` field added alongside `speechAccent`) hash.
   'universe-character-expand.md': ['ef109eb8e12ddb664c11c790271b5139'],
+  // story-builder-idea-expand: pre-055 (seed-only) and post-055-pre-fence
+  // ({{sourceMaterial}} block, no guard) auto-updatable to the post-055-fence
+  // ({{sourceMaterial}} block + injection-guard sentence) hash.
+  'story-builder-idea-expand.md': ['a23939626a226f7420cebfb45d47950c', '778c86e2caa120856c36e4d5a4da3355'],
   // editorial-analysis: pre-042 (pipe-separated arcDirection enum + ≤160
   // excerpt) auto-updatable to the post-042 (single-value example, ≤200) hash.
   'pipeline-editorial-analysis.md': ['14d9879697c66d51830cc798040d5369'],
@@ -208,6 +212,7 @@ const SHIPPED_PROMPT_NEW_MD5 = {
   'writers-room-places.md':     'a7f68e51dd6b4421d20f5bd9d855d9b4',
   'cos-agent-briefing.md':      'dccb392a43cbd3dac900fee12c31619a',
   'universe-character-expand.md':'67b6e73ed47f318451a730088b4cff14',
+  'story-builder-idea-expand.md':'c12d76fefaaded2838023065bfc94bb0',
   'pipeline-editorial-analysis.md':'daeb02bd54b0c099b21af659c6298cfe',
 };
 const SHIPPED_PROMPT_FILES = Object.keys(SHIPPED_PROMPT_OLD_MD5);

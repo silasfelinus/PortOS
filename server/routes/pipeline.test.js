@@ -533,6 +533,16 @@ describe('pipeline routes', () => {
     expect(r.body.stage.output).toContain('mock-output:idea');
   });
 
+  it('POST /issues/:id/stages/:stageId/generate accepts sourceStageIds and rejects unknown stage ids', async () => {
+    const app = makeApp();
+    const ser = await request(app).post('/api/pipeline/series').send({ name: 'S', universeId: 'u-test' });
+    const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
+    const ok = await request(app).post(`/api/pipeline/issues/${iss.body.id}/stages/prose/generate`).send({ sourceStageIds: ['comicScript'] });
+    expect(ok.status).toBe(200);
+    const bad = await request(app).post(`/api/pipeline/issues/${iss.body.id}/stages/prose/generate`).send({ sourceStageIds: ['bogus'] });
+    expect(bad.status).toBe(400);
+  });
+
   it('POST /issues/:id/stages/:stageId/generate rejects visual stages', async () => {
     const app = makeApp();
     const ser = await request(app).post('/api/pipeline/series').send({ name: 'S', universeId: 'u-test' });
