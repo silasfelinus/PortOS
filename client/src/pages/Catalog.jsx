@@ -42,6 +42,14 @@ const PRIMARY_CONTENT_KEY = {
   scene: 'summary',
   concept: 'summary',
 };
+// Display label per content key — driven from PRIMARY_CONTENT_KEY so a future
+// type→key remapping automatically picks up the right label and the form
+// label can't silently lie about where content lands on submit.
+const PRIMARY_CONTENT_LABEL = {
+  physicalDescription: 'Physical Description',
+  description: 'Description',
+  summary: 'Summary',
+};
 
 // Pull a short snippet from the type-specific payload — first hit wins,
 // trimmed and ellipsised to ~120 chars. Characters use `physicalDescription`
@@ -145,8 +153,7 @@ export default function Catalog() {
     setCreating(false);
     if (!created) return;
     toast.success(`Created ${form.type} "${name}"`);
-    setForm({ type: form.type, name: '', content: '' });
-    setShowForm(false);
+    closeForm();
     // Update list locally (CLAUDE.md: prefer state update over refetch) but
     // still refresh stats so the type-chip counts move.
     setItems((prev) => [created, ...prev]);
@@ -171,6 +178,14 @@ export default function Catalog() {
     loadStats();
   };
 
+  // Single reset path used by Cancel + toolbar toggle + post-submit so all
+  // three "form dismissed" paths leave the same clean state — without this,
+  // stale name/content text reappears the next time the form opens.
+  const closeForm = () => {
+    setForm((f) => ({ type: f.type, name: '', content: '' }));
+    setShowForm(false);
+  };
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
@@ -191,7 +206,7 @@ export default function Catalog() {
           </Link>
           <button
             type="button"
-            onClick={() => setShowForm((v) => !v)}
+            onClick={() => (showForm ? closeForm() : setShowForm(true))}
             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-accent hover:bg-port-accent/90 text-white text-sm font-medium"
           >
             <Plus size={16} aria-hidden="true" />
@@ -277,9 +292,7 @@ export default function Catalog() {
           </div>
           <div>
             <label htmlFor="catalog-new-content" className="block text-xs uppercase tracking-wider text-gray-500 mb-1">
-              {form.type === 'character' ? 'Physical Description'
-                : (form.type === 'idea' || form.type === 'scene' || form.type === 'concept') ? 'Summary'
-                : 'Description'}
+              {PRIMARY_CONTENT_LABEL[PRIMARY_CONTENT_KEY[form.type]] || 'Description'}
               <span className="normal-case text-gray-500"> (optional)</span>
             </label>
             <textarea
@@ -294,7 +307,7 @@ export default function Catalog() {
           <div className="flex justify-end gap-2">
             <button
               type="button"
-              onClick={() => setShowForm(false)}
+              onClick={closeForm}
               className="px-3 py-2 rounded-lg text-gray-400 hover:text-white text-sm"
             >
               Cancel
@@ -334,7 +347,7 @@ export default function Catalog() {
               <li key={it.id} className="relative bg-port-card border border-port-border rounded-lg hover:border-port-accent/60 transition-colors">
                 <Link
                   to={`/catalog/${encodeURIComponent(it.type)}/${encodeURIComponent(it.id)}`}
-                  className="flex flex-col gap-2 p-3 pr-10 min-h-[88px]"
+                  className={`flex flex-col gap-2 p-3 min-h-[88px] ${armed ? 'pr-32' : 'pr-10'}`}
                 >
                   <span className="block text-white font-medium truncate">{name}</span>
                   <span className="flex items-center gap-1.5 flex-wrap">
@@ -350,19 +363,22 @@ export default function Catalog() {
                   ) : null}
                 </Link>
                 <div className="absolute top-2 right-2">
+                  {/* The delete control is a sibling of the <Link>, not a
+                      descendant, so a click on these buttons never traverses
+                      the anchor — no preventDefault/stopPropagation needed. */}
                   {armed ? (
-                    <span className="inline-flex items-center gap-1 text-xs bg-port-card border border-port-border rounded px-1 py-0.5">
+                    <span className="inline-flex items-center gap-1 text-xs bg-port-card border border-port-border rounded px-1 py-0.5 shadow-sm">
                       <span className="text-gray-400 pl-1">Delete?</span>
                       <button
                         type="button"
-                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); confirmDelete(it); }}
+                        onClick={() => confirmDelete(it)}
                         className="px-2 py-0.5 rounded bg-port-error/20 text-port-error hover:bg-port-error/30 font-medium"
                       >
                         Yes
                       </button>
                       <button
                         type="button"
-                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setArmedId(null); }}
+                        onClick={() => setArmedId(null)}
                         className="px-2 py-0.5 rounded text-gray-400 hover:text-white"
                       >
                         No
@@ -371,7 +387,7 @@ export default function Catalog() {
                   ) : (
                     <button
                       type="button"
-                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); setArmedId(it.id); }}
+                      onClick={() => setArmedId(it.id)}
                       className="p-1.5 rounded text-gray-500 hover:text-port-error bg-port-card"
                       aria-label={`Delete ${name}`}
                       title="Delete ingredient"
