@@ -66,6 +66,12 @@ export const listCatalogIngredients = ({ type, tag, q, limit, offset, ...options
 export const getCatalogIngredient = (id, options) =>
   request(`/catalog/ingredients/${enc(id)}`, options);
 
+// Batched detail hydration — one request for ingredient + refs + sources +
+// relations + revisions + media + missingMedia, used by the detail page's
+// initial load in place of five separate calls.
+export const getCatalogIngredientDetails = (id, options) =>
+  request(`/catalog/ingredients/${enc(id)}/details`, options);
+
 // --- Tags (canonical taxonomy) ------------------------------------------
 
 // Autocomplete over the canonical catalog_tags table. `q` is an optional
