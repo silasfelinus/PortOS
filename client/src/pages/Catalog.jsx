@@ -332,8 +332,8 @@ export default function Catalog() {
                       </span>
                     ))}
                   </span>
-                  {payloadSnippet(it.payload, it.type) ? (
-                    <span className="text-xs text-gray-400 line-clamp-3">{payloadSnippet(it.payload, it.type)}</span>
+                  {payloadSnippet(it.payload, it.type, 120, getType) ? (
+                    <span className="text-xs text-gray-400 line-clamp-3">{payloadSnippet(it.payload, it.type, 120, getType)}</span>
                   ) : null}
                 </Link>
                 <div className="absolute top-2 right-2">

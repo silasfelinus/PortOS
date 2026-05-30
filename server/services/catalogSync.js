@@ -327,15 +327,24 @@ export async function applyUserTypesFromPeer(incoming = []) {
   const byId = new Map(local.map((t) => [t.id, t]));
   let applied = 0;
   let skipped = 0;
-  const updatedOf = (t) => (typeof t?.updatedAt === 'string' ? t.updatedAt : '');
+  // The LWW clock is the LATER of {updatedAt, deletedAt} — a deletion is a
+  // mutation too, so a delete newer than a peer's edit wins (no resurrection)
+  // and an edit newer than the delete revives. A tombstone the peer sends is
+  // stored verbatim (kept in the slice, filtered out of the active registry by
+  // setUserCatalogTypes) so the deletion keeps federating onward.
+  const clockOf = (t) => {
+    const u = typeof t?.updatedAt === 'string' ? t.updatedAt : '';
+    const d = typeof t?.deletedAt === 'string' ? t.deletedAt : '';
+    return d > u ? d : u;
+  };
   for (const peer of incoming) {
     const id = typeof peer?.id === 'string' ? peer.id.trim() : '';
     // Skip a malformed entry or one colliding with a built-in system id —
     // system types always win and are never represented in this slice.
     if (!id || INGREDIENT_TYPE_IDS.includes(id)) { skipped++; continue; }
     const existing = byId.get(id);
-    // LWW on updatedAt: adopt when no local copy, or the peer is at-or-newer.
-    if (!existing || updatedOf(peer) >= updatedOf(existing)) {
+    // LWW: adopt when no local copy, or the peer's clock is at-or-newer.
+    if (!existing || clockOf(peer) >= clockOf(existing)) {
       byId.set(id, { ...peer, id });
       applied++;
     } else {

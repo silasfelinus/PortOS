@@ -303,10 +303,16 @@ export const CATALOG_BADGE_BY_ID = Object.freeze(
  * non-empty key wins), trimmed + ellipsised to `max` chars. When `typeId` is
  * unknown/absent, falls back to a broad union of every type's keys so a row of
  * unknown type still renders a snippet.
+ *
+ * `resolveType` (optional) lets a caller pass the MERGED registry resolver
+ * (`useCatalogTypes().getType`) so a user-defined type's custom
+ * `snippetFallbackKeys` (e.g. a `creed` key) are honored — the static `BY_ID`
+ * only knows the built-ins. Falls back to the static lookup when omitted.
  */
-export function payloadSnippet(payload, typeId, max = 120) {
+export function payloadSnippet(payload, typeId, max = 120, resolveType = null) {
   if (!payload || typeof payload !== 'object') return '';
-  const keys = BY_ID[typeId]?.snippetFallbackKeys || UNION_SNIPPET_KEYS;
+  const typeDef = (resolveType && resolveType(typeId)) || BY_ID[typeId];
+  const keys = typeDef?.snippetFallbackKeys || UNION_SNIPPET_KEYS;
   let raw = '';
   for (const k of keys) {
     if (payload[k]) { raw = payload[k]; break; }

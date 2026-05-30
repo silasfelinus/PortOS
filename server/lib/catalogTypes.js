@@ -275,14 +275,17 @@ let activeUserTypes = [];
  * Replace the active user-type set from a settings `catalogUserTypes` array.
  * Called at boot (after settings load) and on every settings-update event so
  * the in-process registry tracks the persisted definitions without a restart.
- * Skips entries that fail to normalize, collide with a system id, or duplicate
- * an earlier user id.
+ * Skips entries that fail to normalize, collide with a system id, duplicate an
+ * earlier user id, or carry a `deletedAt` tombstone (a soft-deleted type is
+ * retained in the persisted slice so the deletion federates, but it must not
+ * appear in the active registry).
  */
 export function setUserCatalogTypes(list = []) {
   const taken = new Set();
   const out = [];
   const seen = new Set();
   for (const raw of Array.isArray(list) ? list : []) {
+    if (raw?.deletedAt) continue;  // tombstone — persisted but not active
     const normalized = normalizeUserType(raw, taken);
     if (!normalized) continue;
     if (SYSTEM_TYPE_IDS.has(normalized.id) || seen.has(normalized.id)) continue;

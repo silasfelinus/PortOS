@@ -114,11 +114,16 @@ describe('PATCH /api/catalog/types/:id', () => {
 });
 
 describe('DELETE /api/catalog/types/:id', () => {
-  it('deletes an unused type', async () => {
+  it('soft-deletes an unused type (tombstone kept so the delete federates, gone from the registry)', async () => {
     store = { catalogUserTypes: [{ id: 'faction', label: 'Faction', primaryContentKey: 'creed', fields: [] }] };
     const res = await request(makeApp()).delete('/api/catalog/types/faction');
     expect(res.status).toBe(200);
-    expect(store.catalogUserTypes).toHaveLength(0);
+    // The entry is RETAINED with a deletedAt tombstone (so the deletion syncs
+    // to peers) but no longer appears in the active registry response.
+    expect(store.catalogUserTypes).toHaveLength(1);
+    expect(store.catalogUserTypes[0].deletedAt).toBeTruthy();
+    expect(res.body.types.some((t) => t.id === 'faction')).toBe(false);
+    expect(getActiveCatalogType('faction')).toBeUndefined();
   });
 
   it('refuses to delete a type with ingredients (409) unless ?force=true', async () => {
@@ -126,12 +131,31 @@ describe('DELETE /api/catalog/types/:id', () => {
     ingredientsForType = [{ id: 'cat-fac-1' }];
     const refused = await request(makeApp()).delete('/api/catalog/types/faction');
     expect(refused.status).toBe(409);
-    // Slice untouched on the refused delete.
+    // Slice untouched on the refused delete (still live, no tombstone).
     expect(store.catalogUserTypes).toHaveLength(1);
-    // Forced delete drops the definition anyway.
+    expect(store.catalogUserTypes[0].deletedAt).toBeFalsy();
+    // Forced delete tombstones the definition anyway.
     const forced = await request(makeApp()).delete('/api/catalog/types/faction?force=true');
     expect(forced.status).toBe(200);
-    expect(store.catalogUserTypes).toHaveLength(0);
+    expect(store.catalogUserTypes[0].deletedAt).toBeTruthy();
+    expect(forced.body.types.some((t) => t.id === 'faction')).toBe(false);
+  });
+
+  it('404s a DELETE on an already-tombstoned type', async () => {
+    store = { catalogUserTypes: [{ id: 'faction', label: 'Faction', primaryContentKey: 'creed', fields: [], deletedAt: '2026-01-01T00:00:00.000Z' }] };
+    const res = await request(makeApp()).delete('/api/catalog/types/faction');
+    expect(res.status).toBe(404);
+  });
+
+  it('POST revives a tombstoned id (replaces the slot, clears the tombstone)', async () => {
+    store = { catalogUserTypes: [{ id: 'faction', label: 'Old', primaryContentKey: 'creed', fields: [], deletedAt: '2026-01-01T00:00:00.000Z' }] };
+    const res = await request(makeApp())
+      .post('/api/catalog/types')
+      .send({ id: 'faction', label: 'Reborn', primaryContentKey: 'creed', fields: [] });
+    expect(res.status).toBe(201);
+    expect(store.catalogUserTypes).toHaveLength(1);
+    expect(store.catalogUserTypes[0].deletedAt).toBeNull();
+    expect(getActiveCatalogType('faction')?.label).toBe('Reborn');
   });
 
   it('404s an unknown id', async () => {

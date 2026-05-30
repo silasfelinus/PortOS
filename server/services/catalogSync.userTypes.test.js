@@ -87,6 +87,33 @@ describe('applyRemoteChanges — catalogTypes LWW merge', () => {
     expect(store.catalogUserTypes ?? []).toHaveLength(0);
   });
 
+  it('a peer deletion tombstone wins LWW and does NOT resurrect the type', async () => {
+    // Local has a live type (edited 2026-01-01); peer deleted it (2026-06-01).
+    store = { catalogUserTypes: [{ id: 'faction', label: 'Live', primaryContentKey: 'x', fields: [], updatedAt: '2026-01-01' }] };
+    const stats = await applyRemoteChanges({
+      portosMeta: meta,
+      catalogTypes: [{ id: 'faction', label: 'Live', primaryContentKey: 'x', fields: [], updatedAt: '2026-01-01', deletedAt: '2026-06-01' }],
+    });
+    expect(stats.catalogTypes.applied).toBe(1);
+    // Tombstone RETAINED (the delete keeps federating) but absent from the registry.
+    expect(store.catalogUserTypes).toHaveLength(1);
+    expect(store.catalogUserTypes[0].deletedAt).toBe('2026-06-01');
+    expect(getActiveCatalogType('faction')).toBeUndefined();
+  });
+
+  it('a local edit newer than a peer tombstone keeps the type alive', async () => {
+    store = { catalogUserTypes: [{ id: 'faction', label: 'Reborn', primaryContentKey: 'x', fields: [], updatedAt: '2026-06-01', deletedAt: null }] };
+    setUserCatalogTypes(store.catalogUserTypes);
+    const stats = await applyRemoteChanges({
+      portosMeta: meta,
+      catalogTypes: [{ id: 'faction', label: 'Old', primaryContentKey: 'x', fields: [], updatedAt: '2025-01-01', deletedAt: '2026-01-01' }],
+    });
+    // Peer tombstone (clock 2026-01-01) is older than the local live edit → skipped.
+    expect(stats.catalogTypes.skipped).toBe(1);
+    expect(store.catalogUserTypes[0].deletedAt).toBeFalsy();
+    expect(getActiveCatalogType('faction')?.label).toBe('Reborn');
+  });
+
   it('rejects with 412 when the sender is ahead on the catalog schema', async () => {
     await expect(applyRemoteChanges({
       portosMeta: { schemaVersions: { catalog: PORTOS_SCHEMA_VERSIONS.catalog + 1 } },

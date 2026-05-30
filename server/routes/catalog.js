@@ -730,13 +730,29 @@ router.get('/types', asyncHandler(async (req, res) => {
   res.json({ types: getActiveCatalogTypes() });
 }));
 
+// Strip any client-supplied sync-control fields and stamp a fresh server-side
+// `updatedAt` — the LWW federation merge relies on this timestamp being set by
+// the writer, never trusted from the client. Clears any tombstone so a write
+// always revives (an edit newer than a delete wins).
+const stampUserType = (body) => {
+  const { deletedAt: _d, updatedAt: _u, ...rest } = body;
+  return { ...rest, updatedAt: new Date().toISOString(), deletedAt: null };
+};
+
 router.post('/types', asyncHandler(async (req, res) => {
   const body = validateRequest(catalogUserTypeSchema, req.body);
   const current = await readUserTypes();
-  if (current.some((t) => t.id === body.id)) {
+  // A LIVE type with this id already exists → conflict. A tombstoned id (or a
+  // fresh id) is fine: POST revives the tombstone / creates anew, replacing the
+  // slot in place so the unique-id invariant holds.
+  const idx = current.findIndex((t) => t.id === body.id);
+  if (idx !== -1 && !current[idx].deletedAt) {
     throw new ServerError(`Catalog type "${body.id}" already exists`, { status: 409 });
   }
-  const next = [...current, body];
+  const stamped = stampUserType(body);
+  const next = idx === -1
+    ? [...current, stamped]
+    : current.map((t, i) => (i === idx ? stamped : t));
   // Validate the whole slice (unique-id + system-collision refinements) before
   // persisting — a system-id collision (e.g. "character") is rejected here.
   validateRequest(catalogUserTypesSettingsSchema, next);
@@ -751,10 +767,11 @@ router.patch('/types/:id', asyncHandler(async (req, res) => {
   // full user-type (id is immutable — the path wins over any body id).
   const merged = validateRequest(catalogUserTypeSchema, { ...req.body, id: req.params.id });
   const current = await readUserTypes();
-  const idx = current.findIndex((t) => t.id === req.params.id);
+  // Editing a tombstoned (deleted) type is a 404 — it must be re-created via POST.
+  const idx = current.findIndex((t) => t.id === req.params.id && !t.deletedAt);
   if (idx === -1) throw new ServerError(`Catalog type "${req.params.id}" not found`, { status: 404 });
   const next = [...current];
-  next[idx] = merged;
+  next[idx] = stampUserType(merged);
   validateRequest(catalogUserTypesSettingsSchema, next);
   await updateSettings({ catalogUserTypes: next });
   setUserCatalogTypes(next);
@@ -764,7 +781,7 @@ router.patch('/types/:id', asyncHandler(async (req, res) => {
 
 router.delete('/types/:id', asyncHandler(async (req, res) => {
   const current = await readUserTypes();
-  const idx = current.findIndex((t) => t.id === req.params.id);
+  const idx = current.findIndex((t) => t.id === req.params.id && !t.deletedAt);
   if (idx === -1) throw new ServerError(`Catalog type "${req.params.id}" not found`, { status: 404 });
   // Refuse to delete a type that still has ingredients of that type unless the
   // caller explicitly forces it (`?force=true`) — otherwise those rows become
@@ -782,7 +799,16 @@ router.delete('/types/:id', asyncHandler(async (req, res) => {
       );
     }
   }
-  const next = current.filter((t) => t.id !== req.params.id);
+  // Soft-delete: KEEP the entry with a `deletedAt` tombstone (and a fresh
+  // `updatedAt`) so the deletion federates to peers via the catalogTypes sync
+  // block. A physical removal would let a peer that still has the definition
+  // resurrect it on the next pull. setUserCatalogTypes filters tombstones out
+  // of the active registry, so the type disappears from the UI immediately.
+  const deletedAt = new Date().toISOString();
+  const next = current.map((t, i) => (
+    i === idx ? { ...t, deletedAt, updatedAt: deletedAt } : t
+  ));
+  validateRequest(catalogUserTypesSettingsSchema, next);
   await updateSettings({ catalogUserTypes: next });
   setUserCatalogTypes(next);
   console.log(`🧩 Catalog: deleted user type "${req.params.id}"${force ? ' (forced)' : ''}`);

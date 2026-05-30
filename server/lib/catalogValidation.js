@@ -100,6 +100,16 @@ export const catalogUserTypeSchema = z.object({
   label: z.string().trim().min(1).max(80),
   primaryContentKey: userTypeIdentifier,
   fields: z.array(userTypeField).max(40),
+  // Mutation timestamp — drives the cross-peer LWW merge (a newer mutation
+  // wins). Stamped server-side on every create/edit; clients don't send it.
+  updatedAt: z.string().datetime().optional(),
+  // Soft-delete tombstone. A deleted user type is KEPT in the slice with
+  // `deletedAt` set rather than physically removed, so the deletion FEDERATES
+  // to peers instead of a peer resurrecting it on the next sync. Filtered out
+  // of the active registry. LWW compares the later of {updatedAt, deletedAt}:
+  // a delete newer than a peer's edit wins, and an edit newer than the delete
+  // revives the type.
+  deletedAt: z.string().datetime().nullable().optional(),
 }).strict();
 
 // The whole `catalogUserTypes` settings slice: ≤64 user types, unique ids, and
@@ -509,10 +519,13 @@ export const catalogSyncMediaSchema = z.object({
 // drives the LWW window; absent → treated as createdAt for the comparison.
 export const catalogSyncUserTypeSchema = z.object({
   id: z.string().min(1).max(32),
-  label: z.string().max(80),
+  label: z.string().max(80).optional(),  // a pure tombstone may omit label
   primaryContentKey: z.string().max(64).optional(),
   fields: z.array(z.unknown()).max(40).optional(),
   updatedAt: z.string().optional(),
+  // A deletion tombstone rides the wire so a delete federates instead of a
+  // peer resurrecting the type. Null/absent = live.
+  deletedAt: z.string().nullable().optional(),
 }).passthrough();
 
 export const catalogSyncEnvelopeSchema = z.object({
