@@ -60,7 +60,11 @@ vi.mock('./instanceEvents.js', () => ({
 }));
 vi.mock('../lib/fileUtils.js', () => ({
 tryReadFile: vi.fn().mockResolvedValue(null),
-  readJSONFile: vi.fn().mockResolvedValue({}),
+  // Fresh object per call: `mockResolvedValue({})` would hand every
+  // loadCursors() the SAME object, so one test's saveCursors mutation leaks
+  // into the next (a prior test's high catalog cursor then trips the
+  // rebuild/reset detection). A fresh {} isolates each test's cursor state.
+  readJSONFile: vi.fn(async () => ({})),
   ensureDir: vi.fn().mockResolvedValue(),
   atomicWrite: vi.fn().mockResolvedValue(),
   PATHS: { data: '/mock/data' },
@@ -74,6 +78,7 @@ vi.mock('fs/promises', () => ({
   rename: vi.fn().mockResolvedValue()
 }));
 
+import { readJSONFile } from '../lib/fileUtils.js';
 import { getPeers } from './instances.js';
 import { applyRemoteChanges as applyBrainChanges } from './brainSync.js';
 import { applyRemoteChanges as applyMemoryChanges } from './memorySync.js';
@@ -95,6 +100,12 @@ describe('syncOrchestrator', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Reset the cursor-store read to a FRESH empty object each test. The
+    // brain/memory reset tests below override it with `mockResolvedValue(
+    // cursorData)`, and that implementation survives `clearAllMocks` — without
+    // this reset a later test inherits a prior test's (mutated) cursor and the
+    // catalog rebuild/reset detection fires on it.
+    readJSONFile.mockImplementation(async () => ({}));
     vi.useFakeTimers();
     mockFetch.mockReset();
     vi.stubGlobal('fetch', mockFetch);
@@ -378,6 +389,75 @@ describe('syncOrchestrator', () => {
       expect(secondUrl).toContain('since[ingredients]=5');
       // Final cursor advanced to the last batch's max.
       expect(result.catalog.catalogSeqs.ingredients).toBe('9');
+    });
+
+    it('rewinds a stale catalog cursor that exceeds the peer max (peer DB rebuild) and re-pulls from 0', async () => {
+      // Saved cursor is far ahead of the peer's rebuilt table maxima.
+      readJSONFile.mockResolvedValue({
+        [catalogPeer.instanceId]: {
+          catalogSeqs: { scraps: '0', ingredients: '999', sources: '0', refs: '0', relations: '0', tags: '0', media: '0' },
+        },
+      });
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            ingredients: [],
+            maxSequences: { scraps: '0', ingredients: '5', sources: '0', refs: '0', relations: '0', tags: '0', media: '0' },
+            hasMore: true,
+            portosMeta: { schemaVersions: { catalog: 1 } },
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            ingredients: [{ id: 'a' }],
+            maxSequences: { scraps: '0', ingredients: '5', sources: '0', refs: '0', relations: '0', tags: '0', media: '0' },
+            hasMore: false,
+            portosMeta: { schemaVersions: { catalog: 1 } },
+          }),
+        });
+      applyCatalogChanges.mockResolvedValue({
+        scraps: { inserted: 0, updated: 0 }, ingredients: { inserted: 1, updated: 0 },
+        sources: { applied: 0 }, refs: { applied: 0 }, relations: { applied: 0 },
+        tags: { inserted: 0, updated: 0 }, media: { applied: 0 }, errors: [],
+      });
+
+      await syncWithPeer(catalogPeer);
+
+      // First fetch carries the stale cursor; detecting cursor(999) > peerMax(5)
+      // rewinds ingredients to 0 and re-fetches BEFORE applying, so the stale
+      // page isn't applied and the rewound page is.
+      expect(mockFetch.mock.calls[0][0]).toContain('since[ingredients]=999');
+      expect(mockFetch.mock.calls[1][0]).toContain('since[ingredients]=0');
+      expect(applyCatalogChanges).toHaveBeenCalledTimes(1);
+    });
+
+    it('holds a kind cursor when that kind had apply failures (parent on a later page)', async () => {
+      // A ref fails because its parent ingredient is on a later page; the
+      // ingredient itself applies cleanly in the same batch.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ingredients: [{ id: 'a' }], refs: [{ id: 'r' }],
+          maxSequences: { scraps: '0', ingredients: '5', sources: '0', refs: '5', relations: '0', tags: '0', media: '0' },
+          hasMore: false,
+          portosMeta: { schemaVersions: { catalog: 1 } },
+        }),
+      });
+      applyCatalogChanges.mockResolvedValue({
+        scraps: { inserted: 0, updated: 0 }, ingredients: { inserted: 1, updated: 0 },
+        sources: { applied: 0 }, refs: { applied: 0, failed: 1 }, relations: { applied: 0 },
+        tags: { inserted: 0, updated: 0 }, media: { applied: 0 }, errors: [{ kind: 'refs', id: 'r' }],
+      });
+
+      const result = await syncWithPeer(catalogPeer);
+
+      // ingredients applied cleanly → its cursor advances; refs failed → its
+      // cursor is HELD (unset/0) so the next sync re-requests it once the parent
+      // ingredient has landed.
+      expect(result.catalog.catalogSeqs.ingredients).toBe('5');
+      expect(result.catalog.catalogSeqs.refs ?? '0').toBe('0');
     });
 
     it('records a schema gap and stops draining when the sender is ahead on catalog', async () => {

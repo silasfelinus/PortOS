@@ -204,9 +204,38 @@ async function syncCatalogFromPeer(peer, peerId, cursor) {
   let blockedBySchema = null;
 
   let hasMore = true;
+  // Only the FIRST fetch can carry a stale saved cursor from a prior session;
+  // once we start draining, each cursor came from this peer's own maxSequences
+  // and can't exceed them. So the rebuild/reset check runs on the first fetch
+  // only (a mid-drain quiet kind legitimately reports a per-page max at/under
+  // our just-advanced cursor, which must NOT be read as a reset).
+  let firstFetch = true;
   while (hasMore) {
     const data = await fetchPeer(peer, `/api/catalog/sync?${catalogSinceQuery(catalogSeqs)}&limit=100`);
     if (!data) break;
+
+    // Detect a peer catalog rebuild/restore: if our saved cursor for a kind
+    // exceeds the peer's reported maximum, that table's sequence was reset, so
+    // our `since[kind]=<high>` would skip every row forever. Rewind the
+    // affected kinds to 0 and re-fetch from scratch before applying — safe
+    // because catalog apply is idempotent (LWW / ON CONFLICT dedup). Mirrors
+    // the brain/memory `detectCursorReset` path, but uses the sync response's
+    // own maxSequences so it needs no separate peer probe.
+    if (firstFetch && isPlainObjectShallow(data.maxSequences)) {
+      let rewound = false;
+      for (const kind of CATALOG_CURSOR_KINDS) {
+        const ours = catalogSeqs[kind];
+        const peerMax = data.maxSequences[kind];
+        if (typeof ours === 'string' && /^\d+$/.test(ours)
+            && typeof peerMax === 'string' && /^\d+$/.test(peerMax)
+            && BigInt(ours) > BigInt(peerMax)) {
+          console.log(`🔄 Catalog cursor reset for ${peer.name} (${kind}): cursor ${ours} > peer max ${peerMax}`);
+          catalogSeqs[kind] = '0';
+          rewound = true;
+        }
+      }      if (rewound) continue; // re-fetch with the rewound cursors before applying
+    }
+    firstFetch = false;
 
     // Forward the sender's portosMeta so applyRemoteChanges runs the schema
     // gate BEFORE merging — a sender ahead on `catalog` throws and we persist
@@ -235,6 +264,13 @@ async function syncCatalogFromPeer(peer, peerId, cursor) {
     const before = catalogSinceQuery(catalogSeqs);
     if (isPlainObjectShallow(data.maxSequences)) {
       for (const kind of CATALOG_CURSOR_KINDS) {
+        // Don't advance a kind's cursor past a page that had apply failures: a
+        // child row (relation/media/ref to an ingredient on a LATER page) fails
+        // when its parent isn't applied yet. Leaving the cursor makes the next
+        // pull re-request and re-apply it once the parent lands (re-applying the
+        // page's already-succeeded rows is idempotent). A quiet/clean kind has
+        // failed===0 and still advances normally.
+        if ((stats?.[kind]?.failed || 0) > 0) continue;
         const v = data.maxSequences[kind];
         if (typeof v === 'string' && /^\d+$/.test(v)) catalogSeqs[kind] = v;
       }
