@@ -46,9 +46,15 @@ vi.mock('../services/mediaJobQueue/index.js', () => ({
   listJobs: vi.fn(() => []),
 }));
 
+// HOST_ARCH is read at request time inside `buildSetupCheck`, so backing it
+// with a hoisted mutable holder + getter lets tests flip between arm64 and
+// x86_64 hosts without re-mocking. Default arm64 keeps every existing test
+// behaving as before.
+const hostArchHolder = vi.hoisted(() => ({ value: 'arm64' }));
+
 vi.mock('../lib/pythonSetup.js', () => ({
   REQUIRED_PACKAGES: ['mflux', 'mlx'],
-  HOST_ARCH: 'arm64',
+  get HOST_ARCH() { return hostArchHolder.value; },
   isAllowedPython: vi.fn(() => true),
   probePythonHealth: vi.fn(async () => ({
     installed: ['mflux', 'mlx'], missing: [], missingPip: [],
@@ -699,6 +705,7 @@ describe('Image Gen Routes', () => {
 
     afterEach(() => {
       Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+      hostArchHolder.value = 'arm64';
     });
 
     it('exposes hostArch + archMismatch + suggestedArm64Python on matched arch', async () => {
@@ -746,6 +753,20 @@ describe('Image Gen Routes', () => {
       expect(r.status).toBe(200);
       expect(r.body.archMismatch).toBe(false);
       expect(r.body.suggestedArm64Python).toBeNull();
+    });
+
+    it('does not flag archMismatch on darwin/x86_64 hosts (Intel macs) — only arm64 hosts care about mlx wheels', async () => {
+      hostArchHolder.value = 'x86_64';
+      probePythonHealth.mockResolvedValueOnce({
+        installed: [], missing: [], missingPip: [],
+        externallyManaged: false, interpreterArch: 'x86_64',
+      });
+      const r = await request(app).get(`/api/image-gen/setup/check?pythonPath=${encodeURIComponent('/arch-fields-intel-mac')}`);
+      expect(r.status).toBe(200);
+      expect(r.body.hostArch).toBe('x86_64');
+      expect(r.body.archMismatch).toBe(false);
+      expect(r.body.suggestedArm64Python).toBeNull();
+      expect(detectArm64Python).not.toHaveBeenCalled();
     });
   });
 });
