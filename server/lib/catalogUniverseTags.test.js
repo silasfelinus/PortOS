@@ -58,6 +58,17 @@ describe('catalogUniverseTags — friendlifyUniverseTags', () => {
     expect(tags).toEqual(['hero', 'noir']);
   });
 
+  it('leaves a `universe:`-prefixed USER tag untouched when the from-universe marker is absent', () => {
+    // The backfill always stamps `from-universe` alongside `universe:<id>`, so
+    // without the marker this is a legit user tag — must not be rewritten,
+    // dropped, or treated as an unresolved legacy tag.
+    const r1 = friendlifyUniverseTags(['universe:marvel', 'hero'], nameFor, canonicalKey);
+    expect(r1).toEqual({ tags: ['universe:marvel', 'hero'], changed: false, unresolved: false });
+    // Even if the suffix happens to match a real universe id, no marker → no-op.
+    const r2 = friendlifyUniverseTags(['universe:u-1'], nameFor, canonicalKey);
+    expect(r2).toEqual({ tags: ['universe:u-1'], changed: false, unresolved: false });
+  });
+
   it('PRESERVES an unresolved universe id tag (+ marker) for a later retry and reports NOT changed', () => {
     // The universe name can't resolve yet (it arrived after this ingredient, or
     // the local lookup misses). Dropping the id tag would lose it forever, so we

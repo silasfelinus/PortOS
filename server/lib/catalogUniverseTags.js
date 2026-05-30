@@ -75,6 +75,17 @@ export function universeIdFromLegacyTag(tag) {
  */
 export function friendlifyUniverseTags(tags, nameForId, canonicalKey) {
   const input = Array.isArray(tags) ? tags : [];
+
+  // GATE on the `from-universe` marker: the backfill ALWAYS stamped the marker
+  // alongside `universe:<id>`, so its presence is what identifies a machine-
+  // tagged row. Without it, a `universe:<anything>` tag is a legitimate USER
+  // tag (e.g. a thematic `universe:marvel`) — leave the row completely untouched
+  // rather than rewriting/dropping a real tag or withholding the marker forever
+  // on an unresolvable user suffix.
+  const hasMarker = input.some((t) => typeof t === 'string'
+    && t.trim().toLowerCase() === LEGACY_UNIVERSE_MARKER_TAG);
+  if (!hasMarker) return { tags: input, changed: false, unresolved: false };
+
   const kept = [];
   let sawMarker = false;
   const idTags = []; // { id, original } in encounter order, first-seen-per-id
