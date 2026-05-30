@@ -373,11 +373,13 @@ export function parseMarkdownBulk(payload) {
   }
   const entries = out.map((entry, i) => {
     const normalized = normalizeEntry(entry, i);
-    // Carry parsed scraps as a NON-enumerable sibling for a faithful
-    // round-trip. It must be non-enumerable: the bulk-import route spreads
-    // each entry into the `.strict()` catalogIngredientCreateSchema, which has
-    // no `scraps` field — an enumerable key would reject every re-imported
-    // export that has scraps. Consumers read `entry.scraps` explicitly.
+    // Parse scraps into a NON-enumerable sibling so the markdown re-import is
+    // lossy-but-not-corrupt (per PLAN [catalog-markdown-roundtrip-fences-scraps]):
+    // the bulk-import route does NOT persist scraps today — it spreads each
+    // entry into the `.strict()` catalogIngredientCreateSchema, which has no
+    // `scraps` field, so an enumerable key would reject the whole import. The
+    // data is preserved on `entry.scraps` for any consumer; persisting it into
+    // catalog_scraps/catalog_ingredient_sources is a tracked follow-up.
     if (Array.isArray(entry.scraps) && entry.scraps.length > 0) {
       attachNonEnumerable(normalized, 'scraps', entry.scraps);
     }

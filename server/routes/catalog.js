@@ -295,7 +295,11 @@ router.post('/bulk-import', asyncHandler(async (req, res) => {
       // explicit `defaults.role` > the bundle row's own `roleForExportedRef` >
       // a `bulk-<kind>` fallback.
       for (const target of refTargets) {
-        const role = defaults.role || perRowRoles[i] || `bulk-${target.refKind}`;
+        // perRowRoles[i] rides as non-enumerable (un-Zod'd) metadata, so cap it
+        // to the /link schema's 64-char limit — a foreign bundle's oversized
+        // role would otherwise hit the role VARCHAR(64) constraint and surface
+        // as a 500 mid-transaction instead of a clean bulk-import rejection.
+        const role = (defaults.role || perRowRoles[i] || `bulk-${target.refKind}`).slice(0, 64);
         await client.query(
           `INSERT INTO catalog_ingredient_refs (ingredient_id, ref_kind, ref_id, role)
            VALUES ($1, $2, $3, $4)
