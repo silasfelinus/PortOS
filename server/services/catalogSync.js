@@ -44,8 +44,11 @@ import {
   upsertRelationFromPeer,
   upsertTagFromPeer,
   upsertMediaFromPeer,
+  updateIngredient,
 } from './catalogDB.js';
 import { compareSchemaVersions, PORTOS_SCHEMA_VERSIONS } from '../lib/schemaVersions.js';
+import { friendlifyUniverseTags, LEGACY_UNIVERSE_MARKER_TAG } from '../lib/catalogUniverseTags.js';
+import { canonicalTagKey } from '../lib/catalogTypes.js';
 
 const CURSOR_KEYS = ['scraps', 'ingredients', 'sources', 'refs', 'relations', 'tags', 'media'];
 
@@ -183,6 +186,40 @@ export async function applyRemoteChanges(envelope = {}) {
     }
   };
 
+  // Legacy universe tags (`from-universe` + `universe:<id>`) friendlify on
+  // inbound sync: an older peer that syncs an ingredient AFTER our one-time boot
+  // repair (repairUniverseTags.js) already ran would otherwise reintroduce the
+  // raw machine tags via LWW, and the boot repair's marker means it never runs
+  // again to clean them up. Rewriting them to the friendly universe NAME here
+  // makes the repair self-heal on every sync instead of only at boot. The
+  // universe name map is built lazily — and only when a row actually carries the
+  // marker — so an envelope with no legacy rows never issues the universe query.
+  let universeNameMap = null;
+  const ensureUniverseNameMap = async () => {
+    if (universeNameMap) return universeNameMap;
+    const { listUniverses } = await import('./universeBuilder.js');
+    const universes = await listUniverses({ includeDeleted: true });
+    universeNameMap = new Map();
+    for (const u of universes) {
+      if (u?.id && typeof u.name === 'string' && u.name.trim()) {
+        universeNameMap.set(u.id, u.name.trim());
+      }
+    }
+    return universeNameMap;
+  };
+  const friendlifyIngredientTagsOnSync = async (ing, res) => {
+    if (!res?.applied) return; // LWW skip → local row is newer, leave it alone
+    const hasMarker = Array.isArray(ing.tags) && ing.tags.some(
+      (t) => typeof t === 'string' && t.trim().toLowerCase() === LEGACY_UNIVERSE_MARKER_TAG);
+    if (!hasMarker) return;
+    const map = await ensureUniverseNameMap();
+    const { tags, changed } = friendlifyUniverseTags(ing.tags, (id) => map.get(id) || null, canonicalTagKey);
+    if (!changed) return;
+    // source: 'sync' keeps the rewrite out of user-facing revision-diff noise,
+    // matching the boot repair (repairUniverseTags.js).
+    await updateIngredient(ing.id, { tags }, { source: 'sync', actor: 'universe-tag-repair-on-sync' });
+  };
+
   // Tags first — they carry a `parent_id` self-FK (handled by the parent-less
   // retry in upsertTagFromPeer) and are referenced by the freeform tag arrays
   // on ingredients, so we want the canonical rows present before the ingredient
@@ -202,7 +239,7 @@ export async function applyRemoteChanges(envelope = {}) {
 
   await applyKind({
     items: envelope.ingredients, upsertFn: upsertIngredientFromPeer, tally: stats.ingredients, lww: true,
-    errLabel: 'ingredient', idFor: (i) => i?.id,
+    errLabel: 'ingredient', idFor: (i) => i?.id, onApplied: friendlifyIngredientTagsOnSync,
   });
 
   await applyKind({
