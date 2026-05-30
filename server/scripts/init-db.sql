@@ -328,6 +328,34 @@ CREATE TABLE IF NOT EXISTS catalog_ingredient_revisions (
 CREATE INDEX IF NOT EXISTS idx_catalog_ing_revisions_ingredient
   ON catalog_ingredient_revisions (ingredient_id, created_at DESC);
 
+-- Typed media attachments for an ingredient (a generated portrait, a mood /
+-- reference image, a recorded voice memo, …). `media_key` is a REFERENCE into
+-- this install's media library (data/images + the history.jsonl sidecar /
+-- generated assets) — the bytes are NEVER duplicated here, so federation ships
+-- the key and the receiver matches it against its OWN library (a missing match
+-- surfaces via the metadata-missing integrity endpoint rather than failing the
+-- sync). `kind` is an app-layer enum (MEDIA_KINDS in catalogTypes.js), not a DB
+-- CHECK, so a newer peer's extra kind stores harmlessly. Soft-delete
+-- (deleted/deleted_at) from day one so detaches tombstone + propagate to peers
+-- — same lesson as the refs/relations tables. PK is (ingredient_id, media_key,
+-- kind): the same asset can ride as both a portrait and a reference, but not
+-- twice as the same kind.
+CREATE TABLE IF NOT EXISTS catalog_ingredient_media (
+  ingredient_id TEXT NOT NULL REFERENCES catalog_ingredients(id) ON DELETE CASCADE,
+  media_key TEXT NOT NULL,                     -- filename/key into the media library; not an FK
+  kind VARCHAR(32) NOT NULL,                   -- portrait|reference|audio|video|document (MEDIA_KINDS)
+  role VARCHAR(64),                            -- optional free label (e.g. 'hero-shot', 'angry')
+  caption TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  deleted BOOLEAN DEFAULT FALSE,               -- soft-delete tombstone so detaches propagate to peers
+  deleted_at TIMESTAMPTZ,
+  sync_sequence BIGSERIAL,
+  PRIMARY KEY (ingredient_id, media_key, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_catalog_ing_media_ingredient ON catalog_ingredient_media (ingredient_id);
+CREATE INDEX IF NOT EXISTS idx_catalog_ing_media_key ON catalog_ingredient_media (media_key);
+CREATE INDEX IF NOT EXISTS idx_catalog_ing_media_sync_seq ON catalog_ingredient_media (sync_sequence);
+
 -- Auto-update updated_at and bump sync_sequence on content/metadata changes.
 -- Mirrors update_memory_timestamp's pattern: skip the bump on no-content-change
 -- so cosmetic touches don't trigger sync. Respects explicit updated_at (used by
@@ -460,6 +488,29 @@ CREATE TRIGGER trg_catalog_relation_sync_seq
   BEFORE UPDATE ON catalog_ingredient_relations
   FOR EACH ROW
   EXECUTE FUNCTION update_catalog_relation_sync_seq();
+
+-- Media UPDATE bumps sync_sequence when a soft-delete/revival OR a mutable
+-- field (role/caption) changes, so peers receive the edit (or the tombstone)
+-- on their next pull. Unlike refs/relations, media rows carry editable
+-- metadata, so the change-detector also watches role + caption.
+CREATE OR REPLACE FUNCTION update_catalog_media_sync_seq()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.deleted IS DISTINCT FROM OLD.deleted
+     OR NEW.deleted_at IS DISTINCT FROM OLD.deleted_at
+     OR NEW.role IS DISTINCT FROM OLD.role
+     OR NEW.caption IS DISTINCT FROM OLD.caption THEN
+    NEW.sync_sequence := nextval(pg_get_serial_sequence('catalog_ingredient_media', 'sync_sequence'));
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_catalog_media_sync_seq ON catalog_ingredient_media;
+CREATE TRIGGER trg_catalog_media_sync_seq
+  BEFORE UPDATE ON catalog_ingredient_media
+  FOR EACH ROW
+  EXECUTE FUNCTION update_catalog_media_sync_seq();
 
 -- Tag UPDATE bumps sync_sequence + updated_at when a mutable field changes
 -- (label/description/color/parent_id) so peers receive the edit on their next

@@ -139,6 +139,28 @@ export function getRelationKind(id) {
   return RELATION_BY_ID[id];
 }
 
+/**
+ * Catalog ingredient MEDIA-attachment kinds — client mirror of
+ * `server/lib/catalogTypes.js` MEDIA_KINDS. Drives the "Media" panel attach
+ * picker / drag-drop on the ingredient detail page. `accept` is the file-input
+ * MIME filter. Drift is asserted by `client/src/lib/catalogTypes.test.js`
+ * against the server registry — change one side, change the other.
+ */
+export const MEDIA_KINDS = Object.freeze([
+  { id: 'portrait', label: 'Portrait', accept: 'image/*' },
+  { id: 'reference', label: 'Reference', accept: 'image/*' },
+  { id: 'audio', label: 'Audio', accept: 'audio/*' },
+  { id: 'video', label: 'Video', accept: 'video/*' },
+  { id: 'document', label: 'Document', accept: '.pdf,.txt,.md' },
+]);
+
+const MEDIA_BY_ID = Object.freeze(Object.fromEntries(MEDIA_KINDS.map((m) => [m.id, m])));
+
+/** Look up a media-kind entry by id. Returns `undefined` for unknown ids. */
+export function getMediaKind(id) {
+  return MEDIA_BY_ID[id];
+}
+
 const BY_ID = Object.freeze(Object.fromEntries(CATALOG_TYPES.map((t) => [t.id, t])));
 
 /** Look up a registry entry by type id. Returns `undefined` for unknown ids. */

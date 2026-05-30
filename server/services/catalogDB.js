@@ -19,6 +19,7 @@ import {
   tagIdForKey,
   defaultTagsForType,
 } from '../lib/catalogTypes.js';
+import { resolveImageInputPath } from '../lib/fileUtils.js';
 import { getInstanceId } from './instances.js';
 
 function newIngredientId(type) {
@@ -106,6 +107,21 @@ function rowToRelation(row) {
     fromId: row.from_id,
     toId: row.to_id,
     kind: row.kind,
+    createdAt: row.created_at.toISOString(),
+    deleted: !!row.deleted,
+    deletedAt: row.deleted_at?.toISOString() ?? null,
+    syncSequence: String(row.sync_sequence),
+  };
+}
+
+function rowToMedia(row) {
+  if (!row) return null;
+  return {
+    ingredientId: row.ingredient_id,
+    mediaKey: row.media_key,
+    kind: row.kind,
+    role: row.role ?? null,
+    caption: row.caption ?? null,
     createdAt: row.created_at.toISOString(),
     deleted: !!row.deleted,
     deletedAt: row.deleted_at?.toISOString() ?? null,
@@ -753,6 +769,139 @@ export async function upsertRelationFromPeer(rel) {
 }
 
 
+// --- Ingredient media attachments ----------------------------------------
+// Typed references (portrait/reference/audio/video/document) into the install's
+// media library. `media_key` is a key into the library (data/images + the
+// history.jsonl sidecar) — never duplicated bytes. Soft-deleted on detach so
+// peers receive the tombstone; ON CONFLICT DO UPDATE revives a detached row and
+// updates its role/caption (the trg_catalog_media_sync_seq trigger only bumps
+// sync_sequence when one of those actually changes, so a no-op replay stays
+// silent).
+
+export async function attachMedia(ingredientId, mediaKey, kind, { role = null, caption = null } = {}) {
+  const result = await query(
+    `INSERT INTO catalog_ingredient_media (ingredient_id, media_key, kind, role, caption)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (ingredient_id, media_key, kind) DO UPDATE
+       SET deleted = false, deleted_at = NULL,
+           role = EXCLUDED.role, caption = EXCLUDED.caption
+     RETURNING *`,
+    [ingredientId, mediaKey, kind, role, caption],
+  );
+  return rowToMedia(result.rows[0]);
+}
+
+export async function detachMedia(ingredientId, mediaKey, kind) {
+  // Soft-delete (mirrors unlinkIngredientRelation): keep the row as a tombstone
+  // so the sync_sequence bump propagates the detach to peers. `AND deleted =
+  // false` keeps a re-detach from re-bumping the sequence needlessly.
+  await query(
+    `UPDATE catalog_ingredient_media
+        SET deleted = true, deleted_at = NOW()
+      WHERE ingredient_id = $1 AND media_key = $2 AND kind = $3
+        AND deleted = false`,
+    [ingredientId, mediaKey, kind],
+  );
+}
+
+// Set THE portrait for an ingredient: attach `mediaKey` as kind 'portrait' and
+// demote any other live portrait. One active portrait per ingredient — the UI
+// renders it as the ingredient's avatar. Serialized as two statements; the
+// single-user trust model means no competing writer can interleave.
+export async function setPortraitMedia(ingredientId, mediaKey, { role = null, caption = null } = {}) {
+  await query(
+    `UPDATE catalog_ingredient_media
+        SET deleted = true, deleted_at = NOW()
+      WHERE ingredient_id = $1 AND kind = 'portrait'
+        AND media_key <> $2 AND deleted = false`,
+    [ingredientId, mediaKey],
+  );
+  return attachMedia(ingredientId, mediaKey, 'portrait', { role, caption });
+}
+
+// Live (non-tombstoned) media rows for an ingredient's detail "Media" panel,
+// newest first. Portrait(s) first so the avatar is easy to pluck off the head.
+export async function listMediaForIngredient(ingredientId) {
+  const result = await query(
+    `SELECT * FROM catalog_ingredient_media
+      WHERE ingredient_id = $1 AND deleted = false
+      ORDER BY (kind = 'portrait') DESC, created_at DESC`,
+    [ingredientId],
+  );
+  return result.rows.map(rowToMedia);
+}
+
+// The media kinds whose `media_key` resolves against the image library today.
+// Non-image kinds (audio/video/document) have no library resolver yet, so the
+// integrity check skips them rather than reporting a false "missing" — when an
+// audio/video library lands, add its resolver and widen this set.
+const RESOLVABLE_MEDIA_KINDS = new Set(['portrait', 'reference']);
+
+// Integrity surface: which of an ingredient's live IMAGE media_keys DON'T
+// resolve against this install's media library. Federation ships keys, not
+// bytes, so a received attachment whose asset never arrived (or was pruned)
+// shows up here — the detail page surfaces it as `metadata-missing` rather than
+// rendering a broken <img>. `resolveImageInputPath` returns null when the key
+// isn't under any approved image root. Non-image kinds are excluded (no
+// resolver yet). Returns the list of missing `{ mediaKey, kind }`.
+export async function getMissingMediaForIngredient(ingredientId) {
+  const rows = await listMediaForIngredient(ingredientId);
+  return rows
+    .filter((m) => RESOLVABLE_MEDIA_KINDS.has(m.kind) && !resolveImageInputPath(m.mediaKey))
+    .map((m) => ({ mediaKey: m.mediaKey, kind: m.kind }));
+}
+
+export async function getMediaChangesSince(since = '0', limit = 100) {
+  const result = await query(
+    `SELECT * FROM catalog_ingredient_media WHERE sync_sequence > $1 ORDER BY sync_sequence ASC LIMIT $2`,
+    [since, limit + 1],
+  );
+  const hasMore = result.rows.length > limit;
+  const rows = hasMore ? result.rows.slice(0, limit) : result.rows;
+  return { items: rows.map(rowToMedia), hasMore };
+}
+
+export async function upsertMediaFromPeer(media) {
+  // Mirrors upsertRefFromPeer's mixed-version handling: a peer that predates
+  // the media feature never emits these rows, so there's no pre-tombstone
+  // shape to defend against. We still treat "tombstone keys absent" as "peer
+  // has no opinion" so a forked peer that omits them preserves local state on
+  // conflict. On INSERT a tombstone-less row defaults to deleted=false, which
+  // is correct (brand-new locally, peer believes it active). role/caption are
+  // always adopted from the peer (LWW is implicit — last writer's envelope wins
+  // for these tuple-unique rows, same as refs).
+  const hasTombstoneFields =
+    Object.prototype.hasOwnProperty.call(media, 'deleted') ||
+    Object.prototype.hasOwnProperty.call(media, 'deletedAt');
+  if (hasTombstoneFields) {
+    await query(
+      `INSERT INTO catalog_ingredient_media
+         (ingredient_id, media_key, kind, role, caption, created_at, deleted, deleted_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (ingredient_id, media_key, kind) DO UPDATE
+         SET role = EXCLUDED.role,
+             caption = EXCLUDED.caption,
+             deleted = EXCLUDED.deleted,
+             deleted_at = EXCLUDED.deleted_at`,
+      [
+        media.ingredientId, media.mediaKey, media.kind,
+        media.role ?? null, media.caption ?? null, media.createdAt,
+        !!media.deleted, media.deletedAt || null,
+      ],
+    );
+  } else {
+    await query(
+      `INSERT INTO catalog_ingredient_media
+         (ingredient_id, media_key, kind, role, caption, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (ingredient_id, media_key, kind) DO UPDATE
+         SET role = EXCLUDED.role, caption = EXCLUDED.caption`,
+      [media.ingredientId, media.mediaKey, media.kind, media.role ?? null, media.caption ?? null, media.createdAt],
+    );
+  }
+}
+
+
 // --- Tag taxonomy --------------------------------------------------------
 // `catalog_tags` is the canonical index over the freeform
 // `catalog_ingredients.tags TEXT[]` column. `normalizeTags` maps user input
@@ -919,7 +1068,8 @@ export async function getMaxSequences() {
       COALESCE((SELECT MAX(sync_sequence) FROM catalog_ingredient_sources), 0)::text AS sources,
       COALESCE((SELECT MAX(sync_sequence) FROM catalog_ingredient_refs), 0)::text AS refs,
       COALESCE((SELECT MAX(sync_sequence) FROM catalog_ingredient_relations), 0)::text AS relations,
-      COALESCE((SELECT MAX(sync_sequence) FROM catalog_tags), 0)::text AS tags
+      COALESCE((SELECT MAX(sync_sequence) FROM catalog_tags), 0)::text AS tags,
+      COALESCE((SELECT MAX(sync_sequence) FROM catalog_ingredient_media), 0)::text AS media
   `);
   return result.rows[0];
 }
@@ -1126,20 +1276,21 @@ export async function listScrapsForIngredient(ingredientId) {
 
 /**
  * Build an export bundle for one ref (universe/series/issue/work).
- * Hydrates each ingredient + its scraps + ref links. Relations and media
- * refs are intentionally omitted — the underlying tables (catalog_ingredient_relations,
- * catalog_ingredient_media) don't exist yet (see PLAN items
- * `[catalog-ingredient-relations]` / `[catalog-ingredient-media-refs]`).
- * When they land, extend this helper to hydrate them too.
+ * Hydrates each ingredient + its scraps + ref links + media attachments. The
+ * media bundle carries `media_key` REFERENCES (not bytes) — a receiving peer
+ * matches each key against its own library and surfaces unresolved ones via
+ * the metadata-missing integrity surface. Relations are still omitted here
+ * (see `[catalog-ingredient-relations]`); when they land, extend this helper.
  */
 export async function exportSliceForRef(refKind, refId) {
   const rows = await listIngredientsForRef(refKind, refId);
-  // Hydrate scraps + refs in parallel per ingredient. Small N (one slice
-  // is typically <100 ingredients); a per-row round-trip is fine.
+  // Hydrate scraps + refs + media in parallel per ingredient. Small N (one
+  // slice is typically <100 ingredients); a per-row round-trip is fine.
   const ingredients = await Promise.all(rows.map(async ({ ingredient, role }) => {
-    const [scraps, refs] = await Promise.all([
+    const [scraps, refs, media] = await Promise.all([
       listScrapsForIngredient(ingredient.id),
       listRefsForIngredient(ingredient.id),
+      listMediaForIngredient(ingredient.id),
     ]);
     const { embedding: _embedding, ...rest } = ingredient;
     return {
@@ -1150,6 +1301,7 @@ export async function exportSliceForRef(refKind, refId) {
       roleForExportedRef: role,
       refs,
       scraps,
+      media,
     };
   }));
   return {

@@ -14,6 +14,9 @@ import {
   catalogIngredientPatchSchema,
   catalogIngredientLinkSchema,
   catalogRelationLinkSchema,
+  catalogMediaAttachSchema,
+  catalogMediaDetachSchema,
+  catalogPortraitSetSchema,
   catalogIngredientQuerySchema,
   catalogTagQuerySchema,
   catalogScrapCommitSchema,
@@ -27,6 +30,7 @@ import {
   catalogRevisionRestoreSchema,
 } from '../lib/catalogValidation.js';
 import { parseBulkPayload, bundleToMarkdown, toYamlString } from '../lib/catalogBulkParsers.js';
+import { resolveImageInputPath } from '../lib/fileUtils.js';
 import { embedIngredient, embedBatch, ingredientEmbedSeed } from '../services/embeddings.js';
 import { extractIngredients } from '../services/catalogExtraction.js';
 import { migrateBibleToCatalog } from '../scripts/migrateBibleToCatalog.js';
@@ -295,6 +299,70 @@ router.delete('/ingredients/:id/relations', asyncHandler(async (req, res) => {
   res.status(204).end();
 }));
 
+// --- Ingredient media attachments ---------------------------------------
+// `media_key` is a reference into the media library (data/images + history
+// sidecar); the catalog never stores the bytes. The attach/portrait routes
+// reject a key that doesn't resolve against the local IMAGE library with a 422
+// so a typo can't persist a permanently-broken reference. Federated keys that
+// don't resolve are tolerated (they ride in via sync) and surface on the
+// integrity endpoint instead — that's a different code path that never throws.
+//
+// Only image kinds resolve against the gallery today; audio/video/document
+// keys have no library resolver yet, so they skip the existence guard.
+const IMAGE_MEDIA_KINDS = new Set(['portrait', 'reference']);
+
+router.get('/ingredients/:id/media', asyncHandler(async (req, res) => {
+  const ing = await catalogDB.getIngredient(req.params.id);
+  if (!ing) throw new ServerError('Ingredient not found', { status: 404 });
+  res.json(await catalogDB.listMediaForIngredient(req.params.id));
+}));
+
+// Integrity surface: media keys on this ingredient that don't resolve against
+// the local library (typically arrived via federation before their asset did).
+router.get('/ingredients/:id/media/missing', asyncHandler(async (req, res) => {
+  const ing = await catalogDB.getIngredient(req.params.id);
+  if (!ing) throw new ServerError('Ingredient not found', { status: 404 });
+  res.json({ missing: await catalogDB.getMissingMediaForIngredient(req.params.id) });
+}));
+
+router.post('/ingredients/:id/media', asyncHandler(async (req, res) => {
+  validateRequest(catalogMediaAttachSchema, req.body);
+  const ing = await catalogDB.getIngredient(req.params.id);
+  if (!ing) throw new ServerError('Ingredient not found', { status: 404 });
+  // Only IMAGE kinds resolve against the gallery today, so only they get the
+  // existence guard — attaching an audio/video/document key (no library
+  // resolver yet) stores the reference without a 422. The integrity endpoint
+  // mirrors this scoping when reporting missing assets.
+  if (IMAGE_MEDIA_KINDS.has(req.body.kind) && !resolveImageInputPath(req.body.mediaKey)) {
+    throw new ServerError(`Media key "${req.body.mediaKey}" not found in the media library`, { status: 422 });
+  }
+  const media = await catalogDB.attachMedia(req.params.id, req.body.mediaKey, req.body.kind, {
+    role: req.body.role ?? null,
+    caption: req.body.caption ?? null,
+  });
+  res.status(201).json(media);
+}));
+
+router.post('/ingredients/:id/media/portrait', asyncHandler(async (req, res) => {
+  validateRequest(catalogPortraitSetSchema, req.body);
+  const ing = await catalogDB.getIngredient(req.params.id);
+  if (!ing) throw new ServerError('Ingredient not found', { status: 404 });
+  if (!resolveImageInputPath(req.body.mediaKey)) {
+    throw new ServerError(`Media key "${req.body.mediaKey}" not found in the media library`, { status: 422 });
+  }
+  const media = await catalogDB.setPortraitMedia(req.params.id, req.body.mediaKey, {
+    role: req.body.role ?? null,
+    caption: req.body.caption ?? null,
+  });
+  res.status(201).json(media);
+}));
+
+router.delete('/ingredients/:id/media', asyncHandler(async (req, res) => {
+  validateRequest(catalogMediaDetachSchema, req.body);
+  await catalogDB.detachMedia(req.params.id, req.body.mediaKey, req.body.kind);
+  res.status(204).end();
+}));
+
 // Bulk-create ingredients from a markdown / CSV / JSON dump — no LLM round
 // trip, unlike the scrap → extract → commit path. The whole batch commits
 // or rolls back together so a malformed entry can't leave the catalog
@@ -382,10 +450,11 @@ router.post('/bulk-import', asyncHandler(async (req, res) => {
 
 // Export one ref slice (universe/series/issue/work) as a portable bundle.
 // JSON is the canonical round-trip format; markdown + YAML are convenience
-// outputs. Relations and media-refs are intentionally absent — those tables
-// don't exist yet; when they ship the export helper will include them
-// without a payload-shape break (the consumer treats unknown keys as
-// passthrough).
+// outputs. Each ingredient carries its `media` attachments (media-key
+// references, not bytes — the importer matches keys against its own library).
+// Relations are still absent (their table predates a portable shape); when
+// they ship the export helper will include them without a payload-shape break
+// (the consumer treats unknown keys as passthrough).
 router.get('/export', asyncHandler(async (req, res) => {
   const params = validateRequest(catalogExportQuerySchema, req.query);
   const format = params.format || 'json';

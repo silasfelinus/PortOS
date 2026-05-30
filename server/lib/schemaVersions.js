@@ -93,7 +93,18 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // TEXT[]` column is unchanged — canonical tag rows are an additive index, so
   // a v5 receiver still accepts ≤v4 ingredient/scrap/ref/relation pushes; those
   // envelopes simply carry no `tags` block.
-  catalog: 5,
+  // v6 = `catalog_ingredient_media` join table (typed image/audio/video/doc
+  // attachments) + a new `media: [...]` block in the catalog sync envelope.
+  // Each media row ships a `media_key` REFERENCE into the receiver's own media
+  // library (data/images + history.jsonl sidecar) — never the bytes. Same
+  // gating rationale as v4/v5: a ≤v5 receiver doesn't understand the `media`
+  // block, so a v6 sender pushing to it is sender-ahead on `catalog` and gets
+  // a 412 (otherwise the older peer would silently drop every attachment). A v6
+  // receiver still accepts ≤v5 senders (sender-behind); those envelopes carry
+  // no `media` block. Media keys that don't resolve against the receiver's own
+  // library surface via the metadata-missing integrity endpoint rather than
+  // failing the apply.
+  catalog: 6,
   // NOTE: `videoHistory` is intentionally NOT listed here. The version gate
   // rejects the ENTIRE snapshot/push payload on ANY ahead-mismatch (the
   // comparator walks the union of keys), so declaring a brand-new key would

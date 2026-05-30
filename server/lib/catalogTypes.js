@@ -289,6 +289,45 @@ export function getRelationKind(id) {
 }
 
 /**
+ * Catalog ingredient MEDIA-attachment kinds. An ingredient can carry typed
+ * media references (a generated portrait, a mood/reference image, a recorded
+ * voice memo, …) that point at the install's media library by `media_key` —
+ * the bytes are never duplicated into the catalog. `label` drives the attach
+ * picker; `accept` is the file-input MIME filter for drag-and-drop. The
+ * `portrait` kind is special-cased by `setPortraitMedia` (one active portrait
+ * per ingredient; attaching a new one demotes the prior). Client mirror lives
+ * in `client/src/lib/catalogTypes.js` (drift asserted by the type tests).
+ */
+const MEDIA_KIND_REGISTRY = [
+  { id: 'portrait', label: 'Portrait', accept: 'image/*' },
+  { id: 'reference', label: 'Reference', accept: 'image/*' },
+  { id: 'audio', label: 'Audio', accept: 'audio/*' },
+  { id: 'video', label: 'Video', accept: 'video/*' },
+  { id: 'document', label: 'Document', accept: '.pdf,.txt,.md' },
+];
+
+// Fail-fast at module load — duplicate / malformed media kinds block boot.
+const seenMediaIds = new Set();
+for (const m of MEDIA_KIND_REGISTRY) {
+  if (!m.id || typeof m.id !== 'string') throw new Error('catalogTypes: media entry missing id');
+  if (seenMediaIds.has(m.id)) throw new Error(`catalogTypes: duplicate media kind "${m.id}"`);
+  seenMediaIds.add(m.id);
+  if (!m.label) throw new Error(`catalogTypes: media "${m.id}" missing label`);
+}
+
+export const MEDIA_KINDS = Object.freeze(MEDIA_KIND_REGISTRY.map((m) => Object.freeze({ ...m })));
+
+/** Frozen ordered list of media kind ids — the canonical enum source. */
+export const MEDIA_KIND_IDS = Object.freeze(MEDIA_KINDS.map((m) => m.id));
+
+const MEDIA_BY_ID = Object.freeze(Object.fromEntries(MEDIA_KINDS.map((m) => [m.id, m])));
+
+/** Look up a media-kind entry by id. Returns `undefined` for unknown ids. */
+export function getMediaKind(id) {
+  return MEDIA_BY_ID[id];
+}
+
+/**
  * Run a payload through its registered upgrader chain up to the current
  * version. Each upgrader is keyed by the FROM version. Returns the upgraded
  * payload with `schemaVersion` stamped to current. A row at-or-above current

@@ -23,6 +23,10 @@ import {
   catalogExportQuerySchema,
   catalogRelationLinkSchema,
   RELATION_KINDS,
+  catalogMediaAttachSchema,
+  catalogMediaDetachSchema,
+  catalogPortraitSetSchema,
+  MEDIA_KINDS,
 } from './catalogValidation.js';
 
 describe('catalogValidation — ingredient types & ref kinds', () => {
@@ -380,6 +384,74 @@ describe('catalogValidation — catalogSyncEnvelopeSchema relations block', () =
   it('requires createdAt on a relation row', () => {
     expect(() => catalogSyncEnvelopeSchema.parse({
       relations: [{ fromId: 'a', toId: 'b', kind: 'lives-in' }],
+    })).toThrow();
+  });
+});
+
+describe('catalogValidation — media kinds & catalogMediaAttachSchema', () => {
+  it('exposes the media kinds as a frozen list including the documented set', () => {
+    expect(Object.isFrozen(MEDIA_KINDS)).toBe(true);
+    for (const k of ['portrait', 'reference', 'audio', 'video', 'document']) {
+      expect(MEDIA_KINDS).toContain(k);
+    }
+  });
+
+  it('accepts a valid media attach body with optional role/caption', () => {
+    const out = catalogMediaAttachSchema.parse({ mediaKey: 'hero.png', kind: 'portrait', role: 'hero-shot', caption: 'angry' });
+    expect(out).toEqual({ mediaKey: 'hero.png', kind: 'portrait', role: 'hero-shot', caption: 'angry' });
+  });
+
+  it('accepts an attach body without role/caption', () => {
+    expect(() => catalogMediaAttachSchema.parse({ mediaKey: 'a.png', kind: 'reference' })).not.toThrow();
+  });
+
+  it('accepts every registered media kind', () => {
+    for (const k of MEDIA_KINDS) {
+      expect(() => catalogMediaAttachSchema.parse({ mediaKey: 'x.png', kind: k })).not.toThrow();
+    }
+  });
+
+  it('rejects an unknown media kind', () => {
+    expect(() => catalogMediaAttachSchema.parse({ mediaKey: 'x.png', kind: 'hologram' })).toThrow();
+  });
+
+  it('rejects a missing or empty mediaKey', () => {
+    expect(() => catalogMediaAttachSchema.parse({ kind: 'portrait' })).toThrow();
+    expect(() => catalogMediaAttachSchema.parse({ mediaKey: '', kind: 'portrait' })).toThrow();
+  });
+
+  it('rejects unknown keys (strict)', () => {
+    expect(() => catalogMediaAttachSchema.parse({ mediaKey: 'x.png', kind: 'portrait', bytes: 'nope' })).toThrow();
+  });
+
+  it('portrait-set body omits kind; detach body requires kind', () => {
+    expect(() => catalogPortraitSetSchema.parse({ mediaKey: 'x.png' })).not.toThrow();
+    expect(() => catalogPortraitSetSchema.parse({ mediaKey: 'x.png', kind: 'portrait' })).toThrow(); // strict: no kind
+    expect(() => catalogMediaDetachSchema.parse({ mediaKey: 'x.png', kind: 'portrait' })).not.toThrow();
+    expect(() => catalogMediaDetachSchema.parse({ mediaKey: 'x.png' })).toThrow();
+  });
+});
+
+describe('catalogValidation — catalogSyncEnvelopeSchema media block', () => {
+  it('accepts an envelope carrying a media array with tombstone + metadata fields', () => {
+    const out = catalogSyncEnvelopeSchema.parse({
+      media: [
+        { ingredientId: 'i1', mediaKey: 'a.png', kind: 'portrait', createdAt: '2026-01-01T00:00:00Z' },
+        { ingredientId: 'i1', mediaKey: 'b.png', kind: 'reference', role: 'mood', caption: 'rainy', createdAt: '2026-01-01T00:00:00Z', deleted: true, deletedAt: '2026-01-02T00:00:00Z' },
+      ],
+    });
+    expect(out.media).toHaveLength(2);
+  });
+
+  it('tolerates a forward (unknown) media kind on the wire', () => {
+    expect(() => catalogSyncEnvelopeSchema.parse({
+      media: [{ ingredientId: 'i1', mediaKey: 'a.png', kind: 'future-kind', createdAt: '2026-01-01T00:00:00Z' }],
+    })).not.toThrow();
+  });
+
+  it('requires ingredientId + mediaKey + createdAt on a media row', () => {
+    expect(() => catalogSyncEnvelopeSchema.parse({
+      media: [{ kind: 'portrait', createdAt: '2026-01-01T00:00:00Z' }],
     })).toThrow();
   });
 });

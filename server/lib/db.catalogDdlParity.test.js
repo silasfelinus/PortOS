@@ -31,6 +31,7 @@ const CATALOG_TABLES = [
   'catalog_ingredient_relations',
   'catalog_tags',
   'catalog_ingredient_revisions',
+  'catalog_ingredient_media',
 ];
 
 // Strip line comments + collapse whitespace so column lists compare cleanly.

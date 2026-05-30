@@ -27,6 +27,9 @@ import {
   RELATION_KINDS,
   RELATION_KIND_IDS,
   getRelationKind,
+  MEDIA_KINDS,
+  MEDIA_KIND_IDS,
+  getMediaKind,
   canonicalTagKey,
   tagIdForKey,
   defaultTagsForType,
@@ -241,5 +244,40 @@ describe('catalogTypes — relation kinds', () => {
   it('getRelationKind resolves a known id and returns undefined for unknown', () => {
     expect(getRelationKind('lives-in')?.label).toBe('Lives in');
     expect(getRelationKind('nemesis-of')).toBeUndefined();
+  });
+});
+
+describe('catalogTypes — media kinds', () => {
+  it('exposes the documented media kinds, frozen + unique', () => {
+    expect(Object.isFrozen(MEDIA_KINDS)).toBe(true);
+    for (const k of ['portrait', 'reference', 'audio', 'video', 'document']) {
+      expect(MEDIA_KIND_IDS).toContain(k);
+    }
+    expect(new Set(MEDIA_KIND_IDS).size).toBe(MEDIA_KIND_IDS.length);
+  });
+
+  it('every media kind has a label and an accept filter', () => {
+    for (const m of MEDIA_KINDS) {
+      expect(typeof m.label).toBe('string');
+      expect(m.label.length).toBeGreaterThan(0);
+      expect(typeof m.accept).toBe('string');
+      expect(m.accept.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('getMediaKind resolves a known id and returns undefined for unknown', () => {
+    expect(getMediaKind('portrait')?.label).toBe('Portrait');
+    expect(getMediaKind('hologram')).toBeUndefined();
+  });
+
+  it('client mirror has the same media kind ids + accept filters', async () => {
+    const client = await import('../../client/src/lib/catalogTypes.js');
+    expect(client.MEDIA_KINDS.map((m) => m.id)).toEqual([...MEDIA_KIND_IDS]);
+    for (const serverKind of MEDIA_KINDS) {
+      const clientKind = client.getMediaKind(serverKind.id);
+      expect(clientKind, `client mirror missing media kind ${serverKind.id}`).toBeTruthy();
+      expect(clientKind.label).toBe(serverKind.label);
+      expect(clientKind.accept).toBe(serverKind.accept);
+    }
   });
 });

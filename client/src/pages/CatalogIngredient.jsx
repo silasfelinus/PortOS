@@ -5,9 +5,9 @@
  * pipeline series / issues / writers-room). Full-width page; owns its scroll.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
-import { Sparkles, Save, Trash2, ArrowLeft, Loader2, ExternalLink, Plus, X, History, RotateCcw } from 'lucide-react';
+import { Sparkles, Save, Trash2, ArrowLeft, Loader2, ExternalLink, Plus, X, History, RotateCcw, Image as ImageIcon, Star } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import {
   getCatalogIngredient,
@@ -18,8 +18,15 @@ import {
   unlinkCatalogIngredientRelation,
   listCatalogIngredientRevisions,
   restoreCatalogIngredientRevision,
+  listCatalogIngredientMedia,
+  listCatalogIngredientMissingMedia,
+  attachCatalogIngredientMedia,
+  setCatalogIngredientPortrait,
+  detachCatalogIngredientMedia,
 } from '../services/apiCatalog';
+import { listImageGallery } from '../services/apiImageVideo';
 import IngredientPicker from '../components/IngredientPicker';
+import MediaImage from '../components/MediaImage';
 import TagPicker from '../components/TagPicker';
 import { getCatalogType, CATALOG_BADGE_BY_ID, RELATION_KINDS, getRelationKind } from '../lib/catalogTypes';
 import { timeAgo } from '../utils/formatters';
@@ -65,6 +72,11 @@ export default function CatalogIngredient() {
   // remove without re-fetching the whole detail payload.
   const [relations, setRelations] = useState({ outbound: [], inbound: [] });
   const [revisions, setRevisions] = useState([]);
+  // Media attachments + the subset of their keys that don't resolve against the
+  // local library (federated-in but asset not yet present). `missingMedia` is a
+  // Set of media_keys driving the integrity badge on each thumbnail.
+  const [media, setMedia] = useState([]);
+  const [missingMedia, setMissingMedia] = useState(new Set());
 
   const refreshRevisions = useCallback(() => {
     if (!id) return;
@@ -149,6 +161,53 @@ export default function CatalogIngredient() {
       ...prev,
       outbound: prev.outbound.filter((r) => !(r.toId === toId && r.kind === kind)),
     }));
+  };
+
+  // Load media attachments + the integrity (missing-key) overlay. Both refresh
+  // independently of the detail payload so attach/detach updates the panel
+  // without re-fetching the whole record.
+  const refreshMedia = useCallback(() => {
+    if (!id) return;
+    listCatalogIngredientMedia(id, { silent: true })
+      .then((rows) => setMedia(Array.isArray(rows) ? rows : []))
+      .catch(() => { /* media is non-critical — leave the panel empty */ });
+    listCatalogIngredientMissingMedia(id, { silent: true })
+      .then((r) => setMissingMedia(new Set(Array.isArray(r?.missing) ? r.missing.map((m) => m.mediaKey) : [])))
+      .catch(() => { /* integrity overlay is best-effort */ });
+  }, [id]);
+
+  useEffect(() => { refreshMedia(); }, [refreshMedia]);
+
+  // Attach a media key (gallery filename) as a typed attachment. `kind` defaults
+  // to 'reference' for drag-drop / picker; the "set portrait" path routes
+  // through handleSetPortrait instead. Optimistic — prepend then reconcile.
+  const handleAttachMedia = async (mediaKey, kind = 'reference') => {
+    if (!record || !mediaKey) return;
+    const ok = await attachCatalogIngredientMedia(record.id, { mediaKey, kind }, { silent: true })
+      .then(() => true)
+      .catch((err) => { toast.error(err?.message || 'Failed to attach media'); return false; });
+    if (!ok) return;
+    refreshMedia();
+    toast.success('Media attached');
+  };
+
+  const handleSetPortrait = async (mediaKey) => {
+    if (!record || !mediaKey) return;
+    const ok = await setCatalogIngredientPortrait(record.id, { mediaKey }, { silent: true })
+      .then(() => true)
+      .catch((err) => { toast.error(err?.message || 'Failed to set portrait'); return false; });
+    if (!ok) return;
+    refreshMedia();
+    toast.success('Portrait set');
+  };
+
+  const handleDetachMedia = async (mediaKey, kind) => {
+    if (!record) return;
+    const ok = await detachCatalogIngredientMedia(record.id, { mediaKey, kind }, { silent: true })
+      .then(() => true)
+      .catch((err) => { toast.error(err?.message || 'Failed to detach media'); return false; });
+    if (!ok) return;
+    setMedia((prev) => prev.filter((m) => !(m.mediaKey === mediaKey && m.kind === kind)));
   };
 
   const handleSave = async () => {
@@ -316,6 +375,14 @@ export default function CatalogIngredient() {
           onRemove={handleRemoveRelation}
         />
 
+        <MediaPanel
+          media={media}
+          missingMedia={missingMedia}
+          onAttach={handleAttachMedia}
+          onSetPortrait={handleSetPortrait}
+          onDetach={handleDetachMedia}
+        />
+
         <RevisionsPanel
           revisions={revisions}
           current={record}
@@ -413,6 +480,171 @@ function RelationsPanel({ record, relations, onAdd, onRemove }) {
         excludeIds={excludeIds}
       />
     </section>
+  );
+}
+
+// "Media" panel — typed image/audio/video/document attachments. Each row
+// stores a `media_key` REFERENCE into the media library (never the bytes), so
+// the panel scopes its picker to the existing gallery/history. The portrait
+// (one per ingredient) renders large at the head; other attachments tile below.
+// Drag-and-drop accepts an in-app gallery filename dragged as text (the
+// dashboard/gallery tiles set `dataTransfer.setData('text/plain', filename)`);
+// file-upload + voice-memo capture are intentionally out of scope here and
+// land via the separate `[catalog-source-kinds-url-file-voice]` item — the
+// `onAttach(mediaKey, kind)` seam is all those paths need to reuse.
+function MediaPanel({ media, missingMedia, onAttach, onSetPortrait, onDetach }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const list = Array.isArray(media) ? media : [];
+  const portrait = list.find((m) => m.kind === 'portrait');
+  const others = list.filter((m) => m.kind !== 'portrait');
+
+  const onDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    // In-app gallery DnD: the dragged tile carries its filename as text.
+    const key = (e.dataTransfer.getData('text/plain') || '').trim();
+    if (key) { onAttach(key, 'reference'); return; }
+    toast.error('Drop a gallery image, or use “Pick from gallery”. File upload coming soon.');
+  };
+
+  return (
+    <section className="bg-port-card border border-port-border rounded-lg p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-semibold text-white flex items-center gap-1.5">
+          <ImageIcon size={14} aria-hidden="true" /> Media
+        </h2>
+        <button type="button" onClick={() => setPickerOpen(true)}
+          className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-port-border text-gray-300 hover:text-white hover:border-port-accent">
+          <Plus size={12} aria-hidden="true" /> Pick from gallery
+        </button>
+      </div>
+
+      <div
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={onDrop}
+        className={`mb-3 rounded-lg border border-dashed p-3 text-center text-xs transition-colors ${dragOver ? 'border-port-accent bg-port-accent/10 text-white' : 'border-port-border text-gray-500'}`}
+      >
+        Drag a gallery image here to attach it as a reference.
+      </div>
+
+      {portrait && (
+        <div className="mb-3">
+          <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Portrait</div>
+          <MediaTile m={portrait} missing={missingMedia.has(portrait.mediaKey)} isPortrait
+            onSetPortrait={onSetPortrait} onDetach={onDetach} />
+        </div>
+      )}
+
+      {others.length > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          {others.map((m) => (
+            <MediaTile key={`${m.mediaKey}:${m.kind}`} m={m} missing={missingMedia.has(m.mediaKey)}
+              onSetPortrait={onSetPortrait} onDetach={onDetach} />
+          ))}
+        </div>
+      )}
+
+      {list.length === 0 && (
+        <p className="text-xs text-gray-500">No media yet. Attach a generated portrait, a mood/reference image, or a recorded memo (memo capture coming soon).</p>
+      )}
+
+      {pickerOpen && (
+        <GalleryPickerModal
+          onClose={() => setPickerOpen(false)}
+          onPick={(filename, asPortrait) => {
+            if (asPortrait) onSetPortrait(filename);
+            else onAttach(filename, 'reference');
+            setPickerOpen(false);
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
+// One media attachment tile. Images render via <MediaImage> (gracefully shows a
+// "syncing" placeholder when the asset hasn't arrived — the same surface the
+// `missing` integrity flag warns about). Non-image kinds render a labeled chip.
+function MediaTile({ m, missing, isPortrait = false, onSetPortrait, onDetach }) {
+  const isImage = m.kind === 'portrait' || m.kind === 'reference';
+  return (
+    <div className="relative group rounded border border-port-border overflow-hidden bg-port-bg">
+      {isImage ? (
+        <MediaImage src={`/data/images/${m.mediaKey}`} alt={m.caption || m.kind}
+          className={isPortrait ? 'w-full max-w-[180px] aspect-square object-cover' : 'w-full aspect-square object-cover'} />
+      ) : (
+        <div className="w-full aspect-square flex items-center justify-center text-[10px] uppercase tracking-wider text-gray-400 px-1 text-center">
+          {m.kind}<br />{m.mediaKey}
+        </div>
+      )}
+      {missing && (
+        <span className="absolute top-1 left-1 text-[9px] px-1 py-0.5 rounded bg-port-warning/20 text-port-warning border border-port-warning/40"
+          title="This asset isn't in your media library yet (received from a peer before the file arrived).">
+          missing
+        </span>
+      )}
+      <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        {!isPortrait && isImage && (
+          <button type="button" onClick={() => onSetPortrait(m.mediaKey)} title="Set as portrait"
+            className="p-1 rounded bg-black/60 text-gray-200 hover:text-port-warning">
+            <Star size={12} aria-hidden="true" />
+          </button>
+        )}
+        <button type="button" onClick={() => onDetach(m.mediaKey, m.kind)} title="Detach"
+          className="p-1 rounded bg-black/60 text-gray-200 hover:text-port-error">
+          <X size={12} aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Modal that lists the existing media gallery (history) so the user can attach
+// or set-portrait from already-generated assets — the "scoped to existing media
+// history" requirement. Never uploads; it only references library keys.
+function GalleryPickerModal({ onClose, onPick }) {
+  const [items, setItems] = useState(null); // null = loading, [] = loaded-empty
+  const closeRef = useRef(null);
+
+  useEffect(() => {
+    listImageGallery()
+      .then((rows) => setItems(Array.isArray(rows) ? rows : []))
+      .catch(() => setItems([]));
+  }, []);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
+      <div className="bg-port-card border border-port-border rounded-lg w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-3 border-b border-port-border">
+          <h3 className="text-sm font-semibold text-white">Pick from media gallery</h3>
+          <button ref={closeRef} type="button" onClick={onClose} className="text-gray-400 hover:text-white" aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="p-3 overflow-y-auto">
+          {items === null && <p className="text-xs text-gray-500">Loading gallery…</p>}
+          {items?.length === 0 && <p className="text-xs text-gray-500">No images in the gallery yet. Generate one in Image Gen first.</p>}
+          {items && items.length > 0 && (
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+              {items.map((it) => (
+                <div key={it.filename} className="relative group rounded border border-port-border overflow-hidden">
+                  <MediaImage src={it.path || `/data/images/${it.filename}`} alt={it.filename}
+                    className="w-full aspect-square object-cover" />
+                  <div className="absolute inset-x-0 bottom-0 flex opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button type="button" onClick={() => onPick(it.filename, false)}
+                      className="flex-1 text-[10px] py-1 bg-black/70 text-gray-200 hover:text-white">Attach</button>
+                    <button type="button" onClick={() => onPick(it.filename, true)}
+                      className="flex-1 text-[10px] py-1 bg-black/70 text-gray-200 hover:text-port-warning">Portrait</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

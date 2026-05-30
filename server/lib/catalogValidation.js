@@ -12,7 +12,7 @@
 
 import { z } from 'zod';
 import { BIBLE_LIMITS } from './storyBible.js';
-import { INGREDIENT_TYPE_IDS, RELATION_KIND_IDS } from './catalogTypes.js';
+import { INGREDIENT_TYPE_IDS, RELATION_KIND_IDS, MEDIA_KIND_IDS } from './catalogTypes.js';
 
 // Derived from the shared type registry (`catalogTypes.js`) — adding a type
 // there flows through to every Zod enum below automatically. Kept as a frozen
@@ -30,6 +30,9 @@ export const REF_KINDS = Object.freeze([
 // Relation kinds derived from the shared registry (`catalogTypes.js`) — adding
 // a kind there flows through to the Zod enum below.
 export const RELATION_KINDS = RELATION_KIND_IDS;
+
+// Media-attachment kinds derived from the shared registry — same pattern.
+export const MEDIA_KINDS = MEDIA_KIND_IDS;
 
 const tag = z.string().trim().min(1).max(BIBLE_LIMITS.TAG_MAX);
 const tags = z.array(tag).max(BIBLE_LIMITS.TAGS_PER_ENTRY_MAX).optional();
@@ -121,6 +124,31 @@ export const catalogIngredientLinkSchema = z.object({
 export const catalogRelationLinkSchema = z.object({
   toId: z.string().trim().min(1).max(80),
   kind: z.enum(RELATION_KINDS),
+}).strict();
+
+// Media attach body. `mediaKey` is a REFERENCE into the media library (a
+// gallery filename / history sidecar key), not the bytes — capped at a generous
+// 512 to allow nested paths but reject blobs. `kind` is gated to the shared
+// media registry; `role`/`caption` are optional metadata. The route validates
+// that the key resolves against the local library before persisting.
+export const catalogMediaAttachSchema = z.object({
+  mediaKey: z.string().trim().min(1).max(512),
+  kind: z.enum(MEDIA_KINDS),
+  role: z.string().trim().max(64).optional().nullable(),
+  caption: z.string().trim().max(2_000).optional().nullable(),
+}).strict();
+
+// Set-portrait body — same as attach minus `kind` (the route forces 'portrait').
+export const catalogPortraitSetSchema = z.object({
+  mediaKey: z.string().trim().min(1).max(512),
+  role: z.string().trim().max(64).optional().nullable(),
+  caption: z.string().trim().max(2_000).optional().nullable(),
+}).strict();
+
+// Media detach body — identifies the tuple to soft-delete.
+export const catalogMediaDetachSchema = z.object({
+  mediaKey: z.string().trim().min(1).max(512),
+  kind: z.enum(MEDIA_KINDS),
 }).strict();
 
 export const catalogScrapCommitSchema = z.object({
@@ -297,6 +325,23 @@ export const catalogSyncTagSchema = z.object({
   syncSequence: z.string().optional(),
 }).passthrough();
 
+// Media rows carry tombstone fields + editable metadata (role/caption).
+// `kind` is freeform on the wire (not the strict enum) for the same forward-
+// compat reason as relations: a newer peer's extra media kind stores
+// harmlessly rather than 400-ing the whole envelope. `mediaKey` is a reference,
+// not bytes — the receiver matches it against its own library on apply.
+export const catalogSyncMediaSchema = z.object({
+  ingredientId: z.string().max(80),
+  mediaKey: z.string().max(512),
+  kind: z.string().max(32),
+  role: z.string().max(64).nullable().optional(),
+  caption: z.string().max(2_000).nullable().optional(),
+  createdAt: isoDate,
+  deleted: z.boolean().optional(),
+  deletedAt: z.string().nullable().optional(),
+  syncSequence: z.string().optional(),
+}).passthrough();
+
 export const catalogSyncEnvelopeSchema = z.object({
   scraps: z.array(catalogSyncScrapSchema).max(5_000).optional(),
   ingredients: z.array(catalogSyncIngredientSchema).max(5_000).optional(),
@@ -304,5 +349,6 @@ export const catalogSyncEnvelopeSchema = z.object({
   refs: z.array(catalogSyncRefSchema).max(20_000).optional(),
   relations: z.array(catalogSyncRelationSchema).max(20_000).optional(),
   tags: z.array(catalogSyncTagSchema).max(20_000).optional(),
+  media: z.array(catalogSyncMediaSchema).max(20_000).optional(),
   portosMeta,
 }).passthrough();

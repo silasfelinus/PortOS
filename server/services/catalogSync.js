@@ -2,13 +2,16 @@
  * Catalog Federation Sync Service
  *
  * Peer-to-peer sync for the Creative Ingredients Catalog. Mirrors
- * server/services/memorySync.js but the envelope carries six kinds
- * (scraps, ingredients, sources, refs, relations, tags) because the catalog is
- * a multi-table relational store, not a single flat row set.
+ * server/services/memorySync.js but the envelope carries seven kinds
+ * (scraps, ingredients, sources, refs, relations, tags, media) because the
+ * catalog is a multi-table relational store, not a single flat row set. The
+ * `media` rows carry a `media_key` REFERENCE into the receiver's own library
+ * (never the bytes); an unresolved key surfaces via the metadata-missing
+ * integrity endpoint rather than failing the apply.
  *
  * Pull protocol:
- *   GET /api/catalog/sync?since[scraps]=A&since[ingredients]=B&...&since[tags]=F&limit=100
- *   → { scraps[], ingredients[], sources[], refs[], relations[], tags[], maxSequences, hasMore }
+ *   GET /api/catalog/sync?since[scraps]=A&since[ingredients]=B&...&since[media]=G&limit=100
+ *   → { scraps[], ingredients[], sources[], refs[], relations[], tags[], media[], maxSequences, hasMore }
  *
  * The BIGSERIAL `sync_sequence` columns are INDEPENDENT — a row at
  * sources.sync_sequence=50 isn't comparable to ingredients.sync_sequence=50.
@@ -32,6 +35,7 @@ import {
   getRefChangesSince,
   getRelationChangesSince,
   getTagChangesSince,
+  getMediaChangesSince,
   getMaxSequences,
   upsertScrapFromPeer,
   upsertIngredientFromPeer,
@@ -39,10 +43,11 @@ import {
   upsertRefFromPeer,
   upsertRelationFromPeer,
   upsertTagFromPeer,
+  upsertMediaFromPeer,
 } from './catalogDB.js';
 import { compareSchemaVersions, PORTOS_SCHEMA_VERSIONS } from '../lib/schemaVersions.js';
 
-const CURSOR_KEYS = ['scraps', 'ingredients', 'sources', 'refs', 'relations', 'tags'];
+const CURSOR_KEYS = ['scraps', 'ingredients', 'sources', 'refs', 'relations', 'tags', 'media'];
 
 // Normalize `since` (scalar string OR per-kind object) into a `{ scraps,
 // ingredients, sources, refs }` cursor map. Scalar form is uniform across
@@ -62,18 +67,19 @@ function normalizeCursors(since) {
 
 export async function getChangesSince(since = '0', limit = 100) {
   const cursors = normalizeCursors(since);
-  const [scraps, ingredients, sources, refs, relations, tags] = await Promise.all([
+  const [scraps, ingredients, sources, refs, relations, tags, media] = await Promise.all([
     getScrapChangesSince(cursors.scraps, limit),
     getIngredientChangesSince(cursors.ingredients, limit),
     getSourceChangesSince(cursors.sources, limit),
     getRefChangesSince(cursors.refs, limit),
     getRelationChangesSince(cursors.relations, limit),
     getTagChangesSince(cursors.tags, limit),
+    getMediaChangesSince(cursors.media, limit),
   ]);
 
   const hasMore =
     scraps.hasMore || ingredients.hasMore || sources.hasMore || refs.hasMore ||
-    relations.hasMore || tags.hasMore;
+    relations.hasMore || tags.hasMore || media.hasMore;
 
   // Per-kind cursor advance — fall back to the inbound cursor so the next pull
   // doesn't move backward on a quiet kind.
@@ -87,6 +93,7 @@ export async function getChangesSince(since = '0', limit = 100) {
     refs: refs.items,
     relations: relations.items,
     tags: tags.items,
+    media: media.items,
     maxSequences: {
       scraps:      maxOf(scraps.items,      cursors.scraps),
       ingredients: maxOf(ingredients.items, cursors.ingredients),
@@ -94,6 +101,7 @@ export async function getChangesSince(since = '0', limit = 100) {
       refs:        maxOf(refs.items,        cursors.refs),
       relations:   maxOf(relations.items,   cursors.relations),
       tags:        maxOf(tags.items,        cursors.tags),
+      media:       maxOf(media.items,       cursors.media),
     },
     hasMore,
   };
@@ -127,6 +135,7 @@ export async function applyRemoteChanges(envelope = {}) {
     refs: { applied: 0, failed: 0 },
     relations: { applied: 0, failed: 0 },
     tags: { inserted: 0, updated: 0, skipped: 0, failed: 0 },
+    media: { applied: 0, failed: 0 },
     errors: [],
   };
 
@@ -208,6 +217,22 @@ export async function applyRemoteChanges(envelope = {}) {
     } catch (err) {
       stats.relations.failed++;
       recordFailure('relation', `${rel?.fromId}/${rel?.kind}/${rel?.toId}`, err);
+    }
+  }
+
+  // Media rows FK ingredient_id to catalog_ingredients, so they land after the
+  // ingredient upserts. The `media_key` is a REFERENCE into the receiver's own
+  // library — we store the key regardless of whether the asset is present
+  // locally; a missing asset surfaces later via the metadata-missing integrity
+  // endpoint, NOT as an apply failure (otherwise a slow asset transfer would
+  // drop the attachment metadata entirely).
+  for (const media of envelope.media || []) {
+    try {
+      await upsertMediaFromPeer(media);
+      stats.media.applied++;
+    } catch (err) {
+      stats.media.failed++;
+      recordFailure('media', `${media?.ingredientId}/${media?.kind}/${media?.mediaKey}`, err);
     }
   }
 
