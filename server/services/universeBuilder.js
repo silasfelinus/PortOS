@@ -1011,6 +1011,41 @@ export async function insertUniverseWithId(input = {}) {
   return next;
 }
 
+// Canon array keys carrying bible entries that project to catalog rows.
+const CANON_ARRAY_KEYS = ['characters', 'places', 'objects'];
+
+// Compare two canon entries for CONTENT equality, ignoring `updatedAt` (the
+// field we're deciding whether to bump). A cheap stable-stringify is enough —
+// entries are small plain objects and a false "changed" only costs a redundant
+// projection write, never correctness.
+function canonEntryContentEqual(a, b) {
+  const strip = (e) => { const { updatedAt: _x, ...rest } = e || {}; return rest; };
+  return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
+}
+
+// Stamp `updatedAt = now` on every canon entry in `next` whose content differs
+// from its same-id entry in `prev` (or that is new). Mutates `next`'s arrays in
+// place. So the embedded entry's LWW clock truthfully reflects a real edit —
+// the bible sanitizer otherwise preserves the prior timestamp and the
+// canon→catalog projection would skip a genuine change. Untouched entries keep
+// their old timestamp so this never manufactures projection churn.
+function stampChangedCanonEntries(prev, next) {
+  const now = new Date().toISOString();
+  for (const key of CANON_ARRAY_KEYS) {
+    const nextList = Array.isArray(next[key]) ? next[key] : null;
+    if (!nextList) continue;
+    const prevById = new Map(
+      (Array.isArray(prev?.[key]) ? prev[key] : []).map((e) => [e?.id, e]),
+    );
+    next[key] = nextList.map((entry) => {
+      if (!entry?.id) return entry;
+      const before = prevById.get(entry.id);
+      if (before && canonEntryContentEqual(before, entry)) return entry;
+      return { ...entry, updatedAt: now };
+    });
+  }
+}
+
 export async function updateUniverse(id, patchOrMutator = {}, options = {}) {
   // The queued section covers only the universe-builder read/modify/write
   // cycle. The cross-file media-collection rename runs *after* the queue
@@ -1188,6 +1223,16 @@ export async function updateUniverse(id, patchOrMutator = {}, options = {}) {
       updatedAt: new Date().toISOString(),
     });
     if (!mergedRecord) throw makeErr('Invalid universe payload', ERR_VALIDATION);
+    // Stamp `updatedAt = now` on every canon entry whose CONTENT changed vs the
+    // pre-write record. The bible sanitizer preserves a present `updatedAt`, so
+    // an inline edit / AI rewrite that does `{ ...e, ...patch }` keeps the OLD
+    // timestamp — which makes the canon→catalog projection's LWW clock lie (a
+    // catalog row that's merely newer-by-clock would win and the canon edit
+    // would never reach the catalog row, breaking lockstep). Bumping the clock
+    // on genuine content changes makes the embedded entry's timestamp truthful
+    // so projectToCatalog correctly carries the edit across. Unchanged entries
+    // keep their old timestamp (no spurious revisions / no projection churn).
+    stampChangedCanonEntries(cur, mergedRecord);
     // Persist the stale-reference-sheet null at write time so the on-disk
     // record catches up with what the GET-route pruner shows. Otherwise a
     // PATCH that omits `characters` (e.g. rename) merges from `cur` and

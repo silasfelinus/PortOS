@@ -76,6 +76,21 @@ export async function reconcileCanonCatalog({ force = false } = {}) {
   const universes = await listUniverses({ includeDeleted: false });
   const totals = { universesScanned: 0, scanned: 0, catalogWon: 0, canonWon: 0, errors: 0 };
 
+  // Stable snapshot of each catalog row's ORIGINAL `updatedAt` clock, keyed by
+  // ingredientId, captured the first time we see the row. The same ingredient
+  // can be embedded in multiple universes; writing a canon-winner bumps the
+  // row's `updated_at` to NOW(), which — without this snapshot — would make a
+  // LATER universe's genuinely-newer embedded copy lose to the artificially
+  // fresh row and get clobbered. Comparing every universe against the pre-pass
+  // clock keeps the winner determination stable across the whole reconcile.
+  const rowClockAtStart = new Map();
+  // High-water mark of the canon-winner clock already written to each catalog
+  // row this pass. When the same ingredient is embedded in several universes
+  // and more than one copy beats the ORIGINAL row, only the NEWEST embedded
+  // copy may win — a later but older copy must not clobber the newer one we
+  // already wrote.
+  const canonWinnerClock = new Map();
+
   for (const universe of universes) {
     if (universe.deleted) continue;
     totals.universesScanned++;
@@ -93,7 +108,13 @@ export async function reconcileCanonCatalog({ force = false } = {}) {
           const row = await catalogDB.getIngredient(ingredientId);
           if (!row) continue;                               // dangling backlink — leave both sides alone
           const entryAt = Date.parse(entry.updatedAt || '') || 0;
-          const rowAt = Date.parse(row.updatedAt || '') || 0;
+          // Compare against the row's clock AS OF the start of this pass, not
+          // its live value — a canon-winner write earlier in the pass bumped
+          // `updated_at` to now and would otherwise wrongly win here.
+          if (!rowClockAtStart.has(ingredientId)) {
+            rowClockAtStart.set(ingredientId, Date.parse(row.updatedAt || '') || 0);
+          }
+          const rowAt = rowClockAtStart.get(ingredientId);
           if (rowAt > entryAt) {
             // Catalog row is newer → it wins. Stamp its name+payload onto the
             // embedded entry (silent universe write below).
@@ -104,13 +125,16 @@ export async function reconcileCanonCatalog({ force = false } = {}) {
               updatedAt: row.updatedAt,
             };
             totals.catalogWon++;
-          } else if (entryAt > rowAt) {
-            // Embedded entry is newer → it wins. Write it into the catalog row.
+          } else if (entryAt > rowAt && entryAt > (canonWinnerClock.get(ingredientId) || 0)) {
+            // Embedded entry beats the original row AND any canon-winner already
+            // written this pass → it wins. Write it into the catalog row and
+            // raise the high-water mark so an older sibling copy can't clobber it.
             await catalogDB.updateIngredient(
               ingredientId,
               { name: entry.name, payload: entryToPayload(entry) },
               { source: 'sync', actor: 'canon-catalog-reconcile' },
             );
+            canonWinnerClock.set(ingredientId, entryAt);
             totals.canonWon++;
           }
           // Equal timestamps → already converged; nothing to do.

@@ -39,6 +39,13 @@ vi.mock('../services/catalogDB.js', () => ({
   getIngredient: vi.fn(async (id) => dbState.rows[id] || null),
   updateIngredient: vi.fn(async (id, patch, ctx) => {
     dbState.updates.push({ id, patch, ctx });
+    // Simulate the real DB trigger: a write bumps updated_at to "now" (a clock
+    // strictly later than any fixture timestamp). This is what makes the
+    // mid-pass clock-mutation bug observable — a later universe comparing
+    // against the LIVE row would see this fresh clock.
+    if (dbState.rows[id]) {
+      dbState.rows[id] = { ...dbState.rows[id], ...patch, updatedAt: '2099-01-01T00:00:00.000Z' };
+    }
     return dbState.rows[id];
   }),
 }));
@@ -94,6 +101,33 @@ describe('reconcileCanonCatalog', () => {
     expect(dbState.updates[0].ctx.source).toBe('sync');
     // No canon stamp needed (canon already authoritative).
     expect(uniState.canonStamps).toHaveLength(0);
+  });
+
+  it('multi-universe: the NEWEST embedded copy wins; a mid-pass row bump cannot clobber it', async () => {
+    // Same ingredient embedded in three universes. Original catalog row is the
+    // oldest. Two embedded copies beat it (u-mid @ Feb, u-new @ Mar); the third
+    // (u-old @ 2025) loses to the original. The newest (u-new, Mar) must end up
+    // in the catalog row — NOT u-mid just because it was iterated, and NOT lost
+    // to the artificially-fresh clock the first write stamps on the row.
+    dbState.rows['cat-chr-m'] = { id: 'cat-chr-m', name: 'Multi', payload: { v: 'orig' }, updatedAt: '2026-01-01T00:00:00.000Z' };
+    uniState.universes = [
+      { id: 'u-old', characters: [{ id: 'e', ingredientId: 'cat-chr-m', name: 'Multi', v: 'old', updatedAt: '2025-01-01T00:00:00.000Z' }] },
+      { id: 'u-mid', characters: [{ id: 'e', ingredientId: 'cat-chr-m', name: 'Multi', v: 'mid', updatedAt: '2026-02-01T00:00:00.000Z' }] },
+      { id: 'u-new', characters: [{ id: 'e', ingredientId: 'cat-chr-m', name: 'Multi', v: 'new', updatedAt: '2026-03-01T00:00:00.000Z' }] },
+    ];
+
+    const result = await reconcileCanonCatalog();
+
+    // u-old loses to the original row (catalog stamped back onto it); u-mid and
+    // u-new each beat the ORIGINAL row, but only the strictly-newer copy writes.
+    const payloadsWritten = dbState.updates.map((u) => u.patch.payload.v);
+    // The FINAL catalog content must be the newest embedded copy ('new'),
+    // regardless of write order, and 'mid' must never be the last write.
+    expect(dbState.rows['cat-chr-m'].payload.v).toBe('new');
+    expect(payloadsWritten).toContain('new');
+    expect(payloadsWritten[payloadsWritten.length - 1]).toBe('new');
+    // u-old never wins.
+    expect(payloadsWritten).not.toContain('old');
   });
 
   it('leaves entries without an ingredientId untouched', async () => {
