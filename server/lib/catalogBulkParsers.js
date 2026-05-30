@@ -333,12 +333,15 @@ export function parseMarkdownBulk(payload) {
       }
       continue;
     }
-    // Open a ```json (or bare ```) fence — terminates the body section.
+    // Open a ```json fence — the ONLY fence `ingredientToMarkdown` emits,
+    // carrying the non-primary payload keys. Other fences (```js, ```text,
+    // bare ```) are intentionally left in the body so a hand-authored markdown
+    // import doesn't silently lose fenced content. Fence state is driven by
+    // `current.fence`; `section` only gates scraps, so the body resumes after
+    // the closing ```.
     const fenceOpen = /^```(\w*)\s*$/.exec(line);
-    if (fenceOpen) {
-      // Fence state is driven by `current.fence`; `section` only gates the
-      // scraps branch, so the body resumes (section stays 'body') after close.
-      current.fence = { lang: fenceOpen[1] || '', lines: [] };
+    if (fenceOpen && fenceOpen[1].toLowerCase() === 'json') {
+      current.fence = { lines: [] };
       continue;
     }
     // `### Scraps` switches us into the scraps subsection — body is done.
@@ -370,11 +373,13 @@ export function parseMarkdownBulk(payload) {
   }
   const entries = out.map((entry, i) => {
     const normalized = normalizeEntry(entry, i);
-    // Carry parsed scraps as a sibling array for a lossless round-trip. The
-    // bulk-import route ignores it today (the ref-link path is what it acts
-    // on), but the round-trip stays faithful for any consumer that reads it.
+    // Carry parsed scraps as a NON-enumerable sibling for a faithful
+    // round-trip. It must be non-enumerable: the bulk-import route spreads
+    // each entry into the `.strict()` catalogIngredientCreateSchema, which has
+    // no `scraps` field — an enumerable key would reject every re-imported
+    // export that has scraps. Consumers read `entry.scraps` explicitly.
     if (Array.isArray(entry.scraps) && entry.scraps.length > 0) {
-      normalized.scraps = entry.scraps;
+      attachNonEnumerable(normalized, 'scraps', entry.scraps);
     }
     return normalized;
   });

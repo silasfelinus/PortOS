@@ -310,13 +310,34 @@ describe('parseMarkdownBulk', () => {
     };
     const md = ingredientToMarkdown(ing);
     const out = parseMarkdownBulk(md);
+    // scraps ride NON-enumerable so the strict bulk-import gate
+    // (catalogIngredientCreateSchema has no `scraps` field) accepts the
+    // re-import; assert the enumerable shape and the scraps sibling separately.
     expect(out[0]).toEqual({
       type: 'character',
       name: 'Alice',
       payload: { physicalDescription: 'a curious sleuth', personality: 'quiet', role: 'detective' },
       tags: ['noir'],
-      scraps: [{ sourceKind: 'paste', rawText: 'first sighting in chapter 1' }],
     });
+    expect(Object.keys(out[0])).not.toContain('scraps');
+    expect(out[0].scraps).toEqual([{ sourceKind: 'paste', rawText: 'first sighting in chapter 1' }]);
+  });
+
+  it('leaves a non-JSON fence (```js/```text) intact in the body instead of dropping it', () => {
+    const md = [
+      '## Idea: snippet',
+      'here is code:',
+      '```js',
+      'const x = 1;',
+      '```',
+      'after the fence',
+      '',
+    ].join('\n');
+    const out = parseMarkdownBulk(md);
+    expect(out[0].payload.summary).toContain('```js');
+    expect(out[0].payload.summary).toContain('const x = 1;');
+    expect(out[0].payload.summary).toContain('after the fence');
+    expect(out.warnings).toEqual([]);
   });
 });
 
