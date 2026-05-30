@@ -590,21 +590,51 @@ async function buildCollectionAssetManifest(collection) {
   return out;
 }
 
+function summarizeAssetManifest(manifest) {
+  const entries = Array.isArray(manifest) ? manifest : [];
+  return {
+    assetHashes: entries.map((e) => e.sha256).filter(Boolean).sort(),
+    metadataMissing: entries.some((e) => e?.kind === 'image' && !isNonEmptyStr(e.sidecarSha256)),
+  };
+}
+
+async function buildIntegrityAssetManifest(kind, record) {
+  if (kind === 'mediaCollection') return buildCollectionAssetManifest(record);
+  if (kind === 'series') {
+    const childIssues = await listIssues({ seriesId: record?.id, includeDeleted: true }).catch(() => []);
+    const manifestIssues = childIssues.filter(
+      (i) => i?.deleted !== true && i?.ephemeral !== true,
+    );
+    const linkedCollection = await findCollectionBySeriesId(record?.id).catch(() => null);
+    return buildAssetManifestForSeries(record, manifestIssues, linkedCollection);
+  }
+  return buildAssetManifest(record);
+}
+
 /**
- * Returns sorted sha256 hashes for a record's own assets (used by the
- * integrity manifest builder). For `series` this captures the series' OWN
- * asset refs only — child-issue assets are not yet included (v1 limitation;
- * full issue-level integrity is deferred to a future pass).
+ * Returns the integrity-facing asset summary for a record: sorted file hashes
+ * plus whether any hashed image lacks a gen-params sidecar. `series` mirrors
+ * the push manifest path so child issue assets participate in integrity.
+ *
+ * @param {'universe'|'series'|'mediaCollection'} kind
+ * @param {object} record
+ * @returns {Promise<{assetHashes:string[], metadataMissing:boolean}>}
+ */
+export async function assetIntegrityForRecord(kind, record) {
+  const manifest = await buildIntegrityAssetManifest(kind, record);
+  return summarizeAssetManifest(manifest);
+}
+
+/**
+ * Back-compat helper for callers/tests that only need hashes.
  *
  * @param {'universe'|'series'|'mediaCollection'} kind
  * @param {object} record
  * @returns {Promise<string[]>} sorted sha256 strings (falsy hashes omitted)
  */
 export async function assetShaListForRecord(kind, record) {
-  const manifest = kind === 'mediaCollection'
-    ? await buildCollectionAssetManifest(record)
-    : await buildAssetManifest(record);
-  return manifest.map((e) => e.sha256).filter(Boolean).sort();
+  const { assetHashes } = await assetIntegrityForRecord(kind, record);
+  return assetHashes;
 }
 
 async function hashImageForManifest(filename) {
@@ -758,6 +788,22 @@ function directoryForAssetKind(kind) {
 // upgrade?" probe point.
 const SCHEMA_BLOCK_RETRY_COOLDOWN_MS = 5 * 60_000;
 
+async function isSubscriptionRecordTombstone(sub) {
+  if (sub.recordKind === 'universe') {
+    const record = await getUniverse(sub.recordId, { includeDeleted: true }).catch(() => null);
+    return record?.deleted === true;
+  }
+  if (sub.recordKind === 'series') {
+    const record = await getSeries(sub.recordId, { includeDeleted: true }).catch(() => null);
+    return record?.deleted === true;
+  }
+  if (sub.recordKind === 'mediaCollection') {
+    const record = await getCollection(sub.recordId, { includeDeleted: true }).catch(() => null);
+    return record?.deleted === true;
+  }
+  return false;
+}
+
 export async function pushRecordToPeer(sub, options = {}) {
   if (
     !isPlainObject(sub)
@@ -772,11 +818,14 @@ export async function pushRecordToPeer(sub, options = {}) {
   // on the next `peer:online` (where `retryPendingPushesForPeer` passes
   // `bypassSchemaCooldown: true`) or after the cooldown elapses.
   if (sub.blockedBySchema && !options.bypassSchemaCooldown) {
-    const detectedAtMs = Date.parse(sub.blockedBySchema.detectedAt || '');
-    const stillCooling = Number.isFinite(detectedAtMs)
-      && (Date.now() - detectedAtMs) < SCHEMA_BLOCK_RETRY_COOLDOWN_MS;
-    if (stillCooling) {
-      return { pushed: false, reason: 'peer-schema-behind-cooldown', blockedBySchema: true };
+    const tombstonePush = await isSubscriptionRecordTombstone(sub);
+    if (!tombstonePush) {
+      const detectedAtMs = Date.parse(sub.blockedBySchema.detectedAt || '');
+      const stillCooling = Number.isFinite(detectedAtMs)
+        && (Date.now() - detectedAtMs) < SCHEMA_BLOCK_RETRY_COOLDOWN_MS;
+      if (stillCooling) {
+        return { pushed: false, reason: 'peer-schema-behind-cooldown', blockedBySchema: true };
+      }
     }
   }
   const peer = await findPeerById(sub.peerId);

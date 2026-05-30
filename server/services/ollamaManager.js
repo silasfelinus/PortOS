@@ -84,9 +84,10 @@ async function getServiceController() {
     return {
       supported: true,
       manager: 'systemd',
-      start: ['systemctl', ['start', 'ollama']],
-      stop: ['systemctl', ['stop', 'ollama']],
-      list: ['systemctl', ['is-active', 'ollama']]
+      start: ['systemctl', ['enable', '--now', 'ollama']],
+      stop: ['systemctl', ['disable', '--now', 'ollama']],
+      active: ['systemctl', ['is-active', 'ollama']],
+      enabled: ['systemctl', ['is-enabled', 'ollama']]
     }
   }
   return { supported: false, manager: null }
@@ -114,16 +115,23 @@ async function getServiceStatus() {
   }
 
   if (controller.manager === 'systemd') {
-    const [cmd, args] = controller.list
-    const { stdout } = await execFileAsync(cmd, args, { timeout: SERVICE_COMMAND_TIMEOUT_MS }).catch(() => ({ stdout: '' }))
-    const serviceStatus = stdout.trim() || 'inactive'
-    const running = serviceStatus === 'active'
+    const [activeCmd, activeArgs] = controller.active
+    const [enabledCmd, enabledArgs] = controller.enabled
+    const [{ stdout: activeOut }, { stdout: enabledOut }] = await Promise.all([
+      execFileAsync(activeCmd, activeArgs, { timeout: SERVICE_COMMAND_TIMEOUT_MS }).catch(() => ({ stdout: '' })),
+      execFileAsync(enabledCmd, enabledArgs, { timeout: SERVICE_COMMAND_TIMEOUT_MS }).catch(() => ({ stdout: '' })),
+    ])
+    const activeStatus = activeOut.trim() || 'inactive'
+    const enabledStatus = enabledOut.trim() || 'disabled'
+    const running = activeStatus === 'active'
+    const runAtStartup = enabledStatus === 'enabled'
     return {
       supported: true,
       manager: 'systemd',
       running,
-      runAtStartup: running,
-      status: serviceStatus
+      runAtStartup,
+      status: activeStatus,
+      enabledStatus
     }
   }
 
