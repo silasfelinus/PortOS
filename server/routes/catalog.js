@@ -229,10 +229,14 @@ router.post('/ingredients/:id/revisions/:revisionId/restore', asyncHandler(async
   if (!revision || revision.ingredientId !== req.params.id) {
     throw new ServerError('Revision not found', { status: 404 });
   }
-  // Drop the per-record payload.schemaVersion marker — createIngredient/
-  // updateIngredient re-stamp it from the registry, and a restore should land
-  // the CURRENT marker, not the (possibly older) one the revision captured.
-  const { schemaVersion, ...restoredPayload } = revision.payload || {};
+  // Restore the revision's payload verbatim, INCLUDING its captured
+  // `payload.schemaVersion`. `updateIngredient` writes payload as-is and does
+  // NOT re-stamp the version (only create/revive do), so the marker must match
+  // the restored *shape*: a v1-era revision keeps v1, and the boot-time
+  // `migrateCatalogPayload` upgrades it to current iff it's behind. Stripping
+  // the marker (→ absent → treated as v1) or forcing it to current would
+  // mislabel the restored shape and mis-drive that migration.
+  const restoredPayload = revision.payload || {};
   const embeddingPatch = await embedIngredient({ name: revision.name, payload: restoredPayload });
   const updated = await catalogDB.updateIngredient(
     req.params.id,
