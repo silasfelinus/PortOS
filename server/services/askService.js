@@ -22,6 +22,8 @@
 import { getActiveProvider, getProviderById } from './providers.js';
 import { hybridSearchMemories, getMemory } from './memoryBackend.js';
 import { generateQueryEmbedding } from './memoryEmbeddings.js';
+import { hybridSearchIngredients } from './catalogDB.js';
+import { getCatalogType } from '../lib/catalogTypes.js';
 import { getInboxLog, getProjects, getIdeas } from './brainStorage.js';
 import { getStories } from './autobiography.js';
 import { getGoals } from './identity.js';
@@ -35,7 +37,7 @@ import { ensureProviderReady as ensureOllamaProviderReady } from './ollamaManage
 // Re-export so the route can keep importing modes via askService — but
 // askConversations is the source of truth (it owns the persistence schema).
 export const VALID_MODES = STORAGE_VALID_MODES;
-export const SOURCE_KINDS = ['memory', 'brain-note', 'autobiography', 'goal', 'calendar'];
+export const SOURCE_KINDS = ['memory', 'brain-note', 'autobiography', 'goal', 'calendar', 'catalog'];
 
 const PER_SOURCE_LIMIT = {
   memory: 6,
@@ -43,6 +45,7 @@ const PER_SOURCE_LIMIT = {
   autobiography: 3,
   goal: 5,
   calendar: 6,
+  catalog: 4,
 };
 
 // Truncation caps for prompt assembly. Source snippets are short summaries;
@@ -113,6 +116,35 @@ async function retrieveMemories(question) {
     });
   }
   return sources;
+}
+
+// Creative Catalog ingredients (characters / places / objects / ideas / scenes
+// / concepts) via the same RRF hybrid search the memory retriever uses, so the
+// catalog slice shares Ask's scoring/budget model. Snippet is the type's
+// primary-content payload field (falling back to summary/description/name).
+// Vector matches only appear once embeddings are backfilled; FTS works
+// immediately. No try/catch — gatherSources' allSettled isolates failures.
+async function retrieveCatalog(question) {
+  const queryEmbedding = await generateQueryEmbedding(question);
+  const hits = await hybridSearchIngredients(question, queryEmbedding, {
+    limit: PER_SOURCE_LIMIT.catalog,
+    ftsWeight: 0.4,
+    vectorWeight: 0.6,
+  });
+  return hits.map(({ ingredient: ing, rrfScore }) => {
+    const t = getCatalogType(ing.type);
+    const primary = t?.primaryContentKey ? ing.payload?.[t.primaryContentKey] : null;
+    const snippetText = primary || ing.payload?.summary || ing.payload?.description || ing.name;
+    return {
+      kind: 'catalog',
+      id: `catalog:${ing.type}:${ing.id}`,
+      title: ing.name || t?.label || 'Ingredient',
+      snippet: normalizeSnippet(String(snippetText || '')),
+      relevance: rrfScore ?? 0.5,
+      href: `/catalog/${ing.type}/${ing.id}`,
+      meta: { id: ing.id, type: ing.type, tags: ing.tags },
+    };
+  });
 }
 
 // askService scores by query-term overlap, not BM25. We reuse the BM25
@@ -270,12 +302,13 @@ export async function gatherSources(question, { timeWindow, maxSources = 12 } = 
 
   // Fan out — each retriever is independently failable, so allSettled keeps
   // a single-source outage from killing the answer.
-  const [memSettled, brainSettled, autoSettled, goalSettled, calSettled] = await Promise.allSettled([
+  const [memSettled, brainSettled, autoSettled, goalSettled, calSettled, catSettled] = await Promise.allSettled([
     retrieveMemories(question),
     retrieveBrainNotes(question, queryTokens),
     retrieveAutobiography(queryTokens),
     retrieveGoals(queryTokens),
     retrieveCalendar(queryTokens, timeWindow),
+    retrieveCatalog(question),
   ]);
 
   const all = [
@@ -284,6 +317,7 @@ export async function gatherSources(question, { timeWindow, maxSources = 12 } = 
     ...(autoSettled.status === 'fulfilled' ? autoSettled.value : []),
     ...(goalSettled.status === 'fulfilled' ? goalSettled.value : []),
     ...(calSettled.status === 'fulfilled' ? calSettled.value : []),
+    ...(catSettled.status === 'fulfilled' ? catSettled.value : []),
   ];
 
   // Dedupe by id (parallel retrievers can occasionally surface the same
@@ -299,7 +333,7 @@ export async function gatherSources(question, { timeWindow, maxSources = 12 } = 
   // Source-weighted final ranking — memory and goals are the highest-signal
   // PortOS surfaces; calendar wins time-bounded questions; autobiography is
   // long-form so it ranks last unless lexical match is very strong.
-  const KIND_WEIGHT = { memory: 1.0, goal: 0.95, 'brain-note': 0.85, calendar: 0.85, autobiography: 0.7 };
+  const KIND_WEIGHT = { memory: 1.0, goal: 0.95, 'brain-note': 0.85, calendar: 0.85, catalog: 0.8, autobiography: 0.7 };
   deduped.sort((a, b) => (b.relevance * (KIND_WEIGHT[b.kind] || 0.5)) - (a.relevance * (KIND_WEIGHT[a.kind] || 0.5)));
 
   return deduped.slice(0, Math.max(1, Math.min(50, maxSources)));
