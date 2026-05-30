@@ -234,6 +234,7 @@ function shapeSeasonOutlines(rawOutlines) {
       number: raw?.number,
       title: raw?.title,
       logline: raw?.logline,
+      synopsis: raw?.synopsis,
       endingHook: raw?.endingHook,
       episodeCountTarget: raw?.episodeCountTarget,
     });
@@ -346,8 +347,7 @@ export async function generateArcFromSource(seriesId, {
     status: 'draft',
   });
   // importer-arc-extract returns `seasons` (number/title/logline/synopsis/
-  // endingHook); shapeSeasonOutlines reads the fields buildSeason needs
-  // (number/title/logline/endingHook/episodeCountTarget); synopsis is dropped.
+  // endingHook); shapeSeasonOutlines forwards all fields buildSeason accepts.
   const seasons = shapeSeasonOutlines(content?.seasons);
   return { arc, seasons, raw: content, runId, providerId, model };
 }

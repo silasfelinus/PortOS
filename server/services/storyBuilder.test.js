@@ -288,6 +288,7 @@ describe('generateStep backfill (fromDownstream)', () => {
     const updated = await seriesSvc.getSeries(session.seriesId);
     expect(updated.arc?.logline).toBe('Backfilled arc logline');
     expect(updated.seasons?.length).toBe(1);
+    expect(updated.seasons[0].synopsis).toBe('s1');
     expect(res.runId).toBe('run-x');
   });
 
