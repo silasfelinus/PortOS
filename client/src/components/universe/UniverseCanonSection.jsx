@@ -47,6 +47,10 @@ const capImageRefs = (refs) => (
     : refs
 );
 
+// A universe's canon list for a kind is sometimes absent on a freshly-created
+// record; normalize to [] so callers can spread/map without a guard each time.
+const getKindList = (u, kindKey) => (Array.isArray(u?.[kindKey]) ? u[kindKey] : []);
+
 // Build an embedded canon entry from a picked catalog ingredient. The
 // ingredient's `payload` already carries the same field names the universe
 // canon sanitizer whitelists (name / physicalDescription / description / …),
@@ -132,6 +136,15 @@ export default function UniverseCanonSection({
   // Which kind's "Pick from Catalog" modal is open (a KINDS entry, or null).
   const [catalogPickerKind, setCatalogPickerKind] = useState(null);
   const [catalogLinking, setCatalogLinking] = useState(false);
+  // Ingredient ids already embedded in the open kind's canon list — passed to
+  // the picker so it hides already-linked rows. Only recomputed when the open
+  // kind or the universe changes (not on every render).
+  const catalogExcludeIds = useMemo(
+    () => (catalogPickerKind
+      ? getKindList(universe, catalogPickerKind.key).map((e) => e?.ingredientId).filter(Boolean)
+      : []),
+    [catalogPickerKind, universe],
+  );
   // Per-canon-entry usage map: `{ characters: { [entryId]: [{seriesId, seriesName, issueCount, ...}] }, ... }`.
   // Loaded lazily — usage is a derived view and shouldn't block the initial
   // paint. Refetched after mutations that change the canon shape (extract /
@@ -530,7 +543,7 @@ export default function UniverseCanonSection({
     const picked = Array.isArray(ingredient) ? ingredient[0] : ingredient;
     if (!picked || !universe || catalogLinking) return;
     const kindKey = kind.key;
-    const list = Array.isArray(universe[kindKey]) ? universe[kindKey] : [];
+    const list = getKindList(universe, kindKey);
     // Dedup by ingredientId — re-picking an already-linked ingredient is a
     // no-op (mirrors the server-side canon name dedup, but keyed on the
     // durable ingredient identity so renames don't slip a duplicate in).
@@ -767,10 +780,7 @@ export default function UniverseCanonSection({
         onClose={() => setCatalogPickerKind(null)}
         onSelect={(picked) => { if (catalogPickerKind) handlePickFromCatalog(catalogPickerKind, picked); }}
         type={catalogPickerKind?.apiKind}
-        excludeIds={catalogPickerKind
-          ? (Array.isArray(universe[catalogPickerKind.key]) ? universe[catalogPickerKind.key] : [])
-            .map((e) => e?.ingredientId).filter(Boolean)
-          : []}
+        excludeIds={catalogExcludeIds}
         refKind="universe"
         refId={universeId}
       />
