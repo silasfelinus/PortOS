@@ -188,13 +188,19 @@ function neutralizeFenceDelimiters(text) {
   return text.replace(/`{3,}/g, (run) => run.split('').join('‍'));
 }
 
-export async function extractIngredients({ rawText, scrapId = null, providerOverride } = {}) {
+// `runId` lets a caller share ONE progress run across multiple extractions —
+// the chunked path passes the parent run id so every child's progress frame
+// demuxes under the same run the client is tracking (otherwise each child mints
+// its own runId and the single-run client UI ignores all but the first). When
+// omitted, a fresh runId is minted (the normal single-scrap path). `emitStart`
+// lets the chunked path suppress the per-child `start` frame, which would
+// otherwise reset the client's stage checklist on every chunk.
+export async function extractIngredients({ rawText, scrapId = null, providerOverride, runId = randomUUID(), emitStart = true } = {}) {
   if (typeof rawText !== 'string' || !rawText.trim()) {
     throw new Error('extractIngredients: rawText is required');
   }
 
   const corpus = neutralizeFenceDelimiters(rawText);
-  const runId = randomUUID();
   const emit = (frame) => {
     try {
       catalogEvents.emit('progress', { runId, scrapId, ...frame });
@@ -203,7 +209,7 @@ export async function extractIngredients({ rawText, scrapId = null, providerOver
     }
   };
 
-  emit({ type: 'start', stages: EXTRACTION_STAGES.map(({ id, label }) => ({ id, label })) });
+  if (emitStart) emit({ type: 'start', stages: EXTRACTION_STAGES.map(({ id, label }) => ({ id, label })) });
 
   // Run every stage in parallel — they're independent and share the corpus.
   // Each settles to a per-stage status frame so the UI flips the corresponding
@@ -358,11 +364,25 @@ export async function extractIngredientsForScrap({ scrapId, providerOverride } =
     return extractIngredients({ rawText: parent.rawText, scrapId: parent.id, providerOverride });
   }
 
+  // One shared run id for the whole chunked extraction so every child's
+  // progress frame demuxes under the run the client is tracking (the client
+  // gates on a single active runId). Emit ONE start frame up front, then run
+  // each child with `emitStart: false` so a chunk doesn't reset the checklist.
+  const runId = randomUUID();
+  try {
+    catalogEvents.emit('progress', {
+      runId, scrapId: parent.id, type: 'start',
+      stages: EXTRACTION_STAGES.map(({ id, label }) => ({ id, label })),
+    });
+  } catch (err) {
+    console.error(`❌ catalog progress emit failed: ${err.message}`);
+  }
+
   // Run each child corpus through the extractor with bounded concurrency, then
-  // union the per-child drafts. Progress frames still carry the parent scrapId
-  // so the UI's existing live checklist keeps tracking one scrap.
+  // union the per-child drafts. Progress frames carry the parent scrapId + the
+  // shared runId so the UI's existing live checklist keeps tracking one scrap.
   const childDrafts = await mapWithConcurrency(children, CHUNK_EXTRACT_CONCURRENCY, (child) =>
-    extractIngredients({ rawText: child.rawText, scrapId: parent.id, providerOverride }),
+    extractIngredients({ rawText: child.rawText, scrapId: parent.id, providerOverride, runId, emitStart: false }),
   );
 
   const merged = dedupDrafts(childDrafts);
@@ -392,7 +412,7 @@ export async function extractIngredientsForScrap({ scrapId, providerOverride } =
     return { ...stage, count };
   });
 
-  return { runId: randomUUID(), ...merged, stages };
+  return { runId, ...merged, stages };
 }
 
 // (refKind, refId) pairs the scan is allowed to consider. Only catalog
