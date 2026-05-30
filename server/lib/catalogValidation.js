@@ -78,8 +78,27 @@ export const catalogScrapPatchSchema = catalogScrapCreateSchema.partial();
 // client lands on the identical review phase. `providerOverride` mirrors
 // catalogExtractRequestSchema below.
 
+// Block schemes and hosts that would turn "fetch this page" into local-file
+// exfiltration or cloud-metadata SSRF. We deliberately ALLOW other private/LAN
+// hosts: ingesting from a Tailscale peer or a home-network wiki is a legit use
+// of this single-user tool. We only reject the two genuinely dangerous classes:
+// non-http(s) schemes (file:/chrome:/javascript:/ftp:) and loopback +
+// link-local (127.x/::1/169.254.169.254 cloud-metadata).
+export const isSafeIngestUrl = (raw) => {
+  let u;
+  try { u = new URL(raw); } catch { return false; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host === '::1' || host.endsWith('.localhost')) return false;
+  if (/^127\./.test(host)) return false;       // loopback
+  if (/^169\.254\./.test(host)) return false;   // link-local incl. cloud metadata
+  if (host === 'metadata.google.internal') return false;
+  return true;
+};
+
 export const catalogUrlIngestSchema = z.object({
-  url: z.string().trim().url().max(4_000),
+  url: z.string().trim().max(4_000).url()
+    .refine(isSafeIngestUrl, 'only http(s) URLs to non-loopback/non-link-local hosts are allowed'),
   providerOverride: z.string().trim().min(1).max(120).optional(),
 }).strict();
 

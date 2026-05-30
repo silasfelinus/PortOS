@@ -25,7 +25,6 @@ import * as catalogDB from './catalogDB.js';
 import { extractIngredients } from './catalogExtraction.js';
 import { transcribe } from './voice/stt.js';
 import {
-  findOrOpenPage,
   navigateToUrl,
   listCdpPages,
   evaluateOnPage,
@@ -71,10 +70,9 @@ async function createScrapAndExtract({ title, rawText, sourceKind, metadata, pro
  * the page or extracts nothing usable, so the route surfaces a clean 4xx/5xx.
  */
 export async function fetchUrlMainText(url, { settleMs = PAGE_SETTLE_MS } = {}) {
-  // Open (or reuse a tab already on this host), then navigate to force the
-  // exact URL — findOrOpenPage matches by hostname so an existing tab on the
-  // same site would otherwise be reused at the wrong path.
-  await findOrOpenPage(url).catch(() => null);
+  // `navigateToUrl` opens a fresh tab at the exact URL and returns it; we drive
+  // and read that tab below. (Don't call findOrOpenPage first — it would open a
+  // SECOND, orphaned tab per ingest, since navigateToUrl never reuses one.)
   const opened = await navigateToUrl(url);
   await sleep(settleMs);
 

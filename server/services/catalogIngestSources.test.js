@@ -23,7 +23,6 @@ vi.mock('./voice/stt.js', () => ({
   transcribe: vi.fn(),
 }));
 vi.mock('./browserService.js', () => ({
-  findOrOpenPage: vi.fn(),
   navigateToUrl: vi.fn(),
   listCdpPages: vi.fn(),
   evaluateOnPage: vi.fn(),
@@ -57,7 +56,6 @@ beforeEach(() => {
 
 describe('fetchUrlMainText', () => {
   it('navigates + reads main text, returning title + text + finalUrl', async () => {
-    browserService.findOrOpenPage.mockResolvedValue({ id: 'p1' });
     browserService.navigateToUrl.mockResolvedValue({ id: 'p1', url: 'https://ex.com/a' });
     browserService.listCdpPages.mockResolvedValue([
       { id: 'p1', url: 'https://ex.com/a', title: 'A', webSocketDebuggerUrl: 'ws://x' },
@@ -70,7 +68,6 @@ describe('fetchUrlMainText', () => {
   });
 
   it('throws when the page extracts no readable text', async () => {
-    browserService.findOrOpenPage.mockResolvedValue(null);
     browserService.navigateToUrl.mockResolvedValue({ id: 'p1', url: 'https://ex.com/a' });
     browserService.listCdpPages.mockResolvedValue([{ id: 'p1', url: 'https://ex.com/a', title: '', webSocketDebuggerUrl: 'ws://x' }]);
     browserService.evaluateOnPage.mockResolvedValue(JSON.stringify({ title: '', text: '   ' }));
@@ -78,11 +75,19 @@ describe('fetchUrlMainText', () => {
     await expect(fetchUrlMainText('https://ex.com/a', { settleMs: 0 })).rejects.toThrow(/no readable text/);
     expect(catalogDB.createScrap).not.toHaveBeenCalled();
   });
+
+  it('clamps an oversized page body to the raw-text cap (2M chars)', async () => {
+    browserService.navigateToUrl.mockResolvedValue({ id: 'p1', url: 'https://ex.com/a' });
+    browserService.listCdpPages.mockResolvedValue([{ id: 'p1', url: 'https://ex.com/a', title: 'Big', webSocketDebuggerUrl: 'ws://x' }]);
+    const huge = 'x'.repeat(2_500_000);
+    browserService.evaluateOnPage.mockResolvedValue(JSON.stringify({ title: 'Big', text: huge }));
+    const out = await fetchUrlMainText('https://ex.com/a', { settleMs: 0 });
+    expect(out.text.length).toBe(2_000_000);
+  });
 });
 
 describe('ingestFromUrl', () => {
   it('creates a url scrap with url metadata and runs extraction', async () => {
-    browserService.findOrOpenPage.mockResolvedValue({ id: 'p1' });
     browserService.navigateToUrl.mockResolvedValue({ id: 'p1', url: 'https://ex.com/a' });
     browserService.listCdpPages.mockResolvedValue([{ id: 'p1', url: 'https://ex.com/a', title: 'A', webSocketDebuggerUrl: 'ws://x' }]);
     browserService.evaluateOnPage.mockResolvedValue(JSON.stringify({ title: 'Article A', text: 'Body.' }));

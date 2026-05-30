@@ -27,6 +27,7 @@ import {
   catalogMediaDetachSchema,
   catalogPortraitSetSchema,
   MEDIA_KINDS,
+  catalogUrlIngestSchema,
 } from './catalogValidation.js';
 
 describe('catalogValidation — ingredient types & ref kinds', () => {
@@ -453,5 +454,25 @@ describe('catalogValidation — catalogSyncEnvelopeSchema media block', () => {
     expect(() => catalogSyncEnvelopeSchema.parse({
       media: [{ kind: 'portrait', createdAt: '2026-01-01T00:00:00Z' }],
     })).toThrow();
+  });
+});
+
+describe('catalogUrlIngestSchema — SSRF guard', () => {
+  it('accepts a normal http(s) URL (incl. a LAN/Tailscale host — intentional)', () => {
+    expect(catalogUrlIngestSchema.parse({ url: 'https://example.com/post' }).url).toBe('https://example.com/post');
+    // Private/LAN hosts are allowed by design (ingest from a home wiki / peer).
+    expect(() => catalogUrlIngestSchema.parse({ url: 'http://192.168.1.50/wiki' })).not.toThrow();
+  });
+
+  it('rejects file:// and other non-http(s) schemes (local-file exfiltration)', () => {
+    expect(() => catalogUrlIngestSchema.parse({ url: 'file:///etc/passwd' })).toThrow();
+    expect(() => catalogUrlIngestSchema.parse({ url: 'ftp://host/x' })).toThrow();
+  });
+
+  it('rejects loopback and link-local / cloud-metadata hosts (SSRF)', () => {
+    expect(() => catalogUrlIngestSchema.parse({ url: 'http://169.254.169.254/latest/meta-data/' })).toThrow();
+    expect(() => catalogUrlIngestSchema.parse({ url: 'http://localhost:5555/api/secrets' })).toThrow();
+    expect(() => catalogUrlIngestSchema.parse({ url: 'http://127.0.0.1/x' })).toThrow();
+    expect(() => catalogUrlIngestSchema.parse({ url: 'http://metadata.google.internal/x' })).toThrow();
   });
 });
