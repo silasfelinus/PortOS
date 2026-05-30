@@ -150,15 +150,17 @@ describe('catalog DDL parity (init-db.sql ↔ db.js ensureSchema)', () => {
     expect(sqlTrgs.size).toBeGreaterThan(0);
   });
 
-  it('catalog_ingredients type CHECK list matches', () => {
-    // The init-db.sql CREATE TABLE block carries the CHECK; the db.js
-    // version embeds it inline in the same CREATE. The parity guard catches
-    // either side adding a 7th type without updating the other.
-    const sqlSet = extractTypeCheckSet(INIT_SQL);
-    const jsSet = extractTypeCheckSet(DB_JS);
-    expect(sqlSet, 'init-db.sql is missing the type CHECK').toBeTruthy();
-    expect(jsSet, 'db.js is missing the type CHECK').toBeTruthy();
-    expect([...sqlSet].sort()).toEqual([...jsSet].sort());
+  it('catalog_ingredients type is app-layer-gated (no hardcoded CHECK in either file)', () => {
+    // The legacy `CHECK (type IN (...))` was dropped — valid types are gated at
+    // the app layer via the INGREDIENT_TYPES registry + Zod enum, so a new type
+    // is a registry entry, not a two-file constraint migration. Assert NEITHER
+    // file reintroduces a hardcoded `type IN (...)` CHECK (a one-sided re-add
+    // would drift the fresh-install and upgrade paths apart again), and that
+    // both declare the widened VARCHAR(32) column.
+    expect(extractTypeCheckSet(INIT_SQL), 'init-db.sql reintroduced a hardcoded type CHECK').toBeNull();
+    expect(extractTypeCheckSet(DB_JS), 'db.js reintroduced a hardcoded type CHECK').toBeNull();
+    expect(/type VARCHAR\(32\)/i.test(extractCreateTable(INIT_SQL, 'catalog_ingredients'))).toBe(true);
+    expect(/type VARCHAR\(32\)/i.test(extractCreateTable(DB_JS, 'catalog_ingredients'))).toBe(true);
   });
 
   it('search_tsv payload field set matches', () => {

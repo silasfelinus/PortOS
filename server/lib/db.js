@@ -141,8 +141,12 @@ export async function ensureSchema() {
 
     `CREATE TABLE IF NOT EXISTS catalog_ingredients (
       id TEXT PRIMARY KEY,
-      type VARCHAR(20) NOT NULL
-        CHECK (type IN ('character', 'place', 'object', 'idea', 'scene', 'concept')),
+      -- No DB CHECK on \`type\`: valid types are gated at the app layer via the
+      -- INGREDIENT_TYPES registry (catalogTypes.js / catalogValidation.js Zod
+      -- enum), so a new system or user-defined type needs no constraint migration.
+      -- VARCHAR(32) leaves headroom for longer type ids. The DROP CONSTRAINT +
+      -- widen for existing installs runs in the idempotent ALTER block below.
+      type VARCHAR(32) NOT NULL,
       name TEXT NOT NULL,
       payload JSONB NOT NULL DEFAULT '{}'::jsonb,
       tags TEXT[] DEFAULT '{}',
@@ -155,6 +159,14 @@ export async function ensureSchema() {
       deleted_at TIMESTAMPTZ,
       sync_sequence BIGSERIAL
     )`,
+    // Relax the legacy `type` CHECK on existing installs: types are now gated at
+    // the app layer (INGREDIENT_TYPES registry + Zod enum), so a new system or
+    // user-defined type doesn't need a DROP/RE-ADD constraint migration. Postgres
+    // auto-named the inline CHECK `catalog_ingredients_type_check`. Both statements
+    // are idempotent — DROP IF EXISTS no-ops once gone; the column-type widen
+    // no-ops when already VARCHAR(32).
+    `ALTER TABLE catalog_ingredients DROP CONSTRAINT IF EXISTS catalog_ingredients_type_check`,
+    `ALTER TABLE catalog_ingredients ALTER COLUMN type TYPE VARCHAR(32)`,
     // Postgres can't ALTER the expression of a STORED generated column, so when
     // the v2 expansion needs to land we DROP and re-ADD `search_tsv`. The
     // conditional below (executed after the table CREATE, before the

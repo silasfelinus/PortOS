@@ -154,8 +154,12 @@ CREATE INDEX IF NOT EXISTS idx_catalog_scraps_origin_instance ON catalog_scraps 
 -- produce identical records. Idea/scene/concept payloads are lighter shapes.
 CREATE TABLE IF NOT EXISTS catalog_ingredients (
   id TEXT PRIMARY KEY,                         -- 'cat-chr-<uuid>', 'cat-plc-<uuid>', etc.
-  type VARCHAR(20) NOT NULL
-    CHECK (type IN ('character', 'place', 'object', 'idea', 'scene', 'concept')),
+  -- No DB CHECK on `type`: valid types are gated at the app layer via the
+  -- INGREDIENT_TYPES registry (server/lib/catalogTypes.js), enforced by the Zod
+  -- enum in catalogValidation.js. Adding a new system (or future user-defined)
+  -- type is then a registry entry, NOT a DROP/RE-ADD constraint migration in two
+  -- files. VARCHAR(32) leaves headroom for longer type ids.
+  type VARCHAR(32) NOT NULL,
   name TEXT NOT NULL,
   payload JSONB NOT NULL DEFAULT '{}'::jsonb,
   tags TEXT[] DEFAULT '{}',
