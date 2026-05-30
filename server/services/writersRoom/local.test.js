@@ -223,6 +223,16 @@ describe('draft body and versioning', () => {
     expect(after.drafts[1].createdFromVersionId).toBe(after.drafts[0].id);
   });
 
+  it('snapshotDraft carries the source draft referencedIngredientIds forward (same body, same refs)', async () => {
+    const work = await createWork({ title: 'Versioned Refs' });
+    await saveDraftBody(work.id, 'Mira appears.', { referencedIngredientIds: ['cat-chr-mira'] });
+    const after = await snapshotDraft(work.id);
+    // Source version keeps its refs; the new active draft inherits them since
+    // it copies the body verbatim (so its chips aren't blank until re-saved).
+    expect(after.drafts[0].referencedIngredientIds).toEqual(['cat-chr-mira']);
+    expect(after.drafts[1].referencedIngredientIds).toEqual(['cat-chr-mira']);
+  });
+
   it('setActiveDraft switches the pointer; subsequent saves write the new version', async () => {
     const work = await createWork({ title: 'Switch' });
     const firstId = work.activeDraftVersionId;

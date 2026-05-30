@@ -411,14 +411,21 @@ export async function snapshotDraft(workId, { label } = {}) {
   const { manifest, body } = await getWorkWithBody(workId);
   const newDraftId = `wr-draft-${randomUUID()}`;
   const fromId = manifest.activeDraftVersionId;
+  const fromDraft = manifest.drafts.find((d) => d.id === fromId);
   const draftLabel = label || `Draft ${manifest.drafts.length + 1}`;
   await atomicWrite(draftPath(workId, newDraftId), body);
+  // The new draft copies the source's body verbatim, so carry its referenced
+  // ingredient ids forward — otherwise the freshly-snapshotted version would
+  // render no chips (despite identical prose) until the next save re-scans.
   manifest.drafts.push(buildDraftMeta(body, {
     id: newDraftId,
     label: draftLabel,
     contentFile: `drafts/${newDraftId}.md`,
     createdAt: nowIso(),
     createdFromVersionId: fromId,
+    ...(Array.isArray(fromDraft?.referencedIngredientIds)
+      ? { referencedIngredientIds: fromDraft.referencedIngredientIds }
+      : {}),
   }));
   manifest.activeDraftVersionId = newDraftId;
   manifest.updatedAt = nowIso();
