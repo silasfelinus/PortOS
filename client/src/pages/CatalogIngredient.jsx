@@ -95,6 +95,7 @@ export default function CatalogIngredient() {
       .then((d) => {
         if (cancelled) return;
         if (!d?.ingredient) {
+          setLoading(false);
           toast.error('Ingredient not found');
           navigate('/catalog');
           return;
@@ -115,6 +116,7 @@ export default function CatalogIngredient() {
       })
       .catch((err) => {
         if (cancelled) return;
+        setLoading(false);
         toast.error(err?.message || 'Failed to load ingredient');
         navigate('/catalog');
       });

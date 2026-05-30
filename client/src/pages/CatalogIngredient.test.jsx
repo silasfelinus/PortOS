@@ -40,8 +40,22 @@ const { CHAR_FIXTURE } = vi.hoisted(() => ({
   },
 }));
 
+// The detail page now hydrates via the batched getCatalogIngredientDetails
+// ({ ingredient, refs, sources, relations, revisions, media, missingMedia }).
+const { detailsOf } = vi.hoisted(() => ({
+  detailsOf: (ing) => ({
+    ingredient: ing,
+    refs: ing.refs || [],
+    sources: ing.sources || [],
+    relations: { outbound: [], inbound: [] },
+    revisions: [],
+    media: [],
+    missingMedia: [],
+  }),
+}));
+
 vi.mock('../services/apiCatalog', () => ({
-  getCatalogIngredient: vi.fn(async () => CHAR_FIXTURE),
+  getCatalogIngredientDetails: vi.fn(async () => detailsOf(CHAR_FIXTURE)),
   updateCatalogIngredient: vi.fn(),
   deleteCatalogIngredient: vi.fn(),
   listCatalogIngredientRelations: vi.fn(async () => ({ outbound: [], inbound: [] })),
@@ -63,12 +77,12 @@ vi.mock('../components/TagPicker', () => ({ default: () => <div data-testid="tag
 vi.mock('../components/ui/Toast', () => ({ default: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 
 import CatalogIngredient from './CatalogIngredient';
-import { getCatalogIngredient } from '../services/apiCatalog';
+import { getCatalogIngredientDetails } from '../services/apiCatalog';
 
 const renderPage = () => render(<MemoryRouter><CatalogIngredient /></MemoryRouter>);
 
 beforeEach(() => {
-  getCatalogIngredient.mockImplementation(async () => CHAR_FIXTURE);
+  getCatalogIngredientDetails.mockImplementation(async () => detailsOf(CHAR_FIXTURE));
 });
 
 describe('CatalogIngredient — character sheet', () => {
@@ -99,7 +113,7 @@ describe('CatalogIngredient — character sheet', () => {
   });
 
   it('shows an existing reference sheet image when payload carries one', async () => {
-    getCatalogIngredient.mockImplementation(async () => ({
+    getCatalogIngredientDetails.mockImplementation(async () => detailsOf({
       ...CHAR_FIXTURE,
       payload: { ...CHAR_FIXTURE.payload, referenceSheetImageRef: 'sheet-123.png' },
     }));
