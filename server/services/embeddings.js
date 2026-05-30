@@ -88,11 +88,35 @@ export async function embedText(text, options = {}) {
  * the seed is consistent across commit, manual create, manual edit, and
  * the admin backfill.
  *
+ * Character canon shape uses `physicalDescription` + `personality` (per
+ * `sanitizeCharacter` in storyBible.js); without these in the seed, a
+ * character's main descriptive text is never embedded and semantic search
+ * misses every character whose content was captured through the inline New
+ * form or the writers-room/bible extractor — only the name would match.
+ *
  * Returns `''` when there's nothing worth embedding so callers can skip.
  */
 export function ingredientEmbedSeed({ name, payload } = {}) {
   const p = payload || {};
-  return [name, p.description, p.summary, p.notes, p.background]
+  // Include every narrative-weight field across the six ingredient types:
+  // character → role/physicalDescription/personality/background/motivations;
+  // place → slugline/era/description; object → description/significance;
+  // light types (idea/scene/concept) → summary/description/notes. Missing any
+  // of these leaves an ingredient effectively name-only in vector search.
+  return [
+    name,
+    p.role,
+    p.description,
+    p.physicalDescription,
+    p.personality,
+    p.background,
+    p.motivations,
+    p.summary,
+    p.notes,
+    p.slugline,
+    p.era,
+    p.significance,
+  ]
     .filter(Boolean)
     .join(' ')
     .slice(0, 4000);
