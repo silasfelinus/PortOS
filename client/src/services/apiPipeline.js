@@ -38,6 +38,16 @@ export const PIPELINE_STAGE_LABELS = Object.freeze({
   audio: 'Audio',
 });
 
+// The stage that conventionally feeds each text-stage target — mirrors the
+// server's DEFAULT_FORWARD_SOURCE (server/services/pipeline/textStages.js).
+// The text-stage source picker pre-checks these so the common forward flow
+// needs no clicks, while still letting any populated stage be a backport source.
+export const PIPELINE_DEFAULT_FORWARD_SOURCE = Object.freeze({
+  prose: ['idea'],
+  comicScript: ['prose'],
+  teleplay: ['prose'],
+});
+
 export const PIPELINE_TARGET_FORMATS = Object.freeze(['comic', 'tv', 'comic+tv']);
 
 export const PIPELINE_STAGE_STATUS_LABEL = Object.freeze({
