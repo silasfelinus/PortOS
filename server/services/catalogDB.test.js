@@ -235,6 +235,50 @@ describe.skipIf(!dbReady)('catalogDB (Postgres CRUD round-trip)', () => {
     expect(hydrated[0].rawText).toContain('long coat');
   });
 
+  it('createChunkedScrap stores one parent for short input and no children', async () => {
+    if (!requireDb('chunked scrap short')) return;
+    const parent = await catalogDB.createChunkedScrap({
+      title: 'Short note',
+      rawText: 'A single short paragraph that fits in one chunk.',
+      sourceKind: 'paste',
+    });
+    createdScrapIds.add(parent.id);
+    expect(parent.chunkIndex).toBe(0);
+    expect(parent.parentScrapId).toBeNull();
+    const children = await catalogDB.listChildScraps(parent.id);
+    expect(children).toHaveLength(0);
+  });
+
+  it('createChunkedScrap splits a long paste into a parent + ordered children', async () => {
+    if (!requireDb('chunked scrap long')) return;
+    // 5 paragraphs well over the 12k cap so chunkRawText returns multiple slices.
+    const para = 'lorem ipsum dolor sit amet '.repeat(200); // ~5400 chars
+    const rawText = Array.from({ length: 5 }, (_, i) => `Para ${i}: ${para}`).join('\n\n');
+    expect(rawText.length).toBeGreaterThan(12_000);
+
+    const parent = await catalogDB.createChunkedScrap({
+      title: 'Long paste',
+      rawText,
+      sourceKind: 'paste',
+    });
+    createdScrapIds.add(parent.id); // CASCADE drops children on cleanup
+
+    // Parent holds the FULL text so the existing FTS index stays populated.
+    expect(parent.chunkIndex).toBe(0);
+    expect(parent.parentScrapId).toBeNull();
+    expect(parent.rawText).toBe(rawText);
+
+    const children = await catalogDB.listChildScraps(parent.id);
+    expect(children.length).toBeGreaterThan(1);
+    // chunk_index is 1..N in document order, parent_scrap_id points back.
+    children.forEach((child, i) => {
+      expect(child.chunkIndex).toBe(i + 1);
+      expect(child.parentScrapId).toBe(parent.id);
+    });
+    // Lossless: concatenating child slices reproduces the original text.
+    expect(children.map((c) => c.rawText).join('')).toBe(rawText);
+  });
+
   it('exportSliceForRef bundles ingredients + scraps + refs for a ref', async () => {
     if (!requireDb('export slice')) return;
     const ing = await catalogDB.createIngredient({

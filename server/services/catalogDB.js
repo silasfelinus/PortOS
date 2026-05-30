@@ -20,6 +20,7 @@ import {
   defaultTagsForType,
 } from '../lib/catalogTypes.js';
 import { resolveImageInputPath } from '../lib/fileUtils.js';
+import { chunkRawText } from '../lib/catalogChunking.js';
 import { getInstanceId } from './instances.js';
 
 function newIngredientId(type) {
@@ -60,6 +61,8 @@ function rowToScrap(row) {
     embedding: row.embedding ? pgvectorToArray(row.embedding) : null,
     embeddingModel: row.embedding_model,
     originInstanceId: row.origin_instance_id,
+    chunkIndex: row.chunk_index ?? 0,
+    parentScrapId: row.parent_scrap_id ?? null,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
     deleted: !!row.deleted,
@@ -174,15 +177,15 @@ function rowToRevision(row) {
 // alongside the ingredients + source links (see POST /api/catalog/bulk-import).
 // Absent, falls through to the pool-level `query` as before. Mirrors the same
 // option on `createIngredient` / `linkIngredientToSource`.
-export async function createScrap({ title, rawText, sourceKind = 'paste', metadata = {}, embedding = null, embeddingModel = null } = {}, { client } = {}) {
+export async function createScrap({ title, rawText, sourceKind = 'paste', metadata = {}, embedding = null, embeddingModel = null, chunkIndex = 0, parentScrapId = null } = {}, { client } = {}) {
   if (!rawText) throw new Error('rawText is required');
   const id = newScrapId();
   const originInstanceId = await getInstanceId();
   const exec = client ? client.query.bind(client) : query;
   const result = await exec(
     `INSERT INTO catalog_scraps
-       (id, title, raw_text, source_kind, metadata, embedding, embedding_model, origin_instance_id)
-     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+       (id, title, raw_text, source_kind, metadata, embedding, embedding_model, origin_instance_id, chunk_index, parent_scrap_id)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
      RETURNING *`,
     [
       id,
@@ -193,9 +196,71 @@ export async function createScrap({ title, rawText, sourceKind = 'paste', metada
       embedding ? arrayToPgvector(embedding) : null,
       embeddingModel,
       originInstanceId,
+      chunkIndex,
+      parentScrapId,
     ],
   );
   return rowToScrap(result.rows[0]);
+}
+
+/**
+ * Create a scrap, chunking a long `rawText` into a parent row + N child rows.
+ *
+ * The parent (chunk_index 0, parent_scrap_id NULL) stores the FULL original
+ * text so the existing scrap FTS index + "view source" UI keep working. When
+ * `chunkRawText` returns more than one chunk, each chunk slice is written as a
+ * child row (parent_scrap_id = parent.id, chunk_index 1..N, raw_text = the
+ * slice). The catalog extractor then runs per-child and unions the drafts.
+ *
+ * Short inputs (≤ one chunk) insert a single parent row identical to the
+ * pre-chunking behavior — no children. Returns the PARENT scrap.
+ *
+ * Wrapped in `withTransaction` so the parent + every child commit-or-rollback
+ * together — a half-written chunk set would leave the extractor unioning a
+ * partial corpus.
+ */
+export async function createChunkedScrap({ title, rawText, sourceKind = 'paste', metadata = {} } = {}) {
+  if (!rawText) throw new Error('rawText is required');
+  const chunks = chunkRawText(rawText);
+  if (chunks.length <= 1) {
+    return createScrap({ title, rawText, sourceKind, metadata });
+  }
+  return withTransaction(async (client) => {
+    // Parent carries the FULL text (chunk_index 0, no parent).
+    const parent = await createScrap(
+      { title, rawText, sourceKind, metadata, chunkIndex: 0, parentScrapId: null },
+      { client },
+    );
+    for (let i = 0; i < chunks.length; i++) {
+      await createScrap(
+        {
+          title,
+          rawText: chunks[i],
+          sourceKind,
+          metadata,
+          chunkIndex: i + 1,
+          parentScrapId: parent.id,
+        },
+        { client },
+      );
+    }
+    return parent;
+  });
+}
+
+/**
+ * Live child scraps for a chunked parent, ordered by chunk_index so the
+ * extractor processes the corpus in document order. Returns [] for a
+ * non-chunked scrap (no children).
+ */
+export async function listChildScraps(parentId) {
+  const result = await query(
+    `SELECT * FROM catalog_scraps
+      WHERE parent_scrap_id = $1 AND deleted = false
+      ORDER BY chunk_index ASC`,
+    [parentId],
+  );
+  return result.rows.map(rowToScrap);
 }
 
 export async function getScrap(id) {
@@ -1188,11 +1253,18 @@ export async function getRefChangesSince(since = '0', limit = 100) {
 
 
 export async function upsertScrapFromPeer(scrap) {
-  const result = await query(
+  // A child scrap (parent_scrap_id set) may arrive in the envelope BEFORE its
+  // parent row — the sync apply path sorts parents first within one envelope,
+  // but a parent can still lag a child across pagination pages. Mirror the
+  // catalog_tags parent-less retry: on FK violation, NULL the parent so the
+  // child still lands, and a later page carrying the parent re-runs this upsert
+  // (LWW) to restore the link. chunk_index has no FK, so it always rides.
+  const apply = async (parentScrapId) => query(
     `INSERT INTO catalog_scraps
        (id, title, raw_text, source_kind, metadata, embedding, embedding_model,
-        origin_instance_id, created_at, updated_at, deleted, deleted_at)
-     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)
+        origin_instance_id, chunk_index, parent_scrap_id,
+        created_at, updated_at, deleted, deleted_at)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      ON CONFLICT (id) DO UPDATE SET
        title = EXCLUDED.title,
        raw_text = EXCLUDED.raw_text,
@@ -1200,6 +1272,8 @@ export async function upsertScrapFromPeer(scrap) {
        metadata = EXCLUDED.metadata,
        embedding = EXCLUDED.embedding,
        embedding_model = EXCLUDED.embedding_model,
+       chunk_index = EXCLUDED.chunk_index,
+       parent_scrap_id = EXCLUDED.parent_scrap_id,
        updated_at = EXCLUDED.updated_at,
        deleted = EXCLUDED.deleted,
        deleted_at = EXCLUDED.deleted_at
@@ -1214,12 +1288,26 @@ export async function upsertScrapFromPeer(scrap) {
       scrap.embedding ? arrayToPgvector(scrap.embedding) : null,
       scrap.embeddingModel || null,
       scrap.originInstanceId || null,
+      Number.isInteger(scrap.chunkIndex) ? scrap.chunkIndex : 0,
+      parentScrapId,
       scrap.createdAt,
       scrap.updatedAt,
       !!scrap.deleted,
       scrap.deletedAt || null,
     ],
   );
+  const parentId = scrap.parentScrapId ?? null;
+  let result;
+  try {
+    result = await apply(parentId);
+  } catch (err) {
+    // 23503 = foreign_key_violation (parent not present yet). Retry parent-less.
+    if (err?.code === '23503' && parentId !== null) {
+      result = await apply(null);
+    } else {
+      throw err;
+    }
+  }
   return { applied: result.rows.length > 0, isInsert: result.rows[0]?.is_insert ?? false };
 }
 

@@ -23,7 +23,7 @@ import { runStagedLLM } from '../lib/stageRunner.js';
 import { BIBLE_KINDS, BIBLE_FIELD, BIBLE_LIMITS } from '../lib/storyBible.js';
 import { CATALOG_TYPES } from '../lib/catalogTypes.js';
 import { catalogEvents } from './catalogEvents.js';
-import { listIngredientsForRef } from './catalogDB.js';
+import { getScrap, listChildScraps, listIngredientsForRef } from './catalogDB.js';
 
 // Light-shape ingredient type ids, sourced from the shared registry
 // (`extractionShape === 'light'`). Adding a light type to `catalogTypes.js`
@@ -269,6 +269,130 @@ export async function extractIngredients({ rawText, scrapId = null, providerOver
   // frame is just noise.)
 
   return { runId, ...draft, stages };
+}
+
+// Every draft-array key `extractIngredients` can return — the bible plurals
+// (`characters`/`places`/`objects`) plus the light plurals (`ideas`/`scenes`/
+// `concepts`). Each KEY encodes the ingredient type, so deduping by name WITHIN
+// a key is a dedup by (name, type). Driven by the same registries the extractor
+// uses so a new type flows through without a manual edit.
+const DRAFT_ARRAY_KEYS = Object.freeze([
+  ...BIBLE_TYPE_IDS.map((kind) => BIBLE_FIELD[kind]),
+  ...LIGHT_TYPE_IDS.map(lightDraftKey),
+]);
+
+/**
+ * Union the per-child draft arrays from N chunk extractions into one draft,
+ * deduping by `<draftKey>|<lowercased name>` and KEEPING THE FIRST occurrence
+ * (chunk order = document order). Each draft key encodes the ingredient type,
+ * so this is a dedup by (name, type). Non-array / missing keys are tolerated.
+ *
+ * @param {Array<object>} drafts  per-child draft objects ({ characters: [...], ... }).
+ * @returns {object}  one merged draft with the same array keys.
+ */
+export function dedupDrafts(drafts = []) {
+  const merged = {};
+  for (const key of DRAFT_ARRAY_KEYS) merged[key] = [];
+  const seen = new Set();
+  for (const draft of drafts) {
+    if (!draft || typeof draft !== 'object') continue;
+    for (const key of DRAFT_ARRAY_KEYS) {
+      const arr = Array.isArray(draft[key]) ? draft[key] : [];
+      for (const entry of arr) {
+        const name = typeof entry?.name === 'string' ? entry.name.trim().toLowerCase() : '';
+        if (!name) continue;
+        const dedupKey = `${key}|${name}`;
+        if (seen.has(dedupKey)) continue;
+        seen.add(dedupKey);
+        merged[key].push(entry);
+      }
+    }
+  }
+  return merged;
+}
+
+// Map over an array with a bounded number of in-flight promises. Preserves
+// input order in the result. Used so a heavily-chunked scrap doesn't fan out
+// dozens of concurrent LLM extraction passes at once.
+async function mapWithConcurrency(items, concurrency, fn) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < items.length) {
+      const i = cursor++;
+      results[i] = await fn(items[i], i);
+    }
+  };
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, worker);
+  await Promise.all(workers);
+  return results;
+}
+
+// How many child-chunk extractions run concurrently. Bounded so a long paste
+// (up to CATALOG_CHUNK_MAX_CHARS-sized chunks × maxChunks) doesn't slam the
+// provider with dozens of parallel LLM calls.
+const CHUNK_EXTRACT_CONCURRENCY = 2;
+
+/**
+ * Extract candidate ingredients for a stored scrap, transparently handling
+ * chunked scraps. Loads the parent scrap; if it has child rows (a long paste
+ * that `createChunkedScrap` split), runs `extractIngredients` per child corpus
+ * with bounded concurrency and unions the drafts (dedup by name+type, keep
+ * first). A non-chunked scrap falls back to a single `extractIngredients` over
+ * the parent's full text — identical to the pre-chunking behavior.
+ *
+ * Always extracts against the PARENT scrap id (the route rejects extract calls
+ * on a child). Returns the same `{ runId, ...draft, stages }` shape as
+ * `extractIngredients` so the route + client review flow are unchanged.
+ *
+ * @param {object} args
+ * @param {string} args.scrapId            Parent scrap id.
+ * @param {string} [args.providerOverride] Override the staged-llm provider.
+ */
+export async function extractIngredientsForScrap({ scrapId, providerOverride } = {}) {
+  const parent = await getScrap(scrapId);
+  if (!parent) throw new Error(`extractIngredientsForScrap: scrap ${scrapId} not found`);
+
+  const children = await listChildScraps(parent.id);
+  if (children.length === 0) {
+    return extractIngredients({ rawText: parent.rawText, scrapId: parent.id, providerOverride });
+  }
+
+  // Run each child corpus through the extractor with bounded concurrency, then
+  // union the per-child drafts. Progress frames still carry the parent scrapId
+  // so the UI's existing live checklist keeps tracking one scrap.
+  const childDrafts = await mapWithConcurrency(children, CHUNK_EXTRACT_CONCURRENCY, (child) =>
+    extractIngredients({ rawText: child.rawText, scrapId: parent.id, providerOverride }),
+  );
+
+  const merged = dedupDrafts(childDrafts);
+
+  // Aggregate per-stage status so the response's `stages` reflects the whole
+  // run: a stage is 'failed' only if it failed in EVERY child (a transient
+  // single-chunk failure shouldn't fail the stage when other chunks succeeded);
+  // count is the deduped merged total for that stage's keys.
+  const stageMap = new Map();
+  for (const draft of childDrafts) {
+    for (const stage of draft.stages || []) {
+      const prev = stageMap.get(stage.id);
+      if (!prev) {
+        stageMap.set(stage.id, { ...stage });
+      } else {
+        // Any success clears the failed flag; keep the first error seen.
+        if (stage.status !== 'failed') prev.status = 'completed';
+        if (!prev.error && stage.error) prev.error = stage.error;
+      }
+    }
+  }
+  const stages = [...stageMap.values()].map((stage) => {
+    const keys = stage.id === LIGHT_STAGE_ID
+      ? LIGHT_TYPE_IDS.map(lightDraftKey)
+      : [stage.id];
+    const count = keys.reduce((n, key) => n + merged[key].length, 0);
+    return { ...stage, count };
+  });
+
+  return { runId: randomUUID(), ...merged, stages };
 }
 
 // (refKind, refId) pairs the scan is allowed to consider. Only catalog
