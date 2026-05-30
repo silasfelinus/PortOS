@@ -1032,7 +1032,11 @@ export async function updateUniverse(id, patchOrMutator = {}, options = {}) {
   // universe is still persisted; peers learn about the change on the next
   // normal sync cycle.
   const isMutator = typeof patchOrMutator === 'function';
-  const { silent = false } = options;
+  // `canonProjectionGuard` is set (to an ingredientId) when this write
+  // ORIGINATED from a catalog→canon projection. Threaded into projectToCatalog
+  // below so the originating catalog row isn't written back a second time
+  // (breaks the projectToCanon → updateUniverse → projectToCatalog loop).
+  const { silent = false, canonProjectionGuard = null } = options;
   const s = store();
   const { merged, nameChanged, skipped, removedCharacterIds, prevEphemeral, nextEphemeral } = await s.queueRecordWrite(id, async () => {
     const cur = await s.loadOne(id);
@@ -1196,6 +1200,21 @@ export async function updateUniverse(id, patchOrMutator = {}, options = {}) {
     }
     await ensureDir(s.recordDir(id));
     await atomicWrite(s.recordPath(id), mergedRecord);
+    // Project the freshly-persisted canon arrays back into their catalog rows
+    // SYNCHRONOUSLY (inside the queue) so the authoritative catalog_ingredients
+    // row can never lag the embedded cache on the same request. Best-effort:
+    // projectToCatalog never throws (per-entry failures are logged), but wrap
+    // the import/call anyway — this runs inside the queued write critical
+    // section and an uncaught throw here would reject the whole save. Skipped
+    // when the patch can't have touched canon arrays (rename/scalar PATCH).
+    if (isMutator || 'characters' in patch || 'places' in patch || 'objects' in patch) {
+      try {
+        const { projectToCatalog } = await import('./catalogCanonProjection.js');
+        await projectToCatalog(id, mergedRecord, { guardToken: canonProjectionGuard });
+      } catch (err) {
+        console.error(`🔁 canon→catalog projection failed for ${id}: ${err.message}`);
+      }
+    }
     // Diff inside the queue so we read against the freshest merged state;
     // gate on patches that could have touched characters (mutator or
     // literal-PATCH carrying `characters`) — rename/scalar PATCHes are the
