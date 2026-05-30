@@ -115,6 +115,11 @@ describe.skipIf(!dbReady)('catalogDB (Postgres CRUD round-trip)', () => {
 
   it('soft-deletes so GET returns null but the row survives for sync', async () => {
     if (!requireDb('soft-delete ingredient')) return;
+    // Capture the change-feed cursor BEFORE creating: on a populated live
+    // catalog (>1000 prior changes) a 'since 0' page returns the OLDEST rows
+    // and would miss this fresh tombstone. Querying since a recent cursor keeps
+    // the just-deleted row inside the page.
+    const { ingredients: cursor } = await catalogDB.getMaxSequences();
     const created = await catalogDB.createIngredient({ type: 'object', name: 'Brass Key' });
     createdIngredientIds.add(created.id);
 
@@ -123,7 +128,7 @@ describe.skipIf(!dbReady)('catalogDB (Postgres CRUD round-trip)', () => {
     expect(afterDelete).toBeNull();
 
     // The tombstone is still visible to the sync change-feed.
-    const { items } = await catalogDB.getIngredientChangesSince('0', 1000);
+    const { items } = await catalogDB.getIngredientChangesSince(cursor, 1000);
     const tombstone = items.find((i) => i.id === created.id);
     expect(tombstone).toBeTruthy();
     expect(tombstone.deleted).toBe(true);
