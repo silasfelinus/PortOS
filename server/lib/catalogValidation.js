@@ -85,7 +85,7 @@ export const catalogScrapPatchSchema = catalogScrapCreateSchema.partial();
 // the guard can't be bypassed with a mapped literal. We deliberately ALLOW
 // other private/LAN hosts: ingesting from a Tailscale peer or a home-network
 // wiki is a legit use of this single-user tool.
-const isBlockedIngestHost = (host) => {
+export const isBlockedIngestHost = (host) => {
   const h = host.toLowerCase().replace(/^\[|\]$/g, '');
   if (h === 'localhost' || h.endsWith('.localhost') || h === 'metadata.google.internal') return true;
   if (h === '::1' || h === '::' || h === '0.0.0.0') return true;

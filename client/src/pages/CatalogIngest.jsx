@@ -87,6 +87,10 @@ export default function CatalogIngest() {
   const recorderRef = useRef(null);
   const fileInputRef = useRef(null);
 
+  // Stop the mic if the page unmounts mid-recording (navigating away), so the
+  // MediaRecorder stream isn't left live with no UI to stop it.
+  useEffect(() => () => { recorderRef.current?.cancel?.(); }, []);
+
   // Track active runId so a stale frame from an earlier scrap can't mutate the
   // current stage list (server fans these to all sockets — single-user trust
   // model still applies, but tab refresh + a slow extract overlap is real).
@@ -345,7 +349,9 @@ export default function CatalogIngest() {
             </button>
             {phase === 'paste' && (
               <button type="button" onClick={() => setBulkOpen((v) => !v)}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-port-border text-gray-300 hover:text-white"
+                disabled={recording}
+                title={recording ? 'Stop the voice recording first' : undefined}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-port-border text-gray-300 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
                 aria-expanded={bulkOpen}>
                 <Upload size={14} aria-hidden="true" /> Bulk Import
               </button>

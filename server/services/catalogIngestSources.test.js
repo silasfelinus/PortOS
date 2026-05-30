@@ -30,6 +30,9 @@ vi.mock('./browserService.js', () => ({
 vi.mock('fs/promises', () => ({
   writeFile: vi.fn(),
 }));
+vi.mock('dns/promises', () => ({
+  lookup: vi.fn(),
+}));
 vi.mock('../lib/fileUtils.js', () => ({
   PATHS: { audio: '/tmp/data/audio' },
   ensureDir: vi.fn(),
@@ -39,6 +42,7 @@ const catalogDB = await import('./catalogDB.js');
 const catalogExtraction = await import('./catalogExtraction.js');
 const browserService = await import('./browserService.js');
 const fsp = await import('fs/promises');
+const dnsp = await import('dns/promises');
 const {
   fetchUrlMainText,
   ingestFromUrl,
@@ -52,6 +56,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   catalogExtraction.extractIngredients.mockResolvedValue(DRAFT);
   catalogDB.createScrap.mockImplementation(async (args) => ({ id: 'cat-scrap-1', ...args }));
+  // Hostnames resolve to a safe public address by default (the DNS SSRF guard).
+  dnsp.lookup.mockResolvedValue({ address: '93.184.216.34', family: 4 });
 });
 
 describe('fetchUrlMainText', () => {
@@ -74,6 +80,13 @@ describe('fetchUrlMainText', () => {
 
     await expect(fetchUrlMainText('https://ex.com/a', { settleMs: 0 })).rejects.toThrow(/no readable text/);
     expect(catalogDB.createScrap).not.toHaveBeenCalled();
+  });
+
+  it('refuses to ingest a hostname that resolves to a blocked address (DNS SSRF) before navigating', async () => {
+    // Schema passes (it's a normal hostname), but DNS points it at cloud metadata.
+    dnsp.lookup.mockResolvedValue({ address: '169.254.169.254', family: 4 });
+    await expect(fetchUrlMainText('https://evil.example/x', { settleMs: 0 })).rejects.toThrow(/resolves to a blocked/);
+    expect(browserService.navigateToUrl).not.toHaveBeenCalled();
   });
 
   it('refuses to ingest a redirect that lands on a blocked (loopback) host', async () => {

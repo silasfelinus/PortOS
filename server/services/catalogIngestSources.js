@@ -29,8 +29,9 @@ import {
   listCdpPages,
   evaluateOnPage,
 } from './browserService.js';
+import { lookup } from 'dns/promises';
 import { PATHS, ensureDir } from '../lib/fileUtils.js';
-import { isSafeIngestUrl } from '../lib/catalogValidation.js';
+import { isSafeIngestUrl, isBlockedIngestHost } from '../lib/catalogValidation.js';
 
 // Cap fetched/transcribed bodies at the scrap column boundary (the Zod
 // rawText max). A runaway page or a multi-hour memo can't blow past the DB.
@@ -71,6 +72,21 @@ async function createScrapAndExtract({ title, rawText, sourceKind, metadata, pro
  * the page or extracts nothing usable, so the route surfaces a clean 4xx/5xx.
  */
 export async function fetchUrlMainText(url, { settleMs = PAGE_SETTLE_MS } = {}) {
+  // DNS guard: the schema rejects blocked IP LITERALS, but a hostname can
+  // resolve to a blocked address (DNS record / rebinding pointing at
+  // 169.254.169.254, loopback, …). Resolve it and reject before we navigate.
+  // (Residual TOCTOU — Chrome re-resolves independently — is acceptable on a
+  // single-user private network; this closes the realistic record-points-at-
+  // metadata vector and is paired with the post-navigation re-check below.)
+  const { hostname } = new URL(url);
+  const isIpLiteral = /^[\d.]+$/.test(hostname) || hostname.includes(':');
+  if (!isIpLiteral) {
+    const resolved = await lookup(hostname).catch(() => null);
+    if (resolved?.address && isBlockedIngestHost(resolved.address)) {
+      throw new Error('refusing to ingest a host that resolves to a blocked (loopback/link-local) address');
+    }
+  }
+
   // `navigateToUrl` opens a fresh tab at the exact URL and returns it; we drive
   // and read that tab below. (Don't call findOrOpenPage first — it would open a
   // SECOND, orphaned tab per ingest, since navigateToUrl never reuses one.)
@@ -78,11 +94,13 @@ export async function fetchUrlMainText(url, { settleMs = PAGE_SETTLE_MS } = {}) 
   await sleep(settleMs);
 
   // Re-list to get the live webSocketDebuggerUrl for the tab we just drove.
+  // Match strictly by the id (then the exact url) navigateToUrl returned —
+  // never fall back to an arbitrary `pages[0]`, which could be an unrelated
+  // open tab and would ingest the wrong (possibly sensitive) page.
   const pages = await listCdpPages();
   const page = pages.find((p) => p.id === opened.id)
-    || pages.find((p) => p.url === opened.url)
-    || pages[0];
-  if (!page) throw new Error('browser tab not found after navigation');
+    || pages.find((p) => p.url === opened.url);
+  if (!page) throw new Error('could not match the navigated tab after navigation (refusing to read an arbitrary tab)');
 
   // Re-validate the FINAL url before reading the DOM: the request-body URL
   // passed the SSRF guard, but a server-controlled redirect could have sent
