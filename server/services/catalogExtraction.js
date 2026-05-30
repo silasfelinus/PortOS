@@ -33,11 +33,17 @@ const LIGHT_STAGE_ID = 'ideasScenesConcepts';
 // (one per BIBLE_KINDS entry — a future bible kind picks up automatically),
 // plus the one bundled light stage. Order matches the typical user mental
 // model: structural first, then narrative shards.
-const titleCase = (s) => s.charAt(0).toUpperCase() + s.slice(1) + 's';
+//
+// Label is derived from BIBLE_FIELD (which is the canonical plural form
+// already used everywhere else for the field key — `characters` / `places` /
+// `objects`) rather than a hand-rolled "append 's'" helper. The append-'s'
+// approach would silently mis-pluralize a future kind that doesn't take a
+// bare-'s' plural (e.g. `entity` → `Entitys`).
+const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 export const EXTRACTION_STAGES = Object.freeze([
   ...BIBLE_KINDS.map((kind) => ({
     id: BIBLE_FIELD[kind],   // 'characters' | 'places' | 'objects'
-    label: titleCase(kind),
+    label: capitalize(BIBLE_FIELD[kind]),
     kind,
   })),
   { id: LIGHT_STAGE_ID, label: 'Ideas, scenes & concepts' },
