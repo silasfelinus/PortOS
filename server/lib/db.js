@@ -155,14 +155,31 @@ export async function ensureSchema() {
       deleted_at TIMESTAMPTZ,
       sync_sequence BIGSERIAL
     )`,
-    // Postgres can't ALTER the expression of a STORED generated column, so the
-    // FTS column is DROPped and re-ADDed on every boot. The whole catalogDDL
-    // block is idempotent: on a fresh install the DROP is a no-op (column
-    // didn't exist) and ADD creates it; on an existing v1 install the DROP
-    // removes the narrow expression and ADD installs the expanded one that
-    // also indexes physicalDescription / personality / role / motivations /
-    // significance. Bumped PORTOS_SCHEMA_VERSIONS.catalog → 2 in lockstep.
-    `ALTER TABLE catalog_ingredients DROP COLUMN IF EXISTS search_tsv`,
+    // Postgres can't ALTER the expression of a STORED generated column, so when
+    // the v2 expansion needs to land we DROP and re-ADD `search_tsv`. The
+    // conditional below (executed after the table CREATE, before the
+    // ADD-only fallback) inspects pg_attrdef and rewrites the column ONLY
+    // when the current generation expression is missing a v2-only field
+    // (`physicalDescription`). That keeps boot O(1) on already-v2 installs —
+    // an unconditional DROP+ADD would AccessExclusive-lock the table, rewrite
+    // every row, and rebuild the GIN index on every server start.
+    // Fresh installs (no column yet) fall through to the ADD IF NOT EXISTS
+    // below and skip the DROP entirely.
+    `DO $$
+       DECLARE
+         expr TEXT;
+       BEGIN
+         SELECT pg_get_expr(d.adbin, d.adrelid)
+           INTO expr
+           FROM pg_attribute a
+           JOIN pg_attrdef  d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+          WHERE a.attrelid = 'catalog_ingredients'::regclass
+            AND a.attname  = 'search_tsv'
+            AND a.attgenerated = 's';
+         IF expr IS NOT NULL AND position('physicalDescription' in expr) = 0 THEN
+           EXECUTE 'ALTER TABLE catalog_ingredients DROP COLUMN search_tsv';
+         END IF;
+       END$$`,
     `ALTER TABLE catalog_ingredients ADD COLUMN IF NOT EXISTS search_tsv tsvector
        GENERATED ALWAYS AS (
          setweight(to_tsvector('english', coalesce(name, '')), 'A') ||
