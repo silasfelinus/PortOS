@@ -622,23 +622,47 @@ export async function upsertRefFromPeer(ref) {
   // adopts the peer's `deleted` / `deleted_at` state. The trigger only bumps
   // sync_sequence when those columns change, so a no-op replay (peer already
   // matches local) stays silent on the next outbound pull.
-  await query(
-    `INSERT INTO catalog_ingredient_refs
-       (ingredient_id, ref_kind, ref_id, role, created_at, deleted, deleted_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (ingredient_id, ref_kind, ref_id, role) DO UPDATE
-       SET deleted = EXCLUDED.deleted,
-           deleted_at = EXCLUDED.deleted_at`,
-    [
-      ref.ingredientId,
-      ref.refKind,
-      ref.refId,
-      ref.role,
-      ref.createdAt,
-      !!ref.deleted,
-      ref.deletedAt || null,
-    ],
-  );
+  //
+  // Mixed-version federation: a v1 peer (pre-tombstone) emits ref rows with
+  // NO `deleted`/`deletedAt` keys. Treat "key absent" as "peer has no opinion"
+  // and preserve the local state on conflict — otherwise the v1 payload would
+  // coerce missing-to-false and ON CONFLICT DO UPDATE would silently revive
+  // a locally tombstoned ref. The `hasTombstoneFields` flag distinguishes this
+  // from an explicit v2 revival (`deleted: false` present). On INSERT a v1
+  // peer's row defaults to `deleted=false`, which is correct — the row is
+  // brand-new locally and the peer believes it's active.
+  const hasTombstoneFields =
+    Object.prototype.hasOwnProperty.call(ref, 'deleted') ||
+    Object.prototype.hasOwnProperty.call(ref, 'deletedAt');
+  if (hasTombstoneFields) {
+    await query(
+      `INSERT INTO catalog_ingredient_refs
+         (ingredient_id, ref_kind, ref_id, role, created_at, deleted, deleted_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (ingredient_id, ref_kind, ref_id, role) DO UPDATE
+         SET deleted = EXCLUDED.deleted,
+             deleted_at = EXCLUDED.deleted_at`,
+      [
+        ref.ingredientId,
+        ref.refKind,
+        ref.refId,
+        ref.role,
+        ref.createdAt,
+        !!ref.deleted,
+        ref.deletedAt || null,
+      ],
+    );
+  } else {
+    // v1-shape payload: insert when missing, leave local tombstone state alone
+    // on conflict. Matches the original v1 `ON CONFLICT DO NOTHING` semantics.
+    await query(
+      `INSERT INTO catalog_ingredient_refs
+         (ingredient_id, ref_kind, ref_id, role, created_at)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (ingredient_id, ref_kind, ref_id, role) DO NOTHING`,
+      [ref.ingredientId, ref.refKind, ref.refId, ref.role, ref.createdAt],
+    );
+  }
 }
 
 
