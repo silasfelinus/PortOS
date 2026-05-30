@@ -169,16 +169,13 @@ async function buildIdeaContextAugment(series, issue) {
  * Returned in TEXT_STAGE_IDS order for stable prompt rendering.
  */
 function resolveSourceStageIds({ issue, stageId, sourceStageIds }) {
-  const requested = Array.isArray(sourceStageIds)
+  const requested = new Set(Array.isArray(sourceStageIds)
     ? sourceStageIds
-    : DEFAULT_FORWARD_SOURCE[stageId] || [];
-  const eligible = new Set(
-    requested.filter((id) =>
-      TEXT_STAGE_IDS.includes(id)
-      && id !== stageId
-      && stageContentOf(issue.stages?.[id])),
-  );
-  return TEXT_STAGE_IDS.filter((id) => eligible.has(id));
+    : DEFAULT_FORWARD_SOURCE[stageId] || []);
+  return TEXT_STAGE_IDS.filter((id) =>
+    requested.has(id)
+    && id !== stageId
+    && stageContentOf(issue.stages?.[id]));
 }
 
 /**

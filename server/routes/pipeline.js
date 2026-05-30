@@ -362,7 +362,7 @@ const generateSchema = z.object({
   // Explicit source stages to feed the generation (backport support: generate
   // any stage FROM any other populated stage). Omit for the conventional
   // forward source. The service drops the target itself and empty stages.
-  sourceStageIds: z.array(z.enum(['idea', 'prose', 'comicScript', 'teleplay'])).optional(),
+  sourceStageIds: z.array(z.enum(issuesSvc.TEXT_STAGE_IDS)).optional(),
 });
 
 const visualGenerateSchema = z.object({

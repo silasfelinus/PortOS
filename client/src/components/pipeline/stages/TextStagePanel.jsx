@@ -55,16 +55,11 @@ export default function TextStagePanel({
 
   // Selected source stage ids. Defaults to the conventional forward source(s)
   // that exist; recomputed whenever the candidate set changes (issue/stage swap).
-  // `availableKey` is a stable string proxy for the availableSources array so
-  // the effect re-runs on membership change without an array identity in deps.
-  const availableKey = availableSources.join(',');
   const [selectedSources, setSelectedSources] = useState([]);
   useEffect(() => {
     const preferred = (DEFAULT_FORWARD_SOURCE[stageId] || []).filter((id) => availableSources.includes(id));
     setSelectedSources(preferred);
-    // availableSources is captured via its `availableKey` string proxy.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [issue.id, stageId, availableKey]);
+  }, [issue.id, stageId, availableSources]);
 
   const toggleSource = (id) => setSelectedSources(
     (prev) => (prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]),

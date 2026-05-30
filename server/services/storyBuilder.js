@@ -436,9 +436,8 @@ const BACKFILL_SOURCE_MAX = 200_000;
 async function collectIssueSourceText(seriesId) {
   if (!seriesId) return '';
   const issues = await listIssues({ seriesId }).catch(() => []);
-  const ordered = [...issues].sort((a, b) => (a.number || 0) - (b.number || 0));
   const parts = [];
-  for (const iss of ordered) {
+  for (const iss of issues) {
     const st = iss.stages || {};
     const pick = ['comicScript', 'teleplay', 'prose', 'idea']
       .map((sid) => ({ sid, content: stageContentOf(st[sid]) }))
@@ -523,7 +522,7 @@ export async function generateStep(id, stepId, options = {}) {
   }
   if (stepId === 'plotArc') {
     if (!session.seriesId) throw makeErr('No series linked', ERR_VALIDATION);
-    let arc; let seasons; let runId; let providerId; let model;
+    let arcGenResult;
     if (options.fromDownstream) {
       // Backfill: extract the arc + seasons from the issues that already exist
       // (the user drafted scripts/prose first). Reuses the importer's
@@ -535,14 +534,15 @@ export async function generateStep(id, stepId, options = {}) {
           ERR_VALIDATION,
         );
       }
-      ({ arc, seasons, runId, providerId, model } = await generateArcFromSource(session.seriesId, {
+      arcGenResult = await generateArcFromSource(session.seriesId, {
         sourceText, providerOverride: reqProviderId, modelOverride: reqModel,
-      }));
+      });
     } else {
-      ({ arc, seasons, runId, providerId, model } = await generateArcOverview(session.seriesId, {
+      arcGenResult = await generateArcOverview(session.seriesId, {
         providerOverride: reqProviderId, modelOverride: reqModel,
-      }));
+      });
     }
+    const { arc, seasons, runId, providerId, model } = arcGenResult;
     // A null arc means the LLM returned nothing identifying — refuse rather
     // than wiping a previously-generated arc with `updateSeries({ arc: null })`.
     if (!arc) throw makeErr('LLM returned an empty arc — try regenerating', ERR_VALIDATION);
