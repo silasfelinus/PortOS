@@ -28,6 +28,7 @@ vi.mock('./catalogDB.js', () => ({
   upsertRelationFromPeer: vi.fn(),
   upsertTagFromPeer: vi.fn(),
   upsertMediaFromPeer: vi.fn(),
+  updateIngredient: vi.fn(),
 }));
 
 vi.mock('../lib/schemaVersions.js', async () => {
@@ -35,7 +36,15 @@ vi.mock('../lib/schemaVersions.js', async () => {
   return actual;
 });
 
+// universeBuilder is dynamically imported by the friendlify-on-sync path; mock
+// it so the legacy-universe-tag tests resolve names without a Postgres-backed
+// listUniverses. Default to no universes; tests override per-case.
+vi.mock('./universeBuilder.js', () => ({
+  listUniverses: vi.fn(async () => []),
+}));
+
 const catalogDB = await import('./catalogDB.js');
+const universeBuilder = await import('./universeBuilder.js');
 const {
   applyRemoteChanges,
   getChangesSince,
@@ -352,5 +361,94 @@ describe('countAppliedFromStats', () => {
     expect(countAppliedFromStats({
       ingredients: { inserted: 1, updated: 0, skipped: 9, failed: 4 },
     })).toBe(1);
+  });
+});
+
+describe('applyRemoteChanges — legacy universe tag friendlify on inbound sync', () => {
+  const ingredient = (tags) => ({
+    id: 'i-hero', type: 'character', name: 'Hero', tags, createdAt: 't', updatedAt: 't',
+  });
+
+  it('rewrites legacy machine tags to the friendly universe name when applied', async () => {
+    catalogDB.upsertIngredientFromPeer.mockResolvedValueOnce({ applied: true, isInsert: true });
+    universeBuilder.listUniverses.mockResolvedValueOnce([{ id: 'u-1', name: 'My Universe' }]);
+
+    const stats = await applyRemoteChanges({
+      ingredients: [ingredient(['hero', 'from-universe', 'universe:u-1'])],
+    });
+
+    expect(stats.ingredients.inserted).toBe(1);
+    expect(catalogDB.updateIngredient).toHaveBeenCalledTimes(1);
+    expect(catalogDB.updateIngredient).toHaveBeenCalledWith(
+      'i-hero',
+      { tags: ['hero', 'My Universe'] },
+      { source: 'sync', actor: 'universe-tag-repair-on-sync' },
+    );
+    expect(stats.errors).toHaveLength(0);
+  });
+
+  it('leaves an all-unresolvable universe row untouched (no UPDATE) so a later sync can retry', async () => {
+    catalogDB.upsertIngredientFromPeer.mockResolvedValueOnce({ applied: true, isInsert: true });
+    universeBuilder.listUniverses.mockResolvedValueOnce([]); // u-2 not present locally
+
+    await applyRemoteChanges({
+      ingredients: [ingredient(['hero', 'from-universe', 'universe:u-2'])],
+    });
+
+    // friendlifyUniverseTags returns changed=false when EVERY id is unresolvable
+    // (it keeps the marker + id tag flagged for a future retry rather than
+    // burning a no-op write), so no UPDATE fires this pass.
+    expect(catalogDB.updateIngredient).not.toHaveBeenCalled();
+  });
+
+  it('friendlifies the resolvable ids and keeps the marker when only some ids resolve', async () => {
+    catalogDB.upsertIngredientFromPeer.mockResolvedValueOnce({ applied: true, isInsert: true });
+    universeBuilder.listUniverses.mockResolvedValueOnce([{ id: 'u-1', name: 'My Universe' }]);
+
+    await applyRemoteChanges({
+      ingredients: [ingredient(['hero', 'from-universe', 'universe:u-1', 'universe:u-2'])],
+    });
+
+    expect(catalogDB.updateIngredient).toHaveBeenCalledTimes(1);
+    const [, patch] = catalogDB.updateIngredient.mock.calls[0];
+    expect(patch.tags).toContain('My Universe');     // u-1 resolved → friendly name
+    expect(patch.tags).toContain('universe:u-2');    // u-2 unresolved → id kept
+    expect(patch.tags).toContain('from-universe');   // marker kept (an id still unresolved)
+  });
+
+  it('leaves a user-supplied universe:* tag untouched when there is no marker', async () => {
+    catalogDB.upsertIngredientFromPeer.mockResolvedValueOnce({ applied: true, isInsert: true });
+
+    await applyRemoteChanges({
+      ingredients: [ingredient(['hero', 'universe:marvel'])], // thematic user tag, no marker
+    });
+
+    expect(catalogDB.updateIngredient).not.toHaveBeenCalled();
+    expect(universeBuilder.listUniverses).not.toHaveBeenCalled(); // never built the map
+  });
+
+  it('does NOT friendlify when the ingredient upsert was an LWW skip', async () => {
+    catalogDB.upsertIngredientFromPeer.mockResolvedValueOnce({ applied: false }); // local newer
+
+    await applyRemoteChanges({
+      ingredients: [ingredient(['hero', 'from-universe', 'universe:u-1'])],
+    });
+
+    expect(catalogDB.updateIngredient).not.toHaveBeenCalled();
+  });
+
+  it('isolates a friendlify failure as a post-apply error, not an ingredient failure', async () => {
+    catalogDB.upsertIngredientFromPeer.mockResolvedValueOnce({ applied: true, isInsert: true });
+    universeBuilder.listUniverses.mockResolvedValueOnce([{ id: 'u-1', name: 'My Universe' }]);
+    catalogDB.updateIngredient.mockRejectedValueOnce(new Error('write failed'));
+
+    const stats = await applyRemoteChanges({
+      ingredients: [ingredient(['hero', 'from-universe', 'universe:u-1'])],
+    });
+
+    expect(stats.ingredients.inserted).toBe(1); // the upsert itself succeeded
+    expect(stats.ingredients.failed).toBe(0);
+    expect(stats.errors).toHaveLength(1);
+    expect(stats.errors[0].kind).toBe('ingredient-postapply');
   });
 });

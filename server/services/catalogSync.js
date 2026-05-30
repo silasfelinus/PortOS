@@ -44,8 +44,11 @@ import {
   upsertRelationFromPeer,
   upsertTagFromPeer,
   upsertMediaFromPeer,
+  updateIngredient,
 } from './catalogDB.js';
 import { compareSchemaVersions, PORTOS_SCHEMA_VERSIONS } from '../lib/schemaVersions.js';
+import { friendlifyUniverseTags, LEGACY_UNIVERSE_MARKER_TAG } from '../lib/catalogUniverseTags.js';
+import { canonicalTagKey } from '../lib/catalogTypes.js';
 
 const CURSOR_KEYS = ['scraps', 'ingredients', 'sources', 'refs', 'relations', 'tags', 'media'];
 
@@ -152,81 +155,113 @@ export async function applyRemoteChanges(envelope = {}) {
     console.error(`❌ catalog sync ${kind} ${id || '?'} failed: ${err?.message || err}`);
   };
 
+  // Apply one envelope kind. Every row runs in its own try/catch so a single
+  // malformed row can't abort the batch. Two stats shapes: LWW kinds
+  // (tags/scraps/ingredients) read `{ applied, isInsert }` from the upsert into
+  // inserted/updated/skipped; tuple-unique kinds (sources/refs/relations/media)
+  // have no result and tally `applied`. `onApplied(item, res)` runs after a
+  // successful upsert in its OWN guard, so a post-apply side effect can't be
+  // miscounted as an upsert failure.
+  const applyKind = async ({ items, upsertFn, tally, lww, errLabel, idFor, onApplied }) => {
+    for (const item of items || []) {
+      let res;
+      try {
+        res = await upsertFn(item);
+        if (lww) {
+          if (!res.applied) tally.skipped++;
+          else if (res.isInsert) tally.inserted++;
+          else tally.updated++;
+        } else {
+          tally.applied++;
+        }
+      } catch (err) {
+        tally.failed++;
+        recordFailure(errLabel, idFor(item), err);
+        continue;
+      }
+      if (onApplied) {
+        try { await onApplied(item, res); }
+        catch (err) { recordFailure(`${errLabel}-postapply`, idFor(item), err); }
+      }
+    }
+  };
+
+  // Legacy universe tags (`from-universe` + `universe:<id>`) friendlify on
+  // inbound sync: an older peer that syncs an ingredient AFTER our one-time boot
+  // repair (repairUniverseTags.js) already ran would otherwise reintroduce the
+  // raw machine tags via LWW, and the boot repair's marker means it never runs
+  // again to clean them up. Rewriting them to the friendly universe NAME here
+  // re-applies the repair whenever an ingredient is (re)synced and its universe
+  // is resolvable locally — rather than only at boot. When the ingredient
+  // arrives BEFORE its universe, the row keeps its machine tags (changed=false)
+  // and is friendlified on the next sync once the universe is known, or by the
+  // boot repair, whichever fires first. The universe name map is built lazily —
+  // and only when a row actually carries the marker — so an envelope with no
+  // legacy rows never issues the universe query.
+  let universeNameMap = null;
+  const ensureUniverseNameMap = async () => {
+    if (universeNameMap) return universeNameMap;
+    const { listUniverses } = await import('./universeBuilder.js');
+    const universes = await listUniverses({ includeDeleted: true });
+    universeNameMap = new Map();
+    for (const u of universes) {
+      if (u?.id && typeof u.name === 'string' && u.name.trim()) {
+        universeNameMap.set(u.id, u.name.trim());
+      }
+    }
+    return universeNameMap;
+  };
+  const friendlifyIngredientTagsOnSync = async (ing, res) => {
+    if (!res?.applied) return; // LWW skip → local row is newer, leave it alone
+    const hasMarker = Array.isArray(ing.tags) && ing.tags.some(
+      (t) => typeof t === 'string' && t.trim().toLowerCase() === LEGACY_UNIVERSE_MARKER_TAG);
+    if (!hasMarker) return;
+    const map = await ensureUniverseNameMap();
+    const { tags, changed } = friendlifyUniverseTags(ing.tags, (id) => map.get(id) || null, canonicalTagKey);
+    if (!changed) return;
+    // source: 'sync' keeps the rewrite out of user-facing revision-diff noise,
+    // matching the boot repair (repairUniverseTags.js).
+    await updateIngredient(ing.id, { tags }, { source: 'sync', actor: 'universe-tag-repair-on-sync' });
+  };
+
   // Tags first — they carry a `parent_id` self-FK (handled by the parent-less
   // retry in upsertTagFromPeer) and are referenced by the freeform tag arrays
   // on ingredients, so we want the canonical rows present before the ingredient
   // rows land. They have no FK to scraps/ingredients, so ordering is otherwise
-  // free. Each row in its own try/catch.
-  for (const tag of envelope.tags || []) {
-    try {
-      const res = await upsertTagFromPeer(tag);
-      if (!res.applied) stats.tags.skipped++;
-      else if (res.isInsert) stats.tags.inserted++;
-      else stats.tags.updated++;
-    } catch (err) {
-      stats.tags.failed++;
-      recordFailure('tag', tag?.id, err);
-    }
-  }
+  // free.
+  await applyKind({
+    items: envelope.tags, upsertFn: upsertTagFromPeer, tally: stats.tags, lww: true,
+    errLabel: 'tag', idFor: (t) => t?.id,
+  });
 
-  // Scraps next (sources FK to BOTH so we want the parents present before
-  // the join rows land). Each row in its own try/catch — one malformed row
-  // must NOT abort the rest of the envelope.
-  for (const scrap of envelope.scraps || []) {
-    try {
-      const res = await upsertScrapFromPeer(scrap);
-      if (!res.applied) stats.scraps.skipped++;
-      else if (res.isInsert) stats.scraps.inserted++;
-      else stats.scraps.updated++;
-    } catch (err) {
-      stats.scraps.failed++;
-      recordFailure('scrap', scrap?.id, err);
-    }
-  }
+  // Scraps next (sources FK to BOTH so we want the parents present before the
+  // join rows land).
+  await applyKind({
+    items: envelope.scraps, upsertFn: upsertScrapFromPeer, tally: stats.scraps, lww: true,
+    errLabel: 'scrap', idFor: (s) => s?.id,
+  });
 
-  for (const ing of envelope.ingredients || []) {
-    try {
-      const res = await upsertIngredientFromPeer(ing);
-      if (!res.applied) stats.ingredients.skipped++;
-      else if (res.isInsert) stats.ingredients.inserted++;
-      else stats.ingredients.updated++;
-    } catch (err) {
-      stats.ingredients.failed++;
-      recordFailure('ingredient', ing?.id, err);
-    }
-  }
+  await applyKind({
+    items: envelope.ingredients, upsertFn: upsertIngredientFromPeer, tally: stats.ingredients, lww: true,
+    errLabel: 'ingredient', idFor: (i) => i?.id, onApplied: friendlifyIngredientTagsOnSync,
+  });
 
-  for (const src of envelope.sources || []) {
-    try {
-      await upsertSourceFromPeer(src);
-      stats.sources.applied++;
-    } catch (err) {
-      stats.sources.failed++;
-      recordFailure('source', `${src?.ingredientId}↔${src?.scrapId}`, err);
-    }
-  }
+  await applyKind({
+    items: envelope.sources, upsertFn: upsertSourceFromPeer, tally: stats.sources, lww: false,
+    errLabel: 'source', idFor: (s) => `${s?.ingredientId}↔${s?.scrapId}`,
+  });
 
-  for (const ref of envelope.refs || []) {
-    try {
-      await upsertRefFromPeer(ref);
-      stats.refs.applied++;
-    } catch (err) {
-      stats.refs.failed++;
-      recordFailure('ref', `${ref?.ingredientId}/${ref?.refKind}/${ref?.refId}`, err);
-    }
-  }
+  await applyKind({
+    items: envelope.refs, upsertFn: upsertRefFromPeer, tally: stats.refs, lww: false,
+    errLabel: 'ref', idFor: (r) => `${r?.ingredientId}/${r?.refKind}/${r?.refId}`,
+  });
 
   // Relations FK BOTH ids to catalog_ingredients, so they land after the
   // ingredient upserts above (same envelope ordering rationale as sources).
-  for (const rel of envelope.relations || []) {
-    try {
-      await upsertRelationFromPeer(rel);
-      stats.relations.applied++;
-    } catch (err) {
-      stats.relations.failed++;
-      recordFailure('relation', `${rel?.fromId}/${rel?.kind}/${rel?.toId}`, err);
-    }
-  }
+  await applyKind({
+    items: envelope.relations, upsertFn: upsertRelationFromPeer, tally: stats.relations, lww: false,
+    errLabel: 'relation', idFor: (r) => `${r?.fromId}/${r?.kind}/${r?.toId}`,
+  });
 
   // Media rows FK ingredient_id to catalog_ingredients, so they land after the
   // ingredient upserts. The `media_key` is a REFERENCE into the receiver's own
@@ -234,15 +269,10 @@ export async function applyRemoteChanges(envelope = {}) {
   // locally; a missing asset surfaces later via the metadata-missing integrity
   // endpoint, NOT as an apply failure (otherwise a slow asset transfer would
   // drop the attachment metadata entirely).
-  for (const media of envelope.media || []) {
-    try {
-      await upsertMediaFromPeer(media);
-      stats.media.applied++;
-    } catch (err) {
-      stats.media.failed++;
-      recordFailure('media', `${media?.ingredientId}/${media?.kind}/${media?.mediaKey}`, err);
-    }
-  }
+  await applyKind({
+    items: envelope.media, upsertFn: upsertMediaFromPeer, tally: stats.media, lww: false,
+    errLabel: 'media', idFor: (m) => `${m?.ingredientId}/${m?.kind}/${m?.mediaKey}`,
+  });
 
   return stats;
 }
