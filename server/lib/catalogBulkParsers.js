@@ -126,10 +126,7 @@ export function parseJsonBulk(payload) {
     // instead of collapsing every row onto the batch-level default. Rides as
     // a non-enumerable field so deep-equal tests on the entry shape still pass.
     if (entry && typeof entry.roleForExportedRef === 'string' && entry.roleForExportedRef.trim()) {
-      Object.defineProperty(normalized, 'roleForExportedRef', {
-        value: entry.roleForExportedRef.trim(),
-        enumerable: false,
-      });
+      attachNonEnumerable(normalized, 'roleForExportedRef', entry.roleForExportedRef.trim());
     }
     return normalized;
   });
@@ -139,10 +136,7 @@ export function parseJsonBulk(payload) {
   // callers are unaffected.
   if (isBundle && parsed.ref && typeof parsed.ref === 'object'
       && typeof parsed.ref.kind === 'string' && parsed.ref.id != null) {
-    Object.defineProperty(entries, 'bundleRef', {
-      value: { kind: parsed.ref.kind, id: String(parsed.ref.id) },
-      enumerable: false,
-    });
+    attachNonEnumerable(entries, 'bundleRef', { kind: parsed.ref.kind, id: String(parsed.ref.id) });
   }
   return entries;
 }
@@ -256,12 +250,16 @@ function tokenizeCsv(text) {
  * it (until the next `## ` heading) becomes the body. Body lands in the
  * type's primary content key per PRIMARY_CONTENT_KEY_BY_TYPE.
  *
- * This is the inverse of `ingredientToMarkdown`, so it also recognizes the two
- * structured sections that exporter emits inside a `## ` block:
+ * This mirrors `ingredientToMarkdown` for everything that format emits, so it
+ * also recognizes the two structured sections that exporter writes inside a
+ * `## ` block:
  *   - a ` ```json … ``` ` fence carrying the non-primary payload keys, which
  *     is parsed back into `payload.*` (merged under the body's primary key);
  *   - a `### Scraps` subsection of `- (kind) text` bullets, preserved as a
  *     sibling `scraps[]` array for a lossless round-trip.
+ * (Per-row export role rides only the JSON bundle's `roleForExportedRef`; the
+ * markdown format does not carry it, so markdown re-import falls back to the
+ * route's default role — lossy on role by design.)
  * Both terminate the body so re-importing an export doesn't pollute the
  * primary content key with fence text or scrap bullets.
  */
@@ -383,7 +381,7 @@ export function parseMarkdownBulk(payload) {
   // existing callers that array-index `result[i]` (or deep-equal it in
   // tests) keep working; the bulk-import handler reads `result.warnings`
   // to surface typos back to the user.
-  Object.defineProperty(entries, 'warnings', { value: warnings, enumerable: false });
+  attachNonEnumerable(entries, 'warnings', warnings);
   return entries;
 }
 
@@ -440,6 +438,13 @@ export function ingredientToMarkdown(ing) {
     lines.push('');
   }
   return lines.join('\n');
+}
+
+// Attach metadata (warnings, bundleRef, roleForExportedRef) that rides
+// alongside the parsed shape without affecting array-indexing callers or
+// deep-equal tests on the entry/array shape.
+function attachNonEnumerable(target, key, value) {
+  Object.defineProperty(target, key, { value, enumerable: false });
 }
 
 function capitalize(s) {
