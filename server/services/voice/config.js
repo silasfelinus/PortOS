@@ -58,6 +58,7 @@ export const VOICE_DEFAULTS = Object.freeze({
   llm: {
     provider: 'lmstudio',
     model: 'auto',
+    visionModel: 'auto',
     // Legacy free-form system prompt. Overridden by `personality` + tool
     // descriptions when `usePersonality` is true (default).
     systemPrompt: 'You are the PortOS assistant. Your replies are spoken aloud — keep them short and use plain prose (no markdown or lists).',
