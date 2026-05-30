@@ -7,11 +7,8 @@
  * scrap+extract LLM round-trip on /catalog/ingest. One click on a type chip,
  * one name, one textarea, one submit → POST /api/catalog/ingredients.
  *
- * TODO: switch the local TYPES + PRIMARY_CONTENT_KEY + PRIMARY_CONTENT_LABEL
- * tables to the shared registry once `[catalog-shared-type-registry]` lands
- * (PLAN.md "Creative Catalog — extensibility roadmap"). Today these mirror
- * the same tables in `client/src/pages/Catalog.jsx` — adding a 7th type
- * means touching both.
+ * Types, type-chip colors, and the per-type primary content key/label all
+ * come from the shared registry (`client/src/lib/catalogTypes.js`).
  */
 
 import { useState, useRef, useMemo } from 'react';
@@ -19,30 +16,9 @@ import { Link } from 'react-router-dom';
 import { Send } from 'lucide-react';
 import toast from './ui/Toast';
 import { createCatalogIngredient } from '../services/apiCatalog';
+import { CATALOG_TYPES, getCatalogType } from '../lib/catalogTypes';
 
-const TYPES = [
-  { id: 'character', label: 'Character', color: 'bg-blue-500/20 text-blue-300 border-blue-500/40' },
-  { id: 'place',     label: 'Place',     color: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' },
-  { id: 'object',    label: 'Object',    color: 'bg-amber-500/20 text-amber-300 border-amber-500/40' },
-  { id: 'idea',      label: 'Idea',      color: 'bg-purple-500/20 text-purple-300 border-purple-500/40' },
-  { id: 'scene',     label: 'Scene',     color: 'bg-pink-500/20 text-pink-300 border-pink-500/40' },
-  { id: 'concept',   label: 'Concept',   color: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40' },
-];
-
-const PRIMARY_CONTENT_KEY = {
-  character: 'physicalDescription',
-  place: 'description',
-  object: 'description',
-  idea: 'summary',
-  scene: 'summary',
-  concept: 'summary',
-};
-
-const PRIMARY_CONTENT_LABEL = {
-  physicalDescription: 'Physical Description',
-  description: 'Description',
-  summary: 'Summary',
-};
+const TYPES = CATALOG_TYPES;
 
 // Splits a comma-or-space-separated tag string into a clean array. Per-tag
 // length is capped at TAG_MAX_CHARS (mirrors the server's BIBLE_LIMITS.TAG_MAX
@@ -68,9 +44,9 @@ export default function QuickIdeaCapture() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
 
-  const contentKey = PRIMARY_CONTENT_KEY[type] || 'description';
-  const contentLabel = PRIMARY_CONTENT_LABEL[contentKey] || 'Description';
-  const typeMeta = useMemo(() => TYPES.find((t) => t.id === type) || TYPES[0], [type]);
+  const typeMeta = useMemo(() => getCatalogType(type) || TYPES[0], [type]);
+  const contentKey = typeMeta.primaryContentKey || 'description';
+  const contentLabel = typeMeta.primaryContentLabel || 'Description';
 
   const handleSubmit = async (e) => {
     e?.preventDefault();
@@ -135,7 +111,7 @@ export default function QuickIdeaCapture() {
                 aria-checked={active}
                 onClick={() => setType(t.id)}
                 className={`px-2 py-1 rounded-full text-xs border transition-colors ${
-                  active ? t.color : 'border-port-border text-gray-400 hover:text-white'
+                  active ? t.badgeColor : 'border-port-border text-gray-400 hover:text-white'
                 }`}
               >
                 {t.label}
