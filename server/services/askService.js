@@ -133,8 +133,14 @@ async function retrieveCatalog(question) {
   });
   return hits.map(({ ingredient: ing, rrfScore }) => {
     const t = getCatalogType(ing.type);
-    const primary = t?.primaryContentKey ? ing.payload?.[t.primaryContentKey] : null;
-    const snippetText = primary || ing.payload?.summary || ing.payload?.description || ing.name;
+    // Walk the type's registry snippet keys (primaryContentKey first, then its
+    // snippetFallbackKeys in order) so a match whose useful text lives in a
+    // secondary field (personality / role / significance / notes) still gets a
+    // meaningful snippet instead of falling through to name-only.
+    const payload = ing.payload || {};
+    const snippetKeys = [t?.primaryContentKey, ...(t?.snippetFallbackKeys || [])].filter(Boolean);
+    const firstNonEmpty = snippetKeys.map((k) => payload[k]).find((v) => typeof v === 'string' && v.trim());
+    const snippetText = firstNonEmpty || ing.name;
     return {
       kind: 'catalog',
       id: `catalog:${ing.type}:${ing.id}`,

@@ -103,11 +103,14 @@ describe('gatherSources', () => {
     catalogDB.hybridSearchIngredients.mockResolvedValue([
       { ingredient: { id: 'cat-chr-1', type: 'character', name: 'Ada', tags: ['mentor'], payload: { physicalDescription: 'sharp eyes' } }, rrfScore: 0.9 },
       { ingredient: { id: 'cat-idea-2', type: 'idea', name: 'Heist', tags: [], payload: { summary: 'a clockwork heist' } }, rrfScore: 0.6 },
+      // Character whose only text is in a SECONDARY field (personality) — the
+      // snippet should fall through the registry snippetFallbackKeys, not name.
+      { ingredient: { id: 'cat-chr-3', type: 'character', name: 'Grim', tags: [], payload: { personality: 'brooding and loyal' } }, rrfScore: 0.5 },
     ]);
 
     const sources = await askService.gatherSources('who is in my story');
     const catalog = sources.filter((s) => s.kind === 'catalog');
-    expect(catalog).toHaveLength(2);
+    expect(catalog).toHaveLength(3);
     const ada = catalog.find((s) => s.id === 'catalog:character:cat-chr-1');
     expect(ada).toBeTruthy();
     expect(ada.title).toBe('Ada');
@@ -115,6 +118,8 @@ describe('gatherSources', () => {
     expect(ada.href).toBe('/catalog/character/cat-chr-1');
     const idea = catalog.find((s) => s.id === 'catalog:idea:cat-idea-2');
     expect(idea.snippet).toBe('a clockwork heist');         // idea primaryContentKey = summary
+    const grim = catalog.find((s) => s.id === 'catalog:character:cat-chr-3');
+    expect(grim.snippet).toBe('brooding and loyal');        // fell through to personality, not name
   });
 
   it('still answers when the catalog retriever throws (isolated by allSettled)', async () => {
