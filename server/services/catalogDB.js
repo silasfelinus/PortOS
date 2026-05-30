@@ -1312,6 +1312,46 @@ export async function exportSliceForRef(refKind, refId) {
   };
 }
 
+/**
+ * Wire-shaped catalog bundle for one external ref (universe/series/issue/work),
+ * for piggy-backing on a peer RECORD push (e.g. a universe push carries the
+ * catalog rows referenced by its embedded canon). Unlike `exportSliceForRef`
+ * (a user-facing export that strips embeddings + tombstones) this is a SYNC
+ * payload:
+ *
+ *   - `ingredients` carry their `embedding` + tombstone fields, so the
+ *     receiver gets the full enriched row (tags, embedding, payload.summary)
+ *     rather than re-deriving a strictly-lossy view from the embedded canon.
+ *   - `refs` include TOMBSTONED rows (deleted = true) so an unlink propagates
+ *     with the push — the "Appears in" panel converges across peers.
+ *
+ * Shapes match `catalogSyncIngredientSchema` / `catalogSyncRefSchema`, so the
+ * receiver applies them straight through `catalogSync.applyRemoteChanges`.
+ */
+export async function getCatalogBundleForRef(refKind, refId) {
+  // Every ref row for this target — live AND tombstoned (no `deleted = false`
+  // filter, unlike listRefsForIngredient) so unlinks ride the bundle.
+  const refResult = await query(
+    `SELECT * FROM catalog_ingredient_refs WHERE ref_kind = $1 AND ref_id = $2`,
+    [refKind, refId],
+  );
+  const refs = refResult.rows.map(rowToRef);
+
+  // Hydrate each referenced ingredient WITH embedding + tombstone state. A
+  // tombstoned ref still names a (possibly live) ingredient — include it so
+  // the receiver has the enriched row even if its own ref is being removed.
+  const ingredientIds = [...new Set(refs.map((r) => r.ingredientId))];
+  let ingredients = [];
+  if (ingredientIds.length > 0) {
+    const ingResult = await query(
+      `SELECT * FROM catalog_ingredients WHERE id = ANY($1)`,
+      [ingredientIds],
+    );
+    ingredients = ingResult.rows.map(rowToIngredient);
+  }
+  return { ingredients, refs };
+}
+
 export async function getCatalogStats() {
   const [byTypeResult, scrapResult, withEmb] = await Promise.all([
     query(`SELECT type, COUNT(*) AS count FROM catalog_ingredients WHERE deleted = false GROUP BY type`),

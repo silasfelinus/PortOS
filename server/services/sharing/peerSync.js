@@ -1055,6 +1055,16 @@ async function buildPushPayload(sub, sourceInstanceId) {
     const assetManifest = record.deleted === true
       ? []
       : await buildAssetManifestWithCollection(record, linkedCollection);
+    // Bundle the catalog rows referenced by this universe (ingredients + the
+    // universe→ingredient ref links). The embedded canon already replicates
+    // via the universe record, but the catalog row's enrichments (tags,
+    // embedding, payload.summary) live ONLY in Postgres — without this bundle
+    // the receiver re-derives a strictly-lossy view on its first backfill.
+    // Skip for tombstone pushes (the universe is being deleted; its ref rows
+    // tombstone locally and ride a later catalog-sync cycle if needed).
+    const catalogBundle = record.deleted === true
+      ? null
+      : await buildCatalogBundleForRef('universe', sub.recordId);
     return {
       kind: 'universe',
       record: sanitized,
@@ -1062,6 +1072,7 @@ async function buildPushPayload(sub, sourceInstanceId) {
       sourceInstanceId,
       portosMeta,
       ...(linkedCollection ? { linkedCollection } : {}),
+      ...(catalogBundle ? { catalogBundle } : {}),
     };
   }
   if (sub.recordKind === 'series') {
@@ -1126,6 +1137,54 @@ async function buildPushPayload(sub, sourceInstanceId) {
     return { kind: 'mediaCollection', record: sanitized, assetManifest, sourceInstanceId, portosMeta };
   }
   return null;
+}
+
+/**
+ * Build the catalog bundle (`{ ingredients, refs }`) that piggy-backs on a
+ * universe record push. Catalog data lives in Postgres only — on a non-Postgres
+ * install (or when the catalog tables don't exist yet) there's nothing to
+ * bundle, so we gate on the backend and swallow any read failure: a missing
+ * bundle is non-fatal (the universe record still replicates; the receiver's
+ * backfill re-derives a lossy view, exactly as before this bundle existed).
+ *
+ * Returns `null` (omit the key) when there's nothing to ship — both the
+ * non-Postgres case and the genuinely-empty case (a universe with no catalog
+ * refs yet). Dynamic import keeps catalogDB's pg module graph off peerSync's
+ * load path on installs that never touch Postgres.
+ */
+async function buildCatalogBundleForRef(refKind, refId) {
+  const { getBackendName } = await import('../memoryBackend.js');
+  if (getBackendName() !== 'postgres') return null;
+  const { getCatalogBundleForRef } = await import('../catalogDB.js');
+  const bundle = await getCatalogBundleForRef(refKind, refId).catch((err) => {
+    console.log(`⚠️ peerSync: catalog bundle for ${refKind}/${refId} failed: ${err.message}`);
+    return null;
+  });
+  if (!bundle) return null;
+  const ingredients = Array.isArray(bundle.ingredients) ? bundle.ingredients : [];
+  const refs = Array.isArray(bundle.refs) ? bundle.refs : [];
+  if (ingredients.length === 0 && refs.length === 0) return null;
+  return { ingredients, refs };
+}
+
+/**
+ * Apply a received catalog bundle on the receiver. Reuses
+ * `catalogSync.applyRemoteChanges` so the bundle goes through the exact same
+ * per-row LWW upsert + schema gate + try/catch isolation as direct catalog
+ * sync — we forward `portosMeta` so applyRemoteChanges runs the gate itself
+ * (defense in depth; the push-level gate already ran). Postgres-only; the
+ * applyIncomingPush caller already null-checks `catalogBundle`, but we re-gate
+ * the backend here so a stray call on a non-Postgres install is a clean no-op.
+ */
+async function applyCatalogBundle(catalogBundle, portosMeta) {
+  const { getBackendName } = await import('../memoryBackend.js');
+  if (getBackendName() !== 'postgres') return;
+  const { applyRemoteChanges } = await import('../catalogSync.js');
+  await applyRemoteChanges({
+    ingredients: Array.isArray(catalogBundle.ingredients) ? catalogBundle.ingredients : [],
+    refs: Array.isArray(catalogBundle.refs) ? catalogBundle.refs : [],
+    portosMeta,
+  });
 }
 
 async function buildAssetManifestForSeries(series, issues, linkedCollection = null) {
@@ -1244,7 +1303,7 @@ export async function applyIncomingPush(payload) {
   if (!isPlainObject(payload)) {
     throw makeErr('payload must be an object', ERR_VALIDATION);
   }
-  const { kind, record, issues, linkedCollection, assetManifest, sourceInstanceId, portosMeta } = payload;
+  const { kind, record, issues, linkedCollection, catalogBundle, assetManifest, sourceInstanceId, portosMeta } = payload;
   if (!PEER_SUBSCRIBABLE_KINDS.includes(kind)) {
     throw makeErr(`unknown kind: ${kind}`, ERR_VALIDATION);
   }
@@ -1309,6 +1368,17 @@ export async function applyIncomingPush(payload) {
   // is schema-version-safe at any version anyway, so it needn't gate.
   if (record.deleted !== true && isPlainObject(linkedCollection) && linkedCollection.deleted !== true) {
     for (const c of RECORD_KIND_SCHEMA_CATEGORIES.mediaCollection) relevantCategories.add(c);
+  }
+  // A catalog bundle ships catalog-schema-shaped ingredient rows. Gate the
+  // `catalog` category whenever the bundle carries at least one LIVE ingredient
+  // — a sender ahead on `catalog` would push forward-shaped payload an older
+  // receiver can't interpret. Tombstone-only bundles (all ingredients deleted)
+  // are id+deleted+deletedAt+updatedAt — safe at every version, so they needn't
+  // gate (same reasoning as the tombstone-record exemption above).
+  if (record.deleted !== true && isPlainObject(catalogBundle) &&
+      Array.isArray(catalogBundle.ingredients) &&
+      catalogBundle.ingredients.some((i) => i?.deleted !== true)) {
+    for (const c of (RECORD_KIND_SCHEMA_CATEGORIES['cat-ingredient'] || ['catalog'])) relevantCategories.add(c);
   }
   const fullDiff = compareSchemaVersions(senderSchemaVersions, PORTOS_SCHEMA_VERSIONS);
   const versionDiff = scopeVersionDiff(fullDiff, [...relevantCategories]);
@@ -1392,6 +1462,20 @@ export async function applyIncomingPush(payload) {
   if (!localEphemeral && record.deleted !== true && isPlainObject(linkedCollection)) {
     await mergeMediaCollectionsFromSync([linkedCollection]).catch((err) => {
       console.log(`⚠️ peerSync: linkedCollection merge failed: ${err.message}`);
+    });
+  }
+
+  // Apply the bundled catalog rows (ingredients + universe→ingredient refs)
+  // through the same LWW upsert path as direct catalog sync. Same guards as the
+  // linkedCollection merge: skip for local-ephemeral records and tombstone
+  // pushes (a deleted universe's catalog refs tombstone locally on the next
+  // catalog-sync cycle; resurrecting them here would be wrong). Postgres-only
+  // and best-effort — a failure doesn't fail the push (the universe record is
+  // already merged; the receiver's backfill still derives a lossy view, and
+  // the next catalog-sync cycle reconciles the enriched rows).
+  if (!localEphemeral && record.deleted !== true && isPlainObject(catalogBundle)) {
+    await applyCatalogBundle(catalogBundle, portosMeta).catch((err) => {
+      console.log(`⚠️ peerSync: catalog bundle apply failed: ${err.message}`);
     });
   }
 

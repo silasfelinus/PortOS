@@ -39,6 +39,7 @@ const catalogDB = await import('./catalogDB.js');
 const {
   applyRemoteChanges,
   getChangesSince,
+  countAppliedFromStats,
   CatalogSyncVersionMismatchError,
 } = await import('./catalogSync.js');
 const { PORTOS_SCHEMA_VERSIONS } = await import('../lib/schemaVersions.js');
@@ -324,5 +325,32 @@ describe('getChangesSince — cursor normalization + per-kind advance', () => {
     catalogDB.getSourceChangesSince.mockResolvedValue({ items: [], hasMore: true });
     const res = await getChangesSince('0', 100);
     expect(res.hasMore).toBe(true);
+  });
+});
+
+describe('countAppliedFromStats', () => {
+  it('sums inserts/updates (LWW kinds) + applied (tuple kinds) across every kind', () => {
+    const total = countAppliedFromStats({
+      scraps: { inserted: 1, updated: 2 },
+      ingredients: { inserted: 3, updated: 4 },
+      sources: { applied: 5 },
+      refs: { applied: 6 },
+      relations: { applied: 7 },
+      tags: { inserted: 8, updated: 9 },
+      media: { applied: 10 },
+    });
+    expect(total).toBe(55);
+  });
+
+  it('treats missing kinds / fields as zero and tolerates an empty object', () => {
+    expect(countAppliedFromStats({})).toBe(0);
+    expect(countAppliedFromStats()).toBe(0);
+    expect(countAppliedFromStats({ ingredients: { inserted: 2 } })).toBe(2);
+  });
+
+  it('does NOT count skipped / failed rows', () => {
+    expect(countAppliedFromStats({
+      ingredients: { inserted: 1, updated: 0, skipped: 9, failed: 4 },
+    })).toBe(1);
   });
 });

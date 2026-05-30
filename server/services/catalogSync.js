@@ -239,6 +239,21 @@ export async function applyRemoteChanges(envelope = {}) {
   return stats;
 }
 
+// Total rows actually applied (inserted + updated for LWW kinds, applied for
+// tuple-unique kinds) across an `applyRemoteChanges` stats object. Lives here —
+// not in the federation orchestrator — so the per-kind stats SHAPE has a single
+// owner; a future envelope kind only needs adding here, not in every caller.
+export function countAppliedFromStats(stats = {}) {
+  return (
+    (stats.scraps?.inserted || 0) + (stats.scraps?.updated || 0) +
+    (stats.ingredients?.inserted || 0) + (stats.ingredients?.updated || 0) +
+    (stats.sources?.applied || 0) + (stats.refs?.applied || 0) +
+    (stats.relations?.applied || 0) +
+    (stats.tags?.inserted || 0) + (stats.tags?.updated || 0) +
+    (stats.media?.applied || 0)
+  );
+}
+
 // Per-kind cursor view for the federation orchestrator. The previous scalar
 // `getMaxSequence` collapsed the four BIGSERIALs into one max — that lied
 // about the protocol (one cursor can't represent four independent sequences).
