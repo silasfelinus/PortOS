@@ -275,4 +275,28 @@ describe.skipIf(!dbReady)('catalogDB (Postgres CRUD round-trip)', () => {
       expect(seqs[key]).toMatch(/^\d+$/);
     }
   });
+
+  it('hybridSearchIngredients finds an ingredient by FTS, filters by type, and shapes RRF results', async () => {
+    if (!requireDb('hybrid search')) return;
+    const nonce = `zorblax${Date.now()}`; // unique token so FTS matches only our row
+    const ing = await catalogDB.createIngredient({
+      type: 'character', name: `Captain ${nonce}`,
+      payload: { physicalDescription: `a weathered ${nonce} smuggler` },
+    });
+    createdIngredientIds.add(ing.id);
+
+    // FTS-only path (no embedding) — the unique token matches exactly one row.
+    const hits = await catalogDB.hybridSearchIngredients(nonce, null, { limit: 5 });
+    const found = hits.find((h) => h.ingredient.id === ing.id);
+    expect(found).toBeTruthy();
+    expect(found.rrfScore).toBeGreaterThan(0);
+    expect(found.searchMethod).toBe('fts'); // no embedding supplied → fts-only
+
+    // type filter excludes the character row when searching a different type.
+    const placeHits = await catalogDB.hybridSearchIngredients(nonce, null, { type: 'place', limit: 5 });
+    expect(placeHits.some((h) => h.ingredient.id === ing.id)).toBe(false);
+
+    // Empty query + no embedding → no signal → empty result (no throw).
+    expect(await catalogDB.hybridSearchIngredients('', null, { limit: 5 })).toEqual([]);
+  });
 });

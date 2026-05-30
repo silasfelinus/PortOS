@@ -584,6 +584,72 @@ export async function searchIngredientsByText(q, { type, limit = 20 } = {}) {
   return result.rows.map((row) => ({ ingredient: rowToIngredient(row), rank: parseFloat(row.rank) }));
 }
 
+// Hybrid search: Reciprocal Rank Fusion over FTS (`search_tsv`) + vector
+// (`embedding`) results, mirroring memoryDB.hybridSearchMemories so the catalog
+// shares the SAME scoring model when it feeds Ask retrieval. Returns
+// `[{ ingredient, rrfScore, ftsRank, vectorRank, searchMethod }]` sorted by
+// rrfScore. Either signal can be absent (no query text, or no embeddings
+// backfilled yet) — the present one still ranks.
+export async function hybridSearchIngredients(queryText, queryEmbedding, options = {}) {
+  const { type, limit = 20, minRelevance = 0.5, ftsWeight = 0.4, vectorWeight = 0.6 } = options;
+  const RRF_K = 60;
+  const fetchLimit = limit * 2;
+
+  let ftsRows = [];
+  if (queryText) {
+    const conds = ['deleted = false', `search_tsv @@ websearch_to_tsquery('english', $1)`];
+    const params = [queryText, fetchLimit];
+    let idx = 3;
+    if (type) { conds.push(`type = $${idx++}`); params.push(type); }
+    const r = await query(
+      `SELECT *, ts_rank_cd(search_tsv, websearch_to_tsquery('english', $1)) AS rank
+         FROM catalog_ingredients WHERE ${conds.join(' AND ')}
+         ORDER BY rank DESC LIMIT $2`,
+      params,
+    );
+    ftsRows = r.rows;
+  }
+
+  let vecRows = [];
+  if (queryEmbedding) {
+    const conds = ['deleted = false', 'embedding IS NOT NULL', '1 - (embedding <=> $1) >= $2'];
+    const params = [arrayToPgvector(queryEmbedding), minRelevance * 0.5, fetchLimit];
+    let idx = 4;
+    if (type) { conds.push(`type = $${idx++}`); params.push(type); }
+    const r = await query(
+      `SELECT *, 1 - (embedding <=> $1) AS similarity
+         FROM catalog_ingredients WHERE ${conds.join(' AND ')}
+         ORDER BY embedding <=> $1 LIMIT $3`,
+      params,
+    );
+    vecRows = r.rows;
+  }
+
+  const rrf = new Map();
+  ftsRows.forEach((row, rank) => {
+    const cur = rrf.get(row.id) || { row, ftsRank: null, vectorRank: null, rrfScore: 0 };
+    cur.row = row; cur.ftsRank = rank + 1; cur.rrfScore += ftsWeight / (RRF_K + rank + 1);
+    rrf.set(row.id, cur);
+  });
+  vecRows.forEach((row, rank) => {
+    const cur = rrf.get(row.id) || { row, ftsRank: null, vectorRank: null, rrfScore: 0 };
+    if (!cur.row) cur.row = row;
+    cur.vectorRank = rank + 1; cur.rrfScore += vectorWeight / (RRF_K + rank + 1);
+    rrf.set(row.id, cur);
+  });
+
+  return Array.from(rrf.values())
+    .map((d) => ({
+      ingredient: rowToIngredient(d.row),
+      rrfScore: d.rrfScore,
+      ftsRank: d.ftsRank,
+      vectorRank: d.vectorRank,
+      searchMethod: d.ftsRank && d.vectorRank ? 'hybrid' : d.ftsRank ? 'fts' : 'vector',
+    }))
+    .sort((a, b) => b.rrfScore - a.rrfScore)
+    .slice(0, limit);
+}
+
 
 // `{ client }` is optional — see the createIngredient comment above. Passing
 // the same client used to insert the ingredient row keeps the source-link row
