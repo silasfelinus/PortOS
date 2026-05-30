@@ -139,6 +139,29 @@ describe('UniverseCanonSection — Pick from Catalog', () => {
     ));
   });
 
+  it('reverts the optimistic append when the save fails', async () => {
+    const onUniverseChange = vi.fn();
+    updateUniverse.mockRejectedValue(new Error('boom'));
+    listCatalogIngredients.mockResolvedValue({
+      items: [{ id: 'cat-chr-abc123', type: 'character', name: 'Rust Vega', payload: { physicalDescription: 'drifter' } }],
+    });
+
+    renderSection({ onUniverseChange });
+    fireEvent.click(screen.getByRole('button', { name: /pick character from catalog/i }));
+    const row = await screen.findByRole('button', { name: /rust vega/i });
+    fireEvent.click(row);
+
+    await waitFor(() => expect(updateUniverse).toHaveBeenCalled());
+    // Optimistic append fires first (characters carries the new entry); the
+    // failed save then reverts it, so the LAST onUniverseChange restores the
+    // pre-append (empty) list and the catalog link is never attempted.
+    await waitFor(() => {
+      const lastPatch = onUniverseChange.mock.calls.at(-1)[0];
+      expect(lastPatch.characters).toEqual([]);
+    });
+    expect(linkCatalogIngredient).not.toHaveBeenCalled();
+  });
+
   it('refuses to add an ingredient already linked by ingredientId', async () => {
     const onUniverseChange = vi.fn();
     listCatalogIngredients.mockResolvedValue({

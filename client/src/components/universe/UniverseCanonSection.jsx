@@ -563,7 +563,16 @@ export default function UniverseCanonSection({
     onUniverseChange({ ...universe, [kindKey]: nextList });
     const updated = await updateUniverse(universeId, { [kindKey]: nextList })
       .catch((err) => { toast.error(`Add from Catalog failed: ${err.message}`); return null; });
-    if (!updated) { if (mountedRef.current) setCatalogLinking(false); return; }
+    if (!updated) {
+      // Revert the optimistic append — the save didn't land, so the phantom
+      // row must not linger. `list` is the pre-append snapshot from this
+      // closure (canon edits are user-driven one-at-a-time, so it's current).
+      if (mountedRef.current && currentUniverseIdRef.current === capturedId) {
+        onUniverseChange({ ...universe, [kindKey]: list });
+      }
+      if (mountedRef.current) setCatalogLinking(false);
+      return;
+    }
     if (mountedRef.current && currentUniverseIdRef.current === capturedId) onUniverseChange(updated);
     // Link the catalog ingredient back to the universe so the "Appears in"
     // panel populates. Non-fatal: the embedded entry already carries the
