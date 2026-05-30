@@ -73,7 +73,7 @@ import databaseRoutes from './routes/database.js';
 import localLlmRoutes from './routes/localLlm.js';
 import codeReviewRoutes from './routes/codeReview.js';
 import { ensureBackendProvider, getBackend as getLocalLlmBackend } from './services/localLlm.js';
-import { ensureRunning as ensureOllamaRunning } from './services/ollamaManager.js';
+import { ensureProviderReady as ensureOllamaProviderReady, ensureRunning as ensureOllamaRunning } from './services/ollamaManager.js';
 import searchRoutes from './routes/search.js';
 import paletteRoutes from './routes/palette.js';
 import dashboardLayoutsRoutes from './routes/dashboardLayouts.js';
@@ -215,6 +215,7 @@ await verifyCollectionVersions([universeStore(), seriesStore(), issueStore(), co
 
 // Lifecycle hooks shared between AI Toolkit and PortOS runner shim
 const aiToolkitHooks = {
+  ensureProviderReady: (provider) => ensureOllamaProviderReady(provider),
   onRunCreated: (metadata) => {
     recordSession(metadata.providerId, metadata.providerName, metadata.model).catch(err => {
       console.error(`❌ Failed to record usage session: ${err.message}`);
