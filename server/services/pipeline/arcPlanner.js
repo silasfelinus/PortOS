@@ -234,6 +234,7 @@ function shapeSeasonOutlines(rawOutlines) {
       number: raw?.number,
       title: raw?.title,
       logline: raw?.logline,
+      synopsis: raw?.synopsis,
       endingHook: raw?.endingHook,
       episodeCountTarget: raw?.episodeCountTarget,
     });
@@ -288,6 +289,67 @@ export async function generateArcOverview(seriesId, options = {}) {
     providerId,
     model,
   };
+}
+
+/**
+ * Reverse-engineer an arc + seasons from EXISTING finished work (a concatenated
+ * corpus of the series' issue scripts / prose), rather than forward-generating
+ * from the series bible. This is the Story Builder's "backfill the arc from a
+ * drafted comic" path — it reuses the importer's `importer-arc-extract` prompt
+ * (which is purpose-built to describe the spine already in a text) and returns
+ * the SAME `{ arc, seasons, ... }` shape as generateArcOverview so the caller
+ * can commit it through the identical commitSeasonsWithRemap path.
+ *
+ * `contentType` defaults to 'comic-script'; it only tunes the prompt's
+ * per-type guidance (issue/volume boundary heuristics).
+ */
+export async function generateArcFromSource(seriesId, {
+  sourceText, contentType = 'comic-script', providerOverride, modelOverride,
+} = {}) {
+  const series = await getSeries(seriesId);
+  if (series.locked?.arc === true) {
+    throw makeErr(
+      'Arc is locked — unlock it on the Arc Canvas before regenerating',
+      ERR_VALIDATION,
+    );
+  }
+  const source = String(sourceText || '').trim();
+  if (!source) throw makeErr('No source content to extract an arc from', ERR_VALIDATION);
+  const { content, runId, providerId, model } = await runStagedLLM(
+    'importer-arc-extract',
+    {
+      seriesName: series.name,
+      contentType,
+      source,
+      // Mirror the importer's per-type Mustache section guards so the prompt's
+      // boundary heuristics fire correctly (buildTypeFlags in importer.js).
+      isShortStory: contentType === 'short-story',
+      isNovel: contentType === 'novel',
+      isScreenplay: contentType === 'screenplay',
+      isComicScript: contentType === 'comic-script',
+    },
+    {
+      providerOverride,
+      modelOverride,
+      returnsJson: true,
+      source: 'story-builder-arc-backfill',
+    },
+  );
+  const arc = sanitizeArc({
+    logline: content?.logline || '',
+    summary: content?.summary || '',
+    themes: content?.themes,
+    protagonistArc: content?.protagonistArc || '',
+    // Honor the importer prompt's `shape` pick; fall back to any existing pick.
+    shape: content?.shape ?? series.arc?.shape ?? null,
+    // Preserve an existing reader map — the extraction doesn't author one.
+    readerMap: series.arc?.readerMap ?? null,
+    status: 'draft',
+  });
+  // importer-arc-extract returns `seasons` (number/title/logline/synopsis/
+  // endingHook); shapeSeasonOutlines forwards all fields buildSeason accepts.
+  const seasons = shapeSeasonOutlines(content?.seasons);
+  return { arc, seasons, raw: content, runId, providerId, model };
 }
 
 // Reader-map context: the protagonist arc + the Vonnegut shape backbone + the

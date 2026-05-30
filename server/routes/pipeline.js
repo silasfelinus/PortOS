@@ -359,6 +359,10 @@ const generateSchema = z.object({
   seedInput: z.string().max(issuesSvc.STAGE_INPUT_MAX).optional(),
   providerId: z.string().trim().max(80).optional(),
   model: z.string().trim().max(200).optional(),
+  // Explicit source stages to feed the generation (backport support: generate
+  // any stage FROM any other populated stage). Omit for the conventional
+  // forward source. The service drops the target itself and empty stages.
+  sourceStageIds: z.array(z.enum(issuesSvc.TEXT_STAGE_IDS)).optional(),
 });
 
 const visualGenerateSchema = z.object({
