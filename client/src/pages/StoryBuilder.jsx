@@ -916,13 +916,13 @@ function StoryBuilderDetail({ storyId, stepParam }) {
 
               <div className="flex items-center gap-2">
                 {activeIdx > 0 && (
-                  <button onClick={() => goToStep(stepIds[activeIdx - 1], activeIdx - 1)} className="inline-flex items-center gap-1 text-sm text-gray-400 hover:text-white">
+                  <button onClick={() => goToStep(stepIds[activeIdx - 1])} className="inline-flex items-center gap-1 text-sm text-gray-400 hover:text-white">
                     <ChevronLeft className="w-4 h-4" /> Back
                   </button>
                 )}
                 {activeIdx < steps.length - 1 && (
                   <button
-                    onClick={() => goToStep(stepIds[activeIdx + 1], activeIdx + 1)}
+                    onClick={() => goToStep(stepIds[activeIdx + 1])}
                     disabled={!stepState.locked || isStale}
                     className="inline-flex items-center gap-1 text-sm bg-port-accent hover:bg-blue-600 disabled:opacity-40 text-white px-3 py-1.5 rounded"
                   >

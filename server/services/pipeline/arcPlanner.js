@@ -346,7 +346,8 @@ export async function generateArcFromSource(seriesId, {
     status: 'draft',
   });
   // importer-arc-extract returns `seasons` (number/title/logline/synopsis/
-  // endingHook); shapeSeasonOutlines reads the same fields buildSeason needs.
+  // endingHook); shapeSeasonOutlines reads the fields buildSeason needs
+  // (number/title/logline/endingHook/episodeCountTarget); synopsis is dropped.
   const seasons = shapeSeasonOutlines(content?.seasons);
   return { arc, seasons, raw: content, runId, providerId, model };
 }

@@ -20,11 +20,11 @@
 import { makePromptReplaceMigration } from './_lib.js';
 
 export const ACCEPTED_OLD_MD5 = {
-  'story-builder-idea-expand.md': ['a23939626a226f7420cebfb45d47950c'],
+  'story-builder-idea-expand.md': ['a23939626a226f7420cebfb45d47950c', '778c86e2caa120856c36e4d5a4da3355'],
 };
 
 export const NEW_SHIPPED_MD5 = {
-  'story-builder-idea-expand.md': '778c86e2caa120856c36e4d5a4da3355',
+  'story-builder-idea-expand.md': 'c12d76fefaaded2838023065bfc94bb0',
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({
