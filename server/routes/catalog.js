@@ -21,6 +21,7 @@ import {
   catalogMigrationRerunSchema,
   catalogBulkImportSchema,
   catalogExportQuerySchema,
+  REF_KINDS,
 } from '../lib/catalogValidation.js';
 import { parseBulkPayload, bundleToMarkdown, toYamlString } from '../lib/catalogBulkParsers.js';
 import { embedIngredient, embedBatch, ingredientEmbedSeed } from '../services/embeddings.js';
@@ -257,7 +258,14 @@ router.post('/bulk-import', asyncHandler(async (req, res) => {
   for (const [field, kind] of Object.entries(REF_FIELD_TO_KIND)) {
     if (defaults[field]) refTargets.push({ refKind: kind, refId: defaults[field] });
   }
-  if (refTargets.length === 0 && parsed.bundleRef && parsed.bundleRef.kind && parsed.bundleRef.id) {
+  // Validate the bundle's own ref against the same allow-list + id cap the
+  // /link route enforces (z.enum(REF_KINDS), refId max 120), so a hand-edited
+  // or foreign export bundle can't insert a dead ref row whose kind no
+  // listIngredientsForRef ever reads.
+  if (refTargets.length === 0 && parsed.bundleRef
+      && REF_KINDS.includes(parsed.bundleRef.kind)
+      && String(parsed.bundleRef.id).length > 0
+      && String(parsed.bundleRef.id).length <= 120) {
     refTargets.push({ refKind: parsed.bundleRef.kind, refId: parsed.bundleRef.id });
   }
 

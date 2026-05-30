@@ -336,8 +336,9 @@ export function parseMarkdownBulk(payload) {
     // Open a ```json (or bare ```) fence — terminates the body section.
     const fenceOpen = /^```(\w*)\s*$/.exec(line);
     if (fenceOpen) {
+      // Fence state is driven by `current.fence`; `section` only gates the
+      // scraps branch, so the body resumes (section stays 'body') after close.
       current.fence = { lang: fenceOpen[1] || '', lines: [] };
-      current.section = 'fence';
       continue;
     }
     // `### Scraps` switches us into the scraps subsection — body is done.
