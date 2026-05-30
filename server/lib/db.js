@@ -222,9 +222,17 @@ export async function ensureSchema() {
       ref_id TEXT NOT NULL,
       role VARCHAR(64) NOT NULL,
       created_at TIMESTAMPTZ DEFAULT NOW(),
+      deleted BOOLEAN DEFAULT FALSE,
+      deleted_at TIMESTAMPTZ,
       sync_sequence BIGSERIAL,
       PRIMARY KEY (ingredient_id, ref_kind, ref_id, role)
     )`,
+    // Idempotent upgrade path for existing installs predating the soft-delete
+    // columns. Without these, an old install boots the new code and silently
+    // hard-DELETEs on unlink (no tombstone, no sync_sequence bump) — peers
+    // never learn the ref was removed.
+    `ALTER TABLE catalog_ingredient_refs ADD COLUMN IF NOT EXISTS deleted BOOLEAN DEFAULT FALSE`,
+    `ALTER TABLE catalog_ingredient_refs ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`,
     `CREATE INDEX IF NOT EXISTS idx_catalog_ing_refs_target ON catalog_ingredient_refs (ref_kind, ref_id)`,
     `CREATE INDEX IF NOT EXISTS idx_catalog_ing_refs_sync_seq ON catalog_ingredient_refs (sync_sequence)`,
 
@@ -303,6 +311,27 @@ export async function ensureSchema() {
        BEFORE UPDATE ON catalog_ingredient_sources
        FOR EACH ROW
        EXECUTE FUNCTION update_catalog_source_sync_seq()`,
+
+    // Ref-link UPDATE bumps sync_sequence so a soft-delete or revival of a
+    // ref row ships as a normal sync event. Without this, the soft-delete
+    // path would update `deleted`/`deleted_at` but leave sync_sequence at
+    // the original INSERT value — peers past that cursor would never see
+    // the tombstone and their "Appears in" panels would stay stale.
+    `CREATE OR REPLACE FUNCTION update_catalog_ref_sync_seq()
+     RETURNS TRIGGER AS $$
+     BEGIN
+       IF NEW.deleted IS DISTINCT FROM OLD.deleted
+          OR NEW.deleted_at IS DISTINCT FROM OLD.deleted_at THEN
+         NEW.sync_sequence := nextval(pg_get_serial_sequence('catalog_ingredient_refs', 'sync_sequence'));
+       END IF;
+       RETURN NEW;
+     END;
+     $$ LANGUAGE plpgsql`,
+    `DROP TRIGGER IF EXISTS trg_catalog_ref_sync_seq ON catalog_ingredient_refs`,
+    `CREATE TRIGGER trg_catalog_ref_sync_seq
+       BEFORE UPDATE ON catalog_ingredient_refs
+       FOR EACH ROW
+       EXECUTE FUNCTION update_catalog_ref_sync_seq()`,
   ];
   for (const sql of catalogDDL) {
     await pool.query(sql);
