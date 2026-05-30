@@ -234,6 +234,7 @@ export function parseMarkdownBulk(payload) {
   // is everything to the right of the first `:`. Heading must start the line.
   const headingRe = /^##\s+([A-Za-z][A-Za-z-]*)\s*:\s*(.+?)\s*$/;
   const out = [];
+  const warnings = [];
   let current = null;
   const flush = () => {
     if (!current) return;
@@ -256,9 +257,11 @@ export function parseMarkdownBulk(payload) {
       const type = normalizeType(m[1]);
       const name = m[2].trim();
       if (!type) {
-        // Skip unrecognized headings (e.g. `## Notes:`); they'd otherwise
-        // open a malformed section. Leave `current` null so any following
-        // body lines are dropped until the next valid heading.
+        // Skip unrecognized headings (e.g. `## Notes:`, typos like `## Plce:`);
+        // they'd otherwise open a malformed section. Surface as a warning so
+        // the user notices typos; the body until the next valid heading is
+        // dropped.
+        warnings.push(`Unknown type "${m[1]}" in heading "${line.trim()}" — section skipped`);
         current = null;
         continue;
       }
@@ -278,7 +281,13 @@ export function parseMarkdownBulk(payload) {
   if (out.length === 0) {
     throw new Error('markdown produced zero `## <Type>: <Name>` sections');
   }
-  return out.map((entry, i) => normalizeEntry(entry, i));
+  const entries = out.map((entry, i) => normalizeEntry(entry, i));
+  // Warnings ride as a non-enumerable property on the returned array so
+  // existing callers that array-index `result[i]` (or deep-equal it in
+  // tests) keep working; the bulk-import handler reads `result.warnings`
+  // to surface typos back to the user.
+  Object.defineProperty(entries, 'warnings', { value: warnings, enumerable: false });
+  return entries;
 }
 
 /**

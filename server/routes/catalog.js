@@ -249,14 +249,26 @@ router.post('/bulk-import', asyncHandler(async (req, res) => {
     if (defaults[field]) refLinks.push({ refKind: kind, refId: defaults[field], role: defaults.role || `bulk-${kind}` });
   }
 
+  // Embed every entry in parallel BEFORE the transaction — matches the
+  // scrap-commit path (line 100). Network round-trips dominate; keeping
+  // them outside the DB transaction means a slow embed provider can't
+  // hold a Postgres write lock open. Failed embeds land as null `embedding`
+  // and the embeddings/backfill endpoint can fill them in later.
+  const seeds = entries.map((e) => ingredientEmbedSeed(e));
+  const embeds = await embedBatch(seeds);
+
   const created = await withTransaction(async (client) => {
     const out = [];
-    for (const entry of entries) {
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      const e = embeds[i];
       const ing = await catalogDB.createIngredient({
         type: entry.type,
         name: entry.name,
         payload: entry.payload || {},
         tags: entry.tags || [],
+        embedding: e?.embedding ?? null,
+        embeddingModel: e?.model ?? null,
       }, { client });
       // Stamp ref links inside the same transaction so a mid-batch failure
       // rolls back the link rows alongside their ingredients.
@@ -274,8 +286,11 @@ router.post('/bulk-import', asyncHandler(async (req, res) => {
     return out;
   });
 
-  console.log(`📥 Catalog bulk import: ${format} → ${created.length} ingredient(s)`);
-  res.status(201).json({ created, count: created.length });
+  // Parser warnings (today: unrecognized markdown type headings) ride
+  // back on the response so the user notices typos like `## Plce: …`.
+  const warnings = Array.isArray(parsed.warnings) ? parsed.warnings : [];
+  console.log(`📥 Catalog bulk import: ${format} → ${created.length} ingredient(s)${warnings.length ? ` (${warnings.length} warning(s))` : ''}`);
+  res.status(201).json({ created, count: created.length, warnings });
 }));
 
 // Export one ref slice (universe/series/issue/work) as a portable bundle.

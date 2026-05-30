@@ -172,6 +172,20 @@ describe('parseMarkdownBulk', () => {
     const out = parseMarkdownBulk(md);
     expect(out[0].type).toBe('character');
   });
+
+  it('records a warning for each unknown type heading', () => {
+    const md = '## Idea: keeper\nkept body\n## Faction: Goons\nfaction body\n## Plce: typo\nbad body\n## Place: keeper2\nplace body\n';
+    const out = parseMarkdownBulk(md);
+    expect(out.map((e) => e.name)).toEqual(['keeper', 'keeper2']);
+    expect(out.warnings).toHaveLength(2);
+    expect(out.warnings[0]).toMatch(/Unknown type "Faction"/);
+    expect(out.warnings[1]).toMatch(/Unknown type "Plce"/);
+  });
+
+  it('exposes an empty warnings array when all headings are valid', () => {
+    const out = parseMarkdownBulk('## Idea: X\nbody\n');
+    expect(out.warnings).toEqual([]);
+  });
 });
 
 describe('parseBulkPayload dispatch', () => {
