@@ -65,6 +65,7 @@ import {
   applyIncomingPush,
   diffAssetManifestAgainstLocal,
   buildAssetManifest,
+  assetIntegrityForRecord,
   collectCollectionAssetReferences,
   autoSubscribeRecordToAllPeers,
   autoSubscribePeerToAllRecords,
@@ -936,6 +937,24 @@ describe('peerSync', () => {
       const manifest = await buildAssetManifest(record);
       expect(manifest).toHaveLength(1);
       expect(manifest[0]).not.toHaveProperty('sidecarSha256');
+    });
+
+    it('summarizes missing image sidecars for integrity without another asset walk', async () => {
+      await writeFile(join(PATHS.images, 'missing-meta.png'), Buffer.from('image bytes'));
+      const record = { id: 'u1', characters: [{ imageRefs: ['missing-meta.png'] }] };
+      const summary = await assetIntegrityForRecord('universe', record);
+      expect(summary.assetHashes).toHaveLength(1);
+      expect(summary.metadataMissing).toBe(true);
+    });
+
+    it('includes live child issue assets in a series integrity summary', async () => {
+      await writeFile(join(PATHS.images, 'issue-panel.png'), Buffer.from('issue image bytes'));
+      vi.mocked(listIssues).mockResolvedValue([
+        { id: 'i1', seriesId: 's1', stages: { storyboards: { panels: [{ imageRefs: ['issue-panel.png'] }] } } },
+      ]);
+      const summary = await assetIntegrityForRecord('series', { id: 's1', name: 'Series' });
+      expect(summary.assetHashes).toHaveLength(1);
+      expect(summary.metadataMissing).toBe(true);
     });
   });
 
@@ -2308,6 +2327,40 @@ describe('peerSync', () => {
         expect(result.pushed).toBe(false);
         expect(result.reason).toBe('peer-schema-behind-cooldown');
         expect(vi.mocked(peerFetch).mock.calls.length).toBe(fetchCallsAfterFirst);
+      });
+
+      it('bypasses the schema cooldown for tombstone pushes so deletes converge immediately', async () => {
+        vi.mocked(getUniverse).mockResolvedValue({ id: 'u1', name: 'Foo' });
+        vi.mocked(peerFetch).mockResolvedValueOnce({
+          ok: false,
+          status: 409,
+          json: async () => ({
+            code: 'PEER_SYNC_SCHEMA_VERSION_AHEAD',
+            context: {
+              details: { ahead: [{ category: 'universes', senderV: 5, receiverV: 4 }] },
+            },
+          }),
+        });
+        const sub = await subscribePeer({
+          peerId: 'peer-a', recordKind: 'universe', recordId: 'u1',
+        }, { adoptedFromReverse: true });
+        await pushRecordToPeer(sub);
+        const blocked = await findPeerSubscription('peer-a', 'universe', 'u1');
+        vi.mocked(getUniverse).mockResolvedValue({
+          id: 'u1',
+          name: 'Foo',
+          deleted: true,
+          deletedAt: '2026-05-23T00:00:00.000Z',
+          updatedAt: '2026-05-23T00:00:00.000Z',
+        });
+        vi.mocked(peerFetch).mockResolvedValueOnce({ ok: true, json: async () => ({ missingAssets: [] }) });
+
+        const result = await pushRecordToPeer(blocked);
+
+        expect(result.pushed).toBe(true);
+        const body = JSON.parse(vi.mocked(peerFetch).mock.calls.at(-1)[1].body);
+        expect(body.record.deleted).toBe(true);
+        expect(body.assetManifest).toEqual([]);
       });
 
       it('bypassSchemaCooldown=true re-probes regardless of recent block', async () => {

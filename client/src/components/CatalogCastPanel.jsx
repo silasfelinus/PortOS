@@ -93,10 +93,16 @@ export default function CatalogCastPanel({ refKind, refId, refLabel }) {
 
   const handleUnlink = async (row) => {
     const { ingredient, role } = row;
-    setBusyId(ingredient.id);
+    // Busy key matches the row identity (id+role), so unlinking one role's
+    // row doesn't spin/disable a sibling row for the same ingredient.
+    setBusyId(`${ingredient.id}:${role || ''}`);
     await unlinkCatalogIngredient(ingredient.id, { refKind, refId, role }, { silent: true })
       .then(() => {
-        setRows((prev) => prev.filter((r) => r.ingredient.id !== ingredient.id));
+        // Ref rows are keyed by (ingredient_id, ref_kind, ref_id, role), so an
+        // ingredient can be linked to the same record under multiple roles.
+        // Drop only the (id, role) row that was unlinked — not every row sharing
+        // the ingredient id.
+        setRows((prev) => prev.filter((r) => !(r.ingredient.id === ingredient.id && r.role === role)));
       })
       .catch((err) => {
         toast.error(err.message || 'Unlink failed');
@@ -141,9 +147,10 @@ export default function CatalogCastPanel({ refKind, refId, refLabel }) {
             const { ingredient, role } = row;
             const badge = TYPE_BADGE[ingredient.type] || 'bg-gray-500/20 text-gray-300 border-gray-500/40';
             const text = snippet(ingredient.payload);
+            const rowBusy = busyId === `${ingredient.id}:${role || ''}`;
             return (
               <li
-                key={ingredient.id}
+                key={`${ingredient.id}:${role || ''}`}
                 className="flex items-start gap-3 p-2.5 rounded border border-port-border bg-port-bg/40"
               >
                 <div className="flex-1 min-w-0">
@@ -167,12 +174,12 @@ export default function CatalogCastPanel({ refKind, refId, refLabel }) {
                 <button
                   type="button"
                   onClick={() => handleUnlink(row)}
-                  disabled={busyId === ingredient.id}
+                  disabled={rowBusy}
                   aria-label={`Unlink ${ingredient.name || ingredient.id}`}
                   className="p-1.5 rounded text-gray-500 hover:text-port-error hover:bg-port-bg disabled:opacity-50"
                   title="Unlink from this record"
                 >
-                  {busyId === ingredient.id
+                  {rowBusy
                     ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
                     : <Trash2 size={14} aria-hidden="true" />}
                 </button>
