@@ -19,6 +19,8 @@ import {
   catalogIngredientLinkSchema,
   catalogScrapCommitSchema,
   catalogSyncEnvelopeSchema,
+  catalogBulkImportSchema,
+  catalogExportQuerySchema,
 } from './catalogValidation.js';
 
 describe('catalogValidation — ingredient types & ref kinds', () => {
@@ -237,5 +239,82 @@ describe('catalogValidation — catalogSyncEnvelopeSchema', () => {
       portosMeta: { junk: 'x'.repeat(5000) },
     };
     expect(() => catalogSyncEnvelopeSchema.parse(env)).toThrow();
+  });
+});
+
+describe('catalogValidation — catalogBulkImportSchema', () => {
+  it('accepts a minimal markdown payload', () => {
+    const out = catalogBulkImportSchema.parse({ format: 'markdown', payload: '## Idea: X\nbody' });
+    expect(out.format).toBe('markdown');
+  });
+
+  it('accepts json/csv/markdown as formats', () => {
+    for (const f of ['json', 'csv', 'markdown']) {
+      expect(() => catalogBulkImportSchema.parse({ format: f, payload: 'x' })).not.toThrow();
+    }
+  });
+
+  it('rejects unknown formats', () => {
+    expect(() => catalogBulkImportSchema.parse({ format: 'toml', payload: 'x' })).toThrow();
+  });
+
+  it('rejects empty payload', () => {
+    expect(() => catalogBulkImportSchema.parse({ format: 'json', payload: '' })).toThrow();
+  });
+
+  it('caps payload at 2MB', () => {
+    const huge = 'a'.repeat(2_000_001);
+    expect(() => catalogBulkImportSchema.parse({ format: 'json', payload: huge })).toThrow();
+  });
+
+  it('accepts defaults block with universe/series/work refs and tags', () => {
+    const out = catalogBulkImportSchema.parse({
+      format: 'json',
+      payload: '[]',
+      defaults: { universeRef: 'u1', seriesRef: 's1', tags: ['noir'] },
+    });
+    expect(out.defaults.universeRef).toBe('u1');
+    expect(out.defaults.tags).toEqual(['noir']);
+  });
+
+  it('rejects unknown keys in defaults (strict)', () => {
+    expect(() => catalogBulkImportSchema.parse({
+      format: 'json', payload: '[]', defaults: { universeRef: 'u1', mystery: true },
+    })).toThrow();
+  });
+
+  it('rejects unknown top-level keys (strict)', () => {
+    expect(() => catalogBulkImportSchema.parse({ format: 'json', payload: '[]', sneaky: true })).toThrow();
+  });
+});
+
+describe('catalogValidation — catalogExportQuerySchema', () => {
+  it('accepts every ref kind', () => {
+    for (const k of REF_KINDS) {
+      expect(() => catalogExportQuerySchema.parse({ refKind: k, refId: 'r1' })).not.toThrow();
+    }
+  });
+
+  it('rejects unknown ref kind', () => {
+    expect(() => catalogExportQuerySchema.parse({ refKind: 'galaxy', refId: 'r1' })).toThrow();
+  });
+
+  it('defaults to no format (route resolves to json)', () => {
+    const out = catalogExportQuerySchema.parse({ refKind: 'universe', refId: 'u1' });
+    expect(out.format).toBeUndefined();
+  });
+
+  it('accepts json/markdown/yaml format', () => {
+    for (const f of ['json', 'markdown', 'yaml']) {
+      expect(() => catalogExportQuerySchema.parse({ refKind: 'universe', refId: 'u1', format: f })).not.toThrow();
+    }
+  });
+
+  it('rejects unknown format', () => {
+    expect(() => catalogExportQuerySchema.parse({ refKind: 'universe', refId: 'u1', format: 'xml' })).toThrow();
+  });
+
+  it('caps refId at 120 chars', () => {
+    expect(() => catalogExportQuerySchema.parse({ refKind: 'universe', refId: 'a'.repeat(200) })).toThrow();
   });
 });

@@ -16,6 +16,7 @@ import { scheduleTimer } from './timers.js';
 import { getUserTimezone, todayInTimezone, getLocalParts, getUtcOffsetMs } from '../../lib/timezone.js';
 import * as journal from '../brainJournal.js';
 import { resolveNavCommand, normalizeLabel } from '../../lib/navManifest.js';
+import { listIngredients as listCatalogIngredients, listRefsForIngredient } from '../catalogDB.js';
 import { runAsk, VALID_MODES as ASK_VALID_MODES } from '../askService.js';
 import * as imageGen from '../imageGen/index.js';
 import { createImageGenWaiter } from '../imageGenWaiter.js';
@@ -204,6 +205,7 @@ const TOOL_GROUPS = {
   pipeline_open_stage: 'pipeline',
   dispatch_code_agent: 'code',
   code_agent_status: 'code',
+  catalog_lookup: 'catalog',
   // UNGROUPED = always-on: time_now, daily_log_append, ui_navigate.
   // brain_capture used to be always-on, but that caused form-fill turns
   // ("fill description with X") to be misrouted to brain_capture because
@@ -297,6 +299,10 @@ const GROUP_INTENT = {
   // (pipeline.js strips it from the spec list when off).
   code: /\b(?:have (?:claude|codex|gemini|the agent|an agent)\b|dispatch (?:a |an )?(?:coding |code )?agent|spin up an agent|code (?:it )?up|open a pr|pull request|refactor|(?:implement|debug|rewrite|patch)\b[^.!?\n]{0,40}\b(?:bug|tests?|function|method|build|lint|type ?error|error|code|file|module|endpoint|route|component|class|api|schema|migration|script|flag|regression|handler|parser|service|hook|query|registry|config)\b|fix (?:the |a |an |my )?(?:bug|test|tests|failing|function|method|build|lint|type|error|code|file|module|endpoint|route|component)|write (?:a |the |some )?(?:unit |integration )?tests?|add (?:a |an |the )?(?:flag|function|method|endpoint|route|test|migration)\b|(?:how(?:'s| is| are)?|status of|progress on|what(?:'s| is)? happening (?:with|on)|where (?:are|is) (?:we|it|that|the))\b[^.!?\n]{0,40}\b(?:coding (?:task|agent|job)|code agent|dispatched (?:task|job|agent)|pull request|the agent|the pr|that pr|my pr|the task)\b|\bis (?:the |that |my )?(?:coding |code )?(?:agent|task) (?:still |yet )?(?:running|going|working|done|finished))/i,
   ui: UI_INTENT_RE,
+  // Creative catalog lookups — "find my character X", "what scenes feature Y",
+  // "look up the place named Z", "search my catalog for …". Tight enough that
+  // generic "find" / "search" don't trip it (those still go to brain_search).
+  catalog: /\b(catalog|ingredient|cast|creative library)\b|\b(?:look ?up|find|search|show me|do i have|any)\b[^.!?\n]{0,30}\b(?:character|place|object|scene|concept|idea|prop|setting|location|faction)s?\b/i,
 };
 
 // Fail-fast at import time: any group referenced in TOOL_GROUPS that has no
@@ -442,6 +448,28 @@ const describeWeatherCode = (code) => WEATHER_CODES[code] ?? 'unknown conditions
 // the LLM to pass lat/lon when the user names a place.
 const DEFAULT_LAT = 37.7749;
 const DEFAULT_LON = -122.4194;
+
+// Catalog ingredient kinds. Hardcoded for now — the shared catalog type
+// registry (PLAN item `[catalog-shared-type-registry]`) will replace this.
+const CATALOG_INGREDIENT_TYPES = ['character', 'place', 'object', 'idea', 'scene', 'concept'];
+
+// Pull a short snippet from an ingredient's type-specific payload. Mirrors
+// the fallback chain used by client/src/pages/Catalog.jsx so voice + UI agree
+// on what "the body" of an ingredient is. Trimmed to 200 chars.
+const catalogPayloadSnippet = (payload) => {
+  if (!payload || typeof payload !== 'object') return '';
+  const raw = payload.physicalDescription
+    || payload.description
+    || payload.summary
+    || payload.personality
+    || payload.significance
+    || payload.role
+    || payload.notes
+    || '';
+  const text = String(raw).trim().replace(/\s+/g, ' ');
+  if (text.length <= 200) return text;
+  return `${text.slice(0, 197)}…`;
+};
 
 const TOOLS = [
   {
@@ -2032,6 +2060,44 @@ const TOOLS = [
       }
 
       return { ok: true, count: matched.length, agents: matched, summary };
+    },
+  },
+
+  {
+    name: 'catalog_lookup',
+    description:
+      'Search the creative ingredients catalog (characters, places, objects, ideas, scenes, concepts) by name or content. ' +
+      'Use when the user asks "do I have a character named X?", "find my places", "look up the scene where Y happens", "what concepts are in my catalog about Z". ' +
+      'Returns up to `limit` matches (default 5) with id, name, type, a short snippet, and link count. Pass `type` to narrow to a single kind.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Free-text search across name + payload content. Use the user\'s most distinctive phrasing.' },
+        type: { type: 'string', enum: CATALOG_INGREDIENT_TYPES, description: 'Optional: restrict to one ingredient kind.' },
+        limit: { type: 'integer', description: 'Max results (default 5, max 20).' },
+      },
+      required: ['query'],
+    },
+    execute: async ({ query, type, limit = 5 } = {}) => {
+      if (typeof query !== 'string' || !query.trim()) throw new Error('query is required');
+      const q = query.trim();
+      const max = clampLimit(limit, 5, 20);
+      const filterType = CATALOG_INGREDIENT_TYPES.includes(type) ? type : undefined;
+      const { items } = await listCatalogIngredients({ query: q, type: filterType, limit: max });
+      const results = await Promise.all(items.map(async (ing) => {
+        const refs = await listRefsForIngredient(ing.id);
+        return {
+          id: ing.id,
+          name: ing.name,
+          type: ing.type,
+          snippet: catalogPayloadSnippet(ing.payload),
+          refsCount: refs.length,
+        };
+      }));
+      const summary = results.length
+        ? `Found ${results.length} catalog match${results.length === 1 ? '' : 'es'} for "${q}"${filterType ? ` (${filterType})` : ''}.`
+        : `No catalog ingredients matched "${q}"${filterType ? ` in ${filterType}` : ''}.`;
+      return { ok: true, count: results.length, results, summary };
     },
   },
 ];

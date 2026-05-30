@@ -19,7 +19,10 @@ import {
   catalogExtractRequestSchema,
   catalogEmbeddingsBackfillSchema,
   catalogMigrationRerunSchema,
+  catalogBulkImportSchema,
+  catalogExportQuerySchema,
 } from '../lib/catalogValidation.js';
+import { parseBulkPayload, bundleToMarkdown, toYamlString } from '../lib/catalogBulkParsers.js';
 import { embedIngredient, embedBatch, ingredientEmbedSeed } from '../services/embeddings.js';
 import { extractIngredients } from '../services/catalogExtraction.js';
 import { migrateBibleToCatalog } from '../scripts/migrateBibleToCatalog.js';
@@ -203,6 +206,120 @@ router.get('/ingredients/:id/refs', asyncHandler(async (req, res) => {
 
 router.get('/refs/:refKind/:refId/ingredients', asyncHandler(async (req, res) => {
   res.json(await catalogDB.listIngredientsForRef(req.params.refKind, req.params.refId));
+}));
+
+// Bulk-create ingredients from a markdown / CSV / JSON dump — no LLM round
+// trip, unlike the scrap → extract → commit path. The whole batch commits
+// or rolls back together so a malformed entry can't leave the catalog
+// half-populated.
+router.post('/bulk-import', asyncHandler(async (req, res) => {
+  validateRequest(catalogBulkImportSchema, req.body);
+  const { format, payload, defaults = {} } = req.body;
+
+  // Parse → normalize → per-entry Zod validate BEFORE we open a transaction.
+  // Reject the whole batch on any invalid entry; report the first failure
+  // with its index so the user can fix the source file.
+  let parsed;
+  try {
+    parsed = parseBulkPayload(format, payload);
+  } catch (err) {
+    throw new ServerError(`Bulk import parse failed: ${err.message}`, { status: 400 });
+  }
+
+  const defaultTags = Array.isArray(defaults.tags) ? defaults.tags : [];
+  const entries = [];
+  for (let i = 0; i < parsed.length; i++) {
+    const entry = parsed[i];
+    // Merge default tags onto each row (dedup), then validate the full
+    // per-row shape against the same schema the single-create endpoint uses.
+    const mergedTags = Array.from(new Set([...(entry.tags || []), ...defaultTags]));
+    const result = catalogIngredientCreateSchema.safeParse({ ...entry, tags: mergedTags });
+    if (!result.success) {
+      const msg = result.error.errors?.[0]?.message || result.error.message;
+      throw new ServerError(`Bulk import entry ${i} invalid: ${msg}`, { status: 400 });
+    }
+    entries.push(result.data);
+  }
+
+  // Optional ref-links: same shape as the /link route, applied once per
+  // created ingredient inside the same transaction.
+  const refLinks = [];
+  const REF_FIELD_TO_KIND = { universeRef: 'universe', seriesRef: 'series', issueRef: 'issue', workRef: 'work' };
+  for (const [field, kind] of Object.entries(REF_FIELD_TO_KIND)) {
+    if (defaults[field]) refLinks.push({ refKind: kind, refId: defaults[field], role: defaults.role || `bulk-${kind}` });
+  }
+
+  // Embed every entry in parallel BEFORE the transaction — matches the
+  // scrap-commit path (line 100). Network round-trips dominate; keeping
+  // them outside the DB transaction means a slow embed provider can't
+  // hold a Postgres write lock open. Failed embeds land as null `embedding`
+  // and the embeddings/backfill endpoint can fill them in later.
+  const seeds = entries.map((e) => ingredientEmbedSeed(e));
+  const embeds = await embedBatch(seeds);
+
+  const created = await withTransaction(async (client) => {
+    const out = [];
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      const e = embeds[i];
+      const ing = await catalogDB.createIngredient({
+        type: entry.type,
+        name: entry.name,
+        payload: entry.payload || {},
+        tags: entry.tags || [],
+        embedding: e?.embedding ?? null,
+        embeddingModel: e?.model ?? null,
+      }, { client });
+      // Stamp ref links inside the same transaction so a mid-batch failure
+      // rolls back the link rows alongside their ingredients.
+      for (const link of refLinks) {
+        await client.query(
+          `INSERT INTO catalog_ingredient_refs (ingredient_id, ref_kind, ref_id, role)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (ingredient_id, ref_kind, ref_id, role) DO UPDATE
+             SET deleted = false, deleted_at = NULL`,
+          [ing.id, link.refKind, link.refId, link.role],
+        );
+      }
+      out.push({ id: ing.id, type: ing.type, name: ing.name });
+    }
+    return out;
+  });
+
+  // Parser warnings (today: unrecognized markdown type headings) ride
+  // back on the response so the user notices typos like `## Plce: …`.
+  const warnings = Array.isArray(parsed.warnings) ? parsed.warnings : [];
+  console.log(`📥 Catalog bulk import: ${format} → ${created.length} ingredient(s)${warnings.length ? ` (${warnings.length} warning(s))` : ''}`);
+  res.status(201).json({ created, count: created.length, warnings });
+}));
+
+// Export one ref slice (universe/series/issue/work) as a portable bundle.
+// JSON is the canonical round-trip format; markdown + YAML are convenience
+// outputs. Relations and media-refs are intentionally absent — those tables
+// don't exist yet; when they ship the export helper will include them
+// without a payload-shape break (the consumer treats unknown keys as
+// passthrough).
+router.get('/export', asyncHandler(async (req, res) => {
+  const params = validateRequest(catalogExportQuerySchema, req.query);
+  const format = params.format || 'json';
+  const bundle = await catalogDB.exportSliceForRef(params.refKind, params.refId);
+  const baseName = `catalog-${params.refKind}-${params.refId}`.replace(/[^A-Za-z0-9._-]+/g, '_');
+  if (format === 'markdown') {
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${baseName}.md"`);
+    res.send(bundleToMarkdown(bundle));
+    return;
+  }
+  if (format === 'yaml') {
+    res.setHeader('Content-Type', 'application/yaml; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${baseName}.yaml"`);
+    res.send(toYamlString(bundle));
+    return;
+  }
+  // json (default)
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${baseName}.json"`);
+  res.send(JSON.stringify(bundle, null, 2));
 }));
 
 router.get('/sync', asyncHandler(async (req, res) => {

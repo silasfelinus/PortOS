@@ -53,6 +53,7 @@ const PALETTE_ACTIONS = [
   { id: 'dispatch_code_agent',     label: 'Dispatch coding agent',   section: 'Agents' },
   { id: 'code_agent_status',       label: 'Coding agent status',     section: 'Agents' },
   { id: 'time_now',                label: 'Current time',            section: 'System' },
+  { id: 'catalog_lookup',          label: 'Look up ingredient…',     section: 'Catalog' },
 ];
 
 const PALETTE_ACTION_IDS = new Set(PALETTE_ACTIONS.map((a) => a.id));

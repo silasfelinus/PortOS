@@ -7,13 +7,14 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Sparkles, Loader2, CheckCircle2, AlertCircle, ArrowLeft, RotateCcw, Circle } from 'lucide-react';
+import { Sparkles, Loader2, CheckCircle2, AlertCircle, ArrowLeft, RotateCcw, Circle, Upload } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import socket from '../services/socket';
 import {
   createCatalogScrap,
   extractFromCatalogScrap,
   commitCatalogScrapDraft,
+  bulkImportCatalogIngredients,
 } from '../services/apiCatalog';
 
 // One review section per ingredient type. The first three are bible-shaped
@@ -66,6 +67,13 @@ export default function CatalogIngest() {
   // editable inline + checkbox-gated. Defaults all to selected.
   const [draft, setDraft] = useState({ characters: [], places: [], objects: [], ideas: [], scenes: [], concepts: [] });
   const [selected, setSelected] = useState({ characters: new Set(), places: new Set(), objects: new Set(), ideas: new Set(), scenes: new Set(), concepts: new Set() });
+  // Bulk import is a separate ingest path — no LLM extraction, no review.
+  // Power-user paste of pre-structured markdown/CSV/JSON. Lives on the
+  // paste phase so users can switch between the two flows freely.
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkFormat, setBulkFormat] = useState('markdown');
+  const [bulkText, setBulkText] = useState('');
+  const [bulkSubmitting, setBulkSubmitting] = useState(false);
 
   // Track active runId so a stale frame from an earlier scrap can't mutate the
   // current stage list (server fans these to all sockets — single-user trust
@@ -138,6 +146,28 @@ export default function CatalogIngest() {
       setStages((prev) => prev.map((s) => ({ ...s, status: 'completed', count: countForStage(s.id) })));
     }
     setPhase('review');
+  };
+
+  const handleBulkImport = async () => {
+    const payload = bulkText.trim();
+    if (!payload) { toast.error('Paste a markdown / CSV / JSON dump first.'); return; }
+    setBulkSubmitting(true);
+    const result = await bulkImportCatalogIngredients({ format: bulkFormat, payload }, { silent: true })
+      .catch((err) => { toast.error(err?.message || 'Bulk import failed'); return null; });
+    setBulkSubmitting(false);
+    if (!result) return;
+    const n = result.count || 0;
+    const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+    toast.success(`Bulk imported ${n} ingredient${n === 1 ? '' : 's'}.`);
+    // Surface parser warnings (e.g. `## Plce: …` typos in markdown) before
+    // navigating away — otherwise the user has no signal that some sections
+    // were silently skipped.
+    if (warnings.length > 0) {
+      toast.error(`${warnings.length} section${warnings.length === 1 ? '' : 's'} skipped: ${warnings.join('; ')}`, { duration: 8000 });
+    }
+    setBulkText('');
+    setBulkOpen(false);
+    navigate('/catalog');
   };
 
   const toggle = (kind, idx) => {
@@ -219,6 +249,13 @@ export default function CatalogIngest() {
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-white">
               <ArrowLeft size={14} aria-hidden="true" /> Back to Catalog
             </button>
+            {phase === 'paste' && (
+              <button type="button" onClick={() => setBulkOpen((v) => !v)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-port-border text-gray-300 hover:text-white"
+                aria-expanded={bulkOpen}>
+                <Upload size={14} aria-hidden="true" /> Bulk Import
+              </button>
+            )}
             {phase !== 'paste' && (
               <button type="button" onClick={reset}
                 className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-port-border text-gray-300 hover:text-white">
@@ -227,6 +264,53 @@ export default function CatalogIngest() {
             )}
           </div>
         </header>
+
+        {phase === 'paste' && bulkOpen && (
+          <div className="bg-port-card border border-port-border rounded-lg p-4 sm:p-6 space-y-4">
+            <div>
+              <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                <Upload className="w-4 h-4 text-port-accent" aria-hidden="true" /> Bulk Import
+              </h2>
+              <p className="text-xs text-gray-500 mt-1">
+                Direct ingest — no LLM extraction. Markdown sections use
+                <code className="mx-1 px-1 bg-port-bg rounded">## &lt;Type&gt;: &lt;Name&gt;</code>
+                headings; CSV expects <code className="mx-1 px-1 bg-port-bg rounded">type,name,description,tags</code>;
+                JSON is an array of <code className="mx-1 px-1 bg-port-bg rounded">{'{ type, name, description?, payload?, tags? }'}</code>.
+              </p>
+            </div>
+            <div>
+              <label htmlFor="bulk-format" className="block text-sm font-medium mb-1 text-white">Format</label>
+              <select id="bulk-format" value={bulkFormat} onChange={(e) => setBulkFormat(e.target.value)}
+                className="px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm focus:outline-none focus:border-port-accent">
+                <option value="markdown">Markdown</option>
+                <option value="csv">CSV</option>
+                <option value="json">JSON</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="bulk-text" className="block text-sm font-medium mb-1 text-white">Payload</label>
+              <textarea id="bulk-text" rows={10} value={bulkText} onChange={(e) => setBulkText(e.target.value)}
+                placeholder={bulkFormat === 'csv'
+                  ? 'type,name,description,tags\ncharacter,Alice,A curious sleuth,"noir, gritty"\nplace,The Hollow,Abandoned subway tunnel,'
+                  : bulkFormat === 'json'
+                    ? '[\n  { "type": "character", "name": "Alice", "description": "A curious sleuth", "tags": ["noir"] }\n]'
+                    : '## Character: Alice\nA curious sleuth.\ntags: noir, gritty\n\n## Place: The Hollow\nAbandoned subway tunnel.\n'}
+                className="w-full px-3 py-2 bg-port-bg border border-port-border rounded text-white text-sm font-mono focus:outline-none focus:border-port-accent" />
+              <p className="text-xs text-gray-500 mt-1">{bulkText.length.toLocaleString()} chars</p>
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button type="button" onClick={() => setBulkOpen(false)} disabled={bulkSubmitting}
+                className="px-3 py-2 rounded-lg text-gray-400 hover:text-white text-sm">
+                Cancel
+              </button>
+              <button type="button" onClick={handleBulkImport} disabled={bulkSubmitting || !bulkText.trim()}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-port-accent hover:bg-port-accent/90 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium">
+                {bulkSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                {bulkSubmitting ? 'Importing…' : 'Import'}
+              </button>
+            </div>
+          </div>
+        )}
 
         {phase === 'paste' && (
           <form onSubmit={handleIngest} className="bg-port-card border border-port-border rounded-lg p-4 sm:p-6 space-y-4">
