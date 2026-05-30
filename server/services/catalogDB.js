@@ -666,6 +666,69 @@ export async function upsertRefFromPeer(ref) {
 }
 
 
+/**
+ * Hydrate one ingredient with its scraps for the export bundle. Issues two
+ * queries: the sources join to look up the scrap ids, then a single batch
+ * lookup of those scraps. Returns `[]` when an ingredient has no sources.
+ */
+export async function listScrapsForIngredient(ingredientId) {
+  const result = await query(
+    `SELECT s.id, s.title, s.raw_text, s.source_kind, s.metadata,
+            s.created_at, s.updated_at
+       FROM catalog_scraps s
+       JOIN catalog_ingredient_sources src ON src.scrap_id = s.id
+      WHERE src.ingredient_id = $1
+        AND s.deleted = false
+      ORDER BY s.created_at ASC`,
+    [ingredientId],
+  );
+  return result.rows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    rawText: row.raw_text,
+    sourceKind: row.source_kind,
+    metadata: row.metadata || {},
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  }));
+}
+
+/**
+ * Build an export bundle for one ref (universe/series/issue/work).
+ * Hydrates each ingredient + its scraps + ref links. Relations and media
+ * refs are intentionally omitted — the underlying tables (catalog_ingredient_relations,
+ * catalog_ingredient_media) don't exist yet (see PLAN items
+ * `[catalog-ingredient-relations]` / `[catalog-ingredient-media-refs]`).
+ * When they land, extend this helper to hydrate them too.
+ */
+export async function exportSliceForRef(refKind, refId) {
+  const rows = await listIngredientsForRef(refKind, refId);
+  // Hydrate scraps + refs in parallel per ingredient. Small N (one slice
+  // is typically <100 ingredients); a per-row round-trip is fine.
+  const ingredients = await Promise.all(rows.map(async ({ ingredient, role }) => {
+    const [scraps, refs] = await Promise.all([
+      listScrapsForIngredient(ingredient.id),
+      listRefsForIngredient(ingredient.id),
+    ]);
+    const { embedding: _embedding, ...rest } = ingredient;
+    return {
+      ...rest,
+      // The role this ingredient plays for the queried ref — handy for
+      // round-trip re-imports that want to preserve roleness without
+      // re-deriving it from the full refs list.
+      roleForExportedRef: role,
+      refs,
+      scraps,
+    };
+  }));
+  return {
+    version: 1,
+    ref: { kind: refKind, id: refId },
+    exportedAt: new Date().toISOString(),
+    ingredients,
+  };
+}
+
 export async function getCatalogStats() {
   const [byTypeResult, scrapResult, withEmb] = await Promise.all([
     query(`SELECT type, COUNT(*) AS count FROM catalog_ingredients WHERE deleted = false GROUP BY type`),

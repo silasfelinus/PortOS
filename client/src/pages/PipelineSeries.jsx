@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import ArcCanvas from '../components/pipeline/ArcCanvas';
+import CatalogCastPanel from '../components/CatalogCastPanel';
 import TabPills from '../components/ui/TabPills';
 import {
   getPipelineSeries, updatePipelineSeries,
@@ -404,6 +405,8 @@ function BibleSidebar({ series, universes, patchSeries, onSeriesUpdate, onFlushP
           <strong>Prepend</strong> (default) puts the override ahead of the universe's <em>stylePrompt</em>; <strong>Append</strong> trails it; <strong>Replace</strong> drops the universe style entirely. Leave the box blank to use the universe style verbatim.
         </p>
       </Field>
+
+      <CatalogCastPanel refKind="series" refId={series.id} refLabel={series.name || 'this series'} />
 
       <div>
         <h3 className="text-xs uppercase tracking-wider text-gray-500 mb-2">Canon</h3>
