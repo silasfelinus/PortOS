@@ -47,21 +47,27 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // pauses with old peers; issues/universes keep flowing.
   pipelineSeries: 2,
   mediaCollections: 1,
+  // v1 = creative ingredients catalog (Postgres tables: catalog_scraps,
+  // catalog_ingredients, catalog_ingredient_sources, catalog_ingredient_refs).
   // v2 = `catalog_ingredients.search_tsv` expanded to also index the
   // character canon fields (physicalDescription, personality) and the
   // type-specific role/motivations/significance fields, so bible-promoted
   // characters become searchable on their main narrative text. The schema
   // is a DROP+re-ADD of the STORED generated column (Postgres can't ALTER
-  // its expression); applied in lockstep by `ensureSchema` in
-  // server/lib/db.js. Per-category gate so a new peer can sync its catalog
-  // independently of whether other categories are version-locked. An older
-  // v1 peer pushing to a v2 receiver is sender-behind on `catalog` (not
-  // ahead), so the receiver still accepts and re-derives `search_tsv`
-  // locally via the STORED expression. A v2 peer pushing to a v1 receiver
-  // is sender-ahead and gets 412 — the older code can't index the new
-  // payload fields. `cat-ingredient` and `cat-scrap` record kinds map back
+  // its expression); applied in lockstep by `ensureSchema`.
+  // v3 = `catalog_ingredient_refs` gained `deleted`/`deleted_at` soft-delete
+  // tombstones + an UPDATE trigger that bumps sync_sequence on delete/revive.
+  // Older peers (≤v2) hard-DELETE on unlink and never tombstone, so the
+  // version gate prevents a v3 receiver from accepting an older sender's
+  // payload that would silently miss tombstones.
+  //
+  // Per-category gate so a new peer can sync its catalog independently of
+  // whether other categories are version-locked. Older peers are
+  // sender-behind on `catalog` (not ahead), so the receiver still accepts
+  // their pushes; newer peers pushing to older receivers are sender-ahead
+  // and get 412. `cat-ingredient` and `cat-scrap` record kinds map back
   // here via RECORD_KIND_SCHEMA_CATEGORIES.
-  catalog: 2,
+  catalog: 3,
   // NOTE: `videoHistory` is intentionally NOT listed here. The version gate
   // rejects the ENTIRE snapshot/push payload on ANY ahead-mismatch (the
   // comparator walks the union of keys), so declaring a brand-new key would

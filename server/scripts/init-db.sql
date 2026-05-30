@@ -243,6 +243,8 @@ CREATE TABLE IF NOT EXISTS catalog_ingredient_refs (
   ref_id TEXT NOT NULL,
   role VARCHAR(64) NOT NULL,                   -- 'canon-character'|'canon-place'|'canon-object'|'cast'|'mentioned'
   created_at TIMESTAMPTZ DEFAULT NOW(),
+  deleted BOOLEAN DEFAULT FALSE,               -- soft-delete tombstone so unlinks propagate to peers
+  deleted_at TIMESTAMPTZ,
   sync_sequence BIGSERIAL,
   PRIMARY KEY (ingredient_id, ref_kind, ref_id, role)
 );
@@ -339,3 +341,25 @@ CREATE TRIGGER trg_catalog_source_sync_seq
   BEFORE UPDATE ON catalog_ingredient_sources
   FOR EACH ROW
   EXECUTE FUNCTION update_catalog_source_sync_seq();
+
+-- Ref-link UPDATE bumps sync_sequence on soft-delete or revival so peers
+-- receive the tombstone as a normal sync event. Without this, the soft-delete
+-- path would update `deleted`/`deleted_at` but leave sync_sequence at the
+-- original INSERT value — peers past that cursor would never see the change
+-- and their "Appears in" panels would stay stale forever.
+CREATE OR REPLACE FUNCTION update_catalog_ref_sync_seq()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.deleted IS DISTINCT FROM OLD.deleted
+     OR NEW.deleted_at IS DISTINCT FROM OLD.deleted_at THEN
+    NEW.sync_sequence := nextval(pg_get_serial_sequence('catalog_ingredient_refs', 'sync_sequence'));
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_catalog_ref_sync_seq ON catalog_ingredient_refs;
+CREATE TRIGGER trg_catalog_ref_sync_seq
+  BEFORE UPDATE ON catalog_ingredient_refs
+  FOR EACH ROW
+  EXECUTE FUNCTION update_catalog_ref_sync_seq();

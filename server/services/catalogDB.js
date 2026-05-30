@@ -79,6 +79,8 @@ function rowToRef(row) {
     refId: row.ref_id,
     role: row.role,
     createdAt: row.created_at.toISOString(),
+    deleted: !!row.deleted,
+    deletedAt: row.deleted_at?.toISOString() ?? null,
     syncSequence: String(row.sync_sequence),
   };
 }
@@ -429,25 +431,39 @@ export async function listSourcesForScrap(scrapId) {
 }
 
 export async function linkIngredientToRef(ingredientId, refKind, refId, role) {
+  // ON CONFLICT DO UPDATE revives a soft-deleted row instead of leaving it
+  // tombstoned. The trigger only bumps sync_sequence when `deleted` or
+  // `deleted_at` actually change, so a link-on-active-row stays a no-op for
+  // peers (no spurious sync event).
   await query(
     `INSERT INTO catalog_ingredient_refs (ingredient_id, ref_kind, ref_id, role)
      VALUES ($1, $2, $3, $4)
-     ON CONFLICT (ingredient_id, ref_kind, ref_id, role) DO NOTHING`,
+     ON CONFLICT (ingredient_id, ref_kind, ref_id, role) DO UPDATE
+       SET deleted = false, deleted_at = NULL`,
     [ingredientId, refKind, refId, role],
   );
 }
 
 export async function unlinkIngredientFromRef(ingredientId, refKind, refId, role) {
+  // Soft-delete via UPDATE so the row stays around as a tombstone and the
+  // trg_catalog_ref_sync_seq trigger bumps sync_sequence — peers pick the
+  // unlink up on their next pull. The `AND deleted = false` filter keeps
+  // re-unlinks from re-bumping sync_sequence unnecessarily.
   await query(
-    `DELETE FROM catalog_ingredient_refs
-     WHERE ingredient_id = $1 AND ref_kind = $2 AND ref_id = $3 AND role = $4`,
+    `UPDATE catalog_ingredient_refs
+        SET deleted = true, deleted_at = NOW()
+      WHERE ingredient_id = $1 AND ref_kind = $2 AND ref_id = $3 AND role = $4
+        AND deleted = false`,
     [ingredientId, refKind, refId, role],
   );
 }
 
 export async function listRefsForIngredient(ingredientId) {
+  // Filter `deleted = false` so the "Appears in" panel doesn't surface
+  // tombstoned unlinks. Tombstones are read-only state for sync purposes;
+  // user-facing list paths only show live links.
   const result = await query(
-    `SELECT * FROM catalog_ingredient_refs WHERE ingredient_id = $1`,
+    `SELECT * FROM catalog_ingredient_refs WHERE ingredient_id = $1 AND deleted = false`,
     [ingredientId],
   );
   return result.rows.map(rowToRef);
@@ -458,7 +474,8 @@ export async function listIngredientsForRef(refKind, refId) {
     `SELECT i.*, r.role, r.created_at AS ref_created_at
        FROM catalog_ingredients i
        JOIN catalog_ingredient_refs r ON r.ingredient_id = i.id
-       WHERE r.ref_kind = $1 AND r.ref_id = $2 AND i.deleted = false`,
+       WHERE r.ref_kind = $1 AND r.ref_id = $2
+         AND r.deleted = false AND i.deleted = false`,
     [refKind, refId],
   );
   return result.rows.map((row) => ({ ingredient: rowToIngredient(row), role: row.role }));
@@ -599,12 +616,53 @@ export async function upsertSourceFromPeer(src) {
 }
 
 export async function upsertRefFromPeer(ref) {
-  await query(
-    `INSERT INTO catalog_ingredient_refs (ingredient_id, ref_kind, ref_id, role, created_at)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (ingredient_id, ref_kind, ref_id, role) DO NOTHING`,
-    [ref.ingredientId, ref.refKind, ref.refId, ref.role, ref.createdAt],
-  );
+  // ON CONFLICT DO UPDATE so a peer's soft-delete (or revival) of a ref row
+  // is mirrored locally. Refs don't carry an `updated_at` column — they're
+  // tuple-unique — so a strict LWW window doesn't apply; the receiver simply
+  // adopts the peer's `deleted` / `deleted_at` state. The trigger only bumps
+  // sync_sequence when those columns change, so a no-op replay (peer already
+  // matches local) stays silent on the next outbound pull.
+  //
+  // Mixed-version federation: a v1 peer (pre-tombstone) emits ref rows with
+  // NO `deleted`/`deletedAt` keys. Treat "key absent" as "peer has no opinion"
+  // and preserve the local state on conflict — otherwise the v1 payload would
+  // coerce missing-to-false and ON CONFLICT DO UPDATE would silently revive
+  // a locally tombstoned ref. The `hasTombstoneFields` flag distinguishes this
+  // from an explicit v2 revival (`deleted: false` present). On INSERT a v1
+  // peer's row defaults to `deleted=false`, which is correct — the row is
+  // brand-new locally and the peer believes it's active.
+  const hasTombstoneFields =
+    Object.prototype.hasOwnProperty.call(ref, 'deleted') ||
+    Object.prototype.hasOwnProperty.call(ref, 'deletedAt');
+  if (hasTombstoneFields) {
+    await query(
+      `INSERT INTO catalog_ingredient_refs
+         (ingredient_id, ref_kind, ref_id, role, created_at, deleted, deleted_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (ingredient_id, ref_kind, ref_id, role) DO UPDATE
+         SET deleted = EXCLUDED.deleted,
+             deleted_at = EXCLUDED.deleted_at`,
+      [
+        ref.ingredientId,
+        ref.refKind,
+        ref.refId,
+        ref.role,
+        ref.createdAt,
+        !!ref.deleted,
+        ref.deletedAt || null,
+      ],
+    );
+  } else {
+    // v1-shape payload: insert when missing, leave local tombstone state alone
+    // on conflict. Matches the original v1 `ON CONFLICT DO NOTHING` semantics.
+    await query(
+      `INSERT INTO catalog_ingredient_refs
+         (ingredient_id, ref_kind, ref_id, role, created_at)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (ingredient_id, ref_kind, ref_id, role) DO NOTHING`,
+      [ref.ingredientId, ref.refKind, ref.refId, ref.role, ref.createdAt],
+    );
+  }
 }
 
 
