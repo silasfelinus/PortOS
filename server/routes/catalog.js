@@ -420,6 +420,10 @@ router.post('/bulk-import', asyncHandler(async (req, res) => {
   // Zod-validated shape so we can stamp each ref link with its original role.
   const entries = [];
   const perRowRoles = [];
+  // Round-tripped scraps (markdown `### Scraps`) ride as a non-enumerable
+  // `entry.scraps` sibling — captured here alongside the Zod-validated shape so
+  // they can be persisted as catalog_scraps rows in the same transaction below.
+  const perRowScraps = [];
   for (let i = 0; i < parsed.length; i++) {
     const entry = parsed[i];
     // Merge default tags onto each row (dedup), then validate the full
@@ -432,6 +436,7 @@ router.post('/bulk-import', asyncHandler(async (req, res) => {
     }
     entries.push(result.data);
     perRowRoles.push(typeof entry.roleForExportedRef === 'string' ? entry.roleForExportedRef : null);
+    perRowScraps.push(Array.isArray(entry.scraps) ? entry.scraps : []);
   }
 
   // Optional ref-links: same shape as the /link route, applied once per
@@ -464,6 +469,7 @@ router.post('/bulk-import', asyncHandler(async (req, res) => {
   const seeds = entries.map((e) => ingredientEmbedSeed(e));
   const embeds = await embedBatch(seeds);
 
+  let scrapsCreated = 0;
   const created = await withTransaction(async (client) => {
     const out = [];
     for (let i = 0; i < entries.length; i++) {
@@ -495,6 +501,22 @@ router.post('/bulk-import', asyncHandler(async (req, res) => {
           [ing.id, target.refKind, target.refId, role],
         );
       }
+      // Persist any round-tripped scraps as catalog_scraps rows + source links
+      // in the same transaction, so they roll back with the ingredient on a
+      // mid-batch failure. Only markdown imports carry scraps today; JSON/CSV
+      // rows have an empty list. No embedding is generated for an imported scrap
+      // (the ingredient already carries the searchable embedding) — the scrap is
+      // provenance, not a separate search target.
+      for (const s of perRowScraps[i]) {
+        if (!s || typeof s.rawText !== 'string' || !s.rawText.trim()) continue;
+        const scrap = await catalogDB.createScrap({
+          rawText: s.rawText,
+          sourceKind: (typeof s.sourceKind === 'string' && s.sourceKind.trim() ? s.sourceKind.trim() : 'import').slice(0, 32),
+          metadata: { importedVia: 'bulk-import', format },
+        }, { client });
+        await catalogDB.linkIngredientToSource(ing.id, scrap.id, null, { client });
+        scrapsCreated++;
+      }
       out.push({ id: ing.id, type: ing.type, name: ing.name });
     }
     return out;
@@ -503,8 +525,8 @@ router.post('/bulk-import', asyncHandler(async (req, res) => {
   // Parser warnings (today: unrecognized markdown type headings) ride
   // back on the response so the user notices typos like `## Plce: …`.
   const warnings = Array.isArray(parsed.warnings) ? parsed.warnings : [];
-  console.log(`📥 Catalog bulk import: ${format} → ${created.length} ingredient(s)${warnings.length ? ` (${warnings.length} warning(s))` : ''}`);
-  res.status(201).json({ created, count: created.length, warnings });
+  console.log(`📥 Catalog bulk import: ${format} → ${created.length} ingredient(s)${scrapsCreated ? `, ${scrapsCreated} scrap(s)` : ''}${warnings.length ? ` (${warnings.length} warning(s))` : ''}`);
+  res.status(201).json({ created, count: created.length, scrapsCreated, warnings });
 }));
 
 // Export one ref slice (universe/series/issue/work) as a portable bundle.

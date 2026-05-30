@@ -169,11 +169,17 @@ function rowToRevision(row) {
 }
 
 
-export async function createScrap({ title, rawText, sourceKind = 'paste', metadata = {}, embedding = null, embeddingModel = null } = {}) {
+// `{ client }` is optional — when supplied, the INSERT runs on the caller's
+// transaction client so a bulk-import batch can commit-or-rollback its scraps
+// alongside the ingredients + source links (see POST /api/catalog/bulk-import).
+// Absent, falls through to the pool-level `query` as before. Mirrors the same
+// option on `createIngredient` / `linkIngredientToSource`.
+export async function createScrap({ title, rawText, sourceKind = 'paste', metadata = {}, embedding = null, embeddingModel = null } = {}, { client } = {}) {
   if (!rawText) throw new Error('rawText is required');
   const id = newScrapId();
   const originInstanceId = await getInstanceId();
-  const result = await query(
+  const exec = client ? client.query.bind(client) : query;
+  const result = await exec(
     `INSERT INTO catalog_scraps
        (id, title, raw_text, source_kind, metadata, embedding, embedding_model, origin_instance_id)
      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
