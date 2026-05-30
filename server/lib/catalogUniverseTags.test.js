@@ -111,7 +111,7 @@ describe('catalogUniverseTags — friendlifyUniverseTags', () => {
   });
 
   it('tolerates non-array input', () => {
-    expect(friendlifyUniverseTags(null, nameFor, canonicalKey)).toEqual({ tags: [], changed: false });
-    expect(friendlifyUniverseTags(undefined, nameFor, canonicalKey)).toEqual({ tags: [], changed: false });
+    expect(friendlifyUniverseTags(null, nameFor, canonicalKey)).toEqual({ tags: [], changed: false, unresolved: false });
+    expect(friendlifyUniverseTags(undefined, nameFor, canonicalKey)).toEqual({ tags: [], changed: false, unresolved: false });
   });
 });

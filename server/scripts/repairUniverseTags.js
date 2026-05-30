@@ -82,7 +82,7 @@ export async function repairUniverseTags({ force = false } = {}) {
   const nameMap = await buildUniverseNameMap();
   const nameForId = (id) => nameMap.get(id) || null;
 
-  const totals = { scanned: 0, rewritten: 0, errors: 0 };
+  const totals = { scanned: 0, rewritten: 0, errors: 0, unresolved: 0 };
   // Page through every ingredient. Only character/place/object rows can carry
   // the legacy tags, but a tag-only scan is cheap and future-proof, so we walk
   // all rows and let the pure transform decide what's a no-op.
@@ -94,7 +94,10 @@ export async function repairUniverseTags({ force = false } = {}) {
     if (!Array.isArray(rows) || rows.length === 0) break;
     for (const ing of rows) {
       totals.scanned++;
-      const { tags, changed } = friendlifyUniverseTags(ing.tags, nameForId, canonicalTagKey);
+      const { tags, changed, unresolved } = friendlifyUniverseTags(ing.tags, nameForId, canonicalTagKey);
+      // A row whose universe id can't be resolved yet is preserved (changed may
+      // be false) — count it so the marker is withheld and a future boot retries.
+      if (unresolved) totals.unresolved++;
       if (!changed) continue;
       try {
         // `source: 'sync'` keeps the rewrite out of the user-facing revision
@@ -116,17 +119,19 @@ export async function repairUniverseTags({ force = false } = {}) {
     completedAt: new Date().toISOString(),
     stats: totals,
   };
-  // Only stamp the completion marker on a CLEAN pass. A row-level failure
-  // (transient DB error) increments totals.errors; writing the marker anyway
-  // would skip the whole repair next boot and strand those rows' legacy tags
-  // forever. Leaving the marker unwritten re-runs the (idempotent) repair next
-  // boot — already-friendlified rows are no-ops, so only the failed rows retry.
-  const wroteMarker = totals.errors === 0;
+  // Only stamp the completion marker on a CLEAN, COMPLETE pass — no row-level
+  // failures (transient DB errors) AND no rows left with an unresolved
+  // `universe:<id>` tag (its universe hasn't arrived locally yet). Writing the
+  // marker in either case would skip the whole repair next boot and strand
+  // those rows' legacy tags forever. Withholding it re-runs the (idempotent)
+  // repair next boot — already-friendlified rows are no-ops, so only the failed
+  // / not-yet-resolvable rows retry.
+  const wroteMarker = totals.errors === 0 && totals.unresolved === 0;
   if (wroteMarker) await writeMarker(payload);
 
   console.log(
     `🏷️  universe-tag repair: ${totals.scanned} scanned, ` +
-    `${totals.rewritten} rewritten, ${totals.errors} errors` +
+    `${totals.rewritten} rewritten, ${totals.errors} errors, ${totals.unresolved} unresolved` +
     (wroteMarker ? '' : ' — marker NOT written (will retry next boot)'),
   );
 

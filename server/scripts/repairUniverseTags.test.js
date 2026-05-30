@@ -105,6 +105,22 @@ describe('repairUniverseTags', () => {
     expect(fsState.written.version).toBe(2);
   });
 
+  it('withholds the completion marker when a row has an unresolved universe tag (retries next boot)', async () => {
+    // u-999 isn't in the universe name map — its universe hasn't arrived locally
+    // yet. The legacy tag is preserved, the row counts as unresolved, and the
+    // marker is NOT written so a future boot retries once the universe lands.
+    dbState.ingredients = [{ id: 'cat-chr-1', tags: ['from-universe', 'universe:u-999', 'mentor'] }];
+
+    const result = await repairUniverseTags();
+
+    expect(result.skipped).toBe(false);
+    expect(result.stats.unresolved).toBe(1);
+    expect(result.markerWritten).toBe(false);
+    expect(fsState.written).toBeNull();
+    // Legacy tag preserved untouched for the retry.
+    expect(dbState.ingredients[0].tags).toEqual(['from-universe', 'universe:u-999', 'mentor']);
+  });
+
   it('re-runs the walk when forced even with a marker present', async () => {
     fsState.marker = { version: 1 };
     dbState.ingredients = [{ id: 'cat-chr-1', tags: ['from-universe', 'universe:u-1'] }];

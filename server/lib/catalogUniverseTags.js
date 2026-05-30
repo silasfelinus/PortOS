@@ -129,5 +129,8 @@ export function friendlifyUniverseTags(tags, nameForId, canonicalKey) {
   // run retries it instead of burning a no-op write.
   const removedLegacy = (idTags.length - unresolvedIdTags.length) > 0 || (sawMarker && !keepMarker);
   const changed = addedNames.length > 0 || removedLegacy;
-  return { tags: result, changed };
+  // `unresolved` is true when this row STILL carries a legacy `universe:<id>`
+  // tag we couldn't friendlify yet — the repair driver uses it to withhold the
+  // completion marker so a future boot (after the universe arrives) retries.
+  return { tags: result, changed, unresolved: unresolvedIdTags.length > 0 };
 }
