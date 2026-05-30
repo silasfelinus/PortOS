@@ -28,6 +28,7 @@ import {
   catalogExportQuerySchema,
   catalogRevisionQuerySchema,
   catalogRevisionRestoreSchema,
+  REF_KINDS,
 } from '../lib/catalogValidation.js';
 import { parseBulkPayload, bundleToMarkdown, toYamlString } from '../lib/catalogBulkParsers.js';
 import { resolveImageInputPath } from '../lib/fileUtils.js';
@@ -386,7 +387,11 @@ router.post('/bulk-import', asyncHandler(async (req, res) => {
   }
 
   const defaultTags = Array.isArray(defaults.tags) ? defaults.tags : [];
+  // Per-row role from an export bundle (`roleForExportedRef`) rides as a
+  // non-enumerable field on each parsed entry; capture it alongside the
+  // Zod-validated shape so we can stamp each ref link with its original role.
   const entries = [];
+  const perRowRoles = [];
   for (let i = 0; i < parsed.length; i++) {
     const entry = parsed[i];
     // Merge default tags onto each row (dedup), then validate the full
@@ -398,14 +403,29 @@ router.post('/bulk-import', asyncHandler(async (req, res) => {
       throw new ServerError(`Bulk import entry ${i} invalid: ${msg}`, { status: 400 });
     }
     entries.push(result.data);
+    perRowRoles.push(typeof entry.roleForExportedRef === 'string' ? entry.roleForExportedRef : null);
   }
 
   // Optional ref-links: same shape as the /link route, applied once per
-  // created ingredient inside the same transaction.
-  const refLinks = [];
+  // created ingredient inside the same transaction. Explicit `defaults.*Ref`
+  // overrides win; when none are supplied but the payload was an export
+  // bundle, fall back to the bundle's own `ref` so a re-imported slice keeps
+  // its slice membership (otherwise the import is invisible to
+  // listIngredientsForRef and to future slice exports).
   const REF_FIELD_TO_KIND = { universeRef: 'universe', seriesRef: 'series', issueRef: 'issue', workRef: 'work' };
+  const refTargets = [];
   for (const [field, kind] of Object.entries(REF_FIELD_TO_KIND)) {
-    if (defaults[field]) refLinks.push({ refKind: kind, refId: defaults[field], role: defaults.role || `bulk-${kind}` });
+    if (defaults[field]) refTargets.push({ refKind: kind, refId: defaults[field] });
+  }
+  // Validate the bundle's own ref against the same allow-list + id cap the
+  // /link route enforces (z.enum(REF_KINDS), refId max 120), so a hand-edited
+  // or foreign export bundle can't insert a dead ref row whose kind no
+  // listIngredientsForRef ever reads.
+  if (refTargets.length === 0 && parsed.bundleRef
+      && REF_KINDS.includes(parsed.bundleRef.kind)
+      && String(parsed.bundleRef.id).length > 0
+      && String(parsed.bundleRef.id).length <= 120) {
+    refTargets.push({ refKind: parsed.bundleRef.kind, refId: parsed.bundleRef.id });
   }
 
   // Embed every entry in parallel BEFORE the transaction — matches the
@@ -430,14 +450,21 @@ router.post('/bulk-import', asyncHandler(async (req, res) => {
         embeddingModel: e?.model ?? null,
       }, { client });
       // Stamp ref links inside the same transaction so a mid-batch failure
-      // rolls back the link rows alongside their ingredients.
-      for (const link of refLinks) {
+      // rolls back the link rows alongside their ingredients. Role precedence:
+      // explicit `defaults.role` > the bundle row's own `roleForExportedRef` >
+      // a `bulk-<kind>` fallback.
+      for (const target of refTargets) {
+        // perRowRoles[i] rides as non-enumerable (un-Zod'd) metadata, so cap it
+        // to the /link schema's 64-char limit — a foreign bundle's oversized
+        // role would otherwise hit the role VARCHAR(64) constraint and surface
+        // as a 500 mid-transaction instead of a clean bulk-import rejection.
+        const role = (defaults.role || perRowRoles[i] || `bulk-${target.refKind}`).slice(0, 64);
         await client.query(
           `INSERT INTO catalog_ingredient_refs (ingredient_id, ref_kind, ref_id, role)
            VALUES ($1, $2, $3, $4)
            ON CONFLICT (ingredient_id, ref_kind, ref_id, role) DO UPDATE
              SET deleted = false, deleted_at = NULL`,
-          [ing.id, link.refKind, link.refId, link.role],
+          [ing.id, target.refKind, target.refId, role],
         );
       }
       out.push({ id: ing.id, type: ing.type, name: ing.name });
