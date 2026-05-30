@@ -1,0 +1,476 @@
+/**
+ * Pure parsers for the catalog bulk-import path. Dependency-free —
+ * markdown / CSV / JSON each normalize to a list of
+ * `{ type, name, payload, tags }` entries that the route then validates
+ * one-by-one against `catalogIngredientCreateSchema` before insert.
+ *
+ * The parsers are intentionally lenient (best-effort); the Zod gate after
+ * parse is what guarantees DB-safe shape. Each parser throws on structural
+ * failure (not on per-row content errors) — those bubble up as the
+ * `BULK_IMPORT_PARSE_FAILED` error.
+ *
+ * `PRIMARY_CONTENT_KEY_BY_TYPE` mirrors the client-side map in
+ * `client/src/pages/Catalog.jsx`. When a markdown body or CSV `description`
+ * column is supplied without an explicit field name, it lands in the
+ * type-appropriate payload key.
+ *
+ * Also exports a minimal `toYamlString()` serializer used by the export
+ * route — handwritten so we don't pull js-yaml just for the catalog bundle.
+ */
+
+export const INGREDIENT_TYPES = Object.freeze([
+  'character',
+  'place',
+  'object',
+  'idea',
+  'scene',
+  'concept',
+]);
+
+// Mirrors PRIMARY_CONTENT_KEY in client/src/pages/Catalog.jsx and
+// CatalogIngest.jsx. When a bulk-import row supplies a body paragraph or a
+// CSV `description` column, it lands here so the entry renders correctly in
+// the catalog UI without forcing the user to hand-wire payload keys.
+export const PRIMARY_CONTENT_KEY_BY_TYPE = Object.freeze({
+  character: 'physicalDescription',
+  place: 'description',
+  object: 'description',
+  idea: 'summary',
+  scene: 'summary',
+  concept: 'summary',
+});
+
+const TYPE_LOWER = new Set(INGREDIENT_TYPES);
+
+function normalizeType(raw) {
+  if (typeof raw !== 'string') return null;
+  const t = raw.trim().toLowerCase();
+  return TYPE_LOWER.has(t) ? t : null;
+}
+
+function normalizeTags(raw) {
+  if (Array.isArray(raw)) {
+    return raw
+      .map((t) => (typeof t === 'string' ? t.trim() : ''))
+      .filter(Boolean);
+  }
+  if (typeof raw === 'string') {
+    return raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+/**
+ * Normalize one freeform entry into the import shape.
+ * Returns `{ type, name, payload, tags }` or throws.
+ */
+function normalizeEntry(input, index) {
+  if (!input || typeof input !== 'object') {
+    throw new Error(`entry[${index}]: not an object`);
+  }
+  const type = normalizeType(input.type);
+  if (!type) {
+    throw new Error(`entry[${index}]: invalid or missing type (got ${JSON.stringify(input.type)})`);
+  }
+  const name = typeof input.name === 'string' ? input.name.trim() : '';
+  if (!name) {
+    throw new Error(`entry[${index}]: name is required`);
+  }
+  // Caller may supply payload directly OR a top-level `description` /
+  // `summary` shortcut that flows into the type's primary content key.
+  const explicitPayload = input.payload && typeof input.payload === 'object' && !Array.isArray(input.payload)
+    ? { ...input.payload }
+    : {};
+  if (typeof input.description === 'string' && input.description.trim()) {
+    const key = PRIMARY_CONTENT_KEY_BY_TYPE[type];
+    // Don't overwrite an explicit payload key — the explicit one wins.
+    if (!(key in explicitPayload)) explicitPayload[key] = input.description.trim();
+  }
+  return {
+    type,
+    name,
+    payload: explicitPayload,
+    tags: normalizeTags(input.tags),
+  };
+}
+
+/**
+ * JSON: must be a non-empty array of objects.
+ */
+export function parseJsonBulk(payload) {
+  if (typeof payload !== 'string') {
+    throw new Error('json payload must be a string');
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(payload);
+  } catch (err) {
+    throw new Error(`invalid JSON: ${err.message}`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('json payload must be an array of objects');
+  }
+  return parsed.map((entry, i) => normalizeEntry(entry, i));
+}
+
+/**
+ * CSV: dependency-free parser. Header row required; supports basic
+ * double-quoted fields ("" = literal quote, embedded commas allowed).
+ * Recognized headers: `type`, `name`, `description`, `tags`. Unknown
+ * columns are folded into `payload[colName]`.
+ */
+export function parseCsvBulk(payload) {
+  if (typeof payload !== 'string') {
+    throw new Error('csv payload must be a string');
+  }
+  const rows = tokenizeCsv(payload);
+  if (rows.length < 2) {
+    throw new Error('csv requires a header row and at least one data row');
+  }
+  const headers = rows[0].map((h) => h.trim());
+  const typeIdx = headers.indexOf('type');
+  const nameIdx = headers.indexOf('name');
+  if (typeIdx < 0 || nameIdx < 0) {
+    throw new Error('csv headers must include `type` and `name`');
+  }
+  const out = [];
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r];
+    // Skip blank lines (tokenizer leaves a single empty string per blank).
+    if (row.length === 1 && row[0] === '') continue;
+    const entry = { type: row[typeIdx], name: row[nameIdx], payload: {}, tags: [] };
+    for (let c = 0; c < headers.length; c++) {
+      const h = headers[c];
+      const v = row[c] ?? '';
+      if (h === 'type' || h === 'name') continue;
+      if (h === 'tags') {
+        entry.tags = normalizeTags(v);
+      } else if (h === 'description') {
+        entry.description = v;
+      } else if (h) {
+        // Unknown column → stash in payload so users can pre-populate
+        // canon-shape keys (e.g. `personality,role,significance,…`) without
+        // a custom format.
+        if (v !== '') entry.payload[h] = v;
+      }
+    }
+    out.push(normalizeEntry(entry, r - 1));
+  }
+  if (out.length === 0) {
+    throw new Error('csv produced zero data rows');
+  }
+  return out;
+}
+
+function tokenizeCsv(text) {
+  const rows = [];
+  let row = [];
+  let cur = '';
+  let inQuotes = false;
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          cur += '"';
+          i += 2;
+          continue;
+        }
+        inQuotes = false;
+        i++;
+        continue;
+      }
+      cur += ch;
+      i++;
+      continue;
+    }
+    if (ch === '"') { inQuotes = true; i++; continue; }
+    if (ch === ',') { row.push(cur); cur = ''; i++; continue; }
+    if (ch === '\r') {
+      // Swallow lone \r; handle \r\n via the \n branch
+      if (text[i + 1] === '\n') { i++; continue; }
+      // Treat bare \r as line terminator
+      row.push(cur); cur = ''; rows.push(row); row = []; i++;
+      continue;
+    }
+    if (ch === '\n') {
+      row.push(cur); cur = ''; rows.push(row); row = []; i++;
+      continue;
+    }
+    cur += ch;
+    i++;
+  }
+  // Final cell + row (no trailing newline case).
+  row.push(cur);
+  // If the only thing in the final row is an empty cell AND there were prior
+  // rows, drop it (trailing newline artifact).
+  if (!(row.length === 1 && row[0] === '' && rows.length > 0)) {
+    rows.push(row);
+  }
+  return rows;
+}
+
+/**
+ * Markdown convention:
+ *   ## <Type>: <Name>
+ *   <body paragraph(s) — primary content for the type>
+ *   tags: <comma, separated, tags>
+ *
+ * The `tags:` line is optional and case-insensitive; everything else above
+ * it (until the next `## ` heading) becomes the body. Body lands in the
+ * type's primary content key per PRIMARY_CONTENT_KEY_BY_TYPE.
+ */
+export function parseMarkdownBulk(payload) {
+  if (typeof payload !== 'string') {
+    throw new Error('markdown payload must be a string');
+  }
+  const lines = payload.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  // Heading regex: `## <Type>: <Name>` — case-insensitive on the type, name
+  // is everything to the right of the first `:`. Heading must start the line.
+  const headingRe = /^##\s+([A-Za-z][A-Za-z-]*)\s*:\s*(.+?)\s*$/;
+  const out = [];
+  let current = null;
+  const flush = () => {
+    if (!current) return;
+    const bodyText = current.bodyLines.join('\n').trim();
+    if (bodyText) {
+      const key = PRIMARY_CONTENT_KEY_BY_TYPE[current.type];
+      current.payload[key] = bodyText;
+    }
+    out.push({
+      type: current.type,
+      name: current.name,
+      payload: current.payload,
+      tags: current.tags,
+    });
+  };
+  for (const line of lines) {
+    const m = headingRe.exec(line);
+    if (m) {
+      flush();
+      const type = normalizeType(m[1]);
+      const name = m[2].trim();
+      if (!type) {
+        // Skip unrecognized headings (e.g. `## Notes:`); they'd otherwise
+        // open a malformed section. Leave `current` null so any following
+        // body lines are dropped until the next valid heading.
+        current = null;
+        continue;
+      }
+      current = { type, name, bodyLines: [], tags: [], payload: {} };
+      continue;
+    }
+    if (!current) continue;
+    // `tags: a, b, c` (case-insensitive, anywhere in the section).
+    const tagMatch = /^\s*tags\s*:\s*(.*)$/i.exec(line);
+    if (tagMatch) {
+      current.tags = normalizeTags(tagMatch[1]);
+      continue;
+    }
+    current.bodyLines.push(line);
+  }
+  flush();
+  if (out.length === 0) {
+    throw new Error('markdown produced zero `## <Type>: <Name>` sections');
+  }
+  return out.map((entry, i) => normalizeEntry(entry, i));
+}
+
+/**
+ * Top-level dispatch — `format` is the trusted enum (already Zod-validated
+ * at the route boundary).
+ */
+export function parseBulkPayload(format, payload) {
+  if (format === 'json') return parseJsonBulk(payload);
+  if (format === 'csv') return parseCsvBulk(payload);
+  if (format === 'markdown') return parseMarkdownBulk(payload);
+  throw new Error(`unknown bulk-import format: ${format}`);
+}
+
+// === Export serializers ===================================================
+
+/**
+ * Render a single ingredient as a `## <Type>: <Name>` block with body +
+ * tags + scraps. Inverse of parseMarkdownBulk (lossy on payload keys that
+ * aren't the primary content key — they're still dumped as a JSON code
+ * fence so round-tripping power users don't lose data).
+ */
+export function ingredientToMarkdown(ing) {
+  const lines = [];
+  lines.push(`## ${capitalize(ing.type)}: ${ing.name}`);
+  lines.push('');
+  const primaryKey = PRIMARY_CONTENT_KEY_BY_TYPE[ing.type];
+  const payload = ing.payload || {};
+  const primaryBody = typeof payload[primaryKey] === 'string' ? payload[primaryKey].trim() : '';
+  if (primaryBody) {
+    lines.push(primaryBody);
+    lines.push('');
+  }
+  if (Array.isArray(ing.tags) && ing.tags.length > 0) {
+    lines.push(`tags: ${ing.tags.join(', ')}`);
+    lines.push('');
+  }
+  // Dump remaining payload keys as a JSON fence so power users keep the
+  // full canon shape on round-trip. Empty {} is suppressed.
+  const remainder = { ...payload };
+  delete remainder[primaryKey];
+  if (Object.keys(remainder).length > 0) {
+    lines.push('```json');
+    lines.push(JSON.stringify(remainder, null, 2));
+    lines.push('```');
+    lines.push('');
+  }
+  if (Array.isArray(ing.scraps) && ing.scraps.length > 0) {
+    lines.push('### Scraps');
+    lines.push('');
+    for (const s of ing.scraps) {
+      lines.push(`- (${s.sourceKind || 'unknown'}) ${truncate(s.rawText || '', 500)}`);
+    }
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+function capitalize(s) {
+  if (!s) return '';
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function truncate(s, n) {
+  return s.length > n ? `${s.slice(0, n).trimEnd()}…` : s;
+}
+
+/**
+ * Bundle the export envelope as markdown — top heading + per-ingredient
+ * blocks via ingredientToMarkdown.
+ */
+export function bundleToMarkdown(bundle) {
+  const out = [];
+  out.push(`# Catalog Export — ${bundle.ref.kind}/${bundle.ref.id}`);
+  out.push('');
+  out.push(`Exported at ${bundle.exportedAt} (${bundle.ingredients.length} ingredient${bundle.ingredients.length === 1 ? '' : 's'})`);
+  out.push('');
+  for (const ing of bundle.ingredients) {
+    out.push(ingredientToMarkdown(ing));
+  }
+  return out.join('\n');
+}
+
+/**
+ * Minimal YAML serializer for the export bundle's JSON shape. Supports the
+ * value types we actually emit (strings, numbers, booleans, null, arrays,
+ * objects). Strings always quote with double-quotes to sidestep YAML's
+ * special-token landmines (`yes`, `no`, `null`, leading-`-`, etc.).
+ *
+ * Power users who need a richer YAML round-trip can convert from the JSON
+ * format instead; we don't pull js-yaml just for this.
+ */
+export function toYamlString(value) {
+  // Top-level shape: emit as a mapping if it's a plain object, else fall
+  // back to a list/scalar at depth 0.
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    return emitMapping(value, 0).join('\n') + '\n';
+  }
+  if (Array.isArray(value)) {
+    return emitSequence(value, 0).join('\n') + '\n';
+  }
+  return emitScalar(value) + '\n';
+}
+
+function isScalar(v) {
+  return v === null || v === undefined || typeof v !== 'object';
+}
+
+function emitScalar(value) {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'null';
+  if (typeof value === 'string') return yamlQuote(value);
+  return yamlQuote(String(value));
+}
+
+function emitMapping(obj, depth) {
+  const pad = '  '.repeat(depth);
+  const keys = Object.keys(obj);
+  if (keys.length === 0) return [`${pad}{}`];
+  const out = [];
+  for (const k of keys) {
+    const v = obj[k];
+    const keyStr = yamlKey(k);
+    if (isScalar(v)) {
+      out.push(`${pad}${keyStr}: ${emitScalar(v)}`);
+      continue;
+    }
+    if (Array.isArray(v)) {
+      if (v.length === 0) {
+        out.push(`${pad}${keyStr}: []`);
+      } else {
+        out.push(`${pad}${keyStr}:`);
+        out.push(...emitSequence(v, depth));
+      }
+      continue;
+    }
+    // Object (non-null, non-array)
+    if (Object.keys(v).length === 0) {
+      out.push(`${pad}${keyStr}: {}`);
+    } else {
+      out.push(`${pad}${keyStr}:`);
+      out.push(...emitMapping(v, depth + 1));
+    }
+  }
+  return out;
+}
+
+function emitSequence(arr, depth) {
+  const pad = '  '.repeat(depth);
+  const out = [];
+  for (const v of arr) {
+    if (isScalar(v)) {
+      out.push(`${pad}- ${emitScalar(v)}`);
+      continue;
+    }
+    if (Array.isArray(v)) {
+      if (v.length === 0) {
+        out.push(`${pad}- []`);
+      } else {
+        out.push(`${pad}-`);
+        out.push(...emitSequence(v, depth + 1));
+      }
+      continue;
+    }
+    // Object: inline first key after the `- ` then indent the rest.
+    const keys = Object.keys(v);
+    if (keys.length === 0) {
+      out.push(`${pad}- {}`);
+      continue;
+    }
+    const mapLines = emitMapping(v, depth + 1);
+    // The first mapping line already carries depth+1 indentation; rewrite
+    // it to use `- ` at depth instead so the list item is properly aligned.
+    const firstPad = '  '.repeat(depth + 1);
+    const first = mapLines[0].startsWith(firstPad) ? mapLines[0].slice(firstPad.length) : mapLines[0];
+    out.push(`${pad}- ${first}`);
+    for (let i = 1; i < mapLines.length; i++) out.push(mapLines[i]);
+  }
+  return out;
+}
+
+function yamlKey(k) {
+  // Quote keys that aren't safe bare identifiers; covers spaces, colons,
+  // special tokens. Cheap and correct for our shape.
+  if (/^[A-Za-z_][A-Za-z0-9_-]*$/.test(k) && !['null', 'true', 'false', 'yes', 'no'].includes(k.toLowerCase())) {
+    return k;
+  }
+  return yamlQuote(k);
+}
+
+function yamlQuote(s) {
+  // JSON.stringify already gives us a YAML-compatible double-quoted form
+  // for the subset of strings we'll see (escapes \, ", \n, control chars).
+  return JSON.stringify(s);
+}

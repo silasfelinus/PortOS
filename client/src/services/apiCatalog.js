@@ -73,6 +73,20 @@ export const unlinkCatalogIngredient = (id, body, options) =>
 export const listCatalogIngredientsForRef = (refKind, refId, options) =>
   request(`/catalog/refs/${enc(refKind)}/${enc(refId)}/ingredients`, options);
 
+// --- Bulk import / export ----------------------------------------------
+
+export const bulkImportCatalogIngredients = (body, options) =>
+  request('/catalog/bulk-import', { method: 'POST', body: JSON.stringify(body), ...options });
+
+// Returns the raw bundle text/JSON; the caller is responsible for triggering
+// a browser download (typically by constructing a Blob and clicking an
+// anchor). For programmatic use (round-trip ingest), the JSON form is the
+// canonical shape.
+export const exportCatalogSlice = ({ refKind, refId, format = 'json' } = {}, options) => {
+  const params = new URLSearchParams({ refKind, refId, format });
+  return request(`/catalog/export?${params}`, { responseType: 'text', ...options });
+};
+
 // --- Admin --------------------------------------------------------------
 
 export const backfillCatalogEmbeddings = ({ limit, ...options } = {}) =>

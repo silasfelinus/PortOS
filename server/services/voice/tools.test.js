@@ -165,6 +165,12 @@ const activeAppsRef = { value: [
 vi.mock('../apps.js', () => ({
   getActiveApps: vi.fn(async () => activeAppsRef.value),
 }));
+const catalogItemsRef = { value: [] };
+const catalogRefsRef = { value: [] };
+vi.mock('../catalogDB.js', () => ({
+  listIngredients: vi.fn(async () => ({ items: catalogItemsRef.value, nextOffset: catalogItemsRef.value.length })),
+  listRefsForIngredient: vi.fn(async () => catalogRefsRef.value),
+}));
 // dispatch_code_agent resolves a code-capable provider when none is pinned.
 // Default the active provider to a code-capable (tui) one so the inherit path
 // is exercised; individual tests override for the API-default / substitution
@@ -1480,5 +1486,46 @@ describe('new tool intent routing', () => {
   it('routes visual-description utterances to the vision group', () => {
     expect(classifyIntent("what's on this chart?").has('vision')).toBe(true);
     expect(classifyIntent('describe the cybercity').has('vision')).toBe(true);
+  });
+  it('routes catalog lookups to the catalog group', () => {
+    expect(classifyIntent('find my character Mira').has('catalog')).toBe(true);
+    expect(classifyIntent('search my catalog for ideas').has('catalog')).toBe(true);
+    expect(classifyIntent('look up the scene in the woods').has('catalog')).toBe(true);
+    expect(classifyIntent('what time is it').has('catalog')).toBe(false);
+  });
+});
+
+describe('catalog_lookup', () => {
+  afterEach(() => {
+    catalogItemsRef.value = [];
+    catalogRefsRef.value = [];
+  });
+  it('requires a non-empty query', async () => {
+    await expect(dispatchTool('catalog_lookup', { query: '' })).rejects.toThrow(/query is required/);
+    await expect(dispatchTool('catalog_lookup', {})).rejects.toThrow(/query is required/);
+  });
+  it('returns shaped results with snippet + refsCount and ignores invalid type', async () => {
+    catalogItemsRef.value = [
+      { id: 'place-1', type: 'place', name: 'The Reach', payload: { description: 'A windswept plateau under perpetual storm clouds.' }, tags: [] },
+    ];
+    catalogRefsRef.value = [
+      { ingredientId: 'place-1', refKind: 'universe', refId: 'u-1', role: 'setting' },
+      { ingredientId: 'place-1', refKind: 'series', refId: 's-1', role: 'setting' },
+    ];
+    const res = await dispatchTool('catalog_lookup', { query: 'reach', type: 'bogus', limit: 5 });
+    expect(res.ok).toBe(true);
+    expect(res.count).toBe(1);
+    const hit = res.results[0];
+    expect(hit).toMatchObject({ id: 'place-1', type: 'place', name: 'The Reach', refsCount: 2 });
+    expect(hit.snippet).toMatch(/windswept plateau/);
+    expect(res.summary).toMatch(/Found 1 catalog match for "reach"/);
+  });
+  it('reports zero matches gracefully', async () => {
+    catalogItemsRef.value = [];
+    const res = await dispatchTool('catalog_lookup', { query: 'nope' });
+    expect(res.ok).toBe(true);
+    expect(res.count).toBe(0);
+    expect(res.results).toEqual([]);
+    expect(res.summary).toMatch(/No catalog ingredients matched "nope"/);
   });
 });

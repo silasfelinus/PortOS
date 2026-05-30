@@ -107,6 +107,37 @@ export const catalogMigrationRerunSchema = z.object({
   force: z.boolean().optional(),
 }).strict();
 
+// /bulk-import — accept a structured payload in one of three formats. The
+// route parses `payload` into a list of ingredient drafts (per the format),
+// then validates each entry against catalogIngredientCreateSchema before
+// insert. `defaults.tags` are merged onto every row; `defaults.*Ref` (if any)
+// creates a catalog_ingredient_refs row in the same transaction.
+//
+// Payload is capped at 2MB (same ceiling as scrap rawText) so a single
+// import can't blow the request body limit. Per-entry shape is validated
+// after parse, not here.
+export const catalogBulkImportSchema = z.object({
+  format: z.enum(['json', 'csv', 'markdown']),
+  payload: z.string().min(1).max(2_000_000),
+  defaults: z.object({
+    universeRef: z.string().trim().min(1).max(120).optional(),
+    seriesRef: z.string().trim().min(1).max(120).optional(),
+    workRef: z.string().trim().min(1).max(120).optional(),
+    issueRef: z.string().trim().min(1).max(120).optional(),
+    role: z.string().trim().min(1).max(64).optional(),
+    tags: z.array(tag).max(BIBLE_LIMITS.TAGS_PER_ENTRY_MAX).optional(),
+  }).strict().optional(),
+}).strict();
+
+// /export — query params for the export endpoint. Returns the bundle in
+// the requested serialization; the response is `Content-Disposition:
+// attachment` so the browser saves it directly.
+export const catalogExportQuerySchema = z.object({
+  refKind: z.enum(REF_KINDS),
+  refId: z.string().trim().min(1).max(120),
+  format: z.enum(['json', 'markdown', 'yaml']).optional(),
+}).strict();
+
 // Sync envelope shape — used by POST /api/catalog/sync/apply when a peer
 // forwards changes pulled from another instance. Each kind is optional so
 // callers can apply a partial envelope (e.g. ingredients-only).
