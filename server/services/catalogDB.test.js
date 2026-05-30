@@ -288,6 +288,44 @@ describe.skipIf(!dbReady)('catalogDB (Postgres CRUD round-trip)', () => {
     }
   });
 
+  it('patching a chunked parent rawText rebuilds its children from the new text', async () => {
+    if (!requireDb('rechunk on patch')) return;
+    const para = 'lorem ipsum dolor sit amet '.repeat(200); // ~5400 chars
+    const rawText = Array.from({ length: 5 }, (_, i) => `Para ${i}: ${para}`).join('\n\n');
+    const parent = await catalogDB.createChunkedScrap({ title: 'Editable', rawText, sourceKind: 'paste' });
+    createdScrapIds.add(parent.id);
+    const firstChildIds = (await catalogDB.listChildScraps(parent.id)).map((c) => c.id);
+    expect(firstChildIds.length).toBeGreaterThan(1);
+
+    // Edit the parent text → children must be rebuilt from the NEW corpus.
+    const newText = Array.from({ length: 6 }, (_, i) => `Edited ${i}: ${para}`).join('\n\n');
+    const updated = await catalogDB.updateScrap(parent.id, { rawText: newText });
+    expect(updated.rawText).toBe(newText);
+
+    const children = await catalogDB.listChildScraps(parent.id);
+    // Fresh children (old ones tombstoned, not returned) and they reassemble the NEW text.
+    expect(children.map((c) => c.rawText).join('')).toBe(newText);
+    for (const oldId of firstChildIds) {
+      expect(children.some((c) => c.id === oldId), `stale child ${oldId} still live`).toBe(false);
+    }
+  });
+
+  it('soft-deleting a chunked parent soft-deletes its children too', async () => {
+    if (!requireDb('soft delete cascade')) return;
+    const para = 'lorem ipsum dolor sit amet '.repeat(200);
+    const rawText = Array.from({ length: 5 }, (_, i) => `Para ${i}: ${para}`).join('\n\n');
+    const parent = await catalogDB.createChunkedScrap({ title: 'Deletable', rawText, sourceKind: 'paste' });
+    createdScrapIds.add(parent.id);
+    const childIds = (await catalogDB.listChildScraps(parent.id)).map((c) => c.id);
+    expect(childIds.length).toBeGreaterThan(1);
+
+    await catalogDB.deleteScrap(parent.id); // soft delete (the API path)
+
+    // No live children remain — they don't leak to peers as orphaned live rows.
+    expect(await catalogDB.listChildScraps(parent.id)).toHaveLength(0);
+    expect(await catalogDB.getScrap(parent.id)).toBeNull();
+  });
+
   it('exportSliceForRef bundles ingredients + scraps + refs for a ref', async () => {
     if (!requireDb('export slice')) return;
     const ing = await catalogDB.createIngredient({

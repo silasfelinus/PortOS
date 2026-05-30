@@ -312,23 +312,73 @@ export async function updateScrap(id, patch = {}) {
     }
   }
   if (fields.length === 0) return getScrap(id);
-  params.push(id);
-  // `AND deleted = false` keeps PATCH consistent with GET — a PATCH on a
-  // soft-deleted row returns zero rows so the route 404s, instead of silently
-  // mutating a row the next GET would refuse to return.
-  const result = await query(
-    `UPDATE catalog_scraps SET ${fields.join(', ')} WHERE id = $${idx} AND deleted = false RETURNING *`,
-    params,
-  );
-  return rowToScrap(result.rows[0]);
+
+  // Editing a chunked parent's rawText makes its stored child chunks stale —
+  // and extractIngredientsForScrap prefers existing children over the parent
+  // text, so a re-extract would silently union the OLD corpus. When rawText is
+  // patched on a parent/standalone scrap, rebuild the children from the new
+  // text in the SAME transaction as the parent update so the two never diverge.
+  const rechunk = patch.rawText !== undefined;
+
+  return withTransaction(async (client) => {
+    const exec = client.query.bind(client);
+    params.push(id);
+    // `AND deleted = false` keeps PATCH consistent with GET — a PATCH on a
+    // soft-deleted row returns zero rows so the route 404s, instead of silently
+    // mutating a row the next GET would refuse to return.
+    const result = await exec(
+      `UPDATE catalog_scraps SET ${fields.join(', ')} WHERE id = $${idx} AND deleted = false RETURNING *`,
+      params,
+    );
+    const updated = rowToScrap(result.rows[0]);
+    if (!updated) return null;
+
+    // Only a parent/standalone scrap rechunks — patching a child (which the UI
+    // never exposes) must not spawn grandchildren.
+    if (rechunk && updated.parentScrapId === null) {
+      // Tombstone the old children (deleted=true so the removal propagates to
+      // peers; a plain DELETE would leave them as live orphans on a synced peer)
+      // then re-derive fresh chunks from the new full text. listChildScraps
+      // filters deleted=false, so only the fresh children are ever read.
+      await exec(
+        `UPDATE catalog_scraps SET deleted = true, deleted_at = NOW()
+          WHERE parent_scrap_id = $1 AND deleted = false`,
+        [id],
+      );
+      const chunks = chunkRawText(updated.rawText);
+      if (chunks.length > 1) {
+        for (let i = 0; i < chunks.length; i++) {
+          await createScrap(
+            {
+              title: updated.title,
+              rawText: chunks[i],
+              sourceKind: updated.sourceKind,
+              metadata: updated.metadata,
+              chunkIndex: i + 1,
+              parentScrapId: id,
+            },
+            { client },
+          );
+        }
+      }
+    }
+    return updated;
+  });
 }
 
 export async function deleteScrap(id, { hard = false } = {}) {
   if (hard) {
+    // ON DELETE CASCADE (parent_scrap_id FK) removes the child chunk rows.
     await query(`DELETE FROM catalog_scraps WHERE id = $1`, [id]);
   } else {
+    // Soft-delete the parent AND its child chunks together. Children are hidden
+    // from the list but still sync as live scraps, so leaving them deleted=false
+    // would leak orphaned chunk rows to peers (the FK CASCADE only fires on a
+    // hard delete). `parent_scrap_id = id` matches the children, `id = $1` the
+    // parent; `deleted = false` avoids re-stamping deleted_at on already-gone rows.
     await query(
-      `UPDATE catalog_scraps SET deleted = true, deleted_at = NOW() WHERE id = $1`,
+      `UPDATE catalog_scraps SET deleted = true, deleted_at = NOW()
+        WHERE (id = $1 OR parent_scrap_id = $1) AND deleted = false`,
       [id],
     );
   }
