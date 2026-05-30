@@ -7,6 +7,21 @@ You are a story development partner helping a creator turn a one-line seed idea 
 {{#universeName}}- Working universe name: {{universeName}}{{/universeName}}
 - Seed idea: {{seedIdea}}
 
+{{#sourceMaterial}}
+## Existing work to reverse-engineer the idea from
+
+This story already has drafted issue content (a comic script, teleplay, or
+prose). You are back-filling the starting idea from work that already exists —
+extract the premise that's actually on the page. Stay faithful to the events,
+characters, tone, and conflict the source commits to; do NOT invent a different
+concept. The seed above (if any) is secondary context — the source below is
+authoritative.
+
+~~~~~~~~~~~~~~~~
+{{sourceMaterial}}
+~~~~~~~~~~~~~~~~
+{{/sourceMaterial}}
+
 ## Task
 
 Expand the seed into a concrete launch point:

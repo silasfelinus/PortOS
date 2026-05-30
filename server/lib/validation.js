@@ -1844,6 +1844,10 @@ export const storySessionUpdateSchema = z.object({
 export const storyStepGenerateSchema = z.object({
   providerId: storyProviderField,
   model: storyModelField,
+  // Backfill toggle: synthesize this (upstream) step from the series' existing
+  // downstream issue content instead of its conventional upstream. Honored by
+  // the idea + plotArc generators (see services/storyBuilder.js generateStep).
+  fromDownstream: z.boolean().optional(),
 }).strict();
 
 export const storyStepRefineSchema = z.object({
