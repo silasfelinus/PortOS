@@ -73,6 +73,20 @@ export const updateCatalogIngredient = (id, patch, options) =>
 export const deleteCatalogIngredient = (id, options) =>
   request(`/catalog/ingredients/${enc(id)}`, { method: 'DELETE', ...options });
 
+// --- Revision history ---------------------------------------------------
+
+export const listCatalogIngredientRevisions = (id, { limit, offset, ...options } = {}) => {
+  const params = new URLSearchParams();
+  if (limit) params.set('limit', String(limit));
+  if (offset) params.set('offset', String(offset));
+  return request(`/catalog/ingredients/${enc(id)}/revisions${params.toString() ? `?${params}` : ''}`, options);
+};
+
+export const restoreCatalogIngredientRevision = (id, revisionId, body = {}, options) =>
+  request(`/catalog/ingredients/${enc(id)}/revisions/${enc(revisionId)}/restore`, {
+    method: 'POST', body: JSON.stringify(body), ...options,
+  });
+
 // --- Linking (catalog ↔ universe/series/work) ---------------------------
 
 export const linkCatalogIngredient = (id, body, options) =>

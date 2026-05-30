@@ -297,6 +297,37 @@ CREATE INDEX IF NOT EXISTS idx_catalog_tags_label ON catalog_tags (label);
 CREATE INDEX IF NOT EXISTS idx_catalog_tags_parent ON catalog_tags (parent_id);
 CREATE INDEX IF NOT EXISTS idx_catalog_tags_sync_seq ON catalog_tags (sync_sequence);
 
+-- Append-only revision history for catalog_ingredients. A row is written by
+-- catalogDB.updateIngredient whenever name/payload/tags actually change (and a
+-- seed row on create), so the detail page can show "what changed" and offer a
+-- Restore button. `source` records WHO/WHAT drove the change ('user' edit,
+-- 'extract' ingest commit, 'refine' AI pass, 'sync' peer apply); `actor` is an
+-- optional free label (agent run id, provider name). Keyed (ingredient_id,
+-- created_at) for the per-ingredient timeline query. Retention is capped at the
+-- last N per ingredient by the app layer (CATALOG_REVISION_RETENTION, default
+-- 50) -- older rows are pruned on each write to bound growth.
+--
+-- LOCAL audit history: revisions do NOT carry a sync_sequence and are NOT
+-- federated. Each install records its own edit timeline; the synced
+-- catalog_ingredients row already LWW-merges the latest state across peers, so
+-- replicating per-edit history would multiply rows without a restore use case
+-- on the receiving peer. (If revisions ever need to federate, add a
+-- sync_sequence BIGSERIAL + a getChangesSince path and bump
+-- PORTOS_SCHEMA_VERSIONS.catalog.)
+CREATE TABLE IF NOT EXISTS catalog_ingredient_revisions (
+  id TEXT PRIMARY KEY,
+  ingredient_id TEXT NOT NULL REFERENCES catalog_ingredients(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  tags TEXT[] DEFAULT '{}',
+  source VARCHAR(16) NOT NULL DEFAULT 'user'
+    CHECK (source IN ('user', 'extract', 'refine', 'sync')),
+  actor VARCHAR(120),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_catalog_ing_revisions_ingredient
+  ON catalog_ingredient_revisions (ingredient_id, created_at DESC);
+
 -- Auto-update updated_at and bump sync_sequence on content/metadata changes.
 -- Mirrors update_memory_timestamp's pattern: skip the bump on no-content-change
 -- so cosmetic touches don't trigger sync. Respects explicit updated_at (used by

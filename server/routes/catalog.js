@@ -23,6 +23,8 @@ import {
   catalogMigrationRerunSchema,
   catalogBulkImportSchema,
   catalogExportQuerySchema,
+  catalogRevisionQuerySchema,
+  catalogRevisionRestoreSchema,
 } from '../lib/catalogValidation.js';
 import { parseBulkPayload, bundleToMarkdown, toYamlString } from '../lib/catalogBulkParsers.js';
 import { embedIngredient, embedBatch, ingredientEmbedSeed } from '../services/embeddings.js';
@@ -117,7 +119,7 @@ router.post('/scraps/:id/commit', asyncHandler(async (req, res) => {
         tags: draft.tags || [],
         embedding: e?.embedding ?? null,
         embeddingModel: e?.model ?? null,
-      }, { client });
+      }, { client, source: 'extract' });
       await catalogDB.linkIngredientToSource(ing.id, scrap.id, draft.span || null, { client });
       out.push(ing);
     }
@@ -177,17 +179,62 @@ router.post('/ingredients', asyncHandler(async (req, res) => {
 
 router.patch('/ingredients/:id', asyncHandler(async (req, res) => {
   validateRequest(catalogIngredientPatchSchema, req.body);
+  // `source`/`actor` are revision-history metadata, not ingredient columns —
+  // strip them from the DB patch and forward as the revision context instead.
+  const { source, actor, ...fieldPatch } = req.body;
   // Re-embed only when name or payload changes — tag-only edits skip embed.
   let embeddingPatch = {};
-  if (req.body.name !== undefined || req.body.payload !== undefined) {
+  if (fieldPatch.name !== undefined || fieldPatch.payload !== undefined) {
     const current = await catalogDB.getIngredient(req.params.id);
     if (!current) throw new ServerError('Ingredient not found', { status: 404 });
     embeddingPatch = await embedIngredient({
-      name: req.body.name ?? current.name,
-      payload: req.body.payload ?? current.payload,
+      name: fieldPatch.name ?? current.name,
+      payload: fieldPatch.payload ?? current.payload,
     });
   }
-  const updated = await catalogDB.updateIngredient(req.params.id, { ...req.body, ...embeddingPatch });
+  const updated = await catalogDB.updateIngredient(
+    req.params.id,
+    { ...fieldPatch, ...embeddingPatch },
+    { source, actor },
+  );
+  if (!updated) throw new ServerError('Ingredient not found', { status: 404 });
+  res.json(updated);
+}));
+
+// Revision history for one ingredient (newest first). Local audit trail — see
+// catalog_ingredient_revisions in init-db.sql; not federated.
+router.get('/ingredients/:id/revisions', asyncHandler(async (req, res) => {
+  const params = validateRequest(catalogRevisionQuerySchema, req.query);
+  // 404 the history when the ingredient itself is gone, so the UI doesn't
+  // render an empty list for a deleted/never-existed id.
+  const ing = await catalogDB.getIngredient(req.params.id);
+  if (!ing) throw new ServerError('Ingredient not found', { status: 404 });
+  res.json(await catalogDB.listIngredientRevisions(req.params.id, {
+    limit: params.limit ?? 50,
+    offset: params.offset ?? 0,
+  }));
+}));
+
+// Restore a prior revision: re-applies its name/payload/tags via
+// updateIngredient (which itself records a NEW revision for the restore, so the
+// restore is auditable and itself reversible). The restored revision must
+// belong to the path ingredient.
+router.post('/ingredients/:id/revisions/:revisionId/restore', asyncHandler(async (req, res) => {
+  const body = validateRequest(catalogRevisionRestoreSchema, req.body || {});
+  const revision = await catalogDB.getIngredientRevision(req.params.revisionId);
+  if (!revision || revision.ingredientId !== req.params.id) {
+    throw new ServerError('Revision not found', { status: 404 });
+  }
+  // Drop the per-record payload.schemaVersion marker — createIngredient/
+  // updateIngredient re-stamp it from the registry, and a restore should land
+  // the CURRENT marker, not the (possibly older) one the revision captured.
+  const { schemaVersion, ...restoredPayload } = revision.payload || {};
+  const embeddingPatch = await embedIngredient({ name: revision.name, payload: restoredPayload });
+  const updated = await catalogDB.updateIngredient(
+    req.params.id,
+    { name: revision.name, payload: restoredPayload, tags: revision.tags, ...embeddingPatch },
+    { source: body.source || 'user', actor: body.actor },
+  );
   if (!updated) throw new ServerError('Ingredient not found', { status: 404 });
   res.json(updated);
 }));

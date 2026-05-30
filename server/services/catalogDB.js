@@ -29,6 +29,24 @@ function newScrapId() {
   return `cat-scrap-${randomUUID()}`;
 }
 
+function newRevisionId() {
+  return `cat-rev-${randomUUID()}`;
+}
+
+// Cap on how many revision rows we keep per ingredient. Configurable via
+// CATALOG_REVISION_RETENTION (env) so an install that wants a deeper audit
+// trail can raise it; default 50 bounds unbounded growth from AI refine loops
+// or rapid manual edits. A non-positive / non-numeric value falls back to 50.
+export const CATALOG_REVISION_RETENTION = (() => {
+  const raw = parseInt(process.env.CATALOG_REVISION_RETENTION, 10);
+  return Number.isInteger(raw) && raw > 0 ? raw : 50;
+})();
+
+// The four revision sources, mirrored from the DB CHECK constraint. 'user' is
+// the default (manual detail-page edit); 'extract' for ingest commits, 'refine'
+// for AI refinement passes, 'sync' for peer-apply changes.
+const REVISION_SOURCES = new Set(['user', 'extract', 'refine', 'sync']);
+
 
 function rowToScrap(row) {
   if (!row) return null;
@@ -117,6 +135,20 @@ function rowToTag(row) {
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
     syncSequence: String(row.sync_sequence),
+  };
+}
+
+function rowToRevision(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    ingredientId: row.ingredient_id,
+    name: row.name,
+    payload: row.payload || {},
+    tags: row.tags || [],
+    source: row.source,
+    actor: row.actor ?? null,
+    createdAt: row.created_at.toISOString(),
   };
 }
 
@@ -218,7 +250,7 @@ export async function deleteScrap(id, { hard = false } = {}) {
 // block throws). Absent, falls through to the pool-level `query` as before.
 // See `POST /api/catalog/scraps/:id/commit` for the scrap-commit batch that
 // needs every per-draft ingredient + source-link to commit-or-rollback together.
-export async function createIngredient({ id: explicitId, type, name, payload = {}, tags = [], embedding = null, embeddingModel = null } = {}, { client } = {}) {
+export async function createIngredient({ id: explicitId, type, name, payload = {}, tags = [], embedding = null, embeddingModel = null } = {}, { client, source = 'user', actor = null } = {}) {
   if (!type || !getCatalogType(type)) throw new Error(`Invalid ingredient type: ${type}`);
   if (!name || !String(name).trim()) throw new Error('name is required');
 
@@ -258,7 +290,13 @@ export async function createIngredient({ id: explicitId, type, name, payload = {
       originInstanceId,
     ],
   );
-  return rowToIngredient(result.rows[0]);
+  const created = rowToIngredient(result.rows[0]);
+  // Seed an initial revision so the history list shows the original state and a
+  // restore can always return to "as created". Runs on the same transaction
+  // client when one was supplied (scrap-commit batch) so a mid-batch rollback
+  // drops the seed revision alongside its ingredient.
+  await recordIngredientRevision(created, { source, actor, client });
+  return created;
 }
 
 export async function getIngredient(id) {
@@ -269,7 +307,11 @@ export async function getIngredient(id) {
   return rowToIngredient(result.rows[0]);
 }
 
-export async function updateIngredient(id, patch = {}) {
+// `{ source, actor }` drive the revision-history row written on a content
+// change. `source` is one of user|extract|refine|sync (default 'user'); `actor`
+// is an optional free label (agent run id, provider). Embedding-only patches
+// (the backfill path) carry no name/payload/tags and so record NO revision.
+export async function updateIngredient(id, patch = {}, { source = 'user', actor = null } = {}) {
   const fields = [];
   const params = [];
   let idx = 1;
@@ -309,7 +351,79 @@ export async function updateIngredient(id, patch = {}) {
     `UPDATE catalog_ingredients SET ${fields.join(', ')} WHERE id = $${idx} AND deleted = false RETURNING *`,
     params,
   );
-  return rowToIngredient(result.rows[0]);
+  const updated = rowToIngredient(result.rows[0]);
+
+  // Record a revision only when a USER-facing field (name/payload/tags) was
+  // part of this patch AND the row actually exists/updated. Embedding/model-
+  // only patches skip history entirely. `payload.schemaVersion` is stripped
+  // from the stored revision diff-by-content check below, but we snapshot the
+  // committed payload verbatim so a restore round-trips the exact stored shape.
+  const touchedContent =
+    patch.name !== undefined || patch.payload !== undefined || patch.tags !== undefined;
+  if (updated && touchedContent) {
+    await recordIngredientRevision(updated, { source, actor });
+  }
+  return updated;
+}
+
+/**
+ * Insert one revision row capturing the committed state of an ingredient, then
+ * prune the ingredient's history to the most-recent CATALOG_REVISION_RETENTION
+ * rows. Called from updateIngredient (content changes) and createIngredient's
+ * seed path. `{ client }` runs the insert on a caller transaction when present.
+ */
+export async function recordIngredientRevision(ingredient, { source = 'user', actor = null, client } = {}) {
+  if (!ingredient?.id) return null;
+  const src = REVISION_SOURCES.has(source) ? source : 'user';
+  const exec = client ? client.query.bind(client) : query;
+  const result = await exec(
+    `INSERT INTO catalog_ingredient_revisions
+       (id, ingredient_id, name, payload, tags, source, actor)
+     VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
+     RETURNING *`,
+    [
+      newRevisionId(),
+      ingredient.id,
+      ingredient.name,
+      JSON.stringify(ingredient.payload || {}),
+      ingredient.tags || [],
+      src,
+      actor ? String(actor).slice(0, 120) : null,
+    ],
+  );
+  // Prune to the retention cap. Keep the newest N by created_at (tie-break on
+  // id so a same-millisecond burst prunes deterministically). DELETE the rest.
+  await exec(
+    `DELETE FROM catalog_ingredient_revisions
+      WHERE ingredient_id = $1
+        AND id NOT IN (
+          SELECT id FROM catalog_ingredient_revisions
+           WHERE ingredient_id = $1
+           ORDER BY created_at DESC, id DESC
+           LIMIT $2
+        )`,
+    [ingredient.id, CATALOG_REVISION_RETENTION],
+  );
+  return rowToRevision(result.rows[0]);
+}
+
+export async function listIngredientRevisions(ingredientId, { limit = 50, offset = 0 } = {}) {
+  const result = await query(
+    `SELECT * FROM catalog_ingredient_revisions
+      WHERE ingredient_id = $1
+      ORDER BY created_at DESC, id DESC
+      LIMIT $2 OFFSET $3`,
+    [ingredientId, Math.min(Math.max(limit, 1), 200), Math.max(offset, 0)],
+  );
+  return { items: result.rows.map(rowToRevision), nextOffset: offset + result.rows.length };
+}
+
+export async function getIngredientRevision(revisionId) {
+  const result = await query(
+    `SELECT * FROM catalog_ingredient_revisions WHERE id = $1`,
+    [revisionId],
+  );
+  return rowToRevision(result.rows[0]);
 }
 
 export async function deleteIngredient(id, { hard = false } = {}) {

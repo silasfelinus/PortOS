@@ -15,6 +15,24 @@ const captured = { sql: null, params: null };
 
 vi.mock('../lib/db.js', () => ({
   query: vi.fn(async (sql, params) => {
+    // createIngredient/reviveDeletedIngredient now also write + prune a
+    // revision row, so the fake must dispatch on the statement: only capture
+    // the catalog_ingredients write the assertions read, and no-op the
+    // revision INSERT / prune DELETE.
+    const s = sql.trim();
+    if (/^INSERT INTO catalog_ingredient_revisions/i.test(s)) {
+      const [id, ingredient_id, name] = params;
+      return {
+        rows: [{
+          id, ingredient_id, name, payload: JSON.parse(params[3]),
+          tags: params[4] || [], source: params[5], actor: params[6] ?? null,
+          created_at: new Date(),
+        }],
+      };
+    }
+    if (/^DELETE FROM catalog_ingredient_revisions/i.test(s)) {
+      return { rows: [] };
+    }
     captured.sql = sql;
     captured.params = params;
     // Echo a row shaped like catalog_ingredients so rowToIngredient works.

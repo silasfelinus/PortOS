@@ -61,10 +61,34 @@ export const catalogIngredientCreateSchema = z.object({
   tags,
 }).strict();
 
+// Revision-history sources, mirrored from the catalog_ingredient_revisions
+// DB CHECK constraint. The PATCH route accepts an optional `source`/`actor` so
+// AI-driven callers (story-builder refine) can label their edits; a manual
+// detail-page save omits them and the DB layer defaults to 'user'.
+export const REVISION_SOURCES = Object.freeze(['user', 'extract', 'refine', 'sync']);
+const revisionSource = z.enum(REVISION_SOURCES).optional();
+const revisionActor = z.string().trim().min(1).max(120).optional();
+
 export const catalogIngredientPatchSchema = z.object({
   name: z.string().trim().min(1).max(BIBLE_LIMITS.NAME_MAX).optional(),
   payload,
   tags,
+  source: revisionSource,
+  actor: revisionActor,
+}).strict();
+
+// /ingredients/:id/revisions — paginated history list. Newest first.
+export const catalogRevisionQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+}).strict();
+
+// /ingredients/:id/revisions/:revisionId/restore — re-applies a prior
+// revision's name/payload/tags. Optional `source`/`actor` label the NEW
+// revision the restore itself produces (defaults to 'user').
+export const catalogRevisionRestoreSchema = z.object({
+  source: revisionSource,
+  actor: revisionActor,
 }).strict();
 
 export const catalogIngredientQuerySchema = z.object({

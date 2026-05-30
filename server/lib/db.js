@@ -272,6 +272,27 @@ export async function ensureSchema() {
     `CREATE INDEX IF NOT EXISTS idx_catalog_tags_parent ON catalog_tags (parent_id)`,
     `CREATE INDEX IF NOT EXISTS idx_catalog_tags_sync_seq ON catalog_tags (sync_sequence)`,
 
+    // Append-only revision history for catalog_ingredients (local audit, not
+    // federated). Written by catalogDB.updateIngredient on every content change
+    // + a seed row on create; pruned to the last CATALOG_REVISION_RETENTION per
+    // ingredient at the app layer. No sync_sequence — revisions stay local; the
+    // synced ingredient row already LWW-merges the latest state across peers.
+    // Mirrors the catalog_ingredient_revisions block in init-db.sql (parity is
+    // asserted by db.catalogDdlParity.test.js).
+    `CREATE TABLE IF NOT EXISTS catalog_ingredient_revisions (
+      id TEXT PRIMARY KEY,
+      ingredient_id TEXT NOT NULL REFERENCES catalog_ingredients(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      tags TEXT[] DEFAULT '{}',
+      source VARCHAR(16) NOT NULL DEFAULT 'user'
+        CHECK (source IN ('user', 'extract', 'refine', 'sync')),
+      actor VARCHAR(120),
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_catalog_ing_revisions_ingredient
+       ON catalog_ingredient_revisions (ingredient_id, created_at DESC)`,
+
     `CREATE OR REPLACE FUNCTION update_catalog_ingredient_timestamp()
      RETURNS TRIGGER AS $$
      DECLARE

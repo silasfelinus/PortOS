@@ -5,9 +5,9 @@
  * pipeline series / issues / writers-room). Full-width page; owns its scroll.
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
-import { Sparkles, Save, Trash2, ArrowLeft, Loader2, ExternalLink, Plus, X } from 'lucide-react';
+import { Sparkles, Save, Trash2, ArrowLeft, Loader2, ExternalLink, Plus, X, History, RotateCcw } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import {
   getCatalogIngredient,
@@ -16,10 +16,13 @@ import {
   listCatalogIngredientRelations,
   linkCatalogIngredientRelation,
   unlinkCatalogIngredientRelation,
+  listCatalogIngredientRevisions,
+  restoreCatalogIngredientRevision,
 } from '../services/apiCatalog';
 import IngredientPicker from '../components/IngredientPicker';
 import TagPicker from '../components/TagPicker';
 import { getCatalogType, CATALOG_BADGE_BY_ID, RELATION_KINDS, getRelationKind } from '../lib/catalogTypes';
+import { timeAgo } from '../utils/formatters';
 
 // Per-type editor field list + badge color now come from the shared registry
 // (`client/src/lib/catalogTypes.js`). Each editor entry is `[key, label, kind]`
@@ -61,6 +64,14 @@ export default function CatalogIngredient() {
   // the ingredient record so the panel can refresh independently after add/
   // remove without re-fetching the whole detail payload.
   const [relations, setRelations] = useState({ outbound: [], inbound: [] });
+  const [revisions, setRevisions] = useState([]);
+
+  const refreshRevisions = useCallback(() => {
+    if (!id) return;
+    listCatalogIngredientRevisions(id, { limit: 50, silent: true })
+      .then((r) => setRevisions(Array.isArray(r?.items) ? r.items : []))
+      .catch(() => { /* history is non-critical — leave the panel empty */ });
+  }, [id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -78,6 +89,7 @@ export default function CatalogIngredient() {
         setTags(Array.isArray(r.tags) ? r.tags : []);
         setPayload(r.payload && typeof r.payload === 'object' ? { ...r.payload } : {});
         setLoading(false);
+        refreshRevisions();
       })
       .catch((err) => {
         if (cancelled) return;
@@ -85,7 +97,7 @@ export default function CatalogIngredient() {
         navigate('/catalog');
       });
     return () => { cancelled = true; };
-  }, [id, navigate]);
+  }, [id, navigate, refreshRevisions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -162,6 +174,22 @@ export default function CatalogIngredient() {
     // collapse), so reflect the persisted set back into the chips.
     if (Array.isArray(updated.tags)) setTags(updated.tags);
     toast.success('Saved');
+    refreshRevisions();
+  };
+
+  const handleRestore = async (revisionId) => {
+    if (!record) return;
+    const updated = await restoreCatalogIngredientRevision(record.id, revisionId, {}, { silent: true })
+      .catch((err) => { toast.error(err?.message || 'Restore failed'); return null; });
+    if (!updated) return;
+    // Re-apply the restored state into the editable form so the page reflects
+    // the rollback without a full reload.
+    setRecord((prev) => ({ ...prev, ...updated }));
+    setName(updated.name || '');
+    setTags(Array.isArray(updated.tags) ? updated.tags : []);
+    setPayload(updated.payload && typeof updated.payload === 'object' ? { ...updated.payload } : {});
+    toast.success('Restored');
+    refreshRevisions();
   };
 
   const confirmDelete = async () => {
@@ -286,6 +314,13 @@ export default function CatalogIngredient() {
           relations={relations}
           onAdd={handleAddRelation}
           onRemove={handleRemoveRelation}
+        />
+
+        <RevisionsPanel
+          revisions={revisions}
+          current={record}
+          fields={fields}
+          onRestore={handleRestore}
         />
       </div>
     </section>
@@ -439,6 +474,129 @@ function RefsPanel({ refsByKind }) {
             </div>
           ))}
         </div>
+      )}
+    </section>
+  );
+}
+
+const SOURCE_BADGE = {
+  user:    'bg-port-accent/20 text-port-accent border-port-accent/40',
+  extract: 'bg-purple-500/20 text-purple-300 border-purple-500/40',
+  refine:  'bg-port-warning/20 text-port-warning border-port-warning/40',
+  sync:    'bg-port-success/20 text-port-success border-port-success/40',
+};
+
+// Build the label set for diffing: the editor fields plus name + tags. Used to
+// render a field-by-field "what changed" diff between a revision and the
+// currently-saved record.
+function diffRevisionAgainstCurrent(revision, current, fields) {
+  const out = [];
+  const curName = current?.name || '';
+  if ((revision.name || '') !== curName) {
+    out.push({ key: '__name', label: 'Name', from: revision.name || '', to: curName });
+  }
+  const curTags = (current?.tags || []).join(', ');
+  const revTags = (revision.tags || []).join(', ');
+  if (revTags !== curTags) {
+    out.push({ key: '__tags', label: 'Tags', from: revTags, to: curTags });
+  }
+  const curPayload = current?.payload || {};
+  const revPayload = revision.payload || {};
+  for (const [key, label] of fields.map(([k, l]) => [k, l])) {
+    const from = revPayload[key] ?? '';
+    const to = curPayload[key] ?? '';
+    if (String(from) !== String(to)) out.push({ key, label, from: String(from), to: String(to) });
+  }
+  return out;
+}
+
+function RevisionsPanel({ revisions, current, fields, onRestore }) {
+  const [openId, setOpenId] = useState(null);
+  const [restoring, setRestoring] = useState(null);
+
+  const list = Array.isArray(revisions) ? revisions : [];
+
+  const handleRestore = async (id) => {
+    setRestoring(id);
+    await onRestore(id);
+    setRestoring(null);
+  };
+
+  return (
+    <section className="bg-port-card border border-port-border rounded-lg p-4">
+      <h2 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
+        <History size={15} className="text-port-accent" aria-hidden="true" /> Revision history
+        {list.length > 0 && <span className="text-xs text-gray-500 font-normal">({list.length})</span>}
+      </h2>
+      {list.length === 0 ? (
+        <p className="text-xs text-gray-500">No revisions recorded yet.</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {list.map((rev, i) => {
+            const open = openId === rev.id;
+            const isLatest = i === 0;
+            const diff = open ? diffRevisionAgainstCurrent(rev, current, fields) : [];
+            const badge = SOURCE_BADGE[rev.source] || 'bg-gray-500/20 text-gray-300 border-gray-500/40';
+            return (
+              <li key={rev.id} className="border border-port-border rounded bg-port-bg">
+                <div className="flex items-center justify-between gap-2 px-2.5 py-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setOpenId(open ? null : rev.id)}
+                    className="flex items-center gap-2 min-w-0 text-left flex-1 hover:opacity-90"
+                    aria-expanded={open}
+                  >
+                    <span className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border ${badge}`}>
+                      {rev.source}
+                    </span>
+                    <span className="text-xs text-gray-300 truncate">{rev.name || '(untitled)'}</span>
+                    {rev.actor && <span className="text-[10px] text-gray-500 truncate">· {rev.actor}</span>}
+                    <span className="text-[10px] text-gray-500 whitespace-nowrap ml-auto">{timeAgo(rev.createdAt)}</span>
+                  </button>
+                  {!isLatest && (
+                    <button
+                      type="button"
+                      onClick={() => handleRestore(rev.id)}
+                      disabled={restoring === rev.id}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] border border-port-border text-gray-400 hover:text-white disabled:opacity-50"
+                      title="Restore this revision"
+                    >
+                      {restoring === rev.id
+                        ? <Loader2 size={11} className="animate-spin" />
+                        : <RotateCcw size={11} aria-hidden="true" />} Restore
+                    </button>
+                  )}
+                  {isLatest && (
+                    <span className="text-[10px] text-gray-500 px-1 whitespace-nowrap">current</span>
+                  )}
+                </div>
+                {open && (
+                  <div className="px-2.5 pb-2 pt-0.5 border-t border-port-border">
+                    {diff.length === 0 ? (
+                      <p className="text-[11px] text-gray-500 mt-1.5">Identical to the current saved state.</p>
+                    ) : (
+                      <dl className="mt-1.5 space-y-1.5">
+                        {diff.map((d) => (
+                          <div key={d.key} className="text-[11px]">
+                            <dt className="text-gray-500 uppercase tracking-wider text-[9px] mb-0.5">{d.label}</dt>
+                            <dd className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                              <span className="px-1.5 py-0.5 rounded bg-port-error/10 text-port-error/90 break-words">
+                                {d.from || <em className="text-gray-600">empty</em>}
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded bg-port-success/10 text-port-success/90 break-words">
+                                {d.to || <em className="text-gray-600">empty</em>}
+                              </span>
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                    )}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       )}
     </section>
   );
