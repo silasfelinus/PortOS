@@ -104,10 +104,13 @@ function ftsKeys(source) {
 }
 
 describe('catalogTypes — DDL literals match registry', () => {
-  it('the type CHECK list in both SQL sources equals INGREDIENT_TYPE_IDS', () => {
-    const want = [...INGREDIENT_TYPE_IDS].sort();
-    expect(checkSet(INIT_SQL).sort()).toEqual(want);
-    expect(checkSet(DB_JS).sort()).toEqual(want);
+  it('neither SQL source hardcodes a type CHECK (the registry is the sole type gate)', () => {
+    // The DB `CHECK (type IN (…))` was dropped — type validity now lives only in
+    // the INGREDIENT_TYPES registry + its Zod enum. Assert neither init-db.sql
+    // nor db.js reintroduces a hardcoded `type IN (…)` CHECK that could silently
+    // drift from the registry (and would also have to be migrated per new type).
+    expect(checkSet(INIT_SQL)).toBeNull();
+    expect(checkSet(DB_JS)).toBeNull();
   });
 
   it('the search_tsv payload field set in both SQL sources equals FTS_PAYLOAD_FIELDS', () => {
