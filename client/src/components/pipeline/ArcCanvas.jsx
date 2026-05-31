@@ -966,6 +966,7 @@ function DeriveFromManuscriptPreview({ preview, committing, onCancel, onConfirm 
             <div className="flex items-center gap-2">
               <span className="text-[11px] text-gray-500 shrink-0">#{it.number}</span>
               <input className={inputCls} value={it.title} maxLength={DERIVE_TITLE_MAX} placeholder="Issue title"
+                aria-label={`Title for issue ${it.number}`}
                 onChange={(e) => setIssueField(it.id, 'title', e.target.value)} />
             </div>
             <textarea
@@ -973,6 +974,7 @@ function DeriveFromManuscriptPreview({ preview, committing, onCancel, onConfirm 
               rows={2}
               value={it.synopsis}
               maxLength={DERIVE_SYNOPSIS_MAX}
+              aria-label={`Synopsis for issue ${it.number}`}
               placeholder={it.ideaLocked ? 'Synopsis locked on this issue — left unchanged' : 'Issue synopsis (seeds idea.input so Verify Arc can read it)'}
               disabled={it.ideaLocked}
               onChange={(e) => setIssueField(it.id, 'synopsis', e.target.value)}
