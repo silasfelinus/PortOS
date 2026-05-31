@@ -293,7 +293,7 @@ if (activeLocalLlmBackend === 'ollama') {
 }
 
 // Swap the toolkit's generic executeCliRun for PortOS's variant that adds
-// CLI-provider-specific args building (Codex `exec -`, Gemini stdin piping,
+// CLI-provider-specific args building (Codex `exec -`, Antigravity `agy --print`,
 // Claude Code `-p -`). The toolkit's in-tree implementation is also safe
 // (no shell, prompt via stdin) — the PortOS variant exists for the per-CLI
 // invocation conventions, not for security.

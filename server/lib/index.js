@@ -58,6 +58,10 @@ export * from './writersRoomStylePresets.js';
 export * from './aiProvider.js';
 export * from './aiToolkitState.js';
 export * from './ansiStrip.js';
+// Namespaced: antigravity.js and providerModels.js both export
+// ANTIGRAVITY_CONFIGURED_DEFAULT, so a flat `export *` would trip the
+// barrel's duplicate-identifier collision check.
+export * as antigravity from './antigravity.js';
 export * from './cliProviderArgs.js';
 export * from './cliProviderRun.js';
 export * from './codexAssistantExtract.js';

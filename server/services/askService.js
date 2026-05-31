@@ -32,6 +32,7 @@ import { getEvents as getCalendarEvents } from './calendarSync.js';
 import { tokenize as bm25Tokenize, STOP_WORDS } from '../lib/bm25.js';
 import { VALID_MODES as STORAGE_VALID_MODES } from './askConversations.js';
 import { resolveCliModel } from '../lib/providerModels.js';
+import { ensureAntigravityPrintArgs, isAntigravityCliProvider } from '../lib/antigravity.js';
 import { ensureProviderReady as ensureOllamaProviderReady } from './ollamaManager.js';
 
 // Re-export so the route can keep importing modes via askService — but
@@ -554,10 +555,14 @@ async function* streamCompletion(provider, model, prompt, signal) {
   // sources + history are concatenated, which exceeds OS argv limits
   // (especially on Windows ~32k).
   const { spawn } = await import('child_process');
-  const args = [...(provider.args || [])];
+  const args = isAntigravityCliProvider(provider)
+    ? ensureAntigravityPrintArgs(provider.args || [])
+    : [...(provider.args || [])];
   if (provider.headlessArgs?.length) args.push(...provider.headlessArgs);
   const cliModel = resolveCliModel(model);
-  if (provider.id === 'gemini-cli') {
+  if (isAntigravityCliProvider(provider)) {
+    // Antigravity (`agy`) picks its model from its own configuration.
+  } else if (provider.id === 'gemini-cli') {
     if (!args.includes('--output-format') && !args.includes('-o')) args.push('--output-format', 'text');
     if (cliModel) args.push('--model', cliModel);
   } else if (cliModel) {

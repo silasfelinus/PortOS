@@ -298,7 +298,7 @@ const GROUP_INTENT = {
   // in speech). A false positive only OFFERS the tool to the LLM (which still
   // has to choose it), and the tool is a no-op unless codeAgent.enabled
   // (pipeline.js strips it from the spec list when off).
-  code: /\b(?:have (?:claude|codex|gemini|the agent|an agent)\b|dispatch (?:a |an )?(?:coding |code )?agent|spin up an agent|code (?:it )?up|open a pr|pull request|refactor|(?:implement|debug|rewrite|patch)\b[^.!?\n]{0,40}\b(?:bug|tests?|function|method|build|lint|type ?error|error|code|file|module|endpoint|route|component|class|api|schema|migration|script|flag|regression|handler|parser|service|hook|query|registry|config)\b|fix (?:the |a |an |my )?(?:bug|test|tests|failing|function|method|build|lint|type|error|code|file|module|endpoint|route|component)|write (?:a |the |some )?(?:unit |integration )?tests?|add (?:a |an |the )?(?:flag|function|method|endpoint|route|test|migration)\b|(?:how(?:'s| is| are)?|status of|progress on|what(?:'s| is)? happening (?:with|on)|where (?:are|is) (?:we|it|that|the))\b[^.!?\n]{0,40}\b(?:coding (?:task|agent|job)|code agent|dispatched (?:task|job|agent)|pull request|the agent|the pr|that pr|my pr|the task)\b|\bis (?:the |that |my )?(?:coding |code )?(?:agent|task) (?:still |yet )?(?:running|going|working|done|finished))/i,
+  code: /\b(?:have (?:claude|codex|antigravity|gemini|the agent|an agent)\b|dispatch (?:a |an )?(?:coding |code )?agent|spin up an agent|code (?:it )?up|open a pr|pull request|refactor|(?:implement|debug|rewrite|patch)\b[^.!?\n]{0,40}\b(?:bug|tests?|function|method|build|lint|type ?error|error|code|file|module|endpoint|route|component|class|api|schema|migration|script|flag|regression|handler|parser|service|hook|query|registry|config)\b|fix (?:the |a |an |my )?(?:bug|test|tests|failing|function|method|build|lint|type|error|code|file|module|endpoint|route|component)|write (?:a |the |some )?(?:unit |integration )?tests?|add (?:a |an |the )?(?:flag|function|method|endpoint|route|test|migration)\b|(?:how(?:'s| is| are)?|status of|progress on|what(?:'s| is)? happening (?:with|on)|where (?:are|is) (?:we|it|that|the))\b[^.!?\n]{0,40}\b(?:coding (?:task|agent|job)|code agent|dispatched (?:task|job|agent)|pull request|the agent|the pr|that pr|my pr|the task)\b|\bis (?:the |that |my )?(?:coding |code )?(?:agent|task) (?:still |yet )?(?:running|going|working|done|finished))/i,
   ui: UI_INTENT_RE,
   // Creative catalog lookups — "find my character X", "what scenes feature Y",
   // "look up the place named Z", "search my catalog for …". Tight enough that
@@ -1914,7 +1914,7 @@ const TOOLS = [
       const model = typeof codeAgent.model === 'string' ? codeAgent.model.trim() : '';
 
       // Resolve a code-capable provider. A coding agent must run a CLI/TUI
-      // provider (Claude Code, Codex, Gemini CLI, …); an API backend (LM Studio
+      // provider (Claude Code, Codex, Antigravity CLI, …); an API backend (LM Studio
       // / Ollama / OpenAI-compatible) can't, and the spawner would otherwise
       // fall through to the Claude CLI spawn config with a non-Claude model name
       // (buildCliSpawnConfig defaults to claude). Validate BOTH the inherited
@@ -1941,7 +1941,7 @@ const TOOLS = [
           return {
             ok: false,
             error: 'no code-capable provider',
-            summary: "Your AI provider can't run a coding agent. Enable a CLI provider like Claude Code, Codex, or Gemini under Settings, AI Providers, then try again.",
+            summary: "Your AI provider can't run a coding agent. Enable a CLI provider like Claude Code, Codex, or Antigravity under Settings, AI Providers, then try again.",
           };
         }
         resolvedProvider = codeProvider.id;

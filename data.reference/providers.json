@@ -49,22 +49,20 @@
       "enabled": true,
       "envVars": {}
     },
-    "gemini-cli": {
-      "id": "gemini-cli",
-      "name": "Gemini CLI",
+    "antigravity-cli": {
+      "id": "antigravity-cli",
+      "name": "Antigravity CLI",
       "type": "cli",
-      "command": "gemini",
-      "args": [],
-      "models": ["gemini-3.1-pro", "gemini-3-flash", "gemini-2.5-pro", "gemini-2.5-flash"],
-      "defaultModel": "gemini-2.5-flash",
-      "lightModel": "gemini-2.5-flash",
-      "mediumModel": "gemini-3-flash",
-      "heavyModel": "gemini-3.1-pro",
+      "command": "agy",
+      "args": ["--print", "--dangerously-skip-permissions"],
+      "models": ["antigravity-configured-default"],
+      "defaultModel": "antigravity-configured-default",
+      "lightModel": "antigravity-configured-default",
+      "mediumModel": "antigravity-configured-default",
+      "heavyModel": "antigravity-configured-default",
       "timeout": 300000,
       "enabled": true,
-      "envVars": {
-        "GEMINI_SANDBOX": "false"
-      }
+      "envVars": {}
     },
     "codex-tui": {
       "id": "codex-tui",
@@ -100,22 +98,20 @@
       "tuiPromptDelayMs": 2500,
       "tuiIdleTimeoutMs": 180000
     },
-    "gemini-tui": {
-      "id": "gemini-tui",
-      "name": "Gemini TUI",
+    "antigravity-tui": {
+      "id": "antigravity-tui",
+      "name": "Antigravity TUI",
       "type": "tui",
-      "command": "gemini",
-      "args": [],
-      "models": ["gemini-3.1-pro", "gemini-3-flash", "gemini-2.5-pro", "gemini-2.5-flash"],
-      "defaultModel": "gemini-2.5-flash",
-      "lightModel": "gemini-2.5-flash",
-      "mediumModel": "gemini-3-flash",
-      "heavyModel": "gemini-3.1-pro",
+      "command": "agy",
+      "args": ["--dangerously-skip-permissions"],
+      "models": ["antigravity-configured-default"],
+      "defaultModel": "antigravity-configured-default",
+      "lightModel": "antigravity-configured-default",
+      "mediumModel": "antigravity-configured-default",
+      "heavyModel": "antigravity-configured-default",
       "timeout": 600000,
       "enabled": false,
-      "envVars": {
-        "GEMINI_SANDBOX": "false"
-      },
+      "envVars": {},
       "tuiPromptDelayMs": 2500,
       "tuiIdleTimeoutMs": 180000
     },

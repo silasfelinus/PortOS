@@ -68,6 +68,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 |---|---|
 | `aiToolkit/` | Vendored toolkit (providers + runner + prompts + status). See `aiToolkit/index.js`. |
 | `aiToolkitState.js` | Module-level singleton for the toolkit instance shared by the `providers`/`runner`/`promptService` shims — `setAIToolkitInstance` / `requireToolkit` (throws `AI_TOOLKIT_NOT_INITIALIZED`) / `getAIToolkitInstance` (no-throw for cleanup paths). |
+| `antigravity.js` | Antigravity (`agy`) CLI provider helpers — id/sentinel constants (`ANTIGRAVITY_CLI_ID`, `ANTIGRAVITY_CONFIGURED_DEFAULT`, `LEGACY_GEMINI_*`), `isAntigravityCommand`/`isAntigravityCliProvider` predicates, and `ensureAntigravityPrintArgs`/`ensureAntigravityTuiArgs`/`stripAntigravityUnsupportedArgs` argv normalizers (strip legacy Gemini `--yolo`/`-m`/`--output-format`). |
 | `aiProvider.js` | Shared AI provider utilities for LLM calls. |
 | `promptRunner.js` | Shared LLM runner wrapper. |
 | `tuiPromptRunner.js` | One-shot TUI prompt runner (PTY-driven). |

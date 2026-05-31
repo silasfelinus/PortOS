@@ -561,12 +561,13 @@ export const searchQuerySchema = z.object({
 // =============================================================================
 
 // Reviewer choices for the Review Loop. `copilot` requests a native GitHub
-// Copilot review; `claude`/`gemini`/`codex` instruct the review-loop follow-up
+// Copilot review; `claude`/`antigravity`/`codex` instruct the review-loop follow-up
 // agent to invoke the named CLI to critique the PR diff; `lmstudio`/`ollama`
 // route the diff through PortOS's local code-review endpoint
 // (`POST /api/code-review/local`) which runs the configured local LLM model.
 // Mirrored in client/src/components/cos/constants.js → REVIEWER_OPTIONS.
-export const REVIEWER_VALUES = ['copilot', 'claude', 'gemini', 'codex', 'lmstudio', 'ollama'];
+export const REVIEWER_VALUES = ['copilot', 'claude', 'antigravity', 'codex', 'lmstudio', 'ollama'];
+export const REVIEWER_ALIASES = { gemini: 'antigravity' };
 export const DEFAULT_REVIEWER = 'copilot';
 export const DEFAULT_REVIEWERS = ['copilot'];
 // Reviewers that resolve to a local-LLM backend (rather than a CLI or GitHub
@@ -594,10 +595,19 @@ export function normalizeReviewers(meta, fallback = DEFAULT_REVIEWERS) {
   const seen = new Set();
   const out = [];
   for (const r of source) {
-    if (REVIEWER_VALUES.includes(r) && !seen.has(r)) { seen.add(r); out.push(r); }
+    const normalized = REVIEWER_ALIASES[r] || r;
+    if (REVIEWER_VALUES.includes(normalized) && !seen.has(normalized)) { seen.add(normalized); out.push(normalized); }
   }
   if (out.length) return out;
-  const fallbackList = Array.isArray(fallback) ? fallback.filter((r) => REVIEWER_VALUES.includes(r)) : [];
+  const fallbackList = [];
+  const fallbackSeen = new Set();
+  for (const r of Array.isArray(fallback) ? fallback : []) {
+    const normalized = REVIEWER_ALIASES[r] || r;
+    if (REVIEWER_VALUES.includes(normalized) && !fallbackSeen.has(normalized)) {
+      fallbackSeen.add(normalized);
+      fallbackList.push(normalized);
+    }
+  }
   return fallbackList.length ? [...fallbackList] : [...DEFAULT_REVIEWERS];
 }
 
@@ -656,10 +666,13 @@ export const createCosTaskSchema = z.object({
     z.boolean().optional()
   ),
   reviewer: z.preprocess(
-    v => v === '' ? undefined : v,
+    v => v === '' ? undefined : (typeof v === 'string' ? (REVIEWER_ALIASES[v] ?? v) : v),
     z.enum(REVIEWER_VALUES).optional()
   ),
-  reviewers: z.array(z.enum(REVIEWER_VALUES)).optional(),
+  reviewers: z.preprocess(
+    v => Array.isArray(v) ? v.map(r => (typeof r === 'string' ? (REVIEWER_ALIASES[r] ?? r) : r)) : v,
+    z.array(z.enum(REVIEWER_VALUES)).optional()
+  ),
   reviewStopMode: z.enum(REVIEW_STOP_MODES).optional(),
   reviewerApplies: z.preprocess(
     v => v === 'true' ? true : v === 'false' ? false : v,
@@ -783,7 +796,10 @@ export const featureProviderConfigSchema = z.object({
 // `lmstudioModel` / `ollamaModel` are the installed model ids the local-LLM
 // reviewer should run with (empty/undefined = pick the active default model).
 export const codeReviewSettingsSchema = z.object({
-  reviewers: z.array(z.enum(REVIEWER_VALUES)).optional(),
+  reviewers: z.preprocess(
+    v => Array.isArray(v) ? v.map(r => (typeof r === 'string' ? (REVIEWER_ALIASES[r] ?? r) : r)) : v,
+    z.array(z.enum(REVIEWER_VALUES)).optional()
+  ),
   stopMode: z.enum(REVIEW_STOP_MODES).optional(),
   reviewerApplies: z.boolean().optional(),
   lmstudioModel: z.preprocess(emptyToUndefined, z.string().optional()),
@@ -1221,9 +1237,10 @@ export function sanitizeTaskMetadata(raw) {
       hasKeys = true;
     }
   }
-  // `reviewer` is a legacy single constrained string (copilot/claude/gemini/codex).
-  if (Object.prototype.hasOwnProperty.call(raw, 'reviewer') && REVIEWER_VALUES.includes(raw.reviewer)) {
-    clean.reviewer = raw.reviewer;
+  // `reviewer` is a legacy single constrained string.
+  const normalizedReviewer = REVIEWER_ALIASES[raw.reviewer] || raw.reviewer;
+  if (Object.prototype.hasOwnProperty.call(raw, 'reviewer') && REVIEWER_VALUES.includes(normalizedReviewer)) {
+    clean.reviewer = normalizedReviewer;
     hasKeys = true;
   }
   // `reviewers` is the ordered multi-reviewer list — filter to known values, dedupe, preserve order.
@@ -1231,7 +1248,8 @@ export function sanitizeTaskMetadata(raw) {
     const seen = new Set();
     const list = [];
     for (const r of raw.reviewers) {
-      if (REVIEWER_VALUES.includes(r) && !seen.has(r)) { seen.add(r); list.push(r); }
+      const normalized = REVIEWER_ALIASES[r] || r;
+      if (REVIEWER_VALUES.includes(normalized) && !seen.has(normalized)) { seen.add(normalized); list.push(normalized); }
     }
     if (list.length) { clean.reviewers = list; hasKeys = true; }
   }
