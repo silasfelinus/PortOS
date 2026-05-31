@@ -117,7 +117,7 @@ export function VoiceTab() {
       .finally(() => setLoading(false));
     // Load the provider registry once. The conversational brain can only
     // stream through `api`-type providers (filtered here); the code-agent
-    // picker draws from `cli`/`tui` providers (Claude Code, Codex, Gemini) —
+    // picker draws from `cli`/`tui` providers (Claude Code, Codex, Antigravity) —
     // those are the ones that can actually edit code. Silent: the empty-list
     // fallback is the error UI, so don't also pop a toast.
     getProviders({ silent: true })

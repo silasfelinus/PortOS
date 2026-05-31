@@ -90,7 +90,7 @@ export default function TasteTab({ onRefresh }) {
   const loadProviders = useCallback(async () => {
     const data = await api.getProviders().catch(() => ({ providers: [] }));
     // Taste summaries / personalized questions need a chat-completions endpoint —
-    // CLI providers (Claude Code, Codex, Gemini CLI) can't run them. Filter the
+    // CLI providers (Claude Code, Codex, Antigravity CLI) can't run them. Filter the
     // picker so the user can't accidentally select an incompatible default.
     const apiProviders = (data.providers || []).filter(p => p.enabled && isApiProvider(p));
     setProviders(apiProviders);
