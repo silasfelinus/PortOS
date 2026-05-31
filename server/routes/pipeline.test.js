@@ -897,6 +897,30 @@ describe('pipeline routes', () => {
     spy.mockRestore();
   });
 
+  it('POST /issues/:id/stages/storyboards/extract-scenes does NOT pair a new providerOverride with the stale series model', async () => {
+    const extractor = await import('../lib/sceneExtractor.js');
+    const spy = vi.spyOn(extractor, 'extractScenes').mockResolvedValue({
+      extracted: { title: 'T', logline: 'L', scenes: [] },
+      runId: 'r', providerId: 'mock', model: 'mock-model',
+    });
+    const app = makeApp();
+    const uni = await universeSvc.createUniverse({ name: 'U' });
+    const ser = await request(app).post('/api/pipeline/series')
+      .send({ name: 'S', universeId: uni.id, llm: { provider: 'codex', model: 'gpt-5-codex' } });
+    const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
+    await request(app).patch(`/api/pipeline/issues/${iss.body.id}`).send({
+      stages: { teleplay: { status: 'ready', output: '## TEASER\n\n**INT. VAULT — NIGHT**\n\nThey break in.' } },
+    });
+    const r = await request(app)
+      .post(`/api/pipeline/issues/${iss.body.id}/stages/storyboards/extract-scenes`)
+      .send({ from: 'teleplay', providerOverride: 'anthropic' });
+    expect(r.status).toBe(200);
+    // Provider switched to anthropic — the codex model must NOT ride along.
+    expect(spy.mock.calls[0][0].providerOverride).toBe('anthropic');
+    expect(spy.mock.calls[0][0].modelOverride).toBeUndefined();
+    spy.mockRestore();
+  });
+
   it('POST /issues/:id/stages/storyboards/extract-scenes with from=prose routes to the prose stage output', async () => {
     const extractor = await import('../lib/sceneExtractor.js');
     const spy = vi.spyOn(extractor, 'extractScenes').mockResolvedValue({

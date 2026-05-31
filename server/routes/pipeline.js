@@ -1454,6 +1454,13 @@ router.post('/issues/:id/stages/storyboards/extract-scenes', asyncHandler(async 
   // with empty canon — extractScenes can still produce scenes from the
   // source text alone, just without character/place/object grounding.
   const canon = await getSeriesCanon(series);
+  // A model id is provider-specific, so only inherit the series model when the
+  // effective provider is still the series provider — otherwise an override
+  // provider would be paired with a foreign model id and fail (same guard as
+  // the extract-canon route). When the override switches providers without
+  // naming a model, leave it blank so the new provider's default resolves.
+  const sceneProviderMatchesSeries = !body.providerOverride
+    || body.providerOverride === (series.llm?.provider || '');
   const result = await extractScenes({
     source,
     sourceKind,
@@ -1464,7 +1471,9 @@ router.post('/issues/:id/stages/storyboards/extract-scenes', asyncHandler(async 
     series: { name: series.name, styleNotes: series.styleNotes },
     issue: { number: issue.number, title: issue.title },
     providerOverride: body.providerOverride || series.llm?.provider || undefined,
-    modelOverride: body.modelOverride || series.llm?.model || undefined,
+    modelOverride: body.modelOverride
+      || (sceneProviderMatchesSeries ? series.llm?.model : undefined)
+      || undefined,
     tag: `pipeline-storyboards-extract-${sourceKind}`,
   });
 
