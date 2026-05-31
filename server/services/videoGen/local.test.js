@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { join } from 'path';
+import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
 
 // ─── dep mocks (must be declared before the module import) ───────────────────
@@ -101,12 +102,13 @@ vi.mock('child_process', () => {
 // ─── module under test ───────────────────────────────────────────────────────
 // Import AFTER all vi.mock calls so the hoisted mocks are in place.
 let generateChainedVideo;
+let generateVideo;
 let videoGenEvents;
 
 beforeEach(async () => {
   vi.resetModules();
   // Re-import fresh copies so mock reset above applies cleanly
-  ({ generateChainedVideo } = await import('./local.js'));
+  ({ generateChainedVideo, generateVideo } = await import('./local.js'));
   ({ videoGenEvents } = await import('./events.js'));
 });
 
@@ -337,5 +339,51 @@ describe('generateChainedVideo — extend chain arg routing', () => {
     // extractLastFrame was called — we confirm no extend-mode bypass happened
     // by asserting the chain completed its 2 chunks.
     expect(innerJobIds).toHaveLength(2);
+  });
+});
+
+describe('generateVideo — ltx2 FFLF image resizing', () => {
+  it('resizes both start and end frames before passing them to the ltx2 helper', async () => {
+    const { execFile, spawn } = await import('child_process');
+    const execFileMock = vi.mocked(execFile);
+    const spawnMock = vi.mocked(spawn);
+    execFileMock.mockClear();
+    spawnMock.mockClear();
+
+    const jobId = 'fflf-two-frame-resize-test';
+    const sourceImagePath = '/mock/uploads/start.png';
+    const lastImagePath = '/mock/uploads/end.png';
+
+    await generateVideo({
+      jobId,
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'interpolate the two anchors',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+      mode: 'fflf',
+      sourceImagePath,
+      lastImagePath,
+    });
+
+    expect(execFileMock).toHaveBeenCalledTimes(2);
+    expect(execFileMock.mock.calls.map((call) => call[1][1])).toEqual([
+      sourceImagePath,
+      lastImagePath,
+    ]);
+
+    const renderCall = spawnMock.mock.calls.find(
+      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+        && Array.isArray(args)
+        && args.includes('--mode')
+        && args.includes('fflf'),
+    );
+    expect(renderCall).toBeTruthy();
+
+    const args = renderCall[1];
+    expect(args[args.indexOf('--image') + 1]).toBe(join(tmpdir(), `resized-src-${jobId}.png`));
+    expect(args[args.indexOf('--last-image') + 1]).toBe(join(tmpdir(), `resized-last-${jobId}.png`));
   });
 });

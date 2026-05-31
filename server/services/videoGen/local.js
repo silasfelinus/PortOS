@@ -557,20 +557,23 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   const parsedNumFrames = Number(numFrames);
   const parsedFps = Number(fps);
 
-  // Resize source image to match the model resolution. mlx_video requires
-  // exact dimensions (it doesn't auto-pad), and pixie-forge learned the
-  // hard way that letting the model upscale a portrait reference makes
-  // garbled output.
+  // Resize conditioning images to match the model resolution. mlx_video and
+  // ltx2 both require exact dimensions (they don't auto-pad), and pixie-forge
+  // learned the hard way that letting the model upscale a portrait reference
+  // makes garbled output.
   //
   // Skip the last-image resize when buildArgs / the Python child won't
   // actually consume it:
-  //  - On macOS/mlx_video the FFLF fallback only triggers in `fflf` mode
-  //    AND when no source image is also provided (single conditioning frame
-  //    only). Anything else is a no-op, so resizing is wasted ffmpeg work.
+  //  - ltx2 true-FFLF consumes both --image and --last-image, so resize the
+  //    last frame even when a source image is also present.
+  //  - On macOS/mlx_video the FFLF fallback only consumes the last image when
+  //    no source image is also provided (single conditioning frame only).
+  //    Anything else is a no-op, so resizing is wasted ffmpeg work.
   //  - On Windows we forward --last-image to generate_win.py so it can log
   //    status, but the diffusers pipeline only reads --image — the script
   //    never opens the last-frame file, so no resize is needed there either.
-  const lastImageWillBeUsed = !!lastImagePath && !IS_WIN && mode === 'fflf' && !sourceImagePath;
+  const lastImageWillBeUsed = !!lastImagePath && !IS_WIN && mode === 'fflf'
+    && (model.runtime === 'ltx2' || !sourceImagePath);
   // A non-null `keyframes` that ISN'T a length-≥2 array is malformed —
   // fail fast instead of silently dropping it (which would produce an
   // unexpected text/i2v render with the user's anchors ignored). The
