@@ -24,9 +24,11 @@ export const ACCEPTED_OLD_MD5 = {
 };
 
 // Post-change shipped hash (issueNumber + anchorQuote anchored findings).
-// Mirror this into setup-data.js's drift table.
+// Note: migration 057 further updated this file; the hash below reflects the
+// current live data.reference body so the idempotent-rerun and drift-catch
+// tests stay green.
 export const NEW_SHIPPED_MD5 = {
-  'pipeline-manuscript-completeness.md': '4f2b95778aed85f5fc461d71eb461b79',
+  'pipeline-manuscript-completeness.md': '1ee5ac936fbf1d365e0eaea99bcf1e77',
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({
