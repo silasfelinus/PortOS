@@ -54,6 +54,26 @@ async function loadStageText(issueId, stageId) {
   return stageTextOf(issue.stages?.[stageId]);
 }
 
+// Locate the `find` span to replace. `indexOf` alone edits the FIRST match,
+// which silently corrupts the wrong spot when `find` recurs in the issue. When
+// it's ambiguous, disambiguate by the finding's `anchorQuote` — pick the
+// occurrence nearest the anchor — so the edit lands where the comment points.
+// Returns the start index, or -1 if `find` isn't present at all.
+function locateFind(text, find, anchorQuote) {
+  const first = text.indexOf(find);
+  if (first === -1) return -1;
+  if (text.indexOf(find, first + 1) === -1) return first; // unique — no ambiguity
+  const anchorIdx = anchorQuote ? text.indexOf(anchorQuote) : -1;
+  if (anchorIdx === -1) return first; // can't disambiguate — first match
+  let best = first;
+  let bestDist = Math.abs(first - anchorIdx);
+  for (let i = text.indexOf(find, first + 1); i !== -1; i = text.indexOf(find, i + 1)) {
+    const dist = Math.abs(i - anchorIdx);
+    if (dist < bestDist) { best = i; bestDist = dist; }
+  }
+  return best;
+}
+
 // Shape one manuscript section response from a freshly-written stage.
 const sectionFrom = (issue, stageId, stage) => ({
   issueId: issue.id,
@@ -150,7 +170,7 @@ export async function acceptManuscriptFix(seriesId, { commentId, find, replace }
 
   const { issue, stage } = await updateStageWithLatest(issueId, stageId, (cur) => {
     const text = stageTextOf(cur);
-    const idx = text.indexOf(find);
+    const idx = locateFind(text, find, comment.anchorQuote);
     if (idx === -1) {
       throw makeErr('Anchor text is no longer present in the manuscript — regenerate the fix', ERR_VALIDATION);
     }

@@ -143,6 +143,17 @@ describe('manuscriptFix', () => {
     expect(after.stages.prose.output).toBe('The hero walked in. She left, but paused.');
   });
 
+  it('acceptManuscriptFix targets the occurrence nearest the anchorQuote when find is ambiguous', async () => {
+    // "the door" appears twice; the comment anchors the SECOND one.
+    const { s, issue } = await setupSeriesWithDraft('She opened the door. Later, she slammed the door shut.');
+    const seeded = await review.seedReviewFromFindings(s.id, [finding({ anchorQuote: 'slammed the door shut', problem: 'weak verb' })]);
+    const result = await fixer.acceptManuscriptFix(s.id, { commentId: seeded.comments[0].id, find: 'the door', replace: 'the oak door' });
+    // The first "the door" is untouched; the one by the anchor is edited.
+    expect(result.section.content).toBe('She opened the door. Later, she slammed the oak door shut.');
+    const after = await issuesSvc.getIssue(issue.id);
+    expect(after.stages.prose.output).toBe('She opened the door. Later, she slammed the oak door shut.');
+  });
+
   it('acceptManuscriptFix throws when the anchor text is gone', async () => {
     const { s } = await setupSeriesWithDraft();
     const seeded = await review.seedReviewFromFindings(s.id, [finding()]);
