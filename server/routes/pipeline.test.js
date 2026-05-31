@@ -1290,6 +1290,60 @@ describe('pipeline routes', () => {
     spy.mockRestore();
   });
 
+  it('POST /issues/:id/stages/prose/extract-canon does NOT pair a new providerOverride with the stale series model', async () => {
+    const canonSvc = await import('../services/universeCanon.js');
+    const spy = vi.spyOn(canonSvc, 'extractCanonFromProse').mockResolvedValue({
+      universe: { id: 'u', characters: [], places: [], objects: [] },
+      results: { characters: { extracted: [] }, places: { extracted: [] }, objects: { extracted: [] } },
+      failures: [],
+    });
+
+    const app = makeApp();
+    const uni = await universeSvc.createUniverse({ name: 'U' });
+    // Series LLM is codex/gpt-5-codex; the retry picks anthropic + Default model.
+    const ser = await request(app).post('/api/pipeline/series')
+      .send({ name: 'S', universeId: uni.id, llm: { provider: 'codex', model: 'gpt-5-codex' } });
+    const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
+    await request(app).patch(`/api/pipeline/issues/${iss.body.id}`).send({
+      stages: { prose: { status: 'ready', output: 'some prose' } },
+    });
+    const r = await request(app)
+      .post(`/api/pipeline/issues/${iss.body.id}/stages/prose/extract-canon`)
+      .send({ providerOverride: 'anthropic' });
+    expect(r.status).toBe(200);
+    // Provider switched, but the series' codex model must NOT be forwarded to
+    // anthropic — leave modelOverride unset so anthropic's default resolves.
+    expect(spy.mock.calls[0][1].providerOverride).toBe('anthropic');
+    expect(spy.mock.calls[0][1].modelOverride).toBeUndefined();
+    spy.mockRestore();
+  });
+
+  it('POST /issues/:id/stages/prose/extract-canon keeps the series model when the override matches the series provider', async () => {
+    const canonSvc = await import('../services/universeCanon.js');
+    const spy = vi.spyOn(canonSvc, 'extractCanonFromProse').mockResolvedValue({
+      universe: { id: 'u', characters: [], places: [], objects: [] },
+      results: { characters: { extracted: [] }, places: { extracted: [] }, objects: { extracted: [] } },
+      failures: [],
+    });
+
+    const app = makeApp();
+    const uni = await universeSvc.createUniverse({ name: 'U' });
+    const ser = await request(app).post('/api/pipeline/series')
+      .send({ name: 'S', universeId: uni.id, llm: { provider: 'codex', model: 'gpt-5-codex' } });
+    const iss = await request(app).post(`/api/pipeline/series/${ser.body.id}/issues`).send({ title: 'I' });
+    await request(app).patch(`/api/pipeline/issues/${iss.body.id}`).send({
+      stages: { prose: { status: 'ready', output: 'some prose' } },
+    });
+    // No override at all → inherit both series provider and model.
+    const r = await request(app)
+      .post(`/api/pipeline/issues/${iss.body.id}/stages/prose/extract-canon`)
+      .send({});
+    expect(r.status).toBe(200);
+    expect(spy.mock.calls[0][1].providerOverride).toBe('codex');
+    expect(spy.mock.calls[0][1].modelOverride).toBe('gpt-5-codex');
+    spy.mockRestore();
+  });
+
   it('POST /issues/:id/stages/prose/extract-canon stamps `failed` before re-throwing on a hard failure', async () => {
     const canonSvc = await import('../services/universeCanon.js');
     const issuesSvc = await import('../services/pipeline/issues.js');

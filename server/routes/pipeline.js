@@ -1601,7 +1601,16 @@ router.post('/issues/:id/stages/:stageId/extract-canon', asyncHandler(async (req
   // storyboards/extract-scenes) so a manual extract honors the provider/model
   // picked in the series header instead of the global default.
   const provider = body.providerOverride || series.llm?.provider || '';
-  const model = body.model || series.llm?.model || '';
+  // A model id is provider-specific. Only inherit the series model when the
+  // EFFECTIVE provider is still the series provider — otherwise the retry
+  // picker's whole point (switch provider, keep "Default model") would forward
+  // e.g. `providerOverride: anthropic` paired with a Codex/OpenAI model id and
+  // fail. When the user overrode to a different provider without naming a
+  // model, leave it blank so the extractor resolves that provider's default.
+  const providerMatchesSeries = !body.providerOverride
+    || body.providerOverride === (series.llm?.provider || '');
+  const model = body.model
+    || (providerMatchesSeries ? (series.llm?.model || '') : '');
 
   // Stamp the outcome on the stage so the Nouns UI can persist a
   // failure/partial banner and the user can retry with a different
