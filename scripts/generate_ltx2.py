@@ -79,28 +79,37 @@ _A2V_TC_PATCH_OK = False
 def _install_guided_denoise_teacache_patches() -> None:
     """Wire TeaCache into Extend and A2V Stage-1 denoise loops.
 
-    Those modules import `guided_denoise_loop` into local symbols and do not
-    pass `teacache=` themselves. Patch the two import sites, then activate
-    the controller only while the matching runner has a per-call config set.
+    `ExtendPipeline` (ltx_pipelines_mlx.extend) and `AudioToVideoPipeline`
+    (ltx_pipelines_mlx.a2vid_two_stage) each `from ...samplers import
+    guided_denoise_loop` into their OWN module namespace and call it without a
+    `teacache=` argument. We must patch the symbol on *those two modules*
+    specifically — patching any other module (e.g. `retake`) leaves the real
+    call site untouched and silently no-ops. We then activate the controller
+    only while the matching runner has a per-call config set.
     """
     global _EXTEND_TC_PATCH_OK, _A2V_TC_PATCH_OK
     try:
         import ltx_pipelines_mlx.a2vid_two_stage as a2v_mod
-        import ltx_pipelines_mlx.retake as retake_mod
+        import ltx_pipelines_mlx.extend as extend_mod
         from ltx_pipelines_mlx.ti2vid_two_stages import (
             _build_teacache_controller as build_stage1_teacache,
         )
     except Exception:
         return
 
-    original_retake_guided_denoise_loop = retake_mod.guided_denoise_loop
+    original_extend_guided_denoise_loop = extend_mod.guided_denoise_loop
     original_a2v_guided_denoise_loop = a2v_mod.guided_denoise_loop
 
     def build_controller(config: dict | None, fallback_steps: int, sigmas):
         if not config or not config.get("enable"):
             return None
+        # `sigmas` carries num_steps+1 values, so len(sigmas)-1 is the real
+        # step count. fallback_steps (the pipeline's native Stage-1 default)
+        # only applies if a caller ever omits sigmas.
         n_steps = len(sigmas) - 1 if sigmas is not None else config.get("num_steps", fallback_steps)
         try:
+            # thresh=None lets _build_teacache_controller apply its own
+            # LTX2_TEACACHE_THRESH default (0.5 at the current pin).
             return build_stage1_teacache(n_steps, config.get("thresh"))
         except Exception:
             return None
@@ -108,14 +117,14 @@ def _install_guided_denoise_teacache_patches() -> None:
     def guided_denoise_loop_with_extend_teacache(*args, teacache=None, **kwargs):
         if teacache is None:
             teacache = build_controller(_EXTEND_TC_CONFIG, 30, kwargs.get("sigmas"))
-        return original_retake_guided_denoise_loop(*args, teacache=teacache, **kwargs)
+        return original_extend_guided_denoise_loop(*args, teacache=teacache, **kwargs)
 
     def guided_denoise_loop_with_a2v_teacache(*args, teacache=None, **kwargs):
         if teacache is None:
-            teacache = build_controller(_A2V_TC_CONFIG, 10, kwargs.get("sigmas"))
+            teacache = build_controller(_A2V_TC_CONFIG, 30, kwargs.get("sigmas"))
         return original_a2v_guided_denoise_loop(*args, teacache=teacache, **kwargs)
 
-    retake_mod.guided_denoise_loop = guided_denoise_loop_with_extend_teacache
+    extend_mod.guided_denoise_loop = guided_denoise_loop_with_extend_teacache
     a2v_mod.guided_denoise_loop = guided_denoise_loop_with_a2v_teacache
     _EXTEND_TC_PATCH_OK = True
     _A2V_TC_PATCH_OK = True
@@ -124,12 +133,17 @@ def _install_guided_denoise_teacache_patches() -> None:
 _install_guided_denoise_teacache_patches()
 
 
-def _teacache_config(enabled: bool, patch_ok: bool, num_steps: int) -> dict:
+def _teacache_config(enabled: bool, patch_ok: bool, num_steps: int,
+                     thresh: float | None = None) -> dict:
     return {
         "enable": bool(enabled) and patch_ok,
-        "thresh": None,
+        "thresh": thresh,
         "num_steps": num_steps,
     }
+
+
+def _teacache_thresh_label(thresh: float | None) -> str:
+    return f"{thresh}" if thresh is not None else "upstream default 0.5"
 
 
 def configure_negative_prompt(negative_prompt: str) -> None:
@@ -220,6 +234,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-teacache", action="store_true",
                    help="Disable TeaCache acceleration for supported LTX-2 denoise loops "
                         "(extend and a2v Stage 1).")
+    p.add_argument("--teacache-thresh", type=float, default=None,
+                   help="rel_l1_thresh for TeaCache on extend/a2v Stage 1. Higher = more "
+                        "skipping = faster but lower fidelity (~1.2x at 0.5, up to ~3x at 1.5). "
+                        "Omit to use the pipeline default (0.5).")
     return p.parse_args()
 
 
@@ -443,9 +461,10 @@ def run_extend(args: argparse.Namespace) -> str:
     emit_stage(1, 1, 1, "Loaded")
     emit_status(f"Extending video {args.extend_direction} by {args.extend_frames} latent frames…")
     num_steps = args.steps if args.steps is not None else 30
-    _EXTEND_TC_CONFIG = _teacache_config(not args.no_teacache, _EXTEND_TC_PATCH_OK, num_steps)
+    _EXTEND_TC_CONFIG = _teacache_config(not args.no_teacache, _EXTEND_TC_PATCH_OK, num_steps,
+                                         args.teacache_thresh)
     if _EXTEND_TC_CONFIG["enable"]:
-        emit_status("TeaCache active on extend (thresh=default 0.5)")
+        emit_status(f"TeaCache active on extend (thresh={_teacache_thresh_label(args.teacache_thresh)})")
     try:
         video_latent, audio_latent = pipe.extend_from_video(
             prompt=args.prompt,
@@ -495,9 +514,10 @@ def run_a2v(args: argparse.Namespace) -> str:
     emit_stage(1, 1, 1, "Loaded")
     emit_status(f"Generating A2V from {Path(args.audio).name}…")
     stage1_steps = args.steps if args.steps is not None else 30
-    _A2V_TC_CONFIG = _teacache_config(not args.no_teacache, _A2V_TC_PATCH_OK, stage1_steps)
+    _A2V_TC_CONFIG = _teacache_config(not args.no_teacache, _A2V_TC_PATCH_OK, stage1_steps,
+                                      args.teacache_thresh)
     if _A2V_TC_CONFIG["enable"]:
-        emit_status("TeaCache active on A2V Stage 1 (thresh=default 0.5)")
+        emit_status(f"TeaCache active on A2V Stage 1 (thresh={_teacache_thresh_label(args.teacache_thresh)})")
     try:
         return pipe.generate_and_save(
             prompt=args.prompt,
