@@ -55,7 +55,7 @@ import {
   refineStoryboardScenePrompt,
   buildRenderSlot,
 } from '../services/pipeline/visualStages.js';
-import { extractCanonFromProse } from '../services/universeCanon.js';
+import { extractCanonFromProse, summarizeCanonExtraction } from '../services/universeCanon.js';
 import { getSeriesCanon } from '../services/pipeline/seriesCanon.js';
 import { findDuplicateSeriesGroups, findSameNameSeries } from '../services/duplicateDetection.js';
 import { mergeSeries } from '../services/recordMerge.js';
@@ -490,7 +490,13 @@ const extractComicPagesSchema = z.object({
 
 const extractCanonFromScriptSchema = z.object({
   providerOverride: z.string().trim().max(80).optional(),
+  model: z.string().trim().max(128).optional(),
 });
+
+// Stages whose `output` can be mined for canon. `prose` is the conventional
+// source (auto-extracted post-generation); `comicScript`/`teleplay` let the
+// writer pull characters introduced only in panel directions / dialogue cues.
+const CANON_EXTRACT_STAGES = Object.freeze(['prose', 'comicScript', 'teleplay']);
 
 // Per-issue truncation budget for canon extraction. Decoupled from the
 // importer's source ceiling (which ingests a *whole book* — millions of
@@ -1563,9 +1569,9 @@ router.post('/issues/:id/stages/comicPages/extract-pages', asyncHandler(async (r
 // derived entries survive later AI refines.
 router.post('/issues/:id/stages/:stageId/extract-canon', asyncHandler(async (req, res) => {
   const { id, stageId } = req.params;
-  if (stageId !== 'comicScript' && stageId !== 'teleplay') {
+  if (!CANON_EXTRACT_STAGES.includes(stageId)) {
     throw new ServerError(
-      `Stage "${stageId}" does not support canon extraction — supported: comicScript, teleplay`,
+      `Stage "${stageId}" does not support canon extraction — supported: ${CANON_EXTRACT_STAGES.join(', ')}`,
       { status: 400, code: 'PIPELINE_CANON_EXTRACT_BAD_STAGE' },
     );
   }
@@ -1590,20 +1596,43 @@ router.post('/issues/:id/stages/:stageId/extract-canon', asyncHandler(async (req
       { status: 400, code: 'PIPELINE_CANON_EXTRACT_NO_UNIVERSE' },
     );
   }
-  const result = await extractCanonFromProse(series.universeId, {
-    corpus,
-    // Fall back to the series' configured LLM when the client doesn't pass
-    // an explicit override — matches every other Pipeline LLM action
-    // (e.g. storyboards/extract-scenes) so a manual extract honors the
-    // provider picked in the series header instead of the global default.
-    providerOverride: body.providerOverride || series.llm?.provider || undefined,
-    parallel: true,
-    autoLock: true,
-    sourceSeriesId: series.id,
-  }).catch((err) => { throw mapServiceError(err); });
+  // Fall back to the series' configured LLM when the client doesn't pass an
+  // explicit override — matches every other Pipeline LLM action (e.g.
+  // storyboards/extract-scenes) so a manual extract honors the provider/model
+  // picked in the series header instead of the global default.
+  const provider = body.providerOverride || series.llm?.provider || '';
+  const model = body.model || series.llm?.model || '';
+
+  // Stamp the outcome on the stage so the Nouns UI can persist a
+  // failure/partial banner and the user can retry with a different
+  // provider/model. A hard failure (every kind threw) still records `failed`
+  // before re-throwing so the banner survives even when the request 5xxes.
+  let result;
+  try {
+    result = await extractCanonFromProse(series.universeId, {
+      corpus,
+      providerOverride: provider || undefined,
+      modelOverride: model || undefined,
+      parallel: true,
+      autoLock: true,
+      sourceSeriesId: series.id,
+    });
+  } catch (err) {
+    const marker = summarizeCanonExtraction({ error: err, provider, model });
+    await issuesSvc.updateStage(id, stageId, { canonExtraction: marker })
+      .catch((e) => console.warn(`⚠️ Failed to record canon-extraction status for issue ${id.slice(0, 8)}: ${e.message}`));
+    throw mapServiceError(err);
+  }
+
+  const marker = summarizeCanonExtraction({ results: result.results, failures: result.failures, provider, model });
+  const { issue: stampedIssue } = await issuesSvc.updateStage(id, stageId, { canonExtraction: marker })
+    .catch((err) => { throw mapServiceError(err); });
 
   res.json({
     universe: result.universe,
+    issue: stampedIssue,
+    canonExtraction: marker,
+    failures: result.failures,
     extracted: countExtractedCanon(result.results),
     sourceStage: stageId,
     truncated,
