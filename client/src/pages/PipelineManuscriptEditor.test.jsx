@@ -12,6 +12,8 @@ const api = vi.hoisted(() => ({
   patchPipelineManuscriptComment: vi.fn(),
   generatePipelineManuscriptFix: vi.fn(),
   acceptPipelineManuscriptFix: vi.fn(),
+  analyzePipelineManuscriptCompleteness: vi.fn(),
+  getProviders: vi.fn(),
 }));
 vi.mock('../services/api', () => api);
 vi.mock('../components/ui/Toast', () => ({ default: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }) }));
@@ -45,6 +47,11 @@ beforeEach(() => {
     availableTypes: ['prose'],
   });
   api.getPipelineManuscriptReview.mockResolvedValue({ schemaVersion: 1, comments: [comment] });
+  api.getProviders.mockResolvedValue({ providers: [
+    { id: 'anthropic', name: 'Anthropic', enabled: true, defaultModel: 'claude-opus', models: ['claude-opus', 'claude-haiku'] },
+    { id: 'openai', name: 'OpenAI', enabled: true, defaultModel: 'gpt-5', models: ['gpt-5'] },
+    { id: 'off', name: 'Disabled', enabled: false, defaultModel: 'x', models: ['x'] },
+  ] });
 });
 
 describe('PipelineManuscriptEditor', () => {
@@ -71,7 +78,7 @@ describe('PipelineManuscriptEditor', () => {
 
     // The editable replacement appears.
     expect(await screen.findByDisplayValue('She left, but paused.')).toBeInTheDocument();
-    expect(api.generatePipelineManuscriptFix).toHaveBeenCalledWith('ser-1', 'mrc-1');
+    expect(api.generatePipelineManuscriptFix).toHaveBeenCalledWith('ser-1', 'mrc-1', expect.any(Object));
 
     fireEvent.click(screen.getByText('Accept'));
 
@@ -121,5 +128,44 @@ describe('PipelineManuscriptEditor', () => {
     ));
     // Version history surfaces after the save.
     expect(await screen.findByTitle('Show prior saved versions')).toBeInTheDocument();
+  });
+
+  it('routes Generate fix through the selected provider/model override', async () => {
+    api.generatePipelineManuscriptFix.mockResolvedValue({
+      fix: { find: 'She left.', replace: 'She left, but paused.' },
+      comment: { ...comment, fix: { find: 'She left.', replace: 'She left, but paused.' } },
+    });
+    renderEditor();
+    await screen.findByText('My Series');
+
+    // Only enabled providers populate the selector.
+    const providerSelect = screen.getByLabelText(/AI provider/i);
+    expect(screen.queryByRole('option', { name: 'Disabled' })).not.toBeInTheDocument();
+    fireEvent.change(providerSelect, { target: { value: 'anthropic' } });
+    // Model defaults to the provider's defaultModel; switch it explicitly.
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'claude-haiku' } });
+
+    fireEvent.click(screen.getByText('Generate fix'));
+    await waitFor(() => expect(api.generatePipelineManuscriptFix).toHaveBeenCalledWith(
+      'ser-1', 'mrc-1', { providerOverride: 'anthropic', modelOverride: 'claude-haiku' },
+    ));
+  });
+
+  it('re-runs the editorial review with the override and swaps in the returned comments', async () => {
+    const fresh = { ...comment, id: 'mrc-2', problem: 'New pacing note' };
+    api.analyzePipelineManuscriptCompleteness.mockResolvedValue({
+      review: { schemaVersion: 1, comments: [comment, fresh] },
+    });
+    renderEditor();
+    await screen.findByText('My Series');
+
+    fireEvent.change(screen.getByLabelText(/AI provider/i), { target: { value: 'openai' } });
+    fireEvent.click(screen.getByText('Run editorial review'));
+
+    expect(await screen.findByText('New pacing note')).toBeInTheDocument();
+    expect(api.analyzePipelineManuscriptCompleteness).toHaveBeenCalledWith(
+      'ser-1', { providerOverride: 'openai', modelOverride: 'gpt-5' },
+    );
+    await waitFor(() => expect(screen.getByText(/2 open/)).toBeInTheDocument());
   });
 });

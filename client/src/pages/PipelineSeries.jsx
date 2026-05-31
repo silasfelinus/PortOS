@@ -14,7 +14,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Save, Loader2, Workflow as WorkflowIcon, Globe, NotebookPen,
-  PanelLeftClose, PanelLeftOpen, Sparkles,
+  PanelLeftClose, PanelLeftOpen, Sparkles, BookOpen,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import ArcCanvas from '../components/pipeline/ArcCanvas';
@@ -207,6 +207,13 @@ export default function PipelineSeries() {
                 <NotebookPen size={12} /> Writers Room
               </Link>
             ) : null}
+            <Link
+              to={`/pipeline/series/${series.id}/manuscript`}
+              className="ml-2 inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-gray-400 hover:text-white border border-port-border bg-port-card"
+              title="Open the full manuscript editor"
+            >
+              <BookOpen size={12} /> Manuscript
+            </Link>
             <button
               type="button"
               onClick={handleSave}

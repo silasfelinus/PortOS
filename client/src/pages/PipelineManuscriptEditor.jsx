@@ -20,15 +20,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
-  ArrowLeft, Loader2, Sparkles, Check, X, CornerDownRight, FileText, ChevronDown, ChevronRight, Star, History, RotateCcw,
+  ArrowLeft, Loader2, Sparkles, Check, X, CornerDownRight, FileText, ChevronDown, ChevronRight, Star, History, RotateCcw, ClipboardCheck,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import { useAsyncAction } from '../hooks/useAsyncAction';
+import useProviderModels from '../hooks/useProviderModels';
 import { timeAgo } from '../utils/formatters';
 import {
   getPipelineSeries, updatePipelineSeries, getPipelineManuscript, getPipelineManuscriptReview,
   patchPipelineManuscriptComment, savePipelineManuscriptSection, restorePipelineStageVersion,
   generatePipelineManuscriptFix, acceptPipelineManuscriptFix,
+  analyzePipelineManuscriptCompleteness,
 } from '../services/api';
 
 const STAGE_LABEL = { comicScript: 'comic script', teleplay: 'teleplay', prose: 'prose', idea: 'outline' };
@@ -71,6 +73,16 @@ export default function PipelineManuscriptEditor() {
   const [loading, setLoading] = useState(true);
   const [switching, setSwitching] = useState(false);
   const [pinning, setPinning] = useState(false);
+  // AI provider override for Generate-fix + Editorial-review actions.
+  // selectedProviderId === '' means "System default" (no override sent to server).
+  const {
+    providers,
+    selectedProviderId: overrideProviderId,
+    selectedModel: overrideModel,
+    availableModels: overrideModels,
+    setSelectedProviderId: setOverrideProviderId,
+    setSelectedModel: setOverrideModel,
+  } = useProviderModels(); // enabled providers only; we prepend "System default" in the select
   // Per-issue free-text save state: 'saving' | 'saved' | undefined.
   const [saveState, setSaveState] = useState({});
   // textarea elements keyed by issue number, for jump-to-anchor.
@@ -112,6 +124,23 @@ export default function PipelineManuscriptEditor() {
       .finally(() => { if (!canceled) setLoading(false); });
     return () => { canceled = true; };
   }, [seriesId, navigate]);
+
+  // undefined (not '') so the server treats it as "no override" → system default.
+  const providerOverride = overrideProviderId || undefined;
+  const modelOverride = overrideModel || undefined;
+
+  // Re-run the editorial completeness pass over the manuscript with the chosen
+  // provider. The route persists findings as the review comment set, so we just
+  // swap in the returned comments.
+  const [runEditorialReview, reviewing] = useAsyncAction(
+    async () => {
+      const result = await analyzePipelineManuscriptCompleteness(seriesId, { providerOverride, modelOverride });
+      const next = Array.isArray(result?.review?.comments) ? result.review.comments : [];
+      setComments(next);
+      toast.success(`Editorial review complete — ${next.filter((c) => c.status === 'open').length} open notes`);
+    },
+    { errorMessage: 'Failed to run editorial review' },
+  );
 
   // Switch which format the editor spans. Refetches that format's full-story
   // sections (every issue, empty where undrafted).
@@ -310,6 +339,50 @@ export default function PipelineManuscriptEditor() {
 
         {/* Comments sidebar */}
         <aside className="border-t lg:border-t-0 lg:border-l border-port-border bg-port-card/40 lg:overflow-y-auto p-3 space-y-3">
+          {/* AI provider override + editorial-review trigger. The chosen provider
+              feeds both the per-comment "Generate fix" and the review re-run. */}
+          <div className="border border-port-border rounded-lg bg-port-bg/40 p-2.5 space-y-2">
+            <label htmlFor="ms-provider-override" className="block text-[10px] uppercase tracking-wider text-gray-500">
+              AI provider — Generate fix &amp; Editorial review
+            </label>
+            <div className="flex items-center gap-2">
+              <select
+                id="ms-provider-override"
+                value={overrideProviderId}
+                onChange={(e) => setOverrideProviderId(e.target.value)}
+                className="flex-1 min-w-0 px-2 py-1.5 bg-port-bg border border-port-border rounded text-sm text-white"
+              >
+                <option value="">System default</option>
+                {providers.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+              {overrideProviderId && overrideModels.length > 0 ? (
+                <select
+                  id="ms-model-override"
+                  aria-label="Model"
+                  value={overrideModel}
+                  onChange={(e) => setOverrideModel(e.target.value)}
+                  className="flex-1 min-w-0 px-2 py-1.5 bg-port-bg border border-port-border rounded text-sm text-white"
+                >
+                  {overrideModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                </select>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              onClick={runEditorialReview}
+              disabled={reviewing || sections.length === 0}
+              title={sections.length === 0
+                ? 'Draft at least one issue before running an editorial review'
+                : 'Re-run the editorial feedback pass over the manuscript with the selected provider'}
+              className="w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded text-[12px] font-medium border bg-port-bg text-port-accent border-port-border hover:border-port-accent/40 disabled:opacity-40"
+            >
+              {reviewing ? <Loader2 size={12} className="animate-spin" /> : <ClipboardCheck size={12} />}
+              {reviewing ? 'Running editorial review…' : 'Run editorial review'}
+            </button>
+          </div>
+
           <h2 className="text-xs uppercase tracking-wider text-gray-500 flex items-center justify-between">
             <span>Editorial comments</span>
             <span className="text-gray-600">{grouped.open.length} open</span>
@@ -326,6 +399,8 @@ export default function PipelineManuscriptEditor() {
               key={comment.id}
               comment={comment}
               seriesId={seriesId}
+              providerOverride={providerOverride}
+              modelOverride={modelOverride}
               onJump={jumpToComment}
               onCommentChange={updateCommentLocal}
               onAccepted={applyAccepted}
@@ -426,12 +501,12 @@ function Badge({ comment }) {
   );
 }
 
-function CommentCard({ comment, seriesId, onJump, onCommentChange, onAccepted }) {
+function CommentCard({ comment, seriesId, providerOverride, modelOverride, onJump, onCommentChange, onAccepted }) {
   const [replaceText, setReplaceText] = useState(comment.fix?.replace || '');
   const hasFix = !!comment.fix;
 
   const [runGenerate, generating] = useAsyncAction(
-    () => generatePipelineManuscriptFix(seriesId, comment.id),
+    () => generatePipelineManuscriptFix(seriesId, comment.id, { providerOverride, modelOverride }),
     { errorMessage: 'Failed to generate fix' },
   );
   const [runAccept, accepting] = useAsyncAction(
