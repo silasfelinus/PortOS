@@ -15,7 +15,7 @@
 import { randomUUID } from 'crypto';
 import { runStagedLLM } from '../../lib/stageRunner.js';
 import { getSeries, MANUSCRIPT_TYPES } from './series.js';
-import { getIssue, updateStageWithLatest } from './issues.js';
+import { getIssue, updateStageWithLatest, updateStagesWithLatest } from './issues.js';
 import { collectManuscriptSections, stageVersionsOf } from './arcPlanner.js';
 import { getComment, updateComment } from './manuscriptReview.js';
 
@@ -239,15 +239,22 @@ async function planEditsBySection(edits, comment) {
   return planned;
 }
 
-async function applyPlannedEdits(planned) {
+async function applyPlannedEdits(seriesId, planned) {
   const sections = [];
-  for (const group of planned) {
-    const { issue, stage } = await updateStageWithLatest(group.issueId, group.stageId, (cur) => {
+  const updates = planned.map((group) => ({
+    issueId: group.issueId,
+    stageId: group.stageId,
+    computeFn: (cur) => {
       if (stageTextOf(cur) !== group.originalText) {
         throw makeErr('Manuscript changed while applying the fix — regenerate the fix', ERR_VALIDATION);
       }
       return { output: group.output, status: 'edited', lastRunId: `fix-${randomUUID()}` };
-    }, { snapshotPrior: true });
+    },
+  }));
+  const updated = await updateStagesWithLatest(seriesId, updates, { snapshotPrior: true });
+  for (let i = 0; i < updated.length; i += 1) {
+    const group = planned[i];
+    const { issue, stage } = updated[i];
     sections.push(sectionFrom(issue, group.stageId, stage));
   }
   return sections;
@@ -349,7 +356,7 @@ export async function acceptManuscriptFix(seriesId, { commentId, find, replace, 
   }
 
   const planned = await planEditsBySection(acceptedEdits, comment);
-  const sections = await applyPlannedEdits(planned);
+  const sections = await applyPlannedEdits(seriesId, planned);
   const updated = await updateComment(seriesId, commentId, { status: 'accepted' });
   return { comment: updated, section: sections[0] || null, sections };
 }
