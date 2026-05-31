@@ -88,6 +88,16 @@ function migrateAntigravityProviders(data) {
     if (data.activeProvider === mapping.legacyId) {
       data.activeProvider = mapping.targetId;
     }
+
+    // Rewrite fallbackProvider references on all other providers so
+    // user-defined fallback chains aren't silently broken after the
+    // legacy id is removed from the map.
+    for (const p of Object.values(data.providers)) {
+      if (p.fallbackProvider === mapping.legacyId) {
+        p.fallbackProvider = mapping.targetId;
+      }
+    }
+
     delete data.providers[mapping.legacyId];
     changed = true;
   }

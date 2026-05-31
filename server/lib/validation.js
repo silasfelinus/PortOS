@@ -666,10 +666,13 @@ export const createCosTaskSchema = z.object({
     z.boolean().optional()
   ),
   reviewer: z.preprocess(
-    v => v === '' ? undefined : v,
+    v => v === '' ? undefined : (typeof v === 'string' ? (REVIEWER_ALIASES[v] ?? v) : v),
     z.enum(REVIEWER_VALUES).optional()
   ),
-  reviewers: z.array(z.enum(REVIEWER_VALUES)).optional(),
+  reviewers: z.preprocess(
+    v => Array.isArray(v) ? v.map(r => (typeof r === 'string' ? (REVIEWER_ALIASES[r] ?? r) : r)) : v,
+    z.array(z.enum(REVIEWER_VALUES)).optional()
+  ),
   reviewStopMode: z.enum(REVIEW_STOP_MODES).optional(),
   reviewerApplies: z.preprocess(
     v => v === 'true' ? true : v === 'false' ? false : v,
@@ -793,7 +796,10 @@ export const featureProviderConfigSchema = z.object({
 // `lmstudioModel` / `ollamaModel` are the installed model ids the local-LLM
 // reviewer should run with (empty/undefined = pick the active default model).
 export const codeReviewSettingsSchema = z.object({
-  reviewers: z.array(z.enum(REVIEWER_VALUES)).optional(),
+  reviewers: z.preprocess(
+    v => Array.isArray(v) ? v.map(r => (typeof r === 'string' ? (REVIEWER_ALIASES[r] ?? r) : r)) : v,
+    z.array(z.enum(REVIEWER_VALUES)).optional()
+  ),
   stopMode: z.enum(REVIEW_STOP_MODES).optional(),
   reviewerApplies: z.boolean().optional(),
   lmstudioModel: z.preprocess(emptyToUndefined, z.string().optional()),
