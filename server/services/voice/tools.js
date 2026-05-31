@@ -462,6 +462,10 @@ const activeCatalogTypeIds = () => {
   return ids.length ? ids : CATALOG_INGREDIENT_TYPES;
 };
 
+// Escape a freeform string (a user-type label can be anything) for safe use
+// inside a `new RegExp(...)` so a label like "C++ faction" can't throw or inject.
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 // Pull a short snippet from an ingredient's type-specific payload. Mirrors
 // the fallback chain used by client/src/pages/Catalog.jsx so voice + UI agree
 // on what "the body" of an ingredient is. Trimmed to 200 chars.
@@ -2163,6 +2167,26 @@ export const classifyIntent = (userText) => {
   if (!userText) return active;
   for (const [group, re] of Object.entries(GROUP_INTENT)) {
     if (re.test(userText)) active.add(group);
+  }
+  // The static `catalog` regex only knows the six built-in nouns. A user-defined
+  // type (e.g. "wardrobe", "faction") wouldn't trip it, so "search my wardrobes"
+  // would never surface `catalog_lookup` (the enum-widening in resolveParameters
+  // can't help a tool that intent-gating already dropped). Activate the catalog
+  // group when the utterance mentions any active user type's id or label —
+  // singular or simple plural. System types are already covered by the regex.
+  if (!active.has('catalog')) {
+    const customNouns = getActiveCatalogTypes()
+      .filter((t) => t.system === false)
+      .flatMap((t) => [t.id, t.label])
+      .filter((s) => typeof s === 'string' && s.trim().length > 1)
+      .map((s) => s.trim().toLowerCase());
+    if (customNouns.length) {
+      const lower = userText.toLowerCase();
+      // Match the noun as a whole word, optionally pluralized (foo → foos/fooes).
+      if (customNouns.some((n) => new RegExp(`\\b${escapeRegExp(n)}e?s?\\b`).test(lower))) {
+        active.add('catalog');
+      }
+    }
   }
   return active;
 };
