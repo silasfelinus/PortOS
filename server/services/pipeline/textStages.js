@@ -327,8 +327,15 @@ export async function generateStage(issueId, stageId, options = {}) {
     // a different provider/model. Still non-fatal — a noisy extract shouldn't
     // roll back the user's accepted prose draft. The stamp is best-effort: if
     // even the stamp write fails we only warn (no throw out of the prose path).
-    const provider = options.providerId || series.llm?.provider || '';
-    const model = options.model || series.llm?.model || '';
+    //
+    // Record only the override actually forwarded to the extractor (not a
+    // series.llm fallback) — the extract call below passes bare
+    // `options.providerId`/`options.model`, so when those are undefined the
+    // extractor resolves to the global active provider. Claiming
+    // `series.llm.provider` here would make the banner misreport which provider
+    // failed. Empty string = "used the default/active provider".
+    const provider = options.providerId || '';
+    const model = options.model || '';
     const marker = await extractCanonFromProse(series.universeId, {
       corpus: output,
       providerOverride: options.providerId,
