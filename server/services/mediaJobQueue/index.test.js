@@ -6,9 +6,17 @@ import { join } from 'path';
 // The queue persists to data/media-jobs.json. Steer it at a temp dir so each
 // test gets a clean slate without scribbling over the real data dir.
 let tempDataDir;
+// Counting wrapper around the real atomicWrite. persist() funnels every disk
+// write through atomicWrite, so spying on it lets tests assert *how many*
+// times state was flushed — used to pin the progress-persist debounce (it must
+// coalesce a burst of progress events into one write, not write per-event).
+let atomicWriteSpy;
 
 vi.mock('../../lib/fileUtils.js', async () => {
   const actual = await vi.importActual('../../lib/fileUtils.js');
+  // Still performs the real write (so file-reading assertions work) — just
+  // counted. Reassigned per factory eval; tests mockClear() before measuring.
+  atomicWriteSpy = vi.fn((...args) => actual.atomicWrite(...args));
   return {
     ...actual,
     // Override PATHS so JOBS_FILE lands in the temp dir. We can't read the
@@ -20,6 +28,7 @@ vi.mock('../../lib/fileUtils.js', async () => {
         return actual.PATHS[key];
       },
     }),
+    atomicWrite: (...args) => atomicWriteSpy(...args),
   };
 });
 
@@ -273,6 +282,54 @@ describe('mediaJobQueue', () => {
         && persisted.progress === 0.37
         && persisted.statusMsg === 'Rendering step 37/100 (upscaling)';
     }, { timeoutMs: 2000 });
+
+    videoGenEvents.emit('completed', { generationId: job.jobId, filename: `${job.jobId}.mp4` });
+    await waitFor(() => mediaJobQueue.getJob(job.jobId).status === 'completed');
+  });
+
+  it('debounce coalesces a burst of progress events into a single persist write', async () => {
+    // Companion to the snapshot test above: that one proves the *value*
+    // reaches disk; this one proves the debounce, by counting writes. Without
+    // it the test above would still pass if scheduleProgressPersist regressed
+    // to a naive per-event persist() — the high-frequency-write antipattern
+    // CLAUDE.md forbids. We pin the coalescing by counting atomicWrite calls
+    // under a burst of N progress events (must be ≪ N within one window).
+    const file = join(tempDataDir, 'media-jobs.json');
+    const job = mediaJobQueue.enqueueJob({ kind: 'video', params: { prompt: 'burst' } });
+    await waitFor(() => stubs.generateVideo.mock.calls.length === 1);
+
+    // Let the enqueue + 'running'-transition writes land first, then zero the
+    // counter so we measure only the progress burst. Waiting on the persisted
+    // 'running' status guarantees both prior writes have flushed.
+    await waitFor(() => {
+      if (!existsSync(file)) return false;
+      const persisted = JSON.parse(readFileSync(file, 'utf-8')).jobs.find((j) => j.id === job.jobId);
+      return persisted?.status === 'running';
+    });
+    atomicWriteSpy.mockClear();
+
+    // Fire a tight synchronous burst. emit() is synchronous, so all N handlers
+    // run in one tick: the first arms the 250ms debounce timer, the rest only
+    // mark the buffer dirty. A regression to per-event persist() would turn
+    // this into N atomicWrite calls instead of one debounced flush.
+    const BURST = 12;
+    for (let i = 1; i <= BURST; i++) {
+      videoGenEvents.emit('progress', {
+        generationId: job.jobId,
+        progress: i / BURST,
+        message: `Rendering step ${i}/${BURST}`,
+      });
+    }
+
+    // Wait for the single debounced flush to land the LAST burst value.
+    await waitFor(() => {
+      const persisted = JSON.parse(readFileSync(file, 'utf-8')).jobs.find((j) => j.id === job.jobId);
+      return persisted?.statusMsg === `Rendering step ${BURST}/${BURST}`;
+    }, { timeoutMs: 2000 });
+
+    // One debounce window ⇒ one flush (allow tiny slack for a trailing
+    // reschedule). The naive-per-event regression would be ≈ BURST (12) writes.
+    expect(atomicWriteSpy.mock.calls.length).toBeLessThanOrEqual(2);
 
     videoGenEvents.emit('completed', { generationId: job.jobId, filename: `${job.jobId}.mp4` });
     await waitFor(() => mediaJobQueue.getJob(job.jobId).status === 'completed');
