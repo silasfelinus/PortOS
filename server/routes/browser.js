@@ -108,8 +108,9 @@ router.post('/restart', asyncHandler(async (req, res) => {
 
 // POST /api/browser/navigate - Open a URL in the CDP browser
 router.post('/navigate', asyncHandler(async (req, res) => {
+  const caller = req.headers['referer'] || req.headers['origin'] || 'unknown';
+  console.log(`🌐 Navigate: ${req.body?.url} (from ${caller})`);
   const { url } = validateRequest(navigateSchema, req.body);
-  console.log(`🌐 Navigate requested: ${url}`);
   const page = await browserService.navigateToUrl(url);
   res.json(page);
 }));
