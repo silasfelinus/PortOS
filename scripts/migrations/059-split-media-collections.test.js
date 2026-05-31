@@ -155,6 +155,23 @@ describe('migration 059 — split media-collections.json to per-record files', (
     expect(readJson(join(typeDir, id, 'index.json')).name).toBe('First (wins)');
   });
 
+  it('duplicate ids: a leading unsanitizable row (blank name) does not shadow a later valid one', async () => {
+    // sanitizeCollection drops a blank-name record on read, so the old reader
+    // skipped it and surfaced the later valid duplicate. The split must mirror
+    // that — otherwise the blank-name row claims the id and the collection
+    // vanishes after upgrade.
+    const id = '11111111-1111-1111-1111-111111111111';
+    writeJson(legacyPath, {
+      collections: [
+        { id, name: '   ', items: [] },                 // unsanitizable (blank name)
+        collection(id, { name: 'Valid (surfaces)' }),   // later valid duplicate
+      ],
+    });
+    const result = await migration.up({ rootDir });
+    expect(result).toEqual({ ok: true, reason: 'split', written: 1, skipped: 0, invalid: 1 });
+    expect(readJson(join(typeDir, id, 'index.json')).name).toBe('Valid (surfaces)');
+  });
+
   it('throws (does NOT mark applied) when the legacy file is corrupted, so a repaired file re-splits', async () => {
     // Throwing keeps the migration pending in run-migrations.js (which marks any
     // migration whose up() resolves as applied) — so the collections aren't

@@ -165,6 +165,18 @@ export default {
         console.warn(`⚠️ migration 059: skipping record with invalid id "${id}" (left in backup for manual recovery)`);
         continue;
       }
+      // Mirror the rejections sanitizeCollection makes at read time (id + name)
+      // BEFORE claiming the id below. The old monolithic listCollections
+      // sanitized each row first and skipped unloadable ones, so a row the
+      // service would drop on read (e.g. blank/missing name) must not shadow a
+      // later valid duplicate of the same id — otherwise that collection
+      // disappears post-upgrade. (Kept inline, not imported: a migration is a
+      // frozen snapshot and must not shift when sanitizeCollection later evolves.)
+      if (typeof record.name !== 'string' || !record.name.trim()) {
+        invalid += 1;
+        console.warn(`⚠️ migration 059: skipping record id "${id}" with missing/blank name (left in backup)`);
+        continue;
+      }
       if (existingIds.has(id)) {
         // Already split — either in a prior partial run (trust the on-disk
         // per-record file, which may hold fresher post-crash state) OR earlier
