@@ -64,6 +64,10 @@ async function resolveTargets(seriesId, comment) {
   if (comment.issueNumber != null) {
     const section = sections.find((s) => s.number === comment.issueNumber);
     if (section) return [section];
+    throw makeErr(
+      'This comment points to an issue that no longer has drafted manuscript text — regenerate the editorial review',
+      ERR_VALIDATION,
+    );
   }
   if (sections.length) return sections;
   throw makeErr('No drafted manuscript text is available to edit', ERR_VALIDATION);

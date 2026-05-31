@@ -236,6 +236,27 @@ describe('manuscriptFix', () => {
     expect(afterOther.stages.prose.output).toBe('Other series text.');
   });
 
+  it('does not broaden a stale issue-numbered comment to the full manuscript', async () => {
+    const { s, issue } = await setupSeriesWithDraft();
+    const issue2 = await issuesSvc.createIssue({
+      seriesId: s.id, number: 2, title: 'Two', arcPosition: 2,
+      stages: { prose: { output: 'Issue two text.', status: 'ready' } },
+    });
+    const seeded = await review.seedReviewFromFindings(s.id, [finding()]);
+    await issuesSvc.updateIssue(issue.id, { stages: { prose: { output: '', status: 'empty' } } });
+
+    await expect(
+      fixer.acceptManuscriptFix(s.id, {
+        commentId: seeded.comments[0].id,
+        find: 'Issue two text.',
+        replace: 'Wrongly changed.',
+      }),
+    ).rejects.toMatchObject({ code: 'PIPELINE_MANUSCRIPT_FIX_VALIDATION' });
+
+    const after2 = await issuesSvc.getIssue(issue2.id);
+    expect(after2.stages.prose.output).toBe('Issue two text.');
+  });
+
   it('validates every multi-section anchor before writing any section', async () => {
     const { s, issue } = await setupSeriesWithDraft('First anchor.');
     const issue2 = await issuesSvc.createIssue({
