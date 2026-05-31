@@ -165,22 +165,35 @@ const BACKFILL_SOURCE_MAX = 200_000;
 // binding is undefined at module-eval time. The one-liner is stable.
 const stageTextOf = (stage) => (stage?.input?.trim() || stage?.output?.trim() || '');
 
+// Default stage precedence: the richest authored artifact per issue. `idea`
+// (the outline/synopsis seed) is the lowest-priority fallback — it lets an
+// arc be back-derived from outlines alone. Callers that specifically mean
+// "the DRAFTED MANUSCRIPT" must pass MANUSCRIPT_STAGES to exclude it.
+const SOURCE_STAGE_ORDER = ['comicScript', 'teleplay', 'prose', 'idea'];
+export const MANUSCRIPT_STAGES = ['comicScript', 'teleplay', 'prose'];
+
 /**
- * Concatenate the richest authored artifact per issue (comicScript → teleplay →
- * prose → idea) into one corpus an upstream pass can back-derive FROM — the
- * "started from a finished manuscript" case. Issues are ordered by arcPosition
- * so the corpus reads in story order. Returns '' when no issue has any text.
+ * Concatenate the richest authored artifact per issue into one corpus an
+ * upstream pass can back-derive FROM — the "started from a finished manuscript"
+ * case. Issues are ordered by arcPosition so the corpus reads in story order.
+ * Returns '' when no issue has text in any of `stageOrder`.
+ *
+ * `stageOrder` selects which stages count (and their precedence). The default
+ * includes `idea`, so an arc can be derived from outlines; pass
+ * `MANUSCRIPT_STAGES` to require actual drafted script (excludes `idea`) —
+ * that's what `analyzeManuscriptCompleteness` uses so it never grades an
+ * outline as if it were a finished manuscript.
  *
  * Shared by `deriveFromManuscript` here and the Story Builder's plotArc/idea
  * backfill (storyBuilder.js) so both see the identical corpus shape.
  */
-export async function collectIssueSourceText(seriesId) {
+export async function collectIssueSourceText(seriesId, { stageOrder = SOURCE_STAGE_ORDER } = {}) {
   if (!seriesId) return '';
   const issues = (await listIssues({ seriesId }).catch(() => [])).sort(compareIssuesByPosition);
   const parts = [];
   for (const iss of issues) {
     const st = iss.stages || {};
-    const pick = ['comicScript', 'teleplay', 'prose', 'idea']
+    const pick = stageOrder
       .map((sid) => ({ sid, content: stageTextOf(st[sid]) }))
       .find((x) => x.content);
     if (!pick) continue;
@@ -613,7 +626,9 @@ async function buildCompletenessContext(series, manuscript, preloadedWorld) {
  */
 export async function analyzeManuscriptCompleteness(seriesId, options = {}) {
   const series = await getSeries(seriesId);
-  const manuscript = await collectIssueSourceText(seriesId);
+  // Manuscript-only: exclude `idea` so an outline/synopsis seed can't pass the
+  // guard below and get graded as if it were a drafted manuscript.
+  const manuscript = await collectIssueSourceText(seriesId, { stageOrder: MANUSCRIPT_STAGES });
   if (!manuscript) {
     throw makeErr(
       'No manuscript to analyze — write a comic script, prose, or teleplay on at least one issue first',

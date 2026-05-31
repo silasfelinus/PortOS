@@ -1191,9 +1191,13 @@ export async function commitImport({
   const arcPremise = sanitizedArc?.summary || sanitizedArc?.protagonistArc || '';
   const biblePatch = {};
   if (replaceMode) {
-    if (arcLogline) biblePatch.logline = arcLogline;
-    if (arcPremise) biblePatch.premise = arcPremise;
-    if (issueCount > 0) biblePatch.issueCountTarget = issueCount;
+    // Replace mode is a user-confirmed full overwrite — write the new arc's
+    // bible fields unconditionally, INCLUDING empty strings, so an import whose
+    // extracted arc lacks a logline/summary clears the prior work's bible
+    // rather than leaving stale text beside the freshly-replaced arc + seasons.
+    biblePatch.logline = arcLogline;
+    biblePatch.premise = arcPremise;
+    biblePatch.issueCountTarget = issueCount;
   } else {
     if (arcLogline && !(series.logline || '').trim()) biblePatch.logline = arcLogline;
     if (arcPremise && !(series.premise || '').trim()) biblePatch.premise = arcPremise;

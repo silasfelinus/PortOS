@@ -1533,6 +1533,13 @@ describe('arcPlanner — manuscript completeness + derive-from-manuscript', () =
     await expect(planner.analyzeManuscriptCompleteness(s.id)).rejects.toMatchObject({ code: 'PIPELINE_ARC_VALIDATION' });
   });
 
+  it('analyzeManuscriptCompleteness treats an idea-only issue as no manuscript (outline is not a draft)', async () => {
+    const s = await setupSeries();
+    // Only an idea/synopsis seed — no drafted comicScript/prose/teleplay.
+    await issuesSvc.createIssue({ seriesId: s.id, title: 'Outline only', arcPosition: 1, stages: { idea: { input: 'a synopsis', status: 'edited' } } });
+    await expect(planner.analyzeManuscriptCompleteness(s.id)).rejects.toMatchObject({ code: 'PIPELINE_ARC_VALIDATION' });
+  });
+
   it('deriveFromManuscript proposes a single volume + bible + zipped issue synopses', async () => {
     const s = await setupSeries();
     const sea = await seasonsSvc.createSeason(s.id, { title: 'V1', episodeCountTarget: 3 });
