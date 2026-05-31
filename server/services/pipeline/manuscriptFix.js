@@ -151,12 +151,15 @@ function editsFromAcceptRequest({ comment, find, replace, edits }) {
     })).filter((e) => e.find);
   }
   if (find) {
+    if (typeof replace !== 'string') {
+      throw makeErr('replace is required when find is provided', ERR_VALIDATION);
+    }
     return [{
       issueId: comment.issueId,
       stageId: comment.stageId,
       issueNumber: comment.issueNumber,
       find,
-      replace: typeof replace === 'string' ? replace : '',
+      replace,
     }];
   }
   return [];

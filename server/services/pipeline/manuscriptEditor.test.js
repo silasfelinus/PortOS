@@ -152,6 +152,18 @@ describe('manuscriptFix', () => {
     expect(after.stages.prose.output).toBe('The hero walked in. She left, but paused.');
   });
 
+  it('acceptManuscriptFix rejects legacy find-only accepts instead of deleting text', async () => {
+    const { s, issue } = await setupSeriesWithDraft();
+    const seeded = await review.seedReviewFromFindings(s.id, [finding()]);
+
+    await expect(
+      fixer.acceptManuscriptFix(s.id, { commentId: seeded.comments[0].id, find: 'She left.' }),
+    ).rejects.toMatchObject({ code: 'PIPELINE_MANUSCRIPT_FIX_VALIDATION' });
+
+    const after = await issuesSvc.getIssue(issue.id);
+    expect(after.stages.prose.output).toBe('The hero walked in. She left.');
+  });
+
   it('acceptManuscriptFix targets the occurrence nearest the anchorQuote when find is ambiguous', async () => {
     // "the door" appears twice; the comment anchors the SECOND one.
     const { s, issue } = await setupSeriesWithDraft('She opened the door. Later, she slammed the door shut.');

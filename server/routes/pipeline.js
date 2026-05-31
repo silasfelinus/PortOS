@@ -608,6 +608,9 @@ const manuscriptFixAcceptSchema = z.object({
   edits: z.array(manuscriptFixEditSchema).max(20).optional(),
 }).refine((v) => (Array.isArray(v.edits) && v.edits.length > 0) || !!v.find, {
   message: 'Provide find/replace or at least one edit',
+}).refine((v) => !v.find || typeof v.replace === 'string', {
+  path: ['replace'],
+  message: 'replace is required when find is provided',
 });
 // Comment PATCH: status flip and/or attach/clear a fix. `.strict()` rejects
 // stray keys; `fix` nullable so an explicit clear is distinguishable from absent.
