@@ -281,6 +281,24 @@ describe('manuscriptFix', () => {
     expect(after2.stages.prose.output).toBe('Second anchor.');
   });
 
+  it('anchors multiple same-section edits against the original text', async () => {
+    const { s, issue } = await setupSeriesWithDraft('One. Two. Three.');
+    const seeded = await review.seedReviewFromFindings(s.id, [finding()]);
+
+    const result = await fixer.acceptManuscriptFix(s.id, {
+      commentId: seeded.comments[0].id,
+      edits: [
+        { issueId: issue.id, stageId: 'prose', find: 'One.', replace: 'One. Two.' },
+        { issueId: issue.id, stageId: 'prose', find: 'Two.', replace: 'Two changed.' },
+      ],
+    });
+
+    expect(result.comment.status).toBe('accepted');
+    expect(result.section.content).toBe('One. Two. Two changed. Three.');
+    const after = await issuesSvc.getIssue(issue.id);
+    expect(after.stages.prose.output).toBe('One. Two. Two changed. Three.');
+  });
+
   it('acceptManuscriptFix throws when the anchor text is gone', async () => {
     const { s } = await setupSeriesWithDraft();
     const seeded = await review.seedReviewFromFindings(s.id, [finding()]);

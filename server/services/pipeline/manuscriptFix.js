@@ -217,15 +217,24 @@ async function planEditsBySection(edits, comment) {
   for (const group of groups.values()) {
     const issue = await getIssue(group.issueId).catch(() => null);
     if (!issue) throw makeErr(`Issue not found: ${group.issueId}`, ERR_NOT_FOUND);
-    let text = stageTextOf(issue.stages?.[group.stageId]);
+    const originalText = stageTextOf(issue.stages?.[group.stageId]);
+    const spans = [];
     for (const edit of group.edits) {
-      const idx = locateFind(text, edit.find, comment.anchorQuote);
+      const idx = locateFind(originalText, edit.find, comment.anchorQuote);
       if (idx === -1) {
         throw makeErr('Anchor text is no longer present in the manuscript — regenerate the fix', ERR_VALIDATION);
       }
-      text = text.slice(0, idx) + edit.replace + text.slice(idx + edit.find.length);
+      const span = { start: idx, end: idx + edit.find.length, replace: edit.replace };
+      if (spans.some((other) => span.start < other.end && other.start < span.end)) {
+        throw makeErr('Selected edits overlap in the manuscript — regenerate the fix', ERR_VALIDATION);
+      }
+      spans.push(span);
     }
-    planned.push({ ...group, originalText: stageTextOf(issue.stages?.[group.stageId]), output: text });
+    let output = originalText;
+    for (const span of spans.sort((a, b) => b.start - a.start)) {
+      output = output.slice(0, span.start) + span.replace + output.slice(span.end);
+    }
+    planned.push({ ...group, originalText, output });
   }
   return planned;
 }
