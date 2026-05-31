@@ -73,19 +73,6 @@ async function resolveTargets(seriesId, comment) {
   throw makeErr('No drafted manuscript text is available to edit', ERR_VALIDATION);
 }
 
-// Legacy `{ find, replace }` accepts still need exactly one target.
-async function resolveTarget(seriesId, comment) {
-  const targets = await resolveTargets(seriesId, comment);
-  if (targets.length !== 1) {
-    throw makeErr(
-      'This comment spans multiple manuscript sections — accept one or more generated edits instead',
-      ERR_VALIDATION,
-    );
-  }
-  const [target] = targets;
-  return { issueId: target.issueId, stageId: target.stageId };
-}
-
 function normalizeModelEdits(content) {
   if (Array.isArray(content?.edits)) return content.edits;
   if (typeof content?.find === 'string' || typeof content?.replace === 'string') {
