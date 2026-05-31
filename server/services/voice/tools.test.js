@@ -199,6 +199,37 @@ describe('getToolSpecs', () => {
       expect(s.function.parameters?.type).toBe('object');
     }
   });
+
+  it('catalog_lookup advertises user-defined catalog types in its type enum', async () => {
+    const { setUserCatalogTypes } = await import('../../lib/catalogTypes.js');
+    try {
+      setUserCatalogTypes([{ id: 'faction', label: 'Faction', primaryContentKey: 'creed', fields: [] }]);
+      const lookup = getToolSpecs().find((s) => s.function.name === 'catalog_lookup');
+      const enumVals = lookup.function.parameters.properties.type.enum;
+      // Built-ins still present, plus the user type.
+      expect(enumVals).toEqual(expect.arrayContaining(['character', 'place', 'object', 'idea', 'scene', 'concept', 'faction']));
+    } finally {
+      setUserCatalogTypes([]);  // restore the registry for other suites
+    }
+  });
+
+  it('intent gating surfaces catalog_lookup for an utterance naming a user-defined type', async () => {
+    const { setUserCatalogTypes } = await import('../../lib/catalogTypes.js');
+    try {
+      // Before the type exists, "search my wardrobes" must NOT trip the catalog
+      // group (proves the static regex doesn't already cover the word).
+      const before = getToolSpecsForIntent('search my wardrobes');
+      expect(before.specs.some((s) => s.function.name === 'catalog_lookup')).toBe(false);
+
+      setUserCatalogTypes([{ id: 'wardrobe', label: 'Wardrobe', primaryContentKey: 'desc', fields: [] }]);
+      const after = getToolSpecsForIntent('search my wardrobes');
+      // Now the custom-noun match activates the catalog group and offers the tool.
+      expect(after.activeGroups.has('catalog')).toBe(true);
+      expect(after.specs.some((s) => s.function.name === 'catalog_lookup')).toBe(true);
+    } finally {
+      setUserCatalogTypes([]);
+    }
+  });
 });
 
 describe('dispatchTool unknown tool', () => {
