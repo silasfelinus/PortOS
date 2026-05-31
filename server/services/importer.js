@@ -1179,6 +1179,27 @@ export async function commitImport({
     : universe;
 
   const sanitizedArc = sanitizeArc(arc);
+
+  // Bible top-level fields the Arc Canvas sidebar reads. The importer used to
+  // write only series.arc + seasons, leaving logline/premise/issueCountTarget
+  // empty — so a freshly-imported series showed a blank bible. Fill them from
+  // the extracted arc + the count of issues being created. replaceMode
+  // overwrites (user-confirmed wipe); additive only fills fields the series
+  // doesn't already have, so a re-import never clobbers a hand-edited bible.
+  const issueCount = issuesWithPositions.length;
+  const arcLogline = sanitizedArc?.logline || '';
+  const arcPremise = sanitizedArc?.summary || sanitizedArc?.protagonistArc || '';
+  const biblePatch = {};
+  if (replaceMode) {
+    if (arcLogline) biblePatch.logline = arcLogline;
+    if (arcPremise) biblePatch.premise = arcPremise;
+    if (issueCount > 0) biblePatch.issueCountTarget = issueCount;
+  } else {
+    if (arcLogline && !(series.logline || '').trim()) biblePatch.logline = arcLogline;
+    if (arcPremise && !(series.premise || '').trim()) biblePatch.premise = arcPremise;
+    if (issueCount > 0 && !(series.issueCountTarget > 0)) biblePatch.issueCountTarget = issueCount;
+  }
+
   let updatedSeries = series;
   if (replaceMode) {
     // null arc + empty seasons are user-confirmed clears in replace mode
@@ -1186,8 +1207,9 @@ export async function commitImport({
     updatedSeries = await updateSeries(series.id, {
       arc: sanitizedArc,
       seasons: sanitizeSeasonList(seasons),
+      ...biblePatch,
     });
-  } else if (sanitizedArc || seasons.length > 0) {
+  } else if (sanitizedArc || seasons.length > 0 || Object.keys(biblePatch).length > 0) {
     // Only build + persist a seasons array when the caller actually sent
     // some — otherwise an arc-only re-import on a series that already has
     // seasons rewrites the array byte-for-byte identical (just to bump
@@ -1201,6 +1223,7 @@ export async function commitImport({
     updatedSeries = await updateSeries(series.id, {
       ...(sanitizedArc ? { arc: sanitizedArc } : {}),
       ...seasonsPatch,
+      ...biblePatch,
     });
   }
 
