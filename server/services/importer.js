@@ -1201,7 +1201,11 @@ export async function commitImport({
   } else {
     if (arcLogline && !(series.logline || '').trim()) biblePatch.logline = arcLogline;
     if (arcPremise && !(series.premise || '').trim()) biblePatch.premise = arcPremise;
-    if (issueCount > 0 && !(series.issueCountTarget > 0)) biblePatch.issueCountTarget = issueCount;
+    // Additive: target the POST-import total (issues already on the series plus
+    // the ones being added), not just this batch — adding 3 issues to a series
+    // that already has 2 should target 5, not 3. Only when no target is set yet.
+    const additiveTotal = existingIssues.length + issueCount;
+    if (additiveTotal > 0 && !(series.issueCountTarget > 0)) biblePatch.issueCountTarget = additiveTotal;
   }
 
   let updatedSeries = series;

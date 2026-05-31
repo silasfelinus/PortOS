@@ -163,7 +163,12 @@ const BACKFILL_SOURCE_MAX = 200_000;
 // textStages.js imports from THIS module (compareIssuesByPosition,
 // NO_LINKED_UNIVERSE_PLACEHOLDER) — importing back would create a cycle whose
 // binding is undefined at module-eval time. The one-liner is stable.
-const stageTextOf = (stage) => (stage?.input?.trim() || stage?.output?.trim() || '');
+// output (the generated/edited artifact) before input (the upstream seed): for
+// back-derivation we want the most-developed text, so a prose stage with both a
+// beat-sheet seed (input) and a drafted manuscript (output) yields the draft.
+// (textStages.stageContentOf is input-first because it answers a different
+// question — "does this stage have ANY content to use as a generation source".)
+const stageTextOf = (stage) => (stage?.output?.trim() || stage?.input?.trim() || '');
 
 // Default stage precedence: the richest authored artifact per issue. `idea`
 // (the outline/synopsis seed) is the lowest-priority fallback — it lets an
