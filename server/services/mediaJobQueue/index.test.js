@@ -321,14 +321,32 @@ describe('mediaJobQueue', () => {
       });
     }
 
-    // Wait for the single debounced flush to land the LAST burst value.
+    // Wait for the debounce flush to land the LAST burst value — proves at
+    // least one progress write happened (so the bound below is non-vacuous).
     await waitFor(() => {
       const persisted = JSON.parse(readFileSync(file, 'utf-8')).jobs.find((j) => j.id === job.jobId);
       return persisted?.statusMsg === `Rendering step ${BURST}/${BURST}`;
     }, { timeoutMs: 2000 });
 
+    // The "value landed" wait above is NOT a safe count checkpoint on its own:
+    // job.statusMsg is mutated to the final "12/12" synchronously during the
+    // burst, so a naive per-event persist() regression would write the final
+    // value on its FIRST chained flush while the other 11 are still draining —
+    // counting here could read 1 and pass vacuously. So settle first: hold
+    // until the write count stops climbing across a quiet window. The single
+    // debounced flush stabilizes at 1; a per-event regression keeps climbing
+    // to ≈ BURST and only then stabilizes, so the bound below catches it.
+    let prevCount = -1;
+    await waitFor(() => {
+      const c = atomicWriteSpy.mock.calls.length;
+      const settled = c > 0 && c === prevCount;
+      prevCount = c;
+      return settled;
+    }, { intervalMs: 60, timeoutMs: 2000 });
+
     // One debounce window ⇒ one flush (allow tiny slack for a trailing
-    // reschedule). The naive-per-event regression would be ≈ BURST (12) writes.
+    // reschedule). The naive-per-event regression would settle at ≈ BURST (12).
+    expect(atomicWriteSpy.mock.calls.length).toBeGreaterThanOrEqual(1);
     expect(atomicWriteSpy.mock.calls.length).toBeLessThanOrEqual(2);
 
     videoGenEvents.emit('completed', { generationId: job.jobId, filename: `${job.jobId}.mp4` });
