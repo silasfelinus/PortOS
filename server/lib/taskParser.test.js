@@ -213,7 +213,7 @@ describe('Task Parser', () => {
       expect(byId.size).toBe(3);
     });
 
-    it('should not collide a suffixed id with a real later task carrying that suffix', () => {
+    it('should rename the duplicate, never a distinct task that looks like a suffix', () => {
       const markdown = `# Tasks
 
 ## Pending
@@ -222,13 +222,13 @@ describe('Task Parser', () => {
 - [ ] #task-001-dup2 | MEDIUM | C already named like a suffix`;
 
       const tasks = parseTasksMarkdown(markdown);
-      const ids = tasks.map(t => t.id);
 
-      // The renamed first duplicate takes `task-001-dup2`; the real `task-001-dup2`
-      // then collides and suffixes off its own id (`task-001-dup2-dup2`) — the key
-      // point is every id stays distinct, never a re-collision.
-      expect(new Set(ids).size).toBe(ids.length);
-      expect(ids).toEqual(['task-001', 'task-001-dup2', 'task-001-dup2-dup2']);
+      // The duplicate of task-001 skips `-dup2` (a real id elsewhere in the file)
+      // and takes `-dup3`; the user-authored `task-001-dup2` keeps its stable id.
+      expect(tasks.map(t => t.id)).toEqual(['task-001', 'task-001-dup3', 'task-001-dup2']);
+      expect(tasks.map(t => t.description)).toEqual(['A', 'B', 'C already named like a suffix']);
+      // Still no re-collision.
+      expect(new Set(tasks.map(t => t.id)).size).toBe(tasks.length);
     });
   });
 

@@ -173,6 +173,20 @@ export function parseTasksMarkdown(content) {
   let currentTask = null;
   let currentSection = null;
 
+  // Pre-scan every task line's normalized id so suffix assignment below can
+  // avoid colliding with any *stable, user-authored* id present in the file —
+  // not just ids we've parsed so far. Without this a duplicate could grab
+  // `task-001-dup2` only for a real later `task-001-dup2` to be bumped to
+  // `task-001-dup2-dup2`, needlessly mutating an id the user chose. We rename
+  // the duplicate, never the unique original.
+  const rawIds = new Set();
+  for (const line of lines) {
+    if (line.startsWith('- [')) {
+      const parsed = parseTaskLine(line);
+      if (parsed) rawIds.add(parsed.id);
+    }
+  }
+
   // Push a fully-parsed task, guaranteeing its id is unique across the file.
   // Duplicate ids corrupt downstream consumers that key on id — most notably
   // reorderTasks' `new Map(tasks.map(t => [t.id, t]))`, which silently collapses
@@ -186,7 +200,9 @@ export function parseTasksMarkdown(content) {
     if (seenIds.has(task.id)) {
       const originalId = task.id;
       let suffix = 2;
-      while (seenIds.has(`${originalId}-dup${suffix}`)) suffix++;
+      // Skip suffixes already taken AND any raw id in the file, so we never
+      // rename a distinct task that happens to look like a generated suffix.
+      while (seenIds.has(`${originalId}-dup${suffix}`) || rawIds.has(`${originalId}-dup${suffix}`)) suffix++;
       task.id = `${originalId}-dup${suffix}`;
       console.warn(`⚠️ Duplicate task id "${originalId}" in tasks markdown — renamed to "${task.id}"`);
     }
