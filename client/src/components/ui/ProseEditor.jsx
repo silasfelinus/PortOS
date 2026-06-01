@@ -9,8 +9,12 @@ import { forwardRef } from 'react';
 //
 // This component owns ONLY the prose typography (serif + leading) + spellcheck
 // + the optional light "reading paper" theme. Host chrome — width, height,
-// border, background, padding, text size, rows — comes through `className` (and
-// any other passthrough props), so each caller keeps its own frame.
+// border, background, padding, text size, rows, AND focus treatment — comes
+// through `className` (and any other passthrough props), so each caller keeps
+// its own frame. (Focus is deliberately NOT baked in: a shared primitive that
+// silently strips the focus outline is an a11y footgun — a full-bleed host like
+// WorkEditor opts into `focus:outline-none`, while a bordered field keeps the
+// browser default unless it supplies its own ring.)
 
 const DEFAULT_PLACEHOLDER = 'Start writing… Use # Chapter, ## Scene, ### Beat headings to outline.';
 
@@ -35,7 +39,7 @@ const ProseEditor = forwardRef(function ProseEditor({
       style={readingTheme === 'light'
         ? { '--port-input-bg': 'var(--wr-reading-paper)', color: '#1a1a1a' }
         : undefined}
-      className={`font-serif leading-relaxed focus:outline-none ${className}`.trim()}
+      className={`font-serif leading-relaxed ${className}`.trim()}
       {...rest}
     />
   );

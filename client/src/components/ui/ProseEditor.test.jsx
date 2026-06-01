@@ -21,6 +21,13 @@ describe('ProseEditor', () => {
     expect(screen.getByPlaceholderText('Draft here')).toBeTruthy();
   });
 
+  it('does not bake in focus:outline-none (focus treatment is the caller’s)', () => {
+    // A shared primitive must not silently strip the focus outline — bordered
+    // callers rely on the browser default unless they opt into their own ring.
+    render(<ProseEditor value="" onChange={() => {}} />);
+    expect(screen.getByRole('textbox').className).not.toContain('outline-none');
+  });
+
   it('forwards onChange events', () => {
     const onChange = vi.fn();
     render(<ProseEditor value="" onChange={onChange} />);

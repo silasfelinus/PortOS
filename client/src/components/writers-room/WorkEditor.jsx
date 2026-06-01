@@ -809,7 +809,7 @@ export default function WorkEditor({ work, onChange, onToggleExercise, exerciseO
               value={body}
               onChange={(e) => setBody(e.target.value)}
               readingTheme={readingTheme}
-              className="w-full h-full resize-none px-6 py-6 text-base"
+              className="w-full h-full resize-none px-6 py-6 text-base focus:outline-none"
             />
           )}
           <div
