@@ -335,7 +335,12 @@ export function createRunnerService(config = {}) {
             body: JSON.stringify({
               model: model || provider.defaultModel,
               messages: [{ role: 'user', content: messageContent }],
-              stream: true
+              stream: true,
+              // Ollama's OpenAI-compatible endpoint defaults to a ~4K context
+              // window and silently truncates longer prompts. A top-level
+              // num_ctx lifts it (honored by Ollama, ignored by other
+              // OpenAI-style endpoints). Only sent when the provider opts in.
+              ...(Number(provider.numCtx) > 0 ? { num_ctx: Number(provider.numCtx) } : {})
             })
           }).catch(err => ({ ok: false, error: err.message, status: 0 }))
         : { ok: false, error: `Ollama is not running and PortOS could not start it: ${ready.error || 'unknown error'}`, status: 0 };

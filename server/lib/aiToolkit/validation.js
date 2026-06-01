@@ -25,6 +25,9 @@ export const providerSchema = z.object({
   // Model to run on the fallback provider. The UI sends '' when no model is
   // pinned (fall back to the fallback provider's own default), so allow empty.
   fallbackModel: z.string().nullable().optional(),
+  // Per-request context window (Ollama num_ctx). Lifts the ~4K default so long
+  // prompts (e.g. a whole manuscript) aren't silently truncated. Null = unset.
+  numCtx: z.number().int().min(512).max(1048576).nullable().optional(),
   timeout: z.number().int().min(1000).max(1800000).optional(),
   enabled: z.boolean().optional(),
   envVars: z.record(z.string()).optional(),
