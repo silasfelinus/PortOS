@@ -349,12 +349,12 @@ export default function Layout() {
     setFlyoutPos({ top: rect.top, left: rect.right + 4 });
     setFlyoutSection(label);
   }, []);
-  // After the flyout renders, shift it up if it would overflow the bottom of
-  // the viewport so the full menu of options stays visible (sections near the
-  // bottom of a collapsed sidebar otherwise clip off-screen). useLayoutEffect
-  // measures the actual rendered height and adjusts before paint (no flicker).
-  useLayoutEffect(() => {
-    if (!flyoutSection || !flyoutRef.current) return;
+  // Shift the flyout up if it would overflow the bottom of the viewport so the
+  // full menu of options stays visible (sections near the bottom of a collapsed
+  // sidebar otherwise clip off-screen). Measures the actual rendered height and
+  // adjusts before paint (no flicker, hence useLayoutEffect on open).
+  const clampFlyout = useCallback(() => {
+    if (!flyoutRef.current) return;
     const MARGIN = 8;
     const height = flyoutRef.current.offsetHeight;
     const maxTop = window.innerHeight - height - MARGIN;
@@ -362,7 +362,14 @@ export default function Layout() {
       const clampedTop = Math.max(MARGIN, Math.min(prev.top, maxTop));
       return clampedTop === prev.top ? prev : { ...prev, top: clampedTop };
     });
-  }, [flyoutSection]);
+  }, []);
+  useLayoutEffect(() => {
+    if (!flyoutSection) return;
+    clampFlyout();
+    // Re-clamp on resize so a shorter viewport doesn't strand the open flyout.
+    window.addEventListener('resize', clampFlyout);
+    return () => window.removeEventListener('resize', clampFlyout);
+  }, [flyoutSection, clampFlyout]);
   const scheduleCloseFlyout = useCallback(() => {
     clearTimeout(flyoutCloseTimer.current);
     flyoutCloseTimer.current = setTimeout(() => setFlyoutSection(null), 180);
