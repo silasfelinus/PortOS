@@ -169,8 +169,30 @@ function parseMetadataLine(line) {
 export function parseTasksMarkdown(content) {
   const lines = content.split('\n');
   const tasks = [];
+  const seenIds = new Set();
   let currentTask = null;
   let currentSection = null;
+
+  // Push a fully-parsed task, guaranteeing its id is unique across the file.
+  // Duplicate ids corrupt downstream consumers that key on id — most notably
+  // reorderTasks' `new Map(tasks.map(t => [t.id, t]))`, which silently collapses
+  // collisions so only the last duplicate survives the reorder write-back. We
+  // warn and suffix the colliding id (`-dup2`, `-dup3`, …) rather than throw:
+  // throwing would make a single hand-edited or corrupted TASKS.md crash every
+  // read of the CoS task system, whereas suffixing keeps every task alive with a
+  // distinct id. Called once per task, after its metadata lines are attached.
+  const pushTask = (task) => {
+    if (!task) return;
+    if (seenIds.has(task.id)) {
+      const originalId = task.id;
+      let suffix = 2;
+      while (seenIds.has(`${originalId}-dup${suffix}`)) suffix++;
+      task.id = `${originalId}-dup${suffix}`;
+      console.warn(`⚠️ Duplicate task id "${originalId}" in tasks markdown — renamed to "${task.id}"`);
+    }
+    seenIds.add(task.id);
+    tasks.push(task);
+  };
 
   for (const line of lines) {
     // Section headers
@@ -186,9 +208,7 @@ export function parseTasksMarkdown(content) {
 
     // Task line
     if (line.startsWith('- [')) {
-      if (currentTask) {
-        tasks.push(currentTask);
-      }
+      pushTask(currentTask);
       currentTask = parseTaskLine(line);
       if (currentTask) {
         currentTask.section = currentSection;
@@ -206,9 +226,7 @@ export function parseTasksMarkdown(content) {
   }
 
   // Don't forget last task
-  if (currentTask) {
-    tasks.push(currentTask);
-  }
+  pushTask(currentTask);
 
   return tasks;
 }
