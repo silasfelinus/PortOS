@@ -423,6 +423,14 @@ export async function spawnDirectly({
   // the agent is finalized. (output.txt is written separately below.)
   const outputBatcher = createAgentOutputBatcher(agentId);
 
+  // Expose a drain hook on the activeAgents entry so the user-terminate/kill
+  // paths (agentManagement.js) can flush pending batched output before they
+  // mark the agent complete — otherwise up to one debounce window of
+  // stdout/stderr could land after the terminal record. (The close handler
+  // still drains too; flush() is idempotent.)
+  const cliAgentEntry = activeAgents.get(agentId);
+  if (cliAgentEntry) cliAgentEntry.flushOutput = () => outputBatcher.flush();
+
   const stopForImmediateFallbackSignal = (text) => {
     if (immediateFallbackAnalysis || claudeProcess.killed) return;
     const analysis = detectImmediateFallbackSignal(text);

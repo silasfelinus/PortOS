@@ -48,7 +48,7 @@ function getRunnerOutputBatcher(agentId) {
   return batcher;
 }
 
-async function flushRunnerOutputBatcher(agentId) {
+export async function flushRunnerOutputBatcher(agentId) {
   const batcher = runnerOutputBatchers.get(agentId);
   if (!batcher) return;
   // Flush BEFORE deleting: the agent is still in `runnerAgents` at this point
