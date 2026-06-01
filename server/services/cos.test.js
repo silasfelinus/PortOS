@@ -649,22 +649,25 @@ describe('cos.js source — priority + capacity invariants', () => {
     expect(evalFn).toMatch(/tasksToSpawn\.length\s*===\s*0\s*&&\s*state\.config\.idleReviewEnabled/);
   });
 
-  it('on-demand loop dedupes markAppReviewStarted per app via reviewStartedApps set', () => {
+  it('both on-demand loops dedupe markAppReviewStarted per app via reviewStartedApps set', () => {
     // Multiple on-demand requests targeting the same app should mark its
-    // activity record review-started only once per evaluation cycle — without
-    // the guard, each request rewrites the same record. Pin (a) the set is
-    // declared and (b) markAppReviewStarted is gated on it.
-    const fnStart = COS_SRC.indexOf('export async function evaluateTasks');
-    const fnBody = extractFnBody(COS_SRC, fnStart);
-
-    expect(
-      fnBody,
-      'evaluateTasks must declare a reviewStartedApps set to dedupe per-app marks'
-    ).toMatch(/const\s+reviewStartedApps\s*=\s*new\s+Set\(/);
-    expect(
-      fnBody,
-      'markAppReviewStarted must be gated on !reviewStartedApps.has(targetApp.id)'
-    ).toMatch(/if\s*\(\s*!\s*reviewStartedApps\.has\(\s*targetApp\.id\s*\)\s*\)/);
+    // activity record review-started only once per cycle — without the guard,
+    // each request rewrites the same record. BOTH on-demand loops carry the
+    // duplication: the startup/manual `evaluateTasks` loop AND the
+    // event-driven `dequeueNextTask` loop (the common "Run Now" path). Pin
+    // (a) the set is declared and (b) markAppReviewStarted is gated on it in
+    // each.
+    for (const fnName of ['export async function evaluateTasks', 'async function dequeueNextTask']) {
+      const fnBody = extractFnBody(COS_SRC, COS_SRC.indexOf(fnName));
+      expect(
+        fnBody,
+        `${fnName} must declare a reviewStartedApps set to dedupe per-app marks`
+      ).toMatch(/const\s+reviewStartedApps\s*=\s*new\s+Set\(/);
+      expect(
+        fnBody,
+        `${fnName} must gate markAppReviewStarted on !reviewStartedApps.has(targetApp.id)`
+      ).toMatch(/if\s*\(\s*!\s*reviewStartedApps\.has\(\s*targetApp\.id\s*\)\s*\)/);
+    }
   });
 
   it('queueEligibleImprovementTasks routes through generateManagedAppImprovementTaskForType', () => {

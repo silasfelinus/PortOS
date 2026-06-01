@@ -2551,6 +2551,9 @@ async function dequeueNextTask() {
   const taskSchedule = await taskScheduleMod.loadSchedule();
   const onDemandRequests = await taskScheduleMod.getOnDemandRequests();
 
+  // Track apps already marked review-started this cycle so multiple on-demand
+  // requests for the same app don't each rewrite its activity record.
+  const reviewStartedApps = new Set();
   for (const request of onDemandRequests) {
     if (spawned >= availableSlots) break;
 
@@ -2584,7 +2587,10 @@ async function dequeueNextTask() {
 
     if (targetApp) {
       emitLog('info', `Processing on-demand improvement: ${request.taskType} for ${targetApp.name}`, { requestId: request.id, appId: targetApp.id });
-      await markAppReviewStarted(targetApp.id, `on-demand-${Date.now()}`);
+      if (!reviewStartedApps.has(targetApp.id)) {
+        await markAppReviewStarted(targetApp.id, `on-demand-${Date.now()}`);
+        reviewStartedApps.add(targetApp.id);
+      }
       await taskScheduleMod.recordExecution(`task:${request.taskType}`, targetApp.id);
       task = await generateManagedAppImprovementTaskForType(request.taskType, targetApp, state, { skipPreconditions: true });
     } else {
