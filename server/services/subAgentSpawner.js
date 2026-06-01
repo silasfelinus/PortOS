@@ -73,19 +73,30 @@ export async function loadSlashdoCommand(commandName) {
   return content;
 }
 
-// Guard against double-init. Module import is side-effect-free now, so init is
-// an explicit call (server/index.js); the flag keeps a second call (e.g. a test
-// that re-invokes it, or a future re-init path) from double-binding the
-// cosEvents listeners and scheduling a duplicate orphan-cleanup timer.
-let spawnerInitialized = false;
+// Memoized init promise. Module import is side-effect-free now, so init is an
+// explicit call (server/index.js). Returning a shared promise makes the call
+// idempotent AND safe under a concurrent second caller: both await the same
+// in-flight init and only observe "ready" once the `task:ready` listener +
+// orphan timer are actually wired — a plain boolean-at-entry guard would let a
+// concurrent caller return early before that. Reset to null on failure so a
+// later call can retry instead of being stuck on a half-initialized spawner.
+let spawnerInitPromise = null;
 
 /**
- * Initialize the spawner — listen for task:ready events.
+ * Initialize the spawner — listen for task:ready events. Idempotent: repeated
+ * calls return the same promise (and re-run only after a failed attempt).
  */
-export async function initSpawner() {
-  if (spawnerInitialized) return;
-  spawnerInitialized = true;
+export function initSpawner() {
+  if (!spawnerInitPromise) {
+    spawnerInitPromise = runInitSpawner().catch(err => {
+      spawnerInitPromise = null;
+      throw err;
+    });
+  }
+  return spawnerInitPromise;
+}
 
+async function runInitSpawner() {
   // Initialize provider status tracking
   await initProviderStatus().catch(err => {
     console.error(`⚠️ Failed to initialize provider status: ${err.message}`);
