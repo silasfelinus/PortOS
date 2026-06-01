@@ -5,7 +5,7 @@ import { getAllProviders, getProviderById } from '../services/providers.js';
 import { getAllProviderStatuses } from '../services/providerStatus.js';
 import { listAccounts as listCalendarAccounts } from '../services/calendarAccounts.js';
 import { listAccounts as listMessageAccounts } from '../services/messageAccounts.js';
-import { countMemories } from '../services/memory.js';
+import { countMemories } from '../services/memoryBackend.js';
 import { getConfig as getCosConfig } from '../services/cos.js';
 import { getVoiceConfig } from '../services/voice/config.js';
 import { getNetworkExposureStatus } from '../lib/networkExposure.js';

@@ -18,7 +18,7 @@ vi.mock('../services/calendarAccounts.js', () => ({
 vi.mock('../services/messageAccounts.js', () => ({
   listAccounts: vi.fn(async () => [{ enabled: true, lastSyncStatus: 'success' }]),
 }));
-vi.mock('../services/memory.js', () => ({
+vi.mock('../services/memoryBackend.js', () => ({
   countMemories: vi.fn(async () => 7),
 }));
 vi.mock('../services/cos.js', () => ({
@@ -46,7 +46,7 @@ vi.mock('../services/apps.js', () => ({
   getAppStatusSummary: vi.fn(async () => ({ total: 2, online: 2, stopped: 0, notStarted: 0, unmanaged: 0 })),
 }));
 
-const { countMemories } = await import('../services/memory.js');
+const { countMemories } = await import('../services/memoryBackend.js');
 const { getGenomeSummary } = await import('../services/genome.js');
 const { default: capabilitiesRoutes } = await import('./capabilities.js');
 
