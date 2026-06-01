@@ -262,9 +262,12 @@ export async function writeLayoutsDoc(path, doc) {
  * `'_partials'`, matching the shape `collectDrift` in setup-data.js consumes.
  */
 export async function buildPromptDriftTables(migrationsDir) {
+  // Sort by the leading migration number, not lexicographically — so the
+  // `current` (latest) hash selection holds even if a future migration name
+  // isn't zero-padded (e.g. `7-foo.js` must order before `60-foo.js`).
   const candidates = (await readdir(migrationsDir))
     .filter((f) => /^\d.*\.js$/.test(f) && !f.endsWith('.test.js'))
-    .sort();
+    .sort((a, b) => (parseInt(a, 10) - parseInt(b, 10)) || a.localeCompare(b));
 
   // key = `${subdir}/${filename}` so stages + _partials never collide.
   const merged = new Map();

@@ -139,9 +139,9 @@ for (const { relPath, mergeKey } of JSON_MERGE_TARGETS) {
 // managed by a migration are checked, so prompts with no migration counterpart
 // (e.g. cd-evaluate.md) never produce misleading warnings.
 const driftTables = await buildPromptDriftTables(join(__dirname, 'migrations'));
-const EMPTY_DRIFT_TABLE = { oldMap: {}, newMap: {}, files: [] };
-const stageTable   = driftTables.stages    || EMPTY_DRIFT_TABLE;
-const partialTable = driftTables._partials || EMPTY_DRIFT_TABLE;
+const emptyDriftTable = () => ({ oldMap: {}, newMap: {}, files: [] });
+const stageTable   = driftTables.stages    || emptyDriftTable();
+const partialTable = driftTables._partials || emptyDriftTable();
 
 // Walk one directory's worth of shipped prompt files against a hash table
 // and partition them into auto-updatable (still on a known old hash) vs.
