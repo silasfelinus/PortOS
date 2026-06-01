@@ -20,7 +20,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
-  ArrowLeft, Loader2, Sparkles, Check, X, CornerDownRight, FileText, ChevronDown, ChevronRight, Star, History, RotateCcw, ClipboardCheck,
+  ArrowLeft, Loader2, Sparkles, Check, X, CornerDownRight, FileText, ChevronDown, ChevronRight, Star, History, RotateCcw, ClipboardCheck, Layers,
 } from 'lucide-react';
 import InlineDiff from '../components/ui/InlineDiff';
 import toast from '../components/ui/Toast';
@@ -71,6 +71,10 @@ export default function PipelineManuscriptEditor() {
   const [pinnedPrimary, setPinnedPrimary] = useState(null);   // explicit bible value (may be null)
   const [availableTypes, setAvailableTypes] = useState([]);   // formats with ≥1 drafted issue
   const [comments, setComments] = useState([]);
+  // Coverage shape of the last completeness run: { chunked, chunkCount }. A
+  // chunked run means the model couldn't hold the whole manuscript at once
+  // (small context window) — surfaced so the review's coverage isn't ambiguous.
+  const [reviewMeta, setReviewMeta] = useState(null);
   const [loading, setLoading] = useState(true);
   const [switching, setSwitching] = useState(false);
   const [pinning, setPinning] = useState(false);
@@ -152,7 +156,11 @@ export default function PipelineManuscriptEditor() {
       const result = await analyzePipelineManuscriptCompleteness(seriesId, { providerOverride, modelOverride });
       const next = Array.isArray(result?.review?.comments) ? result.review.comments : [];
       setComments(next);
-      toast.success(`Editorial review complete — ${next.filter((c) => c.status === 'open').length} open notes`);
+      setReviewMeta({ chunked: !!result?.chunked, chunkCount: result?.chunkCount || 1 });
+      const openCount = next.filter((c) => c.status === 'open').length;
+      toast.success(result?.chunked
+        ? `Editorial review complete — ${openCount} open notes (reviewed in ${result.chunkCount} chunks)`
+        : `Editorial review complete — ${openCount} open notes`);
     },
     { errorMessage: 'Failed to run editorial review' },
   );
@@ -405,6 +413,16 @@ export default function PipelineManuscriptEditor() {
             <span>Editorial comments</span>
             <span className="text-gray-600">{grouped.open.length} open</span>
           </h2>
+
+          {reviewMeta?.chunked ? (
+            <p
+              className="flex items-center gap-1.5 text-[11px] text-port-warning"
+              title="The manuscript exceeded this model's context window, so it was reviewed in chunks. A larger-context model reviews the whole manuscript in one pass for better cross-chapter continuity."
+            >
+              <Layers size={11} />
+              Reviewed in {reviewMeta.chunkCount} chunks
+            </p>
+          ) : null}
 
           {comments.length === 0 ? (
             <p className="text-xs text-gray-500 italic">

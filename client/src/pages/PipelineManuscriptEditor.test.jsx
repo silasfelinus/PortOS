@@ -170,4 +170,33 @@ describe('PipelineManuscriptEditor', () => {
     );
     await waitFor(() => expect(screen.getByText(/2 open/)).toBeInTheDocument());
   });
+
+  it('shows a chunk-count badge when the review ran in chunks (small context window)', async () => {
+    api.analyzePipelineManuscriptCompleteness.mockResolvedValue({
+      review: { schemaVersion: 1, comments: [comment] },
+      chunked: true,
+      chunkCount: 4,
+    });
+    renderEditor();
+    await screen.findByText('My Series');
+
+    expect(screen.queryByText(/Reviewed in/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('Run editorial review'));
+
+    expect(await screen.findByText('Reviewed in 4 chunks')).toBeInTheDocument();
+  });
+
+  it('does not show a chunk-count badge when the whole manuscript was reviewed at once', async () => {
+    api.analyzePipelineManuscriptCompleteness.mockResolvedValue({
+      review: { schemaVersion: 1, comments: [comment] },
+      chunked: false,
+      chunkCount: 1,
+    });
+    renderEditor();
+    await screen.findByText('My Series');
+
+    fireEvent.click(screen.getByText('Run editorial review'));
+    await waitFor(() => expect(api.analyzePipelineManuscriptCompleteness).toHaveBeenCalled());
+    expect(screen.queryByText(/Reviewed in/)).not.toBeInTheDocument();
+  });
 });
