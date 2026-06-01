@@ -1034,6 +1034,7 @@ export default function Layout() {
             location.pathname.startsWith('/meatspace') ||
             location.pathname.startsWith('/media') ||
             location.pathname.startsWith('/messages') ||
+            location.pathname.startsWith('/local-llm/') ||
             location.pathname.startsWith('/pipeline/issues/') ||
             location.pathname.startsWith('/pipeline/series/') ||
             location.pathname.startsWith('/post') ||
