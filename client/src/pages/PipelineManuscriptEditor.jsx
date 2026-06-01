@@ -499,6 +499,7 @@ function ActiveCommentOverlay({ comment, onClose, ...cardProps }) {
   return (
     <div
       role="dialog"
+      aria-modal="false"
       aria-label="Editorial comment"
       className="fixed bottom-4 left-4 z-40 w-[min(440px,calc(100vw-2rem))] max-h-[70vh] overflow-y-auto rounded-lg border border-port-accent/40 bg-port-card shadow-2xl shadow-black/60"
     >
