@@ -63,4 +63,10 @@ describe('InlineConfirmRow', () => {
     expect(screen.getByRole('button', { name: 'Delete' }).getAttribute('type')).toBe('button');
     expect(screen.getByRole('button', { name: 'Cancel' }).getAttribute('type')).toBe('button');
   });
+
+  it('forwards passthrough props (data-*/aria-*) to the root like sibling primitives', () => {
+    render(<InlineConfirmRow question="x" data-testid="confirm-row" aria-label="Confirm deletion" />);
+    const wrapper = screen.getByTestId('confirm-row');
+    expect(wrapper.getAttribute('aria-label')).toBe('Confirm deletion');
+  });
 });

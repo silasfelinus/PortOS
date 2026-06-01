@@ -24,11 +24,12 @@ export default function InlineConfirmRow({
   onCancel,
   tone = 'error',
   className = '',
+  ...rest
 }) {
   const t = TONES[tone] || TONES.error;
 
   return (
-    <div className={`flex items-center gap-2 p-2 border rounded ${t.wrapper} ${className}`.trim()}>
+    <div className={`flex items-center gap-2 p-2 border rounded ${t.wrapper} ${className}`.trim()} {...rest}>
       <span className="text-xs text-white flex-1">{question}</span>
       <button
         type="button"
