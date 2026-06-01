@@ -10,7 +10,7 @@ import { readFile, unlink, rm } from 'fs/promises';
 import { existsSync } from 'fs';
 import { execGit } from '../lib/execGit.js';
 import { cosEvents, emitLog } from './cosEvents.js';
-import { registerAgent, updateAgent, completeAgent, appendAgentOutput } from './cosAgents.js';
+import { registerAgent, updateAgent, completeAgent } from './cosAgents.js';
 import { getConfig, updateTask, addTask, getTaskById, checkStagePrecondition } from './cos.js';
 import { spawnAgentViaRunner, getActiveAgentsFromRunner, getRunnerHealth } from './cosRunnerClient.js';
 import { getActiveProvider, getAllProviders, getProviderById } from './providers.js';
