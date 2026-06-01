@@ -129,8 +129,7 @@ describe('codeReview helpers', () => {
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ choices: [{ message: { content: 'No findings.' } }] }),
-        text: () => Promise.resolve(''),
+        text: () => Promise.resolve(JSON.stringify({ choices: [{ message: { content: 'No findings.' } }] })),
       })
     })
 
@@ -190,11 +189,23 @@ describe('codeReview helpers', () => {
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ choices: [{ message: { content: '' } }] }),
+        text: () => Promise.resolve(JSON.stringify({ choices: [{ message: { content: '' } }] })),
       })
       const r = await runLocalCodeReview({ backend: 'ollama', model: 'm', diff: 'x' })
       expect(r.ok).toBe(false)
       expect(r.error).toMatch(/no content/)
+    })
+
+    it('surfaces a 200-with-non-JSON body instead of masking it as "no content"', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('<html><body>502 Bad Gateway</body></html>'),
+      })
+      const r = await runLocalCodeReview({ backend: 'lmstudio', model: 'm', diff: 'x' })
+      expect(r.ok).toBe(false)
+      expect(r.error).toMatch(/non-JSON response/)
+      expect(r.error).toMatch(/502 Bad Gateway/)
     })
   })
 })

@@ -4,6 +4,7 @@ import { ensureBackendProvider } from './localLlm.js';
 import { getProviderById } from './providers.js';
 import { markProviderAvailable } from './providerStatus.js';
 import { ensureProviderReady as ensureOllamaProviderReady } from './ollamaManager.js';
+import { readResponseJson } from '../lib/readResponseJson.js';
 
 const PROVIDER_BY_BACKEND = { ollama: 'ollama', lmstudio: 'lmstudio' };
 
@@ -111,7 +112,14 @@ async function streamChatCompletion({ provider, backend, modelId, prompt, system
   }
 
   if (!response.body?.getReader) {
-    const data = await response.json();
+    // Sentinel fallback: a non-JSON/blank 200 body must throw (caught by
+    // runLocalLlmTest → finalizeRunRecord success:false), not return '' — which
+    // line 205 would persist as a successful empty run. Mirrors the pre-helper
+    // response.json() throw; a valid body with empty content is unchanged.
+    const data = await readResponseJson(response, { fallback: null, emptyValue: null });
+    if (!data) {
+      throw new Error(`Provider returned a non-JSON response (${response.status})`);
+    }
     const text = data.choices?.[0]?.message?.content || '';
     if (text) onChunk(text);
     return text;
