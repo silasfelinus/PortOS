@@ -47,6 +47,7 @@ import FavoritesFilterChip from '../components/media/FavoritesFilterChip';
 import ModelSelect from '../components/ModelSelect';
 import ModelDownloadBadge, { deriveSizeEstimate } from '../components/media/ModelDownloadBadge';
 import { useModelDownloadStatus, TEXT_ENCODER_DOWNLOAD_ID } from '../hooks/useModelDownloadStatus';
+import { useMediaJobSse } from '../hooks/useMediaJobSse';
 import { useMediaCompletionRefresh } from '../hooks/useMediaCompletionRefresh';
 import { useMediaAnnotations } from '../hooks/useMediaAnnotations';
 import usePreviewRoute from '../hooks/usePreviewRoute';
@@ -58,7 +59,7 @@ import {
   getSettings, patchSettingsSlice,
   getActiveVideoJob,
 } from '../services/api';
-import { randomSeed, safeParseJSON } from '../lib/genUtils';
+import { randomSeed } from '../lib/genUtils';
 import { VIDEO_RESOLUTIONS } from '../lib/videoGenResolutions';
 import { VIDEO_TILING_OPTIONS, VIDEO_TILING_ENUM_SET } from '../lib/videoTilingOptions';
 import { resolveResolutionLabel } from '../lib/imageGenResolutions';
@@ -421,7 +422,7 @@ export default function VideoGen() {
   const [statusMsg, setStatusMsg] = useState('');
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
-  const eventSourceRef = useRef(null);
+  const { attach, eventSourceRef } = useMediaJobSse('video');
   // Hold the reject() of the in-flight runGeneration Promise so cancel can
   // settle it. Without this, handleCancel() closes the EventSource but the
   // outstanding Promise dangles forever — and the queue worker's .finally()
@@ -458,63 +459,50 @@ export default function VideoGen() {
   useEffect(() => {
     refreshStatus();
     return () => eventSourceRef.current?.close();
-  }, [refreshStatus]);
+  }, [refreshStatus, eventSourceRef]);
 
   // SSE subscriber shared by the in-flight POST path and the mount-time
   // resume path. `withToast: false` on resume suppresses the success/error
   // toast — the user already saw it the first time and a page reload
   // shouldn't replay it.
   const attachJobEvents = (jobId, { isCurrent = () => true, settleResolve = () => {}, settleReject = () => {}, withToast = true } = {}) => {
-    const es = new EventSource(`/api/video-gen/${jobId}/events`);
-    eventSourceRef.current = es;
-    es.onmessage = (ev) => {
-      if (!isCurrent()) { es.close(); return; }
-      const msg = safeParseJSON(ev.data);
-      if (!msg) return;
-      if (msg.type === 'queued') {
-        setStatusMsg(typeof msg.position === 'number' ? `Queued (position ${msg.position})` : 'Queued');
-      }
-      if (msg.type === 'started') setStatusMsg('Starting render…');
-      if (msg.type === 'status') setStatusMsg(msg.message);
-      if (msg.type === 'progress') {
+    return attach(jobId, {
+      isCurrent,
+      onQueued: (msg) => setStatusMsg(typeof msg.position === 'number' ? `Queued (position ${msg.position})` : 'Queued'),
+      onStarted: () => setStatusMsg('Starting render…'),
+      onStatus: (msg) => setStatusMsg(msg.message),
+      onProgress: (msg) => {
         setProgress({ progress: msg.progress });
         // A bare tqdm percentage shouldn't blank the STATUS line that just
         // preceded it; only overwrite when the progress event carries text.
         if (msg.message) setStatusMsg(msg.message);
-      }
-      if (msg.type === 'complete') {
+      },
+      onComplete: (msg) => {
         setResult(msg.result);
         setGenerating(false);
         setProgress({ progress: 1 });
         setStatusMsg('Complete');
-        es.close();
         if (withToast) toast.success('Video generated');
         refreshHistory();
-        settleResolve(msg.result);
-      }
-      if (msg.type === 'error') {
+        return msg.result;
+      },
+      onError: (msg) => {
         setError(msg.error);
         setGenerating(false);
-        es.close();
         if (withToast) toast.error(msg.error);
-        settleReject(new Error(msg.error));
-      }
-      if (msg.type === 'canceled') {
+        return new Error(msg.error);
+      },
+      onCanceled: (msg) => {
         setGenerating(false);
         setStatusMsg(msg.reason || 'Canceled');
-        es.close();
         if (withToast) toast(msg.reason || 'Render canceled');
-        settleReject(new Error(msg.reason || 'Canceled'));
-      }
-    };
-    es.onerror = () => {
-      if (!isCurrent()) { es.close(); return; }
-      setError('Lost connection to server');
-      setGenerating(false);
-      es.close();
-      settleReject(new Error('Lost connection to server'));
-    };
-    return es;
+        return new Error(msg.reason || 'Canceled');
+      },
+      onConnectionError: () => {
+        setError('Lost connection to server');
+        setGenerating(false);
+      },
+    }).then(settleResolve, settleReject);
   };
 
   // Resume an in-flight (or queued) render so a page reload doesn't lose

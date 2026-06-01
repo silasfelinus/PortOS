@@ -16,6 +16,7 @@ export { default as useImageGenQueue } from './useImageGenQueue.js';
 export { default as useMediaPreviewActions } from './useMediaPreviewActions.js';
 export { default as useKeyboardControls } from './useKeyboardControls.js';
 export { default as useMediaJobProgress } from './useMediaJobProgress.js';
+export * from './useMediaJobSse.js';
 export { default as useMoltworldWs } from './useMoltworldWs.js';
 export { default as useMounted } from './useMounted.js';
 export { default as useNextEvalCountdown } from './useNextEvalCountdown.js';
