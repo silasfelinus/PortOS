@@ -788,7 +788,13 @@ export async function enqueueVisualImage(issueId, stageId, options = {}) {
   const { issue, settings, series, world, canon } = await loadBibleContext(issueId);
   assertStageUnlocked(issue, stageId);
   const mode = resolveMode(options, settings);
-  const matchedCharacters = matchCharactersInText(options.description || '', canon.characters);
+  // Match on description + slugline so the featured-character set (and thus
+  // which wardrobe picks apply) stays consistent with the scene-video / shot
+  // paths and the storyboards picker UI — all of which match both fields.
+  const matchedCharacters = matchCharactersInText(
+    `${options.description || ''} ${options.slugline || ''}`,
+    canon.characters,
+  );
   const prompt = composeVisualPrompt({
     series,
     description: options.description,
