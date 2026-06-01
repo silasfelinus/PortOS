@@ -40,6 +40,7 @@ export default function SettingsTabsHeader({ activeTab }) {
       activeTab={activeTab}
       onChange={handleChange}
       ariaLabel="Settings sections"
+      className="w-full min-w-0 shrink-0"
     />
   );
 }

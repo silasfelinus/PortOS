@@ -164,28 +164,28 @@ export default function AiAssignmentsTab() {
   }
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-4">
-        <div>
+    <div className="min-w-0 space-y-5">
+      <div className="flex min-w-0 flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 text-gray-200">
             <Bot size={18} className="text-port-accent" />
             <h2 className="text-lg font-semibold">AI Assignments</h2>
           </div>
           <div className="mt-2 flex flex-wrap gap-2 text-xs">
             {Object.entries(providerCounts).sort((a, b) => b[1] - a[1]).map(([id, count]) => (
-              <span key={id} className="px-2 py-1 rounded bg-port-card border border-port-border text-gray-300">
+              <span key={id} className="max-w-full truncate px-2 py-1 rounded bg-port-card border border-port-border text-gray-300">
                 {providerName(data.providers, id)}: {count}
               </span>
             ))}
           </div>
         </div>
 
-        <div className="bg-port-card border border-port-border rounded-lg p-3 space-y-2 min-w-full xl:min-w-[420px] xl:max-w-[520px]">
+        <div className="w-full min-w-0 max-w-full shrink-0 bg-port-card border border-port-border rounded-lg p-3 space-y-2 xl:w-[520px]">
           <div className="flex flex-col sm:flex-row gap-2">
             <select
               value={fromProvider}
               onChange={(e) => setFromProvider(e.target.value)}
-              className="flex-1 bg-port-bg border border-port-border rounded px-2 py-2 text-sm text-white"
+              className="min-w-0 flex-1 bg-port-bg border border-port-border rounded px-2 py-2 text-sm text-white"
             >
               <option value="">From provider</option>
               {data.providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -196,7 +196,7 @@ export default function AiAssignmentsTab() {
             <select
               value={toProvider}
               onChange={(e) => setToProvider(e.target.value)}
-              className="flex-1 bg-port-bg border border-port-border rounded px-2 py-2 text-sm text-white"
+              className="min-w-0 flex-1 bg-port-bg border border-port-border rounded px-2 py-2 text-sm text-white"
             >
               <option value="">To provider</option>
               {data.providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -205,7 +205,7 @@ export default function AiAssignmentsTab() {
               type="button"
               onClick={runBulkMigration}
               disabled={!fromProvider || !toProvider || fromProvider === toProvider || bulkSaving}
-              className="px-3 py-2 bg-port-accent hover:bg-port-accent/80 disabled:opacity-50 text-white rounded text-sm"
+              className="shrink-0 px-3 py-2 bg-port-accent hover:bg-port-accent/80 disabled:opacity-50 text-white rounded text-sm"
             >
               {bulkSaving ? 'Migrating...' : 'Migrate'}
             </button>
