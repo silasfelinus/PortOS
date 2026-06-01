@@ -36,7 +36,7 @@ describe('ConfirmButtonPair', () => {
   });
 
   it('renders the confirm icon alongside the label', () => {
-    const { container } = render(<ConfirmButtonPair confirmIcon={Trash2} />);
+    render(<ConfirmButtonPair confirmIcon={Trash2} />);
     // lucide renders an <svg>; it sits inside the confirm button.
     const confirm = screen.getByRole('button', { name: 'Delete' });
     expect(confirm.querySelector('svg')).not.toBeNull();
