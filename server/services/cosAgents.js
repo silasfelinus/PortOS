@@ -451,12 +451,14 @@ export function createAgentOutputBatcher(agentId, { intervalMs = OUTPUT_FLUSH_IN
       }
       schedule();
     },
-    // Wait for any in-flight drain, then synchronously empty `pending`. A push
-    // can race in during the awaited drain, so drain once more to be sure.
+    // Wait for any in-flight drain, then fully empty `pending`. A push can race
+    // in during an awaited drain, so loop until nothing is left rather than
+    // draining a fixed number of times (which could strand a late line to the
+    // debounce timer). flush() is only called once the producer has stopped, so
+    // the loop terminates promptly.
     async flush() {
       if (flushing) await flushing;
-      await drain();
-      if (pending.length > 0) await drain();
+      while (pending.length > 0) await drain();
     },
   };
 }

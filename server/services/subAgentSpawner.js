@@ -51,8 +51,12 @@ function getRunnerOutputBatcher(agentId) {
 async function flushRunnerOutputBatcher(agentId) {
   const batcher = runnerOutputBatchers.get(agentId);
   if (!batcher) return;
-  runnerOutputBatchers.delete(agentId);
+  // Flush BEFORE deleting: the agent is still in `runnerAgents` at this point
+  // (handleAgentCompletion removes it afterwards), so a line racing in during
+  // the awaited flush lands in this same batcher instead of orphaning a new
+  // one. The `agent:output` guard below drops any truly post-completion stray.
   await batcher.flush();
+  runnerOutputBatchers.delete(agentId);
 }
 
 
@@ -118,6 +122,12 @@ export async function initSpawner() {
     // Set up event handlers for runner events
     onCosRunnerEvent('agent:output', async (data) => {
       const { agentId, text } = data;
+      // Drop output for an agent that's already finalized/removed. The runner
+      // registers the agent in `runnerAgents` before it spawns the process
+      // (agentLifecycle spawnViaRunner), so this never drops legitimate early
+      // output — it only ignores a stray event arriving after completion, which
+      // would otherwise lazily create a never-drained batcher (Map leak).
+      if (!runnerAgents.has(agentId)) return;
       getRunnerOutputBatcher(agentId).push(text);
 
       // Update phase on first output
