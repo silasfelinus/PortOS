@@ -12,6 +12,18 @@ const sameDraft = (entry, draft) =>
   (entry.providerId || '') === (draft?.providerId || '') &&
   (entry.model || '') === (draft?.model || '');
 
+// Rebuild the draft map from a server response without discarding edits the
+// user has in-flight on OTHER rows: reset only the rows we just saved (and seed
+// rows we've never seen), preserving every other row's existing draft.
+const reconcileDrafts = (prev, assignments, savedIds) => {
+  const saved = new Set(savedIds);
+  const next = {};
+  for (const item of assignments || []) {
+    next[item.id] = saved.has(item.id) || !(item.id in prev) ? getDraft(item) : prev[item.id];
+  }
+  return next;
+};
+
 const providerName = (providers, id) =>
   providers.find((p) => p.id === id)?.name || id || 'Default';
 
@@ -107,7 +119,7 @@ export default function AiAssignmentsTab() {
     setSaving((prev) => ({ ...prev, [entry.id]: false }));
     if (!next) return;
     setData(next);
-    setDrafts(Object.fromEntries((next.assignments || []).map((item) => [item.id, getDraft(item)])));
+    setDrafts((prev) => reconcileDrafts(prev, next.assignments, [entry.id]));
     toast.success('AI assignment saved');
   };
 
@@ -125,6 +137,7 @@ export default function AiAssignmentsTab() {
     }
     setBulkSaving(true);
     let latest = data;
+    const savedIds = [];
     const targetDefaultModel = data.providers.find((p) => p.id === toProvider)?.defaultModel || '';
     for (const entry of targets) {
       const nextModel = entry.modelEditable === false ? (drafts[entry.id]?.model || '') : targetDefaultModel;
@@ -135,12 +148,15 @@ export default function AiAssignmentsTab() {
         toast.error(`${entry.label}: ${err.message}`);
         return null;
       });
-      if (next) latest = next;
+      if (next) {
+        latest = next;
+        savedIds.push(entry.id);
+      }
     }
     setData(latest);
-    setDrafts(Object.fromEntries((latest.assignments || []).map((item) => [item.id, getDraft(item)])));
+    setDrafts((prev) => reconcileDrafts(prev, latest.assignments, savedIds));
     setBulkSaving(false);
-    toast.success(`Migrated ${targets.length} assignment${targets.length === 1 ? '' : 's'}`);
+    toast.success(`Migrated ${savedIds.length} assignment${savedIds.length === 1 ? '' : 's'}`);
   };
 
   if (loading) {

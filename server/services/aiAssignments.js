@@ -10,6 +10,7 @@ import * as featureAgentsService from './featureAgents.js';
 import * as agentPersonalitiesService from './agentPersonalities.js';
 import { getVoiceConfig, updateVoiceConfig } from './voice/config.js';
 import { isPlainObject } from '../lib/objects.js';
+import { ServerError } from '../lib/errorHandler.js';
 
 const textProviderTypes = ['api', 'cli', 'tui'];
 const cliProviderTypes = ['cli', 'tui'];
@@ -439,7 +440,7 @@ export async function updateAiAssignment(id, { providerId, model } = {}) {
   const nextModel = asNullable(model);
 
   if (id === 'provider.active') {
-    if (!nextProviderId) throw new Error('System default provider is required');
+    if (!nextProviderId) throw new ServerError('System default provider is required', { status: 400, code: 'VALIDATION_ERROR' });
     await setActiveProvider(nextProviderId);
     return getAiAssignments();
   }
@@ -447,7 +448,7 @@ export async function updateAiAssignment(id, { providerId, model } = {}) {
   if (id.startsWith('provider.model.')) {
     const [, , providerIdPart, field] = id.split('.');
     const provider = await getProviderById(providerIdPart);
-    if (!provider) throw new Error(`Provider not found: ${providerIdPart}`);
+    if (!provider) throw new ServerError(`Provider not found: ${providerIdPart}`, { status: 404, code: 'NOT_FOUND' });
     await updateProvider(providerIdPart, { [field]: nextModel });
     return getAiAssignments();
   }
@@ -524,7 +525,7 @@ export async function updateAiAssignment(id, { providerId, model } = {}) {
     const index = Number(indexRaw);
     const task = await taskScheduleService.getTaskInterval(taskType);
     const stages = [...(task.taskMetadata?.pipeline?.stages || [])];
-    if (!stages[index]) throw new Error(`Stage not found: ${id}`);
+    if (!stages[index]) throw new ServerError(`Stage not found: ${id}`, { status: 404, code: 'NOT_FOUND' });
     stages[index] = { ...stages[index], providerId: nextProviderId, model: nextModel };
     await taskScheduleService.updateTaskInterval(taskType, {
       taskMetadata: { ...(task.taskMetadata || {}), pipeline: { ...(task.taskMetadata?.pipeline || {}), stages } },
@@ -533,7 +534,12 @@ export async function updateAiAssignment(id, { providerId, model } = {}) {
   }
 
   if (id.startsWith('cos.task.')) {
-    await taskScheduleService.updateTaskInterval(id.replace('cos.task.', ''), { providerId: nextProviderId, model: nextModel });
+    const taskType = id.replace('cos.task.', '');
+    // updateTaskInterval is create-if-missing, so an unknown taskType would
+    // write a junk schedule record — gate on the existing task set first.
+    const status = await taskScheduleService.getScheduleStatus();
+    if (!status?.tasks?.[taskType]) throw new ServerError(`Scheduled task not found: ${taskType}`, { status: 404, code: 'NOT_FOUND' });
+    await taskScheduleService.updateTaskInterval(taskType, { providerId: nextProviderId, model: nextModel });
     return getAiAssignments();
   }
 
@@ -543,14 +549,18 @@ export async function updateAiAssignment(id, { providerId, model } = {}) {
   }
 
   if (id.startsWith('featureAgent.')) {
-    await featureAgentsService.updateFeatureAgent(id.replace('featureAgent.', ''), { providerId: nextProviderId, model: nextModel });
+    const agentId = id.replace('featureAgent.', '');
+    // updateFeatureAgent returns null (not throw) for an unknown id; surface it
+    // so a stale edit doesn't report success while nothing changed.
+    const updated = await featureAgentsService.updateFeatureAgent(agentId, { providerId: nextProviderId, model: nextModel });
+    if (!updated) throw new ServerError(`Feature agent not found: ${agentId}`, { status: 404, code: 'NOT_FOUND' });
     return getAiAssignments();
   }
 
   if (id.startsWith('socialAgent.')) {
     const [, agentId, key] = id.split('.');
     const agent = await agentPersonalitiesService.getAgentById(agentId);
-    if (!agent) throw new Error(`Agent not found: ${agentId}`);
+    if (!agent) throw new ServerError(`Agent not found: ${agentId}`, { status: 404, code: 'NOT_FOUND' });
     const aiConfig = isPlainObject(agent.aiConfig) ? { ...agent.aiConfig } : {};
     if (key === 'default') {
       aiConfig.providerId = nextProviderId || undefined;
@@ -562,5 +572,5 @@ export async function updateAiAssignment(id, { providerId, model } = {}) {
     return getAiAssignments();
   }
 
-  throw new Error(`Unknown AI assignment: ${id}`);
+  throw new ServerError(`Unknown AI assignment: ${id}`, { status: 400, code: 'VALIDATION_ERROR' });
 }
