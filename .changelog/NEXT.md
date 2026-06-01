@@ -36,6 +36,7 @@
 
 ## Fixed
 
+- **[cos-runner-client-non-json-response-handling] CoS agent and run failures now surface the runner's actual error instead of a cryptic "Unexpected token <" crash.** When the background agent runner returns a non-JSON error response (for example while it is restarting mid-request), PortOS reports the runner's real message rather than choking on the unparseable body.
 - **[cos-task-id-uniqueness-validation] Reordering a CoS task list with duplicate task IDs no longer silently drops tasks.** If a hand-edited or corrupted task file holds two tasks sharing the same ID, reordering it previously kept only one and discarded the rest; every task is now preserved, with any collision given a distinct ID.
 - **[banner-icon-aria-hidden] Screen readers no longer announce the decorative icon on alert banners.** The warning/error/info banners' leading icon is now hidden from assistive tech by default, so only the message text is read aloud instead of an unhelpful icon name preceding it.
 - **[media-job-sse-transient-reconnect-resilience] A brief network blip mid-render no longer fails the whole image or video generation.** The live progress stream now distinguishes a transient connection hiccup — which the browser silently reconnects, picking up where the render left off — from a real disconnect, so a momentary Wi-Fi/Tailscale drop while a render is in flight no longer aborts it with a "Lost connection to server" error.
