@@ -40,7 +40,8 @@ export default function Banner({
   // Banner icons are decorative by default — the tone color and body text
   // already convey the meaning, so screen readers should skip the icon. Pass
   // `iconAriaHidden={false}` for the rare case where the icon carries meaning
-  // the text doesn't (then give it an aria-label via the icon itself).
+  // the text doesn't; the icon then renders as a bare exposed <svg>, so the
+  // caller is responsible for labeling it (e.g. an aria-label) at the call site.
   iconAriaHidden = true,
   size = 'sm',
   align = 'start',
