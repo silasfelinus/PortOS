@@ -10,7 +10,7 @@ import { Router } from 'express';
 import { existsSync } from 'fs';
 import { copyFile, unlink } from 'fs/promises';
 import { randomUUID } from 'crypto';
-import { join, extname } from 'path';
+import { join, extname, basename } from 'path';
 import { spawn } from 'child_process';
 import os from 'os';
 import { z } from 'zod';
@@ -747,6 +747,18 @@ const pickJobParams = (params) => {
   const out = {};
   for (const k of ACTIVE_JOB_PARAM_FIELDS) {
     if (params[k] !== undefined) out[k] = params[k];
+  }
+  // keyframes ride a separate mapping rather than the raw whitelist: they're
+  // stored as { path, index } where `path` is an absolute gallery path (the
+  // same internal-path-leak the whitelist exists to prevent — see the
+  // comment above). Re-derive the gallery basename as `file` so the resuming
+  // client's multi-keyframe picker can repopulate { file, index } entries
+  // (its submit shape) without ever seeing the server's filesystem layout.
+  if (Array.isArray(params.keyframes)) {
+    const mapped = params.keyframes
+      .filter((kf) => kf && typeof kf.path === 'string' && Number.isInteger(kf.index))
+      .map((kf) => ({ file: basename(kf.path), index: kf.index }));
+    if (mapped.length) out.keyframes = mapped;
   }
   return out;
 };
