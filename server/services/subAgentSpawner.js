@@ -2,8 +2,12 @@
  * Sub-Agent Spawner Service
  *
  * Orchestrator module: imports from focused sub-modules and re-exports
- * everything for backward compatibility. Keeps module-level initialization
- * (initSpawner, event wiring) and shared state references.
+ * everything for backward compatibility. Owns the explicit `initSpawner()`
+ * entry point (event wiring + orphan cleanup) and shared state references.
+ *
+ * NOTE: importing this module is side-effect-free — `initSpawner()` must be
+ * called explicitly (see `server/index.js`). This keeps test imports from
+ * re-arming the event listeners and timers on every suite.
  */
 
 import { join } from 'path';
@@ -100,10 +104,8 @@ export async function initSpawner() {
   setUseRunner(runnerAvailable);
 
   // Lazy-import lifecycle functions (avoids circular dep at module init time)
-  const { syncRunnerAgents, handleAgentCompletion, cleanupAgentWorktree } = await import('./agentLifecycle.js');
-  const { cleanupOrphanedAgents, handleOrphanedTask } = await import('./agentManagement.js');
-  const { spawnAgentForTask } = await import('./agentLifecycle.js');
-  const { terminateAgent } = await import('./agentManagement.js');
+  const { syncRunnerAgents, handleAgentCompletion, spawnAgentForTask } = await import('./agentLifecycle.js');
+  const { cleanupOrphanedAgents, terminateAgent } = await import('./agentManagement.js');
   const { completeAgentRun } = await import('./agentRunTracking.js');
 
   if (runnerAvailable) {
@@ -198,23 +200,12 @@ export async function initSpawner() {
   cosEvents.on('agent:terminate', async (agentId) => {
     await terminateAgent(agentId);
   });
+
+  // Clean up orphaned agents after a short delay (let other services finish init).
+  // setTimeout runs outside the request lifecycle, so guard the async callback.
+  setTimeout(() => {
+    cleanupOrphanedAgents().catch(err => {
+      console.error(`❌ Failed to clean up orphaned agents: ${err.message}`);
+    });
+  }, 2000);
 }
-
-// Initialize spawner when module loads (async)
-initSpawner().catch(err => {
-  console.error(`❌ Failed to initialize spawner: ${err.message}`);
-});
-
-// Initialize task learning system
-import('./taskLearning.js').then(taskLearning => {
-  taskLearning.initTaskLearning();
-}).catch(err => {
-  console.error(`❌ Failed to initialize task learning: ${err.message}`);
-});
-
-// Clean up orphaned agents after a short delay (let other services init first)
-import('./agentManagement.js').then(({ cleanupOrphanedAgents }) => {
-  setTimeout(cleanupOrphanedAgents, 2000);
-}).catch(err => {
-  console.error(`❌ Failed to schedule orphan cleanup: ${err.message}`);
-});

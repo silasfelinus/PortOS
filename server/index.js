@@ -130,7 +130,7 @@ import { setHttpsEnabledAtBoot } from './lib/httpsState.js';
 import { initTaskLearning } from './services/taskLearning.js';
 import { recordSession, recordMessages } from './services/usage.js';
 import { errorEvents } from './lib/errorHandler.js';
-import './services/subAgentSpawner.js'; // Initialize CoS agent spawner
+import { initSpawner } from './services/subAgentSpawner.js';
 import * as automationScheduler from './services/automationScheduler.js';
 import * as agentActionExecutor from './services/agentActionExecutor.js';
 import * as cos from './services/cos.js';
@@ -346,6 +346,13 @@ initAutoFixer();
 
 // Initialize task learning system to track agent completions
 initTaskLearning();
+
+// Initialize the CoS agent spawner (event wiring + orphan cleanup) explicitly,
+// now that the runner patch + task learning are ready. Fire-and-forget: the
+// spawner sets up its own listeners and recovers in-flight agents in the background.
+initSpawner().catch(err => {
+  console.error(`❌ Failed to initialize spawner: ${err.message}`);
+});
 
 // Middleware - allow any origin for Tailscale access
 app.use((req, res, next) => {
