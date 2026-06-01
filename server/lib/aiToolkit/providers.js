@@ -220,6 +220,7 @@ export function createProviderService(config = {}) {
         mediumModel: providerData.mediumModel || null,
         heavyModel: providerData.heavyModel || null,
         fallbackProvider: providerData.fallbackProvider || null,
+        fallbackModel: providerData.fallbackModel || null,
         timeout: providerData.timeout || 300000,
         enabled: providerData.enabled !== false,
         envVars: providerData.envVars || {},

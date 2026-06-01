@@ -254,10 +254,11 @@ export async function runPromptThroughProvider(args) {
     // `noteFallbackHandled` cancels the right queued task.
     const failed = firstError.effectiveProvider;
     const failedModel = firstError.effectiveModel || resolveEffectiveModel(failed, args.model);
-    const fallback = await pickFallbackProvider(failed);
-    if (!fallback) {
+    const picked = await pickFallbackProvider(failed);
+    if (!picked) {
       throw stripFallbackContext(firstError);
     }
+    const fallback = picked.provider;
 
     await markProviderUnavailableFromError(failed, firstError.message, firstError.errorAnalysis).catch(err => {
       console.error(`❌ markUnavailable failed for ${failed.id}: ${err.message}`);
@@ -265,15 +266,17 @@ export async function runPromptThroughProvider(args) {
 
     console.log(`⚡ Retrying ${args.source} with fallback ${fallback.name} (primary ${failed.name} failed: ${firstError.message})`);
 
-    // Run the fallback as a fresh attempt — explicit `model: undefined`
-    // so the fallback picks its own default rather than inheriting the
-    // primary's model id (which usually doesn't exist on the fallback).
+    // Run the fallback as a fresh attempt. Pass the configured `fallbackModel`
+    // when one is set (so the user's chosen fallback provider+model pair is
+    // honored); otherwise `undefined` lets the fallback pick its own default.
+    // Either way we never inherit the primary's model id, which usually
+    // doesn't exist on the fallback.
     let fallbackResult;
     try {
       fallbackResult = await executeProviderRunOnce({
         ...args,
         provider: fallback,
-        model: undefined,
+        model: picked.model ?? undefined,
         runId: undefined, // fresh runId so the failed primary's record stays intact
       });
     } catch (fallbackError) {
@@ -313,7 +316,10 @@ export async function runPromptThroughProvider(args) {
 /**
  * Pick a fallback provider for `failed`. Honors the failed provider's
  * `fallbackProvider` field first, then the toolkit's system priority
- * list. Returns null when no usable fallback exists.
+ * list. Returns `{ provider, model }` (or null when no usable fallback
+ * exists). `model` is the configured `fallbackModel` hint for the chosen
+ * fallback (null for system-priority picks, meaning "use the fallback's
+ * own default") — never the failed provider's model.
  *
  * The toolkit's `getFallbackProvider` reads `providers[failed.id]` to
  * look up the `fallbackProvider` field, so the primary MUST stay in the
@@ -332,7 +338,8 @@ async function pickFallbackProvider(failed) {
   for (const p of all.providers) providersMap[p.id] = p;
 
   const picked = providerStatus.getFallbackProvider(failed.id, providersMap);
-  return picked?.provider || null;
+  if (!picked?.provider) return null;
+  return { provider: picked.provider, model: picked.model ?? null };
 }
 
 /**

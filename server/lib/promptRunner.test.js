@@ -652,6 +652,39 @@ describe('promptRunner — retry-with-fallback', () => {
     });
   });
 
+  it('runs the configured fallbackModel on the fallback (never the primary model) when one is pinned', async () => {
+    const status = mockToolkitWithFallback();
+    // Provider-level fallback that pins a specific model to run on the fallback.
+    status.getFallbackProvider.mockReturnValue({
+      provider: fallbackApi,
+      source: 'provider',
+      model: 'pinned-fb-model',
+    });
+
+    runner.executeCliRun.mockImplementation(async (id, _p, _pr, _cwd, _onData, onComplete, _t) => {
+      onComplete({ success: false, error: 'Process exited with code 1' });
+    });
+    let ranModel;
+    runner.executeApiRun.mockImplementation(async (id, _p, model, _pr, _cwd, _ctx, onData, onComplete) => {
+      ranModel = model;
+      onData('fallback content');
+      onComplete({ success: true });
+    });
+
+    const out = await runPromptThroughProvider({
+      provider: primaryCli,
+      prompt: 'p',
+      source: 'test',
+    });
+
+    expect(out.usedFallback).toBe(true);
+    // The pinned fallbackModel must reach the fallback run — NOT the primary's
+    // 'primary-model' (the leak this fix closes), and NOT the fallback's own
+    // 'fb-model' default (the pin must win).
+    expect(ranModel).toBe('pinned-fb-model');
+    expect(out.model).toBe('pinned-fb-model');
+  });
+
   it('retries with fallback when primary API fails', async () => {
     mockToolkitWithFallback();
 
