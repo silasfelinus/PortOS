@@ -439,7 +439,12 @@ async function executeProviderRunOnce({ provider, prompt, source, model, runId: 
     runId = runResult.runId;
     if (runResult.provider && runResult.provider.id !== provider.id) {
       effectiveProvider = runResult.provider;
-      effectiveModel = resolveEffectiveModel(effectiveProvider, model);
+      // Re-resolve against the FALLBACK provider using the configured
+      // `fallbackModel` createRun surfaced — NOT the caller's `model`, which
+      // was resolved against the (now-benched) primary and almost never
+      // exists on the fallback. Forwarding it is the leak that sent
+      // `codex-configured-default` to LM Studio (mirrors stageRunner.js).
+      effectiveModel = resolveEffectiveModel(effectiveProvider, runResult.fallbackModel ?? null);
       // createRun persisted `metadata.model = effectiveModel || provider.defaultModel`
       // using the ORIGINAL provider's resolved value — so /runs would
       // attribute a model that doesn't belong to the fallback (e.g. an
