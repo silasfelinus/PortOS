@@ -506,7 +506,7 @@ function ActiveCommentOverlay({ comment, onClose, ...cardProps }) {
         <span className="text-[11px] uppercase tracking-wider text-gray-400 inline-flex items-center gap-1.5">
           <CornerDownRight size={12} className="text-port-accent" /> Editorial comment
         </span>
-        <button type="button" onClick={onClose} className="text-gray-500 hover:text-white" title="Close pinned comment">
+        <button type="button" onClick={onClose} className="text-gray-500 hover:text-white" aria-label="Close pinned comment" title="Close pinned comment">
           <X size={14} />
         </button>
       </div>
