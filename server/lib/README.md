@@ -83,6 +83,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `runners.js` | Image-runner family constants. |
 | `codexAssistantExtract.js` | Strip Codex CLI banner + echoed metadata from session transcript. |
 | `codexCliOutput.js` | Network/system error patterns for `agentErrorAnalysis.js`. |
+| `contextBudget.js` | Context-window budgeter for editorial passes. `estimateTokens` (chars/4), `usableInputTokens`, `planManuscriptPass({ contextWindow, sections })` → `{ mode: 'whole' \| 'chunked', chunks }`. Decides whole-manuscript vs chunked given a model's window. |
 | `ansiStrip.js` | Streaming ANSI / control-byte stripper. |
 | `hfToken.js` | HuggingFace token resolution (settings > env > CLI). |
 | `hfCache.js` | HuggingFace Hub cache inspection (`inspectModelCache(repoId)` → `{cached,sizeBytes,snapshotPath}`, `isModelCached`, `getHfCacheRoot`). Drives the inline "Available / Download" badge on the image + video gen forms. |

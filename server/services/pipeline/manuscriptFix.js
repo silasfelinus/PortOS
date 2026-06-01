@@ -13,7 +13,8 @@
  */
 
 import { randomUUID } from 'crypto';
-import { runStagedLLM } from '../../lib/stageRunner.js';
+import { runStagedLLM, resolveStageContext } from '../../lib/stageRunner.js';
+import { planManuscriptPass, estimateTokens } from '../../lib/contextBudget.js';
 import { getSeries, MANUSCRIPT_TYPES } from './series.js';
 import { getIssue, updateStageWithLatest, updateStagesWithLatest } from './issues.js';
 import { collectManuscriptSections, stageVersionsOf } from './arcPlanner.js';
@@ -275,6 +276,34 @@ export async function saveManuscriptSection(seriesId, { issueId, stageId, output
  * can't be located verbatim in the current stage text, that edit is flagged
  * `fuzzy: true` so the client can warn before apply.
  */
+const FIX_STAGE = 'pipeline-manuscript-fix';
+// Output room for the edits list (each `replace` can be a full page rewrite).
+const FIX_OUTPUT_RESERVE_TOKENS = 6_000;
+
+// Merge per-chunk fixes into one, concatenating edits with first-wins dedupe on
+// (issue, stage, find, replace), and rebuilding the single-edit convenience
+// fields normalizeFix sets so the accept path stays uniform.
+function mergeFixes(fixes) {
+  const edits = [];
+  const seen = new Set();
+  for (const fx of fixes) {
+    for (const e of (fx?.edits || [])) {
+      const k = `${e.issueId}|${e.stageId}|${e.find}|${e.replace}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      edits.push(e);
+    }
+  }
+  if (edits.length === 0) return null;
+  const fix = { edits };
+  if (edits.length === 1) {
+    fix.find = edits[0].find;
+    fix.replace = edits[0].replace;
+    if (edits[0].fuzzy) fix.fuzzy = true;
+  }
+  return fix;
+}
+
 export async function generateManuscriptFix(seriesId, { commentId, providerOverride, modelOverride } = {}) {
   const series = await getSeries(seriesId);
   const comment = await getComment(seriesId, commentId);
@@ -286,21 +315,12 @@ export async function generateManuscriptFix(seriesId, { commentId, providerOverr
   }
 
   const arc = series.arc || {};
-  const manuscript = manuscriptTextOf(targets);
-  const ctx = {
+  const baseCtx = {
     series: { name: series.name, logline: series.logline, premise: series.premise },
     arc: {
       logline: arc.logline || '',
       themesCsv: Array.isArray(arc.themes) ? arc.themes.join(', ') : '',
     },
-    scope: targets.length === 1 ? sectionLabel(targets[0]) : 'Full manuscript',
-    sections: targets.map((s) => ({
-      issueNumber: s.number,
-      title: s.title || '',
-      stageId: s.stageId,
-      manuscript: s.content || '',
-    })),
-    manuscript,
     finding: {
       category: comment.category,
       severity: comment.severity,
@@ -309,19 +329,66 @@ export async function generateManuscriptFix(seriesId, { commentId, providerOverr
       anchorQuote: comment.anchorQuote,
     },
   };
-
-  const { content, runId } = await runStagedLLM('pipeline-manuscript-fix', ctx, {
+  const buildCtx = (sections) => ({
+    ...baseCtx,
+    scope: sections.length === 1 ? sectionLabel(sections[0]) : 'Full manuscript',
+    sections: sections.map((s) => ({
+      issueNumber: s.number,
+      title: s.title || '',
+      stageId: s.stageId,
+      manuscript: s.content || '',
+    })),
+    manuscript: manuscriptTextOf(sections),
+  });
+  const runChunk = (sections) => runStagedLLM(FIX_STAGE, buildCtx(sections), {
     providerOverride,
     modelOverride,
     returnsJson: true,
     source: 'pipeline-manuscript-fix',
   });
 
-  const fix = normalizeFix(content, targets);
+  // A whole-manuscript fix (unanchored/structural comment) must place edits
+  // across the whole book — so we keep it whole when it fits the model's
+  // window, and only chunk by issue (degrading the holistic view) when it
+  // can't. Single-issue comments are always one section → always whole.
+  const { contextWindow } = await resolveStageContext(FIX_STAGE, { providerOverride, modelOverride });
+  const overheadTokens = estimateTokens(JSON.stringify(baseCtx)) + 2_000;
+  const plan = planManuscriptPass({
+    contextWindow,
+    sections: targets.map((s) => ({ ...s, text: `${manuscriptSectionHeader(s)}\n\n${s.content || ''}` })),
+    overheadTokens,
+    outputReserveTokens: FIX_OUTPUT_RESERVE_TOKENS,
+  });
+
+  let fix;
+  let runId;
+  if (plan.mode === 'whole') {
+    const r = await runChunk(targets);
+    fix = normalizeFix(r.content, targets);
+    runId = r.runId;
+  } else {
+    console.log(`📚 manuscript-fix: chunked series=${String(seriesId).slice(0, 12)} chunks=${plan.chunks.length} window=${contextWindow ?? 'floor'}`);
+    const fixes = [];
+    let first = null;
+    for (const chunk of plan.chunks) {
+      const r = await runChunk(chunk.sections);
+      if (!first) first = r;
+      const f = normalizeFix(r.content, chunk.sections);
+      if (f) fixes.push(f);
+    }
+    fix = mergeFixes(fixes);
+    runId = first?.runId;
+  }
   if (!fix) throw makeErr('The model did not return a usable fix — try again', ERR_VALIDATION);
 
   const updated = await updateComment(seriesId, commentId, { fix });
-  return { comment: updated, fix, runId };
+  return {
+    comment: updated,
+    fix,
+    runId,
+    chunked: plan.mode === 'chunked',
+    chunkCount: plan.mode === 'whole' ? 1 : plan.chunks.length,
+  };
 }
 
 /**

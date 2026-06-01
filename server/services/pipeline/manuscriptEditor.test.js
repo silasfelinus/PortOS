@@ -24,6 +24,8 @@ vi.mock('../sharing/peerSync.js', () => mockNoPeerSync());
 vi.mock('../../lib/stageRunner.js', () => ({
   runStagedLLM: vi.fn((...args) => stageRunnerSpy(...args)),
   extractJson: (raw) => JSON.parse(raw),
+  // Large window so manuscript-fix runs as a single call (mode: 'whole').
+  resolveStageContext: vi.fn(async () => ({ provider: { id: 'p' }, model: 'm', contextWindow: 1_000_000 })),
 }));
 
 const seriesSvc = await import('./series.js');

@@ -3,6 +3,7 @@ import { mockNoPeerSync, mockNoPeers } from '../../lib/mockPathsDataRoot.js';
 
 const fileStore = new Map();
 let stageRunnerSpy;
+let stageContextSpy;
 
 vi.mock('../../lib/fileUtils.js', () => ({
 tryReadFile: vi.fn().mockResolvedValue(null),
@@ -26,6 +27,11 @@ vi.mock('../sharing/peerSync.js', () => mockNoPeerSync());
 vi.mock('../../lib/stageRunner.js', () => ({
   runStagedLLM: vi.fn((...args) => stageRunnerSpy(...args)),
   extractJson: (raw) => JSON.parse(raw),
+  // Large window by default so completeness runs as a single call (mode:
+  // 'whole'); a test can set `stageContextSpy` to force a small window.
+  resolveStageContext: vi.fn((...args) => (stageContextSpy
+    ? stageContextSpy(...args)
+    : Promise.resolve({ provider: { id: 'p' }, model: 'm', contextWindow: 1_000_000 }))),
 }));
 
 const seriesSvc = await import('./series.js');
@@ -1483,6 +1489,7 @@ describe('arcPlanner — manuscript completeness + derive-from-manuscript', () =
     fileStore.clear();
     uuidCounter = 0;
     stageRunnerSpy = undefined;
+    stageContextSpy = undefined;
   });
 
   it('issueSynopsisFromSeason joins logline + synopsis (and is empty for nothing)', () => {
@@ -1525,6 +1532,41 @@ describe('arcPlanner — manuscript completeness + derive-from-manuscript', () =
     const out = await planner.analyzeManuscriptCompleteness(s.id);
     expect(out.issues).toHaveLength(1);
     expect(out.issues[0]).toMatchObject({ category: 'arc-gap', severity: 'high' });
+    expect(out.chunked).toBe(false);
+  });
+
+  it('chunks a large manuscript that exceeds the model window and merges findings (first-wins dedupe + prior-findings digest)', async () => {
+    const s = await setupSeries();
+    const big = 'word '.repeat(12_000); // ~60k chars (~15k tokens) per issue
+    await issuesSvc.createIssue({ seriesId: s.id, title: 'One', arcPosition: 1, stages: { prose: { output: `ONE ${big}`, status: 'ready' } } });
+    await issuesSvc.createIssue({ seriesId: s.id, title: 'Two', arcPosition: 2, stages: { prose: { output: `TWO ${big}`, status: 'ready' } } });
+    await issuesSvc.createIssue({ seriesId: s.id, title: 'Three', arcPosition: 3, stages: { prose: { output: `THREE ${big}`, status: 'ready' } } });
+    stageContextSpy = vi.fn(async () => ({ provider: { id: 'p' }, model: 'm', contextWindow: 40_000 }));
+    let n = 0;
+    stageRunnerSpy = vi.fn(async () => {
+      n += 1;
+      return {
+        content: { issues: [
+          // same finding surfaced by every chunk — must be recorded once
+          { severity: 'high', category: 'arc-gap', issueNumber: 1, anchorQuote: 'dup', problem: 'duplicated finding', suggestion: 'x' },
+          { severity: 'low', category: 'pacing', problem: `unique ${n}`, suggestion: '' },
+        ] },
+        runId: `r${n}`, providerId: 'p', model: 'm',
+      };
+    });
+
+    const out = await planner.analyzeManuscriptCompleteness(s.id);
+
+    expect(out.chunked).toBe(true);
+    expect(out.chunkCount).toBeGreaterThanOrEqual(2);
+    expect(stageRunnerSpy).toHaveBeenCalledTimes(out.chunkCount);
+    // duplicate finding collapsed to one; each chunk's unique finding kept
+    expect(out.issues.filter((f) => f.anchorQuote === 'dup')).toHaveLength(1);
+    expect(out.issues.filter((f) => f.problem.startsWith('unique'))).toHaveLength(out.chunkCount);
+    // later chunks get a digest of earlier findings inside the manuscript field
+    const secondManuscript = stageRunnerSpy.mock.calls[1][1].manuscript;
+    expect(secondManuscript).toContain('already recorded for EARLIER chapters');
+    expect(secondManuscript).toContain('duplicated finding');
   });
 
   it('analyzeManuscriptCompleteness refuses when no manuscript exists', async () => {

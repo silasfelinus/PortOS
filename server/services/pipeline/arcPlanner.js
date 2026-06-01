@@ -19,7 +19,8 @@
  * committing it (Phase 4's confirm-before-seeding pattern).
  */
 
-import { runStagedLLM } from '../../lib/stageRunner.js';
+import { runStagedLLM, resolveStageContext } from '../../lib/stageRunner.js';
+import { planManuscriptPass, estimateTokens } from '../../lib/contextBudget.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { stripAnsi } from '../../lib/ansiStrip.js';
 import { getSeries, updateSeries, updateSeasonOnSeries, ARC_LOCKABLE_FIELDS, MANUSCRIPT_TYPES } from './series.js';
@@ -712,37 +713,130 @@ async function buildCompletenessContext(series, manuscript, preloadedWorld) {
   };
 }
 
+const COMPLETENESS_STAGE = 'pipeline-manuscript-completeness';
+// Output room for the findings list; comic-structure suggestions are full page
+// rewrites, so reserve generously.
+const COMPLETENESS_OUTPUT_RESERVE_TOKENS = 6_000;
+// Earlier-chapter findings summarized into the rolling digest fed to later
+// chunks, and the char cap on that digest (kept small so it fits the margin).
+const COMPLETENESS_PRIOR_DIGEST_MAX = 40;
+const COMPLETENESS_PRIOR_DIGEST_CHARS = 2_000;
+
+// Corpus string for a set of sections — byte-identical to collectIssueSourceText's
+// join so anchorQuote/find matching against the editor's per-section text holds.
+const sectionsCorpus = (sections) =>
+  sections.map((s) => `${manuscriptSectionHeader(s)}\n\n${s.content}`).join('\n\n---\n\n');
+
+// One-line digest of prior-chunk findings so later chunks keep cross-chapter
+// continuity in view. Rides INSIDE the manuscript field, so the prompt template
+// is unchanged (no migration).
+function priorFindingsDigest(findings) {
+  if (!findings.length) return '';
+  const lines = findings.slice(0, COMPLETENESS_PRIOR_DIGEST_MAX).map((f) => {
+    const where = Number.isInteger(f.issueNumber) ? `Issue ${f.issueNumber}` : (f.location || 'general');
+    return `- [${where}] ${f.category}: ${f.problem}`;
+  });
+  const more = findings.length > COMPLETENESS_PRIOR_DIGEST_MAX
+    ? `\n(+${findings.length - COMPLETENESS_PRIOR_DIGEST_MAX} more earlier findings)` : '';
+  const body = `${lines.join('\n')}${more}`.slice(0, COMPLETENESS_PRIOR_DIGEST_CHARS);
+  return `# Editorial findings already recorded for EARLIER chapters\n`
+    + `Do not repeat these. Flag only NEW gaps in the chapters below, plus any cross-chapter `
+    + `continuity problems these earlier findings reveal.\n\n${body}\n\n---\n\n`;
+}
+
+// First-wins dedupe across chunks — a finding the same on (issue, category,
+// anchor, problem) is recorded once even if two chunks surface it.
+const findingKey = (f) => [
+  f.issueNumber ?? '',
+  f.category,
+  (f.anchorQuote || '').trim().toLowerCase().slice(0, 120),
+  (f.problem || '').trim().toLowerCase().slice(0, 120),
+].join('|');
+
+function mergeFindingGroups(groups) {
+  const seen = new Set();
+  const out = [];
+  for (const group of groups) {
+    for (const f of group) {
+      const k = findingKey(f);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(f);
+    }
+  }
+  return out;
+}
+
 /**
  * Editor pass over the drafted manuscript itself: returns categorized
  * suggestions for rounding out and finishing a near-complete draft — missing
  * pages/beats, arc holes, and character-development gaps. Read-only; advisory
  * (no auto-resolve). Complements verifyArc/verifyVolume, which stay at synopsis
  * depth and never see the script.
+ *
+ * Context-window-aware: when the whole manuscript + canon context fits the
+ * target model's window it runs in one call (frontier models hold the entire
+ * book); otherwise it chunks by issue, feeds each chunk a digest of prior-chunk
+ * findings for continuity, and merges with first-wins dedupe.
  */
 export async function analyzeManuscriptCompleteness(seriesId, options = {}) {
   const series = await getSeries(seriesId);
   // Manuscript-only: exclude `idea` so an outline/synopsis seed can't pass the
   // guard below and get graded as if it were a drafted manuscript.
-  const manuscript = await collectIssueSourceText(seriesId, { stageOrder: MANUSCRIPT_STAGES });
-  if (!manuscript) {
+  const sections = await collectManuscriptSections(seriesId, { stageOrder: MANUSCRIPT_STAGES });
+  if (!sections.length) {
     throw makeErr(
       'No manuscript to analyze — write a comic script, prose, or teleplay on at least one issue first',
       ERR_VALIDATION,
     );
   }
-  const ctx = await buildCompletenessContext(series, manuscript, options.preloadedWorld);
-  const { content, runId, providerId, model } = await runStagedLLM(
-    'pipeline-manuscript-completeness',
-    ctx,
-    {
-      providerOverride: options.providerOverride,
-      modelOverride: options.modelOverride,
-      returnsJson: true,
-      source: 'pipeline-manuscript-completeness',
-    },
-  );
-  const issues = shapeCompletenessFindings(content?.issues);
-  return { issues, raw: content, runId, providerId, model };
+
+  // Base (non-manuscript) context is fixed overhead present in every call.
+  const baseCtx = await buildCompletenessContext(series, '', options.preloadedWorld);
+  const overheadTokens = estimateTokens(JSON.stringify(baseCtx)) + 2_000; // + template/instructions
+  const { contextWindow } = await resolveStageContext(COMPLETENESS_STAGE, {
+    providerOverride: options.providerOverride,
+    modelOverride: options.modelOverride,
+  });
+  const plan = planManuscriptPass({
+    contextWindow,
+    sections: sections.map((s) => ({ ...s, text: `${manuscriptSectionHeader(s)}\n\n${s.content}` })),
+    overheadTokens,
+    outputReserveTokens: COMPLETENESS_OUTPUT_RESERVE_TOKENS,
+  });
+
+  const runOne = (manuscript) => runStagedLLM(COMPLETENESS_STAGE, { ...baseCtx, manuscript }, {
+    providerOverride: options.providerOverride,
+    modelOverride: options.modelOverride,
+    returnsJson: true,
+    source: 'pipeline-manuscript-completeness',
+  });
+
+  if (plan.mode === 'whole') {
+    const { content, runId, providerId, model } = await runOne(sectionsCorpus(sections).slice(0, plan.usableChars));
+    return { issues: shapeCompletenessFindings(content?.issues), raw: content, runId, providerId, model, chunked: false, chunkCount: 1 };
+  }
+
+  console.log(`📚 completeness: chunked review series=${String(seriesId).slice(0, 12)} chunks=${plan.chunks.length} window=${contextWindow ?? 'floor'}`);
+  const groups = [];
+  let first = null;
+  for (const chunk of plan.chunks) {
+    const digest = priorFindingsDigest(mergeFindingGroups(groups));
+    const corpus = sectionsCorpus(chunk.sections).slice(0, plan.usableChars);
+    const result = await runOne(`${digest}${corpus}`);
+    if (!first) first = result;
+    groups.push(shapeCompletenessFindings(result.content?.issues));
+  }
+  const issues = mergeFindingGroups(groups);
+  return {
+    issues,
+    raw: { issues },
+    runId: first?.runId,
+    providerId: first?.providerId,
+    model: first?.model,
+    chunked: true,
+    chunkCount: plan.chunks.length,
+  };
 }
 
 // Reader-map context: the protagonist arc + the Vonnegut shape backbone + the
