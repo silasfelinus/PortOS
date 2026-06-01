@@ -1,6 +1,6 @@
 ---
 description: Claim the next unclaimed PLAN.md item by its [slug] ID, do the work in an isolated worktree, ship a PR, and clean up.
-argument-hint: "[<slug>] [--review-with=<copilot|codex|gemini|claude>[,…]] [--no-review]"
+argument-hint: "[<slug>] [--review-with=<copilot|codex|agy|claude>[,…]] [--no-review]"
 ---
 
 # Claim — Pick the next PLAN.md item and ship it
@@ -12,7 +12,7 @@ Claim the next unclaimed `- [ ]` item from PLAN.md via the slug-ID system, work 
 **Arguments.** Parse `$ARGUMENTS` by splitting on whitespace — tokens starting with `--` are flags, the first remaining non-flag token is the slug. A flag that takes a value accepts **either** form: glued with `=` (`--review-with=codex`) **or** as the next whitespace-separated token (`--review-with codex`) — in the space form, consume the following token as the flag's value (and don't mistake it for the slug). Order is free: `auth-bug --review-with=codex`, `--review-with codex auth-bug`, and `--review-with=codex auth-bug` are all equivalent.
 
 - **`<slug>`** — claim THAT specific item instead of auto-picking. Useful for cherry-picking out-of-order work. The slug must already exist in PLAN.md as a `- [ ]` line; this command never assigns new IDs (that's `/do:replan`'s job).
-- **`--review-with=<reviewer>[,<reviewer>…]`** — name which reviewer(s) run the post-PR review loop in Phase 6, where each `<reviewer>` is `copilot|codex|gemini|claude`. Comma-separate to request several (e.g. `--review-with=claude,codex` runs both review loops and converges when all agree). This flag expresses a **preference, not an absolute mandate**: it says "if a review runs, use these reviewer(s)" and leans strongly toward actually reviewing — but the agent may still skip `/simplify` and/or trim the external pass (down to a single reviewer, or skip it entirely) when the diff is *genuinely trivial* (a literal value swap, a typo/comment fix, a PLAN-only edit, a doc-only revert). Always state any skip/trim and why. **No default — when omitted, the agent decides from scratch in Phase 6 whether the diff warrants `/simplify` and/or an external review at all** (a 3-line value swap doesn't; a multi-file feature change does). `copilot` drives the GitHub Copilot review-and-fix loop via `/do:pr`; `codex`/`gemini`/`claude` skip Copilot and run an iterative CLI-based review against the PR diff. Record the parsed value as `REVIEWER` (a list of reviewer names; or `auto` when omitted) and reference it in Phase 6.
+- **`--review-with=<reviewer>[,<reviewer>…]`** — name which reviewer(s) run the post-PR review loop in Phase 6, where each `<reviewer>` is `copilot|codex|agy|claude` (the `agy` slug also accepts the aliases `gemini` and `antigravity`, which normalize to `agy` — the Antigravity CLI's binary, successor to the Gemini CLI). Comma-separate to request several (e.g. `--review-with=claude,codex` runs both review loops and converges when all agree). This flag expresses a **preference, not an absolute mandate**: it says "if a review runs, use these reviewer(s)" and leans strongly toward actually reviewing — but the agent may still skip `/simplify` and/or trim the external pass (down to a single reviewer, or skip it entirely) when the diff is *genuinely trivial* (a literal value swap, a typo/comment fix, a PLAN-only edit, a doc-only revert). Always state any skip/trim and why. **No default — when omitted, the agent decides from scratch in Phase 6 whether the diff warrants `/simplify` and/or an external review at all** (a 3-line value swap doesn't; a multi-file feature change does). `copilot` drives the GitHub Copilot review-and-fix loop via `/do:pr`; `codex`/`agy`/`claude` skip Copilot and run an iterative CLI-based review against the PR diff. Record the parsed value as `REVIEWER` (a list of reviewer names, with any `gemini`/`antigravity` normalized to `agy`; or `auto` when omitted) and reference it in Phase 6.
 - **`--no-review`** — explicit opt-out from BOTH `/simplify` and the external review pass. Use when you want the agent to just ship without deliberation (e.g. a doc-only revert). Mutually exclusive with `--review-with`.
 
 ## Phase 1: Pick
@@ -145,7 +145,7 @@ When `/simplify` is deferred but an external review will run, run `/simplify` fi
 
 1. **`/simplify`** — run by default in mode A, and in mode C when the heuristic says yes; skip only when the heuristic's "skip when" column applies (in mode A, only its genuinely-trivial cases). Fix findings in the same diff (per the `feedback_simplify_after_significant_work` memory). Do this BEFORE opening the PR, not retroactively.
 
-2. **Open the PR and run the review loop.** First apply any mode-A trim from the heuristic above (e.g. drop a multi-reviewer request to a single reviewer, or skip entirely, for a genuinely-trivial diff) — state the trim. Then dispatch each reviewer left in `REVIEWER` to its branch below: `copilot` → 6.2a; any of `codex`/`gemini`/`claude` → 6.2b; `auto` (no flag) resolves to 6.2a or 6.2c by the heuristic. **If `REVIEWER` lists several, run each its own branch and merge only once they ALL converge** (the 6.2b loop generalizes to running every requested CLI reviewer each iteration).
+2. **Open the PR and run the review loop.** First apply any mode-A trim from the heuristic above (e.g. drop a multi-reviewer request to a single reviewer, or skip entirely, for a genuinely-trivial diff) — state the trim. Then dispatch each reviewer left in `REVIEWER` to its branch below: `copilot` → 6.2a; any of `codex`/`agy`/`claude` → 6.2b; `auto` (no flag) resolves to 6.2a or 6.2c by the heuristic. **If `REVIEWER` lists several, run each its own branch and merge only once they ALL converge** (the 6.2b loop generalizes to running every requested CLI reviewer each iteration).
 
    ### 6.2a — `REVIEWER` includes `copilot`, OR (`REVIEWER=auto` AND heuristic says review)
 
@@ -155,7 +155,7 @@ When `/simplify` is deferred but an external review will run, run `/simplify` fi
 
    Skip the external review pass. Still run the local-review gate yourself by invoking **`/do:pr`** with NO `--review-with` flag — that runs the Tier 1+4 checklist against the diff (the spec calls this gate "REQUIRED" and it always fires) without requesting Copilot or any CLI reviewer. State the skip rationale ("3-line value swap, matches phosphene's published matrix, no external review"; or "user requested claude,codex but the diff is a one-line value swap — trimmed to no external review") in the merge commit body so the audit trail is honest.
 
-   ### 6.2b — `REVIEWER` includes one or more of `codex`, `gemini`, `claude`
+   ### 6.2b — `REVIEWER` includes one or more of `codex`, `agy`, `claude`
 
    Skip `/do:pr` entirely (it bakes in the Copilot loop). Open the PR manually, then drive an iterative CLI-based review using the chosen reviewer(s). When several CLI reviewers are requested, run each one per iteration (in parallel for the initial pass) and treat the loop as converged only when **all** of them return CLEAN.
 
@@ -168,12 +168,12 @@ When `/simplify` is deferred but an external review will run, run `/simplify` fi
         --body "<PR body>"
       ```
       Capture the PR number as `PR_NUM`.
-   3. **Pick the CLI invocation per requested reviewer** (run each one when several are requested):
+   3. **Pick the CLI invocation per requested reviewer** (run each one when several are requested). **Pass the whole prompt — including the inlined diff — as the prompt ARGUMENT, never via stdin.** `agy -p` (`--print`) and `claude -p` take the prompt as the positional argument right after the flag; piping into them (`… | agy -p`, `agy -p < file`) fails with `agy --print takes the prompt as an argument, not stdin` and wastes an invocation. Build the prompt once with `PROMPT="$(cat /tmp/claim-${SLUG}-prompt.md)"` and pass `"$PROMPT"` as the argument:
       | reviewer | Command |
       |---|---|
-      | `codex`  | `codex exec -` (prompt + diff via stdin) |
-      | `gemini` | `gemini -p "$PROMPT"` (diff via stdin) |
-      | `claude` | `claude -p - ` (prompt + diff via stdin) |
+      | `codex`  | `codex --sandbox danger-full-access exec "$PROMPT"` |
+      | `agy`    | `agy --dangerously-skip-permissions -p "$PROMPT"` |
+      | `claude` | `claude -p "$PROMPT" --dangerously-skip-permissions` |
    4. **Review-and-fix loop — converge to mutual agreement, no iteration cap.** Loop until the main agent AND every requested review CLI agree the PR is ready to merge. The agent (you) decides when the review is producing real value vs. nit-grade churn; each review CLI decides when nothing actionable remains for it. With multiple reviewers, gather all of their findings each iteration, dedup, and converge only when they are all CLEAN. Each iteration:
       ```bash
       # 1. Capture the latest diff
@@ -196,8 +196,10 @@ Context: iteration <N>. Prior iterations flagged + fixed:
 $(cat /tmp/claim-${SLUG}-pr.diff)
 EOF
 
-      # 3. Run the chosen CLI against the prompt
-      <CLI_CMD for REVIEWER> < /tmp/claim-${SLUG}-prompt.md > /tmp/claim-${SLUG}-review.md
+      # 3. Run the chosen CLI against the prompt — pass it as the ARGUMENT, not via stdin.
+      #    (agy/claude -p read the prompt from the argument; `< file` is ignored and agy errors out.)
+      PROMPT="$(cat /tmp/claim-${SLUG}-prompt.md)"
+      <CLI_CMD for REVIEWER, with "$PROMPT" as the prompt argument per the table above> > /tmp/claim-${SLUG}-review.md
       ```
 
       **Loop-exit decision tree** (your call as the main agent):
