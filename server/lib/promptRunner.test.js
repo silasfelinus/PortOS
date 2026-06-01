@@ -124,6 +124,38 @@ describe('promptRunner — happy paths', () => {
     expect(runner.executeCliRun).not.toHaveBeenCalled();
   });
 
+  it('runs the fallbackModel (not the primary model) when createRun proactively swaps to a fallback', async () => {
+    // Primary is benched at call time, so the toolkit createRun swaps to an
+    // API fallback and surfaces the configured fallbackModel. The run must
+    // execute that model on the fallback — NOT the primary's resolved model
+    // (the leak that sent `codex-configured-default` to LM Studio). This is
+    // the common caller path (no pre-created runId), distinct from the
+    // runtime-retry path covered below.
+    const fallback = apiProvider({ id: 'fb-api', defaultModel: 'fb-default' });
+    runner.createRun.mockResolvedValue({
+      runId: 'run-fb',
+      provider: fallback,
+      fallbackModel: 'pinned-fb',
+    });
+    let ranModel;
+    runner.executeApiRun.mockImplementation(async (id, _p, model, _pr, _cwd, _ctx, onData, onComplete) => {
+      ranModel = model;
+      onData('ok');
+      onComplete({ success: true });
+    });
+
+    const out = await runPromptThroughProvider({
+      provider: cliProvider({ defaultModel: 'codex-configured-default' }),
+      prompt: 'p',
+      source: 'test',
+    });
+
+    expect(runner.executeApiRun).toHaveBeenCalledTimes(1);
+    expect(runner.executeCliRun).not.toHaveBeenCalled();
+    expect(ranModel).toBe('pinned-fb');
+    expect(out.model).toBe('pinned-fb');
+  });
+
   it('forwards the provider id + model + source to createRun', async () => {
     runner.executeApiRun.mockImplementation(async (id, _p, _m, _pr, _cwd, _ctx, onData, onComplete) => {
       onData('ok');
@@ -650,6 +682,39 @@ describe('promptRunner — retry-with-fallback', () => {
       provider: 'Primary CLI',
       model: 'primary-model',
     });
+  });
+
+  it('runs the configured fallbackModel on the fallback (never the primary model) when one is pinned', async () => {
+    const status = mockToolkitWithFallback();
+    // Provider-level fallback that pins a specific model to run on the fallback.
+    status.getFallbackProvider.mockReturnValue({
+      provider: fallbackApi,
+      source: 'provider',
+      model: 'pinned-fb-model',
+    });
+
+    runner.executeCliRun.mockImplementation(async (id, _p, _pr, _cwd, _onData, onComplete, _t) => {
+      onComplete({ success: false, error: 'Process exited with code 1' });
+    });
+    let ranModel;
+    runner.executeApiRun.mockImplementation(async (id, _p, model, _pr, _cwd, _ctx, onData, onComplete) => {
+      ranModel = model;
+      onData('fallback content');
+      onComplete({ success: true });
+    });
+
+    const out = await runPromptThroughProvider({
+      provider: primaryCli,
+      prompt: 'p',
+      source: 'test',
+    });
+
+    expect(out.usedFallback).toBe(true);
+    // The pinned fallbackModel must reach the fallback run — NOT the primary's
+    // 'primary-model' (the leak this fix closes), and NOT the fallback's own
+    // 'fb-model' default (the pin must win).
+    expect(ranModel).toBe('pinned-fb-model');
+    expect(out.model).toBe('pinned-fb-model');
   });
 
   it('retries with fallback when primary API fails', async () => {

@@ -22,6 +22,9 @@ export const providerSchema = z.object({
   mediumModel: z.string().nullable().optional(),
   heavyModel: z.string().nullable().optional(),
   fallbackProvider: z.string().nullable().optional(),
+  // Model to run on the fallback provider. The UI sends '' when no model is
+  // pinned (fall back to the fallback provider's own default), so allow empty.
+  fallbackModel: z.string().nullable().optional(),
   timeout: z.number().int().min(1000).max(1800000).optional(),
   enabled: z.boolean().optional(),
   envVars: z.record(z.string()).optional(),

@@ -261,7 +261,12 @@ export async function runStagedLLM(stageName, variables, options = {}) {
   const fellBack = runResult.provider && runResult.provider.id !== provider.id;
   if (fellBack) {
     effectiveProvider = runResult.provider;
-    effectiveModel = resolveEffectiveModel(effectiveProvider, resolvedModel);
+    // Re-resolve against the FALLBACK provider. Do NOT pass `resolvedModel` —
+    // that was resolved against the PRIMARY (e.g. codex's
+    // `codex-configured-default`) and forwarding it leaks a model id the
+    // fallback can't run. Prefer the configured `fallbackModel`; null falls
+    // through to the fallback provider's own default / args-baked model.
+    effectiveModel = resolveEffectiveModel(effectiveProvider, runResult.fallbackModel ?? null);
   }
   // Always patch metadata with the effective timeout (the toolkit doesn't
   // persist `timeout` in its initial metadata.json write). On fallback we
