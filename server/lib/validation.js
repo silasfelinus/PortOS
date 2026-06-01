@@ -1148,6 +1148,26 @@ export const localLlmHuggingFaceSearchSchema = z.object({
   category: z.string().max(40).optional().default('all'),
   limit: z.coerce.number().int().min(1).max(30).optional().default(12),
 });
+export const localLlmPlaygroundOptionsSchema = z.object({
+  systemPrompt: z.string().max(8000).optional().default(''),
+  temperature: z.coerce.number().min(0).max(2).optional().default(0.3),
+  maxTokens: z.coerce.number().int().min(1).max(8192).optional().default(1000),
+  timeoutMs: z.coerce.number().int().min(1000).max(600000).optional().default(300000),
+});
+export const localLlmTestSchema = localLlmPlaygroundOptionsSchema.extend({
+  backend: localLlmBackendSchema,
+  modelId: localLlmModelIdSchema,
+  prompt: z.string().trim().min(1).max(50000),
+});
+export const localLlmCompareSchema = z.object({
+  mode: z.enum(['round-robin', 'parallel']).optional().default('round-robin'),
+  prompt: z.string().trim().min(1).max(50000),
+  targets: z.array(z.object({
+    backend: localLlmBackendSchema,
+    modelId: localLlmModelIdSchema,
+  })).min(1).max(6),
+  options: localLlmPlaygroundOptionsSchema.optional().default({}),
+});
 
 /**
  * Validate data against a Zod schema, throwing on failure.

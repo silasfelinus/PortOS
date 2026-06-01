@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Square, Power, PowerOff, Eye, Wrench, Brain, Code2, MessageSquare, Boxes, AlertTriangle } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Square, Power, PowerOff, Eye, Wrench, Brain, Code2, MessageSquare, Boxes, AlertTriangle, FlaskConical } from 'lucide-react';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
 import { formatBytes, timeAgo } from '../../utils/formatters';
@@ -214,6 +215,7 @@ function BackendCard({ backend, status, isDefault, busy, actionInProgress, runAc
 }
 
 export function LocalLlmTab() {
+  const navigate = useNavigate();
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState('ollama');
@@ -230,6 +232,7 @@ export function LocalLlmTab() {
   // id of the installed model awaiting a delete confirmation (two-step inline
   // confirm — deleting weights is an irreversible multi-GB rm -rf / DELETE).
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [compareTargets, setCompareTargets] = useState([]);
   const progressTimer = useRef(null);
   const statusRequestId = useRef(0);
   const catalogRequestId = useRef(0);
@@ -341,6 +344,7 @@ export function LocalLlmTab() {
   const selectedOllamaStartupAction = selectedData?.service?.supported ? 'enable' : 'start';
   const selectedOllamaStartupLabel = selectedData?.service?.supported ? 'Run at Startup' : 'Start Ollama';
   const installedModels = selectedData?.models || [];
+  const compareTargetKeys = useMemo(() => new Set(compareTargets.map((t) => `${t.backend}\n${t.modelId}`)), [compareTargets]);
   const catalogCategories = useMemo(() => {
     const counts = new Map();
     for (const model of catalog) counts.set(model.category || 'chat', (counts.get(model.category || 'chat') || 0) + 1);
@@ -391,6 +395,25 @@ export function LocalLlmTab() {
     }
   );
   const remove = (modelId) => runAction(`delete-${modelId}`, () => deleteLocalLlmModel(selected, modelId), `${modelId} deleted`);
+  const toggleCompareTarget = (backend, modelId) => {
+    const key = `${backend}\n${modelId}`;
+    setCompareTargets((prev) => {
+      if (prev.some((t) => `${t.backend}\n${t.modelId}` === key)) {
+        return prev.filter((t) => `${t.backend}\n${t.modelId}` !== key);
+      }
+      if (prev.length >= 6) {
+        toast.error('Compare up to 6 models at once');
+        return prev;
+      }
+      return [...prev, { backend, modelId }];
+    });
+  };
+  const openCompare = () => {
+    const params = new URLSearchParams();
+    params.set('targets', JSON.stringify(compareTargets));
+    params.set('mode', 'compare');
+    navigate(`/local-llm/playground?${params.toString()}`);
+  };
 
   // Upgrade Ollama in place (direct .app download on macOS; brew elsewhere) and
   // retry the original model install once Ollama is back online. `upgradeFlow`
@@ -727,11 +750,35 @@ export function LocalLlmTab() {
 
         {/* Installed models */}
         <div className="space-y-2 pt-2 border-t border-port-border/50">
-          <h3 className="text-xs font-medium text-gray-400">Installed on {labelFor(selected)} ({installedModels.length})</h3>
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <h3 className="text-xs font-medium text-gray-400">Installed on {labelFor(selected)} ({installedModels.length})</h3>
+            {compareTargets.length > 0 && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500">{compareTargets.length} selected</span>
+                <button
+                  onClick={openCompare}
+                  disabled={compareTargets.length < 2}
+                  className="px-2.5 py-1 text-xs bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded disabled:opacity-50 flex items-center gap-1"
+                >
+                  <ArrowRightLeft size={12} />
+                  Compare selected
+                </button>
+              </div>
+            )}
+          </div>
           {installedModels.length === 0 ? (
             <p className="text-xs text-gray-500">No models installed yet.</p>
           ) : installedModels.map((m) => (
             <div key={m.id} className="flex items-center gap-3 bg-port-bg border border-port-border rounded-lg p-3">
+              <label className="shrink-0 flex items-center" title={`Include ${m.name || m.id} in a comparison`}>
+                <input
+                  type="checkbox"
+                  checked={compareTargetKeys.has(`${selected}\n${m.id}`)}
+                  onChange={() => toggleCompareTarget(selected, m.id)}
+                  className="h-4 w-4 accent-port-accent"
+                  aria-label={`Select ${m.name || m.id} for comparison`}
+                />
+              </label>
               <div className="flex-1 min-w-0">
                 <div className="text-sm text-white truncate">{m.name}</div>
                 <div className="text-xs text-gray-500 truncate">
@@ -739,6 +786,14 @@ export function LocalLlmTab() {
                 </div>
               </div>
               {m.size != null && <span className="text-xs text-gray-400 shrink-0">{formatBytes(m.size)}</span>}
+              <Link
+                to={`/local-llm/playground?backend=${encodeURIComponent(selected)}&model=${encodeURIComponent(m.id)}`}
+                className="px-2.5 py-1 text-xs bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 rounded flex items-center gap-1 shrink-0 no-underline"
+                title={`Chat with ${m.name || m.id}`}
+              >
+                <FlaskConical size={12} />
+                Chat
+              </Link>
               {confirmDeleteId === m.id ? (
                 <div className="flex items-center gap-1.5 shrink-0">
                   <span className="text-xs text-port-error">Delete?</span>
