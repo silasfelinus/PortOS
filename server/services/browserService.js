@@ -268,7 +268,13 @@ export async function navigateToUrl(url) {
     throw new Error(`CDP navigate failed (${response.status}): ${text}`);
   }
 
-  const page = await readResponseJson(response);
+  // A successful CDP /json/new always returns a target with an id; a malformed
+  // 200 body must fail like a !ok navigate rather than return a truthy tab with
+  // undefined id/url that a caller mistakes for a successful navigation.
+  const page = await readResponseJson(response, { fallback: null, emptyValue: null });
+  if (!page?.id) {
+    throw new Error(`CDP navigate returned a malformed response for ${url}`);
+  }
   console.log(`🌐 Opened ${url} in CDP browser (tab ${page.id})`);
   return { id: page.id, title: page.title || '(loading)', url: page.url, type: page.type };
 }
