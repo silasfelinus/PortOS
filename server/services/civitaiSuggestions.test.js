@@ -33,12 +33,12 @@ describe('getSuggestions', () => {
     const fetchImpl = async (url) => {
       // Curated direct fetches go through /models/<id>; search goes through /models?...
       const m = url.match(/api\/v1\/models\/(\d+)$/);
-      if (m) return { ok: true, status: 200, json: async () => buildModel(Number(m[1]), `Curated-${m[1]}`, 'Flux.1 D') };
+      if (m) return { ok: true, status: 200, text: async () => JSON.stringify(buildModel(Number(m[1]), `Curated-${m[1]}`, 'Flux.1 D') )};
       // Search endpoint — return a list with entries matching the requested baseModel.
       const search = new URL(url);
       const baseModels = search.searchParams.getAll('baseModels');
       const items = baseModels.map((bm, i) => buildModel(9000 + i, `Top-${bm}-${i}`, bm));
-      return { ok: true, status: 200, json: async () => ({ items }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify(({ items }) )};
     };
     const out = await svc.getSuggestions({ fetchImpl, limit: 5 });
     expect(Array.isArray(out.curated)).toBe(true);
@@ -61,9 +61,9 @@ describe('getSuggestions', () => {
         calls += 1;
         // First curated call 404s; rest succeed.
         if (calls === 1) return { ok: false, status: 404 };
-        return { ok: true, status: 200, json: async () => buildModel(Number(m[1]), `Ok-${m[1]}`, 'Flux.1 D') };
+        return { ok: true, status: 200, text: async () => JSON.stringify(buildModel(Number(m[1]), `Ok-${m[1]}`, 'Flux.1 D') )};
       }
-      return { ok: true, status: 200, json: async () => ({ items: [buildModel(9999, 'Search', 'Flux.1 D')] }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify(({ items: [buildModel(9999, 'Search', 'Flux.1 D')] }) )};
     };
     const out = await svc.getSuggestions({ fetchImpl });
     // The first curated entry was dropped, but we should still have the others.
@@ -76,8 +76,8 @@ describe('getSuggestions', () => {
     const fetchImpl = async (url) => {
       calls += 1;
       const m = url.match(/api\/v1\/models\/(\d+)$/);
-      if (m) return { ok: true, status: 200, json: async () => buildModel(Number(m[1]), `Curated`, 'Flux.1 D') };
-      return { ok: true, status: 200, json: async () => ({ items: [buildModel(1, 'Cached', 'Flux.1 D')] }) };
+      if (m) return { ok: true, status: 200, text: async () => JSON.stringify(buildModel(Number(m[1]), `Curated`, 'Flux.1 D') )};
+      return { ok: true, status: 200, text: async () => JSON.stringify(({ items: [buildModel(1, 'Cached', 'Flux.1 D')] }) )};
     };
     await svc.getSuggestions({ fetchImpl });
     const callsAfterFirst = calls;
@@ -93,9 +93,9 @@ describe('getSuggestions', () => {
     let fetchCalls = 0;
     const fetchImpl = async (url) => {
       const m = url.match(/api\/v1\/models\/(\d+)$/);
-      if (m) return { ok: true, status: 200, json: async () => buildModel(Number(m[1]), `Curated`, 'Flux.1 D') };
+      if (m) return { ok: true, status: 200, text: async () => JSON.stringify(buildModel(Number(m[1]), `Curated`, 'Flux.1 D') )};
       fetchCalls += 1;
-      return { ok: true, status: 200, json: async () => ({ items: makeItems(24) }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify(({ items: makeItems(24) }) )};
     };
 
     // First call uses limit=4 — cache is populated at MAX (24 entries).
@@ -117,9 +117,9 @@ describe('getSuggestions', () => {
     let fetchCalls = 0;
     const fetchImpl = async (url) => {
       const m = url.match(/api\/v1\/models\/(\d+)$/);
-      if (m) return { ok: true, status: 200, json: async () => buildModel(Number(m[1]), `Curated`, 'Flux.1 D') };
+      if (m) return { ok: true, status: 200, text: async () => JSON.stringify(buildModel(Number(m[1]), `Curated`, 'Flux.1 D') )};
       fetchCalls += 1;
-      return { ok: true, status: 200, json: async () => ({ items: makeItems(24) }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify(({ items: makeItems(24) }) )};
     };
 
     // First call: limit=24 — populates cache with 24 cards.
@@ -141,8 +141,8 @@ describe('getSuggestions', () => {
     const fetchImpl = async (url) => {
       calls += 1;
       const m = url.match(/api\/v1\/models\/(\d+)$/);
-      if (m) return { ok: true, status: 200, json: async () => buildModel(Number(m[1]), `C`, 'Flux.1 D') };
-      return { ok: true, status: 200, json: async () => ({ items: [] }) };
+      if (m) return { ok: true, status: 200, text: async () => JSON.stringify(buildModel(Number(m[1]), `C`, 'Flux.1 D') )};
+      return { ok: true, status: 200, text: async () => JSON.stringify(({ items: [] }) )};
     };
     await svc.getSuggestions({ fetchImpl });
     const callsAfterFirst = calls;
@@ -158,7 +158,7 @@ describe('getSuggestions', () => {
         return {
           ok: true,
           status: 200,
-          json: async () => ({
+          text: async () => JSON.stringify(({
             ...buildModel(id, 'Multi', 'Flux.1 D'),
             modelVersions: [
               // Most recent (first) per family wins. Two flux2 versions —
@@ -171,10 +171,10 @@ describe('getSuggestions', () => {
               // Unsupported base — shouldn't appear in installs
               { id: 50, baseModel: 'SDXL 1.0', files: [{ name: 's.safetensors', primary: true, sizeKB: 500 }] },
             ],
-          }),
+          })),
         };
       }
-      return { ok: true, status: 200, json: async () => ({ items: [] }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify(({ items: [] }) )};
     };
     const out = await svc.getSuggestions({ fetchImpl });
     const card = out.curated[0];
@@ -198,16 +198,16 @@ describe('getSuggestions', () => {
         return {
           ok: true,
           status: 200,
-          json: async () => ({
+          text: async () => JSON.stringify(({
             ...buildModel(id, 'Multi', 'Flux.1 D'),
             modelVersions: [
               { id: id * 10, baseModel: 'Flux.1 D', trainedWords: [], images: [], files: [{ name: 'a.safetensors', primary: true }] },
               { id: id * 10 + 1, baseModel: 'Flux.2', trainedWords: [], images: [], files: [{ name: 'b.safetensors', primary: true }] },
             ],
-          }),
+          })),
         };
       }
-      return { ok: true, status: 200, json: async () => ({ items: [] }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify(({ items: [] }) )};
     };
     const out = await svc.getSuggestions({ fetchImpl });
     const card = out.curated[0];

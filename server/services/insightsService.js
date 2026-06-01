@@ -22,6 +22,7 @@ import { getActiveProvider, getProviderById } from './providers.js';
 import { getCorrelationData } from './appleHealthQuery.js';
 import { stripCodeFences, parseLLMJSON } from '../lib/aiProvider.js';
 import { fetchWithTimeout } from '../lib/fetchWithTimeout.js';
+import { readResponseJson } from '../lib/readResponseJson.js';
 import { ensureProviderReady as ensureOllamaProviderReady } from './ollamaManager.js';
 
 const DEFAULT_AI_TIMEOUT_MS = 300000;
@@ -194,7 +195,7 @@ async function callProviderAISimple(provider, model, prompt, { temperature = 0.3
       return { error: `Provider returned ${response.status}: ${errorText}` };
     }
 
-    const data = await response.json();
+    const data = await readResponseJson(response);
     return { text: data.choices?.[0]?.message?.content || '' };
   }
 

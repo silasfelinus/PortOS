@@ -4,6 +4,7 @@ import { ensureBackendProvider } from './localLlm.js';
 import { getProviderById } from './providers.js';
 import { markProviderAvailable } from './providerStatus.js';
 import { ensureProviderReady as ensureOllamaProviderReady } from './ollamaManager.js';
+import { readResponseJson } from '../lib/readResponseJson.js';
 
 const PROVIDER_BY_BACKEND = { ollama: 'ollama', lmstudio: 'lmstudio' };
 
@@ -111,7 +112,7 @@ async function streamChatCompletion({ provider, backend, modelId, prompt, system
   }
 
   if (!response.body?.getReader) {
-    const data = await response.json();
+    const data = await readResponseJson(response);
     const text = data.choices?.[0]?.message?.content || '';
     if (text) onChunk(text);
     return text;

@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from '../lib/uuid.js';
 import crypto from 'crypto';
 import { fetchWithTimeout } from '../lib/fetchWithTimeout.js';
+import { readResponseJson } from '../lib/readResponseJson.js';
 import { getToken, clearTokenCache } from './messageTokenExtractor.js';
 
 const GRAPH_API_TIMEOUT_MS = 30000;
@@ -93,7 +94,7 @@ export async function syncOutlookCalendarApi(account, _cache, io, options = {}) 
       return { events: [], status: 'api-error' };
     }
 
-    const data = await response.json();
+    const data = await readResponseJson(response);
     const items = data.value || [];
 
     for (const item of items) {
