@@ -10,16 +10,24 @@ describe('readResponseJson', () => {
   });
 
   it('parses a valid JSON array body when an array fallback is given', async () => {
-    const out = await readResponseJson(res('[1,2,3]'), { fallback: [], emptyValue: [] });
+    const out = await readResponseJson(res('[1,2,3]'), { fallback: [] });
     expect(out).toEqual([1, 2, 3]);
   });
 
-  it('returns emptyValue ({} by default) for an empty body', async () => {
+  it('returns {} for an empty body by default', async () => {
     expect(await readResponseJson(res(''))).toEqual({});
   });
 
-  it('honors a custom emptyValue for an empty body', async () => {
-    expect(await readResponseJson(res(''), { emptyValue: [] })).toEqual([]);
+  it('defaults emptyValue to a plain-value fallback (array caller gets [] for empty)', async () => {
+    expect(await readResponseJson(res(''), { fallback: [] })).toEqual([]);
+  });
+
+  it('honors an explicit emptyValue distinct from fallback', async () => {
+    expect(await readResponseJson(res(''), { fallback: [], emptyValue: null })).toBeNull();
+  });
+
+  it('treats a whitespace-only body as empty (returns emptyValue, not fallback)', async () => {
+    expect(await readResponseJson(res('   \n  '), { fallback: 'NON_JSON', emptyValue: 'EMPTY' })).toBe('EMPTY');
   });
 
   it('returns the fallback ({} by default) for a non-JSON body instead of throwing', async () => {
@@ -27,9 +35,12 @@ describe('readResponseJson', () => {
     await expect(readResponseJson(res('<!DOCTYPE html><html>500</html>'))).resolves.toEqual({});
   });
 
+  it('returns null fallback for a non-JSON body when a truthiness contract requires it', async () => {
+    expect(await readResponseJson(res('nope'), { fallback: null, emptyValue: null })).toBeNull();
+  });
+
   it('returns an array fallback for a non-JSON body when requested', async () => {
-    const out = await readResponseJson(res('nope'), { fallback: [], emptyValue: [] });
-    expect(out).toEqual([]);
+    expect(await readResponseJson(res('nope'), { fallback: [] })).toEqual([]);
   });
 
   it('passes the raw body text to a function fallback', async () => {

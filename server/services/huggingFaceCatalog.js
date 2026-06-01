@@ -246,7 +246,7 @@ async function fetchModels(search, limit, useGgufFilter) {
     const text = await response.text().catch(() => '')
     throw new Error(`Hugging Face search failed: ${response.status}${text ? ` — ${text.slice(0, 160)}` : ''}`)
   }
-  const data = await readResponseJson(response, { fallback: [], emptyValue: [] })
+  const data = await readResponseJson(response, { fallback: [] })
   return Array.isArray(data) ? data : []
 }
 

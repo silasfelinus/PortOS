@@ -205,7 +205,7 @@ export async function cdpRequest(path, options = {}) {
 export async function listCdpPages() {
   const response = await cdpRequest('/json/list', { timeout: HEALTH_TIMEOUT_MS }).catch(() => null);
   if (!response || !response.ok) return [];
-  return readResponseJson(response, { fallback: [], emptyValue: [] });
+  return readResponseJson(response, { fallback: [] });
 }
 
 export async function findOrOpenPage(targetUrl) {
@@ -214,7 +214,8 @@ export async function findOrOpenPage(targetUrl) {
   if (existing) return existing;
   const response = await cdpRequest(`/json/new?${encodeURIComponent(targetUrl)}`, { method: 'PUT' });
   if (!response.ok) return null;
-  return readResponseJson(response);
+  // Preserve the null-on-failure contract: a malformed body stays null, not {}.
+  return readResponseJson(response, { fallback: null, emptyValue: null });
 }
 
 export function isAuthPage(page) {
@@ -289,7 +290,9 @@ export async function getOpenPages() {
 export async function getCdpVersion() {
   const response = await cdpRequest('/json/version', { timeout: HEALTH_TIMEOUT_MS }).catch(() => null);
   if (!response || !response.ok) return null;
-  return readResponseJson(response);
+  // Preserve the null-on-failure contract: the /version route 503s when this is
+  // falsy, so a malformed body must stay null, not become a truthy {}.
+  return readResponseJson(response, { fallback: null, emptyValue: null });
 }
 
 // ---------- Downloads ----------
