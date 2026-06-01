@@ -27,10 +27,10 @@ export default function ConfirmButtonPair({
   className = '',
 }) {
   const confirmTone = TONES[tone] || TONES.error;
-  // While busy with a busyText, swap the confirm icon for a spinner and the
-  // label for the in-flight word ("Deleting"); otherwise keep the resting
-  // icon/label and just disable both buttons.
-  const showSpinner = busy && busyText;
+  // While in-flight, the confirm icon becomes a spinner and both buttons
+  // disable; the label additionally swaps to the in-flight word ("Deleting")
+  // when a busyText is supplied, otherwise it stays put.
+  const confirmLabel = busy && busyText ? busyText : confirmText;
 
   return (
     <div
@@ -45,12 +45,12 @@ export default function ConfirmButtonPair({
         disabled={busy}
         className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors disabled:opacity-50 ${confirmTone}`}
       >
-        {showSpinner ? (
+        {busy ? (
           <Loader2 size={12} className="animate-spin" />
         ) : ConfirmIcon ? (
           <ConfirmIcon size={12} />
         ) : null}
-        {showSpinner ? busyText : confirmText}
+        {confirmLabel}
       </button>
       <button
         type="button"

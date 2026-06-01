@@ -42,10 +42,11 @@ describe('ConfirmButtonPair', () => {
     expect(confirm.querySelector('svg')).not.toBeNull();
   });
 
-  it('disables both buttons while busy', () => {
-    render(<ConfirmButtonPair busy />);
+  it('disables both buttons and shows a spinner while busy, keeping the label without busyText', () => {
+    const { container } = render(<ConfirmButtonPair busy />);
     expect(screen.getByRole('button', { name: 'Delete' }).disabled).toBe(true);
     expect(screen.getByRole('button', { name: 'Cancel' }).disabled).toBe(true);
+    expect(container.querySelector('.animate-spin')).not.toBeNull();
   });
 
   it('swaps the confirm label to busyText and shows a spinner when busy with busyText', () => {
