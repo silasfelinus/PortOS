@@ -7,28 +7,54 @@ import { ensureProviderReady as ensureOllamaProviderReady } from './ollamaManage
 
 const PROVIDER_BY_BACKEND = { ollama: 'ollama', lmstudio: 'lmstudio' };
 
-function buildPrompt({ systemPrompt, prompt }) {
+// Human-readable record of what was asked, stored on the run for /runs replay.
+// This is NOT the wire format — the API receives the structured `buildMessages`
+// array; the synthetic "System instructions:/User prompt:" framing here exists
+// only so the run viewer shows one readable blob.
+export function buildPrompt({ systemPrompt, prompt }) {
   const system = String(systemPrompt || '').trim();
   if (!system) return prompt;
   return `System instructions:\n${system}\n\nUser prompt:\n${prompt}`;
 }
 
-function summarizeTimings({ startedAt, firstChunkAt, endedAt, text }) {
+export function summarizeTimings({ startedAt, firstChunkAt, endedAt, text }) {
   const totalMs = endedAt - startedAt;
   const ttftMs = firstChunkAt ? firstChunkAt - startedAt : null;
   const chars = text.length;
-  const charsPerSecond = totalMs > 0 ? chars / (totalMs / 1000) : chars;
+  // A sub-millisecond total makes a rate meaningless — report n/a (null)
+  // rather than `chars`, which would surface the char COUNT as a chars/sec rate.
+  const charsPerSecond = totalMs > 0 ? Number((chars / (totalMs / 1000)).toFixed(2)) : null;
   return {
     startedAt: new Date(startedAt).toISOString(),
     endedAt: new Date(endedAt).toISOString(),
     ttftMs,
     totalMs,
     chars,
-    charsPerSecond: Number(charsPerSecond.toFixed(2)),
+    charsPerSecond,
   };
 }
 
-function buildMessages({ systemPrompt, prompt }) {
+// Parse one OpenAI-style SSE `data:` line into its content/reasoning delta.
+// Returns null for non-data lines, the [DONE]/✅ sentinels, or a malformed
+// frame: a single bad frame must SKIP, not abort the stream — one non-JSON
+// keep-alive would otherwise throw out of the read loop and discard every
+// token already received.
+export function extractStreamDelta(rawLine) {
+  const line = rawLine.trim();
+  if (!line.startsWith('data: ')) return null;
+  const data = line.slice(6).trim();
+  if (!data || data === '[DONE]' || data === '✅') return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(data);
+  } catch {
+    return null;
+  }
+  const delta = parsed?.choices?.[0]?.delta;
+  return { content: delta?.content || '', reasoning: delta?.reasoning || '' };
+}
+
+export function buildMessages({ systemPrompt, prompt }) {
   const system = String(systemPrompt || '').trim();
   return [
     ...(system ? [{ role: 'system', content: system }] : []),
@@ -98,29 +124,30 @@ async function streamChatCompletion({ provider, backend, modelId, prompt, system
   let reasoning = '';
 
   const consumeLine = (rawLine) => {
-    const line = rawLine.trim();
-    if (!line.startsWith('data: ')) return;
-    const data = line.slice(6).trim();
-    if (!data || data === '[DONE]' || data === '✅') return;
-    const parsed = JSON.parse(data);
-    const delta = parsed?.choices?.[0]?.delta;
-    const text = delta?.content || '';
-    if (text) {
-      output += text;
-      onChunk(text);
+    const delta = extractStreamDelta(rawLine);
+    if (!delta) return;
+    if (delta.content) {
+      output += delta.content;
+      onChunk(delta.content);
     }
-    if (delta?.reasoning) reasoning += delta.reasoning;
+    if (delta.reasoning) reasoning += delta.reasoning;
   };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-    for (const line of lines) consumeLine(line);
+  // Always release the reader (and tear down the socket) on every exit path —
+  // a normal finish, an abort via the timeout signal, or a throw mid-stream.
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) consumeLine(line);
+    }
+    if (buffer.trim()) consumeLine(buffer);
+  } finally {
+    await reader.cancel().catch(() => {});
   }
-  if (buffer.trim()) consumeLine(buffer);
 
   if (!output.trim() && reasoning.trim()) {
     output = reasoning;

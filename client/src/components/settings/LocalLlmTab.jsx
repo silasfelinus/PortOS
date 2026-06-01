@@ -394,7 +394,15 @@ export function LocalLlmTab() {
       clearConfirm: false
     }
   );
-  const remove = (modelId) => runAction(`delete-${modelId}`, () => deleteLocalLlmModel(selected, modelId), `${modelId} deleted`);
+  const remove = (modelId) => runAction(`delete-${modelId}`, () => deleteLocalLlmModel(selected, modelId), `${modelId} deleted`)
+    .then((result) => {
+      // Drop the just-deleted model from any pending comparison (runAction
+      // resolves undefined on failure, so only prune on a real success) — else
+      // openCompare ships a dead modelId the playground would error on.
+      if (!result) return;
+      const key = `${selected}\n${modelId}`;
+      setCompareTargets((prev) => prev.filter((t) => `${t.backend}\n${t.modelId}` !== key));
+    });
   const toggleCompareTarget = (backend, modelId) => {
     const key = `${backend}\n${modelId}`;
     setCompareTargets((prev) => {

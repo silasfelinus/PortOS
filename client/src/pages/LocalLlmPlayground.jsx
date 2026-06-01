@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ArrowRightLeft, Check, Clock, Copy, Gauge, MessageSquare, Play, RefreshCw, Send, TriangleAlert } from 'lucide-react';
 import BrailleSpinner from '../components/BrailleSpinner';
 import toast from '../components/ui/Toast';
+import { copyToClipboard } from '../lib/clipboard';
 import { compareLocalLlmModels, getLocalLlmStatus, testLocalLlmModel } from '../services/api';
 
 const BACKEND_LABEL = { ollama: 'Ollama', lmstudio: 'LM Studio' };
@@ -21,6 +22,15 @@ function formatRate(value) {
 
 function targetKey(target) {
   return `${target.backend}\n${target.modelId}`;
+}
+
+// Number inputs hold raw strings; an emptied field is '' and `Number('')` is 0,
+// which would silently send temperature 0 or fail maxTokens' min(1) server-side.
+// Fall back to the field's default when the value isn't a finite, non-empty number.
+function numOr(value, fallback) {
+  if (value === '' || value == null) return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 function parseTargetsParam(searchParams) {
@@ -88,7 +98,7 @@ function ResultPanel({ result }) {
         )}
         {result.text && (
           <button
-            onClick={() => navigator.clipboard?.writeText(result.text).then(() => toast.success('Copied output')).catch(() => toast.error('Copy failed'))}
+            onClick={() => copyToClipboard(result.text, 'Copied output')}
             className="text-xs text-gray-400 hover:text-white flex items-center gap-1"
           >
             <Copy size={12} />
@@ -116,6 +126,9 @@ export default function LocalLlmPlayground() {
   const [busy, setBusy] = useState(false);
   const [chatResults, setChatResults] = useState([]);
   const [compareResult, setCompareResult] = useState(null);
+
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   const loadStatus = useCallback(() => {
     setLoadingStatus(true);
@@ -162,9 +175,9 @@ export default function LocalLlmPlayground() {
 
   const options = () => ({
     systemPrompt,
-    temperature: Number(temperature),
-    maxTokens: Number(maxTokens),
-    timeoutMs: Number(timeoutMs),
+    temperature: numOr(temperature, 0.3),
+    maxTokens: numOr(maxTokens, 1000),
+    timeoutMs: numOr(timeoutMs, 300000),
   });
 
   const runChat = () => {
@@ -173,11 +186,12 @@ export default function LocalLlmPlayground() {
     const target = primaryTarget;
     testLocalLlmModel({ ...target, prompt: prompt.trim(), ...options() }, { silent: true })
       .then((result) => {
+        if (!mountedRef.current) return;
         setChatResults((prev) => [result, ...prev]);
         if (result.error) toast.error(result.error);
       })
-      .catch((err) => toast.error(err?.message || 'Model test failed'))
-      .finally(() => setBusy(false));
+      .catch((err) => { if (mountedRef.current) toast.error(err?.message || 'Model test failed'); })
+      .finally(() => { if (mountedRef.current) setBusy(false); });
   };
 
   const runCompare = () => {
@@ -191,11 +205,12 @@ export default function LocalLlmPlayground() {
       options: options(),
     }, { silent: true })
       .then((result) => {
+        if (!mountedRef.current) return;
         setCompareResult(result);
         if ((result.results || []).some((r) => r.error)) toast.error('Some model runs failed');
       })
-      .catch((err) => toast.error(err?.message || 'Comparison failed'))
-      .finally(() => setBusy(false));
+      .catch((err) => { if (mountedRef.current) toast.error(err?.message || 'Comparison failed'); })
+      .finally(() => { if (mountedRef.current) setBusy(false); });
   };
 
   return (
