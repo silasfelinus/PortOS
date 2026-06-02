@@ -221,6 +221,45 @@ describe('StoryBuilder — index', () => {
     );
   });
 
+  it('import tab: a committed import whose session-create fails retries the session only, never re-committing', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    api.analyzeImport.mockResolvedValue({
+      universe: { id: 'u9', name: 'Giant' }, series: { id: 's9' },
+      canonPreview: { characters: [{ name: 'Kessa' }], places: [], objects: [] },
+      arcPreview: { logline: 'A giant wakes.', summary: 'spine' },
+      seasonsPreview: [{ number: 1, title: 'Vol 1' }],
+      issueProposals: [{ title: 'Issue 1' }], issueSplitFailed: false,
+    });
+    // Commit succeeds on the first click; createStorySession then fails, leaving
+    // the import committed but no session created.
+    api.commitImport.mockResolvedValue({ universe: { id: 'u9' }, series: { id: 's9' }, createdIssueIds: ['iss-1'] });
+    api.createStorySession.mockRejectedValueOnce(new Error('session create failed'));
+    api.createStorySession.mockResolvedValueOnce({ id: 'stb-import', currentStep: 'idea' });
+
+    renderAt('/story-builder');
+    fireEvent.click(await screen.findByText('Import a finished work'));
+    fireEvent.change(await screen.findByLabelText('Universe name'), { target: { value: 'Giant' } });
+    fireEvent.change(screen.getByLabelText('Series name'), { target: { value: 'Giant' } });
+    fireEvent.change(screen.getByLabelText(/Source text/), { target: { value: 'PAGE ONE...' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Analyze$/ }));
+    await waitFor(() => expect(screen.getByText(/Extracted/)).toBeTruthy());
+
+    // First click → commit succeeds, session fails, button flips to the
+    // session-only retry label.
+    fireEvent.click(screen.getByRole('button', { name: /Import & start building/ }));
+    await waitFor(() => expect(api.createStorySession).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole('button', { name: /Retry starting the builder/ })).toBeTruthy());
+    expect(api.commitImport).toHaveBeenCalledTimes(1);
+
+    // Second click → commitImport is NOT re-run; only createStorySession retries.
+    fireEvent.click(screen.getByRole('button', { name: /Retry starting the builder/ }));
+    await waitFor(() => expect(api.createStorySession).toHaveBeenCalledTimes(2));
+    expect(api.commitImport).toHaveBeenCalledTimes(1);
+    // …and the retry's success is consumed: onCreated navigates to the new
+    // session's detail view, which loads it (proving the result wasn't dropped).
+    await waitFor(() => expect(api.getStorySession).toHaveBeenCalledWith('stb-import', expect.anything()));
+  });
+
   it('import tab: blocks "Import & build" when no issues were extracted, offers retry', async () => {
     const { fireEvent } = await import('@testing-library/react');
     api.analyzeImport.mockResolvedValue({

@@ -195,9 +195,14 @@ function ImportPanel({ onCreated }) {
   // re-creates the issues — re-sending the full payload would clobber the
   // persisted state and risk duplicate issues. Mirrors Importer.jsx.
   const [arcAlreadyPersisted, setArcAlreadyPersisted] = useState(false);
+  // Set once commitImport fully succeeds (issues created) but createStorySession
+  // then failed — a re-click must skip commitImport entirely and resume at
+  // session creation, otherwise it re-creates the already-created issues and
+  // overwrites the arc.
+  const [committed, setCommitted] = useState(false);
   // Any path that clears the preview (analyze, Re-analyze) is a fresh attempt,
-  // so the partial-retry state can't survive it — centralize the reset here.
-  useEffect(() => { if (!preview) setArcAlreadyPersisted(false); }, [preview]);
+  // so the retry/committed state can't survive it — centralize the reset here.
+  useEffect(() => { if (!preview) { setArcAlreadyPersisted(false); setCommitted(false); } }, [preview]);
 
   const types = IMPORTER_CONTENT_TYPES || ['short-story', 'novel', 'screenplay', 'comic-script'];
 
@@ -235,33 +240,39 @@ function ImportPanel({ onCreated }) {
     const issues = preview.issueProposals || [];
     if (issues.length === 0) { toast.error('No issues were extracted — retry the issue split or adjust the source'); return; }
     setCommitting(true);
-    // On an arcAlreadyPersisted retry the server kept arc/seasons/canon from
-    // the failed commit, so resend issues only — re-sending the full payload
-    // would clobber the persisted state and risk duplicate issues.
-    const base = { universeId: preview.universe.id, seriesId: preview.series.id, issues, contentType };
-    const payload = arcAlreadyPersisted
-      ? { ...base, canonSelections: { characters: [], places: [], objects: [] }, arc: null, seasons: [] }
-      : {
-          ...base,
-          canonSelections: {
-            characters: preview.canonPreview?.characters || [],
-            places: preview.canonPreview?.places || [],
-            objects: preview.canonPreview?.objects || [],
-          },
-          arc: pickArcFields(preview.arcPreview),
-          seasons: preview.seasonsPreview || [],
-        };
-    const committed = await commitImport(payload, { silent: true }).catch((err) => {
-      if (err?.code === 'IMPORTER_PARTIAL_COMMIT_ISSUES' && err?.context?.arcAlreadyPersisted) {
-        setArcAlreadyPersisted(true);
-        toast.warning('Arc + seasons saved; issues failed and were rolled back. Click again to re-create the issues only — the arc won\'t be re-sent.');
+    // Skip commitImport when a prior click already committed (only the later
+    // createStorySession failed) — re-running it would duplicate the
+    // already-created issues and overwrite the arc. Resume at session creation.
+    if (!committed) {
+      // On an arcAlreadyPersisted retry the server kept arc/seasons/canon from
+      // the failed commit, so resend issues only — re-sending the full payload
+      // would clobber the persisted state and risk duplicate issues.
+      const base = { universeId: preview.universe.id, seriesId: preview.series.id, issues, contentType };
+      const payload = arcAlreadyPersisted
+        ? { ...base, canonSelections: { characters: [], places: [], objects: [] }, arc: null, seasons: [] }
+        : {
+            ...base,
+            canonSelections: {
+              characters: preview.canonPreview?.characters || [],
+              places: preview.canonPreview?.places || [],
+              objects: preview.canonPreview?.objects || [],
+            },
+            arc: pickArcFields(preview.arcPreview),
+            seasons: preview.seasonsPreview || [],
+          };
+      const result = await commitImport(payload, { silent: true }).catch((err) => {
+        if (err?.code === 'IMPORTER_PARTIAL_COMMIT_ISSUES' && err?.context?.arcAlreadyPersisted) {
+          setArcAlreadyPersisted(true);
+          toast.warning('Arc + seasons saved; issues failed and were rolled back. Click again to re-create the issues only — the arc won\'t be re-sent.');
+          return null;
+        }
+        toast.error(err?.message || 'Import failed');
         return null;
-      }
-      toast.error(err?.message || 'Import failed');
-      return null;
-    });
-    if (!committed) { setCommitting(false); return; }
-    setArcAlreadyPersisted(false);
+      });
+      if (!result) { setCommitting(false); return; }
+      setArcAlreadyPersisted(false);
+      setCommitted(true);
+    }
     const session = await createStorySession({
       intakeMode: 'import',
       title: seriesName.trim() || universeName.trim(),
@@ -351,7 +362,7 @@ function ImportPanel({ onCreated }) {
             <button onClick={importAndBuild} disabled={committing || issueCount === 0}
               className="inline-flex items-center gap-2 bg-port-success hover:bg-green-600 disabled:opacity-50 text-white px-4 py-2 rounded text-sm">
               {committing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-              {arcAlreadyPersisted ? 'Retry issues & start building' : 'Import & start building'}
+              {committed ? 'Retry starting the builder' : arcAlreadyPersisted ? 'Retry issues & start building' : 'Import & start building'}
             </button>
             <button onClick={() => setPreview(null)} disabled={committing}
               className="text-sm text-gray-400 hover:text-white px-2">Re-analyze</button>
