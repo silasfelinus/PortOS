@@ -912,7 +912,6 @@ const musicGenerateSchema = z.object({
   prompt: z.string().trim().min(1).max(800),
   durationSec: z.number().min(MIN_DURATION_SEC).max(MAX_DURATION_SEC).optional(),
   modelId: z.enum(MUSICGEN_MODELS.map((m) => m.id)).optional(),
-  label: z.string().trim().max(200).nullable().optional(),
 });
 router.post('/issues/:id/stages/audio/music/generate', asyncHandler(async (req, res) => {
   const body = validateRequest(musicGenerateSchema, req.body ?? {});
@@ -926,13 +925,12 @@ router.post('/issues/:id/stages/audio/music/generate', asyncHandler(async (req, 
     durationSec: body.durationSec ?? DEFAULT_DURATION_SEC,
     modelId: body.modelId ?? DEFAULT_MUSICGEN_MODEL_ID,
   }).catch((err) => { throw mapServiceError(err); });
-  const label = body.label?.trim() || gen.model;
   const { issue: updatedIssue, stage } = await issuesSvc.updateStageWithLatest(
     req.params.id,
     'audio',
     (current) => ({
       status: audioStatusAfterMusicChange(current),
-      music: { source: MUSIC_SOURCE.GEN, trackFilename: gen.filename, label },
+      music: { source: MUSIC_SOURCE.GEN, trackFilename: gen.filename, label: gen.model },
       errorMessage: '',
     }),
   ).catch((err) => { throw mapServiceError(err); });

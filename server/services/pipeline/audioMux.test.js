@@ -236,11 +236,14 @@ describe('buildVoMuxArgs', () => {
     // music is the looped last input (index 2 here: video=0, vo=1, music=2)
     expect(args).toContain('-stream_loop');
     const filter = args[args.indexOf('-filter_complex') + 1];
-    expect(filter).toContain('asplit=2[vosc][vomain]');
+    expect(filter).toContain('asplit=2[voscraw][vomain]');
     expect(filter).toContain('[2:a]volume=0.400');
     expect(filter).toContain('sidechaincompress=threshold=');
     expect(filter).toContain('[bed][vosc]sidechaincompress');
-    expect(filter).toContain('[ducked][vomain]amix=inputs=2:normalize=0,apad[aout]');
+    expect(filter).toContain('[ducked][vomain]amix=inputs=2:normalize=0[aout]');
+    // The sidechain KEY must be padded to infinity so the music bed survives
+    // past the last VO line (sidechaincompress ends with its shortest input).
+    expect(filter).toContain('[voscraw]apad[vosc]');
   });
 
   it('uses a single VO label without amix for one line', () => {

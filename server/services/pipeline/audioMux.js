@@ -22,6 +22,11 @@
  * video's audio track rather than mixing under it. AI-gen clips are silent
  * today, but LTX-2 audio-to-video can carry a clip soundtrack — preserving +
  * ducking that under VO is tracked as a follow-up in PLAN.md.
+ *
+ * ffmpeg floor: the VO graph uses `amix ... normalize=0` + `sidechaincompress`
+ * (ffmpeg 4.4+, 2021). On an older ffmpeg `muxVoLines` returns ok:false and the
+ * CD stitch falls back to `muxMusicBed`, which uses only `aresample`/`aformat`
+ * and works on every ffmpeg — so the fallback is never broken on the same host.
  */
 
 import { join } from 'path';
@@ -164,10 +169,19 @@ export function buildVoMuxArgs({ inputVideoPath, voLines, musicPath, musicGain =
   if (musicPath) {
     const musicIdx = voLines.length + 1;
     const gain = Number(musicGain).toFixed(3);
-    chains.push(`${voMixLabel}asplit=2[vosc][vomain]`);
+    chains.push(`${voMixLabel}asplit=2[voscraw][vomain]`);
+    // Pad the sidechain *key* to infinity (silence after the last VO line).
+    // sidechaincompress ends with its shortest input, so a finite VO key would
+    // cut the ducked bed off at the last line — the music would vanish for the
+    // rest of the episode. With an infinite (silence-padded) key, the bed runs
+    // the full video length: ducked under dialogue, full-level in the gaps.
+    chains.push(`[voscraw]apad[vosc]`);
     chains.push(`[${musicIdx}:a]volume=${gain},${AFMT}[bed]`);
     chains.push(`[bed][vosc]sidechaincompress=threshold=${duck.threshold}:ratio=${duck.ratio}:attack=${duck.attack}:release=${duck.release}[ducked]`);
-    chains.push(`[ducked][vomain]amix=inputs=2:normalize=0,apad[aout]`);
+    // `[vomain]` is the finite VO; `[ducked]` is bed-length (infinite via the
+    // looped music). amix=longest keeps the bed past the VO; -shortest then
+    // pins the whole output to the video length.
+    chains.push(`[ducked][vomain]amix=inputs=2:normalize=0[aout]`);
   } else {
     chains.push(`${voMixLabel}apad[aout]`);
   }

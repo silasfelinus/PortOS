@@ -91,7 +91,8 @@ export default function AudioStage({ issue, onStageUpdate }) {
   const openGenPanel = async () => {
     setGenPanelOpen(true);
     if (generators === null) {
-      const result = await listPipelineMusicGenerators().catch((err) => {
+      // Owns its own error toast → silent so the helper doesn't double-toast.
+      const result = await listPipelineMusicGenerators({ silent: true }).catch((err) => {
         toast.error(err.message || 'Failed to load generators');
         return null;
       });
@@ -552,7 +553,14 @@ export default function AudioStage({ issue, onStageUpdate }) {
                       max={generators.maxDurationSec ?? 30}
                       step="1"
                       value={genDuration}
-                      onChange={(e) => setGenDuration(Number(e.target.value))}
+                      onChange={(e) => {
+                        // Clamp to the server's accepted range so a blank/typed
+                        // out-of-range value can't 400 on Generate. NaN → default.
+                        const min = generators.minDurationSec ?? 1;
+                        const max = generators.maxDurationSec ?? 30;
+                        const n = Number(e.target.value);
+                        setGenDuration(Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : (generators.defaultDurationSec ?? 12));
+                      }}
                       className="w-24 px-2 py-1.5 bg-port-card border border-port-border rounded text-white text-sm"
                     />
                   </div>

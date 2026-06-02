@@ -620,8 +620,8 @@ export const deletePipelineMusicTrack = (filename) =>
 // Returns { models, defaultModelId, defaultDurationSec, minDurationSec,
 // maxDurationSec, ready }. `ready=false` → show the install hint instead of
 // the prompt box.
-export const listPipelineMusicGenerators = () =>
-  request('/pipeline/audio/music/generators');
+export const listPipelineMusicGenerators = (options = {}) =>
+  request('/pipeline/audio/music/generators', options);
 
 // Generate a background-music track with MusicGen (MLX) and attach it to the
 // issue (source: 'gen'). Long-running (~tens of seconds); callers own a busy

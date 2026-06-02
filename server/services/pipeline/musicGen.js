@@ -20,6 +20,8 @@
  */
 
 import { spawn } from 'child_process';
+import { existsSync, statSync } from 'fs';
+import { unlink } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
@@ -140,15 +142,23 @@ export async function generateMusic({ prompt, durationSec = DEFAULT_DURATION_SEC
   // anonymous HF rate limits.
   const env = safeChildProcessEnv(await hfTokenEnv());
   const result = await runMusicGenProcess({ bin, args, env, signal });
-  if (!result.ok) {
-    throw new ServerError(`Music generation failed: ${result.reason}`, {
+  // A clean exit isn't enough — the sidecar could exit 0 yet write nothing (or
+  // a truncated file) if the runtime changes shape. Require both a parsed
+  // RESULT line AND a non-empty file on disk before we persist the library
+  // pointer; otherwise unlink the partial and fail, so the audio stage never
+  // attaches a dangling/empty track.
+  const parsed = result.ok ? parseResultLine(result.stdout) : null;
+  const wroteFile = existsSync(outputPath) && statSync(outputPath).size > 0;
+  if (!result.ok || !parsed || !wroteFile) {
+    await unlink(outputPath).catch(() => {});
+    const reason = !result.ok ? result.reason : (!wroteFile ? 'sidecar wrote no audio' : 'sidecar returned no result');
+    throw new ServerError(`Music generation failed: ${reason}`, {
       status: 500, code: 'PIPELINE_MUSIC_GEN_FAILED',
     });
   }
-  const parsed = parseResultLine(result.stdout);
   return {
     filename,
-    durationSec: Number.isFinite(parsed?.durationSec) ? parsed.durationSec : clampDuration(durationSec),
+    durationSec: Number.isFinite(parsed.durationSec) ? parsed.durationSec : clampDuration(durationSec),
     modelId: model.id,
     model: model.name,
   };

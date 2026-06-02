@@ -313,19 +313,25 @@ if [[ "$INSTALL_MUSICGEN" == "1" ]]; then
     "$MUSICGEN_PY" -m pip install --upgrade pip wheel setuptools >/dev/null
     # mlx + numpy run the model; transformers (<5 for MLX compat) + sentencepiece
     # provide the T5 text conditioner's tokenizer; scipy is imported by the
-    # mlx-examples musicgen utils. We write WAV via the stdlib `wave` module in
-    # the sidecar, so no soundfile dependency.
+    # mlx-examples musicgen utils. torch is required because MusicGen.from_pretrained
+    # loads the upstream PyTorch checkpoints (torch.load) before converting to MLX —
+    # without it generation fails at model-load even though the class imports fine.
+    # We write WAV via the stdlib `wave` module in the sidecar, so no soundfile dep.
     "$MUSICGEN_PY" -m pip install --upgrade \
       mlx \
       numpy \
+      torch \
       "transformers<5" \
       sentencepiece \
       "huggingface_hub[hf_xet]" \
       scipy
+    # Verify BOTH that the class imports AND that torch loaded — the import alone
+    # passed even when torch was missing, so install used to report ready and
+    # then fail on the first generation.
     if ! PORTOS_MUSICGEN_RUNTIME_DIR="${MLX_EXAMPLES_DIR}/musicgen" \
-         "$MUSICGEN_PY" -c "import sys, os; sys.path.insert(0, os.environ['PORTOS_MUSICGEN_RUNTIME_DIR']); from musicgen import MusicGen" 2>/dev/null; then
-      echo "❌ MusicGen venv built but 'from musicgen import MusicGen' failed." >&2
-      echo "   Check that ${MLX_EXAMPLES_DIR}/musicgen exists and the clone is intact." >&2
+         "$MUSICGEN_PY" -c "import sys, os, torch; sys.path.insert(0, os.environ['PORTOS_MUSICGEN_RUNTIME_DIR']); from musicgen import MusicGen" 2>/dev/null; then
+      echo "❌ MusicGen venv built but 'import torch; from musicgen import MusicGen' failed." >&2
+      echo "   Check that ${MLX_EXAMPLES_DIR}/musicgen exists and torch installed cleanly." >&2
       exit 1
     fi
     echo "✅ MusicGen venv ready: $MUSICGEN_PY (runtime: ${MLX_EXAMPLES_DIR}/musicgen @ ${MLX_EXAMPLES_PIN:0:12})"
