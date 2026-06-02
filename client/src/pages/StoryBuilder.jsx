@@ -14,6 +14,7 @@ import {
 import toast from '../components/ui/Toast';
 import Banner from '../components/ui/Banner';
 import { useLockToggle } from '../hooks/useLockToggle';
+import { useStoryStepProgress } from '../hooks/useStoryStepProgress';
 import {
   getStoryBuilderSteps, listStorySessions, getStorySession, createStorySession,
   updateStorySession, setStoryCurrentStep, lockStoryStep, unlockStoryStep,
@@ -378,7 +379,75 @@ function ReaderMapView({ readerMap }) {
   );
 }
 
-function RefineBox({ onRefine, busy, disabled }) {
+// Kick off a step generate/refine and drive its SSE progress stream. The POST
+// returns immediately; we enable the stream only after it resolves so the run
+// is registered server-side before the EventSource connects (matches the
+// pipeline auto-run). The result content lives in the universe/series records,
+// so callers refetch via `onComplete` rather than reading a payload off the
+// frame. `op` lets a panel show the live phase on the button that triggered the
+// run while leaving sibling buttons merely disabled.
+function useStepStream(sessionId, stepId) {
+  const [starting, setStarting] = useState(false);
+  const [active, setActive] = useState(false);
+  const [phase, setPhase] = useState('');
+  const [op, setOp] = useState(null);
+  const handlersRef = useRef(null);
+  // The runId we're waiting on. useSseProgress only resets its `latest` a render
+  // AFTER `enabled` flips true, so on the subscribe render `latest` still holds
+  // the PREVIOUS run's terminal frame. Gating the terminal branches on a frame's
+  // runId stops that stale frame from firing the new run's onComplete instantly.
+  const runIdRef = useRef(null);
+  const { latest, closed } = useStoryStepProgress(sessionId, stepId, { enabled: active });
+
+  const settle = useCallback(() => {
+    setActive(false); setPhase(''); setOp(null);
+    runIdRef.current = null;
+    const h = handlersRef.current; handlersRef.current = null;
+    return h;
+  }, []);
+
+  // One effect handles every end-of-run path. A terminal frame and the stream's
+  // `closed` flag arrive together on completion, so the ordered branches (and
+  // settle() flipping `active` false) ensure exactly one of onComplete/onError
+  // fires — a separate `closed` effect would double-fire on the same render. The
+  // bare-`closed` branch covers a stream that died before any terminal frame
+  // (server pruned a fast run, or the connection dropped) so the button unsticks.
+  useEffect(() => {
+    if (!active) return;
+    // Ignore frames belonging to a previous run (stale `latest` not yet reset by
+    // the SSE hook). closed is reset on every (re)subscribe, so it never lingers.
+    const mine = latest && latest.runId === runIdRef.current;
+    if (mine && typeof latest.label === 'string' && latest.label) setPhase(latest.label);
+    if (mine && latest.type === 'complete') settle()?.onComplete?.(latest);
+    else if (mine && latest.type === 'error') settle()?.onError?.(new Error(latest.error || 'Generation failed'));
+    else if (closed) settle()?.onError?.(new Error('Lost connection to the generation stream'));
+  }, [latest, closed, active, settle]);
+
+  const start = useCallback(async (nextOp, kickoff, handlers = {}) => {
+    if (starting || active) return;
+    setStarting(true); setPhase('Starting…'); setOp(nextOp);
+    const res = await kickoff().catch((err) => { handlers.onError?.(err); return null; });
+    setStarting(false);
+    if (!res) { setPhase(''); setOp(null); return; }
+    // The kickoff collided with a DIFFERENT in-flight request for this step (a
+    // different op, or a refine of a different target/note). That run persists to
+    // the same records, so binding THIS button's success handler to its terminal
+    // frame would misreport. Don't subscribe — report it and leave the run alone.
+    // (A same-work re-click returns alreadyRunning without conflict and re-attaches.)
+    if (res.conflict) {
+      setPhase(''); setOp(null);
+      handlers.onError?.(new Error('Another operation is already running for this step — try again once it finishes.'));
+      return;
+    }
+    handlersRef.current = handlers;
+    runIdRef.current = res.runId; // only frames from this run drive our handlers
+    setActive(true); // enable the SSE subscription now that the run is registered
+  }, [starting, active]);
+
+  return { start, busy: starting || active, phase, op };
+}
+
+function RefineBox({ onRefine, disabled, busy, running, phase }) {
   const [feedback, setFeedback] = useState('');
   return (
     <div className="border-t border-port-border pt-3 mt-3">
@@ -387,14 +456,15 @@ function RefineBox({ onRefine, busy, disabled }) {
         <input
           type="text" value={feedback} onChange={(e) => setFeedback(e.target.value)}
           placeholder="e.g. make the midpoint reveal land harder"
-          disabled={disabled}
+          disabled={disabled || busy}
           className="flex-1 bg-port-bg border border-port-border rounded px-3 py-1.5 text-sm disabled:opacity-50"
         />
         <button
           onClick={() => onRefine(feedback)} disabled={busy || disabled}
-          className="inline-flex items-center gap-1 bg-port-card border border-port-border hover:border-port-accent px-3 py-1.5 rounded text-sm disabled:opacity-50"
+          className="inline-flex items-center gap-1 bg-port-card border border-port-border hover:border-port-accent px-3 py-1.5 rounded text-sm disabled:opacity-50 whitespace-nowrap"
         >
-          {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />} Refine
+          {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
+          {running ? (phase || 'Refining…') : 'Refine'}
         </button>
       </div>
     </div>
@@ -402,8 +472,9 @@ function RefineBox({ onRefine, busy, disabled }) {
 }
 
 function StepPanel({ session, universe, series, issues, stepId, locked, onChanged }) {
-  const [busy, setBusy] = useState(false);
+  const { start, busy, phase, op } = useStepStream(session.id, stepId);
   const arc = series?.arc || {};
+  const isRunning = (which) => busy && op === which;
 
   // True when at least one issue already carries text content — the prerequisite
   // for backfilling an upstream step (idea / arc) FROM the downstream work.
@@ -413,23 +484,17 @@ function StepPanel({ session, universe, series, issues, stepId, locked, onChange
       .some((sid) => (st[sid]?.input?.trim() || st[sid]?.output?.trim()));
   }), [issues]);
 
-  const runGenerate = async () => {
-    setBusy(true);
-    const res = await generateStoryStep(session.id, stepId, {}, { silent: true })
-      .catch((err) => { toast.error(err?.message || 'Generation failed'); return null; });
-    setBusy(false);
-    if (res) { toast.success('Generated'); onChanged(); }
-  };
+  const runGenerate = () => start('generate',
+    () => generateStoryStep(session.id, stepId, {}, { silent: true }),
+    { onComplete: () => { toast.success('Generated'); onChanged(); },
+      onError: (err) => toast.error(err?.message || 'Generation failed') });
 
   // Backfill: synthesize this upstream step from the series' existing issue
   // content instead of from its conventional upstream (start-from-anywhere).
-  const runBackfill = async () => {
-    setBusy(true);
-    const res = await generateStoryStep(session.id, stepId, { fromDownstream: true }, { silent: true })
-      .catch((err) => { toast.error(err?.message || 'Backfill failed'); return null; });
-    setBusy(false);
-    if (res) { toast.success('Backfilled from existing issues'); onChanged(); }
-  };
+  const runBackfill = () => start('backfill',
+    () => generateStoryStep(session.id, stepId, { fromDownstream: true }, { silent: true }),
+    { onComplete: () => { toast.success('Backfilled from existing issues'); onChanged(); },
+      onError: (err) => toast.error(err?.message || 'Backfill failed') });
 
   const backfillButton = () => (
     <button
@@ -437,30 +502,28 @@ function StepPanel({ session, universe, series, issues, stepId, locked, onChange
       title="Reverse-engineer this step from the scripts / prose your issues already have"
       className="inline-flex items-center gap-2 bg-port-card border border-port-border hover:border-port-accent disabled:opacity-50 px-3 py-1.5 rounded text-sm"
     >
-      {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
-      Backfill from existing issues
+      {isRunning('backfill') ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
+      {isRunning('backfill') ? (phase || 'Working…') : 'Backfill from existing issues'}
     </button>
   );
-  const runRefine = async (feedback, entryId) => {
-    setBusy(true);
-    const res = await refineStoryStep(session.id, stepId, { feedback, entryId }, { silent: true })
-      .catch((err) => { toast.error(err?.message || 'Refine failed'); return null; });
-    setBusy(false);
-    if (res) {
-      toast.success(res.changes?.length ? `Refined — ${res.changes.length} change(s)` : 'Refined');
-      onChanged();
-    }
-  };
+  const runRefine = (feedback, entryId) => start('refine',
+    () => refineStoryStep(session.id, stepId, { feedback, entryId }, { silent: true }),
+    { onComplete: (frame) => {
+        toast.success(frame.changes?.length ? `Refined — ${frame.changes.length} change(s)` : 'Refined');
+        onChanged();
+      },
+      onError: (err) => toast.error(err?.message || 'Refine failed') });
 
   // Once a step has generated content, the button becomes "Re-generate" (with a
-  // refresh icon) so it's clear it has already been run.
+  // refresh icon) so it's clear it has already been run. While running, the
+  // button surfaces the live SSE phase ("Planning the plot arc…").
   const genButton = (label = 'Generate with AI', hasContent = false) => (
     <button
       onClick={runGenerate} disabled={busy || locked}
       className="inline-flex items-center gap-2 bg-port-accent hover:bg-blue-600 disabled:opacity-50 text-white px-3 py-1.5 rounded text-sm"
     >
-      {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : (hasContent ? <RefreshCw className="w-4 h-4" /> : <Sparkles className="w-4 h-4" />)}
-      {hasContent ? 'Re-generate' : label}
+      {isRunning('generate') ? <Loader2 className="w-4 h-4 animate-spin" /> : (hasContent ? <RefreshCw className="w-4 h-4" /> : <Sparkles className="w-4 h-4" />)}
+      {isRunning('generate') ? (phase || 'Working…') : (hasContent ? 'Re-generate' : label)}
     </button>
   );
 
@@ -499,7 +562,7 @@ function StepPanel({ session, universe, series, issues, stepId, locked, onChange
             </Link>
           )}
         </div>
-        {!locked && <RefineBox onRefine={(fb) => runRefine(fb)} busy={busy} />}
+        {!locked && <RefineBox onRefine={(fb) => runRefine(fb)} busy={busy} running={isRunning('refine')} phase={phase} />}
       </div>
     );
   }
@@ -531,7 +594,7 @@ function StepPanel({ session, universe, series, issues, stepId, locked, onChange
       <div className="space-y-3">
         <ReaderMapView readerMap={arc.readerMap} />
         {!locked && genButton('Generate reader map', Boolean(arc.readerMap))}
-        {!locked && arc.readerMap && <RefineBox onRefine={(fb) => runRefine(fb)} busy={busy} />}
+        {!locked && arc.readerMap && <RefineBox onRefine={(fb) => runRefine(fb)} busy={busy} running={isRunning('refine')} phase={phase} />}
       </div>
     );
   }
@@ -572,6 +635,7 @@ function StepCharacters({ session, universe, locked, onChanged }) {
   const [imageCfg, setImageCfg] = useState(PIPELINE_IMAGE_DEFAULTS);
   const [renderingJobs, setRenderingJobs] = useState({});
   const [refiningId, setRefiningId] = useState(null);
+  const { start: startRefine, busy: refineBusy, phase: refinePhase } = useStepStream(session.id, 'characters');
   // MediaJobThumb's onFilename effect can fire more than once (StrictMode +
   // the unstable per-render onComplete arrow); guard so each (char, filename)
   // append runs exactly once.
@@ -621,12 +685,17 @@ function StepCharacters({ session, universe, locked, onChanged }) {
     onChanged();
   };
 
-  const refineChar = async (entryId) => {
+  const refineChar = (entryId) => {
+    if (refineBusy) return;
     setRefiningId(entryId);
-    const res = await refineStoryStep(session.id, 'characters', { entryId }, { silent: true })
-      .catch((err) => { toast.error(err?.message || 'Refine failed'); return null; });
-    setRefiningId(null);
-    if (res) { toast.success(res.changes?.length ? `Refined — ${res.changes.length} change(s)` : 'Refined'); onChanged(); }
+    startRefine('refine',
+      () => refineStoryStep(session.id, 'characters', { entryId }, { silent: true }),
+      { onComplete: (frame) => {
+          setRefiningId(null);
+          toast.success(frame.changes?.length ? `Refined — ${frame.changes.length} change(s)` : 'Refined');
+          onChanged();
+        },
+        onError: (err) => { setRefiningId(null); toast.error(err?.message || 'Refine failed'); } });
   };
 
   return (
@@ -655,10 +724,11 @@ function StepCharacters({ session, universe, locked, onChanged }) {
           </div>
           {!locked && (
             <button
-              onClick={() => refineChar(c.id)} disabled={refiningId === c.id}
-              className="text-xs inline-flex items-center gap-1 border border-port-border rounded px-2 py-1 hover:border-port-accent disabled:opacity-50 shrink-0"
+              onClick={() => refineChar(c.id)} disabled={refineBusy}
+              className="text-xs inline-flex items-center gap-1 border border-port-border rounded px-2 py-1 hover:border-port-accent disabled:opacity-50 shrink-0 whitespace-nowrap"
             >
-              {refiningId === c.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />} Refine
+              {refiningId === c.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+              {refiningId === c.id ? (refinePhase || 'Refining…') : 'Refine'}
             </button>
           )}
         </div>
