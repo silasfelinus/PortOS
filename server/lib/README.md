@@ -49,6 +49,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `scenePrompt.js` | Scene-prompt composer + bible matchers (chars/places/objects in text). |
 | `sceneExtractor.js` | Split prose or teleplay into scene list via LLM. |
 | `seasonStructure.js` | Season/episode structure recommendation. |
+| `seriesLlmOverride.js` | Pure `resolveSeriesLlmOverride(series, { overrideProvider, overrideModel })` → `{ provider, model, providerMatchesSeries }` — shared fallback so Pipeline LLM actions honor the series' configured provider/model, only inheriting the series model when the effective provider still matches. |
 | `bibleExtractor.js` | LLM bible-extraction stage + sanitization. |
 | `catalogBulkParsers.js` | Dependency-free markdown/CSV/JSON parsers for `POST /api/catalog/bulk-import` and YAML/markdown serializers for `GET /api/catalog/export`. |
 | `catalogChunking.js` | Pure lossless scrap-text chunker (`chunkRawText`, `CATALOG_CHUNK_MAX_CHARS`) — splits a long paste into ≤maxChars chunks on paragraph/newline/sentence/whitespace boundaries so the catalog extractor processes each child and unions results. |

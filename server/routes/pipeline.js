@@ -68,6 +68,7 @@ import { COMIC_PAGE_VARIANTS, slotKeyForVariant } from '../services/pipeline/own
 import { ASPECT_RATIOS, QUALITIES } from '../lib/creativeDirectorPresets.js';
 import { IMAGE_GEN_MODE } from '../services/imageGen/modes.js';
 import { extractScenes, SOURCE_KIND } from '../lib/sceneExtractor.js';
+import { resolveSeriesLlmOverride } from '../lib/seriesLlmOverride.js';
 import { buildComicPdf, PAGE_SIZES, DEFAULT_PAGE_SIZE, ERR_NO_RENDERED_PAGES } from '../services/pipeline/comicPdf.js';
 import {
   buildVolumePdf,
@@ -1281,19 +1282,18 @@ router.post('/series/:id/seasons/:seasonId/episodes/generate', asyncHandler(asyn
       // provider is still the series provider; an override that switches
       // providers without naming a model leaves it blank so the new provider's
       // default resolves.
-      const provider = body.providerOverride || series.llm?.provider || '';
-      const providerMatchesSeries = !body.providerOverride
-        || body.providerOverride === (series.llm?.provider || '');
-      const model = body.modelOverride
-        || (providerMatchesSeries ? (series.llm?.model || '') : '');
+      const { provider, model } = resolveSeriesLlmOverride(series, {
+        overrideProvider: body.providerOverride,
+        overrideModel: body.modelOverride,
+      });
       // Stamp new inserts as series-extracted (autoLock + sourceSeriesId) so
       // continuity-derived canon survives later AI refines and stays
       // attributable to this series. Matches the pre-B.4 series-side
       // extract semantics.
       const extractRes = await extractCanonFromProse(series.universeId, {
         corpus,
-        providerOverride: provider || undefined,
-        modelOverride: model || undefined,
+        providerOverride: provider,
+        modelOverride: model,
         parallel: true,
         autoLock: true,
         sourceSeriesId: series.id,
@@ -1716,8 +1716,10 @@ router.post('/issues/:id/stages/storyboards/extract-scenes', asyncHandler(async 
   // provider would be paired with a foreign model id and fail (same guard as
   // the extract-canon route). When the override switches providers without
   // naming a model, leave it blank so the new provider's default resolves.
-  const sceneProviderMatchesSeries = !body.providerOverride
-    || body.providerOverride === (series.llm?.provider || '');
+  const { provider, model } = resolveSeriesLlmOverride(series, {
+    overrideProvider: body.providerOverride,
+    overrideModel: body.modelOverride,
+  });
   const result = await extractScenes({
     source,
     sourceKind,
@@ -1727,10 +1729,8 @@ router.post('/issues/:id/stages/storyboards/extract-scenes', asyncHandler(async 
     work: { title: issue.title, kind: 'tv-episode' },
     series: { name: series.name, styleNotes: series.styleNotes },
     issue: { number: issue.number, title: issue.title },
-    providerOverride: body.providerOverride || series.llm?.provider || undefined,
-    modelOverride: body.modelOverride
-      || (sceneProviderMatchesSeries ? series.llm?.model : undefined)
-      || undefined,
+    providerOverride: provider,
+    modelOverride: model,
     tag: `pipeline-storyboards-extract-${sourceKind}`,
   });
 
@@ -1866,17 +1866,16 @@ router.post('/issues/:id/stages/:stageId/extract-canon', asyncHandler(async (req
   // explicit override — matches every other Pipeline LLM action (e.g.
   // storyboards/extract-scenes) so a manual extract honors the provider/model
   // picked in the series header instead of the global default.
-  const provider = body.providerOverride || series.llm?.provider || '';
   // A model id is provider-specific. Only inherit the series model when the
   // EFFECTIVE provider is still the series provider — otherwise the retry
   // picker's whole point (switch provider, keep "Default model") would forward
   // e.g. `providerOverride: anthropic` paired with a Codex/OpenAI model id and
   // fail. When the user overrode to a different provider without naming a
   // model, leave it blank so the extractor resolves that provider's default.
-  const providerMatchesSeries = !body.providerOverride
-    || body.providerOverride === (series.llm?.provider || '');
-  const model = body.model
-    || (providerMatchesSeries ? (series.llm?.model || '') : '');
+  const { provider, model } = resolveSeriesLlmOverride(series, {
+    overrideProvider: body.providerOverride,
+    overrideModel: body.model,
+  });
 
   // Stamp the outcome on the stage so the Nouns UI can persist a
   // failure/partial banner and the user can retry with a different
@@ -1886,8 +1885,8 @@ router.post('/issues/:id/stages/:stageId/extract-canon', asyncHandler(async (req
   try {
     result = await extractCanonFromProse(series.universeId, {
       corpus,
-      providerOverride: provider || undefined,
-      modelOverride: model || undefined,
+      providerOverride: provider,
+      modelOverride: model,
       parallel: true,
       autoLock: true,
       sourceSeriesId: series.id,
