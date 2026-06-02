@@ -32,6 +32,10 @@ const TABBED_PAGES = [
 
 // Pull the inner text of `export const <constName> = [ … ];` (requiring `export`
 // also asserts the constant stays importable — a forgotten `export` fails loudly).
+// Assumes a FLAT array (entries are `{ id|to|path, label, icon }` objects, no
+// nested array literals): the non-greedy `]` stops at the first `];`, so a tab
+// object carrying a nested array would truncate the block and drop later tabs.
+// True for every tab/section constant today; revisit if a nested literal lands.
 function extractConstArrayBlock(src, constName) {
   const block = src.match(new RegExp(`export const ${constName}\\s*=\\s*\\[([\\s\\S]*?)\\];`));
   if (!block) throw new Error(`No exported ${constName} array found`);
