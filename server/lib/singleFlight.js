@@ -8,9 +8,12 @@
  * execution and one result, and a genuinely-new call after the slot clears
  * starts fresh work.
  *
- * Minimal by design — it coalesces keyed work and nothing more:
+ * Minimal by design — it coalesces keyed work and nothing more. Two other
+ * in-flight-coalescing sites deliberately do NOT use this helper:
  * - It does NOT layer a TTL / result cache on top. `aiToolkit/providers.js`
- *   keeps its own snapshot cache in FRONT of this (TTL check, then coalesce).
+ *   keeps its own self-contained TTL-cache-then-coalesce logic — the vendored
+ *   toolkit must not import PortOS-side lib modules (CLAUDE.md), so it can't
+ *   build on this even if it wanted the bare coalesce.
  * - It does NOT reject concurrent callers. `sseDownload.js` deliberately uses
  *   the opposite "reject-if-busy" idiom (a second client can't share one
  *   client's SSE event stream, and it holds a kill handle rather than a
