@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { ArrowRight, Bot, RefreshCw, Save, Search } from 'lucide-react';
 import toast from '../ui/Toast';
 import { getAiAssignments, updateAiAssignment } from '../../services/api';
@@ -185,6 +186,7 @@ export default function AiAssignmentsTab() {
             <select
               value={fromProvider}
               onChange={(e) => setFromProvider(e.target.value)}
+              aria-label="Migrate from provider"
               className="min-w-0 flex-1 bg-port-bg border border-port-border rounded px-2 py-2 text-sm text-white"
             >
               <option value="">From provider</option>
@@ -196,6 +198,7 @@ export default function AiAssignmentsTab() {
             <select
               value={toProvider}
               onChange={(e) => setToProvider(e.target.value)}
+              aria-label="Migrate to provider"
               className="min-w-0 flex-1 bg-port-bg border border-port-border rounded px-2 py-2 text-sm text-white"
             >
               <option value="">To provider</option>
@@ -223,13 +226,14 @@ export default function AiAssignmentsTab() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search assignments"
+            aria-label="Search assignments"
             className="w-full bg-port-bg border border-port-border rounded pl-9 pr-3 py-2 text-sm text-white"
           />
         </div>
-        <select value={area} onChange={(e) => setArea(e.target.value)} className="bg-port-bg border border-port-border rounded px-3 py-2 text-sm text-white">
+        <select value={area} onChange={(e) => setArea(e.target.value)} aria-label="Filter by area" className="bg-port-bg border border-port-border rounded px-3 py-2 text-sm text-white">
           {areas.map((a) => <option key={a} value={a}>{a === 'all' ? 'All areas' : a}</option>)}
         </select>
-        <select value={scope} onChange={(e) => setScope(e.target.value)} className="bg-port-bg border border-port-border rounded px-3 py-2 text-sm text-white">
+        <select value={scope} onChange={(e) => setScope(e.target.value)} aria-label="Filter by scope" className="bg-port-bg border border-port-border rounded px-3 py-2 text-sm text-white">
           <option value="all">All scopes</option>
           <option value="global">Global</option>
           <option value="record">Record pins</option>
@@ -311,7 +315,7 @@ export default function AiAssignmentsTab() {
                   <td className="px-3 py-3 text-xs text-gray-500">
                     <div className="break-all">{entry.source}</div>
                     {entry.link && (
-                      <a href={entry.link} className="inline-block mt-1 text-port-accent hover:underline">Open</a>
+                      <Link to={entry.link} className="inline-block mt-1 text-port-accent hover:underline">Open</Link>
                     )}
                   </td>
                   <td className="px-3 py-3 text-right">
