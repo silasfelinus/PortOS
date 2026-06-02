@@ -181,8 +181,9 @@ export async function deleteSyncBaseHash(kind, id) {
  *  `await flushBaseHashes()` resolves immediately rather than blocking inside
  *  the batch. */
 export function flushBaseHashes() {
-  if (_flushBatchDepth > 0) return _flushTail;
-  if (!_baseDirty) return _flushTail;
+  // Defer while inside a batch, and no-op when nothing is dirty — either way the
+  // outstanding `_flushTail` thenable is the right thing to await.
+  if (_flushBatchDepth > 0 || !_baseDirty) return _flushTail;
   _flushTail = _flushTail.then(async () => {
     if (!_baseDirty) return;
     _baseDirty = false;
@@ -201,12 +202,13 @@ export function flushBaseHashes() {
  *
  * The base-hash map already coalesces SYNCHRONOUS bursts (the `_baseDirty` flag
  * means a run of `setSyncBaseHash` calls before a single `flushBaseHashes` pays
- * one write). What it can't collapse on its own is an AWAIT-SEPARATED loop: the
- * `peer:online` convergence walk (`retryPendingPushesForPeer`) pushes N records
- * in sequence, and each push's fire-and-forget `flushBaseHashes()` lands on the
- * settled `_flushTail` from the previous record — so a 50-record convergence
- * rewrites `sync_base_hashes.json` 50 times. Wrapping the loop in this scope
- * defers every interior flush; the single terminal write captures all N stamps.
+ * one write). What it can't collapse on its own is an AWAIT-SEPARATED loop that
+ * stamps + flushes per iteration: each flush lands on the previous one's settled
+ * `_flushTail`, so an N-iteration loop rewrites `sync_base_hashes.json` N times.
+ * Wrapping the loop in this scope defers every interior flush; the single
+ * terminal write captures all N stamps. (Caller in the tree today: the
+ * `peer:online` convergence walk `retryPendingPushesForPeer`, which pushes —
+ * and stamps — every subscribed record in sequence.)
  *
  * Re-entrant (depth-counted) so nested scopes collapse to the outermost batch,
  * and the terminal flush runs in `finally` so a thrown/rejected `fn` still
@@ -214,6 +216,10 @@ export function flushBaseHashes() {
  * debounce (tried and reverted — the unref'd timer leaked into `peerSync.test.js`'s
  * settle-waits and made the suite flaky), this is deterministic: the flush is
  * tied to the scope boundary, not a wall-clock timer, so tests just `await` it.
+ *
+ * Contract note: stamps performed inside the scope must have settled (the
+ * in-memory `setSyncBaseHash` awaited) before `fn` returns, or the terminal
+ * flush won't see `_baseDirty` for them. The current caller awaits its stamps.
  */
 export async function withBaseHashFlushBatch(fn) {
   _flushBatchDepth += 1;
