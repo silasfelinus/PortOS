@@ -928,6 +928,7 @@ export async function pushRecordToPeer(sub, options = {}) {
     record: payload.record,
     issues: payload.issues ?? null,
     linkedCollection: payload.linkedCollection ?? null,
+    manuscriptReview: payload.manuscriptReview ?? null,
     assetManifest: payload.assetManifest ?? [],
   });
   if (sub.lastPushedHash && sub.lastPushedHash === hash) {
@@ -954,6 +955,12 @@ export async function pushRecordToPeer(sub, options = {}) {
     }).finally(() => clearTimeout(timeoutId));
   };
   let res = await postPayload(payload);
+  // Set when the older-peer retry below strips `manuscriptReview`: the retry
+  // succeeds with the review removed, so saving the full-payload hash would
+  // make the next push short-circuit as `unchanged` and never deliver the
+  // review once that peer upgrades. Withhold the hash (like reviewSyncPending)
+  // so the next cycle re-sends.
+  let reviewStrippedForLegacyPeer = false;
   // MIXED-VERSION COMPAT: an older receiver's push schema is still `.strict()`
   // without a `portosMeta` field, so it 400-rejects our envelope at Zod
   // validation BEFORE its schema-version gate code (which doesn't exist on
@@ -965,22 +972,30 @@ export async function pushRecordToPeer(sub, options = {}) {
   // they upgrade, the next push round naturally re-includes `portosMeta`.
   // `catalogBundle` (catalog-federation push enrichment) is a second new
   // top-level key an even-newer-than-version-gate-but-pre-catalog peer's strict
-  // schema also rejects. Strip whichever key(s) the receiver actually named —
-  // surgically, so a peer that supports `portosMeta` but not `catalogBundle`
-  // keeps its version-gate handshake. Zod `.strict()` lists all unrecognized
-  // keys in one issue, so a single retry covers both.
-  if (res && res.status === 400 && (payload.portosMeta || payload.catalogBundle)) {
+  // schema also rejects. `manuscriptReview` (the bundled "Finish the draft"
+  // review doc) is a third — a pre-feature peer's series push schema is still
+  // `.strict()` without it, so it 400-rejects a review-bearing series push and
+  // would strand the series + issues. This retry is exactly what makes the
+  // review's "degrades gracefully on older peers" contract hold (see
+  // schemaVersions.js): strip the unknown key the older peer can't parse so the
+  // record/issues still land; the review reaches it once it upgrades. Strip
+  // whichever key(s) the receiver actually named — surgically, so a peer that
+  // supports `portosMeta` but not `catalogBundle`/`manuscriptReview` keeps its
+  // version-gate handshake. Zod `.strict()` lists all unrecognized keys in one
+  // issue, so a single retry covers all of them.
+  if (res && res.status === 400 && (payload.portosMeta || payload.catalogBundle || payload.manuscriptReview)) {
     const errBody = await res.clone().json().catch(() => null);
     const details = Array.isArray(errBody?.context?.details) ? errBody.context.details : [];
     const mentions = (key) => details.some((d) => new RegExp(key).test(`${d?.path || ''} ${d?.message || ''}`));
-    if (errBody?.code === 'VALIDATION_ERROR' && (mentions('portosMeta') || mentions('catalogBundle'))) {
+    if (errBody?.code === 'VALIDATION_ERROR' && (mentions('portosMeta') || mentions('catalogBundle') || mentions('manuscriptReview'))) {
       const legacyPayload = { ...payload };
       const stripped = [];
       if (mentions('portosMeta') && 'portosMeta' in legacyPayload) { delete legacyPayload.portosMeta; stripped.push('portosMeta'); }
       if (mentions('catalogBundle') && 'catalogBundle' in legacyPayload) { delete legacyPayload.catalogBundle; stripped.push('catalogBundle'); }
-      // The universe record still lands; on a pre-catalog peer the catalog
-      // enrichments simply re-derive from the embedded canon on its backfill,
-      // and a re-push after it upgrades re-includes the stripped key(s).
+      if (mentions('manuscriptReview') && 'manuscriptReview' in legacyPayload) { delete legacyPayload.manuscriptReview; stripped.push('manuscriptReview'); reviewStrippedForLegacyPeer = true; }
+      // The series + issues still land; on a pre-feature peer the review simply
+      // doesn't propagate until it upgrades, and a re-push after it upgrades
+      // re-includes the stripped key(s).
       console.log(
         `ℹ️ peerSync: ${peer.name || peer.instanceId} rejected newer envelope key(s) ${stripped.join(', ')} — retrying push without them`,
       );
@@ -1052,6 +1067,12 @@ export async function pushRecordToPeer(sub, options = {}) {
   // merge LWW path; only cost is one redundant POST per push cycle
   // until the receiver finishes pulling).
   const missingCount = Array.isArray(body?.missingAssets) ? body.missingAssets.length : 0;
+  // REVIEW-STRANDED GUARD: the receiver merged the record/issues (returned 2xx)
+  // but its bundled manuscript-review merge threw. Withhold lastPushedHash like
+  // the missing-assets case so the next push cycle re-sends the review instead
+  // of short-circuiting on `unchanged` — the review has no independent
+  // reconciliation path, so a saved hash here would strand the update.
+  const reviewSyncPending = body?.reviewSyncPending === true || reviewStrippedForLegacyPeer;
   // This push landed (receiver returned 2xx). Stamp the per-record confirmed-
   // delivery water-mark so tombstoneGc won't prune THIS record's tombstone
   // until its delete-push has been confirmed — even if a later push for a
@@ -1061,7 +1082,7 @@ export async function pushRecordToPeer(sub, options = {}) {
   // the tombstone's deletedAt once it lands. The `missingAssets` case still
   // counts as confirmed delivery of the RECORD (merge ran on the receiver);
   // only the asset-stranded hash is withheld, not the confirmation mark.
-  await persistPushSuccess(sub.id, missingCount > 0 ? null : hash, { confirmedAtMs: Date.now() });
+  await persistPushSuccess(sub.id, (missingCount > 0 || reviewSyncPending) ? null : hash, { confirmedAtMs: Date.now() });
   if (Number.isFinite(body?.ackedDeletesUpTo) && body.ackedDeletesUpTo > 0) {
     await ackDeletesUpTo(sub.peerId, body.ackedDeletesUpTo).catch(() => {});
   }
@@ -1271,6 +1292,18 @@ async function buildPushPayload(sub, sourceInstanceId) {
     const assetManifest = record.deleted === true
       ? []
       : await buildAssetManifestForSeries(record, manifestIssues, linkedCollection);
+    // Bundle the manuscript-review sibling doc (the "Finish the draft" comment
+    // set) so review-only edits — which don't move the series record — still
+    // propagate. Same reasoning as the linkedCollection bundle above: the
+    // review rides the payload AND the push hash, defeating the lastPushedHash
+    // short-circuit. Skip for tombstones (a deleted series ships no review).
+    // Dynamic import keeps manuscriptReview's arcPlanner graph off peerSync's
+    // boot load path (matches the catalogBundle pattern).
+    const manuscriptReview = record.deleted === true
+      ? null
+      : await import('../pipeline/manuscriptReview.js')
+        .then(({ getReview }) => getReview(sub.recordId))
+        .catch(() => null);
     return {
       kind: 'series',
       record: sanitized,
@@ -1279,6 +1312,7 @@ async function buildPushPayload(sub, sourceInstanceId) {
       sourceInstanceId,
       portosMeta,
       ...(linkedCollection ? { linkedCollection } : {}),
+      ...(manuscriptReview && manuscriptReview.comments?.length ? { manuscriptReview } : {}),
     };
   }
   if (sub.recordKind === 'mediaCollection') {
@@ -1456,7 +1490,7 @@ export async function applyIncomingPush(payload) {
   if (!isPlainObject(payload)) {
     throw makeErr('payload must be an object', ERR_VALIDATION);
   }
-  const { kind, record, issues, linkedCollection, catalogBundle, assetManifest, sourceInstanceId, portosMeta } = payload;
+  const { kind, record, issues, linkedCollection, catalogBundle, manuscriptReview, assetManifest, sourceInstanceId, portosMeta } = payload;
   if (!PEER_SUBSCRIBABLE_KINDS.includes(kind)) {
     throw makeErr(`unknown kind: ${kind}`, ERR_VALIDATION);
   }
@@ -1581,6 +1615,10 @@ export async function applyIncomingPush(payload) {
   // peer collided (without `source`, the merge fns fall back to
   // `{ via:'sync', peerId:null }` and the attribution is lost).
   const source = { via: 'peer-push', peerId: sourceInstanceId };
+  // Set true when a bundled manuscript-review merge throws — returned to the
+  // sender so it withholds lastPushedHash and retries (the review has no other
+  // reconciliation path; see the merge block below).
+  let reviewSyncPending = false;
   if (kind === 'universe') {
     await mergeUniversesFromSync([record], { source });
   } else if (kind === 'series') {
@@ -1593,6 +1631,23 @@ export async function applyIncomingPush(payload) {
     // subscription could overwrite the private fork's issue stages.
     if (!localEphemeral && Array.isArray(issues) && issues.length > 0) {
       await mergeIssuesFromSync(issues, { source });
+    }
+    // Merge the bundled manuscript-review sibling doc, LWW-per-comment. Same
+    // guards as the issue batch + linkedCollection below: skip for local-
+    // ephemeral records (the user opted this series out of sync) and tombstone
+    // pushes (a deleted series carries no live review). A merge failure must
+    // NOT fail the push (the series/issues already merged) — but unlike the
+    // linkedCollection bundle, the review has NO independent reconciliation
+    // cycle, so a swallowed failure could never resend once the sender saves
+    // lastPushedHash. Signal `reviewSyncPending` so the sender withholds the
+    // hash (mirrors the missing-assets guard) and retries next cycle.
+    // Dynamic import keeps the arcPlanner graph off peerSync's load path.
+    if (!localEphemeral && record.deleted !== true && isPlainObject(manuscriptReview)) {
+      const { mergeReviewFromSync } = await import('../pipeline/manuscriptReview.js');
+      await mergeReviewFromSync(record.id, manuscriptReview).catch((err) => {
+        console.log(`⚠️ peerSync: manuscriptReview merge failed: ${err.message}`);
+        reviewSyncPending = true;
+      });
     }
   } else if (kind === 'mediaCollection') {
     await mergeMediaCollectionsFromSync([record], { source });
@@ -1693,6 +1748,7 @@ export async function applyIncomingPush(payload) {
     missingAssets,
     reverseSubscriptionCreated,
     ackedDeletesUpTo,
+    ...(reviewSyncPending ? { reviewSyncPending: true } : {}),
   };
 }
 
