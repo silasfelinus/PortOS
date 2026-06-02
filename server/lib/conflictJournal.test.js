@@ -101,6 +101,94 @@ describe('conflictJournal', () => {
     expect(fields).not.toContain('id');
   });
 
+  describe('deepFieldDiff (per-sub-entry diffing)', () => {
+    it('object map → one part per changed key, only the differing keys', () => {
+      const local = { tone: { v: 'dark' }, palette: { v: 'warm' }, era: { v: 'now' } };
+      const remote = { tone: { v: 'light' }, palette: { v: 'warm' }, mood: { v: 'tense' } };
+      const parts = cj.deepFieldDiff(local, remote);
+      const byPath = Object.fromEntries(parts.map((p) => [p.path, p]));
+      expect(Object.keys(byPath).sort()).toEqual(['era', 'mood', 'tone']); // palette unchanged → absent
+      expect(byPath.tone.changed).toBe('both');
+      expect(byPath.era.changed).toBe('local-only');   // removed on remote
+      expect(byPath.mood.changed).toBe('remote-only');  // added on remote
+    });
+
+    it('array of identity-bearing objects → paired by id (path), labelled by name (label)', () => {
+      const local = [{ id: 'c1', name: 'Alice', age: 30 }, { id: 'c2', name: 'Bob', age: 40 }];
+      const remote = [{ id: 'c1', name: 'Alice', age: 31 }, { id: 'c3', name: 'Cara', age: 22 }];
+      const parts = cj.deepFieldDiff(local, remote);
+      // path = the unique match key (id); label = the friendly name.
+      const byId = Object.fromEntries(parts.map((p) => [p.path, p]));
+      expect(Object.keys(byId).sort()).toEqual(['c1', 'c2', 'c3']);
+      expect(byId.c1).toMatchObject({ label: 'Alice', changed: 'both' });
+      expect(byId.c2).toMatchObject({ label: 'Bob', changed: 'local-only' });   // removed
+      expect(byId.c3).toMatchObject({ label: 'Cara', changed: 'remote-only' }); // added
+    });
+
+    it('distinct ids with a COLLIDING display name keep distinct (unique) paths', () => {
+      // Two different characters both named "Alice" must not collapse — the
+      // React key is `path` (the id), which stays unique even when labels clash.
+      const local = [{ id: 'c1', name: 'Alice', bio: 'one' }, { id: 'c2', name: 'Alice', bio: 'two' }];
+      const remote = [{ id: 'c1', name: 'Alice', bio: 'ONE' }, { id: 'c2', name: 'Alice', bio: 'TWO' }];
+      const parts = cj.deepFieldDiff(local, remote);
+      expect(parts.map((p) => p.path).sort()).toEqual(['c1', 'c2']);
+      expect(parts.every((p) => p.label === 'Alice')).toBe(true);
+    });
+
+    it('reordering identity-bearing objects with no content change → null (no spurious parts)', () => {
+      const local = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }];
+      const remote = [{ id: 'b', name: 'B' }, { id: 'a', name: 'A' }];
+      expect(cj.deepFieldDiff(local, remote)).toBeNull();
+    });
+
+    it('duplicate match keys within an array → null (pairing unreliable, fall back to whole-field)', () => {
+      const local = [{ id: 'dup', name: 'A' }, { id: 'dup', name: 'B' }];
+      const remote = [{ id: 'dup', name: 'C' }];
+      expect(cj.deepFieldDiff(local, remote)).toBeNull();
+    });
+
+    it('returns null for scalars, arrays of scalars, identity-less arrays, and shape mismatches', () => {
+      expect(cj.deepFieldDiff('a', 'b')).toBeNull();
+      expect(cj.deepFieldDiff(['x', 'y'], ['x', 'z'])).toBeNull();
+      expect(cj.deepFieldDiff([{ foo: 1 }], [{ foo: 2 }])).toBeNull(); // no id/key/slug/name
+      expect(cj.deepFieldDiff({ a: 1 }, [1, 2])).toBeNull();           // object vs array
+    });
+  });
+
+  it('diffSummary emits `parts` for object-map + array-of-object fields, whole-field for scalars', async () => {
+    const base = uni({
+      starterPrompt: 'base',
+      categories: { tone: { v: 'dark' } },
+      characters: [{ id: 'c1', name: 'Alice', bio: 'old' }],
+    });
+    await cj.setSyncBaseHash('universe', 'u-1', cj.contentHashForRecord('universe', base));
+    const local = uni({
+      starterPrompt: 'LOCAL prompt',
+      categories: { tone: { v: 'LOCAL tone' } },
+      characters: [{ id: 'c1', name: 'Alice', bio: 'LOCAL bio' }],
+      updatedAt: '2026-05-02T00:00:00Z',
+    });
+    const remote = uni({
+      starterPrompt: 'REMOTE prompt',
+      categories: { tone: { v: 'REMOTE tone' } },
+      characters: [{ id: 'c1', name: 'Alice', bio: 'REMOTE bio' }],
+      updatedAt: '2026-05-03T00:00:00Z',
+    });
+    await cj.maybeJournalBeforeOverwrite({ kind: 'universe', id: 'u-1', local, remote, source: { via: 'sync' } });
+    const [entry] = await pendingEntries();
+    const byField = Object.fromEntries(entry.diffSummary.map((d) => [d.field, d]));
+    // scalar field → whole-field values, no parts.
+    expect(byField.starterPrompt.parts).toBeUndefined();
+    expect(byField.starterPrompt.localValue).toBe('LOCAL prompt');
+    // object-map field → parts keyed by category (path = label = key).
+    expect(byField.categories.localValue).toBeUndefined();
+    expect(byField.categories.parts.map((p) => p.path)).toEqual(['tone']);
+    // array-of-objects field → path is the id, label is the name.
+    expect(byField.characters.parts.map((p) => p.path)).toEqual(['c1']);
+    expect(byField.characters.parts.map((p) => p.label)).toEqual(['Alice']);
+    expect(byField.characters.parts[0].remoteValue.bio).toBe('REMOTE bio');
+  });
+
   it('issue content hash ignores the renumber-managed `number` (no false divergence on a sibling renumber)', () => {
     // A local sibling-delete shifts this issue's `number` in place WITHOUT
     // bumping updatedAt — that must NOT register as a content divergence.
