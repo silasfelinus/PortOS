@@ -966,6 +966,43 @@ describe('mergeMediaCollectionsFromSync', () => {
     expect(await svc.mergeMediaCollectionsFromSync([])).toEqual({ applied: false, count: 0 });
   });
 
+  it('applies a multi-record batch (bounded fan-out) — all distinct ids land, count is exact', async () => {
+    // The parallelized snapshot-apply path: a batch larger than the concurrency
+    // bound, mixing inserts with a no-op (identical to an existing record, which
+    // must NOT count as changed). Confirms every distinct id is written and the
+    // returned count reflects only the records that actually changed.
+    await seedState({
+      collections: [{
+        id: 'c-existing', name: 'Existing', description: '', coverKey: null,
+        universeId: null, seriesId: null,
+        items: [{ kind: 'image', ref: 'a.png', addedAt: '2026-05-22T00:00:00Z' }],
+        createdAt: '2026-05-22T00:00:00Z', updatedAt: '2026-05-22T00:00:00Z',
+      }],
+    });
+    const remotes = [];
+    for (let i = 0; i < 12; i++) {
+      remotes.push({
+        id: `c-batch-${i}`, name: `Batch ${i}`, description: '', coverKey: null,
+        universeId: null, seriesId: null,
+        items: [{ kind: 'image', ref: `b${i}.png`, addedAt: '2026-05-22T01:00:00Z' }],
+        createdAt: '2026-05-22T00:00:00Z', updatedAt: '2026-05-22T01:00:00Z',
+      });
+    }
+    // A remote identical to the existing record → merges to no change.
+    remotes.push({
+      id: 'c-existing', name: 'Existing', description: '', coverKey: null,
+      universeId: null, seriesId: null,
+      items: [{ kind: 'image', ref: 'a.png', addedAt: '2026-05-22T00:00:00Z' }],
+      createdAt: '2026-05-22T00:00:00Z', updatedAt: '2026-05-22T00:00:00Z',
+    });
+
+    const result = await svc.mergeMediaCollectionsFromSync(remotes);
+    expect(result).toEqual({ applied: true, count: 12 }); // 12 new, the identical one no-ops
+    const ids = (await svc.listCollections()).map((c) => c.id).sort();
+    expect(ids).toContain('c-existing');
+    for (let i = 0; i < 12; i++) expect(ids).toContain(`c-batch-${i}`);
+  });
+
   it('inserts a previously-unseen collection', async () => {
     const remote = {
       id: 'c-remote',
@@ -1627,6 +1664,37 @@ describe('pruneTombstonedCollections', () => {
     expect(await svc.listCollections({ includeDeleted: true })).toHaveLength(0);
     // The conflict-journal base hash is evicted so the side store doesn't leak.
     expect(await cj.getSyncBaseHash('mediaCollection', c.id)).toBeNull();
+  });
+
+  it('prunes a multi-candidate batch (bounded fan-out) — only the old tombstones, exact count', async () => {
+    // The parallelized GC sweep: more candidates than the concurrency bound,
+    // interleaved with a live record and a too-recent tombstone that must survive.
+    const oldTs = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const futureTs = new Date(Date.now() + 60 * 1000).toISOString();
+    const collections = [];
+    for (let i = 0; i < 10; i++) {
+      collections.push({
+        id: `c-old-${i}`, name: `Old ${i}`, description: '', coverKey: null,
+        universeId: null, seriesId: null, items: [],
+        createdAt: oldTs, updatedAt: oldTs, deleted: true, deletedAt: oldTs,
+      });
+    }
+    collections.push({
+      id: 'c-live', name: 'Live', description: '', coverKey: null,
+      universeId: null, seriesId: null, items: [],
+      createdAt: oldTs, updatedAt: oldTs, deleted: false, deletedAt: null,
+    });
+    collections.push({
+      id: 'c-recent', name: 'RecentDelete', description: '', coverKey: null,
+      universeId: null, seriesId: null, items: [],
+      createdAt: oldTs, updatedAt: futureTs, deleted: true, deletedAt: futureTs,
+    });
+    await seedState({ collections });
+
+    const result = await svc.pruneTombstonedCollections(Date.now());
+    expect(result).toEqual({ pruned: 10 }); // 10 old tombstones; live + recent survive
+    const surviving = (await svc.listCollections({ includeDeleted: true })).map((c) => c.id).sort();
+    expect(surviving).toEqual(['c-live', 'c-recent']);
   });
 
   it('does NOT prune a live collection', async () => {
