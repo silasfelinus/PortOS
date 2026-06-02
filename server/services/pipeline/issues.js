@@ -36,7 +36,7 @@ import { isStr, trimTo } from '../../lib/storyBible.js';
 import { sanitizeCoverLike } from '../../lib/renderSlot.js';
 import { emitRecordUpdated } from '../sharing/recordEvents.js';
 import { applyVolumeOrderedNumbers, UNSCOPED_ANCHOR } from '../../lib/pipelineIssueOrder.js';
-import { maybeJournalBeforeOverwrite, setSyncBaseHash, contentHashForRecord, flushBaseHashes } from '../../lib/conflictJournal.js';
+import { maybeJournalBeforeOverwrite, setSyncBaseHash, contentHashForRecord, flushBaseHashes, deleteSyncBaseHash } from '../../lib/conflictJournal.js';
 import * as seriesSvc from './series.js';
 
 // TYPE-level (storage layout) schema version stamped on
@@ -1243,6 +1243,12 @@ export async function pruneTombstonedIssues(beforeMs) {
       return t < beforeMs;
     });
     await Promise.all(prunable.map((i) => store().deleteOne(i.id)));
+    // Evict each pruned issue's conflict-journal base hash. Issues seed an
+    // `issue:<id>` base hash when their parent series is pushed (peerSync's
+    // pushRecordToPeer), but no eviction existed — so a pruned issue's key
+    // would linger in sync_base_hashes.json forever. Mirrors the universe /
+    // series / collection prune paths.
+    await Promise.all(prunable.map((i) => deleteSyncBaseHash('issue', i.id)));
     return { pruned: prunable.length };
   });
 }

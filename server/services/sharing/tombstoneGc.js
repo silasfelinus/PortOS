@@ -26,13 +26,28 @@
  * cohort for issue tombstones is "peers subscribed to series".
  */
 
-import { pruneTombstonedUniverses } from '../universeBuilder.js';
-import { pruneTombstonedSeries } from '../pipeline/series.js';
-import { pruneTombstonedIssues } from '../pipeline/issues.js';
-import { pruneTombstonedCollections } from '../mediaCollections.js';
+import { pruneTombstonedUniverses, getUniverse } from '../universeBuilder.js';
+import { pruneTombstonedSeries, getSeries } from '../pipeline/series.js';
+import { pruneTombstonedIssues, getIssue } from '../pipeline/issues.js';
+import { pruneTombstonedCollections, getCollection } from '../mediaCollections.js';
+import { pruneOrphanedBaseHashes } from '../../lib/conflictJournal.js';
 import { listPeerSubscriptions } from './peerSync.js';
 import { getMinAckAcrossPeers } from './peerTombstoneCursors.js';
 import { getPeers } from '../instances.js';
+
+// Resolver for pruneOrphanedBaseHashes: does this base-hash key still map to a
+// LIVE record? A getter that returns null/undefined (missing or tombstoned —
+// default excludes deleted) means the key is dead. Unknown kinds return true so
+// the sweep never strips a key it can't authoritatively check (a base hash for
+// a future kind, or a key shape this version doesn't recognize). getCollection
+// rejects when not found, so the `.catch(() => null)` maps that to "dead".
+async function baseHashKeyResolves(kind, id) {
+  if (kind === 'universe') return !!(await getUniverse(id).catch(() => null));
+  if (kind === 'series') return !!(await getSeries(id).catch(() => null));
+  if (kind === 'issue') return !!(await getIssue(id).catch(() => null));
+  if (kind === 'mediaCollection') return !!(await getCollection(id).catch(() => null));
+  return true; // unknown kind → never strip
+}
 
 const GRACE_MS = 24 * 60 * 60 * 1000;
 
@@ -196,11 +211,19 @@ export async function sweepTombstones({ now = Date.now(), graceMs = GRACE_MS } =
     issueCutoff === null ? Promise.resolve({ pruned: 0 }) : pruneTombstonedIssues(issueCutoff),
     collectionCutoff === null ? Promise.resolve({ pruned: 0 }) : pruneTombstonedCollections(collectionCutoff),
   ]);
+  // Backstop AFTER the tombstone prunes: the prune paths already evict a freshly
+  // hard-deleted record's base hash, so this sweep mops up only keys that
+  // escaped (records deleted outside the prune path, pre-existing accumulation
+  // on long-lived installs, or a future kind without per-record eviction). Runs
+  // every kind regardless of which were refused — orphan keys aren't gated on
+  // snapshot coverage.
+  const orphan = await pruneOrphanedBaseHashes(baseHashKeyResolves);
   return {
     universes: u.pruned,
     series: s.pruned,
     issues: i.pruned,
     collections: c.pruned,
+    orphanBaseHashes: orphan.pruned,
     refused: refusedFromCutoffs(universeCutoff, seriesCutoff, collectionCutoff),
   };
 }

@@ -954,6 +954,10 @@ describe('pipeline issues service', () => {
           deletedAt: oldDeletedAt,
           updatedAt: new Date(Date.now() + 10_000).toISOString(),
         }]);
+        // Seed base hashes for the old (to-be-pruned) and live issues so we can
+        // confirm only the pruned one's key is evicted.
+        await cj.setSyncBaseHash('issue', oldT.id, 'hash-old');
+        await cj.setSyncBaseHash('issue', live.id, 'hash-live');
         const cutoff = Date.now() - 50_000;
         const result = await svc.pruneTombstonedIssues(cutoff);
         expect(result.pruned).toBe(1);
@@ -962,6 +966,10 @@ describe('pipeline issues service', () => {
         expect(ids).toContain(live.id);
         expect(ids).toContain(newT.id);
         expect(ids).not.toContain(oldT.id);
+        // The pruned issue's conflict-journal base hash is evicted; the live
+        // issue's key is untouched.
+        expect(await cj.getSyncBaseHash('issue', oldT.id)).toBeNull();
+        expect(await cj.getSyncBaseHash('issue', live.id)).toBe('hash-live');
       });
 
       it('keeps tombstones with unparseable deletedAt (conservative — never silently delete)', async () => {

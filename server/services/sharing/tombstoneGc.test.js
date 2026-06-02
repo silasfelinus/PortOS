@@ -6,15 +6,22 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // covered by their own service tests.
 vi.mock('../universeBuilder.js', () => ({
   pruneTombstonedUniverses: vi.fn().mockResolvedValue({ pruned: 0 }),
+  getUniverse: vi.fn().mockResolvedValue(null),
 }));
 vi.mock('../pipeline/series.js', () => ({
   pruneTombstonedSeries: vi.fn().mockResolvedValue({ pruned: 0 }),
+  getSeries: vi.fn().mockResolvedValue(null),
 }));
 vi.mock('../pipeline/issues.js', () => ({
   pruneTombstonedIssues: vi.fn().mockResolvedValue({ pruned: 0 }),
+  getIssue: vi.fn().mockResolvedValue(null),
 }));
 vi.mock('../mediaCollections.js', () => ({
   pruneTombstonedCollections: vi.fn().mockResolvedValue({ pruned: 0 }),
+  getCollection: vi.fn().mockResolvedValue(null),
+}));
+vi.mock('../../lib/conflictJournal.js', () => ({
+  pruneOrphanedBaseHashes: vi.fn().mockResolvedValue({ pruned: 0 }),
 }));
 vi.mock('./peerSync.js', () => ({
   listPeerSubscriptions: vi.fn(),
@@ -35,6 +42,7 @@ import { pruneTombstonedUniverses } from '../universeBuilder.js';
 import { pruneTombstonedSeries } from '../pipeline/series.js';
 import { pruneTombstonedIssues } from '../pipeline/issues.js';
 import { pruneTombstonedCollections } from '../mediaCollections.js';
+import { pruneOrphanedBaseHashes } from '../../lib/conflictJournal.js';
 import { listPeerSubscriptions } from './peerSync.js';
 import { getMinAckAcrossPeers } from './peerTombstoneCursors.js';
 import { getPeers } from '../instances.js';
@@ -86,6 +94,32 @@ describe('sweepTombstones — no peers subscribed', () => {
     expect(pruneTombstonedSeries).toHaveBeenCalledWith(expectedCutoff);
     expect(pruneTombstonedIssues).toHaveBeenCalledWith(expectedCutoff);
     expect(pruneTombstonedCollections).toHaveBeenCalledWith(expectedCutoff);
+  });
+});
+
+describe('sweepTombstones — orphaned base-hash sweep', () => {
+  it('runs the orphan sweep and surfaces its count, regardless of refusals', async () => {
+    // A snapshot-mode peer with no per-record sub refuses every tombstone kind
+    // (cutoff null) — but the orphan sweep is NOT gated on coverage, so it must
+    // still run.
+    getPeers.mockResolvedValue([
+      { instanceId: 'peer-a', enabled: true, syncEnabled: true, syncCategories: { universe: true, pipeline: true, mediaCollections: true } },
+    ]);
+    mockSubs({}); // no per-record subscriptions → all kinds refused
+    pruneOrphanedBaseHashes.mockResolvedValueOnce({ pruned: 3 });
+
+    const res = await sweepTombstones({ now: NOW });
+    expect(pruneOrphanedBaseHashes).toHaveBeenCalledTimes(1);
+    // The resolver passed in is the kind-aware predicate (a function).
+    expect(typeof pruneOrphanedBaseHashes.mock.calls[0][0]).toBe('function');
+    expect(res.orphanBaseHashes).toBe(3);
+    // Tombstone prunes were refused, but the orphan sweep still reported.
+    expect(res.refused).toEqual(expect.arrayContaining(['universe', 'series', 'issue', 'mediaCollection']));
+  });
+
+  it('reports orphanBaseHashes:0 when nothing is orphaned', async () => {
+    const res = await sweepTombstones({ now: NOW });
+    expect(res.orphanBaseHashes).toBe(0);
   });
 });
 
@@ -220,7 +254,7 @@ describe('sweepTombstones — return shape', () => {
     pruneTombstonedIssues.mockResolvedValueOnce({ pruned: 5 });
     pruneTombstonedCollections.mockResolvedValueOnce({ pruned: 3 });
     const result = await sweepTombstones({ now: NOW });
-    expect(result).toEqual({ universes: 2, series: 0, issues: 5, collections: 3, refused: [] });
+    expect(result).toEqual({ universes: 2, series: 0, issues: 5, collections: 3, orphanBaseHashes: 0, refused: [] });
   });
 
   it('lists kinds whose cutoff was null in `refused` so the manual-trigger UI can explain why nothing pruned', async () => {

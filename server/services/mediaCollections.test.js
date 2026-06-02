@@ -1618,9 +1618,15 @@ describe('pruneTombstonedCollections', () => {
     const stored = await readStored(c.id);
     await seedState({ collections: [{ ...stored, deleted: true, deletedAt: oldTs, updatedAt: oldTs, items: [] }] });
 
+    // Seed a base hash so we can confirm the prune evicts it.
+    await cj.setSyncBaseHash('mediaCollection', c.id, cj.contentHashForRecord('mediaCollection', stored));
+    expect(await cj.getSyncBaseHash('mediaCollection', c.id)).not.toBeNull();
+
     const result = await svc.pruneTombstonedCollections(Date.now());
     expect(result).toEqual({ pruned: 1 });
     expect(await svc.listCollections({ includeDeleted: true })).toHaveLength(0);
+    // The conflict-journal base hash is evicted so the side store doesn't leak.
+    expect(await cj.getSyncBaseHash('mediaCollection', c.id)).toBeNull();
   });
 
   it('does NOT prune a live collection', async () => {

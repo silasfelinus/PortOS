@@ -172,6 +172,45 @@ export async function deleteSyncBaseHash(kind, id) {
   await flushBaseHashes();
 }
 
+/**
+ * Sweep base-hash entries whose record no longer resolves to a live record.
+ *
+ * The per-record prune paths (`pruneTombstonedUniverses` / `…Series` / `…Issues`
+ * / `…Collections`) already evict a record's base hash when they hard-delete its
+ * tombstone. This is the BACKSTOP for keys that escaped those paths: a record
+ * hand-deleted on disk, a key left behind by an older version before the prune
+ * paths evicted, or any future kind that seeds a base hash without a matching
+ * eviction. Without it the side store accumulates dead keys forever on a
+ * long-lived federated install.
+ *
+ * `resolves` is an async predicate `(kind, id) => boolean` — return true if the
+ * key still maps to a record we want to keep a base hash for. Keys whose kind
+ * the caller doesn't recognize are LEFT ALONE (the predicate should return true
+ * for unknown kinds) so a partial resolver can never strip live entries it
+ * simply didn't know how to check. Coalesces into one disk write via the dirty
+ * flag + a single trailing flush.
+ *
+ * Returns `{ pruned }`.
+ */
+export async function pruneOrphanedBaseHashes(resolves) {
+  if (typeof resolves !== 'function') return { pruned: 0 };
+  const map = await ensureBaseLoaded();
+  let pruned = 0;
+  for (const key of [...map.keys()]) {
+    const sep = key.indexOf(':');
+    if (sep < 0) continue; // malformed key — leave it, never guess
+    const kind = key.slice(0, sep);
+    const id = key.slice(sep + 1);
+    const keep = await resolves(kind, id).catch(() => true); // resolver error → conservative keep
+    if (keep) continue;
+    map.delete(key);
+    _baseDirty = true;
+    pruned += 1;
+  }
+  if (pruned > 0) await flushBaseHashes();
+  return { pruned };
+}
+
 /** Persist the base-hash map if dirty. Serialized so concurrent flushes can't
  *  interleave file writes. Call once after a merge's write loop.
  *
