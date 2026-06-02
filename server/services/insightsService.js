@@ -200,7 +200,7 @@ export async function callProviderAISimple(provider, model, prompt, { temperatur
 
     // Sentinel fallback: a non-JSON/blank 200 body must surface as an error, not
     // an empty `{ text: '' }` success — both callers persist the result
-    // (refreshCrossDomainNarrative → narrative.json, generateInsightThemes →
+    // (refreshCrossDomainNarrative → narrative.json, generateThemeAnalysis →
     // themes.json), so a masqueraded-empty success would overwrite the cached
     // narrative/themes with nothing. A valid body (even one with empty content)
     // still flows through unchanged.
