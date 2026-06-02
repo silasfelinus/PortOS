@@ -681,6 +681,13 @@ export async function refineStep(id, stepId, { feedback, entryId, providerId, mo
     // mergeArcWithLocks (the same guard commitSeasonsWithRemap uses), and write
     // only `arc` — seasons are untouched.
     const latest = await getSeries(session.seriesId);
+    // Re-check the whole-arc lock against the LATEST series, not just the
+    // pre-LLM snapshot refineArc saw — commitSeasonsWithRemap does the same, and
+    // dropping that re-check (this path bypasses it) would let a refine land if
+    // the arc was locked while the LLM call was in flight.
+    if (latest.locked?.arc === true) {
+      throw makeErr('Arc is locked — unlock it on the Arc Canvas before refining', ARC_ERR_VALIDATION);
+    }
     const mergedArc = mergeArcWithLocks(latest.arc, arc, latest.locked?.arcFields);
     const updated = await updateSeries(session.seriesId, { arc: mergedArc });
     return { result: updated, changes, rationale, runId };

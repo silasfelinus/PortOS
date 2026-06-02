@@ -288,6 +288,21 @@ describe('storyBuilder — refine delegation', () => {
     await expect(sb.refineStep(s.id, 'plotArc', { feedback: 'x' })).rejects.toMatchObject({ code: 'PIPELINE_ARC_VALIDATION' });
     expect(stageRunnerSpy).not.toHaveBeenCalled();
   });
+
+  it('refineStep(plotArc) re-checks the arc lock at commit time (locked mid-flight) and does not persist', async () => {
+    const s = await sb.createStorySession({ title: 'X' });
+    await seriesSvc.updateSeries(s.seriesId, { arc: { logline: 'spine', summary: 'sum' } });
+    // Simulate the arc being locked DURING the in-flight LLM call: the stage
+    // runner locks the arc before returning, so refineArc's pre-call snapshot
+    // saw it unlocked but the commit-time re-read must catch it.
+    stageRunnerSpy = vi.fn(async () => {
+      await sb.lockStep(s.id, 'plotArc');
+      return { content: { logline: 'should not land', summary: 'nope', changes: [], rationale: '' }, runId: 'r', providerId: 'p', model: 'm' };
+    });
+    await expect(sb.refineStep(s.id, 'plotArc', { feedback: 'x' })).rejects.toMatchObject({ code: 'PIPELINE_ARC_VALIDATION' });
+    const after = await seriesSvc.getSeries(s.seriesId);
+    expect(after.arc.logline).toBe('spine'); // unchanged — refine did not persist
+  });
 });
 
 describe('generateStep backfill (fromDownstream)', () => {
