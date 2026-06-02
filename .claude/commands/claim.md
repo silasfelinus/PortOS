@@ -107,6 +107,14 @@ Use `feat:` / `fix:` / `refactor:` / `chore:` / etc. per conventional commit pre
 
 **Remove the item from PLAN.md outright.** The audit trail for shipped work lives in `git log` and `.changelog/` — slashdo v2.18.0 retired the DONE.md archive, and PortOS follows the same convention. Do NOT leave a checked `- [x]` behind in PLAN.md — that's only the convention for items intentionally left as a design log (rejected items, items with rich completion notes the human wants preserved on the active plan, etc.).
 
+> **Re-sync with `main` BEFORE editing PLAN.md — required when claims run in parallel.** Every claim edits the same hot "Next Up" list. This worktree was cut from `origin/main` at claim-start (Phase 2); if you edit that **stale** snapshot, your removal commit will silently *re-add* lines that sibling claims removed while you were working — completed items reappear in PLAN.md and get re-claimed as no-op work (an observed, recurring failure). Sync first, from inside the worktree:
+>
+> ```bash
+> cd "${WORKTREE}" && git fetch origin main && git merge --no-edit origin/main
+> ```
+>
+> **Conflict rule — deletions win.** A PLAN.md / `.changelog/NEXT.md` conflict in the "Next Up" region is expected when claims overlap. Resolve it so that **any line removed on *either* side stays removed**, and keep additions from both sides. Then `git add` the resolved files and `git commit --no-edit` to finish the merge. (A clean merge or "Already up to date" needs no action.) Only AFTER this is the working PLAN.md fresh enough to edit.
+
 1. Remove the picked `- [ ]` line from PLAN.md entirely. If removing it leaves a heading empty, leave the heading alone — section curation is `/do:replan`'s job.
 2. **Add an entry to `.changelog/NEXT.md`** capturing what shipped. **Read `.changelog/README.md`'s "Style Rules" section first and follow it** — these entries become public release notes, not a developer journal. Do NOT mirror the prose style of existing dev-heavy entries in `NEXT.md`; many predate the style rules. Lead with the slug in brackets so `git log` and `.changelog/` greps line up:
 
@@ -219,11 +227,14 @@ EOF
    gh pr edit <num> --title "feat([<slug>]): <description>"
    ```
    (Skip if Phase 6.2 already produced a title that includes the slug.)
-4. **Merge:**
+4. **Re-sync with `main`, then merge.** A long review loop can let sibling claims merge *after* your Phase-5 sync — re-sync once more so a stale PLAN.md can't resurrect their removed items at merge time. From inside the worktree:
    ```bash
+   cd "${WORKTREE}" && git fetch origin main && git merge --no-edit origin/main
+   # Resolve any PLAN.md / .changelog/NEXT.md conflict deletions-win (same rule as Phase 5), then:
+   git push
    gh pr merge <num> --merge --delete-branch
    ```
-   `--delete-branch` removes the remote `claim/<slug>` branch. If you want a squash or rebase merge instead, use `--squash` or `--rebase`.
+   If the merge changed nothing, `git push` is a no-op and the PR merges as before. `--delete-branch` removes the remote `claim/<slug>` branch. If you want a squash or rebase merge instead, use `--squash` or `--rebase`.
 
 ## Phase 7: Clean up
 
