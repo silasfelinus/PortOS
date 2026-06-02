@@ -66,6 +66,7 @@
 - **[worktree-remove-helper]** The four agent-worktree cleanup paths now share one robust "remove, then force-clean if git refuses" helper instead of four hand-copied versions — same cleanup behavior, less duplicated code to drift (no user-facing change).
 - **[plan-task-prefer-merge] The scheduled "ship the next PLAN.md item" agent now prefers a real merge commit over a squash when closing its PR.** Its merge step tries auto-merge first, then a plain `--merge`, then squash/rebase as fallbacks — matching the merge style the manual review flow already uses, so scheduled and manual work land in your history the same way. Existing installs auto-upgrade the prompt unless you've customized it.
 - **[wardrobe-appearance-id-route-validation] Rendering a storyboard scene with a stale outfit pick now fails clearly instead of silently ignoring it.** If a scene's wardrobe selection points at a character or outfit that no longer exists (e.g. it was deleted after the pick was made), the render returns a clear error instead of quietly rendering the character without that outfit.
+- **[create-issue-preload-series-for-batch]** Seeding a whole season's episodes into issues now reads the series record once for the batch instead of once per episode (no user-facing change).
 
 ## Fixed
 
