@@ -38,7 +38,7 @@ import {
 } from './pipeline/series.js';
 import {
   generateArcOverview, generateArcFromSource, generateReaderMap, refineReaderMap, commitSeasonsWithRemap,
-  collectIssueSourceText,
+  collectIssueSourceText, generateSeasonEpisodes, commitEpisodesToIssues,
 } from './pipeline/arcPlanner.js';
 
 const TYPE_SCHEMA_VERSION = 1;
@@ -418,6 +418,65 @@ export async function setIssueLock(id, issueId, locked) {
     await store().saveOneNow(next.id, next);
     return next;
   });
+}
+
+// ── Seed issues from the arc (issues step) ─────────────────────────────────
+
+/**
+ * Generate the per-episode breakdown for the linked series' seasons and
+ * persist one issue per episode — so the user doesn't have to leave the
+ * builder for the Pipeline. Delegates to arcPlanner.generateSeasonEpisodes
+ * (per season) + commitEpisodesToIssues, the same path the Pipeline's
+ * season-episodes route uses.
+ *
+ * Provider/model resolution mirrors generateStep: an explicit override wins,
+ * else the session's saved picker choice (session.llm).
+ *
+ * Batch semantics: generateSeasonEpisodes throws on a locked season or one
+ * with no synopsis/logline. In a multi-season run one ineligible season must
+ * not abort the rest, so each season is caught independently and reported as
+ * `skipped` with its reason — the eligible seasons still produce issues.
+ *
+ * `options.seasonId` scopes generation to a single season; omit to cover every
+ * season on the arc.
+ */
+export async function generateIssuesFromArc(id, options = {}) {
+  const session = await getStorySession(id);
+  if (!session.seriesId) throw makeErr('No series linked', ERR_VALIDATION);
+  const series = await getSeries(session.seriesId);
+  const seasons = Array.isArray(series?.seasons) ? series.seasons : [];
+  if (seasons.length === 0) {
+    throw makeErr('No seasons on the arc yet — generate the plot arc first', ERR_VALIDATION);
+  }
+
+  const targetSeasons = options.seasonId
+    ? seasons.filter((s) => s.id === options.seasonId)
+    : seasons;
+  if (options.seasonId && targetSeasons.length === 0) {
+    throw makeErr(`Season not found on series: ${options.seasonId}`, ERR_VALIDATION);
+  }
+
+  const reqProviderId = options.providerId || session.llm?.provider || undefined;
+  const reqModel = options.model || session.llm?.model || undefined;
+
+  const createdIssues = [];
+  const seasonResults = [];
+  for (const season of targetSeasons) {
+    const label = season.title || `Volume ${season.number ?? '?'}`;
+    const res = await generateSeasonEpisodes(session.seriesId, season.id, {
+      providerOverride: reqProviderId,
+      modelOverride: reqModel,
+    }).catch((err) => ({ error: err?.message || 'Failed to generate episodes' }));
+    if (res.error) {
+      seasonResults.push({ seasonId: season.id, title: label, created: 0, skipped: true, reason: res.error });
+      continue;
+    }
+    const issues = await commitEpisodesToIssues(session.seriesId, season.id, res.episodes);
+    createdIssues.push(...issues);
+    seasonResults.push({ seasonId: season.id, title: label, created: issues.length, skipped: false, runId: res.runId });
+  }
+
+  return { createdIssues, seasons: seasonResults };
 }
 
 // ── Backfill (generate upstream from downstream) ───────────────────────────
