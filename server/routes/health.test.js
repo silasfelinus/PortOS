@@ -29,7 +29,11 @@ vi.mock('../lib/db.js', () => ({
 
 vi.mock('../services/settings.js', () => ({
   getSettings: vi.fn().mockResolvedValue({}),
-  updateSettings: vi.fn().mockResolvedValue({})
+  updateSettings: vi.fn().mockResolvedValue({}),
+  // PUT /health/thresholds was migrated to updateSettingsWith (a read-modify-write
+  // that hands the mutator the current settings and returns its result). Mirror
+  // that contract: apply the mutator to an empty current-settings object.
+  updateSettingsWith: vi.fn(async (mutate) => mutate({}))
 }));
 
 describe('System Health Routes', () => {
