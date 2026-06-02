@@ -13,15 +13,19 @@
  * file directly) so updatedAt bumps and the change propagates via the existing
  * push pipeline.
  *
- * NOTE — restore-all is an ADDITIVE overlay, not a byte-for-byte rollback.
- * updateUniverse merges some fields per-key rather than replacing them wholesale
- * (notably `categories`: a partial patch unions keys so an unrelated category
- * isn't wiped — see universeBuilder.js mergedCategories). So restoring a snapshot
- * re-applies the archived values for every restorable field, but a category the
- * snapshot lacked that the live record gained since detection is preserved, not
- * removed. This is intentional: union-on-restore can't silently destroy data the
- * journal never captured. The UI labels it "restore" (re-apply mine), not a
- * destructive "revert to exact snapshot."
+ * NOTE — restore-all is a FAITHFUL replace of the restorable fields, matching
+ * the UI promise ("restore your whole version"). Most restorable fields already
+ * patch wholesale through `update*`; the one exception is universe `categories`,
+ * which `updateUniverse` normally unions per-key (so a partial PATCH of one
+ * category can't wipe the others). restore-all passes `{ replaceCategories: true }`
+ * so the archived snapshot's category map replaces the live one wholesale — a
+ * category the live record gained since the conflict (e.g. one the user kept
+ * after the LWW overwrite) is dropped, because "my whole version" didn't have it.
+ *
+ * merge-fields stays ADDITIVE: it overlays only the chosen fields onto the
+ * CURRENT record, so a selected `categories` field unions per-key (the default
+ * `update*` semantics) rather than replacing — you're merging your version of
+ * that field in, not reverting the record to the snapshot.
  */
 
 import { existsSync } from 'fs';
@@ -64,7 +68,10 @@ export async function getConflict(id) {
 }
 
 // Apply a content patch through the right service's normal update path.
-async function applyToRecord(kind, recordId, patch) {
+// `replace` (restore-all only) makes per-key-merged fields replace wholesale —
+// currently just universe `categories` (every other restorable field already
+// patches wholesale through its service).
+async function applyToRecord(kind, recordId, patch, { replace = false } = {}) {
   // The target record may have been tombstoned between conflict-archive time and
   // resolution. Translate the services' not-found codes into ERR_TARGET_GONE so
   // the route maps it to a clean 409 ("discard the entry") instead of a 500.
@@ -77,8 +84,10 @@ async function applyToRecord(kind, recordId, patch) {
   };
   if (kind === 'universe') {
     // Mutator form bypasses the literal-patch reference-sheet preservation
-    // guard — the restored snapshot is the trusted writer here.
-    await updateUniverse(recordId, () => patch).catch(translateGone);
+    // guard — the restored snapshot is the trusted writer here. `replace`
+    // (restore-all) swaps the additive per-key categories merge for a wholesale
+    // replace so the restore is faithful to the snapshot.
+    await updateUniverse(recordId, () => patch, { replaceCategories: replace }).catch(translateGone);
   } else if (kind === 'series') {
     await updateSeries(recordId, patch).catch(translateGone);
   } else if (kind === 'mediaCollection') {
@@ -94,10 +103,15 @@ async function applyToRecord(kind, recordId, patch) {
     const effective = (cur?.universeId || cur?.seriesId) ? withoutName : patch;
     if (Object.keys(effective).length > 0) await updateCollection(recordId, effective).catch(translateGone);
   } else if (kind === 'issue') {
-    // updateIssue deep-merges `stages` per-stage (mergeIssuePatch), so a
-    // restore re-applies the archived stage content without clobbering a
-    // sibling stage the live record gained since detection — same additive
-    // overlay semantics as universe categories (see the NOTE above).
+    // updateIssue merges `stages` per-key (mergeIssuePatch), but unlike universe
+    // categories' OPEN custom-key set, `sanitizeStages` seeds a CLOSED, fixed
+    // stage-id set with complete field shapes — so the archived snapshot always
+    // carries every stage (and every content sub-field). The per-key overlay
+    // therefore covers them all and the snapshot's value (even an empty one)
+    // wins, making restore-all equivalent to a wholesale replace WITHOUT a
+    // replace flag: a stage value the live record gained since the conflict is
+    // overwritten. (`runHistory` is intentionally recomputed, not rolled back —
+    // it tracks the live undo-history, which a faithful restore should preserve.)
     await updateIssue(recordId, patch).catch(translateGone);
   } else {
     throw makeErr(`Unsupported conflict kind: ${kind}`, ERR_VALIDATION);
@@ -116,7 +130,8 @@ export async function resolveConflict(id, { action, fields = [] } = {}) {
   const snapshot = entry.localSnapshot || {};
 
   if (action === 'restore-all') {
-    await applyToRecord(entry.recordKind, entry.recordId, pick(snapshot, allowed));
+    // Faithful restore: replace the keyed fields (universe categories) wholesale.
+    await applyToRecord(entry.recordKind, entry.recordId, pick(snapshot, allowed), { replace: true });
   } else if (action === 'merge-fields') {
     if (!Array.isArray(fields) || fields.length === 0) {
       throw makeErr('merge-fields requires a non-empty `fields` array', ERR_VALIDATION);
