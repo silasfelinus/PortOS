@@ -691,14 +691,25 @@ function IssuesPanel({ session, series, issues, onChanged }) {
     setGenerating(false);
     if (!res) return;
     const created = res.createdIssues?.length || 0;
-    const skipped = (res.seasons || []).filter((s) => s.skipped);
-    const skipReason = skipped.length ? skipped[0].reason : null;
+    const seasons = res.seasons || [];
+    // Skipped = genuinely ineligible (locked / no synopsis); failed = a
+    // transient provider/LLM error. Surface them separately so an infra
+    // failure never reads as a config skip. Distinct reasons are deduped so a
+    // multi-season batch shows every cause, not just the first.
+    const skipped = seasons.filter((s) => s.skipped);
+    const failed = seasons.filter((s) => s.failed);
+    const reasons = (list) => [...new Set(list.map((s) => s.reason).filter(Boolean))].join('; ');
+    const noun = (n) => (n === 1 ? 'season' : 'seasons');
     if (created > 0) {
       toast.success(`Created ${created} issue${created === 1 ? '' : 's'} from the arc`);
-      // Surface partial-batch skips so a locked/empty season doesn't fail silently.
-      if (skipReason) toast.error(`Skipped ${skipped.length} season${skipped.length === 1 ? '' : 's'}: ${skipReason}`);
+      if (skipped.length) toast.error(`Skipped ${skipped.length} ${noun(skipped.length)}: ${reasons(skipped)}`);
+      if (failed.length) toast.error(`Couldn't generate ${failed.length} ${noun(failed.length)}: ${reasons(failed)}`);
+    } else if (failed.length) {
+      toast.error(`Couldn't generate issues — ${reasons(failed) || 'a provider error occurred'}`);
+    } else if (skipped.length) {
+      toast.error(`No issues created — ${reasons(skipped)}`);
     } else {
-      toast.error(skipReason ? `No issues created — ${skipReason}` : 'No issues were generated');
+      toast.error('No issues were generated');
     }
     onChanged();
   };

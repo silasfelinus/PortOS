@@ -389,9 +389,32 @@ describe('generateIssuesFromArc (issues step)', () => {
     expect(res.createdIssues).toHaveLength(1);
     const locked = res.seasons.find((r) => r.seasonId === seasons[0].id);
     const open = res.seasons.find((r) => r.seasonId === seasons[1].id);
-    expect(locked).toMatchObject({ skipped: true, created: 0 });
+    // A locked season is an ineligible-config skip, not a failure.
+    expect(locked).toMatchObject({ skipped: true, failed: false, created: 0 });
     expect(locked.reason).toMatch(/locked/i);
-    expect(open).toMatchObject({ skipped: false, created: 1 });
+    expect(open).toMatchObject({ skipped: false, failed: false, created: 1 });
+  });
+
+  it('reports a transient provider/LLM error as failed (not skipped)', async () => {
+    const s = await sb.createStorySession({ title: 'Flaky' });
+    const seasons = await seedSeasons(s.seriesId, [
+      { number: 1, title: 'Vol 1', synopsis: 'open' },
+      { number: 2, title: 'Vol 2', synopsis: 'rises' },
+    ]);
+    // Vol 1's episodes pass throws a plain (non-validation) error — provider
+    // down / timeout. Vol 2 succeeds. The batch must not abort, and Vol 1 must
+    // be `failed`, not `skipped`.
+    stageRunnerSpy = vi.fn(async (stage, vars) => {
+      if (vars?.season?.title === 'Vol 1') throw new Error('provider unavailable');
+      return { content: { episodes: [{ number: 1, title: 'V2 E1', arcRole: 'pilot' }] }, runId: 'r', providerId: 'p', model: 'm' };
+    });
+    const res = await sb.generateIssuesFromArc(s.id);
+    expect(res.createdIssues).toHaveLength(1);
+    const bad = res.seasons.find((r) => r.seasonId === seasons[0].id);
+    const good = res.seasons.find((r) => r.seasonId === seasons[1].id);
+    expect(bad).toMatchObject({ skipped: false, failed: true, created: 0 });
+    expect(bad.reason).toMatch(/provider unavailable/);
+    expect(good).toMatchObject({ skipped: false, failed: false, created: 1 });
   });
 
   it('scopes to a single season when seasonId is given', async () => {

@@ -39,6 +39,7 @@ import {
 import {
   generateArcOverview, generateArcFromSource, generateReaderMap, refineReaderMap, commitSeasonsWithRemap,
   collectIssueSourceText, generateSeasonEpisodes, commitEpisodesToIssues,
+  ERR_VALIDATION as ARC_ERR_VALIDATION,
 } from './pipeline/arcPlanner.js';
 
 const TYPE_SCHEMA_VERSION = 1;
@@ -433,9 +434,13 @@ export async function setIssueLock(id, issueId, locked) {
  * else the session's saved picker choice (session.llm).
  *
  * Batch semantics: generateSeasonEpisodes throws on a locked season or one
- * with no synopsis/logline. In a multi-season run one ineligible season must
- * not abort the rest, so each season is caught independently and reported as
- * `skipped` with its reason — the eligible seasons still produce issues.
+ * with no synopsis/logline. In a multi-season run one bad season must not
+ * abort the rest, so each season is caught independently — the eligible
+ * seasons still produce issues. A caught season reports `skipped: true` when
+ * it was genuinely ineligible (ARC_ERR_VALIDATION) and `failed: true` for any
+ * other (transient provider/LLM) error, so the client never frames an infra
+ * failure as a config skip. Successful seasons carry `skipped: false,
+ * failed: false`.
  *
  * `options.seasonId` scopes generation to a single season; omit to cover every
  * season on the arc.
@@ -474,14 +479,26 @@ export async function generateIssuesFromArc(id, options = {}) {
     const res = await generateSeasonEpisodes(session.seriesId, season.id, {
       providerOverride: reqProviderId,
       modelOverride: reqModel,
-    }).catch((err) => ({ error: err?.message || 'Failed to generate episodes' }));
+    }).catch((err) => ({ error: err }));
     if (res.error) {
-      seasonResults.push({ seasonId: season.id, title: label, created: 0, skipped: true, reason: res.error });
+      // generateSeasonEpisodes throws ARC_ERR_VALIDATION for genuinely
+      // ineligible seasons (locked, or no synopsis/logline) — those are
+      // `skipped` (expected config state). Any OTHER throw is a transient
+      // failure (provider down, timeout, non-JSON) and is reported as
+      // `failed` so the client never frames an infra error as "ineligible".
+      // We still don't abort the batch — a blip on one season must not
+      // discard issues already created for the others.
+      const ineligible = res.error?.code === ARC_ERR_VALIDATION;
+      const reason = res.error?.message || 'Failed to generate episodes';
+      seasonResults.push({
+        seasonId: season.id, title: label, created: 0,
+        skipped: ineligible, failed: !ineligible, reason,
+      });
       continue;
     }
     const issues = await commitEpisodesToIssues(session.seriesId, season.id, res.episodes);
     createdIssues.push(...issues);
-    seasonResults.push({ seasonId: season.id, title: label, created: issues.length, skipped: false, runId: res.runId });
+    seasonResults.push({ seasonId: season.id, title: label, created: issues.length, skipped: false, failed: false, runId: res.runId });
   }
 
   return { createdIssues, seasons: seasonResults };
