@@ -56,11 +56,11 @@ describe('forceRemoveWorktreeDir', () => {
     expect(console.log).not.toHaveBeenCalled();
   });
 
-  it('verbose gates the rm + prune sub-failure logs', async () => {
+  it("log:'all' gates the rm + prune sub-failure logs", async () => {
     execGit.mockRejectedValueOnce(new Error('boom')).mockRejectedValueOnce(new Error('prune boom'));
     rm.mockRejectedValue(new Error('rm boom'));
 
-    // verbose:false (default) → only the labelled remove line, no rm/prune lines
+    // default log:'remove' → only the labelled remove line, no rm/prune lines
     await forceRemoveWorktreeDir('/repo', '/repo/wt', { label: 'L' });
     expect(console.log).toHaveBeenCalledTimes(1);
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('⚠️ L: boom'));
@@ -68,8 +68,8 @@ describe('forceRemoveWorktreeDir', () => {
     console.log.mockClear();
     execGit.mockRejectedValueOnce(new Error('boom')).mockRejectedValueOnce(new Error('prune boom'));
     rm.mockRejectedValue(new Error('rm boom'));
-    // verbose:true → remove line + rm-failure line + prune-failure line (3 logs)
-    await forceRemoveWorktreeDir('/repo', '/repo/wt', { label: 'L', verbose: true });
+    // log:'all' → remove line + rm-failure line + prune-failure line (3 logs)
+    await forceRemoveWorktreeDir('/repo', '/repo/wt', { label: 'L', log: 'all' });
     expect(console.log).toHaveBeenCalledTimes(3);
   });
 });
