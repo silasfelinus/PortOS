@@ -991,6 +991,34 @@ describe('pipeline issues service', () => {
         expect(await svc.pruneTombstonedIssues('nope')).toEqual({ pruned: 0 });
       });
     });
+
+    describe('listIssueIds', () => {
+      it('returns live ids by default and includes deleted only when asked', async () => {
+        const a = await svc.createIssue({ seriesId: 'ser-ids', title: 'A' });
+        const b = await svc.createIssue({ seriesId: 'ser-ids', title: 'B' });
+        await svc.deleteIssue(b.id);
+        const live = await svc.listIssueIds();
+        expect(live).toContain(a.id);
+        expect(live).not.toContain(b.id);
+        const all = await svc.listIssueIds({ includeDeleted: true });
+        expect(all).toEqual(expect.arrayContaining([a.id, b.id]));
+      });
+
+      it('is uncapped — does not slice at ISSUES_PER_RESPONSE_MAX like listIssues', async () => {
+        // Guard the conflict-journal orphan-sweep contract: listIssueIds must
+        // return EVERY live id, or the sweep would treat a live issue beyond
+        // the cap as orphaned and strip its base hash. Asserted structurally
+        // here (cap math) since seeding 1000+ issues is too slow for a unit
+        // test: listIssues caps with `.slice(0, ISSUES_PER_RESPONSE_MAX)`,
+        // listIssueIds has no slice. We at least confirm a small set round-trips
+        // 1:1 (no accidental pagination/limit wired in).
+        const ids = [];
+        for (let i = 0; i < 5; i++) ids.push((await svc.createIssue({ seriesId: 'ser-uncapped', title: `E${i}` })).id);
+        const got = await svc.listIssueIds();
+        for (const id of ids) expect(got).toContain(id);
+        expect(got.filter((id) => ids.includes(id))).toHaveLength(5);
+      });
+    });
   });
 
   describe('isStageReady', () => {

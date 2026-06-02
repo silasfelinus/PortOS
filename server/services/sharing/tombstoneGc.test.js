@@ -14,7 +14,7 @@ vi.mock('../pipeline/series.js', () => ({
 }));
 vi.mock('../pipeline/issues.js', () => ({
   pruneTombstonedIssues: vi.fn().mockResolvedValue({ pruned: 0 }),
-  listIssues: vi.fn().mockResolvedValue([]),
+  listIssueIds: vi.fn().mockResolvedValue([]),
 }));
 vi.mock('../mediaCollections.js', () => ({
   pruneTombstonedCollections: vi.fn().mockResolvedValue({ pruned: 0 }),
@@ -40,7 +40,7 @@ import {
 } from './tombstoneGc.js';
 import { pruneTombstonedUniverses, listUniverses } from '../universeBuilder.js';
 import { pruneTombstonedSeries, listSeries } from '../pipeline/series.js';
-import { pruneTombstonedIssues, listIssues } from '../pipeline/issues.js';
+import { pruneTombstonedIssues, listIssueIds } from '../pipeline/issues.js';
 import { pruneTombstonedCollections, listCollections } from '../mediaCollections.js';
 import { pruneOrphanedBaseHashes } from '../../lib/conflictJournal.js';
 import { listPeerSubscriptions } from './peerSync.js';
@@ -125,7 +125,7 @@ describe('sweepTombstones — orphaned base-hash sweep', () => {
   it('passes a resolver that keeps live records, drops dead ones, keeps unknown kinds, and lists each kind once', async () => {
     listUniverses.mockResolvedValue([{ id: 'u-live' }]);
     listSeries.mockResolvedValue([{ id: 's-live' }]);
-    listIssues.mockResolvedValue([{ id: 'i-live' }]);
+    listIssueIds.mockResolvedValue(['i-live']); // already ids, uncapped
     listCollections.mockResolvedValue([{ id: 'c-live' }]);
     // Capture the resolver the sweep hands to pruneOrphanedBaseHashes and drive
     // it directly — this is the real makeBaseHashKeyResolver closure.

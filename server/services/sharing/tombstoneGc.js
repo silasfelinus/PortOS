@@ -28,39 +28,41 @@
 
 import { pruneTombstonedUniverses, listUniverses } from '../universeBuilder.js';
 import { pruneTombstonedSeries, listSeries } from '../pipeline/series.js';
-import { pruneTombstonedIssues, listIssues } from '../pipeline/issues.js';
+import { pruneTombstonedIssues, listIssueIds } from '../pipeline/issues.js';
 import { pruneTombstonedCollections, listCollections } from '../mediaCollections.js';
 import { pruneOrphanedBaseHashes } from '../../lib/conflictJournal.js';
 import { listPeerSubscriptions } from './peerSync.js';
 import { getMinAckAcrossPeers } from './peerTombstoneCursors.js';
 import { getPeers } from '../instances.js';
 
-// Each kind's live-record lister (default args exclude tombstoned/deleted).
+// Each kind's UNCAPPED live-id source (default args exclude tombstoned/deleted).
 // Used to build the orphan-sweep resolver's per-kind id-sets. A kind absent
 // from this map is unknown → the resolver keeps its keys (never strips).
+// `listIssueIds` (not `listIssues`) because the latter caps at 1000 — a capped
+// source would report a live record beyond the cap as missing and the sweep
+// would strip its base hash, silently disabling conflict detection for it.
 const LIVE_ID_LISTERS = Object.freeze({
-  universe: listUniverses,
-  series: listSeries,
-  issue: () => listIssues({}),
-  mediaCollection: listCollections,
+  universe: async () => (await listUniverses()).map((r) => r.id),
+  series: async () => (await listSeries()).map((r) => r.id),
+  issue: () => listIssueIds(),
+  mediaCollection: async () => (await listCollections()).map((r) => r.id),
 });
 
 // Build the `pruneOrphanedBaseHashes` resolver for ONE sweep: load each kind's
 // live-id Set once on first use (lazily — a sweep with no keys of a given kind
 // never lists it) and check membership in memory. This collapses what would be
-// one record read PER base-hash key into at most one directory listing per kind
-// per sweep. Unknown kinds resolve to `true` so the sweep can never strip a key
-// it can't authoritatively check (a base hash for a future kind, or a shape
-// this version doesn't recognize); a listing that throws also keeps the kind's
-// keys (the `pruneOrphanedBaseHashes` resolver-error path is conservative too).
+// one record read PER base-hash key into at most one listing per kind per
+// sweep. Unknown kinds resolve to `true` so the sweep can never strip a key it
+// can't authoritatively check (a base hash for a future kind, or a shape this
+// version doesn't recognize); a listing that throws also keeps the kind's keys
+// (the `pruneOrphanedBaseHashes` resolver-error path is conservative too).
 function makeBaseHashKeyResolver() {
   const idSets = new Map(); // kind → Set<liveId>
   return async (kind, id) => {
     const lister = LIVE_ID_LISTERS[kind];
     if (!lister) return true; // unknown kind → never strip
     if (!idSets.has(kind)) {
-      const records = await lister();
-      idSets.set(kind, new Set(records.map((r) => r.id)));
+      idSets.set(kind, new Set(await lister()));
     }
     return idSets.get(kind).has(id);
   };
