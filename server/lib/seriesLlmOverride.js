@@ -10,24 +10,23 @@
 // provider's default resolves rather than forwarding a foreign model id that
 // would fail.
 //
-// Returns `''` (not `undefined`) for an unresolved provider/model so callers
-// can map to their own sentinel — most pass `provider || undefined` to the
-// extractor.
+// Returns `undefined` (not `''`) for an unresolved provider/model so callers
+// can pass the result straight through to the extractor without re-mapping.
 
 /**
  * Resolve the effective LLM provider/model for a Pipeline action against a series.
  *
  * @param {{ llm?: { provider?: string, model?: string } } | null | undefined} series
  * @param {{ overrideProvider?: string, overrideModel?: string }} [overrides]
- * @returns {{ provider: string, model: string, providerMatchesSeries: boolean }}
+ * @returns {{ provider: string|undefined, model: string|undefined, providerMatchesSeries: boolean }}
  */
 export function resolveSeriesLlmOverride(series, { overrideProvider, overrideModel } = {}) {
   const seriesProvider = series?.llm?.provider || '';
-  const provider = overrideProvider || seriesProvider || '';
+  const provider = overrideProvider || seriesProvider || undefined;
   // No override means we're using the series provider, so the series model is
   // always safe to inherit; an override matches only when it names the same
   // provider the series model belongs to.
   const providerMatchesSeries = !overrideProvider || overrideProvider === seriesProvider;
-  const model = overrideModel || (providerMatchesSeries ? (series?.llm?.model || '') : '');
+  const model = overrideModel || (providerMatchesSeries ? series?.llm?.model : undefined) || undefined;
   return { provider, model, providerMatchesSeries };
 }

@@ -1292,8 +1292,8 @@ router.post('/series/:id/seasons/:seasonId/episodes/generate', asyncHandler(asyn
       // extract semantics.
       const extractRes = await extractCanonFromProse(series.universeId, {
         corpus,
-        providerOverride: provider || undefined,
-        modelOverride: model || undefined,
+        providerOverride: provider,
+        modelOverride: model,
         parallel: true,
         autoLock: true,
         sourceSeriesId: series.id,
@@ -1716,7 +1716,7 @@ router.post('/issues/:id/stages/storyboards/extract-scenes', asyncHandler(async 
   // provider would be paired with a foreign model id and fail (same guard as
   // the extract-canon route). When the override switches providers without
   // naming a model, leave it blank so the new provider's default resolves.
-  const sceneLlm = resolveSeriesLlmOverride(series, {
+  const { provider, model } = resolveSeriesLlmOverride(series, {
     overrideProvider: body.providerOverride,
     overrideModel: body.modelOverride,
   });
@@ -1729,8 +1729,8 @@ router.post('/issues/:id/stages/storyboards/extract-scenes', asyncHandler(async 
     work: { title: issue.title, kind: 'tv-episode' },
     series: { name: series.name, styleNotes: series.styleNotes },
     issue: { number: issue.number, title: issue.title },
-    providerOverride: sceneLlm.provider || undefined,
-    modelOverride: sceneLlm.model || undefined,
+    providerOverride: provider,
+    modelOverride: model,
     tag: `pipeline-storyboards-extract-${sourceKind}`,
   });
 
@@ -1885,8 +1885,8 @@ router.post('/issues/:id/stages/:stageId/extract-canon', asyncHandler(async (req
   try {
     result = await extractCanonFromProse(series.universeId, {
       corpus,
-      providerOverride: provider || undefined,
-      modelOverride: model || undefined,
+      providerOverride: provider,
+      modelOverride: model,
       parallel: true,
       autoLock: true,
       sourceSeriesId: series.id,

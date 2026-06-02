@@ -23,7 +23,7 @@ describe('resolveSeriesLlmOverride', () => {
   it('drops the series model when an override switches provider without a model', () => {
     expect(resolveSeriesLlmOverride(series, { overrideProvider: 'openai' })).toEqual({
       provider: 'openai',
-      model: '',
+      model: undefined,
       providerMatchesSeries: false,
     });
   });
@@ -40,10 +40,10 @@ describe('resolveSeriesLlmOverride', () => {
     ).toEqual({ provider: 'anthropic', model: 'claude-y', providerMatchesSeries: true });
   });
 
-  it('returns empty strings when the series has no llm config and no override', () => {
+  it('returns undefined provider/model when the series has no llm config and no override', () => {
     expect(resolveSeriesLlmOverride({}, {})).toEqual({
-      provider: '',
-      model: '',
+      provider: undefined,
+      model: undefined,
       providerMatchesSeries: true,
     });
   });
@@ -51,12 +51,12 @@ describe('resolveSeriesLlmOverride', () => {
   it('tolerates a null/undefined series', () => {
     expect(resolveSeriesLlmOverride(null, { overrideProvider: 'openai' })).toEqual({
       provider: 'openai',
-      model: '',
+      model: undefined,
       providerMatchesSeries: false,
     });
     expect(resolveSeriesLlmOverride(undefined, {})).toEqual({
-      provider: '',
-      model: '',
+      provider: undefined,
+      model: undefined,
       providerMatchesSeries: true,
     });
   });
