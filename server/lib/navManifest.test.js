@@ -9,13 +9,18 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
 // Maps URL prefix → how to extract the page's own tab set from its source. Each
 // page validates the :tab/:section param against this list, so the nav manifest
-// must agree. Two source shapes are supported:
-//   kind 'ids'   — `export const <constName> = [{ id: '<slug>', … }]`, where each
-//                  tab lives at `<prefix>/<slug>` (Brain/CoS/Calendar/Goals/…).
-//   kind 'links' — `export const <constName> = [{ to|path: '<abs path>', … }]`,
-//                  where the page's own tabs are the entries whose path is exactly
-//                  `<prefix>` or under `<prefix>/`; entries pointing elsewhere
-//                  (e.g. Settings' "Prompts" → /prompts) are cross-links, not tabs.
+// must agree. Three source shapes are supported:
+//   kind 'ids'    — `export const <constName> = [{ id: '<slug>', … }]`, where each
+//                   tab lives at `<prefix>/<slug>` (Brain/CoS/Calendar/Goals/…).
+//   kind 'links'  — `export const <constName> = [{ to|path: '<abs path>', … }]`,
+//                   where the page's own tabs are the entries whose path is exactly
+//                   `<prefix>` or under `<prefix>/`; entries pointing elsewhere
+//                   (e.g. Settings' "Prompts" → /prompts) are cross-links, not tabs.
+//   kind 'switch' — the page has no tab array; its tabs are a `switch (<switchVar>)`
+//                   render-dispatch plus the `{ <switchVar> = '<id>' }` destructuring
+//                   default (POST). Reading the switch directly means the guard
+//                   can't drift from a parallel constant; inner subtab branches
+//                   (`if (subtab === 'x')`) aren't cases, so drill-downs are excluded.
 const TABBED_PAGES = [
   { prefix: '/brain', file: 'client/src/components/brain/constants.js', kind: 'ids', constName: 'TABS' },
   { prefix: '/cos', file: 'client/src/components/cos/constants.js', kind: 'ids', constName: 'TABS' },
@@ -28,6 +33,7 @@ const TABBED_PAGES = [
   { prefix: '/wiki', file: 'client/src/pages/Wiki.jsx', kind: 'ids', constName: 'TABS' },
   { prefix: '/settings', file: 'client/src/components/settings/SettingsTabsHeader.jsx', kind: 'links', constName: 'TABS' },
   { prefix: '/sharing', file: 'client/src/pages/Sharing.jsx', kind: 'links', constName: 'SECTIONS' },
+  { prefix: '/post', file: 'client/src/components/meatspace/tabs/PostTab.jsx', kind: 'switch', switchVar: 'tab' },
 ];
 
 // Pull the inner text of `export const <constName> = [ … ];` (requiring `export`
@@ -42,9 +48,26 @@ function extractConstArrayBlock(src, constName) {
   return block[1];
 }
 
+// The tab ids a `switch (<switchVar>) { case '…': }` render-dispatch serves, plus
+// the destructuring default (`{ <switchVar> = '<id>' }`) — the tab with no explicit
+// case. Assumes the file's `switch (<switchVar>)` is the only one (cases are read to
+// EOF); a second switch would loudly fold its cases in rather than fail silently.
+function extractSwitchTabs(src, switchVar) {
+  const def = src.match(new RegExp(`${switchVar}\\s*=\\s*['"]([^'"]+)['"]`));
+  if (!def) throw new Error(`No destructuring default for "${switchVar}" found`);
+  const block = src.match(new RegExp(`switch\\s*\\(\\s*${switchVar}\\s*\\)\\s*\\{([\\s\\S]*)`));
+  if (!block) throw new Error(`No switch (${switchVar}) found`);
+  const cases = [...block[1].matchAll(/case\s+['"]([^'"]+)['"]\s*:/g)].map((m) => m[1]);
+  return [def[1], ...cases];
+}
+
 // The set of absolute tab paths a page serves under its own prefix.
-function extractTabPaths(filePath, { kind, constName, prefix }) {
-  const block = extractConstArrayBlock(fs.readFileSync(filePath, 'utf8'), constName);
+function extractTabPaths(filePath, { kind, constName, switchVar, prefix }) {
+  const src = fs.readFileSync(filePath, 'utf8');
+  if (kind === 'switch') {
+    return extractSwitchTabs(src, switchVar).map((id) => `${prefix}/${id}`);
+  }
+  const block = extractConstArrayBlock(src, constName);
   if (kind === 'ids') {
     return [...block.matchAll(/id:\s*['"]([^'"]+)['"]/g)].map((m) => `${prefix}/${m[1]}`);
   }
