@@ -221,9 +221,81 @@ export const RESTORABLE_FIELDS = Object.freeze({
   issue: ['title', 'status', 'seasonId', 'arcPosition', 'arcRole', 'lengthProfile', 'pageTarget', 'minutesTarget', 'stages'],
 });
 
-// Top-level shallow diff over the kind's restorable content fields — enough for
-// the UI to render "Name, Premise differ" with InlineDiff and offer each as a
-// selectable merge-field. Deep field diffing is a follow-up.
+const isPlainObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const present = (v) => v !== undefined;
+const changedFlag = (lv, rv) => (present(lv) && present(rv) ? 'both' : (present(rv) ? 'remote-only' : 'local-only'));
+
+// Stable key used to PAIR two array elements across the local/remote sides
+// (prefer an explicit id so a reorder/insert doesn't cascade); falls back
+// through the other identity-ish fields. Returns null when an element carries
+// none — in which case the array isn't deep-diffable by identity.
+const entryMatchKey = (el) => {
+  for (const k of ['id', 'key', 'slug', 'name']) {
+    if (typeof el?.[k] === 'string' && el[k].trim()) return el[k];
+  }
+  return null;
+};
+// Human-friendly LABEL for a changed sub-entry (a uuid id is a poor label, so a
+// name/title is preferred for display even when the match used the id).
+const entryLabel = (el, fallback) => {
+  for (const k of ['name', 'title', 'label', 'key', 'slug', 'id']) {
+    if (typeof el?.[k] === 'string' && el[k].trim()) return el[k];
+  }
+  return fallback;
+};
+
+/**
+ * One-level structural diff of a single restorable field, used to render the
+ * Conflicts tab as "which sub-entry changed" instead of one giant JSON blob.
+ * Returns an array of changed sub-entries `[{ path, localValue, remoteValue,
+ * changed }]`, or `null` when the field isn't deepenable — a scalar, an array
+ * of scalars, an array of objects without any stable identity, or a
+ * shape-mismatch (object vs array) — in which case the caller keeps the
+ * whole-field diff. Only entries that actually differ are emitted.
+ *
+ * - Object map / structured object (`categories`, `stages`, `arc`): one part
+ *   per key whose value differs.
+ * - Array of identity-bearing objects (`characters`, `places`, `seasons`):
+ *   paired by `entryMatchKey`; one part per identity that differs (a side
+ *   missing ⇒ added/removed). The `path` is a human label.
+ */
+export function deepFieldDiff(localVal, remoteVal) {
+  if (isPlainObj(localVal) && isPlainObj(remoteVal)) {
+    const parts = [];
+    for (const key of new Set([...Object.keys(localVal), ...Object.keys(remoteVal)])) {
+      const lv = localVal[key];
+      const rv = remoteVal[key];
+      if (canonicalStringify(lv) === canonicalStringify(rv)) continue;
+      parts.push({ path: key, localValue: lv, remoteValue: rv, changed: changedFlag(lv, rv) });
+    }
+    return parts.length ? parts : null;
+  }
+  if (Array.isArray(localVal) && Array.isArray(remoteVal)) {
+    // Require every present element to carry a match key on BOTH sides — a
+    // mixed/identity-less array (e.g. array of strings) text-diffs fine as a
+    // whole, so bail to the whole-field path for those.
+    const keyed = (arr) => arr.every((el) => entryMatchKey(el) !== null);
+    if (!keyed(localVal) || !keyed(remoteVal) || (localVal.length === 0 && remoteVal.length === 0)) return null;
+    const lMap = new Map(localVal.map((el) => [entryMatchKey(el), el]));
+    const rMap = new Map(remoteVal.map((el) => [entryMatchKey(el), el]));
+    const parts = [];
+    for (const matchKey of new Set([...lMap.keys(), ...rMap.keys()])) {
+      const lv = lMap.get(matchKey);
+      const rv = rMap.get(matchKey);
+      if (canonicalStringify(lv) === canonicalStringify(rv)) continue;
+      parts.push({ path: entryLabel(lv ?? rv, matchKey), localValue: lv, remoteValue: rv, changed: changedFlag(lv, rv) });
+    }
+    return parts.length ? parts : null;
+  }
+  return null;
+}
+
+// Per-field diff over the kind's restorable content fields. A scalar field
+// carries its whole-field `localValue`/`remoteValue` for InlineDiff; an
+// object-map or array-of-objects field instead carries `parts` (the changed
+// sub-entries) so the UI renders one focused diff per entry rather than a
+// single giant JSON blob. The merge-fields selection stays at FIELD granularity
+// (the resolver applies whole snapshot fields) — `parts` is display-only.
 const diffSummary = (kind, local, remote) => {
   const fields = RESTORABLE_FIELDS[kind] || [];
   const out = [];
@@ -231,13 +303,10 @@ const diffSummary = (kind, local, remote) => {
     const lv = local?.[field];
     const rv = remote?.[field];
     if (canonicalStringify(lv) === canonicalStringify(rv)) continue;
-    const present = (v) => v !== undefined;
-    out.push({
-      field,
-      localValue: lv,
-      remoteValue: rv,
-      changed: present(lv) && present(rv) ? 'both' : (present(rv) ? 'remote-only' : 'local-only'),
-    });
+    const changed = changedFlag(lv, rv);
+    const parts = deepFieldDiff(lv, rv);
+    if (parts) out.push({ field, changed, parts });
+    else out.push({ field, localValue: lv, remoteValue: rv, changed });
   }
   return out;
 };
