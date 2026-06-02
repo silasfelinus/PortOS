@@ -195,6 +195,9 @@ function ImportPanel({ onCreated }) {
   // re-creates the issues — re-sending the full payload would clobber the
   // persisted state and risk duplicate issues. Mirrors Importer.jsx.
   const [arcAlreadyPersisted, setArcAlreadyPersisted] = useState(false);
+  // Any path that clears the preview (analyze, Re-analyze) is a fresh attempt,
+  // so the partial-retry state can't survive it — centralize the reset here.
+  useEffect(() => { if (!preview) setArcAlreadyPersisted(false); }, [preview]);
 
   const types = IMPORTER_CONTENT_TYPES || ['short-story', 'novel', 'screenplay', 'comic-script'];
 
@@ -211,7 +214,7 @@ function ImportPanel({ onCreated }) {
       { silent: true },
     ).catch((err) => { toast.error(err?.message || 'Analyze failed'); return null; });
     setAnalyzing(false);
-    if (res) { setPreview(res); setArcAlreadyPersisted(false); }
+    if (res) setPreview(res);
   };
 
   const retryIssues = async () => {
@@ -350,7 +353,7 @@ function ImportPanel({ onCreated }) {
               {committing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
               {arcAlreadyPersisted ? 'Retry issues & start building' : 'Import & start building'}
             </button>
-            <button onClick={() => { setPreview(null); setArcAlreadyPersisted(false); }} disabled={committing}
+            <button onClick={() => setPreview(null)} disabled={committing}
               className="text-sm text-gray-400 hover:text-white px-2">Re-analyze</button>
           </div>
         </div>
