@@ -58,6 +58,17 @@ const pickArcFields = (arc) => {
 // zipped season text so the structural remap can't 400 on commit.
 const IMPORT_ISSUE_SYNOPSIS_MAX = 4000;
 
+// Pick the arc summary to send when retrying the issue split. Follows the
+// absent-vs-intentionally-empty rule: an ABSENT summary (null/undefined) falls
+// back to the logline, but a present-but-EMPTY summary ('') is an intentional
+// clear in the Review panel — return it as-is so the caller sends no
+// arcSummary and the server fills its own synthetic fallback. A bare
+// `summary || logline` would conflate the two and silently resend the logline
+// as the summary the user just cleared.
+export function resolveRetryArcSummary(arc) {
+  return arc?.summary == null ? arc?.logline : arc.summary;
+}
+
 // Collapse the LLM's multi-season proposal into a SINGLE graphic-novel volume.
 // Every issue is pinned to volume 1; each season's logline/synopsis is folded
 // into the matching issue's synopsis (zipped by order) so the user's "the
@@ -344,8 +355,10 @@ export default function Importer() {
       providerOverride: llmProvider,
       modelOverride: llmModel,
     };
-    const arcSummary = arcDraft?.summary || arcDraft?.logline || '';
-    if (arcSummary.trim()) payload.arcSummary = arcSummary;
+    // See resolveRetryArcSummary: a cleared summary is honored (send none, let
+    // the server synthesize) instead of silently falling back to the logline.
+    const arcSummary = resolveRetryArcSummary(arcDraft);
+    if (typeof arcSummary === 'string' && arcSummary.trim()) payload.arcSummary = arcSummary;
     // Round to an integer — the server schema is z.number().int(), so a
     // pasted/typed decimal like 2.5 would otherwise 400 with a confusing error.
     const tic = intake.targetIssueCount === '' ? null : Math.round(Number(intake.targetIssueCount));
