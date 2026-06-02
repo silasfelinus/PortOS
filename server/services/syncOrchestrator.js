@@ -793,6 +793,9 @@ async function runTombstoneSweep() {
   if (result && result.orphanBaseHashes > 0) {
     console.log(`🧹 Tombstone GC: swept ${result.orphanBaseHashes} orphaned base-hash entr${result.orphanBaseHashes === 1 ? 'y' : 'ies'}`);
   }
+  if (result && result.orphanSubscriptions > 0) {
+    console.log(`🧹 Tombstone GC: swept ${result.orphanSubscriptions} orphaned peer subscription${result.orphanSubscriptions === 1 ? '' : 's'}`);
+  }
 }
 
 /**

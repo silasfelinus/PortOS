@@ -75,6 +75,7 @@ import {
   unsubscribePeer,
   unsubscribeAllForPeer,
   unsubscribeAllForRecord,
+  pruneOrphanedPeerSubscriptions,
   pushRecordToPeer,
   applyIncomingPush,
   diffAssetManifestAgainstLocal,
@@ -456,6 +457,52 @@ describe('peerSync', () => {
       expect(await unsubscribeAllForRecord('', 'u1')).toEqual({ removed: [], failed: [] });
       expect(await unsubscribeAllForRecord('universe', '')).toEqual({ removed: [], failed: [] });
       expect(await unsubscribeAllForRecord('bogus', 'u1')).toEqual({ removed: [], failed: [] });
+    });
+  });
+
+  describe('pruneOrphanedPeerSubscriptions', () => {
+    beforeEach(() => {
+      vi.mocked(getUniverse).mockResolvedValue({ id: 'u1' });
+      vi.mocked(getSeries).mockResolvedValue({ id: 's1' });
+      vi.mocked(listIssues).mockResolvedValue([]);
+      vi.mocked(peerFetch).mockResolvedValue({ ok: true, json: async () => ({}) });
+    });
+
+    it('drops subs whose record no longer resolves and keeps the rest', async () => {
+      await subscribePeer({ peerId: 'peer-a', recordKind: 'universe', recordId: 'u-gone' });
+      await subscribePeer({ peerId: 'peer-a', recordKind: 'universe', recordId: 'u-live' });
+      await subscribePeer({ peerId: 'peer-b', recordKind: 'series', recordId: 's-gone' });
+      // Resolver: only u-live still exists.
+      const live = new Set(['universe:u-live']);
+      const res = await pruneOrphanedPeerSubscriptions(async (kind, id) => live.has(`${kind}:${id}`));
+      expect(res.pruned).toBe(2);
+      expect(await findPeerSubscription('peer-a', 'universe', 'u-gone')).toBeNull();
+      expect(await findPeerSubscription('peer-b', 'series', 's-gone')).toBeNull();
+      // u-live survives.
+      expect(await findPeerSubscription('peer-a', 'universe', 'u-live')).not.toBeNull();
+    });
+
+    it('keeps a sub whose resolver throws (conservative — never a false strip)', async () => {
+      await subscribePeer({ peerId: 'peer-a', recordKind: 'universe', recordId: 'u1' });
+      const res = await pruneOrphanedPeerSubscriptions(async () => { throw new Error('listing blew up'); });
+      expect(res.pruned).toBe(0);
+      expect(await findPeerSubscription('peer-a', 'universe', 'u1')).not.toBeNull();
+    });
+
+    it('returns {pruned:0, removed:[]} for a non-function resolver', async () => {
+      await subscribePeer({ peerId: 'peer-a', recordKind: 'universe', recordId: 'u1' });
+      expect(await pruneOrphanedPeerSubscriptions(undefined)).toEqual({ pruned: 0, removed: [] });
+      // The sub is untouched.
+      expect(await listPeerSubscriptions()).toHaveLength(1);
+    });
+
+    it('drops the tombstone cursor when the peer’s last sub was an orphan', async () => {
+      await subscribePeer({ peerId: 'peer-a', recordKind: 'universe', recordId: 'u-gone' });
+      let cursors = await listCursors();
+      expect(cursors['peer-a']).toBeDefined();
+      await pruneOrphanedPeerSubscriptions(async () => false); // everything orphaned
+      cursors = await listCursors();
+      expect(cursors['peer-a']).toBeUndefined();
     });
   });
 

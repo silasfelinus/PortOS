@@ -31,7 +31,7 @@ import { pruneTombstonedSeries, listSeries } from '../pipeline/series.js';
 import { pruneTombstonedIssues, listIssueIds } from '../pipeline/issues.js';
 import { pruneTombstonedCollections, listCollections } from '../mediaCollections.js';
 import { pruneOrphanedBaseHashes } from '../../lib/conflictJournal.js';
-import { listPeerSubscriptions } from './peerSync.js';
+import { listPeerSubscriptions, pruneOrphanedPeerSubscriptions } from './peerSync.js';
 import { getMinAckAcrossPeers } from './peerTombstoneCursors.js';
 import { getPeers } from '../instances.js';
 
@@ -60,6 +60,37 @@ function makeBaseHashKeyResolver() {
   const idSets = new Map(); // kind → Set<liveId>
   return async (kind, id) => {
     const lister = LIVE_ID_LISTERS[kind];
+    if (!lister) return true; // unknown kind → never strip
+    if (!idSets.has(kind)) {
+      idSets.set(kind, new Set(await lister()));
+    }
+    return idSets.get(kind).has(id);
+  };
+}
+
+// Each peer-subscribable kind's UNCAPPED id source INCLUDING tombstones —
+// used by the orphan peer-subscription sweep. A tombstoned record still owns
+// its subscription (the sub pushes the delete to peers), so the sweep must
+// treat a tombstone as "still resolves" and strip a sub only once the record
+// directory is actually gone (hard-deleted by the tombstone prune above).
+// Issues are absent — they're never directly subscribed (issue tombstones
+// ride their parent series's push, so PEER_SUBSCRIBABLE_KINDS has no 'issue').
+const ALL_ID_LISTERS = Object.freeze({
+  universe: async () => (await listUniverses({ includeDeleted: true })).map((r) => r.id),
+  series: async () => (await listSeries({ includeDeleted: true })).map((r) => r.id),
+  mediaCollection: async () => (await listCollections({ includeDeleted: true })).map((r) => r.id),
+});
+
+// Build the orphan-subscription resolver for ONE sweep: lazily list each kind's
+// all-ids Set (including tombstones) on first use and check membership in
+// memory — at most one listing per kind per sweep. Unknown kinds resolve to
+// `true` (never strip a sub for a kind this version doesn't recognize); a
+// listing that throws also keeps the kind's subs (`pruneOrphanedPeerSubscriptions`
+// catches the rejection and treats it as "still resolves").
+function makeSubscriptionRecordResolver() {
+  const idSets = new Map(); // kind → Set<recordId>
+  return async (kind, id) => {
+    const lister = ALL_ID_LISTERS[kind];
     if (!lister) return true; // unknown kind → never strip
     if (!idSets.has(kind)) {
       idSets.set(kind, new Set(await lister()));
@@ -237,12 +268,20 @@ export async function sweepTombstones({ now = Date.now(), graceMs = GRACE_MS } =
   // every kind regardless of which were refused — orphan keys aren't gated on
   // snapshot coverage.
   const orphan = await pruneOrphanedBaseHashes(makeBaseHashKeyResolver());
+  // Orphan peer-subscription sweep — same backstop logic as the base-hash
+  // sweep, AFTER the tombstone prunes so a record whose dir was just rm'd
+  // (no longer resolves even with includeDeleted) gets its dead subscription
+  // rows dropped. Runs every kind regardless of refusals: an orphaned sub
+  // points at a record that no longer exists, so it's safe to strip no matter
+  // what the snapshot-coverage gate decided for live tombstones.
+  const orphanSubs = await pruneOrphanedPeerSubscriptions(makeSubscriptionRecordResolver());
   return {
     universes: u.pruned,
     series: s.pruned,
     issues: i.pruned,
     collections: c.pruned,
     orphanBaseHashes: orphan.pruned,
+    orphanSubscriptions: orphanSubs.pruned,
     refused: refusedFromCutoffs(universeCutoff, seriesCutoff, collectionCutoff),
   };
 }
