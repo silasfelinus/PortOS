@@ -70,6 +70,28 @@ describe('BucketBoard', () => {
     expect(onMoveLinkToIndex).toHaveBeenCalledWith(twoChip[0], 'b1', 1);
   });
 
+  it('routes a drop in the gap (bubbling to the card) to the shown insertion index', () => {
+    const onMoveLinkToIndex = vi.fn();
+    render(
+      <BucketBoard
+        links={twoChip}
+        buckets={buckets}
+        setBuckets={vi.fn()}
+        onAssignLink={vi.fn()}
+        onAddLinkToBucket={vi.fn()}
+        onBucketDeleted={vi.fn()}
+        onMoveLinkToIndex={onMoveLinkToIndex}
+      />
+    );
+    const linkDt = { getData: () => 'l1', types: ['text/x-brain-link'] };
+    // Dragging over Beta (index 1) arms the insertion marker at index 1.
+    fireEvent.dragOver(screen.getByText('Beta'), { dataTransfer: linkDt });
+    // Releasing on the bucket header (not a chip) bubbles to the card's drop
+    // handler, which must honor the armed marker rather than appending.
+    fireEvent.drop(screen.getByText('Bookmarks'), { dataTransfer: linkDt });
+    expect(onMoveLinkToIndex).toHaveBeenCalledWith(twoChip[0], 'b1', 1);
+  });
+
   it('ignores a chip-level drop that carries no link payload (e.g. a bucket reorder)', () => {
     const onMoveLinkToIndex = vi.fn();
     render(

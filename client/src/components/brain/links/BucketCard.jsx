@@ -93,10 +93,18 @@ export default function BucketCard({
       onDragLeave={() => { setDropActive(false); setDropIndex(null); }}
       onDrop={(e) => {
         e.preventDefault();
+        const insertAt = dropIndex; // capture the visible insertion point before clearing
         setDropActive(false);
         setDropIndex(null);
         const linkId = e.dataTransfer.getData(LINK_DND_TYPE);
-        if (linkId) { onDropLink?.(linkId); return; }
+        if (linkId) {
+          // Releasing in a chip gap / on the insertion bar bubbles here rather
+          // than to a chip's own handler — honor the marker that was showing
+          // (land at that index) instead of silently appending.
+          if (insertAt !== null) onMoveLink?.(linkId, insertAt);
+          else onDropLink?.(linkId);
+          return;
+        }
         const draggedBucketId = e.dataTransfer.getData(BUCKET_DND_TYPE);
         if (draggedBucketId) onReorderBucket?.(draggedBucketId);
       }}
