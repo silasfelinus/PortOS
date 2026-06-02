@@ -34,7 +34,7 @@ import { join } from 'path';
 import { randomUUID, createHash } from 'crypto';
 import { PATHS, atomicWrite, readJSONFile, ensureDir } from './fileUtils.js';
 import { createCollectionStore } from './collectionStore.js';
-import { canonicalStringify } from './objects.js';
+import { canonicalStringify, isPlainObject } from './objects.js';
 import { sanitizeRecordForWire } from './syncWire.js';
 
 const JOURNAL_TYPE_SCHEMA_VERSION = 1;
@@ -221,27 +221,37 @@ export const RESTORABLE_FIELDS = Object.freeze({
   issue: ['title', 'status', 'seasonId', 'arcPosition', 'arcRole', 'lengthProfile', 'pageTarget', 'minutesTarget', 'stages'],
 });
 
-const isPlainObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const present = (v) => v !== undefined;
 const changedFlag = (lv, rv) => (present(lv) && present(rv) ? 'both' : (present(rv) ? 'remote-only' : 'local-only'));
 
-// Stable key used to PAIR two array elements across the local/remote sides
-// (prefer an explicit id so a reorder/insert doesn't cascade); falls back
-// through the other identity-ish fields. Returns null when an element carries
-// none — in which case the array isn't deep-diffable by identity.
-const entryMatchKey = (el) => {
-  for (const k of ['id', 'key', 'slug', 'name']) {
+// First non-empty string among `fields`, in order — used both to pick a stable
+// PAIR key for an array element and to pick a human display LABEL for it.
+const firstStringField = (el, fields) => {
+  for (const k of fields) {
     if (typeof el?.[k] === 'string' && el[k].trim()) return el[k];
   }
   return null;
 };
+// Stable key used to PAIR two array elements across the local/remote sides
+// (prefer an explicit id so a reorder/insert doesn't cascade). Null ⇒ the
+// element carries no identity and the array isn't deep-diffable by identity.
+const entryMatchKey = (el) => firstStringField(el, ['id', 'key', 'slug', 'name']);
 // Human-friendly LABEL for a changed sub-entry (a uuid id is a poor label, so a
 // name/title is preferred for display even when the match used the id).
-const entryLabel = (el, fallback) => {
-  for (const k of ['name', 'title', 'label', 'key', 'slug', 'id']) {
-    if (typeof el?.[k] === 'string' && el[k].trim()) return el[k];
+const entryLabel = (el, fallback) => firstStringField(el, ['name', 'title', 'label', 'key', 'slug', 'id']) ?? fallback;
+
+// Diff two key→value maps: one part per key whose value differs. `label(key,
+// lv, rv)` names the part for display. Returns the parts array, or null when
+// nothing differs.
+const diffEntryMaps = (lMap, rMap, label) => {
+  const parts = [];
+  for (const key of new Set([...lMap.keys(), ...rMap.keys()])) {
+    const lv = lMap.get(key);
+    const rv = rMap.get(key);
+    if (canonicalStringify(lv) === canonicalStringify(rv)) continue;
+    parts.push({ path: label(key, lv, rv), localValue: lv, remoteValue: rv, changed: changedFlag(lv, rv) });
   }
-  return fallback;
+  return parts.length ? parts : null;
 };
 
 /**
@@ -260,15 +270,8 @@ const entryLabel = (el, fallback) => {
  *   missing ⇒ added/removed). The `path` is a human label.
  */
 export function deepFieldDiff(localVal, remoteVal) {
-  if (isPlainObj(localVal) && isPlainObj(remoteVal)) {
-    const parts = [];
-    for (const key of new Set([...Object.keys(localVal), ...Object.keys(remoteVal)])) {
-      const lv = localVal[key];
-      const rv = remoteVal[key];
-      if (canonicalStringify(lv) === canonicalStringify(rv)) continue;
-      parts.push({ path: key, localValue: lv, remoteValue: rv, changed: changedFlag(lv, rv) });
-    }
-    return parts.length ? parts : null;
+  if (isPlainObject(localVal) && isPlainObject(remoteVal)) {
+    return diffEntryMaps(new Map(Object.entries(localVal)), new Map(Object.entries(remoteVal)), (key) => key);
   }
   if (Array.isArray(localVal) && Array.isArray(remoteVal)) {
     // Require every present element to carry a match key on BOTH sides — a
@@ -278,14 +281,7 @@ export function deepFieldDiff(localVal, remoteVal) {
     if (!keyed(localVal) || !keyed(remoteVal) || (localVal.length === 0 && remoteVal.length === 0)) return null;
     const lMap = new Map(localVal.map((el) => [entryMatchKey(el), el]));
     const rMap = new Map(remoteVal.map((el) => [entryMatchKey(el), el]));
-    const parts = [];
-    for (const matchKey of new Set([...lMap.keys(), ...rMap.keys()])) {
-      const lv = lMap.get(matchKey);
-      const rv = rMap.get(matchKey);
-      if (canonicalStringify(lv) === canonicalStringify(rv)) continue;
-      parts.push({ path: entryLabel(lv ?? rv, matchKey), localValue: lv, remoteValue: rv, changed: changedFlag(lv, rv) });
-    }
-    return parts.length ? parts : null;
+    return diffEntryMaps(lMap, rMap, (key, lv, rv) => entryLabel(lv ?? rv, key));
   }
   return null;
 }
