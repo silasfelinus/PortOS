@@ -392,7 +392,6 @@ function useStepStream(sessionId, stepId) {
   const [phase, setPhase] = useState('');
   const [op, setOp] = useState(null);
   const handlersRef = useRef(null);
-  const terminalRef = useRef(false);
   const { latest, closed } = useStoryStepProgress(sessionId, stepId, { enabled: active });
 
   const settle = useCallback(() => {
@@ -401,24 +400,23 @@ function useStepStream(sessionId, stepId) {
     return h;
   }, []);
 
+  // One effect handles every end-of-run path. A terminal frame and the stream's
+  // `closed` flag arrive together on completion, so the ordered branches (and
+  // settle() flipping `active` false) ensure exactly one of onComplete/onError
+  // fires — a separate `closed` effect would double-fire on the same render. The
+  // bare-`closed` branch covers a stream that died before any terminal frame
+  // (server pruned a fast run, or the connection dropped) so the button unsticks.
   useEffect(() => {
-    if (!latest || !active) return;
-    if (typeof latest.label === 'string' && latest.label) setPhase(latest.label);
-    if (latest.type === 'complete') { terminalRef.current = true; settle()?.onComplete?.(latest); }
-    else if (latest.type === 'error') { terminalRef.current = true; settle()?.onError?.(new Error(latest.error || 'Generation failed')); }
-  }, [latest, active, settle]);
-
-  // The stream closed without a terminal frame (server pruned a fast run before
-  // we attached, or the connection dropped) — recover so the button un-sticks.
-  useEffect(() => {
-    if (closed && active && !terminalRef.current) {
-      settle()?.onError?.(new Error('Lost connection to the generation stream'));
-    }
-  }, [closed, active, settle]);
+    if (!active) return;
+    if (latest && typeof latest.label === 'string' && latest.label) setPhase(latest.label);
+    if (latest?.type === 'complete') settle()?.onComplete?.(latest);
+    else if (latest?.type === 'error') settle()?.onError?.(new Error(latest.error || 'Generation failed'));
+    else if (closed) settle()?.onError?.(new Error('Lost connection to the generation stream'));
+  }, [latest, closed, active, settle]);
 
   const start = useCallback(async (nextOp, kickoff, handlers = {}) => {
     if (starting || active) return;
-    setStarting(true); setPhase('Starting…'); setOp(nextOp); terminalRef.current = false;
+    setStarting(true); setPhase('Starting…'); setOp(nextOp);
     const res = await kickoff().catch((err) => { handlers.onError?.(err); return null; });
     setStarting(false);
     if (!res) { setPhase(''); setOp(null); return; }
