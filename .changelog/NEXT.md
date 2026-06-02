@@ -18,6 +18,7 @@
 
 ## Changed
 
+- **[series-merge-season-rehoming] Merging two series now keeps each issue in its season.** When you merge a duplicate series into another, issues that belonged to a season are placed into the surviving series' matching season (paired by season number) instead of all landing un-grouped for you to re-file by hand. Issues that had no season stay un-grouped, as before.
 - **[conflict-journal-deep-diff] The Sharing → Conflicts tab now shows which sub-entry changed, not a wall of JSON.** For structured fields — universe categories and canon (characters/places/objects), series arc and seasons, issue stages — a conflict now breaks down into one focused before/after diff per changed entry, labelled by its name or key (e.g. just the character "Alice", or the "tone" category), instead of diffing the entire field as a single JSON blob. Restoring and merging still operate on the whole field.
 
 - **[conflict-journal-issues] Sync conflicts on individual issues are now captured and restorable, like universes and series.** When two of your machines independently edit the same issue while offline and then sync, the older edit is no longer silently overwritten — it's archived in Sharing → Conflicts where you can review what differs and restore your version (covering the issue's title, status, arc placement, length, and stage content such as prose and comic pages). Previously only universe and series conflicts were journaled; child issues rode last-write-wins silently.
