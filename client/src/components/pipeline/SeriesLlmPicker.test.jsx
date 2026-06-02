@@ -59,6 +59,13 @@ describe('SeriesLlmPicker', () => {
     await waitFor(() => expect(updatePipelineSeries).toHaveBeenCalledWith('s1', { llm: { provider: null, model: null } }));
   });
 
+  it('disables the model select when the resolved provider has no models', async () => {
+    getProviders.mockResolvedValue({ providers: [{ id: 'p3', name: 'No Models', models: [] }], activeProvider: 'p3' });
+    renderPicker();
+    await waitFor(() => expect(getProviders).toHaveBeenCalled());
+    expect(screen.getAllByRole('combobox')[1]).toBeDisabled();
+  });
+
   it('preserves the chosen provider when only the model changes', async () => {
     renderPicker({ id: 's1', llm: { provider: 'p1', model: '' } });
     await waitFor(() => expect(getProviders).toHaveBeenCalled());

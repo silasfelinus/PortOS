@@ -12,6 +12,8 @@
  * @param {function} props.onModelChange - Called with model string
  * @param {string} [props.label] - Label text (default: "Provider")
  * @param {boolean} [props.disabled] - Disable both selectors
+ * @param {boolean} [props.modelDisabled] - Disable only the model selector (e.g.
+ *   when the selected provider has no models). Composes with `disabled`.
  * @param {boolean} [props.compact] - Hide labels for inline/toolbar use
  * @param {string} [props.emptyProviderOption] - When set, prepends an option with
  *   value `""` and this label, letting the caller represent a "no explicit
@@ -47,6 +49,7 @@ export default function ProviderModelSelector({
   onModelChange,
   label = 'Provider',
   disabled = false,
+  modelDisabled = false,
   compact = false,
   emptyProviderOption,
   emptyModelOption,
@@ -83,7 +86,7 @@ export default function ProviderModelSelector({
             id={modelSelectId}
             value={selectedModel}
             onChange={(e) => onModelChange(e.target.value)}
-            disabled={disabled}
+            disabled={disabled || modelDisabled}
             title={compact ? 'Model' : undefined}
             aria-label={compact ? 'Model' : undefined}
             className={SELECT_CLASS}

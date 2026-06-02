@@ -52,6 +52,7 @@ export default function SeriesLlmPicker({ series, onSeriesUpdate, disabled = fal
       onModelChange={(model) => saveLlm({ ...(series.llm || {}), model: model || null })}
       label="AI provider"
       disabled={disabled}
+      modelDisabled={providerModels.length === 0}
       compact
       alwaysShowModel
       emptyProviderOption={`Active provider (${providerLabel(activeProviderId)})`}
