@@ -719,6 +719,10 @@ export default function ImageGen() {
   const handleGenerate = async (e) => {
     e?.preventDefault?.();
     if (!prompt.trim()) return;
+    // The disabled submit button blocks clicks, but an Enter keypress in a
+    // number input still fires onSubmit — gate here too so an edit-only model
+    // without a source image hits the inline hint, not a server 400 toast.
+    if (editImageMissing) return;
     const batchN = isAsyncMode ? Math.max(1, batchCount) : 1;
     if (generating) return queueAdditional(batchN);
     setGenerating(true);
