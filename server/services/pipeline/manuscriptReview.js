@@ -21,6 +21,7 @@ import { atomicWrite, readJSONFile } from '../../lib/fileUtils.js';
 import { createFileWriteQueue } from '../../lib/fileWriteQueue.js';
 import { seriesStore } from './series.js';
 import { collectManuscriptSections } from './arcPlanner.js';
+import { emitRecordUpdated } from '../sharing/recordEvents.js';
 
 // Storage-layout version for the review document. Bump + migrate if the
 // comment shape changes in a way older peers can't read.
@@ -167,6 +168,13 @@ export async function seedReviewFromFindings(seriesId, findings, { runId = null 
 
     const next = { schemaVersion: SCHEMA_VERSION, comments: [...review.comments, ...fresh] };
     await writeReview(seriesId, next);
+    // The review is a sibling of the series record, so a review-only change
+    // doesn't move the series `index.json` — emit a series `updated` event so
+    // the peer-sync push + bucket re-export fire (both hash the review into
+    // their payload). Only when something actually changed; a no-op seed
+    // would just be short-circuited by the push hash anyway. Skipped on the
+    // sync RECEIVE path (`mergeReviewFromSync`) to avoid an echo loop.
+    if (fresh.length > 0) emitRecordUpdated('series', seriesId);
     return next;
   });
 }
@@ -191,6 +199,9 @@ export async function updateComment(seriesId, commentId, patch) {
     merged.updatedAt = new Date().toISOString();
     const next = { ...review, comments: review.comments.map((c, i) => (i === idx ? sanitizeComment(merged) : c)) };
     await writeReview(seriesId, next);
+    // Sibling-doc change → fire a series `updated` event so the review
+    // propagates to peers / re-exports to subscribed buckets (see seed above).
+    emitRecordUpdated('series', seriesId);
     return next.comments[idx];
   });
 }

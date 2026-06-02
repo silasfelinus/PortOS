@@ -25,6 +25,7 @@ import { getBucket, ensureBucketLayout, bucketBlobsDir, bucketBlobPath, bucketBl
 import { buildManifest, writeManifest, pruneBucketManifests } from './manifest.js';
 import { listSeries, getSeries } from '../pipeline/series.js';
 import { listIssues } from '../pipeline/issues.js';
+import { getReview } from '../pipeline/manuscriptReview.js';
 import { getUniverse } from '../universeBuilder.js';
 import { findCollectionByUniverseId, findCollectionBySeriesId } from '../mediaCollections.js';
 import { getJob } from '../mediaJobQueue/index.js';
@@ -406,6 +407,19 @@ export async function exportSeries(seriesId, bucketId, opts = {}) {
   const stampedSeries = stampOrigin(series, { bucket, source, sourceBio, manifestId });
   await atomicWrite(join(bucket.path, 'records', 'series', `${series.id}.json`), stampedSeries);
 
+  // Bundle the manuscript-review sibling doc (the "Finish the draft" comment
+  // set) so it travels with the series. It's keyed by seriesId — not a record
+  // id of its own — so it lives under records/reviews/ and is NOT added to
+  // `recordIds` (the importer reads it by seriesId after the series merges).
+  // Skip when empty so we don't litter the bucket with no-op review files; an
+  // importer that finds no file simply leaves the local review untouched.
+  const review = await getReview(series.id).catch(() => null);
+  const reviewRefs = [];
+  if (review && Array.isArray(review.comments) && review.comments.length > 0) {
+    await atomicWrite(join(bucket.path, 'records', 'reviews', `${series.id}.json`), review);
+    reviewRefs.push(series.id);
+  }
+
   for (const issue of issues) {
     recordIds.push(issue.id);
     const stamped = stampOrigin(issue, { bucket, source, sourceBio, manifestId });
@@ -452,7 +466,7 @@ export async function exportSeries(seriesId, bucketId, opts = {}) {
     return [...jobRefGroups.flat(), ...imageRefs.filter(Boolean), ...videoRefs.filter(Boolean), ...imageRefRefs.filter(Boolean)];
   });
 
-  const manifest = { ...manifestStub, recordIds, assetRefs };
+  const manifest = { ...manifestStub, recordIds, assetRefs, reviewRefs };
   const filename = await writeManifest(bucket.path, manifest);
   await pruneAfterExport(bucket, senderInstanceId);
   return { manifestId, filename, recordCount: recordIds.length, assetCount: assetRefs.length };
