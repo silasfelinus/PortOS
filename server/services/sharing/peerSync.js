@@ -216,6 +216,16 @@ export async function getOutboundCoverageForPeer(peerId) {
  * receiver-side reverse-subscribe path; it suppresses the immediate push so
  * we don't ping-pong (the peer that triggered the reverse just pushed us
  * the latest state by definition).
+ *
+ * `opts.awaitInitialPush` makes the first-insert push AWAITED instead of
+ * fire-and-forget. Default false preserves the non-blocking single-subscribe
+ * contract (the HTTP route and one-off subscribes must not stall on a slow
+ * peer). The fan-out helpers set it true so the push — and the base-hash
+ * stamps inside it — settle synchronously within an enclosing
+ * `withBaseHashFlushBatch` scope; otherwise the async stamps escape the scope
+ * and the per-record `sync_base_hashes.json` flush can't be coalesced. The
+ * push failure stays non-fatal either way (logged, never thrown), so one dead
+ * peer can't abort a fan-out loop.
  */
 export async function subscribePeer({ peerId, recordKind, recordId }, opts = {}) {
   if (!PEER_SUBSCRIBABLE_KINDS.includes(recordKind)) {
@@ -278,9 +288,13 @@ export async function subscribePeer({ peerId, recordKind, recordId }, opts = {})
   // result lastPushedHash will short-circuit anyway. Callers that need a
   // forced re-push can call pushRecordToPeer(sub) directly.
   if (created && !opts.adoptedFromReverse) {
-    pushRecordToPeer(sub).catch((err) => {
+    const initialPush = pushRecordToPeer(sub).catch((err) => {
       console.log(`⚠️ peerSync: initial push failed for ${sub.id}: ${err.message}`);
     });
+    // Fan-out callers await the push inside a flush batch so its base-hash
+    // stamps land before the batch's terminal flush; the default path leaves it
+    // fire-and-forget so a single subscribe never blocks on a slow peer.
+    if (opts.awaitInitialPush) await initialPush;
   }
   // `created` distinguishes a freshly-inserted subscription from an idempotent
   // hit on an existing one. Auto-subscribe helpers use this to suppress
@@ -369,16 +383,22 @@ export async function autoSubscribeRecordToAllPeers(recordKind, recordId) {
   // peers would otherwise return the existing subs and emit misleading
   // "🔗 auto-subscribed" lines on every retry / restart.
   const created = [];
-  for (const peer of targets) {
-    const sub = await subscribePeer({ peerId: peer.instanceId, recordKind, recordId }).catch((err) => {
-      console.log(`⚠️ peerSync: auto-subscribe ${recordKind}/${recordId} → ${peer.name || peer.instanceId} failed: ${err.message}`);
-      return null;
-    });
-    if (sub && sub.created) {
-      created.push({ peerId: peer.instanceId, subscriptionId: sub.id });
-      console.log(`🔗 peerSync: auto-subscribed ${recordKind}/${recordId} → ${peer.name || peer.instanceId}`);
+  // Coalesce the base-hash flushes across this fan-out: one record subscribed
+  // to N peers fires N initial pushes, each of which would otherwise rewrite
+  // sync_base_hashes.json. `awaitInitialPush` keeps each push's stamps inside
+  // the batch so the single terminal write covers all N.
+  await withBaseHashFlushBatch(async () => {
+    for (const peer of targets) {
+      const sub = await subscribePeer({ peerId: peer.instanceId, recordKind, recordId }, { awaitInitialPush: true }).catch((err) => {
+        console.log(`⚠️ peerSync: auto-subscribe ${recordKind}/${recordId} → ${peer.name || peer.instanceId} failed: ${err.message}`);
+        return null;
+      });
+      if (sub && sub.created) {
+        created.push({ peerId: peer.instanceId, subscriptionId: sub.id });
+        console.log(`🔗 peerSync: auto-subscribed ${recordKind}/${recordId} → ${peer.name || peer.instanceId}`);
+      }
     }
-  }
+  });
   return created;
 }
 
@@ -440,13 +460,19 @@ export async function autoSubscribePeerToAllRecords(peerId, recordKind) {
   // second toggle on the same category) don't double-report or noise the
   // backfill log line with already-subscribed records.
   const created = [];
-  for (const rec of missing) {
-    const sub = await subscribePeer({ peerId, recordKind, recordId: rec.id }, { skipCursorInit: cursorInited }).catch((err) => {
-      console.log(`⚠️ peerSync: backfill-subscribe ${recordKind}/${rec.id} → ${peerId} failed: ${err.message}`);
-      return null;
-    });
-    if (sub && sub.created) created.push({ recordId: rec.id, subscriptionId: sub.id });
-  }
+  // Coalesce the base-hash flushes across the backfill: N records subscribed to
+  // one peer fire N initial pushes, each of which would otherwise rewrite
+  // sync_base_hashes.json. `awaitInitialPush` keeps each push's stamps inside
+  // the batch so the single terminal write covers all N.
+  await withBaseHashFlushBatch(async () => {
+    for (const rec of missing) {
+      const sub = await subscribePeer({ peerId, recordKind, recordId: rec.id }, { skipCursorInit: cursorInited, awaitInitialPush: true }).catch((err) => {
+        console.log(`⚠️ peerSync: backfill-subscribe ${recordKind}/${rec.id} → ${peerId} failed: ${err.message}`);
+        return null;
+      });
+      if (sub && sub.created) created.push({ recordId: rec.id, subscriptionId: sub.id });
+    }
+  });
   if (created.length > 0) {
     console.log(`🔗 peerSync: backfill-subscribed ${created.length} ${recordKind} record(s) → ${peerId}`);
   }

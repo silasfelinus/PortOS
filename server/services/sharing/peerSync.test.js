@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdir, rm, writeFile } from 'fs/promises';
+import { mkdir, rm, writeFile, readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -110,6 +110,7 @@ import { getBackendName } from '../memoryBackend.js';
 import { getCatalogBundleForRef } from '../catalogDB.js';
 import { applyRemoteChanges as applyCatalogRemoteChanges } from '../catalogSync.js';
 import { listCursors, __drainForTests as __drainCursors } from './peerTombstoneCursors.js';
+import { contentHashForRecord, __resetBaseHashCacheForTests } from '../../lib/conflictJournal.js';
 
 let originalDataPath;
 let originalImagesPath;
@@ -184,6 +185,11 @@ beforeEach(async () => {
   vi.mocked(getBackendName).mockReset().mockReturnValue('file');
   vi.mocked(getCatalogBundleForRef).mockReset().mockResolvedValue({ ingredients: [], refs: [] });
   vi.mocked(applyCatalogRemoteChanges).mockReset().mockResolvedValue({ errors: [] });
+
+  // The conflict-journal base-hash side store caches `_baseHashes` against the
+  // first PATHS.data it loaded; reset it so each test's fresh tmpdir starts
+  // with an empty map (and stamps from a prior test don't bleed in).
+  __resetBaseHashCacheForTests();
 
   await __resetForTests();
 });
@@ -525,6 +531,27 @@ describe('peerSync', () => {
       const second = await autoSubscribeRecordToAllPeers('universe', 'u1');
       expect(second).toEqual([]);
     });
+
+    it('persists the base hash synchronously (awaitInitialPush coalesces the flush)', async () => {
+      // Regression for the flush-coalesce wrap: the fan-out wraps its loop in
+      // withBaseHashFlushBatch and passes awaitInitialPush, so every peer's
+      // initial-push base-hash stamp lands BEFORE the helper returns — no
+      // drain needed. Under the old fire-and-forget path the push hadn't even
+      // started yet, so the file wouldn't carry the stamp here.
+      vi.mocked(getUniverse).mockResolvedValue({ id: 'u1', name: 'U1' });
+      vi.mocked(getPeers).mockResolvedValue([
+        { instanceId: 'peer-a', name: 'A', enabled: true, syncCategories: { universe: true } },
+        { instanceId: 'peer-b', name: 'B', enabled: true, syncCategories: { universe: true } },
+      ]);
+      const created = await autoSubscribeRecordToAllPeers('universe', 'u1');
+      expect(created.map(c => c.peerId).sort()).toEqual(['peer-a', 'peer-b']);
+      // Assert against the FILE, not getSyncBaseHash() — the latter reads the
+      // in-memory map and would pass even if the terminal flush never wrote. A
+      // present-on-disk entry proves the batch's coalesced write actually ran
+      // inside the awaited fan-out (no drain).
+      const onDisk = JSON.parse(await readFile(join(tmp, 'sharing', 'sync_base_hashes.json'), 'utf8'));
+      expect(onDisk['universe:u1']).toBe(contentHashForRecord('universe', { id: 'u1', name: 'U1' }));
+    });
   });
 
   describe('autoSubscribePeerToAllRecords', () => {
@@ -621,6 +648,23 @@ describe('peerSync', () => {
     it('returns [] for invalid arguments', async () => {
       expect(await autoSubscribePeerToAllRecords('', 'universe')).toEqual([]);
       expect(await autoSubscribePeerToAllRecords('peer-a', 'bogus')).toEqual([]);
+    });
+
+    it('persists every record base hash synchronously (awaitInitialPush coalesces the flush)', async () => {
+      // Backfill subscribes N records to one peer; awaitInitialPush keeps each
+      // record's stamp inside the flush batch so all N are persisted by the
+      // time the helper returns — without per-record flushes and without a
+      // post-hoc drain.
+      vi.mocked(listUniverses).mockResolvedValue([{ id: 'u1', name: 'U1' }, { id: 'u2', name: 'U2' }]);
+      vi.mocked(getUniverse).mockImplementation(async (id) => ({ id, name: id.toUpperCase() }));
+      const created = await autoSubscribePeerToAllRecords('peer-a', 'universe');
+      expect(created.map(c => c.recordId).sort()).toEqual(['u1', 'u2']);
+      // Both records' stamps are in the single on-disk file — read it directly
+      // (not getSyncBaseHash's in-memory map) so the assertion proves the
+      // coalesced terminal flush wrote all N stamps before the helper returned.
+      const onDisk = JSON.parse(await readFile(join(tmp, 'sharing', 'sync_base_hashes.json'), 'utf8'));
+      expect(onDisk['universe:u1']).toBe(contentHashForRecord('universe', { id: 'u1', name: 'U1' }));
+      expect(onDisk['universe:u2']).toBe(contentHashForRecord('universe', { id: 'u2', name: 'U2' }));
     });
 
     it('drops ephemeral records before computing the set-diff', async () => {
