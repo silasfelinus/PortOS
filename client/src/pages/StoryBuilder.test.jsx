@@ -280,6 +280,44 @@ describe('StoryBuilder — detail stepper', () => {
     await waitFor(() => expect(api.setStoryCurrentStep).toHaveBeenCalledWith('stb-1', 'universeAesthetic', expect.anything()));
   });
 
+  it('manual step click: a rejected pointer move stays put and resyncs (no navigation)', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    api.getStorySession.mockResolvedValue({
+      id: 'stb-1', title: 'Salt Run', currentStep: 'idea', seedIdea: 'seed',
+      universeId: 'u1', seriesId: 's1', steps: mkSteps(), staleSteps: [], llm: { provider: '', model: '' },
+    });
+    // Server re-gate rejects the pointer move (e.g. session deleted out-of-band).
+    api.setStoryCurrentStep.mockRejectedValue(new Error('gate rejected'));
+    renderAt('/story-builder/stb-1/idea');
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Idea' })).toBeTruthy());
+    const callsBefore = api.getStorySession.mock.calls.length;
+
+    fireEvent.click(screen.getByRole('button', { name: /Plot Arc/i }));
+    await waitFor(() => expect(api.setStoryCurrentStep).toHaveBeenCalledWith('stb-1', 'plotArc', expect.anything()));
+    // Rejection → resync (reload refetches the session) and the URL never advances,
+    // so the heading stays on Idea instead of stranding ahead of currentStep.
+    await waitFor(() => expect(api.getStorySession.mock.calls.length).toBeGreaterThan(callsBefore));
+    expect(screen.getByRole('heading', { name: 'Idea' })).toBeTruthy();
+  });
+
+  it('"Lock & continue": a rejected pointer move keeps the lock but does not advance', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    api.getStorySession.mockResolvedValue({
+      id: 'stb-1', title: 'Salt Run', currentStep: 'idea', seedIdea: 'seed',
+      universeId: 'u1', seriesId: 's1', steps: mkSteps(), staleSteps: [], llm: { provider: '', model: '' },
+    });
+    api.setStoryCurrentStep.mockRejectedValue(new Error('gate rejected'));
+    renderAt('/story-builder/stb-1/idea');
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Idea' })).toBeTruthy());
+    fireEvent.click(screen.getByText('Lock & continue'));
+    await waitFor(() => expect(api.lockStoryStep).toHaveBeenCalledWith('stb-1', 'idea', expect.anything()));
+    // The auto-advance attempt fires…
+    await waitFor(() => expect(api.setStoryCurrentStep).toHaveBeenCalledWith('stb-1', 'universeAesthetic', expect.anything()));
+    // …but is rejected, so the URL stays on Idea (navigation is gated on .then()).
+    await waitFor(() => expect(api.getStorySession.mock.calls.length).toBeGreaterThan(1));
+    expect(screen.getByRole('heading', { name: 'Idea' })).toBeTruthy();
+  });
+
   it('characters step: renders a per-character preview slot and generates a styled preview image', async () => {
     const { fireEvent } = await import('@testing-library/react');
     api.getStorySession.mockResolvedValue({
