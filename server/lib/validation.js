@@ -1510,10 +1510,26 @@ const universePushSchema = z.object({
   ...linkedCollectionField,
   ...catalogBundleField,
 }).strict();
+// Optional bundled manuscript-review sibling doc — a series push carries the
+// "Finish the draft" comment set (data/pipeline-series/{id}/manuscript-review.json)
+// so review-only edits propagate via the per-record push pipeline. ONLY valid on
+// series pushes. `.passthrough()` on the review + each comment (same rationale as
+// portosMeta) so a newer sender that adds a comment field doesn't 400 at this
+// receiver BEFORE its merge — `sanitizeReview` clamps/drops everything on apply.
+// Comments are bounded (5000) so the array can't be used to force unbounded work.
+const manuscriptReviewField = {
+  manuscriptReview: z.object({
+    schemaVersion: z.number().int().min(0).max(1_000_000).optional(),
+    comments: z.array(z.object({
+      id: z.string().trim().min(1).max(120),
+    }).passthrough()).max(5000),
+  }).passthrough().optional(),
+};
 const seriesPushSchema = z.object({
   kind: z.literal('series'),
   ...peerSyncPushBase,
   ...linkedCollectionField,
+  ...manuscriptReviewField,
   issues: z.array(peerWireRecordSchema).max(1000).optional(),
 }).strict();
 const mediaCollectionPushSchema = z.object({
