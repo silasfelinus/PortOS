@@ -240,47 +240,63 @@ const entryMatchKey = (el) => firstStringField(el, ['id', 'key', 'slug', 'name']
 // name/title is preferred for display even when the match used the id).
 const entryLabel = (el, fallback) => firstStringField(el, ['name', 'title', 'label', 'key', 'slug', 'id']) ?? fallback;
 
-// Diff two key→value maps: one part per key whose value differs. `label(key,
-// lv, rv)` names the part for display. Returns the parts array, or null when
-// nothing differs.
+// Diff two key→value maps: one part per key whose value differs. Each part
+// carries a STABLE, unique `path` (the map key — used as the React render key)
+// and a human `label(key, lv, rv)` for display; for an object map the two are
+// the same, but for an identity-paired array the path is the (unique) match key
+// while the label is a friendly name that may collide. Returns the parts array,
+// or null when nothing differs.
 const diffEntryMaps = (lMap, rMap, label) => {
   const parts = [];
   for (const key of new Set([...lMap.keys(), ...rMap.keys()])) {
     const lv = lMap.get(key);
     const rv = rMap.get(key);
     if (canonicalStringify(lv) === canonicalStringify(rv)) continue;
-    parts.push({ path: label(key, lv, rv), localValue: lv, remoteValue: rv, changed: changedFlag(lv, rv) });
+    parts.push({ path: key, label: label(key, lv, rv), localValue: lv, remoteValue: rv, changed: changedFlag(lv, rv) });
   }
   return parts.length ? parts : null;
+};
+
+// Build a Map keyed by each element's stable match key. Returns null — so the
+// caller falls back to the whole-field diff — when ANY element is identity-less
+// (null key) OR two elements share a key (a duplicate id, or two entries that
+// both fall back to the same name): identity pairing isn't reliable, and a
+// last-wins Map would silently drop the collided element from the diff.
+const buildKeyedMap = (arr) => {
+  const map = new Map();
+  for (const el of arr) {
+    const key = entryMatchKey(el);
+    if (key === null || map.has(key)) return null;
+    map.set(key, el);
+  }
+  return map;
 };
 
 /**
  * One-level structural diff of a single restorable field, used to render the
  * Conflicts tab as "which sub-entry changed" instead of one giant JSON blob.
- * Returns an array of changed sub-entries `[{ path, localValue, remoteValue,
- * changed }]`, or `null` when the field isn't deepenable — a scalar, an array
- * of scalars, an array of objects without any stable identity, or a
- * shape-mismatch (object vs array) — in which case the caller keeps the
- * whole-field diff. Only entries that actually differ are emitted.
+ * Returns an array of changed sub-entries `[{ path, label, localValue,
+ * remoteValue, changed }]`, or `null` when the field isn't deepenable — a
+ * scalar, an array of scalars, an array of objects without unique stable
+ * identities, or a shape-mismatch (object vs array) — in which case the caller
+ * keeps the whole-field diff. Only entries that actually differ are emitted.
  *
  * - Object map / structured object (`categories`, `stages`, `arc`): one part
- *   per key whose value differs.
+ *   per key whose value differs (path = label = key).
  * - Array of identity-bearing objects (`characters`, `places`, `seasons`):
  *   paired by `entryMatchKey`; one part per identity that differs (a side
- *   missing ⇒ added/removed). The `path` is a human label.
+ *   missing ⇒ added/removed). The `path` is the unique match key; the `label`
+ *   is a human name.
  */
 export function deepFieldDiff(localVal, remoteVal) {
   if (isPlainObject(localVal) && isPlainObject(remoteVal)) {
     return diffEntryMaps(new Map(Object.entries(localVal)), new Map(Object.entries(remoteVal)), (key) => key);
   }
   if (Array.isArray(localVal) && Array.isArray(remoteVal)) {
-    // Require every present element to carry a match key on BOTH sides — a
-    // mixed/identity-less array (e.g. array of strings) text-diffs fine as a
-    // whole, so bail to the whole-field path for those.
-    const keyed = (arr) => arr.every((el) => entryMatchKey(el) !== null);
-    if (!keyed(localVal) || !keyed(remoteVal) || (localVal.length === 0 && remoteVal.length === 0)) return null;
-    const lMap = new Map(localVal.map((el) => [entryMatchKey(el), el]));
-    const rMap = new Map(remoteVal.map((el) => [entryMatchKey(el), el]));
+    if (localVal.length === 0 && remoteVal.length === 0) return null;
+    const lMap = buildKeyedMap(localVal);
+    const rMap = buildKeyedMap(remoteVal);
+    if (!lMap || !rMap) return null; // identity-less or duplicate keys → whole-field diff
     return diffEntryMaps(lMap, rMap, (key, lv, rv) => entryLabel(lv ?? rv, key));
   }
   return null;

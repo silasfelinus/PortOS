@@ -113,21 +113,37 @@ describe('conflictJournal', () => {
       expect(byPath.mood.changed).toBe('remote-only');  // added on remote
     });
 
-    it('array of identity-bearing objects → paired by id, labelled by name', () => {
+    it('array of identity-bearing objects → paired by id (path), labelled by name (label)', () => {
       const local = [{ id: 'c1', name: 'Alice', age: 30 }, { id: 'c2', name: 'Bob', age: 40 }];
       const remote = [{ id: 'c1', name: 'Alice', age: 31 }, { id: 'c3', name: 'Cara', age: 22 }];
       const parts = cj.deepFieldDiff(local, remote);
-      const byPath = Object.fromEntries(parts.map((p) => [p.path, p]));
-      // c1 changed (age) → labelled 'Alice'; c2 removed → 'Bob'; c3 added → 'Cara'.
-      expect(Object.keys(byPath).sort()).toEqual(['Alice', 'Bob', 'Cara']);
-      expect(byPath.Alice.changed).toBe('both');
-      expect(byPath.Bob.changed).toBe('local-only');
-      expect(byPath.Cara.changed).toBe('remote-only');
+      // path = the unique match key (id); label = the friendly name.
+      const byId = Object.fromEntries(parts.map((p) => [p.path, p]));
+      expect(Object.keys(byId).sort()).toEqual(['c1', 'c2', 'c3']);
+      expect(byId.c1).toMatchObject({ label: 'Alice', changed: 'both' });
+      expect(byId.c2).toMatchObject({ label: 'Bob', changed: 'local-only' });   // removed
+      expect(byId.c3).toMatchObject({ label: 'Cara', changed: 'remote-only' }); // added
+    });
+
+    it('distinct ids with a COLLIDING display name keep distinct (unique) paths', () => {
+      // Two different characters both named "Alice" must not collapse — the
+      // React key is `path` (the id), which stays unique even when labels clash.
+      const local = [{ id: 'c1', name: 'Alice', bio: 'one' }, { id: 'c2', name: 'Alice', bio: 'two' }];
+      const remote = [{ id: 'c1', name: 'Alice', bio: 'ONE' }, { id: 'c2', name: 'Alice', bio: 'TWO' }];
+      const parts = cj.deepFieldDiff(local, remote);
+      expect(parts.map((p) => p.path).sort()).toEqual(['c1', 'c2']);
+      expect(parts.every((p) => p.label === 'Alice')).toBe(true);
     });
 
     it('reordering identity-bearing objects with no content change → null (no spurious parts)', () => {
       const local = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }];
       const remote = [{ id: 'b', name: 'B' }, { id: 'a', name: 'A' }];
+      expect(cj.deepFieldDiff(local, remote)).toBeNull();
+    });
+
+    it('duplicate match keys within an array → null (pairing unreliable, fall back to whole-field)', () => {
+      const local = [{ id: 'dup', name: 'A' }, { id: 'dup', name: 'B' }];
+      const remote = [{ id: 'dup', name: 'C' }];
       expect(cj.deepFieldDiff(local, remote)).toBeNull();
     });
 
@@ -164,11 +180,12 @@ describe('conflictJournal', () => {
     // scalar field → whole-field values, no parts.
     expect(byField.starterPrompt.parts).toBeUndefined();
     expect(byField.starterPrompt.localValue).toBe('LOCAL prompt');
-    // object-map field → parts keyed by category.
+    // object-map field → parts keyed by category (path = label = key).
     expect(byField.categories.localValue).toBeUndefined();
     expect(byField.categories.parts.map((p) => p.path)).toEqual(['tone']);
-    // array-of-objects field → parts labelled by name.
-    expect(byField.characters.parts.map((p) => p.path)).toEqual(['Alice']);
+    // array-of-objects field → path is the id, label is the name.
+    expect(byField.characters.parts.map((p) => p.path)).toEqual(['c1']);
+    expect(byField.characters.parts.map((p) => p.label)).toEqual(['Alice']);
     expect(byField.characters.parts[0].remoteValue.bio).toBe('REMOTE bio');
   });
 

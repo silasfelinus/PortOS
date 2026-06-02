@@ -127,7 +127,7 @@ function ConflictEntry({ entry, onResolved }) {
                   {d.parts.map((p) => (
                     <div key={p.path} className="pl-2 border-l-2 border-port-border">
                       <div className="font-mono text-[10px] text-gray-400 mb-1">
-                        {p.path} <span className="text-gray-600">({p.changed})</span>
+                        {p.label ?? p.path} <span className="text-gray-600">({p.changed})</span>
                       </div>
                       <InlineDiff oldText={asText(p.localValue)} newText={asText(p.remoteValue)} />
                     </div>

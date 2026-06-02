@@ -77,8 +77,8 @@ describe('ConflictsTab', () => {
       diffSummary: [{
         field: 'characters', changed: 'both',
         parts: [
-          { path: 'Alice', changed: 'both', localValue: { bio: 'mine' }, remoteValue: { bio: 'theirs' } },
-          { path: 'Bob', changed: 'local-only', localValue: { bio: 'gone' }, remoteValue: undefined },
+          { path: 'c1', label: 'Alice', changed: 'both', localValue: { bio: 'mine' }, remoteValue: { bio: 'theirs' } },
+          { path: 'c2', label: 'Bob', changed: 'local-only', localValue: { bio: 'gone' }, remoteValue: undefined },
         ],
       }],
       status: 'pending',
