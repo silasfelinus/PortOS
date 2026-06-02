@@ -133,6 +133,13 @@ describe('updateAiAssignment routing', () => {
     await updateAiAssignment('cos.task.morning-brief', { providerId: 'claude', model: 'opus' });
     expect(mocks.updateTaskInterval).toHaveBeenCalledWith('morning-brief', { providerId: 'claude', model: 'opus' });
   });
+
+  it('provider.model.<id>.<field> writes the field on the right provider, even when the id contains a dot', async () => {
+    mocks.getProviderById.mockResolvedValue({ id: 'lm.studio', name: 'LM Studio', models: ['mistral'] });
+    await updateAiAssignment('provider.model.lm.studio.heavyModel', { model: 'mistral' });
+    expect(mocks.getProviderById).toHaveBeenCalledWith('lm.studio');
+    expect(mocks.updateProvider).toHaveBeenCalledWith('lm.studio', { heavyModel: 'mistral' });
+  });
 });
 
 describe('updateAiAssignment guards', () => {

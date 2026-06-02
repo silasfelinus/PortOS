@@ -446,7 +446,13 @@ export async function updateAiAssignment(id, { providerId, model } = {}) {
   }
 
   if (id.startsWith('provider.model.')) {
-    const [, , providerIdPart, field] = id.split('.');
+    // field is a fixed dotless suffix (defaultModel/lightModel/...); parse it
+    // from the last dot so a provider id containing a '.' still targets the
+    // right provider (mirrors the replace-based fallback handler below).
+    const rest = id.slice('provider.model.'.length);
+    const lastDot = rest.lastIndexOf('.');
+    const providerIdPart = rest.slice(0, lastDot);
+    const field = rest.slice(lastDot + 1);
     const provider = await getProviderById(providerIdPart);
     if (!provider) throw new ServerError(`Provider not found: ${providerIdPart}`, { status: 404, code: 'NOT_FOUND' });
     await updateProvider(providerIdPart, { [field]: nextModel });
