@@ -21,6 +21,7 @@ const merge = await import('./recordMerge.js');
 const universeSvc = await import('./universeBuilder.js');
 const seriesSvc = await import('./pipeline/series.js');
 const issuesSvc = await import('./pipeline/issues.js');
+const seasonsSvc = await import('./pipeline/seasons.js');
 const collectionsSvc = await import('./mediaCollections.js');
 
 afterAll(() => rmSync(TEST_DATA_ROOT, { recursive: true, force: true }));
@@ -255,6 +256,40 @@ describe('recordMerge — mergeSeries (integration)', () => {
 
     // Loser tombstoned.
     await expect(seriesSvc.getSeries(loser.id)).rejects.toMatchObject({ code: seriesSvc.ERR_NOT_FOUND });
+  });
+
+  it('preserves issue→season grouping by number across the merge', async () => {
+    const u = await universeSvc.createUniverse({ name: 'U' });
+    const survivor = await seriesSvc.createSeries({ name: 'Twin', universeId: u.id });
+    const loser = await seriesSvc.createSeries({ name: 'Twin', universeId: u.id });
+    // Survivor has season 1; loser has season 1 (collides) + season 2 (new).
+    const survS1 = await seasonsSvc.createSeason(survivor.id, { title: 'Surv S1', number: 1 });
+    const loseS1 = await seasonsSvc.createSeason(loser.id, { title: 'Lose S1', number: 1 });
+    const loseS2 = await seasonsSvc.createSeason(loser.id, { title: 'Lose S2', number: 2 });
+    // Loser issues: A in season 1, B in season 2, C un-grouped.
+    const a = await issuesSvc.createIssue({ seriesId: loser.id, title: 'A' });
+    const b = await issuesSvc.createIssue({ seriesId: loser.id, title: 'B' });
+    await issuesSvc.createIssue({ seriesId: loser.id, title: 'C' });
+    await issuesSvc.updateIssue(a.id, { seasonId: loseS1.id });
+    await issuesSvc.updateIssue(b.id, { seasonId: loseS2.id });
+
+    await merge.mergeSeries(survivor.id, loser.id, {});
+
+    const survivorIssues = await issuesSvc.listIssues({ seriesId: survivor.id });
+    const byTitle = Object.fromEntries(survivorIssues.map((i) => [i.title, i]));
+    // A's loser season 1 collided → re-homed to the SURVIVOR's season 1 (its id),
+    // never the tombstoned loser season id.
+    expect(byTitle.A.seasonId).toBe(survS1.id);
+    expect(byTitle.A.seasonId).not.toBe(loseS1.id);
+    // B's loser season 2 didn't collide → appended to the survivor verbatim, so
+    // the issue stays under that (now-survivor) season id.
+    expect(byTitle.B.seasonId).toBe(loseS2.id);
+    // C had no season → stays un-grouped.
+    expect(byTitle.C.seasonId).toBeNull();
+
+    // The survivor now carries both seasons (1 from the collision, 2 appended).
+    const merged = await seriesSvc.getSeries(survivor.id);
+    expect(merged.seasons.map((s) => s.number).sort()).toEqual([1, 2]);
   });
 
   it('rejects merging series from different universes', async () => {
