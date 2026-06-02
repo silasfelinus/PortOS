@@ -254,15 +254,17 @@ export async function runPromptThroughProvider(args) {
     // `noteFallbackHandled` cancels the right queued task.
     const failed = firstError.effectiveProvider;
     const failedModel = firstError.effectiveModel || resolveEffectiveModel(failed, args.model);
-    const picked = await pickFallbackProvider(failed);
+    // Coalesce the per-provider mark-and-pick during an N-way failure
+    // storm: the 2nd…Nth simultaneous failure for the same provider awaits
+    // the first's result instead of independently re-reading providers.json
+    // (pickFallbackProvider) and re-writing provider-status.json
+    // (markUnavailable). The fallback *run* below is NOT coalesced — each
+    // failed call still executes its own fallback to get its own result.
+    const picked = await coalesceFallbackMarkAndPick(failed, firstError);
     if (!picked) {
       throw stripFallbackContext(firstError);
     }
     const fallback = picked.provider;
-
-    await markProviderUnavailableFromError(failed, firstError.message, firstError.errorAnalysis).catch(err => {
-      console.error(`❌ markUnavailable failed for ${failed.id}: ${err.message}`);
-    });
 
     console.log(`⚡ Retrying ${args.source} with fallback ${fallback.name} (primary ${failed.name} failed: ${firstError.message})`);
 
@@ -327,6 +329,52 @@ export async function runPromptThroughProvider(args) {
  * `getFallbackProvider`; the system priority loop already excludes
  * `failed.id` by construction.
  */
+// In-flight mark-and-pick work, keyed by the failed provider id. During an
+// N-way failure storm (one stuck provider, many simultaneous in-flight
+// calls) every failure would otherwise independently re-read providers.json
+// (pickFallbackProvider) and re-write provider-status.json (markUnavailable).
+// Sharing the first failure's promise collapses that to a single read +
+// single write. The entry is deleted as soon as it settles, so a genuinely
+// new failure after the storm re-picks against fresh provider status.
+const _fallbackMarkAndPickInFlight = new Map();
+
+/**
+ * Mark the failed provider unavailable and pick its fallback, coalescing
+ * concurrent calls for the same provider id onto one shared promise.
+ * Resolves to the same `{ provider, model }` shape as `pickFallbackProvider`
+ * (or null when no usable fallback exists). The mark is skipped when no
+ * fallback is available — matching the prior ordering where the original
+ * error is rethrown without benching a provider that has no recovery path.
+ *
+ * @param {object} failed — the provider that actually ran and failed
+ * @param {Error} firstError — the execution error (carries message + errorAnalysis)
+ * @returns {Promise<{ provider: object, model: string|null }|null>}
+ */
+function coalesceFallbackMarkAndPick(failed, firstError) {
+  const existing = _fallbackMarkAndPickInFlight.get(failed.id);
+  if (existing) return existing;
+
+  const work = (async () => {
+    const picked = await pickFallbackProvider(failed);
+    if (!picked) return null;
+    await markProviderUnavailableFromError(failed, firstError.message, firstError.errorAnalysis).catch(err => {
+      console.error(`❌ markUnavailable failed for ${failed.id}: ${err.message}`);
+    });
+    return picked;
+  })();
+
+  _fallbackMarkAndPickInFlight.set(failed.id, work);
+  work.finally(() => {
+    // Only clear if no newer entry replaced ours (it can't, given the
+    // synchronous set above, but guard anyway so a future caller can't be
+    // stranded on a deleted slot).
+    if (_fallbackMarkAndPickInFlight.get(failed.id) === work) {
+      _fallbackMarkAndPickInFlight.delete(failed.id);
+    }
+  });
+  return work;
+}
+
 async function pickFallbackProvider(failed) {
   const toolkit = getAIToolkitInstance();
   const providerStatus = toolkit?.services?.providerStatus;

@@ -109,10 +109,33 @@ export function createProviderService(config = {}) {
   const {
     dataDir = './data',
     providersFile = 'providers.json',
-    sampleFile = null
+    sampleFile = null,
+    // Short TTL cache on the parsed providers.json. The hot path is an
+    // N-way provider-failure storm: each failing call runs
+    // pickFallbackProvider → getAllProviders → loadProviders, which used
+    // to re-read providers.json from disk every time. A ~1s TTL collapses
+    // that storm to a single read without making config edits feel stale
+    // (provider config changes are human-paced; saveProviders refreshes
+    // the cache inline so a write is reflected immediately).
+    providersCacheTtlMs = 1000
   } = config;
 
   const PROVIDERS_PATH = join(dataDir, providersFile);
+
+  // Last successfully-loaded providers data + the wall-clock time it was
+  // cached. `providersLoadInFlight` coalesces concurrent cold reads so a
+  // simultaneous burst of callers shares one disk read instead of each
+  // racing its own. Per-service-instance (the toolkit builds one), so the
+  // cache is process-wide for the single-user server.
+  let providersCache = null;
+  let providersCacheAt = -Infinity;
+  let providersLoadInFlight = null;
+
+  function refreshProvidersCache(data) {
+    providersCache = data;
+    providersCacheAt = Date.now();
+    return data;
+  }
 
   // JSON.parse with a corrupt-file rescue. A garbled providers.json (truncated
   // write, hand-edit typo, disk corruption) would otherwise crash server boot.
@@ -129,7 +152,7 @@ export function createProviderService(config = {}) {
     }
   }
 
-  async function loadProviders() {
+  async function readProvidersFromDisk() {
     if (!existsSync(PROVIDERS_PATH)) {
       if (sampleFile && existsSync(sampleFile)) {
         const sample = await readFile(sampleFile, 'utf-8');
@@ -164,8 +187,26 @@ export function createProviderService(config = {}) {
     return data;
   }
 
+  // Cache-fronted read. Returns the cached snapshot while it's within the
+  // TTL; otherwise reads from disk, coalescing concurrent cold reads into
+  // a single `readProvidersFromDisk` so an N-way failure storm triggers at
+  // most one read per TTL window.
+  async function loadProviders() {
+    if (providersCache && (Date.now() - providersCacheAt) < providersCacheTtlMs) {
+      return providersCache;
+    }
+    if (providersLoadInFlight) return providersLoadInFlight;
+    providersLoadInFlight = readProvidersFromDisk()
+      .then(refreshProvidersCache)
+      .finally(() => { providersLoadInFlight = null; });
+    return providersLoadInFlight;
+  }
+
   async function saveProviders(data) {
     await atomicWrite(PROVIDERS_PATH, data);
+    // Keep the cache warm + consistent with disk after a write so the next
+    // read reflects the mutation without a re-read or a stale-TTL window.
+    refreshProvidersCache(data);
   }
 
   return {
