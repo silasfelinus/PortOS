@@ -53,7 +53,7 @@ function extractConstArrayBlock(src, constName) {
 // case. Assumes the file's `switch (<switchVar>)` is the only one (cases are read to
 // EOF); a second switch would loudly fold its cases in rather than fail silently.
 function extractSwitchTabs(src, switchVar) {
-  const def = src.match(new RegExp(`${switchVar}\\s*=\\s*['"]([^'"]+)['"]`));
+  const def = src.match(new RegExp(`\\b${switchVar}\\s*=\\s*['"]([^'"]+)['"]`));
   if (!def) throw new Error(`No destructuring default for "${switchVar}" found`);
   const block = src.match(new RegExp(`switch\\s*\\(\\s*${switchVar}\\s*\\)\\s*\\{([\\s\\S]*)`));
   if (!block) throw new Error(`No switch (${switchVar}) found`);
