@@ -69,13 +69,17 @@ export async function resolveMusicTrackPath(trackFilename) {
  * counts as a placed VO line", shared by the CD stitch and any future batch
  * export so the predicate can't drift across call sites.
  */
+// A line is "placed" only with a real numeric offset >= 0. `typeof === 'number'`
+// (not Number(x)) so a null offset — the sanitizer's "not placed yet" sentinel —
+// is excluded rather than coerced to 0 and stacked at the episode start
+// (Number(null) === 0). Single source of the scalar test so the two call sites
+// (selectPlacedVoLines, muxVoLines) can't drift on the placement rule.
+const isPlacedOffset = (x) => typeof x === 'number' && Number.isFinite(x) && x >= 0;
+
 export function selectPlacedVoLines(lines) {
   if (!Array.isArray(lines)) return [];
-  // `typeof === 'number'` (not Number(x)) so a null offset — the sanitizer's
-  // "not placed yet" sentinel — is excluded rather than coerced to 0 and
-  // stacked at the episode start (Number(null) === 0).
   return lines
-    .filter((l) => l?.audioFilename && typeof l.offsetSec === 'number' && Number.isFinite(l.offsetSec) && l.offsetSec >= 0)
+    .filter((l) => l?.audioFilename && isPlacedOffset(l.offsetSec))
     .map((l) => ({ path: join(PATHS.audio, l.audioFilename), offsetSec: l.offsetSec }));
 }
 
@@ -217,8 +221,7 @@ export async function muxVoLines(inputVideoPath, { voLines = [], musicPath = nul
     return { ok: false, reason: 'input video missing' };
   }
   const placed = (Array.isArray(voLines) ? voLines : []).filter((l) => (
-    // `typeof === 'number'` so a null offset isn't coerced to 0 (Number(null) === 0).
-    l?.path && existsSync(l.path) && typeof l.offsetSec === 'number' && Number.isFinite(l.offsetSec) && l.offsetSec >= 0
+    l?.path && existsSync(l.path) && isPlacedOffset(l.offsetSec)
   ));
   if (!placed.length) return { ok: false, reason: 'no placed VO lines' };
   // A missing music file is not fatal — drop to a VO-only mux rather than
