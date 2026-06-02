@@ -773,13 +773,6 @@ export async function enqueueVisualComicPage(issueId, options = {}) {
 }
 
 /**
- * Enqueue one image render for a pipeline issue's visual stage. The caller
- * records the returned jobId on the issue's stage artifact list
- * (e.g. stages.comicPages.pages[i].panels[j].imageJobId).
- *
- * Returns { jobId, mode, prompt }.
- */
-/**
  * Validate per-scene wardrobe picks at the request boundary. The generic
  * visual-image route accepts `characterAppearances` ([{ characterId,
  * wardrobeId? }]) threaded from the storyboards picker; the Zod schema only
@@ -792,6 +785,12 @@ export async function enqueueVisualComicPage(issueId, options = {}) {
  * character) worth surfacing — not a no-op. A null/absent `wardrobeId` is
  * valid (the character renders on their canonical body description); only a
  * non-empty wardrobeId is resolved against the character's wardrobes.
+ *
+ * Scoped to the request boundary on purpose: the persisted-scene paths
+ * (`enqueueStoryboardSceneVideo`, `enqueueStoryboardShotStartFrame`) and the
+ * shared `composeVisualPrompt` primitive — also used by episode-video batch
+ * stitching — keep `buildScenePrompt`'s resilient silent-drop convention so a
+ * single dangling pick can't abort a whole batch render.
  */
 export function assertCharacterAppearancesResolve(characterAppearances, characters) {
   const picks = Array.isArray(characterAppearances) ? characterAppearances : [];
@@ -822,6 +821,13 @@ export function assertCharacterAppearancesResolve(characterAppearances, characte
   }
 }
 
+/**
+ * Enqueue one image render for a pipeline issue's visual stage. The caller
+ * records the returned jobId on the issue's stage artifact list
+ * (e.g. stages.comicPages.pages[i].panels[j].imageJobId).
+ *
+ * Returns { jobId, mode, prompt }.
+ */
 export async function enqueueVisualImage(issueId, stageId, options = {}) {
   if (!VISUAL_STAGE_IDS.includes(stageId)) {
     throw new ServerError(`not a visual stage: ${stageId}`, {
