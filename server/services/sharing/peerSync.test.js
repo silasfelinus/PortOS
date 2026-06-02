@@ -39,6 +39,13 @@ vi.mock('../pipeline/issues.js', async () => ({
   mergeIssuesFromSync: vi.fn(),
 }));
 
+// manuscriptReview is dynamic-imported inside the series push/receive helpers;
+// mock both entry points so the review bundle path is exercisable.
+vi.mock('../pipeline/manuscriptReview.js', async () => ({
+  getReview: vi.fn(),
+  mergeReviewFromSync: vi.fn(),
+}));
+
 vi.mock('../mediaCollections.js', async () => ({
   getCollection: vi.fn(),
   listCollections: vi.fn(),
@@ -99,6 +106,7 @@ import { getInstanceId, getPeers } from '../instances.js';
 import { getUniverse, mergeUniversesFromSync, listUniverses } from '../universeBuilder.js';
 import { getSeries, mergeSeriesFromSync, listSeries } from '../pipeline/series.js';
 import { listIssues, mergeIssuesFromSync } from '../pipeline/issues.js';
+import { getReview, mergeReviewFromSync } from '../pipeline/manuscriptReview.js';
 import {
   getCollection,
   listCollections,
@@ -174,6 +182,10 @@ beforeEach(async () => {
   vi.mocked(getUniverse).mockReset().mockResolvedValue(undefined);
   vi.mocked(getSeries).mockReset().mockResolvedValue(undefined);
   vi.mocked(listIssues).mockReset().mockResolvedValue([]);
+  // Default: no manuscript review for any series. Tests that exercise the
+  // review-bundle path override getReview per-call.
+  vi.mocked(getReview).mockReset().mockResolvedValue({ schemaVersion: 1, comments: [] });
+  vi.mocked(mergeReviewFromSync).mockReset().mockResolvedValue({ schemaVersion: 1, comments: [] });
   // Default: no linked collection for any record. Tests that exercise the
   // bundle path override these per-call.
   vi.mocked(getCollection).mockReset().mockRejectedValue(Object.assign(new Error('Collection not found'), { code: 'NOT_FOUND' }));
@@ -1485,6 +1497,76 @@ describe('peerSync', () => {
       expect(captured.issues.map((i) => i.id)).toEqual(['i1', 'i2']);
     });
 
+    it('bundles the manuscript review with a series push so review-only edits propagate', async () => {
+      vi.mocked(getSeries).mockResolvedValue({ id: 's1', name: 'Series' });
+      vi.mocked(getReview).mockResolvedValue({
+        schemaVersion: 1,
+        comments: [{ id: 'mrc-1', problem: 'pacing', status: 'open', updatedAt: '2026-06-02T00:00:00Z' }],
+      });
+      let captured = null;
+      vi.mocked(peerFetch).mockImplementation(async (_url, opts) => {
+        captured = JSON.parse(opts.body);
+        return { ok: true, json: async () => ({}) };
+      });
+      await pushRecordToPeer({ id: 's', peerId: 'peer-a', recordKind: 'series', recordId: 's1' });
+      expect(captured.kind).toBe('series');
+      expect(captured.manuscriptReview).toBeTruthy();
+      expect(captured.manuscriptReview.comments).toHaveLength(1);
+      expect(captured.manuscriptReview.comments[0].id).toBe('mrc-1');
+    });
+
+    it('omits the manuscriptReview key when the series has an empty review', async () => {
+      vi.mocked(getSeries).mockResolvedValue({ id: 's1', name: 'Series' });
+      vi.mocked(getReview).mockResolvedValue({ schemaVersion: 1, comments: [] });
+      let captured = null;
+      vi.mocked(peerFetch).mockImplementation(async (_url, opts) => {
+        captured = JSON.parse(opts.body);
+        return { ok: true, json: async () => ({}) };
+      });
+      await pushRecordToPeer({ id: 's', peerId: 'peer-a', recordKind: 'series', recordId: 's1' });
+      expect(captured.manuscriptReview).toBeUndefined();
+    });
+
+    it('does not fetch a review for a tombstone series push', async () => {
+      vi.mocked(getSeries).mockResolvedValue({ id: 's1', name: 'Series', deleted: true, deletedAt: '2026-06-02T00:00:00Z', updatedAt: '2026-06-02T00:00:00Z' });
+      let captured = null;
+      vi.mocked(peerFetch).mockImplementation(async (_url, opts) => {
+        captured = JSON.parse(opts.body);
+        return { ok: true, json: async () => ({}) };
+      });
+      await pushRecordToPeer({ id: 's', peerId: 'peer-a', recordKind: 'series', recordId: 's1' });
+      expect(captured.manuscriptReview).toBeUndefined();
+      expect(vi.mocked(getReview)).not.toHaveBeenCalled();
+    });
+
+    it('re-pushes when only the manuscript review changes (series record byte-identical)', async () => {
+      vi.mocked(getSeries).mockResolvedValue({ id: 's1', name: 'Series' });
+      vi.mocked(getReview)
+        .mockResolvedValueOnce({
+          schemaVersion: 1,
+          comments: [{ id: 'mrc-1', problem: 'pacing', status: 'open', updatedAt: '2026-06-02T00:00:00Z' }],
+        })
+        .mockResolvedValueOnce({
+          // A comment status flip bumps updatedAt → review (and thus hash) changes.
+          schemaVersion: 1,
+          comments: [{ id: 'mrc-1', problem: 'pacing', status: 'accepted', updatedAt: '2026-06-02T01:00:00Z' }],
+        });
+      vi.mocked(peerFetch).mockResolvedValue({ ok: true, json: async () => ({}) });
+      const sub = await subscribePeer(
+        { peerId: 'peer-a', recordKind: 'series', recordId: 's1' },
+        { adoptedFromReverse: true },
+      );
+      const first = await pushRecordToPeer(sub);
+      expect(first.pushed).toBe(true);
+
+      vi.mocked(peerFetch).mockClear();
+      const refreshed = await findPeerSubscription('peer-a', 'series', 's1');
+      const second = await pushRecordToPeer(refreshed);
+      expect(second.pushed).toBe(true);
+      expect(second.reason).not.toBe('unchanged');
+      expect(peerFetch).toHaveBeenCalledTimes(1);
+    });
+
     it('bundles the linked media collection with a universe push so collection-only edits propagate', async () => {
       // Regression: collection items[] adds emit recordEvents.updated('universe', id)
       // but the universe record content itself doesn't change, so the
@@ -1900,6 +1982,58 @@ describe('peerSync', () => {
         sourceInstanceId: 'peer-a',
       });
       expect(mergeMediaCollectionsFromSync).not.toHaveBeenCalled();
+    });
+
+    it('routes a bundled manuscriptReview through mergeReviewFromSync on a series push', async () => {
+      const manuscriptReview = {
+        schemaVersion: 1,
+        comments: [{ id: 'mrc-1', problem: 'pacing', status: 'open', updatedAt: '2026-06-02T00:00:00Z' }],
+      };
+      await applyIncomingPush({
+        kind: 'series',
+        record: { id: 's1', name: 'S', deleted: false, deletedAt: null },
+        issues: [],
+        manuscriptReview,
+        assetManifest: [],
+        sourceInstanceId: 'peer-a',
+      });
+      expect(mergeReviewFromSync).toHaveBeenCalledWith('s1', manuscriptReview);
+    });
+
+    it('skips mergeReviewFromSync when no manuscriptReview is bundled', async () => {
+      await applyIncomingPush({
+        kind: 'series',
+        record: { id: 's1', name: 'S', deleted: false, deletedAt: null },
+        issues: [],
+        assetManifest: [],
+        sourceInstanceId: 'peer-a',
+      });
+      expect(mergeReviewFromSync).not.toHaveBeenCalled();
+    });
+
+    it('refuses to merge manuscriptReview when the incoming series record is a tombstone', async () => {
+      await applyIncomingPush({
+        kind: 'series',
+        record: { id: 's1', deleted: true, deletedAt: '2026-06-02T00:00:00Z', updatedAt: '2026-06-02T00:00:00Z' },
+        issues: [],
+        manuscriptReview: { schemaVersion: 1, comments: [{ id: 'mrc-1', problem: 'x', status: 'open', updatedAt: '2026-06-02T00:00:00Z' }] },
+        assetManifest: [],
+        sourceInstanceId: 'peer-a',
+      });
+      expect(mergeReviewFromSync).not.toHaveBeenCalled();
+    });
+
+    it('skips mergeReviewFromSync when the LOCAL series is ephemeral', async () => {
+      vi.mocked(getSeries).mockResolvedValue({ id: 's1', ephemeral: true });
+      await applyIncomingPush({
+        kind: 'series',
+        record: { id: 's1', name: 'S', deleted: false, deletedAt: null },
+        issues: [],
+        manuscriptReview: { schemaVersion: 1, comments: [{ id: 'mrc-1', problem: 'x', status: 'open', updatedAt: '2026-06-02T00:00:00Z' }] },
+        assetManifest: [],
+        sourceInstanceId: 'peer-a',
+      });
+      expect(mergeReviewFromSync).not.toHaveBeenCalled();
     });
 
     it('refuses to merge linkedCollection when the incoming record is a tombstone', async () => {

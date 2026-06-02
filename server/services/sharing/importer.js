@@ -33,6 +33,7 @@ import { SHARING_SCHEMA_VERSION, isManifestCompatible } from './version.js';
 import { PORTOS_SCHEMA_VERSIONS, RECORD_KIND_SCHEMA_CATEGORIES, compareSchemaVersions, scopeVersionDiff, formatVersionGap } from '../../lib/schemaVersions.js';
 import { insertSeriesWithId, updateSeries, getSeries } from '../pipeline/series.js';
 import { insertIssueWithId, updateIssue, getIssue } from '../pipeline/issues.js';
+import { mergeReviewFromSync } from '../pipeline/manuscriptReview.js';
 import { insertUniverseWithId, updateUniverse, getUniverse } from '../universeBuilder.js';
 import { applyLegacySeriesCanonToUniverse } from '../pipeline/migrateSeriesCanon.js';
 import { findOrCreateUniverseCollection, findOrCreateSeriesCollection, addItem as addCollectionItem, ERR_DUPLICATE as COLLECTION_ERR_DUPLICATE } from '../mediaCollections.js';
@@ -625,6 +626,24 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
       kind: 'issue', record: iss, label: iss.title,
       getFn: getIssue, insertFn: insertIssueWithId, updateFn: updateIssue,
     });
+  }
+
+  // Merge the bundled manuscript-review sibling doc (if the sender shipped one)
+  // into local state, LWW-per-comment. Keyed by seriesId under records/reviews/
+  // — read by seriesId rather than via `recordIds` because the review has no
+  // record id of its own. An older sender (no reviews/ folder) → null → skip;
+  // a newer sender whose review LWW-loses every comment is a harmless no-op.
+  // Best-effort: a review merge failure must not abort the manifest (the
+  // series + issues already applied, and the next sync cycle re-attempts).
+  // `mergeReviewFromSync` does not emit a record event, so no re-export loop.
+  for (const s of records.series) {
+    if (skipSeriesMerge.has(s.id)) continue;
+    const review = await readJSONFile(join(bucket.path, 'records', 'reviews', `${s.id}.json`), null, { logError: false });
+    if (review) {
+      await mergeReviewFromSync(s.id, review).catch((err) => {
+        console.log(`⚠️ sharing.importer: manuscript-review merge for ${s.id} failed: ${err.message}`);
+      });
+    }
   }
 
   // Universe and series shares can both carry a linked media collection

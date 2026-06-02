@@ -61,6 +61,7 @@ const importer = await import('./importer.js');
 const series = await import('../pipeline/series.js');
 const issues = await import('../pipeline/issues.js');
 const universeSvc = await import('../universeBuilder.js');
+const manuscriptReview = await import('../pipeline/manuscriptReview.js');
 
 // Rewrite a manifest's senderInstanceId on disk so the importer sees it as
 // coming from a remote peer. The mocked `getInstanceId` returns the same
@@ -200,6 +201,39 @@ describe('sharing round-trip', () => {
 
     const afterOverride = await series.getSeries(s.id);
     expect(afterOverride.name).toBe('Test Series (renamed)');
+  });
+
+  it('round-trips the manuscript review (Finish-the-draft comments) with a series export/import', async () => {
+    const bucket = await buckets.createBucket({ name: 'ReviewBucket', path: tempBucket, mode: 'auto-merge' });
+
+    const s = await series.createSeries({ name: 'Review Series', logline: 'A' });
+    await issues.createIssue({ seriesId: s.id, title: 'Issue 1' });
+    // Author a review comment (the "Finish the draft" pass output).
+    await manuscriptReview.seedReviewFromFindings(s.id, [
+      { problem: 'Act II sags', severity: 'medium', anchorQuote: 'the long road', issueNumber: 1 },
+    ]);
+    const before = await manuscriptReview.getReview(s.id);
+    expect(before.comments).toHaveLength(1);
+
+    const exp = await exporter.exportSeries(s.id, bucket.id);
+    // The review rides under records/reviews/<seriesId>.json, NOT in recordIds.
+    expect(existsSync(join(tempBucket, 'records', 'reviews', `${s.id}.json`))).toBe(true);
+
+    // Drop the local series (removes its folder + review file), then import.
+    await series.deleteSeries(s.id);
+    simulateRemoteSender(tempBucket, exp.filename);
+    await importer.processManifest(bucket.id, exp.filename);
+
+    const restored = await manuscriptReview.getReview(s.id);
+    expect(restored.comments).toHaveLength(1);
+    expect(restored.comments[0].problem).toBe('Act II sags');
+  });
+
+  it('skips writing a review file when the series has no review comments', async () => {
+    const bucket = await buckets.createBucket({ name: 'NoReviewBucket', path: tempBucket, mode: 'auto-merge' });
+    const s = await series.createSeries({ name: 'Empty Review Series', logline: 'A' });
+    await exporter.exportSeries(s.id, bucket.id);
+    expect(existsSync(join(tempBucket, 'records', 'reviews', `${s.id}.json`))).toBe(false);
   });
 
   it('a remote orphan series (universeId null) preserves the local universe link instead of aborting the import', async () => {

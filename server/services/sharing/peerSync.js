@@ -928,6 +928,7 @@ export async function pushRecordToPeer(sub, options = {}) {
     record: payload.record,
     issues: payload.issues ?? null,
     linkedCollection: payload.linkedCollection ?? null,
+    manuscriptReview: payload.manuscriptReview ?? null,
     assetManifest: payload.assetManifest ?? [],
   });
   if (sub.lastPushedHash && sub.lastPushedHash === hash) {
@@ -1271,6 +1272,19 @@ async function buildPushPayload(sub, sourceInstanceId) {
     const assetManifest = record.deleted === true
       ? []
       : await buildAssetManifestForSeries(record, manifestIssues, linkedCollection);
+    // Bundle the manuscript-review sibling doc (the "Finish the draft" comment
+    // set) so review-only edits — which don't move the series record — still
+    // propagate. Same reasoning as the linkedCollection bundle above: the
+    // review rides the payload AND the push hash, defeating the lastPushedHash
+    // short-circuit. Skip for tombstones (a deleted series ships no review).
+    // Dynamic import keeps manuscriptReview's arcPlanner graph off peerSync's
+    // boot load path (matches the catalogBundle pattern).
+    const manuscriptReview = record.deleted === true
+      ? null
+      : await (async () => {
+        const { getReview } = await import('../pipeline/manuscriptReview.js');
+        return getReview(sub.recordId).catch(() => null);
+      })();
     return {
       kind: 'series',
       record: sanitized,
@@ -1279,6 +1293,7 @@ async function buildPushPayload(sub, sourceInstanceId) {
       sourceInstanceId,
       portosMeta,
       ...(linkedCollection ? { linkedCollection } : {}),
+      ...(manuscriptReview && manuscriptReview.comments?.length ? { manuscriptReview } : {}),
     };
   }
   if (sub.recordKind === 'mediaCollection') {
@@ -1456,7 +1471,7 @@ export async function applyIncomingPush(payload) {
   if (!isPlainObject(payload)) {
     throw makeErr('payload must be an object', ERR_VALIDATION);
   }
-  const { kind, record, issues, linkedCollection, catalogBundle, assetManifest, sourceInstanceId, portosMeta } = payload;
+  const { kind, record, issues, linkedCollection, catalogBundle, manuscriptReview, assetManifest, sourceInstanceId, portosMeta } = payload;
   if (!PEER_SUBSCRIBABLE_KINDS.includes(kind)) {
     throw makeErr(`unknown kind: ${kind}`, ERR_VALIDATION);
   }
@@ -1593,6 +1608,18 @@ export async function applyIncomingPush(payload) {
     // subscription could overwrite the private fork's issue stages.
     if (!localEphemeral && Array.isArray(issues) && issues.length > 0) {
       await mergeIssuesFromSync(issues, { source });
+    }
+    // Merge the bundled manuscript-review sibling doc, LWW-per-comment. Same
+    // guards as the issue batch + linkedCollection below: skip for local-
+    // ephemeral records (the user opted this series out of sync) and tombstone
+    // pushes (a deleted series carries no live review). Best-effort — a review
+    // merge failure must not fail the push (the series/issues already merged).
+    // Dynamic import keeps the arcPlanner graph off peerSync's load path.
+    if (!localEphemeral && record.deleted !== true && isPlainObject(manuscriptReview)) {
+      const { mergeReviewFromSync } = await import('../pipeline/manuscriptReview.js');
+      await mergeReviewFromSync(record.id, manuscriptReview).catch((err) => {
+        console.log(`⚠️ peerSync: manuscriptReview merge failed: ${err.message}`);
+      });
     }
   } else if (kind === 'mediaCollection') {
     await mergeMediaCollectionsFromSync([record], { source });
