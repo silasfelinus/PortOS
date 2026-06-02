@@ -5,6 +5,7 @@ import toast from '../ui/Toast';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import BrailleSpinner from '../BrailleSpinner';
 import { formatBytes, timeAgo } from '../../utils/formatters';
+import { localLlmTargetKey } from '../../lib/localLlmTargetKey';
 import {
   getLocalLlmStatus, getLocalLlmCatalog, getLocalLlmHuggingFaceSearch, installLocalLlmModel,
   deleteLocalLlmModel, switchLocalLlmBackend, migrateLocalLlmBackend, installLocalLlmBackend, upgradeLocalLlmBackend, controlOllamaService
@@ -345,7 +346,7 @@ export function LocalLlmTab() {
   const selectedOllamaStartupAction = selectedData?.service?.supported ? 'enable' : 'start';
   const selectedOllamaStartupLabel = selectedData?.service?.supported ? 'Run at Startup' : 'Start Ollama';
   const installedModels = selectedData?.models || [];
-  const compareTargetKeys = useMemo(() => new Set(compareTargets.map((t) => `${t.backend}\n${t.modelId}`)), [compareTargets]);
+  const compareTargetKeys = useMemo(() => new Set(compareTargets.map(localLlmTargetKey)), [compareTargets]);
   const catalogCategories = useMemo(() => {
     const counts = new Map();
     for (const model of catalog) counts.set(model.category || 'chat', (counts.get(model.category || 'chat') || 0) + 1);
@@ -401,14 +402,14 @@ export function LocalLlmTab() {
       // resolves undefined on failure, so only prune on a real success) — else
       // openCompare ships a dead modelId the playground would error on.
       if (!result) return;
-      const key = `${selected}\n${modelId}`;
-      setCompareTargets((prev) => prev.filter((t) => `${t.backend}\n${t.modelId}` !== key));
+      const key = localLlmTargetKey({ backend: selected, modelId });
+      setCompareTargets((prev) => prev.filter((t) => localLlmTargetKey(t) !== key));
     });
   const toggleCompareTarget = (backend, modelId) => {
-    const key = `${backend}\n${modelId}`;
+    const key = localLlmTargetKey({ backend, modelId });
     setCompareTargets((prev) => {
-      if (prev.some((t) => `${t.backend}\n${t.modelId}` === key)) {
-        return prev.filter((t) => `${t.backend}\n${t.modelId}` !== key);
+      if (prev.some((t) => localLlmTargetKey(t) === key)) {
+        return prev.filter((t) => localLlmTargetKey(t) !== key);
       }
       if (prev.length >= 6) {
         toast.error('Compare up to 6 models at once');
@@ -782,7 +783,7 @@ export function LocalLlmTab() {
               <label className="shrink-0 flex items-center" title={`Include ${m.name || m.id} in a comparison`}>
                 <input
                   type="checkbox"
-                  checked={compareTargetKeys.has(`${selected}\n${m.id}`)}
+                  checked={compareTargetKeys.has(localLlmTargetKey({ backend: selected, modelId: m.id }))}
                   onChange={() => toggleCompareTarget(selected, m.id)}
                   className="h-4 w-4 accent-port-accent"
                   aria-label={`Select ${m.name || m.id} for comparison`}

@@ -4,6 +4,7 @@ import { ArrowLeft, ArrowRightLeft, Check, Clock, Copy, Gauge, MessageSquare, Pl
 import BrailleSpinner from '../components/BrailleSpinner';
 import toast from '../components/ui/Toast';
 import { copyToClipboard } from '../lib/clipboard';
+import { localLlmTargetKey } from '../lib/localLlmTargetKey';
 import { compareLocalLlmModels, getLocalLlmStatus, testLocalLlmModel } from '../services/api';
 
 const BACKEND_LABEL = { ollama: 'Ollama', lmstudio: 'LM Studio' };
@@ -18,10 +19,6 @@ function formatMs(ms) {
 function formatRate(value) {
   if (!Number.isFinite(value)) return 'n/a';
   return `${value.toFixed(value >= 10 ? 1 : 2)} chars/s`;
-}
-
-function targetKey(target) {
-  return `${target.backend}\n${target.modelId}`;
 }
 
 // Number inputs hold raw strings; an emptied field is '' and `Number('')` is 0,
@@ -172,15 +169,15 @@ export default function LocalLlmPlayground() {
     setSelectedTargets([{ backend: installedTargets[0].backend, modelId: installedTargets[0].modelId }]);
   }, [installedTargets, selectedTargets.length]);
 
-  const selectedKeys = useMemo(() => new Set(selectedTargets.map(targetKey)), [selectedTargets]);
+  const selectedKeys = useMemo(() => new Set(selectedTargets.map(localLlmTargetKey)), [selectedTargets]);
   const primaryTarget = selectedTargets[0] || null;
   const canRunChat = Boolean(primaryTarget && prompt.trim());
   const canCompare = selectedTargets.length > 0 && prompt.trim();
 
   const toggleTarget = (target) => {
-    const key = targetKey(target);
+    const key = localLlmTargetKey(target);
     setSelectedTargets((prev) => {
-      if (prev.some((t) => targetKey(t) === key)) return prev.filter((t) => targetKey(t) !== key);
+      if (prev.some((t) => localLlmTargetKey(t) === key)) return prev.filter((t) => localLlmTargetKey(t) !== key);
       if (prev.length >= 6) {
         toast.error('Compare up to 6 models at once');
         return prev;
@@ -278,10 +275,10 @@ export default function LocalLlmPlayground() {
                     <div key={backend} className="space-y-2">
                       <div className="text-xs text-gray-500">{BACKEND_LABEL[backend]}</div>
                       {models.map((target) => {
-                        const selected = selectedKeys.has(targetKey(target));
+                        const selected = selectedKeys.has(localLlmTargetKey(target));
                         return (
                           <button
-                            key={targetKey(target)}
+                            key={localLlmTargetKey(target)}
                             onClick={() => toggleTarget(target)}
                             className={`w-full min-h-12 flex items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors ${selected ? 'border-port-accent/60 bg-port-accent/10' : 'border-port-border bg-port-bg hover:border-gray-600'}`}
                           >

@@ -37,6 +37,7 @@ export * from './clipboard.js';
 export * from './compareHelpers.js';
 export * from './genUtils.js';
 export * from './joinInfluenceList.js';
+export * from './localLlmTargetKey.js';
 export * from './loopbackHost.js';
 export * from './mediaNavigation.js';
 export * from './sameJsonShape.js';
