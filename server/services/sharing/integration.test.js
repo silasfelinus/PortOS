@@ -268,6 +268,27 @@ describe('sharing round-trip', () => {
     expect(restored.comments).toHaveLength(1);
   });
 
+  it('ignores a stale review file the manifest did not declare (no resurrection of cleared comments)', async () => {
+    const bucket = await buckets.createBucket({ name: 'StaleReviewBucket', path: tempBucket, mode: 'auto-merge' });
+    const s = await series.createSeries({ name: 'Stale Review Series', logline: 'A' });
+    await issues.createIssue({ seriesId: s.id, title: 'Issue 1' });
+    // Export with NO review → manifest declares reviewRefs: [] and writes no file.
+    const exp = await exporter.exportSeries(s.id, bucket.id);
+    // Simulate a lingering stale review file from an earlier export (the
+    // exporter writes but never deletes review files).
+    mkdirSync(join(tempBucket, 'records', 'reviews'), { recursive: true });
+    writeFileSync(
+      join(tempBucket, 'records', 'reviews', `${s.id}.json`),
+      JSON.stringify({ schemaVersion: 1, comments: [{ id: 'mrc-stale', problem: 'old note', status: 'open', updatedAt: '2026-06-02T00:00:00Z' }] }),
+    );
+    await series.deleteSeries(s.id);
+    simulateRemoteSender(tempBucket, exp.filename);
+    await importer.processManifest(bucket.id, exp.filename);
+    // The manifest declared no review, so the lingering file must NOT be merged.
+    const after = await manuscriptReview.getReview(s.id);
+    expect(after.comments).toHaveLength(0);
+  });
+
   it('keeps a manifest retryable when the bundled review merge fails (no silent drop)', async () => {
     const bucket = await buckets.createBucket({ name: 'ReviewFailBucket', path: tempBucket, mode: 'auto-merge' });
     const s = await series.createSeries({ name: 'Review Fail Series', logline: 'A' });

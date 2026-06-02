@@ -628,20 +628,26 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
     });
   }
 
-  // Merge the bundled manuscript-review sibling doc (if the sender shipped one)
-  // into local state, LWW-per-comment. Keyed by seriesId under records/reviews/
-  // — read by seriesId rather than via `recordIds` because the review has no
-  // record id of its own. An older sender (no reviews/ folder) → null → skip;
-  // a newer sender whose review LWW-loses every comment is a harmless no-op.
-  // `mergeReviewFromSync` does not emit a record event, so no re-export loop.
+  // Merge the bundled manuscript-review sibling doc into local state,
+  // LWW-per-comment. Keyed by seriesId under records/reviews/ — read by
+  // seriesId rather than via `recordIds` because the review has no record id of
+  // its own. The manifest's `reviewRefs` is AUTHORITATIVE: only merge a review
+  // file the THIS manifest declared. The exporter writes (but never deletes) a
+  // review file, so a stale file from a prior export can linger in the bucket;
+  // a later manifest that shipped an emptied review declares `reviewRefs: []`,
+  // and reading the lingering file anyway would resurrect dismissed comments.
+  // Legacy manifests (no reviewRefs) → empty set → nothing merged (those
+  // senders never bundled a review file either).
   // A merge FAILURE (transient write/parse error) must NOT silently advance the
   // cursor — the review has no independent reconciliation cycle (it only rides
   // the series push/export), so a swallowed failure would drop it permanently.
   // Surface it as a pending condition (like recordImportFailures /
   // collectionPending*) so processManifest leaves the manifest retryable.
+  // `mergeReviewFromSync` does not emit a record event, so no re-export loop.
+  const declaredReviews = new Set((Array.isArray(manifest.reviewRefs) ? manifest.reviewRefs : []).filter(isSafeRecordId));
   const reviewMergeFailures = [];
   for (const s of records.series) {
-    if (skipSeriesMerge.has(s.id)) continue;
+    if (skipSeriesMerge.has(s.id) || !declaredReviews.has(s.id)) continue;
     const review = await readJSONFile(join(bucket.path, 'records', 'reviews', `${s.id}.json`), null, { logError: false });
     if (review) {
       await mergeReviewFromSync(s.id, review).catch((err) => {
