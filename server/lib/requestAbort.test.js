@@ -32,6 +32,13 @@ describe('abortSignalFromResponse', () => {
     expect(signal.aborted).toBe(false);
   });
 
+  it('aborts up front when the response was already destroyed before finishing', () => {
+    // Client hung up before the helper ran — the close listener would never fire,
+    // so the signal must already be aborted.
+    const signal = abortSignalFromResponse(fakeRes({ destroyed: true }));
+    expect(signal.aborted).toBe(true);
+  });
+
   it('tolerates a missing response object', () => {
     expect(abortSignalFromResponse(undefined).aborted).toBe(false);
   });

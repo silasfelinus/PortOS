@@ -17,7 +17,13 @@
 // outside the request lifecycle without a try/catch.
 export function abortSignalFromResponse(res) {
   const controller = new AbortController();
-  if (res?.writableEnded || res?.destroyed) return controller.signal;
+  if (res?.writableEnded) return controller.signal; // finished normally — never a cancel
+  // Already torn down before the response finished: the client is gone, so the
+  // `close` listener below would never see the event — abort up front.
+  if (res?.destroyed) {
+    controller.abort();
+    return controller.signal;
+  }
   res?.once?.('close', () => {
     if (!res.writableEnded) controller.abort();
   });
