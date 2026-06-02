@@ -129,3 +129,60 @@ describe('conflictJournal', () => {
     expect(await cj.getSyncBaseHash('universe', 'nonexistent')).toBeNull();
   });
 });
+
+// A minimal collection-shaped record (sanitizeRecordForWire('mediaCollection')
+// needs an id; the merge LWWs name/description/coverKey/universeId/seriesId and
+// union-merges items). `items`/`updatedAt` must NOT affect the conflict hash.
+const coll = (over = {}) => ({
+  id: 'c-1', name: 'Bucket', description: 'd', coverKey: null, universeId: null, seriesId: null,
+  items: [{ kind: 'image', ref: 'a.png', addedAt: '2026-05-01T00:00:00Z' }],
+  createdAt: '2026-05-01T00:00:00Z', updatedAt: '2026-05-01T00:00:00Z', ...over,
+});
+
+describe('conflictJournal — mediaCollection scalar-subset hashing', () => {
+  beforeEach(() => {
+    rmSync(TEST_DATA_ROOT, { recursive: true, force: true });
+    mkdirSync(TEST_DATA_ROOT, { recursive: true });
+    cj.__resetBaseHashCacheForTests();
+  });
+
+  it('hash ignores items and updatedAt (union-merged / LWW-key, never lost)', () => {
+    const base = cj.contentHashForRecord('mediaCollection', coll());
+    // Add an item + bump updatedAt — exactly what addItem does. Same scalars.
+    const withItem = cj.contentHashForRecord('mediaCollection', coll({
+      items: [
+        { kind: 'image', ref: 'a.png', addedAt: '2026-05-01T00:00:00Z' },
+        { kind: 'image', ref: 'b.png', addedAt: '2026-05-02T00:00:00Z' },
+      ],
+      updatedAt: '2026-05-02T00:00:00Z',
+    }));
+    expect(withItem).toBe(base);
+  });
+
+  it('hash changes when a tracked scalar (name) changes', () => {
+    expect(cj.contentHashForRecord('mediaCollection', coll({ name: 'Renamed' })))
+      .not.toBe(cj.contentHashForRecord('mediaCollection', coll()));
+  });
+
+  it('item-only divergence is NOT a 3-way conflict (no false-positive journal)', async () => {
+    await cj.setSyncBaseHash('mediaCollection', 'c-1', cj.contentHashForRecord('mediaCollection', coll()));
+    // Both peers added different items; neither touched a scalar. updatedAt bumps.
+    const local = coll({ items: [{ kind: 'image', ref: 'L.png', addedAt: '2026-05-02T00:00:00Z' }], updatedAt: '2026-05-02T00:00:00Z' });
+    const remote = coll({ items: [{ kind: 'image', ref: 'R.png', addedAt: '2026-05-03T00:00:00Z' }], updatedAt: '2026-05-03T00:00:00Z' });
+    await cj.maybeJournalBeforeOverwrite({ kind: 'mediaCollection', id: 'c-1', local, remote, source: { via: 'sync' } });
+    expect(await pendingEntries()).toHaveLength(0);
+  });
+
+  it('true scalar divergence (both renamed) journals exactly one entry', async () => {
+    await cj.setSyncBaseHash('mediaCollection', 'c-1', cj.contentHashForRecord('mediaCollection', coll()));
+    const local = coll({ name: 'LOCAL name', updatedAt: '2026-05-02T00:00:00Z' });
+    const remote = coll({ name: 'REMOTE name', updatedAt: '2026-05-03T00:00:00Z' });
+    await cj.maybeJournalBeforeOverwrite({ kind: 'mediaCollection', id: 'c-1', local, remote, source: { via: 'sync' } });
+    const entries = await pendingEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].localSnapshot.name).toBe('LOCAL name');
+    expect(entries[0].diffSummary.some((d) => d.field === 'name')).toBe(true);
+    // diffSummary only offers restorable content fields, never items/updatedAt.
+    expect(entries[0].diffSummary.some((d) => d.field === 'items' || d.field === 'updatedAt')).toBe(false);
+  });
+});

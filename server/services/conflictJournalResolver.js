@@ -29,6 +29,7 @@ import { isSafeRecordId } from '../lib/validation.js';
 import { conflictJournalStore, RESTORABLE_FIELDS } from '../lib/conflictJournal.js';
 import { updateUniverse, ERR_NOT_FOUND as UNIVERSE_NOT_FOUND } from './universeBuilder.js';
 import { updateSeries, ERR_NOT_FOUND as SERIES_NOT_FOUND } from './pipeline/series.js';
+import { updateCollection, getCollection, ERR_NOT_FOUND as COLLECTION_NOT_FOUND } from './mediaCollections.js';
 
 export const ERR_NOT_FOUND = 'CONFLICT_JOURNAL_NOT_FOUND';
 export const ERR_VALIDATION = 'CONFLICT_JOURNAL_VALIDATION';
@@ -67,7 +68,7 @@ async function applyToRecord(kind, recordId, patch) {
   // resolution. Translate the services' not-found codes into ERR_TARGET_GONE so
   // the route maps it to a clean 409 ("discard the entry") instead of a 500.
   const translateGone = (err) => {
-    if (err?.code === UNIVERSE_NOT_FOUND || err?.code === SERIES_NOT_FOUND) {
+    if (err?.code === UNIVERSE_NOT_FOUND || err?.code === SERIES_NOT_FOUND || err?.code === COLLECTION_NOT_FOUND) {
       throw makeErr(`The ${kind} this conflict targets no longer exists — discard the entry.`, ERR_TARGET_GONE);
     }
     throw err;
@@ -78,6 +79,18 @@ async function applyToRecord(kind, recordId, patch) {
     await updateUniverse(recordId, () => patch).catch(translateGone);
   } else if (kind === 'series') {
     await updateSeries(recordId, patch).catch(translateGone);
+  } else if (kind === 'mediaCollection') {
+    // A linked collection (universeId/seriesId set) locks its `name` to the
+    // owner record — updateCollection rejects a name change, and a name
+    // "conflict" on such a collection is really an owner-rename cascade
+    // artifact (the universe/series conflict is journaled separately). Drop
+    // `name` from the patch for a linked collection so restore still applies
+    // the freely-editable scalars (description, coverKey) instead of 500ing.
+    // A standalone collection restores all three.
+    const cur = await getCollection(recordId, { includeDeleted: true }).catch(translateGone);
+    const { name: _lockedName, ...withoutName } = patch;
+    const effective = (cur?.universeId || cur?.seriesId) ? withoutName : patch;
+    if (Object.keys(effective).length > 0) await updateCollection(recordId, effective).catch(translateGone);
   } else {
     throw makeErr(`Unsupported conflict kind: ${kind}`, ERR_VALIDATION);
   }
