@@ -56,17 +56,46 @@ export const conflictJournalStore = () => store();
 
 // ---- content hashing (matches the sender/receiver wire convention) ----
 
+// mediaCollection divergence is detected over a SCALAR SUBSET, not the whole
+// wire record. The merge (`mergeMediaCollectionsFromSync`) union-merges `items`
+// — neither side ever loses a render it knows about — and bumps `updatedAt` on
+// every `addItem`. So hashing the full record would false-positive whenever two
+// peers independently added different items to the same collection (items +
+// updatedAt differ, yet NOTHING was overwritten). The journal only cares about
+// the LWW-overwritten scalars; we hash exactly those so an item-only divergence
+// is invisible to detection while a real name/description/cover/link overwrite
+// still trips it. `updatedAt` is the LWW *key*, not content, so it's excluded
+// too. Soft-delete fields stay in (a remote delete that erases a diverged local
+// edit is a real conflict — mirrors the universe/series delete-vs-edit case).
+const MEDIA_COLLECTION_SCALAR_FIELDS = Object.freeze(['name', 'description', 'coverKey', 'universeId', 'seriesId']);
+
 /**
- * sha256 of the canonical wire projection. Reuses sanitizeRecordForWire +
+ * sha256 of the canonical content projection. Reuses sanitizeRecordForWire +
  * canonicalStringify so the sender hashing what it pushes and the receiver
- * hashing its local copy agree byte-for-byte. Returns null when the record has
- * no wire form (ephemeral non-tombstone, or invalid) — callers treat a null
- * hash as "cannot compare".
+ * hashing its local copy agree byte-for-byte. For mediaCollection the wire form
+ * is further narrowed to its overwritable scalars (see
+ * MEDIA_COLLECTION_SCALAR_FIELDS) — both sides apply the same narrowing, so the
+ * base hash stays consistent across peers. Returns null when the record has no
+ * wire form (ephemeral non-tombstone, or invalid) — callers treat a null hash
+ * as "cannot compare".
  */
 export function contentHashForRecord(kind, record) {
   const wire = sanitizeRecordForWire(kind, record);
   if (!wire) return null;
-  return createHash('sha256').update(canonicalStringify(wire)).digest('hex');
+  const hashInput = kind === 'mediaCollection' ? projectCollectionScalars(wire) : wire;
+  return createHash('sha256').update(canonicalStringify(hashInput)).digest('hex');
+}
+
+// Narrow a wire-form collection to the scalars whose overwrite the journal
+// tracks, plus the (already-normalized) soft-delete pair. `items`/`updatedAt`/
+// `id` and all other fields are dropped. canonicalStringify sorts keys, so the
+// insertion order here is irrelevant to the resulting hash.
+function projectCollectionScalars(wire) {
+  const out = {};
+  for (const f of MEDIA_COLLECTION_SCALAR_FIELDS) if (f in wire) out[f] = wire[f];
+  out.deleted = wire.deleted === true;
+  out.deletedAt = out.deleted ? (wire.deletedAt ?? null) : null;
+  return out;
 }
 
 // ---- base-hash side store (in-memory cache, batched write-through) ----
@@ -158,6 +187,11 @@ export async function detectConflict({ kind, id, local, remote }) {
 export const RESTORABLE_FIELDS = Object.freeze({
   universe: ['name', 'starterPrompt', 'logline', 'premise', 'styleNotes', 'categories', 'compositeSheets', 'influences', 'characters', 'places', 'objects'],
   series: ['name', 'logline', 'premise', 'styleNotes', 'titleLogo', 'author', 'stylePromptOverride', 'stylePromptOverrideMode', 'targetFormat', 'issueCountTarget', 'arc', 'seasons'],
+  // mediaCollection restores only the user-authored content scalars. `items`
+  // are union-merged (never lost, nothing to restore); `universeId`/`seriesId`
+  // are structural links managed by the link/unlink helpers, not `updateCollection`
+  // patches — so they're hashed for DETECTION but not offered for restore.
+  mediaCollection: ['name', 'description', 'coverKey'],
 });
 
 // Top-level shallow diff over the kind's restorable content fields — enough for

@@ -19,6 +19,7 @@ vi.mock('crypto', async () => {
 
 const resolver = await import('./conflictJournalResolver.js');
 const universeSvc = await import('./universeBuilder.js');
+const collSvc = await import('./mediaCollections.js');
 const cj = await import('../lib/conflictJournal.js');
 
 afterAll(() => rmSync(TEST_DATA_ROOT, { recursive: true, force: true }));
@@ -110,5 +111,45 @@ describe('conflictJournalResolver', () => {
   it('deleteConflict rejects a path-traversal id without probing the filesystem', async () => {
     await expect(resolver.deleteConflict('../../etc/passwd')).rejects.toMatchObject({ code: resolver.ERR_NOT_FOUND });
     await expect(resolver.deleteConflict('..')).rejects.toMatchObject({ code: resolver.ERR_NOT_FOUND });
+  });
+
+  // --- mediaCollection conflicts ---
+
+  const seedCollectionEntry = async (recordId, localSnapshot) => {
+    const id = `entry-${++uuidCounter}`;
+    await cj.conflictJournalStore().saveOne(id, {
+      id, recordKind: 'mediaCollection', recordId, detectedAt: '2026-05-01T00:00:00Z',
+      source: { via: 'sync' }, baseHash: 'b', localHash: 'l', remoteHash: 'r',
+      localSnapshot, remoteSnapshot: {}, localUpdatedAt: null, remoteUpdatedAt: null,
+      diffSummary: [], status: 'pending', resolvedAt: null, resolution: null,
+    });
+    return id;
+  };
+
+  it('restore-all re-applies a STANDALONE collection’s archived scalars (name, description)', async () => {
+    const c = await collSvc.createCollection({ name: 'Remote Name', description: 'remote desc' });
+    const entryId = await seedCollectionEntry(c.id, { id: c.id, name: 'Local Name', description: 'local desc', coverKey: null });
+    await resolver.resolveConflict(entryId, { action: 'restore-all' });
+    const fresh = await collSvc.getCollection(c.id);
+    expect(fresh.name).toBe('Local Name');      // standalone → name restorable
+    expect(fresh.description).toBe('local desc');
+  });
+
+  it('restore-all on a LINKED collection skips the locked name but applies description', async () => {
+    const u = await universeSvc.createUniverse({ name: 'Verse' });
+    const c = await collSvc.findOrCreateUniverseCollection({ universeId: u.id, universeName: 'Verse', description: 'remote desc' });
+    const ownerName = c.name; // universe-derived, locked
+    const entryId = await seedCollectionEntry(c.id, { id: c.id, name: 'Stale Name', description: 'local desc', coverKey: null });
+    // Must NOT throw on the locked name — name is dropped, description applies.
+    await resolver.resolveConflict(entryId, { action: 'restore-all' });
+    const fresh = await collSvc.getCollection(c.id);
+    expect(fresh.name).toBe(ownerName);          // unchanged (locked to universe)
+    expect(fresh.description).toBe('local desc'); // freely-editable scalar restored
+  });
+
+  it('translates a deleted collection target into ERR_TARGET_GONE', async () => {
+    const entryId = await seedCollectionEntry('ghost-collection', { id: 'ghost-collection', name: 'Ghost', description: 'x', coverKey: null });
+    await expect(resolver.resolveConflict(entryId, { action: 'restore-all' }))
+      .rejects.toMatchObject({ code: resolver.ERR_TARGET_GONE });
   });
 });

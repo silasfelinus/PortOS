@@ -30,13 +30,24 @@ vi.mock('crypto', async () => {
 });
 
 const svc = await import('./mediaCollections.js');
+const cj = await import('../lib/conflictJournal.js');
 
 // Wipe + recreate the collections dir before every test so each starts clean.
 // The empty dir means collectionStore's readdir is the source of truth and its
 // process-local knownIds fallback never leaks ids across tests.
+//
+// Also wipe the conflict-journal + base-hash side store and reset the
+// conflictJournal in-memory base-hash cache: mergeMediaCollectionsFromSync now
+// seeds/advances per-collection base hashes, and that Map is module-level — so
+// without a reset a base hash seeded by an earlier test's insert would bleed
+// into a later test that reuses the same collection id and spuriously trip the
+// 3-way divergence detector (base==null is the correct first-merge state).
 function resetStore() {
   rmSync(COLLECTIONS_DIR, { recursive: true, force: true });
+  rmSync(join(TEST_DATA_ROOT, 'sharing'), { recursive: true, force: true });
+  rmSync(join(TEST_DATA_ROOT, 'conflict-journal'), { recursive: true, force: true });
   mkdirSync(COLLECTIONS_DIR, { recursive: true });
+  cj.__resetBaseHashCacheForTests();
   uuidCounter = 0;
 }
 
@@ -1423,6 +1434,71 @@ describe('mergeMediaCollectionsFromSync', () => {
     // The 08:00 slash-format timestamp is earlier than 10:00 ISO; numeric
     // compare picks it. Lexicographic compare would have picked the ISO one.
     expect(Date.parse(merged.items[0].addedAt)).toBe(Date.parse('05/22/2026 08:00:00 UTC'));
+  });
+});
+
+describe('mergeMediaCollectionsFromSync — conflict journal', () => {
+  const baseColl = (over = {}) => ({
+    id: 'c1', name: 'Bucket', description: 'd', coverKey: null,
+    universeId: null, seriesId: null,
+    items: [{ kind: 'image', ref: 'a.png', addedAt: '2026-05-01T00:00:00Z' }],
+    createdAt: '2026-05-01T00:00:00Z', updatedAt: '2026-05-01T00:00:00Z', ...over,
+  });
+  const journalEntries = () => cj.conflictJournalStore().loadAll();
+
+  it('seeds a base hash on first insert (new record) so a future divergence is detectable', async () => {
+    await svc.mergeMediaCollectionsFromSync([baseColl()]);
+    expect(await cj.getSyncBaseHash('mediaCollection', 'c1'))
+      .toBe(cj.contentHashForRecord('mediaCollection', baseColl()));
+    expect(await journalEntries()).toHaveLength(0);
+  });
+
+  it('item-only divergence does NOT journal (items union-merged, never lost)', async () => {
+    // Establish a shared base, then both sides add different items only.
+    await svc.mergeMediaCollectionsFromSync([baseColl()]);
+    // Local adds an item directly on disk; remote arrives with a different item.
+    await seedState({ collections: [baseColl({
+      items: [
+        { kind: 'image', ref: 'a.png', addedAt: '2026-05-01T00:00:00Z' },
+        { kind: 'image', ref: 'local.png', addedAt: '2026-05-02T00:00:00Z' },
+      ],
+      updatedAt: '2026-05-02T00:00:00Z',
+    })] });
+    const before = (await journalEntries()).length;
+    await svc.mergeMediaCollectionsFromSync([baseColl({
+      items: [
+        { kind: 'image', ref: 'a.png', addedAt: '2026-05-01T00:00:00Z' },
+        { kind: 'image', ref: 'remote.png', addedAt: '2026-05-03T00:00:00Z' },
+      ],
+      updatedAt: '2026-05-03T00:00:00Z',
+    })]);
+    expect((await journalEntries()).length).toBe(before);
+    // ...and both items survived the union (the whole reason scalars-only is safe).
+    const [merged] = await svc.listCollections();
+    expect(merged.items.map((i) => i.ref).sort()).toEqual(['a.png', 'local.png', 'remote.png']);
+  });
+
+  it('journals when a newer remote overwrites a diverged local scalar (name)', async () => {
+    await svc.mergeMediaCollectionsFromSync([baseColl()]);          // seed base
+    await seedState({ collections: [baseColl({ name: 'LOCAL rename', updatedAt: '2026-05-02T00:00:00Z' })] });
+    await svc.mergeMediaCollectionsFromSync([baseColl({ name: 'REMOTE rename', updatedAt: '2026-05-03T00:00:00Z' })]);
+    const entries = await journalEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ recordKind: 'mediaCollection', recordId: 'c1', status: 'pending' });
+    expect(entries[0].localSnapshot.name).toBe('LOCAL rename');
+    // Remote won LWW; local archived.
+    const [merged] = await svc.listCollections();
+    expect(merged.name).toBe('REMOTE rename');
+  });
+
+  it('does NOT journal when local wins LWW (its scalars are kept, nothing lost)', async () => {
+    await svc.mergeMediaCollectionsFromSync([baseColl()]);          // seed base
+    await seedState({ collections: [baseColl({ name: 'LOCAL rename', updatedAt: '2026-05-05T00:00:00Z' })] });
+    // Older remote — local wins; no overwrite, no journal.
+    await svc.mergeMediaCollectionsFromSync([baseColl({ name: 'REMOTE rename', updatedAt: '2026-05-03T00:00:00Z' })]);
+    expect(await journalEntries()).toHaveLength(0);
+    const [merged] = await svc.listCollections();
+    expect(merged.name).toBe('LOCAL rename');
   });
 });
 

@@ -1006,7 +1006,12 @@ export async function pushRecordToPeer(sub, options = {}) {
   // like a divergence. Best-effort; never block the push result on it — the
   // stamp + filesystem flush run fire-and-forget so a slow disk can't delay the
   // push loop. The `.catch()` keeps the rejection from escaping as unhandled.
-  if ((sub.recordKind === 'universe' || sub.recordKind === 'series') && payload.record) {
+  if (PEER_SUBSCRIBABLE_KINDS.includes(sub.recordKind) && payload.record) {
+    // For mediaCollection, contentHashForRecord hashes only the scalar subset
+    // (items are union-merged on the receiver, so the post-push collections are
+    // NOT byte-identical — but their scalars converge, which is what the base
+    // hash tracks). For universe/series it's the full wire record. Same call
+    // either way; the narrowing lives in contentHashForRecord.
     setSyncBaseHash(sub.recordKind, sub.recordId, contentHashForRecord(sub.recordKind, payload.record))
       .then(() => flushBaseHashes())
       .catch((err) => console.log(`⚠️ peerSync: base-hash stamp after push failed: ${err?.message || err}`));

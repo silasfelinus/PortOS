@@ -29,6 +29,9 @@ import { createCollectionStore } from '../lib/collectionStore.js';
 import { ITEM_KIND, REF_MAX_LENGTH, itemKey } from '../lib/mediaItemKey.js';
 import { sanitizeOrigin } from '../lib/sharingOrigin.js';
 import { emitRecordUpdated, emitRecordDeleted } from './sharing/recordEvents.js';
+import {
+  maybeJournalBeforeOverwrite, setSyncBaseHash, contentHashForRecord, flushBaseHashes,
+} from '../lib/conflictJournal.js';
 
 export const ERR_NOT_FOUND = 'NOT_FOUND';
 export const ERR_DUPLICATE = 'DUPLICATE';
@@ -923,7 +926,7 @@ export async function pruneTombstonedCollections(olderThanMs) {
  * against the SAME collection can't interleave, while merges of DIFFERENT
  * collections proceed in parallel.
  */
-export async function mergeMediaCollectionsFromSync(remoteCollections) {
+export async function mergeMediaCollectionsFromSync(remoteCollections, { source = { via: 'sync', peerId: null } } = {}) {
   if (!Array.isArray(remoteCollections)) return { applied: false, count: 0 };
   let changed = 0;
   for (const remote of remoteCollections) {
@@ -933,6 +936,9 @@ export async function mergeMediaCollectionsFromSync(remoteCollections) {
       const local = await store().loadOne(sanitized.id);
       if (!local) {
         await store().saveOneNow(sanitized.id, sanitized);
+        // No local counterpart to lose — nothing to journal, but seed the base
+        // hash so a FUTURE scalar divergence on this collection is detected.
+        await setSyncBaseHash('mediaCollection', sanitized.id, contentHashForRecord('mediaCollection', sanitized));
         return true;
       }
       const mergedItems = mergeCollectionItems(local.items, sanitized.items);
@@ -948,6 +954,19 @@ export async function mergeMediaCollectionsFromSync(remoteCollections) {
       const localTs = local.updatedAt || '';
       const remoteTs = sanitized.updatedAt || '';
       const remoteWins = compareNewerWins(remoteTs, localTs);
+      if (remoteWins) {
+        // Remote's scalars are about to overwrite local's. Non-blocking conflict
+        // journal: archive the about-to-be-lost local version when BOTH sides
+        // diverged from the last synced base — but only over the SCALAR SUBSET
+        // (contentHashForRecord narrows mediaCollection to its overwritable
+        // scalars, so an item-only divergence — items are union-merged, never
+        // lost — does NOT false-positive here). Always advances the base hash
+        // (clean or conflict) so the next snapshot cycle doesn't re-journal the
+        // same divergence. Never throws into the merge. Skipped when local wins:
+        // local scalars are KEPT, so there's nothing to lose (and the base stays
+        // put — it advances only on an accepted overwrite, mirroring universe).
+        await maybeJournalBeforeOverwrite({ kind: 'mediaCollection', id: sanitized.id, local, remote: sanitized, source });
+      }
       const scalarSource = remoteWins ? sanitized : local;
       // Cover key: only adopt the scalar source's coverKey if it points at an
       // item that survives the union — otherwise sanitizeCollection on next
@@ -975,6 +994,9 @@ export async function mergeMediaCollectionsFromSync(remoteCollections) {
     });
     if (didChange) changed++;
   }
+  // Persist the batched conflict-journal base-hash updates accumulated above in
+  // one write (seeds on insert + advances on accepted overwrite).
+  await flushBaseHashes();
   if (changed === 0) return { applied: false, count: 0 };
   return { applied: true, count: changed };
 }
