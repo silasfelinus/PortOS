@@ -240,6 +240,8 @@ export async function runLocalLlmTest({
     // A timeout/abort mid-stream still has tokens worth keeping — surface what the
     // model already streamed (attached to the error by streamChatCompletion) instead
     // of discarding it. Persist it on the failed run record too so /runs replay shows it.
+    // (TTFT is best-effort here: a reasoning-only partial leaves firstChunkAt unset,
+    // since reasoning deltas don't mark first-chunk timing during the stream.)
     const partialText = typeof err?.partialOutput === 'string' ? err.partialOutput : '';
     if (runId) {
       await finalizeRunRecord({
