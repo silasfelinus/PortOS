@@ -4,6 +4,7 @@ import BrailleSpinner from '../../BrailleSpinner';
 import InlineConfirmRow from '../../ui/InlineConfirmRow';
 import LinkChip from './LinkChip';
 import { bucketColor, BUCKET_COLORS, BUCKET_COLOR_KEYS, LINK_DND_TYPE, BUCKET_DND_TYPE } from './bucketColors';
+import { chipInsertIndex } from './bucketReorder';
 
 /**
  * A single bucket (bookmark group): colored header with inline edit/delete,
@@ -37,10 +38,7 @@ export default function BucketCard({
 
   // Insert a chip before or after the chip at index `i` based on which half of
   // it the pointer is over (chips flow left-to-right within a wrapping row).
-  const dropIndexFor = (e, i) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    return e.clientX > rect.left + rect.width / 2 ? i + 1 : i;
-  };
+  const dropIndexFor = (e, i) => chipInsertIndex(e.currentTarget.getBoundingClientRect(), e.clientX, i);
 
   // While dragging a link over a chip: show a precise insertion bar instead of
   // the whole-card drop ring. Bucket-reorder drags (no link payload) fall
@@ -91,7 +89,7 @@ export default function BucketCard({
       className={`flex flex-col bg-port-card border rounded-lg overflow-hidden transition-colors ${
         dropActive ? 'border-port-accent ring-1 ring-port-accent' : 'border-port-border'
       }`}
-      onDragOver={(e) => { e.preventDefault(); setDropActive(true); }}
+      onDragOver={(e) => { e.preventDefault(); if (dropIndex === null) setDropActive(true); }}
       onDragLeave={() => { setDropActive(false); setDropIndex(null); }}
       onDrop={(e) => {
         e.preventDefault();
@@ -213,7 +211,7 @@ export default function BucketCard({
         {links.map((link, i) => (
           <Fragment key={link.id}>
             {dropIndex === i && <ChipInsertionBar />}
-            <div onDragOver={(e) => handleChipDragOver(e, i)} onDrop={(e) => handleChipDrop(e, i)}>
+            <div className="max-w-full min-w-0" onDragOver={(e) => handleChipDragOver(e, i)} onDrop={(e) => handleChipDrop(e, i)}>
               <LinkChip link={link} onRemove={onRemoveLink} draggable />
             </div>
           </Fragment>

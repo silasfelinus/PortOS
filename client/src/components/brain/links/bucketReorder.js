@@ -8,6 +8,16 @@
  * links whose `{ bucketId, bucketOrder }` actually changed (so the caller only
  * PATCHes what moved).
  */
+/**
+ * Map a pointer position over a chip to an insertion index: before the chip
+ * (its own index) when the pointer is in its left half, after it (index + 1)
+ * when in the right half. Pure so the before/after boundary is unit-testable
+ * (jsdom can't supply a real rect or clientX to a drag event).
+ */
+export function chipInsertIndex(rect, clientX, i) {
+  return clientX > rect.left + rect.width / 2 ? i + 1 : i;
+}
+
 export function reorderLinksInBucket(links, link, bucketId, targetIndex) {
   const ordered = links
     .filter(l => l.bucketId === bucketId)
