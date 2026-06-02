@@ -33,6 +33,7 @@ import { ServerError } from './errorHandler.js';
 import { PROVIDER_TYPES } from './aiToolkit/constants.js';
 import { analyzeError, ERROR_CATEGORIES } from './aiToolkit/errorDetection.js';
 import { getAIToolkitInstance } from './aiToolkitState.js';
+import { createSingleFlight } from './singleFlight.js';
 
 // noteFallbackHandled lives in services/autoFixer.js, which transitively
 // pulls in services/cos.js (PM2 + fs + sockets). Importing it lazily on
@@ -320,9 +321,9 @@ export async function runPromptThroughProvider(args) {
 // calls) every failure would otherwise independently re-read providers.json
 // (pickFallbackProvider) and re-write provider-status.json (markUnavailable).
 // Sharing the first failure's promise collapses that to a single read +
-// single write. The entry is deleted as soon as it settles, so a genuinely
-// new failure after the storm re-picks against fresh provider status.
-const _fallbackMarkAndPickInFlight = new Map();
+// single write. The slot clears as soon as it settles, so a genuinely new
+// failure after the storm re-picks against fresh provider status.
+const _fallbackMarkAndPick = createSingleFlight();
 
 /**
  * Mark the failed provider unavailable and pick its fallback, coalescing
@@ -337,29 +338,14 @@ const _fallbackMarkAndPickInFlight = new Map();
  * @returns {Promise<{ provider: object, model: string|null }|null>}
  */
 function coalesceFallbackMarkAndPick(failed, firstError) {
-  const existing = _fallbackMarkAndPickInFlight.get(failed.id);
-  if (existing) return existing;
-
-  const work = (async () => {
+  return _fallbackMarkAndPick.run(failed.id, async () => {
     const picked = await pickFallbackProvider(failed);
     if (!picked) return null;
     await markProviderUnavailableFromError(failed, firstError.message, firstError.errorAnalysis).catch(err => {
       console.error(`❌ markUnavailable failed for ${failed.id}: ${err.message}`);
     });
     return picked;
-  })();
-
-  // While `work` is in flight, concurrent callers return it without
-  // overwriting the slot, so this entry is only ever cleared by its own
-  // settle — a plain delete is safe. Use `then(cleanup, cleanup)` rather
-  // than `finally`: `finally` re-raises a `work` rejection on the derived
-  // promise, which nothing awaits → unhandledRejection. The two-arm `then`
-  // handles both settle paths and swallows the cleanup branch's copy of the
-  // rejection; the caller's own `await work` still sees the original reject.
-  const clearSlot = () => { _fallbackMarkAndPickInFlight.delete(failed.id); };
-  _fallbackMarkAndPickInFlight.set(failed.id, work);
-  work.then(clearSlot, clearSlot);
-  return work;
+  });
 }
 
 /**

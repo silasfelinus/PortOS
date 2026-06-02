@@ -190,6 +190,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `errorHandler.js` | `ServerError` + `asyncHandler` middleware. |
 | `mapWithConcurrency.js` | Generic bounded-concurrency async mapper that preserves input order while capping in-flight work. |
 | `objects.js` | Object utilities — `deepMerge` (recursive merge w/ array replacement), `isPlainObject` (non-null, non-array `object` guard for JSON / LLM payloads), `POLLUTING_KEYS` (shared `__proto__`/`constructor`/`prototype` denylist for sanitizers), `canonicalStringify` (recursive sorted-key JSON serialization for cross-machine content hashing), `isEmptyScalar` (true for null/undefined/whitespace-string/empty-array — merge gap-fill gate). |
+| `singleFlight.js` | `createSingleFlight()` → `run(key, fn)` — keyed in-flight coalescer: concurrent calls for the same key share one `fn()` execution and result; the slot auto-clears on settle. Minimal by design (no TTL/result cache layered on top, doesn't reject concurrent callers). Used by `promptRunner.js`'s fallback mark-and-pick. |
 | `sseUtils.js` | Per-job SSE stream helpers (imageGen + others). |
 | `uuid.js` | `v4()` thin wrapper over `crypto.randomUUID()`. |
 
