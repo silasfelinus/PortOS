@@ -402,7 +402,9 @@ function ReaderMapBeatTimeline({ readerMap }) {
         {beats.map((b, i) => {
           const x = xFor(b, i);
           const intensity = Number.isFinite(b.intensity) ? Math.max(0, Math.min(1, b.intensity)) : 0.5;
-          const barH = (H - PAD * 2) * intensity;
+          // Floor the drawn height so a real beat with intensity 0 still shows a
+          // visible marker instead of a zero-height (invisible) bar.
+          const barH = Math.max(2, (H - PAD * 2) * intensity);
           const color = getBeatKindColor(b.kind);
           return (
             <g key={b.id || i}>
@@ -646,20 +648,27 @@ function StepPanel({ session, universe, series, issues, stepId, locked, onChange
         {issuesHaveContent && !hasArc && (
           <p className="text-xs text-gray-500">Started from drafted issues? Backfill extracts the arc from their scripts / prose.</p>
         )}
-        {/* Embed the Arc Canvas inline once an arc exists, so the logline /
-            summary / protagonist arc / themes / Vonnegut shape AND the season
-            roadmap are editable in-builder instead of read-only field blocks +
-            a deep-link. Falls back to the field summary before the first
-            generate (ArcCanvas has nothing to show without an arc). The arc step
-            is the right home for the whole-roadmap editor: it owns series.arc. */}
-        {hasArc ? (
-          <ArcCanvas
-            series={series}
-            issues={issues}
-            onSeriesUpdate={onSeriesUpdate}
-            onIssuesUpdate={onIssuesUpdate}
-            onFlushPending={onFlushPending}
-          />
+        {/* Embed the Arc Canvas inline once an arc exists AND the step is
+            unlocked, so the logline / summary / protagonist arc / themes /
+            Vonnegut shape AND the season roadmap are editable in-builder instead
+            of read-only field blocks + a deep-link. The arc step is the right
+            home for the whole-roadmap editor: it owns series.arc. We show the
+            read-only field summary when there's no arc yet (ArcCanvas has
+            nothing to render) OR when the step is LOCKED — ArcCanvas has no
+            read-only mode and could otherwise edit (or internally unlock) a
+            locked arc, bypassing the builder's "Unlock to revise" lock workflow.
+            The deep-link below covers intentional editing of a locked arc. The
+            `@container` wrapper activates ArcCanvas's `@5xl:` two-column layout. */}
+        {hasArc && !locked ? (
+          <div className="@container">
+            <ArcCanvas
+              series={series}
+              issues={issues}
+              onSeriesUpdate={onSeriesUpdate}
+              onIssuesUpdate={onIssuesUpdate}
+              onFlushPending={onFlushPending}
+            />
+          </div>
         ) : (
           <>
             <FieldBlock label="Arc logline" value={arc.logline} />
@@ -968,12 +977,16 @@ function StoryBuilderDetail({ storyId, stepParam }) {
   // dirty-check, an `updateSeriesFromServer` that keeps it aligned, and an
   // issues setter that accepts ArcCanvas's `setState(fn)`-shaped updates.
   const lastSavedRef = useRef(null);
-  // Capture the FIRST server snapshot only (guard on empty ref) — like
-  // PipelineSeries.jsx. Updating on every `series` change would clobber the
-  // last-saved baseline on an unrelated refetch and defeat flushPending's
-  // dirty-check (it would always see series === lastSaved). After load, the ref
-  // only advances via updateSeriesFromServer (a server-confirmed save).
-  useEffect(() => { if (series && !lastSavedRef.current) lastSavedRef.current = series; }, [series]);
+  // Capture the server snapshot as the dirty-check baseline, but only on the
+  // FIRST load of each series (keyed on id) — NOT on every `series` change,
+  // which would clobber the baseline on an unrelated refetch and defeat
+  // flushPending's dirty-check (it would always see series === lastSaved).
+  // Re-keying on id also resets the baseline when this mounted detail view
+  // navigates to a different story/series. After capture, the ref only advances
+  // via updateSeriesFromServer (a server-confirmed save).
+  useEffect(() => {
+    if (series && lastSavedRef.current?.id !== series.id) lastSavedRef.current = series;
+  }, [series]);
 
   const updateSeriesFromServer = useCallback((next) => {
     setSeries(next);

@@ -229,11 +229,26 @@ describe('StoryBuilder — detail stepper', () => {
     expect(screen.queryByTestId('arc-canvas')).toBeNull();
     unmount();
 
-    // Arc present → the ArcCanvas is embedded inline (wired with the series).
+    // Arc present + step unlocked → the ArcCanvas is embedded inline.
     api.getPipelineSeries.mockResolvedValue({ id: 's1', arc: { logline: 'AL', summary: 'AS' } });
     renderAt('/story-builder/stb-1/plotArc');
     await waitFor(() => expect(screen.getByTestId('arc-canvas')).toBeTruthy());
     expect(screen.getByTestId('arc-canvas').textContent).toContain('s1');
+  });
+
+  it('plotArc step does NOT embed the editable ArcCanvas when the step is locked', async () => {
+    // ArcCanvas has no read-only mode and could edit (or internally unlock) a
+    // locked arc, bypassing the "Unlock to revise" workflow — so a locked
+    // plotArc must fall back to the read-only field summary, not the editor.
+    api.getPipelineSeries.mockResolvedValue({ id: 's1', arc: { logline: 'AL', summary: 'AS' } });
+    api.getStorySession.mockResolvedValue({
+      id: 'stb-1', title: 'X', currentStep: 'plotArc', universeId: 'u1', seriesId: 's1',
+      steps: mkSteps({ idea: { locked: true }, universeAesthetic: { locked: true }, plotArc: { status: 'locked', locked: true } }),
+      staleSteps: [], llm: { provider: '', model: '' },
+    });
+    renderAt('/story-builder/stb-1/plotArc');
+    await waitFor(() => expect(screen.getByText('Arc logline')).toBeTruthy());
+    expect(screen.queryByTestId('arc-canvas')).toBeNull();
   });
 
   it('readerMap step renders the beat timeline when the map has beats', async () => {
