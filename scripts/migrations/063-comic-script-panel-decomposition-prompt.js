@@ -9,8 +9,9 @@
  * rules in `pipeline-comic-script.md`:
  *   (a) page-level text is layout intent ONLY (1–3 lines max), never action /
  *       dialogue / scene content;
- *   (b) every page MUST decompose into 4–6 discrete `Panel N` blocks carrying
- *       Description / Caption / Dialogue / SFX.
+ *   (b) every page MUST decompose into discrete `Panel N` blocks carrying
+ *       Description / Caption / Dialogue / SFX (the count follows the existing
+ *       rhythm rule — 4–6 typical, splash, or the rare 7–8 grid).
  *
  * Strategy: hash-driven prompt-replace via `./_lib.js`. Idempotent.
  */
@@ -35,7 +36,8 @@ const { applyMigration, up } = makePromptReplaceMigration({
     `   against your current:\n` +
     `     data/prompts/stages/${filename}\n` +
     `   and add the two rules forbidding page-level scene content and\n` +
-    `   mandating 4–6 discrete Panel blocks per page.`,
+    `   mandating discrete Panel blocks per page (count following the\n` +
+    `   existing rhythm rule).`,
   skipFooter: (count) =>
     `⚠️  ${count} comic-script prompt(s) could not be auto-updated because\n` +
     `   they were customized. Comic scripts still generate, but pages may\n` +
