@@ -42,6 +42,7 @@
 
 ## Fixed
 
+- **[voice-taskcomplete-announce-once-guard] The voice assistant no longer repeats "your coding task is done" if a finished task is edited again.** Each voice-dispatched coding task now announces its completion (or failure) once; a later edit to an already-finished task won't re-trigger the spoken line, while a task that genuinely changes outcome — say a blocked task that later succeeds — still speaks its new result.
 - **[cos-runner-client-non-json-response-handling] CoS agent and run failures now surface the runner's actual error instead of a cryptic "Unexpected token <" crash.** When the background agent runner returns a non-JSON error response (for example while it is restarting mid-request), PortOS reports the runner's real message rather than choking on the unparseable body.
 - **[cos-task-id-uniqueness-validation] Reordering a CoS task list with duplicate task IDs no longer silently drops tasks.** If a hand-edited or corrupted task file holds two tasks sharing the same ID, reordering it previously kept only one and discarded the rest; every task is now preserved, with any collision given a distinct ID.
 - **[banner-icon-aria-hidden] Screen readers no longer announce the decorative icon on alert banners.** The warning/error/info banners' leading icon is now hidden from assistive tech by default, so only the message text is read aloud instead of an unhelpful icon name preceding it.
