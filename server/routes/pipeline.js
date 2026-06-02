@@ -1273,13 +1273,27 @@ router.post('/series/:id/seasons/:seasonId/episodes/generate', asyncHandler(asyn
       .filter(Boolean)
       .join('\n\n');
     if (corpus.trim() && series?.universeId) {
+      // Fall back to the series' configured LLM when the client doesn't pass an
+      // explicit override — matches the extract-canon and extract-scenes routes
+      // so continuity extraction honors the provider/model picked in the series
+      // header instead of the global active provider. A model id is
+      // provider-specific, so only inherit the series model when the effective
+      // provider is still the series provider; an override that switches
+      // providers without naming a model leaves it blank so the new provider's
+      // default resolves.
+      const provider = body.providerOverride || series.llm?.provider || '';
+      const providerMatchesSeries = !body.providerOverride
+        || body.providerOverride === (series.llm?.provider || '');
+      const model = body.modelOverride
+        || (providerMatchesSeries ? (series.llm?.model || '') : '');
       // Stamp new inserts as series-extracted (autoLock + sourceSeriesId) so
       // continuity-derived canon survives later AI refines and stays
       // attributable to this series. Matches the pre-B.4 series-side
       // extract semantics.
       const extractRes = await extractCanonFromProse(series.universeId, {
         corpus,
-        providerOverride: body.providerOverride,
+        providerOverride: provider || undefined,
+        modelOverride: model || undefined,
         parallel: true,
         autoLock: true,
         sourceSeriesId: series.id,
