@@ -602,7 +602,7 @@ export async function getIssue(id, { includeDeleted = false } = {}) {
   return found;
 }
 
-export function createIssue(input = {}) {
+export function createIssue(input = {}, { preloadedSeries = null } = {}) {
   const seriesId = trimTo(input.seriesId, SERIES_ID_MAX);
   if (!seriesId) return Promise.reject(makeErr('seriesId is required', ERR_VALIDATION));
   const title = trimTo(input.title, TITLE_MAX);
@@ -631,7 +631,7 @@ export function createIssue(input = {}) {
     });
     if (!next) throw makeErr('Invalid issue payload', ERR_VALIDATION);
     state.issues.push(next);
-    await renumberInline(state, seriesId, next.seasonId || UNSCOPED_ANCHOR);
+    await renumberInline(state, seriesId, next.seasonId || UNSCOPED_ANCHOR, preloadedSeries);
     await saveIssuesNow(state.issues.filter((i) => i.seriesId === seriesId));
     // New issue = series-level change for any active share subscription.
     emitRecordUpdated('series', next.seriesId);
@@ -639,8 +639,14 @@ export function createIssue(input = {}) {
   });
 }
 
-async function renumberInline(state, seriesId, fromSeasonId = null) {
-  const series = await seriesSvc.getSeries(seriesId).catch(() => null);
+async function renumberInline(state, seriesId, fromSeasonId = null, preloadedSeries = null) {
+  // Batch callers (e.g. commitEpisodesToIssues seeding a whole season) thread
+  // the already-fetched series so an N-episode loop doesn't pay N redundant
+  // getSeries reads of an unchanging record. Guard on id match so a mismatched
+  // preload can never renumber against the wrong season list.
+  const series = (preloadedSeries && preloadedSeries.id === seriesId)
+    ? preloadedSeries
+    : await seriesSvc.getSeries(seriesId).catch(() => null);
   // Exclude tombstones from numbering — surviving issues should keep a
   // contiguous sequence regardless of how many deletes happened.
   // applyVolumeOrderedNumbers mutates each issue's `number` in place, so the
