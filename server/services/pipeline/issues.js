@@ -719,17 +719,20 @@ export function bulkReassignSeason(seriesId, fromSeasonId, toSeasonId = null, { 
  * series-merge engine (recordMerge.js) so a duplicate series' issues survive
  * the merge instead of being orphaned under the tombstoned loser.
  *
- * Moved issues land UN-GROUPED (`seasonId: null`): seasons are series-scoped,
- * so the loser's season ids don't exist on the survivor. The survivor's
- * seasons were unioned by number separately; re-homing issues to specific
- * survivor seasons is left to the user. A single renumber pass on the survivor
- * sequences the combined set. Returns `{ reassigned }`.
+ * Issue→season grouping is preserved across the move via `seasonIdMap` — a
+ * `{ loserSeasonId: survivorSeasonId }` map the caller (`mergeSeries`) builds by
+ * pairing the loser's seasons to the survivor's by `number`. An issue whose
+ * `seasonId` resolves through the map lands in the matching survivor season; one
+ * with no `seasonId`, or a `seasonId` the map doesn't cover (a stale ref, or a
+ * loser season that didn't survive the union), lands UN-GROUPED (`seasonId:
+ * null`). A single renumber pass on the survivor sequences the combined set.
+ * Returns `{ reassigned }`.
  *
  * Serialized on the SURVIVOR's issues queue so the renumber can't race a
  * concurrent survivor edit. Tombstoned issues are skipped (moving them would
  * bump updatedAt and lose the originator's delete LWW race).
  */
-export function reassignIssuesToSeries(fromSeriesId, toSeriesId) {
+export function reassignIssuesToSeries(fromSeriesId, toSeriesId, { seasonIdMap = {} } = {}) {
   if (!isStr(fromSeriesId) || !isStr(toSeriesId) || fromSeriesId === toSeriesId) {
     return Promise.reject(makeErr('reassignIssuesToSeries: fromSeriesId and toSeriesId must differ', ERR_VALIDATION));
   }
@@ -746,7 +749,10 @@ export function reassignIssuesToSeries(fromSeriesId, toSeriesId) {
     for (let i = 0; i < state.issues.length; i += 1) {
       const iss = state.issues[i];
       if (iss.seriesId !== fromSeriesId || iss.deleted) continue;
-      const merged = sanitizeIssue({ ...iss, seriesId: toSeriesId, seasonId: null, updatedAt: now });
+      // Map the issue's loser season to the survivor's same-number season so the
+      // grouping survives; fall back to un-grouped when there's no mapping.
+      const seasonId = (iss.seasonId && seasonIdMap[iss.seasonId]) || null;
+      const merged = sanitizeIssue({ ...iss, seriesId: toSeriesId, seasonId, updatedAt: now });
       if (!merged) continue;
       state.issues[i] = merged;
       moved.push(merged);

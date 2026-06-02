@@ -29,7 +29,7 @@ import {
   normalizeLabelKey,
   VARIATIONS_PER_CATEGORY_MAX, COMPOSITE_SHEETS_MAX, INFLUENCES_PER_LIST_MAX, IMAGE_REFS_PER_ENTRY_MAX,
 } from './universeBuilder.js';
-import { mergeExtractedBible, BIBLE_KIND } from '../lib/storyBible.js';
+import { mergeExtractedBible, BIBLE_KIND, isStr } from '../lib/storyBible.js';
 import { canonicalStringify, isEmptyScalar } from '../lib/objects.js';
 import { getSeries, updateSeries, deleteSeries, listSeries } from './pipeline/series.js';
 import { reassignIssuesToSeries, listIssues } from './pipeline/issues.js';
@@ -402,7 +402,9 @@ export async function mergeSeries(survivorId, loserId, fieldChoices = {}, { dryR
   const { record, conflicts, autoResolved, unionSummary } = buildSeriesUnion(survivor, loser, fieldChoices, fieldOverrides);
 
   const loserCollection = await findCollectionBySeriesId(loserId);
-  // Issues are reassigned to the survivor un-grouped; count for the preview.
+  // Issues are reassigned to the survivor, keeping their season grouping where
+  // the loser's season maps to a survivor season of the same number; count for
+  // the preview.
   const loserIssues = await listIssues({ seriesId: loserId });
   const cascade = {
     issuesToRepoint: loserIssues.length,
@@ -414,12 +416,33 @@ export async function mergeSeries(survivorId, loserId, fieldChoices = {}, { dryR
   }
   requireResolved(conflicts);
 
-  // 1. Write the unioned survivor.
-  await updateSeries(survivorId, record);
+  // 1. Write the unioned survivor. Capture the PERSISTED record — `updateSeries`
+  //    runs `sanitizeSeasonList` (which caps at SEASONS_PER_SERIES_MAX), so the
+  //    saved seasons can differ from the in-memory union; the season map below
+  //    must pair against what actually landed on disk.
+  const persistedSurvivor = await updateSeries(survivorId, record);
 
-  // 2. Re-point the loser's issues to the survivor (un-grouped) before tombstone.
+  // 2. Re-point the loser's issues to the survivor before tombstone, preserving
+  //    season grouping. The persisted survivor carries a season for every loser
+  //    season number that survived the union (a number collision gap-fills the
+  //    survivor's same-number season; a non-colliding loser season is appended
+  //    verbatim), so pair each loser season to the survivor season sharing its
+  //    number. An issue whose loser season has no number, or maps to a season
+  //    that didn't persist (e.g. dropped at the season cap), lands un-grouped —
+  //    the map only ever holds ids that exist on the saved survivor.
   if (loserIssues.length > 0) {
-    await reassignIssuesToSeries(loserId, survivorId);
+    const survivorSeasonIdByNumber = new Map(
+      (persistedSurvivor.seasons || [])
+        .filter((s) => Number.isFinite(s?.number) && isStr(s?.id))
+        .map((s) => [s.number, s.id]),
+    );
+    const seasonIdMap = {};
+    for (const ls of loser.seasons || []) {
+      if (!isStr(ls?.id) || !Number.isFinite(ls?.number)) continue;
+      const survivorSeasonId = survivorSeasonIdByNumber.get(ls.number);
+      if (survivorSeasonId) seasonIdMap[ls.id] = survivorSeasonId;
+    }
+    await reassignIssuesToSeries(loserId, survivorId, { seasonIdMap });
   }
 
   // 3. Fold the loser's series-collection into the survivor's, then tombstone it.

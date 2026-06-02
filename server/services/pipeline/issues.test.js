@@ -1106,6 +1106,40 @@ describe('pipeline issues service', () => {
     });
   });
 
+  describe('reassignIssuesToSeries (season mapping)', () => {
+    it('maps loser seasonIds to survivor seasonIds, leaving unmapped/absent ones un-grouped', async () => {
+      const from = await seriesSvc.createSeries({ name: 'From' });
+      const to = await seriesSvc.createSeries({ name: 'To' });
+      const mapped = await svc.createIssue({ seriesId: from.id, title: 'mapped' });
+      const unmapped = await svc.createIssue({ seriesId: from.id, title: 'unmapped' });
+      await svc.createIssue({ seriesId: from.id, title: 'none' });
+      await svc.updateIssue(mapped.id, { seasonId: 'sea-loser-1' });
+      await svc.updateIssue(unmapped.id, { seasonId: 'sea-loser-x' }); // absent from the map
+
+      const result = await svc.reassignIssuesToSeries(from.id, to.id, {
+        seasonIdMap: { 'sea-loser-1': 'sea-surv-1' },
+      });
+      expect(result.reassigned).toBe(3);
+
+      const byTitle = Object.fromEntries(
+        (await svc.listIssues({ seriesId: to.id })).map((i) => [i.title, i]),
+      );
+      expect(byTitle.mapped.seasonId).toBe('sea-surv-1'); // remapped
+      expect(byTitle.unmapped.seasonId).toBeNull();        // not in the map → un-grouped
+      expect(byTitle.none.seasonId).toBeNull();            // had no season → un-grouped
+    });
+
+    it('defaults to un-grouped when no seasonIdMap is supplied (back-compat)', async () => {
+      const from = await seriesSvc.createSeries({ name: 'From2' });
+      const to = await seriesSvc.createSeries({ name: 'To2' });
+      const iss = await svc.createIssue({ seriesId: from.id, title: 'x' });
+      await svc.updateIssue(iss.id, { seasonId: 'sea-whatever' });
+      await svc.reassignIssuesToSeries(from.id, to.id);
+      const [moved] = await svc.listIssues({ seriesId: to.id });
+      expect(moved.seasonId).toBeNull();
+    });
+  });
+
   describe('bulkReassignSeason', () => {
     const setup = async () => {
       const series = await seriesSvc.createSeries({ name: 'Saga' });
