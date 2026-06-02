@@ -70,7 +70,7 @@ describe('local LLM playground routes', () => {
       temperature: 0.3,
       maxTokens: 1000,
       timeoutMs: 300000,
-      // Derived from req — lets a client disconnect tear down the upstream stream.
+      // Derived from res — lets a client disconnect tear down the upstream stream.
       signal: expect.any(AbortSignal),
     });
   });

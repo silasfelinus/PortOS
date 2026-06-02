@@ -29,7 +29,7 @@ import {
   getStatus, listModels, installModel, deleteModel, switchBackend, migrateBackend, installBackend, upgradeBackend, controlOllamaServer
 } from '../services/localLlm.js'
 import { runLocalLlmTest, compareLocalLlmModels } from '../services/localLlmPlayground.js'
-import { abortSignalFromRequest } from '../lib/requestAbort.js'
+import { abortSignalFromResponse } from '../lib/requestAbort.js'
 import { getLoadedModels as getLoadedOllamaModels, unloadModel as unloadOllamaModel } from '../services/ollamaManager.js'
 
 const router = Router()
@@ -228,7 +228,7 @@ router.post('/unload', asyncHandler(async (req, res) => {
 // quality without leaving the Local LLM workflow.
 router.post('/test', asyncHandler(async (req, res) => {
   const body = validateRequest(localLlmTestSchema, req.body)
-  res.json(await runLocalLlmTest({ ...body, signal: abortSignalFromRequest(req) }))
+  res.json(await runLocalLlmTest({ ...body, signal: abortSignalFromResponse(res) }))
 }))
 
 // POST /api/local-llm/compare — run one prompt through multiple local models.
@@ -236,7 +236,7 @@ router.post('/test', asyncHandler(async (req, res) => {
 // measures contention when several loaded local models run at once.
 router.post('/compare', asyncHandler(async (req, res) => {
   const body = validateRequest(localLlmCompareSchema, req.body)
-  res.json(await compareLocalLlmModels({ ...body, signal: abortSignalFromRequest(req) }))
+  res.json(await compareLocalLlmModels({ ...body, signal: abortSignalFromResponse(res) }))
 }))
 
 export default router

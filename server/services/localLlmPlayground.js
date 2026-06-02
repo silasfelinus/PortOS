@@ -288,6 +288,10 @@ export async function compareLocalLlmModels({ targets, prompt, mode = 'round-rob
   }
 
   for (const target of targets) {
+    // `runLocalLlmTest` swallows aborts into a result object rather than throwing,
+    // so without this guard a cancel mid-sequence would still kick off every
+    // remaining model. Stop the round-robin once the client has hung up.
+    if (signal?.aborted) break;
     results.push(await runOne(target));
   }
   return { mode: 'round-robin', prompt, results };
