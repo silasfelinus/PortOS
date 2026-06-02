@@ -315,20 +315,6 @@ export async function runPromptThroughProvider(args) {
   }
 }
 
-/**
- * Pick a fallback provider for `failed`. Honors the failed provider's
- * `fallbackProvider` field first, then the toolkit's system priority
- * list. Returns `{ provider, model }` (or null when no usable fallback
- * exists). `model` is the configured `fallbackModel` hint for the chosen
- * fallback (null for system-priority picks, meaning "use the fallback's
- * own default") — never the failed provider's model.
- *
- * The toolkit's `getFallbackProvider` reads `providers[failed.id]` to
- * look up the `fallbackProvider` field, so the primary MUST stay in the
- * map. Self-loop protection (`fallbackProvider === self`) lives in
- * `getFallbackProvider`; the system priority loop already excludes
- * `failed.id` by construction.
- */
 // In-flight mark-and-pick work, keyed by the failed provider id. During an
 // N-way failure storm (one stuck provider, many simultaneous in-flight
 // calls) every failure would otherwise independently re-read providers.json
@@ -363,18 +349,28 @@ function coalesceFallbackMarkAndPick(failed, firstError) {
     return picked;
   })();
 
+  // While `work` is in flight, concurrent callers return it without
+  // overwriting the slot, so this entry is only ever cleared by its own
+  // settle — a plain delete is safe.
   _fallbackMarkAndPickInFlight.set(failed.id, work);
-  work.finally(() => {
-    // Only clear if no newer entry replaced ours (it can't, given the
-    // synchronous set above, but guard anyway so a future caller can't be
-    // stranded on a deleted slot).
-    if (_fallbackMarkAndPickInFlight.get(failed.id) === work) {
-      _fallbackMarkAndPickInFlight.delete(failed.id);
-    }
-  });
+  work.finally(() => _fallbackMarkAndPickInFlight.delete(failed.id));
   return work;
 }
 
+/**
+ * Pick a fallback provider for `failed`. Honors the failed provider's
+ * `fallbackProvider` field first, then the toolkit's system priority
+ * list. Returns `{ provider, model }` (or null when no usable fallback
+ * exists). `model` is the configured `fallbackModel` hint for the chosen
+ * fallback (null for system-priority picks, meaning "use the fallback's
+ * own default") — never the failed provider's model.
+ *
+ * The toolkit's `getFallbackProvider` reads `providers[failed.id]` to
+ * look up the `fallbackProvider` field, so the primary MUST stay in the
+ * map. Self-loop protection (`fallbackProvider === self`) lives in
+ * `getFallbackProvider`; the system priority loop already excludes
+ * `failed.id` by construction.
+ */
 async function pickFallbackProvider(failed) {
   const toolkit = getAIToolkitInstance();
   const providerStatus = toolkit?.services?.providerStatus;
