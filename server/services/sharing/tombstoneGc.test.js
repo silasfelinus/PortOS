@@ -6,19 +6,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // covered by their own service tests.
 vi.mock('../universeBuilder.js', () => ({
   pruneTombstonedUniverses: vi.fn().mockResolvedValue({ pruned: 0 }),
-  getUniverse: vi.fn().mockResolvedValue(null),
+  listUniverses: vi.fn().mockResolvedValue([]),
 }));
 vi.mock('../pipeline/series.js', () => ({
   pruneTombstonedSeries: vi.fn().mockResolvedValue({ pruned: 0 }),
-  getSeries: vi.fn().mockResolvedValue(null),
+  listSeries: vi.fn().mockResolvedValue([]),
 }));
 vi.mock('../pipeline/issues.js', () => ({
   pruneTombstonedIssues: vi.fn().mockResolvedValue({ pruned: 0 }),
-  getIssue: vi.fn().mockResolvedValue(null),
+  listIssues: vi.fn().mockResolvedValue([]),
 }));
 vi.mock('../mediaCollections.js', () => ({
   pruneTombstonedCollections: vi.fn().mockResolvedValue({ pruned: 0 }),
-  getCollection: vi.fn().mockResolvedValue(null),
+  listCollections: vi.fn().mockResolvedValue([]),
 }));
 vi.mock('../../lib/conflictJournal.js', () => ({
   pruneOrphanedBaseHashes: vi.fn().mockResolvedValue({ pruned: 0 }),
@@ -38,10 +38,10 @@ import {
   getSweepStatus,
   TOMBSTONE_GRACE_MS,
 } from './tombstoneGc.js';
-import { pruneTombstonedUniverses } from '../universeBuilder.js';
-import { pruneTombstonedSeries } from '../pipeline/series.js';
-import { pruneTombstonedIssues } from '../pipeline/issues.js';
-import { pruneTombstonedCollections } from '../mediaCollections.js';
+import { pruneTombstonedUniverses, listUniverses } from '../universeBuilder.js';
+import { pruneTombstonedSeries, listSeries } from '../pipeline/series.js';
+import { pruneTombstonedIssues, listIssues } from '../pipeline/issues.js';
+import { pruneTombstonedCollections, listCollections } from '../mediaCollections.js';
 import { pruneOrphanedBaseHashes } from '../../lib/conflictJournal.js';
 import { listPeerSubscriptions } from './peerSync.js';
 import { getMinAckAcrossPeers } from './peerTombstoneCursors.js';
@@ -120,6 +120,28 @@ describe('sweepTombstones — orphaned base-hash sweep', () => {
   it('reports orphanBaseHashes:0 when nothing is orphaned', async () => {
     const res = await sweepTombstones({ now: NOW });
     expect(res.orphanBaseHashes).toBe(0);
+  });
+
+  it('passes a resolver that keeps live records, drops dead ones, keeps unknown kinds, and lists each kind once', async () => {
+    listUniverses.mockResolvedValue([{ id: 'u-live' }]);
+    listSeries.mockResolvedValue([{ id: 's-live' }]);
+    listIssues.mockResolvedValue([{ id: 'i-live' }]);
+    listCollections.mockResolvedValue([{ id: 'c-live' }]);
+    // Capture the resolver the sweep hands to pruneOrphanedBaseHashes and drive
+    // it directly — this is the real makeBaseHashKeyResolver closure.
+    let resolver;
+    pruneOrphanedBaseHashes.mockImplementationOnce(async (fn) => { resolver = fn; return { pruned: 0 }; });
+    await sweepTombstones({ now: NOW });
+
+    expect(await resolver('universe', 'u-live')).toBe(true);
+    expect(await resolver('universe', 'u-gone')).toBe(false);
+    expect(await resolver('issue', 'i-live')).toBe(true);
+    expect(await resolver('mediaCollection', 'c-gone')).toBe(false);
+    // Unknown kind is always kept and never triggers a listing.
+    expect(await resolver('brain', 'whatever')).toBe(true);
+    // A second probe of an already-listed kind reuses the cached id-set —
+    // listUniverses is called exactly once across both universe probes.
+    expect(listUniverses).toHaveBeenCalledTimes(1);
   });
 });
 

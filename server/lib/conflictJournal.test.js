@@ -296,10 +296,12 @@ describe('conflictJournal', () => {
       expect(await cj.getSyncBaseHash('series', 'live-s')).not.toBeNull();
     });
 
-    it('keeps keys of an unknown kind (resolver returns true) so a partial resolver never strips live entries', async () => {
+    it('keeps every key when the resolver returns true (a partial resolver never strips live entries)', async () => {
       await cj.setSyncBaseHash('issue', 'iss-1', cj.contentHashForRecord('issue', iss({ id: 'iss-1' })));
-      // Resolver mirrors the real one: unknown kinds → true (never strip).
-      const { pruned } = await cj.pruneOrphanedBaseHashes(async (kind) => (kind === 'issue' ? true : true));
+      // The contract: a resolver that returns true (e.g. for a kind it doesn't
+      // recognize) must leave that key in place. The tombstoneGc resolver maps
+      // unknown kinds to true for exactly this reason.
+      const { pruned } = await cj.pruneOrphanedBaseHashes(async () => true);
       expect(pruned).toBe(0);
       expect(await cj.getSyncBaseHash('issue', 'iss-1')).not.toBeNull();
     });

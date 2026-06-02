@@ -26,27 +26,44 @@
  * cohort for issue tombstones is "peers subscribed to series".
  */
 
-import { pruneTombstonedUniverses, getUniverse } from '../universeBuilder.js';
-import { pruneTombstonedSeries, getSeries } from '../pipeline/series.js';
-import { pruneTombstonedIssues, getIssue } from '../pipeline/issues.js';
-import { pruneTombstonedCollections, getCollection } from '../mediaCollections.js';
+import { pruneTombstonedUniverses, listUniverses } from '../universeBuilder.js';
+import { pruneTombstonedSeries, listSeries } from '../pipeline/series.js';
+import { pruneTombstonedIssues, listIssues } from '../pipeline/issues.js';
+import { pruneTombstonedCollections, listCollections } from '../mediaCollections.js';
 import { pruneOrphanedBaseHashes } from '../../lib/conflictJournal.js';
 import { listPeerSubscriptions } from './peerSync.js';
 import { getMinAckAcrossPeers } from './peerTombstoneCursors.js';
 import { getPeers } from '../instances.js';
 
-// Resolver for pruneOrphanedBaseHashes: does this base-hash key still map to a
-// LIVE record? A getter that returns null/undefined (missing or tombstoned —
-// default excludes deleted) means the key is dead. Unknown kinds return true so
-// the sweep never strips a key it can't authoritatively check (a base hash for
-// a future kind, or a key shape this version doesn't recognize). getCollection
-// rejects when not found, so the `.catch(() => null)` maps that to "dead".
-async function baseHashKeyResolves(kind, id) {
-  if (kind === 'universe') return !!(await getUniverse(id).catch(() => null));
-  if (kind === 'series') return !!(await getSeries(id).catch(() => null));
-  if (kind === 'issue') return !!(await getIssue(id).catch(() => null));
-  if (kind === 'mediaCollection') return !!(await getCollection(id).catch(() => null));
-  return true; // unknown kind → never strip
+// Each kind's live-record lister (default args exclude tombstoned/deleted).
+// Used to build the orphan-sweep resolver's per-kind id-sets. A kind absent
+// from this map is unknown → the resolver keeps its keys (never strips).
+const LIVE_ID_LISTERS = Object.freeze({
+  universe: listUniverses,
+  series: listSeries,
+  issue: () => listIssues({}),
+  mediaCollection: listCollections,
+});
+
+// Build the `pruneOrphanedBaseHashes` resolver for ONE sweep: load each kind's
+// live-id Set once on first use (lazily — a sweep with no keys of a given kind
+// never lists it) and check membership in memory. This collapses what would be
+// one record read PER base-hash key into at most one directory listing per kind
+// per sweep. Unknown kinds resolve to `true` so the sweep can never strip a key
+// it can't authoritatively check (a base hash for a future kind, or a shape
+// this version doesn't recognize); a listing that throws also keeps the kind's
+// keys (the `pruneOrphanedBaseHashes` resolver-error path is conservative too).
+function makeBaseHashKeyResolver() {
+  const idSets = new Map(); // kind → Set<liveId>
+  return async (kind, id) => {
+    const lister = LIVE_ID_LISTERS[kind];
+    if (!lister) return true; // unknown kind → never strip
+    if (!idSets.has(kind)) {
+      const records = await lister();
+      idSets.set(kind, new Set(records.map((r) => r.id)));
+    }
+    return idSets.get(kind).has(id);
+  };
 }
 
 const GRACE_MS = 24 * 60 * 60 * 1000;
@@ -217,7 +234,7 @@ export async function sweepTombstones({ now = Date.now(), graceMs = GRACE_MS } =
   // on long-lived installs, or a future kind without per-record eviction). Runs
   // every kind regardless of which were refused — orphan keys aren't gated on
   // snapshot coverage.
-  const orphan = await pruneOrphanedBaseHashes(baseHashKeyResolves);
+  const orphan = await pruneOrphanedBaseHashes(makeBaseHashKeyResolver());
   return {
     universes: u.pruned,
     series: s.pruned,
