@@ -51,6 +51,7 @@ import { PIPELINE_IMAGE_DEFAULTS, readPipelineImageSettings } from '../lib/pipel
 import { hasCanonDescriptorContent, descriptorForCanonEntry } from '../lib/canonPrompt';
 import { listSheetPointers } from '../lib/sheetPointers';
 import { upsertByIdPrepend } from '../lib/upsertByIdPrepend';
+import { sameJsonShape } from '../lib/sameJsonShape';
 import { BIBLE_LIMITS } from '../lib/bibleLimits';
 import {
   mergeVariations, mergeCanonByName, mergeExpandIntoDraft, extractPreservedFromDraft,
@@ -567,10 +568,10 @@ export default function UniverseBuilder() {
   // unsaved influence edits would get pinned to a record whose influences are
   // still the prior values. Comparing this against the live draft tells the
   // probe when the style is dirty so it can block until the user saves.
-  const savedStyleSnapshotRef = useRef(JSON.stringify(ensureInfluences(emptyTemplate().influences)));
+  const savedStyleSnapshotRef = useRef(ensureInfluences(emptyTemplate().influences));
   const markDraftSaved = useCallback((snapshotSource) => {
     savedDraftSnapshotRef.current = draftSnapshotForDirty(snapshotSource);
-    savedStyleSnapshotRef.current = JSON.stringify(ensureInfluences(snapshotSource?.influences));
+    savedStyleSnapshotRef.current = ensureInfluences(snapshotSource?.influences);
   }, []);
   const isDraftDirty = useCallback(
     () => savedDraftSnapshotRef.current !== draftSnapshotForDirty(draftRef.current || draft),
@@ -1697,7 +1698,7 @@ export default function UniverseBuilder() {
   // True when the draft's influences diverge from the saved record. The style
   // probe renders from these influences but pins its filename server-side, so a
   // probe taken while dirty would mis-attribute to style the record never had.
-  const styleProbeDirty = savedStyleSnapshotRef.current !== JSON.stringify(ensureInfluences(draft.influences));
+  const styleProbeDirty = !sameJsonShape(savedStyleSnapshotRef.current, ensureInfluences(draft.influences));
 
   // URL-driven tab + bucket state (per CLAUDE.md "Linkable routes for all
   // views"). `?tab=cast&bucket=heroes` deep-links into a sub-bucket; both fall
