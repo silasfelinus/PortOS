@@ -82,7 +82,12 @@ const {
   refineComicPanelPrompt,
   refineStoryboardScenePrompt,
   assertCharacterAppearancesResolve,
+  enqueueVisualImage,
 } = await import('./visualStages.js');
+
+// The universeBuilder mock's getUniverse is auto-captured here so individual
+// tests can feed enqueueVisualImage a canon (pickCanon reads universe.characters).
+const { getUniverse } = await import('../universeBuilder.js');
 
 beforeEach(() => {
   getIssueMock.mockClear();
@@ -902,5 +907,44 @@ describe('assertCharacterAppearancesResolve', () => {
     // A pick missing characterId entirely is skipped (the Zod schema guarantees
     // it upstream; the helper just doesn't crash on it).
     expect(() => assertCharacterAppearancesResolve([{ wardrobeId: 'wd-coat' }], characters)).not.toThrow();
+  });
+});
+
+// Guards the WIRING (not just the pure helper): removing the
+// assertCharacterAppearancesResolve call from enqueueVisualImage must turn
+// these red, otherwise the request-boundary contract could silently regress.
+describe('enqueueVisualImage characterAppearances enforcement', () => {
+  const canonWorld = {
+    characters: [
+      { id: 'char-aria', name: 'Aria', physicalDescription: 'tall', wardrobes: [{ id: 'wd-coat', name: 'Trench', description: 'long coat' }] },
+    ],
+  };
+
+  it('rejects a dangling characterId with a 400 before enqueueing', async () => {
+    getUniverse.mockResolvedValueOnce(canonWorld);
+    await expect(enqueueVisualImage('iss-test', 'storyboards', {
+      description: 'A scene with Aria',
+      characterAppearances: [{ characterId: 'char-ghost' }],
+    })).rejects.toMatchObject({ status: 400, code: 'PIPELINE_VISUAL_BAD_CHARACTER' });
+    expect(enqueueJobMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a mismatched wardrobeId with a 400 before enqueueing', async () => {
+    getUniverse.mockResolvedValueOnce(canonWorld);
+    await expect(enqueueVisualImage('iss-test', 'storyboards', {
+      description: 'A scene with Aria',
+      characterAppearances: [{ characterId: 'char-aria', wardrobeId: 'wd-nope' }],
+    })).rejects.toMatchObject({ status: 400, code: 'PIPELINE_VISUAL_BAD_WARDROBE' });
+    expect(enqueueJobMock).not.toHaveBeenCalled();
+  });
+
+  it('enqueues when picks resolve (valid wardrobe + null wardrobe)', async () => {
+    getUniverse.mockResolvedValueOnce(canonWorld);
+    const result = await enqueueVisualImage('iss-test', 'storyboards', {
+      description: 'A scene with Aria',
+      characterAppearances: [{ characterId: 'char-aria', wardrobeId: 'wd-coat' }],
+    });
+    expect(result.jobId).toBe('job-fake-1234');
+    expect(enqueueJobMock).toHaveBeenCalledTimes(1);
   });
 });
