@@ -89,6 +89,10 @@ Write the code, tests, and any docs the item requires. Follow the repo conventio
 
 Run the relevant test suite as you go (`cd server && npm test -- <area>` for focused runs).
 
+**Roll discovered backbone work INTO this PR — don't defer it.** While implementing (or during the Phase 6 review), you'll often discover a supporting improvement: a helper to extract, a shared abstraction the change should sit on, a small refactor that makes the fix cleaner or pins it with a test. **Default to doing that work in this same PR**, not to filing a new PLAN item. A discovered improvement that *supports* the current item is part of shipping it well — fold it in, test it, mention it in the PR body.
+
+Only add a NEW PLAN item when the discovered work is **genuinely large** — its own multi-file feature, a migration, a cross-cutting redesign, or anything that warrants its own plan/PR and review cycle. The bar for deferring is "this needs its own PR," not "this is slightly out of the original line-item's wording." When in doubt, roll it in. (This still respects CLAUDE.md's "capture deferred work" rule — that rule is about not *losing* work you decide not to do; this is about preferring to *do* the small supporting work rather than deferring it.)
+
 **Commit messages.** Reference the slug in the subject line so the work is grep-able across the changelog, branches, and PR titles:
 
 ```
