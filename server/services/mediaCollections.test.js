@@ -1003,6 +1003,39 @@ describe('mergeMediaCollectionsFromSync', () => {
     for (let i = 0; i < 12; i++) expect(ids).toContain(`c-batch-${i}`);
   });
 
+  it('rethrows after the whole batch settles + still flushes when a worker fails', async () => {
+    // Error-handling contract for the parallel fan-out: if one record's write
+    // throws, the call must reject (throw-on-failure preserved) — but only AFTER
+    // every other in-flight worker settles, so no write leaks into the
+    // background past the rejection, and the base-hash flush still runs for the
+    // records that DID complete.
+    const store = svc.mediaCollectionStore();
+    const realSave = store.saveOneNow.bind(store);
+    const saveSpy = vi.spyOn(store, 'saveOneNow').mockImplementation((id, rec) => {
+      if (id === 'c-boom') return Promise.reject(new Error('disk full'));
+      return realSave(id, rec);
+    });
+    const mk = (id) => ({
+      id, name: id, description: '', coverKey: null, universeId: null, seriesId: null,
+      items: [{ kind: 'image', ref: `${id}.png`, addedAt: '2026-05-22T01:00:00Z' }],
+      createdAt: '2026-05-22T00:00:00Z', updatedAt: '2026-05-22T01:00:00Z',
+    });
+    const remotes = ['c-ok-1', 'c-ok-2', 'c-boom', 'c-ok-3'].map(mk);
+
+    await expect(svc.mergeMediaCollectionsFromSync(remotes)).rejects.toThrow('disk full');
+    saveSpy.mockRestore();
+
+    // The non-failing records all persisted (no early abort skipped them) and
+    // each carries a seeded base hash (the flush ran despite the throw).
+    const persisted = new Set((await svc.listCollections()).map((c) => c.id));
+    for (const id of ['c-ok-1', 'c-ok-2', 'c-ok-3']) {
+      expect(persisted.has(id)).toBe(true);
+      expect(await cj.getSyncBaseHash('mediaCollection', id)).not.toBeNull();
+    }
+    expect(persisted.has('c-boom')).toBe(false);
+    expect(await cj.getSyncBaseHash('mediaCollection', 'c-boom')).toBeNull();
+  });
+
   it('inserts a previously-unseen collection', async () => {
     const remote = {
       id: 'c-remote',

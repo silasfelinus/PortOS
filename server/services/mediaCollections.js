@@ -901,6 +901,12 @@ export async function pruneTombstonedCollections(olderThanMs) {
   // Candidates have distinct ids → distinct per-record queues, so prune them
   // with a bounded fan-out instead of one-at-a-time. Each returns whether it
   // actually pruned; sum after (no shared mutable counter across the workers).
+  // Each worker catches its own error so mapWithConcurrency never rejects mid-
+  // flight (which would let the OTHER in-flight workers keep writing in the
+  // background past our return); we rethrow the first error after every worker
+  // has settled, preserving the throw-on-failure contract without leaking
+  // background writes.
+  let firstError = null;
   const outcomes = await mapWithConcurrency(candidates, COLLECTION_WRITE_CONCURRENCY, (c) =>
     store().queueRecordWrite(c.id, async () => {
       // Re-check inside the queue (deleteOneNow spans the load→delete boundary)
@@ -914,7 +920,8 @@ export async function pruneTombstonedCollections(olderThanMs) {
       // dead keys (mirrors pruneTombstonedUniverses / pruneTombstonedSeries).
       await deleteSyncBaseHash('mediaCollection', c.id);
       return true;
-    }));
+    }).catch((err) => { if (!firstError) firstError = err; return false; }));
+  if (firstError) throw firstError;
   return { pruned: outcomes.filter(Boolean).length };
 }
 
@@ -946,6 +953,13 @@ export async function mergeMediaCollectionsFromSync(remoteCollections, { source 
   // record makes accumulate in memory and are persisted by the single
   // `flushBaseHashes()` after the fan-out settles — unchanged from the
   // sequential version.
+  //
+  // Each worker catches its own error so mapWithConcurrency never rejects mid-
+  // flight: an early reject would let the other in-flight workers keep writing
+  // (and mutating the in-memory base-hash map) in the background past our return
+  // AND skip the flush below, stranding completed writes' base hashes unsaved.
+  // We let every worker settle, ALWAYS flush, then rethrow the first error.
+  let firstError = null;
   const outcomes = await mapWithConcurrency(remoteCollections, COLLECTION_WRITE_CONCURRENCY, (remote) => {
     const sanitized = sanitizeCollection(remote);
     if (!sanitized) return false;
@@ -1008,12 +1022,14 @@ export async function mergeMediaCollectionsFromSync(remoteCollections, { source 
       if (collectionsEqual(local, next)) return false;
       await store().saveOneNow(sanitized.id, next);
       return true;
-    });
+    }).catch((err) => { if (!firstError) firstError = err; return false; });
   });
   const changed = outcomes.filter(Boolean).length;
   // Persist the batched conflict-journal base-hash updates accumulated above in
-  // one write (seeds on insert + advances on accepted overwrite).
+  // one write (seeds on insert + advances on accepted overwrite). Always runs —
+  // even if a worker threw — so completed writes' base hashes aren't stranded.
   await flushBaseHashes();
+  if (firstError) throw firstError;
   if (changed === 0) return { applied: false, count: 0 };
   return { applied: true, count: changed };
 }
