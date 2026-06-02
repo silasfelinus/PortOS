@@ -51,6 +51,7 @@ import { PIPELINE_IMAGE_DEFAULTS, readPipelineImageSettings } from '../lib/pipel
 import { hasCanonDescriptorContent, descriptorForCanonEntry } from '../lib/canonPrompt';
 import { listSheetPointers } from '../lib/sheetPointers';
 import { upsertByIdPrepend } from '../lib/upsertByIdPrepend';
+import { sameJsonShape } from '../lib/sameJsonShape';
 import { BIBLE_LIMITS } from '../lib/bibleLimits';
 import {
   mergeVariations, mergeCanonByName, mergeExpandIntoDraft, extractPreservedFromDraft,
@@ -561,8 +562,16 @@ export default function UniverseBuilder() {
   // flush via handleSave() when they diverge so the server doesn't operate
   // on a stale copy.
   const savedDraftSnapshotRef = useRef(draftSnapshotForDirty(emptyTemplate()));
+  // Saved-record influences snapshot, tracked alongside the full-draft snapshot.
+  // StyleProbeImage builds its prompt from `influences` but persists only the
+  // resulting `styleImageRefs` to the SERVER record — so a probe rendered from
+  // unsaved influence edits would get pinned to a record whose influences are
+  // still the prior values. Comparing this against the live draft tells the
+  // probe when the style is dirty so it can block until the user saves.
+  const savedStyleSnapshotRef = useRef(ensureInfluences(emptyTemplate().influences));
   const markDraftSaved = useCallback((snapshotSource) => {
     savedDraftSnapshotRef.current = draftSnapshotForDirty(snapshotSource);
+    savedStyleSnapshotRef.current = ensureInfluences(snapshotSource?.influences);
   }, []);
   const isDraftDirty = useCallback(
     () => savedDraftSnapshotRef.current !== draftSnapshotForDirty(draftRef.current || draft),
@@ -1686,6 +1695,10 @@ export default function UniverseBuilder() {
   const categoryKeys = getCategoryKeys(draft.categories);
   const totalVariations = totalVariationCount(draft);
   const totalSheets = draft.compositeSheets?.length || 0;
+  // True when the draft's influences diverge from the saved record. The style
+  // probe renders from these influences but pins its filename server-side, so a
+  // probe taken while dirty would mis-attribute to style the record never had.
+  const styleProbeDirty = !sameJsonShape(savedStyleSnapshotRef.current, ensureInfluences(draft.influences));
 
   // URL-driven tab + bucket state (per CLAUDE.md "Linkable routes for all
   // views"). `?tab=cast&bucket=heroes` deep-links into a sub-bucket; both fall
@@ -1863,6 +1876,7 @@ export default function UniverseBuilder() {
             totalSheets={totalSheets}
             onPreview={openPreviewByFilename}
             onStyleProbeRenderComplete={bumpGalleryRefresh}
+            styleProbeDirty={styleProbeDirty}
           />
         )}
 
@@ -2962,6 +2976,7 @@ function BibleTab({
   totalVariations, categoryKeyCount, totalSheets,
   onPreview,
   onStyleProbeRenderComplete = null,
+  styleProbeDirty = false,
 }) {
   const { providers, providerModels, providerLabel, activeProviderId } = llm;
   const {
@@ -3153,12 +3168,15 @@ function BibleTab({
         />
         <div className="mt-4 pt-4 border-t border-port-border">
           {/* StyleProbeImage persists styleImageRefs server-side itself; merge
-              only that field into the draft so unsaved style edits aren't lost. */}
+              only that field into the draft so unsaved style edits aren't lost.
+              `styleDirty` blocks the render while influences have unsaved edits —
+              otherwise the probe pins to a saved record that lacks that style. */}
           <StyleProbeImage
             universe={draft}
             onUniverseChange={(updated) => updateDraft({ styleImageRefs: updated?.styleImageRefs || [] })}
             onPreview={onPreview}
             onRenderComplete={() => onStyleProbeRenderComplete?.()}
+            styleDirty={styleProbeDirty}
           />
         </div>
       </section>
