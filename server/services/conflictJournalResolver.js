@@ -103,10 +103,15 @@ async function applyToRecord(kind, recordId, patch, { replace = false } = {}) {
     const effective = (cur?.universeId || cur?.seriesId) ? withoutName : patch;
     if (Object.keys(effective).length > 0) await updateCollection(recordId, effective).catch(translateGone);
   } else if (kind === 'issue') {
-    // updateIssue deep-merges `stages` per-stage (mergeIssuePatch), so a
-    // restore re-applies the archived stage content without clobbering a
-    // sibling stage the live record gained since detection — same additive
-    // overlay semantics as universe categories (see the NOTE above).
+    // updateIssue merges `stages` per-key (mergeIssuePatch), but unlike universe
+    // categories' OPEN custom-key set, `sanitizeStages` seeds a CLOSED, fixed
+    // stage-id set with complete field shapes — so the archived snapshot always
+    // carries every stage (and every content sub-field). The per-key overlay
+    // therefore covers them all and the snapshot's value (even an empty one)
+    // wins, making restore-all equivalent to a wholesale replace WITHOUT a
+    // replace flag: a stage value the live record gained since the conflict is
+    // overwritten. (`runHistory` is intentionally recomputed, not rolled back —
+    // it tracks the live undo-history, which a faithful restore should preserve.)
     await updateIssue(recordId, patch).catch(translateGone);
   } else {
     throw makeErr(`Unsupported conflict kind: ${kind}`, ERR_VALIDATION);

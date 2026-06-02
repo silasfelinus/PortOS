@@ -116,6 +116,24 @@ describe('conflictJournalResolver', () => {
     expect(fresh.stages.prose.output).toBe('MY prose');
   });
 
+  it('issue restore-all overwrites a stage value the live record gained since the conflict (faithful without a replace flag)', async () => {
+    const issue = await issueSvc.createIssue({ seriesId: 'ser-faithful', title: 'T' });
+    // Post-conflict, the live record gained prose content the snapshot never had.
+    await issueSvc.updateIssue(issue.id, { stages: { prose: { status: 'ready', output: 'live-added prose' } } });
+    expect((await issueSvc.getIssue(issue.id)).stages.prose.output).toBe('live-added prose');
+    // The archived snapshot's prose was empty (the user's version had no prose).
+    const entryId = await seedEntry(
+      issue.id,
+      { id: issue.id, seriesId: 'ser-faithful', title: 'T', stages: { prose: { status: 'draft', output: '' } } },
+      'issue',
+    );
+    await resolver.resolveConflict(entryId, { action: 'restore-all' });
+    // The snapshot's empty prose overwrote the live addition — the closed stage-id
+    // set makes the per-key overlay equivalent to a wholesale replace, so issue
+    // stages need no replaceStages flag (unlike universe categories' open key set).
+    expect((await issueSvc.getIssue(issue.id)).stages.prose.output).toBe('');
+  });
+
   it('issue merge-fields overlays only the chosen field; unsupported kind is rejected', async () => {
     const issue = await issueSvc.createIssue({ seriesId: 'ser-merge', title: 'Keep Title' });
     await issueSvc.updateIssue(issue.id, { stages: { prose: { status: 'ready', output: 'REMOTE prose' } } });
