@@ -187,6 +187,9 @@ const NAV_COVERAGE_OPT_OUT = new Map([
   ['/universes/new', 'create-mode sentinel for the Universe Builder editor'],
 ]);
 
+// Element wrappers that forward to another route rather than render a page. A
+// NEW redirect wrapper must be added here, or the scanner will treat it as a
+// real page and (loudly, not silently) demand a nav entry for its route.
 const REDIRECT_ELEMENT = /element=\{<\s*(Navigate|RedirectWithSearch|CanonRedirect|UniverseRouteRedirect)\b/;
 
 // Flatten a stack of (possibly multi-segment, possibly "/") route path pieces
@@ -196,24 +199,37 @@ function joinRoutePath(segments) {
 }
 
 // Walk App.jsx line-by-line, tracking the stack of currently-open <Route>
-// containers, and return the absolute paths of every concrete, non-redirect,
-// non-param leaf route — the set that must each have a NAV_COMMANDS entry (or an
-// opt-out). Each <Route> is a single line in App.jsx, so a line scanner suffices.
-function extractNavigableRoutePaths(appSrc) {
+// containers. Returns:
+//  - required: absolute paths of every concrete, non-redirect, non-param leaf
+//    route — the set that must each have a NAV_COMMANDS entry (or an opt-out)
+//  - malformed: <Route>-opening lines whose tag doesn't close on the same line
+//  - stackDepth: open containers left unclosed at EOF
+// The scanner assumes each <Route> is a single line (true in App.jsx today). A
+// multi-line route would otherwise slip through silently — a multi-line *leaf*
+// reads as a pathless index route (resolves to an already-covered parent, never
+// flagged) and a multi-line *container* never gets pushed yet still pops on its
+// </Route>, corrupting the stack. `malformed`/`stackDepth` make that assumption
+// self-enforcing so it fails loudly instead. Returned (not thrown) so a bad
+// App.jsx surfaces as a focused test failure rather than aborting collection.
+function scanRoutes(appSrc) {
   const stack = []; // parent path segments of currently-open <Route> containers
   const required = [];
+  const malformed = [];
   for (const rawLine of appSrc.split('\n')) {
     const line = rawLine.trim();
     if (line === '</Route>') { stack.pop(); continue; }
     if (!/^<Route\b/.test(line)) continue; // skips <Routes>, comments, JSX text
 
+    // A single-line <Route> always closes its tag with `>` (container) or `/>`
+    // (leaf). Anything else is a multi-line opener the scanner can't handle.
+    if (!line.endsWith('>')) { malformed.push(line); continue; }
+
     const pathMatch = line.match(/\bpath="([^"]*)"/);
     const routePath = pathMatch ? pathMatch[1] : null; // null = index route
-    const isContainer = line.endsWith('>') && !line.endsWith('/>');
 
     // A container is a layout wrapper: push its segment so children resolve to
     // absolute paths, but don't require a manifest entry for the wrapper itself.
-    if (isContainer) {
+    if (!line.endsWith('/>')) {
       stack.push(routePath ?? '');
       continue;
     }
@@ -227,14 +243,23 @@ function extractNavigableRoutePaths(appSrc) {
     if (absolute.split('/').some((s) => s.startsWith(':'))) continue; // param route
     required.push(absolute);
   }
-  return [...new Set(required)];
+  return { required: [...new Set(required)], malformed, stackDepth: stack.length };
 }
 
 describe('nav coverage — every navigable App.jsx route has a manifest entry', () => {
   // Query string / hash on a manifest path (e.g. /media/image?settings=1) is a
   // deep-link variant of a real route; compare on the bare path.
   const navPaths = new Set(NAV_COMMANDS.map((c) => c.path.split(/[?#]/)[0]));
-  const routePaths = new Set(extractNavigableRoutePaths(fs.readFileSync(APP_JSX, 'utf8')));
+  const scan = scanRoutes(fs.readFileSync(APP_JSX, 'utf8'));
+  const routePaths = new Set(scan.required);
+
+  it('the line scanner saw every <Route> (single-line assumption holds)', () => {
+    // A non-empty malformed list or unbalanced stack means a multi-line route
+    // exists and would slip past the coverage check below — re-fold it to one
+    // line, or upgrade the scanner before trusting the guard.
+    expect(scan.malformed).toEqual([]);
+    expect(scan.stackDepth).toBe(0);
+  });
 
   it('each concrete leaf <Route> resolves to a NAV_COMMANDS path (or an opt-out)', () => {
     const uncovered = [...routePaths]
