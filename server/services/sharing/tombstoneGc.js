@@ -48,26 +48,6 @@ const LIVE_ID_LISTERS = Object.freeze({
   mediaCollection: async () => (await listCollections()).map((r) => r.id),
 });
 
-// Build the `pruneOrphanedBaseHashes` resolver for ONE sweep: load each kind's
-// live-id Set once on first use (lazily — a sweep with no keys of a given kind
-// never lists it) and check membership in memory. This collapses what would be
-// one record read PER base-hash key into at most one listing per kind per
-// sweep. Unknown kinds resolve to `true` so the sweep can never strip a key it
-// can't authoritatively check (a base hash for a future kind, or a shape this
-// version doesn't recognize); a listing that throws also keeps the kind's keys
-// (the `pruneOrphanedBaseHashes` resolver-error path is conservative too).
-function makeBaseHashKeyResolver() {
-  const idSets = new Map(); // kind → Set<liveId>
-  return async (kind, id) => {
-    const lister = LIVE_ID_LISTERS[kind];
-    if (!lister) return true; // unknown kind → never strip
-    if (!idSets.has(kind)) {
-      idSets.set(kind, new Set(await lister()));
-    }
-    return idSets.get(kind).has(id);
-  };
-}
-
 // Each peer-subscribable kind's UNCAPPED id source INCLUDING tombstones —
 // used by the orphan peer-subscription sweep. A tombstoned record still owns
 // its subscription (the sub pushes the delete to peers), so the sweep must
@@ -81,16 +61,22 @@ const ALL_ID_LISTERS = Object.freeze({
   mediaCollection: async () => (await listCollections({ includeDeleted: true })).map((r) => r.id),
 });
 
-// Build the orphan-subscription resolver for ONE sweep: lazily list each kind's
-// all-ids Set (including tombstones) on first use and check membership in
-// memory — at most one listing per kind per sweep. Unknown kinds resolve to
-// `true` (never strip a sub for a kind this version doesn't recognize); a
-// listing that throws also keeps the kind's subs (`pruneOrphanedPeerSubscriptions`
-// catches the rejection and treats it as "still resolves").
-function makeSubscriptionRecordResolver() {
-  const idSets = new Map(); // kind → Set<recordId>
+// Build a kind-aware id-membership resolver for ONE sweep: lazily list each
+// kind's id Set on first use (a sweep that never probes a kind never lists it)
+// and check membership in memory — at most one listing per kind per sweep,
+// collapsing what would otherwise be one record read per probed key. Unknown
+// kinds resolve to `true` so a sweep can never strip something it can't
+// authoritatively check (a key for a future kind, or a shape this version
+// doesn't recognize); a listing that throws also keeps the kind (both
+// `pruneOrphanedBaseHashes` and `pruneOrphanedPeerSubscriptions` treat a
+// resolver rejection as "still resolves"). The base-hash sweep passes
+// LIVE_ID_LISTERS (a record stops protecting its base hash once tombstoned);
+// the subscription sweep passes ALL_ID_LISTERS (a tombstone still owns its
+// sub until the record dir is hard-deleted).
+function makeRecordIdResolver(listers) {
+  const idSets = new Map(); // kind → Set<id>
   return async (kind, id) => {
-    const lister = ALL_ID_LISTERS[kind];
+    const lister = listers[kind];
     if (!lister) return true; // unknown kind → never strip
     if (!idSets.has(kind)) {
       idSets.set(kind, new Set(await lister()));
@@ -267,14 +253,14 @@ export async function sweepTombstones({ now = Date.now(), graceMs = GRACE_MS } =
   // on long-lived installs, or a future kind without per-record eviction). Runs
   // every kind regardless of which were refused — orphan keys aren't gated on
   // snapshot coverage.
-  const orphan = await pruneOrphanedBaseHashes(makeBaseHashKeyResolver());
+  const orphan = await pruneOrphanedBaseHashes(makeRecordIdResolver(LIVE_ID_LISTERS));
   // Orphan peer-subscription sweep — same backstop logic as the base-hash
   // sweep, AFTER the tombstone prunes so a record whose dir was just rm'd
   // (no longer resolves even with includeDeleted) gets its dead subscription
   // rows dropped. Runs every kind regardless of refusals: an orphaned sub
   // points at a record that no longer exists, so it's safe to strip no matter
   // what the snapshot-coverage gate decided for live tombstones.
-  const orphanSubs = await pruneOrphanedPeerSubscriptions(makeSubscriptionRecordResolver());
+  const orphanSubs = await pruneOrphanedPeerSubscriptions(makeRecordIdResolver(ALL_ID_LISTERS));
   return {
     universes: u.pruned,
     series: s.pruned,
