@@ -518,4 +518,24 @@ Thud!`;
       { character: 'KESSA', line: 'No!' },
     ]);
   });
+
+  // Lock the lookahead heuristic against EACH block type that can follow a
+  // trailing shout (PAGE / PANEL / CAPTION / SFX), plus the blank-line-skipped
+  // case — every one must keep the shout attributed to the current speaker.
+  describe('trailing all-caps shout — lookahead across every block boundary', () => {
+    const cases = [
+      ['next PAGE', 'PAGE 1\nPANEL 1\nA face.\nGIANT\nWait.\nSTOP\nPAGE 2\nPANEL 1\nElsewhere.'],
+      ['next PANEL', 'PAGE 1\nPANEL 1\nA face.\nGIANT\nWait.\nSTOP\nPANEL 2\nAnother shot.'],
+      ['next CAPTION', 'PAGE 1\nPANEL 1\nA face.\nGIANT\nWait.\nSTOP\nCAPTION\nLater.'],
+      ['next SFX', 'PAGE 1\nPANEL 1\nA face.\nGIANT\nWait.\nSTOP\nSFX\nBOOM'],
+      ['blank line then next PANEL', 'PAGE 1\nPANEL 1\nA face.\nGIANT\nWait.\nSTOP\n\nPANEL 2\nAnother shot.'],
+    ];
+    it.each(cases)('keeps the shout under the speaker when followed by %s', (_label, script) => {
+      const { pages } = parseComicScript(script);
+      expect(pages[0].panels[0].dialogue).toEqual([
+        { character: 'GIANT', line: 'Wait.' },
+        { character: 'GIANT', line: 'STOP' },
+      ]);
+    });
+  });
 });
