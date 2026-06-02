@@ -439,6 +439,14 @@ export async function setIssueLock(id, issueId, locked) {
  *
  * `options.seasonId` scopes generation to a single season; omit to cover every
  * season on the arc.
+ *
+ * Deliberately does NOT run the Pipeline route's post-create continuity canon
+ * extraction (extractCanonFromProse). In the builder, canon is owned by the
+ * dedicated `characters` step where the user curates it against the universe;
+ * episode synopses here are thin idea-stage seeds, so auto-extracting canon
+ * from them would push low-signal entries the user then has to clean up. Issue
+ * creation is the focused job of this action — the characters step handles
+ * canon.
  */
 export async function generateIssuesFromArc(id, options = {}) {
   const session = await getStorySession(id);

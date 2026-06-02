@@ -692,14 +692,13 @@ function IssuesPanel({ session, series, issues, onChanged }) {
     if (!res) return;
     const created = res.createdIssues?.length || 0;
     const skipped = (res.seasons || []).filter((s) => s.skipped);
+    const skipReason = skipped.length ? skipped[0].reason : null;
     if (created > 0) {
       toast.success(`Created ${created} issue${created === 1 ? '' : 's'} from the arc`);
+      // Surface partial-batch skips so a locked/empty season doesn't fail silently.
+      if (skipReason) toast.error(`Skipped ${skipped.length} season${skipped.length === 1 ? '' : 's'}: ${skipReason}`);
     } else {
-      toast.error(skipped.length ? `No issues created — ${skipped[0].reason}` : 'No issues were generated');
-    }
-    // Surface partial-batch skips so a locked/empty season doesn't fail silently.
-    if (created > 0 && skipped.length) {
-      toast.error(`Skipped ${skipped.length} season${skipped.length === 1 ? '' : 's'}: ${skipped[0].reason}`);
+      toast.error(skipReason ? `No issues created — ${skipReason}` : 'No issues were generated');
     }
     onChanged();
   };
