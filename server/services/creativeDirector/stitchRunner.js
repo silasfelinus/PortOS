@@ -157,7 +157,7 @@ async function maybeMuxPipelineAudio(project, finalEntry) {
     console.log(`🎙️ CD stitch mux: overlaying ${voLines.length} VO line(s)${musicPath ? ' + ducked music bed' : ''} onto ${finalEntry.filename}`);
     const result = await muxVoLines(videoPath, { voLines, musicPath });
     if (result.ok) {
-      console.log(`✅ CD stitch mux: VO mux applied to ${finalEntry.filename} (${result.lineCount} line(s)${result.ducked ? ', music ducked' : ''})`);
+      console.log(`✅ CD stitch mux: VO mux applied to ${finalEntry.filename} (${result.lineCount} line(s)${result.ducked ? ', music ducked' : ''}${result.clipAudio ? ', clip audio preserved' : ''})`);
       return;
     }
     // VO mux failed — fall through to a plain music bed if we have one, so a

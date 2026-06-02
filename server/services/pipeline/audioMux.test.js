@@ -15,6 +15,10 @@ vi.mock('../../lib/fileUtils.js', async () => {
 });
 
 const findFfmpegMock = vi.fn();
+// hasAudioStream is mocked so muxVoLines tests deterministically control
+// whether the input video is treated as carrying a clip soundtrack — without
+// shelling out to a real ffprobe against the fake video fixtures.
+const hasAudioStreamMock = vi.fn();
 // Pull the real runFfmpegProcess through — it's the helper audioMux now
 // delegates to. The child_process mock below still intercepts spawn, so the
 // real helper drives our fake ffmpeg.
@@ -23,6 +27,7 @@ vi.mock('../../lib/ffmpeg.js', async () => {
   return {
     ...actual,
     findFfmpeg: (...a) => findFfmpegMock(...a),
+    hasAudioStream: (...a) => hasAudioStreamMock(...a),
   };
 });
 
@@ -67,6 +72,10 @@ beforeEach(async () => {
   mockExitCode = 0;
   mockStderr = '';
   findFfmpegMock.mockReset();
+  // Default: input video has no audio stream (matches today's silent AI-gen
+  // clips). Tests that exercise clip-audio preservation opt in explicitly.
+  hasAudioStreamMock.mockReset();
+  hasAudioStreamMock.mockResolvedValue(false);
   await rm(TEST_HOME, { recursive: true, force: true }).catch(() => {});
   await mkdir(FAKE_MUSIC_DIR, { recursive: true });
 });
@@ -236,14 +245,50 @@ describe('buildVoMuxArgs', () => {
     // music is the looped last input (index 2 here: video=0, vo=1, music=2)
     expect(args).toContain('-stream_loop');
     const filter = args[args.indexOf('-filter_complex') + 1];
-    expect(filter).toContain('asplit=2[voscraw][vomain]');
+    // One bed (music) → VO padded then split into the mixed-back copy + one
+    // sidechain key. The apad-before-split keeps the bed alive past the last
+    // VO line (sidechaincompress ends with its shortest input).
+    expect(filter).toContain('apad,asplit=2[vomain][vsck0]');
     expect(filter).toContain('[2:a]volume=0.400');
     expect(filter).toContain('sidechaincompress=threshold=');
-    expect(filter).toContain('[bed][vosc]sidechaincompress');
-    expect(filter).toContain('[ducked][vomain]amix=inputs=2:normalize=0[aout]');
-    // The sidechain KEY must be padded to infinity so the music bed survives
-    // past the last VO line (sidechaincompress ends with its shortest input).
-    expect(filter).toContain('[voscraw]apad[vosc]');
+    expect(filter).toContain('[bed][vsck0]sidechaincompress');
+    expect(filter).toContain('[ducked0][vomain]amix=inputs=2:normalize=0[aout]');
+  });
+
+  it('mixes the clip soundtrack in as a second ducked bed alongside music', () => {
+    const args = buildVoMuxArgs({
+      inputVideoPath: '/v.mp4',
+      voLines: [{ path: '/a.wav', offsetSec: 0 }],
+      musicPath: '/m.mp3',
+      clipAudio: true,
+      outPath: '/out.mp4',
+    });
+    const filter = args[args.indexOf('-filter_complex') + 1];
+    // The stitched video's own audio (0:a) is resampled and ducked under VO
+    // via its own sidechain key, the same way the music bed is.
+    expect(filter).toContain('[0:a]aresample=48000');
+    expect(filter).toMatch(/\[clip\]/);
+    // Two beds (music + clip) → VO split into mixed-back + two sidechain keys.
+    expect(filter).toContain('apad,asplit=3[vomain][vsck0][vsck1]');
+    expect(filter).toContain('[bed][vsck0]sidechaincompress');
+    expect(filter).toContain('[clip][vsck1]sidechaincompress');
+    expect(filter).toContain('[ducked0][ducked1][vomain]amix=inputs=3:normalize=0[aout]');
+  });
+
+  it('ducks the clip soundtrack under VO even with no music bed', () => {
+    const args = buildVoMuxArgs({
+      inputVideoPath: '/v.mp4',
+      voLines: [{ path: '/a.wav', offsetSec: 0 }],
+      clipAudio: true,
+      outPath: '/out.mp4',
+    });
+    // No music → no looped input, but the clip soundtrack is still preserved.
+    expect(args).not.toContain('-stream_loop');
+    const filter = args[args.indexOf('-filter_complex') + 1];
+    expect(filter).toContain('[0:a]aresample=48000');
+    expect(filter).toContain('apad,asplit=2[vomain][vsck0]');
+    expect(filter).toContain('[clip][vsck0]sidechaincompress');
+    expect(filter).toContain('[ducked0][vomain]amix=inputs=2:normalize=0[aout]');
   });
 
   it('uses a single VO label without amix for one line', () => {
@@ -329,5 +374,40 @@ describe('muxVoLines', () => {
     expect(result.ducked).toBe(true);
     const filter = spawnCalls[0].args[spawnCalls[0].args.indexOf('-filter_complex') + 1];
     expect(filter).toContain('sidechaincompress');
+  });
+
+  it('preserves the clip soundtrack ducked under VO when the input has audio', async () => {
+    findFfmpegMock.mockResolvedValue('/usr/local/bin/ffmpeg');
+    hasAudioStreamMock.mockResolvedValue(true);
+    const video = join(TEST_HOME, 'v.mp4');
+    const wav = join(TEST_HOME, 'a.wav');
+    await writeFile(video, Buffer.from('vid'));
+    await writeFile(wav, Buffer.from('wav'));
+
+    const result = await muxVoLines(video, { voLines: [{ path: wav, offsetSec: 1 }] });
+    expect(result.ok).toBe(true);
+    expect(result.clipAudio).toBe(true);
+    // VO-only request, but the clip's own audio is mixed in and ducked.
+    expect(result.ducked).toBe(false);
+    const filter = spawnCalls[0].args[spawnCalls[0].args.indexOf('-filter_complex') + 1];
+    expect(filter).toContain('[0:a]aresample=48000');
+    expect(filter).toContain('[clip][vsck0]sidechaincompress');
+  });
+
+  it('skips the clip soundtrack when the input video is silent', async () => {
+    findFfmpegMock.mockResolvedValue('/usr/local/bin/ffmpeg');
+    hasAudioStreamMock.mockResolvedValue(false);
+    const video = join(TEST_HOME, 'v.mp4');
+    const wav = join(TEST_HOME, 'a.wav');
+    await writeFile(video, Buffer.from('vid'));
+    await writeFile(wav, Buffer.from('wav'));
+
+    const result = await muxVoLines(video, { voLines: [{ path: wav, offsetSec: 1 }] });
+    expect(result.ok).toBe(true);
+    expect(result.clipAudio).toBe(false);
+    const filter = spawnCalls[0].args[spawnCalls[0].args.indexOf('-filter_complex') + 1];
+    // A silent video must never have [0:a] referenced — that would abort ffmpeg.
+    expect(filter).not.toContain('[0:a]');
+    expect(filter).not.toContain('[clip]');
   });
 });
