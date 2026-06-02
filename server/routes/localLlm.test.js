@@ -3,7 +3,14 @@ import express from 'express';
 import { request } from '../lib/testHelper.js';
 import localLlmRoutes from './localLlm.js';
 import { runLocalLlmTest, compareLocalLlmModels } from '../services/localLlmPlayground.js';
+import { getLoadedModels, unloadModel } from '../services/ollamaManager.js';
 import { localLlmCompareSchema, localLlmTestSchema } from '../lib/validation.js';
+import { errorEvents } from '../lib/errorHandler.js';
+
+// asyncHandler emits to errorEvents on every route failure; with `io` set on
+// the app it always fires. Swallow it so a validation-rejection test doesn't
+// trip Node's "unhandled 'error' event" — assertions go through the response.
+errorEvents.on('error', () => {});
 
 vi.mock('../services/localLlm.js', () => ({
   getStatus: vi.fn(),
@@ -109,5 +116,76 @@ describe('local LLM playground routes', () => {
     const parsed = localLlmCompareSchema.safeParse({ targets, prompt: 'too many' });
 
     expect(parsed.success).toBe(false);
+  });
+});
+
+describe('local LLM memory-management routes', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('GET /loaded reports the models Ollama currently has resident', async () => {
+    getLoadedModels.mockResolvedValue([{ name: 'llama3.2', sizeVram: 4096 }]);
+
+    const res = await request(makeApp()).get('/api/local-llm/loaded');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ollama: [{ name: 'llama3.2', sizeVram: 4096 }] });
+    expect(getLoadedModels).toHaveBeenCalledTimes(1);
+  });
+
+  it('POST /unload evicts a resident model and echoes the service result', async () => {
+    unloadModel.mockResolvedValue({ unloaded: true, modelId: 'llama3.2' });
+
+    const res = await request(makeApp())
+      .post('/api/local-llm/unload')
+      .send({ backend: 'ollama', modelId: 'llama3.2' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true, unloaded: true, modelId: 'llama3.2' });
+    expect(unloadModel).toHaveBeenCalledWith('llama3.2');
+  });
+
+  it('POST /unload treats an already-evicted model as an idempotent 200 no-op', async () => {
+    unloadModel.mockResolvedValue({ unloaded: false, reason: 'not loaded' });
+
+    const res = await request(makeApp())
+      .post('/api/local-llm/unload')
+      .send({ backend: 'ollama', modelId: 'llama3.2' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true, unloaded: false, reason: 'not loaded', modelId: 'llama3.2' });
+  });
+
+  it('POST /unload surfaces a genuine unload failure as 502', async () => {
+    unloadModel.mockResolvedValue({ unloaded: false, reason: 'Ollama unreachable' });
+
+    const res = await request(makeApp())
+      .post('/api/local-llm/unload')
+      .send({ backend: 'ollama', modelId: 'llama3.2' });
+
+    expect(res.status).toBe(502);
+    expect(res.body).toEqual({ error: 'Ollama unreachable', modelId: 'llama3.2' });
+    expect(unloadModel).toHaveBeenCalledWith('llama3.2');
+  });
+
+  it('POST /unload refuses a non-ollama backend before calling the service', async () => {
+    const res = await request(makeApp())
+      .post('/api/local-llm/unload')
+      .send({ backend: 'lmstudio', modelId: 'some-model' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/use \/api\/lmstudio\/unload/);
+    expect(unloadModel).not.toHaveBeenCalled();
+  });
+
+  it('POST /unload rejects a flag-like modelId via Zod validation', async () => {
+    const res = await request(makeApp())
+      .post('/api/local-llm/unload')
+      .send({ backend: 'ollama', modelId: '-rf' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('VALIDATION_ERROR');
+    expect(unloadModel).not.toHaveBeenCalled();
   });
 });
