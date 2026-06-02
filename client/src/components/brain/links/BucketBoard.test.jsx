@@ -70,9 +70,9 @@ describe('BucketBoard', () => {
     expect(onMoveLinkToIndex).toHaveBeenCalledWith(twoChip[0], 'b1', 1);
   });
 
-  it('routes a drop in the gap (bubbling to the card) to the shown insertion index', () => {
+  it('keeps the armed marker through a bubbled dragleave and routes a gap drop to it', () => {
     const onMoveLinkToIndex = vi.fn();
-    render(
+    const { container } = render(
       <BucketBoard
         links={twoChip}
         buckets={buckets}
@@ -84,11 +84,19 @@ describe('BucketBoard', () => {
       />
     );
     const linkDt = { getData: () => 'l1', types: ['text/x-brain-link'] };
-    // Dragging over Beta (index 1) arms the insertion marker at index 1.
+    const card = container.querySelector('.flex.flex-col.bg-port-card'); // b1's card root
+    const chipRow = container.querySelector('.flex.flex-wrap'); // b1's chip row
+    // Hovering Beta (index 1) arms the marker at index 1.
     fireEvent.dragOver(screen.getByText('Beta'), { dataTransfer: linkDt });
-    // Releasing on the bucket header (not a chip) bubbles to the card's drop
-    // handler, which must honor the armed marker rather than appending.
-    fireEvent.drop(screen.getByText('Bookmarks'), { dataTransfer: linkDt });
+    // A bubbled dragleave reaching the card (the chip→gap crossing fires one)
+    // must NOT clear the armed marker — the regression was the card-level
+    // onDragLeave wiping dropIndex unconditionally. (relatedTarget can't be
+    // simulated in jsdom, but the card's leave no longer reads the event, so
+    // this exercises the exact handler that held the bug.)
+    fireEvent.dragLeave(card);
+    // Releasing in the gap (the chip row, not a chip) bubbles to the card's
+    // drop handler, which must honor the still-armed marker rather than append.
+    fireEvent.drop(chipRow, { dataTransfer: linkDt });
     expect(onMoveLinkToIndex).toHaveBeenCalledWith(twoChip[0], 'b1', 1);
   });
 

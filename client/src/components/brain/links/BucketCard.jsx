@@ -90,7 +90,11 @@ export default function BucketCard({
         dropActive ? 'border-port-accent ring-1 ring-port-accent' : 'border-port-border'
       }`}
       onDragOver={(e) => { e.preventDefault(); if (dropIndex === null) setDropActive(true); }}
-      onDragLeave={() => { setDropActive(false); setDropIndex(null); }}
+      // Don't clear dropIndex here: native dragleave bubbles, so a chip→gap
+      // crossing would fire this and wipe the armed marker before a gap/bar
+      // release — defeating the guarded clear on the chips row below. The chips
+      // row's own dragleave (with a relatedTarget guard) owns clearing.
+      onDragLeave={() => setDropActive(false)}
       onDrop={(e) => {
         e.preventDefault();
         const insertAt = dropIndex; // capture the visible insertion point before clearing
@@ -254,5 +258,7 @@ export default function BucketCard({
 
 /** A thin vertical accent bar marking where a dragged chip will land. */
 function ChipInsertionBar() {
-  return <div className="w-0.5 self-stretch min-h-[1.75rem] rounded-full bg-port-accent" aria-hidden="true" />;
+  // pointer-events-none so the bar isn't itself a drag target — a release on it
+  // passes through to the chips row (and bubbles to the card drop handler).
+  return <div className="w-0.5 self-stretch min-h-[1.75rem] rounded-full bg-port-accent pointer-events-none" aria-hidden="true" />;
 }
