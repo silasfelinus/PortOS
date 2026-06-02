@@ -16,7 +16,7 @@
  * extractor against the corresponding text stage and replace the list.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus, Trash2, Sparkles, Loader2, Wand2, Film, WandSparkles, Shirt } from 'lucide-react';
 import toast from '../../ui/Toast';
 import {
@@ -26,9 +26,8 @@ import {
   refinePipelineSceneImagePrompt,
   updatePipelineIssue,
   extractPipelineStoryboardScenes,
-  getUniverse,
 } from '../../../services/api';
-import useMounted from '../../../hooks/useMounted';
+import useUniverse from '../../../hooks/useUniverse';
 import { matchCharactersInText } from '../../../lib/scenePrompt';
 import MediaJobThumb from '../MediaJobThumb';
 import { genConfigToImageOptions, genConfigToRefineOptions } from './VisualGenSettings';
@@ -54,21 +53,14 @@ export default function StoryboardsStage({ issue, series, onStageUpdate, actions
     if (armTimerRef.current) clearTimeout(armTimerRef.current);
   }, []);
 
-  // Canon characters (with wardrobes) live on the linked universe — load them
-  // once so each scene can offer a per-character wardrobe picker. Only
-  // characters that own at least one wardrobe are pickable.
-  const mountedRef = useMounted();
-  const [wardrobeChars, setWardrobeChars] = useState([]);
-  useEffect(() => {
-    if (!series?.universeId) { setWardrobeChars([]); return undefined; }
-    let cancelled = false;
-    getUniverse(series.universeId).then((w) => {
-      if (cancelled || !mountedRef.current) return;
-      const chars = Array.isArray(w?.characters) ? w.characters : [];
-      setWardrobeChars(chars.filter((c) => Array.isArray(c?.wardrobes) && c.wardrobes.length > 0));
-    }).catch(() => { if (mountedRef.current) setWardrobeChars([]); });
-    return () => { cancelled = true; };
-  }, [series?.universeId, mountedRef]);
+  // Canon characters (with wardrobes) live on the linked universe — load it
+  // and derive the pickable set so each scene can offer a per-character
+  // wardrobe picker. Only characters that own at least one wardrobe are pickable.
+  const [universe] = useUniverse(series?.universeId);
+  const wardrobeChars = useMemo(() => {
+    const chars = Array.isArray(universe?.characters) ? universe.characters : [];
+    return chars.filter((c) => Array.isArray(c?.wardrobes) && c.wardrobes.length > 0);
+  }, [universe]);
 
   const teleplayReady = !!(issue.stages?.teleplay?.output || '').trim();
   const proseReady = !!(issue.stages?.prose?.output || '').trim();
