@@ -108,3 +108,20 @@ export const updateSettings = (patch) => queueWrite(async () => {
   const merged = { ...raw, ...incoming };
   return save(merged);
 });
+
+// Read-modify-write INSIDE the write queue. For callers whose merge semantics
+// `updateSettings`' shallow `{ ...raw, ...patch }` can't express — a deep merge
+// (`deepMerge(current, …)`), or building the next object by spreading/deleting a
+// sub-key. `mutate(current)` receives the freshest stripped settings (same shape
+// `getSettings()` returns) and returns the FULL next settings object to persist.
+//
+// This closes the stale-base window in the old `getSettings() → modify →
+// saveSettings(...)` pattern: there, a concurrent `updateSettings` landing
+// between the external read and the queued write was clobbered by the caller's
+// stale pre-image. Here the read and the write share one queued turn, so the
+// mutator always sees the latest persisted snapshot.
+export const updateSettingsWith = (mutate) => queueWrite(async () => {
+  const current = stripStoreKeys(await loadRaw());
+  const next = await mutate(current);
+  return save(next);
+});
