@@ -60,9 +60,13 @@ const store = () => {
 
 export const issueStore = () => store();
 
-// Series-scoped queue for mutations that can renumber siblings. Ordinary
-// per-issue PATCH/stage writes use collectionStore's per-id queue so edits to
-// different issues no longer serialize behind one monolithic JSON tail.
+// Series-scoped write queue. ALL issue mutations — create, per-issue PATCH,
+// stage writes, deletes, and sibling-renumbering ops — route through this so
+// they serialize per series. Even though collectionStore keeps a per-id queue,
+// per-issue edits still share the series-level `index.json` (numbering, ordering),
+// so two concurrent writes to *different* issues in the same series could read a
+// stale index and clobber each other. A single tail per seriesId collapses that
+// race: each write awaits the previous one and merges against the freshest state.
 const seriesIssueTails = new Map();
 function queueSeriesIssuesWrite(seriesId, fn) {
   const key = typeof seriesId === 'string' && seriesId ? seriesId : '__unknown__';
