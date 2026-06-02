@@ -966,22 +966,30 @@ export async function pushRecordToPeer(sub, options = {}) {
   // they upgrade, the next push round naturally re-includes `portosMeta`.
   // `catalogBundle` (catalog-federation push enrichment) is a second new
   // top-level key an even-newer-than-version-gate-but-pre-catalog peer's strict
-  // schema also rejects. Strip whichever key(s) the receiver actually named —
-  // surgically, so a peer that supports `portosMeta` but not `catalogBundle`
-  // keeps its version-gate handshake. Zod `.strict()` lists all unrecognized
-  // keys in one issue, so a single retry covers both.
-  if (res && res.status === 400 && (payload.portosMeta || payload.catalogBundle)) {
+  // schema also rejects. `manuscriptReview` (the bundled "Finish the draft"
+  // review doc) is a third — a pre-feature peer's series push schema is still
+  // `.strict()` without it, so it 400-rejects a review-bearing series push and
+  // would strand the series + issues. This retry is exactly what makes the
+  // review's "degrades gracefully on older peers" contract hold (see
+  // schemaVersions.js): strip the unknown key the older peer can't parse so the
+  // record/issues still land; the review reaches it once it upgrades. Strip
+  // whichever key(s) the receiver actually named — surgically, so a peer that
+  // supports `portosMeta` but not `catalogBundle`/`manuscriptReview` keeps its
+  // version-gate handshake. Zod `.strict()` lists all unrecognized keys in one
+  // issue, so a single retry covers all of them.
+  if (res && res.status === 400 && (payload.portosMeta || payload.catalogBundle || payload.manuscriptReview)) {
     const errBody = await res.clone().json().catch(() => null);
     const details = Array.isArray(errBody?.context?.details) ? errBody.context.details : [];
     const mentions = (key) => details.some((d) => new RegExp(key).test(`${d?.path || ''} ${d?.message || ''}`));
-    if (errBody?.code === 'VALIDATION_ERROR' && (mentions('portosMeta') || mentions('catalogBundle'))) {
+    if (errBody?.code === 'VALIDATION_ERROR' && (mentions('portosMeta') || mentions('catalogBundle') || mentions('manuscriptReview'))) {
       const legacyPayload = { ...payload };
       const stripped = [];
       if (mentions('portosMeta') && 'portosMeta' in legacyPayload) { delete legacyPayload.portosMeta; stripped.push('portosMeta'); }
       if (mentions('catalogBundle') && 'catalogBundle' in legacyPayload) { delete legacyPayload.catalogBundle; stripped.push('catalogBundle'); }
-      // The universe record still lands; on a pre-catalog peer the catalog
-      // enrichments simply re-derive from the embedded canon on its backfill,
-      // and a re-push after it upgrades re-includes the stripped key(s).
+      if (mentions('manuscriptReview') && 'manuscriptReview' in legacyPayload) { delete legacyPayload.manuscriptReview; stripped.push('manuscriptReview'); }
+      // The series + issues still land; on a pre-feature peer the review simply
+      // doesn't propagate until it upgrades, and a re-push after it upgrades
+      // re-includes the stripped key(s).
       console.log(
         `ℹ️ peerSync: ${peer.name || peer.instanceId} rejected newer envelope key(s) ${stripped.join(', ')} — retrying push without them`,
       );

@@ -2864,6 +2864,44 @@ describe('peerSync', () => {
         expect(retryPayload.record.id).toBe('u1');
       });
 
+      it('falls back without manuscriptReview when a pre-feature peer rejects the new key, keeping series + issues', async () => {
+        // A pre-manuscript-review-sync peer's seriesPushSchema is still
+        // `.strict()` without `manuscriptReview`, so it 400-rejects a review-
+        // bearing series push. The sender must strip ONLY manuscriptReview and
+        // retry so the series + issues still land (the review reaches the peer
+        // once it upgrades). This is what makes the review's "degrades
+        // gracefully on older peers" contract hold.
+        vi.mocked(getSeries).mockResolvedValue({ id: 's1', name: 'Series' });
+        vi.mocked(listIssues).mockResolvedValue([{ id: 'i1', seriesId: 's1', number: 1 }]);
+        vi.mocked(getReview).mockResolvedValue({
+          schemaVersion: 1,
+          comments: [{ id: 'mrc-1', problem: 'pacing', status: 'open', updatedAt: '2026-06-02T00:00:00Z' }],
+        });
+        const firstCallBody = { ok: false, status: 400, json: async () => ({
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          context: { details: [{ path: '', message: "Unrecognized key(s) in object: 'manuscriptReview'" }] },
+        }) };
+        firstCallBody.clone = () => firstCallBody;
+        const retryBody = { ok: true, status: 200, json: async () => ({}) };
+        vi.mocked(peerFetch).mockResolvedValueOnce(firstCallBody).mockResolvedValueOnce(retryBody);
+        const sub = await subscribePeer({
+          peerId: 'peer-a', recordKind: 'series', recordId: 's1',
+        }, { adoptedFromReverse: true });
+        const result = await pushRecordToPeer(sub);
+        expect(result.pushed).toBe(true);
+        const calls = vi.mocked(peerFetch).mock.calls;
+        expect(calls.length).toBe(2);
+        const firstPayload = JSON.parse(calls[0][1].body);
+        const retryPayload = JSON.parse(calls[1][1].body);
+        expect(firstPayload.manuscriptReview).toBeDefined();
+        expect(retryPayload.manuscriptReview).toBeUndefined();
+        // Surgical strip: portosMeta survives, and the series + issues still land.
+        expect(retryPayload.portosMeta).toBeDefined();
+        expect(retryPayload.record.id).toBe('s1');
+        expect(retryPayload.issues).toHaveLength(1);
+      });
+
       it('does NOT retry on a 400 whose validation error is unrelated to portosMeta', async () => {
         // The retry is keyed on the `portosMeta` mention in the validation
         // details — any other 400 (oversized field, unknown record key, etc.)
