@@ -76,6 +76,21 @@ describe('storyBuilderRunner', () => {
     await flush();
   });
 
+  it('surfaces the in-flight op when a different op coalesces onto the same step', async () => {
+    let resolve;
+    conductor.generateStep.mockImplementation(() => new Promise((r) => { resolve = () => r({}); }));
+    startStepRun('stb-1', 'plotArc', { op: 'generate' });
+    // A refine click lands on the same step while the generate is in flight: it
+    // coalesces but must report the live op so the client refuses to bind its
+    // "Refined" handler to the generate's terminal frame.
+    const collision = startStepRun('stb-1', 'plotArc', { op: 'refine', feedback: 'x' });
+    expect(collision.alreadyRunning).toBe(true);
+    expect(collision.op).toBe('generate');
+    expect(conductor.refineStep).not.toHaveBeenCalled();
+    resolve();
+    await flush();
+  });
+
   it('surfaces a refine failure as an error frame', async () => {
     conductor.refineStep.mockRejectedValue(new Error('LLM down'));
     startStepRun('stb-2', 'universeAesthetic', { op: 'refine', feedback: 'tighter' });

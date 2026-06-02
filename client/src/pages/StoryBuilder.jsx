@@ -420,6 +420,16 @@ function useStepStream(sessionId, stepId) {
     const res = await kickoff().catch((err) => { handlers.onError?.(err); return null; });
     setStarting(false);
     if (!res) { setPhase(''); setOp(null); return; }
+    // The kickoff coalesced onto a different-op run already in flight for this
+    // step (e.g. a refine landing on an in-flight generate). Both ops persist to
+    // the same records, so binding THIS button's success handler to that run's
+    // terminal frame would misreport ("Refined" when a generate finished). Don't
+    // subscribe — report the conflict and leave the live run untouched.
+    if (res.alreadyRunning && res.op && res.op !== nextOp) {
+      setPhase(''); setOp(null);
+      handlers.onError?.(new Error('Another operation is already running for this step — try again once it finishes.'));
+      return;
+    }
     handlersRef.current = handlers;
     setActive(true); // enable the SSE subscription now that the run is registered
   }, [starting, active]);

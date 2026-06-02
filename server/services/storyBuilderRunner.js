@@ -57,7 +57,15 @@ function broadcast(key, payload) {
  */
 export function startStepRun(sessionId, stepId, { op = 'generate', ...options } = {}) {
   const key = runKey(sessionId, stepId);
-  if (runs.has(key)) return { runId: runs.get(key).runId, alreadyRunning: true };
+  // Coalesce a second click onto the in-flight run, but surface that run's `op`
+  // so the caller can tell a same-op re-click (reload mid-run — safe to attach)
+  // from a different-op collision (a refine landing on an in-flight generate).
+  // The two ops persist to the same records, so the client must NOT bind a
+  // refine's success handler to a generate's terminal frame.
+  if (runs.has(key)) {
+    const existing = runs.get(key);
+    return { runId: existing.runId, alreadyRunning: true, op: existing.op };
+  }
 
   const runId = randomUUID();
   const record = {
