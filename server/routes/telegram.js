@@ -126,14 +126,16 @@ router.put('/config', asyncHandler(async (req, res) => {
   // read above) so "keep the existing chatId when none is supplied" resolves
   // against the freshest persisted value; `finalToken` is request-driven (the
   // submitted token, else whatever was stored when we validated it).
-  await updateSettingsWith((current) => ({
+  const saved = await updateSettingsWith((current) => ({
     ...current,
     secrets: { ...current.secrets, telegram: { token: finalToken } },
     telegram: { ...current.telegram, chatId: chatId || current.telegram?.chatId || '' }
   }));
 
-  // Initialize bot — send test message only if chatId is configured
-  const hasChatId = !!(chatId || settings.telegram?.chatId);
+  // Initialize bot — send test message only if chatId is configured. Derive from
+  // the PERSISTED result (not the pre-write `settings` read) so the init decision
+  // and response match exactly what was saved, even if another write landed first.
+  const hasChatId = !!saved.telegram?.chatId;
   await telegram.init(hasChatId);
   const status = telegram.getStatus();
 
