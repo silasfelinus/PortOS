@@ -68,6 +68,36 @@ describe('conflictJournalResolver', () => {
     expect(fresh.starterPrompt).toBe('REMOTE prompt'); // untouched
   });
 
+  it('restore-all REPLACES universe categories wholesale — a category the live record gained since the conflict is dropped', async () => {
+    const u = await universeSvc.createUniverse({ name: 'Cats' });
+    // Post-conflict, the live record gained a custom category the snapshot never had.
+    await universeSvc.updateUniverse(u.id, { categories: { gadgets: { variations: [{ label: 'Ray', prompt: 'a ray gun' }] } } });
+    expect((await universeSvc.getUniverse(u.id)).categories.gadgets).toBeTruthy();
+    const entryId = await seedEntry(u.id, {
+      id: u.id, name: 'Cats',
+      categories: { landscapes: { variations: [{ label: 'Hill', prompt: 'a green hill' }] } },
+    });
+
+    await resolver.resolveConflict(entryId, { action: 'restore-all' });
+    const fresh = await universeSvc.getUniverse(u.id);
+    expect(fresh.categories.gadgets).toBeUndefined();               // faithful replace dropped the live-only category
+    expect(fresh.categories.landscapes.variations).toHaveLength(1);  // the snapshot's category landed
+  });
+
+  it('merge-fields KEEPS a live-only category (additive overlay, not a replace)', async () => {
+    const u = await universeSvc.createUniverse({ name: 'Cats2' });
+    await universeSvc.updateUniverse(u.id, { categories: { gadgets: { variations: [{ label: 'Ray', prompt: 'a ray gun' }] } } });
+    const entryId = await seedEntry(u.id, {
+      id: u.id, name: 'Cats2',
+      categories: { landscapes: { variations: [{ label: 'Hill', prompt: 'a green hill' }] } },
+    });
+
+    await resolver.resolveConflict(entryId, { action: 'merge-fields', fields: ['categories'] });
+    const fresh = await universeSvc.getUniverse(u.id);
+    expect(fresh.categories.gadgets).toBeTruthy();                   // additive: live-only category preserved
+    expect(fresh.categories.landscapes.variations).toHaveLength(1);  // snapshot's category merged in
+  });
+
   it('restore-all re-applies an archived ISSUE snapshot (title + prose stage)', async () => {
     const issue = await issueSvc.createIssue({ seriesId: 'ser-restore', title: 'Remote Title' });
     // Remote LWW-overwrote both the title and the prose output.
