@@ -141,6 +141,28 @@ export const findFfprobe = async () => {
   return cachedFfprobePath;
 };
 
+// Probe whether a media file carries at least one audio stream. Referencing
+// `[0:a]` in a filter_complex graph against a silent video (AI-gen clips are
+// silent today) aborts the whole ffmpeg run, so callers that want to preserve
+// a clip's own soundtrack (e.g. LTX-2 audio-to-video) must gate the `[0:a]`
+// input on this probe. Returns false when ffprobe is unavailable so callers
+// default to the safe "no clip audio" path rather than emitting a graph that
+// can't build.
+export const hasAudioStream = async (videoPath) => {
+  if (typeof videoPath !== 'string' || !videoPath) return false;
+  const ffprobe = await findFfprobe();
+  if (!ffprobe) return false;
+  const args = [
+    '-v', 'error',
+    '-select_streams', 'a',
+    '-show_entries', 'stream=index',
+    '-of', 'default=nokey=1:noprint_wrappers=1',
+    videoPath,
+  ];
+  const { stdout } = await execFileAsync(ffprobe, args, { env: safeChildProcessEnv(), timeout: 5000 }).catch(() => ({ stdout: '' }));
+  return (stdout || '').trim().length > 0;
+};
+
 // Single-video thumbnail extraction. Seeks to mid-clip rather than frame 0
 // because LTX-2 renders fade IN from black: the first ~0.5s is near-zero
 // brightness, so a frame-0 thumbnail looks like a "broken black" tile
