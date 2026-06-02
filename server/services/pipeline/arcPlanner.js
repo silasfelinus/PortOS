@@ -1108,7 +1108,12 @@ export async function generateSeasonEpisodes(seriesId, seasonId, options = {}) {
  * Builder's "generate issues from arc" action so both mint byte-identical
  * issue shapes. The episode's logline + synopsis land in `stages.idea.input`.
  */
-export async function commitEpisodesToIssues(seriesId, seasonId, episodes = []) {
+export async function commitEpisodesToIssues(seriesId, seasonId, episodes = [], { preloadedSeries = null } = {}) {
+  // Fetch the series once for the whole batch (unless the caller already holds
+  // it) and thread it into each createIssue's renumber pass. The series record
+  // doesn't change as issues are appended, so an N-episode season otherwise
+  // pays N redundant getSeries reads of an unchanging record.
+  const series = preloadedSeries || await getSeries(seriesId).catch(() => null);
   const created = [];
   for (const ep of episodes) {
     const issue = await createIssue({
@@ -1132,7 +1137,7 @@ export async function commitEpisodesToIssues(seriesId, seasonId, episodes = []) 
           input: [ep.logline, ep.synopsis].filter(Boolean).join('\n\n'),
         },
       },
-    });
+    }, { preloadedSeries: series });
     created.push(issue);
   }
   return created;

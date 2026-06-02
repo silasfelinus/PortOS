@@ -1256,13 +1256,18 @@ router.post('/series/:id/seasons/:seasonId/episodes/generate', asyncHandler(asyn
     // already accepts `seasonId` + `arcPosition`; the shared helper owns the
     // per-episode → createIssue mapping so the Story Builder's batch path
     // mints identical issue shapes.
-    createdIssues = await arcPlanner.commitEpisodesToIssues(req.params.id, req.params.seasonId, result.episodes);
+    // Fetch the series once and thread it through both the issue-creation
+    // batch (so each createIssue's renumber pass skips a redundant read) and
+    // the continuity extraction below.
+    const series = await seriesSvc.getSeries(req.params.id).catch(() => null);
+    createdIssues = await arcPlanner.commitEpisodesToIssues(
+      req.params.id, req.params.seasonId, result.episodes, { preloadedSeries: series },
+    );
 
     // Non-fatal: episode creation already succeeded, so a noisy extraction
     // failure must not invalidate the user's accepted breakdown. Phase B.4:
     // canon lives on the linked universe — orphan series (no universeId)
     // skip extraction.
-    const series = await seriesSvc.getSeries(req.params.id).catch(() => null);
     const corpus = result.episodes
       .map((ep) => `## E${ep.number} — ${ep.title}\n\n${ep.logline || ''}\n\n${ep.synopsis || ''}`.trim())
       .filter(Boolean)

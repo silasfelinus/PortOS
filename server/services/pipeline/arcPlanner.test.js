@@ -375,6 +375,58 @@ describe('arcPlanner — generateSeasonEpisodes', () => {
   });
 });
 
+describe('arcPlanner — commitEpisodesToIssues', () => {
+  beforeEach(() => {
+    fileStore.clear();
+    uuidCounter = 0;
+  });
+
+  it('mints one issue per episode with arc pointers + idea seed', async () => {
+    const s = await setupSeries();
+    const episodes = [
+      { number: 1, title: 'Pilot', arcRole: 'pilot', logline: 'L1', synopsis: 'S1', lengthProfile: 'standard' },
+      { number: 2, title: 'Rising', arcRole: 'complication', logline: 'L2', synopsis: '', lengthProfile: 'short' },
+    ];
+    const created = await planner.commitEpisodesToIssues(s.id, null, episodes);
+    expect(created).toHaveLength(2);
+    expect(created[0].title).toBe('Pilot');
+    expect(created[0].arcPosition).toBe(1);
+    expect(created[0].arcRole).toBe('pilot');
+    expect(created[0].stages.idea.input).toBe('L1\n\nS1');
+    expect(created[0].stages.idea.status).toBe('edited');
+    // No synopsis ⇒ idea seed is the bare logline and the stage stays 'empty'.
+    expect(created[1].stages.idea.input).toBe('L2');
+    expect(created[1].stages.idea.status).toBe('empty');
+  });
+
+  it('reads the series once for the whole batch instead of once per episode', async () => {
+    const s = await setupSeries();
+    const episodes = [1, 2, 3, 4].map((n) => ({
+      number: n, title: `E${n}`, arcRole: 'beat', logline: `L${n}`, synopsis: `S${n}`,
+    }));
+    const spy = vi.spyOn(seriesSvc, 'getSeries');
+    const created = await planner.commitEpisodesToIssues(s.id, null, episodes);
+    const callCount = spy.mock.calls.length;
+    spy.mockRestore();
+    expect(created).toHaveLength(4);
+    // The preload fetches once; each createIssue's renumber pass reuses it —
+    // the pre-fix shape was one getSeries per episode (4 reads).
+    expect(callCount).toBe(1);
+  });
+
+  it('honors a caller-supplied preloadedSeries with zero getSeries reads', async () => {
+    const s = await setupSeries();
+    const series = await seriesSvc.getSeries(s.id);
+    const episodes = [{ number: 1, title: 'Solo', arcRole: 'pilot', logline: 'L', synopsis: 'S' }];
+    const spy = vi.spyOn(seriesSvc, 'getSeries');
+    const created = await planner.commitEpisodesToIssues(s.id, null, episodes, { preloadedSeries: series });
+    const callCount = spy.mock.calls.length;
+    spy.mockRestore();
+    expect(created).toHaveLength(1);
+    expect(callCount).toBe(0);
+  });
+});
+
 describe('arcPlanner — verifyArc', () => {
   beforeEach(() => {
     fileStore.clear();

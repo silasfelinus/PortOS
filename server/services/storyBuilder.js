@@ -496,7 +496,7 @@ export async function generateIssuesFromArc(id, options = {}) {
       });
       continue;
     }
-    const issues = await commitEpisodesToIssues(session.seriesId, season.id, res.episodes);
+    const issues = await commitEpisodesToIssues(session.seriesId, season.id, res.episodes, { preloadedSeries: series });
     createdIssues.push(...issues);
     seasonResults.push({ seasonId: season.id, title: label, created: issues.length, skipped: false, failed: false, runId: res.runId });
   }
