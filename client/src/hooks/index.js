@@ -49,6 +49,7 @@ export * from './usePipelineEditorialProgress.js';
 export * from './usePipelineVolumeBeatsProgress.js';
 export * from './useSeriesEditorial.js';
 export * from './useSseProgress.js';
+export * from './useStoryStepProgress.js';
 export * from './useModelDownloadStatus.js';
 
 // === Media (annotations, completion, attachments) ===

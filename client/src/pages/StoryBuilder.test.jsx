@@ -27,6 +27,7 @@ const api = vi.hoisted(() => ({
   unlockStoryStep: vi.fn(),
   generateStoryStep: vi.fn(),
   refineStoryStep: vi.fn(),
+  storyStepProgressSseUrl: vi.fn((id, stepId) => `/api/story-builder/${id}/steps/${stepId}/progress`),
   setStoryIssueLock: vi.fn(),
   getUniverse: vi.fn(),
   getPipelineSeries: vi.fn(),

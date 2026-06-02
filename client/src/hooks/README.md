@@ -40,6 +40,7 @@ grep -i "what you want to do" client/src/hooks/README.md
 | `usePipelineEditorialProgress` | Series editorial reader-emotion batch SSE. | Editorial Roadmap analysis UI only. |
 | `usePipelineVolumeBeatsProgress` | Volume beat-sheet SSE. | Volume beat-sheet UI only. |
 | `useSeriesEditorial` | Editorial-roadmap aggregate + batch lifecycle (load, re-attach, SSE, start/cancel, reload). | Any view of the editorial roadmap (panel or Reader Map page). |
+| `useStoryStepProgress` | Generate/refine SSE for one Story Builder step. | Story Builder step generate/refine progress only. |
 
 ## Media (annotations, completion, attachments)
 

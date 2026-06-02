@@ -522,10 +522,14 @@ export async function generateStep(id, stepId, options = {}) {
   // selection at the top of the Story Builder drives every operation.
   const reqProviderId = options.providerId || session.llm?.provider || undefined;
   const reqModel = options.model || session.llm?.model || undefined;
+  // Best-effort phase emitter for the SSE runner; a no-op on the synchronous
+  // path (no onProgress passed) so this call stays byte-for-byte unchanged there.
+  const emit = (label, phase) => options.onProgress?.({ label, phase });
   if (stepId === 'idea') {
     // Backfill: reverse-engineer the idea from existing issue content when the
     // user started downstream. Rendered only when present, so the forward path
     // (seed-only) is byte-for-byte unchanged.
+    if (options.fromDownstream) emit('Reading existing issues…', 'collect');
     const sourceMaterial = options.fromDownstream ? await collectIssueSourceText(session.seriesId) : '';
     if (options.fromDownstream && !sourceMaterial) {
       throw makeErr(
@@ -533,6 +537,7 @@ export async function generateStep(id, stepId, options = {}) {
         ERR_VALIDATION,
       );
     }
+    emit('Expanding the idea…', 'generate');
     const { content, runId, providerId, model } = await runStagedLLM(
       'story-builder-idea-expand',
       { universeName: session.title, seedIdea: session.seedIdea || '', sourceMaterial },
@@ -540,6 +545,7 @@ export async function generateStep(id, stepId, options = {}) {
     );
     const expandedIdea = isStr(content?.expandedIdea) ? content.expandedIdea.trim() : '';
     const logline = isStr(content?.logline) ? content.logline.trim() : '';
+    emit('Saving…', 'persist');
     // Seed the universe starter + series premise/logline from the expansion.
     // Honor downstream lock keys: locking the universeAesthetic step sets
     // universe.locked.{logline,...} via applyUnderlyingLock, but
@@ -560,6 +566,7 @@ export async function generateStep(id, stepId, options = {}) {
   if (stepId === 'universeAesthetic') {
     if (!session.universeId) throw makeErr('No universe linked', ERR_VALIDATION);
     const universe = await getUniverse(session.universeId);
+    emit('Expanding the aesthetic…', 'generate');
     const expanded = await expandWorldTemplate({
       starterPrompt: universe.starterPrompt || session.seedIdea || universe.name,
       influences: universe.influences,
@@ -570,6 +577,7 @@ export async function generateStep(id, stepId, options = {}) {
       providerId: reqProviderId,
       model: reqModel,
     });
+    emit('Saving…', 'persist');
     const updated = await updateUniverse(session.universeId, {
       logline: expanded.logline,
       premise: expanded.premise,
@@ -585,6 +593,7 @@ export async function generateStep(id, stepId, options = {}) {
       // Backfill: extract the arc + seasons from the issues that already exist
       // (the user drafted scripts/prose first). Reuses the importer's
       // arc-extraction prompt via arcPlanner.generateArcFromSource.
+      emit('Reading existing issues…', 'collect');
       const sourceText = await collectIssueSourceText(session.seriesId);
       if (!sourceText) {
         throw makeErr(
@@ -592,10 +601,12 @@ export async function generateStep(id, stepId, options = {}) {
           ERR_VALIDATION,
         );
       }
+      emit('Extracting the plot arc…', 'generate');
       arcGenResult = await generateArcFromSource(session.seriesId, {
         sourceText, providerOverride: reqProviderId, modelOverride: reqModel,
       });
     } else {
+      emit('Planning the plot arc…', 'generate');
       arcGenResult = await generateArcOverview(session.seriesId, {
         providerOverride: reqProviderId, modelOverride: reqModel,
       });
@@ -609,15 +620,18 @@ export async function generateStep(id, stepId, options = {}) {
     // Canvas's regenerate uses. A plain updateSeries({ arc, seasons }) would
     // bypass mergeArcWithLocks / mergeSeasonsWithLocks / buildSeasonRemap and
     // silently wipe locked seasons and orphan their issues.
+    emit('Saving seasons…', 'persist');
     const series = await getSeries(session.seriesId);
     const { series: updated } = await commitSeasonsWithRemap(series, { arc, seasons });
     return { result: updated, runId, providerId, model };
   }
   if (stepId === 'readerMap') {
     if (!session.seriesId) throw makeErr('No series linked', ERR_VALIDATION);
+    emit('Mapping reader emotion…', 'generate');
     const { readerMap, runId, providerId, model } = await generateReaderMap(session.seriesId, {
       providerOverride: reqProviderId, modelOverride: reqModel,
     });
+    emit('Saving…', 'persist');
     const series = await getSeries(session.seriesId);
     const updated = await updateSeries(session.seriesId, { arc: { ...(series.arc || {}), readerMap } });
     return { result: updated, runId, providerId, model };
@@ -625,14 +639,16 @@ export async function generateStep(id, stepId, options = {}) {
   throw makeErr(`Generate is not supported for step "${stepId}"`, ERR_VALIDATION);
 }
 
-export async function refineStep(id, stepId, { feedback, entryId, providerId, model } = {}) {
+export async function refineStep(id, stepId, { feedback, entryId, providerId, model, onProgress } = {}) {
   const session = await getStorySession(id);
   // Same fallback as generateStep: explicit override → session picker choice.
   const reqProviderId = providerId || session.llm?.provider || undefined;
   const reqModel = model || session.llm?.model || undefined;
+  const emit = (label, phase) => onProgress?.({ label, phase });
   if (stepId === 'universeAesthetic') {
     if (!session.universeId) throw makeErr('No universe linked', ERR_VALIDATION);
     const universe = await getUniverse(session.universeId);
+    emit('Refining the aesthetic…', 'generate');
     const refined = await refineWorldPrompts({
       starterPrompt: universe.starterPrompt || universe.name,
       logline: universe.logline,
@@ -644,6 +660,7 @@ export async function refineStep(id, stepId, { feedback, entryId, providerId, mo
       providerId: reqProviderId,
       model: reqModel,
     });
+    emit('Saving…', 'persist');
     const updated = await updateUniverse(session.universeId, {
       logline: refined.logline,
       premise: refined.premise,
@@ -654,7 +671,9 @@ export async function refineStep(id, stepId, { feedback, entryId, providerId, mo
   }
   if (stepId === 'readerMap') {
     if (!session.seriesId) throw makeErr('No series linked', ERR_VALIDATION);
+    emit('Refining the reader map…', 'generate');
     const { readerMap, changes, rationale, runId } = await refineReaderMap(session.seriesId, feedback, { providerId: reqProviderId, model: reqModel });
+    emit('Saving…', 'persist');
     const series = await getSeries(session.seriesId);
     const updated = await updateSeries(session.seriesId, { arc: { ...(series.arc || {}), readerMap } });
     return { result: updated, changes, rationale, runId };
@@ -662,6 +681,7 @@ export async function refineStep(id, stepId, { feedback, entryId, providerId, mo
   if (stepId === 'characters') {
     if (!session.universeId) throw makeErr('No universe linked', ERR_VALIDATION);
     if (!isStr(entryId)) throw makeErr('entryId is required to refine a character', ERR_VALIDATION);
+    emit('Refining the character…', 'generate');
     const out = await refineUniverseCharacter(session.universeId, entryId, { providerId: reqProviderId, model: reqModel });
     return { result: out.universe, changes: out.changes || [], rationale: out.rationale || '' };
   }
