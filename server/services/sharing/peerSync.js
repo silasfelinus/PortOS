@@ -532,6 +532,47 @@ export async function unsubscribeAllForRecord(recordKind, recordId) {
   return { removed, failed };
 }
 
+/**
+ * Drop peer subscriptions whose target record no longer resolves AT ALL —
+ * not even as a tombstone. The tombstone GC path (`pruneTombstonedUniverses`
+ * / `pruneTombstonedSeries` in tombstoneGc.js) rm's a pruned record's
+ * directory but leaves its rows in `peer_subscriptions.json`: on the next
+ * `peer:online`, `retryPendingPushesForPeer` walks them, `buildPushPayload`
+ * returns null ("record-not-found"), and the push silently no-ops — harmless,
+ * but it inflates the "retrying N pending pushes" log count and keeps the
+ * peer's tombstone cursor pinned by a dead row.
+ *
+ * `resolver(recordKind, recordId) => Promise<boolean>` returns true when the
+ * record still exists in ANY form (live OR tombstoned). Only subs whose
+ * resolver returns false are dropped. A tombstoned-but-not-yet-pruned record
+ * still resolves true, so its sub survives to push the delete to peers — we
+ * strip a sub only once the underlying record directory is actually gone.
+ *
+ * Mirrors the orphan-base-hash sweep's conservative contract: a resolver that
+ * throws is treated as "still resolves" so a transient listing failure can
+ * never trigger a false strip. Malformed rows (missing recordKind/recordId)
+ * are left untouched — they're a separate concern from the dir-gone orphan
+ * this sweep targets.
+ *
+ * Returns `{ pruned, removed }` — count and ids of dropped subscriptions.
+ */
+export async function pruneOrphanedPeerSubscriptions(resolver) {
+  if (typeof resolver !== 'function') return { pruned: 0, removed: [] };
+  const subs = await listPeerSubscriptions();
+  const removed = [];
+  for (const sub of subs) {
+    if (!isNonEmptyStr(sub?.recordKind) || !isNonEmptyStr(sub?.recordId)) continue;
+    const exists = await resolver(sub.recordKind, sub.recordId).catch(() => true);
+    if (exists) continue;
+    const ok = await unsubscribePeer(sub.id).then(() => true).catch((err) => {
+      console.log(`⚠️ peerSync: orphan-subscription sweep failed for ${sub.id}: ${err.message}`);
+      return false;
+    });
+    if (ok) removed.push(sub.id);
+  }
+  return { pruned: removed.length, removed };
+}
+
 // --- Asset manifest -----------------------------------------------------
 
 /**
