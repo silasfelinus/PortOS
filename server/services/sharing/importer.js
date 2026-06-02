@@ -27,7 +27,7 @@ import { existsSync } from 'fs';
 import { EventEmitter } from 'events';
 import { PATHS, ensureDir, atomicWrite, readJSONFile } from '../../lib/fileUtils.js';
 import { isSafeRecordId } from '../../lib/validation.js';
-import { getBucket, bucketBlobPath, bucketBlobSidecarPath, imageSidecarName, isHexHash } from './buckets.js';
+import { getBucket, bucketBlobPath, bucketBlobSidecarPath, bucketRecordsDir, bucketRecordPath, imageSidecarName, isHexHash } from './buckets.js';
 import { readManifest, markProcessed, readCursor, hasBeenProcessed, forgetProcessed } from './manifest.js';
 import { SHARING_SCHEMA_VERSION, isManifestCompatible } from './version.js';
 import { PORTOS_SCHEMA_VERSIONS, RECORD_KIND_SCHEMA_CATEGORIES, compareSchemaVersions, scopeVersionDiff, formatVersionGap } from '../../lib/schemaVersions.js';
@@ -312,7 +312,7 @@ async function processAnnotationManifest(bucket, manifest) {
   const recordId = (manifest.recordIds || [])[0] || manifest.senderInstanceId;
   if (!recordId) return { applied: 0, missing: true, reason: 'no-record-id' };
   if (!isSafeRecordId(recordId)) return { applied: 0, missing: true, reason: 'bad-record-id' };
-  const recordPath = join(bucket.path, 'records', 'media-annotations', `${recordId}.json`);
+  const recordPath = bucketRecordPath(bucket.path, 'media-annotations', recordId);
   const record = await readJSONFile(recordPath, null, { logError: false });
   if (!record) return { applied: 0, missing: true, reason: 'record-not-synced' };
   // record.instanceId is the source-of-truth for the author; fall back to the
@@ -331,14 +331,14 @@ async function processAnnotationManifest(bucket, manifest) {
 
 /** Merge bucket-bundled media-job records into local data/media-jobs.json. */
 async function mergeMediaJobRecords(bucketPath, recordIds) {
-  const mediaDir = join(bucketPath, 'records', 'media');
+  const mediaDir = bucketRecordsDir(bucketPath, 'media');
   if (!existsSync(mediaDir)) return;
   const persistedPath = join(PATHS.data, 'media-jobs.json');
   const [persisted, incoming] = await Promise.all([
     readJSONFile(persistedPath, { jobs: [] }, { logError: false }),
     Promise.all((recordIds || []).map(async (id) => {
       if (!isSafeRecordId(id)) return null;
-      const recordPath = join(mediaDir, `${id}.json`);
+      const recordPath = bucketRecordPath(bucketPath, 'media', id);
       if (!existsSync(recordPath)) return null;
       return readJSONFile(recordPath, null, { logError: false });
     })),
@@ -372,7 +372,7 @@ async function mergeMediaJobRecords(bucketPath, recordIds) {
 async function missingDeclaredReviews(bucketPath, manifest) {
   const refs = (Array.isArray(manifest.reviewRefs) ? manifest.reviewRefs : []).filter(isSafeRecordId);
   const checks = await Promise.all(refs.map(async (sid) => {
-    const r = await readJSONFile(join(bucketPath, 'records', 'reviews', `${sid}.json`), null, { logError: false });
+    const r = await readJSONFile(bucketRecordPath(bucketPath, 'reviews', sid), null, { logError: false });
     return r == null ? sid : null;
   }));
   return checks.filter(Boolean);
@@ -384,11 +384,11 @@ async function readReferencedRecords(bucketPath, manifest) {
   const resolveOne = async (id) => {
     if (!isSafeRecordId(id)) return { kind: 'missing', id };
     if (id.startsWith('ser-')) {
-      const r = await readJSONFile(join(bucketPath, 'records', 'series', `${id}.json`), null, { logError: false });
+      const r = await readJSONFile(bucketRecordPath(bucketPath, 'series', id), null, { logError: false });
       return r ? { kind: 'series', record: r } : { kind: 'missing', id };
     }
     if (id.startsWith('iss-')) {
-      const r = await readJSONFile(join(bucketPath, 'records', 'issues', `${id}.json`), null, { logError: false });
+      const r = await readJSONFile(bucketRecordPath(bucketPath, 'issues', id), null, { logError: false });
       return r ? { kind: 'issues', record: r } : { kind: 'missing', id };
     }
     if (id.startsWith('chr-') || id.startsWith('set-') || id.startsWith('obj-')) {
@@ -396,9 +396,9 @@ async function readReferencedRecords(bucketPath, manifest) {
       return { kind: 'skip' };
     }
     // UUID-only — could be a universe or a media job. Try both.
-    const uni = await readJSONFile(join(bucketPath, 'records', 'universes', `${id}.json`), null, { logError: false });
+    const uni = await readJSONFile(bucketRecordPath(bucketPath, 'universes', id), null, { logError: false });
     if (uni) return { kind: 'universes', record: uni };
-    const med = await readJSONFile(join(bucketPath, 'records', 'media', `${id}.json`), null, { logError: false });
+    const med = await readJSONFile(bucketRecordPath(bucketPath, 'media', id), null, { logError: false });
     if (med) return { kind: 'media', record: med };
     return { kind: 'missing', id };
   };
@@ -663,7 +663,7 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
   const reviewMergeFailures = [];
   for (const s of records.series) {
     if (skipSeriesMerge.has(s.id) || !declaredReviews.has(s.id)) continue;
-    const review = await readJSONFile(join(bucket.path, 'records', 'reviews', `${s.id}.json`), null, { logError: false });
+    const review = await readJSONFile(bucketRecordPath(bucket.path, 'reviews', s.id), null, { logError: false });
     if (review) {
       await mergeReviewFromSync(s.id, review).catch((err) => {
         console.log(`⚠️ sharing.importer: manuscript-review merge for ${s.id} failed: ${err.message}`);

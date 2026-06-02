@@ -21,7 +21,7 @@ import { existsSync } from 'fs';
 import { PATHS, ensureDir, atomicWrite, readJSONFile, sha256File } from '../../lib/fileUtils.js';
 import { getOrComputeImageSha256 } from '../../lib/assetHash.js';
 import { isPlainObject } from '../../lib/objects.js';
-import { getBucket, ensureBucketLayout, bucketBlobsDir, bucketBlobPath, bucketBlobSidecarPath, bucketBlobIndexPath, imageSidecarName, isHexHash } from './buckets.js';
+import { getBucket, ensureBucketLayout, bucketBlobsDir, bucketBlobPath, bucketBlobSidecarPath, bucketBlobIndexPath, bucketRecordsDir, bucketRecordPath, imageSidecarName, isHexHash } from './buckets.js';
 import { buildManifest, writeManifest, pruneBucketManifests } from './manifest.js';
 import { listSeries, getSeries } from '../pipeline/series.js';
 import { listIssues } from '../pipeline/issues.js';
@@ -209,7 +209,7 @@ async function jobFromSidecar(jobId) {
  * per-image `.metadata.json` sidecar for jobs older than the 24h archive TTL.
  * Returns the asset refs (image filenames) discovered.
  */
-async function exportMediaJobAndAsset(jobId, bucketPath, mediaRecordsDir, cache) {
+async function exportMediaJobAndAsset(jobId, bucketPath, cache) {
   if (!jobId || !isStr(jobId)) return [];
   const job = getJob(jobId) || await jobFromSidecar(jobId);
   if (!job) {
@@ -226,8 +226,8 @@ async function exportMediaJobAndAsset(jobId, bucketPath, mediaRecordsDir, cache)
     params: job.params,
     result: job.result,
   };
-  await ensureDir(mediaRecordsDir);
-  await atomicWrite(join(mediaRecordsDir, `${job.id}.json`), exported);
+  await ensureDir(bucketRecordsDir(bucketPath, 'media'));
+  await atomicWrite(bucketRecordPath(bucketPath, 'media', job.id), exported);
   // Copy the produced asset(s).
   const assetKind = job.kind === 'video' ? 'video' : 'image';
   const refs = [];
@@ -405,7 +405,7 @@ export async function exportSeries(seriesId, bucketId, opts = {}) {
   // Write records.
   const recordIds = [series.id];
   const stampedSeries = stampOrigin(series, { bucket, source, sourceBio, manifestId });
-  await atomicWrite(join(bucket.path, 'records', 'series', `${series.id}.json`), stampedSeries);
+  await atomicWrite(bucketRecordPath(bucket.path, 'series', series.id), stampedSeries);
 
   // Bundle the manuscript-review sibling doc (the "Finish the draft" comment
   // set) so it travels with the series. It's keyed by seriesId — not a record
@@ -416,20 +416,20 @@ export async function exportSeries(seriesId, bucketId, opts = {}) {
   const review = await getReview(series.id).catch(() => null);
   const reviewRefs = [];
   if (review && Array.isArray(review.comments) && review.comments.length > 0) {
-    await atomicWrite(join(bucket.path, 'records', 'reviews', `${series.id}.json`), review);
+    await atomicWrite(bucketRecordPath(bucket.path, 'reviews', series.id), review);
     reviewRefs.push(series.id);
   }
 
   for (const issue of issues) {
     recordIds.push(issue.id);
     const stamped = stampOrigin(issue, { bucket, source, sourceBio, manifestId });
-    await atomicWrite(join(bucket.path, 'records', 'issues', `${issue.id}.json`), stamped);
+    await atomicWrite(bucketRecordPath(bucket.path, 'issues', issue.id), stamped);
   }
 
   if (universe) {
     recordIds.push(universe.id);
     const stampedUni = stampOrigin(universe, { bucket, source, sourceBio, manifestId });
-    await atomicWrite(join(bucket.path, 'records', 'universes', `${universe.id}.json`), stampedUni);
+    await atomicWrite(bucketRecordPath(bucket.path, 'universes', universe.id), stampedUni);
   }
 
   // Gather asset refs across every record, plus the universe's linked
@@ -455,10 +455,9 @@ export async function exportSeries(seriesId, bucketId, opts = {}) {
   }
 
   // Copy media-job records + their assets — run all four groups in parallel.
-  const mediaRecordsDir = join(bucket.path, 'records', 'media');
   const assetRefs = await withAssetHashCache(bucket.path, async (cache) => {
     const [jobRefGroups, imageRefs, videoRefs, imageRefRefs] = await Promise.all([
-      Promise.all([...allJobIds].map((jobId) => exportMediaJobAndAsset(jobId, bucket.path, mediaRecordsDir, cache))),
+      Promise.all([...allJobIds].map((jobId) => exportMediaJobAndAsset(jobId, bucket.path, cache))),
       Promise.all([...allImageFiles].map((f) => copyAssetIfPresent(f, 'image', bucket.path, cache))),
       Promise.all([...allVideoFiles].map((f) => copyAssetIfPresent(f, 'video', bucket.path, cache))),
       Promise.all([...allImageRefFiles].map((f) => copyAssetIfPresent(f, 'image-ref', bucket.path, cache))),
@@ -502,7 +501,7 @@ export async function exportUniverse(universeId, bucketId, opts = {}) {
   const manifestId = manifestStub.id;
 
   const stamped = stampOrigin(universe, { bucket, source, sourceBio, manifestId });
-  await atomicWrite(join(bucket.path, 'records', 'universes', `${universe.id}.json`), stamped);
+  await atomicWrite(bucketRecordPath(bucket.path, 'universes', universe.id), stamped);
 
   // Combine universe-record asset refs with the linked collection's assets
   // so a single export pass pulls everything the universe needs.
@@ -518,10 +517,9 @@ export async function exportUniverse(universeId, bucketId, opts = {}) {
   );
   const allImageRefFiles = new Set(universeRefs.directImageRefFilenames);
 
-  const mediaRecordsDir = join(bucket.path, 'records', 'media');
   const assetRefs = await withAssetHashCache(bucket.path, async (cache) => {
     const [jobRefGroups, imageRefs, videoRefs, imageRefRefs] = await Promise.all([
-      Promise.all([...allJobIds].map((jobId) => exportMediaJobAndAsset(jobId, bucket.path, mediaRecordsDir, cache))),
+      Promise.all([...allJobIds].map((jobId) => exportMediaJobAndAsset(jobId, bucket.path, cache))),
       Promise.all([...allImageFiles].map((f) => copyAssetIfPresent(f, 'image', bucket.path, cache))),
       Promise.all([...allVideoFiles].map((f) => copyAssetIfPresent(f, 'video', bucket.path, cache))),
       Promise.all([...allImageRefFiles].map((f) => copyAssetIfPresent(f, 'image-ref', bucket.path, cache))),
@@ -564,7 +562,6 @@ export async function exportMedia(items, bucketId) {
   });
   const manifestId = manifestStub.id;
 
-  const mediaRecordsDir = join(bucket.path, 'records', 'media');
   // Pre-resolve each item to a job (or null) so we know what to parallelize
   // and what record ids to collect for the manifest.
   const resolved = (items || []).flatMap((item) => {
@@ -578,7 +575,7 @@ export async function exportMedia(items, bucketId) {
   const recordIds = resolved.filter((r) => r.job).map((r) => r.job.id);
   const assetRefs = await withAssetHashCache(bucket.path, async (cache) => {
     const results = await Promise.all(resolved.map(async (r) => {
-      if (r.job) return exportMediaJobAndAsset(r.job.id, bucket.path, mediaRecordsDir, cache);
+      if (r.job) return exportMediaJobAndAsset(r.job.id, bucket.path, cache);
       const copied = await copyAssetIfPresent(r.ref, r.kind, bucket.path, cache);
       return copied ? [copied] : [];
     }));
