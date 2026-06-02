@@ -35,7 +35,7 @@ export function hasStyleForProbe(universe) {
   return Boolean(prompt.trim());
 }
 
-export default function StyleProbeImage({ universe, onUniverseChange, canRender = true, onPreview = null, onRenderComplete = null }) {
+export default function StyleProbeImage({ universe, onUniverseChange, canRender = true, styleDirty = false, onPreview = null, onRenderComplete = null }) {
   const [imageCfg, setImageCfg] = useState(PIPELINE_IMAGE_DEFAULTS);
   const [jobId, setJobId] = useState(null);
   // MediaJobThumb's onFilename effect can fire more than once — process each
@@ -49,8 +49,16 @@ export default function StyleProbeImage({ universe, onUniverseChange, canRender 
   }, []);
 
   const styleReady = hasStyleForProbe(universe);
+  // The probe prompt is built from the in-memory `influences`, but `onComplete`
+  // persists only the resulting `styleImageRefs` to the SERVER's saved record.
+  // When the draft's influences have unsaved edits, that record's influences are
+  // still the prior values — so persisting the probe would pin it to style the
+  // record never had (and it would survive even after the user discards the
+  // draft). Block rendering until the style is saved.
+  const canProbe = canRender && !styleDirty;
 
   const render = async () => {
+    if (styleDirty) { toast.error('Save your style changes before probing the base style'); return; }
     if (!styleReady) { toast.error('Add embrace influences before probing the base style'); return; }
     const baseOpts = pipelineImageCfgToRenderOpts(imageCfg);
     const probe = buildStyleProbePrompt(universe);
@@ -84,7 +92,7 @@ export default function StyleProbeImage({ universe, onUniverseChange, canRender 
   };
 
   const hasExistingImage = Array.isArray(universe?.styleImageRefs) && universe.styleImageRefs.length > 0;
-  const regenerateEnabled = canRender && Boolean(universe?.id) && styleReady && !jobId;
+  const regenerateEnabled = canProbe && Boolean(universe?.id) && styleReady && !jobId;
 
   return (
     <div className="flex items-start gap-3">
@@ -94,7 +102,7 @@ export default function StyleProbeImage({ universe, onUniverseChange, canRender 
         onRender={render}
         onComplete={onComplete}
         onPreview={onPreview}
-        canRender={canRender && Boolean(universe?.id) && styleReady}
+        canRender={canProbe && Boolean(universe?.id) && styleReady}
         alt="Base style"
         size="xl"
       />
@@ -103,13 +111,16 @@ export default function StyleProbeImage({ universe, onUniverseChange, canRender 
         Rendered from the positive/negative influences with no subject — a quick read on the world's base visual
         emphasis. Style notes are excluded so this matches what downstream image prompts will actually use.
         {!styleReady && <span className="text-port-warning"> Add embrace influences first.</span>}
+        {styleReady && styleDirty && (
+          <span className="text-port-warning"> Save your style changes first — the probe renders from your current influences but pins to the saved universe.</span>
+        )}
         {hasExistingImage ? (
           <div className="mt-2">
             <button
               type="button"
               onClick={render}
               disabled={!regenerateEnabled}
-              title={regenerateEnabled ? 'Render a new base style image' : 'Add embrace influences or save the universe first'}
+              title={regenerateEnabled ? 'Render a new base style image' : (styleDirty ? 'Save your style changes first' : 'Add embrace influences or save the universe first')}
               className="inline-flex items-center gap-1 px-2 py-1 rounded border border-port-border bg-port-bg/40 text-gray-300 hover:border-port-accent/50 hover:text-port-accent hover:bg-port-accent/5 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-port-border disabled:hover:text-gray-300 disabled:hover:bg-port-bg/40 transition-colors"
             >
               <Sparkles size={12} />
