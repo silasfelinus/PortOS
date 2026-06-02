@@ -1,14 +1,4 @@
 /**
- * Pure helper for intra-bucket (and cross-bucket) positioned chip drops.
- *
- * Given the full link list, the dragged link, the destination bucket, and the
- * insertion index (computed from the drop location — relative to the bucket's
- * CURRENT chip order, counting the dragged chip if it already lives there),
- * returns a dense renumbering of the destination bucket plus the subset of
- * links whose `{ bucketId, bucketOrder }` actually changed (so the caller only
- * PATCHes what moved).
- */
-/**
  * Map a pointer position over a chip to an insertion index: before the chip
  * (its own index) when the pointer is in its left half, after it (index + 1)
  * when in the right half. Pure so the before/after boundary is unit-testable
@@ -18,6 +8,16 @@ export function chipInsertIndex(rect, clientX, i) {
   return clientX > rect.left + rect.width / 2 ? i + 1 : i;
 }
 
+/**
+ * Pure helper for intra-bucket (and cross-bucket) positioned chip drops.
+ *
+ * Given the full link list, the dragged link, the destination bucket, and the
+ * insertion index (computed from the drop location — relative to the bucket's
+ * CURRENT chip order, counting the dragged chip if it already lives there),
+ * returns a dense renumbering of the destination bucket plus the subset of
+ * links whose `{ bucketId, bucketOrder }` actually changed (so the caller only
+ * PATCHes what moved).
+ */
 export function reorderLinksInBucket(links, link, bucketId, targetIndex) {
   const ordered = links
     .filter(l => l.bucketId === bucketId)
