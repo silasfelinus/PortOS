@@ -28,6 +28,7 @@ import { PATHS } from '../lib/fileUtils.js';
 import { createCollectionStore } from '../lib/collectionStore.js';
 import { ITEM_KIND, REF_MAX_LENGTH, itemKey } from '../lib/mediaItemKey.js';
 import { sanitizeOrigin } from '../lib/sharingOrigin.js';
+import { mapWithConcurrency } from '../lib/mapWithConcurrency.js';
 import { emitRecordUpdated, emitRecordDeleted } from './sharing/recordEvents.js';
 import {
   maybeJournalBeforeOverwrite, setSyncBaseHash, contentHashForRecord, flushBaseHashes, deleteSyncBaseHash,
@@ -41,6 +42,12 @@ const makeErr = (message, code) => Object.assign(new Error(message), { code });
 export const NAME_MAX_LENGTH = 80;
 export const DESCRIPTION_MAX_LENGTH = 500;
 export const ITEMS_MAX = 5000;
+
+// Bounded fan-out for the multi-record snapshot-merge / GC-sweep loops. Distinct
+// record ids ride distinct per-record write queues, so these are safe to run
+// concurrently; the cap keeps a large snapshot from opening hundreds of file
+// descriptors at once. (Same-id writes still serialize inside queueRecordWrite.)
+const COLLECTION_WRITE_CONCURRENCY = 8;
 
 // A collection id is a filesystem path segment (data/media-collections/<id>/).
 // The store's idPattern allowlist rejects anything else, so a record whose id
@@ -891,23 +898,31 @@ export async function pruneTombstonedCollections(olderThanMs) {
     const ms = Date.parse(c.deletedAt || '');
     return Number.isFinite(ms) && ms < olderThanMs;
   });
-  let pruned = 0;
-  for (const c of candidates) {
-    await store().queueRecordWrite(c.id, async () => {
+  // Candidates have distinct ids → distinct per-record queues, so prune them
+  // with a bounded fan-out instead of one-at-a-time. Each returns whether it
+  // actually pruned; sum after (no shared mutable counter across the workers).
+  // Each worker catches its own error so mapWithConcurrency never rejects mid-
+  // flight (which would let the OTHER in-flight workers keep writing in the
+  // background past our return); we rethrow the first error after every worker
+  // has settled, preserving the throw-on-failure contract without leaking
+  // background writes.
+  let firstError = null;
+  const outcomes = await mapWithConcurrency(candidates, COLLECTION_WRITE_CONCURRENCY, (c) =>
+    store().queueRecordWrite(c.id, async () => {
       // Re-check inside the queue (deleteOneNow spans the load→delete boundary)
       // so a concurrent re-create at the same id isn't blown away.
       const cur = await store().loadOne(c.id);
-      if (!cur || cur.deleted !== true) return;
+      if (!cur || cur.deleted !== true) return false;
       const ms = Date.parse(cur.deletedAt || '');
-      if (!(Number.isFinite(ms) && ms < olderThanMs)) return;
+      if (!(Number.isFinite(ms) && ms < olderThanMs)) return false;
       await store().deleteOneNow(c.id);
       // Evict the conflict-journal base hash so the side store doesn't grow
       // dead keys (mirrors pruneTombstonedUniverses / pruneTombstonedSeries).
       await deleteSyncBaseHash('mediaCollection', c.id);
-      pruned += 1;
-    });
-  }
-  return { pruned };
+      return true;
+    }).catch((err) => { if (!firstError) firstError = err; return false; }));
+  if (firstError) throw firstError;
+  return { pruned: outcomes.filter(Boolean).length };
 }
 
 /**
@@ -931,11 +946,24 @@ export async function pruneTombstonedCollections(olderThanMs) {
  */
 export async function mergeMediaCollectionsFromSync(remoteCollections, { source = { via: 'sync', peerId: null } } = {}) {
   if (!Array.isArray(remoteCollections)) return { applied: false, count: 0 };
-  let changed = 0;
-  for (const remote of remoteCollections) {
+  // Distinct collection ids ride distinct per-record queues, so apply the
+  // snapshot batch with a bounded fan-out rather than one-at-a-time. (A duplicate
+  // id within the batch still serializes on the same queue, and the merge is
+  // LWW so its outcome is order-independent.) The base-hash mutations each
+  // record makes accumulate in memory and are persisted by the single
+  // `flushBaseHashes()` after the fan-out settles — unchanged from the
+  // sequential version.
+  //
+  // Each worker catches its own error so mapWithConcurrency never rejects mid-
+  // flight: an early reject would let the other in-flight workers keep writing
+  // (and mutating the in-memory base-hash map) in the background past our return
+  // AND skip the flush below, stranding completed writes' base hashes unsaved.
+  // We let every worker settle, ALWAYS flush, then rethrow the first error.
+  let firstError = null;
+  const outcomes = await mapWithConcurrency(remoteCollections, COLLECTION_WRITE_CONCURRENCY, (remote) => {
     const sanitized = sanitizeCollection(remote);
-    if (!sanitized) continue;
-    const didChange = await store().queueRecordWrite(sanitized.id, async () => {
+    if (!sanitized) return false;
+    return store().queueRecordWrite(sanitized.id, async () => {
       const local = await store().loadOne(sanitized.id);
       if (!local) {
         await store().saveOneNow(sanitized.id, sanitized);
@@ -994,12 +1022,14 @@ export async function mergeMediaCollectionsFromSync(remoteCollections, { source 
       if (collectionsEqual(local, next)) return false;
       await store().saveOneNow(sanitized.id, next);
       return true;
-    });
-    if (didChange) changed++;
-  }
+    }).catch((err) => { if (!firstError) firstError = err; return false; });
+  });
+  const changed = outcomes.filter(Boolean).length;
   // Persist the batched conflict-journal base-hash updates accumulated above in
-  // one write (seeds on insert + advances on accepted overwrite).
+  // one write (seeds on insert + advances on accepted overwrite). Always runs —
+  // even if a worker threw — so completed writes' base hashes aren't stranded.
   await flushBaseHashes();
+  if (firstError) throw firstError;
   if (changed === 0) return { applied: false, count: 0 };
   return { applied: true, count: changed };
 }
