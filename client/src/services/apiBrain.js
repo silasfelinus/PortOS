@@ -156,9 +156,10 @@ export const createBrainLink = (data) => request('/brain/links', {
   method: 'POST',
   body: JSON.stringify(data)
 });
-export const updateBrainLink = (id, data) => request(`/brain/links/${id}`, {
+export const updateBrainLink = (id, data, options = {}) => request(`/brain/links/${id}`, {
   method: 'PUT',
-  body: JSON.stringify(data)
+  body: JSON.stringify(data),
+  ...options
 });
 export const deleteBrainLink = (id) => request(`/brain/links/${id}`, { method: 'DELETE' });
 export const cloneBrainLink = (id) => request(`/brain/links/${id}/clone`, { method: 'POST' });

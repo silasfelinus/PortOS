@@ -44,6 +44,50 @@ describe('BucketBoard', () => {
     expect(screen.queryByText('Ungrouped Link')).toBeNull();
   });
 
+  const twoChip = [
+    { id: 'l1', url: 'https://a.com', title: 'Alpha', bucketId: 'b1', bucketOrder: 0 },
+    { id: 'l2', url: 'https://b.com', title: 'Beta', bucketId: 'b1', bucketOrder: 1 }
+  ];
+
+  it('routes a positioned chip drop to onMoveLinkToIndex with the dragged link + chip index', () => {
+    const onMoveLinkToIndex = vi.fn();
+    render(
+      <BucketBoard
+        links={twoChip}
+        buckets={buckets}
+        setBuckets={vi.fn()}
+        onAssignLink={vi.fn()}
+        onAddLinkToBucket={vi.fn()}
+        onBucketDeleted={vi.fn()}
+        onMoveLinkToIndex={onMoveLinkToIndex}
+      />
+    );
+    // Drag Alpha (l1) onto Beta (index 1). jsdom reports a zero-size rect, so
+    // the before/after midpoint resolves to "before" → index 1. (The exact
+    // before/after split is geometry the helper test covers.)
+    const dataTransfer = { getData: () => 'l1', types: ['text/x-brain-link'] };
+    fireEvent.drop(screen.getByText('Beta'), { dataTransfer });
+    expect(onMoveLinkToIndex).toHaveBeenCalledWith(twoChip[0], 'b1', 1);
+  });
+
+  it('ignores a chip-level drop that carries no link payload (e.g. a bucket reorder)', () => {
+    const onMoveLinkToIndex = vi.fn();
+    render(
+      <BucketBoard
+        links={twoChip}
+        buckets={buckets}
+        setBuckets={vi.fn()}
+        onAssignLink={vi.fn()}
+        onAddLinkToBucket={vi.fn()}
+        onBucketDeleted={vi.fn()}
+        onMoveLinkToIndex={onMoveLinkToIndex}
+      />
+    );
+    const dataTransfer = { getData: () => '', types: ['text/x-brain-bucket'] };
+    fireEvent.drop(screen.getByText('Alpha'), { dataTransfer });
+    expect(onMoveLinkToIndex).not.toHaveBeenCalled();
+  });
+
   it('creates a new bucket through the inline form', async () => {
     api.createBrainBucket.mockResolvedValue({ id: 'b3', name: 'Reading', color: 'accent', order: 2 });
     const setBuckets = vi.fn();
