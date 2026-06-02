@@ -66,6 +66,9 @@ function Metric({ icon: Icon, label, value }) {
 
 function ResultPanel({ result }) {
   const ok = !result?.error;
+  // A failed run that still streamed tokens before it stopped (e.g. a timeout) —
+  // show the partial output alongside the error rather than hiding it.
+  const hasPartial = Boolean(result?.error && result?.text);
   return (
     <section className={`border rounded-lg bg-port-bg p-3 space-y-3 ${ok ? 'border-port-border' : 'border-port-error/40'}`}>
       <div className="flex items-start justify-between gap-3">
@@ -73,8 +76,8 @@ function ResultPanel({ result }) {
           <div className="text-sm text-white truncate">{result.modelId}</div>
           <div className="text-xs text-gray-500">{BACKEND_LABEL[result.backend] || result.backend}</div>
         </div>
-        <span className={`text-xs px-2 py-1 rounded ${ok ? 'bg-port-success/15 text-port-success' : 'bg-port-error/15 text-port-error'}`}>
-          {ok ? 'Done' : 'Failed'}
+        <span className={`text-xs px-2 py-1 rounded ${ok ? 'bg-port-success/15 text-port-success' : hasPartial ? 'bg-port-warning/15 text-port-warning' : 'bg-port-error/15 text-port-error'}`}>
+          {ok ? 'Done' : hasPartial ? 'Partial' : 'Failed'}
         </span>
       </div>
 
@@ -84,10 +87,14 @@ function ResultPanel({ result }) {
         <Metric icon={MessageSquare} label="Speed" value={formatRate(result.timings?.charsPerSecond)} />
       </div>
 
-      {result.error ? (
+      {result.error && (
         <p className="text-sm text-port-error whitespace-pre-wrap">{result.error}</p>
-      ) : (
-        <pre className="text-sm text-gray-200 whitespace-pre-wrap break-words font-sans leading-relaxed max-h-72 overflow-auto">{result.text}</pre>
+      )}
+      {result.text && (
+        <div className="space-y-1">
+          {hasPartial && <div className="text-xs text-port-warning">Partial output before the run stopped</div>}
+          <pre className="text-sm text-gray-200 whitespace-pre-wrap break-words font-sans leading-relaxed max-h-72 overflow-auto">{result.text}</pre>
+        </div>
       )}
 
       <div className="flex items-center gap-2 flex-wrap">

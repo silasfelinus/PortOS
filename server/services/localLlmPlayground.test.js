@@ -1,5 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { buildPrompt, buildMessages, summarizeTimings, extractStreamDelta } from './localLlmPlayground.js';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+
+vi.mock('./runner.js', () => ({ createRun: vi.fn(), finalizeRunRecord: vi.fn() }));
+vi.mock('./localLlm.js', () => ({ ensureBackendProvider: vi.fn(() => Promise.resolve()) }));
+vi.mock('./providers.js', () => ({ getProviderById: vi.fn() }));
+vi.mock('./providerStatus.js', () => ({ markProviderAvailable: vi.fn(() => Promise.resolve()) }));
+vi.mock('./ollamaManager.js', () => ({ ensureProviderReady: vi.fn(() => Promise.resolve({ success: true })) }));
+
+import { buildPrompt, buildMessages, summarizeTimings, extractStreamDelta, resolvePartialOutput, runLocalLlmTest } from './localLlmPlayground.js';
+import { createRun, finalizeRunRecord } from './runner.js';
+import { getProviderById } from './providers.js';
 
 describe('buildPrompt', () => {
   it('returns the bare prompt when no system instructions', () => {
@@ -73,5 +82,87 @@ describe('extractStreamDelta', () => {
 
   it('tolerates a frame with no delta', () => {
     expect(extractStreamDelta('data: {"choices":[{}]}')).toEqual({ content: '', reasoning: '' });
+  });
+});
+
+describe('resolvePartialOutput', () => {
+  it('prefers visible content over reasoning', () => {
+    expect(resolvePartialOutput({ output: 'hello', reasoning: 'thinking' })).toBe('hello');
+  });
+
+  it('falls back to reasoning when no content streamed', () => {
+    expect(resolvePartialOutput({ output: '   ', reasoning: 'partial thought' })).toBe('partial thought');
+  });
+
+  it('returns empty string when neither content nor reasoning streamed', () => {
+    expect(resolvePartialOutput({ output: '', reasoning: '' })).toBe('');
+    expect(resolvePartialOutput({})).toBe('');
+  });
+});
+
+// Build a fake stream reader: yields each SSE line as a chunk, then either
+// finishes cleanly (done) or throws an AbortError to simulate a timeout.
+function makeReader(lines, { abort = false } = {}) {
+  let i = 0;
+  return {
+    read: vi.fn(async () => {
+      if (i < lines.length) return { done: false, value: new TextEncoder().encode(lines[i++]) };
+      if (abort) {
+        const err = new Error('The operation was aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
+      return { done: true, value: undefined };
+    }),
+    cancel: vi.fn(async () => {}),
+  };
+}
+
+const sse = (delta) => `data: ${JSON.stringify({ choices: [{ delta }] })}\n`;
+
+describe('runLocalLlmTest timeout/abort contract', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getProviderById.mockResolvedValue({ id: 'lmstudio', type: 'api', endpoint: 'http://localhost:1234/v1' });
+    createRun.mockResolvedValue({ runId: 'run-1', provider: { id: 'lmstudio' } });
+    finalizeRunRecord.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => { delete global.fetch; });
+
+  const stubStream = (reader) => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200, body: { getReader: () => reader } });
+  };
+
+  it('returns the content streamed before an abort as text and persists it on the failed run', async () => {
+    stubStream(makeReader([sse({ content: 'Hello ' }), sse({ content: 'world' })], { abort: true }));
+
+    const result = await runLocalLlmTest({ backend: 'lmstudio', modelId: 'm1', prompt: 'hi', timeoutMs: 5000 });
+
+    expect(result.error).toContain('Timed out');
+    expect(result.text).toBe('Hello world');
+    expect(finalizeRunRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'run-1', output: 'Hello world', success: false, exitCode: 1 }),
+    );
+  });
+
+  it('surfaces a reasoning-only partial when no visible content streamed before the abort', async () => {
+    stubStream(makeReader([sse({ reasoning: 'thinking hard…' })], { abort: true }));
+
+    const result = await runLocalLlmTest({ backend: 'lmstudio', modelId: 'm1', prompt: 'hi', timeoutMs: 5000 });
+
+    expect(result.error).toContain('Timed out');
+    expect(result.text).toBe('thinking hard…');
+    expect(finalizeRunRecord).toHaveBeenCalledWith(expect.objectContaining({ output: 'thinking hard…', success: false }));
+  });
+
+  it('returns the full text and a success record when the stream finishes normally', async () => {
+    stubStream(makeReader([sse({ content: 'Done.' })], { abort: false }));
+
+    const result = await runLocalLlmTest({ backend: 'lmstudio', modelId: 'm1', prompt: 'hi', timeoutMs: 5000 });
+
+    expect(result.error).toBeUndefined();
+    expect(result.text).toBe('Done.');
+    expect(finalizeRunRecord).toHaveBeenCalledWith(expect.objectContaining({ output: 'Done.', success: true, exitCode: 0 }));
   });
 });
