@@ -76,5 +76,5 @@ export function useArcCanvasSync({
     return true;
   }, [series, flushFields, payloadDefaults, silent, onFlushError, updateSeriesFromServer]);
 
-  return { updateSeriesFromServer, handleIssuesUpdate, flushPending, lastSavedRef };
+  return { updateSeriesFromServer, handleIssuesUpdate, flushPending };
 }
