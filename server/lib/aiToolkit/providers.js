@@ -127,14 +127,28 @@ export function createProviderService(config = {}) {
   // simultaneous burst of callers shares one disk read instead of each
   // racing its own. Per-service-instance (the toolkit builds one), so the
   // cache is process-wide for the single-user server.
+  //
+  // `cacheGeneration` is bumped on every cache mutation (refresh or
+  // invalidate). A cold read captures it before reading disk and only
+  // adopts its result if the generation is unchanged on resolve — so a
+  // slow stale read can't clobber a fresher snapshot a concurrent
+  // `saveProviders` wrote while it was in flight.
   let providersCache = null;
   let providersCacheAt = -Infinity;
   let providersLoadInFlight = null;
+  let cacheGeneration = 0;
 
   function refreshProvidersCache(data) {
     providersCache = data;
     providersCacheAt = Date.now();
+    cacheGeneration += 1;
     return data;
+  }
+
+  function invalidateProvidersCache() {
+    providersCache = null;
+    providersCacheAt = -Infinity;
+    cacheGeneration += 1;
   }
 
   // JSON.parse with a corrupt-file rescue. A garbled providers.json (truncated
@@ -196,16 +210,28 @@ export function createProviderService(config = {}) {
       return providersCache;
     }
     if (providersLoadInFlight) return providersLoadInFlight;
+    const gen = cacheGeneration;
     providersLoadInFlight = readProvidersFromDisk()
-      .then(refreshProvidersCache)
+      .then(data => {
+        // Adopt this read only if no write/invalidate landed while it was
+        // in flight; otherwise that newer snapshot is fresher — return it
+        // rather than clobbering the cache with our stale parse.
+        if (cacheGeneration === gen) return refreshProvidersCache(data);
+        return providersCache ?? data;
+      })
       .finally(() => { providersLoadInFlight = null; });
     return providersLoadInFlight;
   }
 
   async function saveProviders(data) {
+    // Drop the cache BEFORE the write: mutators read → mutate the cached
+    // object in place → save, so the warm cache already holds the unsaved
+    // mutation. Invalidating first means a failed `atomicWrite` leaves no
+    // cache to serve the un-persisted change (the next read re-reads disk),
+    // and refreshing only after success keeps the cache consistent with
+    // what actually landed on disk.
+    invalidateProvidersCache();
     await atomicWrite(PROVIDERS_PATH, data);
-    // Keep the cache warm + consistent with disk after a write so the next
-    // read reflects the mutation without a re-read or a stale-TTL window.
     refreshProvidersCache(data);
   }
 

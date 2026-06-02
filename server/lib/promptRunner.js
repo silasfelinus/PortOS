@@ -351,9 +351,14 @@ function coalesceFallbackMarkAndPick(failed, firstError) {
 
   // While `work` is in flight, concurrent callers return it without
   // overwriting the slot, so this entry is only ever cleared by its own
-  // settle — a plain delete is safe.
+  // settle — a plain delete is safe. Use `then(cleanup, cleanup)` rather
+  // than `finally`: `finally` re-raises a `work` rejection on the derived
+  // promise, which nothing awaits → unhandledRejection. The two-arm `then`
+  // handles both settle paths and swallows the cleanup branch's copy of the
+  // rejection; the caller's own `await work` still sees the original reject.
+  const clearSlot = () => { _fallbackMarkAndPickInFlight.delete(failed.id); };
   _fallbackMarkAndPickInFlight.set(failed.id, work);
-  work.finally(() => _fallbackMarkAndPickInFlight.delete(failed.id));
+  work.then(clearSlot, clearSlot);
   return work;
 }
 
