@@ -44,6 +44,17 @@ const api = vi.hoisted(() => ({
 }));
 vi.mock('../services/api', () => api);
 
+// Spy on toast so the rejection tests can prove the catch-path notice fired —
+// the success path never toasts, so a specific toast.error message uniquely
+// pins the rejection branch (a bare reload-count check can't, since onSuccess
+// already reloads before the pointer move).
+const toastMock = vi.hoisted(() => {
+  const fn = vi.fn();
+  fn.success = vi.fn(); fn.error = vi.fn(); fn.loading = vi.fn(); fn.warning = vi.fn(); fn.dismiss = vi.fn();
+  return fn;
+});
+vi.mock('../components/ui/Toast', () => ({ default: toastMock, toast: toastMock, Toaster: () => null }));
+
 // The plotArc step embeds the full ArcCanvas roadmap editor; mock it to an
 // inert sentinel so these tests assert the EMBEDDING (and its props) without
 // pulling ArcCanvas's heavy import graph or its own API calls into scope.
@@ -294,9 +305,11 @@ describe('StoryBuilder — detail stepper', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Plot Arc/i }));
     await waitFor(() => expect(api.setStoryCurrentStep).toHaveBeenCalledWith('stb-1', 'plotArc', expect.anything()));
-    // Rejection → resync (reload refetches the session) and the URL never advances,
-    // so the heading stays on Idea instead of stranding ahead of currentStep.
-    await waitFor(() => expect(api.getStorySession.mock.calls.length).toBeGreaterThan(callsBefore));
+    // Rejection → the catch path toasts + resyncs (reload refetches the session),
+    // and the URL never advances, so the heading stays on Idea instead of
+    // stranding ahead of currentStep. The specific toast pins the rejection branch.
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith('Could not switch step'));
+    expect(api.getStorySession.mock.calls.length).toBeGreaterThan(callsBefore);
     expect(screen.getByRole('heading', { name: 'Idea' })).toBeTruthy();
   });
 
@@ -313,8 +326,10 @@ describe('StoryBuilder — detail stepper', () => {
     await waitFor(() => expect(api.lockStoryStep).toHaveBeenCalledWith('stb-1', 'idea', expect.anything()));
     // The auto-advance attempt fires…
     await waitFor(() => expect(api.setStoryCurrentStep).toHaveBeenCalledWith('stb-1', 'universeAesthetic', expect.anything()));
-    // …but is rejected, so the URL stays on Idea (navigation is gated on .then()).
-    await waitFor(() => expect(api.getStorySession.mock.calls.length).toBeGreaterThan(1));
+    // …but is rejected, so the catch path toasts (this specific message only
+    // fires on the rejected pointer move, not the success path) and the URL
+    // stays on Idea — navigation is gated on .then().
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith('Locked, but could not advance'));
     expect(screen.getByRole('heading', { name: 'Idea' })).toBeTruthy();
   });
 
