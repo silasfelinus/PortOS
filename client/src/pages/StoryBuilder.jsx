@@ -1070,7 +1070,10 @@ function StoryBuilderDetail({ storyId, stepParam }) {
         const nextId = stepIds[activeIdx + 1];
         setStoryCurrentStep(storyId, nextId, { silent: true })
           .then(() => navigate(`/story-builder/${storyId}/${nextId}`))
-          .catch(() => {});
+          // The lock succeeded, but the pointer move was re-gated/rejected. Stay
+          // put (don't strand the URL ahead of the persisted currentStep) and
+          // resync so the rail reflects the server's actual pointer.
+          .catch(() => { toast.error('Locked, but could not advance'); reload(); });
       }
     },
     lockedMessage: `${activeStep?.label || 'Step'} locked`,
@@ -1081,8 +1084,12 @@ function StoryBuilderDetail({ storyId, stepParam }) {
   const goToStep = async (id) => {
     // Free navigation — any step is reachable. Upstream lock/stale state is
     // surfaced as a warning on the step (not a block), so a user can jump to a
-    // later step and backfill the earlier ones.
-    await setStoryCurrentStep(storyId, id, { silent: true }).catch(() => {});
+    // later step and backfill the earlier ones. Navigate only AFTER the server
+    // accepts the pointer move — otherwise a rejected re-gate (deleted session,
+    // invalid step) strands the URL on a step the persisted currentStep never
+    // advanced to. On rejection, resync so the rail reflects the real pointer.
+    const ok = await setStoryCurrentStep(storyId, id, { silent: true }).then(() => true).catch(() => false);
+    if (!ok) { toast.error('Could not switch step'); reload(); return; }
     navigate(`/story-builder/${storyId}/${id}`);
   };
 
