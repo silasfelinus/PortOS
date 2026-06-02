@@ -66,6 +66,7 @@ grep -i "what you want to do" client/src/lib/README.md
 | `compareHelpers.js` | `equalByKeys(a, b, keys)` / `equalListByKeys(a, b, keys)` — typed key-based equality for `useAutoRefetch`'s `compare`. Keys are property names, dotted paths (`'context.running'`), or `(item) => value` accessors. The typed alternative to `sameJsonShape` when a monotonic timestamp or unrendered field would break stringify-equality dedup. |
 | `genUtils.js` | Shared bits between Image Gen and Video Gen pages. |
 | `joinInfluenceList.js` | Mirror of `joinInfluenceList` in server universe builder. |
+| `localLlmTargetKey.js` | `localLlmTargetKey({ backend, modelId })` — stable string key for a local-LLM compare target. Shared by the LocalLlmTab checkbox grid and the LocalLlmPlayground compare URL so a delimiter change can't desync the round-trip. |
 | `loopbackHost.js` | `isLoopbackHost(host)` / `isLoopbackOrigin()` / `describeMicAvailability()` — Secure Context / loopback-origin heuristics. Use these in any new mic, clipboard, or `getUserMedia`-gated surface; matches the full `127.0.0.0/8` range, IPv6 `::1`, and the browser-bracketed `[::1]` form. |
 | `mediaNavigation.js` | `getAdjacentMedia(items, item)` — prev/next computation for lightboxes. |
 | `sameJsonShape.js` | `sameJsonShape(prev, next)` — JSON.stringify-based equality for `useAutoRefetch`'s `compare` option on small, deterministically-shaped poll payloads. |
