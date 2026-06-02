@@ -6,9 +6,9 @@ import { useAsyncAction } from '../hooks/useAsyncAction';
 import { useImporterProgress, stageStatusIcon } from '../hooks/useImporterProgress';
 import { STORY_SHAPES } from '../components/pipeline/StoryShapes';
 import EntryCard from '../components/universe/EntryCard';
+import ProviderModelSelector from '../components/ProviderModelSelector';
+import useProviderModels from '../hooks/useProviderModels';
 import { previewCanonFragments } from '../lib/canonPrompt';
-import { getProviders } from '../services/api';
-import { filterSelectableModels } from '../utils/providers';
 import {
   analyzeImport,
   classifyImport,
@@ -122,23 +122,17 @@ export default function Importer() {
   // AI provider/model override for the extraction LLM calls (classify +
   // analyze). Empty string = "use the stage/active provider default" — sent
   // as `''` and coerced to undefined server-side (see importer*Schema).
-  const [providers, setProviders] = useState([]);
-  const [llmProvider, setLlmProvider] = useState('');
-  const [llmModel, setLlmModel] = useState('');
-  useEffect(() => {
-    let cancelled = false;
-    getProviders({ silent: true }).then((data) => {
-      if (cancelled) return;
-      setProviders((data?.providers || []).filter((p) => p.enabled));
-    }).catch((err) => {
-      console.warn(`⚠️ Importer provider list fetch failed: ${err?.message || err}`);
-    });
-    return () => { cancelled = true; };
-  }, []);
-  const llmModels = useMemo(() => {
-    const p = providers.find((x) => x.id === llmProvider);
-    return p ? filterSelectableModels(p.models || [p.defaultModel]) : [];
-  }, [providers, llmProvider]);
+  // `allowDefault` keeps both selectors at `''` (no auto-select) so the
+  // "Default" option is the resting state; `silent` matches the prior
+  // console.warn-only failure behavior for this secondary control.
+  const {
+    providers,
+    selectedProviderId: llmProvider,
+    selectedModel: llmModel,
+    availableModels: llmModels,
+    setSelectedProviderId: setLlmProvider,
+    setSelectedModel: setLlmModel,
+  } = useProviderModels({ allowDefault: true, silent: true });
 
   const [canonSelections, setCanonSelections] = useState({ characters: [], places: [], objects: [] });
   const [selectedCanon, setSelectedCanon] = useState({ characters: new Set(), places: new Set(), objects: new Set() });
@@ -387,7 +381,7 @@ export default function Importer() {
           llmProvider={llmProvider}
           llmModel={llmModel}
           llmModels={llmModels}
-          onProviderChange={(id) => { setLlmProvider(id); setLlmModel(''); }}
+          onProviderChange={setLlmProvider}
           onModelChange={setLlmModel}
         />
       )}
@@ -567,36 +561,19 @@ function IntakeForm({
           <p className="text-xs text-port-text-muted mt-1">Leave blank to let the LLM split based on natural chapter/issue/act boundaries.</p>
         </div>
         <div>
-          <label htmlFor="importer-llm-provider" className="block text-sm font-medium mb-1">
-            AI Provider &amp; Model (optional)
-          </label>
-          <div className="flex items-center gap-2">
-            <select
-              id="importer-llm-provider"
-              value={llmProvider}
-              onChange={(e) => onProviderChange(e.target.value)}
-              className="flex-1 min-w-0 bg-port-bg border border-port-border rounded px-3 py-2 text-sm focus:outline-none focus:border-port-accent"
-            >
-              <option value="">Default (stage provider)</option>
-              {providers.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-            {llmModels.length > 0 && (
-              <select
-                id="importer-llm-model"
-                aria-label="Model"
-                value={llmModel}
-                onChange={(e) => onModelChange(e.target.value)}
-                className="flex-1 min-w-0 bg-port-bg border border-port-border rounded px-3 py-2 text-sm focus:outline-none focus:border-port-accent"
-              >
-                <option value="">Default model</option>
-                {llmModels.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
-            )}
-          </div>
+          <p className="block text-sm font-medium mb-1">AI Provider &amp; Model (optional)</p>
+          <ProviderModelSelector
+            providers={providers}
+            selectedProviderId={llmProvider}
+            selectedModel={llmModel}
+            availableModels={llmModels}
+            onProviderChange={onProviderChange}
+            onModelChange={onModelChange}
+            compact
+            label="AI Provider"
+            emptyProviderOption="Default (stage provider)"
+            emptyModelOption="Default model"
+          />
           <p className="text-xs text-port-text-muted mt-1">Model used to extract canon, arc, and the issue split. Defaults to each stage&apos;s configured provider.</p>
         </div>
       </div>

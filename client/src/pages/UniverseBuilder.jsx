@@ -30,6 +30,7 @@ import { useLocalStoragePersisted } from '../hooks/useLocalStorageBool';
 import useUniverseAction from '../hooks/useUniverseAction';
 import { useUniverseNav } from '../hooks/useUniverseNav';
 import InfluenceChipsInput from '../components/universeBuilder/InfluenceChipsInput';
+import ProviderModelSelector from '../components/ProviderModelSelector';
 import ImageGenSettingsForm from '../components/imageGen/ImageGenSettingsForm';
 import { RUNNER_FAMILIES } from '../lib/runnerFamilies';
 import ShareToButton from '../components/sharing/ShareToButton';
@@ -3002,30 +3003,25 @@ function BibleTab({
             />
           </div>
           <div>
-            <label htmlFor="world-llm-provider" className="text-xs text-gray-400 mb-1 block">LLM for expansion</label>
-            <select
-              id="world-llm-provider"
-              value={draft.llm?.provider ?? ''}
-              onChange={(e) => updateDraft({ llm: { ...draft.llm, provider: e.target.value || null, model: null } })}
-              className="w-full bg-port-bg border border-port-border rounded px-2 py-2 text-white text-sm min-h-[40px]"
-            >
-              <option value="">Active provider ({providerLabel(activeProviderId)})</option>
-              {providers.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-            <select
-              value={draft.llm?.model || ''}
-              onChange={(e) => updateDraft({ llm: { ...draft.llm, model: e.target.value || null } })}
-              className="mt-1 w-full bg-port-bg border border-port-border rounded px-2 py-2 text-white text-sm min-h-[40px]"
-            >
-              <option value="">Default model</option>
-              {providerModels.map((m) => {
-                const id = typeof m === 'string' ? m : m.id;
-                const label = typeof m === 'string' ? m : (m.name || m.id);
-                return <option key={id} value={id}>{label}</option>;
-              })}
-            </select>
+            <p className="text-xs text-gray-400 mb-1 block">LLM for expansion</p>
+            {/* The selection here is part of the draft and persisted to the
+                server (feeds expand/render), not ephemeral like the Importer —
+                so we drive it from `draft.llm` and use only the shared
+                component, not useProviderModels' auto-select/load machinery. */}
+            <ProviderModelSelector
+              providers={providers}
+              selectedProviderId={draft.llm?.provider ?? ''}
+              selectedModel={draft.llm?.model || ''}
+              availableModels={providerModels}
+              onProviderChange={(id) => updateDraft({ llm: { ...draft.llm, provider: id || null, model: null } })}
+              onModelChange={(m) => updateDraft({ llm: { ...draft.llm, model: m || null } })}
+              compact
+              label="LLM for expansion"
+              layout="stacked"
+              emptyProviderOption={`Active provider (${providerLabel(activeProviderId)})`}
+              emptyModelOption="Default model"
+              alwaysShowModel
+            />
           </div>
         </div>
 
