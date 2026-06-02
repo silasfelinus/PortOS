@@ -36,7 +36,7 @@ import { isStr, trimTo } from '../../lib/storyBible.js';
 import { sanitizeCoverLike } from '../../lib/renderSlot.js';
 import { emitRecordUpdated } from '../sharing/recordEvents.js';
 import { applyVolumeOrderedNumbers, UNSCOPED_ANCHOR } from '../../lib/pipelineIssueOrder.js';
-import { maybeJournalBeforeOverwrite, setSyncBaseHash, contentHashForRecord, flushBaseHashes } from '../../lib/conflictJournal.js';
+import { maybeJournalBeforeOverwrite, setSyncBaseHash, contentHashForRecord, flushBaseHashes, deleteSyncBaseHash } from '../../lib/conflictJournal.js';
 import * as seriesSvc from './series.js';
 
 // TYPE-level (storage layout) schema version stamped on
@@ -553,6 +553,22 @@ export async function listIssues({
     };
   }
   return sorted.slice(0, ISSUES_PER_RESPONSE_MAX).map(project);
+}
+
+/**
+ * Every live (or, with `includeDeleted`, every) issue id — UNCAPPED.
+ *
+ * `listIssues` slices at `ISSUES_PER_RESPONSE_MAX` (1000) even unpaginated, so
+ * it can't back a "does this id still exist?" membership check: an install with
+ * >1000 issues would report ids beyond the cap as missing. Callers that need
+ * the complete id set (e.g. the conflict-journal orphan-base-hash sweep, which
+ * would otherwise prune a live issue's base hash and silently disable conflict
+ * detection for it) use this. Returns ids only — no projection, no history.
+ */
+export async function listIssueIds({ includeDeleted = false } = {}) {
+  const { issues } = await readState();
+  const live = includeDeleted ? issues : issues.filter((i) => !i.deleted);
+  return live.map((i) => i.id);
 }
 
 /**
@@ -1243,6 +1259,12 @@ export async function pruneTombstonedIssues(beforeMs) {
       return t < beforeMs;
     });
     await Promise.all(prunable.map((i) => store().deleteOne(i.id)));
+    // Evict each pruned issue's conflict-journal base hash. Issues seed an
+    // `issue:<id>` base hash when their parent series is pushed (peerSync's
+    // pushRecordToPeer), but no eviction existed — so a pruned issue's key
+    // would linger in sync_base_hashes.json forever. Mirrors the universe /
+    // series / collection prune paths.
+    await Promise.all(prunable.map((i) => deleteSyncBaseHash('issue', i.id)));
     return { pruned: prunable.length };
   });
 }

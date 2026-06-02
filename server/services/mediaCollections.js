@@ -30,7 +30,7 @@ import { ITEM_KIND, REF_MAX_LENGTH, itemKey } from '../lib/mediaItemKey.js';
 import { sanitizeOrigin } from '../lib/sharingOrigin.js';
 import { emitRecordUpdated, emitRecordDeleted } from './sharing/recordEvents.js';
 import {
-  maybeJournalBeforeOverwrite, setSyncBaseHash, contentHashForRecord, flushBaseHashes,
+  maybeJournalBeforeOverwrite, setSyncBaseHash, contentHashForRecord, flushBaseHashes, deleteSyncBaseHash,
 } from '../lib/conflictJournal.js';
 
 export const ERR_NOT_FOUND = 'NOT_FOUND';
@@ -901,6 +901,9 @@ export async function pruneTombstonedCollections(olderThanMs) {
       const ms = Date.parse(cur.deletedAt || '');
       if (!(Number.isFinite(ms) && ms < olderThanMs)) return;
       await store().deleteOneNow(c.id);
+      // Evict the conflict-journal base hash so the side store doesn't grow
+      // dead keys (mirrors pruneTombstonedUniverses / pruneTombstonedSeries).
+      await deleteSyncBaseHash('mediaCollection', c.id);
       pruned += 1;
     });
   }

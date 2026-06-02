@@ -281,6 +281,44 @@ describe('conflictJournal', () => {
     await expect(cj.deleteSyncBaseHash('universe', 'nonexistent')).resolves.toBeUndefined();
     expect(await cj.getSyncBaseHash('universe', 'nonexistent')).toBeNull();
   });
+
+  describe('pruneOrphanedBaseHashes', () => {
+    it('drops keys whose record no longer resolves, keeps the rest', async () => {
+      await cj.setSyncBaseHash('universe', 'live', cj.contentHashForRecord('universe', uni({ id: 'live' })));
+      await cj.setSyncBaseHash('universe', 'dead', cj.contentHashForRecord('universe', uni({ id: 'dead' })));
+      await cj.setSyncBaseHash('series', 'live-s', cj.contentHashForRecord('universe', uni({ id: 'live-s' })));
+      // Resolver: only 'live' and 'live-s' still exist.
+      const liveKeys = new Set(['universe:live', 'series:live-s']);
+      const { pruned } = await cj.pruneOrphanedBaseHashes(async (kind, id) => liveKeys.has(`${kind}:${id}`));
+      expect(pruned).toBe(1);
+      expect(await cj.getSyncBaseHash('universe', 'live')).not.toBeNull();
+      expect(await cj.getSyncBaseHash('universe', 'dead')).toBeNull();
+      expect(await cj.getSyncBaseHash('series', 'live-s')).not.toBeNull();
+    });
+
+    it('keeps every key when the resolver returns true (a partial resolver never strips live entries)', async () => {
+      await cj.setSyncBaseHash('issue', 'iss-1', cj.contentHashForRecord('issue', iss({ id: 'iss-1' })));
+      // The contract: a resolver that returns true (e.g. for a kind it doesn't
+      // recognize) must leave that key in place. The tombstoneGc resolver maps
+      // unknown kinds to true for exactly this reason.
+      const { pruned } = await cj.pruneOrphanedBaseHashes(async () => true);
+      expect(pruned).toBe(0);
+      expect(await cj.getSyncBaseHash('issue', 'iss-1')).not.toBeNull();
+    });
+
+    it('treats a resolver that throws as a conservative keep', async () => {
+      await cj.setSyncBaseHash('universe', 'u-x', cj.contentHashForRecord('universe', uni({ id: 'u-x' })));
+      const { pruned } = await cj.pruneOrphanedBaseHashes(async () => { throw new Error('lookup blew up'); });
+      expect(pruned).toBe(0);
+      expect(await cj.getSyncBaseHash('universe', 'u-x')).not.toBeNull();
+    });
+
+    it('returns {pruned:0} when given a non-function', async () => {
+      await cj.setSyncBaseHash('universe', 'u-y', cj.contentHashForRecord('universe', uni({ id: 'u-y' })));
+      expect(await cj.pruneOrphanedBaseHashes(null)).toEqual({ pruned: 0 });
+      expect(await cj.getSyncBaseHash('universe', 'u-y')).not.toBeNull();
+    });
+  });
 });
 
 // A minimal collection-shaped record (sanitizeRecordForWire('mediaCollection')
