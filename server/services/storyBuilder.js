@@ -29,7 +29,7 @@ import {
   STEP_IDS, STEP_STATUSES, isValidStepId,
 } from '../lib/storyBuilderSteps.js';
 import { hashUpstream, computeStaleSteps } from '../lib/storyBuilderIntegrity.js';
-import { createUniverse, getUniverse, updateUniverse } from './universeBuilder.js';
+import { createUniverse, deleteUniverse, getUniverse, updateUniverse } from './universeBuilder.js';
 import { expandWorldTemplate } from './universeBuilderExpand.js';
 import { refineWorldPrompts } from './universeBuilderRefine.js';
 import { refineUniverseCharacter } from './universeCanon.js';
@@ -174,12 +174,29 @@ export async function createStorySession(input = {}) {
   if (intakeMode === 'seed') {
     // Mint the shells the wizard fills in. The universe name doubles as the
     // working title; the seed idea seeds the universe starter prompt.
+    //
+    // The universe is created first (and on creation fires peer auto-subscribe),
+    // then the series. If `createSeries` throws, we'd otherwise leave an orphan
+    // universe on disk with no session pointing at it. Track whether *we* minted
+    // the universe in this call and tombstone it on a series failure — but never
+    // touch a universe the caller passed in (`input.universeId`).
+    let mintedUniverseId = null;
     if (!universeId) {
       const universe = await createUniverse({ name: title, starterPrompt: seedIdea || '' });
       universeId = universe.id;
+      mintedUniverseId = universe.id;
     }
     if (!seriesId) {
-      const series = await createSeries({ name: title, universeId, premise: seedIdea || '' });
+      const series = await createSeries({ name: title, universeId, premise: seedIdea || '' }).catch(async (err) => {
+        if (mintedUniverseId) {
+          // Roll back the just-created universe so a failed session create
+          // doesn't leave a stray (and already peer-subscribed) shell behind.
+          await deleteUniverse(mintedUniverseId).catch((cleanupErr) => {
+            console.error(`⚠️ Failed to roll back orphan universe ${mintedUniverseId} after series create failed: ${cleanupErr.message}`);
+          });
+        }
+        throw err;
+      });
       seriesId = series.id;
     }
   }
