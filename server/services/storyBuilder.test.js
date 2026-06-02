@@ -72,6 +72,29 @@ describe('storyBuilder — CRUD', () => {
     await expect(sb.createStorySession({ title: '   ' })).rejects.toMatchObject({ code: sb.ERR_VALIDATION });
   });
 
+  it('rolls back the just-minted universe when createSeries throws (no orphan)', async () => {
+    const createSpy = vi.spyOn(seriesSvc, 'createSeries').mockRejectedValueOnce(new Error('series boom'));
+    await expect(sb.createStorySession({ title: 'Doomed', seedIdea: 'idea' })).rejects.toThrow('series boom');
+    // The universe minted just before the failed series create is tombstoned —
+    // exactly one universe was created in this call, so any live universe is a leak.
+    const live = (await universeSvc.listUniverses()).filter((u) => !u.deleted);
+    expect(live).toHaveLength(0);
+    createSpy.mockRestore();
+  });
+
+  it('does NOT delete a caller-supplied universe when createSeries throws', async () => {
+    const universe = await universeSvc.createUniverse({ name: 'Pre-existing' });
+    const createSpy = vi.spyOn(seriesSvc, 'createSeries').mockRejectedValueOnce(new Error('series boom'));
+    await expect(
+      sb.createStorySession({ title: 'Doomed', seedIdea: 'idea', universeId: universe.id }),
+    ).rejects.toThrow('series boom');
+    // The universe the caller passed in must survive — we only roll back what we minted.
+    const survivor = await universeSvc.getUniverse(universe.id);
+    expect(survivor).toBeTruthy();
+    expect(survivor.deleted).toBeFalsy();
+    createSpy.mockRestore();
+  });
+
   it('lists, gets, updates, and soft-deletes', async () => {
     const s = await sb.createStorySession({ title: 'X' });
     expect((await sb.listStorySessions()).map((x) => x.id)).toContain(s.id);
