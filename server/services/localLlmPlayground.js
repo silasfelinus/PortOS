@@ -208,17 +208,16 @@ export async function runLocalLlmTest({
       throw new Error(`Local LLM playground refused fallback provider for ${provider.id}`);
     }
 
-    // The timeout aborts the upstream read; a client disconnect (the user hit
-    // Cancel, closing the browser fetch) aborts `clientSignal`, which we forward
-    // onto the same controller so the upstream reader tears down early instead of
-    // running on to the full timeout with no one listening.
-    const controller = new AbortController();
-    const onClientAbort = () => controller.abort();
-    if (clientSignal) {
-      if (clientSignal.aborted) controller.abort();
-      else clientSignal.addEventListener('abort', onClientAbort, { once: true });
-    }
-    const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+    // The timeout controller aborts the upstream read (its plain AbortError keeps
+    // the "Timed out after Xms" mapping below). A client disconnect — the user hit
+    // Cancel, closing the browser fetch — aborts `clientSignal`; AbortSignal.any
+    // composes both so whichever fires first tears down the upstream reader instead
+    // of running on to the full timeout with no one listening.
+    const timeoutController = new AbortController();
+    const timeoutHandle = setTimeout(() => timeoutController.abort(), timeoutMs);
+    const signal = clientSignal
+      ? AbortSignal.any([clientSignal, timeoutController.signal])
+      : timeoutController.signal;
     const text = await streamChatCompletion({
       provider,
       backend,
@@ -227,14 +226,11 @@ export async function runLocalLlmTest({
       systemPrompt,
       temperature,
       maxTokens,
-      signal: controller.signal,
+      signal,
       onChunk: (chunk) => {
         if (!firstChunkAt && chunk) firstChunkAt = Date.now();
       },
-    }).finally(() => {
-      clearTimeout(timeoutHandle);
-      clientSignal?.removeEventListener('abort', onClientAbort);
-    });
+    }).finally(() => clearTimeout(timeoutHandle));
 
     const endedAt = Date.now();
     await finalizeRunRecord({ runId, output: text, exitCode: 0, success: true, startTime: startedAt });
