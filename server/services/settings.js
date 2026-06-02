@@ -123,5 +123,12 @@ export const updateSettings = (patch) => queueWrite(async () => {
 export const updateSettingsWith = (mutate) => queueWrite(async () => {
   const current = stripStoreKeys(await loadRaw());
   const next = await mutate(current);
+  // Guard the mutator's return BEFORE persisting: unlike the old
+  // saveSettings(objectLiteral) callers, a mutator with a missing `return`
+  // (or one that returns an array/primitive) would otherwise serialize
+  // garbage like `undefined`/`"foo"` into settings.json. Fail loud instead.
+  if (!isPlainObject(next)) {
+    throw new TypeError('updateSettingsWith: mutate() must return a plain settings object');
+  }
   return save(next);
 });

@@ -230,6 +230,24 @@ describe('settings.js', () => {
       // must not see it (matching the getSettings() the old callers read).
       expect(seen).toEqual({ theme: 'dark' });
     });
+
+    it('awaits an async mutator', async () => {
+      tryReadFile.mockResolvedValue(JSON.stringify({ a: 1 }));
+      const result = await updateSettingsWith(async (current) => {
+        await Promise.resolve();
+        return { ...current, b: 2 };
+      });
+      expect(result).toEqual({ a: 1, b: 2 });
+    });
+
+    it('throws and writes nothing when the mutator returns a non-object (missing return, array, primitive)', async () => {
+      tryReadFile.mockResolvedValue(JSON.stringify({ a: 1 }));
+      for (const bad of [undefined, null, 'str', 42, [1, 2]]) {
+        await expect(updateSettingsWith(() => bad)).rejects.toThrow(/must return a plain settings object/);
+      }
+      // No invalid content (e.g. "undefined") was ever persisted.
+      expect(atomicWrite).not.toHaveBeenCalled();
+    });
   });
 
   describe('MortalLoom store key pollution guard', () => {
