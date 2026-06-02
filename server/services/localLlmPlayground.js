@@ -63,6 +63,17 @@ export function buildMessages({ systemPrompt, prompt }) {
   ];
 }
 
+// Resolve the text to surface from a (possibly interrupted) stream: prefer the
+// visible content, fall back to reasoning when no content arrived (some models
+// emit only a reasoning channel), and '' when neither did. Used on both the
+// normal-finish path and the partial-output-on-throw path so a timed-out run
+// still shows what streamed before the abort.
+export function resolvePartialOutput({ output = '', reasoning = '' }) {
+  if (output.trim()) return output;
+  if (reasoning.trim()) return reasoning;
+  return '';
+}
+
 async function resolveLocalProvider(backend) {
   const providerId = PROVIDER_BY_BACKEND[backend];
   if (!providerId) {
@@ -143,6 +154,9 @@ async function streamChatCompletion({ provider, backend, modelId, prompt, system
 
   // Always release the reader (and tear down the socket) on every exit path —
   // a normal finish, an abort via the timeout signal, or a throw mid-stream.
+  // On a throw (e.g. an AbortError from the timeout) surface the tokens already
+  // streamed by attaching them to the error, so runLocalLlmTest can render the
+  // partial output alongside the timeout message instead of discarding it.
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -153,15 +167,16 @@ async function streamChatCompletion({ provider, backend, modelId, prompt, system
       for (const line of lines) consumeLine(line);
     }
     if (buffer.trim()) consumeLine(buffer);
+  } catch (err) {
+    err.partialOutput = resolvePartialOutput({ output, reasoning });
+    throw err;
   } finally {
     await reader.cancel().catch(() => {});
   }
 
-  if (!output.trim() && reasoning.trim()) {
-    output = reasoning;
-    onChunk(reasoning);
-  }
-  return output;
+  const resolved = resolvePartialOutput({ output, reasoning });
+  if (resolved && resolved !== output) onChunk(resolved);
+  return resolved;
 }
 
 export async function runLocalLlmTest({
@@ -222,10 +237,14 @@ export async function runLocalLlmTest({
   } catch (err) {
     const endedAt = Date.now();
     const error = err?.name === 'AbortError' ? `Timed out after ${timeoutMs}ms` : err?.message || 'Local LLM test failed';
+    // A timeout/abort mid-stream still has tokens worth keeping — surface what the
+    // model already streamed (attached to the error by streamChatCompletion) instead
+    // of discarding it. Persist it on the failed run record too so /runs replay shows it.
+    const partialText = typeof err?.partialOutput === 'string' ? err.partialOutput : '';
     if (runId) {
       await finalizeRunRecord({
         runId,
-        output: '',
+        output: partialText,
         exitCode: 1,
         success: false,
         error,
@@ -238,7 +257,8 @@ export async function runLocalLlmTest({
       providerId: provider.id,
       runId,
       error,
-      timings: summarizeTimings({ startedAt, firstChunkAt, endedAt, text: '' }),
+      text: partialText,
+      timings: summarizeTimings({ startedAt, firstChunkAt, endedAt, text: partialText }),
       options: { temperature, maxTokens, timeoutMs },
     };
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPrompt, buildMessages, summarizeTimings, extractStreamDelta } from './localLlmPlayground.js';
+import { buildPrompt, buildMessages, summarizeTimings, extractStreamDelta, resolvePartialOutput } from './localLlmPlayground.js';
 
 describe('buildPrompt', () => {
   it('returns the bare prompt when no system instructions', () => {
@@ -73,5 +73,20 @@ describe('extractStreamDelta', () => {
 
   it('tolerates a frame with no delta', () => {
     expect(extractStreamDelta('data: {"choices":[{}]}')).toEqual({ content: '', reasoning: '' });
+  });
+});
+
+describe('resolvePartialOutput', () => {
+  it('prefers visible content over reasoning', () => {
+    expect(resolvePartialOutput({ output: 'hello', reasoning: 'thinking' })).toBe('hello');
+  });
+
+  it('falls back to reasoning when no content streamed', () => {
+    expect(resolvePartialOutput({ output: '   ', reasoning: 'partial thought' })).toBe('partial thought');
+  });
+
+  it('returns empty string when neither content nor reasoning streamed', () => {
+    expect(resolvePartialOutput({ output: '', reasoning: '' })).toBe('');
+    expect(resolvePartialOutput({})).toBe('');
   });
 });
