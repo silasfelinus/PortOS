@@ -12,7 +12,7 @@
 
 import { randomUUID } from 'crypto';
 import { runStagedLLM } from '../lib/stageRunner.js';
-import { importerEvents } from './importerEvents.js';
+import { importerEvents, emitImporterProgress } from './importerEvents.js';
 // Re-export so consumers reach the analyze-phase progress bus through the
 // importer's public surface (the socket bridge imports it from the source
 // module directly; tests + future callers use this).
@@ -699,10 +699,13 @@ export async function analyzeImport({
   // Live stage progress (see ANALYZE_STAGES). `runId` lets the client ignore
   // stragglers from a prior run. Emitting is best-effort UI sugar — never let
   // a listener throw abort the extraction, so swallow + log at this boundary.
+  // `emitImporterProgress` records each frame into the live snapshot before
+  // broadcasting so a socket that (re)connects mid-analyze can be replayed the
+  // checklist (see importerEvents.js / socket.js).
   const runId = randomUUID();
   const emitProgress = (frame) => {
     try {
-      importerEvents.emit('progress', { runId, ...frame });
+      emitImporterProgress({ runId, ...frame });
     } catch (err) {
       console.error(`❌ importer progress emit failed: ${err.message}`);
     }
@@ -826,6 +829,14 @@ export async function analyzeImport({
   }
 
   const arcPreview = buildArcPreview(arcRun.content);
+
+  // Terminal frame: clears the live snapshot so a tab that opens after this
+  // run finishes isn't replayed a stale (all-done) checklist. A throw before
+  // here (an LLM timeout on canon/arc, a series-create failure) leaves the
+  // snapshot in place; that's benign — the client only renders the checklist
+  // while its own analyze request is in flight, and the next run's `start`
+  // frame overwrites the snapshot.
+  emitProgress({ type: 'done' });
 
   return {
     universe,

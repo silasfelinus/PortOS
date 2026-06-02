@@ -61,6 +61,29 @@ describe('useImporterProgress', () => {
     expect(result.current.stages).toBeNull();
   });
 
+  it('rebuilds the checklist from a replayed snapshot (mid-analyze reconnect)', () => {
+    // A socket that (re)connects mid-analyze gets the server's snapshot
+    // replayed as a `start` frame followed by the stage statuses seen so far
+    // (see importerEvents.getImporterProgressFrames + socket.js). The hook
+    // seeds runId from the replayed `start`, so the trailing `stage` frames now
+    // match and the checklist is fully restored — labels + per-stage status —
+    // instead of staying stuck on "Starting…".
+    const { result } = renderHook(() => useImporterProgress());
+    const stages = [
+      { id: 'canon', label: 'Canon' },
+      { id: 'arc', label: 'Arc' },
+      { id: 'issues', label: 'Issues' },
+    ];
+    fire({ type: 'start', runId: 'r9', stages });
+    fire({ type: 'stage', runId: 'r9', id: 'canon', status: 'done' });
+    fire({ type: 'stage', runId: 'r9', id: 'arc', status: 'running' });
+    expect(result.current.stages).toEqual([
+      { id: 'canon', label: 'Canon', status: 'done' },
+      { id: 'arc', label: 'Arc', status: 'running' },
+      { id: 'issues', label: 'Issues', status: 'pending' },
+    ]);
+  });
+
   it('ignores malformed frames', () => {
     const { result } = renderHook(() => useImporterProgress());
     fire(null);
