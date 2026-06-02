@@ -945,6 +945,18 @@ export async function processManifest(bucketId, manifestFilename) {
   }
   const { records, missing: missingRecords } = await readReferencedRecords(bucket.path, manifest);
 
+  // Declared manuscript-review files (records/reviews/<seriesId>.json) that the
+  // manifest says are bundled but haven't landed on disk yet. Cloud-relayed
+  // buckets (Drive/Dropbox) deliver files out of order, so the manifest can be
+  // processed before its review file syncs; without this wait the importer
+  // would read null, treat it as "no review", and markProcessed — permanently
+  // dropping the review. Mirror the missingRecords pending gate. Legacy
+  // manifests have no `reviewRefs` → empty → no wait (back-compat).
+  const declaredReviewRefs = Array.isArray(manifest.reviewRefs) ? manifest.reviewRefs : [];
+  const missingReviews = declaredReviewRefs.filter(
+    (sid) => isSafeRecordId(sid) && !existsSync(join(bucket.path, 'records', 'reviews', `${sid}.json`)),
+  );
+
   // Always copy assets + media-job records ahead of the merge so canon and
   // pipeline records that reference them point at present files. Asset and
   // record-bundle sync can both lag behind manifest sync in Drive/Dropbox/etc.;
@@ -984,9 +996,10 @@ export async function processManifest(bucketId, manifestFilename) {
     console.log(`⚠️ sharing: bucket=${bucket.name} manifest=${manifest.id} kind=${manifest.kind} collectionUniverse=${collectionTombstonedUniverse} is deleted locally — ${outcome.collectionItemsDeferred ?? 0} item(s) skipped; restore universe to import`);
     return { processed: true, manifest, outcome };
   }
-  if (assetCopy.missing.length > 0 || missingRecords.length > 0 || collectionPendingUniverse || collectionPendingSeries || legacyCanonPendingUniverses || legacyCanonPendingFailures || recordImportFailures || reviewMergeFailures) {
+  if (assetCopy.missing.length > 0 || missingRecords.length > 0 || missingReviews.length > 0 || collectionPendingUniverse || collectionPendingSeries || legacyCanonPendingUniverses || legacyCanonPendingFailures || recordImportFailures || reviewMergeFailures) {
     if (assetCopy.missing.length > 0) outcome.pendingAssets = assetCopy.missing;
     if (missingRecords.length > 0) outcome.pendingRecords = missingRecords;
+    if (missingReviews.length > 0) outcome.pendingReviews = missingReviews;
     if (collectionPendingUniverse) outcome.pendingCollectionUniverse = collectionPendingUniverse;
     if (collectionPendingSeries) outcome.pendingCollectionSeries = collectionPendingSeries;
     if (legacyCanonPendingUniverses) outcome.pendingLegacyCanonUniverses = legacyCanonPendingUniverses;
@@ -994,7 +1007,7 @@ export async function processManifest(bucketId, manifestFilename) {
     if (recordImportFailures) outcome.pendingRecordImportFailures = recordImportFailures;
     if (reviewMergeFailures) outcome.pendingReviewMergeFailures = reviewMergeFailures;
     sharingEvents.emit('manifest-processed', { bucketId, manifestId: manifest.id, manifestFilename, outcome });
-    console.log(`⏳ sharing: bucket=${bucket.name} manifest=${manifest.id} kind=${manifest.kind} mode=${bucket.mode} waitingForAssets=${assetCopy.missing.length} waitingForRecords=${missingRecords.length}${collectionPendingUniverse ? ` waitingForUniverse=${collectionPendingUniverse}` : ''}${collectionPendingSeries ? ` waitingForSeries=${collectionPendingSeries}` : ''}${legacyCanonPendingUniverses ? ` waitingForLegacyCanonUniverses=${legacyCanonPendingUniverses.join(',')}` : ''}${legacyCanonPendingFailures ? ` legacyCanonFailures=${legacyCanonPendingFailures.join(',')}` : ''}${recordImportFailures ? ` recordImportFailures=${recordImportFailures.join(',')}` : ''}${reviewMergeFailures ? ` reviewMergeFailures=${reviewMergeFailures.join(',')}` : ''}`);
+    console.log(`⏳ sharing: bucket=${bucket.name} manifest=${manifest.id} kind=${manifest.kind} mode=${bucket.mode} waitingForAssets=${assetCopy.missing.length} waitingForRecords=${missingRecords.length}${missingReviews.length > 0 ? ` waitingForReviews=${missingReviews.length}` : ''}${collectionPendingUniverse ? ` waitingForUniverse=${collectionPendingUniverse}` : ''}${collectionPendingSeries ? ` waitingForSeries=${collectionPendingSeries}` : ''}${legacyCanonPendingUniverses ? ` waitingForLegacyCanonUniverses=${legacyCanonPendingUniverses.join(',')}` : ''}${legacyCanonPendingFailures ? ` legacyCanonFailures=${legacyCanonPendingFailures.join(',')}` : ''}${recordImportFailures ? ` recordImportFailures=${recordImportFailures.join(',')}` : ''}${reviewMergeFailures ? ` reviewMergeFailures=${reviewMergeFailures.join(',')}` : ''}`);
     return { processed: true, pending: true, manifest, outcome };
   }
   await markProcessed(bucketId, manifestFilename, manifest.id);
@@ -1101,6 +1114,17 @@ export async function promoteInboxItem(bucketId, manifestId) {
     throw Object.assign(new Error(`Manifest assets are still syncing (${assetCopy.missing.length} missing)`), {
       code: 'SHARING_ASSETS_PENDING',
       missingAssets: assetCopy.missing,
+    });
+  }
+  // Same out-of-order delivery guard as the auto-merge path: a declared review
+  // file that hasn't landed yet must block the promote, or applyAutoMerge would
+  // read null and silently drop the review.
+  const missingReviews = (Array.isArray(manifest.reviewRefs) ? manifest.reviewRefs : [])
+    .filter((sid) => isSafeRecordId(sid) && !existsSync(join(bucket.path, 'records', 'reviews', `${sid}.json`)));
+  if (missingReviews.length > 0) {
+    throw Object.assign(new Error(`Manifest reviews are still syncing (${missingReviews.length} missing)`), {
+      code: 'SHARING_REVIEWS_PENDING',
+      missingReviews,
     });
   }
   await mergeMediaJobRecords(bucket.path, manifest.recordIds);

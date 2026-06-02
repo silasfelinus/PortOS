@@ -414,8 +414,10 @@ export async function exportSeries(seriesId, bucketId, opts = {}) {
   // Skip when empty so we don't litter the bucket with no-op review files; an
   // importer that finds no file simply leaves the local review untouched.
   const review = await getReview(series.id).catch(() => null);
+  const reviewRefs = [];
   if (review && Array.isArray(review.comments) && review.comments.length > 0) {
     await atomicWrite(join(bucket.path, 'records', 'reviews', `${series.id}.json`), review);
+    reviewRefs.push(series.id);
   }
 
   for (const issue of issues) {
@@ -464,7 +466,7 @@ export async function exportSeries(seriesId, bucketId, opts = {}) {
     return [...jobRefGroups.flat(), ...imageRefs.filter(Boolean), ...videoRefs.filter(Boolean), ...imageRefRefs.filter(Boolean)];
   });
 
-  const manifest = { ...manifestStub, recordIds, assetRefs };
+  const manifest = { ...manifestStub, recordIds, assetRefs, reviewRefs };
   const filename = await writeManifest(bucket.path, manifest);
   await pruneAfterExport(bucket, senderInstanceId);
   return { manifestId, filename, recordCount: recordIds.length, assetCount: assetRefs.length };

@@ -236,6 +236,38 @@ describe('sharing round-trip', () => {
     expect(existsSync(join(tempBucket, 'records', 'reviews', `${s.id}.json`))).toBe(false);
   });
 
+  it('keeps a manifest pending when a declared review file has not synced yet (out-of-order delivery)', async () => {
+    const bucket = await buckets.createBucket({ name: 'ReviewLagBucket', path: tempBucket, mode: 'auto-merge' });
+    const s = await series.createSeries({ name: 'Review Lag Series', logline: 'A' });
+    await issues.createIssue({ seriesId: s.id, title: 'Issue 1' });
+    await manuscriptReview.seedReviewFromFindings(s.id, [
+      { problem: 'Act II sags', severity: 'medium', anchorQuote: 'the road', issueNumber: 1 },
+    ]);
+    const exp = await exporter.exportSeries(s.id, bucket.id);
+    const reviewFile = join(tempBucket, 'records', 'reviews', `${s.id}.json`);
+    expect(existsSync(reviewFile)).toBe(true);
+
+    // Simulate the manifest + series arriving before the review file (cloud
+    // relay delivers files out of order): stash the review file aside.
+    const stashed = readFileSync(reviewFile, 'utf-8');
+    rmSync(reviewFile);
+    await series.deleteSeries(s.id);
+    simulateRemoteSender(tempBucket, exp.filename);
+
+    const r1 = await importer.processManifest(bucket.id, exp.filename);
+    // The manifest declared the review (reviewRefs), so the importer must wait
+    // — NOT markProcessed and drop it.
+    expect(r1.pending).toBe(true);
+    expect(r1.outcome.pendingReviews).toContain(s.id);
+
+    // The review file lands → reprocess → it merges.
+    writeFileSync(reviewFile, stashed);
+    const r2 = await importer.processManifest(bucket.id, exp.filename);
+    expect(r2.pending).toBeFalsy();
+    const restored = await manuscriptReview.getReview(s.id);
+    expect(restored.comments).toHaveLength(1);
+  });
+
   it('keeps a manifest retryable when the bundled review merge fails (no silent drop)', async () => {
     const bucket = await buckets.createBucket({ name: 'ReviewFailBucket', path: tempBucket, mode: 'auto-merge' });
     const s = await series.createSeries({ name: 'Review Fail Series', logline: 'A' });
