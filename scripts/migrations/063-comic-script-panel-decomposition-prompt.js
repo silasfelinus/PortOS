@@ -22,7 +22,7 @@ export const ACCEPTED_OLD_MD5 = {
 };
 
 export const NEW_SHIPPED_MD5 = {
-  'pipeline-comic-script.md': '9fe2451b573fc60eb6c971e1b8808ef3',
+  'pipeline-comic-script.md': 'e9ee70bf18888492edada6633cd9928a',
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({
