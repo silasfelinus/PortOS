@@ -125,24 +125,29 @@ describe('local LLM memory-management routes', () => {
   });
 
   it('GET /loaded reports the models Ollama currently has resident', async () => {
-    getLoadedModels.mockResolvedValue([{ name: 'llama3.2', sizeVram: 4096 }]);
+    // Mirror the real getLoadedModels() field set so the fixture documents the
+    // pass-through contract and would catch any future field-stripping.
+    const resident = { id: 'llama3.2', name: 'llama3.2', size: 4096, sizeVram: 4096, expiresAt: null };
+    getLoadedModels.mockResolvedValue([resident]);
 
     const res = await request(makeApp()).get('/api/local-llm/loaded');
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ollama: [{ name: 'llama3.2', sizeVram: 4096 }] });
+    expect(res.body).toEqual({ ollama: [resident] });
     expect(getLoadedModels).toHaveBeenCalledTimes(1);
   });
 
   it('POST /unload evicts a resident model and echoes the service result', async () => {
-    unloadModel.mockResolvedValue({ unloaded: true, modelId: 'llama3.2' });
+    // Real unloadModel() success shape is { unloaded: true, model } — NOT modelId
+    // (ollamaManager.js); the handler spreads it into the response verbatim.
+    unloadModel.mockResolvedValue({ unloaded: true, model: 'llama3.2' });
 
     const res = await request(makeApp())
       .post('/api/local-llm/unload')
       .send({ backend: 'ollama', modelId: 'llama3.2' });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ success: true, unloaded: true, modelId: 'llama3.2' });
+    expect(res.body).toEqual({ success: true, unloaded: true, model: 'llama3.2' });
     expect(unloadModel).toHaveBeenCalledWith('llama3.2');
   });
 
