@@ -255,6 +255,9 @@ describe('StoryBuilder — index', () => {
     fireEvent.click(screen.getByRole('button', { name: /Retry starting the builder/ }));
     await waitFor(() => expect(api.createStorySession).toHaveBeenCalledTimes(2));
     expect(api.commitImport).toHaveBeenCalledTimes(1);
+    // …and the retry's success is consumed: onCreated navigates to the new
+    // session's detail view, which loads it (proving the result wasn't dropped).
+    await waitFor(() => expect(api.getStorySession).toHaveBeenCalledWith('stb-import', expect.anything()));
   });
 
   it('import tab: blocks "Import & build" when no issues were extracted, offers retry', async () => {
