@@ -1281,10 +1281,9 @@ async function buildPushPayload(sub, sourceInstanceId) {
     // boot load path (matches the catalogBundle pattern).
     const manuscriptReview = record.deleted === true
       ? null
-      : await (async () => {
-        const { getReview } = await import('../pipeline/manuscriptReview.js');
-        return getReview(sub.recordId).catch(() => null);
-      })();
+      : await import('../pipeline/manuscriptReview.js')
+        .then(({ getReview }) => getReview(sub.recordId))
+        .catch(() => null);
     return {
       kind: 'series',
       record: sanitized,
