@@ -154,3 +154,107 @@ describe('getNavAliasMap — voice-agent compatibility', () => {
     expect(collisions).toEqual([]);
   });
 });
+
+// ── Route ↔ nav-manifest coverage guard ────────────────────────────────────
+// Parses the <Route path="…"> tree out of client/src/App.jsx and asserts every
+// concrete, navigable leaf route resolves to a NAV_COMMANDS path. This catches
+// the failure mode where a page is added to App.jsx (and maybe linked from
+// inside another page) but never registered in the nav manifest, leaving it
+// unreachable from ⌘K and voice (ui_navigate) — exactly how /local-llm/playground
+// initially shipped. The shape-invariant guard above validates entry *shape*; it
+// can't see a route that has no entry at all.
+//
+// Skipped (not destinations the manifest should cover):
+//  - routes with a `:param` segment (detail/editor sub-routes; the :tab routes
+//    are covered separately by the TABS contract above)
+//  - redirect routes (<Navigate>, <RedirectWithSearch>, <CanonRedirect>,
+//    <UniverseRouteRedirect>) — they forward to a real route, not a page
+//  - container routes that only host children (their navigable destinations are
+//    the child/index routes, e.g. /media's index redirects to /media/image)
+//
+// Routes intentionally kept out of nav go in NAV_COVERAGE_OPT_OUT with a reason;
+// a second test fails if an opt-out entry goes stale (route deleted, or the path
+// gained a manifest entry) so the allow-list can't quietly rot.
+const APP_JSX = path.join(REPO_ROOT, 'client/src/App.jsx');
+
+// Concrete leaf routes that render a real page but are deliberately absent from
+// the nav manifest — reached via an in-page button or as a create-mode sentinel,
+// not from ⌘K / voice / the sidebar.
+const NAV_COVERAGE_OPT_OUT = new Map([
+  ['/apps/create', 'create-app form, reached via the "New App" button on /apps'],
+  ['/feature-agents/create', 'create-agent form, reached via the "New Agent" button'],
+  ['/templates', 'legacy templates page, intentionally not surfaced in nav'],
+  ['/universes/new', 'create-mode sentinel for the Universe Builder editor'],
+]);
+
+const REDIRECT_ELEMENT = /element=\{<\s*(Navigate|RedirectWithSearch|CanonRedirect|UniverseRouteRedirect)\b/;
+
+// Flatten a stack of (possibly multi-segment, possibly "/") route path pieces
+// into a single absolute path: ['/', 'media', 'image'] → '/media/image'.
+function joinRoutePath(segments) {
+  const parts = [];
+  for (const seg of segments) {
+    for (const piece of seg.split('/')) {
+      if (piece) parts.push(piece);
+    }
+  }
+  return `/${parts.join('/')}`;
+}
+
+// Walk App.jsx line-by-line, tracking the stack of currently-open <Route>
+// containers, and return the absolute paths of every concrete, non-redirect,
+// non-param leaf route — the set that must each have a NAV_COMMANDS entry (or an
+// opt-out). Each <Route> is a single line in App.jsx, so a line scanner suffices.
+function extractNavigableRoutePaths(appSrc) {
+  const stack = []; // parent path segments of currently-open <Route> containers
+  const required = [];
+  for (const rawLine of appSrc.split('\n')) {
+    const line = rawLine.trim();
+    if (line === '</Route>') { stack.pop(); continue; }
+    if (!/^<Route\b/.test(line)) continue; // skips <Routes>, comments, JSX text
+
+    const pathMatch = line.match(/\bpath="([^"]*)"/);
+    const routePath = pathMatch ? pathMatch[1] : null; // null = index route
+    const isContainer = line.endsWith('>') && !line.endsWith('/>');
+
+    // A container is a layout wrapper: push its segment so children resolve to
+    // absolute paths, but don't require a manifest entry for the wrapper itself.
+    if (isContainer) {
+      stack.push(routePath ?? '');
+      continue;
+    }
+    if (REDIRECT_ELEMENT.test(line)) continue;
+
+    // An index route resolves to its parent's path (e.g. the `/` index = Dashboard).
+    const absolute = routePath === null
+      ? joinRoutePath(stack)
+      : joinRoutePath([...stack, routePath]);
+
+    if (absolute.split('/').some((s) => s.startsWith(':'))) continue; // param route
+    required.push(absolute);
+  }
+  return [...new Set(required)];
+}
+
+describe('nav coverage — every navigable App.jsx route has a manifest entry', () => {
+  // Query string / hash on a manifest path (e.g. /media/image?settings=1) is a
+  // deep-link variant of a real route; compare on the bare path.
+  const navPaths = new Set(NAV_COMMANDS.map((c) => c.path.split(/[?#]/)[0]));
+
+  it('each concrete leaf <Route> resolves to a NAV_COMMANDS path (or an opt-out)', () => {
+    const appSrc = fs.readFileSync(APP_JSX, 'utf8');
+    const uncovered = extractNavigableRoutePaths(appSrc)
+      .filter((p) => !navPaths.has(p) && !NAV_COVERAGE_OPT_OUT.has(p));
+    expect(uncovered).toEqual([]);
+  });
+
+  it('opt-out list has no stale entries', () => {
+    const appSrc = fs.readFileSync(APP_JSX, 'utf8');
+    const routePaths = new Set(extractNavigableRoutePaths(appSrc));
+    // A stale opt-out is one whose route no longer exists, or that has since
+    // gained a manifest entry (so it should just be removed from the allow-list).
+    const stale = [...NAV_COVERAGE_OPT_OUT.keys()]
+      .filter((p) => !routePaths.has(p) || navPaths.has(p));
+    expect(stale).toEqual([]);
+  });
+});
