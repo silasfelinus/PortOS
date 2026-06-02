@@ -13,10 +13,231 @@
  * files so this module is never imported as a migration.
  */
 
-import { readFile, writeFile, unlink, readdir } from 'fs/promises';
+import { readFile, writeFile, unlink, readdir, rename, mkdir, stat } from 'fs/promises';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { createHash } from 'crypto';
+
+// ---- monolithic → per-record split-migration family ----
+//
+// Migrations 034 / 035 / 036 / 059 all split a single `data/<legacy>.json`
+// (`{ [recordsKey]: [...] }`) into per-record `data/<typeDir>/<id>/index.json`
+// files plus a type-level `data/<typeDir>/index.json` that stamps the storage
+// `schemaVersion`. They share the same gate1 (already-applied) / gate2
+// (fresh-install) / recovery / split / stamp / backup skeleton and differ only
+// in a handful of config values. `makeSplitMigration` collapses that skeleton;
+// see `server/lib/collectionStore.js` for the on-disk layout it targets.
+//
+// Behavioral divergences across the four are PRESERVED via flags, not
+// homogenized — they were deliberate (a split that silently changed what an
+// applied migration did to existing data would be a corruption bug):
+//
+//   - `onUnreadable: 'return' | 'throw'` — 034/035/036 return
+//     `{ ok:false, reason:'unreadable' }` (the runner marks them applied; a
+//     repaired file is NOT re-split). 059 THROWS so the runner leaves it
+//     pending and a repaired file re-splits on the next boot.
+//   - `dedupe` — 059 claims each id as it writes so a duplicate id later in the
+//     legacy array is skipped (first-wins, mirroring the old monolithic
+//     `listCollections` dedup). 034/035/036 never had duplicate-id concerns.
+//   - `extraValid(record)` — 059 additionally rejects a blank/missing `name`
+//     (mirroring `sanitizeCollection`'s read-time drop) so an unsanitizable
+//     leading row can't shadow a later valid duplicate. The others validate id
+//     only.
+//   - `buildConfig(doc)` — 034 moves the legacy cross-record `runs[]` into
+//     `config.runs`; the others stamp `config: {}`.
+//   - `idPattern` / `invalidWarn` / `recordNoun` — per-kind id shape + log copy.
+
+const splitFileExists = (path) => stat(path).then(() => true, (err) => {
+  if (err.code === 'ENOENT') return false;
+  throw err;
+});
+
+// Two read variants so we distinguish "missing file" from "present but
+// unparseable" — the latter is a recovery-required state reported through the
+// migration's return value (or a throw) rather than crashing the boot.
+const splitReadJsonStrict = async (path) => {
+  const raw = await readFile(path, 'utf-8').catch((err) => {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  });
+  if (raw == null) return null;
+  return JSON.parse(raw);
+};
+
+const splitReadJsonTolerant = async (path) => {
+  const raw = await readFile(path, 'utf-8').catch((err) => {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  });
+  if (raw == null) return null;
+  try { return JSON.parse(raw); } catch { return { __unreadable: true }; }
+};
+
+const splitWriteJson = (path, value) =>
+  writeFile(path, JSON.stringify(value, null, 2) + '\n');
+
+// Scan the type dir for records already split in a prior partial run. Uses
+// `withFileTypes` so stray non-directory entries (user `.bak` files, editor
+// swap files) are skipped without statting INTO them — `stat('foo.bak/index.json')`
+// would raise ENOTDIR and crash the migration.
+async function splitExistingRecordIds(typeDir) {
+  const ids = new Set();
+  if (!await splitFileExists(typeDir)) return ids;
+  const entries = await readdir(typeDir, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (entry.name === 'index.json' || entry.name.startsWith('.') || !entry.isDirectory()) continue;
+    if (await splitFileExists(join(typeDir, entry.name, 'index.json'))) ids.add(entry.name);
+  }
+  return ids;
+}
+
+/**
+ * Build a monolithic→per-record split migration's `up()`. Returns `{ up }`.
+ *
+ * Required config:
+ *   - `migrationLabel`   — log tag, e.g. `'migration 034'`
+ *   - `typeDirName`      — `data/<typeDirName>/` (e.g. `'universes'`)
+ *   - `legacyFilename`   — `data/<legacyFilename>` (e.g. `'universe-builder.json'`)
+ *   - `backupSuffix`     — appended to the legacy path on backup (e.g. `'.bak-034'`)
+ *   - `typeSchemaVersion`— the type-level layout version this migration stamps
+ *   - `typeLabel`        — the `type` field written into the type index
+ *   - `recordsKey`       — array key in the legacy doc (e.g. `'universes'`)
+ *   - `idPattern`        — RegExp a record id must match to be split
+ *   - `recordNoun`       — singular noun for the split-count log (e.g. `'universe'`)
+ *
+ * Optional:
+ *   - `buildConfig(doc)` — returns the type index `config`; default `() => ({})`
+ *   - `extraValid(record)`— extra per-record validity gate beyond id (059's name check)
+ *   - `dedupe`           — claim ids as written so later duplicates skip (059); default false
+ *   - `onUnreadable`     — `'return'` (default) or `'throw'`
+ */
+export function makeSplitMigration({
+  migrationLabel,
+  typeDirName,
+  legacyFilename,
+  backupSuffix,
+  typeSchemaVersion,
+  typeLabel,
+  recordsKey,
+  idPattern,
+  recordNoun,
+  buildConfig = () => ({}),
+  extraValid = null,
+  dedupe = false,
+  onUnreadable = 'return',
+}) {
+  const up = async ({ rootDir }) => {
+    const dataDir = join(rootDir, 'data');
+    const typeDir = join(dataDir, typeDirName);
+    const typeIndexPath = join(typeDir, 'index.json');
+    const legacyPath = join(dataDir, legacyFilename);
+    const backupPath = legacyPath + backupSuffix;
+
+    // Gate 1: type index already at/above target → no-op (a re-run after full
+    // success lands here). Strict read — a corrupted index.json should throw.
+    const typeIndex = await splitReadJsonStrict(typeIndexPath);
+    if (typeIndex && typeIndex.schemaVersion >= typeSchemaVersion) {
+      console.log(`📦 ${migrationLabel}: ${typeLabel} already at schemaVersion=${typeIndex.schemaVersion} — no-op`);
+      return { ok: true, reason: 'already-applied' };
+    }
+
+    const legacyExists = await splitFileExists(legacyPath);
+    const backupExists = await splitFileExists(backupPath);
+
+    // Gate 2: fresh install — no legacy, no backup. Stamp the type index so the
+    // boot-time verifyCollectionVersions doesn't flag it missing.
+    if (!legacyExists && !backupExists) {
+      await mkdir(typeDir, { recursive: true });
+      await splitWriteJson(typeIndexPath, {
+        schemaVersion: typeSchemaVersion,
+        type: typeLabel,
+        updatedAt: new Date().toISOString(),
+        config: buildConfig(null),
+      });
+      console.log(`📦 ${migrationLabel}: fresh install — stamped data/${typeDirName}/index.json @ v${typeSchemaVersion}`);
+      return { ok: true, reason: 'fresh-install' };
+    }
+
+    // Recovery gate: a prior run split records but didn't finish renaming the
+    // legacy file. Use whichever file is present — prefer the live file if both
+    // somehow exist (the split must not have happened).
+    const sourcePath = legacyExists ? legacyPath : backupPath;
+    const doc = await splitReadJsonTolerant(sourcePath);
+    if (!doc || typeof doc !== 'object' || doc.__unreadable) {
+      if (onUnreadable === 'throw') {
+        // THROW (don't return) so the runner does NOT mark this migration applied
+        // (run-migrations.js records any migration whose up() resolves) — keeps it
+        // pending so a repaired file re-splits on the next boot. Server boot itself
+        // survives via the runMigrations().catch() in server/index.js.
+        throw new Error(`${migrationLabel}: ${sourcePath} is unreadable — repair or remove it, then reboot to retry the split`);
+      }
+      console.warn(`⚠️ ${migrationLabel}: ${sourcePath} unreadable — skipping. Resolve manually before next boot.`);
+      return { ok: false, reason: 'unreadable' };
+    }
+
+    const records = Array.isArray(doc[recordsKey]) ? doc[recordsKey] : [];
+    const existingIds = await splitExistingRecordIds(typeDir);
+    await mkdir(typeDir, { recursive: true });
+
+    let written = 0;
+    let skipped = 0;
+    let invalid = 0;
+    for (const record of records) {
+      if (!record || typeof record !== 'object') {
+        invalid += 1;
+        continue;
+      }
+      const id = typeof record.id === 'string' ? record.id : null;
+      if (!id || !idPattern.test(id)) {
+        invalid += 1;
+        console.warn(`⚠️ ${migrationLabel}: skipping ${recordNoun} with invalid id "${id}"`);
+        continue;
+      }
+      if (extraValid && !extraValid(record)) {
+        invalid += 1;
+        console.warn(`⚠️ ${migrationLabel}: skipping ${recordNoun} id "${id}" — failed validity check (left in backup)`);
+        continue;
+      }
+      if (existingIds.has(id)) {
+        // Already split — in a prior partial run (trust the on-disk per-record
+        // file, which may hold fresher post-crash state) OR, when `dedupe` is
+        // on, earlier in THIS loop (a duplicate id within the legacy array →
+        // first-wins, matching the old monolithic reader's dedup).
+        skipped += 1;
+        continue;
+      }
+      const recordDir = join(typeDir, id);
+      await mkdir(recordDir, { recursive: true });
+      await splitWriteJson(join(recordDir, 'index.json'), record);
+      if (dedupe) existingIds.add(id); // first-wins: later duplicates skip above
+      written += 1;
+    }
+
+    // Stamp the type index AFTER all records land so a crash mid-split leaves
+    // it missing — the next boot's gate 1 won't trip and gate 2/recovery re-runs.
+    await splitWriteJson(typeIndexPath, {
+      schemaVersion: typeSchemaVersion,
+      type: typeLabel,
+      updatedAt: new Date().toISOString(),
+      config: buildConfig(doc),
+    });
+
+    // Backup the legacy file (skip when the recovery path was driven from the
+    // backup). Renaming preserves data; manual restore is
+    // `mv <legacy>${backupSuffix} <legacy>`.
+    if (legacyExists) await rename(legacyPath, backupPath);
+
+    console.log(
+      `📦 ${migrationLabel}: split ${written} ${recordNoun}(s) into data/${typeDirName}/<id>/index.json ` +
+      `(${skipped} already split, ${invalid} invalid); stamped index.json @ v${typeSchemaVersion}; ` +
+      `legacy file backed up as ${legacyFilename}${backupSuffix}`,
+    );
+
+    return { ok: true, reason: 'split', written, skipped, invalid };
+  };
+
+  return { up };
+}
 
 /**
  * Newline-normalized MD5. Both `\r\n` and bare `\r` collapse to `\n` before
