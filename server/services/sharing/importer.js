@@ -633,15 +633,20 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
   // — read by seriesId rather than via `recordIds` because the review has no
   // record id of its own. An older sender (no reviews/ folder) → null → skip;
   // a newer sender whose review LWW-loses every comment is a harmless no-op.
-  // Best-effort: a review merge failure must not abort the manifest (the
-  // series + issues already applied, and the next sync cycle re-attempts).
   // `mergeReviewFromSync` does not emit a record event, so no re-export loop.
+  // A merge FAILURE (transient write/parse error) must NOT silently advance the
+  // cursor — the review has no independent reconciliation cycle (it only rides
+  // the series push/export), so a swallowed failure would drop it permanently.
+  // Surface it as a pending condition (like recordImportFailures /
+  // collectionPending*) so processManifest leaves the manifest retryable.
+  const reviewMergeFailures = [];
   for (const s of records.series) {
     if (skipSeriesMerge.has(s.id)) continue;
     const review = await readJSONFile(join(bucket.path, 'records', 'reviews', `${s.id}.json`), null, { logError: false });
     if (review) {
       await mergeReviewFromSync(s.id, review).catch((err) => {
         console.log(`⚠️ sharing.importer: manuscript-review merge for ${s.id} failed: ${err.message}`);
+        reviewMergeFailures.push(s.id);
       });
     }
   }
@@ -707,6 +712,7 @@ async function applyAutoMerge(bucket, manifest, records, { availableAssetKeys = 
     legacyCanonPendingUniverses: legacyCanonPendingUniverses.length > 0 ? legacyCanonPendingUniverses : null,
     legacyCanonPendingFailures: legacyCanonPendingFailures.length > 0 ? legacyCanonPendingFailures : null,
     recordImportFailures: failedInserts.length > 0 ? failedInserts : null,
+    reviewMergeFailures: reviewMergeFailures.length > 0 ? reviewMergeFailures : null,
     adoptedSubscription: adoptedSubscription
       ? { id: adoptedSubscription.id, bucketId: adoptedSubscription.bucketId, recordKind: adoptedSubscription.recordKind, recordId: adoptedSubscription.recordId }
       : null,
@@ -967,6 +973,7 @@ export async function processManifest(bucketId, manifestFilename) {
   const legacyCanonPendingUniverses = outcome?.legacyCanonPendingUniverses || null;
   const legacyCanonPendingFailures = outcome?.legacyCanonPendingFailures || null;
   const recordImportFailures = outcome?.recordImportFailures || null;
+  const reviewMergeFailures = outcome?.reviewMergeFailures || null;
   // Tombstoned universe: the collection owner IS on disk but locally deleted.
   // Unlike the truly-missing case this will never self-resolve via sync, so we
   // advance the cursor (no infinite pending loop) and emit a clear signal. The
@@ -977,7 +984,7 @@ export async function processManifest(bucketId, manifestFilename) {
     console.log(`⚠️ sharing: bucket=${bucket.name} manifest=${manifest.id} kind=${manifest.kind} collectionUniverse=${collectionTombstonedUniverse} is deleted locally — ${outcome.collectionItemsDeferred ?? 0} item(s) skipped; restore universe to import`);
     return { processed: true, manifest, outcome };
   }
-  if (assetCopy.missing.length > 0 || missingRecords.length > 0 || collectionPendingUniverse || collectionPendingSeries || legacyCanonPendingUniverses || legacyCanonPendingFailures || recordImportFailures) {
+  if (assetCopy.missing.length > 0 || missingRecords.length > 0 || collectionPendingUniverse || collectionPendingSeries || legacyCanonPendingUniverses || legacyCanonPendingFailures || recordImportFailures || reviewMergeFailures) {
     if (assetCopy.missing.length > 0) outcome.pendingAssets = assetCopy.missing;
     if (missingRecords.length > 0) outcome.pendingRecords = missingRecords;
     if (collectionPendingUniverse) outcome.pendingCollectionUniverse = collectionPendingUniverse;
@@ -985,8 +992,9 @@ export async function processManifest(bucketId, manifestFilename) {
     if (legacyCanonPendingUniverses) outcome.pendingLegacyCanonUniverses = legacyCanonPendingUniverses;
     if (legacyCanonPendingFailures) outcome.pendingLegacyCanonFailures = legacyCanonPendingFailures;
     if (recordImportFailures) outcome.pendingRecordImportFailures = recordImportFailures;
+    if (reviewMergeFailures) outcome.pendingReviewMergeFailures = reviewMergeFailures;
     sharingEvents.emit('manifest-processed', { bucketId, manifestId: manifest.id, manifestFilename, outcome });
-    console.log(`⏳ sharing: bucket=${bucket.name} manifest=${manifest.id} kind=${manifest.kind} mode=${bucket.mode} waitingForAssets=${assetCopy.missing.length} waitingForRecords=${missingRecords.length}${collectionPendingUniverse ? ` waitingForUniverse=${collectionPendingUniverse}` : ''}${collectionPendingSeries ? ` waitingForSeries=${collectionPendingSeries}` : ''}${legacyCanonPendingUniverses ? ` waitingForLegacyCanonUniverses=${legacyCanonPendingUniverses.join(',')}` : ''}${legacyCanonPendingFailures ? ` legacyCanonFailures=${legacyCanonPendingFailures.join(',')}` : ''}${recordImportFailures ? ` recordImportFailures=${recordImportFailures.join(',')}` : ''}`);
+    console.log(`⏳ sharing: bucket=${bucket.name} manifest=${manifest.id} kind=${manifest.kind} mode=${bucket.mode} waitingForAssets=${assetCopy.missing.length} waitingForRecords=${missingRecords.length}${collectionPendingUniverse ? ` waitingForUniverse=${collectionPendingUniverse}` : ''}${collectionPendingSeries ? ` waitingForSeries=${collectionPendingSeries}` : ''}${legacyCanonPendingUniverses ? ` waitingForLegacyCanonUniverses=${legacyCanonPendingUniverses.join(',')}` : ''}${legacyCanonPendingFailures ? ` legacyCanonFailures=${legacyCanonPendingFailures.join(',')}` : ''}${recordImportFailures ? ` recordImportFailures=${recordImportFailures.join(',')}` : ''}${reviewMergeFailures ? ` reviewMergeFailures=${reviewMergeFailures.join(',')}` : ''}`);
     return { processed: true, pending: true, manifest, outcome };
   }
   await markProcessed(bucketId, manifestFilename, manifest.id);

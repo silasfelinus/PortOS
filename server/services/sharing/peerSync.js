@@ -1061,6 +1061,12 @@ export async function pushRecordToPeer(sub, options = {}) {
   // merge LWW path; only cost is one redundant POST per push cycle
   // until the receiver finishes pulling).
   const missingCount = Array.isArray(body?.missingAssets) ? body.missingAssets.length : 0;
+  // REVIEW-STRANDED GUARD: the receiver merged the record/issues (returned 2xx)
+  // but its bundled manuscript-review merge threw. Withhold lastPushedHash like
+  // the missing-assets case so the next push cycle re-sends the review instead
+  // of short-circuiting on `unchanged` — the review has no independent
+  // reconciliation path, so a saved hash here would strand the update.
+  const reviewSyncPending = body?.reviewSyncPending === true;
   // This push landed (receiver returned 2xx). Stamp the per-record confirmed-
   // delivery water-mark so tombstoneGc won't prune THIS record's tombstone
   // until its delete-push has been confirmed — even if a later push for a
@@ -1070,7 +1076,7 @@ export async function pushRecordToPeer(sub, options = {}) {
   // the tombstone's deletedAt once it lands. The `missingAssets` case still
   // counts as confirmed delivery of the RECORD (merge ran on the receiver);
   // only the asset-stranded hash is withheld, not the confirmation mark.
-  await persistPushSuccess(sub.id, missingCount > 0 ? null : hash, { confirmedAtMs: Date.now() });
+  await persistPushSuccess(sub.id, (missingCount > 0 || reviewSyncPending) ? null : hash, { confirmedAtMs: Date.now() });
   if (Number.isFinite(body?.ackedDeletesUpTo) && body.ackedDeletesUpTo > 0) {
     await ackDeletesUpTo(sub.peerId, body.ackedDeletesUpTo).catch(() => {});
   }
@@ -1603,6 +1609,10 @@ export async function applyIncomingPush(payload) {
   // peer collided (without `source`, the merge fns fall back to
   // `{ via:'sync', peerId:null }` and the attribution is lost).
   const source = { via: 'peer-push', peerId: sourceInstanceId };
+  // Set true when a bundled manuscript-review merge throws — returned to the
+  // sender so it withholds lastPushedHash and retries (the review has no other
+  // reconciliation path; see the merge block below).
+  let reviewSyncPending = false;
   if (kind === 'universe') {
     await mergeUniversesFromSync([record], { source });
   } else if (kind === 'series') {
@@ -1619,13 +1629,18 @@ export async function applyIncomingPush(payload) {
     // Merge the bundled manuscript-review sibling doc, LWW-per-comment. Same
     // guards as the issue batch + linkedCollection below: skip for local-
     // ephemeral records (the user opted this series out of sync) and tombstone
-    // pushes (a deleted series carries no live review). Best-effort — a review
-    // merge failure must not fail the push (the series/issues already merged).
+    // pushes (a deleted series carries no live review). A merge failure must
+    // NOT fail the push (the series/issues already merged) — but unlike the
+    // linkedCollection bundle, the review has NO independent reconciliation
+    // cycle, so a swallowed failure could never resend once the sender saves
+    // lastPushedHash. Signal `reviewSyncPending` so the sender withholds the
+    // hash (mirrors the missing-assets guard) and retries next cycle.
     // Dynamic import keeps the arcPlanner graph off peerSync's load path.
     if (!localEphemeral && record.deleted !== true && isPlainObject(manuscriptReview)) {
       const { mergeReviewFromSync } = await import('../pipeline/manuscriptReview.js');
       await mergeReviewFromSync(record.id, manuscriptReview).catch((err) => {
         console.log(`⚠️ peerSync: manuscriptReview merge failed: ${err.message}`);
+        reviewSyncPending = true;
       });
     }
   } else if (kind === 'mediaCollection') {
@@ -1727,6 +1742,7 @@ export async function applyIncomingPush(payload) {
     missingAssets,
     reverseSubscriptionCreated,
     ackedDeletesUpTo,
+    ...(reviewSyncPending ? { reviewSyncPending: true } : {}),
   };
 }
 

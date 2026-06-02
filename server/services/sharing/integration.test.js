@@ -236,6 +236,33 @@ describe('sharing round-trip', () => {
     expect(existsSync(join(tempBucket, 'records', 'reviews', `${s.id}.json`))).toBe(false);
   });
 
+  it('keeps a manifest retryable when the bundled review merge fails (no silent drop)', async () => {
+    const bucket = await buckets.createBucket({ name: 'ReviewFailBucket', path: tempBucket, mode: 'auto-merge' });
+    const s = await series.createSeries({ name: 'Review Fail Series', logline: 'A' });
+    await issues.createIssue({ seriesId: s.id, title: 'Issue 1' });
+    await manuscriptReview.seedReviewFromFindings(s.id, [
+      { problem: 'Act II sags', severity: 'medium', anchorQuote: 'the road', issueNumber: 1 },
+    ]);
+    const exp = await exporter.exportSeries(s.id, bucket.id);
+    await series.deleteSeries(s.id);
+
+    // Force a transient review-merge failure on the FIRST import attempt.
+    const spy = vi.spyOn(manuscriptReview, 'mergeReviewFromSync').mockRejectedValueOnce(new Error('disk full'));
+    simulateRemoteSender(tempBucket, exp.filename);
+    const r1 = await importer.processManifest(bucket.id, exp.filename);
+    // Manifest stays pending (cursor un-advanced) so the watcher retries —
+    // the review is NOT silently dropped.
+    expect(r1.pending).toBe(true);
+    expect(r1.outcome.pendingReviewMergeFailures).toContain(s.id);
+    spy.mockRestore();
+
+    // Re-process (manifest was kept retryable) — now the review lands.
+    const r2 = await importer.processManifest(bucket.id, exp.filename);
+    expect(r2.pending).toBeFalsy();
+    const restored = await manuscriptReview.getReview(s.id);
+    expect(restored.comments).toHaveLength(1);
+  });
+
   it('a remote orphan series (universeId null) preserves the local universe link instead of aborting the import', async () => {
     const bucket = await buckets.createBucket({ name: 'OrphanLinkBucket', path: tempBucket, mode: 'auto-merge' });
     const u = await universeSvc.createUniverse({ name: 'Linked Universe' });

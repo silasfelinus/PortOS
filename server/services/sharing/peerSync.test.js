@@ -1567,6 +1567,30 @@ describe('peerSync', () => {
       expect(peerFetch).toHaveBeenCalledTimes(1);
     });
 
+    it('withholds lastPushedHash when the receiver reports reviewSyncPending (so the next cycle re-sends)', async () => {
+      vi.mocked(getSeries).mockResolvedValue({ id: 's1', name: 'Series' });
+      vi.mocked(getReview).mockResolvedValue({
+        schemaVersion: 1,
+        comments: [{ id: 'mrc-1', problem: 'pacing', status: 'open', updatedAt: '2026-06-02T00:00:00Z' }],
+      });
+      // Receiver merged the record but its review merge threw → reviewSyncPending.
+      vi.mocked(peerFetch).mockResolvedValue({ ok: true, json: async () => ({ reviewSyncPending: true }) });
+      const sub = await subscribePeer(
+        { peerId: 'peer-a', recordKind: 'series', recordId: 's1' },
+        { adoptedFromReverse: true },
+      );
+      const r = await pushRecordToPeer(sub);
+      expect(r.pushed).toBe(true);
+      // Hash withheld → a subsequent push with identical content is NOT a no-op.
+      const refreshed = await findPeerSubscription('peer-a', 'series', 's1');
+      expect(refreshed.lastPushedHash).toBeFalsy();
+      vi.mocked(peerFetch).mockClear();
+      vi.mocked(peerFetch).mockResolvedValue({ ok: true, json: async () => ({}) });
+      const second = await pushRecordToPeer(refreshed);
+      expect(second.reason).not.toBe('unchanged');
+      expect(peerFetch).toHaveBeenCalledTimes(1);
+    });
+
     it('bundles the linked media collection with a universe push so collection-only edits propagate', async () => {
       // Regression: collection items[] adds emit recordEvents.updated('universe', id)
       // but the universe record content itself doesn't change, so the
@@ -2034,6 +2058,21 @@ describe('peerSync', () => {
         sourceInstanceId: 'peer-a',
       });
       expect(mergeReviewFromSync).not.toHaveBeenCalled();
+    });
+
+    it('returns reviewSyncPending when the bundled review merge throws (so the sender retries)', async () => {
+      vi.mocked(mergeReviewFromSync).mockRejectedValueOnce(new Error('disk full'));
+      const res = await applyIncomingPush({
+        kind: 'series',
+        record: { id: 's1', name: 'S', deleted: false, deletedAt: null },
+        issues: [],
+        manuscriptReview: { schemaVersion: 1, comments: [{ id: 'mrc-1', problem: 'x', status: 'open', updatedAt: '2026-06-02T00:00:00Z' }] },
+        assetManifest: [],
+        sourceInstanceId: 'peer-a',
+      });
+      // The series/issues merge still succeeded — the push isn't failed — but
+      // the sender is told to withhold its hash and retry the review.
+      expect(res.reviewSyncPending).toBe(true);
     });
 
     it('refuses to merge linkedCollection when the incoming record is a tombstone', async () => {
