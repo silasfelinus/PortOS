@@ -9,10 +9,10 @@ vi.mock('../lib/fetchWithTimeout.js', () => ({
 }));
 
 import { fetchWithTimeout } from '../lib/fetchWithTimeout.js';
+import { mockJsonResponse, mockTextResponse } from '../lib/testHelper.js';
 import { callProviderAISimple } from './insightsService.js';
 
 const PROVIDER = { type: 'api', endpoint: 'http://localhost:1234/v1' };
-const okResponse = (body) => ({ ok: true, status: 200, text: async () => body });
 
 describe('insightsService.callProviderAISimple — non-JSON-body guard', () => {
   beforeEach(() => {
@@ -25,14 +25,14 @@ describe('insightsService.callProviderAISimple — non-JSON-body guard', () => {
   // It must surface as { error } so the `if (result.error) return` guard bails
   // before any write.
   it('returns { error } (not empty success) on a non-JSON 200 body', async () => {
-    fetchWithTimeout.mockResolvedValue(okResponse('<html><body>502 Bad Gateway</body></html>'));
+    fetchWithTimeout.mockResolvedValue(mockTextResponse('<html><body>502 Bad Gateway</body></html>'));
     const result = await callProviderAISimple(PROVIDER, 'm', 'prompt');
     expect(result.text).toBeUndefined();
     expect(result.error).toMatch(/non-JSON response/);
   });
 
   it('returns { error } on a blank 200 body', async () => {
-    fetchWithTimeout.mockResolvedValue(okResponse(''));
+    fetchWithTimeout.mockResolvedValue(mockTextResponse(''));
     const result = await callProviderAISimple(PROVIDER, 'm', 'prompt');
     expect(result.error).toMatch(/non-JSON response/);
   });
@@ -41,19 +41,19 @@ describe('insightsService.callProviderAISimple — non-JSON-body guard', () => {
   // still flow through as { text: '' } — the guard must not conflate valid-empty
   // with a parse failure.
   it('returns { text: "" } for a valid body with empty content', async () => {
-    fetchWithTimeout.mockResolvedValue(okResponse(JSON.stringify({ choices: [{ message: { content: '' } }] })));
+    fetchWithTimeout.mockResolvedValue(mockJsonResponse({ choices: [{ message: { content: '' } }] }));
     const result = await callProviderAISimple(PROVIDER, 'm', 'prompt');
     expect(result).toEqual({ text: '' });
   });
 
   it('returns the content for a valid populated body', async () => {
-    fetchWithTimeout.mockResolvedValue(okResponse(JSON.stringify({ choices: [{ message: { content: 'hello' } }] })));
+    fetchWithTimeout.mockResolvedValue(mockJsonResponse({ choices: [{ message: { content: 'hello' } }] }));
     const result = await callProviderAISimple(PROVIDER, 'm', 'prompt');
     expect(result).toEqual({ text: 'hello' });
   });
 
   it('returns { error } with the status code on a non-2xx response', async () => {
-    fetchWithTimeout.mockResolvedValue({ ok: false, status: 500, text: async () => 'boom' });
+    fetchWithTimeout.mockResolvedValue(mockTextResponse('boom', { ok: false, status: 500 }));
     const result = await callProviderAISimple(PROVIDER, 'm', 'prompt');
     expect(result.error).toMatch(/Provider returned 500: boom/);
   });

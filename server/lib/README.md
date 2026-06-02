@@ -198,4 +198,4 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | Module | Purpose |
 |---|---|
 | `mockPathsDataRoot.js` | Shared Vitest helpers for `PATHS.data → temp dir` and no-peer record creation guards. |
-| `testHelper.js` | Test HTTP request helper. |
+| `testHelper.js` | Test helpers: `request()` (supertest-style HTTP) + `mockJsonResponse`/`mockTextResponse` (fetch `Response` mocks read via `.text()`). |

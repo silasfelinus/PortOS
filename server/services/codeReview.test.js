@@ -16,6 +16,7 @@ vi.mock('./settings.js', () => ({
 vi.mock('./lmStudioManager.js', () => ({ getBaseUrl: () => 'http://localhost:1234' }))
 vi.mock('./ollamaManager.js', () => ({ getBaseUrl: () => 'http://localhost:11434' }))
 
+import { mockJsonResponse, mockTextResponse } from '../lib/testHelper.js'
 import {
   isLocalLlmReviewer,
   pickCodeReviewDefaults,
@@ -126,11 +127,7 @@ describe('codeReview helpers', () => {
     beforeEach(() => {
       // Default fetch mock — chat-completions success with a static body. Each
       // test that wants a different shape replaces this in its own setup.
-      global.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        text: () => Promise.resolve(JSON.stringify({ choices: [{ message: { content: 'No findings.' } }] })),
-      })
+      global.fetch = vi.fn().mockResolvedValue(mockJsonResponse({ choices: [{ message: { content: 'No findings.' } }] }))
     })
 
     it('rejects unsupported reviewer backends', async () => {
@@ -168,11 +165,7 @@ describe('codeReview helpers', () => {
     })
 
     it('surfaces a non-2xx HTTP error with the status code', async () => {
-      global.fetch = vi.fn().mockResolvedValue({
-        ok: false,
-        status: 500,
-        text: () => Promise.resolve('boom'),
-      })
+      global.fetch = vi.fn().mockResolvedValue(mockTextResponse('boom', { ok: false, status: 500 }))
       const r = await runLocalCodeReview({ backend: 'lmstudio', model: 'm', diff: 'x' })
       expect(r.ok).toBe(false)
       expect(r.error).toMatch(/lmstudio API error 500: boom/)
@@ -186,22 +179,14 @@ describe('codeReview helpers', () => {
     })
 
     it('flags an empty model response so the agent never silently records "no findings"', async () => {
-      global.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        text: () => Promise.resolve(JSON.stringify({ choices: [{ message: { content: '' } }] })),
-      })
+      global.fetch = vi.fn().mockResolvedValue(mockJsonResponse({ choices: [{ message: { content: '' } }] }))
       const r = await runLocalCodeReview({ backend: 'ollama', model: 'm', diff: 'x' })
       expect(r.ok).toBe(false)
       expect(r.error).toMatch(/no content/)
     })
 
     it('surfaces a 200-with-non-JSON body instead of masking it as "no content"', async () => {
-      global.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        text: () => Promise.resolve('<html><body>502 Bad Gateway</body></html>'),
-      })
+      global.fetch = vi.fn().mockResolvedValue(mockTextResponse('<html><body>502 Bad Gateway</body></html>'))
       const r = await runLocalCodeReview({ backend: 'lmstudio', model: 'm', diff: 'x' })
       expect(r.ok).toBe(false)
       expect(r.error).toMatch(/non-JSON response/)
