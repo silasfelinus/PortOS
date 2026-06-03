@@ -14,6 +14,7 @@
 
 ## Changed
 
+- **[issue-741]** Extracted the CoS daemon health monitor (PM2/memory checks and errored-process auto-restart) out of the 3300-line `cos.js` into a dedicated `cosHealthMonitor.js` behind an unchanged public API. First slice of the `cos.js` split. Internal refactor with no behavior difference.
 - **[issue-744]** Extracted the scheduled-task prompt catalog and prompt getters out of the 3500-line `taskSchedule.js` into a dedicated `taskPromptService.js`; the prompt defaults and auto-upgrade machinery are moved verbatim and re-exported, so behavior is unchanged. Internal refactor with no behavior difference.
 - **[issue-790]** Unified the duplicated buffered-spawn and Windows kill-tree logic shared by the app build and update flows into one helper. Internal refactor with no behavior difference.
 - **[issue-751]** Collapsed the repeated AppleScript builders in `server/services/xcodeScripts.js` into a shared `xcodeScriptBuilders.js`; the emitted `take_screenshots_macos.sh` is byte-for-byte unchanged. Internal refactor with no behavior difference.
