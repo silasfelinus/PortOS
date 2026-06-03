@@ -3,11 +3,9 @@ import { Printer, ClipboardCopy, FileText } from 'lucide-react';
 
 import * as api from '../../../services/api';
 import { copyToClipboard } from '../../../lib/clipboard';
-import { buildClinicianReport, reportToMarkdown, formatRange } from '../../../lib/clinicianReport';
+import { buildClinicianReport, reportToMarkdown, formatRange, STATUS_LABELS } from '../../../lib/clinicianReport';
 import { STATUS_COLORS } from '../constants';
 import BrailleSpinner from '../../BrailleSpinner';
-
-const STATUS_LABELS = { normal: 'Normal', low: 'Low', high: 'High', unknown: '—' };
 
 export default function ExportTab() {
   const [report, setReport] = useState(null);

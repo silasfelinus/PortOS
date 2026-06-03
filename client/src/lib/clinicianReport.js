@@ -36,7 +36,7 @@ export function getCategoryForKey(key) {
   return 'Other';
 }
 
-const STATUS_LABELS = { normal: 'Normal', low: 'Low', high: 'High', unknown: '' };
+export const STATUS_LABELS = { normal: 'Normal', low: 'Low', high: 'High', unknown: '' };
 
 export function formatRange(range) {
   if (!range) return '';
