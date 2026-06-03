@@ -5,6 +5,7 @@
 - **[issue-704] Writers Room synced review** — a new Review view shows a work's prose, its generated script scenes, and the images rendered from them side by side, with the links between them. Click a passage to highlight the scenes and media it became; click a scene to jump back to its source prose and see the image, prompt, and render details. Each media card carries its provenance, and the script is flagged as stale when the draft has changed since it was generated. Pick which of the three panes to show.
 - **`/claim --issues`** — the claim workflow can now pull its work queue from GitHub issues instead of PLAN.md, auto-picking the oldest open issue filed by the repo owner and filing any major code-review findings as new issues. Developer tooling only — no app-facing change.
 - **Episode video model picker** — the pipeline's Episode Video stage now lets you choose which video model renders each scene, alongside the aspect-ratio and quality controls. Leave it on "Default model" to follow your video settings, or pin a specific model; the choice is remembered when you restart a render.
+- **[issue-732] Multi-reference editing on Flux 2 Klein 9B (bf16)** — the full-quality bf16 Flux 2 Klein 9B model now accepts reference images for multi-reference editing. When you supply references it loads the `FLUX.2-klein-9B-kv` repo (tuned for reference editing) instead of the base 9B; plain text and image-to-image renders stay on the base repo. Needs ~64+ GB RAM and the FLUX.2-klein license accepted on Hugging Face.
 
 ## Changed
 
