@@ -48,6 +48,26 @@ export function speedLevel(throughput, cap = RIVER.throughputCap) {
   return clamp01(t / c);
 }
 
+// Sum completed tasks over the most recent `days` calendar days (excluding future days), as a
+// bounded "recent drain" signal. The activity calendar's `summary.totalTasks` spans the whole
+// 12-week window, so it would pin the river at full speed forever after a few historical
+// completions; a trailing window keeps the current honest about *recent* throughput. Returns
+// null when there's no usable calendar so the caller can fall back to today's count.
+export function recentCalendarThroughput(calendarData, days = 7) {
+  const weeks = Array.isArray(calendarData?.weeks) ? calendarData.weeks : null;
+  if (!weeks) return null;
+  const flat = [];
+  for (const week of weeks) {
+    if (!Array.isArray(week)) continue;
+    for (const day of week) {
+      if (day && typeof day === 'object' && !day.isFuture) flat.push(day);
+    }
+  }
+  if (flat.length === 0) return null;
+  const window = days > 0 ? flat.slice(-days) : flat;
+  return window.reduce((sum, day) => sum + nonNegOrZero(day.tasks), 0);
+}
+
 // Euclidean distance on the ground plane (x/z) between the two endpoints.
 function groundLength(from, to) {
   const dx = to[0] - from[0];
@@ -89,8 +109,12 @@ export function computeTaskFlowRiver(taskQueue, recentThroughput) {
         : IDLE_COLOR;
 
   const length = groundLength(RIVER.from, RIVER.to);
-  // Rotation about Y so a unit segment laid along +x points from `from` toward `to`.
-  const angle = Math.atan2(RIVER.to[0] - RIVER.from[0], RIVER.to[2] - RIVER.from[2]);
+  // Rotation about +Y so the channel's local +x (its length axis) points from `from` toward
+  // `to`. A +Y rotation by θ maps local +x (1,0,0) to world (cosθ, 0, -sinθ); aligning that
+  // with the ground-plane direction (dx, dz) gives θ = atan2(-dz, dx).
+  const dx = RIVER.to[0] - RIVER.from[0];
+  const dz = RIVER.to[2] - RIVER.from[2];
+  const angle = Math.atan2(-dz, dx);
   const center = [
     (RIVER.from[0] + RIVER.to[0]) / 2,
     0,

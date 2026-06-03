@@ -100,6 +100,16 @@ describe('computeActivityHeatmap', () => {
     expect(today.intensity).toBeGreaterThanOrEqual(0.5);
   });
 
+  it('picks out a zero-task today as accent, not as a dark empty day', () => {
+    // todayIndex 0 has 0 tasks — it's still the "you are here" tile, not an empty day.
+    const cal = makeCalendar([[0, 3, 0, 0, 0, 0, 0]], { maxTasks: 3, todayIndex: 0 });
+    const vm = computeActivityHeatmap(cal);
+    const today = vm.tiles.find((t) => t.isToday);
+    expect(today.tasks).toBe(0);
+    expect(today.color).toBe('#3b82f6'); // accent, NOT the empty #1a2030
+    expect(today.intensity).toBeGreaterThanOrEqual(0.5);
+  });
+
   it('skips future days in the trailing partial week', () => {
     const cal = makeCalendar([[1, 0, 0, 0, 0, 0, 0]]);
     cal.weeks[0][3].isFuture = true;

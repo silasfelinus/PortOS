@@ -5,6 +5,7 @@ import {
   RIVER,
   widthLevel,
   speedLevel,
+  recentCalendarThroughput,
   computeTaskFlowRiver,
 } from './cityTaskFlowRiver';
 
@@ -45,6 +46,16 @@ describe('computeTaskFlowRiver', () => {
     const dx = MONUMENT.position[0] - TASK_QUEUE.position[0];
     const dz = MONUMENT.position[2] - TASK_QUEUE.position[2];
     expect(vm.length).toBeCloseTo(Math.sqrt(dx * dx + dz * dz));
+  });
+
+  it('yaws so the channel local +x points from warehouse to monument', () => {
+    const vm = computeTaskFlowRiver({ pending: 0 }, 0);
+    // A +Y rotation by `angle` maps local +x (1,0,0) to world (cos, 0, -sin); that vector,
+    // scaled by length, must reconstruct the warehouse→monument displacement.
+    const dirX = Math.cos(vm.angle) * vm.length;
+    const dirZ = -Math.sin(vm.angle) * vm.length;
+    expect(dirX).toBeCloseTo(MONUMENT.position[0] - TASK_QUEUE.position[0]);
+    expect(dirZ).toBeCloseTo(MONUMENT.position[2] - TASK_QUEUE.position[2]);
   });
 
   it('widens with backlog and quickens with throughput', () => {
@@ -91,6 +102,50 @@ describe('computeTaskFlowRiver', () => {
     expect(vm.particles.every((p) => p.phase >= 0 && p.phase < 1)).toBe(true);
   });
 
+});
+
+describe('recentCalendarThroughput', () => {
+  const cal = (taskRows) => ({
+    weeks: taskRows.map((row) =>
+      row.map((tasks, dow) => ({ date: `d${dow}`, dayOfWeek: dow, tasks, isFuture: false }))
+    ),
+    summary: { totalTasks: taskRows.flat().reduce((s, t) => s + t, 0) },
+  });
+
+  it('sums only the most recent N days, excluding future days', () => {
+    // 14 days total (two weeks); last 7 days carry 1+2+3 = 6 tasks.
+    const data = cal([
+      [5, 5, 5, 5, 5, 5, 5],
+      [0, 0, 0, 0, 1, 2, 3],
+    ]);
+    expect(recentCalendarThroughput(data, 7)).toBe(6);
+  });
+
+  it('windows away the 12-week-total saturation problem', () => {
+    // A big historical total but a quiet recent week reads as low, not pinned high.
+    const busyWeeks = Array.from({ length: 12 }, () => [9, 9, 9, 9, 9, 9, 9]);
+    busyWeeks.push([0, 0, 0, 0, 0, 0, 0]); // quiet current week
+    const data = cal(busyWeeks);
+    expect(data.summary.totalTasks).toBe(12 * 7 * 9); // huge historical total
+    expect(recentCalendarThroughput(data, 7)).toBe(0); // but the recent window is quiet
+  });
+
+  it('skips future days in the trailing window', () => {
+    const data = cal([[1, 1, 1, 1, 1, 1, 1]]);
+    data.weeks[0][5].isFuture = true;
+    data.weeks[0][6].isFuture = true;
+    expect(recentCalendarThroughput(data, 7)).toBe(5);
+  });
+
+  it('returns null for a missing/empty calendar so the caller can fall back', () => {
+    expect(recentCalendarThroughput(null)).toBeNull();
+    expect(recentCalendarThroughput({})).toBeNull();
+    expect(recentCalendarThroughput({ weeks: [] })).toBeNull();
+    expect(recentCalendarThroughput({ weeks: 'oops' })).toBeNull();
+  });
+});
+
+describe('computeTaskFlowRiver — idle resilience', () => {
   it('handles missing / non-object inputs as an idle trickle without crashing', () => {
     for (const badQueue of [null, undefined, 'nope', 42, []]) {
       for (const badThroughput of [null, undefined, 'nope', -5, NaN]) {

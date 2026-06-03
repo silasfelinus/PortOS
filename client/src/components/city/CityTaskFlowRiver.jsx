@@ -1,7 +1,7 @@
 import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { computeTaskQueue } from '../../utils/cityTaskQueue';
-import { computeTaskFlowRiver } from '../../utils/cityTaskFlowRiver';
+import { computeTaskFlowRiver, recentCalendarThroughput } from '../../utils/cityTaskFlowRiver';
 
 // CyberCity task-flow river (issue #817): an animated channel running from the task-queue
 // warehouse to the productivity district, tying queued work to completed throughput. The
@@ -13,12 +13,16 @@ import { computeTaskFlowRiver } from '../../utils/cityTaskFlowRiver';
 export default function CityTaskFlowRiver({ cosTasks, productivityData, calendarData, settings }) {
   const river = useMemo(() => {
     const queue = computeTaskQueue(cosTasks);
-    // Recent throughput: prefer the calendar window total (steady multi-day signal), fall
-    // back to today's completed count from the quick-summary so the river still flows before
-    // the calendar fetch lands. Optional chaining tolerates missing/non-object payloads;
+    // Recent throughput drives the current speed. Prefer today's completed count from the
+    // quick-summary (the freshest "draining now" signal); fall back to a bounded last-7-days
+    // total from the calendar so the river still flows before today's count is meaningful.
+    // Using the calendar's full 12-week total would pin the river at max speed forever, so we
+    // deliberately window it. Optional chaining tolerates missing/non-object payloads, and
     // computeTaskFlowRiver reads a non-number as zero.
-    const calendarTotal = calendarData?.summary?.totalTasks;
-    const throughput = typeof calendarTotal === 'number' ? calendarTotal : productivityData?.today?.completed;
+    const todayCompleted = productivityData?.today?.completed;
+    const throughput = typeof todayCompleted === 'number'
+      ? todayCompleted
+      : recentCalendarThroughput(calendarData, 7);
     return computeTaskFlowRiver(queue, throughput);
   }, [cosTasks, productivityData, calendarData]);
 
@@ -62,7 +66,10 @@ export default function CityTaskFlowRiver({ cosTasks, productivityData, calendar
         />
       </mesh>
 
-      {/* Traveling flow nodes — brighter, faster current means more energy moving downstream */}
+      {/* Traveling flow nodes — only when there's a live current to depict; on the lowest
+          preset (animation off) or an idle/not-draining channel the bed alone stays drawn so
+          static glowing boxes never imply movement that isn't happening. */}
+      {animate && river.flowing && (
       <group ref={nodesRef}>
         {particles.map((p) => (
           <mesh
@@ -80,6 +87,7 @@ export default function CityTaskFlowRiver({ cosTasks, productivityData, calendar
           </mesh>
         ))}
       </group>
+      )}
     </group>
   );
 }

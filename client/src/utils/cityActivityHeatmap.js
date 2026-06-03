@@ -81,14 +81,20 @@ export function computeActivityHeatmap(calendarData) {
         // Weeks run along x (columns), day-of-week runs along z (front→back rows).
         x: weekIndex * step,
         z: dow * step,
+        // Animation phase derived from grid indices (not world coords) so the component's
+        // shimmer reads as a coherent diagonal wave sweeping across the field rather than
+        // near-random per-tile flicker.
+        phase: (weekIndex + dow) * 0.18,
         tasks,
         level,
         isToday,
-        // Empty days sit dark; active days glow green, scaled by level; today gets an accent.
-        color: tasks === 0 ? EMPTY_COLOR : isToday ? TODAY_COLOR : ACTIVE_COLOR,
-        // Emissive intensity: empty tiles barely glow; active tiles ramp with level; today
-        // always reads clearly even on a light day.
-        intensity: tasks === 0 ? 0.04 : isToday ? Math.max(0.5, 0.25 + level * 0.7) : 0.18 + level * 0.6,
+        // Today is always picked out in accent blue, even on a zero-task day — it's a
+        // location sentinel, not an activity reading. Otherwise empty days sit dark and
+        // active days glow green scaled by level.
+        color: isToday ? TODAY_COLOR : tasks === 0 ? EMPTY_COLOR : ACTIVE_COLOR,
+        // Emissive intensity: today always reads clearly (legible even at zero tasks); other
+        // empty tiles barely glow; active tiles ramp with level.
+        intensity: isToday ? Math.max(0.5, 0.25 + level * 0.7) : tasks === 0 ? 0.04 : 0.18 + level * 0.6,
       });
     });
   });

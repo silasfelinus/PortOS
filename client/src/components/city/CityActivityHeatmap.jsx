@@ -40,7 +40,7 @@ export default function CityActivityHeatmap({ calendarData, settings }) {
           <mesh
             key={tile.key}
             position={[tile.x, tileHeight / 2, tile.z]}
-            userData={{ baseIntensity: tile.tasks > 0 ? tile.intensity : 0, phase: tile.x + tile.z }}
+            userData={{ baseIntensity: tile.tasks > 0 ? tile.intensity : 0, phase: tile.phase }}
           >
             <boxGeometry args={[tileSize, tileHeight, tileSize]} />
             <meshStandardMaterial
