@@ -156,13 +156,14 @@ Only defer discovered work when it is **genuinely large** — its own multi-file
 
 **Where deferred work lands depends on the mode:**
 - **PLAN.md mode** → add a NEW `- [ ]` PLAN.md item (see CLAUDE.md's "capture deferred work" rule for the format).
-- **Issues mode** → file a NEW **GitHub issue** instead — never write to PLAN.md in this mode. Use a body that an implementer can pick up cold (file paths, line numbers, why it was split out, and which issue surfaced it), and reference the current issue:
+- **Issues mode** → file a NEW **GitHub issue** instead — never write to PLAN.md in this mode. Use a body that an implementer can pick up cold (file paths, line numbers, why it was split out, and which issue surfaced it), and **tag it `plan`** so the next `/claim --issues` (and `/do:replan`) treats it as queued work — the `plan` label is PortOS's tracked-work convention, mirroring how PLAN.md mode adds a `- [ ]` line. Reference the current issue:
   ```bash
   gh issue create \
     --title "<concise actionable title>" \
+    --label plan \
     --body "$(printf 'Discovered while working issue #%s.\n\n<context: what, where (file:line), why it needs its own PR>\n' "$ISSUE_NUM")"
   ```
-  Filing under your own account is correct — Phase 1's creator-filter only constrains *which* issues `/claim` will auto-pick; it does not stop you from filing new ones. Mention the new issue number in the PR body so the trail is visible.
+  (`--label plan` requires the label to exist; it's a standing PortOS label, but if `gh issue create` errors on a missing label on a fresh fork, create it once with `gh label create plan --color 428BCA --description "Tracked by /do:replan" 2>/dev/null || true` and retry.) Filing under your own account is correct — Phase 1's creator-filter only constrains *which* issues `/claim` will auto-pick; it does not stop you from filing new ones. Mention the new issue number in the PR body so the trail is visible.
 
 **Commit messages.** Reference the slug in the subject line so the work is grep-able across the changelog, branches, and PR titles:
 
@@ -219,7 +220,7 @@ git commit -m "docs([issue-<num>]): log issue #<num> to changelog"
 
 > **Issues mode — link the PR to the issue.** Whichever path opens the PR (`/do:pr` in 6.2a or the manual `gh pr create` in 6.2b), the PR body MUST contain `Closes #<num>` (or `Fixes #<num>`) so merging auto-closes the claimed issue. If you list discovered-but-deferred GitHub issues you filed in Phase 4/6, reference them with plain `#<n>` (do NOT write `Closes` for those — they're follow-ups, not resolved by this PR).
 >
-> **Issues mode — major code-review findings become GitHub issues, not PLAN.md items.** Any review finding you decide *not* to fix in this PR but that is substantial enough to warrant its own work (a real bug elsewhere, a missing-but-out-of-scope feature, a cross-cutting refactor) gets filed as a NEW GitHub issue (`gh issue create`, same form as Phase 4), referenced in the merge commit. Nit/style findings still just get parked verbally — don't open an issue for a naming preference.
+> **Issues mode — major code-review findings become GitHub issues, not PLAN.md items.** Any review finding you decide *not* to fix in this PR but that is substantial enough to warrant its own work (a real bug elsewhere, a missing-but-out-of-scope feature, a cross-cutting refactor) gets filed as a NEW GitHub issue (`gh issue create --label plan …`, same form as Phase 4 — including the `plan` tag so it joins the claimable queue), referenced in the merge commit. Nit/style findings still just get parked verbally — don't open an issue for a naming preference.
 
 **Decide the review intensity before doing any review work.** Three modes; pick exactly one:
 
