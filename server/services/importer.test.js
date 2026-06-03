@@ -320,6 +320,10 @@ describe('analyzeImport', () => {
     expect(result.universe.id).toBeDefined();
     expect(result.series.id).toMatch(/^ser-/);
     expect(result.series.universeId).toBe(result.universe.id);
+    // New shells are created ephemeral (issue #727) so an abandoned analyze
+    // leaves no syncing orphan — the orphan-shell GC sweeps them later.
+    expect(result.universe.ephemeral).toBe(true);
+    expect(result.series.ephemeral).toBe(true);
     expect(result.canonPreview.characters).toHaveLength(1);
     expect(result.canonPreview.characters[0].name).toBe('Aria');
     expect(result.canonPreview.places).toHaveLength(1);
@@ -862,6 +866,10 @@ describe('commitImport', () => {
     expect(result.series.logline).toBe('A reluctant heir.');
     expect(result.series.premise).toBe('Big story.');
     expect(result.series.issueCountTarget).toBe(1);
+    // A successful commit promotes both shells out of ephemeral (issue #727)
+    // so the now-real records sync to peers instead of staying GC-eligible.
+    expect(result.universe.ephemeral).not.toBe(true);
+    expect(result.series.ephemeral).not.toBe(true);
     // One issue created with prose + idea seeded.
     expect(result.createdIssueIds).toHaveLength(1);
     const issue = await issuesSvc.getIssue(result.createdIssueIds[0]);

@@ -809,16 +809,24 @@ export async function analyzeImport({
   // failure doesn't leave an orphaned universe on disk. We only delete the
   // universe if we created it in this call — a pre-existing universe must
   // never be removed as a side-effect of a series-create failure.
+  //
+  // New shells are created `ephemeral` (issue #727): an analyze the user
+  // abandons before commit otherwise leaves a zero-issue/zero-canon universe
+  // + series lingering on disk. `ephemeral` keeps them out of every sync
+  // transport and tags them for the orphan-shell GC sweep
+  // (importerOrphanGc.js). `commitImport` promotes them (clears `ephemeral`)
+  // so a committed import becomes a normal, syncing record. Pre-existing
+  // records are never re-flagged ephemeral here.
   let universe = isExistingUniverse
     ? existingUniverse
-    : await createUniverse({ name: universeName.trim() });
+    : await createUniverse({ name: universeName.trim(), ephemeral: true });
   const universeWasCreated = !isExistingUniverse;
 
   let series;
   try {
     series = isExistingSeries
       ? existingSeries
-      : await createSeries({ name: seriesName.trim(), universeId: universe.id });
+      : await createSeries({ name: seriesName.trim(), universeId: universe.id, ephemeral: true });
   } catch (seriesErr) {
     if (universeWasCreated) {
       await deleteUniverse(universe.id).catch((delErr) =>
@@ -1366,9 +1374,26 @@ export async function commitImport({
     throw partial;
   }
 
+  // Promote any ephemeral shell now that the commit fully succeeded (issue
+  // #727). analyzeImport creates brand-new universe/series records `ephemeral`
+  // so an abandoned analyze leaves no syncing orphan; a successful commit turns
+  // them into normal records. Only patch records still flagged ephemeral —
+  // updateUniverse/updateSeries handle the ephemeral→non-ephemeral peer
+  // re-subscribe wiring, so the clear must go through them (not a raw write).
+  // Done after the issue loop so a rolled-back commit leaves the shells
+  // ephemeral and still GC-eligible.
+  let promotedUniverse = updatedUniverse;
+  let promotedSeries = updatedSeries;
+  if (updatedUniverse.ephemeral === true) {
+    promotedUniverse = await updateUniverse(updatedUniverse.id, { ephemeral: false });
+  }
+  if (updatedSeries.ephemeral === true) {
+    promotedSeries = await updateSeries(updatedSeries.id, { ephemeral: false });
+  }
+
   return {
-    universe: updatedUniverse,
-    series: updatedSeries,
+    universe: promotedUniverse,
+    series: promotedSeries,
     createdIssueIds,
     remappedIssues,
   };
