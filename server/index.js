@@ -88,6 +88,8 @@ import { initMortalLoomStore } from './services/mortalLoomStore.js';
 import reviewRoutes from './routes/review.js';
 import githubRoutes from './routes/github.js';
 import settingsRoutes from './routes/settings.js';
+import authRoutes from './routes/auth.js';
+import { authGate, socketAuthGate } from './lib/authGate.js';
 import telegramRoutes from './routes/telegram.js';
 import updateRoutes from './routes/update.js';
 import loopsRoutes from './routes/loops.js';
@@ -186,6 +188,11 @@ const io = new Server(httpServer, {
   },
   path: '/socket.io'
 });
+
+// Auth gate for Socket.IO — when settings.secrets.auth.enabled is true the
+// handshake must carry a valid token cookie or Authorization: Bearer header
+// (set by POST /api/auth/login). No-op when auth is off.
+io.use(socketAuthGate);
 
 // Initialize socket handlers
 initSocket(io);
@@ -375,7 +382,13 @@ app.use(express.urlencoded({ limit: '55mb', extended: true }));
 // Make io available to routes
 app.set('io', io);
 
+// Auth gate runs before any /api/* route. When settings.secrets.auth.enabled
+// is true the gate returns 401 for everything except the small public set in
+// lib/authGate.js (login, status, healthz). No-op when auth is off.
+app.use(authGate);
+
 // API Routes
+app.use('/api/auth', authRoutes);
 app.use('/api/alerts', alertsRoutes);
 app.use('/api/avatar', avatarRoutes);
 app.use('/api/system', systemHealthRoutes);

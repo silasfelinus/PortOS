@@ -56,6 +56,7 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiScaffold.js` | App scaffolding templates. |
 | `apiSchedules.js` | Automation schedules. |
 | `apiSystem.js` | System info (CPU/memory/ports/alerts) + D&D-style character sheet getter. |
+| `apiAuth.js` | Optional login password — status, login/logout, set/clear password. |
 | `apiLoops.js` | Scheduled loops. |
 
 ## Personal data / identity
