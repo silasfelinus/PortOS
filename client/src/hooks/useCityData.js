@@ -20,6 +20,7 @@ export const useCityData = () => {
   const [notificationCounts, setNotificationCounts] = useState({ unread: 0 });
   const [backupStatus, setBackupStatus] = useState(null);
   const [cosTasks, setCosTasks] = useState([]);
+  const [character, setCharacter] = useState(null);
   const [loading, setLoading] = useState(true);
   const logIdRef = useRef(0);
 
@@ -33,7 +34,7 @@ export const useCityData = () => {
     // /notifications/count returns the lightweight { count } payload — the HUD
     // and Attention pane only need unread, and notifications:count socket
     // events keep it fresh after this initial fetch.
-    const [appsData, agents, cosAgentsData, status, reviewData, instanceData, health, notif, backup, cosTasksData] = await Promise.all([
+    const [appsData, agents, cosAgentsData, status, reviewData, instanceData, health, notif, backup, cosTasksData, characterData] = await Promise.all([
       api.getApps().catch(() => []),
       api.getRunningAgents().catch(() => []),
       api.getCosAgents().catch(() => []),
@@ -44,6 +45,7 @@ export const useCityData = () => {
       api.getNotificationCount().catch(() => ({ count: 0 })),
       api.getBackupStatus({ silent: true }).catch(() => null),
       api.getCosTasks({ silent: true }).catch(() => ({ tasks: [] })),
+      api.getCharacter({ silent: true }).catch(() => null),
     ]);
 
     setApps(appsData);
@@ -56,6 +58,7 @@ export const useCityData = () => {
     setNotificationCounts({ unread: notif?.count ?? 0 });
     setBackupStatus(backup);
     setCosTasks(Array.isArray(cosTasksData?.tasks) ? cosTasksData.tasks : []);
+    if (characterData) setCharacter(characterData);
     setLoading(false);
   }, []);
 
@@ -82,6 +85,15 @@ export const useCityData = () => {
     });
   }, []);
 
+  // Character XP badge: there's no XP-gain socket event, so the only way an XP
+  // gain (e.g. a synced JIRA ticket / completed task) surfaces in the HUD is a
+  // periodic poll. The Xp badge diffs successive snapshots to fire its burst.
+  // Preserve last-good character on a transient blip (don't wipe to null).
+  const fetchCharacter = useCallback(async () => {
+    const next = await api.getCharacter({ silent: true }).catch(() => null);
+    if (next) setCharacter(next);
+  }, []);
+
   // Only overwrite the running-agents HUD/list when a fresh fetch lands —
   // a transient blip used to wipe the visible agents to `[]` until the
   // next successful poll.
@@ -100,6 +112,7 @@ export const useCityData = () => {
   // cadence without double-fetching at mount.
   useAutoRefetch(fetchRunningAgents, 10_000, { immediate: false, pollOnly: true });
   useAutoRefetch(fetchHealth, 15_000, { immediate: false, pollOnly: true });
+  useAutoRefetch(fetchCharacter, 15_000, { immediate: false, pollOnly: true });
 
   const agentMap = useMemo(() => {
     const map = new Map();
@@ -222,6 +235,7 @@ export const useCityData = () => {
     notificationCounts,
     backupStatus,
     cosTasks,
+    character,
     loading,
     connected: socket.connected,
   };
