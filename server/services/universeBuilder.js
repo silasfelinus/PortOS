@@ -1507,6 +1507,15 @@ export async function mergeUniversesFromSync(remoteUniverses, { source = { via: 
       const localTs = local.updatedAt || '';
       const remoteTs = sanitized.updatedAt || '';
       if (remoteTs > localTs) {
+        // `styleImageRefs` is WIRE-LOCAL — sanitizeRecordForWire strips it, so an
+        // inbound payload never carries it and sanitizeTemplate defaulted it to []
+        // above. The local value is authoritative for THIS peer's probe renders;
+        // without restoring it, this remote-wins LWW write would clobber the local
+        // refs to []. Preserve it onto the sanitized record before it's journaled
+        // or written (the conflict hash excludes the field, so this restore can't
+        // shift the journal's divergence verdict). Mirror of the ephemeral
+        // local-only contract above.
+        sanitized.styleImageRefs = local.styleImageRefs ?? [];
         // Non-blocking conflict journal: archive the about-to-be-lost local
         // version when BOTH sides diverged from the last synced base. Always
         // advances the base hash (clean or conflict) so the next snapshot
