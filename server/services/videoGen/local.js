@@ -770,6 +770,11 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // 'error') so the timer can't outlive this child or fire against a recycled
   // PID. Armed at most once per child (re-seeing the marker is a no-op).
   let completionWatchdog = null;
+  // Set when the watchdog itself fires the SIGKILL. The 'close' handler reads
+  // it so it can treat that kill as success (the render already wrote its file —
+  // we only killed a post-completion teardown hang) rather than reporting the
+  // generic "killed, likely OOM" failure.
+  let completionWatchdogFired = false;
   const clearCompletionWatchdog = () => {
     if (completionWatchdog) {
       clearTimeout(completionWatchdog);
@@ -785,6 +790,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
         completionWatchdog = null;
         if (activeProcess !== proc || proc.exitCode !== null || proc.signalCode !== null) return;
         console.log(`⚠️ video child reported completion but never exited — SIGKILL [${jobId.slice(0, 8)}]`);
+        completionWatchdogFired = true;
         proc.kill('SIGKILL');
       } catch (err) {
         console.error(`❌ completion watchdog failed [${jobId.slice(0, 8)}]: ${err.message}`);
@@ -972,7 +978,15 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
       await unlink(audioFilePath).catch(() => {});
     }
 
-    if (code !== 0) {
+    // A watchdog-triggered SIGKILL means the render already emitted its
+    // completion marker and only the python teardown hung — the output file is
+    // on disk, so treat it as success (not the generic "killed, likely OOM"
+    // failure). Guard on the file actually existing + being non-empty so a
+    // marker without a real output (a malformed runtime) still fails loudly.
+    const watchdogSuccess = completionWatchdogFired && signal === 'SIGKILL'
+      && existsSync(outputPath) && statSync(outputPath).size > 0;
+
+    if (code !== 0 && !watchdogSuccess) {
       job.status = 'error';
       let reason;
       if (missingPyModule) {
@@ -997,6 +1011,9 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
       broadcastSse(job, { type: 'error', error: `Generation failed: ${reason}` });
       videoGenEvents.emit('failed', { generationId: jobId, error: reason });
     } else {
+      if (watchdogSuccess) {
+        console.log(`⚠️ video child force-killed after completion teardown hang — output is intact [${jobId.slice(0, 8)}]`);
+      }
       job.status = 'complete';
       await optimizeForStreaming(outputPath);
       const thumbnail = await generateThumbnail(outputPath, jobId);

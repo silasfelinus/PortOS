@@ -553,6 +553,93 @@ describe('generateVideo — panel-side completion watchdog', () => {
     expect(hang.proc.kill).toHaveBeenCalledWith('SIGKILL');
   });
 
+  it('reports completed (not failed) when the watchdog SIGKILL fires after a real render finished', async () => {
+    process.env.VIDEOGEN_COMPLETION_WATCHDOG_MS = '40000';
+    vi.resetModules();
+    ({ generateVideo } = await import('./local.js'));
+    ({ videoGenEvents } = await import('./events.js'));
+
+    // The output file exists + is non-empty (fs mock already returns true/size 1000),
+    // so the watchdog-killed render must be treated as a success.
+    const { existsSync, statSync } = await import('fs');
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(statSync).mockReturnValue({ size: 1000 });
+
+    const { spawn } = await import('child_process');
+    const hang = makeHangingProc();
+    vi.mocked(spawn).mockImplementationOnce(() => hang.proc);
+
+    const events = [];
+    const onCompleted = (e) => events.push(['completed', e]);
+    const onFailed = (e) => events.push(['failed', e]);
+    videoGenEvents.on('completed', onCompleted);
+    videoGenEvents.on('failed', onFailed);
+
+    generateVideo({
+      jobId: 'watchdog-success-recover',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'render then teardown-hang',
+      width: 512, height: 512, numFrames: 25, fps: 24,
+      mode: 'text',
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Render emits its result JSON, then hangs in teardown.
+    hang.emitStdout('{"video_path": "/data/videos/out.mp4"}\n');
+    // Watchdog fires the SIGKILL past the grace window.
+    await vi.advanceTimersByTimeAsync(40001);
+    expect(hang.proc.kill).toHaveBeenCalledWith('SIGKILL');
+    // The OS delivers the kill → 'close' fires with signal SIGKILL.
+    hang.fireClose(null, 'SIGKILL');
+    await vi.advanceTimersByTimeAsync(0);
+
+    videoGenEvents.off('completed', onCompleted);
+    videoGenEvents.off('failed', onFailed);
+
+    const kinds = events.map(([k]) => k);
+    expect(kinds).toContain('completed');
+    expect(kinds).not.toContain('failed');
+  });
+
+  it('still reports failed when a SIGKILL arrives without a completion marker (real OOM kill)', async () => {
+    process.env.VIDEOGEN_COMPLETION_WATCHDOG_MS = '40000';
+    vi.resetModules();
+    ({ generateVideo } = await import('./local.js'));
+    ({ videoGenEvents } = await import('./events.js'));
+
+    const { spawn } = await import('child_process');
+    const hang = makeHangingProc();
+    vi.mocked(spawn).mockImplementationOnce(() => hang.proc);
+
+    const events = [];
+    const onCompleted = (e) => events.push(['completed', e]);
+    const onFailed = (e) => events.push(['failed', e]);
+    videoGenEvents.on('completed', onCompleted);
+    videoGenEvents.on('failed', onFailed);
+
+    generateVideo({
+      jobId: 'watchdog-oom-kill',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'oom before completion',
+      width: 512, height: 512, numFrames: 25, fps: 24,
+      mode: 'text',
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // No completion marker ever seen — the kernel OOM-kills the child mid-render.
+    hang.fireClose(null, 'SIGKILL');
+    await vi.advanceTimersByTimeAsync(0);
+
+    videoGenEvents.off('completed', onCompleted);
+    videoGenEvents.off('failed', onFailed);
+
+    const kinds = events.map(([k]) => k);
+    expect(kinds).toContain('failed');
+    expect(kinds).not.toContain('completed');
+  });
+
   it('does NOT SIGKILL when the child exits cleanly after completion (timer is cleared on close)', async () => {
     process.env.VIDEOGEN_COMPLETION_WATCHDOG_MS = '40000';
     vi.resetModules();
