@@ -155,22 +155,26 @@ export default function Shell() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const emitShellInput = useCallback((data) => {
+  // focus:false skips returning keyboard focus to the terminal after sending — used by
+  // the nav-key hot buttons so repeated arrow taps on touch devices don't keep re-summoning
+  // the on-screen keyboard (input is delivered over the socket regardless of focus).
+  const emitShellInput = useCallback((data, { focus = true } = {}) => {
     if (!socket || !sessionIdRef.current) return;
     // Don't fire quick-commands into the prior session while a switch/start is mid-flight.
     if (pendingAttachRef.current.target) return;
     socket.emit('shell:input', { sessionId: sessionIdRef.current, data });
-    termInstanceRef.current?.focus();
+    if (focus) termInstanceRef.current?.focus();
   }, [socket]);
 
   const sendCommand = useCallback((cmd) => emitShellInput(cmd + '\n'), [emitShellInput]);
   const sendCtrlC = useCallback(() => emitShellInput('\x03'), [emitShellInput]);
   // Arrow keys send CSI or SS3 based on the terminal's DECCKM state (see NAV_KEYS);
-  // Enter and any other literal-`seq` keys pass through unchanged.
+  // Enter and any other literal-`seq` keys pass through unchanged. focus:false keeps the
+  // soft keyboard down on touch — these buttons exist to replace it, not trigger it.
   const sendNavKey = useCallback((key) => {
-    if (key.seq != null) { emitShellInput(key.seq); return; }
+    if (key.seq != null) { emitShellInput(key.seq, { focus: false }); return; }
     const appCursor = termInstanceRef.current?.modes?.applicationCursorKeysMode;
-    emitShellInput(`\x1b${appCursor ? 'O' : '['}${key.code}`);
+    emitShellInput(`\x1b${appCursor ? 'O' : '['}${key.code}`, { focus: false });
   }, [emitShellInput]);
   const handlePaste = useCallback(async () => {
     const text = await readClipboard();
