@@ -67,7 +67,6 @@ export default function ProvenanceChip({
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        aria-haspopup="dialog"
         aria-controls={open ? popId : undefined}
         title={`${meta.label} — tap for how this is derived`}
         className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide transition-colors ${chipTone}`}
@@ -79,9 +78,7 @@ export default function ProvenanceChip({
       {open && (
         <div
           id={popId}
-          role="dialog"
-          aria-label={`${meta.label} provenance`}
-          className="absolute left-0 top-full z-30 mt-1.5 w-64 rounded-lg border border-port-border bg-port-card p-3 text-left shadow-xl"
+          className="absolute left-0 top-full z-30 mt-1.5 w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-port-border bg-port-card p-3 text-left shadow-xl"
         >
           <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-gray-200 normal-case tracking-normal">
             <Icon size={12} aria-hidden="true" className={`shrink-0 ${iconTone}`} />

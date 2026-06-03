@@ -20,15 +20,14 @@ describe('ProvenanceChip', () => {
   it('reveals the default explainer and "what would change this?" on click', () => {
     render(<ProvenanceChip level="speculative" />);
     const btn = screen.getByRole('button');
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByText('What would change this?')).toBeNull();
 
     fireEvent.click(btn);
 
     expect(btn).toHaveAttribute('aria-expanded', 'true');
-    const dialog = screen.getByRole('dialog');
-    expect(dialog.textContent).toContain(PROVENANCE_LEVELS.speculative.description);
-    expect(dialog.textContent).toContain('What would change this?');
-    expect(dialog.textContent).toContain(PROVENANCE_LEVELS.speculative.whatWouldChange);
+    expect(screen.getByText('What would change this?')).toBeTruthy();
+    expect(screen.getByText(PROVENANCE_LEVELS.speculative.description)).toBeTruthy();
+    expect(screen.getByText(PROVENANCE_LEVELS.speculative.whatWouldChange)).toBeTruthy();
   });
 
   it('prefers custom explainer / whatWouldChange copy over the level defaults', () => {
@@ -40,10 +39,9 @@ describe('ProvenanceChip', () => {
       />,
     );
     fireEvent.click(screen.getByRole('button'));
-    const dialog = screen.getByRole('dialog');
-    expect(dialog.textContent).toContain('Custom how-derived copy.');
-    expect(dialog.textContent).toContain('Custom change copy.');
-    expect(dialog.textContent).not.toContain(PROVENANCE_LEVELS.inferred.description);
+    expect(screen.getByText('Custom how-derived copy.')).toBeTruthy();
+    expect(screen.getByText('Custom change copy.')).toBeTruthy();
+    expect(screen.queryByText(PROVENANCE_LEVELS.inferred.description)).toBeNull();
   });
 
   it('overrides the chip label when label prop is set, keeping the resolved tone', () => {
@@ -60,17 +58,17 @@ describe('ProvenanceChip', () => {
       </div>,
     );
     fireEvent.click(screen.getByRole('button', { name: /inferred/i }));
-    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(screen.getByText('What would change this?')).toBeTruthy();
     fireEvent.mouseDown(screen.getByRole('button', { name: 'elsewhere' }));
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByText('What would change this?')).toBeNull();
   });
 
   it('closes the popover on Escape', () => {
     render(<ProvenanceChip level="inferred" />);
     const btn = screen.getByRole('button');
     fireEvent.click(btn);
-    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(screen.getByText('What would change this?')).toBeTruthy();
     fireEvent.keyDown(document, { key: 'Escape' });
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByText('What would change this?')).toBeNull();
   });
 });

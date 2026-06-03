@@ -69,14 +69,14 @@ function BirthDateSection({ birthDate, onUpdate }) {
           <div>
             <p className="text-2xl font-mono font-bold text-white">{birthDate}</p>
             {age != null && (
-              <p className="text-sm text-gray-500 mt-1 flex items-center gap-2">
-                Chronological age: {age} years
+              <div className="text-sm text-gray-500 mt-1 flex items-center gap-2">
+                <span>Chronological age: {age} years</span>
                 <ProvenanceChip
                   level="data-backed"
                   explainer="Counted directly from the birth date on record — a fact, not an estimate."
                   whatWouldChange="Correcting the birth date above."
                 />
-              </p>
+              </div>
             )}
           </div>
           <button
