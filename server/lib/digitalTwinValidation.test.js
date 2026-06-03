@@ -4,7 +4,9 @@ import {
   runMultiTestsInputSchema,
   createPersonaInputSchema,
   setActivePersonaInputSchema,
-  digitalTwinSettingsSchema
+  digitalTwinSettingsSchema,
+  testHistoryEntrySchema,
+  valuesTestHistoryEntrySchema
 } from './digitalTwinValidation.js';
 
 // Regression guard: the client API wrappers default `testIds` to `null` for a
@@ -35,6 +37,74 @@ describe('runTestsInputSchema testIds null-tolerance', () => {
       testIds: null
     });
     expect(parsed.testIds).toBeUndefined();
+  });
+});
+
+// Per-persona testing (M34 P7): a test run may embody a persona. The UI's
+// "Base twin" choice sends '' (or omits it); a specific persona sends its uuid.
+describe('runTestsInputSchema personaId (per-persona testing)', () => {
+  const uuid = '22222222-2222-4222-8222-222222222222';
+
+  it('treats empty-string personaId as base twin (normalized away)', () => {
+    const parsed = runTestsInputSchema.parse({ providerId: 'p', model: 'm', personaId: '' });
+    expect(parsed.personaId).toBeUndefined();
+  });
+
+  it('treats null/omitted personaId as base twin', () => {
+    expect(runTestsInputSchema.parse({ providerId: 'p', model: 'm', personaId: null }).personaId).toBeUndefined();
+    expect(runTestsInputSchema.parse({ providerId: 'p', model: 'm' }).personaId).toBeUndefined();
+  });
+
+  it('accepts a uuid persona id', () => {
+    expect(runTestsInputSchema.parse({ providerId: 'p', model: 'm', personaId: uuid }).personaId).toBe(uuid);
+  });
+
+  it('rejects a malformed persona id', () => {
+    expect(runTestsInputSchema.safeParse({ providerId: 'p', model: 'm', personaId: 'nope' }).success).toBe(false);
+  });
+
+  it('carries personaId on the multi-model schema too', () => {
+    const parsed = runMultiTestsInputSchema.parse({
+      providers: [{ providerId: 'p', model: 'm' }],
+      personaId: uuid
+    });
+    expect(parsed.personaId).toBe(uuid);
+  });
+});
+
+// Run-history entries persist which persona they embodied. Zod strips unknown
+// keys, so the persona fields MUST survive a parse round-trip or loadMeta would
+// silently drop them — while older (persona-free) entries still validate.
+describe('history-entry schemas preserve persona attribution', () => {
+  const uuid = '33333333-3333-4333-8333-333333333333';
+  const baseBehavioral = {
+    runId: '44444444-4444-4444-8444-444444444444',
+    providerId: 'p', model: 'm', score: 0.8,
+    passed: 4, failed: 1, partial: 0, total: 5,
+    timestamp: '2026-06-03T00:00:00.000Z'
+  };
+  const baseValues = {
+    runId: '55555555-5555-4555-8555-555555555555',
+    providerId: 'p', model: 'm', score: 0.6,
+    aligned: 3, partial: 1, misaligned: 1, total: 5,
+    timestamp: '2026-06-03T00:00:00.000Z'
+  };
+
+  it('keeps personaId/personaName on a behavioral entry', () => {
+    const parsed = testHistoryEntrySchema.parse({ ...baseBehavioral, personaId: uuid, personaName: 'Professional' });
+    expect(parsed.personaId).toBe(uuid);
+    expect(parsed.personaName).toBe('Professional');
+  });
+
+  it('keeps personaId/personaName on a values entry', () => {
+    const parsed = valuesTestHistoryEntrySchema.parse({ ...baseValues, personaId: uuid, personaName: 'Casual' });
+    expect(parsed.personaId).toBe(uuid);
+    expect(parsed.personaName).toBe('Casual');
+  });
+
+  it('still validates persona-free (legacy) entries', () => {
+    expect(testHistoryEntrySchema.parse(baseBehavioral).personaName).toBeUndefined();
+    expect(valuesTestHistoryEntrySchema.parse(baseValues).personaName).toBeUndefined();
   });
 });
 

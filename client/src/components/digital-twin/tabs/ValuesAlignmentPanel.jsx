@@ -23,7 +23,7 @@ import { timeAgo } from '../../../utils/formatters';
  * Reuses the provider/model selection from the parent TestTab via the
  * `selectedProviders` prop so the two suites share one configuration.
  */
-export default function ValuesAlignmentPanel({ selectedProviders = [], onRefresh }) {
+export default function ValuesAlignmentPanel({ selectedProviders = [], personaId = '', onRefresh }) {
   const [dilemmas, setDilemmas] = useState([]);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -57,7 +57,7 @@ export default function ValuesAlignmentPanel({ selectedProviders = [], onRefresh
 
     const runResults = await Promise.all(
       selectedProviders.map(({ providerId, model }) =>
-        api.runValuesAlignmentTests(providerId, model)
+        api.runValuesAlignmentTests(providerId, model, null, personaId || null)
           .then(result => ({ providerId, model, ...result }))
           .catch(err => ({ providerId, model, error: err.message }))
       )
@@ -68,7 +68,7 @@ export default function ValuesAlignmentPanel({ selectedProviders = [], onRefresh
     // to the local list instead of refetching (reactive-update convention).
     const fresh = runResults
       .filter(r => !r.error && r.runId)
-      .map(({ runId, score, aligned, total, timestamp, model }) => ({ runId, score, aligned, total, timestamp, model }));
+      .map(({ runId, score, aligned, total, timestamp, model, personaName }) => ({ runId, score, aligned, total, timestamp, model, personaName }));
     if (fresh.length) setHistory(prev => [...fresh, ...prev].slice(0, 5));
     setRunning(false);
 
@@ -287,7 +287,14 @@ export default function ValuesAlignmentPanel({ selectedProviders = [], onRefresh
                         {Math.round(run.score * 100)}%
                       </span>
                       <div>
-                        <div className="text-sm text-white">{run.model}</div>
+                        <div className="text-sm text-white flex items-center gap-2">
+                          {run.model}
+                          {run.personaName && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-port-accent/20 text-port-accent">
+                              {run.personaName}
+                            </span>
+                          )}
+                        </div>
                         <div className="text-xs text-gray-500">
                           {run.aligned}/{run.total} aligned • {timeAgo(run.timestamp)}
                         </div>

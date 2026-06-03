@@ -18,21 +18,21 @@ export const deleteDigitalTwinDocument = (id) => request(`/digital-twin/document
 
 // Digital Twin - Testing
 export const getDigitalTwinTests = () => request('/digital-twin/tests');
-export const runDigitalTwinTests = (providerId, model, testIds = null) => request('/digital-twin/tests/run', {
+export const runDigitalTwinTests = (providerId, model, testIds = null, personaId = null) => request('/digital-twin/tests/run', {
   method: 'POST',
-  body: JSON.stringify({ providerId, model, testIds })
+  body: JSON.stringify({ providerId, model, testIds, personaId })
 });
-export const runDigitalTwinMultiTests = (providers, testIds = null) => request('/digital-twin/tests/run-multi', {
+export const runDigitalTwinMultiTests = (providers, testIds = null, personaId = null) => request('/digital-twin/tests/run-multi', {
   method: 'POST',
-  body: JSON.stringify({ providers, testIds })
+  body: JSON.stringify({ providers, testIds, personaId })
 });
 export const getDigitalTwinTestHistory = (limit = 10) => request(`/digital-twin/tests/history?limit=${limit}`);
 
 // Digital Twin - Values-Alignment Testing (M34 P6)
 export const getValuesAlignmentTests = () => request('/digital-twin/values-tests');
-export const runValuesAlignmentTests = (providerId, model, testIds = null) => request('/digital-twin/values-tests/run', {
+export const runValuesAlignmentTests = (providerId, model, testIds = null, personaId = null) => request('/digital-twin/values-tests/run', {
   method: 'POST',
-  body: JSON.stringify({ providerId, model, testIds })
+  body: JSON.stringify({ providerId, model, testIds, personaId })
 });
 export const getValuesAlignmentTestHistory = (limit = 10) => request(`/digital-twin/values-tests/history?limit=${limit}`);
 

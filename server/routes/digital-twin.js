@@ -143,8 +143,8 @@ router.get('/tests', asyncHandler(async (req, res) => {
  * Run behavioral tests against a single provider/model
  */
 router.post('/tests/run', asyncHandler(async (req, res) => {
-  const { providerId, model, testIds } = validateRequest(runTestsInputSchema, req.body);
-  const result = await digitalTwinService.runTests(providerId, model, testIds);
+  const { providerId, model, testIds, personaId } = validateRequest(runTestsInputSchema, req.body);
+  const result = await digitalTwinService.runTests(providerId, model, testIds, personaId);
   res.json(result);
 }));
 
@@ -153,13 +153,13 @@ router.post('/tests/run', asyncHandler(async (req, res) => {
  * Run behavioral tests against multiple providers/models
  */
 router.post('/tests/run-multi', asyncHandler(async (req, res) => {
-  const { providers, testIds } = validateRequest(runMultiTestsInputSchema, req.body);
+  const { providers, testIds, personaId } = validateRequest(runMultiTestsInputSchema, req.body);
   const io = req.app.get('io');
 
   // Run tests for each provider in parallel
   const results = await Promise.all(
     providers.map(async ({ providerId, model }) => {
-      const result = await digitalTwinService.runTests(providerId, model, testIds).catch(err => ({
+      const result = await digitalTwinService.runTests(providerId, model, testIds, personaId).catch(err => ({
         providerId,
         model,
         error: err.message
@@ -206,8 +206,8 @@ router.get('/values-tests', asyncHandler(async (req, res) => {
  * response against the user's stored values hierarchy
  */
 router.post('/values-tests/run', asyncHandler(async (req, res) => {
-  const { providerId, model, testIds } = validateRequest(runTestsInputSchema, req.body);
-  const result = await digitalTwinService.runValuesAlignmentTests(providerId, model, testIds);
+  const { providerId, model, testIds, personaId } = validateRequest(runTestsInputSchema, req.body);
+  const result = await digitalTwinService.runValuesAlignmentTests(providerId, model, testIds, personaId);
   res.json(result);
 }));
 
