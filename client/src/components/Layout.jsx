@@ -59,6 +59,7 @@ import {
   Link2,
   Database,
   Shield,
+  Lock,
   Wand2,
   Zap,
   Inbox,
@@ -292,6 +293,7 @@ const navItems = [
       { to: '/settings/mortalloom', label: 'MortalLoom', icon: Activity },
       { to: '/prompts', label: 'Prompts', icon: FileText },
       { to: '/ai', label: 'Providers', icon: Bot },
+      { to: '/settings/security', label: 'Security', icon: Lock },
       { to: '/settings/sharing', label: 'Sharing', icon: Share2 },
       { to: '/settings/telegram', label: 'Telegram', icon: MessageSquare },
       { to: '/settings/voice', label: 'Voice', icon: Mic }
