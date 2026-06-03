@@ -19,6 +19,7 @@ import {
   Loader2,
   BookOpen,
   Pencil,
+  Columns3,
   Film,
   ExternalLink,
 } from 'lucide-react';
@@ -44,6 +45,7 @@ import { countWords } from '../../utils/formatters';
 import StoryboardPanel, { STORYBOARD_TAB, STORYBOARD_TAB_VALUES } from './StoryboardPanel';
 import AnalysisHistory from './AnalysisHistory';
 import ProseReader from './ProseReader';
+import SyncedReview from './SyncedReview';
 import ProseTokenPopover from './ProseTokenPopover';
 import WritersRoomDock from './WritersRoomDock';
 import useImageGenQueue from '../../hooks/useImageGenQueue';
@@ -139,14 +141,16 @@ export default function WorkEditor({ work, onChange, onToggleExercise, exerciseO
     stopOne: queueStopOne,
   } = useImageGenQueue();
 
-  // View mode (Edit | Read) is URL-driven so it deep-links and survives reloads.
-  // ?view=read switches to ProseReader; default is the existing textarea.
+  // View mode (Edit | Read | Review) is URL-driven so it deep-links and
+  // survives reloads. ?view=read → ProseReader; ?view=review → SyncedReview
+  // (Phase 4 prose/script/media surface); default is the existing textarea.
   const [searchParams, setSearchParams] = useSearchParams();
-  const viewMode = searchParams.get('view') === 'read' ? 'read' : 'edit';
+  const rawView = searchParams.get('view');
+  const viewMode = rawView === 'read' ? 'read' : rawView === 'review' ? 'review' : 'edit';
   const setViewMode = useCallback((mode) => {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
-      if (mode === 'read') next.set('view', 'read'); else next.delete('view');
+      if (mode === 'read' || mode === 'review') next.set('view', mode); else next.delete('view');
       return next;
     }, { replace: true });
   }, [setSearchParams]);
@@ -690,6 +694,17 @@ export default function WorkEditor({ work, onChange, onToggleExercise, exerciseO
           >
             <BookOpen size={11} /> Read
           </button>
+          <button
+            type="button"
+            aria-pressed={viewMode === 'review'}
+            onClick={() => setViewMode('review')}
+            className={`flex items-center gap-1 px-2 py-0.5 text-[11px] rounded ${
+              viewMode === 'review' ? 'bg-port-card text-white' : 'text-gray-400 hover:text-gray-200'
+            }`}
+            title="Synced prose · script · media review"
+          >
+            <Columns3 size={11} /> Review
+          </button>
         </div>
         <button
           onClick={handleSave}
@@ -765,11 +780,15 @@ export default function WorkEditor({ work, onChange, onToggleExercise, exerciseO
         />
       )}
 
-      {/* Mobile-only Writing/Storyboard toggle — desktop renders both side-by-side. */}
-      <div className="lg:hidden flex border-b border-port-border bg-port-bg/40 shrink-0">
-        <MobileTab active={mobileTab === MOBILE_TAB.WRITING} onClick={() => setMobileTab(MOBILE_TAB.WRITING)} icon={PenLine} label="Writing" />
-        <MobileTab active={mobileTab === MOBILE_TAB.STORYBOARD} onClick={() => setMobileTab(MOBILE_TAB.STORYBOARD)} icon={Clapperboard} label="Storyboard" />
-      </div>
+      {/* Mobile-only Writing/Storyboard toggle — desktop renders both side-by-side.
+          Review mode is a full-width surface with no storyboard sidebar, so the
+          toggle is irrelevant there. */}
+      {viewMode !== 'review' && (
+        <div className="lg:hidden flex border-b border-port-border bg-port-bg/40 shrink-0">
+          <MobileTab active={mobileTab === MOBILE_TAB.WRITING} onClick={() => setMobileTab(MOBILE_TAB.WRITING)} icon={PenLine} label="Writing" />
+          <MobileTab active={mobileTab === MOBILE_TAB.STORYBOARD} onClick={() => setMobileTab(MOBILE_TAB.STORYBOARD)} icon={Clapperboard} label="Storyboard" />
+        </div>
+      )}
 
       {/*
         When the render dock is visible (queue non-empty) it's `position: fixed`
@@ -783,8 +802,10 @@ export default function WorkEditor({ work, onChange, onToggleExercise, exerciseO
         className="flex-1 flex flex-col lg:flex-row min-h-0"
         style={renderQueue.length ? { paddingBottom: 56 } : undefined}
       >
-        <div className={`relative min-h-0 flex-1 ${mobileTab === MOBILE_TAB.STORYBOARD ? 'hidden lg:block' : 'block'}`}>
-          {viewMode === 'read' ? (
+        <div className={`relative min-h-0 flex-1 ${viewMode !== 'review' && mobileTab === MOBILE_TAB.STORYBOARD ? 'hidden lg:block' : 'block'}`}>
+          {viewMode === 'review' ? (
+            <SyncedReview work={work} />
+          ) : viewMode === 'read' ? (
             <div ref={readerRef} className="w-full h-full">
               <ProseReader
                 body={body}
@@ -812,16 +833,20 @@ export default function WorkEditor({ work, onChange, onToggleExercise, exerciseO
               className="w-full h-full resize-none px-6 py-6 text-base focus:outline-none"
             />
           )}
-          <div
-            className={`absolute bottom-2 right-3 flex items-center gap-3 text-[11px] px-2 py-1 rounded pointer-events-none ${
-              readingTheme === 'light' ? 'text-gray-700 bg-[var(--wr-reading-paper)]/85' : 'text-gray-500 bg-port-bg/80'
-            }`}
-          >
-            <span>{wordCount.toLocaleString()} words</span>
-            {dirty && <span className="text-port-warning">● unsaved</span>}
-          </div>
+          {viewMode !== 'review' && (
+            <div
+              className={`absolute bottom-2 right-3 flex items-center gap-3 text-[11px] px-2 py-1 rounded pointer-events-none ${
+                readingTheme === 'light' ? 'text-gray-700 bg-[var(--wr-reading-paper)]/85' : 'text-gray-500 bg-port-bg/80'
+              }`}
+            >
+              <span>{wordCount.toLocaleString()} words</span>
+              {dirty && <span className="text-port-warning">● unsaved</span>}
+            </div>
+          )}
         </div>
 
+        {/* Review mode is a full-width synced surface — no storyboard sidebar. */}
+        {viewMode !== 'review' && (
         <div
           onMouseDown={onSplitMouseDown}
           onDoubleClick={() => {
@@ -834,7 +859,9 @@ export default function WorkEditor({ work, onChange, onToggleExercise, exerciseO
           title="Drag to resize · double-click to reset"
           className="hidden lg:block w-1 shrink-0 cursor-col-resize bg-port-border hover:bg-port-accent/60 active:bg-port-accent transition-colors"
         />
+        )}
 
+        {viewMode !== 'review' && (
         <aside
           style={{ '--sidebar-w': `${sidebarWidth}px` }}
           className={`border-t lg:border-t-0 border-port-border bg-port-card/60 flex flex-col text-xs min-h-0 w-full flex-1 lg:flex-initial lg:w-[var(--sidebar-w)] lg:shrink-0 ${
@@ -869,6 +896,7 @@ export default function WorkEditor({ work, onChange, onToggleExercise, exerciseO
             onTabChange={setSidebarTab}
           />
         </aside>
+        )}
       </div>
 
       <ProseTokenPopover

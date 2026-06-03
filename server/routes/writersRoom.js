@@ -33,6 +33,7 @@ import {
 import {
   runAnalysis, listAnalyses, getAnalysis, attachSceneImage,
 } from '../services/writersRoom/evaluator.js';
+import { getSyncedReview } from '../services/writersRoom/syncedReview.js';
 import {
   listCharacters, createCharacter, updateCharacter, deleteCharacter,
 } from '../services/writersRoom/characters.js';
@@ -186,6 +187,15 @@ router.post('/works/:id/analysis', asyncHandler(async (req, res) => {
 
 router.get('/works/:id/analysis/:analysisId', asyncHandler(async (req, res) => {
   res.json(await getAnalysis(req.params.id, req.params.analysisId));
+}));
+
+// ---------- synced review (Phase 4: prose ↔ script ↔ media) ----------
+
+// Read-model assembled on demand from the active draft's segment index and the
+// `script` analysis snapshot (scenes + scene images). No new persistence — see
+// services/writersRoom/syncedReview.js for why this derives rather than stores.
+router.get('/works/:id/synced-review', asyncHandler(async (req, res) => {
+  res.json(await getSyncedReview(req.params.id));
 }));
 
 // ---------- characters ----------
