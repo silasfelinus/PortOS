@@ -45,8 +45,8 @@ afterAll(() => rmSync(tempRoot, { recursive: true, force: true }));
 
 describe('sweepOrphanShells', () => {
   it('removes an aged-out, ephemeral, zero-issue/zero-canon universe + series', async () => {
-    const uni = await universeSvc.createUniverse({ name: 'Abandoned U', ephemeral: true });
-    const ser = await seriesSvc.createSeries({ name: 'Abandoned S', universeId: uni.id, ephemeral: true });
+    const uni = await universeSvc.createUniverse({ name: 'Abandoned U', ephemeral: true, importDraft: true });
+    const ser = await seriesSvc.createSeries({ name: 'Abandoned S', universeId: uni.id, ephemeral: true, importDraft: true });
 
     const { deletedSeries, deletedUniverses } = await sweepOrphanShells({ now: FUTURE });
     expect(deletedSeries).toContain(ser.id);
@@ -65,9 +65,24 @@ describe('sweepOrphanShells', () => {
     expect(deletedUniverses).not.toContain(uni.id);
   });
 
+  it('spares an ephemeral-but-not-importDraft empty record (user-private, not an import shell)', async () => {
+    // `ephemeral` is a general user-settable "keep local / don't sync" marker —
+    // a deliberately-private empty universe/series carries it too. The GC must
+    // key on `importDraft` (stamped only by analyzeImport), never `ephemeral`
+    // alone, or it would silently delete the user's private records.
+    const uni = await universeSvc.createUniverse({ name: 'Private U', ephemeral: true });
+    const ser = await seriesSvc.createSeries({ name: 'Private S', universeId: uni.id, ephemeral: true });
+    expect(uni.importDraft).not.toBe(true);
+    expect(ser.importDraft).not.toBe(true);
+
+    const { deletedSeries, deletedUniverses } = await sweepOrphanShells({ now: FUTURE });
+    expect(deletedSeries).not.toContain(ser.id);
+    expect(deletedUniverses).not.toContain(uni.id);
+  });
+
   it('spares an ephemeral shell that is younger than the grace window', async () => {
-    const uni = await universeSvc.createUniverse({ name: 'Fresh U', ephemeral: true });
-    const ser = await seriesSvc.createSeries({ name: 'Fresh S', universeId: uni.id, ephemeral: true });
+    const uni = await universeSvc.createUniverse({ name: 'Fresh U', ephemeral: true, importDraft: true });
+    const ser = await seriesSvc.createSeries({ name: 'Fresh S', universeId: uni.id, ephemeral: true, importDraft: true });
 
     // Sweep with the real clock — the records were created just now, so the
     // age gate must spare them.
@@ -77,8 +92,8 @@ describe('sweepOrphanShells', () => {
   });
 
   it('spares an ephemeral series that still has issues, and its universe', async () => {
-    const uni = await universeSvc.createUniverse({ name: 'WithIssues U', ephemeral: true });
-    const ser = await seriesSvc.createSeries({ name: 'WithIssues S', universeId: uni.id, ephemeral: true });
+    const uni = await universeSvc.createUniverse({ name: 'WithIssues U', ephemeral: true, importDraft: true });
+    const ser = await seriesSvc.createSeries({ name: 'WithIssues S', universeId: uni.id, ephemeral: true, importDraft: true });
     await issuesSvc.createIssue({ seriesId: ser.id, title: 'A', arcPosition: 1 });
 
     const { deletedSeries, deletedUniverses } = await sweepOrphanShells({ now: FUTURE });
@@ -90,7 +105,7 @@ describe('sweepOrphanShells', () => {
   it('spares an ephemeral universe that has canon entities', async () => {
     const uni = await universeSvc.createUniverse({
       name: 'WithCanon U',
-      ephemeral: true,
+      ephemeral: true, importDraft: true,
       characters: [{ name: 'Aria' }],
     });
 
@@ -99,8 +114,8 @@ describe('sweepOrphanShells', () => {
   });
 
   it('does not remove a shared universe when one of its ephemeral series is GC-able but a committed one survives', async () => {
-    const uni = await universeSvc.createUniverse({ name: 'Shared U', ephemeral: true });
-    const orphanSer = await seriesSvc.createSeries({ name: 'Orphan S', universeId: uni.id, ephemeral: true });
+    const uni = await universeSvc.createUniverse({ name: 'Shared U', ephemeral: true, importDraft: true });
+    const orphanSer = await seriesSvc.createSeries({ name: 'Orphan S', universeId: uni.id, ephemeral: true, importDraft: true });
     const committedSer = await seriesSvc.createSeries({ name: 'Committed S', universeId: uni.id });
 
     const { deletedSeries, deletedUniverses } = await sweepOrphanShells({ now: FUTURE });

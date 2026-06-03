@@ -6,17 +6,20 @@
  * abandons the import before committing (e.g. an issue-split failure on a
  * fresh universe/series), those shells linger on disk forever.
  *
- * The primary defense is marking analyze-created shells `ephemeral` (kept out
- * of every sync transport) and clearing the flag in `commitImport` once the
+ * The primary defense is marking analyze-created shells as import drafts
+ * (`ephemeral` so they stay out of every sync transport, plus a dedicated
+ * `importDraft` marker) and clearing both flags in `commitImport` once the
  * import lands. This sweep is the belt-and-suspenders second half: it deletes
- * shells that are STILL ephemeral, hold no committed work (zero issues,
+ * shells that are STILL import drafts, hold no committed work (zero issues,
  * zero canon entities, no arc/seasons), and are older than a grace window —
  * so an abandoned analyze self-cleans instead of accreting orphan data.
  *
  * Conservative by construction:
- * - Only `ephemeral` records are candidates. A committed import promotes both
- *   records out of ephemeral, so a real universe/series is never a candidate
- *   regardless of how empty it looks.
+ * - Only `importDraft` records are candidates. `ephemeral` alone is NOT enough
+ *   — it's a general user-settable "don't sync / keep local" marker, so a
+ *   user's deliberately-private empty universe/series is also `ephemeral` and
+ *   must never be swept. `importDraft` is stamped ONLY by analyzeImport and
+ *   cleared on commit, so it uniquely identifies an abandoned import shell.
  * - A universe is only swept once its ephemeral series are gone AND it has no
  *   OTHER live (non-deleted) series — so a shared universe is never removed as
  *   a side-effect. `deleteUniverse` also enforces this block-until-empty rule.
@@ -86,11 +89,11 @@ export async function sweepOrphanShells({ now = Date.now(), maxAgeMs = ORPHAN_SH
     survivingSeriesByUniverse.set(key, (survivingSeriesByUniverse.get(key) || 0) + 1);
   };
 
-  // True only for an ephemeral, story-work-free, aged-out, zero-issue shell.
+  // True only for an import-draft, story-work-free, aged-out, zero-issue shell.
   // Each gate runs cheapest-first (the listIssues read is reached only by a
   // series that already passed every in-memory check).
   const seriesIsSweepable = async (s) => {
-    if (s.ephemeral !== true || seriesHasStoryWork(s)) return false;
+    if (s.importDraft !== true || seriesHasStoryWork(s)) return false;
     const age = ageMs(s, now);
     if (!Number.isFinite(age) || age < maxAgeMs) return false;
     const issues = await listIssues({ seriesId: s.id });
@@ -106,10 +109,10 @@ export async function sweepOrphanShells({ now = Date.now(), maxAgeMs = ORPHAN_SH
     }
   }
 
-  // --- Pass 2: ephemeral, empty, aged-out universes with no surviving series ---
+  // --- Pass 2: import-draft, empty, aged-out universes with no surviving series ---
   const allUniverses = await listUniverses();
   for (const u of allUniverses) {
-    if (u.ephemeral !== true) continue;
+    if (u.importDraft !== true) continue;
     if (universeHasCanon(u)) continue;
     const age = ageMs(u, now);
     if (!Number.isFinite(age) || age < maxAgeMs) continue;

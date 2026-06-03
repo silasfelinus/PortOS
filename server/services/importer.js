@@ -810,23 +810,25 @@ export async function analyzeImport({
   // universe if we created it in this call — a pre-existing universe must
   // never be removed as a side-effect of a series-create failure.
   //
-  // New shells are created `ephemeral` (issue #727): an analyze the user
+  // New shells are created as import drafts (issue #727): an analyze the user
   // abandons before commit otherwise leaves a zero-issue/zero-canon universe
   // + series lingering on disk. `ephemeral` keeps them out of every sync
-  // transport and tags them for the orphan-shell GC sweep
-  // (importerOrphanGc.js). `commitImport` promotes them (clears `ephemeral`)
+  // transport; `importDraft` is the dedicated GC marker that distinguishes an
+  // abandoned analyze from a user's deliberately-private empty record (which
+  // is also `ephemeral`) — so the orphan-shell GC sweep (importerOrphanGc.js)
+  // only ever touches genuine import shells. `commitImport` clears both flags
   // so a committed import becomes a normal, syncing record. Pre-existing
-  // records are never re-flagged ephemeral here.
+  // records are never re-flagged here.
   let universe = isExistingUniverse
     ? existingUniverse
-    : await createUniverse({ name: universeName.trim(), ephemeral: true });
+    : await createUniverse({ name: universeName.trim(), ephemeral: true, importDraft: true });
   const universeWasCreated = !isExistingUniverse;
 
   let series;
   try {
     series = isExistingSeries
       ? existingSeries
-      : await createSeries({ name: seriesName.trim(), universeId: universe.id, ephemeral: true });
+      : await createSeries({ name: seriesName.trim(), universeId: universe.id, ephemeral: true, importDraft: true });
   } catch (seriesErr) {
     if (universeWasCreated) {
       await deleteUniverse(universe.id).catch((delErr) =>
@@ -1374,21 +1376,23 @@ export async function commitImport({
     throw partial;
   }
 
-  // Promote any ephemeral shell now that the commit fully succeeded (issue
-  // #727). analyzeImport creates brand-new universe/series records `ephemeral`
-  // so an abandoned analyze leaves no syncing orphan; a successful commit turns
-  // them into normal records. Only patch records still flagged ephemeral —
-  // updateUniverse/updateSeries handle the ephemeral→non-ephemeral peer
-  // re-subscribe wiring, so the clear must go through them (not a raw write).
-  // Done after the issue loop so a rolled-back commit leaves the shells
-  // ephemeral and still GC-eligible.
+  // Promote any import-draft shell now that the commit fully succeeded (issue
+  // #727). analyzeImport creates brand-new universe/series records as import
+  // drafts (`ephemeral` + `importDraft`) so an abandoned analyze leaves no
+  // syncing orphan; a successful commit turns them into normal records by
+  // clearing BOTH flags. Clearing `ephemeral` must go through
+  // updateUniverse/updateSeries (they wire the ephemeral→non-ephemeral peer
+  // re-subscribe), so the same patch clears `importDraft` too. Gate STRICTLY on
+  // `importDraft` — committing an import onto a user's pre-existing private
+  // (`ephemeral`-only) record must NOT silently un-privatize it. Done after the
+  // issue loop so a rolled-back commit leaves the draft shells GC-eligible.
   let promotedUniverse = updatedUniverse;
   let promotedSeries = updatedSeries;
-  if (updatedUniverse.ephemeral === true) {
-    promotedUniverse = await updateUniverse(updatedUniverse.id, { ephemeral: false });
+  if (updatedUniverse.importDraft === true) {
+    promotedUniverse = await updateUniverse(updatedUniverse.id, { ephemeral: false, importDraft: false });
   }
-  if (updatedSeries.ephemeral === true) {
-    promotedSeries = await updateSeries(updatedSeries.id, { ephemeral: false });
+  if (updatedSeries.importDraft === true) {
+    promotedSeries = await updateSeries(updatedSeries.id, { ephemeral: false, importDraft: false });
   }
 
   return {

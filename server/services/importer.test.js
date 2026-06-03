@@ -320,10 +320,14 @@ describe('analyzeImport', () => {
     expect(result.universe.id).toBeDefined();
     expect(result.series.id).toMatch(/^ser-/);
     expect(result.series.universeId).toBe(result.universe.id);
-    // New shells are created ephemeral (issue #727) so an abandoned analyze
-    // leaves no syncing orphan — the orphan-shell GC sweeps them later.
+    // New shells are created as import drafts (issue #727): `ephemeral` keeps
+    // them out of sync, `importDraft` is the marker the orphan-shell GC keys on
+    // so an abandoned analyze self-cleans (without touching a user's private
+    // `ephemeral`-only records).
     expect(result.universe.ephemeral).toBe(true);
     expect(result.series.ephemeral).toBe(true);
+    expect(result.universe.importDraft).toBe(true);
+    expect(result.series.importDraft).toBe(true);
     expect(result.canonPreview.characters).toHaveLength(1);
     expect(result.canonPreview.characters[0].name).toBe('Aria');
     expect(result.canonPreview.places).toHaveLength(1);
@@ -815,8 +819,12 @@ async function setupForCommit() {
   // PATHS is, and instances.js resolves its own file paths) and fans the
   // fixture out to every actual peer, leaving "Commit U" / "Commit S"
   // records on the user's null sync machine after every test run.
-  const uni = await universeSvc.createUniverse({ name: 'Commit U', ephemeral: true });
-  const ser = await seriesSvc.createSeries({ name: 'Commit S', universeId: uni.id, ephemeral: true });
+  //
+  // importDraft:true models what analyzeImport stamps on a brand-new shell, so
+  // commitImport's promotion (which gates strictly on importDraft) clears both
+  // flags — matching the real analyze→commit lifecycle.
+  const uni = await universeSvc.createUniverse({ name: 'Commit U', ephemeral: true, importDraft: true });
+  const ser = await seriesSvc.createSeries({ name: 'Commit S', universeId: uni.id, ephemeral: true, importDraft: true });
   return { uni, ser };
 }
 
@@ -866,10 +874,13 @@ describe('commitImport', () => {
     expect(result.series.logline).toBe('A reluctant heir.');
     expect(result.series.premise).toBe('Big story.');
     expect(result.series.issueCountTarget).toBe(1);
-    // A successful commit promotes both shells out of ephemeral (issue #727)
-    // so the now-real records sync to peers instead of staying GC-eligible.
+    // A successful commit promotes both shells out of draft state (issue #727):
+    // ephemeral cleared so they sync to peers, importDraft cleared so the
+    // orphan-shell GC never touches them.
     expect(result.universe.ephemeral).not.toBe(true);
     expect(result.series.ephemeral).not.toBe(true);
+    expect(result.universe.importDraft).not.toBe(true);
+    expect(result.series.importDraft).not.toBe(true);
     // One issue created with prose + idea seeded.
     expect(result.createdIssueIds).toHaveLength(1);
     const issue = await issuesSvc.getIssue(result.createdIssueIds[0]);
