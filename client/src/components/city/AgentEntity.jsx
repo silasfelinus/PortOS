@@ -1,4 +1,4 @@
-import { useRef, useMemo } from 'react';
+import { useRef, useMemo, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Sparkles } from '@react-three/drei';
 import * as THREE from 'three';
@@ -43,6 +43,10 @@ export default function AgentEntity({ agent, position, index = 0, settings }) {
     }
     return geom;
   }, [color, trailSamples]);
+
+  // Dispose the geometry's GPU buffers when it's replaced (color/quality change)
+  // or on unmount — the imperative geometry isn't reclaimed automatically.
+  useEffect(() => () => trailGeom.dispose(), [trailGeom]);
 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();

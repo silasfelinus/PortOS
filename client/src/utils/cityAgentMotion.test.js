@@ -97,6 +97,7 @@ describe('computeAgentTrailPoints', () => {
     const pts = computeAgentTrailPoints(t, opts, 8, AGENT_MOTION.trailSeconds);
     const last = pts.length - 3;
     expect(pts[last]).toBeCloseTo(tail.x, 6);
+    expect(pts[last + 1]).toBeCloseTo(tail.y, 6);
     expect(pts[last + 2]).toBeCloseTo(tail.z, 6);
   });
 
