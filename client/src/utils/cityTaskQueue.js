@@ -68,7 +68,6 @@ export function computeTaskQueue(tasks, opts = {}) {
   }
   return {
     position: TASK_QUEUE.position,
-    counts,
     pending: counts.pending,
     inProgress: counts.in_progress,
     blocked: counts.blocked,
