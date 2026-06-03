@@ -125,6 +125,28 @@ export function computeMilestoneSegments(goal, height) {
   });
 }
 
+// Stamp a monument view-model with its milestone segments + done/total counts. Used by
+// placeMonument and again by the forest layout after a spire's height is boosted (the
+// segments must be recomputed against the taller height). Mutates and returns `monument`.
+function attachMilestones(monument, goal, height) {
+  monument.segments = computeMilestoneSegments(goal, height);
+  monument.milestoneTotal = monument.segments.length;
+  monument.milestoneDone = monument.segments.filter((s) => s.done).length;
+  return monument;
+}
+
+// Status ordering shared by the flat row and the forest: completed first (trophies up
+// front), then active, stalled, abandoned; ties broken by goal id for a layout that
+// doesn't reshuffle across refetches. Used as an Array.sort comparator over items that
+// expose `{ status, id }`.
+const STATUS_RANK = { completed: 0, active: 1, stalled: 2, abandoned: 3 };
+function compareByStatusThenId(a, b) {
+  const sa = STATUS_RANK[a.status] ?? 9;
+  const sb = STATUS_RANK[b.status] ?? 9;
+  if (sa !== sb) return sa - sb;
+  return String(a.id || '').localeCompare(String(b.id || ''));
+}
+
 // Map one goal to its placed monument view-model. `index` is the slot in the row (0-based);
 // `count` is how many monuments are actually placed, so the row is centered on MONUMENTS.base.
 // When `position` is supplied (goal-forest layout) it overrides the centered-row placement,
@@ -138,9 +160,8 @@ export function placeMonument(goal, index, count, now = Date.now(), position = n
   // Center the row: slot 0 sits at the leftmost, the middle slot aligns with base.x.
   const offset = (index - (count - 1) / 2) * MONUMENTS.spacing;
   const x = MONUMENTS.base[0] + offset;
-  const segments = computeMilestoneSegments(goal, height);
 
-  return {
+  return attachMilestones({
     id: goal?.id || `goal-${index}`,
     title: typeof goal?.title === 'string' && goal.title ? goal.title : 'Untitled Goal',
     status,
@@ -153,11 +174,8 @@ export function placeMonument(goal, index, count, now = Date.now(), position = n
     built: style.built,
     height,
     width: MONUMENTS.baseWidth,
-    segments, // ordered milestone floors (empty when the goal has no milestones)
-    milestoneTotal: segments.length,
-    milestoneDone: segments.filter((s) => s.done).length,
     position: Array.isArray(position) ? position : [x, 0, MONUMENTS.z],
-  };
+  }, goal, height);
 }
 
 // Full derived view-model for the component. `goals` is the raw goals list (the API
@@ -167,17 +185,10 @@ export function placeMonument(goal, index, count, now = Date.now(), position = n
 export function computeGoalMonuments(goals, now = Date.now()) {
   const list = Array.isArray(goals) ? goals.filter((g) => g && typeof g === 'object') : [];
 
-  // Stable ordering so the row doesn't reshuffle across refetches: completed first
-  // (trophies up front), then active, then stalled, then abandoned; ties broken by id.
-  const order = { completed: 0, active: 1, stalled: 2, abandoned: 3 };
+  // Stable ordering so the row doesn't reshuffle across refetches (see STATUS_RANK).
   const ranked = list
-    .map((goal) => ({ goal, status: effectiveGoalStatus(goal, now) }))
-    .sort((a, b) => {
-      const sa = order[a.status] ?? 9;
-      const sb = order[b.status] ?? 9;
-      if (sa !== sb) return sa - sb;
-      return String(a.goal?.id || '').localeCompare(String(b.goal?.id || ''));
-    });
+    .map((goal) => ({ goal, id: goal?.id, status: effectiveGoalStatus(goal, now) }))
+    .sort(compareByStatusThenId);
 
   const visible = ranked.slice(0, MONUMENTS.maxMonuments);
   const overflowCount = Math.max(0, ranked.length - visible.length);
@@ -218,7 +229,7 @@ export function computeGoalMonuments(goals, now = Date.now()) {
 // clusters don't overlap. Pure + deterministic (no three.js): the component consumes the
 // returned positions/links directly.
 export const FOREST = {
-  base: [30, 0, -40], // shared center with the flat row's MONUMENTS.base
+  base: MONUMENTS.base, // shared center with the flat row
   clusterSpacing: 26, // x-distance between adjacent root clusters
   childRadius: 7.5, // ring radius of children around their root spire
   spireBoost: 1.5, // root spires render this much taller than a flat monument
@@ -253,15 +264,10 @@ export function buildGoalForest(goals) {
 export function computeGoalForest(goals, now = Date.now()) {
   const { roots } = buildGoalForest(goals);
 
-  const order = { completed: 0, active: 1, stalled: 2, abandoned: 3 };
+  // Same completed→active→stalled→abandoned ordering as the flat row (see STATUS_RANK).
   const rankedRoots = roots
-    .map((node) => ({ node, status: effectiveGoalStatus(node.goal, now) }))
-    .sort((a, b) => {
-      const sa = order[a.status] ?? 9;
-      const sb = order[b.status] ?? 9;
-      if (sa !== sb) return sa - sb;
-      return String(a.node.goal?.id || '').localeCompare(String(b.node.goal?.id || ''));
-    });
+    .map((node) => ({ node, id: node.goal?.id, status: effectiveGoalStatus(node.goal, now) }))
+    .sort(compareByStatusThenId);
 
   const visibleRoots = rankedRoots.slice(0, FOREST.maxRoots);
   const rootOverflow = Math.max(0, rankedRoots.length - visibleRoots.length);
@@ -272,13 +278,11 @@ export function computeGoalForest(goals, now = Date.now()) {
     const clusterZ = FOREST.base[2];
 
     // Root spire — a placed monument boosted in height so it visually anchors the cluster.
+    // Re-segment milestones against the boosted height so floors fill the taller tower.
     const spire = placeMonument(node.goal, 0, 1, now, [clusterX, 0, clusterZ]);
     spire.height *= FOREST.spireBoost;
     spire.isSpire = true;
-    // Re-segment milestones against the boosted height so floors fill the taller tower.
-    spire.segments = computeMilestoneSegments(node.goal, spire.height);
-    spire.milestoneTotal = spire.segments.length;
-    spire.milestoneDone = spire.segments.filter((s) => s.done).length;
+    attachMilestones(spire, node.goal, spire.height);
 
     const childNodes = node.children.slice(0, FOREST.maxChildren);
     const childOverflow = Math.max(0, node.children.length - childNodes.length);
