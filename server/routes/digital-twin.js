@@ -52,6 +52,18 @@ import { UUID_RE } from '../lib/fileUtils.js';
 
 const router = Router();
 
+/**
+ * Assert a persona id (when supplied) resolves to a stored persona, throwing
+ * 404 otherwise. A test run with a stale/deleted personaId would otherwise
+ * silently fall back to the base twin, mislabeling the result; this makes the
+ * contract explicit — mirroring the same guard on PUT /personas/active.
+ */
+async function assertPersonaExists(personaId) {
+  if (personaId && !(await digitalTwinService.getPersonaById(personaId))) {
+    throw new ServerError('Persona not found', { status: 404, code: 'NOT_FOUND' });
+  }
+}
+
 // =============================================================================
 // STATUS & SUMMARY
 // =============================================================================
@@ -143,8 +155,9 @@ router.get('/tests', asyncHandler(async (req, res) => {
  * Run behavioral tests against a single provider/model
  */
 router.post('/tests/run', asyncHandler(async (req, res) => {
-  const { providerId, model, testIds } = validateRequest(runTestsInputSchema, req.body);
-  const result = await digitalTwinService.runTests(providerId, model, testIds);
+  const { providerId, model, testIds, personaId } = validateRequest(runTestsInputSchema, req.body);
+  await assertPersonaExists(personaId);
+  const result = await digitalTwinService.runTests(providerId, model, testIds, personaId);
   res.json(result);
 }));
 
@@ -153,13 +166,14 @@ router.post('/tests/run', asyncHandler(async (req, res) => {
  * Run behavioral tests against multiple providers/models
  */
 router.post('/tests/run-multi', asyncHandler(async (req, res) => {
-  const { providers, testIds } = validateRequest(runMultiTestsInputSchema, req.body);
+  const { providers, testIds, personaId } = validateRequest(runMultiTestsInputSchema, req.body);
+  await assertPersonaExists(personaId);
   const io = req.app.get('io');
 
   // Run tests for each provider in parallel
   const results = await Promise.all(
     providers.map(async ({ providerId, model }) => {
-      const result = await digitalTwinService.runTests(providerId, model, testIds).catch(err => ({
+      const result = await digitalTwinService.runTests(providerId, model, testIds, personaId).catch(err => ({
         providerId,
         model,
         error: err.message
@@ -206,8 +220,9 @@ router.get('/values-tests', asyncHandler(async (req, res) => {
  * response against the user's stored values hierarchy
  */
 router.post('/values-tests/run', asyncHandler(async (req, res) => {
-  const { providerId, model, testIds } = validateRequest(runTestsInputSchema, req.body);
-  const result = await digitalTwinService.runValuesAlignmentTests(providerId, model, testIds);
+  const { providerId, model, testIds, personaId } = validateRequest(runTestsInputSchema, req.body);
+  await assertPersonaExists(personaId);
+  const result = await digitalTwinService.runValuesAlignmentTests(providerId, model, testIds, personaId);
   res.json(result);
 }));
 
@@ -218,6 +233,76 @@ router.post('/values-tests/run', asyncHandler(async (req, res) => {
 router.get('/values-tests/history', asyncHandler(async (req, res) => {
   const data = validateRequest(testHistoryQuerySchema, req.query);
   const history = await digitalTwinService.getValuesAlignmentHistory(data.limit);
+  res.json(history);
+}));
+
+// =============================================================================
+// ADVERSARIAL BOUNDARY TESTING (M34 P6)
+// =============================================================================
+
+/**
+ * GET /api/digital-twin/adversarial-tests
+ * Get the adversarial-boundary scenario suite (parsed from ADVERSARIAL_BOUNDARY_SUITE.md)
+ */
+router.get('/adversarial-tests', asyncHandler(async (req, res) => {
+  const scenarios = await digitalTwinService.parseAdversarialSuite();
+  res.json(scenarios);
+}));
+
+/**
+ * POST /api/digital-twin/adversarial-tests/run
+ * Run adversarial-boundary scenarios against a single provider/model, scoring
+ * whether the embodied twin held or breached each stated boundary
+ */
+router.post('/adversarial-tests/run', asyncHandler(async (req, res) => {
+  const { providerId, model, testIds, personaId } = validateRequest(runTestsInputSchema, req.body);
+  await assertPersonaExists(personaId);
+  const result = await digitalTwinService.runAdversarialTests(providerId, model, testIds, personaId);
+  res.json(result);
+}));
+
+/**
+ * GET /api/digital-twin/adversarial-tests/history
+ * Get adversarial-boundary run history
+ */
+router.get('/adversarial-tests/history', asyncHandler(async (req, res) => {
+  const data = validateRequest(testHistoryQuerySchema, req.query);
+  const history = await digitalTwinService.getAdversarialTestHistory(data.limit);
+  res.json(history);
+}));
+
+// =============================================================================
+// MULTI-TURN CONVERSATION TESTING (M34 P6)
+// =============================================================================
+
+/**
+ * GET /api/digital-twin/multi-turn-tests
+ * Get the multi-turn conversation suite (parsed from MULTI_TURN_SUITE.md)
+ */
+router.get('/multi-turn-tests', asyncHandler(async (req, res) => {
+  const scenarios = await digitalTwinService.parseMultiTurnSuite();
+  res.json(scenarios);
+}));
+
+/**
+ * POST /api/digital-twin/multi-turn-tests/run
+ * Run multi-turn conversation scenarios against a single provider/model, scoring
+ * whether the embodied twin stayed consistent across each conversation
+ */
+router.post('/multi-turn-tests/run', asyncHandler(async (req, res) => {
+  const { providerId, model, testIds, personaId } = validateRequest(runTestsInputSchema, req.body);
+  await assertPersonaExists(personaId);
+  const result = await digitalTwinService.runMultiTurnTests(providerId, model, testIds, personaId);
+  res.json(result);
+}));
+
+/**
+ * GET /api/digital-twin/multi-turn-tests/history
+ * Get multi-turn conversation run history
+ */
+router.get('/multi-turn-tests/history', asyncHandler(async (req, res) => {
+  const data = validateRequest(testHistoryQuerySchema, req.query);
+  const history = await digitalTwinService.getMultiTurnTestHistory(data.limit);
   res.json(history);
 }));
 

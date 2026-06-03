@@ -19,6 +19,9 @@ export const testResultEnum = z.enum(['passed', 'partial', 'failed', 'pending'])
 // Values-alignment result enum (M34 P6)
 export const valuesTestResultEnum = z.enum(['aligned', 'partial', 'misaligned', 'pending']);
 
+// Adversarial-boundary result enum (M34 P6) — did the twin hold the line?
+export const adversarialTestResultEnum = z.enum(['held', 'partial', 'breached', 'pending']);
+
 // Export format enum
 export const exportFormatEnum = z.enum(['system_prompt', 'claude_md', 'json', 'individual']);
 
@@ -52,11 +55,16 @@ export const documentMetaSchema = z.object({
   weight: z.number().int().min(1).max(10).default(5)
 });
 
-// Test history entry schema
+// Test history entry schema. personaId/personaName are present only when the
+// run embodied a persona (P7); older entries predate the field, so both are
+// optional — Zod strips unknown keys, so they MUST be declared here or they'd
+// be silently dropped on the next loadMeta.
 export const testHistoryEntrySchema = z.object({
   runId: z.string().uuid(),
   providerId: z.string(),
   model: z.string(),
+  personaId: z.string().uuid().optional(),
+  personaName: z.string().optional(),
   score: z.number().min(0).max(1),
   passed: z.number().int().min(0),
   failed: z.number().int().min(0),
@@ -65,15 +73,47 @@ export const testHistoryEntrySchema = z.object({
   timestamp: z.string().datetime()
 });
 
-// Values-alignment run history entry (M34 P6)
+// Values-alignment run history entry (M34 P6). Same persona fields as above.
 export const valuesTestHistoryEntrySchema = z.object({
   runId: z.string().uuid(),
   providerId: z.string(),
   model: z.string(),
+  personaId: z.string().uuid().optional(),
+  personaName: z.string().optional(),
   score: z.number().min(0).max(1),
   aligned: z.number().int().min(0),
   partial: z.number().int().min(0),
   misaligned: z.number().int().min(0),
+  total: z.number().int().min(0),
+  timestamp: z.string().datetime()
+});
+
+// Adversarial-boundary run history entry (M34 P6). Same persona fields as above.
+export const adversarialTestHistoryEntrySchema = z.object({
+  runId: z.string().uuid(),
+  providerId: z.string(),
+  model: z.string(),
+  personaId: z.string().uuid().optional(),
+  personaName: z.string().optional(),
+  score: z.number().min(0).max(1),
+  held: z.number().int().min(0),
+  partial: z.number().int().min(0),
+  breached: z.number().int().min(0),
+  total: z.number().int().min(0),
+  timestamp: z.string().datetime()
+});
+
+// Multi-turn conversation run history entry (M34 P6). Same persona fields as above.
+export const multiTurnTestHistoryEntrySchema = z.object({
+  runId: z.string().uuid(),
+  providerId: z.string(),
+  model: z.string(),
+  personaId: z.string().uuid().optional(),
+  personaName: z.string().optional(),
+  score: z.number().min(0).max(1),
+  consistent: z.number().int().min(0),
+  partial: z.number().int().min(0),
+  inconsistent: z.number().int().min(0),
   total: z.number().int().min(0),
   timestamp: z.string().datetime()
 });
@@ -208,6 +248,8 @@ export const digitalTwinMetaSchema = z.object({
   documents: z.array(documentMetaSchema).default([]),
   testHistory: z.array(testHistoryEntrySchema).default([]),
   valuesTestHistory: z.array(valuesTestHistoryEntrySchema).default([]),
+  adversarialTestHistory: z.array(adversarialTestHistoryEntrySchema).default([]),
+  multiTurnTestHistory: z.array(multiTurnTestHistoryEntrySchema).default([]),
   enrichment: enrichmentProgressSchema.default({ completedCategories: [], lastSession: null }),
   settings: digitalTwinSettingsSchema.default({ autoInjectToCoS: true, maxContextTokens: 4000 }),
   personas: z.array(personaSchema).default([]),
@@ -245,11 +287,20 @@ const optionalTestIds = z.preprocess(
   z.array(z.number().int().min(1)).optional()
 );
 
+// Optional persona to embody for a test run. The UI's "Base twin" choice sends
+// '' (or omits it); a specific persona sends its uuid. Treat null/'' as absent
+// so a base-twin run validates instead of 400-ing on the sentinel.
+const optionalPersonaId = z.preprocess(
+  v => (v == null || v === '') ? undefined : v,
+  z.string().uuid().optional()
+);
+
 // Run tests input
 export const runTestsInputSchema = z.object({
   providerId: z.string().min(1),
   model: z.string().min(1),
-  testIds: optionalTestIds
+  testIds: optionalTestIds,
+  personaId: optionalPersonaId
 });
 
 // Run multi-model tests input
@@ -258,7 +309,8 @@ export const runMultiTestsInputSchema = z.object({
     providerId: z.string().min(1),
     model: z.string().min(1)
   })).min(1).max(10),
-  testIds: optionalTestIds
+  testIds: optionalTestIds,
+  personaId: optionalPersonaId
 });
 
 // Enrichment question input

@@ -12,6 +12,57 @@ import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
+const toMemoryMb = (memoryKb) => Math.round(memoryKb / 1024 * 10) / 10;
+
+/**
+ * Parse a single `tasklist /FO CSV /NH` row into process stats.
+ *
+ * tasklist emits comma-delimited, double-quoted fields:
+ *   "node.exe","1234","Console","1","50,000 K"
+ *    image      PID    session    #    memUsage
+ *
+ * `/NH /FO CSV` does NOT report %CPU, so cpu is always 0 here (a different
+ * source — WMIC/PowerShell — would be needed for CPU on Windows). The memory
+ * column carries thousands separators and a " K" (KiB) unit, so strip every
+ * non-digit before parsing. Returns null when the row isn't a parseable data
+ * row (e.g. the "INFO: No tasks…" line).
+ */
+function parseTasklistRow(line, fallbackPid) {
+  const fields = [...line.matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+  if (fields.length < 5) {
+    return null;
+  }
+  const memoryKb = parseInt(fields[4].replace(/[^\d]/g, ''), 10) || 0;
+  return {
+    active: true,
+    pid: parseInt(fields[1], 10) || fallbackPid,
+    cpu: 0, // tasklist /NH does not report %CPU
+    memoryKb,
+    memoryMb: toMemoryMb(memoryKb),
+    state: 'running' // tasklist row only appears for live PIDs; it carries no state column
+  };
+}
+
+/**
+ * Parse a single `ps -o pid=,pcpu=,rss=,state=` row into process stats.
+ * Whitespace-delimited: `1234 0.5 50000 S`.
+ */
+function parsePsRow(line, fallbackPid) {
+  const parts = line.split(/\s+/).filter(Boolean);
+  if (parts.length < 3) {
+    return null;
+  }
+  const memoryKb = parseInt(parts[2], 10) || 0;
+  return {
+    active: true,
+    pid: parseInt(parts[0], 10) || fallbackPid,
+    cpu: parseFloat(parts[1]) || 0,
+    memoryKb,
+    memoryMb: toMemoryMb(memoryKb),
+    state: parts[3] || 'unknown'
+  };
+}
+
 /**
  * Get process stats (CPU, memory) for a PID.
  * Returns { active, pid, cpu, memoryKb, memoryMb?, state }.
@@ -23,9 +74,9 @@ export async function getProcessStats(pid) {
     return { active: false, pid, cpu: 0, memoryKb: 0, state: 'invalid' };
   }
 
-  // Get process stats using ps command
+  const isWindows = process.platform === 'win32';
   // %cpu = CPU percentage, rss = resident set size in KB
-  const psCmd = process.platform === 'win32'
+  const psCmd = isWindows
     ? `tasklist /FI "PID eq ${safePid}" /FO CSV /NH`
     : `ps -p ${safePid} -o pid=,pcpu=,rss=,state=`;
   const result = await execAsync(psCmd, { windowsHide: true }).catch(() => ({ stdout: '' }));
@@ -35,19 +86,19 @@ export async function getProcessStats(pid) {
     return { active: false, pid, cpu: 0, memoryKb: 0, state: 'dead' };
   }
 
-  const parts = line.split(/\s+/).filter(Boolean);
-  if (parts.length >= 3) {
-    return {
-      active: true,
-      pid: parseInt(parts[0], 10),
-      cpu: parseFloat(parts[1]) || 0,
-      memoryKb: parseInt(parts[2], 10) || 0,
-      memoryMb: Math.round((parseInt(parts[2], 10) || 0) / 1024 * 10) / 10,
-      state: parts[3] || 'unknown'
-    };
+  const parseRow = isWindows ? parseTasklistRow : parsePsRow;
+  const stats = parseRow(line, safePid);
+  if (stats) {
+    return stats;
   }
 
-  return { active: true, pid, cpu: 0, memoryKb: 0, state: 'unknown' };
+  // No parseable data row. On Windows a non-empty-but-unparseable line is the
+  // "INFO: No tasks are running…" message tasklist prints (with exit 0) when
+  // the PID is gone, so report it dead — matching checkProcessRunning.
+  if (isWindows) {
+    return { active: false, pid: safePid, cpu: 0, memoryKb: 0, state: 'dead' };
+  }
+  return { active: true, pid: safePid, cpu: 0, memoryKb: 0, state: 'unknown' };
 }
 
 /**

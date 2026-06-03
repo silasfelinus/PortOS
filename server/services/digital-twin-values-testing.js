@@ -18,7 +18,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { getProviderById } from './providers.js';
 import { buildPrompt } from './promptService.js';
-import { DIGITAL_TWIN_DIR, generateId, now, callProviderAI, parseScorerVerdict } from './digital-twin-helpers.js';
+import { DIGITAL_TWIN_DIR, generateId, now, callProviderAI, parseScorerVerdict, resolveTestPersona, parseBulletList } from './digital-twin-helpers.js';
 import { loadMeta, saveMeta, cache, CACHE_TTL_MS } from './digital-twin-meta.js';
 import { getDigitalTwinForPrompt } from './digital-twin-context.js';
 
@@ -75,13 +75,6 @@ export async function parseValuesAlignmentSuite() {
   return dilemmas;
 }
 
-function parseBulletList(block) {
-  return block
-    .split('\n')
-    .map(line => line.replace(/^[-*]\s*/, '').trim())
-    .filter(Boolean);
-}
-
 /**
  * Render the user's ranked values into a readable block for the scorer prompt.
  * Returns a sentinel string (not empty) when no hierarchy is recorded, so the
@@ -98,9 +91,11 @@ export function formatValuesHierarchy(traits) {
     .join('\n');
 }
 
-export async function runValuesAlignmentTests(providerId, model, testIds = null) {
+export async function runValuesAlignmentTests(providerId, model, testIds = null, personaId = null) {
   const dilemmas = await parseValuesAlignmentSuite();
-  const twinContext = await getDigitalTwinForPrompt();
+  // A persona flavors the embodied identity so the dilemmas measure values
+  // alignment *as* that persona (P7); none tests the base twin.
+  const twinContext = await getDigitalTwinForPrompt(personaId ? { personaId } : {});
 
   const provider = await getProviderById(providerId);
   if (!provider || !provider.enabled) {
@@ -130,6 +125,7 @@ export async function runValuesAlignmentTests(providerId, model, testIds = null)
     runId: generateId(),
     providerId,
     model,
+    ...resolveTestPersona(meta.personas, personaId),
     score: toRun.length > 0 ? (aligned + partial * 0.5) / toRun.length : 0,
     aligned,
     partial,
