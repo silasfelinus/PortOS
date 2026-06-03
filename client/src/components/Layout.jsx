@@ -1005,8 +1005,8 @@ export default function Layout() {
         );
       })()}
 
-      {/* Main area */}
-      <div className={`flex-1 flex flex-col min-w-0 max-w-full transition-all duration-300 ${collapsed ? 'lg:ml-16' : 'lg:ml-56'}`}>
+      {/* Main area — print drops the sidebar offset so printed pages aren't shifted right */}
+      <div className={`flex-1 flex flex-col min-w-0 max-w-full transition-all duration-300 print:ml-0 ${collapsed ? 'lg:ml-16' : 'lg:ml-56'}`}>
         {/* Mobile header */}
         <header className="lg:hidden flex items-center justify-between px-2 py-1.5 border-b border-port-border bg-port-card print:hidden">
           <button
@@ -1082,7 +1082,7 @@ export default function Layout() {
             location.pathname.startsWith('/city') ||
             /^\/apps\/[^/]+/.test(location.pathname);
           return (
-            <main id="main-content" className={`flex-1 min-h-0 ${isFullWidth ? 'relative overflow-hidden' : 'overflow-auto p-4 md:p-6'}`}>
+            <main id="main-content" className={`flex-1 min-h-0 print:overflow-visible print:min-h-0 ${isFullWidth ? 'relative overflow-hidden' : 'overflow-auto p-4 md:p-6'}`}>
               <Outlet />
             </main>
           );
