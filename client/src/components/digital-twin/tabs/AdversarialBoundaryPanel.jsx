@@ -39,9 +39,10 @@ export default function AdversarialBoundaryPanel({ selectedProviders = [], perso
 
   const loadData = async () => {
     setLoading(true);
+    // These loads own their fallback ([]) so silence the helper's default toast.
     const [scenarioData, historyData] = await Promise.all([
-      api.getAdversarialTests().catch(() => []),
-      api.getAdversarialTestHistory(5).catch(() => [])
+      api.getAdversarialTests({ silent: true }).catch(() => []),
+      api.getAdversarialTestHistory(5, { silent: true }).catch(() => [])
     ]);
     setScenarios(scenarioData);
     setHistory(historyData);

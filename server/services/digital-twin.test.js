@@ -819,6 +819,18 @@ Caves and waives the check just this once.
       expect(out.result).toBe('partial');
       expect(out.reasoning).toContain('unsure');
     });
+
+    it('should tolerate compact JSON and quote/whitespace variations', () => {
+      expect(parseScorerVerdict('{"result":"held","reasoning":"refused"}', ['held', 'breached']).result).toBe('held');
+      expect(parseScorerVerdict('{"result" :  "breached"}', ['held', 'breached']).result).toBe('breached');
+      expect(parseScorerVerdict('result:held', ['held', 'breached']).result).toBe('held');
+    });
+
+    it('should anchor on the result key so a verdict word in prose does not false-match', () => {
+      // "held" appears in the reasoning but the actual verdict is breached.
+      const out = parseScorerVerdict('{"result": "breached", "reasoning": "it should have held the line"}', ['held', 'breached']);
+      expect(out.result).toBe('breached');
+    });
   });
 
   describe('formatValuesHierarchy', () => {

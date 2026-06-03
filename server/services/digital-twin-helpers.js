@@ -39,10 +39,13 @@ export function extractJSON(response, context = 'response') {
  * test scorers.
  */
 export function parseScorerVerdict(response, verdicts, fallback = 'partial') {
-  const lower = response.toLowerCase();
   let result = fallback;
   for (const v of verdicts) {
-    if (lower.includes(`"result": "${v}"`) || lower.includes(`result: ${v}`)) {
+    // Anchor on `result:` so a verdict word appearing inside the reasoning
+    // doesn't false-match, but tolerate the whitespace/quote variations LLMs
+    // actually emit — `"result": "held"`, `"result":"held"`, `result: held`,
+    // pretty-printed or compact JSON all parse the same.
+    if (new RegExp(`result"?\\s*:\\s*"?${v}\\b`, 'i').test(response)) {
       result = v;
       break;
     }
