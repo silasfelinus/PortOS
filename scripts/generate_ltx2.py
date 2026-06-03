@@ -70,11 +70,6 @@ def emit_download(msg: str) -> None:
     print(f"DOWNLOAD:{msg}", file=sys.stderr, flush=True)
 
 
-def env_truthy(name: str) -> bool:
-    """True when env var `name` is set to a recognized truthy value (1/true/yes/on)."""
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 _EXTEND_TC_CONFIG: dict | None = None
 _A2V_TC_CONFIG: dict | None = None
 _EXTEND_TC_PATCH_OK = False
@@ -279,22 +274,8 @@ def configure_image_strength(image_strength: float | None) -> None:
     emit_status(f"Using image strength {image_strength:g}")
 
 
-def run_two_stage(
-    args: argparse.Namespace,
-    image: str | None = None,
-    *,
-    stage1_steps: int | None = None,
-    stage2_steps: int | None = None,
-    cfg_scale: float | None = None,
-    status: str = "Generating with CFG…",
-) -> str:
-    """T2V/I2V path via the dgrauet two-stage pipeline.
-
-    The keyword overrides let the env-gated T2V perf experiment
-    (PORTOS_T2V_TWO_STAGE) drive a fast half-res config with no CFG;
-    callers that omit them keep the original CFG-path defaults
-    (30 stage-1 steps, args.stage2_steps, cfg_scale 3.0).
-    """
+def run_two_stage(args: argparse.Namespace, image: str | None = None) -> str:
+    """T2V/I2V path that honors CFG via the dgrauet two-stage pipeline."""
     from ltx_pipelines_mlx import TwoStagePipeline
     emit_status(f"Loading two-stage pipeline ({args.model})…")
     emit_stage(1, 0, 1, "Loading model")
@@ -307,7 +288,7 @@ def run_two_stage(
     )
     bind_output_fps(pipe, args.fps)
     emit_stage(1, 1, 1, "Loaded")
-    emit_status(status)
+    emit_status("Generating with CFG…")
     return pipe.generate_and_save(
         prompt=args.prompt,
         output_path=args.output,
@@ -316,30 +297,15 @@ def run_two_stage(
         width=args.width,
         num_frames=args.num_frames,
         seed=args.seed,
-        stage1_steps=stage1_steps if stage1_steps is not None
-        else (args.steps if args.steps is not None else 30),
-        stage2_steps=stage2_steps if stage2_steps is not None else args.stage2_steps,
-        cfg_scale=cfg_scale if cfg_scale is not None
-        else (args.cfg_scale if args.cfg_scale is not None else 3.0),
+        stage1_steps=args.steps if args.steps is not None else 30,
+        stage2_steps=args.stage2_steps,
+        cfg_scale=args.cfg_scale if args.cfg_scale is not None else 3.0,
     )
 
 
 def run_text(args: argparse.Namespace) -> str:
     if args.cfg_scale is not None:
         return run_two_stage(args)
-    # Env-gated perf experiment: route the default no-CFG T2V Standard path
-    # through the two-stage pipeline (half-res stage 1 + latent upsample +
-    # short stage-2 refine) for a predicted ~30-35% wall-time reduction.
-    # Default off — set PORTOS_T2V_TWO_STAGE=1 to A/B it; explicit --steps /
-    # --stage2-steps still win over the fast 8/3 defaults.
-    if env_truthy("PORTOS_T2V_TWO_STAGE"):
-        return run_two_stage(
-            args,
-            stage1_steps=args.steps if args.steps is not None else 8,
-            stage2_steps=args.stage2_steps if args.stage2_steps is not None else 3,
-            cfg_scale=1.0,
-            status="Generating T2V (two-stage)…",
-        )
     from ltx_pipelines_mlx import TextToVideoPipeline
     emit_status(f"Loading T2V pipeline ({args.model})…")
     emit_stage(1, 0, 1, "Loading model")
