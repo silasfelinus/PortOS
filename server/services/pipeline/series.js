@@ -444,9 +444,10 @@ export async function updateSeries(id, patch = {}) {
     });
   }
   // Reconcile a draft parent universe (issue #851). When a committed (non-
-  // draft) series is linked to an import-draft universe WITHOUT going through
-  // commitImport, the universe stays `ephemeral` + `importDraft` forever and
-  // silently never syncs — even though it now holds real committed work. Mirror
+  // draft, non-ephemeral) series is linked to an import-draft universe WITHOUT
+  // going through commitImport, the universe stays `ephemeral` + `importDraft`
+  // forever and silently never syncs — even though it now holds real committed
+  // work that reaches peers (see isPromotingChild for the child gate). Mirror
   // commitImport's promotion exactly: clear BOTH flags via updateUniverse so
   // the ephemeral→non-ephemeral peer re-subscribe fires and the now-real
   // universe reaches every peer. Best-effort + outside the series write queue
