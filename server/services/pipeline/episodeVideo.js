@@ -160,7 +160,13 @@ export async function startEpisodeVideoForIssue(issueId, options = {}) {
   assertStageUnlocked(issue, 'episodeVideo');
   const aspectRatio = options.aspectRatio || '16:9';
   const quality = options.quality || 'standard';
-  const modelId = options.modelId || settings?.videoGen?.defaultModelId || getDefaultVideoModelId();
+  // The user's picker choice: `null` = "Default model". Unlike aspectRatio /
+  // quality (whose defaults are fixed constants), the video default is a live
+  // user setting (videoGen.defaultModelId), so we persist the *choice* — not
+  // the resolved id — and keep "Default" following the setting across reloads.
+  // The CD project's renderer still needs a concrete model, so resolve one here.
+  const requestedModelId = options.modelId || null;
+  const modelId = requestedModelId || settings?.videoGen?.defaultModelId || getDefaultVideoModelId();
 
   const project = await createCDProject({
     name: `Pipeline: ${(series?.name || 'Series').slice(0, 60)} — ${(issue.title || issueId).slice(0, 60)}`,
@@ -182,12 +188,13 @@ export async function startEpisodeVideoForIssue(issueId, options = {}) {
     cdProjectId: project.id,
     // Persist the chosen render settings so a page reload restores the
     // pickers — otherwise restart from a fresh tab would silently fall back
-    // to defaults that the user can't see or adjust. modelId is the resolved
-    // concrete id (a user "Default model" pick lands here as the actual id),
-    // mirroring how aspectRatio/quality persist their resolved defaults.
+    // to defaults that the user can't see or adjust. modelId persists the
+    // user's CHOICE (null = "Default"), so a Default pick keeps tracking the
+    // videoGen.defaultModelId setting on reload instead of pinning to whatever
+    // it happened to resolve to at first render.
     aspectRatio,
     quality,
-    modelId,
+    modelId: requestedModelId,
     output: '',
     errorMessage: '',
   });

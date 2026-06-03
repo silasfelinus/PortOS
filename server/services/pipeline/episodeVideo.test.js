@@ -290,15 +290,19 @@ describe('pipeline episodeVideo helper', () => {
     expect(refreshed.stages.episodeVideo.modelId).toBe('ltx2_unified');
   });
 
-  it('startEpisodeVideoForIssue falls back to the default video model when modelId is omitted', async () => {
+  it('startEpisodeVideoForIssue resolves a concrete default for the CD project but records the Default choice (null) on the stage', async () => {
     const { issue } = await seedSeriesAndIssue({
       scenes: [{ description: 'foo' }],
     });
     await svc.startEpisodeVideoForIssue(issue.id);
-    // mediaModels mock resolves the default to 'ltx23_distilled_q4'.
+    // The renderer needs a concrete id — mediaModels mock resolves the default
+    // to 'ltx23_distilled_q4'.
     expect(cdCreated[0].modelId).toBe('ltx23_distilled_q4');
+    // ...but the stage records the *choice* (null = Default) so a Default pick
+    // keeps following the videoGen.defaultModelId setting across reloads
+    // instead of pinning to the first-resolved id.
     const refreshed = await issuesSvc.getIssue(issue.id);
-    expect(refreshed.stages.episodeVideo.modelId).toBe('ltx23_distilled_q4');
+    expect(refreshed.stages.episodeVideo.modelId).toBeNull();
   });
 
   it('startEpisodeVideoForIssue reuses an existing cdProjectId by default', async () => {
