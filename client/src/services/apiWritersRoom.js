@@ -66,6 +66,13 @@ export const attachWritersRoomSceneImage = (workId, analysisId, payload) =>
     body: JSON.stringify(payload),
   });
 
+// Synced review (Phase 4): a read-model that maps prose segments ↔ script
+// scenes ↔ generated media with provenance + stale detection. Derived on the
+// server from the active draft's segment index and the `script` analysis
+// snapshot — no separate persistence.
+export const getWritersRoomSyncedReview = (workId, options) =>
+  request(`/writers-room/works/${enc(workId)}/synced-review`, options);
+
 // Characters (editable bible — separate from immutable analysis snapshots)
 export const listWritersRoomCharacters = (workId) =>
   request(`/writers-room/works/${enc(workId)}/characters`);
