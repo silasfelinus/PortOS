@@ -1,6 +1,7 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { BadgeCheck, FlaskConical, HelpCircle, Sigma, Telescope } from 'lucide-react';
 import { getProvenanceLevel } from '../../lib/healthProvenance.js';
+import useClickOutside from '../../hooks/useClickOutside';
 
 // Source-style provenance chip for health/longevity insights. Tap (or click) to
 // reveal how the insight was derived plus a "what would change this?" explainer.
@@ -41,22 +42,18 @@ export default function ProvenanceChip({
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
   const popId = useId();
+  const close = useCallback(() => setOpen(false), []);
+
+  useClickOutside(wrapRef, open, close);
 
   useEffect(() => {
     if (!open) return undefined;
-    const onPointerDown = (e) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
-    };
     const onKey = (e) => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key === 'Escape') close();
     };
-    document.addEventListener('mousedown', onPointerDown);
     document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, close]);
 
   const Icon = LEVEL_ICONS[meta.id] ?? Sigma;
   const chipTone = TONE_CHIP[meta.tone] ?? TONE_CHIP.muted;

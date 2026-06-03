@@ -52,6 +52,19 @@ describe('ProvenanceChip', () => {
     expect(btn.className).toContain('text-port-warning');
   });
 
+  it('closes the popover on a click outside', () => {
+    render(
+      <div>
+        <ProvenanceChip level="inferred" />
+        <button type="button">elsewhere</button>
+      </div>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /inferred/i }));
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'elsewhere' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
   it('closes the popover on Escape', () => {
     render(<ProvenanceChip level="inferred" />);
     const btn = screen.getByRole('button');
