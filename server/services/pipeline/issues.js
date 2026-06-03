@@ -361,6 +361,13 @@ const sanitizeVisualStage = (raw, stageId = null) => {
     videoPath: isStr(raw?.videoPath) && raw.videoPath ? raw.videoPath : null,
     aspectRatio: ASPECT_RATIO_VALUES.has(raw?.aspectRatio) ? raw.aspectRatio : null,
     quality: QUALITY_VALUES.has(raw?.quality) ? raw.quality : null,
+    // Video model id — only meaningful on episodeVideo (it picks the per-scene
+    // render engine). Dropped on comicPages/storyboards so the contract is
+    // explicit, but kept when stageId is omitted (legacy load-time sanitize
+    // has no per-stage context). `null` = use the server/settings default.
+    modelId: (stageId === null || stageId === 'episodeVideo') && isStr(raw?.modelId) && raw.modelId
+      ? raw.modelId.slice(0, 64)
+      : null,
     // genConfig is read by comicPages/storyboards; pass-through is a no-op on
     // episodeVideo, which never looks at it.
     genConfig: sanitizeGenConfig(raw?.genConfig),
