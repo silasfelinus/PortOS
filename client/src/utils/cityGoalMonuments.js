@@ -151,11 +151,13 @@ function compareByStatusThenId(a, b) {
 // `count` is how many monuments are actually placed, so the row is centered on MONUMENTS.base.
 // When `position` is supplied (goal-forest layout) it overrides the centered-row placement,
 // so the same monument view-model serves both the flat row and the hierarchy spires.
-export function placeMonument(goal, index, count, now = Date.now(), position = null) {
+// `heightScale` (forest spires) boosts the tower height; passing it here means milestone
+// segments are computed once against the final height instead of re-segmented after.
+export function placeMonument(goal, index, count, now = Date.now(), position = null, heightScale = 1) {
   const status = effectiveGoalStatus(goal, now);
   const style = STATUS_STYLES[status] || DEFAULT_STYLE;
   const completeness = buildCompleteness(goal, status);
-  const height = MONUMENTS.minHeight + completeness * (MONUMENTS.fullHeight - MONUMENTS.minHeight);
+  const height = (MONUMENTS.minHeight + completeness * (MONUMENTS.fullHeight - MONUMENTS.minHeight)) * heightScale;
 
   // Center the row: slot 0 sits at the leftmost, the middle slot aligns with base.x.
   const offset = (index - (count - 1) / 2) * MONUMENTS.spacing;
@@ -297,11 +299,10 @@ export function computeGoalForest(goals, now = Date.now()) {
     const clusterZ = FOREST.base[2];
 
     // Root spire — a placed monument boosted in height so it visually anchors the cluster.
-    // Re-segment milestones against the boosted height so floors fill the taller tower.
-    const spire = placeMonument(node.goal, 0, 1, now, [clusterX, 0, clusterZ]);
-    spire.height *= FOREST.spireBoost;
+    // The spireBoost is applied inside placeMonument so milestone floors fill the taller
+    // tower in one pass (no discarded re-segment).
+    const spire = placeMonument(node.goal, 0, 1, now, [clusterX, 0, clusterZ], FOREST.spireBoost);
     spire.isSpire = true;
-    attachMilestones(spire, node.goal, spire.height);
 
     const childNodes = node.children.slice(0, FOREST.maxChildren);
     // Child overflow counts the folded-away children plus their own sub-trees, mirroring
@@ -326,7 +327,8 @@ export function computeGoalForest(goals, now = Date.now()) {
     });
 
     // Links: from each child's apex up to the root spire's apex. Towers rise from a 0.4
-    // plinth, so the true top sits at 0.4 + height — match that so links join the tips.
+    // plinth, so the nominal top sits at 0.4 + height — links join near the tips (segmented
+    // towers leave a sub-floor gap below this from the inter-floor spacing, visually fine).
     const links = children.map((child) => ({
       from: [child.position[0], 0.4 + child.height, child.position[2]],
       to: [spire.position[0], 0.4 + spire.height, spire.position[2]],

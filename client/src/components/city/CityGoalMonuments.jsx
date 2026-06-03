@@ -200,7 +200,14 @@ export default function CityGoalMonuments({ goals, settings }) {
   }, [useForest, forest.clusters, district.monuments]);
 
   useFrame(({ clock }) => {
-    if (!animate || !shimmerRef.current || !shimmer) return;
+    if (!shimmerRef.current || !shimmer) return;
+    if (!animate) {
+      // Quality dial dropped below the pulse threshold (or the shimmer target changed):
+      // settle the mesh back to its static base glow so it can't freeze mid-pulse at an
+      // elevated emissive intensity.
+      shimmerRef.current.material.emissiveIntensity = shimmer.intensity;
+      return;
+    }
     const pulse = (Math.sin(clock.getElapsedTime() * 1.6) + 1) / 2; // 0..1
     shimmerRef.current.material.emissiveIntensity = shimmer.intensity + pulse * 0.5;
   });
