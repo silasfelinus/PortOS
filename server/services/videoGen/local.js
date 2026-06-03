@@ -56,6 +56,28 @@ const IS_WIN = process.platform === 'win32';
 
 const MODULE_NOT_FOUND_RE = /ModuleNotFoundError: No module named ['"]([^'"]+)['"]/;
 
+// Panel-side SIGKILL watchdog (defense-in-depth at the Node layer).
+//
+// Some video runtimes finish all real work — decode, mux, write the file, and
+// print the final `{"video_path": ...}` JSON — yet the python process lingers
+// instead of exiting (a known mlx/torch teardown hang where a daemon thread or
+// GPU context keeps the interpreter alive). The helper-side `os._exit(0)` is the
+// first line of defense; this watchdog is the second. Once we observe the
+// render's completion marker on stdout (the muxing-done line or the result
+// JSON), we arm a grace timer; if the child still hasn't emitted 'close' by the
+// time it fires, we SIGKILL it so the job (and the serialized gpu lane) doesn't
+// wedge forever. The timer is cleared in every exit path so it can never fire
+// against a recycled PID.
+const COMPLETION_WATCHDOG_GRACE_MS = (() => {
+  const raw = parseInt(process.env.VIDEOGEN_COMPLETION_WATCHDOG_MS || '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 40000;
+})();
+
+// Upstream prints this when the final decode+mux finishes, just before it should
+// exit. Matching it (case-insensitive) lets us arm the watchdog even for
+// runtimes that don't emit the result JSON on stdout.
+const MUXING_DONE_RE = /\[Decoding video \+ audio \+ muxing\]\s+done in/i;
+
 // Catalog comes from data/media-models.json (see server/lib/mediaModels.js).
 // Cached as a plain object at boot for O(1) lookup by id, matching the prior shape.
 export const VIDEO_MODELS = Object.fromEntries(getVideoModels().map((m) => [m.id, m]));
@@ -741,6 +763,37 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   childEnv.PYTHONUNBUFFERED = '1';
   const proc = spawn(bin, args, { env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
   activeProcess = proc;
+
+  // Panel-side completion watchdog. Armed once we see the render's completion
+  // marker on stdout; SIGKILLs the child if it hasn't exited after the grace
+  // window. clearCompletionWatchdog() runs in every terminal path ('close',
+  // 'error') so the timer can't outlive this child or fire against a recycled
+  // PID. Armed at most once per child (re-seeing the marker is a no-op).
+  let completionWatchdog = null;
+  const clearCompletionWatchdog = () => {
+    if (completionWatchdog) {
+      clearTimeout(completionWatchdog);
+      completionWatchdog = null;
+    }
+  };
+  const armCompletionWatchdog = () => {
+    if (completionWatchdog) return;
+    completionWatchdog = setTimeout(() => {
+      // Runs outside the Express request lifecycle — an uncaught throw here
+      // would crash the Node process, so guard the whole body.
+      try {
+        completionWatchdog = null;
+        if (activeProcess !== proc || proc.exitCode !== null || proc.signalCode !== null) return;
+        console.log(`⚠️ video child reported completion but never exited — SIGKILL [${jobId.slice(0, 8)}]`);
+        proc.kill('SIGKILL');
+      } catch (err) {
+        console.error(`❌ completion watchdog failed [${jobId.slice(0, 8)}]: ${err.message}`);
+      }
+    }, COMPLETION_WATCHDOG_GRACE_MS);
+    // Don't let the watchdog timer keep the event loop alive on its own.
+    if (typeof completionWatchdog.unref === 'function') completionWatchdog.unref();
+  };
+
   // Hold a sleep-prevention lock for the lifetime of the python child, so a
   // 90s+ render doesn't get aborted by sleep on a laptop. `-s` blocks system
   // sleep (lid-close / low-power), `-i` blocks idle sleep, `-d` blocks display
@@ -754,6 +807,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   // Without an 'error' handler, a missing/non-executable pythonPath would
   // crash the server with an unhandled error event.
   proc.on('error', (err) => {
+    clearCompletionWatchdog();
     job.status = 'error';
     const reason = `Failed to spawn ${bin}: ${err.message}`;
     console.log(`❌ Video generation spawn error [${jobId.slice(0, 8)}]: ${reason}`);
@@ -871,9 +925,17 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
       // for the result metadata; otherwise raw-log so we can debug failures.
       try {
         const parsed = JSON.parse(line);
-        if (parsed.video_path) job.resultJson = parsed;
+        if (parsed.video_path) {
+          job.resultJson = parsed;
+          // The result JSON is the strongest "work is done" signal — arm the
+          // watchdog so a post-completion teardown hang can't wedge the job.
+          armCompletionWatchdog();
+        }
         continue;
       } catch { /* not JSON */ }
+      // Some runtimes don't print the result JSON but do log the final
+      // decode+mux line right before they should exit — treat it the same way.
+      if (MUXING_DONE_RE.test(line)) armCompletionWatchdog();
       console.log(`🐍-out [${jobId.slice(0, 8)}] ${line}`);
     }
   });
@@ -891,6 +953,7 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
   });
 
   proc.on('close', async (code, signal) => {
+    clearCompletionWatchdog();
     activeProcess = null;
     // Cleanup the resized temp images if we made them. Track via flags rather
     // than a path-prefix check — tmpdir() can return a symlinked path
