@@ -182,9 +182,12 @@ export async function startEpisodeVideoForIssue(issueId, options = {}) {
     cdProjectId: project.id,
     // Persist the chosen render settings so a page reload restores the
     // pickers — otherwise restart from a fresh tab would silently fall back
-    // to defaults that the user can't see or adjust.
+    // to defaults that the user can't see or adjust. modelId is the resolved
+    // concrete id (a user "Default model" pick lands here as the actual id),
+    // mirroring how aspectRatio/quality persist their resolved defaults.
     aspectRatio,
     quality,
+    modelId,
     output: '',
     errorMessage: '',
   });

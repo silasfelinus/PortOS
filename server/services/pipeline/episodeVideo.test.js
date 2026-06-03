@@ -280,6 +280,27 @@ describe('pipeline episodeVideo helper', () => {
     expect(refreshed.stages.episodeVideo.quality).toBe('high');
   });
 
+  it('startEpisodeVideoForIssue forwards an explicit modelId to the CD project + persists it on the stage', async () => {
+    const { issue } = await seedSeriesAndIssue({
+      scenes: [{ description: 'foo' }],
+    });
+    await svc.startEpisodeVideoForIssue(issue.id, { modelId: 'ltx2_unified' });
+    expect(cdCreated[0].modelId).toBe('ltx2_unified');
+    const refreshed = await issuesSvc.getIssue(issue.id);
+    expect(refreshed.stages.episodeVideo.modelId).toBe('ltx2_unified');
+  });
+
+  it('startEpisodeVideoForIssue falls back to the default video model when modelId is omitted', async () => {
+    const { issue } = await seedSeriesAndIssue({
+      scenes: [{ description: 'foo' }],
+    });
+    await svc.startEpisodeVideoForIssue(issue.id);
+    // mediaModels mock resolves the default to 'ltx23_distilled_q4'.
+    expect(cdCreated[0].modelId).toBe('ltx23_distilled_q4');
+    const refreshed = await issuesSvc.getIssue(issue.id);
+    expect(refreshed.stages.episodeVideo.modelId).toBe('ltx23_distilled_q4');
+  });
+
   it('startEpisodeVideoForIssue reuses an existing cdProjectId by default', async () => {
     const { issue } = await seedSeriesAndIssue({
       scenes: [{ description: 'one' }, { description: 'two' }, { description: '' }],
