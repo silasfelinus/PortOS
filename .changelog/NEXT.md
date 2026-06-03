@@ -84,6 +84,7 @@
 
 ## Fixed
 
+- **Security settings reachable from the sidebar** — the Settings → Security tab now has its own entry in the sidebar's Settings group, so you can open it without typing the URL or going through ⌘K. The tab, its route, and command-palette/voice navigation already existed; only the sidebar link was missing.
 - **[issue-729] Style-probe renders stay put across federated machines** — a universe's base style-probe images are now kept local to each machine, so syncing with an older peer no longer wipes them and a probe render no longer surfaces a phantom sync conflict.
 - **[issue-717] No stray React warnings when you navigate away mid-action** — buttons that run an async task (save, generate, sync) no longer log an "update on an unmounted component" warning if you leave the page before the task finishes.
 - **[issue-719] Steadier media galleries during live note/star sync** — incoming annotation broadcasts that match what a view already shows no longer trigger a needless re-render of the media cards.
