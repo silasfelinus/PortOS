@@ -95,4 +95,17 @@ describe('GoalDetailPanel badge migration to <Pill>', () => {
     expect(typeBadge.className).toContain('px-1.5');
     expect(typeBadge.className).not.toContain('inline-flex');
   });
+
+  it('keeps the todo-priority badge as its own px-1 span (not a Pill)', () => {
+    // px-1 is tighter than Pill's xs (px-1.5); migrating would widen it, so it
+    // stays a native span. Pin that so the exception can't silently regress.
+    renderPanel({
+      ...baseGoal,
+      todos: [{ id: 't-1', title: 'do thing', status: 'todo', priority: 'high' }],
+    });
+    const priorityBadge = screen.getByText('high');
+    expect(priorityBadge.tagName).toBe('SPAN');
+    expect(priorityBadge.className).toContain('px-1');
+    expect(priorityBadge.className).not.toContain('inline-flex');
+  });
 });
