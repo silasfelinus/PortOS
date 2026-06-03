@@ -7,11 +7,9 @@ const minsAgo = (m) => NOW - m * 60 * 1000;
 const secsAgo = (s) => NOW - s * 1000;
 
 describe('computeActivityDensity', () => {
-  it('returns one slot per bin, oldest first', () => {
+  it('returns one empty slot per bin', () => {
     const slots = computeActivityDensity([], { now: NOW, bins: 24 });
     expect(slots).toHaveLength(24);
-    // bin 0 is the oldest edge of the window
-    expect(slots[0].startMs).toBeGreaterThan(slots[23].startMs);
     expect(slots.every(s => s.count === 0 && s.level === null)).toBe(true);
   });
 

@@ -33,16 +33,11 @@ const eventTime = (log) => {
  * @param {number} opts.now - reference "now" epoch ms (injectable for tests)
  * @param {number} [opts.windowMs] - how far back the bar spans (default 10m)
  * @param {number} [opts.bins] - number of bars (default 24)
- * @returns {Array<{count:number, level:string|null, startMs:number}>}
+ * @returns {Array<{count:number, level:string|null}>}
  */
 export function computeActivityDensity(logs, { now, windowMs = 10 * 60 * 1000, bins = 24 } = {}) {
   const slotMs = windowMs / bins;
-  const slots = Array.from({ length: bins }, (_, i) => ({
-    count: 0,
-    level: null,
-    // ms-ago at the START (older edge) of this bin; bin 0 is the oldest.
-    startMs: windowMs - i * slotMs,
-  }));
+  const slots = Array.from({ length: bins }, () => ({ count: 0, level: null }));
 
   const severityRank = { error: 3, warn: 2, success: 1, info: 0, debug: 0 };
 
