@@ -3,8 +3,8 @@ import { extractToken, isAuthEnabled, verifySession } from '../services/auth.js'
 // Paths that bypass the auth gate even when a password is set:
 //   - /api/auth/status, /api/auth/whoami, /api/auth/login → the login UI
 //     itself needs to reach these to render and sign in.
-//   - /api/system/health (and the cheap /healthz used by uptime checks) — the
-//     server has to be reachable by Tailscale's healthcheck without a session.
+//   - /api/system/health — Tailscale's reachability check shouldn't need a
+//     session.
 // Anything not on this list returns 401 when auth is on and the request has
 // no valid token.
 const PUBLIC_API_PATHS = new Set([
@@ -13,7 +13,6 @@ const PUBLIC_API_PATHS = new Set([
   '/api/auth/login',
   '/api/auth/logout',
   '/api/system/health',
-  '/healthz',
 ]);
 
 const isPublicPath = (path) => {

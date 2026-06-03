@@ -210,8 +210,10 @@ export const extractToken = (req) => {
   const cookie = parseCookieToken(req.headers?.cookie);
   if (cookie) return cookie;
   const authHeader = req.headers?.authorization;
-  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-    return authHeader.slice('Bearer '.length).trim();
+  // RFC 6750: Bearer scheme name is case-insensitive.
+  if (typeof authHeader === 'string' && authHeader.length > 7
+      && authHeader.slice(0, 7).toLowerCase() === 'bearer ') {
+    return authHeader.slice(7).trim();
   }
   return null;
 };

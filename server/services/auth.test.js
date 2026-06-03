@@ -112,6 +112,9 @@ describe('auth service', () => {
     expect(auth.parseCookieToken(null)).toBe(null);
     expect(auth.extractToken({ headers: { cookie: 'portos_auth=cookie-token' } })).toBe('cookie-token');
     expect(auth.extractToken({ headers: { authorization: 'Bearer header-token' } })).toBe('header-token');
+    // RFC 6750: scheme name is case-insensitive — accept lowercase / mixed.
+    expect(auth.extractToken({ headers: { authorization: 'bearer lowercase' } })).toBe('lowercase');
+    expect(auth.extractToken({ headers: { authorization: 'BEARER mixed' } })).toBe('mixed');
     expect(auth.extractToken({
       headers: { cookie: 'portos_auth=cookie-wins', authorization: 'Bearer header-loses' },
     })).toBe('cookie-wins');
