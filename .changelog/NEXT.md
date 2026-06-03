@@ -44,6 +44,7 @@
 
 ## Changed
 
+- **[issue-738] Cross-Domain Insights Engine design** — design groundwork for narrative insights connecting genome, health, taste, and creative output, including a dismissable/acceptable insight model and a structured facts table feeding the LLM.
 - **[issue-727] Abandoned imports no longer leave empty universes lying around** — starting an import and walking away before you commit it used to leave a blank universe and series behind in your library. Those scratch records are now hidden from sync and automatically cleaned up after a week if you never finish the import, while committing one keeps it for good.
 - **Codex TUI runs fully bypassed** — Codex now launches in TUI mode with `--dangerously-bypass-approvals-and-sandbox` (the same full-yolo posture the headless CLI path already used), instead of only `--ask-for-approval never`. The previous flag suppressed approval prompts but kept Codex's sandbox on, so tool calls that needed real file or network writes still got blocked. Provider configs that pin their own `--ask-for-approval` / `--sandbox` policy are left untouched.
 - **[issue-733]** "Finish the draft" editorial findings now carry an explicit marker for whether their suggestion is delta advice or a full page replacement, so comic-script panel rewrites and ordinary prose suggestions are handled by the right fix path. Internal maintenance change with no behavior difference.
