@@ -73,11 +73,18 @@ describe('reviewQueue.buildQueue', () => {
 
   it('surfaces drafts and CoS approvals from their producers', async () => {
     cosTaskStore.getCosTasks.mockResolvedValue({ awaitingApproval: [{ id: 'sys-1', description: 'approve me', priority: 'HIGH', createdAt: '2026-06-03T09:00:00.000Z' }] });
-    messageDrafts.listDrafts.mockResolvedValue([
+    // The producer pushes a multi-status filter down to listDrafts, so the mock
+    // honors it the way the real implementation does (drops the 'sent' draft).
+    const allDrafts = [
       { id: 'd1', status: 'draft', subject: 'unsent', updatedAt: '2026-06-03T08:00:00.000Z' },
       { id: 'd2', status: 'sent', subject: 'gone' }
-    ]);
+    ];
+    messageDrafts.listDrafts.mockImplementation(({ status } = {}) => {
+      const wanted = Array.isArray(status) ? status : status ? [status] : null;
+      return Promise.resolve(wanted ? allDrafts.filter(d => wanted.includes(d.status)) : allDrafts);
+    });
     const queue = await buildQueue();
+    expect(messageDrafts.listDrafts).toHaveBeenCalledWith({ status: ['draft', 'pending_review'] });
     expect(queue.items.find(i => i.id === 'cos:sys-1')).toMatchObject({ severity: 'high', drillTo: '/cos/tasks' });
     const draftRows = queue.items.filter(i => i.source === 'drafts');
     expect(draftRows).toHaveLength(1);

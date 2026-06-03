@@ -123,10 +123,10 @@ const PRODUCERS = [
     async gather() {
       // Drafts the user (or an AI) prepared that haven't been sent yet. Today
       // messageDrafts only emits 'draft' (vs 'approved'); 'pending_review' is
-      // matched ahead of the producer adding it (see #832) so this needs no
-      // change when it lands.
-      const drafts = await messageDrafts.listDrafts();
-      return drafts.filter(d => d.status === 'draft' || d.status === 'pending_review');
+      // matched ahead of the producer adding it. The multi-status filter is
+      // pushed down to listDrafts so the whole store isn't loaded + filtered
+      // in memory on every Review Hub load.
+      return messageDrafts.listDrafts({ status: ['draft', 'pending_review'] });
     },
     map(draft) {
       return {
