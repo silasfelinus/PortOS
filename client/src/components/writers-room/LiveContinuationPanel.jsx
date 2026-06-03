@@ -44,11 +44,25 @@ export default function LiveContinuationPanel({
   const inFlightRef = useRef(false);
   const genRef = useRef(0);
   const rerunPendingRef = useRef(false);
+  // Always read the LATEST cursor-context getter (and workId) through refs. A
+  // queued rerun is invoked from inside the settled call's closure, so reading
+  // `getCursorContext` directly would re-run against the prose that call
+  // captured — stale by exactly the mid-flight edit we're trying to catch up
+  // to. Refs keep `requestSuggest` identity-stable AND current.
+  const ctxGetterRef = useRef(getCursorContext);
+  const workIdRef = useRef(workId);
+  useEffect(() => { ctxGetterRef.current = getCursorContext; }, [getCursorContext]);
+  useEffect(() => { workIdRef.current = workId; }, [workId]);
 
   const requestSuggest = useCallback(async () => {
     if (inFlightRef.current) { rerunPendingRef.current = true; return; }
-    const ctx = getCursorContext?.();
-    if (!ctx || (!ctx.before?.trim() && !ctx.after?.trim() && !ctx.selection?.trim())) return;
+    const ctx = ctxGetterRef.current?.();
+    if (!ctx || (!ctx.before?.trim() && !ctx.after?.trim() && !ctx.selection?.trim())) {
+      // Nothing to ask about — make sure a spinner left over from a queued
+      // rerun doesn't get stuck on.
+      setLoading(false);
+      return;
+    }
     const gen = ++genRef.current;
     inFlightRef.current = true;
     setLoading(true);
@@ -56,7 +70,7 @@ export default function LiveContinuationPanel({
     // Drop stale options up front — a new request against a moved cursor must
     // not leave the previous suggestions visible/insertable while it runs.
     setOptions([]);
-    const res = await suggestWritersRoomContinuation(workId, ctx, { silent: true }).catch((err) => {
+    const res = await suggestWritersRoomContinuation(workIdRef.current, ctx, { silent: true }).catch((err) => {
       // 429 budget / 409 off are expected control-flow, not crashes — show them
       // inline rather than as a red toast.
       if (mountedRef.current && gen === genRef.current) {
@@ -68,7 +82,8 @@ export default function LiveContinuationPanel({
     });
     inFlightRef.current = false;
     // A newer request arrived while this one was in flight — discard this
-    // (stale) result and re-run with the latest cursor context.
+    // (stale) result and re-run with the latest cursor context (read fresh
+    // from the ref, not this closure's captured getter).
     const superseded = gen !== genRef.current || rerunPendingRef.current;
     if (rerunPendingRef.current) {
       rerunPendingRef.current = false;
@@ -80,7 +95,7 @@ export default function LiveContinuationPanel({
     setOptions(res.options || []);
     if (res.usage) setUsage(res.usage);
     if ((res.options || []).length === 0) setNotice('No suggestions this time — keep writing and pause again.');
-  }, [workId, getCursorContext, mountedRef]);
+  }, [mountedRef]);
 
   // Expose the imperative trigger to the parent so its debounce timer can fire
   // a suggest without this component owning the cursor/textarea.
