@@ -31,11 +31,21 @@ export async function request(endpoint, options = {}) {
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Request failed' }));
     const errorMessage = error.error || `HTTP ${response.status}`;
+    // Auth gate (server: lib/authGate.js) returns 401 with code AUTH_REQUIRED
+    // for any /api request without a valid session. Bounce to /login so the
+    // user can re-authenticate; skip if we're already there.
+    if (response.status === 401 && error?.code === 'AUTH_REQUIRED' && typeof window !== 'undefined') {
+      const here = window.location.pathname + window.location.search;
+      if (!window.location.pathname.startsWith('/login')) {
+        const next = encodeURIComponent(here);
+        window.location.replace(`/login?next=${next}`);
+      }
+    }
     if (!silent) {
       // Platform unavailability is a warning, not an error
       if (error.code === 'PLATFORM_UNAVAILABLE') {
         toast(errorMessage, { icon: '⚠️' });
-      } else {
+      } else if (error.code !== 'AUTH_REQUIRED') {
         toast.error(errorMessage);
       }
     }
