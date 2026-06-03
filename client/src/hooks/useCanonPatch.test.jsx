@@ -56,21 +56,31 @@ describe('useCanonPatch', () => {
         { id: 'c2', name: 'Bob' },
       ],
     });
-    // PATCH sends the full kind list.
+    // PATCH sends the full kind list, silently (the hook owns the error toast).
     expect(updateUniverse).toHaveBeenCalledWith('u1', {
       characters: [
         { id: 'c1', name: 'Alice', intExt: 'EXT' },
         { id: 'c2', name: 'Bob' },
       ],
-    });
+    }, { silent: true });
     // Server response re-applied.
     expect(apply).toHaveBeenNthCalledWith(2, serverCopy);
   });
 
-  it('no-ops on a missing universe or a non-object patch', async () => {
+  it('no-ops when the universe is missing', async () => {
     const { result, apply } = setup({ universe: null });
     await act(async () => {
       await result.current.patchEntry(KIND, 'c1', { intExt: 'EXT' });
+    });
+    expect(apply).not.toHaveBeenCalled();
+    expect(updateUniverse).not.toHaveBeenCalled();
+  });
+
+  it('no-ops when the patch is missing or not an object', async () => {
+    const { result, apply } = setup();
+    await act(async () => {
+      await result.current.patchEntry(KIND, 'c1', null);
+      await result.current.patchEntry(KIND, 'c1', 'nope');
     });
     expect(apply).not.toHaveBeenCalled();
     expect(updateUniverse).not.toHaveBeenCalled();
