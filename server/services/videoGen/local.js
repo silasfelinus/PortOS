@@ -285,8 +285,9 @@ export const resolveT2vTwoStageOverride = ({
   const userSetGuidance = guidanceScale != null && guidanceScale !== '';
   const userSetSteps = !!steps;
   if (userSetGuidance || userSetSteps) return null;
-  // Any conditioning input makes this not a plain T2V (matches the helperMode
-  // 'text' inference in buildLtx2Args).
+  // Any conditioning input makes this not a plain T2V. This is a strict
+  // subset of buildLtx2Args's helperMode==='text' inference — never broader —
+  // so the experiment declines rather than over-fires on an edge case.
   const hasConditioning = !!sourceImagePath || !!uploadedTempPath
     || (Array.isArray(uploadedTempPaths) && uploadedTempPaths.length > 0)
     || (Array.isArray(keyframes) && keyframes.length > 0)

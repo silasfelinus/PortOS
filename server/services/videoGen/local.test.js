@@ -388,6 +388,52 @@ describe('generateVideo — ltx2 FFLF image resizing', () => {
   });
 });
 
+describe('generateVideo — PORTOS_T2V_TWO_STAGE arg threading', () => {
+  afterEach(() => { delete process.env.PORTOS_T2V_TWO_STAGE; });
+
+  // Drive a plain default T2V Standard render through generateVideo and pull
+  // the ltx2 helper's spawn args back out — this is the only place the
+  // Node-side override + --stage2-steps threading is observable end-to-end
+  // (the pure-helper test can't see buildLtx2Args).
+  const renderArgsFor = async (jobId) => {
+    const { spawn } = await import('child_process');
+    const spawnMock = vi.mocked(spawn);
+    spawnMock.mockClear();
+    await generateVideo({
+      jobId,
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified', // mock model: steps 30, guidance 3.5
+      prompt: 'a quiet street at dusk',
+      width: 512,
+      height: 512,
+      numFrames: 25,
+      fps: 24,
+      // plain T2V: no mode, no conditioning, no explicit steps/guidance
+    });
+    const call = spawnMock.mock.calls.find(
+      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+        && Array.isArray(args) && args.includes('--mode') && args.includes('text'),
+    );
+    expect(call).toBeTruthy();
+    return call[1];
+  };
+
+  it('threads --stage2-steps 3 + fast steps/cfg when the knob is on', async () => {
+    process.env.PORTOS_T2V_TWO_STAGE = '1';
+    const args = await renderArgsFor('t2v-twostage-on');
+    expect(args[args.indexOf('--stage2-steps') + 1]).toBe('3');
+    expect(args[args.indexOf('--steps') + 1]).toBe('8');
+    expect(args[args.indexOf('--cfg-scale') + 1]).toBe('1');
+  });
+
+  it('leaves the Standard render untouched (model defaults, no --stage2-steps) when the knob is off', async () => {
+    const args = await renderArgsFor('t2v-twostage-off');
+    expect(args).not.toContain('--stage2-steps');
+    expect(args[args.indexOf('--steps') + 1]).toBe('30');
+    expect(args[args.indexOf('--cfg-scale') + 1]).toBe('3.5');
+  });
+});
+
 describe('FFLF/ltx2 pixel-budget helpers', () => {
   const DEFAULT_BUDGET = 704 * 448 * 25; // ≈7.9M pixel-frames
 
