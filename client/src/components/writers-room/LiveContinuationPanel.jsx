@@ -26,7 +26,12 @@ export default function LiveContinuationPanel({
 }) {
   const [options, setOptions] = useState([]);
   const [loading, setLoading] = useState(false);
+  // Local usage so a fresh suggest updates the "N left today" readout
+  // immediately (the response carries the new count, which we don't push up to
+  // the parent's work manifest). Re-synced from the prop below so a
+  // parent-driven liveMode change (budget edit, work swap) isn't shadowed.
   const [usage, setUsage] = useState(liveMode?.usage || null);
+  useEffect(() => { setUsage(liveMode?.usage || null); }, [liveMode?.usage]);
   const [notice, setNotice] = useState(null);
   const mountedRef = useMounted();
   // Guard against overlapping suggest calls: a fast typist can trigger a second

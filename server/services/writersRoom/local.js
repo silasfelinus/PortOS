@@ -397,7 +397,9 @@ export async function linkToPipeline(id, { seriesId = null, issueId = null } = {
 
 // UTC day key (YYYY-MM-DD) for the daily budget window. UTC (not local) so the
 // reset boundary is deterministic across machines a single user federates.
-function utcDayKey() {
+// Exported so the live-director's pre-call budget check compares against the
+// same boundary recordLiveModeUsage rolls over on.
+export function utcDayKey() {
   return nowIso().slice(0, 10);
 }
 

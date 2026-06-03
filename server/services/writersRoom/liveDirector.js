@@ -15,7 +15,7 @@
 
 import { ServerError } from '../../lib/errorHandler.js';
 import { runStagedLLM } from '../../lib/stageRunner.js';
-import { getWork, resolveLiveMode, recordLiveModeUsage } from './local.js';
+import { getWork, resolveLiveMode, recordLiveModeUsage, utcDayKey } from './local.js';
 import { badRequest } from './_shared.js';
 
 const STAGE = 'writers-room-continue';
@@ -58,8 +58,9 @@ export async function suggestContinuation(workId, { before = '', after = '', sel
   // inside recordLiveModeUsage; here we just compare today's count against the
   // cap before spending an LLM call. Reading the resolved usage (which is not
   // date-normalized) would let yesterday's count block today, so treat a
-  // stale-date counter as 0 spent-today.
-  const today = new Date().toISOString().slice(0, 10);
+  // stale-date counter as 0 spent-today. Same utcDayKey as the writer so the
+  // boundaries can't drift.
+  const today = utcDayKey();
   const spentToday = live.usage.date === today ? live.usage.count : 0;
   if (live.dailyCallBudget > 0 && spentToday >= live.dailyCallBudget) {
     throw new ServerError(
