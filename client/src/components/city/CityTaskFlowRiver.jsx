@@ -15,14 +15,10 @@ export default function CityTaskFlowRiver({ cosTasks, productivityData, calendar
     const queue = computeTaskQueue(cosTasks);
     // Recent throughput: prefer the calendar window total (steady multi-day signal), fall
     // back to today's completed count from the quick-summary so the river still flows before
-    // the calendar fetch lands.
-    const calendarTotal = calendarData && typeof calendarData === 'object'
-      ? calendarData?.summary?.totalTasks
-      : undefined;
-    const todayCompleted = productivityData && typeof productivityData === 'object'
-      ? productivityData?.today?.completed
-      : undefined;
-    const throughput = typeof calendarTotal === 'number' ? calendarTotal : todayCompleted;
+    // the calendar fetch lands. Optional chaining tolerates missing/non-object payloads;
+    // computeTaskFlowRiver reads a non-number as zero.
+    const calendarTotal = calendarData?.summary?.totalTasks;
+    const throughput = typeof calendarTotal === 'number' ? calendarTotal : productivityData?.today?.completed;
     return computeTaskFlowRiver(queue, throughput);
   }, [cosTasks, productivityData, calendarData]);
 
