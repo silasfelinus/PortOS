@@ -53,6 +53,22 @@ export function parseScorerVerdict(response, verdicts, fallback = 'partial') {
 }
 
 /**
+ * Resolve a persona id (as passed to a test runner) into the fields stamped on
+ * a test-history entry, so a run can be attributed to the persona it embodied.
+ * Returns `{}` when no persona id is given or it doesn't match a stored persona
+ * — leaving the history entry persona-free (the base-twin run). `personas` is
+ * `meta.personas`; mirrors how `resolvePersona` in digital-twin-context.js maps
+ * an id to a persona for the prompt itself.
+ */
+export function resolveTestPersona(personas, personaId) {
+  if (!personaId) return {};
+  const list = Array.isArray(personas) ? personas : [];
+  const persona = list.find(p => p.id === personaId);
+  if (!persona) return {};
+  return { personaId: persona.id, personaName: persona.name };
+}
+
+/**
  * Ensure a document entry exists in meta.documents. If absent, push it.
  * Mutates meta in place; caller must saveMeta() after.
  */

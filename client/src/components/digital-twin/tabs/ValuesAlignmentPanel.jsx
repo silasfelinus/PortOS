@@ -14,6 +14,7 @@ import BrailleSpinner from '../../BrailleSpinner';
 import * as api from '../../../services/api';
 import toast from '../../ui/Toast';
 
+import PersonaBadge from '../PersonaBadge';
 import { VALUES_STATUS } from '../constants';
 import { timeAgo } from '../../../utils/formatters';
 
@@ -23,7 +24,7 @@ import { timeAgo } from '../../../utils/formatters';
  * Reuses the provider/model selection from the parent TestTab via the
  * `selectedProviders` prop so the two suites share one configuration.
  */
-export default function ValuesAlignmentPanel({ selectedProviders = [], onRefresh }) {
+export default function ValuesAlignmentPanel({ selectedProviders = [], personaId = '', onPersonaNotFound, onRefresh }) {
   const [dilemmas, setDilemmas] = useState([]);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -55,11 +56,13 @@ export default function ValuesAlignmentPanel({ selectedProviders = [], onRefresh
     setRunning(true);
     setResults([]);
 
+    // These calls own their error UI below (and one path delegates to the
+    // parent), so silence the helper's default toast to avoid double-toasting.
     const runResults = await Promise.all(
       selectedProviders.map(({ providerId, model }) =>
-        api.runValuesAlignmentTests(providerId, model)
+        api.runValuesAlignmentTests(providerId, model, null, personaId || null, { silent: true })
           .then(result => ({ providerId, model, ...result }))
-          .catch(err => ({ providerId, model, error: err.message }))
+          .catch(err => ({ providerId, model, error: err.message, code: err?.code }))
       )
     );
 
@@ -68,11 +71,17 @@ export default function ValuesAlignmentPanel({ selectedProviders = [], onRefresh
     // to the local list instead of refetching (reactive-update convention).
     const fresh = runResults
       .filter(r => !r.error && r.runId)
-      .map(({ runId, score, aligned, total, timestamp, model }) => ({ runId, score, aligned, total, timestamp, model }));
+      .map(({ runId, score, aligned, total, timestamp, model, personaName }) => ({ runId, score, aligned, total, timestamp, model, personaName }));
     if (fresh.length) setHistory(prev => [...fresh, ...prev].slice(0, 5));
     setRunning(false);
 
-    if (runResults.some(r => r.error)) {
+    // A stale/deleted persona is rejected by the same route guard the
+    // behavioral runner hits; ask the parent (which owns the picker) to clear
+    // it, and show a persona-specific message instead of the generic one.
+    if (runResults.some(r => r.code === 'NOT_FOUND')) {
+      onPersonaNotFound?.();
+      toast.error('That persona no longer exists — switched to the base twin. Try again.');
+    } else if (runResults.some(r => r.error)) {
       toast.error('Some runs failed — check provider availability');
     } else {
       toast.success('Values-alignment tests completed');
@@ -287,7 +296,10 @@ export default function ValuesAlignmentPanel({ selectedProviders = [], onRefresh
                         {Math.round(run.score * 100)}%
                       </span>
                       <div>
-                        <div className="text-sm text-white">{run.model}</div>
+                        <div className="text-sm text-white flex items-center gap-2">
+                          {run.model}
+                          <PersonaBadge name={run.personaName} />
+                        </div>
                         <div className="text-xs text-gray-500">
                           {run.aligned}/{run.total} aligned • {timeAgo(run.timestamp)}
                         </div>

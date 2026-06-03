@@ -116,7 +116,7 @@ traits: {
 ### Phase 7: Twin Personas & Context Switching
 - Named personas (Professional, Casual, Family, Creative)
 - Blending rules for trait variation per context
-- Per-persona testing
+- Per-persona testing — **done**: the Test tab can run the behavioral and values-alignment suites *as* a selected persona (or the base twin), and each run-history entry records which persona it embodied
 
 ## Success Metrics
 

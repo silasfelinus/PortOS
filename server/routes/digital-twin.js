@@ -52,6 +52,18 @@ import { UUID_RE } from '../lib/fileUtils.js';
 
 const router = Router();
 
+/**
+ * Assert a persona id (when supplied) resolves to a stored persona, throwing
+ * 404 otherwise. A test run with a stale/deleted personaId would otherwise
+ * silently fall back to the base twin, mislabeling the result; this makes the
+ * contract explicit — mirroring the same guard on PUT /personas/active.
+ */
+async function assertPersonaExists(personaId) {
+  if (personaId && !(await digitalTwinService.getPersonaById(personaId))) {
+    throw new ServerError('Persona not found', { status: 404, code: 'NOT_FOUND' });
+  }
+}
+
 // =============================================================================
 // STATUS & SUMMARY
 // =============================================================================
@@ -143,8 +155,9 @@ router.get('/tests', asyncHandler(async (req, res) => {
  * Run behavioral tests against a single provider/model
  */
 router.post('/tests/run', asyncHandler(async (req, res) => {
-  const { providerId, model, testIds } = validateRequest(runTestsInputSchema, req.body);
-  const result = await digitalTwinService.runTests(providerId, model, testIds);
+  const { providerId, model, testIds, personaId } = validateRequest(runTestsInputSchema, req.body);
+  await assertPersonaExists(personaId);
+  const result = await digitalTwinService.runTests(providerId, model, testIds, personaId);
   res.json(result);
 }));
 
@@ -153,13 +166,14 @@ router.post('/tests/run', asyncHandler(async (req, res) => {
  * Run behavioral tests against multiple providers/models
  */
 router.post('/tests/run-multi', asyncHandler(async (req, res) => {
-  const { providers, testIds } = validateRequest(runMultiTestsInputSchema, req.body);
+  const { providers, testIds, personaId } = validateRequest(runMultiTestsInputSchema, req.body);
+  await assertPersonaExists(personaId);
   const io = req.app.get('io');
 
   // Run tests for each provider in parallel
   const results = await Promise.all(
     providers.map(async ({ providerId, model }) => {
-      const result = await digitalTwinService.runTests(providerId, model, testIds).catch(err => ({
+      const result = await digitalTwinService.runTests(providerId, model, testIds, personaId).catch(err => ({
         providerId,
         model,
         error: err.message
@@ -206,8 +220,9 @@ router.get('/values-tests', asyncHandler(async (req, res) => {
  * response against the user's stored values hierarchy
  */
 router.post('/values-tests/run', asyncHandler(async (req, res) => {
-  const { providerId, model, testIds } = validateRequest(runTestsInputSchema, req.body);
-  const result = await digitalTwinService.runValuesAlignmentTests(providerId, model, testIds);
+  const { providerId, model, testIds, personaId } = validateRequest(runTestsInputSchema, req.body);
+  await assertPersonaExists(personaId);
+  const result = await digitalTwinService.runValuesAlignmentTests(providerId, model, testIds, personaId);
   res.json(result);
 }));
 
