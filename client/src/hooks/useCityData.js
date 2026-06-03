@@ -19,6 +19,7 @@ export const useCityData = () => {
   const [systemHealth, setSystemHealth] = useState(null);
   const [notificationCounts, setNotificationCounts] = useState({ unread: 0 });
   const [backupStatus, setBackupStatus] = useState(null);
+  const [cosTasks, setCosTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const logIdRef = useRef(0);
 
@@ -32,7 +33,7 @@ export const useCityData = () => {
     // /notifications/count returns the lightweight { count } payload — the HUD
     // and Attention pane only need unread, and notifications:count socket
     // events keep it fresh after this initial fetch.
-    const [appsData, agents, cosAgentsData, status, reviewData, instanceData, health, notif, backup] = await Promise.all([
+    const [appsData, agents, cosAgentsData, status, reviewData, instanceData, health, notif, backup, cosTasksData] = await Promise.all([
       api.getApps().catch(() => []),
       api.getRunningAgents().catch(() => []),
       api.getCosAgents().catch(() => []),
@@ -42,6 +43,7 @@ export const useCityData = () => {
       api.getSystemHealth({ silent: true }).catch(() => null),
       api.getNotificationCount().catch(() => ({ count: 0 })),
       api.getBackupStatus({ silent: true }).catch(() => null),
+      api.getCosTasks({ silent: true }).catch(() => ({ tasks: [] })),
     ]);
 
     setApps(appsData);
@@ -53,6 +55,7 @@ export const useCityData = () => {
     setSystemHealth(health);
     setNotificationCounts({ unread: notif?.count ?? 0 });
     setBackupStatus(backup);
+    setCosTasks(Array.isArray(cosTasksData?.tasks) ? cosTasksData.tasks : []);
     setLoading(false);
   }, []);
 
@@ -179,6 +182,12 @@ export const useCityData = () => {
     socket.on('backup:started', handleBackupStarted);
     socket.on('backup:completed', handleBackupCompleted);
 
+    // CoS task-queue silhouette: the server broadcasts the full current task list as
+    // `cos:tasks:cos:changed` on every add/modify/complete, so one handler keeps the
+    // warehouse's crate stack in sync without per-event bookkeeping.
+    const handleCosTasksChanged = (data) => setCosTasks(Array.isArray(data?.tasks) ? data.tasks : []);
+    socket.on('cos:tasks:cos:changed', handleCosTasksChanged);
+
     // Subscribe but do NOT unsubscribe on cleanup. The cos:* and notifications:*
     // namespaces are shared (useNotifications in Layout, useAgentFeedbackToast).
     // Server uses a per-socket Set, so unsubscribing here would yank the
@@ -196,6 +205,7 @@ export const useCityData = () => {
       socket.off('notifications:cleared', handleNotifCleared);
       socket.off('backup:started', handleBackupStarted);
       socket.off('backup:completed', handleBackupCompleted);
+      socket.off('cos:tasks:cos:changed', handleCosTasksChanged);
     };
   }, [fetchAll, fetchApps, fetchBackup]);
 
@@ -211,6 +221,7 @@ export const useCityData = () => {
     systemHealth,
     notificationCounts,
     backupStatus,
+    cosTasks,
     loading,
     connected: socket.connected,
   };
