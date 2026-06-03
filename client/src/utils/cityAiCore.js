@@ -22,6 +22,11 @@ export const AI_CORE = {
   opMaxAgeMs: 60_000,
   // How long after the last op start the core keeps its "just fired" flare.
   flareMs: 1200,
+  // How long a just-completed op lingers as an "afterglow" beam. The provider only reports
+  // token throughput on the completion event (which ends the op), so this window is what
+  // lets a measured tokens/sec actually thicken a beam before it fades — without it, every
+  // beam would render at the base thickness.
+  afterglowMs: 1500,
   // Generic (un-targeted) radial beam length, in world units.
   radialLength: 16,
   // Beam thickness clamps (world units). Un-measured ops use `beamThicknessBase`;
@@ -65,26 +70,45 @@ function readTokensPerSec(v) {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
+// True while an op should still draw a beam: in flight (within opMaxAgeMs), or just
+// completed and within its afterglow window. `done` ops keep their last `ts` and are timed
+// against `afterglowMs` so a measured tokens/sec gets a moment to thicken its beam.
+function opWithinWindow(op, now) {
+  const age = now - op.ts;
+  return op.done ? age <= AI_CORE.afterglowMs : age <= AI_CORE.opMaxAgeMs;
+}
+
 // Apply one `ai:status` event to the in-flight op map (plain object keyed by op id),
-// returning a NEW object. Terminal phases remove the op; every other phase adds/updates
+// returning a NEW object. A terminal phase (complete/error) doesn't drop the op outright:
+// if it reported token throughput, the op is kept briefly as a `done` afterglow entry (so
+// the measured tokens/sec can size its beam — throughput only arrives at completion); a
+// terminal phase with no throughput drops the op immediately. Every other phase adds/updates
 // it with the event's model, building association (`appId`/`workspacePath`), last-known
-// tokens/sec, and a last-seen timestamp. Entries older than `opMaxAgeMs` are pruned so a
+// tokens/sec, and a last-seen timestamp. Entries past their window are pruned so a
 // never-completed op can't wedge the core busy. Pure — `now` is injected.
 export function applyAiStatusEvent(ops, event, now = Date.now()) {
   const next = {};
-  // Prune stale ops first.
+  // Prune ops past their (in-flight or afterglow) window first.
   for (const [id, op] of Object.entries(ops || {})) {
-    if (now - op.ts <= AI_CORE.opMaxAgeMs) next[id] = op;
+    if (opWithinWindow(op, now)) next[id] = op;
   }
   const id = event?.id;
   if (!id) return next;
+  const prev = next[id] || {};
+  const tokensPerSec = readTokensPerSec(event.tokensPerSec) ?? prev.tokensPerSec ?? null;
   if (TERMINAL_PHASES.has(event.phase)) {
-    delete next[id];
+    // Drop immediately when there's nothing to show; otherwise keep a short afterglow so
+    // the just-measured throughput visibly thickens the beam before it fades.
+    if (tokensPerSec === null) {
+      delete next[id];
+      return next;
+    }
+    next[id] = { ...prev, id, done: true, tokensPerSec, ts: now };
     return next;
   }
-  const prev = next[id] || {};
   next[id] = {
     id,
+    done: false,
     model: event.model || prev.model || null,
     tier: modelTier(event.model || prev.model),
     // Association is stamped at start; carry it forward across intermediate phases even if
@@ -92,7 +116,7 @@ export function applyAiStatusEvent(ops, event, now = Date.now()) {
     appId: event.appId ?? prev.appId ?? null,
     workspacePath: event.workspacePath ?? prev.workspacePath ?? null,
     // Throughput typically only arrives on later phases; keep the last measured value.
-    tokensPerSec: readTokensPerSec(event.tokensPerSec) ?? prev.tokensPerSec ?? null,
+    tokensPerSec,
     ts: now,
   };
   return next;
@@ -130,7 +154,9 @@ export function beamThickness(tokensPerSec) {
 // Derive the core's view-model from the in-flight op map. `lastStartTs` (the timestamp of
 // the most recent op start) drives a brief flare; `now` is injected for determinism.
 export function computeAiCore(ops, lastStartTs = 0, now = Date.now()) {
-  const active = Object.values(ops || {}).filter(op => now - op.ts <= AI_CORE.opMaxAgeMs);
+  // Only in-flight ops count toward "busy"/concurrency; `done` afterglow ops still draw a
+  // beam (see computeAiCoreBeams) but the call is finished, so they don't inflate the count.
+  const active = Object.values(ops || {}).filter(op => !op.done && now - op.ts <= AI_CORE.opMaxAgeMs);
   const activeCount = active.length;
   const busy = activeCount > 0;
   // Loudest active tier wins the color; idle when nothing is in flight.
@@ -155,12 +181,14 @@ export function computeAiCore(ops, lastStartTs = 0, now = Date.now()) {
   };
 }
 
-// Build the per-beam descriptors the renderer draws from the apex. Each active op becomes
-// one beam: if it resolves to a building whose world position is known, the beam is
-// `targeted` and aims at that building (in apex-local space); otherwise it falls back to a
-// generic radial beam at an even angle. Thickness scales by the op's measured tokens/sec.
+// Build the per-beam descriptors the renderer draws from the apex. Each op still within its
+// window (in flight, or completed within the afterglow) becomes one beam: if it resolves to
+// a building whose world position is known, the beam is `targeted` and aims at that building
+// (in apex-local space); otherwise it falls back to a generic radial beam at an even angle.
+// Thickness scales by the op's measured tokens/sec — which is why afterglow ops are kept:
+// throughput is only known once the call completes.
 //
-//   ops       — in-flight op map (from applyAiStatusEvent)
+//   ops       — op map (from applyAiStatusEvent), including afterglow `done` entries
 //   positions — Map<appId, { x, z }> of building world positions (CityScene's layout)
 //   apps      — app records (for workspacePath → app resolution)
 //   apexY     — world Y of the spire apex (beams originate here)
@@ -170,7 +198,7 @@ export function computeAiCore(ops, lastStartTs = 0, now = Date.now()) {
 // Returns up to AI_CORE.maxBeams descriptors. Pure.
 export function computeAiCoreBeams(ops, positions, apps = [], apexY = AI_CORE.apexY, color, now = Date.now()) {
   const active = Object.values(ops || {})
-    .filter(op => now - op.ts <= AI_CORE.opMaxAgeMs)
+    .filter(op => opWithinWindow(op, now))
     .slice(0, AI_CORE.maxBeams);
 
   const getPos = (id) => {

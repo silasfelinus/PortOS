@@ -166,6 +166,28 @@ describe('applyAiStatusEvent building association', () => {
     ops = applyAiStatusEvent(ops, ev('a', 'provider:starting', 'm'), NOW + 20);
     expect(ops.a.tokensPerSec).toBe(150); // preserved
   });
+
+  it('drops a terminal op with no throughput immediately', () => {
+    let ops = applyAiStatusEvent({}, ev('a', 'start', 'm', { appId: 'app-1' }), NOW);
+    ops = applyAiStatusEvent(ops, ev('a', 'complete', 'm'), NOW + 1);
+    expect(Object.keys(ops)).toEqual([]);
+  });
+
+  it('keeps a completed op as a done afterglow when it reported throughput', () => {
+    let ops = applyAiStatusEvent({}, ev('a', 'start', 'm', { appId: 'app-1' }), NOW);
+    ops = applyAiStatusEvent(ops, ev('a', 'complete', 'm', { tokens: 200, tokensPerSec: 80 }), NOW + 5);
+    expect(ops.a.done).toBe(true);
+    expect(ops.a.tokensPerSec).toBe(80);
+    expect(ops.a.appId).toBe('app-1'); // association carried onto the afterglow
+  });
+
+  it('prunes a done afterglow op once afterglowMs has passed', () => {
+    let ops = applyAiStatusEvent({}, ev('a', 'start', 'm'), NOW);
+    ops = applyAiStatusEvent(ops, ev('a', 'complete', 'm', { tokensPerSec: 80 }), NOW + 5);
+    // A later event past the afterglow window prunes the done op.
+    ops = applyAiStatusEvent(ops, ev('b', 'start', 'm'), NOW + 5 + AI_CORE.afterglowMs + 1);
+    expect(Object.keys(ops)).toEqual(['b']);
+  });
 });
 
 describe('resolveOpAppId', () => {
@@ -243,5 +265,35 @@ describe('computeAiCoreBeams', () => {
     const ops = { a: { id: 'a', appId: 'app-1', ts: NOW } };
     const beams = computeAiCoreBeams(ops, positions, apps, AI_CORE.apexY, '#fff', NOW + AI_CORE.opMaxAgeMs + 1);
     expect(beams).toHaveLength(0);
+  });
+
+  it('draws a done afterglow op with its measured thickness, then drops it after afterglowMs', () => {
+    const ops = { a: { id: 'a', appId: 'app-1', done: true, tokensPerSec: 200, ts: NOW } };
+    const within = computeAiCoreBeams(ops, positions, apps, AI_CORE.apexY, '#fff', NOW + AI_CORE.afterglowMs - 1);
+    expect(within).toHaveLength(1);
+    expect(within[0].targeted).toBe(true);
+    expect(within[0].thickness).toBe(AI_CORE.beamThicknessMax);
+    const after = computeAiCoreBeams(ops, positions, apps, AI_CORE.apexY, '#fff', NOW + AI_CORE.afterglowMs + 1);
+    expect(after).toHaveLength(0);
+  });
+});
+
+describe('computeAiCore with afterglow ops', () => {
+  it('does not count a done afterglow op toward busy/activeCount', () => {
+    const ops = {
+      a: { id: 'a', tier: 'heavy', ts: NOW }, // in flight
+      b: { id: 'b', tier: 'light', done: true, tokensPerSec: 50, ts: NOW }, // afterglow
+    };
+    const vm = computeAiCore(ops, 0, NOW);
+    expect(vm.activeCount).toBe(1);
+    expect(vm.busy).toBe(true);
+    expect(vm.tier).toBe('heavy');
+  });
+
+  it('reads idle when only done afterglow ops remain', () => {
+    const ops = { b: { id: 'b', tier: 'light', done: true, tokensPerSec: 50, ts: NOW } };
+    const vm = computeAiCore(ops, 0, NOW);
+    expect(vm.busy).toBe(false);
+    expect(vm.activeCount).toBe(0);
   });
 });
