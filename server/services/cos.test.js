@@ -36,6 +36,12 @@ import { firstLine } from './cos.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const COS_SRC = readFileSync(join(__dirname, 'cos.js'), 'utf-8');
+// The task-generation engine (evaluateTasks + the improvement/idle generators
+// + applyPlanIdMetadata) was extracted to cosTaskGenerator.js (issue-741). The
+// spawn-side scheduler (dequeueNextTask, tryImmediateSpawn, the tasks:changed
+// listener) stays in cos.js. Source-level guards below read each invariant from
+// whichever module now owns it.
+const GEN_SRC = readFileSync(join(__dirname, 'cosTaskGenerator.js'), 'utf-8');
 
 // ─── Inline replicas of the cos.js priority + capacity slice ───────────────
 
@@ -592,9 +598,9 @@ describe('cos.js source — priority + capacity invariants', () => {
   });
 
   it('evaluateTasks short-circuits when availableSlots <= 0', () => {
-    const fnStart = COS_SRC.indexOf('export async function evaluateTasks');
+    const fnStart = GEN_SRC.indexOf('export async function evaluateTasks');
     expect(fnStart, 'evaluateTasks must exist').toBeGreaterThan(-1);
-    const fnBody = extractFnBody(COS_SRC, fnStart);
+    const fnBody = extractFnBody(GEN_SRC, fnStart);
 
     expect(fnBody).toMatch(/if\s*\(\s*availableSlots\s*<=\s*0\s*\)/);
   });
@@ -631,7 +637,7 @@ describe('cos.js source — priority + capacity invariants', () => {
     // is the safety net for older state.json files that pre-date the
     // per-project cap. Both dequeueNextTask and evaluateTasks must keep it.
     const dequeueFn = extractFnBody(COS_SRC, COS_SRC.indexOf('async function dequeueNextTask'));
-    const evalFn    = extractFnBody(COS_SRC, COS_SRC.indexOf('export async function evaluateTasks'));
+    const evalFn    = extractFnBody(GEN_SRC, GEN_SRC.indexOf('export async function evaluateTasks'));
 
     const pattern = /maxConcurrentAgentsPerProject\s*\|\|\s*state\.config\.maxConcurrentAgents/;
     expect(dequeueFn).toMatch(pattern);
@@ -643,7 +649,7 @@ describe('cos.js source — priority + capacity invariants', () => {
     // drops either fence, idle could spawn alongside autoSystem/mission and
     // double-load the agent pool.
     const dequeueFn = extractFnBody(COS_SRC, COS_SRC.indexOf('async function dequeueNextTask'));
-    const evalFn    = extractFnBody(COS_SRC, COS_SRC.indexOf('export async function evaluateTasks'));
+    const evalFn    = extractFnBody(GEN_SRC, GEN_SRC.indexOf('export async function evaluateTasks'));
 
     expect(dequeueFn).toMatch(/spawned\s*===\s*0\s*&&\s*state\.config\.idleReviewEnabled/);
     expect(evalFn).toMatch(/tasksToSpawn\.length\s*===\s*0\s*&&\s*state\.config\.idleReviewEnabled/);
@@ -657,8 +663,12 @@ describe('cos.js source — priority + capacity invariants', () => {
     // event-driven `dequeueNextTask` loop (the common "Run Now" path). Pin
     // (a) the set is declared and (b) markAppReviewStarted is gated on it in
     // each.
-    for (const fnName of ['export async function evaluateTasks', 'async function dequeueNextTask']) {
-      const fnBody = extractFnBody(COS_SRC, COS_SRC.indexOf(fnName));
+    // evaluateTasks now lives in cosTaskGenerator.js; dequeueNextTask stays in cos.js.
+    for (const { fnName, src } of [
+      { fnName: 'export async function evaluateTasks', src: GEN_SRC },
+      { fnName: 'async function dequeueNextTask', src: COS_SRC },
+    ]) {
+      const fnBody = extractFnBody(src, src.indexOf(fnName));
       expect(
         fnBody,
         `${fnName} must declare a reviewStartedApps set to dedupe per-app marks`
@@ -679,9 +689,9 @@ describe('cos.js source — priority + capacity invariants', () => {
     // `claim/<slug>` PR, and produced a duplicate. The fix routes the queue
     // path through the shared generator so `applyPlanIdMetadata` runs and
     // the full prompt + planId metadata land on the queued task.
-    const fnStart = COS_SRC.indexOf('async function queueEligibleImprovementTasks');
+    const fnStart = GEN_SRC.indexOf('async function queueEligibleImprovementTasks');
     expect(fnStart, 'queueEligibleImprovementTasks must exist').toBeGreaterThan(-1);
-    const fnBody = extractFnBody(COS_SRC, fnStart);
+    const fnBody = extractFnBody(GEN_SRC, fnStart);
 
     expect(
       fnBody,
@@ -781,10 +791,10 @@ describe('cos.js source — priority + capacity invariants', () => {
     // contains a `for (...) { try { ... } catch }` block and the
     // brace-balanced scanner doesn't always match the right closer when
     // there are template-literal braces nested inside.
-    const fnStart = COS_SRC.indexOf('async function generateManagedAppImprovementTaskForType');
+    const fnStart = GEN_SRC.indexOf('async function generateManagedAppImprovementTaskForType');
     expect(fnStart, 'generateManagedAppImprovementTaskForType must exist').toBeGreaterThan(-1);
-    const fnEnd = COS_SRC.indexOf('\nasync function ', fnStart + 1);
-    const fnBody = COS_SRC.slice(fnStart, fnEnd === -1 ? undefined : fnEnd);
+    const fnEnd = GEN_SRC.indexOf('\nasync function ', fnStart + 1);
+    const fnBody = GEN_SRC.slice(fnStart, fnEnd === -1 ? undefined : fnEnd);
 
     // The updateAppActivity call must appear AFTER applyPlanIdMetadata —
     // otherwise a `planMeta.skipReason` early-return still rotates the pointer.
@@ -815,13 +825,13 @@ describe('cos.js source — priority + capacity invariants', () => {
     // in-flight scan in applyPlanIdMetadata must stay (it gates dispatch), but
     // the planId stamp must be fenced behind PLAN_SELF_CLAIM_TASK_TYPES.
     expect(
-      COS_SRC,
+      GEN_SRC,
       'plan-task must be registered as a self-claiming task type'
     ).toMatch(/PLAN_SELF_CLAIM_TASK_TYPES\s*=\s*new Set\(\[\s*'plan-task'\s*\]\)/);
 
-    const fnStart = COS_SRC.indexOf('async function applyPlanIdMetadata');
+    const fnStart = GEN_SRC.indexOf('async function applyPlanIdMetadata');
     expect(fnStart, 'applyPlanIdMetadata must exist').toBeGreaterThan(-1);
-    const fnBody = extractFnBody(COS_SRC, fnStart);
+    const fnBody = extractFnBody(GEN_SRC, fnStart);
 
     // The planId stamp must be guarded so self-claiming types never pre-pick.
     expect(
