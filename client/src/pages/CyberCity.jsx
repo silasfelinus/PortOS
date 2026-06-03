@@ -13,7 +13,7 @@ import CitySettingsPanel from '../components/city/CitySettingsPanel';
 import { computeFilterResult } from '../utils/cityFilter';
 
 function CyberCityInner() {
-  const { apps, cosAgents, cosStatus, eventLogs, agentMap, reviewCounts, instances, systemHealth, notificationCounts, backupStatus, cosTasks, loading, connected } = useCityData();
+  const { apps, cosAgents, cosStatus, eventLogs, agentMap, reviewCounts, instances, systemHealth, notificationCounts, backupStatus, cosTasks, healthMetrics, loading, connected } = useCityData();
   const { settings, updateSetting } = useCitySettingsContext();
   const { playSfx } = useCityAudio(settings);
   const navigate = useNavigate();
@@ -108,6 +108,7 @@ function CyberCityInner() {
         instances={instances}
         backupStatus={backupStatus}
         cosTasks={cosTasks}
+        healthMetrics={healthMetrics}
         productivityData={productivityData}
         settings={settings}
         playSfx={playSfx}

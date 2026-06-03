@@ -2,6 +2,10 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import * as api from '../services/api';
 import socket from '../services/socket';
 import { useAutoRefetch } from './useAutoRefetch';
+import { METRICS as HEALTH_TOWER_METRICS } from '../utils/cityHealthTower';
+
+// Metric keys the vitals-tower landmark renders — fetched as the latest-value snapshot.
+const HEALTH_METRIC_KEYS = HEALTH_TOWER_METRICS.map(m => m.key);
 
 const healthSignature = (h) => {
   const warnings = (h?.warnings || []).map(w => `${w.type}:${w.message}`).join(';');
@@ -20,6 +24,7 @@ export const useCityData = () => {
   const [notificationCounts, setNotificationCounts] = useState({ unread: 0 });
   const [backupStatus, setBackupStatus] = useState(null);
   const [cosTasks, setCosTasks] = useState([]);
+  const [healthMetrics, setHealthMetrics] = useState(null);
   const [loading, setLoading] = useState(true);
   const logIdRef = useRef(0);
 
@@ -33,7 +38,7 @@ export const useCityData = () => {
     // /notifications/count returns the lightweight { count } payload — the HUD
     // and Attention pane only need unread, and notifications:count socket
     // events keep it fresh after this initial fetch.
-    const [appsData, agents, cosAgentsData, status, reviewData, instanceData, health, notif, backup, cosTasksData] = await Promise.all([
+    const [appsData, agents, cosAgentsData, status, reviewData, instanceData, health, notif, backup, cosTasksData, healthMetricsData] = await Promise.all([
       api.getApps().catch(() => []),
       api.getRunningAgents().catch(() => []),
       api.getCosAgents().catch(() => []),
@@ -44,6 +49,7 @@ export const useCityData = () => {
       api.getNotificationCount().catch(() => ({ count: 0 })),
       api.getBackupStatus({ silent: true }).catch(() => null),
       api.getCosTasks({ silent: true }).catch(() => ({ tasks: [] })),
+      api.getLatestHealthMetrics(HEALTH_METRIC_KEYS, { silent: true }).catch(() => null),
     ]);
 
     setApps(appsData);
@@ -56,6 +62,7 @@ export const useCityData = () => {
     setNotificationCounts({ unread: notif?.count ?? 0 });
     setBackupStatus(backup);
     setCosTasks(Array.isArray(cosTasksData?.tasks) ? cosTasksData.tasks : []);
+    setHealthMetrics(healthMetricsData);
     setLoading(false);
   }, []);
 
@@ -222,6 +229,7 @@ export const useCityData = () => {
     notificationCounts,
     backupStatus,
     cosTasks,
+    healthMetrics,
     loading,
     connected: socket.connected,
   };
