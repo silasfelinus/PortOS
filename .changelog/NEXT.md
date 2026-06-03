@@ -16,5 +16,6 @@
 
 - **[issue-717] No stray React warnings when you navigate away mid-action** — buttons that run an async task (save, generate, sync) no longer log an "update on an unmounted component" warning if you leave the page before the task finishes.
 - **[issue-719] Steadier media galleries during live note/star sync** — incoming annotation broadcasts that match what a view already shows no longer trigger a needless re-render of the media cards.
+- **[issue-766] Episode Video renders cleanly when a remembered model is gone** — if the video model you previously pinned for an episode has since been removed, the render now quietly falls back to your default model instead of failing partway through.
 
 ## Removed
