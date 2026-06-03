@@ -128,21 +128,34 @@ export default function TestTab({ onRefresh }) {
     const testIds = selectedTests.length > 0 ? selectedTests : null;
     const personaId = selectedPersonaId || null;
 
-    if (selectedProviders.length === 1) {
-      // Single provider test
-      const { providerId, model } = selectedProviders[0];
-      const result = await api.runSoulTests(providerId, model, testIds, personaId);
-      setResults([{ providerId, model, ...result }]);
-    } else {
-      // Multi-provider test
-      const multiResults = await api.runSoulMultiTests(selectedProviders, testIds, personaId);
-      setResults(multiResults);
-    }
+    try {
+      if (selectedProviders.length === 1) {
+        // Single provider test
+        const { providerId, model } = selectedProviders[0];
+        const result = await api.runSoulTests(providerId, model, testIds, personaId);
+        setResults([{ providerId, model, ...result }]);
+      } else {
+        // Multi-provider test
+        const multiResults = await api.runSoulMultiTests(selectedProviders, testIds, personaId);
+        setResults(multiResults);
+      }
 
-    await loadData();
-    setRunning(false);
-    toast.success('Tests completed');
-    onRefresh();
+      await loadData();
+      toast.success('Tests completed');
+      onRefresh();
+    } catch (err) {
+      // A stale/deleted persona id is rejected with 404 by the route guard —
+      // self-heal the picker so the next run isn't blocked. The api helper
+      // already toasts the error, so don't add a second one here.
+      if (err?.code === 'NOT_FOUND') {
+        setSelectedPersonaId('');
+        loadData();
+      }
+    } finally {
+      // Always clear the spinner — without this an error (e.g. the 404 above)
+      // would strand the tab on "Running Tests...".
+      setRunning(false);
+    }
   };
 
   const getResultIcon = (result) => {
