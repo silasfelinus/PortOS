@@ -253,23 +253,29 @@ export default function Review() {
         </section>
 
         {/* Cross-domain "Needs Attention" queue (M42 P5) — live-pulled from
-            Brain, Ask, CoS, Messages, Health, and Backups. */}
-        {queueItems.length > 0 && (
+            Brain, Ask, CoS, Messages, Health, and Backups. Shown whenever there
+            are items OR a source failed to load (so the degraded-source notice
+            isn't hidden behind an otherwise-empty queue). */}
+        {(queueItems.length > 0 || queueSourceErrors.length > 0) && (
           <section className="bg-port-card border border-port-border rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-sm font-semibold text-white flex items-center gap-2">
                 <Inbox size={16} className="text-port-accent" />
                 Needs Attention
               </h3>
-              <span className="text-xs rounded-full px-2 py-0.5 bg-port-accent/10 text-port-accent border border-port-accent/20">
-                {queueItems.length} across domains
-              </span>
+              {queueItems.length > 0 && (
+                <span className="text-xs rounded-full px-2 py-0.5 bg-port-accent/10 text-port-accent border border-port-accent/20">
+                  {queueItems.length} across domains
+                </span>
+              )}
             </div>
-            <div className="space-y-2">
-              {queueItems.map(item => (
-                <QueueRow key={item.id} item={item} onDrill={handleQueueDrill} onDismiss={handleQueueDismiss} />
-              ))}
-            </div>
+            {queueItems.length > 0 && (
+              <div className="space-y-2">
+                {queueItems.map(item => (
+                  <QueueRow key={item.id} item={item} onDrill={handleQueueDrill} onDismiss={handleQueueDismiss} />
+                ))}
+              </div>
+            )}
             {queueSourceErrors.length > 0 && (
               <p className="text-xs text-gray-600">
                 Couldn&apos;t load: {queueSourceErrors.map(([, s]) => s.label).join(', ')}.

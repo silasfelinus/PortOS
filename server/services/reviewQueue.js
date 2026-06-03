@@ -121,8 +121,10 @@ const PRODUCERS = [
     label: 'Message drafts',
     drillTo: '/messages/drafts',
     async gather() {
-      // Drafts the user (or an AI) prepared that haven't been sent yet —
-      // both freeform drafts and ones explicitly awaiting review.
+      // Drafts the user (or an AI) prepared that haven't been sent yet. Today
+      // messageDrafts only emits 'draft' (vs 'approved'); 'pending_review' is
+      // matched ahead of the producer adding it (see #832) so this needs no
+      // change when it lands.
       const drafts = await messageDrafts.listDrafts();
       return drafts.filter(d => d.status === 'draft' || d.status === 'pending_review');
     },
@@ -146,14 +148,16 @@ const PRODUCERS = [
       const { alerts = [] } = await getAlertsCached();
       return alerts.filter(a => a.severity === 'critical' || a.severity === 'high');
     },
-    map(alert) {
+    // proactiveAlerts emits { type, severity, title, detail, link } with no
+    // stable id and possibly-repeating types, so key on the array index too.
+    map(alert, index) {
       return {
-        id: `health:${alert.id || alert.type}`,
+        id: `health:${alert.type || 'alert'}:${index}`,
         title: alert.title || `${alert.type || 'System'} alert`,
-        summary: (alert.message || '').slice(0, 200),
+        summary: (alert.detail || alert.message || '').slice(0, 200),
         timestamp: alert.timestamp || null,
         severity: alert.severity === 'critical' ? 'critical' : 'high',
-        drillTo: alert.actionUrl || '/system-health'
+        drillTo: alert.link || '/system-health'
       };
     }
   },
@@ -162,16 +166,17 @@ const PRODUCERS = [
     label: 'Failed backups',
     drillTo: '/settings/backup',
     async gather() {
-      // A backup that failed or errored on its last run needs acknowledgement.
+      // A backup that errored on its last run needs acknowledgement. The
+      // backup service records failure as status 'error' with an `error` field.
       const state = await backup.getState();
-      const failed = state && (state.status === 'failed' || state.lastError);
+      const failed = state && (state.status === 'error' || state.error);
       return failed ? [state] : [];
     },
     map(state) {
       return {
         id: 'backup:last-run',
         title: 'Backup failed',
-        summary: (state.lastError || 'The most recent backup did not complete.').slice(0, 200),
+        summary: (state.error || 'The most recent backup did not complete.').slice(0, 200),
         timestamp: state.lastRun || null,
         severity: 'high',
         drillTo: '/settings/backup'
@@ -190,10 +195,10 @@ const SEVERITY_ORDER = { critical: 0, high: 1, normal: 2 };
 async function gatherProducer(producer) {
   const raw = await producer.gather();
   const list = Array.isArray(raw) ? raw : [];
-  const items = list.slice(0, PER_SOURCE_LIMIT).map(item => ({
+  const items = list.slice(0, PER_SOURCE_LIMIT).map((item, index) => ({
     source: producer.source,
     sourceLabel: producer.label,
-    ...producer.map(item)
+    ...producer.map(item, index)
   }));
   return { items, total: list.length };
 }

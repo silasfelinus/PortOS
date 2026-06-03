@@ -25,7 +25,7 @@ function resetEmpty() {
   cosTaskStore.getCosTasks.mockResolvedValue({ awaitingApproval: [] });
   messageDrafts.listDrafts.mockResolvedValue([]);
   proactiveAlerts.generateAlerts.mockResolvedValue({ alerts: [] });
-  backup.getState.mockResolvedValue({ status: 'success', lastError: null });
+  backup.getState.mockResolvedValue({ status: 'ok', error: null });
 }
 
 describe('reviewQueue.buildQueue', () => {
@@ -85,21 +85,33 @@ describe('reviewQueue.buildQueue', () => {
   });
 
   it('only surfaces critical/high health alerts and a failed backup', async () => {
+    // Real proactiveAlerts shape: { type, severity, title, detail, link }.
     proactiveAlerts.generateAlerts.mockResolvedValue({ alerts: [
-      { id: 'al1', type: 'memory', severity: 'critical', message: 'OOM' },
-      { id: 'al2', type: 'cpu', severity: 'low', message: 'meh' }
+      { type: 'system_resource', severity: 'critical', title: 'High memory usage', detail: '95% used', link: '/apps' },
+      { type: 'goal_stall', severity: 'medium', title: 'meh', detail: 'low' }
     ] });
-    backup.getState.mockResolvedValue({ status: 'failed', lastError: 'disk full', lastRun: '2026-06-03T07:00:00.000Z' });
+    // Real backup failure shape: status 'error' with an `error` field.
+    backup.getState.mockResolvedValue({ status: 'error', error: 'disk full', lastRun: '2026-06-03T07:00:00.000Z' });
     const queue = await buildQueue();
     const healthRows = queue.items.filter(i => i.source === 'health');
     expect(healthRows).toHaveLength(1);
-    expect(healthRows[0]).toMatchObject({ severity: 'critical' });
+    expect(healthRows[0]).toMatchObject({ severity: 'critical', summary: '95% used', drillTo: '/apps' });
     expect(queue.items.find(i => i.source === 'backup')).toMatchObject({ title: 'Backup failed', summary: 'disk full' });
+  });
+
+  it('gives same-type health alerts unique ids', async () => {
+    proactiveAlerts.generateAlerts.mockResolvedValue({ alerts: [
+      { type: 'system_resource', severity: 'high', title: 'High memory', detail: 'mem', link: '/apps' },
+      { type: 'system_resource', severity: 'high', title: 'High CPU', detail: 'cpu', link: '/apps' }
+    ] });
+    const queue = await buildQueue();
+    const ids = queue.items.filter(i => i.source === 'health').map(i => i.id);
+    expect(new Set(ids).size).toBe(2);
   });
 
   it('sorts by severity then recency', async () => {
     brain.getInboxLog.mockResolvedValue([{ id: 'b1', capturedText: 'normal', capturedAt: '2026-06-03T12:00:00.000Z' }]);
-    proactiveAlerts.generateAlerts.mockResolvedValue({ alerts: [{ id: 'al1', type: 'disk', severity: 'critical', message: 'crit', timestamp: '2026-06-03T01:00:00.000Z' }] });
+    proactiveAlerts.generateAlerts.mockResolvedValue({ alerts: [{ type: 'disk', severity: 'critical', title: 'crit', detail: 'full', link: '/apps', timestamp: '2026-06-03T01:00:00.000Z' }] });
     const queue = await buildQueue();
     // critical alert sorts ahead of the (newer) normal brain item
     expect(queue.items[0].severity).toBe('critical');
