@@ -11,6 +11,7 @@
 // the placement doesn't reshuffle across refetches.
 
 import { hashString } from './hashString';
+import { effectiveLevel, completedGoalCount, bestStreakDays } from './cityArtifacts';
 
 // Placement: a tight cluster at the far -X / +Z corner, deliberately off in a quiet quadrant
 // away from the achievement hall (+X/-Z) so an egg reads as "hidden" rather than featured.
@@ -20,12 +21,6 @@ export const EGGS = {
   columns: 2,
   size: 1.1,
 };
-
-// Coerce to a finite number or null (the "absent" sentinel) so an absent field never collapses
-// into a real 0 (mirrors cityArtifacts.finiteOrNull).
-function finiteOrNull(value) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
 
 // A number reads the same forwards and backwards (and is >= 10 so single digits don't trivially
 // qualify). Used by the palindrome-streak egg.
@@ -79,25 +74,24 @@ export const EASTER_EGGS = [
   },
 ];
 
-// Normalize the raw inputs into the flat predicate context. `level` and `bestStreak` are nullable
-// (absent → null, never 0) so an "exact value" egg can't false-fire on missing data. Goal counts
-// default to 0 (a missing list is just an empty board).
-export function eggContext({ date, character, goals, productivityData } = {}) {
-  const lvl = character?.level;
-  const level = Number.isFinite(lvl) && lvl >= 1 ? Math.floor(lvl) : null;
-
+// Count the "real" goal entries (objects) from a list or the API `{ goals: [] }` wrapper, so the
+// clean-sweep egg can compare completed vs total. Mirrors completedGoalCount's input tolerance.
+function totalGoalCount(goals) {
   const list = Array.isArray(goals) ? goals : Array.isArray(goals?.goals) ? goals.goals : [];
-  const realGoals = list.filter((g) => g && typeof g === 'object');
-  const completedGoals = realGoals.filter((g) => g.status === 'completed').length;
-  const totalGoals = realGoals.length;
+  return list.filter((g) => g && typeof g === 'object').length;
+}
 
-  const streak = productivityData?.streak;
-  const bestStreak =
-    streak && typeof streak === 'object'
-      ? finiteOrNull(streak.longest) ?? finiteOrNull(streak.current)
-      : null;
-
-  return { date: date || null, level, completedGoals, totalGoals, bestStreak };
+// Normalize the raw inputs into the flat predicate context, reusing the cityArtifacts derivations
+// so the egg conditions stay consistent with the earned-artifact trophies. `level` and `bestStreak`
+// are nullable (absent → null, never 0) so an "exact value" egg can't false-fire on missing data.
+export function eggContext({ date, character, goals, productivityData } = {}) {
+  return {
+    date: date || null,
+    level: effectiveLevel(character), // floored level or null (xp-derived if needed)
+    completedGoals: completedGoalCount(goals),
+    totalGoals: totalGoalCount(goals),
+    bestStreak: bestStreakDays(productivityData), // longest, else current, else null
+  };
 }
 
 // Build the list of UNLOCKED egg descriptors. Deterministic, side-effect-free, stable order.
