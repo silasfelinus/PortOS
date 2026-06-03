@@ -64,10 +64,11 @@ export function tierColor(tier) {
 const TIER_RANK = { light: 1, medium: 2, heavy: 3 };
 
 // Coerce a finite, non-negative tokens/sec from an event; otherwise null ("unknown").
-// Keeps "the provider didn't report usage" distinct from a measured zero.
+// Keeps "the provider didn't report usage" distinct from a measured zero. Only an actual
+// number counts — `null`/`undefined`/`''` (which `Number()` would coerce to 0/NaN) are
+// "unknown", per the sentinel-vs-empty convention.
 function readTokensPerSec(v) {
-  const n = Number(v);
-  return Number.isFinite(n) && n >= 0 ? n : null;
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
 }
 
 // True while an op should still draw a beam: in flight (within opMaxAgeMs), or just
@@ -122,9 +123,31 @@ export function applyAiStatusEvent(ops, event, now = Date.now()) {
   return next;
 }
 
+// True when `child` is `parent` itself or a path nested under it — a boundary-aware check so
+// `/repos/app` does NOT match the sibling `/repos/app-other`. Compares on a trailing-slash
+// normalized form. Pure.
+function isPathUnder(child, parent) {
+  if (!child || !parent) return false;
+  if (child === parent) return true;
+  const base = parent.endsWith('/') ? parent : `${parent}/`;
+  return child.startsWith(base);
+}
+
+// Drop every op past its window (in-flight or afterglow). Returns the SAME reference when
+// nothing changed so callers can skip a no-op state update; otherwise a new pruned object.
+// Used by a one-shot timer so a `done`/flare beam fades on schedule even when no further
+// `ai:status` event arrives to trigger the reducer. Pure.
+export function pruneAiOps(ops, now = Date.now()) {
+  const entries = Object.entries(ops || {});
+  const kept = entries.filter(([, op]) => opWithinWindow(op, now));
+  if (kept.length === entries.length) return ops;
+  return Object.fromEntries(kept);
+}
+
 // Map an op's building association to an app id. Prefers an explicit `appId`; otherwise
-// matches the longest `repoPath` prefix of the op's `workspacePath` (a CoS-agent worktree
-// lives under its app's repo). Returns null when nothing matches. Pure.
+// matches the app whose `repoPath` is the longest path-boundary prefix of the op's
+// `workspacePath` (a CoS-agent worktree lives under its app's repo). Returns null when
+// nothing matches. Pure.
 export function resolveOpAppId(op, apps = []) {
   if (op?.appId) return op.appId;
   const wp = op?.workspacePath;
@@ -132,7 +155,7 @@ export function resolveOpAppId(op, apps = []) {
   let best = null;
   let bestLen = -1;
   for (const app of apps) {
-    if (app?.repoPath && wp.startsWith(app.repoPath) && app.repoPath.length > bestLen) {
+    if (app?.repoPath && isPathUnder(wp, app.repoPath) && app.repoPath.length > bestLen) {
       best = app.id;
       bestLen = app.repoPath.length;
     }

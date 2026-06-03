@@ -8,6 +8,7 @@ import {
   resolveOpAppId,
   beamThickness,
   computeAiCoreBeams,
+  pruneAiOps,
 } from './cityAiCore';
 
 const NOW = 1_000_000;
@@ -201,11 +202,51 @@ describe('resolveOpAppId', () => {
   it('matches the longest repoPath prefix of workspacePath', () => {
     expect(resolveOpAppId({ workspacePath: '/repos/proj/packages/web/src' }, apps)).toBe('inner');
     expect(resolveOpAppId({ workspacePath: '/repos/proj/docs' }, apps)).toBe('outer');
+    expect(resolveOpAppId({ workspacePath: '/repos/proj' }, apps)).toBe('outer'); // exact match
+  });
+  it('does not match a sibling path that merely shares a prefix', () => {
+    // /repos/proj-other is NOT under /repos/proj — boundary-aware, not raw startsWith.
+    expect(resolveOpAppId({ workspacePath: '/repos/proj-other/src' }, apps)).toBeNull();
   });
   it('returns null when nothing matches', () => {
     expect(resolveOpAppId({ workspacePath: '/elsewhere' }, apps)).toBeNull();
     expect(resolveOpAppId({}, apps)).toBeNull();
     expect(resolveOpAppId(null, apps)).toBeNull();
+  });
+});
+
+describe('readTokensPerSec sentinel (via afterglow retention)', () => {
+  it('treats null / empty-string throughput as unknown, not a measured zero', () => {
+    // A terminal event with no real throughput must drop the op (unknown), not keep it as
+    // a zero-throughput afterglow.
+    let ops = applyAiStatusEvent({}, ev('a', 'start', 'm'), NOW);
+    ops = applyAiStatusEvent(ops, ev('a', 'complete', 'm', { tokensPerSec: null }), NOW + 1);
+    expect(Object.keys(ops)).toEqual([]);
+    ops = applyAiStatusEvent({}, ev('b', 'start', 'm'), NOW);
+    ops = applyAiStatusEvent(ops, ev('b', 'complete', 'm', { tokensPerSec: '' }), NOW + 1);
+    expect(Object.keys(ops)).toEqual([]);
+  });
+  it('keeps a genuine zero-throughput afterglow distinct from unknown', () => {
+    let ops = applyAiStatusEvent({}, ev('a', 'start', 'm'), NOW);
+    ops = applyAiStatusEvent(ops, ev('a', 'complete', 'm', { tokensPerSec: 0 }), NOW + 1);
+    expect(ops.a?.done).toBe(true);
+    expect(ops.a.tokensPerSec).toBe(0);
+  });
+});
+
+describe('pruneAiOps', () => {
+  it('returns the same reference when nothing expired', () => {
+    const ops = { a: { id: 'a', ts: NOW } };
+    expect(pruneAiOps(ops, NOW)).toBe(ops);
+  });
+  it('drops expired in-flight and afterglow ops', () => {
+    const ops = {
+      live: { id: 'live', ts: NOW },
+      stale: { id: 'stale', ts: NOW - AI_CORE.opMaxAgeMs - 1 },
+      glow: { id: 'glow', done: true, ts: NOW - AI_CORE.afterglowMs - 1 },
+    };
+    const pruned = pruneAiOps(ops, NOW);
+    expect(Object.keys(pruned)).toEqual(['live']);
   });
 });
 

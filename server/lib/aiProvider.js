@@ -210,7 +210,9 @@ export async function callProviderAISimple(provider, model, prompt, options = {}
   const elapsedSec = () => ((Date.now() - startMs) / 1000).toFixed(1);
   // Token-throughput extras for the completion event — `tokensPerSec` powers the AI Core
   // beam thickness. Omitted entirely when the provider didn't report token usage so the
-  // client can distinguish "unknown" from a real zero.
+  // client can distinguish "unknown" from a real zero. This is a coarse end-to-end rate
+  // (elapsed since the op started, so on the model-load / LM-Studio-retry paths it folds in
+  // load + retry time and reads slightly low) — adequate for a relative beam-width cue.
   const throughput = (tokens) => {
     if (!Number.isFinite(tokens)) return {};
     const secs = Math.max((Date.now() - startMs) / 1000, 0.001);

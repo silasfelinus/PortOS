@@ -3,7 +3,7 @@ import * as api from '../services/api';
 import socket from '../services/socket';
 import { useAutoRefetch } from './useAutoRefetch';
 import { METRICS as HEALTH_TOWER_METRICS } from '../utils/cityHealthTower';
-import { applyAiStatusEvent } from '../utils/cityAiCore';
+import { applyAiStatusEvent, pruneAiOps, AI_CORE } from '../utils/cityAiCore';
 import { coalesce } from '../utils/coalesce';
 
 // Metric keys the vitals-tower landmark renders — fetched as the latest-value snapshot.
@@ -37,6 +37,10 @@ export const useCityData = () => {
   const [aiActivity, setAiActivity] = useState({ ops: {}, lastStartTs: 0 });
   const [loading, setLoading] = useState(true);
   const logIdRef = useRef(0);
+  // One-shot timer that prunes expired AI Core ops. `ai:status` is purely event-driven, so
+  // without this a `done` afterglow (or a flare) beam would linger until the next event —
+  // the render derivations check the clock but nothing re-renders to advance it.
+  const aiPruneTimerRef = useRef(null);
 
   const fetchApps = useCallback(async () => {
     const data = await api.getApps().catch(() => []);
@@ -251,10 +255,31 @@ export const useCityData = () => {
     // (start → model:loading → model:loaded → complete/error) globally. Track the in-flight
     // set so the central spire glows/beams with live model activity; the pure reducer adds
     // on non-terminal phases, drops on complete/error, and prunes stale ops.
-    const handleAiStatus = (event) => setAiActivity(prev => ({
-      ops: applyAiStatusEvent(prev.ops, event),
-      lastStartTs: event?.phase === 'start' ? Date.now() : prev.lastStartTs,
-    }));
+    // Prune expired ops and re-arm while any remain, so a `done` afterglow beam fades after
+    // afterglowMs and a stranded in-flight op clears at opMaxAgeMs — without depending on a
+    // further `ai:status` event to advance the clock. Tick at the afterglow cadence (the
+    // shorter window); pruneAiOps returns the same ref when nothing expired, short-circuiting
+    // the setState to no re-render.
+    const scheduleAiPrune = () => {
+      if (aiPruneTimerRef.current) clearTimeout(aiPruneTimerRef.current);
+      aiPruneTimerRef.current = setTimeout(() => {
+        let remaining = 0;
+        setAiActivity(prev => {
+          const ops = pruneAiOps(prev.ops);
+          remaining = Object.keys(ops).length;
+          return ops === prev.ops ? prev : { ...prev, ops };
+        });
+        if (remaining > 0) scheduleAiPrune();
+      }, AI_CORE.afterglowMs + 100);
+    };
+
+    const handleAiStatus = (event) => {
+      setAiActivity(prev => ({
+        ops: applyAiStatusEvent(prev.ops, event),
+        lastStartTs: event?.phase === 'start' ? Date.now() : prev.lastStartTs,
+      }));
+      scheduleAiPrune();
+    };
     socket.on('ai:status', handleAiStatus);
 
     // Subscribe but do NOT unsubscribe on cleanup. The cos:* and notifications:*
@@ -279,6 +304,7 @@ export const useCityData = () => {
       socket.off('voice:error', handleVoiceError);
       socket.off('voice:idle', handleVoiceIdle);
       socket.off('ai:status', handleAiStatus);
+      if (aiPruneTimerRef.current) clearTimeout(aiPruneTimerRef.current);
       coalescedFetchAll.cancel(); // drop any pending trailing refetch on unmount
     };
   }, [fetchAll, fetchApps, fetchBackup, coalescedFetchAll]);
