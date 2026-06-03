@@ -319,10 +319,10 @@ export async function generateManuscriptFix(seriesId, { commentId, providerOverr
       problem: comment.problem,
       suggestion: comment.suggestion,
       anchorQuote: comment.anchorQuote,
-      replacementStrategy: comment.replacementStrategy,
-      // Boolean mirror for Mustache's section tags (it can't compare strings) so
-      // the fix prompt can branch on whether `suggestion` is a full-page rewrite
-      // (substitute it directly) or delta advice (synthesize the edit).
+      // Boolean mirror of `replacementStrategy` for Mustache's section tags (it
+      // can't compare strings) so the fix prompt can branch on whether
+      // `suggestion` is a full-page rewrite (substitute it directly) or delta
+      // advice (synthesize the edit).
       isFullPage: comment.replacementStrategy === 'full-page',
     },
   };
