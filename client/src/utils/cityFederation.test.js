@@ -53,7 +53,7 @@ describe('bridgeState', () => {
     const b = bridgeState({ status: 'online', syncEnabled: false });
     expect(b.active).toBe(false);
     expect(b.broken).toBe(false);
-    expect(b.intensity).toBeLessThan(1);
+    expect(b.intensity).toBe(0.5); // online but idle sits between active (1) and unreachable (0.2)
   });
 });
 
