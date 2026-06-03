@@ -382,9 +382,10 @@ app.use(express.urlencoded({ limit: '55mb', extended: true }));
 // Make io available to routes
 app.set('io', io);
 
-// Auth gate runs before any /api/* route. When settings.secrets.auth.enabled
-// is true the gate returns 401 for everything except the small public set in
-// lib/authGate.js (login, status, healthz). No-op when auth is off.
+// Auth gate runs before any /api/* or /sdapi/* route. When
+// settings.secrets.auth.enabled is true the gate returns 401 for everything
+// except the small public set in lib/authGate.js (auth status/whoami/login/
+// logout + /api/system/health). No-op when auth is off.
 app.use(authGate);
 
 // API Routes

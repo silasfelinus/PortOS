@@ -101,6 +101,27 @@ describe('authGate middleware', () => {
     expect(result.res.statusCode).toBe(401);
     expect(result.res.body).toBe('Unauthorized');
   });
+
+  it('gates the /sdapi/* AUTOMATIC1111-compatible surface', async () => {
+    const auth = await import('../services/auth.js');
+    await auth.setPassword({ newPassword: 'correct-horse' });
+    const { authGate } = await import('./authGate.js');
+    const result = await runGate(authGate, { path: '/sdapi/v1/sd-models', headers: {} });
+    expect(result.called).toBe(false);
+    expect(result.res.statusCode).toBe(401);
+    expect(result.res.body).toEqual({ error: 'Authentication required', code: 'AUTH_REQUIRED' });
+  });
+
+  it('treats a malformed cookie value as no token (clean 401, not 500)', async () => {
+    const auth = await import('../services/auth.js');
+    await auth.setPassword({ newPassword: 'correct-horse' });
+    const { authGate } = await import('./authGate.js');
+    // %E0 is a partial percent-escape — decodeURIComponent throws URIError.
+    const result = await runGate(authGate, { path: '/api/cos', headers: { cookie: 'portos_auth=%E0' } });
+    expect(result.called).toBe(false);
+    expect(result.res.statusCode).toBe(401);
+    expect(result.res.body.code).toBe('AUTH_REQUIRED');
+  });
 });
 
 describe('socketAuthGate middleware', () => {

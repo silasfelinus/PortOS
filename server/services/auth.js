@@ -1,5 +1,5 @@
 import { join } from 'path';
-import { randomBytes, scrypt, timingSafeEqual } from 'crypto';
+import { createHash, randomBytes, scrypt, timingSafeEqual } from 'crypto';
 import { promisify } from 'util';
 import { atomicWrite, PATHS, safeJSONParse, tryReadFile } from '../lib/fileUtils.js';
 import { getSettings, updateSettings } from './settings.js';
@@ -19,16 +19,30 @@ const SALT_BYTES = 16;
 const HASH_BYTES = 64;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const COOKIE_NAME = 'portos_auth';
-const SCRYPT_PARAMS = { N: 16384, r: 8, p: 1 };
+// scrypt cost parameters per OWASP 2023 password-storage guidance for
+// interactive logins. PortOS has no rate limiting and the password hash +
+// salt persist in `settings.json` (single-user trust model — local
+// filesystem access already exists), so the realistic threat is offline
+// cracking of an exfiltrated settings file. The higher N narrows the
+// GPU/ASIC margin without making a one-per-tab login feel slow.
+// Node's default `maxmem` of 32 MiB rejects this N. OpenSSL needs slightly
+// more headroom than the canonical 128·N·r working set (≈128 MiB for these
+// params), so allocate 256 MiB.
+const SCRYPT_PARAMS = { N: 131072, r: 8, p: 1, maxmem: 256 * 1024 * 1024 };
 
-// In-memory session store. Keyed by token → { expiresAt }. Persisted to disk on
-// every mutation so tokens survive server restarts (handy when PM2 reloads on
-// update). A single-user install rarely has more than a handful of live
-// sessions; a Map keeps this simple.
+// In-memory session store. Keyed by `sha256(token)` → { expiresAt }. Persisted
+// to disk on every mutation so tokens survive server restarts (handy when PM2
+// reloads on update). A single-user install rarely has more than a handful of
+// live sessions; a Map keeps this simple. The plaintext token only ever lives
+// in the response cookie — not in memory and not at rest — so an exfiltrated
+// `auth-sessions.json` (e.g. from a backup or peer-sync mirror) doesn't yield
+// usable credentials.
 const sessions = new Map();
 let loaded = false;
 
 const now = () => Date.now();
+
+const hashToken = (token) => createHash('sha256').update(token).digest('hex');
 
 const readSessions = async () => {
   const raw = await tryReadFile(SESSIONS_FILE);
@@ -36,16 +50,21 @@ const readSessions = async () => {
   if (!Array.isArray(parsed.tokens)) return;
   const cutoff = now();
   for (const entry of parsed.tokens) {
-    if (!entry?.token || typeof entry.expiresAt !== 'number') continue;
+    // Records carry `tokenHash` (sha256 hex) — accept the legacy `token` key
+    // too so a pre-hash install upgrading on the spot doesn't sign every
+    // session out at boot (the in-memory + at-rest representation rewrites
+    // on the next mutation).
+    const stored = entry?.tokenHash ?? entry?.token;
+    if (typeof stored !== 'string' || typeof entry.expiresAt !== 'number') continue;
     if (entry.expiresAt <= cutoff) continue;
-    sessions.set(entry.token, { expiresAt: entry.expiresAt });
+    sessions.set(stored, { expiresAt: entry.expiresAt });
   }
 };
 
 const writeSessions = async () => {
   const tokens = [];
-  for (const [token, { expiresAt }] of sessions) {
-    tokens.push({ token, expiresAt });
+  for (const [tokenHash, { expiresAt }] of sessions) {
+    tokens.push({ tokenHash, expiresAt });
   }
   await atomicWrite(SESSIONS_FILE, JSON.stringify({ tokens }, null, 2) + '\n');
 };
@@ -155,7 +174,7 @@ export const createSession = async () => {
   await ensureLoaded();
   const token = randomBytes(TOKEN_BYTES).toString('hex');
   const expiresAt = now() + SESSION_TTL_MS;
-  sessions.set(token, { expiresAt });
+  sessions.set(hashToken(token), { expiresAt });
   await writeSessions();
   return { token, expiresAt, maxAgeMs: SESSION_TTL_MS };
 };
@@ -163,10 +182,11 @@ export const createSession = async () => {
 export const verifySession = async (token) => {
   if (typeof token !== 'string' || token.length === 0) return false;
   await ensureLoaded();
-  const entry = sessions.get(token);
+  const key = hashToken(token);
+  const entry = sessions.get(key);
   if (!entry) return false;
   if (entry.expiresAt <= now()) {
-    sessions.delete(token);
+    sessions.delete(key);
     await writeSessions().catch(() => null);
     return false;
   }
@@ -175,7 +195,7 @@ export const verifySession = async (token) => {
 
 export const revokeSession = async (token) => {
   await ensureLoaded();
-  if (sessions.delete(token)) {
+  if (sessions.delete(hashToken(token))) {
     await writeSessions();
   }
 };
@@ -197,7 +217,13 @@ export const parseCookieToken = (cookieHeader) => {
     if (eq === -1) continue;
     const name = part.slice(0, eq).trim();
     if (name !== COOKIE_NAME) continue;
-    return decodeURIComponent(part.slice(eq + 1).trim());
+    const raw = part.slice(eq + 1).trim();
+    // decodeURIComponent throws on malformed %XX sequences. An attacker
+    // sending `portos_auth=%E0` would otherwise turn every gated request
+    // into a 500 via the error middleware instead of a clean 401. Treat
+    // a malformed cookie the same as "no token".
+    try { return decodeURIComponent(raw); }
+    catch { return null; }
   }
   return null;
 };

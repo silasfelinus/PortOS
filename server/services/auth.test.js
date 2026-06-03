@@ -144,4 +144,15 @@ describe('auth service', () => {
     const fresh = await import('./auth.js');
     expect(await fresh.verifySession(token)).toBe(true);
   });
+
+  it('stores sessions hashed at rest (plaintext token never lands in the file)', async () => {
+    const { readFileSync } = await import('fs');
+    const { join } = await import('path');
+    const auth = await import('./auth.js');
+    await auth.setPassword({ newPassword: 'correct-horse' });
+    const { token } = await auth.createSession();
+    const raw = readFileSync(join(tempRoot, 'auth-sessions.json'), 'utf8');
+    expect(raw).not.toContain(token);
+    expect(raw).toContain('tokenHash');
+  });
 });

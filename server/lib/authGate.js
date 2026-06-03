@@ -15,13 +15,25 @@ const PUBLIC_API_PATHS = new Set([
   '/api/system/health',
 ]);
 
+// Non-`/api` API surfaces that must also be gated. `/sdapi/v1/*` is the
+// AUTOMATIC1111-compatible image-gen mount served by sdapiRoutes — it accepts
+// generation requests and exposes the LoRA / model catalog, so a sidecar with
+// network reach but no auth must NOT be able to hit it. Add to this list any
+// future routes that live outside `/api`.
+const GATED_NON_API_PREFIXES = ['/sdapi/'];
+
 const isPublicPath = (path) => {
   if (PUBLIC_API_PATHS.has(path)) return true;
-  // Static client assets ship in client/dist/. Gating them is pointless — the
-  // index.html is just the bootstrap loader, and a sidecar attacker can't do
-  // anything with it without a token to hit the JSON API. Letting them through
-  // also keeps the login page itself reachable.
-  return !path.startsWith('/api/') && !path.startsWith('/data/');
+  // /api/* and /data/* are always gated. /sdapi/* (and any future non-/api
+  // API surface listed above) is also gated. Everything else is the static
+  // client bundle — index.html / hashed JS+CSS / fonts — which is safe to
+  // serve without a session: a sidecar can't do anything with it without a
+  // token to hit the JSON API, and the login page itself must be reachable.
+  if (path.startsWith('/api/') || path.startsWith('/data/')) return false;
+  for (const prefix of GATED_NON_API_PREFIXES) {
+    if (path.startsWith(prefix)) return false;
+  }
+  return true;
 };
 
 // Express middleware. Bypasses everything when auth is off. When it's on,
