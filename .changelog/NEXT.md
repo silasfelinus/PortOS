@@ -20,6 +20,7 @@
 - **[issue-721]** Goal detail badges now use the shared pill component, keeping their look consistent with the rest of the app. Internal maintenance change with no behavior difference.
 - **[issue-755]** Split the 1252-line `GoalDetailPanel.jsx` god component into a thin composition shell over focused subcomponents and a `useGoalDetail` state hook. Internal refactor with no behavior difference.
 - **[issue-759]** The autofixer UI's large inline HTML document moved out of `autofixer/ui.js` into a sibling `ui.template.html`, leaving the route handler as logic only. Internal refactor with no behavior difference.
+- **[issue-747]** Split the 2200-line voice Chief-of-Staff tool registry into per-domain modules (brain, meatspace, goals, system, daily log, UI, ask, vision, calendar/weather, timer, media, pipeline, code, catalog) behind a thin orchestrator; the command palette and voice agent keep the exact same tool set. Internal refactor with no behavior difference.
 - **[issue-734]** The reference-watch scheduled task now guards its read/write default against silent drift when its prompt is revised. Internal maintenance change with no behavior difference.
 - **[issue-722]** Prompt-template migrations now scan their files concurrently, so future multi-file updates apply faster.
 - **[issue-720] Shared popover positioning** — the theme switcher and collection pickers now share one placement engine, so their pop-up menus stay anchored to their button and on-screen consistently. Internal maintenance change with no behavior difference.
