@@ -87,6 +87,24 @@ export function formatTranscript(transcript) {
     .join('\n\n');
 }
 
+/**
+ * Clamp a rendered transcript to `max` chars for the scorer prompt while
+ * preserving BOTH ends. A naive `.substring(0, max)` keeps only the head, but a
+ * multi-turn test's most diagnostic content is at the *tail* — caving under
+ * repeated pushback, contradicting an earlier answer, forgetting a turn-1
+ * constraint all surface in the later turns. Constraints set up front (e.g. a
+ * stated budget) live at the head, so we keep a head slice AND a larger tail
+ * slice, joining them with an elision marker. Exported for unit testing.
+ */
+export function clampTranscript(text, max = 4000) {
+  if (typeof text !== 'string' || text.length <= max) return text || '';
+  const elision = '\n\n[…earlier turns omitted…]\n\n';
+  const budget = max - elision.length;
+  const headLen = Math.floor(budget / 3); // keep the opening constraints
+  const tailLen = budget - headLen;       // bias toward the diagnostic tail
+  return text.slice(0, headLen) + elision + text.slice(text.length - tailLen);
+}
+
 export async function runMultiTurnTests(providerId, model, testIds = null, personaId = null) {
   const scenarios = await parseMultiTurnSuite();
   // A persona flavors the embodied identity so the conversations measure
@@ -180,7 +198,7 @@ async function runSingleConversation(scenario, twinContext, provider, model) {
 async function scoreConversation(scenario, transcript, provider, model) {
   const scorerData = {
     scenarioName: scenario.testName,
-    transcript: formatTranscript(transcript).substring(0, 4000),
+    transcript: clampTranscript(formatTranscript(transcript), 4000),
     consistentTrajectory: scenario.consistentTrajectory,
     inconsistentTrajectory: scenario.inconsistentTrajectory
   };

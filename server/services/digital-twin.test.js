@@ -139,7 +139,7 @@ import {
   saveImportAsDocument
 } from './digital-twin.js';
 import { formatValuesHierarchy } from './digital-twin-values-testing.js';
-import { formatTranscript } from './digital-twin-multi-turn-testing.js';
+import { formatTranscript, clampTranscript } from './digital-twin-multi-turn-testing.js';
 import { parseScorerVerdict } from './digital-twin-helpers.js';
 import { cache } from './digital-twin-meta.js';
 
@@ -916,6 +916,31 @@ Forgets the budget and recommends lodging that exceeds it.
       expect(formatTranscript([])).toBe('');
       expect(formatTranscript(null)).toBe('');
       expect(formatTranscript(undefined)).toBe('');
+    });
+  });
+
+  describe('clampTranscript', () => {
+    it('returns the text unchanged when within the limit', () => {
+      expect(clampTranscript('short', 4000)).toBe('short');
+    });
+
+    it('preserves BOTH the head and the diagnostic tail when over the limit', () => {
+      // HEAD carries the turn-1 constraint; TAIL carries the caving the scorer
+      // must catch. A naive substring(0, max) would drop the TAIL entirely.
+      const head = 'HEAD_CONSTRAINT ';
+      const tail = ' TAIL_CAVES';
+      const text = head + 'x'.repeat(5000) + tail;
+      const out = clampTranscript(text, 200);
+      expect(out.length).toBeLessThanOrEqual(200);
+      expect(out).toContain('HEAD_CONSTRAINT');
+      expect(out).toContain('TAIL_CAVES');
+      expect(out).toContain('earlier turns omitted');
+    });
+
+    it('tolerates empty / non-string input', () => {
+      expect(clampTranscript('', 4000)).toBe('');
+      expect(clampTranscript(null, 4000)).toBe('');
+      expect(clampTranscript(undefined, 4000)).toBe('');
     });
   });
 
