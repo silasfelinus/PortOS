@@ -8,4 +8,6 @@
 
 ## Fixed
 
+- **[issue-719] Steadier media galleries during live note/star sync** — incoming annotation broadcasts that match what a view already shows no longer trigger a needless re-render of the media cards.
+
 ## Removed
