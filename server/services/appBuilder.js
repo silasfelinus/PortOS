@@ -42,29 +42,33 @@ const killProc = (child) => {
 const INSTALL_TIMEOUT_MS = 3 * 60 * 1000;
 const BUILD_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
+const DEFAULT_BUILD_COMMAND = 'npm run build';
 
 /**
  * Validate and split a build command.
- * @returns {{ ok: true, cmd, args }} when valid, or
+ * @returns {{ ok: true, cmd, args, buildCommand }} when valid (buildCommand is
+ *          the resolved string, with the default applied), or
  *          {{ ok: false, message, code: 'INVALID_BUILD_COMMAND' }} when not —
  *          so the route can map a bad command to HTTP 400 without try/catch.
  */
 export function parseBuildCommand(buildCommand) {
-  const [cmd, ...args] = (buildCommand || 'npm run build').split(/\s+/);
+  const resolved = buildCommand || DEFAULT_BUILD_COMMAND;
+  const [cmd, ...args] = resolved.split(/\s+/);
 
   if (!ALLOWED_BUILD_CMDS.has(cmd)) {
     return {
       ok: false,
       code: 'INVALID_BUILD_COMMAND',
-      message: `Build command '${cmd}' is not allowed. Allowed: ${[...ALLOWED_BUILD_CMDS].join(', ')}`
+      message: `Build command '${cmd}' is not allowed. Allowed: ${[...ALLOWED_BUILD_CMDS].join(', ')}`,
+      buildCommand: resolved
     };
   }
 
   if (needsShell(cmd) && hasShellUnsafeArg(args)) {
-    return { ok: false, code: 'INVALID_BUILD_COMMAND', message: 'Build command args contain shell-unsafe characters' };
+    return { ok: false, code: 'INVALID_BUILD_COMMAND', message: 'Build command args contain shell-unsafe characters', buildCommand: resolved };
   }
 
-  return { ok: true, cmd, args };
+  return { ok: true, cmd, args, buildCommand: resolved };
 }
 
 /**
@@ -146,12 +150,11 @@ function runBuild(cmd, args, repoPath) {
  * @returns {Promise<object>} structured build result
  */
 export async function buildApp(app) {
-  const buildCommand = app.buildCommand || 'npm run build';
   const parsed = parseBuildCommand(app.buildCommand);
   if (!parsed.ok) {
-    return { success: false, failure: 'validation', code: parsed.code, message: parsed.message, buildCommand };
+    return { success: false, failure: 'validation', code: parsed.code, message: parsed.message, buildCommand: parsed.buildCommand };
   }
-  const { cmd, args } = parsed;
+  const { cmd, args, buildCommand } = parsed;
 
   console.log(`🔨 Building ${app.name}: ${buildCommand}`);
 

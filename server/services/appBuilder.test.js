@@ -4,12 +4,12 @@ import { parseBuildCommand, hasShellUnsafeArg, ALLOWED_BUILD_CMDS } from './appB
 describe('appBuilder.parseBuildCommand', () => {
   it('defaults to "npm run build" when no command is provided', () => {
     const result = parseBuildCommand(undefined);
-    expect(result).toEqual({ ok: true, cmd: 'npm', args: ['run', 'build'] });
+    expect(result).toEqual({ ok: true, cmd: 'npm', args: ['run', 'build'], buildCommand: 'npm run build' });
   });
 
   it('accepts an allowlisted command and splits cmd/args', () => {
     const result = parseBuildCommand('npx vite build');
-    expect(result).toEqual({ ok: true, cmd: 'npx', args: ['vite', 'build'] });
+    expect(result).toEqual({ ok: true, cmd: 'npx', args: ['vite', 'build'], buildCommand: 'npx vite build' });
   });
 
   it('accepts all allowlisted native build tools', () => {
