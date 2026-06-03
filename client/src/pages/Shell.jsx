@@ -5,7 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { useSocket } from '../hooks/useSocket';
-import { RefreshCw, Power, PowerOff, FolderOpen, ChevronDown, Plus, X, Terminal as TerminalIcon, ClipboardPaste, OctagonX } from 'lucide-react';
+import { RefreshCw, Power, PowerOff, FolderOpen, ChevronDown, Plus, X, Terminal as TerminalIcon, ClipboardPaste, OctagonX, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, CornerDownLeft } from 'lucide-react';
 import * as api from '../services/api';
 import { readClipboard } from '../lib/clipboard';
 
@@ -21,6 +21,17 @@ const QUICK_COMMANDS = [
   { label: 'git pull', command: 'git pull --rebase --autostash' },
   { label: 'npm test', command: 'npm test' },
   { label: 'npm run dev', command: 'npm run dev' },
+];
+
+// Hot buttons for arrow / Enter entry — handy on touch devices and for driving TUI
+// apps or scrolling shell history without a hardware keyboard. Values are the ANSI
+// escape sequences a terminal emits for these keys.
+const NAV_KEYS = [
+  { label: 'Up', Icon: ArrowUp, seq: '\x1b[A' },
+  { label: 'Down', Icon: ArrowDown, seq: '\x1b[B' },
+  { label: 'Left', Icon: ArrowLeft, seq: '\x1b[D' },
+  { label: 'Right', Icon: ArrowRight, seq: '\x1b[C' },
+  { label: 'Enter', Icon: CornerDownLeft, seq: '\r' },
 ];
 
 // Read a CSS custom property as hex (e.g., '--port-bg' → '#0f0f0f')
@@ -834,6 +845,19 @@ export default function Shell() {
               onBlur={() => setShowPasteInput(false)}
             />
           )}
+          <div className="w-px h-6 bg-port-border" />
+          {/* Arrow / Enter hot buttons — touch-friendly TUI nav + shell history */}
+          {NAV_KEYS.map(({ label, Icon, seq }) => (
+            <button
+              key={label}
+              onClick={() => emitShellInput(seq)}
+              className="flex items-center justify-center px-2.5 py-1.5 bg-port-card hover:bg-port-border text-gray-300 hover:text-white rounded text-xs font-mono transition-colors border border-port-border min-h-[40px] min-w-[40px]"
+              title={`Send ${label} key`}
+              aria-label={`Send ${label} key`}
+            >
+              <Icon size={14} />
+            </button>
+          ))}
           <div className="w-px h-6 bg-port-border" />
           {QUICK_COMMANDS.map(({ label, command }) => (
             <button
