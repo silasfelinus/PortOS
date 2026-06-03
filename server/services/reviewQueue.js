@@ -92,10 +92,11 @@ const PRODUCERS = [
     source: 'ask',
     label: 'Ask answers',
     drillTo: '/ask',
-    action: 'Promote',
-    async resolve(id) {
-      return askConversations.setPromoted(id, true);
-    },
+    // No inline action: "promote" for an Ask answer means saving a specific turn
+    // into Brain/Task/Goal (askConversations.promoteAskTurn), which needs the
+    // user to pick a target — so it can't be one-click. (setPromoted only *pins*
+    // the conversation against expiry, which the Ask UI labels "Pin", not the
+    // promote-to-target the queue title implies.) Drill into /ask to promote.
     async gather() {
       // Conversations with content that haven't been promoted to brain/task/goal.
       const convs = await askConversations.listConversations({ limit: PER_SOURCE_LIMIT * 2 });

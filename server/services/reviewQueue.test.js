@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock every producer service the aggregator pulls from, so the test exercises
 // only the normalization / sort / cap / degrade-on-failure logic.
 const brain = { getInboxLog: vi.fn(), markInboxDone: vi.fn() };
-const askConversations = { listConversations: vi.fn(), setPromoted: vi.fn() };
+const askConversations = { listConversations: vi.fn() };
 const cosTaskStore = { getCosTasks: vi.fn(), approveTask: vi.fn() };
 const messageDrafts = { listDrafts: vi.fn(), approveDraft: vi.fn() };
 const proactiveAlerts = { generateAlerts: vi.fn() };
@@ -153,15 +153,19 @@ describe('reviewQueue.buildQueue', () => {
     expect(queue.sources.brain.shown).toBe(25);
   });
 
-  it('tags resolvable rows with an inline action verb, leaves health/backup without one', async () => {
+  it('tags resolvable rows with an inline action verb, leaves no-clean-resolve sources without one', async () => {
     brain.getInboxLog.mockResolvedValue([{ id: 'b1', capturedText: 'classify', capturedAt: '2026-06-03T10:00:00.000Z' }]);
+    cosTaskStore.getCosTasks.mockResolvedValue({ awaitingApproval: [{ id: 'sys-1', description: 'approve me', priority: 'HIGH', createdAt: '2026-06-03T09:00:00.000Z' }] });
     askConversations.listConversations.mockResolvedValue([{ id: 'a1', title: 'promote me', promoted: false, turnCount: 1 }]);
     proactiveAlerts.generateAlerts.mockResolvedValue({ alerts: [{ type: 'disk', severity: 'critical', title: 'crit', detail: 'full', link: '/apps' }] });
     backup.getState.mockResolvedValue({ status: 'error', error: 'disk full' });
     const queue = await buildQueue();
     expect(queue.items.find(i => i.source === 'brain').action).toBe('Done');
-    expect(queue.items.find(i => i.source === 'ask').action).toBe('Promote');
-    // Live-computed / settings-driven sources have no inline resolve.
+    expect(queue.items.find(i => i.source === 'cos').action).toBe('Approve');
+    // Ask "promote" needs a per-turn target choice (drill-down), and health
+    // (live-computed) / backup (settings-driven retry) have no clean local
+    // resolve — none of them carry an inline action.
+    expect(queue.items.find(i => i.source === 'ask').action).toBeUndefined();
     expect(queue.items.find(i => i.source === 'health').action).toBeUndefined();
     expect(queue.items.find(i => i.source === 'backup').action).toBeUndefined();
   });
@@ -179,12 +183,6 @@ describe('reviewQueue.resolveQueueItem', () => {
     expect(result).toMatchObject({ source: 'brain', id: 'brain:b1', resolved: true });
   });
 
-  it('dispatches ask rows to setPromoted(id, true)', async () => {
-    askConversations.setPromoted.mockResolvedValue({ id: 'a1', promoted: true });
-    await resolveQueueItem('ask:a1');
-    expect(askConversations.setPromoted).toHaveBeenCalledWith('a1', true);
-  });
-
   it('dispatches draft rows to approveDraft', async () => {
     messageDrafts.approveDraft.mockResolvedValue({ id: 'd1', status: 'approved' });
     await resolveQueueItem('drafts:d1');
@@ -197,8 +195,10 @@ describe('reviewQueue.resolveQueueItem', () => {
     expect(brain.markInboxDone).toHaveBeenCalledWith('b:1:2');
   });
 
-  it('rejects an unknown source with a 400', async () => {
+  it('rejects sources without an inline resolve (ask/health/backup) and unknown sources with a 400', async () => {
+    await expect(resolveQueueItem('ask:a1')).rejects.toMatchObject({ status: 400 });
     await expect(resolveQueueItem('health:x')).rejects.toMatchObject({ status: 400 });
+    await expect(resolveQueueItem('backup:last-run')).rejects.toMatchObject({ status: 400 });
     await expect(resolveQueueItem('nope:x')).rejects.toMatchObject({ status: 400 });
   });
 

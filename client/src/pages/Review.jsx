@@ -76,7 +76,8 @@ export default function Review() {
 
   // Cross-domain live queue (M42 P5). These rows are derived live from each
   // producer, not stored, so "dismiss" is a per-session client-side hide rather
-  // than a server mutation — accept/promote actions are a follow-up.
+  // than a server mutation. Rows whose producer declares an inline action also
+  // get a server-backed accept/promote that resolves the underlying record.
   const [queue, setQueue] = useState(null);
   const [dismissedQueueIds, setDismissedQueueIds] = useState(() => new Set());
   // Rows with an inline accept/promote in flight — disables the button so a
