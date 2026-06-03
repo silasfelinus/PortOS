@@ -237,6 +237,19 @@ describe('computeMilestoneSegments', () => {
     expect(segs.map((s) => s.order)).toEqual([0, 1, 2]); // re-indexed slot order
   });
 
+  it('falls back to input index when the order field is absent (manual milestones)', () => {
+    // addMilestone() on the server omits `order`; computeMilestoneSegments must keep input
+    // order for those (sort key = input index). An explicit `order` (AI phases set it)
+    // sorts by its value; ties with an index-keyed entry break by original input index.
+    const g = goal({ milestones: [
+      { id: 'm1', title: 'First added' },           // no order → key = index 0
+      { id: 'm2', title: 'Second added' },          // no order → key = index 1
+      { id: 'm3', title: 'Phase', order: 5 },       // explicit order 5 → sorts last
+    ] });
+    const segs = computeMilestoneSegments(g, 9);
+    expect(segs.map((s) => s.title)).toEqual(['First added', 'Second added', 'Phase']);
+  });
+
   it('marks the done flag per milestone', () => {
     const g = goal({ milestones: [
       milestone({ order: 0, completedAt: '2026-01-01T00:00:00Z' }),
