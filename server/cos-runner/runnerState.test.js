@@ -8,10 +8,14 @@ describe('cos-runner runnerState', () => {
 
   // STATE_FILE is computed from PATHS.cos at module-load time, so each test
   // points PATHS.cos at a fresh temp dir and re-imports the module.
+  // resetModules() MUST run BEFORE importing fileUtils — otherwise the reset
+  // discards the mutated instance and runnerState.js re-imports a fresh
+  // fileUtils whose PATHS.cos points back at the real data/cos dir, letting the
+  // tests read and clobber the live runner-state.json.
   const loadModule = async () => {
+    vi.resetModules();
     const fileUtils = await import('../lib/fileUtils.js');
     fileUtils.PATHS.cos = tmpDir;
-    vi.resetModules();
     return import('./runnerState.js');
   };
 

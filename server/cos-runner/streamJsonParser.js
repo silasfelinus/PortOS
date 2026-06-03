@@ -1,8 +1,8 @@
 /**
  * CoS Runner — Stream-JSON parsing layer
  *
- * Self-contained (no imports out to other PortOS modules beyond fs/path-free
- * pure helpers) so the isolated `portos-cos` PM2 process stays standalone.
+ * Self-contained — no imports, pure functions only — so the isolated
+ * `portos-cos` PM2 process stays standalone.
  * NOTE: an equivalent parser also lives in server/services/agentCliSpawning.js
  * for the in-process spawn path; the two are intentionally separate copies
  * because cos-runner must not pull in the main server's dependency graph.

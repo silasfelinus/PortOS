@@ -38,6 +38,8 @@ export async function loadState() {
  * which also handles ensureDir, JSON stringification, and the Windows rename fallback.
  */
 export function saveState(state) {
-  stateLock = stateLock.then(() => atomicWrite(STATE_FILE, state));
+  // Swallow a prior write's rejection before chaining so one failed write can't
+  // poison the lock and silently skip every subsequent save.
+  stateLock = stateLock.catch(() => {}).then(() => atomicWrite(STATE_FILE, state));
   return stateLock;
 }
