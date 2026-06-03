@@ -6,6 +6,8 @@
 
 ## Changed
 
+- **[issue-722]** Prompt-template migrations now scan their files concurrently, so future multi-file updates apply faster.
+
 ## Fixed
 
 ## Removed
