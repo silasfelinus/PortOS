@@ -340,3 +340,12 @@ export function getHealthLabel(score) {
   return 'Needs Work';
 }
 
+// Shared 0–1 test-run score → Tailwind text color, used by the values-alignment,
+// adversarial-boundary, and multi-turn test panels so their score readouts stay
+// visually consistent (green ≥80%, yellow ≥50%, red below).
+export function scoreToColor(score) {
+  if (score >= 0.8) return 'text-green-400';
+  if (score >= 0.5) return 'text-yellow-400';
+  return 'text-red-400';
+}
+
