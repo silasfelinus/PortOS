@@ -835,6 +835,31 @@ describe('cos.js source — priority + capacity invariants', () => {
       'applyPlanIdMetadata must still scan in-flight slugs to gate dispatch'
     ).toMatch(/findInProgressIds\(/);
   });
+
+  it('tasks:changed listener schedules dequeueNextTask before the user tryImmediateSpawn', () => {
+    // When task CRUD moved to cosTaskStore.js (issue-741), the addTask→
+    // tryImmediateSpawn and approveTask→dequeueNextTask direct calls were
+    // replaced by a `tasks:changed` listener here. The original sequence for a
+    // user-added task was: emit tasks:changed (which queued dequeueNextTask via
+    // this listener) FIRST, then addTask called setImmediate(tryImmediateSpawn).
+    // dequeue fills open slots in priority order before the just-added task's
+    // immediate-spawn attempt runs — so the order must stay dequeue-then-spawn.
+    const onIdx = COS_SRC.indexOf("cosEvents.on('tasks:changed'");
+    expect(onIdx, 'tasks:changed listener must exist').toBeGreaterThan(-1);
+    const handler = COS_SRC.slice(onIdx, COS_SRC.indexOf('});', onIdx) + 3);
+
+    const dequeueIdx = handler.indexOf('dequeueNextTask()');
+    const spawnIdx = handler.indexOf('tryImmediateSpawn(');
+    expect(dequeueIdx, 'listener must schedule dequeueNextTask').toBeGreaterThan(-1);
+    expect(spawnIdx, 'listener must schedule tryImmediateSpawn').toBeGreaterThan(-1);
+    expect(
+      dequeueIdx,
+      'dequeueNextTask must be scheduled before the user-task tryImmediateSpawn'
+    ).toBeLessThan(spawnIdx);
+
+    // tryImmediateSpawn is user-task-only, matching the pre-extraction guard.
+    expect(handler).toMatch(/data\.type\s*===\s*'user'/);
+  });
 });
 
 describe('addTask — first-line dedup', () => {
@@ -862,30 +887,8 @@ describe('addTask — first-line dedup', () => {
     expect(firstLine(multi).toLowerCase()).toBe(firstLine(stored).toLowerCase());
   });
 
-  it('addTask uses firstLine for dedup (regression guard)', () => {
-    // addTask's signature destructuring (`{ raw = false } = {}`) confuses the
-    // brace-balanced extractFnBody scanner — slice from the declaration to
-    // the next top-level function instead.
-    const start = COS_SRC.indexOf('export async function addTask');
-    expect(start, 'addTask must exist').toBeGreaterThan(-1);
-    const end = COS_SRC.indexOf('export async function', start + 1);
-    const fnBody = COS_SRC.slice(start, end === -1 ? undefined : end);
-    expect(fnBody).toMatch(/firstLine\(taskData\.description\)/);
-    expect(fnBody).toMatch(/firstLine\(t\.description\)/);
-  });
-
-  it('addTask scopes dedup by metadata.app (regression guard)', () => {
-    // Same description against two different apps must NOT trip the
-    // duplicate check — surfaced by codex review of the
-    // [voice-code-agent-target-managed-app] PR. Without this scope, the
-    // voice tool happily speaks "Queued in BookLoom" while returning the
-    // matched PortOS task.
-    const start = COS_SRC.indexOf('export async function addTask');
-    const end = COS_SRC.indexOf('export async function', start + 1);
-    const fnBody = COS_SRC.slice(start, end === -1 ? undefined : end);
-    // The dedup `tasks.find(...)` predicate must compare the candidate's
-    // `metadata?.app` (or null) against the new task's `taskData.app`.
-    expect(fnBody).toMatch(/t\.metadata\?\.app\s*\|\|\s*null/);
-    expect(fnBody).toMatch(/taskData\.app\s*\|\|\s*null/);
-  });
+  // The addTask source-level regression guards (firstLine dedup + per-app
+  // dedup scope) moved to cosTaskStore.test.js when addTask was extracted into
+  // cosTaskStore.js. The firstLine behavioral tests above stay here because
+  // cos.js still re-exports firstLine for backward compat.
 });
