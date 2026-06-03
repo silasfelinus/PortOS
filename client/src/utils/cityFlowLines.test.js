@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { FLOW, hashFlowKey, computeFlowConnections } from './cityFlowLines';
+import { FLOW, computeFlowConnections } from './cityFlowLines';
 
 // Four downtown buildings in a row plus one non-downtown and one offscreen.
 const positions = new Map([
@@ -9,13 +9,6 @@ const positions = new Map([
   ['d', { x: 6, z: 0, district: 'downtown' }],
   ['w', { x: 0, z: 20, district: 'warehouse' }],
 ]);
-
-describe('hashFlowKey', () => {
-  it('is deterministic and non-negative', () => {
-    expect(hashFlowKey('a→b')).toBe(hashFlowKey('a→b'));
-    expect(hashFlowKey('a→b')).toBeGreaterThanOrEqual(0);
-  });
-});
 
 describe('computeFlowConnections', () => {
   it('returns nothing with fewer than two active buildings', () => {
