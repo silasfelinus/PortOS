@@ -41,6 +41,10 @@ export const useCityData = () => {
   // without this a `done` afterglow (or a flare) beam would linger until the next event —
   // the render derivations check the clock but nothing re-renders to advance it.
   const aiPruneTimerRef = useRef(null);
+  // Mirror of the latest aiActivity so the prune timer can decide whether to re-arm without
+  // depending on React having run the state updater synchronously (it isn't guaranteed to).
+  const aiActivityRef = useRef(aiActivity);
+  aiActivityRef.current = aiActivity;
 
   const fetchApps = useCallback(async () => {
     const data = await api.getApps().catch(() => []);
@@ -264,17 +268,21 @@ export const useCityData = () => {
     const scheduleAiPrune = () => {
       if (aiPruneTimerRef.current) clearTimeout(aiPruneTimerRef.current);
       aiPruneTimerRef.current = setTimeout(() => {
-        let rearm = false;
+        const now = Date.now();
         setAiActivity(prev => {
-          const now = Date.now();
           const ops = pruneAiOps(prev.ops, now);
           const flareActive = prev.lastStartTs > 0 && now - prev.lastStartTs <= AI_CORE.flareMs;
           const lastStartTs = prev.lastStartTs > 0 && !flareActive ? 0 : prev.lastStartTs;
-          rearm = Object.keys(ops).length > 0 || flareActive;
           if (ops === prev.ops && lastStartTs === prev.lastStartTs) return prev;
           return { ...prev, ops, lastStartTs };
         });
-        if (rearm) scheduleAiPrune();
+        // Decide re-arm from the ref (kept in sync with state every render), NOT from a flag
+        // set inside the updater above — React doesn't guarantee that updater ran by now, so
+        // reading its result synchronously would be unreliable. The ref reflects pre-tick
+        // state; if anything is still within its window we re-arm and the next tick prunes it.
+        const { ops: liveOps, lastStartTs: liveStart } = aiActivityRef.current;
+        const flarePending = liveStart > 0 && now - liveStart <= AI_CORE.flareMs;
+        if (Object.keys(pruneAiOps(liveOps, now)).length > 0 || flarePending) scheduleAiPrune();
       }, AI_CORE.afterglowMs + 100);
     };
 
