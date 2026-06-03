@@ -8,13 +8,17 @@
 
 ## Changed
 
+- **[issue-751]** Collapsed the repeated AppleScript builders in `server/services/xcodeScripts.js` into a shared `xcodeScriptBuilders.js`; the emitted `take_screenshots_macos.sh` is byte-for-byte unchanged. Internal refactor with no behavior difference.
 - **[issue-748]** Extracted the pure command-arg builders and output parsers from `server/services/git.js` into focused `server/lib/git*` modules. Internal refactor with no behavior difference.
+- **[issue-750]** Split `server/services/memory.js` into a `memoryStore.js` persistence/cache layer plus a pure `server/lib/memoryQuery.js` (index projection, filter/sort, search/hybrid meta filters, RRF fusion); `memory.js` re-exports so import sites are unchanged. Internal refactor with no behavior difference.
 - **[issue-718]** The duplicated optimistic canon-patch handler in the universe canon and Nouns stage editors now lives in one shared `useCanonPatch` hook. Internal refactor with no behavior difference.
 - **[issue-721]** Goal detail badges now use the shared pill component, keeping their look consistent with the rest of the app. Internal maintenance change with no behavior difference.
+- **[issue-755]** Split the 1252-line `GoalDetailPanel.jsx` god component into a thin composition shell over focused subcomponents and a `useGoalDetail` state hook. Internal refactor with no behavior difference.
 - **[issue-759]** The autofixer UI's large inline HTML document moved out of `autofixer/ui.js` into a sibling `ui.template.html`, leaving the route handler as logic only. Internal refactor with no behavior difference.
 - **[issue-734]** The reference-watch scheduled task now guards its read/write default against silent drift when its prompt is revised. Internal maintenance change with no behavior difference.
 - **[issue-722]** Prompt-template migrations now scan their files concurrently, so future multi-file updates apply faster.
 - **[issue-720] Shared popover positioning** — the theme switcher and collection pickers now share one placement engine, so their pop-up menus stay anchored to their button and on-screen consistently. Internal maintenance change with no behavior difference.
+- **[issue-754]** Extracted the init-image and FLUX.2 multi-reference uploaders from `client/src/pages/ImageGen.jsx` into focused `InitImagePicker` / `ReferenceImagePicker` components. Internal refactor with no behavior difference.
 - **`/claim --issues` marks issues in progress while it works them** — claiming an issue now assigns it to you (and labels it `in-progress`) before any code is written, so a `/claim --issues` running on another machine sees it as taken instead of grabbing it too; the marker is released if a claim is abandoned, and the issue is closed once its PR merges. Developer tooling only — no app-facing change.
 - **`$claim` (Codex) and `/claim` (Claude Code) now share one procedure** — the Codex claim skill was collapsed to a thin adapter over the slash command's procedure, so Codex inherits `--issues` mode, the in-progress marker, and the multi-reviewer loop instead of running a stale copy that had drifted behind. Developer tooling only — no app-facing change.
 

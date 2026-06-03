@@ -144,6 +144,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 |---|---|
 | `bm25.js` | BM25 ranking + inverted-index helpers. |
 | `vectorMath.js` | Vector math utilities (cosine, etc.). |
+| `memoryQuery.js` | Pure memory-index helpers: meta projection, filter/sort, search/hybrid meta filters, RRF fusion. |
 | `memoryStats.js` | macOS-correct memory accounting (handles "Pages free" quirk). |
 
 ## Extraction & parsing
