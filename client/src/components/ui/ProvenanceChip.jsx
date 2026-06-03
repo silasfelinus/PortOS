@@ -62,7 +62,7 @@ export default function ProvenanceChip({
   const change = whatWouldChange ?? meta.whatWouldChange;
 
   return (
-    <span ref={wrapRef} className={`relative inline-flex align-middle ${className}`}>
+    <div ref={wrapRef} className={`relative inline-flex align-middle ${className}`}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -91,6 +91,6 @@ export default function ProvenanceChip({
           <p className="text-xs leading-relaxed text-gray-400">{change}</p>
         </div>
       )}
-    </span>
+    </div>
   );
 }
