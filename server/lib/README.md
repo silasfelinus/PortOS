@@ -113,6 +113,9 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `commandSecurity.js` | Allowlist of safe shell commands. |
 | `execGit.js` | `execGit` utility imported by `git.js` + worktree manager. |
 | `ffmpeg.js` | Shared ffmpeg helpers (videoGen + videoTimeline). |
+| `gitArgs.js` | `PROTECTED_BRANCHES`, `validateFilePaths(files)` — pure command-arg builders/validators for `git.js` (reject injection/traversal in staged paths). |
+| `gitForge.js` | `parseGitRemote`, `parseGitHubOwnerFromRemote`, `pickGhAccountForOwner`, `detectForgeCli`, `parsePullRequestUrl` — pure GitHub/GitLab remote + PR/MR URL parsers and forge/account selectors used by `git.js`. |
+| `gitOutputParsers.js` | `parseStatus`, `parseDiffStat`, `parseBranchVerboseLine`, `parseSubmoduleStatusLine`/`SUBMODULE_STATUS_RE`, `extractAgentSummary` — pure parsers turning git command output into structured data for `git.js`. |
 | `gitRemote.js` | `getOriginInfo`, `parseGitRemoteUrl`, `UPSTREAM_OWNER`/`UPSTREAM_REPO` — classifies the local `origin` remote vs the upstream atomantic/PortOS repo. Used by the update flow to detect forks. |
 | `processEnv.js` | `stripDebugMallocEnv(env)` — drop macOS `Malloc*` debug env vars before spawning a child. Pinokio-launched PortOS exports `MallocStackLogging`/`MallocScribble`/etc. that flood Python subprocess stderr with `can't turn off malloc stack logging` lines; route every Node→Python spawn through this. No-op on Linux/Windows. |
 | `pythonSetup.js` | Python venv / runner setup helpers. |
