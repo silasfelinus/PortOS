@@ -18,6 +18,7 @@ import CityFederationHorizon from './CityFederationHorizon';
 import CityBackupVault from './CityBackupVault';
 import CityTaskQueue from './CityTaskQueue';
 import CityHealthTower from './CityHealthTower';
+import CityProductivityDistrict from './CityProductivityDistrict';
 import CityGoalMonuments from './CityGoalMonuments';
 import CityVoiceMarker from './CityVoiceMarker';
 import CityAiCore from './CityAiCore';
@@ -83,6 +84,7 @@ export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, 
       <CityBackupVault backupStatus={backupStatus} settings={settings} />
       <CityTaskQueue cosTasks={cosTasks} settings={settings} />
       <CityHealthTower healthMetrics={healthMetrics} settings={settings} />
+      <CityProductivityDistrict productivityData={productivityData} settings={settings} />
       <CityGoalMonuments goals={goals} settings={settings} />
       <CityVoiceMarker voiceState={voiceState} settings={settings} />
       <CityAiCore aiActivity={aiActivity} settings={settings} />
