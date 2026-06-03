@@ -31,6 +31,19 @@ You are a developmental editor making **one or more surgical edits** to a drafte
 ~~~~~~~~
 {{/finding.anchorQuote}}
 
+## How to read the suggested fix
+
+{{#finding.isFullPage}}
+This finding's suggested fix is a **complete replacement** for a malformed comic page — the page dumped its scene content into the page-level description instead of discrete panels. The suggested fix above is the full panel-by-panel rewrite that the page should become.
+
+- Set `find` to the malformed page block (use the anchor above to locate it) — copied verbatim from the manuscript.
+- Set `replace` to the suggested fix's panel breakdown, in the manuscript's existing formatting. Do not paraphrase, summarize, or re-derive it; substitute it as the page's new content, lightly adjusting only formatting markers so it matches the surrounding script style.
+- Return exactly one edit for the page, unless the anchor spans more than one malformed page.
+{{/finding.isFullPage}}
+{{^finding.isFullPage}}
+The suggested fix above is **advice**, not literal replacement text — it describes the smallest addition that closes the gap. Synthesize the actual edit yourself in the author's voice, following the guidance under "What to do" below.
+{{/finding.isFullPage}}
+
 ## Edit scope
 
 {{scope}}
