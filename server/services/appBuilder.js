@@ -24,6 +24,12 @@ const needsShell = (cmd) => IS_WIN32 && WIN_CMD_SHIMS.has(cmd);
 // Actual cmd.exe metacharacters (& | < > ^ % ! and grouping parens).
 // Validated only when shell is active (needsShell guard at call site).
 const SHELL_UNSAFE_RE = /[&|<>^%!()]/;
+/**
+ * True if any arg contains a cmd.exe metacharacter. Pure and
+ * platform-independent so the shell-safety check is testable on every platform
+ * (the `needsShell` gate that actually applies it stays at the call site).
+ */
+export const hasShellUnsafeArg = (args) => args.some(a => SHELL_UNSAFE_RE.test(a));
 // On Windows, SIGTERM kills cmd.exe but orphans its child (npm). Use taskkill
 // /T /F to terminate the whole process tree.
 const killProc = (child) => {
@@ -54,7 +60,7 @@ export function parseBuildCommand(buildCommand) {
     };
   }
 
-  if (needsShell(cmd) && args.some(a => SHELL_UNSAFE_RE.test(a))) {
+  if (needsShell(cmd) && hasShellUnsafeArg(args)) {
     return { ok: false, code: 'INVALID_BUILD_COMMAND', message: 'Build command args contain shell-unsafe characters' };
   }
 
