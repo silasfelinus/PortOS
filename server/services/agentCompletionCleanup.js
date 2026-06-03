@@ -156,15 +156,15 @@ export async function runAgentCompletionCleanup({ agentId, task, agent, effectiv
   const agentState = await getAgentState(agentId).catch(() => null);
 
   // JIRA integration: push branch, create PR, comment on ticket
-  const jiraTicketId = agent.task?.metadata?.jiraTicketId;
-  const jiraBranch = agent.task?.metadata?.jiraBranch;
-  const jiraInstanceId = agent.task?.metadata?.jiraInstanceId;
-  const jiraCreatePR = agent.task?.metadata?.jiraCreatePR;
+  const jiraTicketId = task?.metadata?.jiraTicketId;
+  const jiraBranch = task?.metadata?.jiraBranch;
+  const jiraInstanceId = task?.metadata?.jiraInstanceId;
+  const jiraCreatePR = task?.metadata?.jiraCreatePR;
 
   if (jiraTicketId && jiraBranch && effectiveSuccess) {
     const workspace = agentState?.metadata?.workspacePath || ROOT_DIR;
 
-    let jiraTicketUrl = agent.task?.metadata?.jiraTicketUrl || null;
+    let jiraTicketUrl = task?.metadata?.jiraTicketUrl || null;
     if (!jiraTicketUrl && jiraInstanceId) {
       const jiraConfig = await jiraService.getInstances().catch(() => null);
       const baseUrl = jiraConfig?.instances?.[jiraInstanceId]?.baseUrl;
@@ -270,12 +270,12 @@ export async function runAgentCompletionCleanup({ agentId, task, agent, effectiv
 
   // Clean up worktree if agent was using one (skip merge when JIRA branch — PR handles merge)
   if (!jiraBranch) {
-    const taskOpenPR = isTruthyMeta(agent.task?.metadata?.openPR);
-    const taskReviewLoop = isTruthyMeta(agent.task?.metadata?.reviewLoop);
+    const taskOpenPR = isTruthyMeta(task?.metadata?.openPR);
+    const taskReviewLoop = isTruthyMeta(task?.metadata?.reviewLoop);
     // Review-loop follow-up agents already merged via `gh pr merge` in the agent
     // body — re-merging the worktree branch into the source workspace would
     // duplicate the squashed commits, so suppress the auto-merge fallback.
-    const taskReviewLoopFollowUp = isTruthyMeta(agent.task?.metadata?.reviewLoopFollowUp);
+    const taskReviewLoopFollowUp = isTruthyMeta(task?.metadata?.reviewLoopFollowUp);
     // Claude Code CLI agents run `/simplify` + `/do:pr` themselves (see
     // buildCliCompletionSection in agentPromptBuilder.js) — they push the
     // branch and open the PR on their own. Mirror the TUI cleanup contract
@@ -286,7 +286,7 @@ export async function runAgentCompletionCleanup({ agentId, task, agent, effectiv
     // (AI Providers → Code Review Defaults panel). Settings I/O is cached
     // inside the resolver, so this is effectively free even when invoked
     // from a tight CoS sweep.
-    const reviewOptions = await resolveReviewLoopOptions(agent.task?.metadata, { normalize: normalizeReviewers, isTruthyMeta });
+    const reviewOptions = await resolveReviewLoopOptions(task?.metadata, { normalize: normalizeReviewers, isTruthyMeta });
     const cleanupWarnings = await cleanupAgentWorktree(agentId, effectiveSuccess, {
       openPR: agentOwnsPR ? false : taskOpenPR,
       requestCopilotReview: !agentOwnsPR && taskOpenPR && taskReviewLoop,

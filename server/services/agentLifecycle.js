@@ -36,10 +36,16 @@ import { v4 as uuidv4 } from '../lib/uuid.js';
 // them from agentLifecycle.js keep working.
 import { resolveAgentProviderAndModel } from './agentProviderResolution.js';
 import { prepareAgentWorkspace } from './agentWorkspacePrep.js';
-import { cleanupAgentWorktree, spawnReviewLoopFollowUp, spawnMergeRecoveryTask } from './agentWorktreeCleanup.js';
-import { handlePipelineProgression, runAgentCompletionCleanup } from './agentCompletionCleanup.js';
+import { cleanupAgentWorktree } from './agentWorktreeCleanup.js';
+import { runAgentCompletionCleanup } from './agentCompletionCleanup.js';
 
-export { cleanupAgentWorktree, spawnReviewLoopFollowUp, spawnMergeRecoveryTask, handlePipelineProgression };
+// Re-export the moved functions so existing consumers (subAgentSpawner,
+// agentManagement) keep importing them from agentLifecycle.js. cleanupAgentWorktree
+// is also used internally (passed as cleanupWorktreeFn to the spawn helpers), so it
+// stays imported above; the rest are pure pass-throughs.
+export { cleanupAgentWorktree };
+export { spawnReviewLoopFollowUp, spawnMergeRecoveryTask } from './agentWorktreeCleanup.js';
+export { handlePipelineProgression } from './agentCompletionCleanup.js';
 
 const ROOT_DIR = PATHS.root;
 const AGENTS_DIR = PATHS.cosAgents;
