@@ -778,8 +778,11 @@ const sanitizeTemplate = (raw) => {
     // Base "style probe" renders — images generated from the raw style preset
     // (influences embrace/avoid + styleNotes) with NO subject, so the user can
     // see the world's base visual emphasis. Additive + regenerable; sanitized
-    // like canon imageRefs (dedupe + cap). Not wire-version-gated (low-stakes,
-    // one-click to regenerate if an older peer round-trips and strips it).
+    // like canon imageRefs (dedupe + cap). WIRE-LOCAL: stripped from every
+    // universe payload by sanitizeRecordForWire (so an older peer can't
+    // drop-then-LWW-strip it off a newer one) and excluded from the
+    // conflict-journal content hash (which reuses that projection). Per-peer +
+    // one-click to regenerate, so no schema-version gate is needed.
     styleImageRefs: sanitizeEntryImageRefs(raw.styleImageRefs),
     locked,
     characters,
