@@ -23,6 +23,8 @@ import CityActivityHeatmap from './CityActivityHeatmap';
 import CityTaskFlowRiver from './CityTaskFlowRiver';
 import CityGoalMonuments from './CityGoalMonuments';
 import CityArtifacts from './CityArtifacts';
+import CitySeasonalDecor from './CitySeasonalDecor';
+import CityEasterEggs from './CityEasterEggs';
 import CityVoiceMarker from './CityVoiceMarker';
 import CityAiCore from './CityAiCore';
 import CityDataRain from './CityDataRain';
@@ -94,6 +96,8 @@ export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, 
       <CityTaskFlowRiver cosTasks={cosTasks} productivityData={productivityData} calendarData={activityCalendar} settings={settings} />
       <CityGoalMonuments goals={goals} settings={settings} />
       <CityArtifacts character={character} goals={goals} productivityData={productivityData} settings={settings} />
+      <CitySeasonalDecor settings={settings} />
+      <CityEasterEggs character={character} goals={goals} productivityData={productivityData} settings={settings} />
       <CityVoiceMarker voiceState={voiceState} settings={settings} />
       <CityAiCore aiActivity={aiActivity} settings={settings} />
       <CityGround settings={settings} />
