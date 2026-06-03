@@ -17,6 +17,7 @@ import { hashString } from './hashString';
 // building cluster and the achievement/goal districts. Deterministic seeded scatter so the
 // dressing doesn't reshuffle across refetches.
 export const SEASONAL_DECOR = {
+  base: [0, 0, 0], // ring is centered on the city origin; banner anchors here
   ringRadius: 70, // distance from origin — outside the active districts
   ringY: 0.5, // resting height of a ground decoration
   count: 8, // decorations placed around the ring per theme
@@ -160,6 +161,7 @@ export function computeSeasonalDecor(date) {
   const decorations = placeDecorations(theme.id);
 
   return {
+    base: SEASONAL_DECOR.base,
     season: season.id,
     seasonLabel: season.label,
     isHoliday: !!holiday,

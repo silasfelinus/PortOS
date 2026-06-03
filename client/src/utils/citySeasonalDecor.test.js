@@ -56,10 +56,20 @@ describe('resolveHoliday', () => {
     expect(resolveHoliday('nope')).toBeNull();
   });
 
-  it('every holiday window has a corresponding season (sanity on the table)', () => {
+  it('every holiday entry has well-formed window tuples + palette fields', () => {
     for (const h of HOLIDAYS) {
       expect(typeof h.color).toBe('string');
+      expect(typeof h.accent).toBe('string');
       expect(typeof h.label).toBe('string');
+      expect(typeof h.prop).toBe('string');
+      for (const tuple of [h.start, h.end]) {
+        expect(tuple).toHaveLength(2);
+        const [month, day] = tuple;
+        expect(month).toBeGreaterThanOrEqual(1);
+        expect(month).toBeLessThanOrEqual(12);
+        expect(day).toBeGreaterThanOrEqual(1);
+        expect(day).toBeLessThanOrEqual(31);
+      }
     }
   });
 });
@@ -111,9 +121,10 @@ describe('computeSeasonalDecor', () => {
     expect(vm.color).toBe(HOLIDAYS.find((h) => h.id === 'halloween').color);
   });
 
-  it('places one decoration per configured slot', () => {
+  it('places one decoration per configured slot and carries the ring base', () => {
     const vm = computeSeasonalDecor(on(4, 15));
     expect(vm.total).toBe(SEASONAL_DECOR.count);
     expect(vm.decorations).toHaveLength(SEASONAL_DECOR.count);
+    expect(vm.base).toEqual(SEASONAL_DECOR.base);
   });
 });
