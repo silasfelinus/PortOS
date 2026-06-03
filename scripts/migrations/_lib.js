@@ -279,14 +279,22 @@ export async function applyPromptReplaceMigration({
 }) {
   const stagesDir = join(rootDir, 'data', 'prompts', 'stages');
   const sampleDir = join(rootDir, 'data.reference', 'prompts', 'stages');
+  const filenames = Object.keys(accepted);
 
-  // Per-file scan runs in parallel — each file's read/compare/write is
-  // independent (no cross-file shared state), so the only cost of the old
-  // serial loop was wall-clock time on a multi-file migration. Each task
-  // returns the name of the single counter it bumped (or null for a no-op);
-  // we sum them post-flight, so counter accumulation never races (it happens
-  // after every task settles, not from inside the async work).
-  const outcomes = await Promise.all(Object.keys(accepted).map(async (filename) => {
+  // Two phases so parallelism never changes the migration's failure semantics:
+  //
+  //   1. PLAN (parallel) — every file's reads + hash compares run concurrently
+  //      (that's the dominant cost, and they share no state). Each yields a
+  //      side-effect-free descriptor: which write/unlink to perform, which
+  //      counter to bump, and any deferred log line. A read rejection here
+  //      rejects the whole migration BEFORE any file has been mutated — so a
+  //      fail-stop on a missing/unreadable file leaves data/ untouched (a
+  //      stricter guarantee than the old serial loop, which could leave an
+  //      already-processed prefix mutated).
+  //   2. APPLY (ordered) — perform the planned writes/unlinks in Object.keys
+  //      order so log output and the on-disk result are deterministic, exactly
+  //      as the serial loop produced them.
+  const plans = await Promise.all(filenames.map(async (filename) => {
     const dataPath = join(stagesDir, filename);
     const samplePath = join(sampleDir, filename);
 
@@ -299,13 +307,10 @@ export async function applyPromptReplaceMigration({
       if (createIfMissing) {
         const sampleContent = await readFile(samplePath, 'utf-8').catch(() => null);
         if (sampleContent != null) {
-          await writeFile(dataPath, sampleContent);
-          console.log(`📄 created ${label}: ${filename}`);
-          return 'created';
+          return { write: { path: dataPath, content: sampleContent }, counter: 'created', log: `📄 created ${label}: ${filename}` };
         }
       }
-      console.log(`📄 ${label} ${filename}: not present in data/, will be created by setup-data.js`);
-      return null;
+      return { log: `📄 ${label} ${filename}: not present in data/, will be created by setup-data.js` };
     }
 
     const existingMd5 = md5(existing);
@@ -325,39 +330,41 @@ export async function applyPromptReplaceMigration({
       });
       if (!sampleExists) {
         if (matchesAcceptedOld || matchesCurrent) {
-          await unlink(dataPath);
-          console.log(`🗑️  ${label} ${filename} was renamed/retired upstream — removed unmodified copy from data/`);
-          return 'retired';
+          return { unlink: dataPath, counter: 'retired', log: `🗑️  ${label} ${filename} was renamed/retired upstream — removed unmodified copy from data/` };
         }
-        console.warn(
-          `⚠️  ${label} ${filename} was renamed/retired upstream but your local copy has been customized.\n` +
-          `   Check data.reference/prompts/stages/ for the replacement file and merge any custom edits manually.`,
-        );
-        return 'skipped';
+        return {
+          counter: 'skipped',
+          warn: `⚠️  ${label} ${filename} was renamed/retired upstream but your local copy has been customized.\n` +
+            `   Check data.reference/prompts/stages/ for the replacement file and merge any custom edits manually.`,
+        };
       }
     }
 
     if (matchesCurrent) {
-      return 'alreadyCurrent';
+      return { counter: 'alreadyCurrent' };
     }
 
     if (!matchesAcceptedOld) {
-      console.warn(
-        `⚠️  ${label} ${filename} has been customized — skipping auto-update.\n` +
-        customizedHint(filename),
-      );
-      return 'skipped';
+      return {
+        counter: 'skipped',
+        warn: `⚠️  ${label} ${filename} has been customized — skipping auto-update.\n` + customizedHint(filename),
+      };
     }
 
+    // Sample read stays in the plan phase: a missing sample for an accepted-old
+    // file is the migration-author error the old loop surfaced by throwing, so
+    // it must still abort before any write lands.
     const sampleContent = await readFile(samplePath, 'utf-8');
-    await writeFile(dataPath, sampleContent);
-    console.log(`✅ updated ${label}: ${filename}`);
-    return 'updated';
+    return { write: { path: dataPath, content: sampleContent }, counter: 'updated', log: `✅ updated ${label}: ${filename}` };
   }));
 
   const counts = { updated: 0, alreadyCurrent: 0, skipped: 0, created: 0, retired: 0 };
-  for (const outcome of outcomes) {
-    if (outcome) counts[outcome]++;
+  for (const plan of plans) {
+    if (plan.unlink) await unlink(plan.unlink);
+    if (plan.write) await writeFile(plan.write.path, plan.write.content);
+    if (plan.warn) console.warn(plan.warn);
+    if (plan.log) console.log(plan.log);
+    if (plan.counter) counts[plan.counter]++;
   }
 
   return counts;

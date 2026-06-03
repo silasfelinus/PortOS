@@ -146,6 +146,27 @@ describe('applyPromptReplaceMigration opt-ins', () => {
         expect(readFileSync(join(stagesDir, name), 'utf-8')).toBe(BODY_NEW);
       }
     });
+
+    it('fail-stops before any write when one file has a missing sample', async () => {
+      // Regression for the parallel-scan failure semantics: the plan phase
+      // reads every file concurrently, but a single rejection (here, an
+      // accepted-old file whose sample is gone → ENOENT) must abort the whole
+      // migration BEFORE the apply phase mutates ANY file — so the other
+      // updatable file is left untouched, not nondeterministically written.
+      writeFileSync(join(stagesDir, 'pipeline-a.md'), BODY_OLD);
+      writeFileSync(join(sampleDir, 'pipeline-a.md'), BODY_NEW); // would update
+      writeFileSync(join(stagesDir, 'pipeline-b.md'), BODY_OLD); // sample missing → throws
+      writeFileSync(join(stagesDir, 'pipeline-c.md'), BODY_OLD);
+      writeFileSync(join(sampleDir, 'pipeline-c.md'), BODY_NEW); // would update
+
+      await expect(
+        applyPromptReplaceMigration({ rootDir, ...multiOpts }),
+      ).rejects.toThrow(/ENOENT/);
+
+      // No write landed — every data file still holds its pre-migration body.
+      expect(readFileSync(join(stagesDir, 'pipeline-a.md'), 'utf-8')).toBe(BODY_OLD);
+      expect(readFileSync(join(stagesDir, 'pipeline-c.md'), 'utf-8')).toBe(BODY_OLD);
+    });
   });
 });
 
