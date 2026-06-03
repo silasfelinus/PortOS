@@ -317,12 +317,21 @@ function buildUpstreamInputs(session, universe, series) {
     seriesLogline: series?.logline || '',
     seriesPremise: series?.premise || '',
   };
+  // Each step's hash folds in its OWN outputs (`ownOutputs`) alongside its
+  // upstream inputs. The session lock only gates the wizard UI — the underlying
+  // universe/series records stay editable in Universe Builder, Arc Planner, etc.
+  // Fingerprinting a step's own output means an out-of-band edit to that content
+  // (e.g. changing universe.logline directly while the aesthetic step is locked)
+  // flags the locked step stale, not just edits to an earlier step's inputs
+  // (#731). The `issues`/`production` steps carry no `ownOutputs` — their output
+  // lives in large child-record collections already covered by their upstream
+  // inputs, and hashing every child issue/page would be needless churn.
   return {
-    idea: { intakeMode: session.intakeMode, seedIdea: session.seedIdea || '' },
-    universeAesthetic: { seedIdea: session.seedIdea || '', ideaOutputs },
-    plotArc: { aesthetic, seedIdea: session.seedIdea || '', ideaOutputs },
-    readerMap: { arc },
-    characters: { readerMap, arcSummary: arc.summary, aesthetic },
+    idea: { intakeMode: session.intakeMode, seedIdea: session.seedIdea || '', ownOutputs: ideaOutputs },
+    universeAesthetic: { seedIdea: session.seedIdea || '', ideaOutputs, ownOutputs: aesthetic },
+    plotArc: { aesthetic, seedIdea: session.seedIdea || '', ideaOutputs, ownOutputs: arc },
+    readerMap: { arc, ownOutputs: readerMap },
+    characters: { readerMap, arcSummary: arc.summary, aesthetic, ownOutputs: cast },
     issues: { arc, readerMap, cast },
     production: { arc, readerMap, cast },
   };
