@@ -155,6 +155,12 @@ const DEFAULT_REGISTRY = {
       runner: 'flux2',
       quantization: 'none',
       repo: 'black-forest-labs/FLUX.2-klein-9B',
+      // Multi-reference editing loads this `-kv` sibling repo instead of the
+      // base 9B (its transformer is tuned for the K/V reference-editing task).
+      // The plain text/i2i bf16 path stays on `repo`. Same FLUX.2-klein
+      // license — accept once at huggingface.co. Threaded to the runner as
+      // `--kv-repo`; see scripts/flux2_macos.py.
+      kvRepo: 'black-forest-labs/FLUX.2-klein-9B-kv',
       steps: 20,
       guidance: 3.5,
       cfgDisabled: true,
@@ -379,6 +385,28 @@ const backfillEditOnly = (list) => {
   });
 };
 
+// Multi-reference editing on the bf16 path loads the `-kv` sibling repo. Map
+// each id to the kv repo it should use. Existing installs stored their
+// `flux2-klein-9b-bf16` entry before `kvRepo` existed, so backfill it at load
+// (same pattern as cfgDisabled/editOnly) AND ship migration 064 for installs
+// that have already persisted the registry. Mirrored in
+// data.reference/media-models.json. A user-set `kvRepo` (any value, including
+// '') wins — `'kvRepo' in entry` is the override signal.
+const KV_REPO_BY_ID = {
+  'flux2-klein-9b-bf16': 'black-forest-labs/FLUX.2-klein-9B-kv',
+};
+
+const backfillKvRepo = (list) => {
+  if (!Array.isArray(list)) return list;
+  return list.map((entry) => {
+    if (!isPlainObject(entry) || typeof entry.id !== 'string') return entry;
+    if ('kvRepo' in entry) return entry; // user override wins
+    const kvRepo = KV_REPO_BY_ID[entry.id];
+    if (!kvRepo) return entry;
+    return { ...entry, kvRepo };
+  });
+};
+
 export const isFlux2 = (model) => model?.runner === RUNNER_FAMILIES.FLUX2;
 export const isZImage = (model) => model?.runner === RUNNER_FAMILIES.Z_IMAGE;
 export const isErnie = (model) => model?.runner === RUNNER_FAMILIES.ERNIE;
@@ -496,9 +524,9 @@ const normalizeRegistry = (parsed) => {
   // (treat as fresh install — let the new entries land).
   const shippedImage = isPlainObject(safe._shippedDefaults?.image) ? safe._shippedDefaults.image : null;
   const isImageBootstrap = shippedImage === null;
-  const upgradedImage = backfillEditOnly(backfillCfgDisabled(
+  const upgradedImage = backfillKvRepo(backfillEditOnly(backfillCfgDisabled(
     upgradeImageEntries(arrayOrDefault(safe.image, DEFAULT_REGISTRY.image)),
-  ));
+  )));
   // Image bootstrap deliberately uses userIds ONLY (not union with defaults).
   // Image is getting `_shippedDefaults` for the first time in this release, so
   // there's no prior history of deletions to preserve via the union trick the
