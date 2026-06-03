@@ -185,6 +185,40 @@ router.get('/tests/history', asyncHandler(async (req, res) => {
 }));
 
 // =============================================================================
+// VALUES-ALIGNMENT TESTING (M34 P6)
+// =============================================================================
+
+/**
+ * GET /api/digital-twin/values-tests
+ * Get the values-alignment dilemma suite (parsed from VALUES_ALIGNMENT_SUITE.md)
+ */
+router.get('/values-tests', asyncHandler(async (req, res) => {
+  const dilemmas = await digitalTwinService.parseValuesAlignmentSuite();
+  res.json(dilemmas);
+}));
+
+/**
+ * POST /api/digital-twin/values-tests/run
+ * Run values-alignment dilemmas against a single provider/model, scoring each
+ * response against the user's stored values hierarchy
+ */
+router.post('/values-tests/run', asyncHandler(async (req, res) => {
+  const { providerId, model, testIds } = validateRequest(runTestsInputSchema, req.body);
+  const result = await digitalTwinService.runValuesAlignmentTests(providerId, model, testIds);
+  res.json(result);
+}));
+
+/**
+ * GET /api/digital-twin/values-tests/history
+ * Get values-alignment run history
+ */
+router.get('/values-tests/history', asyncHandler(async (req, res) => {
+  const data = validateRequest(testHistoryQuerySchema, req.query);
+  const history = await digitalTwinService.getValuesAlignmentHistory(data.limit);
+  res.json(history);
+}));
+
+// =============================================================================
 // ENRICHMENT
 // =============================================================================
 

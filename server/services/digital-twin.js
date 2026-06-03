@@ -7,6 +7,7 @@
  *   digital-twin-meta.js       — loadMeta, saveMeta, updateMeta, updateSettings, events
  *   digital-twin-documents.js  — getDocuments, getDocumentById, createDocument, updateDocument, deleteDocument
  *   digital-twin-testing.js    — parseTestSuite, runTests, getTestHistory
+ *   digital-twin-values-testing.js — parseValuesAlignmentSuite, runValuesAlignmentTests, getValuesAlignmentHistory
  *   digital-twin-enrichment.js — getEnrichmentCategories, generateEnrichmentQuestion, processEnrichmentAnswer, …
  *   digital-twin-export.js     — getExportFormats, exportDigitalTwin, exportSoul
  *   digital-twin-context.js    — getDigitalTwinForPrompt, getSoulForPrompt
@@ -38,6 +39,12 @@ export {
   runTests,
   getTestHistory
 } from './digital-twin-testing.js';
+
+export {
+  parseValuesAlignmentSuite,
+  runValuesAlignmentTests,
+  getValuesAlignmentHistory
+} from './digital-twin-values-testing.js';
 
 export {
   getEnrichmentCategories,

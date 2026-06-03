@@ -16,6 +16,9 @@ export const documentCategoryEnum = z.enum([
 // Test result enum
 export const testResultEnum = z.enum(['passed', 'partial', 'failed', 'pending']);
 
+// Values-alignment result enum (M34 P6)
+export const valuesTestResultEnum = z.enum(['aligned', 'partial', 'misaligned', 'pending']);
+
 // Export format enum
 export const exportFormatEnum = z.enum(['system_prompt', 'claude_md', 'json', 'individual']);
 
@@ -58,6 +61,19 @@ export const testHistoryEntrySchema = z.object({
   passed: z.number().int().min(0),
   failed: z.number().int().min(0),
   partial: z.number().int().min(0),
+  total: z.number().int().min(0),
+  timestamp: z.string().datetime()
+});
+
+// Values-alignment run history entry (M34 P6)
+export const valuesTestHistoryEntrySchema = z.object({
+  runId: z.string().uuid(),
+  providerId: z.string(),
+  model: z.string(),
+  score: z.number().min(0).max(1),
+  aligned: z.number().int().min(0),
+  partial: z.number().int().min(0),
+  misaligned: z.number().int().min(0),
   total: z.number().int().min(0),
   timestamp: z.string().datetime()
 });
@@ -158,6 +174,7 @@ export const digitalTwinMetaSchema = z.object({
   version: z.string().default('1.0.0'),
   documents: z.array(documentMetaSchema).default([]),
   testHistory: z.array(testHistoryEntrySchema).default([]),
+  valuesTestHistory: z.array(valuesTestHistoryEntrySchema).default([]),
   enrichment: enrichmentProgressSchema.default({ completedCategories: [], lastSession: null }),
   settings: digitalTwinSettingsSchema.default({ autoInjectToCoS: true, maxContextTokens: 4000 }),
   traits: traitsSchema.optional(),
@@ -186,11 +203,19 @@ export const updateDocumentInputSchema = z.object({
   weight: z.number().int().min(1).max(10).optional()
 });
 
+// testIds is "all tests" when absent. The client API wrappers default the
+// argument to `null` (not `undefined`), so tolerate the null sentinel —
+// `.optional()` alone rejects `null` and would 400 a "run all" request.
+const optionalTestIds = z.preprocess(
+  v => v == null ? undefined : v,
+  z.array(z.number().int().min(1)).optional()
+);
+
 // Run tests input
 export const runTestsInputSchema = z.object({
   providerId: z.string().min(1),
   model: z.string().min(1),
-  testIds: z.array(z.number().int().min(1)).optional()
+  testIds: optionalTestIds
 });
 
 // Run multi-model tests input
@@ -199,7 +224,7 @@ export const runMultiTestsInputSchema = z.object({
     providerId: z.string().min(1),
     model: z.string().min(1)
   })).min(1).max(10),
-  testIds: z.array(z.number().int().min(1)).optional()
+  testIds: optionalTestIds
 });
 
 // Enrichment question input

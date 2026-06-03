@@ -16,6 +16,7 @@ import BrailleSpinner from '../../BrailleSpinner';
 import * as api from '../../../services/api';
 import toast from '../../ui/Toast';
 
+import ValuesAlignmentPanel from './ValuesAlignmentPanel';
 import { TEST_STATUS } from '../constants';
 import { timeAgo } from '../../../utils/formatters';
 
@@ -628,6 +629,9 @@ export default function TestTab({ onRefresh }) {
           )}
         </div>
       )}
+
+      {/* Values-Alignment Tests (M34 P6) — shares the provider selection above */}
+      <ValuesAlignmentPanel selectedProviders={selectedProviders} onRefresh={onRefresh} />
     </div>
   );
 }
