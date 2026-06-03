@@ -255,21 +255,26 @@ export const useCityData = () => {
     // (start → model:loading → model:loaded → complete/error) globally. Track the in-flight
     // set so the central spire glows/beams with live model activity; the pure reducer adds
     // on non-terminal phases, drops on complete/error, and prunes stale ops.
-    // Prune expired ops and re-arm while any remain, so a `done` afterglow beam fades after
-    // afterglowMs and a stranded in-flight op clears at opMaxAgeMs — without depending on a
-    // further `ai:status` event to advance the clock. Tick at the afterglow cadence (the
-    // shorter window); pruneAiOps returns the same ref when nothing expired, short-circuiting
-    // the setState to no re-render.
+    // Prune expired ops AND clear a stale flare, re-arming while either is still pending —
+    // so a `done` afterglow beam (afterglowMs), a stranded in-flight op (opMaxAgeMs), and a
+    // flare-only beam (flareMs, when a fast throughput-less call left no op behind) all fade
+    // without depending on a further `ai:status` event to advance the clock. Tick at the
+    // afterglow cadence; both pruneAiOps and the lastStartTs clear short-circuit to no
+    // re-render when nothing expired.
     const scheduleAiPrune = () => {
       if (aiPruneTimerRef.current) clearTimeout(aiPruneTimerRef.current);
       aiPruneTimerRef.current = setTimeout(() => {
-        let remaining = 0;
+        let rearm = false;
         setAiActivity(prev => {
-          const ops = pruneAiOps(prev.ops);
-          remaining = Object.keys(ops).length;
-          return ops === prev.ops ? prev : { ...prev, ops };
+          const now = Date.now();
+          const ops = pruneAiOps(prev.ops, now);
+          const flareActive = prev.lastStartTs > 0 && now - prev.lastStartTs <= AI_CORE.flareMs;
+          const lastStartTs = prev.lastStartTs > 0 && !flareActive ? 0 : prev.lastStartTs;
+          rearm = Object.keys(ops).length > 0 || flareActive;
+          if (ops === prev.ops && lastStartTs === prev.lastStartTs) return prev;
+          return { ...prev, ops, lastStartTs };
         });
-        if (remaining > 0) scheduleAiPrune();
+        if (rearm) scheduleAiPrune();
       }, AI_CORE.afterglowMs + 100);
     };
 

@@ -182,6 +182,16 @@ describe('applyAiStatusEvent building association', () => {
     expect(ops.a.appId).toBe('app-1'); // association carried onto the afterglow
   });
 
+  it('reads the association from the completion event when the in-flight op was already pruned', () => {
+    // A long call (300s) whose in-flight entry was pruned at opMaxAgeMs (60s); the completion
+    // event still carries appId, so the afterglow must target the building, not go radial.
+    const completeEvent = ev('a', 'complete', 'm', { appId: 'app-9', workspacePath: '/r/x', tokensPerSec: 40 });
+    const ops = applyAiStatusEvent({}, completeEvent, NOW); // empty prior map → no prev
+    expect(ops.a.done).toBe(true);
+    expect(ops.a.appId).toBe('app-9');
+    expect(ops.a.workspacePath).toBe('/r/x');
+  });
+
   it('prunes a done afterglow op once afterglowMs has passed', () => {
     let ops = applyAiStatusEvent({}, ev('a', 'start', 'm'), NOW);
     ops = applyAiStatusEvent(ops, ev('a', 'complete', 'm', { tokensPerSec: 80 }), NOW + 5);

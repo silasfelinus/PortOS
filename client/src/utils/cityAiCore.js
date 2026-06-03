@@ -99,12 +99,24 @@ export function applyAiStatusEvent(ops, event, now = Date.now()) {
   const tokensPerSec = readTokensPerSec(event.tokensPerSec) ?? prev.tokensPerSec ?? null;
   if (TERMINAL_PHASES.has(event.phase)) {
     // Drop immediately when there's nothing to show; otherwise keep a short afterglow so
-    // the just-measured throughput visibly thickens the beam before it fades.
+    // the just-measured throughput visibly thickens the beam before it fades. Re-read the
+    // association from the event (every phase event carries it) — the in-flight entry may
+    // have been pruned at opMaxAgeMs on a long call, so falling back to `prev` alone would
+    // lose the building target.
     if (tokensPerSec === null) {
       delete next[id];
       return next;
     }
-    next[id] = { ...prev, id, done: true, tokensPerSec, ts: now };
+    next[id] = {
+      id,
+      done: true,
+      model: event.model || prev.model || null,
+      tier: modelTier(event.model || prev.model),
+      appId: event.appId ?? prev.appId ?? null,
+      workspacePath: event.workspacePath ?? prev.workspacePath ?? null,
+      tokensPerSec,
+      ts: now,
+    };
     return next;
   }
   next[id] = {
