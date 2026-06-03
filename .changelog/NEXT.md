@@ -16,6 +16,8 @@
 
 ## Changed
 
+- **[issue-805]** Removed ~470 lines of dead, never-called self-improvement task-generation code left behind by an earlier rewrite. Internal cleanup with no behavior difference.
+
 - **[issue-741]** Extracted the CoS daemon health monitor (PM2/memory checks and errored-process auto-restart) out of the 3300-line `cos.js` into a dedicated `cosHealthMonitor.js` behind an unchanged public API. First slice of the `cos.js` split. Internal refactor with no behavior difference.
 - **[issue-741]** Extracted the CoS task store (task create/read/update/delete, reorder, approve, and queue persistence) out of `cos.js` into a dedicated `cosTaskStore.js` behind an unchanged public API; the store now signals task changes by event so the scheduler stays decoupled. Next slice of the `cos.js` split. Internal refactor with no behavior difference.
 - **[issue-741]** Extracted the CoS task-generation engine — the evaluation loop that decides what to spawn each cycle, the self-improvement / managed-app / idle-review task generators, and the PLAN.md in-flight pick helpers — out of `cos.js` into a dedicated `cosTaskGenerator.js` behind an unchanged public API; the spawn-side scheduler stays in `cos.js`. Next slice of the `cos.js` split, taking it from ~2800 to ~1200 lines. Internal refactor with no behavior difference.
