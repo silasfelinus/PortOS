@@ -7,6 +7,7 @@
 
 ## Changed
 
+- **[issue-751]** Collapsed the repeated AppleScript builders in `server/services/xcodeScripts.js` into a shared `xcodeScriptBuilders.js`; the emitted `take_screenshots_macos.sh` is byte-for-byte unchanged. Internal refactor with no behavior difference.
 - **[issue-748]** Extracted the pure command-arg builders and output parsers from `server/services/git.js` into focused `server/lib/git*` modules. Internal refactor with no behavior difference.
 - **[issue-718]** The duplicated optimistic canon-patch handler in the universe canon and Nouns stage editors now lives in one shared `useCanonPatch` hook. Internal refactor with no behavior difference.
 - **[issue-721]** Goal detail badges now use the shared pill component, keeping their look consistent with the rest of the app. Internal maintenance change with no behavior difference.
