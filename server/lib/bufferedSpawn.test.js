@@ -24,11 +24,17 @@ function makeFakeChild({ pid = 1234 } = {}) {
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   child.kill = vi.fn();
+  child.unref = vi.fn();
   return child;
 }
 
 beforeEach(() => {
   spawnMock.mockReset();
+  // Default: any spawn returns a fresh fake child. On a Windows test runner the
+  // timeout path also spawns `taskkill` via killProcessTree — without a default
+  // it would get `undefined` and crash on `.on(...)`. Tests that need to drive a
+  // specific child queue it explicitly with mockReturnValueOnce.
+  spawnMock.mockImplementation(() => makeFakeChild());
   vi.useRealTimers();
 });
 
