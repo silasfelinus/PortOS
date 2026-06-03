@@ -122,6 +122,70 @@ describe('authGate middleware', () => {
     expect(result.res.statusCode).toBe(401);
     expect(result.res.body.code).toBe('AUTH_REQUIRED');
   });
+
+  it('rejects cross-origin requests with 403 before consulting the session', async () => {
+    const auth = await import('../services/auth.js');
+    const { token } = await auth.setPassword({ newPassword: 'correct-horse' });
+    const { authGate } = await import('./authGate.js');
+    // Even a VALID session cookie can't rescue a cross-origin request —
+    // the gate must reject before reading the cookie, since CSRF
+    // side-effects land regardless of whether the response is visible.
+    const result = await runGate(authGate, {
+      path: '/api/cos',
+      headers: {
+        host: 'portos.tailnet.ts.net',
+        origin: 'https://evil.tailnet.ts.net',
+        cookie: `portos_auth=${token}`,
+      },
+    });
+    expect(result.called).toBe(false);
+    expect(result.res.statusCode).toBe(403);
+    expect(result.res.body.code).toBe('CROSS_ORIGIN_BLOCKED');
+  });
+
+  it('allows same-origin requests when Origin matches Host', async () => {
+    const auth = await import('../services/auth.js');
+    const { token } = await auth.setPassword({ newPassword: 'correct-horse' });
+    const { authGate } = await import('./authGate.js');
+    const result = await runGate(authGate, {
+      path: '/api/cos',
+      headers: {
+        host: 'portos.tailnet.ts.net',
+        origin: 'https://portos.tailnet.ts.net',
+        cookie: `portos_auth=${token}`,
+      },
+    });
+    expect(result.called).toBe(true);
+  });
+
+  it('allows requests without an Origin header (curl, server-to-server)', async () => {
+    const auth = await import('../services/auth.js');
+    const { token } = await auth.setPassword({ newPassword: 'correct-horse' });
+    const { authGate } = await import('./authGate.js');
+    const result = await runGate(authGate, {
+      path: '/api/cos',
+      headers: {
+        host: 'portos.tailnet.ts.net',
+        cookie: `portos_auth=${token}`,
+      },
+    });
+    expect(result.called).toBe(true);
+  });
+
+  it('treats a malformed Origin header as cross-origin', async () => {
+    const auth = await import('../services/auth.js');
+    const { token } = await auth.setPassword({ newPassword: 'correct-horse' });
+    const { authGate } = await import('./authGate.js');
+    const result = await runGate(authGate, {
+      path: '/api/cos',
+      headers: {
+        host: 'portos.tailnet.ts.net',
+        origin: 'not a valid url',
+        cookie: `portos_auth=${token}`,
+      },
+    });
+    expect(result.res.statusCode).toBe(403);
+  });
 });
 
 describe('socketAuthGate middleware', () => {
@@ -152,5 +216,24 @@ describe('socketAuthGate middleware', () => {
       socketAuthGate({ handshake: { headers: { cookie: `portos_auth=${token}` } } }, (e) => resolve(e));
     });
     expect(err).toBeUndefined();
+  });
+
+  it('rejects a cross-origin handshake', async () => {
+    const auth = await import('../services/auth.js');
+    const { token } = await auth.setPassword({ newPassword: 'correct-horse' });
+    const { socketAuthGate } = await import('./authGate.js');
+    const err = await new Promise((resolve) => {
+      socketAuthGate({
+        handshake: {
+          headers: {
+            host: 'portos.tailnet.ts.net',
+            origin: 'https://evil.tailnet.ts.net',
+            cookie: `portos_auth=${token}`,
+          },
+        },
+      }, (e) => resolve(e));
+    });
+    expect(err).toBeInstanceOf(Error);
+    expect(err.data).toEqual({ code: 'CROSS_ORIGIN_BLOCKED' });
   });
 });

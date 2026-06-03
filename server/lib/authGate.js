@@ -36,6 +36,30 @@ const isPublicPath = (path) => {
   return true;
 };
 
+// Reject cross-origin requests when auth is on. PortOS's CORS middleware
+// reflects `Origin` with `Access-Control-Allow-Credentials: true` so the UI
+// works from any tailnet hostname / IP — but combined with the session
+// cookie that becomes a CSRF surface: a malicious page on another tailnet
+// host can fetch PortOS APIs with `credentials: 'include'` after the user
+// has logged in (Tailscale's `ts.net` is on the Public Suffix List, so
+// SameSite=Lax doesn't help — same-tailnet hosts are same-site). Match the
+// `Origin` header's host:port against the request's own `Host` header; any
+// mismatch is a cross-origin attempt and gets 403 before the session is
+// even consulted. Requests with no `Origin` header (server-to-server,
+// curl, the loopback mirror) pass through.
+const isCrossOrigin = (req) => {
+  const origin = req.headers?.origin;
+  if (!origin || origin === 'null') return false;
+  const host = req.headers?.host;
+  if (!host) return false;
+  // URL parses scheme://authority — we only compare the authority. A
+  // malformed Origin (URL constructor throws) is treated as cross-origin.
+  let parsed;
+  try { parsed = new URL(origin); }
+  catch { return true; }
+  return parsed.host !== host;
+};
+
 // Express middleware. Bypasses everything when auth is off. When it's on,
 // allows the small public set above; gates the rest behind a valid token in
 // the cookie or Authorization: Bearer header.
@@ -44,6 +68,14 @@ export const authGate = async (req, res, next) => {
   if (!enabled) return next();
   const path = req.path;
   if (isPublicPath(path)) return next();
+  // CSRF guard runs BEFORE the cookie check — a cross-origin request must
+  // be rejected even if it carries a valid session, otherwise an attacker
+  // with no cookie still triggers side effects whose response the browser
+  // hides but whose mutations have already landed.
+  if (isCrossOrigin(req)) {
+    res.status(403).json({ error: 'Cross-origin request rejected', code: 'CROSS_ORIGIN_BLOCKED' });
+    return;
+  }
   const token = extractToken(req);
   if (await verifySession(token)) return next();
   // /data/* is hit directly by <img>/<audio>/<video> tags which don't show a
@@ -64,6 +96,11 @@ export const socketAuthGate = async (socket, next) => {
   const enabled = await isAuthEnabled();
   if (!enabled) return next();
   const fakeReq = { headers: socket.handshake?.headers || {} };
+  if (isCrossOrigin(fakeReq)) {
+    const err = new Error('Cross-origin request rejected');
+    err.data = { code: 'CROSS_ORIGIN_BLOCKED' };
+    return next(err);
+  }
   const token = extractToken(fakeReq);
   if (await verifySession(token)) return next();
   const err = new Error('Authentication required');
