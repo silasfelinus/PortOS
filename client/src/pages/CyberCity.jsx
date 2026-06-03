@@ -68,6 +68,13 @@ function CyberCityInner() {
     60_000,
   );
 
+  // Life goals drive the goal-monument district. Same pattern as productivityData —
+  // `useAutoRefetch` keeps the last-good snapshot on transient failures.
+  const { data: goalsData } = useAutoRefetch(
+    () => api.getGoals({ silent: true }),
+    120_000,
+  );
+
   const handleBuildingClick = useCallback((app) => {
     if (app?.id) {
       navigate(`/apps/${app.id}`);
@@ -112,6 +119,7 @@ function CyberCityInner() {
         voiceState={voiceState}
         aiActivity={aiActivity}
         productivityData={productivityData}
+        goals={goalsData}
         settings={settings}
         playSfx={playSfx}
         keysRef={keysRef}
