@@ -685,7 +685,8 @@ const COMPLETENESS_CATEGORIES = new Set([
 // comic-structure category instead carries a COMPLETE panel-by-panel rewrite of
 // the malformed page in `suggestion` (it's directly substitutable). The strategy
 // makes that dual use explicit so the fix prompt and UI don't have to special-case
-// the category. Mirrored in server/services/pipeline/manuscriptReview.js.
+// the category. Consumed by server/services/pipeline/manuscriptReview.js (it
+// imports both from here — single source of truth, no duplicate definition).
 export const REPLACEMENT_STRATEGIES = new Set(['delta', 'full-page']);
 // Category → default strategy. comic-structure is the only full-page category;
 // everything else (including legacy findings with no strategy field) is a delta.

@@ -60,7 +60,7 @@ const EXPECTED_STAGE_NEW = {
   'story-builder-idea-expand.md': 'c12d76fefaaded2838023065bfc94bb0',
   'pipeline-editorial-analysis.md': 'daeb02bd54b0c099b21af659c6298cfe',
   'pipeline-manuscript-completeness.md': 'cec8faeb75dfff74e41b8221145c2e92',
-  'pipeline-manuscript-fix.md': '87c6e47030df07b37ace44d2a15372cf',
+  'pipeline-manuscript-fix.md': '88199bf7b5b50155bd2e1624bd920ebd',
   'pipeline-tv-script.md': '376f779f4687b598f1c92ca4e770fd5a',
 };
 const EXPECTED_PARTIAL_OLD = {

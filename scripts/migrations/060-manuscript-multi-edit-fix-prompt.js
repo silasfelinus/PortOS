@@ -24,7 +24,7 @@ export const ACCEPTED_OLD_MD5 = {
 // body. The idempotent-rerun and drift-catch tests require it to match the live
 // data.reference body, not 060's own output.
 export const NEW_SHIPPED_MD5 = {
-  'pipeline-manuscript-fix.md': '87c6e47030df07b37ace44d2a15372cf',
+  'pipeline-manuscript-fix.md': '88199bf7b5b50155bd2e1624bd920ebd',
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({

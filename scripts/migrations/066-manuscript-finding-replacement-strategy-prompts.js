@@ -37,7 +37,7 @@ export const ACCEPTED_OLD_MD5 = {
 // (056/057 for completeness, 060 for fix) so their drift-catch tests stay green.
 export const NEW_SHIPPED_MD5 = {
   'pipeline-manuscript-completeness.md': 'cec8faeb75dfff74e41b8221145c2e92',
-  'pipeline-manuscript-fix.md': '87c6e47030df07b37ace44d2a15372cf',
+  'pipeline-manuscript-fix.md': '88199bf7b5b50155bd2e1624bd920ebd',
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({
