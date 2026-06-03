@@ -13,9 +13,8 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import { ensureDir, PATHS, readJSONFile, atomicWrite, tryReadFile } from '../../lib/fileUtils.js'
 import { validateCommand } from '../../lib/commandSecurity.js'
-import { DATA_DIR, JOBS_FILE, JOBS_SKILLS_DIR } from './constants.js'
+import { DATA_DIR, JOBS_FILE, JOBS_SKILLS_DIR, resolveIntervalMs } from './constants.js'
 import { createDefaultJobsData, mergeWithDefaults } from './defaults.js'
-import { resolveIntervalMs } from './scheduler.js'
 
 let initPromise = null
 

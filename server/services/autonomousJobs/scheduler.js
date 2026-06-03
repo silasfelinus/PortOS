@@ -8,8 +8,15 @@
 
 import { getUserTimezone, getLocalParts, nextLocalTime } from '../../lib/timezone.js'
 import { parseCronToNextRun } from '../eventScheduler.js'
-import { DAY, HOUR, WEEK } from './constants.js'
-import { getEnabledJobs } from './crud.js'
+import { DAY } from './constants.js'
+import { loadJobs } from './store.js'
+
+// Reads enabled jobs straight from the store. Scheduler intentionally does NOT
+// import from crud.js — doing so created a scheduler→crud→scheduler cycle.
+async function getEnabledJobs() {
+  const data = await loadJobs()
+  return data.jobs.filter(j => j.enabled)
+}
 
 /**
  * Check if today is a weekday (Monday-Friday) in the user's timezone.
@@ -141,36 +148,4 @@ async function getNextDueJob() {
   return earliest
 }
 
-/**
- * Resolve interval string to milliseconds
- */
-function resolveIntervalMs(interval, customMs) {
-  switch (interval) {
-    case 'hourly': return HOUR
-    case 'every-2-hours': return 2 * HOUR
-    case 'every-4-hours': return 4 * HOUR
-    case 'every-8-hours': return 8 * HOUR
-    case 'daily': return DAY
-    case 'weekly': return WEEK
-    case 'biweekly': return 2 * WEEK
-    case 'monthly': return 30 * DAY
-    case 'custom': return customMs || DAY
-    default: return DAY
-  }
-}
-
-/**
- * Available interval options for UI
- */
-const INTERVAL_OPTIONS = [
-  { value: 'hourly', label: 'Every Hour', ms: HOUR },
-  { value: 'every-2-hours', label: 'Every 2 Hours', ms: 2 * HOUR },
-  { value: 'every-4-hours', label: 'Every 4 Hours', ms: 4 * HOUR },
-  { value: 'every-8-hours', label: 'Every 8 Hours', ms: 8 * HOUR },
-  { value: 'daily', label: 'Daily', ms: DAY },
-  { value: 'weekly', label: 'Weekly', ms: WEEK },
-  { value: 'biweekly', label: 'Every 2 Weeks', ms: 2 * WEEK },
-  { value: 'monthly', label: 'Monthly', ms: 30 * DAY }
-]
-
-export { isWeekday, getDueJobs, getNextDueJob, resolveIntervalMs, INTERVAL_OPTIONS }
+export { isWeekday, getDueJobs, getNextDueJob }

@@ -27,7 +27,7 @@
 
 import { validateCommand } from '../lib/commandSecurity.js'
 import { agentDataCleanup } from './autonomousJobs/scriptHandlers.js'
-import { JOB_SKILL_MAP } from './autonomousJobs/constants.js'
+import { JOB_SKILL_MAP, INTERVAL_OPTIONS } from './autonomousJobs/constants.js'
 import { initJobs, syncSkillTemplatesFromSample } from './autonomousJobs/store.js'
 import {
   getAllJobs,
@@ -44,8 +44,7 @@ import {
 import {
   isWeekday,
   getDueJobs,
-  getNextDueJob,
-  INTERVAL_OPTIONS
+  getNextDueJob
 } from './autonomousJobs/scheduler.js'
 import {
   loadJobSkillTemplate,

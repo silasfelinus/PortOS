@@ -3,9 +3,10 @@
  *
  * Runs `type: 'script'` and `type: 'shell'` jobs directly (no AI agent).
  * `executeShellJob` spawns the validated command with a timeout + output cap and
- * persists the result. NOTE: the child-process / setTimeout callbacks here run
- * outside the Express request lifecycle, so their inline try/catch + emoji
- * `console.error` handling is intentional (an uncaught throw would crash Node).
+ * persists the result. The child-process / setTimeout callbacks here run outside
+ * the Express request lifecycle; their async persist calls carry `.catch()`
+ * handlers that log via emoji-prefixed `console.error` so a persist failure can't
+ * reject into the void. Behavior is preserved verbatim from the pre-split module.
  */
 
 import { spawn } from 'child_process'
