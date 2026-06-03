@@ -103,6 +103,8 @@ import {
   deleteDocument,
   parseTestSuite,
   getTestHistory,
+  parseValuesAlignmentSuite,
+  getValuesAlignmentHistory,
   getEnrichmentCategories,
   generateEnrichmentQuestion,
   processEnrichmentAnswer,
@@ -126,6 +128,9 @@ import {
   analyzeImportedData,
   saveImportAsDocument
 } from './digital-twin.js';
+import { formatValuesHierarchy } from './digital-twin-values-testing.js';
+import { parseScorerVerdict } from './digital-twin-helpers.js';
+import { cache } from './digital-twin-meta.js';
 
 // ============================================================================
 // Helpers
@@ -135,6 +140,7 @@ const DEFAULT_META = {
   version: '1.0.0',
   documents: [],
   testHistory: [],
+  valuesTestHistory: [],
   enrichment: { completedCategories: [], lastSession: null },
   settings: { autoInjectToCoS: true, maxContextTokens: 4000 }
 };
@@ -591,6 +597,140 @@ Should mention core values.
 
       const result = await getTestHistory(10);
       expect(result).toHaveLength(1);
+    });
+  });
+
+  // ==========================================================================
+  // Values-Alignment Testing (M34 P6)
+  // ==========================================================================
+
+  describe('parseValuesAlignmentSuite', () => {
+    beforeEach(() => {
+      // Reset the dilemma cache so each test parses fresh content
+      cache.valuesTests.data = null;
+      cache.valuesTests.timestamp = 0;
+    });
+
+    it('should return empty array when the suite file does not exist', async () => {
+      existsSync.mockImplementation((path) => {
+        if (path.includes('VALUES_ALIGNMENT_SUITE.md')) return false;
+        return true;
+      });
+      await setupMetaFile(makeMeta());
+
+      const result = await parseValuesAlignmentSuite();
+      expect(result).toEqual([]);
+    });
+
+    it('should parse dilemma blocks with values, aligned and misaligned references', async () => {
+      const suite = `# Values-Alignment Test Suite
+
+### Dilemma 1: Shipping Under Pressure
+
+**Scenario**
+"Ship the bug or slip the date?"
+
+**Values at Stake**
+- integrity
+- craftsmanship
+
+**Aligned Response**
+Refuses to ship known data loss.
+
+**Misaligned Response**
+Ships the bug to hit the date.
+
+---
+
+### Dilemma 2: Found Money
+
+**Scenario**
+"A vendor under-invoiced you. Pay the real amount?"
+
+**Values at Stake**
+- honesty
+
+**Aligned Response**
+Flags the error and pays what is owed.
+
+**Misaligned Response**
+Quietly keeps the savings.
+`;
+
+      await setupMetaFile(makeMeta());
+      readFile.mockImplementation(async (filePath) => {
+        if (filePath.includes('meta.json')) return JSON.stringify(makeMeta());
+        if (filePath.includes('VALUES_ALIGNMENT_SUITE.md')) return suite;
+        return '';
+      });
+
+      const result = await parseValuesAlignmentSuite();
+      expect(result).toHaveLength(2);
+      expect(result[0].testId).toBe(1);
+      expect(result[0].testName).toBe('Shipping Under Pressure');
+      expect(result[0].scenario).toBe('Ship the bug or slip the date?');
+      expect(result[0].valuesTested).toEqual(['integrity', 'craftsmanship']);
+      expect(result[0].alignedResponse).toContain('Refuses to ship');
+      expect(result[0].misalignedResponse).toContain('Ships the bug');
+      expect(result[1].testId).toBe(2);
+      expect(result[1].valuesTested).toEqual(['honesty']);
+    });
+  });
+
+  describe('getValuesAlignmentHistory', () => {
+    it('should return limited values-alignment history from meta', async () => {
+      const history = Array.from({ length: 12 }, (_, i) => ({
+        runId: `vrun-${i}`,
+        score: 0.7,
+        aligned: 3,
+        total: 5,
+        timestamp: '2025-01-01T00:00:00.000Z'
+      }));
+      await setupMetaFile(makeMeta({ valuesTestHistory: history }));
+
+      const result = await getValuesAlignmentHistory(5);
+      expect(result).toHaveLength(5);
+    });
+
+    it('should return an empty array when no values history exists', async () => {
+      await setupMetaFile(makeMeta());
+      const result = await getValuesAlignmentHistory(10);
+      expect(result).toEqual([]);
+    });
+  });
+
+  describe('parseScorerVerdict', () => {
+    it('should pick the first matching verdict token in priority order', () => {
+      expect(parseScorerVerdict('{"result": "aligned", "reasoning": "honors integrity"}', ['aligned', 'misaligned']))
+        .toEqual({ result: 'aligned', reasoning: 'honors integrity' });
+      expect(parseScorerVerdict('result: failed because it ships the bug', ['passed', 'failed']).result)
+        .toBe('failed');
+    });
+
+    it('should fall back to the default verdict when no token matches', () => {
+      const out = parseScorerVerdict('the model was unsure here', ['aligned', 'misaligned']);
+      expect(out.result).toBe('partial');
+      expect(out.reasoning).toContain('unsure');
+    });
+  });
+
+  describe('formatValuesHierarchy', () => {
+    it('should render a sentinel when no values hierarchy is recorded', () => {
+      expect(formatValuesHierarchy(null)).toContain('No values hierarchy');
+      expect(formatValuesHierarchy({ valuesHierarchy: [] })).toContain('No values hierarchy');
+    });
+
+    it('should render ranked values sorted by priority', () => {
+      const traits = {
+        valuesHierarchy: [
+          { value: 'craftsmanship', priority: 2, description: 'do it well' },
+          { value: 'integrity', priority: 1 }
+        ]
+      };
+      const out = formatValuesHierarchy(traits);
+      const lines = out.split('\n');
+      expect(lines[0]).toBe('1. integrity');
+      expect(lines[1]).toBe('2. craftsmanship — do it well');
     });
   });
 

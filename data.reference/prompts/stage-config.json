@@ -165,6 +165,13 @@
       "returnsJson": true,
       "variables": []
     },
+    "values-alignment-scorer": {
+      "name": "Values-Alignment Scorer",
+      "description": "Grade whether a twin response is consistent with the user's ranked values hierarchy",
+      "model": "default",
+      "returnsJson": true,
+      "variables": []
+    },
     "soul-writing-analyzer": {
       "name": "Soul Writing Analyzer",
       "description": "Extract communication patterns from writing samples",

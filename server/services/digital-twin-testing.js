@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { getProviderById } from './providers.js';
 import { buildPrompt } from './promptService.js';
-import { DIGITAL_TWIN_DIR, generateId, now, callProviderAI } from './digital-twin-helpers.js';
+import { DIGITAL_TWIN_DIR, generateId, now, callProviderAI, parseScorerVerdict } from './digital-twin-helpers.js';
 import { loadMeta, saveMeta, cache, CACHE_TTL_MS } from './digital-twin-meta.js';
 import { getDigitalTwinForPrompt } from './digital-twin-context.js';
 
@@ -145,28 +145,11 @@ async function scoreTestResponse(test, response, providerId, model) {
   const result = await callProviderAI(provider, model, prompt);
 
   if (!result.error && result.text) {
-    return parseScoreResponse(result.text);
+    return parseScorerVerdict(result.text, ['passed', 'failed']);
   }
 
   // Default fallback
   return { result: 'partial', reasoning: 'Unable to score - defaulting to partial' };
-}
-
-function parseScoreResponse(response) {
-  const lower = response.toLowerCase();
-
-  let result = 'partial';
-  if (lower.includes('"result": "passed"') || lower.includes('result: passed')) {
-    result = 'passed';
-  } else if (lower.includes('"result": "failed"') || lower.includes('result: failed')) {
-    result = 'failed';
-  }
-
-  // Extract reasoning
-  const reasoningMatch = response.match(/"reasoning":\s*"([^"]+)"/);
-  const reasoning = reasoningMatch ? reasoningMatch[1] : response.substring(0, 200);
-
-  return { result, reasoning };
 }
 
 export async function getTestHistory(limit = 10) {

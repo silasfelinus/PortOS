@@ -32,6 +32,27 @@ export function extractJSON(response, context = 'response') {
 }
 
 /**
+ * Parse a JSON-ish scorer response into { result, reasoning }. Tolerates both
+ * `"result": "x"` and `result: x` shapes. `verdicts` lists the recognized
+ * result tokens in priority order (first match wins); anything unrecognized
+ * falls back to `fallback`. Shared by the behavioral and values-alignment
+ * test scorers.
+ */
+export function parseScorerVerdict(response, verdicts, fallback = 'partial') {
+  const lower = response.toLowerCase();
+  let result = fallback;
+  for (const v of verdicts) {
+    if (lower.includes(`"result": "${v}"`) || lower.includes(`result: ${v}`)) {
+      result = v;
+      break;
+    }
+  }
+  const reasoningMatch = response.match(/"reasoning":\s*"([^"]+)"/);
+  const reasoning = reasoningMatch ? reasoningMatch[1] : response.substring(0, 200);
+  return { result, reasoning };
+}
+
+/**
  * Ensure a document entry exists in meta.documents. If absent, push it.
  * Mutates meta in place; caller must saveMeta() after.
  */

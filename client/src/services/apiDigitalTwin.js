@@ -28,6 +28,14 @@ export const runDigitalTwinMultiTests = (providers, testIds = null) => request('
 });
 export const getDigitalTwinTestHistory = (limit = 10) => request(`/digital-twin/tests/history?limit=${limit}`);
 
+// Digital Twin - Values-Alignment Testing (M34 P6)
+export const getValuesAlignmentTests = () => request('/digital-twin/values-tests');
+export const runValuesAlignmentTests = (providerId, model, testIds = null) => request('/digital-twin/values-tests/run', {
+  method: 'POST',
+  body: JSON.stringify({ providerId, model, testIds })
+});
+export const getValuesAlignmentTestHistory = (limit = 10) => request(`/digital-twin/values-tests/history?limit=${limit}`);
+
 // Digital Twin - Enrichment
 export const getDigitalTwinEnrichCategories = () => request('/digital-twin/enrich/categories');
 export const getDigitalTwinEnrichProgress = () => request('/digital-twin/enrich/progress');

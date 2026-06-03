@@ -114,6 +114,26 @@ export const TEST_STATUS = {
   }
 };
 
+// Values-alignment result states (M34 P6)
+export const VALUES_STATUS = {
+  aligned: {
+    label: 'Aligned',
+    color: 'bg-green-500/20 text-green-400 border-green-500/30'
+  },
+  partial: {
+    label: 'Partial',
+    color: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
+  },
+  misaligned: {
+    label: 'Misaligned',
+    color: 'bg-red-500/20 text-red-400 border-red-500/30'
+  },
+  pending: {
+    label: 'Pending',
+    color: 'bg-gray-500/20 text-gray-400 border-gray-500/30'
+  }
+};
+
 // Enrichment category configurations
 export const ENRICHMENT_CATEGORIES = {
   core_memories: {
