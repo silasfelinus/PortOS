@@ -17,7 +17,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { v4 as uuidv4 } from '../lib/uuid.js';
 import { getActiveProvider } from './providers.js';
-import { parseTasksMarkdown, generateTasksMarkdown, isInternalTaskId } from '../lib/taskParser.js';
+import { isInternalTaskId } from '../lib/taskParser.js';
 // NOTE: `getAppActivityById` + `updateAppActivity` are deliberately NOT
 // listed here even though they're used elsewhere in this file. The two
 // other call sites (in `generateManagedAppImprovementTask` and
@@ -2765,8 +2765,13 @@ export async function init() {
   cosEvents.on('tasks:changed', (data) => {
     if (!isDaemonRunning() || !data?.action) return;
     if (data.action === 'added') {
-      if (data.type === 'user' && data.task) setImmediate(() => tryImmediateSpawn(data.task));
+      // Order matters: dequeueNextTask is scheduled before the user-task
+      // tryImmediateSpawn, matching the pre-extraction sequence (addTask emitted
+      // tasks:changed — registering dequeue via this listener — before it called
+      // setImmediate(tryImmediateSpawn)). dequeue fills slots in priority order
+      // first; tryImmediateSpawn then handles the just-added task.
       setImmediate(() => dequeueNextTask());
+      if (data.type === 'user' && data.task) setImmediate(() => tryImmediateSpawn(data.task));
     } else if (data.action === 'approved') {
       setImmediate(() => dequeueNextTask());
     }

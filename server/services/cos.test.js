@@ -835,6 +835,31 @@ describe('cos.js source — priority + capacity invariants', () => {
       'applyPlanIdMetadata must still scan in-flight slugs to gate dispatch'
     ).toMatch(/findInProgressIds\(/);
   });
+
+  it('tasks:changed listener schedules dequeueNextTask before the user tryImmediateSpawn', () => {
+    // When task CRUD moved to cosTaskStore.js (issue-741), the addTask→
+    // tryImmediateSpawn and approveTask→dequeueNextTask direct calls were
+    // replaced by a `tasks:changed` listener here. The original sequence for a
+    // user-added task was: emit tasks:changed (which queued dequeueNextTask via
+    // this listener) FIRST, then addTask called setImmediate(tryImmediateSpawn).
+    // dequeue fills open slots in priority order before the just-added task's
+    // immediate-spawn attempt runs — so the order must stay dequeue-then-spawn.
+    const onIdx = COS_SRC.indexOf("cosEvents.on('tasks:changed'");
+    expect(onIdx, 'tasks:changed listener must exist').toBeGreaterThan(-1);
+    const handler = COS_SRC.slice(onIdx, COS_SRC.indexOf('});', onIdx) + 3);
+
+    const dequeueIdx = handler.indexOf('dequeueNextTask()');
+    const spawnIdx = handler.indexOf('tryImmediateSpawn(');
+    expect(dequeueIdx, 'listener must schedule dequeueNextTask').toBeGreaterThan(-1);
+    expect(spawnIdx, 'listener must schedule tryImmediateSpawn').toBeGreaterThan(-1);
+    expect(
+      dequeueIdx,
+      'dequeueNextTask must be scheduled before the user-task tryImmediateSpawn'
+    ).toBeLessThan(spawnIdx);
+
+    // tryImmediateSpawn is user-task-only, matching the pre-extraction guard.
+    expect(handler).toMatch(/data\.type\s*===\s*'user'/);
+  });
 });
 
 describe('addTask — first-line dedup', () => {
