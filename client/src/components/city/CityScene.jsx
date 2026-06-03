@@ -17,6 +17,7 @@ import CitySkyline from './CitySkyline';
 import CityFederationHorizon from './CityFederationHorizon';
 import CityBackupVault from './CityBackupVault';
 import CityTaskQueue from './CityTaskQueue';
+import CityHealthTower from './CityHealthTower';
 import CityVoiceMarker from './CityVoiceMarker';
 import CityDataRain from './CityDataRain';
 import CityNeonSigns from './CityNeonSigns';
@@ -28,7 +29,7 @@ import CitySky from './CitySky';
 import PlayerController from './PlayerController';
 import CameraTransition from './CameraTransition';
 
-export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, reviewCounts, instances, backupStatus, cosTasks, voiceState, productivityData, settings, playSfx, keysRef, dimmedAppIds }) {
+export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, reviewCounts, instances, backupStatus, cosTasks, healthMetrics, voiceState, productivityData, settings, playSfx, keysRef, dimmedAppIds }) {
   const [positions, setPositions] = useState(null);
   const [proximityApp, setProximityApp] = useState(null);
   const [transitioning, setTransitioning] = useState(false);
@@ -79,6 +80,7 @@ export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, 
       <CityFederationHorizon instances={instances} settings={settings} />
       <CityBackupVault backupStatus={backupStatus} settings={settings} />
       <CityTaskQueue cosTasks={cosTasks} settings={settings} />
+      <CityHealthTower healthMetrics={healthMetrics} settings={settings} />
       <CityVoiceMarker voiceState={voiceState} settings={settings} />
       <CityGround settings={settings} />
 
