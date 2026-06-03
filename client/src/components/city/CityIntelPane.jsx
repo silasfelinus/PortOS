@@ -277,6 +277,7 @@ function TimelineView({ logs }) {
         </div>
         <div className="flex items-end gap-px h-8" title="Event density over the last 10 minutes">
           {density.map((slot, i) => {
+            // Floor non-empty bins at 12% so a single event is still visible.
             const heightPct = slot.count > 0 ? Math.max(12, (slot.count / maxCount) * 100) : 0;
             const colorClass = slot.level ? (DENSITY_BAR_COLORS[slot.level] || DENSITY_BAR_COLORS.info) : 'bg-cyan-500/10';
             return (

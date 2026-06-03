@@ -95,15 +95,15 @@ describe('buildTimelineBuckets', () => {
     expect(total).toBe(10);
   });
 
-  it('normalizes level aliases', () => {
+  it('lower-cases the level and defaults a missing one to info', () => {
     const logs = [
-      { _localId: 1, timestamp: secsAgo(1), level: 'warning', message: 'w' },
-      { _localId: 2, timestamp: secsAgo(2), level: 'OK', message: 'o' },
+      { _localId: 1, timestamp: secsAgo(1), level: 'WARN', message: 'w' },
+      { _localId: 2, timestamp: secsAgo(2), message: 'no-level' },
     ];
     const buckets = buildTimelineBuckets(logs, { now: NOW });
     const levels = buckets.flatMap(b => b.events.map(e => e.level));
     expect(levels).toContain('warn');
-    expect(levels).toContain('success');
+    expect(levels).toContain('info');
   });
 
   it('skips events with future or invalid timestamps', () => {

@@ -6,17 +6,15 @@
 // and grouping them into relative-age buckets. Both transforms are pure so
 // they can be unit-tested without a DOM (mirrors cityFilter.js).
 
-// Newest-first, only events with a usable timestamp, capped so a runaway log
-// can't blow up the render. `now` is injectable for deterministic tests.
+// Default cap on events the timeline considers, so a runaway log can't blow
+// up the render. `now` is injectable into both transforms for deterministic tests.
 const MAX_TIMELINE_EVENTS = 40;
 
-const normalizeLevel = (level) => {
-  const l = (level || 'info').toLowerCase();
-  if (l === 'warning') return 'warn';
-  if (l === 'err' || l === 'fatal') return 'error';
-  if (l === 'ok' || l === 'done') return 'success';
-  return l;
-};
+// Lower-case so lookups against the lower-cased color maps in CityIntelPane
+// stay robust; the cos:log stream only emits info/warn/error/success/debug, so
+// unknown values just fall through to the maps' info default (same as the
+// sibling ACTIVITY tab).
+const normalizeLevel = (level) => (level || 'info').toLowerCase();
 
 const eventTime = (log) => {
   const t = new Date(log?.timestamp ?? NaN).getTime();
