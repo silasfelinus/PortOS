@@ -1678,3 +1678,88 @@ describe('mergeSeasons (pure helper)', () => {
     expect(caught.message).toMatch(/duplicate/i);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Reconcile draft parent universe (issue #851)
+//
+// An import-draft universe (ephemeral + importDraft, created by analyzeImport)
+// must be promoted to a normal syncing record when a COMMITTED (non-draft)
+// series is linked to it WITHOUT going through commitImport — otherwise the
+// universe holds real work but silently never syncs. The promotion mirrors
+// commitImport: clear BOTH importDraft and ephemeral. It must NOT fire when a
+// draft series is linked (that's commitImport's job) or when the parent isn't
+// a draft.
+// ---------------------------------------------------------------------------
+describe('reconcile draft parent universe (issue #851)', () => {
+  it('promotes a draft universe when a committed series is linked via updateSeries', async () => {
+    // Draft universe shell, exactly as analyzeImport would stamp it.
+    const draftUni = await universeSvc.createUniverse({
+      name: 'Draft Parent', ephemeral: true, importDraft: true,
+    });
+    // A separate, committed (non-draft) universe the series starts under.
+    const realUni = await universeSvc.createUniverse({ name: 'Committed Home' });
+    const committedSeries = await seriesSvc.createSeries({ name: 'Real Work', universeId: realUni.id });
+    expect(committedSeries.importDraft).not.toBe(true);
+
+    // Manually re-home the committed series onto the draft universe.
+    await seriesSvc.updateSeries(committedSeries.id, { universeId: draftUni.id });
+
+    const promoted = await universeSvc.getUniverse(draftUni.id);
+    expect(promoted.importDraft).not.toBe(true);
+    expect(promoted.ephemeral).not.toBe(true);
+  });
+
+  it('promotes a draft universe when a committed series is CREATED already linked to it', async () => {
+    const draftUni = await universeSvc.createUniverse({
+      name: 'Draft Parent 2', ephemeral: true, importDraft: true,
+    });
+    await seriesSvc.createSeries({ name: 'Born Committed', universeId: draftUni.id });
+
+    const promoted = await universeSvc.getUniverse(draftUni.id);
+    expect(promoted.importDraft).not.toBe(true);
+    expect(promoted.ephemeral).not.toBe(true);
+  });
+
+  it('does NOT promote a draft universe when a DRAFT series is linked (commitImport owns that)', async () => {
+    const draftUni = await universeSvc.createUniverse({
+      name: 'Still Draft', ephemeral: true, importDraft: true,
+    });
+    // A draft-shell series, as analyzeImport stamps it — linking it must leave
+    // the universe a draft so the orphan GC + commitImport keep their contract.
+    const draftSeries = await seriesSvc.createSeries({
+      name: 'Draft Child', universeId: draftUni.id, ephemeral: true, importDraft: true,
+    });
+    expect(draftSeries.importDraft).toBe(true);
+
+    const after = await universeSvc.getUniverse(draftUni.id);
+    expect(after.importDraft).toBe(true);
+    expect(after.ephemeral).toBe(true);
+  });
+
+  it('leaves a private (ephemeral-only, non-draft) universe untouched when a committed series is linked', async () => {
+    // `ephemeral` alone is a user's "keep local" choice — linking a series must
+    // not un-privatize it. Only `importDraft` parents get promoted.
+    const privateUni = await universeSvc.createUniverse({ name: 'Private', ephemeral: true });
+    expect(privateUni.importDraft).not.toBe(true);
+    const realUni = await universeSvc.createUniverse({ name: 'Elsewhere' });
+    const series = await seriesSvc.createSeries({ name: 'A Series', universeId: realUni.id });
+
+    await seriesSvc.updateSeries(series.id, { universeId: privateUni.id });
+
+    const after = await universeSvc.getUniverse(privateUni.id);
+    expect(after.ephemeral).toBe(true);
+    expect(after.importDraft).not.toBe(true);
+  });
+
+  it('leaves a non-draft universe untouched (no spurious write) when a committed series links to it', async () => {
+    const normalUni = await universeSvc.createUniverse({ name: 'Normal' });
+    const realUni = await universeSvc.createUniverse({ name: 'Origin' });
+    const series = await seriesSvc.createSeries({ name: 'Moving Series', universeId: realUni.id });
+
+    await seriesSvc.updateSeries(series.id, { universeId: normalUni.id });
+
+    const after = await universeSvc.getUniverse(normalUni.id);
+    expect(after.importDraft).not.toBe(true);
+    expect(after.ephemeral).not.toBe(true);
+  });
+});
