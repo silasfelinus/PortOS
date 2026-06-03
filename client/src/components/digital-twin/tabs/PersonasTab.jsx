@@ -31,12 +31,12 @@ export default function PersonasTab({ onRefresh }) {
 
   const loadData = async () => {
     setLoading(true);
-    const [personaData, settings] = await Promise.all([
-      api.getDigitalTwinPersonas().catch(() => []),
-      api.getDigitalTwinSettings({ silent: true }).catch(() => ({}))
+    const [personaData, active] = await Promise.all([
+      api.getDigitalTwinPersonas({ silent: true }).catch(() => []),
+      api.getActiveDigitalTwinPersona({ silent: true }).catch(() => null)
     ]);
     setPersonas(personaData);
-    setActiveId(settings?.activePersonaId ?? null);
+    setActiveId(active?.id ?? null);
     setLoading(false);
   };
 

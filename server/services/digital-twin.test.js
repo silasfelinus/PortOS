@@ -1263,6 +1263,16 @@ Quietly keeps the savings.
       expect(updated.instructions).toBe('two');
     });
 
+    it('clears the description when passed an empty string (clear vs preserve)', async () => {
+      await setupMetaFile(makeMeta());
+      const persona = await createPersona({ name: 'A', description: 'work', instructions: 'one' });
+      const cleared = await updatePersona(persona.id, { description: '' });
+      expect(cleared.description).toBe('');
+      // An omitted description preserves the original.
+      const preserved = await updatePersona(persona.id, { instructions: 'two' });
+      expect(preserved.description).toBe('');
+    });
+
     it('throws when updating a missing persona', async () => {
       await setupMetaFile(makeMeta());
       await expect(updatePersona('does-not-exist', { name: 'x' })).rejects.toThrow();

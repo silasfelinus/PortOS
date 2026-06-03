@@ -63,7 +63,8 @@ export const updateDigitalTwinSettings = (settings) => request('/digital-twin/se
 });
 
 // Digital Twin - Personas (M34 P7)
-export const getDigitalTwinPersonas = () => request('/digital-twin/personas');
+export const getDigitalTwinPersonas = (options) => request('/digital-twin/personas', options);
+export const getActiveDigitalTwinPersona = (options) => request('/digital-twin/personas/active', options);
 export const createDigitalTwinPersona = (data) => request('/digital-twin/personas', {
   method: 'POST',
   body: JSON.stringify(data)
