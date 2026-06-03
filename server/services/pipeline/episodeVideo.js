@@ -19,7 +19,7 @@ import { getSeries } from './series.js';
 import { getSeriesCanon } from './seriesCanon.js';
 import { createProject as createCDProject, setTreatment as setCDTreatment } from '../creativeDirector/local.js';
 import { startCreativeDirectorProject } from '../creativeDirector/completionHook.js';
-import { getDefaultVideoModelId } from '../../lib/mediaModels.js';
+import { getDefaultVideoModelId, getVideoModels } from '../../lib/mediaModels.js';
 import { buildPlaceByKey } from '../../lib/scenePrompt.js';
 import { getSettings } from '../settings.js';
 
@@ -165,7 +165,24 @@ export async function startEpisodeVideoForIssue(issueId, options = {}) {
   // user setting (videoGen.defaultModelId), so we persist the *choice* — not
   // the resolved id — and keep "Default" following the setting across reloads.
   // The CD project's renderer still needs a concrete model, so resolve one here.
-  const requestedModelId = options.modelId || null;
+  // Validate an explicit picker choice against the live video-model registry.
+  // A persisted `modelId` can go stale if the model is later renamed/pruned —
+  // on restart it would flow into createCDProject and fail asynchronously on
+  // the CD project's failureReason. Drop a now-unknown id to the resolved
+  // default so the render degrades cleanly instead.
+  //
+  // Sentinel rule: only drop when the registry has a NON-EMPTY list to validate
+  // against. An empty list means "can't validate on this platform" (e.g. every
+  // video model flagged broken) — NOT "this id is unknown" — so we pass the id
+  // through rather than silently swapping a possibly-valid choice for a default
+  // that's equally unresolvable. This mirrors getDefaultVideoModelId, which
+  // returns the configured id unchanged when there's nothing to fall back to.
+  let requestedModelId = options.modelId || null;
+  const knownModels = getVideoModels();
+  if (requestedModelId && knownModels.length && !knownModels.some((m) => m.id === requestedModelId)) {
+    console.log(`⚠️ Pipeline episode video — unknown modelId "${requestedModelId}" not in registry; dropping to default`);
+    requestedModelId = null;
+  }
   const modelId = requestedModelId || settings?.videoGen?.defaultModelId || getDefaultVideoModelId();
 
   const project = await createCDProject({

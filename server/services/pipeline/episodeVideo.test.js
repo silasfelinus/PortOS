@@ -38,8 +38,13 @@ vi.mock('../creativeDirector/completionHook.js', () => ({
   startCreativeDirectorProject: vi.fn(async () => undefined),
 }));
 
+let mockVideoModels = [
+  { id: 'ltx23_distilled_q4' },
+  { id: 'ltx2_unified' },
+];
 vi.mock('../../lib/mediaModels.js', () => ({
   getDefaultVideoModelId: () => 'ltx23_distilled_q4',
+  getVideoModels: () => mockVideoModels,
 }));
 
 vi.mock('../settings.js', () => ({
@@ -76,6 +81,10 @@ describe('pipeline episodeVideo helper', () => {
     cdCreated.length = 0;
     cdTreatments.length = 0;
     uuidCounter = 0;
+    mockVideoModels = [
+      { id: 'ltx23_distilled_q4' },
+      { id: 'ltx2_unified' },
+    ];
     vi.clearAllMocks();
   });
 
@@ -303,6 +312,35 @@ describe('pipeline episodeVideo helper', () => {
     // instead of pinning to the first-resolved id.
     const refreshed = await issuesSvc.getIssue(issue.id);
     expect(refreshed.stages.episodeVideo.modelId).toBeNull();
+  });
+
+  it('startEpisodeVideoForIssue drops a stale modelId (absent from the registry) to the default', async () => {
+    const { issue } = await seedSeriesAndIssue({
+      scenes: [{ description: 'foo' }],
+    });
+    // 'pruned_model' was a valid pick once but has since been renamed/removed
+    // from the registry — it should degrade to the resolved default rather than
+    // flow into the CD project and fail asynchronously.
+    await svc.startEpisodeVideoForIssue(issue.id, { modelId: 'pruned_model' });
+    expect(cdCreated[0].modelId).toBe('ltx23_distilled_q4');
+    // The stale choice is cleared on the stage too (null = Default), so a reload
+    // doesn't keep re-submitting the dead id.
+    const refreshed = await issuesSvc.getIssue(issue.id);
+    expect(refreshed.stages.episodeVideo.modelId).toBeNull();
+  });
+
+  it('startEpisodeVideoForIssue passes an explicit modelId through when the registry is empty (cannot validate)', async () => {
+    // An empty registry means "no models to validate against on this platform",
+    // NOT "this id is unknown" — so a possibly-valid id must not be silently
+    // swapped for an equally-unresolvable default.
+    mockVideoModels = [];
+    const { issue } = await seedSeriesAndIssue({
+      scenes: [{ description: 'foo' }],
+    });
+    await svc.startEpisodeVideoForIssue(issue.id, { modelId: 'some_byov_model' });
+    expect(cdCreated[0].modelId).toBe('some_byov_model');
+    const refreshed = await issuesSvc.getIssue(issue.id);
+    expect(refreshed.stages.episodeVideo.modelId).toBe('some_byov_model');
   });
 
   it('startEpisodeVideoForIssue reuses an existing cdProjectId by default', async () => {
