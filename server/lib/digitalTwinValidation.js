@@ -203,11 +203,19 @@ export const updateDocumentInputSchema = z.object({
   weight: z.number().int().min(1).max(10).optional()
 });
 
+// testIds is "all tests" when absent. The client API wrappers default the
+// argument to `null` (not `undefined`), so tolerate the null sentinel —
+// `.optional()` alone rejects `null` and would 400 a "run all" request.
+const optionalTestIds = z.preprocess(
+  v => v == null ? undefined : v,
+  z.array(z.number().int().min(1)).optional()
+);
+
 // Run tests input
 export const runTestsInputSchema = z.object({
   providerId: z.string().min(1),
   model: z.string().min(1),
-  testIds: z.array(z.number().int().min(1)).optional()
+  testIds: optionalTestIds
 });
 
 // Run multi-model tests input
@@ -216,7 +224,7 @@ export const runMultiTestsInputSchema = z.object({
     providerId: z.string().min(1),
     model: z.string().min(1)
   })).min(1).max(10),
-  testIds: z.array(z.number().int().min(1)).optional()
+  testIds: optionalTestIds
 });
 
 // Enrichment question input
