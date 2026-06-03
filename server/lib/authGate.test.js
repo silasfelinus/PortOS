@@ -172,6 +172,52 @@ describe('authGate middleware', () => {
     expect(result.called).toBe(true);
   });
 
+  it('allows mixed-case same-origin hostnames (RFC 3986 case-insensitive)', async () => {
+    const auth = await import('../services/auth.js');
+    const { token } = await auth.setPassword({ newPassword: 'correct-horse' });
+    const { authGate } = await import('./authGate.js');
+    const result = await runGate(authGate, {
+      path: '/api/cos',
+      headers: {
+        host: 'PortOS.Tailnet.ts.net',
+        origin: 'https://portos.tailnet.ts.net',
+        cookie: `portos_auth=${token}`,
+      },
+    });
+    expect(result.called).toBe(true);
+  });
+
+  it('allows loopback↔loopback cross-port (Vite dev proxy)', async () => {
+    const auth = await import('../services/auth.js');
+    const { token } = await auth.setPassword({ newPassword: 'correct-horse' });
+    const { authGate } = await import('./authGate.js');
+    const result = await runGate(authGate, {
+      path: '/api/cos',
+      headers: {
+        host: 'localhost:5555',
+        origin: 'http://localhost:5554',
+        cookie: `portos_auth=${token}`,
+      },
+    });
+    expect(result.called).toBe(true);
+  });
+
+  it('rejects a cross-origin logout (public path still gets the CSRF check)', async () => {
+    const auth = await import('../services/auth.js');
+    await auth.setPassword({ newPassword: 'correct-horse' });
+    const { authGate } = await import('./authGate.js');
+    const result = await runGate(authGate, {
+      path: '/api/auth/logout',
+      headers: {
+        host: 'portos.tailnet.ts.net',
+        origin: 'https://evil.tailnet.ts.net',
+      },
+    });
+    expect(result.called).toBe(false);
+    expect(result.res.statusCode).toBe(403);
+    expect(result.res.body.code).toBe('CROSS_ORIGIN_BLOCKED');
+  });
+
   it('treats a malformed Origin header as cross-origin', async () => {
     const auth = await import('../services/auth.js');
     const { token } = await auth.setPassword({ newPassword: 'correct-horse' });

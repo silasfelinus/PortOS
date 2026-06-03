@@ -47,7 +47,10 @@ const SCRYPT_PARAMS = { N: 131072, r: 8, p: 1, maxmem: 256 * 1024 * 1024 };
 // `auth-sessions.json` (e.g. from a backup or peer-sync mirror) doesn't yield
 // usable credentials.
 const sessions = new Map();
-let loaded = false;
+// Single in-flight load promise — both callers await the SAME promise so a
+// burst of concurrent verifySession calls after a restart can't observe an
+// empty Map while the first call is still reading auth-sessions.json.
+let loadPromise = null;
 
 const now = () => Date.now();
 
@@ -77,11 +80,12 @@ const writeSessions = async () => {
 };
 
 const ensureLoaded = async () => {
-  if (loaded) return;
-  loaded = true;
-  await readSessions().catch((err) => {
-    console.error(`❌ Failed to load auth sessions: ${err.message}`);
-  });
+  if (!loadPromise) {
+    loadPromise = readSessions().catch((err) => {
+      console.error(`❌ Failed to load auth sessions: ${err.message}`);
+    });
+  }
+  return loadPromise;
 };
 
 const hashPassword = async (password, salt) => {
@@ -115,7 +119,15 @@ const recomputeEnabledCache = (settings) => {
 settingsEvents.on('settings:updated', recomputeEnabledCache);
 
 export const isAuthEnabled = async () => {
-  if (enabledCache === null) recomputeEnabledCache(await getSettings());
+  if (enabledCache === null) {
+    const settings = await getSettings();
+    // Double-check after the await — a concurrent updateSettings firing
+    // settings:updated between the null check and this point would have
+    // primed the cache already; clobbering it with the stale pre-write
+    // snapshot would open a fail-open window if the concurrent write
+    // was a first-time auth enable.
+    if (enabledCache === null) recomputeEnabledCache(settings);
+  }
   return enabledCache;
 };
 
@@ -219,8 +231,9 @@ export const revokeSession = async (token) => {
     await writeSessions();
     // Logging-out one tab kicks every connected socket too — the
     // single-user model means broadcast events shouldn't keep streaming
-    // to a tab whose cookie was just cleared.
-    authEvents.emit('sessions:revoked-all');
+    // to a tab whose cookie was just cleared. Deferred so the logout
+    // response's clear-cookie reaches the browser first.
+    setImmediate(() => authEvents.emit('sessions:revoked-all'));
   }
 };
 
@@ -232,7 +245,14 @@ export const revokeAllSessions = async () => {
   // (e.g. a tab open before auth was enabled, or before a password rotation)
   // get kicked. Otherwise they'd keep emitting privileged events on the
   // already-accepted handshake until the page reloads.
-  authEvents.emit('sessions:revoked-all');
+  //
+  // Defer with `setImmediate` so the HTTP response that triggered this
+  // revoke (POST /api/auth/password) has time to flush its new Set-Cookie
+  // header before we kick the requesting tab's socket. Without the defer,
+  // the user's own password-change request kicks their own socket, which
+  // reconnects with the OLD cookie (the new one hasn't arrived yet) and
+  // bounces them to /login mid-change.
+  setImmediate(() => authEvents.emit('sessions:revoked-all'));
 };
 
 // Parse the `Cookie` header for our token. Express doesn't ship a cookie

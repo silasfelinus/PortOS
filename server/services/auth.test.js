@@ -168,8 +168,38 @@ describe('auth service', () => {
     await auth.setPassword({ newPassword: 'correct-horse' });             // first-time enable
     await auth.setPassword({ newPassword: 'new-horse', currentPassword: 'correct-horse' }); // rotate
     await auth.clearPassword({ currentPassword: 'new-horse' });           // disable
-    // setPassword/clearPassword both call revokeAllSessions internally.
+    // The emit is deferred via setImmediate so the response cookie can
+    // flush first — let the event loop tick before asserting.
+    await new Promise((resolve) => setImmediate(resolve));
     expect(events.length).toBe(3);
+  });
+
+  it('coalesces concurrent verifySession calls so a burst right after restart sees the loaded sessions', async () => {
+    // First enable auth (this writes both settings.json and an initial
+    // auth-sessions.json with one session), THEN seed our fake session
+    // so it survives the resetModules below — setPassword would otherwise
+    // overwrite anything we wrote before it.
+    const auth = await import('./auth.js');
+    await auth.setPassword({ newPassword: 'correct-horse' });
+    const { writeFileSync } = await import('fs');
+    const { join } = await import('path');
+    const { createHash } = await import('crypto');
+    const fakeToken = 'a'.repeat(64);
+    const fakeHash = createHash('sha256').update(fakeToken).digest('hex');
+    writeFileSync(join(tempRoot, 'auth-sessions.json'), JSON.stringify({
+      tokens: [{ tokenHash: fakeHash, expiresAt: Date.now() + 60_000 }],
+    }) + '\n');
+    // Simulate a server restart — fresh module = empty in-memory sessions Map.
+    vi.resetModules();
+    const fresh = await import('./auth.js');
+    // Burst of concurrent calls — without coalescing, calls 2+ would see
+    // the load-flag set but the Map still empty and return false.
+    const results = await Promise.all([
+      fresh.verifySession(fakeToken),
+      fresh.verifySession(fakeToken),
+      fresh.verifySession(fakeToken),
+    ]);
+    expect(results).toEqual([true, true, true]);
   });
 
   it('emits sessions:revoked-all on single-token logout too (kicks the tab\'s sockets)', async () => {
@@ -179,9 +209,11 @@ describe('auth service', () => {
     const events = [];
     auth.authEvents.on('sessions:revoked-all', () => events.push('event'));
     await auth.revokeSession(token);
+    await new Promise((resolve) => setImmediate(resolve));
     expect(events.length).toBe(1);
     // Revoking an unknown token must NOT fire — no state changed.
     await auth.revokeSession('not-a-real-token');
+    await new Promise((resolve) => setImmediate(resolve));
     expect(events.length).toBe(1);
   });
 });

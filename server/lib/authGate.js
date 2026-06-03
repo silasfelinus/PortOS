@@ -47,6 +47,21 @@ const isPublicPath = (path) => {
 // mismatch is a cross-origin attempt and gets 403 before the session is
 // even consulted. Requests with no `Origin` header (server-to-server,
 // curl, the loopback mirror) pass through.
+// Hostnames are case-insensitive (RFC 3986 §3.2.2). Node's `URL` already
+// lowercases the parsed authority; lowercase the raw `Host` header too so a
+// client that sends mixed-case isn't 403'd as cross-origin.
+const stripPort = (hostHeader) => {
+  // Bracketed IPv6 host: `[::1]:port` → `[::1]`.
+  if (hostHeader.startsWith('[')) {
+    const close = hostHeader.indexOf(']');
+    return close === -1 ? hostHeader : hostHeader.slice(0, close + 1);
+  }
+  const colon = hostHeader.indexOf(':');
+  return colon === -1 ? hostHeader : hostHeader.slice(0, colon);
+};
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+const isLoopback = (hostname) => LOOPBACK_HOSTS.has(hostname.toLowerCase());
+
 const isCrossOrigin = (req) => {
   const origin = req.headers?.origin;
   if (!origin || origin === 'null') return false;
@@ -57,7 +72,15 @@ const isCrossOrigin = (req) => {
   let parsed;
   try { parsed = new URL(origin); }
   catch { return true; }
-  return parsed.host !== host;
+  if (parsed.host.toLowerCase() === host.toLowerCase()) return false;
+  // Dev workflow exemption: Vite proxies :5554 → :5555 with changeOrigin,
+  // so a real same-origin browser request arrives as
+  // `Origin: http://localhost:5554` / `Host: localhost:5555`. Treat any
+  // loopback-to-loopback pairing as same-origin regardless of port — the
+  // CSRF threat is from attackers on OTHER machines, not from a local
+  // dev server on the same loopback interface.
+  if (isLoopback(stripPort(parsed.host)) && isLoopback(stripPort(host))) return false;
+  return true;
 };
 
 // Express middleware. Bypasses everything when auth is off. When it's on,
@@ -66,16 +89,16 @@ const isCrossOrigin = (req) => {
 export const authGate = async (req, res, next) => {
   const enabled = await isAuthEnabled();
   if (!enabled) return next();
-  const path = req.path;
-  if (isPublicPath(path)) return next();
-  // CSRF guard runs BEFORE the cookie check — a cross-origin request must
-  // be rejected even if it carries a valid session, otherwise an attacker
-  // with no cookie still triggers side effects whose response the browser
-  // hides but whose mutations have already landed.
+  // CSRF guard runs FIRST, before isPublicPath — public endpoints like
+  // /api/auth/logout still mutate state (clear the cookie + revoke the
+  // session), so a same-tailnet attacker could force-logout a user
+  // cross-origin if the guard sat behind the public-path bypass.
   if (isCrossOrigin(req)) {
     res.status(403).json({ error: 'Cross-origin request rejected', code: 'CROSS_ORIGIN_BLOCKED' });
     return;
   }
+  const path = req.path;
+  if (isPublicPath(path)) return next();
   const token = extractToken(req);
   if (await verifySession(token)) return next();
   // /data/* is hit directly by <img>/<audio>/<video> tags which don't show a
