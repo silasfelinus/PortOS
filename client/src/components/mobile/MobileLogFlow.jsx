@@ -60,10 +60,23 @@ export default function MobileLogFlow() {
     setTimeout(() => setLastLogged(null), 2500);
   };
 
-  const drinkButtons = [...DRINK_PRESETS, ...(Array.isArray(customDrinks) ? customDrinks : [])];
-  const nicButtons = [...NICOTINE_PRESETS, ...(Array.isArray(customNicotine)
-    ? customNicotine.map((p) => ({ product: p.name, mgPerUnit: p.mgPerUnit }))
-    : [])];
+  // Normalize both kinds into one button shape { key, label, detail, onTap }
+  // so a single grid renders either tab.
+  const buttons = tab === 'alcohol'
+    ? [...DRINK_PRESETS, ...(Array.isArray(customDrinks) ? customDrinks : [])].map((d) => ({
+      key: `${d.name}-${d.oz}-${d.abv}`,
+      label: d.name,
+      detail: `${d.oz}oz · ${d.abv}%`,
+      onTap: () => logDrink(d),
+    }))
+    : [...NICOTINE_PRESETS, ...(Array.isArray(customNicotine)
+      ? customNicotine.map((p) => ({ product: p.name, mgPerUnit: p.mgPerUnit }))
+      : [])].map((p) => ({
+      key: `${p.product}-${p.mgPerUnit}`,
+      label: p.product,
+      detail: `${p.mgPerUnit}mg`,
+      onTap: () => logNic(p),
+    }));
 
   return (
     <div className="space-y-4">
@@ -78,41 +91,19 @@ export default function MobileLogFlow() {
         </div>
       )}
 
-      {tab === 'alcohol' ? (
-        <div className="grid grid-cols-2 gap-3">
-          {drinkButtons.map((d, i) => {
-            const key = `${d.name}-${d.oz}-${d.abv}`;
-            return (
-              <button
-                key={`${key}-${i}`}
-                onClick={() => logDrink(d)}
-                disabled={busy === key}
-                className="flex min-h-[72px] flex-col items-center justify-center rounded-xl border border-port-border bg-port-card disabled:opacity-50"
-              >
-                <span className="text-base font-semibold text-white">{d.name}</span>
-                <span className="text-xs text-gray-500">{d.oz}oz · {d.abv}%</span>
-              </button>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="grid grid-cols-2 gap-3">
-          {nicButtons.map((p, i) => {
-            const key = `${p.product}-${p.mgPerUnit}`;
-            return (
-              <button
-                key={`${key}-${i}`}
-                onClick={() => logNic(p)}
-                disabled={busy === key}
-                className="flex min-h-[72px] flex-col items-center justify-center rounded-xl border border-port-border bg-port-card disabled:opacity-50"
-              >
-                <span className="text-base font-semibold text-white">{p.product}</span>
-                <span className="text-xs text-gray-500">{p.mgPerUnit}mg</span>
-              </button>
-            );
-          })}
-        </div>
-      )}
+      <div className="grid grid-cols-2 gap-3">
+        {buttons.map((b, i) => (
+          <button
+            key={`${b.key}-${i}`}
+            onClick={b.onTap}
+            disabled={busy === b.key}
+            className="flex min-h-[72px] flex-col items-center justify-center rounded-xl border border-port-border bg-port-card disabled:opacity-50"
+          >
+            <span className="text-base font-semibold text-white">{b.label}</span>
+            <span className="text-xs text-gray-500">{b.detail}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

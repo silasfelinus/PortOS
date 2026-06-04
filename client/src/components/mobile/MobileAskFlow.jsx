@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { Send, Sparkles } from 'lucide-react';
 import * as api from '../../services/api';
 import toast from '../ui/Toast';
@@ -14,6 +14,9 @@ export default function MobileAskFlow() {
   const [answer, setAnswer] = useState('');
   const [streaming, setStreaming] = useState(false);
   const controllerRef = useRef(null);
+
+  // Abort any in-flight stream when the flow unmounts (back to hub / nav away).
+  useEffect(() => () => controllerRef.current?.abort(), []);
 
   const ask = useCallback(async (q) => {
     const trimmed = (q ?? question).trim();
