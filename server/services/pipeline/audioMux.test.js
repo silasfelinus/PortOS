@@ -66,6 +66,7 @@ vi.mock('child_process', async () => {
 });
 
 const { muxMusicBed, muxVoLines, buildVoMuxArgs, buildCueMuxArgs, muxCueBed, muxStripAudio, selectPlacedVoLines, selectPlacedCues, resolveMusicTrackPath, DEFAULT_MUSIC_GAIN } = await import('./audioMux.js');
+const { placeCuesOnTimeline } = await import('./audioCuePlacement.js');
 
 beforeEach(async () => {
   spawnCalls.length = 0;
@@ -438,6 +439,23 @@ describe('selectPlacedCues', () => {
   it('returns [] for non-array input', () => {
     expect(selectPlacedCues(null)).toEqual([]);
     expect(selectPlacedCues(undefined)).toEqual([]);
+  });
+
+  it('keeps a partially-rendered cue in its OWN arc slot (place full list, then filter)', () => {
+    // The stitcher places the FULL ordered cue list, THEN drops un-rendered
+    // cues. A lone rendered "climax" (cue 2 of 3) must stay in its middle slot,
+    // not stretch across the whole episode (the bug from placing only rendered).
+    const cues = [
+      { id: 'a', label: 'Setup' },                          // un-rendered
+      { id: 'b', label: 'Climax', trackFilename: 'b.wav' },  // rendered
+      { id: 'c', label: 'Resolution' },                     // un-rendered
+    ];
+    const placed = selectPlacedCues(placeCuesOnTimeline(cues, 90));
+    expect(placed).toHaveLength(1);
+    // 90s / 3 cues → the climax owns its 30..60 middle slot, not 0..90.
+    expect(placed[0].startSec).toBeCloseTo(30, 5);
+    expect(placed[0].endSec).toBeCloseTo(60, 5);
+    expect(placed[0].path).toMatch(/b\.wav$/);
   });
 });
 

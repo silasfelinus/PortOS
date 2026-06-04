@@ -156,10 +156,15 @@ async function maybeMuxPipelineAudio(project, finalEntry) {
   // are no placed+rendered cues.
   if (audioMode === 'generated') {
     const cues = Array.isArray(issue.stages?.audio?.cues) ? issue.stages.audio.cues : [];
-    const rendered = cues.filter((c) => c?.trackFilename);
-    if (rendered.length) {
+    const hasRendered = cues.some((c) => c?.trackFilename);
+    if (hasRendered) {
       const totalSec = await probeVideoDuration(videoPath);
-      const placed = selectPlacedCues(placeCuesOnTimeline(rendered, totalSec));
+      // Place the FULL ordered cue list first so each cue keeps its own arc slot,
+      // THEN drop the un-rendered ones (selectPlacedCues filters on trackFilename).
+      // Placing only the rendered subset would collapse the timeline onto it — a
+      // single rendered "climax" cue would stretch across the whole episode
+      // instead of staying in its slot, leaving the un-rendered slots as silence.
+      const placed = selectPlacedCues(placeCuesOnTimeline(cues, totalSec));
       if (placed.length) {
         console.log(`🎼 CD stitch mux: laying ${placed.length} generated cue(s)${voLines.length ? ` + ${voLines.length} VO line(s)` : ''} onto ${finalEntry.filename}`);
         const result = await muxCueBed(videoPath, { cues: placed, voLines });
