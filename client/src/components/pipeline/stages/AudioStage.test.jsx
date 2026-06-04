@@ -38,11 +38,18 @@ import {
 } from '../../../services/api';
 
 const READY_ENGINE = {
-  engines: [{
-    id: 'musicgen', name: 'MusicGen', models: [{ id: 'm', name: 'M' }],
-    defaultModelId: 'm', defaultDurationSec: 12, minDurationSec: 1, maxDurationSec: 30,
-    ready: true,
-  }],
+  engines: [
+    {
+      id: 'musicgen', name: 'MusicGen', models: [{ id: 'm', name: 'M' }],
+      defaultModelId: 'm', defaultDurationSec: 12, minDurationSec: 1, maxDurationSec: 30,
+      ready: true,
+    },
+    {
+      id: 'audioldm2', name: 'AudioLDM2', models: [{ id: 'a', name: 'A' }],
+      defaultModelId: 'a', defaultDurationSec: 30, minDurationSec: 1, maxDurationSec: 120,
+      ready: true,
+    },
+  ],
   defaultEngine: 'musicgen',
 };
 const NOT_READY_ENGINE = {
@@ -130,6 +137,60 @@ describe('AudioStage — whole-episode audio (#863)', () => {
       { engine: 'musicgen' },
       { silent: true },
     ));
+  });
+
+  it("renders a cue on its OWN stamped engine, not the UI default", async () => {
+    const cues = [{ id: 'cue-1', label: 'Act I', prompt: 'longform', engine: 'audioldm2', startSec: 0, endSec: 60 }];
+    const issue = makeIssue({ audioMode: 'generated', cues });
+    renderPipelineAudioCue.mockResolvedValue({ issue, stage: { cues }, cueIdx: 0, cue: cues[0] });
+    render(<AudioStage issue={issue} onStageUpdate={() => {}} />);
+
+    await waitFor(() => expect(listPipelineMusicGenerators).toHaveBeenCalled());
+    const cueItem = screen.getByText('Act I').closest('li');
+    await userEvent.click(within(cueItem).getByRole('button', { name: /Render/i }));
+
+    await waitFor(() => expect(renderPipelineAudioCue).toHaveBeenCalledWith(
+      'iss-1',
+      0,
+      { engine: 'audioldm2' },
+      { silent: true },
+    ));
+  });
+
+  it('serializes overlapping cue-prompt saves so neither edit clobbers the other', async () => {
+    const cues = [
+      { id: 'cue-1', label: 'Act I', prompt: 'a0' },
+      { id: 'cue-2', label: 'Act II', prompt: 'b0' },
+    ];
+    const onStageUpdate = vi.fn();
+    // updatePipelineIssue returns the patched issue so the component lifts the
+    // freshest cues[] for the next queued save to merge against.
+    updatePipelineIssue.mockImplementation((_id, patch) => {
+      const next = makeIssue({ audioMode: 'generated', cues: patch.stages.audio.cues });
+      return Promise.resolve(next);
+    });
+
+    const issue = makeIssue({ audioMode: 'generated', cues });
+    const { rerender } = render(<AudioStage issue={issue} onStageUpdate={onStageUpdate} />);
+
+    // Edit cue 0, blur; then edit cue 1, blur — both before re-render lifts.
+    const ta0 = within(screen.getByText('Act I').closest('li')).getByRole('textbox');
+    await userEvent.clear(ta0);
+    await userEvent.type(ta0, 'a1');
+    ta0.blur();
+    const ta1 = within(screen.getByText('Act II').closest('li')).getByRole('textbox');
+    await userEvent.clear(ta1);
+    await userEvent.type(ta1, 'b1');
+    ta1.blur();
+
+    // Drive the lifted issue back in so the second save's tail reads it.
+    await waitFor(() => expect(updatePipelineIssue).toHaveBeenCalledTimes(2));
+    const lastPatch = updatePipelineIssue.mock.calls[1][1].stages.audio.cues;
+    // The second patch must carry cue 0's new value (a1), proving it merged
+    // against the freshest array rather than the original render-time snapshot.
+    expect(lastPatch[0].prompt).toBe('a1');
+    expect(lastPatch[1].prompt).toBe('b1');
+    rerender(<AudioStage issue={issue} onStageUpdate={onStageUpdate} />);
   });
 
   it('disables cue render when the engine is not installed', async () => {

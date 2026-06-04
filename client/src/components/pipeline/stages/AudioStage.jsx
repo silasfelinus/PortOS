@@ -11,7 +11,7 @@
  * available; 3rd-party engines extend through the same namespace.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, Sparkles, Wand2, Mic, Music, Upload, Trash2, ListMusic } from 'lucide-react';
 import toast from '../../ui/Toast';
 import VoicePicker from '../../voice/VoicePicker';
@@ -50,7 +50,9 @@ export default function AudioStage({ issue, onStageUpdate }) {
   const lines = Array.isArray(stage.lines) ? stage.lines : [];
   const music = stage.music || null;
   const audioMode = AUDIO_MODES.some((m) => m.id === stage.audioMode) ? stage.audioMode : 'per-clip';
-  const cues = Array.isArray(stage.cues) ? stage.cues : [];
+  // Memoized so the `latestCuesRef` sync effect keys on the lifted array's
+  // identity, not a fresh `[]` rebuilt every render.
+  const cues = useMemo(() => (Array.isArray(stage.cues) ? stage.cues : []), [stage.cues]);
   const [extracting, setExtracting] = useState(false);
   // Per-line render busy state keyed by line index — multiple lines can
   // render concurrently with independent spinners.
@@ -133,16 +135,26 @@ export default function AudioStage({ issue, onStageUpdate }) {
   const [renderingCues, setRenderingCues] = useState(() => new Set());
   const [renderingAllCues, setRenderingAllCues] = useState(false);
   const [cuePromptDrafts, setCuePromptDrafts] = useState({});
-  // Two-click arm for the destructive re-derive (replaces an existing cues[]).
-  const [cuesReplaceArmed, setCuesReplaceArmed] = useState(false);
-  const cuesArmTimerRef = useRef(null);
-  useEffect(() => () => {
-    if (cuesArmTimerRef.current) clearTimeout(cuesArmTimerRef.current);
-  }, []);
-  // Pending cue-prompt PATCH promises by cue index so a Render awaits the
-  // freshest persisted prompt — the render route reads cue.prompt server-side,
-  // so a render fired before the blur-save settles would synth stale text.
-  const pendingCueSavesRef = useRef(new Map());
+  // Inline confirm row (user-preferred over a two-click arm) for the
+  // destructive re-derive that replaces an existing cues[].
+  const [confirmRederive, setConfirmRederive] = useState(false);
+  // Cue-prompt saves are serialized onto a single tail (not a per-index Map):
+  // the whole cues[] array is one shared record, so two edits to different cues
+  // both PATCH the same array and a Map keyed by index would still let the
+  // second clobber the first. The tail awaits the prior save, then rebuilds the
+  // patch from the FRESHEST cues (`latestCuesRef`, updated every render from the
+  // lifted issue) so each edit merges against the latest persisted list.
+  // Mirrors the server-side `issueWriteTail` "collapse to one tail per shared
+  // file" rule. `savingCueIdxs` is reactive state (not a ref) so the per-row
+  // Render gate updates live and recovers if a save fails.
+  const cueSaveTailRef = useRef(Promise.resolve());
+  const latestCuesRef = useRef(cues);
+  // Sync the ref from props only when the lifted cues[] actually changes
+  // identity — NOT on every render. A bare per-render assignment would clobber
+  // the in-tail update a chained save just wrote (the `setSavingCueIdxs`
+  // re-render fires before the lifted prop arrives).
+  useEffect(() => { latestCuesRef.current = cues; }, [cues]);
+  const [savingCueIdxs, setSavingCueIdxs] = useState(() => new Set());
 
   // When the stage loads (or switches) into 'generated' mode, eagerly fetch the
   // generators list so the cue Render affordances can gate on engine readiness
@@ -222,6 +234,13 @@ export default function AudioStage({ issue, onStageUpdate }) {
   const cueEngine = genEngines.find((e) => e.id === defaultEngineId) || genEngines[0] || null;
   const cueEngineReady = !!cueEngine?.ready;
   const enginesLoaded = generators !== null;
+  // A cue renders on its OWN engine (cue.engine) when stamped, else the default
+  // — so gate each cue's Render on the engine it will actually use. Returns the
+  // engine descriptor (or the default) for a given cue.
+  const engineForCue = (cue) => {
+    const id = cue?.engine || defaultEngineId;
+    return genEngines.find((e) => e.id === id) || cueEngine;
+  };
 
   // Persist a new whole-episode audio mode via the existing issue PATCH route,
   // then lift the returned issue so the UI reflects the saved mode.
@@ -244,20 +263,8 @@ export default function AudioStage({ issue, onStageUpdate }) {
     // no explicit fetch needed here.
   };
 
-  const handleGenerateCues = async () => {
-    const replacing = cues.length > 0;
-    if (replacing && !cuesReplaceArmed) {
-      setCuesReplaceArmed(true);
-      toast.warning(`This re-derives the cue list, replacing ${cues.length} cue${cues.length === 1 ? '' : 's'} (rendered audio is carried forward by label). Click again to confirm.`);
-      if (cuesArmTimerRef.current) clearTimeout(cuesArmTimerRef.current);
-      cuesArmTimerRef.current = setTimeout(() => {
-        cuesArmTimerRef.current = null;
-        setCuesReplaceArmed(false);
-      }, 5000);
-      return;
-    }
-    if (cuesArmTimerRef.current) { clearTimeout(cuesArmTimerRef.current); cuesArmTimerRef.current = null; }
-    setCuesReplaceArmed(false);
+  const runGenerateCues = async (replacing) => {
+    setConfirmRederive(false);
     setDerivingCues(true);
     const result = await generatePipelineAudioCues(
       issue.id,
@@ -274,29 +281,44 @@ export default function AudioStage({ issue, onStageUpdate }) {
     toast.success(`Derived ${result.cueCount} cue${result.cueCount === 1 ? '' : 's'}`);
   };
 
-  // Per-cue prompt edit. Patches the whole cues[] array (server merges against
-  // the freshest persisted record inside the per-issue write queue). Registers
-  // the in-flight Promise so a Render can await it.
+  // First derive runs immediately; a re-derive (which replaces an existing
+  // list) reveals an inline confirm row instead.
+  const handleGenerateCues = () => {
+    if (cues.length > 0) { setConfirmRederive(true); return; }
+    void runGenerateCues(false);
+  };
+
+  // Per-cue prompt edit, serialized onto the shared tail. Returns the promise
+  // for this save so callers (Render) can await the exact write they triggered.
+  // The patch is built INSIDE the tail from `latestCuesRef` so a save chained
+  // behind another sees the prior save's lifted result, not a stale snapshot.
   const saveCuePrompt = (cueIdx, prompt) => {
-    const nextCues = cues.map((c, i) => (i === cueIdx ? { ...c, prompt } : c));
-    const set = pendingCueSavesRef.current.get(cueIdx) || new Set();
-    if (!pendingCueSavesRef.current.has(cueIdx)) pendingCueSavesRef.current.set(cueIdx, set);
-    const promise = updatePipelineIssue(
-      issue.id,
-      { stages: { audio: { cues: nextCues } } },
-      { silent: true },
-    )
-      .then((updated) => {
-        if (updated) onStageUpdate?.('audio', updated.stages?.audio, updated);
-        return updated;
-      })
-      .catch((err) => { toast.error(err.message || 'Failed to save cue prompt'); return null; })
-      .finally(() => {
-        set.delete(promise);
-        if (set.size === 0) pendingCueSavesRef.current.delete(cueIdx);
-      });
-    set.add(promise);
-    return promise;
+    setSavingCueIdxs((prev) => new Set(prev).add(cueIdx));
+    const run = cueSaveTailRef.current.then(async () => {
+      const base = latestCuesRef.current;
+      if (!base[cueIdx] || base[cueIdx].prompt === prompt) return null; // gone/no-op
+      const nextCues = base.map((c, i) => (i === cueIdx ? { ...c, prompt } : c));
+      const updated = await updatePipelineIssue(
+        issue.id,
+        { stages: { audio: { cues: nextCues } } },
+        { silent: true },
+      ).catch((err) => { toast.error(err.message || 'Failed to save cue prompt'); return null; });
+      if (updated) {
+        // Keep the ref fresh within the tail before the next save reads it —
+        // React's lifted-state re-render is async.
+        latestCuesRef.current = Array.isArray(updated.stages?.audio?.cues)
+          ? updated.stages.audio.cues
+          : latestCuesRef.current;
+        onStageUpdate?.('audio', updated.stages?.audio, updated);
+      }
+      return updated;
+    }).finally(() => {
+      setSavingCueIdxs((prev) => { const next = new Set(prev); next.delete(cueIdx); return next; });
+    });
+    // The tail itself never rejects (errors are caught above) so a failed save
+    // can't wedge the queue.
+    cueSaveTailRef.current = run.then(() => undefined, () => undefined);
+    return run;
   };
 
   const handleCuePromptBlur = (cueIdx) => {
@@ -308,21 +330,26 @@ export default function AudioStage({ issue, onStageUpdate }) {
     dropDraft();
   };
 
-  const renderOneCue = async (cueIdx) => {
-    // Await any in-flight prompt save + flush an unblurred draft so the render
-    // synths against the freshest persisted prompt.
-    const pendingSet = pendingCueSavesRef.current.get(cueIdx);
-    if (pendingSet && pendingSet.size > 0) await Promise.all([...pendingSet]);
-    const draft = cuePromptDrafts[cueIdx];
-    if (draft !== undefined && draft !== (cues[cueIdx]?.prompt || '')) {
+  // Render one cue. `promptOverride` (from Render-all) lets a not-yet-blurred
+  // draft be rendered. Awaits the cue's prompt save so the server reads the
+  // freshest persisted prompt, and resolves the engine the SAME way the backend
+  // does — body override → the cue's own engine hint → the UI default — so a
+  // cue stamped with a non-default engine (e.g. audioldm2) re-renders on it.
+  const renderOneCue = async (cueIdx, promptOverride) => {
+    const draft = promptOverride !== undefined ? promptOverride : cuePromptDrafts[cueIdx];
+    if (draft !== undefined && draft !== (latestCuesRef.current[cueIdx]?.prompt || '')) {
       await saveCuePrompt(cueIdx, draft);
       setCuePromptDrafts((prev) => { const next = { ...prev }; delete next[cueIdx]; return next; });
+    } else {
+      // No new draft — still drain any in-flight save for this cue.
+      await cueSaveTailRef.current;
     }
+    const engine = latestCuesRef.current[cueIdx]?.engine || defaultEngineId;
     setRenderingCues((prev) => new Set(prev).add(cueIdx));
     const result = await renderPipelineAudioCue(
       issue.id,
       cueIdx,
-      { engine: defaultEngineId },
+      { engine },
       { silent: true },
     ).catch((err) => {
       toast.error(err.message || `Cue ${cueIdx + 1} render failed`);
@@ -339,18 +366,23 @@ export default function AudioStage({ issue, onStageUpdate }) {
     if (ok) toast.success(`Rendered cue ${cueIdx + 1}`);
   };
 
-  // Render every cue with a prompt, sequentially (each is a GPU-heavy job;
+  // Render every cue that has a prompt (a typed-but-unsaved draft counts —
+  // renderOneCue flushes it), sequentially (each is a GPU-heavy job;
   // serializing avoids thrashing the single sidecar).
   const handleRenderAllCues = async () => {
     setRenderingAllCues(true);
     let rendered = 0;
     for (let i = 0; i < cues.length; i += 1) {
-      if (!cues[i]?.prompt) continue;
-      const ok = await renderOneCue(i);
+      const effectivePrompt = cuePromptDrafts[i] !== undefined ? cuePromptDrafts[i] : (cues[i]?.prompt || '');
+      if (!effectivePrompt.trim()) continue;
+      // Skip cues whose engine isn't installed — the per-cue button would block
+      // them, so render-all should too rather than firing a doomed request.
+      if (!engineForCue(cues[i])?.ready) continue;
+      const ok = await renderOneCue(i, cuePromptDrafts[i]);
       if (ok) rendered += 1;
     }
     setRenderingAllCues(false);
-    toast.success(`Rendered ${rendered} cue${rendered === 1 ? '' : 's'}`);
+    if (rendered > 0) toast.success(`Rendered ${rendered} cue${rendered === 1 ? '' : 's'}`);
   };
 
   const loadMusicLibrary = async () => {
@@ -623,18 +655,36 @@ export default function AudioStage({ issue, onStageUpdate }) {
               </p>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
-              <button
-                type="button"
-                onClick={handleGenerateCues}
-                disabled={derivingCues || renderingAllCues || audioModeSaving}
-                title="Derive the cue list from the episode's beats + storyboard scene order"
-                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-card border border-port-border text-white text-sm hover:border-port-accent/50 disabled:opacity-40"
-              >
-                {derivingCues ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-                {cuesReplaceArmed
-                  ? 'Click again to replace'
-                  : (cues.length > 0 ? 'Re-derive cues' : 'Generate cues')}
-              </button>
+              {confirmRederive ? (
+                <span className="inline-flex items-center gap-2 text-xs text-gray-300">
+                  <span className="italic">Replace {cues.length} cue{cues.length === 1 ? '' : 's'}? (rendered audio is kept by label)</span>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmRederive(false)}
+                    className="px-2 py-1 rounded border border-port-border text-gray-300 hover:border-gray-500"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void runGenerateCues(true)}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded bg-port-warning text-black font-medium"
+                  >
+                    <Wand2 size={14} /> Re-derive
+                  </button>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleGenerateCues}
+                  disabled={derivingCues || renderingAllCues || audioModeSaving}
+                  title="Derive the cue list from the episode's beats + storyboard scene order"
+                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-card border border-port-border text-white text-sm hover:border-port-accent/50 disabled:opacity-40"
+                >
+                  {derivingCues ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+                  {cues.length > 0 ? 'Re-derive cues' : 'Generate cues'}
+                </button>
+              )}
               {cues.length > 0 ? (
                 <button
                   type="button"
@@ -670,8 +720,10 @@ export default function AudioStage({ issue, onStageUpdate }) {
               {cues.map((cue, i) => {
                 const isRendering = renderingCues.has(i);
                 const promptValue = cuePromptDrafts[i] !== undefined ? cuePromptDrafts[i] : (cue.prompt || '');
-                const cuePromptSaving = pendingCueSavesRef.current.has(i);
+                const cuePromptSaving = savingCueIdxs.has(i);
                 const placed = Number.isFinite(cue.startSec) && Number.isFinite(cue.endSec);
+                const thisCueEngine = engineForCue(cue);
+                const thisCueEngineReady = !!thisCueEngine?.ready;
                 return (
                   <li key={cue.id || i} className="p-3 bg-port-bg border border-port-border rounded-lg">
                     <div className="flex items-start gap-3">
@@ -719,11 +771,11 @@ export default function AudioStage({ issue, onStageUpdate }) {
                         <button
                           type="button"
                           onClick={() => handleRenderCue(i)}
-                          disabled={isRendering || renderingAllCues || cuePromptSaving || !cueEngineReady || !promptValue.trim()}
+                          disabled={isRendering || renderingAllCues || cuePromptSaving || !thisCueEngineReady || !promptValue.trim()}
                           title={!enginesLoaded
                             ? 'Checking generator engine…'
-                            : (!cueEngineReady
-                              ? `${cueEngine?.name || 'The music engine'} isn't installed — render is unavailable`
+                            : (!thisCueEngineReady
+                              ? `${thisCueEngine?.name || 'The music engine'} isn't installed — render is unavailable`
                               : (promptValue.trim() ? 'Render this cue as music' : 'Add a prompt first'))}
                           className="inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded bg-port-accent text-white text-xs disabled:opacity-50"
                         >
