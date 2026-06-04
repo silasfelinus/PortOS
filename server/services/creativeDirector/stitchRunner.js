@@ -204,8 +204,23 @@ async function maybeMuxPipelineAudio(project, finalEntry) {
     return;
   }
 
-  // 'uploaded-track' (and 'per-clip') — today's single-music-pointer path.
-  // 'per-clip' has no music pointer so it preserves each clip's own soundtrack.
+  // 'per-clip' — preserve each stitched clip's OWN soundtrack; never lay an
+  // episode-level bed, even if a leftover music pointer exists (an issue may
+  // have been switched to per-clip with a stale music.trackFilename). Overlay
+  // placed VO (ducked over the clip audio, which muxVoLines preserves) with NO
+  // music bed; with no VO, leave the stitch untouched.
+  if (audioMode === 'per-clip') {
+    if (voLines.length) {
+      console.log(`🎙️ CD stitch mux: per-clip mode — overlaying ${voLines.length} VO line(s) (no bed) onto ${finalEntry.filename}`);
+      const result = await muxVoLines(videoPath, { voLines, musicPath: null });
+      if (result.ok) console.log(`✅ CD stitch mux: VO applied (per-clip) to ${finalEntry.filename}${result.clipAudio ? ', clip audio preserved' : ''}`);
+      else console.log(`⚠️ CD stitch mux: VO skipped (${result.reason}) — keeping clip audio`);
+    }
+    return;
+  }
+
+  // 'uploaded-track' — loop the single music pointer under the whole episode
+  // (today's bed path). VO, when placed, ducks the bed under dialogue.
   const musicFilename = issue.stages?.audio?.music?.trackFilename;
   const musicPath = await resolveMusicTrackPath(musicFilename);
 
