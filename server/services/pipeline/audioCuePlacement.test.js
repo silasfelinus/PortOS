@@ -19,42 +19,40 @@ describe('placeCuesOnTimeline', () => {
     expect(placed[0].startSec).toBeNull();
   });
 
-  it('tiles cues end-to-end across the episode, last cue pinned to the end', () => {
+  it('tiles cues evenly end-to-end across the episode, last cue pinned to the end', () => {
     const cues = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
     const placed = placeCuesOnTimeline(cues, 90);
-    // Even split (no rendered durations): 30s each.
+    // Equal stretch per cue: 30s each.
     expect(placed[0].startSec).toBe(0);
     expect(placed[0].endSec).toBeCloseTo(30, 5);
     expect(placed[1].startSec).toBeCloseTo(30, 5);
-    expect(placed[2].endSec).toBe(90); // pinned to the episode end
+    expect(placed[2].endSec).toBe(90); // last pinned to the episode end
     // Contiguous: each cue starts where the previous ended.
     expect(placed[1].startSec).toBeCloseTo(placed[0].endSec, 5);
     expect(placed[2].startSec).toBeCloseTo(placed[1].endSec, 5);
   });
 
-  it('honors a cue rendered durationSec, splitting the rest evenly', () => {
+  it('ignores a cue rendered durationSec for span — tiles by count, not render length', () => {
+    // Cues are typically rendered with engine-default lengths (12–20s) BEFORE
+    // stitch placement; honoring those would collapse early cues to short spans
+    // and dump the rest on the last cue. The muxer loops each cue to fill its
+    // placed span, so span is purely "share of the episode," set by count.
     const cues = [
-      { id: 'a', durationSec: 20 }, // honored
-      { id: 'b' },
-      { id: 'c' },
+      { id: 'a', durationSec: 12 },
+      { id: 'b', durationSec: 18 },
+      { id: 'c', durationSec: 15 },
     ];
-    const placed = placeCuesOnTimeline(cues, 100);
-    expect(placed[0].endSec).toBeCloseTo(20, 5); // honored rendered length
-    // remaining 80s split across the 2 remaining cues → 40 each, last pinned to 100
-    expect(placed[1].startSec).toBeCloseTo(20, 5);
-    expect(placed[1].endSec).toBeCloseTo(60, 5);
-    expect(placed[2].endSec).toBe(100);
+    const placed = placeCuesOnTimeline(cues, 90);
+    expect(placed[0].endSec).toBeCloseTo(30, 5); // NOT 12
+    expect(placed[1].startSec).toBeCloseTo(30, 5);
+    expect(placed[1].endSec).toBeCloseTo(60, 5); // NOT 30 (12+18)
+    expect(placed[2].endSec).toBe(90);
   });
 
-  it('clamps a rendered duration that would overrun the timeline', () => {
-    const cues = [{ id: 'a', durationSec: 500 }, { id: 'b' }];
-    const placed = placeCuesOnTimeline(cues, 60);
-    // First cue can't run past the episode; last cue pinned to the end.
-    expect(placed[0].endSec).toBeLessThanOrEqual(60);
-    expect(placed[1].endSec).toBe(60);
-    // A clamped first cue can leave the last cue a zero-length tail — that's fine,
-    // the muxer's placed-cue filter drops zero/negative spans.
-    expect(placed[1].startSec).toBeLessThanOrEqual(60);
+  it('gives a single cue the whole episode', () => {
+    const placed = placeCuesOnTimeline([{ id: 'only', durationSec: 12 }], 75);
+    expect(placed[0].startSec).toBe(0);
+    expect(placed[0].endSec).toBe(75);
   });
 
   it('preserves cue identity fields (id/label/prompt) while adding timing', () => {

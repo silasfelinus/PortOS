@@ -7,12 +7,14 @@
  * duration (storyboard scenes carry no per-scene duration, and the VO
  * `offsetSec` is a manually-placed audio offset, not a scene-timing source).
  *
- * This module owns that placement: given the ordered cues and the total episode
- * duration (ffprobed at stitch time), it lays each story-order cue onto the
- * absolute timeline so the cues tile the episode end-to-end. A cue's own
- * rendered `durationSec` is honored when present (so a 30s sting stays 30s);
- * unrendered cues split the remaining time evenly. The result is the
- * `startSec`/`endSec` the cue muxer (`buildCueMuxArgs`) places each cue at.
+ * This module owns that auto-placement: given the ordered cues and the total
+ * episode duration (ffprobed at stitch time), it tiles the cues evenly across
+ * the episode end-to-end. The cue muxer loops + trims each cue to the span it's
+ * placed at, so a cue's *rendered* `durationSec` is irrelevant to its span —
+ * tiling by COUNT (not by rendered length) is correct, and it's what keeps the
+ * arc shape: each beat gets an equal stretch rather than collapsing to a short
+ * default-duration render with the final cue absorbing the rest. `durationSec`
+ * stays render metadata only.
  *
  * Pure + unit-tested — no ffprobe, no filesystem. The caller probes the
  * duration and passes it in.
@@ -22,14 +24,12 @@
  * Place an ordered cue list onto a timeline of `totalDurationSec`. Returns a NEW
  * cue array (cues unchanged in identity) with `startSec`/`endSec` filled.
  *
- * Strategy: walk cues in order, advancing a cursor. Each cue spans from the
- * cursor to cursor + its length, where length is the cue's rendered
- * `durationSec` when it's a finite positive number, otherwise an even share of
- * the time still unclaimed by the remaining cues. The final cue is pinned to
- * end exactly at `totalDurationSec` so the bed covers the whole episode (no
- * trailing gap from rounding). Cues that would start past the episode end are
- * clamped to a zero-length tail at the end (the muxer drops zero/negative-span
- * cues via its placed-cue filter).
+ * Strategy: split the episode into N equal stretches, one per cue, in story
+ * order — N = cues.length. The cue muxer loops each cue to fill its stretch, so
+ * the placement is purely "how much of the episode does this beat own," not "how
+ * long was it rendered." The last cue is pinned to end exactly at
+ * `totalDurationSec` so the bed covers the whole episode with no trailing gap
+ * from float rounding.
  *
  * @param {Array} cues               ordered cue objects (need at least `id`)
  * @param {number} totalDurationSec  episode length in seconds (> 0)
@@ -43,31 +43,13 @@ export function placeCuesOnTimeline(cues, totalDurationSec) {
     return cues.map((c) => ({ ...c, startSec: null, endSec: null }));
   }
 
-  const out = [];
-  let cursor = 0;
-  for (let i = 0; i < cues.length; i += 1) {
-    const cue = cues[i];
-    const remainingCues = cues.length - i;
-    const remainingTime = Math.max(0, total - cursor);
-    const rendered = Number(cue?.durationSec);
-    const hasRendered = Number.isFinite(rendered) && rendered > 0;
-
-    let length;
-    if (i === cues.length - 1) {
-      // Last cue: fill to the end so the bed covers the whole episode.
-      length = remainingTime;
-    } else if (hasRendered) {
-      // Honor the cue's actual rendered length, but never overrun the timeline.
-      length = Math.min(rendered, remainingTime);
-    } else {
-      // Even share of the time still unclaimed by the cues that remain.
-      length = remainingTime / remainingCues;
-    }
-
-    const startSec = Math.min(cursor, total);
-    const endSec = Math.min(cursor + length, total);
-    out.push({ ...cue, startSec, endSec });
-    cursor = endSec;
-  }
-  return out;
+  // Equal stretch per cue (by count, NOT by rendered durationSec — see header).
+  const slice = total / cues.length;
+  return cues.map((cue, i) => ({
+    ...cue,
+    startSec: i * slice,
+    // Pin the last cue's end to the exact episode length so float accumulation
+    // can't leave a sub-second gap at the tail.
+    endSec: i === cues.length - 1 ? total : (i + 1) * slice,
+  }));
 }
