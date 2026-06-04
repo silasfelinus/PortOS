@@ -266,16 +266,23 @@ export function errorMiddleware(err, req, res, next) {
     console.error(logMsg);
   }
 
+  // Sanitize once and share with both the socket event and the HTTP body so
+  // the two channels can't drift on what's stripped — mirrors asyncHandler.
+  const safeContext = sanitizeContext(error.context);
+
   // Emit Socket.IO event
   if (io) {
-    emitErrorEvent(io, error);
+    emitErrorEvent(io, error, safeContext);
   }
 
-  // Send response
+  // Send response. Include `context` (e.g. a service's `details` / `modelId`)
+  // when present, matching the envelope asyncHandler emits — synchronous
+  // handlers that throw a ServerError land here, not in asyncHandler.
   res.status(error.status).json({
     error: error.message,
     code: error.code,
-    timestamp: error.timestamp
+    timestamp: error.timestamp,
+    ...(safeContext && Object.keys(safeContext).length > 0 && { context: safeContext })
   });
 }
 

@@ -3,7 +3,8 @@ import {
   ServerError,
   normalizeError,
   emitErrorEvent,
-  errorEvents
+  errorEvents,
+  errorMiddleware
 } from './errorHandler.js';
 
 describe('errorHandler.js', () => {
@@ -158,6 +159,40 @@ describe('errorHandler.js', () => {
       b.cause = a;
       const normalized = normalizeError(a);
       expect(normalized.context.cause.length).toBeLessThanOrEqual(5);
+    });
+  });
+
+  describe('errorMiddleware', () => {
+    const makeRes = () => {
+      const res = {};
+      res.status = vi.fn(() => res);
+      res.json = vi.fn(() => res);
+      return res;
+    };
+    const makeReq = () => ({ method: 'GET', originalUrl: '/x', app: { get: () => null } });
+
+    it('emits the standard envelope and includes non-empty sanitized context', () => {
+      const res = makeRes();
+      errorMiddleware(
+        new ServerError('boom', { status: 404, context: { modelId: 'm', apiKey: 'secret' } }),
+        makeReq(),
+        res,
+        () => {}
+      );
+      expect(res.status).toHaveBeenCalledWith(404);
+      const body = res.json.mock.calls[0][0];
+      expect(body.error).toBe('boom');
+      expect(body.code).toBe('NOT_FOUND');
+      expect(body.timestamp).toBeDefined();
+      // context is forwarded but sensitive keys are stripped.
+      expect(body.context).toEqual({ modelId: 'm' });
+    });
+
+    it('omits context when it is empty', () => {
+      const res = makeRes();
+      errorMiddleware(new ServerError('nope', { status: 400 }), makeReq(), res, () => {});
+      const body = res.json.mock.calls[0][0];
+      expect(body).not.toHaveProperty('context');
     });
   });
 
