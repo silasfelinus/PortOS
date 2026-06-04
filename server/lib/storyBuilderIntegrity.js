@@ -61,3 +61,24 @@ export function computeStaleSteps(session, currentHashes = {}) {
   }
   return stale;
 }
+
+/**
+ * For a sync-enabled session, report whether THIS machine's live upstream
+ * records have drifted from the session-carried `syncedHashes` baseline (#730).
+ * That's the "reconcile would change something" signal: a synced session keys
+ * its staleness off `syncedHashes` (so a peer's edit can't false-positive it),
+ * but the user may still want to adopt this machine's current records as the new
+ * baseline — and they only need to when at least one locked step's live hash no
+ * longer matches the carried baseline. Returns false when no baseline exists or
+ * no locked step diverges.
+ */
+export function computeSyncDrift(session, currentHashes = {}, syncedHashes = {}) {
+  const steps = session?.steps || {};
+  for (const [stepId, state] of Object.entries(steps)) {
+    if (!state || state.locked !== true) continue;
+    const current = currentHashes[stepId];
+    if (current == null) continue;
+    if ((syncedHashes?.[stepId] ?? null) !== current) return true;
+  }
+  return false;
+}

@@ -60,8 +60,9 @@ router.post('/', asyncHandler(async (req, res) => {
 
 router.get('/:id', asyncHandler(async (req, res) => {
   const view = await getStorySessionView(req.params.id).catch((err) => { throw mapServiceError(err); });
-  // Flatten the session with the computed (non-persisted) staleSteps array.
-  res.json({ ...view.session, staleSteps: view.staleSteps });
+  // Flatten the session with the computed (non-persisted) staleSteps array +
+  // the syncDrift flag (#730: live records diverged from the synced baseline).
+  res.json({ ...view.session, staleSteps: view.staleSteps, syncDrift: view.syncDrift });
 }));
 
 router.patch('/:id', asyncHandler(async (req, res) => {

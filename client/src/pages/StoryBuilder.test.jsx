@@ -27,6 +27,8 @@ const api = vi.hoisted(() => ({
   unlockStoryStep: vi.fn(),
   generateStoryStep: vi.fn(),
   refineStoryStep: vi.fn(),
+  setStorySessionSync: vi.fn(),
+  reconcileStorySession: vi.fn(),
   storyStepProgressSseUrl: vi.fn((id, stepId) => `/api/story-builder/${id}/steps/${stepId}/progress`),
   setStoryIssueLock: vi.fn(),
   getUniverse: vi.fn(),
@@ -93,6 +95,8 @@ beforeEach(() => {
   api.generateStoryStep.mockResolvedValue({ result: {} });
   api.refineStoryStep.mockResolvedValue({ result: {}, changes: [] });
   api.setStoryIssueLock.mockResolvedValue({});
+  api.setStorySessionSync.mockImplementation(async (_id, sync) => ({ id: 'stb-1', sync }));
+  api.reconcileStorySession.mockResolvedValue({ id: 'stb-1', sync: true });
   api.getUniverse.mockResolvedValue({ id: 'u1', logline: 'L', premise: 'P', styleNotes: 'S', influences: { embrace: [], avoid: [] }, characters: [] });
   api.getPipelineSeries.mockResolvedValue({ id: 's1', arc: { logline: 'AL', summary: 'AS', readerMap: { hooks: [{ id: 'rm-1', label: 'Why?' }] } } });
   api.listPipelineIssues.mockResolvedValue([]);
@@ -470,5 +474,42 @@ describe('StoryBuilder — detail stepper', () => {
     expect(screen.getByText(/re-review and re-lock/i)).toBeTruthy();
     // Locked step → the action flips to "Unlock to revise".
     expect(screen.getByText('Unlock to revise')).toBeTruthy();
+  });
+
+  it('cross-machine resume: toggles sync on and reveals the reconcile control (#730)', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    api.getStorySession.mockResolvedValue({
+      id: 'stb-1', title: 'Salt Run', currentStep: 'idea', seedIdea: 'seed',
+      universeId: 'u1', seriesId: 's1', steps: mkSteps(), staleSteps: [], sync: false, syncDrift: false, llm: { provider: '', model: '' },
+    });
+    renderAt('/story-builder/stb-1/idea');
+    await waitFor(() => expect(screen.getByText('Cross-machine resume off')).toBeTruthy());
+    // Reconcile is hidden while sync is off (local-only sessions can't reconcile).
+    expect(screen.queryByRole('button', { name: /Reconcile/i })).toBeNull();
+
+    fireEvent.click(screen.getByText('Cross-machine resume off'));
+    await waitFor(() => expect(api.setStorySessionSync).toHaveBeenCalledWith('stb-1', true, expect.objectContaining({ silent: true })));
+    // Reactive: label flips and the reconcile control appears without a refetch.
+    await waitFor(() => expect(screen.getByText('Cross-machine resume on')).toBeTruthy());
+    expect(screen.getByRole('button', { name: /Reconcile/i })).toBeTruthy();
+  });
+
+  it('cross-machine resume: reconcile is enabled only when drift exists, and clears it (#730)', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    api.getStorySession.mockResolvedValue({
+      id: 'stb-1', title: 'Salt Run', currentStep: 'idea', seedIdea: 'seed',
+      universeId: 'u1', seriesId: 's1', steps: mkSteps(), staleSteps: [], sync: true, syncDrift: true, llm: { provider: '', model: '' },
+    });
+    renderAt('/story-builder/stb-1/idea');
+    await waitFor(() => expect(screen.getByText('Cross-machine resume on')).toBeTruthy());
+    const reconcileBtn = screen.getByRole('button', { name: /Reconcile/i });
+    expect(reconcileBtn.disabled).toBe(false);
+    expect(screen.getByText(/drifted from the synced baseline/i)).toBeTruthy();
+
+    fireEvent.click(reconcileBtn);
+    await waitFor(() => expect(api.reconcileStorySession).toHaveBeenCalledWith('stb-1', expect.objectContaining({ silent: true })));
+    // Drift clears reactively → message flips and the button disables.
+    await waitFor(() => expect(screen.getByText(/Baseline matches this machine/i)).toBeTruthy());
+    expect(screen.getByRole('button', { name: /Reconcile/i }).disabled).toBe(true);
   });
 });
