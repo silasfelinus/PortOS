@@ -1,6 +1,6 @@
 import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { PIXEL_FONT_URL, cityDayMix } from './cityConstants';
+import { PIXEL_FONT_URL, cityDayMix, tintStructure } from './cityConstants';
 import CityLabel from './CityLabel';
 import { computeVoiceMarker } from '../../utils/cityVoiceMarker';
 
@@ -38,7 +38,7 @@ export default function CityVoiceMarker({ voiceState, settings }) {
       {/* Low disc base — anchors the marker to the ground */}
       <mesh position={[0, 0.1, 0]}>
         <cylinderGeometry args={[baseRadius, baseRadius * 1.15, 0.2, 24]} />
-        <meshStandardMaterial color="#0c1620" emissive={color} emissiveIntensity={0.12} metalness={0.5} roughness={0.6} />
+        <meshStandardMaterial color={tintStructure('#0c1620')} emissive={color} emissiveIntensity={0.12} metalness={0.5} roughness={0.6} />
       </mesh>
       {/* Slim antenna pole */}
       <mesh position={[0, poleHeight / 2, 0]}>

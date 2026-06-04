@@ -1,7 +1,7 @@
 import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { getTimeOfDayPreset } from './cityConstants';
+import { getTimeOfDayPreset, tintTowardAccent, CITY_COLORS } from './cityConstants';
 
 const SUN_RADIUS = 100;
 
@@ -103,15 +103,19 @@ const lerpColor = (target, a, b, t) => {
   target.b = a.b + (b.b - a.b) * t;
 };
 
-// Pre-allocate parsed preset colors (keyed by "theme:timeOfDay")
+// Pre-allocate parsed preset colors (keyed by "theme:timeOfDay:accent"). The upper
+// sky bands (zenith, midSky) are tinted toward the active theme accent so the sky
+// tracks the theme; horizon haze + sun colors stay physical/untinted. The accent is
+// in the cache key so a theme switch re-derives instead of serving a stale tint.
 const presetColors = {};
 const getPresetColors = (name, skyTheme) => {
-  const cacheKey = `${skyTheme}:${name}`;
+  const accent = CITY_COLORS.ground;
+  const cacheKey = `${skyTheme}:${name}:${accent}`;
   if (!presetColors[cacheKey]) {
     const p = getTimeOfDayPreset(name, skyTheme);
     presetColors[cacheKey] = {
-      zenith: new THREE.Color(p.zenith),
-      midSky: new THREE.Color(p.midSky),
+      zenith: new THREE.Color(tintTowardAccent(p.zenith, 0.16)),
+      midSky: new THREE.Color(tintTowardAccent(p.midSky, 0.12)),
       horizonHigh: new THREE.Color(p.horizonHigh),
       horizonLow: new THREE.Color(p.horizonLow),
       sunCore: new THREE.Color(p.sunCore),

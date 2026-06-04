@@ -1,6 +1,6 @@
 import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { PIXEL_FONT_URL, cityDayMix } from './cityConstants';
+import { PIXEL_FONT_URL, cityDayMix, tintStructure } from './cityConstants';
 import CityLabel from './CityLabel';
 import { computeHealthTower } from '../../utils/cityHealthTower';
 
@@ -16,7 +16,7 @@ function Segment({ segment, baseRadius, isHeart, heartRef }) {
     <mesh ref={isHeart ? heartRef : undefined} position={[0, segment.y, 0]}>
       <cylinderGeometry args={[baseRadius, baseRadius, height, 32]} />
       <meshStandardMaterial
-        color={segment.present ? '#0c1620' : '#0a0e16'}
+        color={segment.present ? tintStructure('#0c1620') : tintStructure('#0a0e16')}
         emissive={color}
         emissiveIntensity={intensity}
         metalness={0.5}
@@ -52,7 +52,7 @@ export default function CityHealthTower({ healthMetrics, settings }) {
       {/* Plinth the tower rises from */}
       <mesh position={[0, 0.3, 0]}>
         <cylinderGeometry args={[baseRadius * 1.3, baseRadius * 1.45, 0.6, 32]} />
-        <meshStandardMaterial color="#0a0e16" emissive="#22c55e" emissiveIntensity={0.08} metalness={0.6} roughness={0.5} />
+        <meshStandardMaterial color={tintStructure('#0a0e16')} emissive="#22c55e" emissiveIntensity={0.08} metalness={0.6} roughness={0.5} />
       </mesh>
 
       {/* Stacked metric segments — lifted above the plinth */}

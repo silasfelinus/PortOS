@@ -1,6 +1,6 @@
 import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { PIXEL_FONT_URL, cityDayMix } from './cityConstants';
+import { PIXEL_FONT_URL, cityDayMix, tintStructure } from './cityConstants';
 import CityLabel from './CityLabel';
 import { computeTaskQueue, TASK_QUEUE } from '../../utils/cityTaskQueue';
 
@@ -60,7 +60,7 @@ export default function CityTaskQueue({ cosTasks, settings }) {
       {/* Warehouse base — a wide low dock the crates sit on */}
       <mesh position={[0, warehouseHeight / 2, 0]}>
         <boxGeometry args={[warehouseWidth, warehouseHeight, warehouseWidth * 0.9]} />
-        <meshStandardMaterial color="#0c1620" emissive={color} emissiveIntensity={0.1} metalness={0.4} roughness={0.6} />
+        <meshStandardMaterial color={tintStructure('#0c1620')} emissive={color} emissiveIntensity={0.1} metalness={0.4} roughness={0.6} />
       </mesh>
       {/* Roof light bar — the live queue-state indicator */}
       <mesh ref={roofRef} position={[0, warehouseHeight + 0.2, 0]}>

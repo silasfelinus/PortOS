@@ -1,6 +1,6 @@
 import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { PIXEL_FONT_URL, cityDayMix } from './cityConstants';
+import { PIXEL_FONT_URL, cityDayMix, tintStructure } from './cityConstants';
 import CityLabel from './CityLabel';
 import CityTubeLine from './CityTubeLine';
 import { computeMemoryDistrict, MEMORY_DISTRICT } from '../../utils/cityMemoryDistrict';
@@ -88,7 +88,7 @@ export default function CityMemoryDistrict({ memoryGraph, inboxDepth = 0, settin
 
   // Inbox well: glows brighter and pulses faster the deeper the unclassified backlog.
   const inboxActive = inboxDepth > 0;
-  const wellColor = inboxActive ? '#06b6d4' : '#1e3a5f';
+  const wellColor = inboxActive ? '#06b6d4' : tintStructure('#1e3a5f');
 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();

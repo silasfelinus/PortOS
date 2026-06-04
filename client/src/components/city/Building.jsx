@@ -1,7 +1,7 @@
 import { useRef, useState, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { getBuildingColor, getBuildingHeight, getAccentColor, CITY_COLORS, BUILDING_PARAMS, PIXEL_FONT_URL, mixHex } from './cityConstants';
+import { getBuildingColor, getBuildingHeight, getAccentColor, CITY_COLORS, BUILDING_PARAMS, PIXEL_FONT_URL, mixHex, tintStructure } from './cityConstants';
 import CityLabel from './CityLabel';
 import HolographicPanel from './HolographicPanel';
 import BuildingHologram from './BuildingHologram';
@@ -100,8 +100,8 @@ const createWindowTexture = (accentColor, width, height, seed) => {
   canvas.height = px * rowCount;
   const ctx = canvas.getContext('2d');
 
-  // Dark base
-  ctx.fillStyle = '#050510';
+  // Dark base (tinted toward the theme accent, luminance preserved)
+  ctx.fillStyle = tintStructure('#050510');
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   // Seeded random for consistent patterns
@@ -122,7 +122,7 @@ const createWindowTexture = (accentColor, width, height, seed) => {
         } else if (bright > 0.3) {
           ctx.fillStyle = accentColor + '20';
         } else {
-          ctx.fillStyle = '#0a0f1e';
+          ctx.fillStyle = tintStructure('#0a0f1e');
         }
         ctx.fillRect(c * px + 1, r * px + 1, px - 2, px - 2);
       }

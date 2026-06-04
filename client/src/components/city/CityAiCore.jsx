@@ -1,7 +1,7 @@
 import { useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
-import { PIXEL_FONT_URL, cityDayMix } from './cityConstants';
+import { PIXEL_FONT_URL, cityDayMix, tintStructure } from './cityConstants';
 import CityLabel from './CityLabel';
 import { computeAiCore, computeAiCoreBeams, AI_CORE } from '../../utils/cityAiCore';
 
@@ -107,7 +107,7 @@ export default function CityAiCore({ aiActivity, positions, apps, settings }) {
       {/* Slender spire body — tapered so it reads as a tower, not a column */}
       <mesh position={[0, height / 2, 0]}>
         <cylinderGeometry args={[0.5, 1.4, height, 8]} />
-        <meshStandardMaterial color="#0a0f1c" emissive={color} emissiveIntensity={0.1 + core.intensity * 0.15} metalness={0.7} roughness={0.4} />
+        <meshStandardMaterial color={tintStructure('#0a0f1c')} emissive={color} emissiveIntensity={0.1 + core.intensity * 0.15} metalness={0.7} roughness={0.4} />
       </mesh>
       {/* Apex orb — the live AI-activity indicator */}
       <mesh ref={apexRef} position={[0, apexY, 0]}>

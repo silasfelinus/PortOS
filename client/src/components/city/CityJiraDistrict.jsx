@@ -1,6 +1,6 @@
 import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { PIXEL_FONT_URL, cityDayMix } from './cityConstants';
+import { PIXEL_FONT_URL, cityDayMix, tintStructure } from './cityConstants';
 import CityLabel from './CityLabel';
 import { computeJiraDistrict, JIRA_DISTRICT } from '../../utils/cityJiraDistrict';
 
@@ -22,7 +22,7 @@ function SprintStructure({ structure, pulseRef, isPulse }) {
       <group position={position}>
         <mesh position={[0, height / 2, 0]}>
           <boxGeometry args={[size, height, size]} />
-          <meshStandardMaterial color="#0d1a12" emissive={color} emissiveIntensity={0.7} metalness={0.6} roughness={0.4} toneMapped={false} />
+          <meshStandardMaterial color={tintStructure('#0d1a12')} emissive={color} emissiveIntensity={0.7} metalness={0.6} roughness={0.4} toneMapped={false} />
         </mesh>
       </group>
     );

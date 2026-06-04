@@ -1,7 +1,7 @@
 import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import CityTubeLine from './CityTubeLine';
-import { PIXEL_FONT_URL, cityDayMix } from './cityConstants';
+import { PIXEL_FONT_URL, cityDayMix, tintStructure } from './cityConstants';
 import CityLabel from './CityLabel';
 import { computeGoalMonuments, computeGoalForest, MONUMENTS, FOREST } from '../../utils/cityGoalMonuments';
 
@@ -40,7 +40,7 @@ function MonumentBody({ monument, shimmerRef, isShimmer }) {
             >
               <boxGeometry args={doneFloor ? [width, floorH, width] : [width * 1.05, floorH, width * 1.05]} />
               <meshStandardMaterial
-                color={doneFloor ? (built ? '#0d1a12' : '#0c1424') : color}
+                color={doneFloor ? (built ? tintStructure('#0d1a12') : tintStructure('#0c1424')) : color}
                 emissive={color}
                 emissiveIntensity={doneFloor ? intensity : intensity * 0.45}
                 metalness={doneFloor ? (built ? 0.7 : 0.4) : 0.2}
@@ -65,7 +65,7 @@ function MonumentBody({ monument, shimmerRef, isShimmer }) {
       <mesh ref={isShimmer ? shimmerRef : undefined} position={[0, 0.4 + builtHeight / 2, 0]}>
         <boxGeometry args={[width, builtHeight, width]} />
         <meshStandardMaterial
-          color={built ? '#0d1a12' : '#0c1424'}
+          color={built ? tintStructure('#0d1a12') : tintStructure('#0c1424')}
           emissive={color}
           emissiveIntensity={intensity}
           metalness={built ? 0.7 : 0.4}
@@ -93,7 +93,7 @@ function Monument({ monument, shimmerRef, isShimmer, dayMix = 0 }) {
       {/* Plinth */}
       <mesh position={[0, 0.2, 0]}>
         <boxGeometry args={[width * 1.4, 0.4, width * 1.4]} />
-        <meshStandardMaterial color="#0a0e16" emissive={color} emissiveIntensity={0.1 * intensity + 0.04} metalness={0.6} roughness={0.5} />
+        <meshStandardMaterial color={tintStructure('#0a0e16')} emissive={color} emissiveIntensity={0.1 * intensity + 0.04} metalness={0.6} roughness={0.5} />
       </mesh>
 
       <MonumentBody monument={monument} shimmerRef={shimmerRef} isShimmer={isShimmer} />
@@ -239,7 +239,7 @@ export default function CityGoalMonuments({ goals, settings }) {
             <group position={overflow.position}>
               <mesh position={[0, MONUMENTS.minHeight / 2, 0]}>
                 <boxGeometry args={[MONUMENTS.baseWidth, MONUMENTS.minHeight, MONUMENTS.baseWidth]} />
-                <meshStandardMaterial color="#0c1424" emissive="#64748b" emissiveIntensity={0.2} metalness={0.5} roughness={0.6} />
+                <meshStandardMaterial color={tintStructure('#0c1424')} emissive="#64748b" emissiveIntensity={0.2} metalness={0.5} roughness={0.6} />
               </mesh>
               <CityLabel position={[0, MONUMENTS.minHeight + 1, 0]} fontSize={0.6} color="#94a3b8" dayMix={dayMix} anchorX="center" anchorY="middle" font={PIXEL_FONT_URL} maxWidth={9}>
                 {`+${overflow.count} MORE`}

@@ -1,5 +1,15 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { deriveCityPalette, applyCityBrandColors, resolveCityTimeOfDay, cityLabelColors, CITY_COLORS, getBuildingColor } from './cityConstants';
+import { deriveCityPalette, applyCityBrandColors, resolveCityTimeOfDay, cityLabelColors, tintTowardAccent, tintStructure, CITY_COLORS, getBuildingColor } from './cityConstants';
+
+const hexLum = (hex) => {
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  return 0.299 * r + 0.587 * g + 0.114 * b;
+};
+const hexChannels = (hex) => {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+};
 import { getTheme, THEMES } from '../../themes/portosThemes';
 
 describe('deriveCityPalette', () => {
@@ -115,6 +125,39 @@ describe('cityLabelColors', () => {
   });
 });
 
+describe('tintTowardAccent / tintStructure', () => {
+  // These read the live CITY_COLORS.ground accent; set/restore it per test.
+  let savedGround;
+  beforeEach(() => { savedGround = CITY_COLORS.ground; });
+  afterEach(() => { CITY_COLORS.ground = savedGround; });
+
+  it('shifts hue toward the accent while preserving luminance', () => {
+    CITY_COLORS.ground = '#ff0000'; // pure red accent
+    const base = '#0a0e16'; // a dark blue-dominant structural base
+    const out = tintStructure(base);
+    // Luminance preserved within rounding — the base stays just as dark.
+    expect(hexLum(out)).toBeCloseTo(hexLum(base), 0);
+    // Hue pulled toward red: the red channel rises relative to the original.
+    expect(hexChannels(out)[0]).toBeGreaterThan(hexChannels(base)[0]);
+  });
+
+  it('leaves pure black untouched (no hue to tint)', () => {
+    CITY_COLORS.ground = '#22c55e';
+    expect(tintTowardAccent('#000000')).toBe('#000000');
+  });
+
+  it('is a no-op-ish identity when the accent equals the base hue direction', () => {
+    CITY_COLORS.ground = '#0a0e16';
+    // Tinting toward itself preserves the color (luminance + channels unchanged).
+    expect(hexLum(tintStructure('#0a0e16'))).toBeCloseTo(hexLum('#0a0e16'), 0);
+  });
+
+  it('returns the input unchanged for an unparseable color', () => {
+    CITY_COLORS.ground = '#22c55e';
+    expect(tintTowardAccent('not-a-hex')).toBe('not-a-hex');
+  });
+});
+
 describe('applyCityBrandColors', () => {
   // Restore the cyan baseline after each test so mutation doesn't leak across the suite.
   beforeEach(() => applyCityBrandColors(deriveCityPalette(undefined)));
@@ -133,6 +176,27 @@ describe('applyCityBrandColors', () => {
     applyCityBrandColors(deriveCityPalette(getTheme('black-ice-terminal-day')));
     expect(CITY_COLORS.building.stopped).toBe('#ef4444');
     expect(getBuildingColor('stopped')).toBe('#ef4444');
+    // not_found stays the canonical purple — the value ProcessBuilding now unifies to.
+    expect(CITY_COLORS.building.not_found).toBe('#8b5cf6');
+  });
+
+  it('re-tints the building body toward the accent, preserving its darkness', () => {
+    const ORIGINAL_BODY = '#0c0c24';
+    applyCityBrandColors(deriveCityPalette(getTheme('black-ice-terminal-day'))); // green accent
+    const themed = CITY_COLORS.buildingBody;
+    expect(themed).not.toBe(ORIGINAL_BODY); // picked up the theme
+    expect(hexLum(themed)).toBeCloseTo(hexLum(ORIGINAL_BODY), 0); // still a dark body
+  });
+
+  it('recomputes the building body from the original, not compounding across switches', () => {
+    applyCityBrandColors(deriveCityPalette(getTheme('black-ice-terminal-day')));
+    const greenBody = CITY_COLORS.buildingBody;
+    applyCityBrandColors(deriveCityPalette(getTheme('classic-midnight')));
+    const blueBody = CITY_COLORS.buildingBody;
+    // Switching back yields the same value — proof it recomputes from ORIGINAL_BUILDING_BODY.
+    applyCityBrandColors(deriveCityPalette(getTheme('black-ice-terminal-day')));
+    expect(CITY_COLORS.buildingBody).toBe(greenBody);
+    expect(blueBody).not.toBe(greenBody);
   });
 
   it('recomputes from the cyan baseline rather than compounding across switches', () => {
