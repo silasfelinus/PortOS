@@ -308,8 +308,11 @@ export default function CitySky({ settings }) {
 
   return (
     <group>
+      {/* Dome radius must exceed the CityLandscape mountain ring (~1210 max extent)
+          so the horizon mountains sit INSIDE the dome and aren't occluded by the
+          opaque daytime sky. Kept under the camera far plane (2000). */}
       <mesh material={skyMaterial}>
-        <sphereGeometry args={[500, 32, 32]} />
+        <sphereGeometry args={[1600, 32, 32]} />
       </mesh>
       <CelestialBody groupRef={bodyGroupRef} />
       <directionalLight

@@ -25,7 +25,9 @@ export default function CityGalaxySky({ settings }) {
 
   return (
     <mesh renderOrder={-1000} rotation={[0, -Math.PI * 0.18, 0]}>
-      <sphereGeometry args={[480, 64, 32]} />
+      {/* Sits just inside the CitySky dome (1600) and beyond the mountain ring
+          (~1210) so the galaxy reads as the night backdrop behind the horizon. */}
+      <sphereGeometry args={[1500, 64, 32]} />
       <meshBasicMaterial
         map={texture}
         color="#9bbcff"
