@@ -3,7 +3,14 @@ import { Drama, Plus, Pencil, Trash2, Check, X, CheckCircle2, SlidersHorizontal 
 import BrailleSpinner from '../../BrailleSpinner';
 import * as api from '../../../services/api';
 import toast from '../../ui/Toast';
-import { describeTraitAdjustments, BIG_FIVE_LEAN } from '../../../lib/personaTraitBlend.js';
+import {
+  describeTraitAdjustments,
+  BIG_FIVE_LEAN,
+  COMM_DELTA_MIN,
+  COMM_DELTA_MAX,
+  BIG_FIVE_DELTA_MIN,
+  BIG_FIVE_DELTA_MAX
+} from '../../../lib/personaTraitBlend.js';
 
 const EMOJI_OPTIONS = ['never', 'rare', 'occasional', 'frequent'];
 const BIG_FIVE_KEYS = ['O', 'C', 'E', 'A', 'N'];
@@ -507,8 +514,8 @@ function SliderRow({ id, label, hint, value, onChange }) {
       <input
         id={id}
         type="range"
-        min={-9}
-        max={9}
+        min={COMM_DELTA_MIN}
+        max={COMM_DELTA_MAX}
         step={1}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
@@ -535,8 +542,8 @@ function BigFiveRow({ id, label, more, less, value, onChange }) {
       <input
         id={id}
         type="range"
-        min={-1}
-        max={1}
+        min={BIG_FIVE_DELTA_MIN}
+        max={BIG_FIVE_DELTA_MAX}
         step={0.1}
         value={value}
         onChange={(e) => onChange(roundTenth(Number(e.target.value)))}

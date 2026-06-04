@@ -1,4 +1,14 @@
 import { z } from 'zod';
+import {
+  COMM_DELTA_MIN,
+  COMM_DELTA_MAX,
+  BIG_FIVE_DELTA_MIN,
+  BIG_FIVE_DELTA_MAX
+} from './personaTraitBlend.js';
+
+// Emoji-usage vocabulary, shared by the base twin's communication profile and a
+// persona's trait-adjustment override so the two enums can't drift apart.
+export const EMOJI_USAGE_VALUES = ['never', 'rare', 'occasional', 'frequent'];
 
 // Document category enum
 export const documentCategoryEnum = z.enum([
@@ -156,12 +166,13 @@ export const soulSettingsSchema = digitalTwinSettingsSchema; // Alias for backwa
 // ±9 delta can reach either end), absolute overrides for emoji usage and tone,
 // and directional Big-Five leans (0..1 scale → ±1 delta). All fields optional;
 // an instructions-only persona omits the whole object. The blend + directive
-// rendering live in `server/lib/personaTraitBlend.js`.
-const bigFiveDelta = z.number().min(-1).max(1);
+// rendering live in `server/lib/personaTraitBlend.js`, which is the single
+// source for the delta bounds the schema and UI sliders both enforce.
+const bigFiveDelta = z.number().min(BIG_FIVE_DELTA_MIN).max(BIG_FIVE_DELTA_MAX);
 export const personaTraitAdjustmentsSchema = z.object({
-  formality: z.number().int().min(-9).max(9).optional(),
-  verbosity: z.number().int().min(-9).max(9).optional(),
-  emojiUsage: z.enum(['never', 'rare', 'occasional', 'frequent']).optional(),
+  formality: z.number().int().min(COMM_DELTA_MIN).max(COMM_DELTA_MAX).optional(),
+  verbosity: z.number().int().min(COMM_DELTA_MIN).max(COMM_DELTA_MAX).optional(),
+  emojiUsage: z.enum(EMOJI_USAGE_VALUES).optional(),
   tone: z.string().max(100).optional(),
   bigFive: z.object({
     O: bigFiveDelta.optional(),
@@ -220,7 +231,7 @@ export const communicationProfileSchema = z.object({
   formality: z.number().int().min(1).max(10).describe('1=very casual, 10=very formal'),
   verbosity: z.number().int().min(1).max(10).describe('1=terse, 10=elaborate'),
   avgSentenceLength: z.number().min(5).max(50).optional(),
-  emojiUsage: z.enum(['never', 'rare', 'occasional', 'frequent']).default('rare'),
+  emojiUsage: z.enum(EMOJI_USAGE_VALUES).default('rare'),
   preferredTone: z.string().max(100).optional(),
   distinctiveMarkers: z.array(z.string().max(200)).max(10).optional()
 });
