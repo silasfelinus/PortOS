@@ -175,8 +175,9 @@ export async function executeScheduledJob(jobId) {
 
   // Per-domain CoS auto-run gate: a SCHEDULED job firing automatically is an
   // autonomous action, so off/dry-run withhold it (dry-run logs what it would
-  // have run). Manual /jobs/:id triggers run through runJobNow, not this path,
-  // so explicit user intent is unaffected. Record a skip first (advances
+  // have run). Manual triggers run through POST /jobs/:id/trigger (which calls
+  // the spawn/execute helpers directly), not this scheduled path, so explicit
+  // user intent is unaffected. Record a skip first (advances
   // lastRun without incrementing runCount, exactly like the gate-skip path) so
   // re-registration computes a FUTURE fire time — re-registering a past-due job
   // with stale lastRun would refire every second (the same 1s-loop the spawn
