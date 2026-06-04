@@ -89,7 +89,6 @@ import {
   generateMusic,
   ENGINES,
   DEFAULT_ENGINE_ID,
-  getEngine,
   isEngineReady,
 } from '../services/pipeline/musicGen.js';
 import { uploadSingle } from '../lib/multipart.js';
