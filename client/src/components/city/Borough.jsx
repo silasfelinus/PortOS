@@ -61,6 +61,7 @@ export default function Borough({ app, position, agentMap, onBuildingClick, play
           position={[position.x + x, 0, position.z + z, rotation]}
           seed={seed}
           dimmed={dimmed}
+          dayMix={dayMix}
         />
       ))}
 

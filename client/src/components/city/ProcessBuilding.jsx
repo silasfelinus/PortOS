@@ -2,7 +2,7 @@ import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Text } from '@react-three/drei';
 import * as THREE from 'three';
-import { CITY_COLORS, PROCESS_BUILDING_PARAMS, PIXEL_FONT_URL } from './cityConstants';
+import { CITY_COLORS, PROCESS_BUILDING_PARAMS, PIXEL_FONT_URL, mixHex } from './cityConstants';
 
 const STATUS_COLORS = {
   online: '#06b6d4',
@@ -13,7 +13,7 @@ const STATUS_COLORS = {
   error: '#ef4444',
 };
 
-export default function ProcessBuilding({ process, pm2Status, position, seed, dimmed = false }) {
+export default function ProcessBuilding({ process, pm2Status, position, seed, dimmed = false, dayMix = 0 }) {
   const blinkRef = useRef();
   const glowRef = useRef();
 
@@ -21,6 +21,9 @@ export default function ProcessBuilding({ process, pm2Status, position, seed, di
   const color = STATUS_COLORS[status] || STATUS_COLORS.not_found;
   const { width, depth } = PROCESS_BUILDING_PARAMS;
   const dimMul = dimmed ? 0.25 : 1;
+  // Match the main Building's daytime treatment — sheds neon, lightens to a lit solid.
+  const bodyColor = mixHex(CITY_COLORS.buildingBody, mixHex('#9aa0ac', color, 0.12), dayMix);
+  const neonFade = 1 - dayMix;
 
   // Height based on status + seed variation
   const height = useMemo(() => {
@@ -43,13 +46,13 @@ export default function ProcessBuilding({ process, pm2Status, position, seed, di
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
     if (blinkRef.current) {
-      blinkRef.current.material.opacity = ((Math.sin(t * 3 + seed) > 0.3) ? 0.8 : 0.1) * dimMul;
+      blinkRef.current.material.opacity = ((Math.sin(t * 3 + seed) > 0.3) ? 0.8 : 0.1) * dimMul * neonFade;
     }
     if (glowRef.current) {
       const base = status === 'online'
         ? 0.15 + Math.sin(t * 1.5 + seed) * 0.08
         : 0.08;
-      glowRef.current.material.opacity = base * dimMul;
+      glowRef.current.material.opacity = base * dimMul * neonFade;
     }
   });
 
@@ -59,23 +62,24 @@ export default function ProcessBuilding({ process, pm2Status, position, seed, di
       <mesh position={[0, height / 2, 0]}>
         <boxGeometry args={[width, height, depth]} />
         <meshStandardMaterial
-          color={CITY_COLORS.buildingBody}
+          color={bodyColor}
           emissive={color}
-          emissiveIntensity={(status === 'online' ? 0.2 : 0.08) * dimMul}
+          emissiveIntensity={(status === 'online' ? 0.2 : 0.08) * dimMul * (1 - dayMix * 0.9)}
+          roughness={dayMix > 0.5 ? 0.9 : 1}
           transparent
           opacity={0.9 * dimMul}
         />
       </mesh>
 
-      {/* Neon wireframe edges */}
+      {/* Neon wireframe edges (soften to a plain outline by day) */}
       <lineSegments position={[0, height / 2, 0]} geometry={edgesGeom}>
-        <lineBasicMaterial color={color} transparent opacity={0.8 * dimMul} />
+        <lineBasicMaterial color={dayMix > 0.5 ? mixHex('#4a4f57', color, 0.15) : color} transparent opacity={(0.8 - dayMix * 0.55) * dimMul} />
       </lineSegments>
 
       {/* Neon top cap */}
       <mesh position={[0, height + 0.01, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <planeGeometry args={[width + 0.05, depth + 0.05]} />
-        <meshBasicMaterial color={color} transparent opacity={0.4 * dimMul} />
+        <meshBasicMaterial color={color} transparent opacity={0.4 * dimMul * (1 - dayMix * 0.6)} />
       </mesh>
 
       {/* Process name on front face */}

@@ -149,24 +149,26 @@ export const CITY_COLORS = {
       },
       noon: {
         hour: 12,
-        zenith: '#4466cc',
-        midSky: '#6688dd',
-        horizonHigh: '#88aaee',
-        horizonLow: '#aaccff',
-        sunCore: '#ffffee',
-        sunGlow: '#ffffcc',
-        sunLight: '#ffffff',
-        sunIntensity: 5.0,
+        zenith: '#4a93e0',
+        midSky: '#7fb6ec',
+        horizonHigh: '#bfe0f7',
+        horizonLow: '#e6f3fc',
+        sunCore: '#fffef2',
+        sunGlow: '#fff7d6',
+        sunLight: '#fff4e0',
+        // Rebalanced to match the default noon (lower intensities / mid ground) so
+        // a dreamworld sky in Day mode doesn't blow the scene out to white.
+        sunIntensity: 1.9,
         sunScale: 0.8,
         isMoon: false,
         daylightFactor: 1.0,
-        groundColor: '#556680',
-        groundRoughness: 0.4,
-        hemiSkyColor: '#99bbff',
-        hemiGroundColor: '#445566',
-        hemiIntensity: 1.6,
-        ambientColor: '#7799cc',
-        ambientIntensity: 0.5,
+        groundColor: '#8d9198',
+        groundRoughness: 0.9,
+        hemiSkyColor: '#acc6e8',
+        hemiGroundColor: '#b4b0a0',
+        hemiIntensity: 0.95,
+        ambientColor: '#c0cce0',
+        ambientIntensity: 0.35,
       },
       sunset: {
         hour: 18,
@@ -407,7 +409,9 @@ export const deriveCityPalette = (theme) => {
 
 // Recolor the brand surfaces in-place from a derived palette. The city page calls
 // this when the theme changes and remounts the scene subtree (keyed on themeId)
-// so every component re-reads the singleton. Recomputes from ORIGINAL_BRAND.
+// so every component re-reads the singleton. Recomputes every brand surface from
+// the derived palette's accent (not from the previously-applied colors), so
+// repeated theme switches don't compound.
 export const applyCityBrandColors = (palette) => {
   const accent = palette?.accent || ORIGINAL_GROUND;
   CITY_COLORS.ground = accent;
