@@ -173,7 +173,11 @@ describe('local LLM memory-management routes', () => {
       .send({ backend: 'ollama', modelId: 'llama3.2' });
 
     expect(res.status).toBe(502);
-    expect(res.body).toEqual({ error: 'Ollama unreachable', modelId: 'llama3.2' });
+    // Standard error envelope (errorHandler): message in `error`, machine code
+    // derived from status, the modelId carried in `context` for diagnostics.
+    expect(res.body.error).toBe('Ollama unreachable');
+    expect(res.body.code).toBe('BAD_GATEWAY');
+    expect(res.body.context).toEqual({ modelId: 'llama3.2' });
     expect(unloadModel).toHaveBeenCalledWith('llama3.2');
   });
 
