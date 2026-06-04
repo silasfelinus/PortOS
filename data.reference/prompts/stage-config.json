@@ -221,6 +221,13 @@
       "returnsJson": true,
       "variables": []
     },
+    "twin-spoken-written-compare": {
+      "name": "Twin Spoken-vs-Written Comparison",
+      "description": "Compare a person's spoken transcript against their writing samples and surface communication-style differences",
+      "model": "default",
+      "returnsJson": true,
+      "variables": []
+    },
     "pipeline-idea-expansion": {
       "name": "Pipeline — Idea / Beat Sheet",
       "description": "Turn a rough seed idea for one issue or episode into a tight beat sheet with logline, theme, beats, setting, and any new characters. Spine for prose, comic script, TV script, and storyboard stages.",

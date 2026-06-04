@@ -409,6 +409,16 @@ export const writingAnalysisInputSchema = z.object({
   model: z.string().min(1)
 });
 
+// Spoken-vs-written style comparison input (M34 P5 — multi-modal capture).
+// writtenSamples is optional: when omitted the service falls back to the
+// user's enabled twin documents.
+export const spokenWrittenStyleInputSchema = z.object({
+  spokenTranscript: z.string().min(100).max(50000),
+  writtenSamples: z.array(z.string().min(10).max(20000)).max(10).optional(),
+  providerId: z.string().min(1),
+  model: z.string().min(1)
+});
+
 // List-based enrichment item
 export const listItemSchema = z.object({
   title: z.string().min(1).max(500),

@@ -28,6 +28,7 @@ import {
   contradictionInputSchema,
   generateTestsInputSchema,
   writingAnalysisInputSchema,
+  spokenWrittenStyleInputSchema,
   analyzeListInputSchema,
   saveListDocumentInputSchema,
   getListItemsInputSchema,
@@ -540,6 +541,17 @@ router.post('/tests/generate', asyncHandler(async (req, res) => {
 router.post('/analyze-writing', asyncHandler(async (req, res) => {
   const { samples, providerId, model } = validateRequest(writingAnalysisInputSchema, req.body);
   const result = await digitalTwinService.analyzeWritingSamples(samples, providerId, model);
+  res.json(result);
+}));
+
+/**
+ * POST /api/digital-twin/style/spoken-written
+ * Compare the user's spoken style (a transcript) against their written style
+ * (pasted samples, or their twin documents) and surface the differences.
+ */
+router.post('/style/spoken-written', asyncHandler(async (req, res) => {
+  const data = validateRequest(spokenWrittenStyleInputSchema, req.body);
+  const result = await digitalTwinService.compareSpokenWrittenStyle(data);
   res.json(result);
 }));
 
