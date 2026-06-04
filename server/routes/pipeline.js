@@ -1565,7 +1565,7 @@ router.post('/series/:id/seasons/:seasonId/generate-beats', asyncHandler(async (
 router.get('/series/:id/seasons/:seasonId/generate-beats/progress', (req, res) => {
   const attached = volumeBeatsRunner.attachClient(req.params.seasonId, res);
   if (!attached) {
-    res.status(404).json({ error: 'No active beat-sheet run for this volume' });
+    throw new ServerError('No active beat-sheet run for this volume', { status: 404 });
   }
 });
 
@@ -2396,7 +2396,7 @@ router.post('/issues/:id/auto-run-text', asyncHandler(async (req, res) => {
 router.get('/issues/:id/auto-run-text/progress', (req, res) => {
   const attached = autoRunner.attachClient(req.params.id, res);
   if (!attached) {
-    res.status(404).json({ error: 'No active auto-run for this issue' });
+    throw new ServerError('No active auto-run for this issue', { status: 404 });
   }
 });
 
@@ -2443,7 +2443,7 @@ router.post('/series/:id/editorial/analyze', asyncHandler(async (req, res) => {
 router.get('/series/:id/editorial/analyze/progress', (req, res) => {
   const attached = editorialRunner.attachClient(req.params.id, res);
   if (!attached) {
-    res.status(404).json({ error: 'No active editorial analysis for this series' });
+    throw new ServerError('No active editorial analysis for this series', { status: 404 });
   }
 });
 
