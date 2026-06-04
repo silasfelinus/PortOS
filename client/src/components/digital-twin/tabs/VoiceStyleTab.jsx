@@ -97,7 +97,11 @@ export default function VoiceStyleTab({ onRefresh }) {
     const res = await api.compareSpokenWrittenStyle(payload, { silent: true })
       .catch((err) => ({ error: err.message }));
 
-    if (res.error) {
+    if (res.error && res.rawResponse) {
+      // The model replied but its output couldn't be parsed — surface the
+      // unparseable-response notice inline instead of only a transient toast.
+      setResult(res);
+    } else if (res.error) {
       toast.error(res.error);
     } else {
       setResult(res);
@@ -194,7 +198,7 @@ export default function VoiceStyleTab({ onRefresh }) {
           <div className="flex justify-end">
             <button
               onClick={handleCompare}
-              disabled={comparing || transcript.trim().length < MIN_TRANSCRIPT || !selectedProviderId}
+              disabled={comparing || transcript.trim().length < MIN_TRANSCRIPT || !selectedProviderId || !selectedModel}
               className="flex items-center gap-2 px-6 py-3 min-h-[48px] bg-port-accent text-white rounded-lg font-medium hover:bg-port-accent/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {comparing ? (
