@@ -433,35 +433,12 @@ export async function getStorySessionView(id) {
   return { session, staleSteps, universe, series };
 }
 
-/**
- * Re-snapshot a sync-enabled session's `syncedHashes` baseline to the CURRENT
- * live records. This is the explicit "adopt this machine's universe/series
- * state as the new staleness baseline" gesture — the only thing that moves the
- * carried baseline on a synced session. A no-op shape-wise for a local-only
- * session (it carries no baseline), but we still allow the call so the route
- * can offer reconcile after the user flips sync on. Returns the saved session.
- */
-export async function reconcileStorySession(id) {
-  const session = await getStorySession(id);
-  const { hashes } = await computeCurrentHashes(session);
-  return store().queueRecordWrite(id, async () => {
-    const cur = await store().loadOne(id);
-    if (!cur || cur.deleted) throw makeErr(`Story Builder session not found: ${id}`, ERR_NOT_FOUND);
-    const next = sanitizeSession({ ...cur, sync: true, syncedHashes: hashes, updatedAt: nowIso() });
-    await store().saveOneNow(next.id, next);
-    return next;
-  });
-}
-
-/**
- * Toggle cross-machine resume on/off for a session (#730). Turning it ON
- * snapshots the current live hashes as the staleness baseline (so the user
- * doesn't start out "stale against nothing"); turning it OFF drops the baseline
- * and reverts to live-diff staleness.
- */
-export async function setStorySessionSync(id, enabled) {
-  const session = await getStorySession(id);
-  const { hashes } = enabled ? await computeCurrentHashes(session) : { hashes: {} };
+// Persist sync mode + (when enabled) a fresh live-hash baseline. Both
+// reconcile and sync-enable do exactly this — snapshot the current live hashes
+// as the carried staleness baseline; disabling drops the baseline entirely.
+// `hashes` is computed by the caller (outside the write queue) so disabling
+// skips the universe/series read it doesn't need.
+async function writeSyncState(id, enabled, hashes) {
   return store().queueRecordWrite(id, async () => {
     const cur = await store().loadOne(id);
     if (!cur || cur.deleted) throw makeErr(`Story Builder session not found: ${id}`, ERR_NOT_FOUND);
@@ -474,6 +451,31 @@ export async function setStorySessionSync(id, enabled) {
     await store().saveOneNow(next.id, next);
     return next;
   });
+}
+
+/**
+ * Re-snapshot a session's `syncedHashes` baseline to the CURRENT live records,
+ * and turn sync on if it wasn't already. This is the explicit "adopt this
+ * machine's universe/series state as the new staleness baseline" gesture — the
+ * only thing that moves the carried baseline on a synced session. Returns the
+ * saved session.
+ */
+export async function reconcileStorySession(id) {
+  const session = await getStorySession(id);
+  const { hashes } = await computeCurrentHashes(session);
+  return writeSyncState(id, true, hashes);
+}
+
+/**
+ * Toggle cross-machine resume on/off for a session (#730). Turning it ON
+ * snapshots the current live hashes as the staleness baseline (so the user
+ * doesn't start out "stale against nothing"); turning it OFF drops the baseline
+ * and reverts to live-diff staleness.
+ */
+export async function setStorySessionSync(id, enabled) {
+  const session = await getStorySession(id);
+  const { hashes } = enabled ? await computeCurrentHashes(session) : { hashes: {} };
+  return writeSyncState(id, enabled, hashes);
 }
 
 // ── State machine: lock / unlock ──────────────────────────────────────────
