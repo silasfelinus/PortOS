@@ -286,21 +286,32 @@ export default function CitySettingsPanel() {
             />
             <div className="py-1.5">
               <div className="font-pixel text-[10px] text-gray-400 tracking-wide mb-2">TIME OF DAY</div>
-              <div className="grid grid-cols-4 gap-1.5">
-                {['sunrise', 'noon', 'sunset', 'midnight'].map(tod => (
-                  <button
-                    key={tod}
-                    onClick={() => updateSetting('timeOfDay', tod)}
-                    className={`font-pixel text-[9px] py-2 rounded border transition-all tracking-wide ${
-                      settings.timeOfDay === tod
-                        ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.2)]'
-                        : 'bg-gray-800/40 border-gray-700/40 text-gray-500 hover:border-gray-600 hover:text-gray-400'
-                    }`}
-                  >
-                    {tod.toUpperCase()}
-                  </button>
-                ))}
+              <div className="grid grid-cols-3 gap-1.5">
+                {[
+                  { key: 'auto', label: 'AUTO' },
+                  { key: 'day', label: 'DAY' },
+                  { key: 'night', label: 'NIGHT' },
+                ].map(({ key, label }) => {
+                  // Legacy presets (sunrise/noon/sunset/midnight) read as Auto now.
+                  const active = (settings.timeOfDay === 'day' || settings.timeOfDay === 'night')
+                    ? settings.timeOfDay === key
+                    : key === 'auto';
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => updateSetting('timeOfDay', key)}
+                      className={`font-pixel text-[9px] py-2 rounded border transition-all tracking-wide ${
+                        active
+                          ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.2)]'
+                          : 'bg-gray-800/40 border-gray-700/40 text-gray-500 hover:border-gray-600 hover:text-gray-400'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
               </div>
+              <div className="font-pixel text-[8px] text-gray-600 tracking-wide mt-1.5">AUTO FOLLOWS YOUR THEME (DAY / NIGHT)</div>
             </div>
           </div>
 
