@@ -88,7 +88,6 @@ const PipelineSeriesRoadmap = lazyWithReload(() => import('./pages/PipelineSerie
 const PipelineManuscriptEditor = lazyWithReload(() => import('./pages/PipelineManuscriptEditor'));
 const PipelineIssue = lazyWithReload(() => import('./pages/PipelineIssue'));
 const Login = lazyWithReload(() => import('./pages/Login'));
-const Mobile = lazyWithReload(() => import('./pages/Mobile'));
 
 // Loading fallback for lazy-loaded pages
 const PageLoader = () => (
@@ -165,8 +164,6 @@ export default function App() {
         <Route path="/" element={<Layout />}>
           <Route index element={<Dashboard />} />
           <Route path="apps" element={<Apps />} />
-          <Route path="mobile" element={<Mobile />} />
-          <Route path="mobile/:flow" element={<Mobile />} />
           <Route path="devtools" element={<Navigate to="/devtools/runs" replace />} />
           <Route path="devtools/datadog" element={<DataDog />} />
           <Route path="devtools/github" element={<GitHub />} />

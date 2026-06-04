@@ -75,10 +75,9 @@ export const getDailyAlcohol = (from, to) => {
   if (to) params.set('to', to);
   return request(`/meatspace/alcohol/daily?${params}`);
 };
-export const logAlcoholDrink = (data, options) => request('/meatspace/alcohol/log', {
+export const logAlcoholDrink = (data) => request('/meatspace/alcohol/log', {
   method: 'POST',
-  body: JSON.stringify(data),
-  ...options
+  body: JSON.stringify(data)
 });
 export const updateAlcoholDrink = (date, index, data) => request(`/meatspace/alcohol/log/${date}/${index}`, {
   method: 'PUT',
@@ -87,7 +86,7 @@ export const updateAlcoholDrink = (date, index, data) => request(`/meatspace/alc
 export const removeAlcoholDrink = (date, index) => request(`/meatspace/alcohol/log/${date}/${index}`, {
   method: 'DELETE'
 });
-export const getCustomDrinks = (options) => request('/meatspace/alcohol/custom-drinks', options);
+export const getCustomDrinks = () => request('/meatspace/alcohol/custom-drinks');
 export const addCustomDrink = (data) => request('/meatspace/alcohol/custom-drinks', {
   method: 'POST',
   body: JSON.stringify(data)
@@ -106,10 +105,9 @@ export const getDailyNicotine = (from, to) => {
   if (to) params.set('to', to);
   return request(`/meatspace/nicotine/daily?${params}`);
 };
-export const logNicotine = (data, options) => request('/meatspace/nicotine/log', {
+export const logNicotine = (data) => request('/meatspace/nicotine/log', {
   method: 'POST',
-  body: JSON.stringify(data),
-  ...options
+  body: JSON.stringify(data)
 });
 export const updateNicotineEntry = (date, index, data) => request(`/meatspace/nicotine/log/${date}/${index}`, {
   method: 'PUT',
@@ -118,7 +116,7 @@ export const updateNicotineEntry = (date, index, data) => request(`/meatspace/ni
 export const removeNicotineEntry = (date, index) => request(`/meatspace/nicotine/log/${date}/${index}`, {
   method: 'DELETE'
 });
-export const getCustomNicotineProducts = (options) => request('/meatspace/nicotine/custom-products', options);
+export const getCustomNicotineProducts = () => request('/meatspace/nicotine/custom-products');
 export const addCustomNicotineProduct = (data) => request('/meatspace/nicotine/custom-products', {
   method: 'POST',
   body: JSON.stringify(data)
