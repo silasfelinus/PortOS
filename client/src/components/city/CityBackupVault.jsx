@@ -1,6 +1,6 @@
 import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { PIXEL_FONT_URL, cityDayMix } from './cityConstants';
+import { PIXEL_FONT_URL, cityDayMix, tintStructure } from './cityConstants';
 import CityLabel from './CityLabel';
 import { computeBackupVault } from '../../utils/cityBackupVault';
 import { timeAgo } from '../../utils/formatters';
@@ -39,7 +39,7 @@ export default function CityBackupVault({ backupStatus, settings }) {
       <mesh position={[0, height / 2, 0]}>
         <boxGeometry args={[width, height, width * 0.8]} />
         <meshStandardMaterial
-          color="#0a0e16"
+          color={tintStructure('#0a0e16')}
           emissive={color}
           emissiveIntensity={0.12 + vault.intensity * 0.18}
           metalness={0.6}
@@ -49,7 +49,7 @@ export default function CityBackupVault({ backupStatus, settings }) {
       {/* Beveled cap so it reads as a sealed bunker, not just a box */}
       <mesh position={[0, height + 0.25, 0]}>
         <boxGeometry args={[width * 1.1, 0.5, width * 0.9]} />
-        <meshStandardMaterial color="#0d131f" emissive={color} emissiveIntensity={0.25} metalness={0.7} roughness={0.4} />
+        <meshStandardMaterial color={tintStructure('#0d131f')} emissive={color} emissiveIntensity={0.25} metalness={0.7} roughness={0.4} />
       </mesh>
       {/* Circular vault seal on the front (+Z) face — the live health indicator */}
       <mesh ref={sealRef} position={[0, height * 0.5, width * 0.4 + 0.05]} rotation={[Math.PI / 2, 0, 0]}>

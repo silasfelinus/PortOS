@@ -1,7 +1,7 @@
 import { useMemo, useRef, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { PIXEL_FONT_URL, cityDayMix } from './cityConstants';
+import { PIXEL_FONT_URL, cityDayMix, tintStructure } from './cityConstants';
 import CityLabel from './CityLabel';
 import { computeFederationHorizon, FEDERATION } from '../../utils/cityFederation';
 
@@ -62,7 +62,7 @@ function Monolith({ position, width, height, color, opacity, label, sublabel, on
       <mesh position={[0, height / 2, 0]}>
         <boxGeometry args={[width, height, width * 0.4]} />
         <meshStandardMaterial
-          color="#0a0a18"
+          color={tintStructure('#0a0a18')}
           emissive={color}
           emissiveIntensity={opacity}
           transparent

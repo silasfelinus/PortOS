@@ -1,6 +1,6 @@
 import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { PIXEL_FONT_URL, cityDayMix } from './cityConstants';
+import { PIXEL_FONT_URL, cityDayMix, tintStructure } from './cityConstants';
 import CityLabel from './CityLabel';
 import { computeArtifacts, ARTIFACTS } from '../../utils/cityArtifacts';
 
@@ -20,7 +20,7 @@ function Artifact({ artifact, dayMix = 0 }) {
       {/* Pedestal base */}
       <mesh position={[0, ph / 2, 0]}>
         <cylinderGeometry args={[pw * 0.6, pw * 0.7, ph, 6]} />
-        <meshStandardMaterial color="#0a0e16" emissive={color} emissiveIntensity={0.12} metalness={0.7} roughness={0.4} />
+        <meshStandardMaterial color={tintStructure('#0a0e16')} emissive={color} emissiveIntensity={0.12} metalness={0.7} roughness={0.4} />
       </mesh>
 
       {/* Glowing faceted emblem — the artifact itself */}

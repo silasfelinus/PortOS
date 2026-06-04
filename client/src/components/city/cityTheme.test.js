@@ -1,5 +1,15 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { deriveCityPalette, applyCityBrandColors, resolveCityTimeOfDay, cityLabelColors, CITY_COLORS, getBuildingColor } from './cityConstants';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { deriveCityPalette, applyCityBrandColors, resolveCityTimeOfDay, cityLabelColors, tintTowardAccent, tintStructure, CITY_COLORS, getBuildingColor, seededRand, smoothstepRange, cityDayMix } from './cityConstants';
+
+const hexLum = (hex) => {
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  return 0.299 * r + 0.587 * g + 0.114 * b;
+};
+const hexChannels = (hex) => {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+};
 import { getTheme, THEMES } from '../../themes/portosThemes';
 
 describe('deriveCityPalette', () => {
@@ -115,6 +125,39 @@ describe('cityLabelColors', () => {
   });
 });
 
+describe('tintTowardAccent / tintStructure', () => {
+  // These read the live CITY_COLORS.ground accent; set/restore it per test.
+  let savedGround;
+  beforeEach(() => { savedGround = CITY_COLORS.ground; });
+  afterEach(() => { CITY_COLORS.ground = savedGround; });
+
+  it('shifts hue toward the accent while preserving luminance', () => {
+    CITY_COLORS.ground = '#ff0000'; // pure red accent
+    const base = '#0a0e16'; // a dark blue-dominant structural base
+    const out = tintStructure(base);
+    // Luminance preserved within rounding — the base stays just as dark.
+    expect(hexLum(out)).toBeCloseTo(hexLum(base), 0);
+    // Hue pulled toward red: the red channel rises relative to the original.
+    expect(hexChannels(out)[0]).toBeGreaterThan(hexChannels(base)[0]);
+  });
+
+  it('leaves pure black untouched (no hue to tint)', () => {
+    CITY_COLORS.ground = '#22c55e';
+    expect(tintTowardAccent('#000000')).toBe('#000000');
+  });
+
+  it('is a no-op-ish identity when the accent equals the base hue direction', () => {
+    CITY_COLORS.ground = '#0a0e16';
+    // Tinting toward itself preserves the color (luminance + channels unchanged).
+    expect(hexLum(tintStructure('#0a0e16'))).toBeCloseTo(hexLum('#0a0e16'), 0);
+  });
+
+  it('returns the input unchanged for an unparseable color', () => {
+    CITY_COLORS.ground = '#22c55e';
+    expect(tintTowardAccent('not-a-hex')).toBe('not-a-hex');
+  });
+});
+
 describe('applyCityBrandColors', () => {
   // Restore the cyan baseline after each test so mutation doesn't leak across the suite.
   beforeEach(() => applyCityBrandColors(deriveCityPalette(undefined)));
@@ -133,6 +176,27 @@ describe('applyCityBrandColors', () => {
     applyCityBrandColors(deriveCityPalette(getTheme('black-ice-terminal-day')));
     expect(CITY_COLORS.building.stopped).toBe('#ef4444');
     expect(getBuildingColor('stopped')).toBe('#ef4444');
+    // not_found stays the canonical purple — the value ProcessBuilding now unifies to.
+    expect(CITY_COLORS.building.not_found).toBe('#8b5cf6');
+  });
+
+  it('re-tints the building body toward the accent, preserving its darkness', () => {
+    const ORIGINAL_BODY = '#0c0c24';
+    applyCityBrandColors(deriveCityPalette(getTheme('black-ice-terminal-day'))); // green accent
+    const themed = CITY_COLORS.buildingBody;
+    expect(themed).not.toBe(ORIGINAL_BODY); // picked up the theme
+    expect(hexLum(themed)).toBeCloseTo(hexLum(ORIGINAL_BODY), 0); // still a dark body
+  });
+
+  it('recomputes the building body from the original, not compounding across switches', () => {
+    applyCityBrandColors(deriveCityPalette(getTheme('black-ice-terminal-day')));
+    const greenBody = CITY_COLORS.buildingBody;
+    applyCityBrandColors(deriveCityPalette(getTheme('classic-midnight')));
+    const blueBody = CITY_COLORS.buildingBody;
+    // Switching back yields the same value — proof it recomputes from ORIGINAL_BUILDING_BODY.
+    applyCityBrandColors(deriveCityPalette(getTheme('black-ice-terminal-day')));
+    expect(CITY_COLORS.buildingBody).toBe(greenBody);
+    expect(blueBody).not.toBe(greenBody);
   });
 
   it('recomputes from the cyan baseline rather than compounding across switches', () => {
@@ -140,5 +204,66 @@ describe('applyCityBrandColors', () => {
     applyCityBrandColors(deriveCityPalette(getTheme('classic-midnight')));
     // classic-midnight accent is 59 130 246 -> #3b82f6, not a blend of green+blue
     expect(CITY_COLORS.ground).toBe('#3b82f6');
+  });
+});
+
+describe('seededRand', () => {
+  it('is deterministic for a given seed', () => {
+    const a = seededRand(42);
+    const b = seededRand(42);
+    const seqA = [a(), a(), a(), a(), a()];
+    const seqB = [b(), b(), b(), b(), b()];
+    expect(seqA).toEqual(seqB);
+  });
+
+  it('produces different streams for different seeds', () => {
+    const a = seededRand(42);
+    const b = seededRand(137);
+    expect(a()).not.toBe(b());
+  });
+
+  it('yields values in [0, 1)', () => {
+    const r = seededRand(3187);
+    for (let i = 0; i < 100; i++) {
+      const v = r();
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThan(1);
+    }
+  });
+
+  it('matches the original inline LCG it replaced', () => {
+    // Reference: the exact expression copy-pasted across the city components.
+    let s = 77;
+    const ref = () => { s = (s * 16807) % 2147483647; return (s & 0x7fffffff) / 2147483647; };
+    const r = seededRand(77);
+    expect([r(), r(), r()]).toEqual([ref(), ref(), ref()]);
+  });
+});
+
+describe('smoothstepRange', () => {
+  it('clamps below edge0 to 0 and above edge1 to 1', () => {
+    expect(smoothstepRange(0.35, 1, 0.2)).toBe(0);
+    expect(smoothstepRange(0.35, 1, 1)).toBe(1);
+    expect(smoothstepRange(0.35, 1, 2)).toBe(1);
+  });
+
+  it('returns the Hermite midpoint at the center', () => {
+    expect(smoothstepRange(0, 1, 0.5)).toBeCloseTo(0.5, 10);
+  });
+
+  it('guards against a zero-width range', () => {
+    expect(smoothstepRange(0.5, 0.5, 0.4)).toBe(0);
+    expect(smoothstepRange(0.5, 0.5, 0.6)).toBe(1);
+  });
+});
+
+describe('cityDayMix', () => {
+  it('is 1 in full daylight and 0 at night', () => {
+    expect(cityDayMix({ timeOfDay: 'noon' })).toBe(1);
+    expect(cityDayMix({ timeOfDay: 'sunset' })).toBe(0);
+  });
+
+  it('defaults to the night preset when unset', () => {
+    expect(cityDayMix(undefined)).toBe(0);
   });
 });

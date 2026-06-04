@@ -1,6 +1,6 @@
 import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { PIXEL_FONT_URL, cityDayMix } from './cityConstants';
+import { PIXEL_FONT_URL, cityDayMix, tintStructure } from './cityConstants';
 import CityLabel from './CityLabel';
 import { computeProductivityMonument } from '../../utils/cityProductivity';
 
@@ -38,11 +38,11 @@ export default function CityProductivityDistrict({ productivityData, settings })
       {/* Stepped plinth the obelisk rises from */}
       <mesh position={[0, 0.4, 0]}>
         <boxGeometry args={[baseWidth * 1.6, 0.8, baseWidth * 1.6]} />
-        <meshStandardMaterial color="#0a0e16" emissive={color} emissiveIntensity={0.08} metalness={0.6} roughness={0.5} />
+        <meshStandardMaterial color={tintStructure('#0a0e16')} emissive={color} emissiveIntensity={0.08} metalness={0.6} roughness={0.5} />
       </mesh>
       <mesh position={[0, 1.0, 0]}>
         <boxGeometry args={[baseWidth * 1.2, 0.5, baseWidth * 1.2]} />
-        <meshStandardMaterial color="#0c121d" emissive={color} emissiveIntensity={0.12} metalness={0.6} roughness={0.5} />
+        <meshStandardMaterial color={tintStructure('#0c121d')} emissive={color} emissiveIntensity={0.12} metalness={0.6} roughness={0.5} />
       </mesh>
 
       {/* Tapered obelisk shaft — height scales with the streak */}
@@ -50,7 +50,7 @@ export default function CityProductivityDistrict({ productivityData, settings })
         <mesh position={[0, shaftTop / 2, 0]}>
           <cylinderGeometry args={[baseWidth * 0.18, baseWidth * 0.42, shaftTop, 4]} />
           <meshStandardMaterial
-            color="#0a0e16"
+            color={tintStructure('#0a0e16')}
             emissive={color}
             emissiveIntensity={0.12 + monument.intensity * 0.25}
             metalness={0.6}

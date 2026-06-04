@@ -1,7 +1,7 @@
 import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { PIXEL_FONT_URL, cityDayMix } from './cityConstants';
+import { PIXEL_FONT_URL, cityDayMix, tintStructure } from './cityConstants';
 import CityLabel from './CityLabel';
 
 function SignalBeacon({ position, color, label, sublabel, intensity = 1, dayMix = 0 }) {
@@ -34,7 +34,7 @@ function SignalBeacon({ position, color, label, sublabel, intensity = 1, dayMix 
 
       <mesh position={[0, 0.15, 0]}>
         <cylinderGeometry args={[0.35, 0.45, 0.3, 10]} />
-        <meshStandardMaterial color="#0a0a18" emissive={color} emissiveIntensity={0.35 * intensity} />
+        <meshStandardMaterial color={tintStructure('#0a0a18')} emissive={color} emissiveIntensity={0.35 * intensity} />
       </mesh>
 
       <mesh position={[0, 0.42, 0]}>
