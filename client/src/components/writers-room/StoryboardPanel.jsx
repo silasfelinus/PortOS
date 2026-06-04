@@ -61,6 +61,8 @@ export default function StoryboardPanel({
   onCharactersChange,
   onPlacesChange,
   onScenesChange,
+  onLiveRenderContextChange,
+  registerSceneImageMerge,
   objects = [],
   onObjectsChange,
   onRunObjects,
@@ -251,6 +253,42 @@ export default function StoryboardPanel({
     // analysis snapshot changing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [latestScript]);
+
+  // Surface everything the Phase 5 live render preview needs to render the
+  // scene under the cursor: the scenes + their owning analysis id (for the
+  // scene-image attach), the bible lookup maps, and the active image config /
+  // world style. The panel reuses SceneCard's exact prompt + render path, so it
+  // needs the same inputs. Keyed on the analysis snapshot identity (scenes /
+  // charByKey / placeByKey are all derived from it or from the bible props).
+  useEffect(() => {
+    onLiveRenderContextChange?.({
+      analysisId: latestScript?.id || null,
+      scenes,
+      charByKey,
+      placeByKey,
+      imageCfg,
+      imageStyle,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [latestScript, charByKey, placeByKey, imageCfg, imageStyle]);
+
+  // Expose an imperative "merge a freshly-attached sceneImages map" up to
+  // WorkEditor so the live render preview's completion updates the boards
+  // reactively (no refetch) — only when the attach targeted the analysis we're
+  // currently showing (a stale attach against a since-replaced analysis is
+  // dropped). The merged-in snapshot supersedes the prior sceneImages.
+  useEffect(() => {
+    if (!registerSceneImageMerge) return undefined;
+    registerSceneImageMerge((analysis) => {
+      if (!analysis?.id || !analysis.sceneImages) return;
+      setLatestScript((prev) => (
+        prev && prev.id === analysis.id
+          ? { ...prev, sceneImages: { ...prev.sceneImages, ...analysis.sceneImages } }
+          : prev
+      ));
+    });
+    return () => registerSceneImageMerge(null);
+  }, [registerSceneImageMerge]);
 
   return (
     <div className="flex flex-col h-full">

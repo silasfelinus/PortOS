@@ -72,10 +72,26 @@ export const suggestWritersRoomContinuation = (workId, context, options) =>
     body: JSON.stringify(context || {}),
     ...(options || {}),
   });
-export const attachWritersRoomSceneImage = (workId, analysisId, payload) =>
+// Persist a scene→generated-image link on the analysis snapshot (and mirror it
+// into the work's media collection). Returns { analysis, collectionId } — the
+// analysis carries the merged sceneImages map so callers can update reactively.
+// Pass { silent: true } when you own the error UI (e.g. a console.warn).
+export const attachWritersRoomSceneImage = (workId, analysisId, payload, options) =>
   request(`/writers-room/works/${enc(workId)}/analysis/${enc(analysisId)}/scene-image`, {
     method: 'POST',
     body: JSON.stringify(payload),
+    ...(options || {}),
+  });
+
+// Reserve one live render preview (Phase 5) against the per-work render budget.
+// Call this BEFORE kicking off the render via the existing image-gen route —
+// the server gates on the live-mode toggle (409) and the distinct daily render
+// budget (429). Returns { renderUsage, renderBudget }. Callers own their own
+// error UI, so pass { silent: true } to avoid a double toast.
+export const reserveWritersRoomRenderPreview = (workId, options) =>
+  request(`/writers-room/works/${enc(workId)}/live-render-preview`, {
+    method: 'POST',
+    ...(options || {}),
   });
 
 // Synced review (Phase 4): a read-model that maps prose segments ↔ script
