@@ -14,9 +14,10 @@ export default function MobileAskFlow() {
   const [answer, setAnswer] = useState('');
   const [streaming, setStreaming] = useState(false);
   const controllerRef = useRef(null);
+  const mountedRef = useRef(true);
 
   // Abort any in-flight stream when the flow unmounts (back to hub / nav away).
-  useEffect(() => () => controllerRef.current?.abort(), []);
+  useEffect(() => () => { mountedRef.current = false; controllerRef.current?.abort(); }, []);
 
   const ask = useCallback(async (q) => {
     const trimmed = (q ?? question).trim();
@@ -44,7 +45,8 @@ export default function MobileAskFlow() {
     ).catch((err) => {
       if (err.name !== 'AbortError') toast.error(err.message || 'Ask failed');
     });
-    setStreaming(false);
+    // Skip the state write if the flow unmounted mid-stream.
+    if (mountedRef.current) setStreaming(false);
   }, [question, streaming]);
 
   return (

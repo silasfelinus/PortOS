@@ -67,12 +67,12 @@ export const updateCosTask = (id, updates) => request(`/cos/tasks/${id}`, {
   method: 'PUT',
   body: JSON.stringify(updates)
 });
-export const deleteCosTask = (id, taskType = 'user') => request(`/cos/tasks/${id}?type=${taskType}`, { method: 'DELETE' });
+export const deleteCosTask = (id, taskType = 'user', options) => request(`/cos/tasks/${id}?type=${taskType}`, { method: 'DELETE', ...options });
 export const reorderCosTasks = (taskIds) => request('/cos/tasks/reorder', {
   method: 'POST',
   body: JSON.stringify({ taskIds })
 });
-export const approveCosTask = (id) => request(`/cos/tasks/${id}/approve`, { method: 'POST' });
+export const approveCosTask = (id, options) => request(`/cos/tasks/${id}/approve`, { method: 'POST', ...options });
 export const forceCosEvaluate = () => request('/cos/evaluate', { method: 'POST' });
 export const forceSpawnTask = (taskId) => request(`/cos/tasks/${taskId}/spawn`, { method: 'POST' });
 export const getCosHealth = () => request('/cos/health');

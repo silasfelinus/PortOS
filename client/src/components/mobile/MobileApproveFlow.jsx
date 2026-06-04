@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, X, Inbox } from 'lucide-react';
+import { Check, X, Inbox, AlertTriangle } from 'lucide-react';
 import * as api from '../../services/api';
 import toast from '../ui/Toast';
 import BrailleSpinner from '../BrailleSpinner';
@@ -12,12 +12,10 @@ export default function MobileApproveFlow() {
   const { data, loading, refetch } = useAutoRefetch(() => api.getCosTasks({ silent: true }), 20_000);
   const [busyId, setBusyId] = useState(null);
 
-  // GET /api/cos/tasks returns { user, cos } — awaiting-approval lives on cos.
-  const awaiting = data?.cos?.awaitingApproval || [];
-
   const approve = async (task) => {
     setBusyId(task.id);
-    const result = await api.approveCosTask(task.id).catch((err) => {
+    // silent: this flow owns the error toast in the catch below.
+    const result = await api.approveCosTask(task.id, { silent: true }).catch((err) => {
       toast.error(`Approve failed: ${err.message}`);
       return null;
     });
@@ -32,7 +30,8 @@ export default function MobileApproveFlow() {
 
   const reject = async (task) => {
     setBusyId(task.id);
-    const result = await api.deleteCosTask(task.id, 'internal').catch((err) => {
+    // silent: this flow owns the error toast in the catch below.
+    const result = await api.deleteCosTask(task.id, 'internal', { silent: true }).catch((err) => {
       toast.error(`Reject failed: ${err.message}`);
       return null;
     });
@@ -45,6 +44,21 @@ export default function MobileApproveFlow() {
   if (loading && !data) {
     return <div className="flex justify-center py-12"><BrailleSpinner text="Loading approvals" /></div>;
   }
+
+  // useAutoRefetch preserves the last good snapshot on error, so a null `data`
+  // after the initial load means the fetch never succeeded — distinguish that
+  // from a genuinely-empty queue so a failed fetch doesn't read as "all clear".
+  if (!data) {
+    return (
+      <div className="flex flex-col items-center gap-2 py-12 text-center text-gray-500">
+        <AlertTriangle size={40} aria-hidden="true" />
+        <p className="text-base">Approvals are unavailable right now.</p>
+      </div>
+    );
+  }
+
+  // GET /api/cos/tasks returns { user, cos } — awaiting-approval lives on cos.
+  const awaiting = data.cos?.awaitingApproval || [];
 
   if (awaiting.length === 0) {
     return (

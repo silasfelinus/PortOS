@@ -75,9 +75,10 @@ export const getDailyAlcohol = (from, to) => {
   if (to) params.set('to', to);
   return request(`/meatspace/alcohol/daily?${params}`);
 };
-export const logAlcoholDrink = (data) => request('/meatspace/alcohol/log', {
+export const logAlcoholDrink = (data, options) => request('/meatspace/alcohol/log', {
   method: 'POST',
-  body: JSON.stringify(data)
+  body: JSON.stringify(data),
+  ...options
 });
 export const updateAlcoholDrink = (date, index, data) => request(`/meatspace/alcohol/log/${date}/${index}`, {
   method: 'PUT',
@@ -105,9 +106,10 @@ export const getDailyNicotine = (from, to) => {
   if (to) params.set('to', to);
   return request(`/meatspace/nicotine/daily?${params}`);
 };
-export const logNicotine = (data) => request('/meatspace/nicotine/log', {
+export const logNicotine = (data, options) => request('/meatspace/nicotine/log', {
   method: 'POST',
-  body: JSON.stringify(data)
+  body: JSON.stringify(data),
+  ...options
 });
 export const updateNicotineEntry = (date, index, data) => request(`/meatspace/nicotine/log/${date}/${index}`, {
   method: 'PUT',

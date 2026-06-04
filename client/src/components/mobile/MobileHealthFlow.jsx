@@ -10,6 +10,7 @@ const HEALTH_STYLE = {
   healthy: { color: 'text-port-success', Icon: CheckCircle, label: 'Healthy' },
   warning: { color: 'text-port-warning', Icon: AlertTriangle, label: 'Warning' },
   critical: { color: 'text-port-error', Icon: XCircle, label: 'Critical' },
+  unknown: { color: 'text-gray-400', Icon: AlertTriangle, label: 'Unknown' },
 };
 
 function tone(pct, warn, critical) {
@@ -28,7 +29,8 @@ export default function MobileHealthFlow() {
 
   const restart = async (app) => {
     setRestartingId(app.id);
-    const result = await api.restartApp(app.id).catch((err) => {
+    // silent: this flow owns the error toast in the catch below.
+    const result = await api.restartApp(app.id, { silent: true }).catch((err) => {
       toast.error(`Restart failed: ${err.message}`);
       return null;
     });
@@ -45,15 +47,29 @@ export default function MobileHealthFlow() {
     return <div className="flex justify-center py-12"><BrailleSpinner text="Loading health" /></div>;
   }
 
-  const style = HEALTH_STYLE[health?.overallHealth] || HEALTH_STYLE.healthy;
+  // useAutoRefetch preserves the last good snapshot on error, so a null `health`
+  // after the initial load means the fetch has never succeeded — show an
+  // explicit unavailable state rather than a misleading "Healthy".
+  if (!health) {
+    return (
+      <div className="flex flex-col items-center gap-2 py-12 text-center text-gray-500">
+        <AlertTriangle size={32} aria-hidden="true" />
+        <p className="text-base">System health is unavailable right now.</p>
+      </div>
+    );
+  }
+
+  // Unrecognized overallHealth falls to a neutral "unknown" style, never "healthy".
+  const style = HEALTH_STYLE[health.overallHealth] || HEALTH_STYLE.unknown;
   const StatusIcon = style.Icon;
   const mem = health?.system?.memory;
   const disk = health?.system?.disk;
   const cpu = health?.system?.cpu;
   const thresholds = health?.thresholds || {};
 
-  // Only PM2-managed apps can be restarted; others (Xcode/native) have no runtime.
-  const restartable = (apps || []).filter((a) => a.overallStatus && a.overallStatus !== 'n/a');
+  // Only active, PM2-managed apps can be restarted; archived apps and
+  // others (Xcode/native, overallStatus 'n/a') have no restartable runtime.
+  const restartable = (apps || []).filter((a) => !a.archived && a.overallStatus && a.overallStatus !== 'n/a');
 
   return (
     <div className="space-y-4">

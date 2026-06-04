@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Wine, Cigarette, Check } from 'lucide-react';
 import * as api from '../../services/api';
 import toast from '../ui/Toast';
@@ -25,6 +25,9 @@ export default function MobileLogFlow() {
   const [tab, setTab] = useState('alcohol');
   const [busy, setBusy] = useState(null);
   const [lastLogged, setLastLogged] = useState(null);
+  const flashTimerRef = useRef(null);
+
+  useEffect(() => () => clearTimeout(flashTimerRef.current), []);
 
   // Custom presets change rarely — poll slowly just to pick up edits made elsewhere.
   const { data: customDrinks } = useAutoRefetch(() => api.getCustomDrinks({ silent: true }), 300_000);
@@ -33,7 +36,8 @@ export default function MobileLogFlow() {
   const logDrink = async (drink) => {
     const key = `${drink.name}-${drink.oz}-${drink.abv}`;
     setBusy(key);
-    const result = await api.logAlcoholDrink({ name: drink.name, oz: drink.oz, abv: drink.abv }).catch((err) => {
+    // silent: this flow owns the error toast in the catch below.
+    const result = await api.logAlcoholDrink({ name: drink.name, oz: drink.oz, abv: drink.abv }, { silent: true }).catch((err) => {
       toast.error(`Log failed: ${err.message}`);
       return null;
     });
@@ -45,7 +49,8 @@ export default function MobileLogFlow() {
   const logNic = async (product) => {
     const key = `${product.product}-${product.mgPerUnit}`;
     setBusy(key);
-    const result = await api.logNicotine({ product: product.product, mgPerUnit: product.mgPerUnit }).catch((err) => {
+    // silent: this flow owns the error toast in the catch below.
+    const result = await api.logNicotine({ product: product.product, mgPerUnit: product.mgPerUnit }, { silent: true }).catch((err) => {
       toast.error(`Log failed: ${err.message}`);
       return null;
     });
@@ -57,7 +62,8 @@ export default function MobileLogFlow() {
   const flash = (msg) => {
     setLastLogged(msg);
     toast.success(msg);
-    setTimeout(() => setLastLogged(null), 2500);
+    clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => setLastLogged(null), 2500);
   };
 
   // Normalize both kinds into one button shape { key, label, detail, onTap }

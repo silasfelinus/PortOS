@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { Send, Check } from 'lucide-react';
 import * as api from '../../services/api';
 import toast from '../ui/Toast';
@@ -11,6 +11,9 @@ export default function MobileCaptureFlow() {
   const [text, setText] = useState('');
   const [saving, setSaving] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  const savedTimerRef = useRef(null);
+
+  useEffect(() => () => clearTimeout(savedTimerRef.current), []);
 
   const onTranscript = useCallback((chunk) => {
     setText((prev) => (prev ? `${prev} ${chunk}`.trim() : chunk));
@@ -20,7 +23,8 @@ export default function MobileCaptureFlow() {
     const trimmed = text.trim();
     if (!trimmed || saving) return;
     setSaving(true);
-    const result = await api.captureBrainThought(trimmed).catch((err) => {
+    // silent: this flow owns the error toast in the catch below.
+    const result = await api.captureBrainThought(trimmed, undefined, undefined, { silent: true }).catch((err) => {
       toast.error(`Capture failed: ${err.message}`);
       return null;
     });
@@ -28,7 +32,8 @@ export default function MobileCaptureFlow() {
     if (!result) return;
     setText('');
     setJustSaved(true);
-    setTimeout(() => setJustSaved(false), 2000);
+    clearTimeout(savedTimerRef.current);
+    savedTimerRef.current = setTimeout(() => setJustSaved(false), 2000);
     toast.success('Captured to Brain');
   };
 

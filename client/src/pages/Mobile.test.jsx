@@ -20,6 +20,7 @@ vi.mock('../services/api', () => ({
   getApps: vi.fn().mockResolvedValue([
     { id: 'app1', name: 'BookLoom', overallStatus: 'online' },
     { id: 'native', name: 'iOSApp', overallStatus: 'n/a' },
+    { id: 'old', name: 'OldApp', overallStatus: 'stopped', archived: true },
   ]),
   restartApp: vi.fn().mockResolvedValue({ ok: true }),
   handleSelfRestart: vi.fn(),
@@ -77,12 +78,13 @@ describe('Mobile hub', () => {
 });
 
 describe('Mobile flow dispatch', () => {
-  it('renders the log flow with one-tap presets and posts on tap', async () => {
+  it('renders the log flow with one-tap presets and posts silently on tap', async () => {
     renderAt('/mobile/log');
     const beerBtn = await screen.findByText('Beer');
     fireEvent.click(beerBtn.closest('button'));
     await waitFor(() => {
-      expect(api.logAlcoholDrink).toHaveBeenCalledWith({ name: 'Beer', oz: 12, abv: 5 });
+      // Flow owns its own error toast, so the API call must be silent.
+      expect(api.logAlcoholDrink).toHaveBeenCalledWith({ name: 'Beer', oz: 12, abv: 5 }, { silent: true });
     });
   });
 
@@ -91,17 +93,33 @@ describe('Mobile flow dispatch', () => {
     expect(await screen.findByText(/Nothing awaiting approval/i)).toBeTruthy();
   });
 
-  it('renders the health flow with a restart button for managed apps only', async () => {
+  it('renders the health flow with a restart button for managed, non-archived apps only', async () => {
     renderAt('/mobile/health');
     expect(await screen.findByText('BookLoom')).toBeTruthy();
-    // n/a (native) app is filtered out of the restartable list.
+    // n/a (native) and archived apps are filtered out of the restartable list.
     expect(screen.queryByText('iOSApp')).toBeNull();
+    expect(screen.queryByText('OldApp')).toBeNull();
     fireEvent.click(screen.getByLabelText('Restart BookLoom'));
-    await waitFor(() => expect(api.restartApp).toHaveBeenCalledWith('app1'));
+    await waitFor(() => expect(api.restartApp).toHaveBeenCalledWith('app1', { silent: true }));
   });
 
   it('redirects an unknown flow slug back to the hub', () => {
     renderAt('/mobile/bogus');
     expect(screen.getByText('Quick Actions')).toBeTruthy();
+  });
+
+  it('shows an explicit unavailable state when health never loads (not a false "Healthy")', async () => {
+    // useAutoRefetch keeps data null when the fetch rejects.
+    api.getSystemHealth.mockRejectedValueOnce(new Error('boom'));
+    renderAt('/mobile/health');
+    expect(await screen.findByText(/System health is unavailable/i)).toBeTruthy();
+    expect(screen.queryByText('Healthy')).toBeNull();
+  });
+
+  it('shows an unavailable state for approvals when the queue fetch fails (not "Nothing awaiting")', async () => {
+    api.getCosTasks.mockRejectedValueOnce(new Error('boom'));
+    renderAt('/mobile/approve');
+    expect(await screen.findByText(/Approvals are unavailable/i)).toBeTruthy();
+    expect(screen.queryByText(/Nothing awaiting approval/i)).toBeNull();
   });
 });
