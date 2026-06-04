@@ -775,8 +775,11 @@ async function dequeueNextTask() {
 
   const hasPendingUserTasks = pendingUserTasks.length > 0;
 
-  // Priority 3: Mission-driven proactive tasks
-  if (spawned < availableSlots && !hasPendingUserTasks && state.config.proactiveMode) {
+  // Priority 3: Mission-driven proactive tasks. These are speculative autonomous
+  // spawns — when CoS auto-run isn't `execute`, skip generating them entirely
+  // (off and dry-run both withhold autonomous spawns; only the concrete already-
+  // queued auto-approved tasks above are surfaced for dry-run).
+  if (spawned < availableSlots && !hasPendingUserTasks && state.config.proactiveMode && cosAutonomyMode === 'execute') {
     const missionTasks = await generateMissionTasks({ maxTasks: availableSlots - spawned }).catch(err => {
       emitLog('debug', `Mission task generation failed: ${err.message}`);
       return [];
@@ -802,8 +805,9 @@ async function dequeueNextTask() {
     }
   }
 
-  // Priority 4: Idle review task (only when completely idle)
-  if (spawned === 0 && state.config.idleReviewEnabled && !hasPendingUserTasks) {
+  // Priority 4: Idle review task (only when completely idle) — also an autonomous
+  // spawn, so gated by the CoS auto-run domain.
+  if (spawned === 0 && state.config.idleReviewEnabled && !hasPendingUserTasks && cosAutonomyMode === 'execute') {
     const freshCosTasks = await getCosTasks();
     const pendingSystemTasks = freshCosTasks.autoApproved?.length || 0;
     if (pendingSystemTasks === 0) {

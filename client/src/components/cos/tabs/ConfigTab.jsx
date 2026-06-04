@@ -172,7 +172,7 @@ function DomainAutonomyControl({ config, onDomainChange }) {
                   return (
                     <button
                       key={mode.id}
-                      onClick={() => onDomainChange(domain.id, mode.id, mode.label)}
+                      onClick={() => onDomainChange(domain.id, mode.id, mode.label, domain.label)}
                       title={mode.description}
                       className={`px-2.5 py-1 text-xs font-medium rounded-md border transition-all ${isActive ? colors.active : colors.base}`}
                     >
@@ -227,10 +227,16 @@ export default function ConfigTab({ config, onUpdate, onEvaluate, avatarStyle, s
     onUpdate();
   };
 
-  const handleDomainChange = async (domainId, mode, modeLabel) => {
-    await api.updateCosConfig({ domainAutonomy: { [domainId]: mode } }).catch(err => toast.error(err.message));
-    toast.success(`${domainId} autonomy set to ${modeLabel}`);
-    onUpdate();
+  const handleDomainChange = async (domainId, mode, modeLabel, domainLabel) => {
+    // Custom error toast ⇒ pass { silent: true } so the helper doesn't also
+    // toast; and only show success / refresh AFTER the PUT actually resolves.
+    try {
+      await api.updateCosConfig({ domainAutonomy: { [domainId]: mode } }, { silent: true });
+      toast.success(`${domainLabel} autonomy set to ${modeLabel}`);
+      onUpdate();
+    } catch (err) {
+      toast.error(err.message);
+    }
   };
 
   const handleSave = async () => {

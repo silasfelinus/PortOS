@@ -655,6 +655,22 @@ describe('cos.js source — priority + capacity invariants', () => {
     expect(evalFn).toMatch(/tasksToSpawn\.length\s*===\s*0\s*&&\s*state\.config\.idleReviewEnabled/);
   });
 
+  it('CoS auto-run domain gate (#711) fences autonomous spawns in BOTH engines', () => {
+    // Per-domain autonomy: the `cos` guardrail must gate every AUTOMATIC internal
+    // spawn path — not just the auto-approved loop. Both spawn engines
+    // (dequeueNextTask in cos.js, evaluateTasks in cosTaskGenerator.js) must read
+    // the cos mode and fence their mission / idle / auto-approved blocks on it,
+    // or "off"/"dry-run" leaks autonomous agents through the un-gated engine.
+    const dequeueFn = extractFnBody(COS_SRC, COS_SRC.indexOf('async function dequeueNextTask'));
+    const evalFn    = extractFnBody(GEN_SRC, GEN_SRC.indexOf('export async function evaluateTasks'));
+
+    for (const [name, fnBody] of [['dequeueNextTask', dequeueFn], ['evaluateTasks', evalFn]]) {
+      expect(fnBody, `${name} must resolve the cos autonomy mode`).toMatch(/getDomainMode\(\s*state\.config\s*,\s*['"]cos['"]\s*\)/);
+      // The mission/idle blocks must be fenced on execute so off/dry-run skip them.
+      expect(fnBody, `${name} must fence autonomous spawns on cosAutonomyMode === 'execute'`).toMatch(/cosAutonomyMode\s*===\s*['"]execute['"]/);
+    }
+  });
+
   it('both on-demand loops dedupe markAppReviewStarted per app via reviewStartedApps set', () => {
     // Multiple on-demand requests targeting the same app should mark its
     // activity record review-started only once per cycle — without the guard,

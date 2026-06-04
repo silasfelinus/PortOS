@@ -45,9 +45,10 @@ export const pauseCos = (reason) => request('/cos/pause', {
 });
 export const resumeCos = () => request('/cos/resume', { method: 'POST' });
 export const getCosConfig = () => request('/cos/config');
-export const updateCosConfig = (config) => request('/cos/config', {
+export const updateCosConfig = (config, options = {}) => request('/cos/config', {
   method: 'PUT',
-  body: JSON.stringify(config)
+  body: JSON.stringify(config),
+  ...options
 });
 export const getCosTasks = (options) => request('/cos/tasks', options);
 export const addCosTask = (task) => request('/cos/tasks', {
