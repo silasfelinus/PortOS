@@ -120,6 +120,19 @@ export const compareSpokenWrittenStyle = (payload, options = {}) => request('/di
   ...options
 });
 
+// Image identity source (M34 P5). Analyze a photo with a vision model to extract
+// visible appearance / presentation, then optionally save it as an identity doc.
+export const analyzeIdentityImage = (payload, options = {}) => request('/digital-twin/identity/image', {
+  method: 'POST',
+  body: JSON.stringify(payload),
+  ...options
+});
+export const saveIdentityImageDocument = (payload, options = {}) => request('/digital-twin/identity/image/save', {
+  method: 'POST',
+  body: JSON.stringify(payload),
+  ...options
+});
+
 // Digital Twin - List-based Enrichment
 export const analyzeEnrichmentList = (category, items, providerId, model) => request('/digital-twin/enrich/analyze-list', {
   method: 'POST',

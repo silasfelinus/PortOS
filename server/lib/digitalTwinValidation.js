@@ -419,6 +419,24 @@ export const spokenWrittenStyleInputSchema = z.object({
   model: z.string().min(1)
 });
 
+// Image identity-source input (M34 P5 — multi-modal capture). A base64 image
+// data URL plus the vision-capable provider/model. The data URL is capped well
+// under the server's 55mb JSON body limit (~15M chars ≈ 11MB of image bytes).
+export const identityImageInputSchema = z.object({
+  imageDataUrl: z.string()
+    .max(15_000_000)
+    .regex(/^data:image\/(png|jpe?g|gif|webp);base64,/, 'Must be a base64 image data URL'),
+  providerId: z.string().min(1),
+  model: z.string().min(1)
+});
+
+// Save the appearance analysis as an identity document. Mirrors the import/save
+// upsert shape — content is required, title optional.
+export const identityImageSaveInputSchema = z.object({
+  content: z.string().min(1).max(100000),
+  title: z.string().min(1).max(200).optional()
+});
+
 // List-based enrichment item
 export const listItemSchema = z.object({
   title: z.string().min(1).max(500),

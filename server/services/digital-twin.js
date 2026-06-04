@@ -116,6 +116,12 @@ export {
 } from './digital-twin-style-comparison.js';
 
 export {
+  analyzeIdentityImage,
+  saveIdentityImageDocument,
+  parseIdentityImage
+} from './digital-twin-image-identity.js';
+
+export {
   analyzeImportedData,
   saveImportAsDocument,
   getImportSources,

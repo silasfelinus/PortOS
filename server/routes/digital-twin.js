@@ -29,6 +29,8 @@ import {
   generateTestsInputSchema,
   writingAnalysisInputSchema,
   spokenWrittenStyleInputSchema,
+  identityImageInputSchema,
+  identityImageSaveInputSchema,
   analyzeListInputSchema,
   saveListDocumentInputSchema,
   getListItemsInputSchema,
@@ -552,6 +554,31 @@ router.post('/analyze-writing', asyncHandler(async (req, res) => {
 router.post('/style/spoken-written', asyncHandler(async (req, res) => {
   const data = validateRequest(spokenWrittenStyleInputSchema, req.body);
   const result = await digitalTwinService.compareSpokenWrittenStyle(data);
+  res.json(result);
+}));
+
+/**
+ * POST /api/digital-twin/identity/image
+ * Analyze a photo of the user with a vision model and extract visible
+ * appearance / self-presentation descriptors (M34 P5 — multi-modal capture).
+ */
+router.post('/identity/image', asyncHandler(async (req, res) => {
+  const data = validateRequest(identityImageInputSchema, req.body);
+  const result = await digitalTwinService.analyzeIdentityImage(data);
+  res.json(result);
+}));
+
+/**
+ * POST /api/digital-twin/identity/image/save
+ * Persist the appearance analysis as a Digital Twin identity document
+ * (upserts APPEARANCE.md).
+ */
+router.post('/identity/image/save', asyncHandler(async (req, res) => {
+  const data = validateRequest(identityImageSaveInputSchema, req.body);
+  const result = await digitalTwinService.saveIdentityImageDocument(data);
+  if (result?.error) {
+    throw new ServerError(result.error, { status: 400, code: 'VALIDATION_ERROR' });
+  }
   res.json(result);
 }));
 
