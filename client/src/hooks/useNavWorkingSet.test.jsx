@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { useNavWorkingSet } from './useNavWorkingSet.js';
@@ -69,6 +69,21 @@ describe('useNavWorkingSet', () => {
     localStorage.setItem(PINNED_KEY, '{bad');
     const { result } = renderHook(() => useNavWorkingSet(resolveNavEntry), { wrapper });
     expect(result.current.pinned).toEqual([]);
+  });
+
+  it('does not throw when localStorage.getItem throws (private mode)', () => {
+    const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('SecurityError'); });
+    expect(() => renderHook(() => useNavWorkingSet(resolveNavEntry), { wrapper })).not.toThrow();
+    spy.mockRestore();
+  });
+
+  it('does not throw when localStorage.setItem throws (quota)', () => {
+    const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('QuotaExceededError'); });
+    const { result } = renderHook(() => useNavWorkingSet(resolveNavEntry), { wrapper });
+    expect(() => act(() => result.current.pin('/brain/inbox'))).not.toThrow();
+    // in-memory state still updates despite the write failing
+    expect(result.current.isPinned('/brain/inbox')).toBe(true);
+    spy.mockRestore();
   });
 
   it('records a subsequent navigation into recent and storage', () => {

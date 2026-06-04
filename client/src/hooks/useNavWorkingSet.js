@@ -5,11 +5,11 @@ import {
   recordVisit, togglePin as togglePinPure, isPinned as isPinnedPure,
 } from '../utils/navWorkingSet.js';
 
-// Read a JSON string[] from localStorage, tolerating absent/corrupt values.
+// Read a JSON string[] from localStorage, tolerating absent/corrupt/throwing storage.
 const readList = (key) => {
-  const raw = localStorage.getItem(key);
-  if (!raw) return [];
   try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed.filter((p) => typeof p === 'string') : [];
   } catch {
@@ -17,7 +17,15 @@ const readList = (key) => {
   }
 };
 
-const writeList = (key, list) => localStorage.setItem(key, JSON.stringify(list));
+// Persist a JSON string[]; ignore storage failures (private mode / quota) so the
+// in-memory React state still updates and the app never crashes on a write.
+const writeList = (key, list) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(list));
+  } catch {
+    /* storage unavailable (private mode / quota) — keep in-memory state only */
+  }
+};
 
 /**
  * Sidebar working-set state (Pinned + Recent), persisted to localStorage.

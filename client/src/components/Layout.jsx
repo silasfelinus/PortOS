@@ -82,6 +82,7 @@ import {
   Share2,
   Pin,
   PinOff,
+  Navigation,
   Workflow as WorkflowIcon
 } from 'lucide-react';
 /* global __APP_VERSION__ */
@@ -491,6 +492,24 @@ export default function Layout() {
     return () => window.removeEventListener('focus', onFocus);
   }, []);
 
+  // Fetch the palette nav manifest once on mount so manifest-only paths
+  // (e.g. /wiki/log, /goals/tree) can be resolved in the Pinned/Recent sections
+  // even though they are not sidebar leaves.
+  const [manifestNav, setManifestNav] = useState([]);
+  useEffect(() => {
+    api.getPaletteManifest({ silent: true })
+      .then((data) => setManifestNav(Array.isArray(data?.nav) ? data.nav : []))
+      .catch((err) => console.warn(`⚠️ Layout: palette manifest fetch failed: ${err?.message || err}`));
+  }, []);
+
+  const manifestEntryByPath = useMemo(() => {
+    const map = new Map();
+    manifestNav.forEach((c) => {
+      if (c?.path && !map.has(c.path)) map.set(c.path, { path: c.path, label: c.label, icon: Navigation });
+    });
+    return map;
+  }, [manifestNav]);
+
   useEffect(() => {
     localStorage.setItem(SIDEBAR_KEY, String(collapsed));
   }, [collapsed]);
@@ -570,8 +589,8 @@ export default function Layout() {
   }, [resolvedNavItems]);
 
   const resolveNavEntry = useCallback(
-    (path) => navEntryByPath.get(path) || null,
-    [navEntryByPath],
+    (path) => navEntryByPath.get(path) || manifestEntryByPath.get(path) || null,
+    [navEntryByPath, manifestEntryByPath],
   );
 
   const { pinned, recent, pin, unpin, isPinned } = useNavWorkingSet(resolveNavEntry);
