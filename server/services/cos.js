@@ -341,7 +341,10 @@ export async function start() {
   setTimeout(() => {
     if (!isDaemonRunning()) return;
     loadState().then(async (state) => {
-      if (!state.config.idleReviewEnabled) return;
+      // Gate on the CoS auto-run domain (parity with evaluateTasks and the
+      // cos-improvement-check timer): queueing improvement tasks mutates
+      // COS-TASKS.md with autonomous internal work, so off/dry-run must not queue.
+      if (!state.config.idleReviewEnabled || getDomainMode(state.config, 'cos') !== 'execute') return;
       const cosTaskData = await getCosTasks();
       await queueEligibleImprovementTasks(state, cosTaskData);
       setImmediate(() => dequeueNextTask());
