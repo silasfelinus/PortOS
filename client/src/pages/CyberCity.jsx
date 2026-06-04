@@ -13,11 +13,23 @@ import { CitySettingsProvider, useCitySettingsContext } from '../components/city
 import CitySettingsPanel from '../components/city/CitySettingsPanel';
 import { computeFilterResult } from '../utils/cityFilter';
 import { DEFAULT_PRESET_ID, cyclePreset } from '../utils/cityPhotoMode';
+import { computeSoundscape } from '../utils/citySoundscape';
 
 function CyberCityInner() {
   const { apps, cosAgents, cosStatus, eventLogs, agentMap, reviewCounts, instances, systemHealth, notificationCounts, backupStatus, cosTasks, healthMetrics, voiceState, character, aiActivity, loading, connected } = useCityData();
   const { settings, updateSetting } = useCitySettingsContext();
-  const { playSfx } = useCityAudio(settings);
+
+  // Ambient soundscape (roadmap 3.4): the music's mood follows system health and its energy
+  // follows live agent activity. Derived from data the page already has — no extra fetch.
+  const activeAgentCount = useMemo(
+    () => (cosAgents || []).filter(a => a.status === 'running' || a.state === 'coding' || a.state === 'thinking' || a.state === 'investigating').length,
+    [cosAgents]
+  );
+  const soundscape = useMemo(
+    () => computeSoundscape({ systemHealth, agentCount: activeAgentCount }),
+    [systemHealth, activeAgentCount]
+  );
+  const { playSfx } = useCityAudio(settings, soundscape);
   const navigate = useNavigate();
   const location = useLocation();
   const [filter, setFilter] = useState(() => {
@@ -93,6 +105,26 @@ function CyberCityInner() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [photoMode]);
+
+  // Task-complete chime (roadmap 3.4): when a CoS task transitions to completed, play a reward
+  // chime. Track the set of completed ids across socket updates and chime on each newly-seen one.
+  // Seeded on first populated render (completedSeenRef === null) so a fresh page load doesn't
+  // chime for every already-completed task in the backlog.
+  const completedSeenRef = useRef(null);
+  useEffect(() => {
+    const completedIds = (cosTasks || []).filter(t => t?.status === 'completed').map(t => t.id);
+    if (completedSeenRef.current === null) {
+      completedSeenRef.current = new Set(completedIds);
+      return;
+    }
+    let fired = false;
+    for (const id of completedIds) {
+      if (!completedSeenRef.current.has(id)) {
+        completedSeenRef.current.add(id);
+        if (!fired) { playSfx('taskComplete'); fired = true; } // one chime per batch, not per task
+      }
+    }
+  }, [cosTasks, playSfx]);
 
   // Productivity data for HUD vitals and billboards. Let errors throw —
   // `useAutoRefetch` preserves the last-good snapshot on transient failures.
