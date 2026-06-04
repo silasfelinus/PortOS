@@ -478,9 +478,10 @@ export async function reconcileStorySession(id) {
  * and reverts to live-diff staleness.
  */
 export async function setStorySessionSync(id, enabled) {
+  const on = enabled === true;
   const session = await getStorySession(id);
-  const { hashes } = enabled ? await computeCurrentHashes(session) : { hashes: {} };
-  return writeSyncState(id, enabled, hashes);
+  const { hashes } = on ? await computeCurrentHashes(session) : { hashes: {} };
+  return writeSyncState(id, on, hashes);
 }
 
 // ── State machine: lock / unlock ──────────────────────────────────────────
