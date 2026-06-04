@@ -245,6 +245,18 @@ describe('reviewQueue.buildQueue', () => {
     expect(ask.promoteTargets).toEqual(['brain', 'task']);
     expect(ask.goalOptions).toBeUndefined();
   });
+
+  it('skips malformed goal entries without sinking the whole queue', async () => {
+    askConversations.listConversations.mockResolvedValue([{ id: 'a1', title: 'promote me', promoted: false, turnCount: 1 }]);
+    // A null / non-object entry must not throw synchronously in the filter —
+    // that would run before the per-producer catch and sink every source.
+    identity.getGoals.mockResolvedValue({ goals: [null, 'bogus', { id: 'g1', title: 'Real goal', status: 'active' }] });
+    const queue = await buildQueue();
+    const ask = queue.items.find(i => i.source === 'ask');
+    expect(ask).toBeTruthy();
+    expect(ask.promoteTargets).toEqual(['brain', 'task', 'goal']);
+    expect(ask.goalOptions).toEqual([{ id: 'g1', title: 'Real goal' }]);
+  });
 });
 
 describe('reviewQueue.promoteAskQueueItem', () => {

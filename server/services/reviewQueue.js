@@ -68,9 +68,13 @@ async function getActiveGoalOptions() {
     return null;
   });
   const goals = Array.isArray(data?.goals) ? data.goals : [];
+  // Guard each entry — a malformed `null`/non-object goal would otherwise throw
+  // on `g.status` here, and because this runs *before* the per-producer
+  // Promise.all catch in buildQueue, that throw would sink the whole queue
+  // rather than degrading goal targets to empty.
   return goals
-    .filter((g) => g.status === 'active' && typeof g.id === 'string' && g.id)
-    .map((g) => ({ id: g.id, title: g.title || '(untitled goal)' }));
+    .filter((g) => g && typeof g === 'object' && g.status === 'active' && typeof g.id === 'string' && g.id)
+    .map((g) => ({ id: g.id, title: typeof g.title === 'string' && g.title ? g.title : '(untitled goal)' }));
 }
 
 /**
@@ -116,11 +120,12 @@ const PRODUCERS = [
     source: 'ask',
     label: 'Ask answers',
     drillTo: '/ask',
-    // No inline action: "promote" for an Ask answer means saving a specific turn
-    // into Brain/Task/Goal (askConversations.promoteAskTurn), which needs the
-    // user to pick a target — so it can't be one-click. (setPromoted only *pins*
-    // the conversation against expiry, which the Ask UI labels "Pin", not the
-    // promote-to-target the queue title implies.) Drill into /ask to promote.
+    // Ask carries no single `action`/`resolve` primitive (the row's
+    // `setPromoted` only *pins* the conversation against expiry, which the Ask
+    // UI labels "Pin", not promote-to-target). Promotion is instead offered
+    // inline via `promoteTargets` + `goalOptions`: brain/task in one click and
+    // goal via a picker (see map() below). Drilling into /ask still works for a
+    // per-turn promote the queue's latest-turn shortcut doesn't cover.
     async gather() {
       // Conversations with content that haven't been promoted to brain/task/goal.
       const convs = await askConversations.listConversations({ limit: PER_SOURCE_LIMIT * 2 });
