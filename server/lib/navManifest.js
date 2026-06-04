@@ -100,6 +100,7 @@ export const NAV_COMMANDS = [
 
   { id: 'nav.twin.overview', path: '/digital-twin/overview', label: 'Overview', section: 'Digital Twin', aliases: ['digital-twin', 'twin'] },
   { id: 'nav.twin.accounts', path: '/digital-twin/accounts', label: 'Accounts', section: 'Digital Twin', aliases: ['twin-accounts'] },
+  { id: 'nav.twin.appearance', path: '/digital-twin/appearance', label: 'Appearance', section: 'Digital Twin', aliases: ['twin-appearance', 'appearance', 'photo'], keywords: ['image', 'photo', 'vision', 'face', 'identity', 'presentation', 'look', 'avatar'] },
   { id: 'nav.ask', path: '/ask', label: 'Ask Yourself', section: 'Digital Twin', aliases: ['ask', 'ask-yourself', 'twin-chat'], keywords: ['chat', 'twin', 'conversation', 'advise', 'draft'] },
   { id: 'nav.twin.autobiography', path: '/digital-twin/autobiography', label: 'Autobiography', section: 'Digital Twin', aliases: ['twin-autobiography', 'autobiography'] },
   { id: 'nav.character', path: '/character', label: 'Character', section: 'Digital Twin', aliases: ['character'] },
