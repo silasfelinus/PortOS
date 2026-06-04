@@ -95,8 +95,10 @@ beforeEach(() => {
   api.generateStoryStep.mockResolvedValue({ result: {} });
   api.refineStoryStep.mockResolvedValue({ result: {}, changes: [] });
   api.setStoryIssueLock.mockResolvedValue({});
-  api.setStorySessionSync.mockImplementation(async (_id, sync) => ({ id: 'stb-1', sync }));
-  api.reconcileStorySession.mockResolvedValue({ id: 'stb-1', sync: true });
+  // The sync/reconcile routes return the recomputed view (staleSteps + syncDrift),
+  // not just the record — toggling sync or reconciling can shift staleness.
+  api.setStorySessionSync.mockImplementation(async (_id, sync) => ({ id: 'stb-1', sync, staleSteps: [], syncDrift: false }));
+  api.reconcileStorySession.mockResolvedValue({ id: 'stb-1', sync: true, staleSteps: [], syncDrift: false });
   api.getUniverse.mockResolvedValue({ id: 'u1', logline: 'L', premise: 'P', styleNotes: 'S', influences: { embrace: [], avoid: [] }, characters: [] });
   api.getPipelineSeries.mockResolvedValue({ id: 's1', arc: { logline: 'AL', summary: 'AS', readerMap: { hooks: [{ id: 'rm-1', label: 'Why?' }] } } });
   api.listPipelineIssues.mockResolvedValue([]);
@@ -511,5 +513,31 @@ describe('StoryBuilder — detail stepper', () => {
     // Drift clears reactively → message flips and the button disables.
     await waitFor(() => expect(screen.getByText(/Baseline matches this machine/i)).toBeTruthy());
     expect(screen.getByRole('button', { name: /Reconcile/i }).disabled).toBe(true);
+  });
+
+  it('cross-machine resume: reconcile surfaces newly-stale steps from the recomputed view (#730)', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    api.getStorySession.mockResolvedValue({
+      id: 'stb-1', title: 'Salt Run', currentStep: 'readerMap',
+      universeId: 'u1', seriesId: 's1',
+      steps: mkSteps({
+        idea: { locked: true }, universeAesthetic: { locked: true },
+        plotArc: { locked: true }, readerMap: { status: 'locked', locked: true },
+      }),
+      staleSteps: [], sync: true, syncDrift: true, llm: { provider: '', model: '' },
+    });
+    // Reconcile adopts this machine's records → a locked step whose frozen hash
+    // differs from the adopted baseline becomes stale; the route returns it.
+    api.reconcileStorySession.mockResolvedValue({ id: 'stb-1', sync: true, staleSteps: ['readerMap'], syncDrift: false });
+    renderAt('/story-builder/stb-1/readerMap');
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Reader Map' })).toBeTruthy());
+    // No stale warning before reconcile.
+    expect(screen.queryByText(/re-review and re-lock/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /Reconcile/i }));
+    await waitFor(() => expect(api.reconcileStorySession).toHaveBeenCalled());
+    // The recomputed view's staleSteps merges reactively → stale banner appears
+    // without a full refetch.
+    await waitFor(() => expect(screen.getByText(/re-review and re-lock/i)).toBeTruthy());
   });
 });

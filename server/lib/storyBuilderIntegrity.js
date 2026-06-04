@@ -69,8 +69,10 @@ export function computeStaleSteps(session, currentHashes = {}) {
  * its staleness off `syncedHashes` (so a peer's edit can't false-positive it),
  * but the user may still want to adopt this machine's current records as the new
  * baseline — and they only need to when at least one locked step's live hash no
- * longer matches the carried baseline. Returns false when no baseline exists or
- * no locked step diverges.
+ * longer matches the carried baseline. A locked step missing from the baseline
+ * counts as drift (adopting the records would add a hash the session hasn't
+ * recorded); a locked step with no live hash available is skipped. Returns
+ * false when the session has no locked steps or every locked step matches.
  */
 export function computeSyncDrift(session, currentHashes = {}, syncedHashes = {}) {
   const steps = session?.steps || {};

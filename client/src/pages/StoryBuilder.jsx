@@ -1094,31 +1094,37 @@ function StoryBuilderDetail({ storyId, stepParam }) {
     if (updated) setSession((prev) => (prev ? { ...prev, llm: updated.llm } : prev));
   };
 
-  // Cross-machine resume (#730). Toggling sync on captures a fresh staleness
-  // baseline from this machine's live records; reconcile re-captures it. Both
-  // settle drift to false, so we merge the server-confirmed `sync` flag and
-  // clear drift locally rather than refetching the whole view.
+  // Cross-machine resume (#730). The sync/reconcile routes return the full
+  // recomputed session view (staleSteps + syncDrift), not just the record —
+  // because toggling sync or reconciling shifts the staleness baseline, which
+  // can change which steps read as stale. Merge the whole view so the step rail
+  // and the drift indicator both update reactively, no full refetch.
+  const applySessionView = (view) => {
+    setSession((prev) => (prev ? { ...prev, ...view } : view));
+    setStaleSteps(view.staleSteps || []);
+    setSyncDrift(view.syncDrift === true);
+  };
+
   const toggleSync = async () => {
     if (!session || syncBusy) return;
     const next = session.sync !== true;
     setSyncBusy(true);
-    const updated = await setStorySessionSync(storyId, next, { silent: true })
+    const view = await setStorySessionSync(storyId, next, { silent: true })
       .catch(() => null)
       .finally(() => setSyncBusy(false));
-    if (!updated) { toast.error('Failed to update cross-machine resume'); return; }
-    setSession((prev) => (prev ? { ...prev, sync: updated.sync === true } : prev));
-    setSyncDrift(false);
+    if (!view) { toast.error('Failed to update cross-machine resume'); return; }
+    applySessionView(view);
     toast.success(next ? 'Cross-machine resume enabled' : 'Cross-machine resume disabled');
   };
 
   const reconcile = async () => {
     if (!session || session.sync !== true || syncBusy) return;
     setSyncBusy(true);
-    const updated = await reconcileStorySession(storyId, { silent: true })
+    const view = await reconcileStorySession(storyId, { silent: true })
       .catch(() => null)
       .finally(() => setSyncBusy(false));
-    if (!updated) { toast.error('Failed to reconcile'); return; }
-    setSyncDrift(false);
+    if (!view) { toast.error('Failed to reconcile'); return; }
+    applySessionView(view);
     toast.success('Re-baselined to this machine');
   };
 

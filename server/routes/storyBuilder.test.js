@@ -92,11 +92,15 @@ describe('GET /api/story-builder/:id', () => {
 });
 
 describe('cross-machine resume routes (#730)', () => {
-  it('POST /:id/sync toggles sync and dispatches to the service', async () => {
+  it('POST /:id/sync toggles sync, dispatches to the service, and returns the recomputed view', async () => {
     const res = await request(makeApp()).post('/api/story-builder/stb-1/sync').send({ sync: true });
     expect(res.status).toBe(200);
     expect(svc.setStorySessionSync).toHaveBeenCalledWith('stb-1', true);
-    expect(res.body.sync).toBe(true);
+    // Toggling sync can shift staleness, so the route returns the flattened view
+    // (staleSteps + syncDrift) — not the bare record — for a reactive merge.
+    expect(svc.getStorySessionView).toHaveBeenCalledWith('stb-1');
+    expect(res.body.staleSteps).toEqual(['readerMap']);
+    expect(res.body.syncDrift).toBe(true);
   });
 
   it('POST /:id/sync rejects a missing sync flag with 400', async () => {
@@ -105,11 +109,15 @@ describe('cross-machine resume routes (#730)', () => {
     expect(svc.setStorySessionSync).not.toHaveBeenCalled();
   });
 
-  it('POST /:id/reconcile re-baselines and dispatches to the service', async () => {
+  it('POST /:id/reconcile re-baselines, dispatches to the service, and returns the recomputed view', async () => {
     const res = await request(makeApp()).post('/api/story-builder/stb-1/reconcile').send({});
     expect(res.status).toBe(200);
     expect(svc.reconcileStorySession).toHaveBeenCalledWith('stb-1');
-    expect(res.body.reconciled).toBe(true);
+    // Reconcile moves the baseline → staleSteps recompute; the route returns the
+    // flattened view so the client updates the step rail without a refetch.
+    expect(svc.getStorySessionView).toHaveBeenCalledWith('stb-1');
+    expect(res.body.staleSteps).toEqual(['readerMap']);
+    expect(res.body.syncDrift).toBe(true);
   });
 
   it('maps a reconcile VALIDATION error (local-only session) to 400', async () => {
