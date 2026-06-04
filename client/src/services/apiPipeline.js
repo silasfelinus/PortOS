@@ -634,3 +634,28 @@ export const generatePipelineMusic = (issueId, { prompt, engine, durationSec, mo
     body: JSON.stringify({ prompt, engine, durationSec, modelId }),
     ...options,
   });
+
+// ---- Whole-episode audio cues (issue #863) ----
+
+// Derive the per-arc cue list from the episode's own beats + storyboard scene
+// order and flip audioMode to 'generated'. Already-rendered cue audio is
+// carried forward by label. Pass { force: true } to replace an existing
+// cues[] (server 409s otherwise). Returns
+// { issue, stage, cues, cueCount, runId, providerId, model }.
+export const generatePipelineAudioCues = (issueId, { engine, providerOverride, modelOverride, force } = {}, options = {}) =>
+  request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/audio/cues/generate`, {
+    method: 'POST',
+    body: JSON.stringify({ engine, providerOverride, modelOverride, force }),
+    ...options,
+  });
+
+// Render one cue's music via the generator-agnostic generateMusic contract,
+// stamping trackFilename + durationSec back into that cue. Long-running;
+// callers own a busy state. Returns
+// { issue, stage, cueIdx, cue, trackFilename, durationSec, engine, modelId }.
+export const renderPipelineAudioCue = (issueId, cueIdx, { engine, durationSec, modelId } = {}, options = {}) =>
+  request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/audio/cues/${encodeURIComponent(cueIdx)}/render`, {
+    method: 'POST',
+    body: JSON.stringify({ engine, durationSec, modelId }),
+    ...options,
+  });

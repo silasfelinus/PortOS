@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, Sparkles, Wand2, Mic, Music, Upload, Trash2 } from 'lucide-react';
+import { Loader2, Sparkles, Wand2, Mic, Music, Upload, Trash2, ListMusic } from 'lucide-react';
 import toast from '../../ui/Toast';
 import VoicePicker from '../../voice/VoicePicker';
 import {
@@ -26,15 +26,31 @@ import {
   deletePipelineMusicTrack,
   listPipelineMusicGenerators,
   generatePipelineMusic,
+  generatePipelineAudioCues,
+  renderPipelineAudioCue,
+  updatePipelineIssue,
   PIPELINE_STAGE_LABELS,
   PIPELINE_STAGE_STATUS_LABEL as STATUS_LABEL,
   PIPELINE_STAGE_STATUS_COLOR as STATUS_COLOR,
 } from '../../../services/api';
 
+// The whole-episode audio strategy (#863). 'per-clip' keeps each stitched
+// clip's own soundtrack (today's default); 'silent' strips it; 'generated'
+// lays an arc-driven cues[] bed across the timeline; 'uploaded-track' loops a
+// single attached/generated music pointer.
+const AUDIO_MODES = [
+  { id: 'per-clip', label: 'Per-clip audio', hint: "Keep each stitched clip's own soundtrack." },
+  { id: 'silent', label: 'Silent', hint: 'Strip clip audio — voice-over plays over silence.' },
+  { id: 'generated', label: 'Generated cues', hint: 'Arc-driven music cues laid across the episode timeline.' },
+  { id: 'uploaded-track', label: 'Single track', hint: 'Loop one attached/uploaded music track under the whole episode.' },
+];
+
 export default function AudioStage({ issue, onStageUpdate }) {
   const stage = issue.stages?.audio || { status: 'empty', lines: [], music: null };
   const lines = Array.isArray(stage.lines) ? stage.lines : [];
   const music = stage.music || null;
+  const audioMode = AUDIO_MODES.some((m) => m.id === stage.audioMode) ? stage.audioMode : 'per-clip';
+  const cues = Array.isArray(stage.cues) ? stage.cues : [];
   const [extracting, setExtracting] = useState(false);
   // Per-line render busy state keyed by line index — multiple lines can
   // render concurrently with independent spinners.
@@ -107,26 +123,61 @@ export default function AudioStage({ issue, onStageUpdate }) {
   // separate from text drafts; committed on blur via the same patch queue.
   const [offsetDrafts, setOffsetDrafts] = useState({});
 
+  // Whole-episode audio mode (#863). Persists via the existing PATCH /issues/:id
+  // route. `audioModeSaving` gates the mode-dependent cue actions while the
+  // PATCH is in flight (CLAUDE.md "in-flight saves must gate dependent actions").
+  const [audioModeSaving, setAudioModeSaving] = useState(false);
+  // Generated-cue state: deriving the list, rendering each / all cues, and
+  // per-cue prompt drafts (committed on blur via the cue write queue below).
+  const [derivingCues, setDerivingCues] = useState(false);
+  const [renderingCues, setRenderingCues] = useState(() => new Set());
+  const [renderingAllCues, setRenderingAllCues] = useState(false);
+  const [cuePromptDrafts, setCuePromptDrafts] = useState({});
+  // Two-click arm for the destructive re-derive (replaces an existing cues[]).
+  const [cuesReplaceArmed, setCuesReplaceArmed] = useState(false);
+  const cuesArmTimerRef = useRef(null);
+  useEffect(() => () => {
+    if (cuesArmTimerRef.current) clearTimeout(cuesArmTimerRef.current);
+  }, []);
+  // Pending cue-prompt PATCH promises by cue index so a Render awaits the
+  // freshest persisted prompt — the render route reads cue.prompt server-side,
+  // so a render fired before the blur-save settles would synth stale text.
+  const pendingCueSavesRef = useRef(new Map());
+
+  // When the stage loads (or switches) into 'generated' mode, eagerly fetch the
+  // generators list so the cue Render affordances can gate on engine readiness
+  // without first opening the music Generate panel. `loadGenerators` is a no-op
+  // once the list has landed.
+  useEffect(() => {
+    if (audioMode === 'generated') void loadGenerators();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioMode]);
+
+  // Fetch the generators list (once) without opening the music Generate panel —
+  // the cue affordances and the panel both need it to gate on engine readiness.
+  const loadGenerators = async () => {
+    if (generators !== null) return;
+    // Owns its own error toast → silent so the helper doesn't double-toast.
+    const result = await listPipelineMusicGenerators({ silent: true }).catch((err) => {
+      toast.error(err.message || 'Failed to load generators');
+      return null;
+    });
+    if (result) {
+      setGenerators(result);
+      // Default to the server's default engine, then that engine's default
+      // model + duration. Falls back to the flattened legacy fields.
+      const engines = result.engines ?? [];
+      const defEngine = engines.find((e) => e.id === result.defaultEngine) || engines[0] || null;
+      setGenEngineId((prev) => prev || defEngine?.id || result.defaultEngine || 'musicgen');
+      setGenModelId((prev) => prev || defEngine?.defaultModelId || result.defaultModelId || result.models?.[0]?.id || '');
+      const defDuration = defEngine?.defaultDurationSec ?? result.defaultDurationSec;
+      if (Number.isFinite(defDuration)) setGenDuration(defDuration);
+    }
+  };
+
   const openGenPanel = async () => {
     setGenPanelOpen(true);
-    if (generators === null) {
-      // Owns its own error toast → silent so the helper doesn't double-toast.
-      const result = await listPipelineMusicGenerators({ silent: true }).catch((err) => {
-        toast.error(err.message || 'Failed to load generators');
-        return null;
-      });
-      if (result) {
-        setGenerators(result);
-        // Default to the server's default engine, then that engine's default
-        // model + duration. Falls back to the flattened legacy fields.
-        const engines = result.engines ?? [];
-        const defEngine = engines.find((e) => e.id === result.defaultEngine) || engines[0] || null;
-        setGenEngineId((prev) => prev || defEngine?.id || result.defaultEngine || 'musicgen');
-        setGenModelId((prev) => prev || defEngine?.defaultModelId || result.defaultModelId || result.models?.[0]?.id || '');
-        const defDuration = defEngine?.defaultDurationSec ?? result.defaultDurationSec;
-        if (Number.isFinite(defDuration)) setGenDuration(defDuration);
-      }
-    }
+    await loadGenerators();
   };
 
   // Switching engine re-anchors the model + duration to the new backend's
@@ -158,6 +209,148 @@ export default function AudioStage({ issue, onStageUpdate }) {
     onStageUpdate?.('audio', result.stage, result.issue);
     setGenPanelOpen(false);
     toast.success(`Generated ${result.durationSec ?? genDuration}s track (${result.modelId})`);
+  };
+
+  // ---- Whole-episode audio mode + generated cues (#863) ----
+
+  // The readiness of the generator engines drives whether the cue Generate /
+  // Render affordances are enabled. Reuse the same generators list the music
+  // panel fetches; lazily load it the first time the user lands on 'generated'.
+  const defaultEngineId = generators?.defaultEngine
+    || generators?.engines?.[0]?.id
+    || 'musicgen';
+  const cueEngine = genEngines.find((e) => e.id === defaultEngineId) || genEngines[0] || null;
+  const cueEngineReady = !!cueEngine?.ready;
+  const enginesLoaded = generators !== null;
+
+  // Persist a new whole-episode audio mode via the existing issue PATCH route,
+  // then lift the returned issue so the UI reflects the saved mode.
+  const handleAudioModeChange = async (mode) => {
+    if (mode === audioMode) return;
+    setAudioModeSaving(true);
+    // Custom error toast below → silent so the helper doesn't double-toast.
+    const result = await updatePipelineIssue(
+      issue.id,
+      { stages: { audio: { audioMode: mode } } },
+      { silent: true },
+    ).catch((err) => {
+      toast.error(err.message || 'Failed to set audio mode');
+      return null;
+    });
+    setAudioModeSaving(false);
+    if (!result) return;
+    onStageUpdate?.('audio', result.stages?.audio, result);
+    // The `audioMode` effect will land the generators list for 'generated';
+    // no explicit fetch needed here.
+  };
+
+  const handleGenerateCues = async () => {
+    const replacing = cues.length > 0;
+    if (replacing && !cuesReplaceArmed) {
+      setCuesReplaceArmed(true);
+      toast.warning(`This re-derives the cue list, replacing ${cues.length} cue${cues.length === 1 ? '' : 's'} (rendered audio is carried forward by label). Click again to confirm.`);
+      if (cuesArmTimerRef.current) clearTimeout(cuesArmTimerRef.current);
+      cuesArmTimerRef.current = setTimeout(() => {
+        cuesArmTimerRef.current = null;
+        setCuesReplaceArmed(false);
+      }, 5000);
+      return;
+    }
+    if (cuesArmTimerRef.current) { clearTimeout(cuesArmTimerRef.current); cuesArmTimerRef.current = null; }
+    setCuesReplaceArmed(false);
+    setDerivingCues(true);
+    const result = await generatePipelineAudioCues(
+      issue.id,
+      { engine: defaultEngineId, force: replacing },
+      { silent: true },
+    ).catch((err) => {
+      toast.error(err.message || 'Cue derivation failed');
+      return null;
+    });
+    setDerivingCues(false);
+    if (!result) return;
+    onStageUpdate?.('audio', result.stage, result.issue);
+    setCuePromptDrafts({});
+    toast.success(`Derived ${result.cueCount} cue${result.cueCount === 1 ? '' : 's'}`);
+  };
+
+  // Per-cue prompt edit. Patches the whole cues[] array (server merges against
+  // the freshest persisted record inside the per-issue write queue). Registers
+  // the in-flight Promise so a Render can await it.
+  const saveCuePrompt = (cueIdx, prompt) => {
+    const nextCues = cues.map((c, i) => (i === cueIdx ? { ...c, prompt } : c));
+    const set = pendingCueSavesRef.current.get(cueIdx) || new Set();
+    if (!pendingCueSavesRef.current.has(cueIdx)) pendingCueSavesRef.current.set(cueIdx, set);
+    const promise = updatePipelineIssue(
+      issue.id,
+      { stages: { audio: { cues: nextCues } } },
+      { silent: true },
+    )
+      .then((updated) => {
+        if (updated) onStageUpdate?.('audio', updated.stages?.audio, updated);
+        return updated;
+      })
+      .catch((err) => { toast.error(err.message || 'Failed to save cue prompt'); return null; })
+      .finally(() => {
+        set.delete(promise);
+        if (set.size === 0) pendingCueSavesRef.current.delete(cueIdx);
+      });
+    set.add(promise);
+    return promise;
+  };
+
+  const handleCuePromptBlur = (cueIdx) => {
+    const draft = cuePromptDrafts[cueIdx];
+    if (draft === undefined) return;
+    const dropDraft = () => setCuePromptDrafts((prev) => { const next = { ...prev }; delete next[cueIdx]; return next; });
+    if (draft === (cues[cueIdx]?.prompt || '')) { dropDraft(); return; }
+    void saveCuePrompt(cueIdx, draft);
+    dropDraft();
+  };
+
+  const renderOneCue = async (cueIdx) => {
+    // Await any in-flight prompt save + flush an unblurred draft so the render
+    // synths against the freshest persisted prompt.
+    const pendingSet = pendingCueSavesRef.current.get(cueIdx);
+    if (pendingSet && pendingSet.size > 0) await Promise.all([...pendingSet]);
+    const draft = cuePromptDrafts[cueIdx];
+    if (draft !== undefined && draft !== (cues[cueIdx]?.prompt || '')) {
+      await saveCuePrompt(cueIdx, draft);
+      setCuePromptDrafts((prev) => { const next = { ...prev }; delete next[cueIdx]; return next; });
+    }
+    setRenderingCues((prev) => new Set(prev).add(cueIdx));
+    const result = await renderPipelineAudioCue(
+      issue.id,
+      cueIdx,
+      { engine: defaultEngineId },
+      { silent: true },
+    ).catch((err) => {
+      toast.error(err.message || `Cue ${cueIdx + 1} render failed`);
+      return null;
+    });
+    setRenderingCues((prev) => { const next = new Set(prev); next.delete(cueIdx); return next; });
+    if (!result) return false;
+    if (result.issue) onStageUpdate?.('audio', result.stage, result.issue);
+    return true;
+  };
+
+  const handleRenderCue = async (cueIdx) => {
+    const ok = await renderOneCue(cueIdx);
+    if (ok) toast.success(`Rendered cue ${cueIdx + 1}`);
+  };
+
+  // Render every cue with a prompt, sequentially (each is a GPU-heavy job;
+  // serializing avoids thrashing the single sidecar).
+  const handleRenderAllCues = async () => {
+    setRenderingAllCues(true);
+    let rendered = 0;
+    for (let i = 0; i < cues.length; i += 1) {
+      if (!cues[i]?.prompt) continue;
+      const ok = await renderOneCue(i);
+      if (ok) rendered += 1;
+    }
+    setRenderingAllCues(false);
+    toast.success(`Rendered ${rendered} cue${rendered === 1 ? '' : 's'}`);
   };
 
   const loadMusicLibrary = async () => {
@@ -390,6 +583,162 @@ export default function AudioStage({ issue, onStageUpdate }) {
           </button>
         </div>
       </header>
+
+      {/* Whole-episode audio mode (#863) — drives the episode's non-dialogue
+          audio at stitch time. */}
+      <section className="p-3 bg-port-card border border-port-border rounded-lg">
+        <div className="flex items-center gap-2 mb-2">
+          <ListMusic className="w-4 h-4 text-port-accent" />
+          <label htmlFor="audio-mode" className="text-sm font-medium text-white">Episode audio</label>
+          {audioModeSaving ? <Loader2 size={12} className="animate-spin text-gray-500" /> : null}
+        </div>
+        <div className="flex items-center gap-3 flex-wrap">
+          <select
+            id="audio-mode"
+            value={audioMode}
+            disabled={audioModeSaving}
+            onChange={(e) => void handleAudioModeChange(e.target.value)}
+            className="px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm disabled:opacity-50"
+          >
+            {AUDIO_MODES.map((m) => (
+              <option key={m.id} value={m.id}>{m.label}</option>
+            ))}
+          </select>
+          <p className="text-xs text-gray-500 flex-1 min-w-[12rem]">
+            {AUDIO_MODES.find((m) => m.id === audioMode)?.hint}
+          </p>
+        </div>
+      </section>
+
+      {audioMode === 'generated' ? (
+        <section className="p-3 bg-port-card border border-port-border rounded-lg space-y-3">
+          <div className="flex items-start justify-between flex-wrap gap-3">
+            <div>
+              <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                <Music className="w-4 h-4 text-port-accent" /> Music cues
+              </h3>
+              <p className="text-xs text-gray-500 mt-0.5">
+                One cue per arc beat, laid across the episode timeline. Derive the list from the
+                episode's beats, then render each cue's music.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={handleGenerateCues}
+                disabled={derivingCues || renderingAllCues || audioModeSaving}
+                title="Derive the cue list from the episode's beats + storyboard scene order"
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-card border border-port-border text-white text-sm hover:border-port-accent/50 disabled:opacity-40"
+              >
+                {derivingCues ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+                {cuesReplaceArmed
+                  ? 'Click again to replace'
+                  : (cues.length > 0 ? 'Re-derive cues' : 'Generate cues')}
+              </button>
+              {cues.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={handleRenderAllCues}
+                  disabled={renderingAllCues || derivingCues || audioModeSaving || !cueEngineReady || !cues.some((c) => c.prompt)}
+                  title={!enginesLoaded
+                    ? 'Checking generator engine…'
+                    : (!cueEngineReady
+                      ? `${cueEngine?.name || 'The music engine'} isn't installed — render is unavailable`
+                      : 'Render every cue that has a prompt')}
+                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-port-accent text-white text-sm disabled:opacity-50"
+                >
+                  {renderingAllCues ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                  Render all cues
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          {enginesLoaded && !cueEngineReady ? (
+            <p className="text-xs text-port-warning">
+              {cueEngine?.name || 'The music engine'} isn't installed yet — you can derive and edit cue
+              prompts, but rendering is disabled until its runtime is bootstrapped.
+            </p>
+          ) : null}
+
+          {cues.length === 0 ? (
+            <p className="text-sm text-gray-400 italic">
+              No cues yet. Click <strong>Generate cues</strong> to derive them from the episode's beats.
+            </p>
+          ) : (
+            <ul className="space-y-2">
+              {cues.map((cue, i) => {
+                const isRendering = renderingCues.has(i);
+                const promptValue = cuePromptDrafts[i] !== undefined ? cuePromptDrafts[i] : (cue.prompt || '');
+                const cuePromptSaving = pendingCueSavesRef.current.has(i);
+                const placed = Number.isFinite(cue.startSec) && Number.isFinite(cue.endSec);
+                return (
+                  <li key={cue.id || i} className="p-3 bg-port-bg border border-port-border rounded-lg">
+                    <div className="flex items-start gap-3">
+                      <span className="text-[10px] text-gray-500 font-mono pt-1.5 w-8">{i + 1}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                          <span className="text-xs uppercase tracking-wider text-port-accent font-medium">
+                            {cue.label || `Cue ${i + 1}`}
+                          </span>
+                          {placed ? (
+                            <span className="text-[10px] text-gray-500 font-mono" title="Timeline placement (seconds)">
+                              {cue.startSec.toFixed(1)}s–{cue.endSec.toFixed(1)}s
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-gray-600 italic" title="Placed onto the timeline at stitch time">
+                              placed at stitch
+                            </span>
+                          )}
+                          {cue.engine ? (
+                            <span className="text-[10px] text-gray-600 font-mono">{cue.engine}</span>
+                          ) : null}
+                        </div>
+                        <label htmlFor={`cue-prompt-${i}`} className="sr-only">Music prompt for cue {i + 1}</label>
+                        <textarea
+                          id={`cue-prompt-${i}`}
+                          value={promptValue}
+                          onChange={(e) => setCuePromptDrafts((prev) => ({ ...prev, [i]: e.target.value }))}
+                          onBlur={() => handleCuePromptBlur(i)}
+                          rows={2}
+                          maxLength={800}
+                          placeholder="e.g. warm ambient pads, slow build"
+                          className="w-full px-2 py-1.5 bg-port-card border border-port-border rounded text-white text-sm"
+                        />
+                        {cue.trackFilename ? (
+                          <audio
+                            controls
+                            src={`/data/music/${encodeURIComponent(cue.trackFilename)}`}
+                            className="mt-2 w-full max-w-md"
+                          >
+                            <track kind="captions" />
+                          </audio>
+                        ) : null}
+                      </div>
+                      <div className="w-28 flex flex-col gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleRenderCue(i)}
+                          disabled={isRendering || renderingAllCues || cuePromptSaving || !cueEngineReady || !promptValue.trim()}
+                          title={!enginesLoaded
+                            ? 'Checking generator engine…'
+                            : (!cueEngineReady
+                              ? `${cueEngine?.name || 'The music engine'} isn't installed — render is unavailable`
+                              : (promptValue.trim() ? 'Render this cue as music' : 'Add a prompt first'))}
+                          className="inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded bg-port-accent text-white text-xs disabled:opacity-50"
+                        >
+                          {isRendering ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                          {cue.trackFilename ? 'Re-render' : 'Render'}
+                        </button>
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+      ) : null}
 
       {lines.length === 0 ? (
         <p className="text-sm text-gray-400 italic">
