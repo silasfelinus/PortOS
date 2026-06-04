@@ -1,5 +1,5 @@
 import { Sparkles } from '@react-three/drei';
-import { cityDayMix } from './cityConstants';
+import { cityDayMix, CITY_COLORS } from './cityConstants';
 
 export default function CityParticles({ settings }) {
   const density = settings?.particleDensity ?? 1.0;
@@ -9,14 +9,15 @@ export default function CityParticles({ settings }) {
 
   return (
     <>
-      {/* Cyan ambient sparkles - main atmosphere */}
+      {/* Primary ambient sparkles — follow the themed accent (CITY_COLORS.particles
+          is recolored per theme by applyCityBrandColors) */}
       <Sparkles
         count={scale(120)}
         scale={[50, 20, 50]}
         size={1.8}
         speed={0.3}
         opacity={0.3 * dayFade}
-        color="#06b6d4"
+        color={CITY_COLORS.particles}
       />
       {/* Pink/magenta secondary sparkles */}
       <Sparkles

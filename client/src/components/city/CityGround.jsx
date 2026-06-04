@@ -44,7 +44,7 @@ function RollingFog({ dayMix = 0 }) {
     <mesh ref={ref} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.5, 0]}>
       <planeGeometry args={[100, 100]} />
       <meshBasicMaterial
-        color="#06b6d4"
+        color={CITY_COLORS.ground}
         transparent
         opacity={0.012}
         blending={THREE.AdditiveBlending}
@@ -66,10 +66,12 @@ export default function CityGround({ settings }) {
   groundColorTarget.current.set(preset.groundColor ?? '#0a0a20');
   const targetRoughness = preset.groundRoughness ?? 0.7;
 
-  // The neon grid + additive fog are a night look — at day the grid mutes to faint
-  // pavement lines and the glow fog fades out.
-  const gridCellColor = mixHex('#0e7490', '#a7afb8', dayMix);
-  const gridSectionColor = mixHex('#06b6d4', '#bcc4cc', dayMix);
+  // The neon grid + additive fog follow the themed accent (CITY_COLORS.ground is
+  // recolored per theme by applyCityBrandColors). At night they read as accent neon;
+  // by day the grid mutes to faint pavement lines and the glow fog fades out.
+  const accent = CITY_COLORS.ground;
+  const gridSectionColor = mixHex(accent, '#bcc4cc', dayMix);
+  const gridCellColor = mixHex(mixHex(accent, '#0a1420', 0.5), '#a7afb8', dayMix);
   const groundFogOpacity = 0.045 * (1 - dayMix);
 
   useFrame((_, delta) => {
@@ -136,7 +138,7 @@ export default function CityGround({ settings }) {
         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.1, 0]}>
           <planeGeometry args={[80, 80]} />
           <meshBasicMaterial
-            color="#06b6d4"
+            color={accent}
             transparent
             opacity={groundFogOpacity}
             blending={THREE.AdditiveBlending}

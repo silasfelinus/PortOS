@@ -47,8 +47,20 @@ export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, 
   const [proximityApp, setProximityApp] = useState(null);
   const [transitioning, setTransitioning] = useState(false);
   const prevExplorationRef = useRef(false);
+  const orbitRef = useRef(null);
 
   const explorationMode = settings?.explorationMode || false;
+
+  // drei's `keyEvents` only (re)connects pointer events to the DOM element in this
+  // three-stdlib version — it does NOT attach the keydown listener OrbitControls
+  // needs for arrow-key panning. Wire that explicitly when the orbital controls are
+  // mounted (re-runs when the mode flips them in/out), with matching teardown.
+  useEffect(() => {
+    const controls = orbitRef.current;
+    if (!controls?.listenToKeyEvents) return undefined;
+    controls.listenToKeyEvents(window);
+    return () => controls.stopListenToKeyEvents?.();
+  }, [explorationMode, transitioning, photoMode]);
 
   // Set transitioning=true when exploration mode toggles
   useEffect(() => {
@@ -154,9 +166,10 @@ export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, 
         <OrbitControls
           // Map-style navigation: left-drag pans the camera across the city (so you can
           // reach off-center districts without first-person mode), right-drag rotates, scroll
-          // zooms, arrow keys pan. On a Mac trackpad, ctrl+drag registers as a right-click so
-          // it rotates. screenSpacePanning=false keeps panning in the ground plane (map feel).
-          keyEvents
+          // zooms, arrow keys pan (wired via listenToKeyEvents in the effect above). On a Mac
+          // trackpad, ctrl+drag registers as a right-click so it rotates. screenSpacePanning=
+          // false keeps panning in the ground plane (map feel).
+          ref={orbitRef}
           enablePan
           screenSpacePanning={false}
           panSpeed={1.0}
