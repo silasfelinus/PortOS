@@ -141,15 +141,14 @@ export async function captureThought(text, providerOverride, modelOverride) {
   const mode = await getDomainAutonomyMode('brain');
 
   // Create initial inbox log entry. When auto-classify is off the entry goes
-  // straight to needs_review rather than the transient classifying state.
+  // straight to needs_review rather than the transient classifying state — and
+  // carries no `ai` metadata, since no provider/model was ever invoked.
   const inboxEntry = await storage.createInboxLog({
     capturedText: text,
     source: 'brain_ui',
-    ai: {
-      providerId: provider,
-      modelId: model,
-      promptTemplateId: 'brain-classifier'
-    },
+    ...(mode === 'off'
+      ? {}
+      : { ai: { providerId: provider, modelId: model, promptTemplateId: 'brain-classifier' } }),
     status: mode === 'off' ? 'needs_review' : 'classifying'
   });
 

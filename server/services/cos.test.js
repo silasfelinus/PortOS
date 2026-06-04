@@ -42,6 +42,7 @@ const COS_SRC = readFileSync(join(__dirname, 'cos.js'), 'utf-8');
 // listener) stays in cos.js. Source-level guards below read each invariant from
 // whichever module now owns it.
 const GEN_SRC = readFileSync(join(__dirname, 'cosTaskGenerator.js'), 'utf-8');
+const SCHED_SRC = readFileSync(join(__dirname, 'cosJobScheduler.js'), 'utf-8');
 
 // ─── Inline replicas of the cos.js priority + capacity slice ───────────────
 
@@ -669,6 +670,19 @@ describe('cos.js source — priority + capacity invariants', () => {
       // The mission/idle blocks must be fenced on execute so off/dry-run skip them.
       expect(fnBody, `${name} must fence autonomous spawns on cosAutonomyMode === 'execute'`).toMatch(/cosAutonomyMode\s*===\s*['"]execute['"]/);
     }
+  });
+
+  it('CoS auto-run domain gate (#711) covers the scheduled-job + improvement-check timers', () => {
+    // executeScheduledJob and the cos-improvement-check timer are a THIRD
+    // autonomous spawn path (outside dequeueNextTask / evaluateTasks). They must
+    // also respect the cos guardrail, or off/dry-run leaks scheduled-job agents
+    // and keeps mutating COS-TASKS.md via queueEligibleImprovementTasks.
+    const execFn = extractFnBody(SCHED_SRC, SCHED_SRC.indexOf('export async function executeScheduledJob'));
+    expect(execFn, 'executeScheduledJob must read the cos autonomy mode').toMatch(/getDomainMode\(\s*state\.config\s*,\s*['"]cos['"]\s*\)/);
+    expect(execFn, 'executeScheduledJob must fence on execute').toMatch(/cosAutonomyMode\s*!==\s*['"]execute['"]/);
+    // The improvement-check timer must gate its queueEligibleImprovementTasks call.
+    expect(SCHED_SRC, 'improvement-check timer must gate queueing on cos === execute')
+      .toMatch(/idleReviewEnabled\s*&&\s*getDomainMode\(\s*state\.config\s*,\s*['"]cos['"]\s*\)\s*===\s*['"]execute['"]/);
   });
 
   it('both on-demand loops dedupe markAppReviewStarted per app via reviewStartedApps set', () => {

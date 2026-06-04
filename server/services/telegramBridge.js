@@ -223,6 +223,13 @@ export function updateCachedForwardTypes(forwardTypes) {
  * Forward a notification to Telegram via HTTP API
  */
 async function forwardNotification(notification) {
+  // Cached forward-type filter first (mirrors telegram.js): a filtered-out
+  // notification skips the state read, and dry-run only reports what execute
+  // would actually send.
+  if (Array.isArray(cachedForwardTypes) && cachedForwardTypes.length > 0) {
+    if (!cachedForwardTypes.includes(notification.type)) return;
+  }
+
   // Per-domain autonomy gate (mirrors telegram.js): `off` suppresses outbound
   // forwarding; `dry-run` logs what would have been sent without messaging.
   const mode = await getDomainAutonomyMode('messages');
@@ -231,10 +238,6 @@ async function forwardNotification(notification) {
       console.log(`📨 [dry-run] Messages auto-send would forward notification: ${notification.type} — "${notification.title}"`);
     }
     return;
-  }
-
-  if (Array.isArray(cachedForwardTypes) && cachedForwardTypes.length > 0) {
-    if (!cachedForwardTypes.includes(notification.type)) return;
   }
 
   const emoji = NOTIFICATION_EMOJI[notification.type] || '🔔';
