@@ -280,6 +280,20 @@ in this spike.
    `PATCH /issues/:id/stages/audio` route today, and one isn't needed; the mode
    is just another field on the audio-stage sub-object.
 
+   **Union-arm hazard (must be handled in the implementing PR).** The `stages`
+   record is validated by `z.union([visualStageInputSchema,
+   audioStageInputSchema, stageInputSchema])`, and Zod picks the **first arm that
+   parses**. `visualStageInputSchema` extends the base with only *optional*
+   fields, so an audio-stage payload can match the *visual* arm first — and Zod's
+   default object parsing would strip the unknown `audioMode`/`cues` keys before
+   the audio arm is ever tried. Simply adding `audioMode`/`cues` to
+   `audioStageInputSchema` is therefore **not sufficient**; the implementing PR
+   must also fix arm selection so an audio payload reaches the audio arm — e.g.
+   key the schema by stage id (the cleanest), order the audio arm ahead of the
+   visual arm, or make the arms `.strict()` so a non-matching arm fails instead
+   of silently stripping. (This is a latent sharp edge for `lines`/`music` too;
+   the new fields just make getting arm-selection right load-bearing.)
+
 2. **Cue generation.** `POST /issues/:id/stages/audio/cues/generate` — derive the
    per-arc cue list from the issue's **own** beat prose (its `stages.idea` /
    text-stage content — the same beats `arcPlanner` reads, not a series-level
