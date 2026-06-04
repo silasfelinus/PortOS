@@ -1,8 +1,8 @@
 import { useRef, useState, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Text } from '@react-three/drei';
 import * as THREE from 'three';
-import { getBuildingColor, getBuildingHeight, getAccentColor, CITY_COLORS, BUILDING_PARAMS, PIXEL_FONT_URL, mixHex } from './cityConstants';
+import { getBuildingColor, getBuildingHeight, getAccentColor, CITY_COLORS, BUILDING_PARAMS, PIXEL_FONT_URL, mixHex, tintStructure } from './cityConstants';
+import CityLabel from './CityLabel';
 import HolographicPanel from './HolographicPanel';
 import BuildingHologram from './BuildingHologram';
 
@@ -100,8 +100,8 @@ const createWindowTexture = (accentColor, width, height, seed) => {
   canvas.height = px * rowCount;
   const ctx = canvas.getContext('2d');
 
-  // Dark base
-  ctx.fillStyle = '#050510';
+  // Dark base (tinted toward the theme accent, luminance preserved)
+  ctx.fillStyle = tintStructure('#050510');
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   // Seeded random for consistent patterns
@@ -122,7 +122,7 @@ const createWindowTexture = (accentColor, width, height, seed) => {
         } else if (bright > 0.3) {
           ctx.fillStyle = accentColor + '20';
         } else {
-          ctx.fillStyle = '#0a0f1e';
+          ctx.fillStyle = tintStructure('#0a0f1e');
         }
         ctx.fillRect(c * px + 1, r * px + 1, px - 2, px - 2);
       }
@@ -421,11 +421,12 @@ export default function Building({ app, position, agentCount, onClick, playSfx, 
         </>
       )}
 
-      {/* Building name on front face - pixel font */}
-      <Text
+      {/* Building name on front face - pixel font (dark ink + halo by day) */}
+      <CityLabel
         position={[0, height * 0.88, depth / 2 + 0.02]}
         fontSize={0.2}
         color={edgeColor}
+        dayMix={dayMix}
         fillOpacity={dimMul}
         anchorX="center"
         anchorY="middle"
@@ -433,13 +434,14 @@ export default function Building({ app, position, agentCount, onClick, playSfx, 
         maxWidth={width * 0.9}
       >
         {displayName}
-      </Text>
+      </CityLabel>
 
       {/* Building name on back face */}
-      <Text
+      <CityLabel
         position={[0, height * 0.88, -(depth / 2 + 0.02)]}
         fontSize={0.2}
         color={edgeColor}
+        dayMix={dayMix}
         fillOpacity={dimMul}
         anchorX="center"
         anchorY="middle"
@@ -448,13 +450,14 @@ export default function Building({ app, position, agentCount, onClick, playSfx, 
         maxWidth={width * 0.9}
       >
         {displayName}
-      </Text>
+      </CityLabel>
 
       {/* Name on left side */}
-      <Text
+      <CityLabel
         position={[-(width / 2 + 0.02), height * 0.88, 0]}
         fontSize={0.18}
         color={accentColor}
+        dayMix={dayMix}
         fillOpacity={dimMul}
         anchorX="center"
         anchorY="middle"
@@ -463,7 +466,7 @@ export default function Building({ app, position, agentCount, onClick, playSfx, 
         maxWidth={depth * 0.85}
       >
         {displayName}
-      </Text>
+      </CityLabel>
 
       {/* Base glow circle - wider and brighter (night only) */}
       {!daytime && (

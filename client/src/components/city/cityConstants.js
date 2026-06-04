@@ -295,6 +295,29 @@ export const cityDayMix = (settings) => {
   return smoothstepRange(0.35, 1, preset?.daylightFactor ?? 0);
 };
 
+// Drei <Text> props for an informational in-world label that stays legible in both
+// the night-neon scene AND the bright daytime scene. At night (dayMix→0) the label
+// keeps its neon fill with no outline, so the established look is untouched. As day
+// ramps up (dayMix→1) the fill lerps toward a dark ink — readable against the bright
+// sky and sunlit mid-tone facades where a glowing neon fill just washes out — and a
+// light outline halo fades in to lift the glyphs off whatever's behind them. The ink
+// keeps a hint of the label's hue so day labels stay loosely color-coded by status.
+// Continuous in dayMix so it degrades gracefully if an intermediate time-of-day is
+// ever re-enabled (today dayMix is strictly 0 or 1). Decorative neon signage is NOT
+// a caller — it is meant to dim in daylight like real neon.
+export const cityLabelColors = (neonColor, dayMix = 0) => {
+  const d = Math.max(0, Math.min(1, dayMix || 0));
+  const darkInk = mixHex('#0d1422', neonColor, 0.22);
+  return {
+    color: mixHex(neonColor, darkInk, d),
+    outlineColor: '#eef4ff',
+    // Percentage strings are relative to fontSize, so the halo scales with each label.
+    // At night d=0 → "0.00%", which drei treats as a zero-width (i.e. no) outline.
+    outlineWidth: `${(d * 9).toFixed(2)}%`,
+    outlineOpacity: d * 0.85,
+  };
+};
+
 // Get a deterministic neon accent color per app (for windows/decorations)
 export const getAccentColor = (app) => {
   const hash = hashString(app.name || app.id);
@@ -310,6 +333,11 @@ export const getAccentColor = (app) => {
 // switches don't compound; ORIGINAL_GROUND is only the fallback for a theme that
 // somehow has no accent.
 const ORIGINAL_GROUND = CITY_COLORS.ground;
+// The dark building body + window-grid bases default to a cyber near-black. We
+// re-tint them toward the theme accent on a theme switch (see applyCityBrandColors
+// / tintStructure), so capture the cyan-era originals to recompute from — never
+// from the already-tinted value, or repeated switches compound.
+const ORIGINAL_BUILDING_BODY = CITY_COLORS.buildingBody;
 
 // Shared color primitives. parseHex: "#0a7a4a" -> [10, 122, 74] (null on bad input).
 // toHex: clamps/rounds each channel back to "#rrggbb".
@@ -349,6 +377,28 @@ export const mixHex = (a, b, t) => {
   const cb = parseHex(b);
   return ca && cb ? toHex(...ca.map((c, i) => c + (cb[i] - c) * t)) : a;
 };
+
+// Tint a color toward the active theme accent (the live CITY_COLORS.ground) by
+// `amount`, then rescale to the original luminance so ONLY hue/saturation shift —
+// the scene's brightness hierarchy (dark structural bases stay dark, bright sky
+// bands stay bright) is preserved while every surface picks up the theme. Reads the
+// live accent so it tracks theme switches. Pure aside from that read; null-safe.
+export const tintTowardAccent = (hex, amount = 0.2) => {
+  const base = parseHex(hex);
+  const accent = parseHex(CITY_COLORS.ground);
+  if (!base || !accent) return hex;
+  const lum = (c) => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+  const lb = lum(base);
+  if (lb === 0) return hex; // pure black has no hue to tint
+  const mixed = base.map((c, i) => c + (accent[i] - c) * amount);
+  const lm = lum(mixed) || 1;
+  const k = lb / lm; // rescale mixed back to the base's luminance
+  return toHex(mixed[0] * k, mixed[1] * k, mixed[2] * k);
+};
+
+// Convenience for the dark structural bases (building bodies, district plinths,
+// monument footings) — a slightly stronger tint than the default.
+export const tintStructure = (hex) => tintTowardAccent(hex, 0.22);
 
 // GLSL-style smoothstep with an edge remap (distinct from the plain Hermite
 // smoothstep(t) in utils/easing.js — different arity, kept local on purpose).
@@ -418,4 +468,8 @@ export const applyCityBrandColors = (palette) => {
   CITY_COLORS.particles = accent;
   CITY_COLORS.building.online = accent;
   CITY_COLORS.neonAccents[0] = accent;
+  // Ground must be set first — tintStructure reads CITY_COLORS.ground. Re-tint the
+  // dark building body toward the accent (luminance preserved) so structures track
+  // the theme too, not just the neon brand surfaces.
+  CITY_COLORS.buildingBody = tintStructure(ORIGINAL_BUILDING_BODY);
 };
