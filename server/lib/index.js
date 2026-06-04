@@ -163,6 +163,7 @@ export * from './timezone.js';
 // === General utilities ===
 export * from './asyncMutex.js';
 export * from './authGate.js';
+export * from './domainAutonomy.js';
 export * from './errorHandler.js';
 export * from './mapWithConcurrency.js';
 export * from './objects.js';

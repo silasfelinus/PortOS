@@ -27,6 +27,7 @@ import { recordJobExecution } from './autonomousJobs.js';
 import { safeJSONParse } from '../lib/fileUtils.js';
 import { addNotification, NOTIFICATION_TYPES } from './notifications.js';
 import { getUserTimezone, todayInTimezone } from '../lib/timezone.js';
+import { normalizeDomainAutonomy, getDomainMode } from '../lib/domainAutonomy.js';
 
 // Shared state management (extracted to avoid circular deps)
 import { loadState, saveState, withStateLock, ensureDirectories, isImprovementEnabled, AGENTS_DIR, REPORTS_DIR, SCRIPTS_DIR, ROOT_DIR, isDaemonRunning, setDaemonRunning } from './cosState.js';
@@ -147,7 +148,18 @@ export async function getConfig() {
 export async function updateConfig(updates) {
   const config = await withStateLock(async () => {
     const state = await loadState();
+    // domainAutonomy is a partial-friendly map: a PATCH that names only one
+    // domain must merge over the others rather than replace the whole object.
+    // Capture the prior map BEFORE the spread clobbers it, then normalize the
+    // merge so an unknown/invalid stored value resolves to the `execute` default.
+    const priorDomainAutonomy = state.config.domainAutonomy;
     state.config = { ...state.config, ...updates };
+    if (updates.domainAutonomy !== undefined) {
+      state.config.domainAutonomy = normalizeDomainAutonomy({
+        ...priorDomainAutonomy,
+        ...updates.domainAutonomy
+      });
+    }
     await saveState(state);
     return state.config;
   });
@@ -728,12 +740,21 @@ async function dequeueNextTask() {
     trackSpawn(userTask);
   }
 
-  // Priority 2: Auto-approved system tasks
+  // Priority 2: Auto-approved system tasks — gated by the CoS auto-run domain.
+  // `off`/`dry-run` both stop the unattended spawn; `dry-run` logs what would
+  // have run so the user can see the plan without it executing.
   const cosTaskData = await getCosTasks();
   const autoApproved = cosTaskData.autoApproved || [];
+  const cosAutonomyMode = getDomainMode(state.config, 'cos');
 
   for (const task of autoApproved) {
     if (spawned >= availableSlots) break;
+    if (cosAutonomyMode !== 'execute') {
+      if (cosAutonomyMode === 'dry-run') {
+        emitLog('info', `[dry-run] CoS auto-run would spawn system task: ${task.id}`, { taskId: task.id, domainAutonomy: 'cos' });
+      }
+      continue;
+    }
     if (await blockIfExceedsMaxSpawns(task, 'internal')) continue;
     // Skip improvement tasks whose type was disabled after queuing
     const analysisType = task.metadata?.analysisType || task.metadata?.selfImprovementType;

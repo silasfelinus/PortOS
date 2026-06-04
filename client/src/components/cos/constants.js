@@ -166,6 +166,30 @@ export const MEMORY_TYPE_COLORS = {
   context: 'bg-gray-500/20 text-gray-400 border-gray-500/30'
 };
 
+// Per-domain autonomy guardrails (#711). Mirrors server/lib/domainAutonomy.js —
+// each domain is independently set to off | dry-run | execute. Default is
+// `execute` (historical behavior). Keep this list in sync with the server.
+export const AUTONOMY_DOMAINS = [
+  { id: 'brain', label: 'Brain auto-classify', description: 'Auto-classify captured thoughts and file them.' },
+  { id: 'memory', label: 'Memory auto-extract', description: 'Auto-store high-confidence memories from agent runs.' },
+  { id: 'cos', label: 'CoS auto-run', description: 'Auto-spawn autonomous (non-user) tasks without approval.' },
+  { id: 'messages', label: 'Messages auto-send', description: 'Auto-forward notifications to outbound channels (Telegram).' }
+];
+
+export const DOMAIN_AUTONOMY_MODES = [
+  { id: 'off', label: 'Off', description: 'Never act automatically — leave it for manual action.' },
+  { id: 'dry-run', label: 'Dry-run', description: 'Plan the action and surface it, but don\'t commit the side effect.' },
+  { id: 'execute', label: 'Execute', description: 'Act automatically (default).' }
+];
+
+export const DEFAULT_DOMAIN_MODE = 'execute';
+
+// Resolve a domain's mode from config, tolerating absent/partial config.
+export const getDomainMode = (config, domainId) => {
+  const candidate = config?.domainAutonomy?.[domainId];
+  return DOMAIN_AUTONOMY_MODES.some(m => m.id === candidate) ? candidate : DEFAULT_DOMAIN_MODE;
+};
+
 // Autonomy level presets for CoS behavior
 export const AUTONOMY_LEVELS = [
   {
