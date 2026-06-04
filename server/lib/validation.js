@@ -1930,6 +1930,13 @@ export const storySessionUpdateSchema = z.object({
   }).optional(),
 }).strict();
 
+// Cross-machine resume opt-in toggle (#730). Sessions are local-only by
+// default; flipping this on snapshots a staleness baseline that travels with
+// the session so a peer's universe edit can't false-positive-stale it.
+export const storySessionSyncSchema = z.object({
+  sync: z.boolean(),
+}).strict();
+
 export const storyStepGenerateSchema = z.object({
   providerId: storyProviderField,
   model: storyModelField,
