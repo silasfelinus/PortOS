@@ -209,6 +209,17 @@ describe('selectPlacedVoLines', () => {
     expect(selectPlacedVoLines(undefined)).toEqual([]);
     expect(selectPlacedVoLines([])).toEqual([]);
   });
+  it('drops traversal/absolute filenames from stale or peer-synced state', () => {
+    // VO line state can arrive from a synced peer; a traversal/absolute
+    // audioFilename must be dropped rather than handed to ffmpeg (parity with
+    // the selectPlacedCues guard).
+    const out = selectPlacedVoLines([
+      { audioFilename: '../../etc/passwd', offsetSec: 1 }, // dropped — escapes PATHS.audio
+      { audioFilename: '/etc/passwd', offsetSec: 2 },      // dropped — absolute
+      { audioFilename: 'safe.wav', offsetSec: 3 },         // kept
+    ]);
+    expect(out).toEqual([{ path: expect.stringMatching(/safe\.wav$/), offsetSec: 3 }]);
+  });
 });
 
 describe('buildVoMuxArgs', () => {

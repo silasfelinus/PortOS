@@ -329,20 +329,23 @@ export async function scheduleNextImprovementCheck() {
     delayMs: Math.max(delayMs, 1000),
     handler: async () => {
       if (!isDaemonRunning()) return;
-      const paused = (await loadState()).paused || false;
-      if (paused) {
+      // This is a 'once' event — the eventScheduler does NOT auto-reschedule it,
+      // so the handler must re-arm itself. Re-arm in `finally` so a throw in the
+      // body (loadState / getCosTasks / queueEligibleImprovementTasks) can't
+      // permanently halt the improvement cadence until a process restart.
+      try {
+        const paused = (await loadState()).paused || false;
+        if (paused) return;
+
+        const state = await loadState();
+        if (state.config.idleReviewEnabled) {
+          const cosTaskData = await getCosTasks();
+          await queueEligibleImprovementTasks(state, cosTaskData);
+          cosEvents.emit('cos:dequeue-requested');
+        }
+      } finally {
         await scheduleNextImprovementCheck();
-        return;
       }
-
-      const state = await loadState();
-      if (state.config.idleReviewEnabled) {
-        const cosTaskData = await getCosTasks();
-        await queueEligibleImprovementTasks(state, cosTaskData);
-        cosEvents.emit('cos:dequeue-requested');
-      }
-
-      await scheduleNextImprovementCheck();
     },
     metadata: { description }
   });

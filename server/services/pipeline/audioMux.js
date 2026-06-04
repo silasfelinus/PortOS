@@ -80,9 +80,18 @@ const isPlacedOffset = (x) => typeof x === 'number' && Number.isFinite(x) && x >
 
 export function selectPlacedVoLines(lines) {
   if (!Array.isArray(lines)) return [];
-  return lines
-    .filter((l) => l?.audioFilename && isPlacedOffset(l.offsetSec))
-    .map((l) => ({ path: join(PATHS.audio, l.audioFilename), offsetSec: l.offsetSec }));
+  const out = [];
+  for (const l of lines) {
+    if (!l?.audioFilename || !isPlacedOffset(l.offsetSec)) continue;
+    // Validate the filename is a safe basename under PATHS.audio before building
+    // an ffmpeg input path — VO line state can arrive from a synced peer, so a
+    // traversal/absolute filename must be dropped rather than handed to ffmpeg
+    // (mirrors the selectPlacedCues guard below).
+    const path = safeUnder(PATHS.audio, l.audioFilename);
+    if (!path) continue;
+    out.push({ path, offsetSec: l.offsetSec });
+  }
+  return out;
 }
 
 /**
