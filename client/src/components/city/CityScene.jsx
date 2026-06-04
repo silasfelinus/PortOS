@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
+import * as THREE from 'three';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import CityGround from './CityGround';
@@ -41,13 +42,25 @@ import PlayerController from './PlayerController';
 import CameraTransition from './CameraTransition';
 import CityPhotoCamera from './CityPhotoCamera';
 
-export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, reviewCounts, instances, backupStatus, cosTasks, healthMetrics, voiceState, aiActivity, productivityData, activityCalendar, goals, character, chronotype, memoryGraph, inboxDepth, jiraTickets, photoMode, photoPresetId, onPhotoCaptureReady, settings, playSfx, keysRef, dimmedAppIds }) {
+export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, reviewCounts, instances, backupStatus, cosTasks, healthMetrics, voiceState, aiActivity, productivityData, activityCalendar, goals, character, chronotype, memoryGraph, inboxDepth, jiraTickets, photoMode, photoPresetId, onPhotoCaptureReady, settings, playSfx, keysRef, dimmedAppIds, background }) {
   const [positions, setPositions] = useState(null);
   const [proximityApp, setProximityApp] = useState(null);
   const [transitioning, setTransitioning] = useState(false);
   const prevExplorationRef = useRef(false);
+  const orbitRef = useRef(null);
 
   const explorationMode = settings?.explorationMode || false;
+
+  // drei's `keyEvents` only (re)connects pointer events to the DOM element in this
+  // three-stdlib version — it does NOT attach the keydown listener OrbitControls
+  // needs for arrow-key panning. Wire that explicitly when the orbital controls are
+  // mounted (re-runs when the mode flips them in/out), with matching teardown.
+  useEffect(() => {
+    const controls = orbitRef.current;
+    if (!controls?.listenToKeyEvents) return undefined;
+    controls.listenToKeyEvents(window);
+    return () => controls.stopListenToKeyEvents?.();
+  }, [explorationMode, transitioning, photoMode]);
 
   // Set transitioning=true when exploration mode toggles
   useEffect(() => {
@@ -79,7 +92,7 @@ export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, 
       camera={{ position: [0, 25, 45], fov: 50 }}
       dpr={dpr}
       shadows={false}
-      style={{ background: '#030308', cursor: explorationMode ? 'crosshair' : 'auto' }}
+      style={{ background: background || '#030308', cursor: explorationMode ? 'crosshair' : 'auto' }}
       // preserveDrawingBuffer lets photo mode read the frame back via toDataURL. It's a
       // WebGL context-creation attribute, so it can't be toggled at runtime without recreating
       // the renderer (which would flash the scene) — we accept it always-on. The cost on modern
@@ -151,11 +164,23 @@ export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, 
       )}
       {!explorationMode && !transitioning && !photoMode && (
         <OrbitControls
+          // Map-style navigation: left-drag pans the camera across the city (so you can
+          // reach off-center districts without first-person mode), right-drag rotates, scroll
+          // zooms, arrow keys pan (wired via listenToKeyEvents in the effect above). On a Mac
+          // trackpad, ctrl+drag registers as a right-click so it rotates. screenSpacePanning=
+          // false keeps panning in the ground plane (map feel).
+          ref={orbitRef}
+          enablePan
+          screenSpacePanning={false}
+          panSpeed={1.0}
+          keyPanSpeed={24}
           maxPolarAngle={Math.PI / 2.2}
           minDistance={5}
           maxDistance={120}
           enableDamping
           dampingFactor={0.05}
+          mouseButtons={{ LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE }}
+          touches={{ ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_ROTATE }}
         />
       )}
       <CameraTransition

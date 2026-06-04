@@ -24,6 +24,9 @@ export const CITY_COLORS = {
   // Time-of-day presets (used by CitySky + CityLights)
   // hour: 0-24 mapped to sun arc. Sun traces east(6h) → overhead(12h) → west(18h) → below(0h)
   // daylightFactor: multiplier for scene ambient/point lights (bright day, dim night)
+  // NOTE: the city UI now selects only day/night (→ 'noon'/'sunset' via resolveCityTimeOfDay).
+  // 'sunrise' and 'midnight' are retained for legacy stored reads and possible future use,
+  // but are no longer reachable from the settings picker.
   timeOfDay: {
     sunrise: {
       hour: 6,
@@ -49,23 +52,29 @@ export const CITY_COLORS = {
     },
     noon: {
       hour: 12,
-      zenith: '#1a4488',
-      midSky: '#2266aa',
-      horizonHigh: '#4488bb',
-      horizonLow: '#5599cc',
-      sunCore: '#ffffee',
-      sunGlow: '#ffffcc',
-      sunLight: '#ffffff',
-      sunIntensity: 4.5,
+      // Bright, airy daytime sky — luminous blue overhead fading to a near-white
+      // horizon haze (stylized "clear day" look, BotW-ish).
+      zenith: '#4a93e0',
+      midSky: '#7fb6ec',
+      horizonHigh: '#bfe0f7',
+      horizonLow: '#e6f3fc',
+      sunCore: '#fffef2',
+      sunGlow: '#fff7d6',
+      sunLight: '#fff4e0',
+      // Moderate intensities — kept low enough that lit surfaces don't clip to white
+      // (the post-process previously bloomed the over-bright scene into a white disc).
+      sunIntensity: 1.9,
       sunScale: 0.7,
       isMoon: false,
       daylightFactor: 1.0,
-      groundColor: '#3a3a50',
-      groundRoughness: 0.6,
-      hemiSkyColor: '#7799bb',
-      hemiGroundColor: '#2a3040',
-      hemiIntensity: 1.2,
-      ambientColor: '#556688',
+      // Mid-tone ground so daylight lands around a clean gray, not blown-out white.
+      groundColor: '#8d9198',
+      groundRoughness: 0.9,
+      // Soft daytime sky fill (blue from above, warm bounce) — gentle, not high-key.
+      hemiSkyColor: '#acc6e8',
+      hemiGroundColor: '#b4b0a0',
+      hemiIntensity: 0.95,
+      ambientColor: '#c0cce0',
       ambientIntensity: 0.35,
     },
     sunset: {
@@ -140,24 +149,26 @@ export const CITY_COLORS = {
       },
       noon: {
         hour: 12,
-        zenith: '#4466cc',
-        midSky: '#6688dd',
-        horizonHigh: '#88aaee',
-        horizonLow: '#aaccff',
-        sunCore: '#ffffee',
-        sunGlow: '#ffffcc',
-        sunLight: '#ffffff',
-        sunIntensity: 5.0,
+        zenith: '#4a93e0',
+        midSky: '#7fb6ec',
+        horizonHigh: '#bfe0f7',
+        horizonLow: '#e6f3fc',
+        sunCore: '#fffef2',
+        sunGlow: '#fff7d6',
+        sunLight: '#fff4e0',
+        // Rebalanced to match the default noon (lower intensities / mid ground) so
+        // a dreamworld sky in Day mode doesn't blow the scene out to white.
+        sunIntensity: 1.9,
         sunScale: 0.8,
         isMoon: false,
         daylightFactor: 1.0,
-        groundColor: '#556680',
-        groundRoughness: 0.4,
-        hemiSkyColor: '#99bbff',
-        hemiGroundColor: '#445566',
-        hemiIntensity: 1.6,
-        ambientColor: '#7799cc',
-        ambientIntensity: 0.5,
+        groundColor: '#8d9198',
+        groundRoughness: 0.9,
+        hemiSkyColor: '#acc6e8',
+        hemiGroundColor: '#b4b0a0',
+        hemiIntensity: 0.95,
+        ambientColor: '#c0cce0',
+        ambientIntensity: 0.35,
       },
       sunset: {
         hour: 18,
@@ -275,8 +286,136 @@ export const getTimeOfDayPreset = (timeOfDay, skyTheme) => {
   return timeOfDayPresets.sunset;
 };
 
+// 0 at night (sunset preset), ramping to 1 at full day (noon). The scene's many
+// night-cyberpunk surfaces (post-fx grade, building albedo/neon, ground grid/fog)
+// lerp toward a bright daytime look by this factor. The ramp starts at 0.35 so the
+// established night look (sunset's daylightFactor 0.2) stays fully at 0/unchanged.
+export const cityDayMix = (settings) => {
+  const preset = getTimeOfDayPreset(settings?.timeOfDay ?? 'sunset', settings?.skyTheme ?? 'cyberpunk');
+  return smoothstepRange(0.35, 1, preset?.daylightFactor ?? 0);
+};
+
 // Get a deterministic neon accent color per app (for windows/decorations)
 export const getAccentColor = (app) => {
   const hash = hashString(app.name || app.id);
   return CITY_COLORS.neonAccents[hash % CITY_COLORS.neonAccents.length];
+};
+
+// --- Theme integration -------------------------------------------------------
+// CyberCity's "brand" surfaces (ground grid, particles, online buildings, the
+// lead neon accent) default to cyan. When the user picks a PortOS theme we
+// recolor those surfaces to the theme accent so the 3D scene tracks the rest of
+// the UI. Status colors (stopped=red, etc.) stay semantic. Every brand surface
+// is recomputed from the theme accent (not from the previous theme), so repeated
+// switches don't compound; ORIGINAL_GROUND is only the fallback for a theme that
+// somehow has no accent.
+const ORIGINAL_GROUND = CITY_COLORS.ground;
+
+// Shared color primitives. parseHex: "#0a7a4a" -> [10, 122, 74] (null on bad input).
+// toHex: clamps/rounds each channel back to "#rrggbb".
+const parseHex = (hex) => {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+};
+const toHex = (r, g, b) => '#' + [r, g, b]
+  .map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0'))
+  .join('');
+
+// "10 122 74" (a --port-* rgb triplet) -> "#0a7a4a"
+const tripletToHex = (triplet) => {
+  if (typeof triplet !== 'string') return null;
+  const parts = triplet.trim().split(/\s+/).map(Number);
+  if (parts.length !== 3 || parts.some(Number.isNaN)) return null;
+  return toHex(parts[0], parts[1], parts[2]);
+};
+
+const darkenHex = (hex, factor) => {
+  const rgb = parseHex(hex);
+  return rgb ? toHex(rgb[0] * factor, rgb[1] * factor, rgb[2] * factor) : hex;
+};
+
+// Mix a hex color t of the way toward white (t in 0..1). Used to derive a bright,
+// accent-tinted daytime sky backdrop from the theme accent.
+const lightenHex = (hex, t) => {
+  const rgb = parseHex(hex);
+  return rgb ? toHex(...rgb.map((c) => c + (255 - c) * t)) : hex;
+};
+
+// Mix two hex colors (t in 0..1, 0=a, 1=b).
+export const mixHex = (a, b, t) => {
+  const ca = parseHex(a);
+  const cb = parseHex(b);
+  return ca && cb ? toHex(...ca.map((c, i) => c + (cb[i] - c) * t)) : a;
+};
+
+// GLSL-style smoothstep with an edge remap (distinct from the plain Hermite
+// smoothstep(t) in utils/easing.js — different arity, kept local on purpose).
+const smoothstepRange = (a, b, x) => {
+  if (a === b) return x < a ? 0 : 1;
+  const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
+
+// The city renders just two times of day — day and night — and follows the active
+// theme's mode by default ('auto'). The user can still force 'day'/'night'. Legacy
+// stored values (sunrise/noon/sunset/midnight) are treated as 'auto' so existing
+// installs pick up theme coupling without a migration. Returns the daytime flag
+// plus the concrete preset key the sky/lights/ground consume (noon vs sunset —
+// sunset preserves the established dark-theme look users already have).
+export const resolveCityTimeOfDay = (setting, themeIsDay) => {
+  const daytime = setting === 'day' ? true
+    : setting === 'night' ? false
+    : !!themeIsDay;
+  return { daytime, presetKey: daytime ? 'noon' : 'sunset' };
+};
+
+// The CRT overlay (scanlines / neon edge-glow / vignette in CityScanlines) is a
+// cyber-terminal affectation, not a universal effect — so each piece is opted in
+// per theme family. Scanlines are the most style-specific (terminal only); the
+// neon edge glow suits the cyber-leaning families (terminal + the classic
+// cyberpunk default); the cinematic vignette applies everywhere except the clean
+// "glass" family. Glow color itself is themed via the live --port-accent var.
+const deriveCrtProfile = (family) => ({
+  scanlines: family === 'terminal',
+  glow: family === 'terminal' || family === 'classic',
+  vignette: family !== 'glass',
+});
+
+// Derive the city palette from a PortOS theme object (a THEMES entry). Pure.
+export const deriveCityPalette = (theme) => {
+  const accent = tripletToHex(theme?.colors?.['--port-accent']) || ORIGINAL_GROUND;
+  const isDay = theme?.mode === 'day';
+  // Night backdrop: a near-black, accent-tinted void — the neon's additive/bloom
+  // materials need darkness or they blow out. Day backdrop: a bright, accent-tinted
+  // sky (the daytime preset dims the neon, so a light surround is safe and reads as
+  // actual daytime). The scene picks one based on the resolved time of day; the HUD
+  // panels follow the light/dark theme independently (see .cybercity-themed CSS).
+  const nightBackground = darkenHex(accent, 0.1);
+  const dayBackground = lightenHex(accent, 0.86);
+  return {
+    themeId: theme?.id || 'classic-midnight',
+    mode: theme?.mode || 'night',
+    isDay,
+    accent,
+    nightBackground,
+    dayBackground,
+    // Default surround by theme mode — used for the loading screen before settings resolve.
+    background: isDay ? dayBackground : nightBackground,
+    crt: deriveCrtProfile(theme?.family),
+  };
+};
+
+// Recolor the brand surfaces in-place from a derived palette. The city page calls
+// this when the theme changes and remounts the scene subtree (keyed on themeId)
+// so every component re-reads the singleton. Recomputes every brand surface from
+// the derived palette's accent (not from the previously-applied colors), so
+// repeated theme switches don't compound.
+export const applyCityBrandColors = (palette) => {
+  const accent = palette?.accent || ORIGINAL_GROUND;
+  CITY_COLORS.ground = accent;
+  CITY_COLORS.particles = accent;
+  CITY_COLORS.building.online = accent;
+  CITY_COLORS.neonAccents[0] = accent;
 };
