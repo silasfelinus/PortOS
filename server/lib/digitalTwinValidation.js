@@ -150,6 +150,28 @@ export const soulSettingsSchema = digitalTwinSettingsSchema; // Alias for backwa
 
 // --- Phase 7: Twin Personas (M34 P7) ---
 
+// Trait-blending rules (M34 P7). Beyond free-text instructions, a persona may
+// modulate the *base* twin's quantitative profile for its context: relative
+// nudges to formality/verbosity (the 1..10 communicationProfile scale, so a
+// ±9 delta can reach either end), absolute overrides for emoji usage and tone,
+// and directional Big-Five leans (0..1 scale → ±1 delta). All fields optional;
+// an instructions-only persona omits the whole object. The blend + directive
+// rendering live in `server/lib/personaTraitBlend.js`.
+const bigFiveDelta = z.number().min(-1).max(1);
+export const personaTraitAdjustmentsSchema = z.object({
+  formality: z.number().int().min(-9).max(9).optional(),
+  verbosity: z.number().int().min(-9).max(9).optional(),
+  emojiUsage: z.enum(['never', 'rare', 'occasional', 'frequent']).optional(),
+  tone: z.string().max(100).optional(),
+  bigFive: z.object({
+    O: bigFiveDelta.optional(),
+    C: bigFiveDelta.optional(),
+    E: bigFiveDelta.optional(),
+    A: bigFiveDelta.optional(),
+    N: bigFiveDelta.optional()
+  }).optional()
+});
+
 // A persona is a named context variant. Its instructions are prepended to the
 // twin context so the embodied twin modulates voice/behavior for a context
 // (Professional, Casual, Family, …) without forking the underlying documents.
@@ -158,6 +180,7 @@ export const personaSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
   instructions: z.string().min(1).max(5000),
+  traitAdjustments: personaTraitAdjustmentsSchema.optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
 });
@@ -165,13 +188,16 @@ export const personaSchema = z.object({
 export const createPersonaInputSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
-  instructions: z.string().min(1).max(5000)
+  instructions: z.string().min(1).max(5000),
+  traitAdjustments: personaTraitAdjustmentsSchema.optional()
 });
 
 export const updatePersonaInputSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   description: z.string().max(500).optional(),
-  instructions: z.string().min(1).max(5000).optional()
+  instructions: z.string().min(1).max(5000).optional(),
+  // nullable so the UI can clear adjustments back to an instructions-only persona
+  traitAdjustments: personaTraitAdjustmentsSchema.nullable().optional()
 });
 
 export const setActivePersonaInputSchema = z.object({
