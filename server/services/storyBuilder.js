@@ -7,12 +7,28 @@
  * `seriesId`). All real content lives in the universe and series records and is
  * mutated through their existing services — this service never duplicates it.
  *
- * Sessions are LOCAL-ONLY: they reference peer-syncable records by FK, but the
- * lock/integrity bookkeeping is a private workflow artifact. We deliberately do
- * NOT register a sync schema version, do NOT add the type to
- * RECORD_TYPE_CATEGORIES, and do NOT auto-subscribe peers on create — syncing a
- * session would create cross-install staleness false-positives. The
- * tombstone/origin/ephemeral fields are carried only for on-disk shape parity.
+ * Sessions are LOCAL-ONLY BY DEFAULT: they reference peer-syncable records by
+ * FK, but the lock/integrity bookkeeping is a private workflow artifact. A
+ * session opts into cross-machine resume by flipping `sync: true` (#730). The
+ * wire/push integration itself (peer push schema, manifest kind, importer
+ * apply) is a later slice; what ships here is the OPT-IN flag plus the
+ * sync-safe staleness model that makes enabling it later non-corrupting.
+ *
+ * Sync-safe staleness (#730). The default (local-only) staleness model
+ * live-diffs each locked step's frozen `upstreamHash` against the CURRENT hash
+ * recomputed from the live universe/series records — so any out-of-band edit
+ * (#731), including a peer's universe edit that arrived via universe sync, flags
+ * the locked step stale. That is correct within one install but wrong for a
+ * synced session: once the session travels to another machine, that machine's
+ * live records legitimately differ, so a live recompute would false-positive
+ * EVERY locked step stale. So a `sync: true` session instead keys staleness on a
+ * content hash CARRIED IN THE SESSION (`syncedHashes`) — the upstream hashes the
+ * session last reconciled with on whatever machine touched it. A peer's record
+ * edit moves the live records but NOT `syncedHashes`, so it can't false-positive
+ * a synced session; the user re-snapshots the baseline explicitly via reconcile.
+ *
+ * The tombstone/origin/ephemeral fields are carried only for on-disk shape
+ * parity (and forward-compat with the eventual sync wire integration).
  *
  * Persisted to data/story-builder/{id}/index.json.
  */
@@ -121,6 +137,21 @@ function sanitizeSteps(raw) {
   return steps;
 }
 
+// The content-hash baseline a `sync: true` session carries (#730): one
+// sha256 hex digest per step id, the upstream hash the session last reconciled
+// with. Drops unknown ids and non-hex values so a hand-edited / peer-sourced
+// record can't smuggle a bogus baseline that would mis-flag staleness.
+const HASH_RE = /^[0-9a-f]{64}$/;
+function sanitizeSyncedHashes(raw) {
+  if (!raw || typeof raw !== 'object') return {};
+  const out = {};
+  for (const id of STEP_IDS) {
+    const h = raw[id];
+    if (isStr(h) && HASH_RE.test(h)) out[id] = h;
+  }
+  return out;
+}
+
 export function sanitizeSession(raw) {
   if (!raw || typeof raw !== 'object') return null;
   if (!isStr(raw.id) || !raw.id) return null;
@@ -143,6 +174,11 @@ export function sanitizeSession(raw) {
     currentStep,
     steps: sanitizeSteps(raw.steps),
     llm,
+    // Cross-machine resume is OPT-IN (#730): local-only is the default. When
+    // off, `syncedHashes` is irrelevant (staleness live-diffs against records)
+    // so we drop it to keep the record minimal.
+    sync: raw.sync === true,
+    ...(raw.sync === true ? { syncedHashes: sanitizeSyncedHashes(raw.syncedHashes) } : {}),
     origin: sanitizeOrigin(raw.origin),
     createdAt,
     updatedAt,
@@ -378,12 +414,66 @@ export async function computeCurrentHashes(session) {
  * Load a session augmented with the computed `staleSteps` array (the locked
  * steps whose upstream inputs have drifted since lock time). This is the shape
  * the route serves to the client.
+ *
+ * Staleness baseline depends on the sync mode (#730):
+ *  - local-only (default): compare each locked step's frozen `upstreamHash`
+ *    against the LIVE recompute, so any out-of-band record edit flags stale
+ *    (#731). Correct within one install.
+ *  - sync (`session.sync === true`): compare against the session-carried
+ *    `syncedHashes` baseline instead of live records. The baseline travels with
+ *    the session, so a peer's universe edit that hasn't been reconciled can't
+ *    false-positive-stale a session that synced across machines. The user
+ *    re-snapshots the baseline to live via `reconcileStorySession`.
  */
 export async function getStorySessionView(id) {
   const session = await getStorySession(id);
   const { hashes, universe, series } = await computeCurrentHashes(session);
-  const staleSteps = computeStaleSteps(session, hashes);
+  const baseline = session.sync === true ? (session.syncedHashes || {}) : hashes;
+  const staleSteps = computeStaleSteps(session, baseline);
   return { session, staleSteps, universe, series };
+}
+
+/**
+ * Re-snapshot a sync-enabled session's `syncedHashes` baseline to the CURRENT
+ * live records. This is the explicit "adopt this machine's universe/series
+ * state as the new staleness baseline" gesture — the only thing that moves the
+ * carried baseline on a synced session. A no-op shape-wise for a local-only
+ * session (it carries no baseline), but we still allow the call so the route
+ * can offer reconcile after the user flips sync on. Returns the saved session.
+ */
+export async function reconcileStorySession(id) {
+  const session = await getStorySession(id);
+  const { hashes } = await computeCurrentHashes(session);
+  return store().queueRecordWrite(id, async () => {
+    const cur = await store().loadOne(id);
+    if (!cur || cur.deleted) throw makeErr(`Story Builder session not found: ${id}`, ERR_NOT_FOUND);
+    const next = sanitizeSession({ ...cur, sync: true, syncedHashes: hashes, updatedAt: nowIso() });
+    await store().saveOneNow(next.id, next);
+    return next;
+  });
+}
+
+/**
+ * Toggle cross-machine resume on/off for a session (#730). Turning it ON
+ * snapshots the current live hashes as the staleness baseline (so the user
+ * doesn't start out "stale against nothing"); turning it OFF drops the baseline
+ * and reverts to live-diff staleness.
+ */
+export async function setStorySessionSync(id, enabled) {
+  const session = await getStorySession(id);
+  const { hashes } = enabled ? await computeCurrentHashes(session) : { hashes: {} };
+  return store().queueRecordWrite(id, async () => {
+    const cur = await store().loadOne(id);
+    if (!cur || cur.deleted) throw makeErr(`Story Builder session not found: ${id}`, ERR_NOT_FOUND);
+    const next = sanitizeSession({
+      ...cur,
+      sync: enabled === true,
+      ...(enabled === true ? { syncedHashes: hashes } : {}),
+      updatedAt: nowIso(),
+    });
+    await store().saveOneNow(next.id, next);
+    return next;
+  });
 }
 
 // ── State machine: lock / unlock ──────────────────────────────────────────
@@ -437,7 +527,16 @@ export async function lockStep(id, stepId) {
       lockedAt: nowIso(),
       upstreamHash: hashes[stepId],
     };
-    const next = sanitizeSession({ ...cur, steps, updatedAt: nowIso() });
+    // A sync-enabled session keys staleness off its carried baseline, not live
+    // records — so locking must also move the baseline to live (#730). Otherwise
+    // the just-locked step would compare its fresh `upstreamHash` against a
+    // stale `syncedHashes` entry and report itself stale on the next read.
+    const next = sanitizeSession({
+      ...cur,
+      steps,
+      ...(cur.sync === true ? { syncedHashes: { ...(cur.syncedHashes || {}), ...hashes } } : {}),
+      updatedAt: nowIso(),
+    });
     await store().saveOneNow(next.id, next);
     return next;
   });
