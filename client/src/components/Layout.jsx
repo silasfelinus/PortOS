@@ -47,7 +47,6 @@ import {
   Flame,
   Monitor,
   Cigarette,
-  Skull,
   HeartPulse,
   ClipboardList,
   Compass,
@@ -74,7 +73,6 @@ import {
   MessagesSquare,
   BookOpen,
   NotebookPen,
-  Search,
   Mic,
   Rss,
   Archive,
@@ -82,6 +80,9 @@ import {
   Sun,
   Moon,
   Share2,
+  Pin,
+  PinOff,
+  Navigation,
   Workflow as WorkflowIcon
 } from 'lucide-react';
 /* global __APP_VERSION__ */
@@ -92,6 +93,7 @@ import { useAgentFeedbackToast } from '../hooks/useAgentFeedbackToast';
 import { useSharingNotifications } from '../hooks/useSharingNotifications';
 import { useUpdateChecker } from '../hooks/useUpdateChecker';
 import { useAIStatusNotifications } from '../hooks/useAIStatusNotifications';
+import { useNavWorkingSet } from '../hooks/useNavWorkingSet.js';
 import { useThemeContext } from './ThemeContext';
 import NotificationDropdown from './NotificationDropdown';
 import VoiceToggleButton from './voice/VoiceToggleButton';
@@ -133,6 +135,7 @@ const navItems = [
       { to: '/brain/config', label: 'Config', icon: Settings },
       { to: '/brain/daily-log', label: 'Daily Log', icon: NotebookPen },
       { to: '/brain/digest', label: 'Digest', icon: Calendar },
+      { to: '/messages/drafts', label: 'Drafts', icon: FilePen },
       { to: '/brain/feeds', label: 'Feeds', icon: Rss },
       { to: '/brain/graph', label: 'Graph', icon: Network },
       { to: '/brain/import', label: 'Import', icon: Upload },
@@ -140,10 +143,16 @@ const navItems = [
       { to: '/insights/overview', label: 'Insights', icon: Lightbulb },
       { to: '/brain/links', label: 'Links', icon: Link2 },
       { to: '/brain/memory', label: 'Memory', icon: Database },
+      { to: '/messages/inbox', label: 'Messages', icon: Inbox },
+      { to: '/messages/config', label: 'Messages Config', icon: Settings },
+      { to: '/messages/sync', label: 'Messages Sync', icon: RefreshCw },
       { to: '/brain/notes', label: 'Notes', icon: FileText },
+      { to: '/openclaw', label: 'OpenClaw', icon: MessagesSquare },
       { to: '/rapid-reader', label: 'Rapid Reader', icon: Zap },
-      { to: '/brain/trust', label: 'Trust', icon: Shield }
-    ]
+      { to: '/agents', label: 'Social Agents', icon: Users },
+      { to: '/brain/trust', label: 'Trust', icon: Shield },
+      { to: '/wiki/overview', label: 'Wiki', icon: BookOpen },
+    ],
   },
   {
     label: 'Calendar',
@@ -156,8 +165,8 @@ const navItems = [
       { to: '/calendar/month', label: 'Month', icon: CalendarDays },
       { to: '/calendar/review', label: 'Review', icon: ClipboardList },
       { to: '/calendar/sync', label: 'Sync', icon: RefreshCw },
-      { to: '/calendar/week', label: 'Week', icon: CalendarDays }
-    ]
+      { to: '/calendar/week', label: 'Week', icon: CalendarDays },
+    ],
   },
   {
     label: 'Chief of Staff',
@@ -175,22 +184,10 @@ const navItems = [
       { to: '/cos/memory', label: 'Memory', icon: Brain },
       { to: '/cos/schedule', label: 'Schedule', icon: Clock },
       { to: '/cos/productivity', label: 'Streaks', icon: Flame },
+      { to: '/cos/jobs', label: 'System Tasks', icon: Bot },
       { to: '/cos/tasks', label: 'Tasks', icon: FileText },
-      { to: '/cos/workflow', label: 'Workflow', icon: WorkflowIcon }
-    ]
-  },
-  {
-    label: 'Comms',
-    icon: MessagesSquare,
-    defaultTo: '/messages/inbox',
-    children: [
-      { to: '/messages/config', label: 'Config', icon: Settings },
-      { to: '/messages/drafts', label: 'Drafts', icon: FilePen },
-      { to: '/messages/inbox', label: 'Inbox', icon: Inbox },
-      { to: '/openclaw', label: 'OpenClaw', icon: MessagesSquare },
-      { to: '/agents', label: 'Social Agents', icon: Users },
-      { to: '/messages/sync', label: 'Sync', icon: RefreshCw }
-    ]
+      { to: '/cos/workflow', label: 'Workflow', icon: WorkflowIcon },
+    ],
   },
   {
     label: 'Create',
@@ -204,8 +201,8 @@ const navItems = [
       { to: '/sharing', label: 'Sharing', icon: Share2 },
       { to: '/story-builder', label: 'Story Builder', icon: Wand2 },
       { to: '/universes', label: 'Universes', icon: Globe, dynamic: 'universes' },
-      { to: '/writers-room', label: 'Writers Room', icon: NotebookPen }
-    ]
+      { to: '/writers-room', label: 'Writers Room', icon: NotebookPen },
+    ],
   },
   {
     label: 'Dev Tools',
@@ -213,72 +210,48 @@ const navItems = [
     children: [
       { to: '/devtools/agents', label: 'AI Agents', icon: Cpu },
       { to: '/devtools/runs', label: 'AI Runs', icon: Play },
+      { to: '/ambient', label: 'Ambient', icon: Sparkles },
       { href: '//:5560', label: 'Autofixer', icon: Wrench, external: true, dynamicHost: true },
       { to: '/browser', label: 'Browser', icon: Globe },
+      { to: '/capabilities', label: 'Capabilities', icon: Compass },
       { to: '/devtools/runner', label: 'Code', icon: Code2 },
+      { to: '/data', label: 'Data', icon: HardDrive },
       { to: '/devtools/datadog', label: 'DataDog', icon: Dog },
       { to: '/feature-agents', label: 'Feature Agents', icon: Wand2 },
       { to: '/devtools/github', label: 'GitHub', icon: Github },
       { to: '/devtools/history', label: 'History', icon: History },
       { to: '/devtools/image-clean', label: 'Image Cleaner', icon: Eraser },
+      { to: '/instances', label: 'Instances', icon: Network },
       { to: '/devtools/jira', label: 'JIRA', icon: Ticket },
       { to: '/devtools/jira/reports', label: 'JIRA Reports', icon: FileText },
+      { to: '/loops', label: 'Loops', icon: RefreshCw },
+      { to: '/devtools/processes', label: 'Processes', icon: Activity },
+      { to: '/security', label: 'Security', icon: Camera },
       { to: '/shell', label: 'Shell', icon: SquareTerminal },
       { to: '/devtools/submodules', label: 'Submodules', icon: GitBranch },
-      { to: '/devtools/usage', label: 'Usage', icon: BarChart3 }
-    ]
+      { to: '/system-health', label: 'System Health', icon: Activity },
+      { to: '/uploads', label: 'Uploads', icon: Upload },
+      { to: '/devtools/usage', label: 'Usage', icon: BarChart3 },
+    ],
   },
+  { to: '/goals/list', label: 'Goals', icon: Target, single: true },
   {
-    label: 'Digital Twin',
+    label: 'Health',
     icon: Heart,
-    defaultTo: '/digital-twin/overview',
-    children: [
-      { to: '/digital-twin/accounts', label: 'Accounts', icon: Globe },
-      { to: '/ask', label: 'Ask Yourself', icon: MessageCircle },
-      { to: '/digital-twin/autobiography', label: 'Autobiography', icon: PenLine },
-      { to: '/character', label: 'Character', icon: Swords },
-      { to: '/digital-twin/documents', label: 'Documents', icon: FileText },
-      { to: '/digital-twin/enrich', label: 'Enrich', icon: Sparkles },
-      { to: '/digital-twin/export', label: 'Export', icon: Download },
-      { to: '/goals/list', label: 'Goals', icon: Target },
-      { to: '/digital-twin/identity', label: 'Identity', icon: Fingerprint },
-      { to: '/digital-twin/import', label: 'Import', icon: Upload },
-      { to: '/digital-twin/interview', label: 'Interview', icon: MessageSquare },
-      { to: '/digital-twin/overview', label: 'Overview', icon: Heart },
-      { to: '/digital-twin/taste', label: 'Taste', icon: Palette },
-      { to: '/digital-twin/test', label: 'Test', icon: CheckCircle },
-      { to: '/digital-twin/time-capsule', label: 'Time Capsule', icon: Archive }
-    ]
-  },
-  {
-    label: 'MeatSpace',
-    icon: Skull,
     defaultTo: '/meatspace/overview',
     children: [
       { to: '/meatspace/age', label: 'Age', icon: Clock },
       { to: '/meatspace/alcohol', label: 'Alcohol', icon: Activity },
       { to: '/meatspace/blood', label: 'Blood', icon: HeartPulse },
       { to: '/meatspace/body', label: 'Body', icon: Scale },
+      { to: '/meatspace/health', label: 'Body Health', icon: Heart },
       { to: '/meatspace/export', label: 'Export', icon: FileText },
       { to: '/meatspace/genome', label: 'Genome', icon: Dna },
-      { to: '/meatspace/health', label: 'Body Health', icon: Heart },
       { to: '/meatspace/lifestyle', label: 'Lifestyle', icon: ClipboardList },
       { to: '/meatspace/nicotine', label: 'Nicotine', icon: Cigarette },
       { to: '/meatspace/overview', label: 'Overview', icon: Activity },
-      { to: '/meatspace/settings', label: 'Settings', icon: Settings }
-    ]
-  },
-  {
-    label: 'POST',
-    icon: Zap,
-    defaultTo: '/post/launcher',
-    children: [
-      { to: '/post/config', label: 'Config', icon: Settings },
-      { to: '/post/history', label: 'History', icon: History },
-      { to: '/post/launcher', label: 'Launcher', icon: Play },
-      { to: '/post/memory', label: 'Memory', icon: Brain },
-      { to: '/post/wordplay', label: 'Wordplay', icon: MessageCircle },
-    ]
+      { to: '/meatspace/settings', label: 'Settings', icon: Settings },
+    ],
   },
   {
     label: 'Settings',
@@ -296,38 +269,76 @@ const navItems = [
       { to: '/settings/security', label: 'Security', icon: Lock },
       { to: '/settings/sharing', label: 'Sharing', icon: Share2 },
       { to: '/settings/telegram', label: 'Telegram', icon: MessageSquare },
-      { to: '/settings/voice', label: 'Voice', icon: Mic }
-    ]
+      { to: '/settings/voice', label: 'Voice', icon: Mic },
+    ],
+  },
+  { moreLabel: true },
+  {
+    label: 'Identity',
+    icon: Fingerprint,
+    defaultTo: '/digital-twin/overview',
+    children: [
+      { to: '/digital-twin/accounts', label: 'Accounts', icon: Globe },
+      { to: '/ask', label: 'Ask Yourself', icon: MessageCircle },
+      { to: '/digital-twin/autobiography', label: 'Autobiography', icon: PenLine },
+      { to: '/character', label: 'Character', icon: Swords },
+      { to: '/digital-twin/documents', label: 'Documents', icon: FileText },
+      { to: '/digital-twin/enrich', label: 'Enrich', icon: Sparkles },
+      { to: '/digital-twin/export', label: 'Export', icon: Download },
+      { to: '/digital-twin/identity', label: 'Identity', icon: Fingerprint },
+      { to: '/digital-twin/import', label: 'Import', icon: Upload },
+      { to: '/digital-twin/interview', label: 'Interview', icon: MessageSquare },
+      { to: '/digital-twin/overview', label: 'Overview', icon: Heart },
+      { to: '/digital-twin/taste', label: 'Taste', icon: Palette },
+      { to: '/digital-twin/test', label: 'Test', icon: CheckCircle },
+      { to: '/digital-twin/time-capsule', label: 'Time Capsule', icon: Archive },
+    ],
   },
   {
-    label: 'System',
-    icon: HardDrive,
-    defaultTo: '/data',
+    label: 'POST',
+    icon: Zap,
+    defaultTo: '/post/launcher',
     children: [
-      { to: '/capabilities', label: 'Capabilities', icon: Compass },
-      { to: '/data', label: 'Data', icon: HardDrive },
-      { to: '/instances', label: 'Instances', icon: Network },
-      { to: '/loops', label: 'Loops', icon: RefreshCw },
-      { to: '/devtools/processes', label: 'Processes', icon: Activity },
-      { to: '/security', label: 'Security', icon: Camera },
-      { to: '/cos/jobs', label: 'System Tasks', icon: Bot },
-      { to: '/uploads', label: 'Uploads', icon: Upload }
-    ]
+      { to: '/post/config', label: 'Config', icon: Settings },
+      { to: '/post/history', label: 'History', icon: History },
+      { to: '/post/launcher', label: 'Launcher', icon: Play },
+      { to: '/post/memory', label: 'Memory', icon: Brain },
+      { to: '/post/wordplay', label: 'Wordplay', icon: MessageCircle },
+    ],
   },
-  {
-    label: 'Wiki',
-    icon: BookOpen,
-    children: [
-      { to: '/wiki/overview', label: 'Overview', icon: BarChart3 },
-      { to: '/wiki/browse', label: 'Browse', icon: FileText },
-      { to: '/wiki/graph', label: 'Graph', icon: Network },
-      { to: '/wiki/log', label: 'Log', icon: Activity },
-      { to: '/wiki/search', label: 'Search', icon: Search }
-    ]
-  }
 ];
 
 const SIDEBAR_KEY = 'portos-sidebar-collapsed';
+
+// One row in the sidebar's Pinned/Recent sections: a nav link plus a pin/unpin
+// toggle that does not navigate (stops propagation). Pinned rows show a filled
+// pin; recent rows reveal the pin affordance on hover/focus.
+function WorkingSetRow({ entry, pinned, onTogglePin, onNavigate, isActive }) {
+  const Icon = entry.icon;
+  return (
+    <div className="group mx-2 flex items-stretch min-w-0">
+      <NavLink
+        to={entry.path}
+        end={entry.end}
+        onClick={onNavigate}
+        className={`flex-1 flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors min-w-0 ${
+          isActive ? 'bg-port-accent/10 text-port-accent' : 'text-gray-400 hover:text-white hover:bg-port-border/50'
+        }`}
+      >
+        {Icon && <Icon size={16} className="shrink-0" />}
+        <span className="min-w-0 truncate">{entry.label}</span>
+      </NavLink>
+      <button
+        type="button"
+        aria-label={pinned ? `Unpin ${entry.label}` : `Pin ${entry.label}`}
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); onTogglePin(); }}
+        className={`px-2 rounded-lg hover:bg-port-border/50 ${pinned ? 'text-port-accent' : 'text-gray-500 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'}`}
+      >
+        {pinned ? <PinOff size={14} /> : <Pin size={14} />}
+      </button>
+    </div>
+  );
+}
 
 export default function Layout() {
   const location = useLocation();
@@ -482,6 +493,24 @@ export default function Layout() {
     return () => window.removeEventListener('focus', onFocus);
   }, []);
 
+  // Fetch the palette nav manifest once on mount so manifest-only paths
+  // (e.g. /wiki/log, /goals/tree) can be resolved in the Pinned/Recent sections
+  // even though they are not sidebar leaves.
+  const [manifestNav, setManifestNav] = useState([]);
+  useEffect(() => {
+    api.getPaletteManifest({ silent: true })
+      .then((data) => setManifestNav(Array.isArray(data?.nav) ? data.nav : []))
+      .catch((err) => console.warn(`⚠️ Layout: palette manifest fetch failed: ${err?.message || err}`));
+  }, []);
+
+  const manifestEntryByPath = useMemo(() => {
+    const map = new Map();
+    manifestNav.forEach((c) => {
+      if (c?.path && !map.has(c.path)) map.set(c.path, { path: c.path, label: c.label, icon: Navigation });
+    });
+    return map;
+  }, [manifestNav]);
+
   useEffect(() => {
     localStorage.setItem(SIDEBAR_KEY, String(collapsed));
   }, [collapsed]);
@@ -541,6 +570,32 @@ export default function Layout() {
     });
   }, [sidebarApps, pipelineSeries, universes]);
 
+  // Flat path -> { path, label, icon } lookup over every leaf nav row, so the
+  // Pinned/Recent sections render a stored path with its real label + icon.
+  const navEntryByPath = useMemo(() => {
+    const map = new Map();
+    const addLeaf = (leaf) => {
+      if (leaf?.to && !map.has(leaf.to)) {
+        map.set(leaf.to, { path: leaf.to, label: leaf.label, icon: leaf.icon, end: leaf.end });
+      }
+    };
+    resolvedNavItems.forEach((item) => {
+      if (item.single) addLeaf(item);
+      (item.children || []).forEach((child) => {
+        addLeaf(child);
+        (child.grandChildren || []).forEach(addLeaf);
+      });
+    });
+    return map;
+  }, [resolvedNavItems]);
+
+  const resolveNavEntry = useCallback(
+    (path) => navEntryByPath.get(path) || manifestEntryByPath.get(path) || null,
+    [navEntryByPath, manifestEntryByPath],
+  );
+
+  const { pinned, recent, pin, unpin, isPinned } = useNavWorkingSet(resolveNavEntry);
+
   // Auto-expand sections when on a child page
   useEffect(() => {
     resolvedNavItems.forEach(item => {
@@ -588,6 +643,11 @@ export default function Layout() {
       return (
         <div key={`separator-${index}`} className="mx-4 my-2 border-t border-port-border" />
       );
+    }
+
+    // "More" section divider (Task 5 will add pin/recent logic here)
+    if (item.moreLabel) {
+      return <div key="more-label" className="mx-4 mt-3 mb-1 pt-2 border-t border-port-border text-[10px] font-semibold uppercase tracking-wide text-gray-500">More</div>;
     }
 
     const Icon = item.icon;
@@ -770,21 +830,16 @@ export default function Layout() {
                 ? location.pathname === child.to
                 : isActive(child.to);
               const grandChildren = Array.isArray(child.grandChildren) ? child.grandChildren : [];
+              const childIsPinned = isPinned(child.to);
               return (
                 <div key={child.to} className="min-w-0">
-                  <NavLink
-                    to={child.to}
-                    end={child.end}
-                    onClick={() => setMobileOpen(false)}
-                    className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors min-w-0 ${
-                      childActive
-                        ? 'bg-port-accent/10 text-port-accent'
-                        : 'text-gray-500 hover:text-white hover:bg-port-border/50'
-                    }`}
-                  >
-                    <ChildIcon size={16} className="shrink-0" />
-                    <span className="min-w-0 truncate">{child.label}</span>
-                  </NavLink>
+                  <WorkingSetRow
+                    entry={{ path: child.to, label: child.label, icon: ChildIcon, end: child.end }}
+                    pinned={childIsPinned}
+                    onTogglePin={() => (childIsPinned ? unpin(child.to) : pin(child.to))}
+                    onNavigate={() => setMobileOpen(false)}
+                    isActive={childActive}
+                  />
                   {grandChildren.length > 0 && (
                     <div className="ml-6 mt-0.5 mb-1 border-l border-port-border/50 pl-2 min-w-0">
                       {grandChildren.map((gc) => {
@@ -895,6 +950,27 @@ export default function Layout() {
 
         {/* Nav items */}
         <nav className="flex-1 py-4 overflow-y-auto overflow-x-hidden min-w-0">
+          {!collapsed && (pinned.length > 0 || recent.length > 0) && (
+            <div className="mb-2">
+              {pinned.length > 0 && (
+                <div className="mb-2">
+                  <div className="px-4 py-1 text-[10px] font-semibold uppercase tracking-wide text-gray-500">Pinned</div>
+                  {pinned.map((entry) => (
+                    <WorkingSetRow key={`pin-${entry.path}`} entry={entry} pinned onTogglePin={() => unpin(entry.path)} onNavigate={() => setMobileOpen(false)} isActive={entry.end ? location.pathname === entry.path : isActive(entry.path)} />
+                  ))}
+                </div>
+              )}
+              {recent.length > 0 && (
+                <div className="mb-2">
+                  <div className="px-4 py-1 text-[10px] font-semibold uppercase tracking-wide text-gray-500">Recent</div>
+                  {recent.map((entry) => (
+                    <WorkingSetRow key={`recent-${entry.path}`} entry={entry} pinned={false} onTogglePin={() => pin(entry.path)} onNavigate={() => setMobileOpen(false)} isActive={entry.end ? location.pathname === entry.path : isActive(entry.path)} />
+                  ))}
+                </div>
+              )}
+              <div className="mx-4 my-2 border-t border-port-border" />
+            </div>
+          )}
           {resolvedNavItems.map(renderNavItem)}
         </nav>
 
