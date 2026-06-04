@@ -2525,9 +2525,12 @@ describe('pipeline routes', () => {
       expect(r.status).toBe(200);
       expect(r.body.music.source).toBe('upload');
       expect(r.body.music.trackFilename).toMatch(/^music-uuid-/);
+      // Uploading a single track flips the episode to 'uploaded-track'.
+      expect(r.body.stage.audioMode).toBe('uploaded-track');
       // Persisted on the issue
       const after = await request(app).get(`/api/pipeline/issues/${iss.id}`);
       expect(after.body.stages.audio.music.trackFilename).toBe(r.body.music.trackFilename);
+      expect(after.body.stages.audio.audioMode).toBe('uploaded-track');
       expect(lastImportedName).toBe('My Theme.mp3');
     });
 
@@ -2551,6 +2554,10 @@ describe('pipeline routes', () => {
       expect(r.body.music.source).toBe('library');
       expect(r.body.music.trackFilename).toBe('shared.mp3');
       expect(r.body.music.label).toBe('Library pick');
+      // Attaching a single track flips the episode to 'uploaded-track' so the
+      // stitcher actually muxes it (a new issue defaults to 'per-clip', which
+      // ignores the music pointer — issue #863).
+      expect(r.body.stage.audioMode).toBe('uploaded-track');
     });
 
     it('POST /audio/music/attach 404s when the track is not in the library', async () => {
@@ -2596,8 +2603,26 @@ describe('pipeline routes', () => {
         .send();
       expect(r.status).toBe(200);
       expect(r.body.stage.music).toBeNull();
+      // Clearing the only track reverts an 'uploaded-track' issue to 'per-clip'.
+      expect(r.body.stage.audioMode).toBe('per-clip');
       // Library entry survives the issue detach
       expect(musicLibraryStore.has('shared.mp3')).toBe(true);
+    });
+
+    it('DELETE /audio/music leaves a generated-mode issue in generated mode', async () => {
+      const app = makeApp();
+      const iss = await seedIssue(app);
+      // Put the issue in generated mode with a (stale) music pointer, then clear
+      // the pointer — the explicit generated strategy must survive.
+      await request(app).patch(`/api/pipeline/issues/${iss.id}`).send({
+        stages: { audio: { audioMode: 'generated', music: { source: 'gen', trackFilename: 'old.wav', label: 'x' } } },
+      });
+      const r = await request(app)
+        .delete(`/api/pipeline/issues/${iss.id}/stages/audio/music`)
+        .send();
+      expect(r.status).toBe(200);
+      expect(r.body.stage.music).toBeNull();
+      expect(r.body.stage.audioMode).toBe('generated');
     });
 
     it('DELETE /audio/music 404s with PIPELINE_ISSUE_NOT_FOUND when the issue does not exist', async () => {

@@ -927,6 +927,20 @@ const musicUpload = uploadSingle('track', {
 const audioStatusAfterMusicChange = (stage) =>
   (stage.lines?.length ? 'edited' : 'empty');
 
+// Attaching/generating/uploading a single track means "use this one track as
+// the episode bed" — flip audioMode to 'uploaded-track' so the stitcher
+// actually muxes it. Without this a new issue stays at the default 'per-clip'
+// mode, which (correctly) ignores the music pointer, so the track would land on
+// the issue but never play (issue #863). Only override the generated/silent
+// modes when the user explicitly attaches a single track — those are deliberate
+// strategy choices we shouldn't silently undo for an unrelated music write... but
+// since all three routes ARE the "set the single track" action, the override is
+// the user's intent. The delete route mirrors this: clearing the only track
+// reverts an 'uploaded-track' issue to 'per-clip', leaving generated/silent be.
+const audioModeAfterTrackSet = () => 'uploaded-track';
+const audioModeAfterTrackClear = (stage) =>
+  (stage.audioMode === 'uploaded-track' ? 'per-clip' : stage.audioMode);
+
 router.get('/audio/music-library', asyncHandler(async (_req, res) => {
   res.json({ tracks: await listMusicLibrary() });
 }));
@@ -999,6 +1013,7 @@ router.post('/issues/:id/stages/audio/music/generate', asyncHandler(async (req, 
     'audio',
     (current) => ({
       status: audioStatusAfterMusicChange(current),
+      audioMode: audioModeAfterTrackSet(),
       music: { source: MUSIC_SOURCE.GEN, trackFilename: gen.filename, label: gen.model },
       errorMessage: '',
     }),
@@ -1024,6 +1039,7 @@ router.post('/issues/:id/stages/audio/music/upload', musicUpload, asyncHandler(a
     'audio',
     (current) => ({
       status: audioStatusAfterMusicChange(current),
+      audioMode: audioModeAfterTrackSet(),
       music: { source: MUSIC_SOURCE.UPLOAD, trackFilename: filename, label },
       errorMessage: '',
     }),
@@ -1049,6 +1065,7 @@ router.post('/issues/:id/stages/audio/music/attach', asyncHandler(async (req, re
     'audio',
     (current) => ({
       status: audioStatusAfterMusicChange(current),
+      audioMode: audioModeAfterTrackSet(),
       music: {
         source: MUSIC_SOURCE.LIBRARY,
         trackFilename: body.trackFilename,
@@ -1066,6 +1083,7 @@ router.delete('/issues/:id/stages/audio/music', asyncHandler(async (req, res) =>
     'audio',
     (current) => ({
       status: audioStatusAfterMusicChange(current),
+      audioMode: audioModeAfterTrackClear(current),
       music: null,
       errorMessage: '',
     }),
