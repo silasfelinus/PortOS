@@ -115,5 +115,11 @@ export async function streamLocalLlmTest(payload, { signal, onToken } = {}) {
   } finally {
     await reader.cancel().catch(() => {});
   }
+  // A clean EOF that never delivered a `result` frame (server killed mid-stream,
+  // truncated body, proxy cut the connection — all surface as read() done:true,
+  // NOT an AbortError) would otherwise resolve null and be silently swallowed by
+  // the caller's `if (!result) return`. Throw so the caller's .catch toasts it;
+  // an intentional cancel sets signal.aborted and the caller suppresses that.
+  if (!result && !signal?.aborted) throw new Error('Stream ended before a result was received');
   return result;
 }

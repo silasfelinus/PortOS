@@ -96,6 +96,24 @@ describe('local LLM playground routes', () => {
     ]);
   });
 
+  it('emits exactly one terminal result frame (no extra 500) when the run resolves an in-stream error', async () => {
+    // A timed-out/aborted run resolves an { error, text } result rather than
+    // throwing — the route must surface it as the single terminal frame.
+    runLocalLlmTest.mockResolvedValue({
+      backend: 'ollama', modelId: 'llama3.2', error: 'Timed out after 5000ms', text: 'partial',
+    });
+
+    const res = await request(makeApp())
+      .post('/api/local-llm/test/stream')
+      .send({ backend: 'ollama', modelId: 'llama3.2', prompt: 'Say hello' });
+
+    expect(res.status).toBe(200);
+    const frames = res.text.trim().split('\n').map((l) => JSON.parse(l));
+    expect(frames).toEqual([
+      { type: 'result', result: { backend: 'ollama', modelId: 'llama3.2', error: 'Timed out after 5000ms', text: 'partial' } },
+    ]);
+  });
+
   it('converts a pre-stream provider throw into a terminal error result frame (no 500 after headers)', async () => {
     runLocalLlmTest.mockRejectedValue(new Error('Local provider "ollama" is not configured'));
 

@@ -101,11 +101,15 @@ function CodeBlock({ lang, code, closed }) {
         </div>
       </div>
       {showPreview ? (
-        // Sandbox WITHOUT allow-same-origin so the model's markup/scripts can run
-        // (allow-scripts) but can't reach this page's DOM, cookies, or storage.
+        // Minimal sandbox: allow-scripts so the markup's JS runs, allow-forms so
+        // demo forms submit within the frame. Deliberately omit allow-same-origin
+        // (can't reach this page's DOM/cookies/storage), allow-popups (no
+        // window.open spam), and allow-modals (no blocking alert/prompt loops the
+        // user can only escape by closing the tab) — none are needed to render a
+        // page, and all widen the nuisance surface of untrusted model output.
         <iframe
           title="HTML preview"
-          sandbox="allow-scripts allow-forms allow-modals allow-popups"
+          sandbox="allow-scripts allow-forms"
           srcDoc={code}
           className="w-full h-72 md:h-96 bg-white"
         />
