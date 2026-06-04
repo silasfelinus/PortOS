@@ -36,7 +36,7 @@ import { rename, unlink } from 'fs/promises';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { PATHS } from '../../lib/fileUtils.js';
-import { findFfmpeg, runFfmpegProcess, hasAudioStream } from '../../lib/ffmpeg.js';
+import { findFfmpeg, runFfmpegProcess, hasAudioStream, safeUnder } from '../../lib/ffmpeg.js';
 import { statMusicTrack } from './musicLibrary.js';
 
 // 0.5 ≈ -6 dB — quiet enough to sit under dialogue once VO mixing lands
@@ -307,16 +307,24 @@ const CUE_FADE_SEC = 1.5;
  */
 export function selectPlacedCues(cues) {
   if (!Array.isArray(cues)) return [];
-  return cues
-    .filter((c) => c?.trackFilename && isPlacedOffset(c.startSec))
-    .map((c) => ({
-      path: join(PATHS.music, c.trackFilename),
+  const out = [];
+  for (const c of cues) {
+    if (!c?.trackFilename || !isPlacedOffset(c.startSec)) continue;
+    // Validate the filename is a safe basename under PATHS.music before building
+    // an ffmpeg input path — cue state can arrive from a synced peer, so a
+    // traversal/absolute filename must be dropped rather than handed to ffmpeg.
+    const path = safeUnder(PATHS.music, c.trackFilename);
+    if (!path) continue;
+    out.push({
+      path,
       startSec: c.startSec,
       // endSec is advisory for fade timing; null when un-placed.
       endSec: isPlacedOffset(c.endSec) && c.endSec > c.startSec ? c.endSec : null,
       // null gain → fall back to the stage default; 0 is a real "muted" value.
       gain: typeof c.gain === 'number' && Number.isFinite(c.gain) && c.gain >= 0 ? c.gain : null,
-    }));
+    });
+  }
+  return out;
 }
 
 /**
@@ -328,32 +336,46 @@ export function selectPlacedCues(cues) {
  * already be filtered to placed+rendered entries (selectPlacedCues does this).
  *
  * Graph:
- *   - each cue: delayed to its startSec (`adelay`), faded in at its start and
- *     out at its end (`afade`), resampled to the shared format, gained
+ *   - each cue: looped (`-stream_loop -1`) then trimmed to its placed span so a
+ *     short rendered clip fills its whole timeline slot instead of going silent
+ *     partway through; delayed to its startSec (`adelay`); faded in at its start
+ *     and out at its end (`afade`); resampled to the shared format; gained
  *   - all cues `amix=normalize=0` into one absolute-timeline bed
- *   - when VO lines are present: the bed is ducked under VO via
+ *   - the clip's own soundtrack (`[0:a]`) is preserved when `clipAudio` is set:
+ *     mixed into the bed (no VO) or ducked alongside the cue bed (with VO)
+ *   - when VO lines are present: the bed(s) are ducked under VO via
  *     `sidechaincompress` (same key machinery as buildVoMuxArgs), and the VO is
- *     mixed back over the ducked bed; the clip's own audio (`[0:a]`) is also
- *     ducked when `clipAudio` is set
+ *     mixed back over the ducked bed
  *   - `-shortest` pins the output to the video length
  */
 export function buildCueMuxArgs({ inputVideoPath, cues, voLines = [], musicGain = DEFAULT_MUSIC_GAIN, duck = DEFAULT_DUCK, clipAudio = false, outPath }) {
   const args = ['-i', inputVideoPath];
-  for (const cue of cues) args.push('-i', cue.path);
+  // Loop each cue input so a cue rendered shorter than its placed span still
+  // fills the slot — the per-cue `atrim` below cuts it back to the exact span.
+  for (const cue of cues) args.push('-stream_loop', '-1', '-i', cue.path);
   for (const line of voLines) args.push('-i', line.path);
 
   const chains = [];
-  // Each cue: delay to its absolute start, fade in/out, resample, gain.
+  // Each cue: trim the (looped) source to its placed span, delay to its absolute
+  // start, fade in/out, resample, gain.
   cues.forEach((cue, i) => {
     const inputIdx = i + 1; // 0 is the video
     const delayMs = Math.round(Number(cue.startSec) * 1000);
     const gain = Number(cue.gain ?? musicGain).toFixed(3);
-    const filters = [`adelay=${delayMs}:all=1`];
-    // Fade IN at the cue's absolute start (st is in seconds on the post-delay
-    // timeline). Fade OUT just before endSec when we know the span — otherwise
-    // skip the out-fade (the amix tail + -shortest still bounds it).
+    const span = (typeof cue.endSec === 'number' && cue.endSec > cue.startSec)
+      ? cue.endSec - cue.startSec
+      : null;
+    const filters = [];
+    // Trim the looped stream to the placed span first (atrim is on the cue's
+    // own timeline, before adelay shifts it onto the episode timeline). Without
+    // a known span we don't loop-trim — leave the single play, bounded by amix
+    // + -shortest. (selectPlacedCues only loses endSec when it's not placed.)
+    if (span) filters.push(`atrim=0:${span.toFixed(3)}`);
+    filters.push(`adelay=${delayMs}:all=1`);
+    // Fade IN at the cue's absolute start (post-delay timeline). Fade OUT just
+    // before endSec when we know the span.
     filters.push(`afade=t=in:st=${(cue.startSec).toFixed(3)}:d=${CUE_FADE_SEC}`);
-    if (cue.endSec && cue.endSec - cue.startSec > CUE_FADE_SEC) {
+    if (span && span > CUE_FADE_SEC) {
       const fadeOutStart = (cue.endSec - CUE_FADE_SEC).toFixed(3);
       filters.push(`afade=t=out:st=${fadeOutStart}:d=${CUE_FADE_SEC}`);
     }
@@ -383,9 +405,16 @@ export function buildCueMuxArgs({ inputVideoPath, cues, voLines = [], musicGain 
       beds.push('[clip]');
     }
     appendDuckChain(chains, voMixLabel, beds, duck, 'cue');
+  } else if (clipAudio) {
+    // No VO but the clip carries its own soundtrack — the design preserves it
+    // under the generated cues (not replace). Mix [0:a] in alongside the cue
+    // bed rather than ducking (no dialogue to duck under). apad so -shortest
+    // pins the result to the video length.
+    chains.push(`[0:a]${AFMT}[clip]`);
+    chains.push(`${bedLabel}[clip]amix=inputs=2:normalize=0,apad[aout]`);
   } else {
-    // No VO — the cue bed is the whole soundtrack. apad so -shortest pins it to
-    // the video length rather than the last cue.
+    // No VO, silent clip — the cue bed is the whole soundtrack. apad so
+    // -shortest pins it to the video length rather than the last cue.
     chains.push(`${bedLabel}apad[aout]`);
   }
 
@@ -429,9 +458,12 @@ export async function muxCueBed(inputVideoPath, { cues = [], voLines = [], music
   const ffmpeg = await findFfmpeg();
   if (!ffmpeg) return { ok: false, reason: 'ffmpeg not on PATH' };
 
-  // Preserve the clip's own soundtrack only when ducking under VO (same gate as
-  // muxVoLines); referencing [0:a] against a silent clip aborts the graph.
-  const clipAudio = placedVo.length ? await hasAudioStream(inputVideoPath) : false;
+  // Preserve the clip's own soundtrack whenever it has one — the design's
+  // 'generated' row keeps clip audio (mixed under the cues with no VO, ducked
+  // alongside the cue bed with VO). Probe unconditionally: referencing [0:a]
+  // against a silent clip aborts the graph, so we only set clipAudio when a
+  // stream is actually present (a probe failure safely returns false).
+  const clipAudio = await hasAudioStream(inputVideoPath);
 
   const tmpOut = `${inputVideoPath}.cuemux.${randomUUID()}.mp4`;
   const args = buildCueMuxArgs({ inputVideoPath, cues: placedCues, voLines: placedVo, musicGain, duck, clipAudio, outPath: tmpOut });
