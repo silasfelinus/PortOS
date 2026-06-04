@@ -118,13 +118,13 @@ describe('config slot convention', () => {
     expect(idx.config.runs.map((r) => r.id).sort()).toEqual(['r1', 'r2', 'r3']);
   });
 
-  it('defaultTypeIndexConfig seeds the slot once but is NOT re-applied on later writes', async () => {
+  it('defaultTypeIndexConfig seeds a fresh slot but is NOT re-applied on later writes', async () => {
     const store = createCollectionStore({
       dir, type: 'universes', schemaVersion: 1,
       defaultTypeIndexConfig: { runs: [], featureFlags: { beta: false } },
     });
-    // First write only touches runs; the seeded featureFlags is NOT re-merged
-    // because saveTypeIndex shallow-merges over the CURRENT on-disk config.
+    // First write to a fresh (missing) index seeds the default, then merges the
+    // patch over it — so the seeded featureFlags rides along on this first save.
     await store.saveTypeIndex({ config: { runs: [{ id: 'r1' }] } });
     const seeded = await store.loadTypeIndex();
     expect(seeded.config).toEqual({ runs: [{ id: 'r1' }], featureFlags: { beta: false } });
@@ -133,6 +133,25 @@ describe('config slot convention', () => {
     const idx = await store.loadTypeIndex();
     expect(idx.config.featureFlags).toEqual({ beta: true });
     expect(idx.config.runs).toEqual([{ id: 'r1' }]);
+  });
+
+  it('a default key absent from an EXISTING on-disk config is NOT re-injected on a later patch', async () => {
+    // Pre-seed disk with a valid index whose config lacks `featureFlags`, so the
+    // only way the key could reappear is if the default were re-merged on write.
+    // It must NOT — saveTypeIndex shallow-merges the patch over the current
+    // on-disk config, never over `defaultTypeIndexConfig`.
+    writeFileSync(join(dir, 'index.json'), JSON.stringify({
+      schemaVersion: 1, type: 'universes', config: { runs: [{ id: 'r0' }] },
+      updatedAt: new Date().toISOString(),
+    }));
+    const store = createCollectionStore({
+      dir, type: 'universes', schemaVersion: 1,
+      defaultTypeIndexConfig: { runs: [], featureFlags: { beta: false } },
+    });
+    await store.saveTypeIndex({ config: { runs: [{ id: 'r0' }, { id: 'r1' }] } });
+    const idx = await store.loadTypeIndex();
+    expect(idx.config).toEqual({ runs: [{ id: 'r0' }, { id: 'r1' }] });
+    expect('featureFlags' in idx.config).toBe(false);
   });
 });
 
