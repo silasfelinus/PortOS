@@ -9,10 +9,10 @@ import {
   COMM_DELTA_MIN,
   COMM_DELTA_MAX,
   BIG_FIVE_DELTA_MIN,
-  BIG_FIVE_DELTA_MAX
+  BIG_FIVE_DELTA_MAX,
+  EMOJI_USAGE_VALUES
 } from '../../../lib/personaTraitBlend.js';
 
-const EMOJI_OPTIONS = ['never', 'rare', 'occasional', 'frequent'];
 const BIG_FIVE_KEYS = ['O', 'C', 'E', 'A', 'N'];
 const BIG_FIVE_LABELS = { O: 'Openness', C: 'Conscientiousness', E: 'Extraversion', A: 'Agreeableness', N: 'Neuroticism' };
 
@@ -451,7 +451,7 @@ function TraitAdjustmentsEditor({ idPrefix, adjustments, setAdjustments }) {
                 className="w-full px-3 py-2 bg-port-bg border border-port-border rounded-lg text-white focus:border-port-accent focus:outline-none"
               >
                 <option value="">No override</option>
-                {EMOJI_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+                {EMOJI_USAGE_VALUES.map(o => <option key={o} value={o}>{o}</option>)}
               </select>
             </div>
             <div>

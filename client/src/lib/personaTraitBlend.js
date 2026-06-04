@@ -28,6 +28,12 @@ export const COMM_DELTA_MAX = 9;
 export const BIG_FIVE_DELTA_MIN = -1;
 export const BIG_FIVE_DELTA_MAX = 1;
 
+// Emoji-usage vocabulary, shared by the base twin's communication profile, a
+// persona's trait-adjustment override (server Zod), and the Personas UI
+// dropdown. Living in this byte-parity-guarded mirror means the parity test
+// catches any client↔server drift in the enum.
+export const EMOJI_USAGE_VALUES = ['never', 'rare', 'occasional', 'frequent'];
+
 export const BIG_FIVE_LEAN = {
   O: { more: 'more open and curious', less: 'more conventional and focused' },
   C: { more: 'more conscientious and organized', less: 'more relaxed and spontaneous' },

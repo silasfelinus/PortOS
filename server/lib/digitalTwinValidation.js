@@ -3,12 +3,9 @@ import {
   COMM_DELTA_MIN,
   COMM_DELTA_MAX,
   BIG_FIVE_DELTA_MIN,
-  BIG_FIVE_DELTA_MAX
+  BIG_FIVE_DELTA_MAX,
+  EMOJI_USAGE_VALUES
 } from './personaTraitBlend.js';
-
-// Emoji-usage vocabulary, shared by the base twin's communication profile and a
-// persona's trait-adjustment override so the two enums can't drift apart.
-export const EMOJI_USAGE_VALUES = ['never', 'rare', 'occasional', 'frequent'];
 
 // Document category enum
 export const documentCategoryEnum = z.enum([
