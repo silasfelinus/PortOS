@@ -82,6 +82,8 @@ import {
   Sun,
   Moon,
   Share2,
+  Pin,
+  PinOff,
   Workflow as WorkflowIcon
 } from 'lucide-react';
 /* global __APP_VERSION__ */
@@ -92,6 +94,7 @@ import { useAgentFeedbackToast } from '../hooks/useAgentFeedbackToast';
 import { useSharingNotifications } from '../hooks/useSharingNotifications';
 import { useUpdateChecker } from '../hooks/useUpdateChecker';
 import { useAIStatusNotifications } from '../hooks/useAIStatusNotifications';
+import { useNavWorkingSet } from '../hooks/useNavWorkingSet.js';
 import { useThemeContext } from './ThemeContext';
 import NotificationDropdown from './NotificationDropdown';
 import VoiceToggleButton from './voice/VoiceToggleButton';
@@ -308,6 +311,35 @@ const navItems = [
 
 const SIDEBAR_KEY = 'portos-sidebar-collapsed';
 
+// One row in the sidebar's Pinned/Recent sections: a nav link plus a pin/unpin
+// toggle that does not navigate (stops propagation). Pinned rows show a filled
+// pin; recent rows reveal the pin affordance on hover/focus.
+function WorkingSetRow({ entry, pinned, onTogglePin, onNavigate, isActive }) {
+  const Icon = entry.icon;
+  return (
+    <div className="group mx-2 flex items-stretch min-w-0">
+      <NavLink
+        to={entry.path}
+        onClick={onNavigate}
+        className={`flex-1 flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors min-w-0 ${
+          isActive ? 'bg-port-accent/10 text-port-accent' : 'text-gray-400 hover:text-white hover:bg-port-border/50'
+        }`}
+      >
+        {Icon && <Icon size={16} className="shrink-0" />}
+        <span className="min-w-0 truncate">{entry.label}</span>
+      </NavLink>
+      <button
+        type="button"
+        aria-label={pinned ? `Unpin ${entry.label}` : `Pin ${entry.label}`}
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); onTogglePin(); }}
+        className={`px-2 rounded-lg hover:bg-port-border/50 ${pinned ? 'text-port-accent' : 'text-gray-500 opacity-0 group-hover:opacity-100 focus:opacity-100'}`}
+      >
+        {pinned ? <PinOff size={14} /> : <Pin size={14} />}
+      </button>
+    </div>
+  );
+}
+
 export default function Layout() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -519,6 +551,32 @@ export default function Layout() {
       return item;
     });
   }, [sidebarApps, pipelineSeries, universes]);
+
+  // Flat path -> { path, label, icon } lookup over every leaf nav row, so the
+  // Pinned/Recent sections render a stored path with its real label + icon.
+  const navEntryByPath = useMemo(() => {
+    const map = new Map();
+    const addLeaf = (leaf) => {
+      if (leaf?.to && !map.has(leaf.to)) {
+        map.set(leaf.to, { path: leaf.to, label: leaf.label, icon: leaf.icon });
+      }
+    };
+    resolvedNavItems.forEach((item) => {
+      if (item.single) addLeaf(item);
+      (item.children || []).forEach((child) => {
+        addLeaf(child);
+        (child.grandChildren || []).forEach(addLeaf);
+      });
+    });
+    return map;
+  }, [resolvedNavItems]);
+
+  const resolveNavEntry = useCallback(
+    (path) => navEntryByPath.get(path) || null,
+    [navEntryByPath],
+  );
+
+  const { pinned, recent, pin, unpin, isPinned } = useNavWorkingSet(resolveNavEntry);
 
   // Auto-expand sections when on a child page
   useEffect(() => {
@@ -756,19 +814,29 @@ export default function Layout() {
               const grandChildren = Array.isArray(child.grandChildren) ? child.grandChildren : [];
               return (
                 <div key={child.to} className="min-w-0">
-                  <NavLink
-                    to={child.to}
-                    end={child.end}
-                    onClick={() => setMobileOpen(false)}
-                    className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors min-w-0 ${
-                      childActive
-                        ? 'bg-port-accent/10 text-port-accent'
-                        : 'text-gray-500 hover:text-white hover:bg-port-border/50'
-                    }`}
-                  >
-                    <ChildIcon size={16} className="shrink-0" />
-                    <span className="min-w-0 truncate">{child.label}</span>
-                  </NavLink>
+                  <div className="group min-w-0 flex items-stretch">
+                    <NavLink
+                      to={child.to}
+                      end={child.end}
+                      onClick={() => setMobileOpen(false)}
+                      className={`flex-1 flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors min-w-0 ${
+                        childActive
+                          ? 'bg-port-accent/10 text-port-accent'
+                          : 'text-gray-500 hover:text-white hover:bg-port-border/50'
+                      }`}
+                    >
+                      <ChildIcon size={16} className="shrink-0" />
+                      <span className="min-w-0 truncate">{child.label}</span>
+                    </NavLink>
+                    <button
+                      type="button"
+                      aria-label={isPinned(child.to) ? `Unpin ${child.label}` : `Pin ${child.label}`}
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); isPinned(child.to) ? unpin(child.to) : pin(child.to); }}
+                      className={`px-2 rounded-lg hover:bg-port-border/50 ${isPinned(child.to) ? 'text-port-accent' : 'text-gray-500 opacity-0 group-hover:opacity-100 focus:opacity-100'}`}
+                    >
+                      {isPinned(child.to) ? <PinOff size={14} /> : <Pin size={14} />}
+                    </button>
+                  </div>
                   {grandChildren.length > 0 && (
                     <div className="ml-6 mt-0.5 mb-1 border-l border-port-border/50 pl-2 min-w-0">
                       {grandChildren.map((gc) => {
@@ -879,6 +947,27 @@ export default function Layout() {
 
         {/* Nav items */}
         <nav className="flex-1 py-4 overflow-y-auto overflow-x-hidden min-w-0">
+          {!collapsed && (pinned.length > 0 || recent.length > 0) && (
+            <div className="mb-2">
+              {pinned.length > 0 && (
+                <div className="mb-2">
+                  <div className="px-4 py-1 text-[10px] font-semibold uppercase tracking-wide text-gray-500">Pinned</div>
+                  {pinned.map((entry) => (
+                    <WorkingSetRow key={`pin-${entry.path}`} entry={entry} pinned onTogglePin={() => unpin(entry.path)} onNavigate={() => setMobileOpen(false)} isActive={isActive(entry.path)} />
+                  ))}
+                </div>
+              )}
+              {recent.length > 0 && (
+                <div className="mb-2">
+                  <div className="px-4 py-1 text-[10px] font-semibold uppercase tracking-wide text-gray-500">Recent</div>
+                  {recent.map((entry) => (
+                    <WorkingSetRow key={`recent-${entry.path}`} entry={entry} pinned={false} onTogglePin={() => pin(entry.path)} onNavigate={() => setMobileOpen(false)} isActive={isActive(entry.path)} />
+                  ))}
+                </div>
+              )}
+              <div className="mx-4 my-2 border-t border-port-border" />
+            </div>
+          )}
           {resolvedNavItems.map(renderNavItem)}
         </nav>
 
