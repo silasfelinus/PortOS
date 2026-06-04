@@ -9,7 +9,6 @@ import {
   beamThickness,
   computeAiCoreBeams,
   pruneAiOps,
-  tierColor,
 } from './cityAiCore';
 
 const NOW = 1_000_000;

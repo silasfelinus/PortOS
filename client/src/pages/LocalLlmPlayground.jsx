@@ -61,7 +61,7 @@ function modelSizeLabel(model) {
   return model?.catalog?.size || '';
 }
 
-function useCaseTags(model) {
+function getUseCaseTags(model) {
   const tags = [];
   if (model?.catalog?.category) tags.push(CATEGORY_LABELS[model.catalog.category] || model.catalog.category);
   for (const capability of model?.catalog?.capabilities || []) {
@@ -430,7 +430,7 @@ export default function LocalLlmPlayground() {
                         const selected = selectedKeys.has(localLlmTargetKey(target));
                         const size = modelSizeLabel(target);
                         const ram = recommendedRamGb(target);
-                        const tags = useCaseTags(target);
+                        const tags = getUseCaseTags(target);
                         const detailParts = [
                           target.catalog?.params || target.params,
                           size,
