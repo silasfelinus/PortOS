@@ -24,8 +24,10 @@ import { addItem as addCollectionItem } from '../mediaCollections.js';
 import { buildTimelineClips } from './orchestrator.js';
 import { getProject, updateProject } from './local.js';
 import { getIssue } from '../pipeline/issues.js';
-import { muxMusicBed, muxVoLines, resolveMusicTrackPath, selectPlacedVoLines } from '../pipeline/audioMux.js';
+import { muxMusicBed, muxVoLines, muxCueBed, muxStripAudio, resolveMusicTrackPath, selectPlacedVoLines, selectPlacedCues } from '../pipeline/audioMux.js';
+import { placeCuesOnTimeline } from '../pipeline/audioCuePlacement.js';
 import { PATHS } from '../../lib/fileUtils.js';
+import { probeVideoDuration } from '../../lib/ffmpeg.js';
 
 const FINAL_RENDER_POLL_MS = 3000;
 const FINAL_RENDER_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes — concat is fast but be generous on big projects.
@@ -140,18 +142,75 @@ async function maybeMuxPipelineAudio(project, finalEntry) {
     console.log(`⚠️ CD stitch mux: source issue ${project.sourceIssueId.slice(0, 8)} not found — skipping`);
     return;
   }
+
+  const videoPath = join(PATHS.videos, finalEntry.filename);
+  // Whole-episode audio strategy (issue #863). Absent / unknown audioMode reads
+  // as 'per-clip' (the sanitizer already defaults it), so existing issues keep
+  // today's behavior. Placed VO lines are muxable in every non-silent mode.
+  const audioMode = issue.stages?.audio?.audioMode || 'per-clip';
+  const voLines = selectPlacedVoLines(issue.stages?.audio?.lines);
+
+  // 'generated' — assemble the arc-driven cues[] onto the timeline. Cue timing
+  // is derived HERE from the rendered episode's duration (the design defers
+  // placement to stitch time). Falls back to the music-bed path only if there
+  // are no placed+rendered cues.
+  if (audioMode === 'generated') {
+    const cues = Array.isArray(issue.stages?.audio?.cues) ? issue.stages.audio.cues : [];
+    const rendered = cues.filter((c) => c?.trackFilename);
+    if (rendered.length) {
+      const totalSec = await probeVideoDuration(videoPath);
+      const placed = selectPlacedCues(placeCuesOnTimeline(rendered, totalSec));
+      if (placed.length) {
+        console.log(`🎼 CD stitch mux: laying ${placed.length} generated cue(s)${voLines.length ? ` + ${voLines.length} VO line(s)` : ''} onto ${finalEntry.filename}`);
+        const result = await muxCueBed(videoPath, { cues: placed, voLines });
+        if (result.ok) {
+          console.log(`✅ CD stitch mux: cue bed applied to ${finalEntry.filename} (${result.cueCount} cue(s)${result.ducked ? ', VO ducked' : ''}${result.clipAudio ? ', clip audio preserved' : ''})`);
+          return;
+        }
+        console.log(`⚠️ CD stitch mux: cue bed skipped (${result.reason}) — keeping clip audio`);
+      } else {
+        console.log(`⚠️ CD stitch mux: generated mode but no placeable cues (episode duration unknown?) — keeping clip audio`);
+      }
+    } else {
+      console.log(`⚠️ CD stitch mux: generated mode but no rendered cues — keeping clip audio`);
+    }
+    // No cue bed landed. If VO lines are placed, still overlay them (no music
+    // bed) so dialogue isn't lost; otherwise leave the clip audio as-is.
+    if (voLines.length) {
+      const result = await muxVoLines(videoPath, { voLines, musicPath: null });
+      if (result.ok) console.log(`✅ CD stitch mux: VO-only overlay applied to ${finalEntry.filename}`);
+    }
+    return;
+  }
+
+  // 'silent' — strip the clip's own soundtrack (the design mutes the bed AND the
+  // clip audio). Strip first, then overlay any placed VO over the now-silent
+  // video: the VO mux re-probes and finds no audio stream, so dialogue plays
+  // with no clip bed underneath — "ducked over silence" per the design table.
+  if (audioMode === 'silent') {
+    console.log(`🔇 CD stitch mux: silent mode — stripping clip audio${voLines.length ? ` + overlaying ${voLines.length} VO line(s)` : ''} on ${finalEntry.filename}`);
+    const stripped = await muxStripAudio(videoPath);
+    if (!stripped.ok) {
+      console.log(`⚠️ CD stitch mux: silent strip skipped (${stripped.reason}) — keeping output`);
+      return;
+    }
+    if (voLines.length) {
+      const result = await muxVoLines(videoPath, { voLines, musicPath: null });
+      if (result.ok) console.log(`✅ CD stitch mux: VO applied over silence to ${finalEntry.filename}`);
+      else console.log(`⚠️ CD stitch mux: VO skipped (${result.reason}) — silent video kept`);
+    } else {
+      console.log(`✅ CD stitch mux: silent episode (clip audio stripped) for ${finalEntry.filename}`);
+    }
+    return;
+  }
+
+  // 'uploaded-track' (and 'per-clip') — today's single-music-pointer path.
+  // 'per-clip' has no music pointer so it preserves each clip's own soundtrack.
   const musicFilename = issue.stages?.audio?.music?.trackFilename;
   const musicPath = await resolveMusicTrackPath(musicFilename);
 
-  // Placed VO lines — rendered AND positioned (see selectPlacedVoLines). When
-  // any exist, the VO pass (which also ducks the music bed under dialogue)
-  // supersedes the music-only bed.
-  const voLines = selectPlacedVoLines(issue.stages?.audio?.lines);
-
   // Nothing to overlay — no placed VO and no music. Leave the stitch as-is.
   if (!voLines.length && !musicPath) return;
-
-  const videoPath = join(PATHS.videos, finalEntry.filename);
 
   if (voLines.length) {
     console.log(`🎙️ CD stitch mux: overlaying ${voLines.length} VO line(s)${musicPath ? ' + ducked music bed' : ''} onto ${finalEntry.filename}`);
