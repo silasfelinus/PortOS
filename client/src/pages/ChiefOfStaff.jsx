@@ -674,7 +674,7 @@ export default function ChiefOfStaff() {
           {/* Collapsible Content */}
           <div
             id="cos-agent-panel"
-            className={`${agentPanelCollapsed ? 'hidden' : 'flex'} lg:flex min-w-0 relative overflow-hidden ${hasCanvasAvatar ? 'flex-none min-h-[180px] sm:min-h-[190px] md:min-h-[190px] lg:h-[min(460px,calc(100vh-1rem))] xl:h-[min(620px,calc(100vh-1rem))]' : 'flex-1'}`}
+            className={`${agentPanelCollapsed ? 'hidden' : 'flex'} lg:flex min-w-0 relative overflow-hidden ${hasCanvasAvatar ? 'flex-none min-h-[180px] sm:min-h-[190px] md:min-h-[190px] lg:min-h-[min(460px,calc(100vh-1rem))] xl:min-h-[min(620px,calc(100vh-1rem))]' : 'flex-1'}`}
           >
             {/* Background Effects */}
             <div
@@ -694,7 +694,7 @@ export default function ChiefOfStaff() {
             )}
 
             {/* Avatar UI overlays the full-width canvas stage for 3D styles. */}
-            <div className={`${hasCanvasAvatar ? 'absolute inset-y-0 left-0 w-[46%] lg:relative lg:inset-auto lg:w-full lg:flex-none lg:h-full p-2 sm:p-3 lg:px-4 lg:py-6' : 'relative flex-1 min-w-0 lg:flex-none lg:h-full p-2 lg:px-4 lg:py-6'} min-w-0 flex flex-col items-center z-10`}>
+            <div className={`${hasCanvasAvatar ? 'absolute inset-y-0 left-0 w-[46%] lg:relative lg:inset-auto lg:w-full lg:flex-none lg:min-h-full p-2 sm:p-3 lg:px-4 lg:py-6' : 'relative flex-1 min-w-0 lg:flex-none lg:min-h-full p-2 lg:px-4 lg:py-6'} min-w-0 flex flex-col items-center z-10`}>
               <div className="hidden lg:block text-sm font-semibold tracking-widest uppercase text-slate-400 mb-1 font-mono">
                 Digital Assistant
               </div>
