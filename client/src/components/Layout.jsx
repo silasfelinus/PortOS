@@ -46,6 +46,7 @@ import {
   Network,
   Flame,
   Monitor,
+  Smartphone,
   Cigarette,
   Skull,
   HeartPulse,
@@ -123,6 +124,7 @@ const navItems = [
   { to: '/', label: 'Dashboard', icon: Home, single: true },
   { to: '/review', label: 'Review Hub', icon: ClipboardList, single: true },
   { to: '/city', label: 'City', icon: Building2, single: true },
+  { to: '/mobile', label: 'Quick Actions', icon: Smartphone, single: true },
   { separator: true },
   { label: 'Apps', icon: Package, dynamic: 'apps', defaultTo: '/apps', children: [] },
   {
@@ -1059,6 +1061,9 @@ export default function Layout() {
             location.pathname.startsWith('/insights') ||
             location.pathname.startsWith('/meatspace') ||
             location.pathname.startsWith('/media') ||
+            // The mobile hub + flow views own their own max-w-lg scroll column.
+            location.pathname === '/mobile' ||
+            location.pathname.startsWith('/mobile/') ||
             location.pathname.startsWith('/messages') ||
             location.pathname.startsWith('/local-llm/') ||
             location.pathname.startsWith('/pipeline/issues/') ||
