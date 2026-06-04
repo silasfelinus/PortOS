@@ -180,30 +180,35 @@ function summarizeAwayActivity(agents, sinceIso) {
   const succeeded = agents.filter(a => a.result?.success);
   const failed = agents.filter(a => !a.result?.success);
 
-  const durationOf = (a) => a.result?.duration
-    || (a.completedAt && a.startedAt
-      ? new Date(a.completedAt).getTime() - new Date(a.startedAt).getTime()
-      : 0);
+  // Clamp to >=0 so a clock-skewed completedAt < startedAt can't produce a
+  // negative duration in either the per-card field or the rollup.
+  const durationOf = (a) => {
+    const d = a.result?.duration
+      || (a.completedAt && a.startedAt
+        ? new Date(a.completedAt).getTime() - new Date(a.startedAt).getTime()
+        : 0);
+    return d > 0 ? d : 0;
+  };
 
-  const toCard = (a) => ({
-    id: a.id,
-    taskId: a.taskId,
-    description: a.metadata?.taskDescription?.substring(0, 120) || a.taskId,
-    taskType: a.metadata?.analysisType || a.metadata?.taskType || 'task',
-    app: a.metadata?.app || null,
-    success: a.result?.success || false,
-    durationMs: durationOf(a),
-    durationFormatted: formatDuration(durationOf(a) > 0 ? durationOf(a) : 0),
-    completedAt: a.completedAt,
-    completedRelative: formatRelativeTime(a.completedAt)
-  });
+  const toCard = (a) => {
+    const durationMs = durationOf(a);
+    return {
+      id: a.id,
+      taskId: a.taskId,
+      description: a.metadata?.taskDescription?.substring(0, 120) || a.taskId,
+      taskType: a.metadata?.analysisType || a.metadata?.taskType || 'task',
+      app: a.metadata?.app || null,
+      success: a.result?.success || false,
+      durationMs,
+      durationFormatted: formatDuration(durationMs),
+      completedAt: a.completedAt,
+      completedRelative: formatRelativeTime(a.completedAt)
+    };
+  };
 
   // Most-recent first so the freshest work tops each list.
   const byRecency = (a, b) => new Date(b.completedAt) - new Date(a.completedAt);
-  const totalDurationMs = agents.reduce((sum, a) => {
-    const d = durationOf(a);
-    return sum + (d > 0 ? d : 0);
-  }, 0);
+  const totalDurationMs = agents.reduce((sum, a) => sum + durationOf(a), 0);
 
   return {
     sinceIso,
