@@ -312,13 +312,13 @@ const baseStageStrictSchema = stageInputSchema.strict();
 // `sanitizeAudioCue` enforces the real shape (ids, time sentinels, gain clamp);
 // here we only bound sizes so a corrupt payload can't balloon the request.
 const audioCueInputSchema = z.object({
-  id: z.string().trim().max(80).optional(),
-  label: z.string().max(200).nullable().optional(),
-  prompt: z.string().max(8000).nullable().optional(),
-  engine: z.string().trim().max(80).nullable().optional(),
+  id: z.string().trim().max(issuesSvc.AUDIO_CUE_ID_MAX).optional(),
+  label: z.string().max(issuesSvc.AUDIO_CUE_LABEL_MAX).nullable().optional(),
+  prompt: z.string().max(issuesSvc.AUDIO_CUE_PROMPT_MAX).nullable().optional(),
+  engine: z.string().trim().max(issuesSvc.AUDIO_CUE_ENGINE_MAX).nullable().optional(),
   startSec: z.number().nullable().optional(),
   endSec: z.number().nullable().optional(),
-  trackFilename: z.string().trim().max(500).nullable().optional(),
+  trackFilename: z.string().trim().max(issuesSvc.AUDIO_FILENAME_MAX).nullable().optional(),
   durationSec: z.number().nullable().optional(),
   gain: z.number().nullable().optional(),
 }).strip();

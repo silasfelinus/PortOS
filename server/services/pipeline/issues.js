@@ -392,7 +392,7 @@ const sanitizeVisualStage = (raw, stageId = null) => {
 // flashback voice, etc.).
 const AUDIO_LINE_TEXT_MAX = 4000;
 const AUDIO_LINES_MAX = 1000;
-const AUDIO_FILENAME_MAX = 500;
+export const AUDIO_FILENAME_MAX = 500;
 const AUDIO_LINE_ID_MAX = 80;
 // Cap a per-line VO offset at a generous episode length so a corrupted record
 // can't push an `adelay` filter into absurd territory. Two hours is far beyond
@@ -453,10 +453,13 @@ export const AUDIO_MODES = Object.freeze(['per-clip', 'silent', 'generated', 'up
 // discipline).
 export const sanitizeAudioMode = (raw) => (AUDIO_MODES.includes(raw) ? raw : 'per-clip');
 
-const AUDIO_CUE_ID_MAX = 80;
-const AUDIO_CUE_LABEL_MAX = 200;
-const AUDIO_CUE_PROMPT_MAX = 8000;
-const AUDIO_CUE_ENGINE_MAX = 80;
+// Per-cue field caps. Exported so the route's light Zod arm references the
+// same numbers (the sanitizer below is authoritative; the route only guards
+// against payload ballooning) and can't silently drift if these change.
+export const AUDIO_CUE_ID_MAX = 80;
+export const AUDIO_CUE_LABEL_MAX = 200;
+export const AUDIO_CUE_PROMPT_MAX = 8000;
+export const AUDIO_CUE_ENGINE_MAX = 80;
 export const AUDIO_CUES_MAX = 200;
 
 // Per-cue gain override. `null` = "use the stage / global default", distinct
