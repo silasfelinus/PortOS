@@ -163,7 +163,7 @@ const SceneCard = forwardRef(function SceneCard({
       prompt,
       negativePrompt: imageStyle?.negativePrompt || '',
       imageCfg,
-    })).catch((err) => {
+    }), { silent: true }).catch((err) => {
       setError(err.message);
       setGenStatus('error');
       return null;

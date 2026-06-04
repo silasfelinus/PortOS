@@ -47,12 +47,12 @@ export default function LiveRenderPanel({
   useEffect(() => { setRenderUsage(liveMode?.renderUsage || null); }, [liveMode?.renderUsage]);
   const mountedRef = useMounted();
 
-  // Track the live job so late socket events for a superseded/cancelled render
-  // are ignored, mirroring SceneCard. `sceneIdRef` remembers which scene the
-  // in-flight job renders so onCompleted can attach without re-resolving the
-  // (possibly moved) cursor.
-  const jobIdRef = useRef(null);
-  const sceneIdRef = useRef(null);
+  // All job-scoped state captured at kickoff lives in one ref so a render that
+  // finishes after the cursor moved / Adapt re-ran attaches to the analysis,
+  // scene, and prompt it was STARTED against — not the live (possibly changed)
+  // values. `{ jobId, sceneId, analysisId, prompt }`, or null when idle. Late
+  // socket events whose generationId doesn't match jobId are ignored.
+  const pendingJobRef = useRef(null);
   const [genStatus, setGenStatus] = useState('idle');
 
   // Read the attach callback through a ref so the socket effect (and the
@@ -66,25 +66,20 @@ export default function LiveRenderPanel({
   const analysisId = ctx.analysisId || null;
   const scenes = useMemo(() => (Array.isArray(ctx.scenes) ? ctx.scenes : []), [ctx.scenes]);
   const imageCfg = ctx.imageCfg || WR_IMAGE_DEFAULTS;
-  // The async render can finish (socket completion / fast sync result) after the
-  // user has moved the cursor and the context has changed, so read the analysis
-  // id the job was reserved against through a ref rather than the live value.
-  const analysisIdRef = useRef(analysisId);
-  useEffect(() => { analysisIdRef.current = analysisId; }, [analysisId]);
 
   // Persist a finished render onto the script analysis (best-effort, mirroring
   // SceneCard) AND fold the returned sceneImages map up so the storyboard
   // updates reactively without a refetch. Shared by the socket-completion path
-  // and the fast synchronous-completion path. { silent: true } because we own
-  // the error UI here (a console.warn) — without it the helper would also toast.
-  const persistAttach = useCallback((sceneId, jobId, prompt) => {
-    const aid = analysisIdRef.current;
-    if (!workId || !aid || !jobId || !sceneId) return;
-    attachWritersRoomSceneImage(workId, aid, {
-      sceneId,
-      filename: `${jobId}.png`,
-      jobId,
-      prompt: prompt || null,
+  // and the fast synchronous-completion path. Takes a job snapshot so it never
+  // reads live state. { silent: true } because we own the error UI here (a
+  // console.warn) — without it the helper would also toast.
+  const persistAttach = useCallback((job) => {
+    if (!workId || !job?.analysisId || !job.jobId || !job.sceneId) return;
+    attachWritersRoomSceneImage(workId, job.analysisId, {
+      sceneId: job.sceneId,
+      filename: `${job.jobId}.png`,
+      jobId: job.jobId,
+      prompt: job.prompt || null,
     }, { silent: true }).then((res) => {
       if (mountedRef.current && res?.analysis) onAttachedRef.current?.(res.analysis);
     }).catch((err) => {
@@ -97,22 +92,25 @@ export default function LiveRenderPanel({
   // the caret read happens lazily inside the click handler so this is just for
   // the label/enabled state on the latest known offset.
   const [cursorOffset, setCursorOffset] = useState(null);
-  const target = sceneAtCursor(scenes, body, cursorOffset);
+  // Only resolve a target once we've actually read the caret (on the first
+  // render attempt). Before that, sceneAtCursor would default a null offset to
+  // end-of-body and mislabel the last scene as "the cursor scene".
+  const target = cursorOffset === null ? null : sceneAtCursor(scenes, body, cursorOffset);
 
   useEffect(() => {
     const onCompleted = (data) => {
-      if (!jobIdRef.current || data.generationId !== jobIdRef.current) return;
-      const completedJobId = jobIdRef.current;
-      const sceneId = sceneIdRef.current;
-      jobIdRef.current = null;
-      sceneIdRef.current = null;
+      const job = pendingJobRef.current;
+      if (!job || data.generationId !== job.jobId) return;
+      pendingJobRef.current = null;
       if (mountedRef.current) setGenStatus('idle');
-      persistAttach(sceneId, completedJobId, data.prompt);
+      // Prefer the prompt captured at kickoff (queued completion events from
+      // local/codex don't echo the prompt); fall back to the event's if present.
+      persistAttach({ ...job, prompt: job.prompt || data.prompt });
     };
     const onFailed = (data) => {
-      if (!jobIdRef.current || data.generationId !== jobIdRef.current) return;
-      jobIdRef.current = null;
-      sceneIdRef.current = null;
+      const job = pendingJobRef.current;
+      if (!job || data.generationId !== job.jobId) return;
+      pendingJobRef.current = null;
       if (mountedRef.current) setGenStatus('idle');
     };
     socket.on('image-gen:completed', onCompleted);
@@ -121,8 +119,8 @@ export default function LiveRenderPanel({
       socket.off('image-gen:completed', onCompleted);
       socket.off('image-gen:failed', onFailed);
     };
-    // sceneId comes from sceneIdRef (set when we kicked the job off); the
-    // persist target inputs are read through refs inside persistAttach.
+    // The job snapshot is read from pendingJobRef (set at kickoff); persistAttach
+    // is identity-stable, so this effect binds once.
   }, [persistAttach, mountedRef]);
 
   const renderCursorScene = useCallback(async () => {
@@ -185,20 +183,21 @@ export default function LiveRenderPanel({
       setGenStatus('idle');
       return;
     }
-    // A fast/synchronous backend (some external SD-API / Codex paths) can return
-    // a finished result whose image-gen:completed socket event already fired
-    // before we could set jobIdRef — so the socket handler ignored it and would
-    // leave the button stuck on "Rendering…" with no attach. Detect the
-    // already-done case from the HTTP result and finalize inline. Only register
-    // into the render dock + wait on the socket for jobs that are still running.
-    const alreadyDone = res.status && res.status !== 'queued' && res.status !== 'running';
-    if (alreadyDone) {
+    const job = { jobId, sceneId: scene.id, analysisId, prompt };
+    // Whether to wait on the socket. A fast/synchronous backend (some external
+    // SD-API / Codex paths) returns a finished result whose image-gen:completed
+    // socket event already fired before we set pendingJobRef — so the socket
+    // handler ignored it and the button would stick on "Rendering…" with no
+    // attach. Those responses carry a path/filename and NO (or terminal)
+    // status, so treat a job as still-running ONLY when it explicitly reports
+    // queued/running; otherwise finalize inline.
+    const stillRunning = res.status === 'queued' || res.status === 'running';
+    if (!stillRunning) {
       setGenStatus('idle');
-      persistAttach(scene.id, jobId, prompt);
+      persistAttach(job);
       return;
     }
-    jobIdRef.current = jobId;
-    sceneIdRef.current = scene.id;
+    pendingJobRef.current = job;
     // Register into the shared render dock so the job shows alongside storyboard
     // renders.
     const num = hit.sceneNumber;
