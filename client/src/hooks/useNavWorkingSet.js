@@ -73,17 +73,12 @@ export function useNavWorkingSet(resolveNavEntry) {
 
   const pinned = useMemo(() => resolveAll(pinnedPaths), [resolveAll, pinnedPaths]);
 
+  // Recent excludes the current page (already highlighted in nav) and any pinned pages.
   const recent = useMemo(() => {
     const pinnedSet = new Set(pinnedPaths);
-    // Prefer to exclude the current page (it's already highlighted in the nav).
-    // If that would leave the list empty, keep the current page so the section
-    // is never blank on first-ever visit.
-    const withoutCurrent = recentPaths.filter(
+    const visible = recentPaths.filter(
       (p) => p !== location.pathname && !pinnedSet.has(p),
     );
-    const visible = withoutCurrent.length > 0
-      ? withoutCurrent
-      : recentPaths.filter((p) => !pinnedSet.has(p));
     return resolveAll(visible);
   }, [resolveAll, recentPaths, pinnedPaths, location.pathname]);
 

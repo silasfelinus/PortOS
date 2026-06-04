@@ -17,9 +17,12 @@ describe('useNavWorkingSet', () => {
     localStorage.clear();
   });
 
-  it('records the initial route as a recent visit', () => {
+  it('records the initial route to localStorage (even though it is excluded from the displayed recent list)', () => {
     const { result } = renderHook(() => useNavWorkingSet(resolveNavEntry), { wrapper });
-    expect(result.current.recent.map((r) => r.path)).toEqual(['/start']);
+    // The current page is recorded to storage...
+    expect(JSON.parse(localStorage.getItem(RECENT_KEY))).toEqual(['/start']);
+    // ...but excluded from the displayed list because it's the current page.
+    expect(result.current.recent).toEqual([]);
   });
 
   it('pin() persists to localStorage and exposes resolved rows', () => {
