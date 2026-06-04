@@ -52,7 +52,7 @@ const DEFAULT_SETTINGS = {
   sfxVolume: 0.5,
   qualityPreset: 'high',
   skyTheme: 'cyberpunk',
-  timeOfDay: 'sunset',
+  timeOfDay: 'auto', // 'auto' follows the active theme's day/night mode; 'day'/'night' force it
   explorationMode: false,
   ...QUALITY_PRESETS.high,
 };

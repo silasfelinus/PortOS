@@ -2,7 +2,7 @@ import { useRef, useState, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Text } from '@react-three/drei';
 import * as THREE from 'three';
-import { getBuildingColor, getBuildingHeight, getAccentColor, CITY_COLORS, BUILDING_PARAMS, PIXEL_FONT_URL } from './cityConstants';
+import { getBuildingColor, getBuildingHeight, getAccentColor, CITY_COLORS, BUILDING_PARAMS, PIXEL_FONT_URL, mixHex } from './cityConstants';
 import HolographicPanel from './HolographicPanel';
 import BuildingHologram from './BuildingHologram';
 
@@ -267,7 +267,7 @@ function NeonEdgeStrip({ position, height, color, delay, dimMul = 1 }) {
   );
 }
 
-export default function Building({ app, position, agentCount, onClick, playSfx, neonBrightness = 1.2, isProximity = false, dimmed = false }) {
+export default function Building({ app, position, agentCount, onClick, playSfx, neonBrightness = 1.2, isProximity = false, dimmed = false, dayMix = 0 }) {
   const meshRef = useRef();
   const glowRef = useRef();
   const haloRef = useRef();
@@ -280,6 +280,22 @@ export default function Building({ app, position, agentCount, onClick, playSfx, 
   const isStopped = app.overallStatus === 'stopped' && !app.archived;
   const { width, depth } = BUILDING_PARAMS;
   const dimMul = dimmed ? 0.25 : 1;
+
+  // Daytime treatment: the building sheds its neon and reads as a sunlit solid. The
+  // facade lerps from the dark cyber body toward a light, faintly status-tinted
+  // wall; the dark window texture is dropped (it only reads at night) and the neon
+  // edge softens to a plain architectural outline.
+  // NOTE: dayMix is currently strictly 0 or 1 (the city renders only noon/sunset), so
+  // the continuous lerps and the `daytime` hard-switches agree today. The lerps are
+  // forward-looking — if an intermediate time-of-day is ever re-enabled, convert the
+  // `!daytime`-gated mounts (halo/strips/glow/ground-lines) to opacity fades too so a
+  // partial dayMix degrades gracefully instead of popping at 0.5.
+  const daytime = dayMix > 0.5;
+  // Mid-tone facade (not near-white) so strong daylight lands around a clean gray
+  // rather than clipping to white; a touch of the status color keeps variety.
+  const dayFacade = mixHex('#9aa0ac', edgeColor, 0.12);
+  const bodyColor = mixHex(CITY_COLORS.buildingBody, dayFacade, dayMix);
+  const edgeLineColor = daytime ? mixHex('#4a4f57', edgeColor, 0.15) : edgeColor;
 
   // Name hash for seeded randomness
   const seed = useMemo(() => {
@@ -315,7 +331,8 @@ export default function Building({ app, position, agentCount, onClick, playSfx, 
         ? Math.sin(t * 3.5 + seed) * 0.2 * nb
         : 0;
     const hoverBoost = hovered ? 0.4 * nb : 0;
-    meshRef.current.material.emissiveIntensity = (baseIntensity + pulse + hoverBoost) * dimMul;
+    // Neon self-glow fades out in daylight — the building is lit by the sun instead.
+    meshRef.current.material.emissiveIntensity = (baseIntensity + pulse + hoverBoost) * dimMul * (1 - dayMix * 0.9);
 
     if (glowRef.current) {
       glowRef.current.material.opacity = (0.35 + (isOnline ? Math.sin(t * 1.5) * 0.12 : 0) + (hovered ? 0.25 : 0)) * dimMul;
@@ -342,21 +359,23 @@ export default function Building({ app, position, agentCount, onClick, playSfx, 
       >
         <boxGeometry args={[width, height, depth]} />
         <meshStandardMaterial
-          color={CITY_COLORS.buildingBody}
+          color={bodyColor}
           emissive={edgeColor}
-          emissiveIntensity={0.35 * neonBrightness * dimMul}
-          map={windowTexture}
+          emissiveIntensity={0.35 * neonBrightness * dimMul * (1 - dayMix * 0.9)}
+          map={daytime ? undefined : windowTexture}
+          roughness={daytime ? 0.9 : 1}
+          metalness={daytime ? 0.05 : 0}
           transparent
           opacity={(app.archived ? 0.6 : 0.95) * dimMul}
         />
       </mesh>
 
-      {/* Neon wireframe edges */}
+      {/* Building edges — bright neon by night, a plain architectural outline by day */}
       <lineSegments position={[0, height / 2, 0]} geometry={edgesGeom}>
         <lineBasicMaterial
-          color={edgeColor}
+          color={edgeLineColor}
           transparent
-          opacity={(app.archived ? 0.5 : 0.9) * dimMul}
+          opacity={((app.archived ? 0.5 : 0.9) - dayMix * 0.55) * dimMul}
         />
       </lineSegments>
 
@@ -380,8 +399,8 @@ export default function Building({ app, position, agentCount, onClick, playSfx, 
         )}
       </mesh>
 
-      {/* Glow halo wireframe - slightly larger than building */}
-      {!app.archived && (
+      {/* Glow halo wireframe - slightly larger than building (night only) */}
+      {!app.archived && !daytime && (
         <lineSegments ref={haloRef} position={[0, height / 2, 0]}>
           <edgesGeometry args={[new THREE.BoxGeometry(width + 0.15, height + 0.15, depth + 0.15)]} />
           <lineBasicMaterial
@@ -392,8 +411,8 @@ export default function Building({ app, position, agentCount, onClick, playSfx, 
         </lineSegments>
       )}
 
-      {/* Vertical neon edge strips on corners */}
-      {!app.archived && (
+      {/* Vertical neon edge strips on corners (night only) */}
+      {!app.archived && !daytime && (
         <>
           <NeonEdgeStrip position={[width / 2, height / 2, depth / 2]} height={height} color={accentColor} delay={0} dimMul={dimMul} />
           <NeonEdgeStrip position={[-width / 2, height / 2, depth / 2]} height={height} color={accentColor} delay={1} dimMul={dimMul} />
@@ -446,19 +465,21 @@ export default function Building({ app, position, agentCount, onClick, playSfx, 
         {displayName}
       </Text>
 
-      {/* Base glow circle - wider and brighter */}
-      <mesh ref={glowRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]}>
-        <circleGeometry args={[1.8, 32]} />
-        <meshBasicMaterial
-          color={edgeColor}
-          transparent
-          opacity={0.25 * dimMul}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
+      {/* Base glow circle - wider and brighter (night only) */}
+      {!daytime && (
+        <mesh ref={glowRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]}>
+          <circleGeometry args={[1.8, 32]} />
+          <meshBasicMaterial
+            color={edgeColor}
+            transparent
+            opacity={0.25 * dimMul}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      )}
 
-      {/* Neon ground line accents */}
-      {!app.archived && (
+      {/* Neon ground line accents (night only) */}
+      {!app.archived && !daytime && (
         <>
           <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, depth / 2 + 0.3]}>
             <planeGeometry args={[width + 0.5, 0.05]} />

@@ -205,7 +205,10 @@ export default function CityHud({ cosStatus, cosAgents, agentMap, eventLogs, con
   ).length;
 
   return (
-    <div className="absolute inset-0 pointer-events-none overflow-hidden">
+    // z-20 keeps the HUD above the CityScanlines CRT overlay (z-10) so the vignette
+    // + scanline-multiply + chromatic-aberration glow stay on the 3D scene and don't
+    // haze the (now theme-colored) HUD panels.
+    <div className="absolute inset-0 pointer-events-none overflow-hidden z-20">
       {/* Top-left: Clock + system status + vitals */}
       <div className="absolute top-3 left-3 pointer-events-auto">
         <div className="relative bg-black/85 backdrop-blur-sm border border-cyan-500/40 rounded-lg px-4 py-3 overflow-hidden">
@@ -366,7 +369,7 @@ export default function CityHud({ cosStatus, cosAgents, agentMap, eventLogs, con
       {/* Top-center: CyberCity title with glitch effect */}
       <div className="absolute top-3 left-1/2 -translate-x-1/2 pointer-events-none">
         <GlitchTitle
-          text="CYBERCITY"
+          text="CITY"
           className="font-pixel text-cyan-400/50 text-sm tracking-[0.4em]"
         />
         <div className="font-pixel text-[8px] text-cyan-400/20 tracking-[0.2em] text-center mt-0.5">

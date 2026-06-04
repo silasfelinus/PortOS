@@ -14,6 +14,8 @@ import CitySettingsPanel from '../components/city/CitySettingsPanel';
 import { computeFilterResult } from '../utils/cityFilter';
 import { DEFAULT_PRESET_ID, cyclePreset } from '../utils/cityPhotoMode';
 import { computeSoundscape } from '../utils/citySoundscape';
+import { deriveCityPalette, applyCityBrandColors, resolveCityTimeOfDay } from '../components/city/cityConstants';
+import { useThemeContext } from '../components/ThemeContext';
 
 function CyberCityInner() {
   const { apps, cosAgents, cosStatus, eventLogs, agentMap, reviewCounts, instances, systemHealth, notificationCounts, backupStatus, cosTasks, healthMetrics, voiceState, character, aiActivity, loading, connected } = useCityData();
@@ -32,6 +34,31 @@ function CyberCityInner() {
   const { playSfx } = useCityAudio(settings, soundscape);
   const navigate = useNavigate();
   const location = useLocation();
+
+  // CyberCity follows the active PortOS theme: the HUD recolors via the
+  // `cybercity-themed` CSS scope (see index.css) and the 3D scene's brand colors
+  // + surround are derived from the same theme here.
+  const { theme: cityTheme } = useThemeContext();
+  const cityPalette = useMemo(() => {
+    const palette = deriveCityPalette(cityTheme);
+    // Recolor the shared CITY_COLORS singleton during render — before the scene
+    // children render — so the keyed remount below (key={cityPalette.themeId})
+    // reads fresh brand colors on a theme switch.
+    applyCityBrandColors(palette);
+    return palette;
+  }, [cityTheme]);
+
+  // The city renders day or night, following the theme mode by default (see
+  // resolveCityTimeOfDay). The resolved preset key is handed to the scene via a
+  // settings override (CitySky/CityLights/CityGround read settings.timeOfDay), and
+  // the backdrop swaps between the bright day sky and the dark night void to match.
+  const cityTimeOfDay = resolveCityTimeOfDay(settings?.timeOfDay, cityPalette.isDay);
+  const sceneBackground = cityTimeOfDay.daytime ? cityPalette.dayBackground : cityPalette.nightBackground;
+  const sceneSettings = useMemo(
+    () => ({ ...settings, timeOfDay: cityTimeOfDay.presetKey }),
+    [settings, cityTimeOfDay.presetKey],
+  );
+
   const [filter, setFilter] = useState(() => {
     // try/catch is necessary because sessionStorage values are external state
     // a corrupted/older-schema entry would throw and crash the page render.
@@ -228,9 +255,9 @@ function CyberCityInner() {
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-4" style={{ background: '#030308' }}>
+      <div className="flex flex-col items-center justify-center h-full gap-4 cybercity-themed" style={{ background: cityPalette.background }}>
         <div className="font-pixel text-cyan-400 text-lg tracking-widest animate-pulse" style={{ textShadow: '0 0 12px rgba(6,182,212,0.5)' }}>
-          INITIALIZING CYBERCITY
+          INITIALIZING CITY
         </div>
         <div className="w-48 h-1 bg-gray-800 rounded-full overflow-hidden">
           <div className="h-full bg-cyan-500 rounded-full animate-pulse" style={{ width: '60%', boxShadow: '0 0 8px rgba(6,182,212,0.5)' }} />
@@ -243,8 +270,10 @@ function CyberCityInner() {
   }
 
   return (
-    <div className="relative w-full h-full" style={{ background: '#030308', isolation: 'isolate' }}>
+    <div className="relative w-full h-full cybercity-themed" style={{ background: sceneBackground, isolation: 'isolate' }}>
       <CityScene
+        key={cityPalette.themeId}
+        background={sceneBackground}
         apps={apps}
         agentMap={agentMap}
         onBuildingClick={handleBuildingClick}
@@ -267,7 +296,7 @@ function CyberCityInner() {
         photoMode={photoMode}
         photoPresetId={photoPresetId}
         onPhotoCaptureReady={handlePhotoCaptureReady}
-        settings={settings}
+        settings={sceneSettings}
         playSfx={playSfx}
         keysRef={keysRef}
         dimmedAppIds={filterResult.dimmed}
@@ -305,7 +334,7 @@ function CyberCityInner() {
         captureFnRef={captureFnRef}
         statsSnapshot={photoStats}
       />
-      <CityScanlines settings={settings} />
+      <CityScanlines settings={settings} crt={cityPalette.crt} />
       {showSettings && <CitySettingsPanel />}
     </div>
   );

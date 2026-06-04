@@ -122,7 +122,7 @@ import socket from '../services/socket';
 const navItems = [
   { to: '/', label: 'Dashboard', icon: Home, single: true },
   { to: '/review', label: 'Review Hub', icon: ClipboardList, single: true },
-  { to: '/city', label: 'CyberCity', icon: Building2, single: true },
+  { to: '/city', label: 'City', icon: Building2, single: true },
   { separator: true },
   { label: 'Apps', icon: Package, dynamic: 'apps', defaultTo: '/apps', children: [] },
   {

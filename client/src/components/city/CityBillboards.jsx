@@ -251,7 +251,7 @@ export default function CityBillboards({ positions, apps, cosStatus, reviewCount
     }
 
     const activityMessages = [
-      { label: 'CYBERCITY', text: 'DIGITAL INFRASTRUCTURE' },
+      { label: 'CITY', text: 'DIGITAL INFRASTRUCTURE' },
       { label: 'PORTOS', text: 'PERSONAL OPERATING SYSTEM' },
       { label: 'INSTANCE MESH', text: `${onlinePeers}/${nodeCount} NODES LINKED` },
     ];

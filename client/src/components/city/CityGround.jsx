@@ -2,16 +2,17 @@ import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Grid } from '@react-three/drei';
 import * as THREE from 'three';
-import { CITY_COLORS, getTimeOfDayPreset } from './cityConstants';
+import { CITY_COLORS, getTimeOfDayPreset, cityDayMix, mixHex } from './cityConstants';
 
 // Reflective puddle/wet-ground patches
-function WetPatch({ position, size, color }) {
+function WetPatch({ position, size, color, dayMix = 0 }) {
   const ref = useRef();
 
   useFrame(({ clock }) => {
     if (!ref.current) return;
     const t = clock.getElapsedTime();
-    ref.current.material.opacity = 0.1 + Math.sin(t * 0.8 + position[0] * 3) * 0.04;
+    // Neon puddle reflections are a wet-night look — fade them out by day.
+    ref.current.material.opacity = (0.1 + Math.sin(t * 0.8 + position[0] * 3) * 0.04) * (1 - dayMix);
   });
 
   return (
@@ -29,13 +30,13 @@ function WetPatch({ position, size, color }) {
 }
 
 // Rolling fog layer with animated opacity
-function RollingFog() {
+function RollingFog({ dayMix = 0 }) {
   const ref = useRef();
 
   useFrame(({ clock }) => {
     if (!ref.current) return;
     const t = clock.getElapsedTime();
-    ref.current.material.opacity = 0.025 + Math.sin(t * 0.15) * 0.012;
+    ref.current.material.opacity = (0.025 + Math.sin(t * 0.15) * 0.012) * (1 - dayMix);
     ref.current.position.z = Math.sin(t * 0.05) * 3;
   });
 
@@ -60,9 +61,16 @@ export default function CityGround({ settings }) {
   const timeOfDay = settings?.timeOfDay ?? 'sunset';
   const skyTheme = settings?.skyTheme ?? 'cyberpunk';
   const preset = getTimeOfDayPreset(timeOfDay, skyTheme);
+  const dayMix = cityDayMix(settings);
   const groundColorTarget = useRef(new THREE.Color(preset.groundColor ?? '#0a0a20'));
   groundColorTarget.current.set(preset.groundColor ?? '#0a0a20');
   const targetRoughness = preset.groundRoughness ?? 0.7;
+
+  // The neon grid + additive fog are a night look — at day the grid mutes to faint
+  // pavement lines and the glow fog fades out.
+  const gridCellColor = mixHex('#0e7490', '#a7afb8', dayMix);
+  const gridSectionColor = mixHex('#06b6d4', '#bcc4cc', dayMix);
+  const groundFogOpacity = 0.045 * (1 - dayMix);
 
   useFrame((_, delta) => {
     if (!groundMatRef.current) return;
@@ -109,8 +117,8 @@ export default function CityGround({ settings }) {
         infiniteGrid
         cellSize={2}
         sectionSize={6}
-        cellColor="#0e7490"
-        sectionColor="#06b6d4"
+        cellColor={gridCellColor}
+        sectionColor={gridSectionColor}
         cellThickness={0.6}
         sectionThickness={1.4}
         fadeDistance={80}
@@ -120,23 +128,25 @@ export default function CityGround({ settings }) {
 
       {/* Wet street reflective patches */}
       {puddles.map(p => (
-        <WetPatch key={p.id} position={p.position} size={p.size} color={p.color} />
+        <WetPatch key={p.id} position={p.position} size={p.size} color={p.color} dayMix={dayMix} />
       ))}
 
-      {/* Subtle ground fog layer */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.1, 0]}>
-        <planeGeometry args={[80, 80]} />
-        <meshBasicMaterial
-          color="#06b6d4"
-          transparent
-          opacity={0.045}
-          blending={THREE.AdditiveBlending}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
+      {/* Subtle ground fog layer (night neon haze; gone by day) */}
+      {groundFogOpacity > 0.001 && (
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.1, 0]}>
+          <planeGeometry args={[80, 80]} />
+          <meshBasicMaterial
+            color="#06b6d4"
+            transparent
+            opacity={groundFogOpacity}
+            blending={THREE.AdditiveBlending}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      )}
 
       {/* Rolling fog layer at street level */}
-      {reflectionsEnabled && <RollingFog />}
+      {reflectionsEnabled && <RollingFog dayMix={dayMix} />}
     </group>
   );
 }
