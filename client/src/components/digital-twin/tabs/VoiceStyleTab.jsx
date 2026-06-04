@@ -231,7 +231,7 @@ export default function VoiceStyleTab({ onRefresh }) {
             <ProfileCard title="Written" profile={result.writtenProfile} accent="text-pink-400" />
           </div>
 
-          {result.differences.length > 0 && (
+          {Array.isArray(result.differences) && result.differences.length > 0 && (
             <div>
               <h4 className="text-sm font-semibold text-white mb-2">Key differences</h4>
               <div className="space-y-2">
