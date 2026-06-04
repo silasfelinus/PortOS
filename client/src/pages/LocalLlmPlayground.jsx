@@ -405,7 +405,7 @@ export default function LocalLlmPlayground() {
               aria-expanded={modelsOpen}
             >
               <span className="flex items-center gap-2">
-                <h2 className="text-sm font-medium text-gray-300">Models</h2>
+                <span className="text-sm font-medium text-gray-300">Models</span>
                 <span className="text-xs text-gray-500 xl:hidden">({selectedTargets.length} selected)</span>
               </span>
               <span className="flex items-center gap-2">
