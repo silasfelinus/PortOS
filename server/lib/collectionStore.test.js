@@ -4,6 +4,7 @@ import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { createCollectionStore, verifyCollectionVersions } from './collectionStore.js';
+import { atomicWrite } from './fileUtils.js';
 
 // Defer one tick so we can interleave per-id queue assertions.
 const tick = () => new Promise((r) => setImmediate(r));
@@ -79,6 +80,59 @@ describe('loadTypeIndex / saveTypeIndex', () => {
     ]);
     const idx = await store.loadTypeIndex();
     expect(idx.config).toEqual({ a: 1, b: 2, c: 3 });
+  });
+});
+
+// Pins the documented `config`-slot convention (see the collectionStore header
+// + the TypeIndexConfig typedef). These guarantees are load-bearing for the
+// universeBuilder `config.runs` history-log pattern.
+describe('config slot convention', () => {
+  it('shallow-merge REPLACES an array slot (does not concat) — runs RMW must write the full array', async () => {
+    const store = createCollectionStore({ dir, type: 'universes', schemaVersion: 1 });
+    await store.saveTypeIndex({ config: { runs: [{ id: 'r1' }] } });
+    // A naive patch with only the new entry replaces the whole array — proving
+    // a consumer MUST load → append → write the full array (recordRun pattern).
+    await store.saveTypeIndex({ config: { runs: [{ id: 'r2' }] } });
+    const idx = await store.loadTypeIndex();
+    expect(idx.config.runs).toEqual([{ id: 'r2' }]);
+  });
+
+  it('correct append pattern: load the slot, mutate a copy, write the full replacement (fenced)', async () => {
+    const store = createCollectionStore({ dir, type: 'universes', schemaVersion: 1 });
+    // Mirrors universeBuilder.recordRun: the load→append→write runs inside a
+    // single queueTypeIndexWrite fence (writing the index directly, NOT via the
+    // re-entrant saveTypeIndex) so concurrent appends don't clobber each other.
+    const append = (run) => store.queueTypeIndexWrite(async () => {
+      const current = await store.loadTypeIndex();
+      const runs = Array.isArray(current.config?.runs) ? [...current.config.runs] : [];
+      runs.push(run);
+      await atomicWrite(store.typeIndexPath(), {
+        schemaVersion: current.schemaVersion,
+        type: current.type,
+        config: { ...(current.config || {}), runs },
+        updatedAt: new Date().toISOString(),
+      });
+    });
+    await Promise.all([append({ id: 'r1' }), append({ id: 'r2' }), append({ id: 'r3' })]);
+    const idx = await store.loadTypeIndex();
+    expect(idx.config.runs.map((r) => r.id).sort()).toEqual(['r1', 'r2', 'r3']);
+  });
+
+  it('defaultTypeIndexConfig seeds the slot once but is NOT re-applied on later writes', async () => {
+    const store = createCollectionStore({
+      dir, type: 'universes', schemaVersion: 1,
+      defaultTypeIndexConfig: { runs: [], featureFlags: { beta: false } },
+    });
+    // First write only touches runs; the seeded featureFlags is NOT re-merged
+    // because saveTypeIndex shallow-merges over the CURRENT on-disk config.
+    await store.saveTypeIndex({ config: { runs: [{ id: 'r1' }] } });
+    const seeded = await store.loadTypeIndex();
+    expect(seeded.config).toEqual({ runs: [{ id: 'r1' }], featureFlags: { beta: false } });
+    // Overwriting featureFlags replaces it wholesale (one-level shallow merge).
+    await store.saveTypeIndex({ config: { featureFlags: { beta: true } } });
+    const idx = await store.loadTypeIndex();
+    expect(idx.config.featureFlags).toEqual({ beta: true });
+    expect(idx.config.runs).toEqual([{ id: 'r1' }]);
   });
 });
 
