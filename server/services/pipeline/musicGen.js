@@ -247,7 +247,7 @@ export async function generateMusic({ prompt, engine: engineId = DEFAULT_ENGINE_
   // token isn't required — but pass it through when the user has one set so the
   // first download doesn't hit anonymous HF rate limits.
   const env = safeChildProcessEnv(await hfTokenEnv());
-  const result = await runSidecarProcess({ bin, args, env, signal });
+  const result = await runSidecarProcess({ bin, args, env, signal, engineId: engine.id });
   // A clean exit isn't enough — the sidecar could exit 0 yet write nothing (or
   // a truncated file) if the runtime changes shape. Require both a parsed
   // RESULT line AND a non-empty file on disk before we persist the library
@@ -277,7 +277,7 @@ export async function generateMusic({ prompt, engine: engineId = DEFAULT_ENGINE_
 // line and a bounded stderr tail for the failure reason. Not a route handler —
 // the spawn-error / close branches must not throw (they run outside the Express
 // lifecycle), so they resolve a structured result instead.
-function runSidecarProcess({ bin, args, env, signal }) {
+function runSidecarProcess({ bin, args, env, signal, engineId = DEFAULT_ENGINE_ID }) {
   return new Promise((resolve) => {
     const proc = spawn(bin, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
@@ -299,7 +299,7 @@ function runSidecarProcess({ bin, args, env, signal }) {
       stderrTail = (stderrTail + s).slice(-STDERR_TAIL);
       for (const line of s.split(/\r?\n/)) {
         const t = line.trim();
-        if (t.startsWith('STAGE:')) console.log(`🎼 musicgen ${t.slice('STAGE:'.length)}`);
+        if (t.startsWith('STAGE:')) console.log(`🎼 ${engineId} ${t.slice('STAGE:'.length)}`);
       }
     });
     proc.on('error', (err) => finish({ ok: false, reason: `spawn failed: ${err.message}`, stdout }));

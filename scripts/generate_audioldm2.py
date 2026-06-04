@@ -152,7 +152,12 @@ def main():
     pipe = AudioLDM2Pipeline.from_pretrained(args.model, torch_dtype=dtype)
     pipe = pipe.to(device)
 
-    generator = torch.Generator(device=device).manual_seed(int(args.seed or 0))
+    # PyTorch's MPS backend does not support torch.Generator(device='mps') — it
+    # raises before inference on Apple Silicon (our primary target). Seed on CPU
+    # there; diffusers accepts a CPU generator for an MPS pipeline. CUDA/CPU use
+    # their native device generator. https://github.com/pytorch/pytorch/issues/84288
+    generator_device = "cpu" if device == "mps" else device
+    generator = torch.Generator(device=generator_device).manual_seed(int(args.seed or 0))
 
     log_stage("generate", f"{duration:.1f}s/{steps}steps")
     out = pipe(

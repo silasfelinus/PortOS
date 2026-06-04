@@ -911,6 +911,9 @@ router.get('/audio/music/generators', asyncHandler(async (_req, res) => {
     defaultDurationSec: engine.defaultDurationSec,
     minDurationSec: engine.minDurationSec,
     maxDurationSec: engine.maxDurationSec,
+    // The authoritative install-hint env var (e.g. INSTALL_AUDIOLDM2) so the UI
+    // renders the exact command instead of re-deriving it from the engine id.
+    installEnv: engine.installEnv,
     ready: isEngineReady(engine.id),
   }));
   const fallback = engines.find((e) => e.id === DEFAULT_ENGINE_ID) ?? engines[0];

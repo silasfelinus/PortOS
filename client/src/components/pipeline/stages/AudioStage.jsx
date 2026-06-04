@@ -97,6 +97,7 @@ export default function AudioStage({ issue, onStageUpdate }) {
         defaultDurationSec: generators.defaultDurationSec,
         minDurationSec: generators.minDurationSec,
         maxDurationSec: generators.maxDurationSec,
+        installEnv: 'INSTALL_MUSICGEN',
         ready: generators.ready,
       }]
     : []);
@@ -566,7 +567,7 @@ export default function AudioStage({ issue, onStageUpdate }) {
                 {!activeEngine?.ready ? (
                   <p className="text-xs text-gray-400">
                     {activeEngine?.name || 'This engine'} isn't installed yet. Run{' '}
-                    <code className="text-gray-300">INSTALL_{(activeEngine?.id || 'musicgen').toUpperCase()}=1 bash scripts/setup-image-video.sh</code>{' '}
+                    <code className="text-gray-300">{activeEngine?.installEnv || `INSTALL_${(activeEngine?.id || 'musicgen').toUpperCase()}`}=1 bash scripts/setup-image-video.sh</code>{' '}
                     to bootstrap its runtime, then reopen this panel.
                   </p>
                 ) : (
