@@ -25,6 +25,7 @@ describe('recordVisit', () => {
     const result = recordVisit('/new', ['/1', '/2', '/3', '/4', '/5']);
     expect(result).toEqual(['/new', '/1', '/2', '/3', '/4']);
     expect(result).toHaveLength(RECENT_CAP);
+    expect(result).not.toContain('/5'); // oldest entry dropped past the cap
   });
 
   it('ignores falsy / non-string paths (returns the list unchanged)', () => {
