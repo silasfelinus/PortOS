@@ -4,6 +4,7 @@ import {
   validateRequest,
   storySessionCreateSchema,
   storySessionUpdateSchema,
+  storySessionSyncSchema,
   storyStepGenerateSchema,
   storyStepRefineSchema,
   storyIssueLockSchema,
@@ -22,6 +23,8 @@ import {
   setCurrentStep,
   setIssueLock,
   generateIssuesFromArc,
+  setStorySessionSync,
+  reconcileStorySession,
   ERR_NOT_FOUND,
   ERR_VALIDATION,
 } from '../services/storyBuilder.js';
@@ -70,6 +73,24 @@ router.patch('/:id', asyncHandler(async (req, res) => {
 router.delete('/:id', asyncHandler(async (req, res) => {
   const result = await deleteStorySession(req.params.id).catch((err) => { throw mapServiceError(err); });
   res.json(result);
+}));
+
+// ── Cross-machine resume opt-in (#730) ──────────────────────────────────────
+
+// Toggle whether this session participates in cross-machine resume. Local-only
+// is the default; flipping sync on captures a staleness baseline that travels
+// with the session so a peer's universe edit can't false-positive-stale it.
+router.post('/:id/sync', asyncHandler(async (req, res) => {
+  const { sync } = validateRequest(storySessionSyncSchema, req.body || {});
+  const updated = await setStorySessionSync(req.params.id, sync).catch((err) => { throw mapServiceError(err); });
+  res.json(updated);
+}));
+
+// Re-snapshot a sync-enabled session's staleness baseline to the current live
+// records — the explicit "adopt this machine's universe/series state" gesture.
+router.post('/:id/reconcile', asyncHandler(async (req, res) => {
+  const updated = await reconcileStorySession(req.params.id).catch((err) => { throw mapServiceError(err); });
+  res.json(updated);
 }));
 
 // ── Step state machine ─────────────────────────────────────────────────────
