@@ -25,6 +25,7 @@ import { join } from 'path';
 import { sanitizeTaskMetadata, PIPELINE_BEHAVIOR_FLAGS, MAX_TOTAL_SPAWNS, normalizeReviewers } from '../lib/validation.js';
 import { parsePlanItems, extractAllIds, findInProgressIds, pickFirstAvailable, diagnoseUnpickablePlan } from '../lib/planIds.js';
 import { loadState, saveState, withStateLock, isImprovementEnabled, isDaemonRunning } from './cosState.js';
+import { getDomainMode } from '../lib/domainAutonomy.js';
 import { cosEvents, emitLog } from './cosEvents.js';
 import { addTask, updateTask, getAllTasks, getCosTasks, firstLine, PRIORITY_VALUES } from './cosTaskStore.js';
 import { recordDecision, DECISION_TYPES } from './decisionLog.js';
@@ -242,6 +243,12 @@ export async function evaluateTasks(options) {
   // Track per-project counts including tasks we're about to spawn in this batch
   const spawnProjectCounts = { ...agentsByProject };
 
+  // Per-domain CoS auto-run gate. Off/dry-run withhold all AUTOMATIC internal
+  // spawns (auto-approved system tasks, mission, feature-agent, idle-review);
+  // user and on-demand tasks are unaffected. dry-run logs the concrete already-
+  // queued auto-approved tasks it would have spawned without emitting them.
+  const cosAutonomyMode = getDomainMode(state.config, 'cos');
+
   // Helper: check if a task can spawn (within both global and per-project limits)
   const canSpawnTask = (task) => {
     if (tasksToSpawn.length >= availableSlots) return false;
@@ -345,8 +352,16 @@ export async function evaluateTasks(options) {
     trackSpawn(userTask);
   }
 
-  // Priority 2: Auto-approved system tasks (if slots available)
-  if (tasksToSpawn.length < availableSlots && cosTaskData.exists) {
+  // Priority 2: Auto-approved system tasks (if slots available) — gated by the
+  // CoS auto-run domain. off/dry-run withhold the unattended spawn; dry-run logs
+  // what would have run so the user can see the plan without it executing.
+  if (tasksToSpawn.length < availableSlots && cosTaskData.exists && cosAutonomyMode !== 'execute') {
+    if (cosAutonomyMode === 'dry-run') {
+      for (const task of (cosTaskData.autoApproved || [])) {
+        emitLog('info', `[dry-run] CoS auto-run would spawn system task: ${task.id}`, { taskId: task.id, domainAutonomy: 'cos' });
+      }
+    }
+  } else if (tasksToSpawn.length < availableSlots && cosTaskData.exists) {
     const autoApproved = cosTaskData.autoApproved || [];
     for (const task of autoApproved) {
       if (tasksToSpawn.length >= availableSlots) break;
@@ -391,13 +406,15 @@ export async function evaluateTasks(options) {
 
   // Background: Queue eligible self-improvement tasks as system tasks
   // Only queue if there are NO pending user tasks (user tasks always take priority)
-  // Skip on initial startup to avoid auto-spawning agents on fresh installs
-  if (state.config.idleReviewEnabled && !hasPendingUserTasks && !initialStartup) {
+  // Skip on initial startup to avoid auto-spawning agents on fresh installs.
+  // Also skip when CoS auto-run isn't `execute` — queueing creates autonomous work.
+  if (state.config.idleReviewEnabled && !hasPendingUserTasks && !initialStartup && cosAutonomyMode === 'execute') {
     await queueEligibleImprovementTasks(state, cosTaskData);
   }
 
-  // Priority 3: Mission-driven proactive tasks (if no user tasks)
-  if (tasksToSpawn.length < availableSlots && !hasPendingUserTasks && state.config.proactiveMode) {
+  // Priority 3: Mission-driven proactive tasks (if no user tasks). Autonomous —
+  // gated by the CoS auto-run domain (off/dry-run skip generation entirely).
+  if (tasksToSpawn.length < availableSlots && !hasPendingUserTasks && state.config.proactiveMode && cosAutonomyMode === 'execute') {
     const missionTasks = await generateMissionTasks({ maxTasks: availableSlots - tasksToSpawn.length }).catch(err => {
       emitLog('debug', `Mission task generation failed: ${err.message}`);
       return [];
@@ -431,8 +448,9 @@ export async function evaluateTasks(options) {
   // which caused duplicate agent spawns on startup when both paths fired
   // for the same past-due job within seconds of each other.
 
-  // Priority 3.6: Feature Agents (after autonomous jobs, yield to user tasks)
-  if (tasksToSpawn.length < availableSlots && !hasPendingUserTasks) {
+  // Priority 3.6: Feature Agents (after autonomous jobs, yield to user tasks).
+  // Autonomous — gated by the CoS auto-run domain.
+  if (tasksToSpawn.length < availableSlots && !hasPendingUserTasks && cosAutonomyMode === 'execute') {
     const { getDueFeatureAgents, generateTaskFromFeatureAgent, setCurrentAgent } = await import('./featureAgents.js');
     const dueAgents = await getDueFeatureAgents().catch(err => {
       emitLog('debug', `Feature agents check failed: ${err.message}`);
@@ -454,7 +472,7 @@ export async function evaluateTasks(options) {
   // 1. Nothing to spawn
   // 2. No pending user tasks (even on cooldown)
   // 3. No system tasks queued
-  if (tasksToSpawn.length === 0 && state.config.idleReviewEnabled && !hasPendingUserTasks) {
+  if (tasksToSpawn.length === 0 && state.config.idleReviewEnabled && !hasPendingUserTasks && cosAutonomyMode === 'execute') {
     const freshCosTasks = await getCosTasks();
     const pendingSystemTasks = freshCosTasks.autoApproved?.length || 0;
     if (pendingSystemTasks === 0) {
