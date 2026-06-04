@@ -116,6 +116,7 @@ export const NAV_COMMANDS = [
   { id: 'nav.twin.taste', path: '/digital-twin/taste', label: 'Taste', section: 'Digital Twin', aliases: ['twin-taste'] },
   { id: 'nav.twin.test', path: '/digital-twin/test', label: 'Test', section: 'Digital Twin', aliases: ['twin-test'] },
   { id: 'nav.twin.time-capsule', path: '/digital-twin/time-capsule', label: 'Time Capsule', section: 'Digital Twin', aliases: ['time-capsule', 'twin-time-capsule', 'capsule'], keywords: ['legacy', 'archive', 'snapshot'] },
+  { id: 'nav.twin.voice', path: '/digital-twin/voice', label: 'Voice', section: 'Digital Twin', aliases: ['twin-voice', 'voice-style', 'spoken-written'], keywords: ['speech', 'spoken', 'written', 'transcript', 'style', 'comparison', 'communication'] },
 
   { id: 'nav.meatspace.overview', path: '/meatspace/overview', label: 'Overview', section: 'MeatSpace', aliases: ['meatspace'] },
   { id: 'nav.meatspace.health', path: '/meatspace/health', label: 'Body Health', section: 'MeatSpace', aliases: ['meatspace-health', 'body-health'], keywords: ['health', 'vitals', 'wellbeing', 'biometrics'] },

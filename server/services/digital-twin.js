@@ -111,6 +111,11 @@ export {
 } from './digital-twin-analysis.js';
 
 export {
+  compareSpokenWrittenStyle,
+  parseStyleComparison
+} from './digital-twin-style-comparison.js';
+
+export {
   analyzeImportedData,
   saveImportAsDocument,
   getImportSources,
