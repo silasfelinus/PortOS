@@ -38,14 +38,22 @@ export const BIG_FIVE_LEAN = {
 
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 
-// Bare magnitude adverb for a 1..10-scale delta (slightly / notably / much) —
-// used where the paired verb already encodes direction (e.g. "more concise").
-function commAdverb(delta) {
+// Bin a delta's magnitude into slightly / notably / much against the [notably,
+// much] thresholds for its scale. One ladder, two scales (1..10 comm deltas use
+// [3, 5]; 0..1 Big-Five deltas use [0.2, 0.4]).
+function magnitudeAdverb(delta, notably, much) {
   const mag = Math.abs(delta);
-  if (mag >= 5) return 'much';
-  if (mag >= 3) return 'notably';
+  if (mag >= much) return 'much';
+  if (mag >= notably) return 'notably';
   return 'slightly';
 }
+
+// Bare adverb for a 1..10-scale delta — used where the paired verb already
+// encodes direction (e.g. "more concise").
+const commAdverb = (delta) => magnitudeAdverb(delta, 3, 5);
+
+// Adverb for a 0..1-scale Big-Five delta.
+const bigFiveMagnitude = (delta) => magnitudeAdverb(delta, 0.2, 0.4);
 
 // Signed wording for a fixed-quality 1..10 trait (e.g. formality): the quality
 // word stays put and direction is "more"/"less" of it — "much more formal".
@@ -57,14 +65,6 @@ function commMagnitude(delta) {
 // positive = more elaborate — so it always reads "{adverb} more {quality}".
 function verbosityPhrase(delta) {
   return `${commAdverb(delta)} more ${delta > 0 ? 'elaborate' : 'concise'}`;
-}
-
-// Magnitude wording for a 0..1-scale Big-Five delta.
-function bigFiveMagnitude(delta) {
-  const mag = Math.abs(delta);
-  if (mag >= 0.4) return 'much';
-  if (mag >= 0.2) return 'notably';
-  return 'slightly';
 }
 
 /**

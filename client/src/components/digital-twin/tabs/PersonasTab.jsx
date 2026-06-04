@@ -11,8 +11,10 @@ const BIG_FIVE_LABELS = { O: 'Openness', C: 'Conscientiousness', E: 'Extraversio
 
 // The editor's working shape. '' / 0 mean "no override" for that field; the
 // payload builder strips them so an untouched editor sends no traitAdjustments.
-const EMPTY_ADJUSTMENTS = { formality: 0, verbosity: 0, emojiUsage: '', tone: '', bigFive: { O: 0, C: 0, E: 0, A: 0, N: 0 } };
-const EMPTY_FORM = { name: '', description: '', instructions: '', adjustments: EMPTY_ADJUSTMENTS };
+// Factories (not shared constants) so each form/reset gets its own nested
+// objects — a shared reference would let one form's edits leak into another.
+const makeEmptyAdjustments = () => ({ formality: 0, verbosity: 0, emojiUsage: '', tone: '', bigFive: { O: 0, C: 0, E: 0, A: 0, N: 0 } });
+const makeEmptyForm = () => ({ name: '', description: '', instructions: '', adjustments: makeEmptyAdjustments() });
 
 // Hydrate the editor shape from a stored persona's traitAdjustments.
 function adjustmentsToForm(traitAdjustments) {
@@ -54,10 +56,10 @@ export default function PersonasTab({ onRefresh }) {
   const [busy, setBusy] = useState(false);
 
   const [showCreate, setShowCreate] = useState(false);
-  const [createForm, setCreateForm] = useState(EMPTY_FORM);
+  const [createForm, setCreateForm] = useState(makeEmptyForm());
 
   const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState(EMPTY_FORM);
+  const [editForm, setEditForm] = useState(makeEmptyForm());
 
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
@@ -92,7 +94,7 @@ export default function PersonasTab({ onRefresh }) {
     setBusy(false);
     if (!persona) return;
     setPersonas(prev => [...prev, persona]);
-    setCreateForm(EMPTY_FORM);
+    setCreateForm(makeEmptyForm());
     setShowCreate(false);
     toast.success('Persona created');
     onRefresh?.();
@@ -176,7 +178,7 @@ export default function PersonasTab({ onRefresh }) {
         </div>
         {!showCreate && (
           <button
-            onClick={() => { setShowCreate(true); setCreateForm(EMPTY_FORM); }}
+            onClick={() => { setShowCreate(true); setCreateForm(makeEmptyForm()); }}
             className="flex items-center justify-center gap-2 px-4 py-2.5 min-h-[44px] bg-port-accent text-white rounded-lg font-medium hover:bg-port-accent/80 shrink-0"
           >
             <Plus className="w-4 h-4" />
@@ -199,7 +201,7 @@ export default function PersonasTab({ onRefresh }) {
               <Check className="w-4 h-4" /> Create
             </button>
             <button
-              onClick={() => { setShowCreate(false); setCreateForm(EMPTY_FORM); }}
+              onClick={() => { setShowCreate(false); setCreateForm(makeEmptyForm()); }}
               className="flex items-center gap-2 px-4 py-2 min-h-[40px] border border-port-border text-gray-400 rounded-lg hover:text-white"
             >
               <X className="w-4 h-4" /> Cancel
@@ -219,6 +221,7 @@ export default function PersonasTab({ onRefresh }) {
           {personas.map(persona => {
             const isActive = activeId === persona.id;
             const isEditing = editingId === persona.id;
+            const voiceTags = describeTraitAdjustments(persona.traitAdjustments);
             return (
               <div
                 key={persona.id}
@@ -289,12 +292,12 @@ export default function PersonasTab({ onRefresh }) {
                     </div>
                     <p className="text-sm text-gray-300 mt-3 whitespace-pre-wrap bg-port-bg p-3 rounded">{persona.instructions}</p>
 
-                    {describeTraitAdjustments(persona.traitAdjustments).length > 0 && (
+                    {voiceTags.length > 0 && (
                       <div className="mt-3 flex items-center gap-2 flex-wrap">
                         <span className="flex items-center gap-1 text-xs text-gray-500">
                           <SlidersHorizontal className="w-3.5 h-3.5" /> Voice:
                         </span>
-                        {describeTraitAdjustments(persona.traitAdjustments).map((d, i) => (
+                        {voiceTags.map((d, i) => (
                           <span key={i} className="text-xs px-2 py-0.5 rounded bg-port-bg border border-port-border text-gray-300">{d}</span>
                         ))}
                       </div>
@@ -393,7 +396,7 @@ function TraitAdjustmentsEditor({ idPrefix, adjustments, setAdjustments }) {
 
   const setField = (key, value) => setAdjustments(a => ({ ...a, [key]: value }));
   const setBigFive = (key, value) => setAdjustments(a => ({ ...a, bigFive: { ...a.bigFive, [key]: value } }));
-  const reset = () => setAdjustments(() => ({ ...EMPTY_ADJUSTMENTS, bigFive: { ...EMPTY_ADJUSTMENTS.bigFive } }));
+  const reset = () => setAdjustments(makeEmptyAdjustments);
 
   return (
     <div className="border border-port-border rounded-lg">
