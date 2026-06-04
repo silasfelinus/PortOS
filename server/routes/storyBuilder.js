@@ -150,7 +150,7 @@ router.get('/:id/steps/:stepId/progress', (req, res) => {
   assertStep(req.params.stepId);
   const attached = attachClient(req.params.id, req.params.stepId, res);
   if (!attached) {
-    res.status(404).json({ error: 'No active run for this step' });
+    throw new ServerError('No active run for this step', { status: 404 });
   }
 });
 

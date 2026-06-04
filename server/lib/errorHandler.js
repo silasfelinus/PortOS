@@ -49,7 +49,10 @@ export class ServerError extends Error {
     super(message);
     this.name = 'ServerError';
     this.status = options.status || 500;
-    this.code = options.code || 'INTERNAL_ERROR';
+    // Derive the machine-readable code from the HTTP status when the caller
+    // didn't pass one explicitly — so `new ServerError(msg, { status: 404 })`
+    // emits `NOT_FOUND`, not `INTERNAL_ERROR`. An explicit `code` always wins.
+    this.code = options.code || getErrorCode(this.status);
     this.timestamp = Date.now();
     this.context = options.context || {};
     this.severity = options.severity || 'error'; // error, critical, warning
@@ -163,7 +166,7 @@ export function normalizeError(err) {
 /**
  * Get appropriate error code from HTTP status
  */
-function getErrorCode(status) {
+export function getErrorCode(status) {
   const codeMap = {
     400: 'BAD_REQUEST',
     401: 'UNAUTHORIZED',

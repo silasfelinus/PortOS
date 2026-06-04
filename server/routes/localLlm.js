@@ -9,7 +9,7 @@
  */
 
 import { Router } from 'express'
-import { asyncHandler } from '../lib/errorHandler.js'
+import { asyncHandler, ServerError } from '../lib/errorHandler.js'
 import {
   validateRequest,
   localLlmInstallSchema,
@@ -47,7 +47,7 @@ router.get('/status', asyncHandler(async (req, res) => {
 // GET /api/local-llm/catalog?backend=ollama&q=llama — curated install picker
 router.get('/catalog', asyncHandler(async (req, res) => {
   const { backend, q } = req.query
-  if (!isBackend(backend)) return res.status(400).json({ error: 'backend must be "ollama" or "lmstudio"' })
+  if (!isBackend(backend)) throw new ServerError('backend must be "ollama" or "lmstudio"', { status: 400 })
   const installed = (await listModels(backend)).map((m) => m.id)
   const models = q ? searchCatalog(backend, q, installed) : getCatalog(backend, installed)
   res.json({ backend, models })
@@ -74,7 +74,7 @@ router.post('/install-backend', asyncHandler(async (req, res) => {
     })
   if (!result.success) {
     emit('error', result.error || 'Install failed')
-    return res.status(502).json({ error: result.error || 'Install failed', backend })
+    throw new ServerError(result.error || 'Install failed', { status: 502, context: { backend } })
   }
   emit('complete', `${backend === 'ollama' ? 'Ollama' : 'LM Studio'} installed${result.note ? ` — ${result.note}` : ''}`)
   res.json(result)
@@ -97,7 +97,7 @@ router.post('/ollama-service', asyncHandler(async (req, res) => {
   })
   if (!result.success) {
     emit('error', result.error || `Ollama ${action} failed`)
-    return res.status(502).json({ error: result.error || `Ollama ${action} failed` })
+    throw new ServerError(result.error || `Ollama ${action} failed`, { status: 502 })
   }
   const completeLabel = {
     start: 'Ollama is running',
@@ -129,7 +129,7 @@ router.post('/install', asyncHandler(async (req, res) => {
     // Forward structured `code` (e.g. OLLAMA_OUTDATED) so the client can offer
     // a recovery action — like prompting to upgrade Ollama — instead of just
     // surfacing the raw error string in a toast.
-    return res.status(502).json({ error: result.error || 'Install failed', modelId, ...(result.code ? { code: result.code } : {}) })
+    throw new ServerError(result.error || 'Install failed', { status: 502, ...(result.code ? { code: result.code } : {}), context: { modelId } })
   }
   emit('complete', result.pending
     ? `${modelId} download started in LM Studio — it'll finish in the background`
@@ -150,7 +150,7 @@ router.post('/upgrade-backend', asyncHandler(async (req, res) => {
     })
   if (!result.success) {
     emit('error', result.error || 'Upgrade failed')
-    return res.status(502).json({ error: result.error || 'Upgrade failed', backend })
+    throw new ServerError(result.error || 'Upgrade failed', { status: 502, context: { backend } })
   }
   emit('complete', `${backend === 'ollama' ? 'Ollama' : 'LM Studio'} upgraded${result.note ? ` — ${result.note}` : ''}`)
   res.json(result)
@@ -160,7 +160,7 @@ router.post('/upgrade-backend', asyncHandler(async (req, res) => {
 router.post('/delete', asyncHandler(async (req, res) => {
   const { backend, modelId } = validateRequest(localLlmDeleteSchema, req.body)
   const result = await deleteModel(backend, modelId)
-  if (!result.success) return res.status(502).json({ error: result.error || 'Delete failed', modelId })
+  if (!result.success) throw new ServerError(result.error || 'Delete failed', { status: 502, context: { modelId } })
   res.json({ success: true, ...result })
 }))
 
@@ -172,7 +172,7 @@ router.post('/switch', asyncHandler(async (req, res) => {
   const result = await switchBackend(to)
   if (!result.success) {
     emit('error', result.error || 'Switch failed')
-    return res.status(500).json({ error: result.error || 'Switch failed' })
+    throw new ServerError(result.error || 'Switch failed', { status: 500 })
   }
   emit('complete', `${to} is now the default backend`)
   res.json(result)
@@ -187,7 +187,7 @@ router.post('/migrate', asyncHandler(async (req, res) => {
   const result = await migrateBackend(to, { mode, onProgress: ({ event, message }) => emit(event, message) })
   if (!result.success) {
     emit('error', result.error || 'Migration failed')
-    return res.status(500).json({ error: result.error || 'Migration failed' })
+    throw new ServerError(result.error || 'Migration failed', { status: 500 })
   }
   res.json(result)
 }))
@@ -207,7 +207,7 @@ router.get('/loaded', asyncHandler(async (req, res) => {
 // it here to keep each backend's quirks behind its own router.
 router.post('/unload', asyncHandler(async (req, res) => {
   const { backend, modelId } = validateRequest(localLlmUnloadSchema, req.body)
-  if (backend !== 'ollama') return res.status(400).json({ error: 'backend must be "ollama" (use /api/lmstudio/unload for LM Studio)' })
+  if (backend !== 'ollama') throw new ServerError('backend must be "ollama" (use /api/lmstudio/unload for LM Studio)', { status: 400 })
   const result = await unloadOllamaModel(modelId)
   // "not loaded" is an idempotent no-op (the model already isn't resident
   // — between the panel's last poll and this click it may have hit Ollama's
@@ -218,7 +218,7 @@ router.post('/unload', asyncHandler(async (req, res) => {
     if (result.reason === 'not loaded') {
       return res.json({ success: true, unloaded: false, reason: result.reason, modelId })
     }
-    return res.status(502).json({ error: result.reason || 'unload failed', modelId })
+    throw new ServerError(result.reason || 'unload failed', { status: 502, context: { modelId } })
   }
   res.json({ success: true, ...result })
 }))

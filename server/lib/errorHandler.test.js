@@ -35,6 +35,18 @@ describe('errorHandler.js', () => {
       expect(error.context).toEqual({ resource: 'user' });
     });
 
+    it('should derive code from status when no explicit code is passed', () => {
+      expect(new ServerError('nope', { status: 404 }).code).toBe('NOT_FOUND');
+      expect(new ServerError('bad', { status: 400 }).code).toBe('BAD_REQUEST');
+      expect(new ServerError('conflict', { status: 409 }).code).toBe('CONFLICT');
+      expect(new ServerError('down', { status: 503 }).code).toBe('SERVICE_UNAVAILABLE');
+    });
+
+    it('should let an explicit code override the status-derived one', () => {
+      const error = new ServerError('dup', { status: 409, code: 'DUPLICATE_ENTRY' });
+      expect(error.code).toBe('DUPLICATE_ENTRY');
+    });
+
     it('should be an instance of Error', () => {
       const error = new ServerError('Test');
       expect(error instanceof Error).toBe(true);

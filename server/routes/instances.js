@@ -131,7 +131,7 @@ router.post('/provision-cert', asyncHandler(async (req, res) => {
   const result = await provisionTailscaleCert();
   if (!result.ok) {
     // Map to apiCore.js error envelope so the client auto-toasts the message.
-    return res.status(400).json({ error: result.message, code: result.reason });
+    throw new ServerError(result.message, { status: 400, code: result.reason });
   }
   res.json(result);
 }));
