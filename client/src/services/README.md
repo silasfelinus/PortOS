@@ -85,7 +85,7 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiCreativeDirector.js` | Creative Director (video production). |
 | `apiPipeline.js` | Pipeline (issues + stages + canon). |
 | `apiUniverseBuilder.js` | Universe Builder (generate + edit + commit). |
-| `apiWritersRoom.js` | Writers Room (folders + works + drafts). |
+| `apiWritersRoom.js` | Writers Room (folders + works + drafts, live continuation + render-preview reservation, scene-image attach). |
 | `apiSharing.js` | Share buckets + federation sync. |
 | `apiPeerSync.js` | Per-record peer sync subscriptions (universe + series → other PortOS instances over Tailnet). |
 | `apiSyncReview.js` | Sync hygiene: duplicate-record detection + smart merge (universe/series) and the non-blocking edit-conflict journal (list/resolve). Surfaced in Sharing → Duplicates / Conflicts. |
