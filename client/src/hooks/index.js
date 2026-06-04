@@ -88,6 +88,7 @@ export * from './useSwipeNav.js';
 
 // === Storage & persistence ===
 export * from './useLocalStorageBool.js';
+export * from './useNavWorkingSet.js';
 
 // === Domain: City / Voice / Mortality / Universe / Apps / Sessions ===
 export * from './useAppDeploy.js';
