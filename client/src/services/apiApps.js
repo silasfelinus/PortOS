@@ -17,7 +17,7 @@ export const deleteApp = (id) => request(`/apps/${id}`, { method: 'DELETE' });
 // App actions
 export const startApp = (id) => request(`/apps/${id}/start`, { method: 'POST' });
 export const stopApp = (id) => request(`/apps/${id}/stop`, { method: 'POST' });
-export const restartApp = (id) => request(`/apps/${id}/restart`, { method: 'POST' });
+export const restartApp = (id, options) => request(`/apps/${id}/restart`, { method: 'POST', ...options });
 export const upgradeAppTls = (id, body) => request(`/apps/${id}/upgrade-tls`, {
   method: 'POST',
   body: JSON.stringify(body),
