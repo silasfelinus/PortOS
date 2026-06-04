@@ -9,8 +9,12 @@ import {
 const readList = (key) => {
   const raw = localStorage.getItem(key);
   if (!raw) return [];
-  const parsed = JSON.parse(raw);
-  return Array.isArray(parsed) ? parsed.filter((p) => typeof p === 'string') : [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((p) => typeof p === 'string') : [];
+  } catch {
+    return [];
+  }
 };
 
 const writeList = (key, list) => localStorage.setItem(key, JSON.stringify(list));
@@ -19,6 +23,8 @@ const writeList = (key, list) => localStorage.setItem(key, JSON.stringify(list))
  * Sidebar working-set state (Pinned + Recent), persisted to localStorage.
  * @param {(path: string) => ({ path, label, icon } | null)} resolveNavEntry
  *   Maps a stored route path to a display row, or null if it's not a known page.
+ *   MUST be stable (useCallback or module-level) — an unstabilized inline function
+ *   re-derives pinned/recent on every parent render.
  */
 export function useNavWorkingSet(resolveNavEntry) {
   const location = useLocation();

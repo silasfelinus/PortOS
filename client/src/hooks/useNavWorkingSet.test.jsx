@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { useNavWorkingSet } from './useNavWorkingSet.js';
 import { RECENT_KEY, PINNED_KEY } from '../utils/navWorkingSet.js';
 
@@ -57,5 +57,36 @@ describe('useNavWorkingSet', () => {
     act(() => result.current.pin('/unknown'));
     // /unknown is stored but unresolvable -> not displayed
     expect(result.current.pinned.map((r) => r.path)).toEqual(['/known']);
+  });
+
+  it('tolerates corrupt recent storage', () => {
+    localStorage.setItem(RECENT_KEY, 'not-json{');
+    const { result } = renderHook(() => useNavWorkingSet(resolveNavEntry), { wrapper });
+    expect(result.current.recent).toEqual([]);
+  });
+
+  it('tolerates corrupt pinned storage', () => {
+    localStorage.setItem(PINNED_KEY, '{bad');
+    const { result } = renderHook(() => useNavWorkingSet(resolveNavEntry), { wrapper });
+    expect(result.current.pinned).toEqual([]);
+  });
+
+  it('records a subsequent navigation into recent and storage', () => {
+    let nav;
+    function GrabNav() {
+      nav = useNavigate();
+      return null;
+    }
+    const navWrapper = ({ children }) => (
+      <MemoryRouter initialEntries={['/start']}>
+        <GrabNav />
+        {children}
+      </MemoryRouter>
+    );
+    const { result } = renderHook(() => useNavWorkingSet(resolveNavEntry), { wrapper: navWrapper });
+    act(() => nav('/second'));
+    // /second is now current (excluded from display), /start moved to recent
+    expect(JSON.parse(localStorage.getItem(RECENT_KEY))).toEqual(['/second', '/start']);
+    expect(result.current.recent.map((r) => r.path)).toEqual(['/start']);
   });
 });
