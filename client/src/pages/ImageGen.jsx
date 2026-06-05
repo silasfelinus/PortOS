@@ -378,23 +378,6 @@ export default function ImageGen() {
     refreshStatus(effectiveMode);
   }, [effectiveMode, refreshStatus]);
 
-  // ?initImageFile=foo.png pre-fills from a gallery basename — the "Send to
-  // image-to-image" card/lightbox action navigates here with it. Strip the param
-  // after applying (mirror the remix-keys effect below) so a refresh/back-nav
-  // doesn't re-clobber a cleared init image. The init image only applies on an
-  // i2i-capable backend (hasInitImage gate), so request a switch — deferred via
-  // a ref since availableBackends may not have loaded yet on this navigation.
-  useEffect(() => {
-    const fromUrl = searchParams.get('initImageFile');
-    if (!fromUrl) return;
-    if (initImage.source == null) {
-      setInitImage({ source: 'gallery', file: null, name: fromUrl, previewUrl: `/data/images/${fromUrl}` });
-    }
-    wantI2iModeRef.current = true;
-    setSearchParams((prev) => { const n = new URLSearchParams(prev); n.delete('initImageFile'); return n; }, { replace: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
-
   // Deferred i2i mode nudge: once backends resolve, flip to an i2i-capable
   // backend so the URL-supplied init image actually takes effect (the picker +
   // generate payload are local/codex only). Give up quietly if neither exists.
@@ -433,13 +416,16 @@ export default function ImageGen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, availableLoras]);
 
-  // Remix payload from Media History (?prompt=…&modelId=…&seed=…). Populate
-  // form state once on mount, then strip the params so a hot-reload or back-
-  // nav doesn't re-clobber edits the user has made since.
+  // Inbound params from Media History / Send-to-i2i (?prompt=…&modelId=…&seed=…
+  // and/or ?initImageFile=…). Populate form state once on mount, then strip ALL
+  // consumed params in a SINGLE setSearchParams so a hot-reload/back-nav doesn't
+  // re-clobber later edits — and so the init-image strip and the remix-keys strip
+  // can't race as two competing updates (which left initImageFile in the URL).
   useEffect(() => {
     const remixKeys = ['prompt', 'negativePrompt', 'modelId', 'width', 'height', 'seed', 'steps', 'guidance', 'quantize'];
+    const initFile = searchParams.get('initImageFile');
     const present = remixKeys.filter((k) => searchParams.get(k) != null);
-    if (present.length === 0) return;
+    if (!initFile && present.length === 0) return;
     const get = (k) => searchParams.get(k);
     if (get('prompt')) setPrompt(get('prompt'));
     if (get('negativePrompt')) setNegativePrompt(get('negativePrompt'));
@@ -450,9 +436,16 @@ export default function ImageGen() {
     if (get('steps')) setSteps(get('steps'));
     if (get('guidance')) setGuidance(get('guidance'));
     if (get('quantize')) setQuantize(get('quantize'));
+    // Send-to-i2i: queue the gallery source + request an i2i-capable backend
+    // (deferred via the ref since backends may not have loaded on this nav).
+    if (initFile && initImage.source == null) {
+      setInitImage({ source: 'gallery', file: null, name: initFile, previewUrl: `/data/images/${initFile}` });
+      wantI2iModeRef.current = true;
+    }
     setSearchParams((prev) => {
       const n = new URLSearchParams(prev);
       remixKeys.forEach((k) => n.delete(k));
+      n.delete('initImageFile');
       return n;
     }, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
