@@ -476,21 +476,36 @@ export default function ImageGen() {
     return new File([blob], newName, { type: 'image/png' });
   };
 
+  // Decode an image File to its baked pixel dimensions (post-EXIF-rotation).
+  const readImageDimensions = async (file) => {
+    const bitmap = await window.createImageBitmap(file).catch(() => null);
+    if (!bitmap) return null;
+    const dims = { width: bitmap.width, height: bitmap.height };
+    bitmap.close?.();
+    return dims;
+  };
+
   const handlePickInitImage = async (e) => {
     const raw = e.target.files?.[0];
     if (!raw) return;
     const file = await normalizeImageOrientation(raw);
     revokeIfBlob(initImage.previewUrl);
     setInitImage({ source: 'upload', file, name: file.name, previewUrl: URL.createObjectURL(file) });
+    // Default the output resolution to the uploaded image's dimensions.
+    const dims = await readImageDimensions(file);
+    if (dims) { setWidth(dims.width); setHeight(dims.height); }
   };
   const handleClearInitImage = () => {
     revokeIfBlob(initImage.previewUrl);
     setInitImage({ source: null, file: null, name: null, previewUrl: null });
   };
   // Pick an existing gallery image as the i2i source (from GalleryImagePicker).
-  // No EXIF normalization needed — gallery PNGs are already baked correct.
+  // Bring over the source's prompt + render settings + dimensions (same as
+  // Send-to-i2i), then queue it as the init image. No EXIF normalization needed
+  // — gallery PNGs are already baked correct.
   const handlePickGalleryInitImage = (item) => {
     if (!item?.filename) return;
+    if (item.raw) handleRemix(item.raw);
     revokeIfBlob(initImage.previewUrl);
     setInitImage({ source: 'gallery', file: null, name: item.filename, previewUrl: item.previewUrl || `/data/images/${item.filename}` });
   };
