@@ -1,0 +1,71 @@
+// Real-sharp tests for the regen pixel/spatial helpers (issue #912). Kept in a
+// SEPARATE file from regen.test.js because that suite mocks `sharp` for the
+// pure param-assembly tests — computePixelDelta and applyLightRegen need the
+// genuine decoder/encoder. sharp accepts a Buffer or a path, so the fixtures
+// are in-memory PNG buffers (no temp files).
+import { describe, it, expect } from 'vitest';
+import sharp from 'sharp';
+import { computePixelDelta, applyLightRegen, REGEN_SQUEEZE_FACTOR } from './regen.js';
+
+// Solid-color PNG of the given size — a deterministic fixture for delta math.
+const solidPng = (w, h, { r, g, b }) =>
+  sharp({ create: { width: w, height: h, channels: 3, background: { r, g, b } } }).png().toBuffer();
+
+describe('computePixelDelta', () => {
+  it('reports zero delta / infinite PSNR for an identical image', async () => {
+    const buf = await solidPng(128, 128, { r: 120, g: 64, b: 200 });
+    const delta = await computePixelDelta(buf, buf);
+    expect(delta.pixelDeltaPct).toBe(0);
+    expect(delta.psnr).toBe(Infinity);
+  });
+
+  it('reports a large delta for opposite solid colors', async () => {
+    const black = await solidPng(128, 128, { r: 0, g: 0, b: 0 });
+    const white = await solidPng(128, 128, { r: 255, g: 255, b: 255 });
+    const delta = await computePixelDelta(black, white);
+    expect(delta.pixelDeltaPct).toBeGreaterThan(95); // ~100% of full range
+    expect(delta.psnr).toBeLessThan(5); // near-worst-case
+  });
+
+  it('returns null when an input cannot be decoded', async () => {
+    const ok = await solidPng(64, 64, { r: 10, g: 10, b: 10 });
+    const delta = await computePixelDelta(ok, Buffer.from('not an image'));
+    expect(delta).toBeNull();
+  });
+});
+
+describe('applyLightRegen', () => {
+  it('returns a re-encoded PNG at the SOURCE dimensions (squeeze is upscaled back)', async () => {
+    const src = await solidPng(256, 192, { r: 80, g: 160, b: 240 });
+    const out = await applyLightRegen(src);
+    expect(Buffer.isBuffer(out.data)).toBe(true);
+    expect(out.width).toBe(256);
+    expect(out.height).toBe(192);
+    // Output decodes back at the original dimensions, not the squeezed render size.
+    const meta = await sharp(out.data).metadata();
+    expect(meta.width).toBe(256);
+    expect(meta.height).toBe(192);
+  });
+
+  it('actually changes the pixels (it is a disruption pass, not a copy)', async () => {
+    // A non-uniform image so the spatial stages have detail to perturb.
+    const src = await sharp({
+      create: { width: 256, height: 256, channels: 3, background: { r: 30, g: 90, b: 180 } },
+    }).composite([{
+      input: { create: { width: 128, height: 256, channels: 3, background: { r: 220, g: 60, b: 60 } } },
+      left: 0, top: 0,
+    }]).png().toBuffer();
+    const out = await applyLightRegen(src);
+    const delta = await computePixelDelta(src, out.data);
+    expect(delta.pixelDeltaPct).toBeGreaterThan(0);
+  });
+
+  it('returns null for an undecodable buffer', async () => {
+    expect(await applyLightRegen(Buffer.from('nope'))).toBeNull();
+  });
+
+  it('squeeze factor is a sane fraction below 1', () => {
+    expect(REGEN_SQUEEZE_FACTOR).toBeGreaterThan(0.5);
+    expect(REGEN_SQUEEZE_FACTOR).toBeLessThan(1);
+  });
+});

@@ -30,13 +30,16 @@ export const cleanGalleryImage = (filename) => request(`/image-gen/${encodeURICo
 // of a gallery image; returns the queue ack ({ jobId, position, ... }) — the
 // finished render lands in the gallery via the normal queue-completion refresh.
 // `silent` so the lightbox owns its own error toast (single-layer rule).
-export const regenerateGalleryImage = (filename, { strength, steps, prompt } = {}) =>
+// `method: 'light'` runs the CPU-only spatial pass (synchronous — returns the
+// new variant directly, not a queue ack), for installs without a FLUX runner.
+export const regenerateGalleryImage = (filename, { strength, steps, prompt, method } = {}) =>
   request(`/image-gen/${encodeURIComponent(filename)}/regenerate`, {
     method: 'POST',
     body: JSON.stringify({
       ...(strength != null ? { strength } : {}),
       ...(steps != null ? { steps } : {}),
       ...(prompt != null ? { prompt } : {}),
+      ...(method != null ? { method } : {}),
     }),
     silent: true,
   });

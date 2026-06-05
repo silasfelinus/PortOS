@@ -54,8 +54,12 @@ function describeCleanedLineage(item) {
   // SynthID-defeat regen reuses `cleanedFrom` for grouping but is a generative
   // round-trip, not a clean — describe it honestly (issue #912).
   if (item.regenerated && item.cleanedFrom) {
-    const pct = typeof item.regenStrength === 'number' ? ` · ${Math.round(item.regenStrength * 100)}% denoise` : '';
-    return `Regenerated from ${item.cleanedFrom}${pct}`;
+    const denoise = typeof item.regenStrength === 'number' ? ` · ${Math.round(item.regenStrength * 100)}% denoise` : '';
+    // Realized fidelity (how much the pixels actually changed) — stamped by the
+    // server so the lineage row reflects the true delta, not just the request.
+    const fidelity = typeof item.regenPixelDeltaPct === 'number' ? ` · ${item.regenPixelDeltaPct}% changed` : '';
+    const method = item.regenMethod === 'light-spatial' ? ' (light)' : '';
+    return `Regenerated${method} from ${item.cleanedFrom}${denoise}${fidelity}`;
   }
   if (item.cleanedFrom) {
     return `${item.cleanLevel ? `Cleaned (${item.cleanLevel}) ` : 'Cleaned '}from ${item.cleanedFrom}`;
@@ -374,11 +378,15 @@ function SettingsPane({
   const asideClasses = 'md:w-80 lg:w-96 shrink-0 flex flex-col border-t md:border-t-0 md:border-l border-port-border max-h-[40vh] md:max-h-[92vh]';
   const [cleaning, setCleaning] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  const [lightRegenerating, setLightRegenerating] = useState(false);
   // Regen controls: the button toggles an inline panel (strength slider +
   // optional prompt) so a watermark-defeat pass can be tuned without leaving the
   // lightbox. Slider bounds come from the server (`regenBounds`) so the floor
   // stays in lock-step with route validation.
   const { strengthMin: regenMin = 0.02, strengthMax: regenMax = 0.6, strengthDefault: regenDefault = 0.25 } = regenBounds || {};
+  // CPU-only spatial fallback — always offered (sharp is server-side), so an
+  // install without a FLUX runner can still attempt a (less reliable) pass.
+  const regenLightAvailable = !!regenBounds?.lightAvailable;
   const [regenOpen, setRegenOpen] = useState(false);
   const [regenStrength, setRegenStrength] = useState(regenDefault);
   const [regenPrompt, setRegenPrompt] = useState('');
@@ -680,13 +688,39 @@ function SettingsPane({
             </div>
             <button
               type="button"
-              disabled={regenerating}
+              disabled={regenerating || lightRegenerating}
               onClick={runBusyAction(regenerating, setRegenerating, (it) => onRegenerate(it, { strength: regenStrength, prompt: regenPrompt.trim() || undefined }))}
               className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-port-accent text-white hover:opacity-90 rounded disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Wand2 className="w-3.5 h-3.5" /> {regenerating ? 'Queuing…' : `Regenerate at ${regenStrength.toFixed(2)}`}
             </button>
+            {regenLightAvailable && (
+              <button
+                type="button"
+                disabled={regenerating || lightRegenerating}
+                onClick={runBusyAction(lightRegenerating, setLightRegenerating, (it) => onRegenerate(it, { method: 'light' }))}
+                title="CPU-only spatial pass (no GPU). Faster, but less reliable than the FLUX round-trip."
+                className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-port-border hover:bg-port-border/70 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Wand2 className="w-3.5 h-3.5" /> {lightRegenerating ? 'Processing…' : 'Light (CPU, less reliable)'}
+              </button>
+            )}
           </div>
+        )}
+        {/* No FLUX runner installed, but the CPU spatial pass is always available
+            — offer it standalone so these installs aren't left with no SynthID
+            defeat path at all. Honestly labeled as less reliable. */}
+        {!isVideo && onRegenerate && !regenAvailable && regenLightAvailable && (
+          <button
+            type="button"
+            disabled={lightRegenerating}
+            onClick={runBusyAction(lightRegenerating, setLightRegenerating, (it) => onRegenerate(it, { method: 'light' }))}
+            title="CPU-only spatial pass to disrupt SynthID watermarking (no GPU required). Less reliable than a FLUX round-trip; install a local FLUX runner for the stronger pass. Creates a new variant; the original is kept."
+            aria-label="Light CPU regen to disrupt SynthID watermark"
+            className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs text-white hover:opacity-90 rounded bg-port-accent/80 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Wand2 className="w-3.5 h-3.5" /> {lightRegenerating ? 'Processing…' : 'Regen (light)'}
+          </button>
         )}
         {isVideo && onContinue && (
           <button

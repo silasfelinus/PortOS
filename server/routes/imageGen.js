@@ -40,7 +40,8 @@ import { STYLE_PRESETS } from '../lib/writersRoomStylePresets.js';
 import { cleanImageBuffer } from '../lib/imageClean.js';
 import {
   resolveRegenBackend, getRegenAvailability, readImageDimensions, buildRegenParams,
-  DEFAULT_REGEN_STRENGTH, REGEN_STRENGTH_MIN, REGEN_STRENGTH_MAX,
+  REGEN_STRENGTH_MIN, REGEN_STRENGTH_MAX,
+  resolveRegenStrengthDefault, applyLightRegen, computePixelDelta,
 } from '../services/imageGen/regen.js';
 import { purgeImageRefFromAllUniverses } from '../services/universeCanon.js';
 import { listCollections, addItem, ERR_DUPLICATE } from '../services/mediaCollections.js';
@@ -156,6 +157,9 @@ const regenerateSchema = z.object({
   strength: z.number().min(REGEN_STRENGTH_MIN).max(REGEN_STRENGTH_MAX).optional(),
   steps: z.number().int().min(1).max(50).optional(),
   prompt: z.string().max(8000).optional(),
+  // 'flux' (default) = GPU img2img round-trip; 'light' = CPU-only spatial pass
+  // for installs without a FLUX runner (strength/steps/prompt ignored).
+  method: z.enum(['flux', 'light']).optional(),
 });
 
 router.get('/status', asyncHandler(async (req, res) => {
@@ -625,6 +629,68 @@ router.post('/:filename/clean', asyncHandler(async (req, res) => {
   });
 }));
 
+// CPU-only "light" regen (issue #912). The no-GPU fallback: applies sharp's
+// spatial-domain disruption stack (resize-squeeze + color nudge + median/sharpen)
+// to overwrite SynthID's resolution-dependent carriers without a FLUX runner.
+// Synchronous like Clean — writes a `_regen-light.png` variant + sidecar and
+// returns it. Honestly LESS reliable than the GPU round-trip (no FFT phase
+// subtraction); the sidecar stamps `regenMethod: 'light-spatial'` so the UI
+// never overclaims. Mirrors the manual-clean route's file/sidecar/collection shape.
+async function runLightRegen({ filename, sourceAbsPath, sourceMeta }) {
+  const buffer = await readFile(sourceAbsPath).catch((err) => {
+    if (err.code === 'ENOENT') throw new ServerError('Image not found', { status: 404, code: 'NOT_FOUND' });
+    throw err;
+  });
+  const result = await applyLightRegen(buffer);
+  if (!result) {
+    throw new ServerError('Could not decode image for light regen', { status: 400, code: 'INVALID_IMAGE' });
+  }
+
+  const base = filename.slice(0, -'.png'.length);
+  const outFilename = `${base}_regen-light.png`;
+  const outPath = join(PATHS.images, outFilename);
+  const sidecarPath = join(PATHS.images, `${base}_regen-light.metadata.json`);
+  // Anchor the variant group at the root original (same rule as buildRegenParams):
+  // regenerating a cleaned/regenerated variant must group under the root, not orphan.
+  const groupRoot = typeof sourceMeta.cleanedFrom === 'string' && sourceMeta.cleanedFrom
+    ? sourceMeta.cleanedFrom : filename;
+  const createdAt = new Date().toISOString();
+  // Strip hidden/filename/id so the listGallery `...metadata` spread doesn't
+  // overwrite the disk-derived filename or re-hide the deliberate variant.
+  const { hidden: _hidden, filename: _srcFilename, id: _srcId, ...sourceMetaForVariant } = sourceMeta;
+
+  // Compare the in-memory source/output buffers — no need to re-read outPath
+  // off disk just to measure the delta.
+  const delta = await computePixelDelta(buffer, result.data).catch(() => null);
+  const variantMeta = {
+    ...sourceMetaForVariant,
+    createdAt,
+    cleanedFrom: groupRoot,
+    regenerated: true,
+    regenMethod: 'light-spatial',
+    ...(delta ? { regenPixelDeltaPct: delta.pixelDeltaPct, regenPsnr: delta.psnr } : {}),
+  };
+  await Promise.all([
+    writeFile(outPath, result.data),
+    writeFile(sidecarPath, JSON.stringify(variantMeta, null, 2)),
+  ]);
+
+  const filedCollections = await autoFileCleanedToSourceCollections(filename, outFilename).catch((err) => {
+    console.warn(`⚠️ Auto-file light-regen ${outFilename} → collections failed: ${err?.message || err}`);
+    return [];
+  });
+  console.log(`♻️ Light-regen ${filename} → ${outFilename} (${delta ? `${delta.pixelDeltaPct}% changed` : 'fidelity n/a'}${filedCollections.length ? `, filed to ${filedCollections.length} collection(s)` : ''})`);
+
+  // Response is the sidecar record plus the disk-derived fields listGallery adds.
+  return {
+    ...variantMeta,
+    filename: outFilename,
+    path: `/data/images/${outFilename}`,
+    width: result.width,
+    height: result.height,
+  };
+}
+
 // SynthID-defeat regeneration (issue #912). Round-trips an existing gallery
 // image through local FLUX img2img at low–moderate denoise so the per-pixel
 // watermark is overwritten by fresh sampling — the only honest defeat path
@@ -648,12 +714,22 @@ router.post('/:filename/regenerate', asyncHandler(async (req, res) => {
     readImageDimensions(sourceAbsPath),
   ]);
 
+  // CPU-only light path (no FLUX runner required). A best-effort spatial pass
+  // for installs that can't run the GPU round-trip — synchronous like Clean:
+  // it writes a `_regen-light.png` variant inline and returns it (no queue).
+  if (body.method === 'light') {
+    return res.json(await runLightRegen({ filename, sourceAbsPath, sourceMeta }));
+  }
+
   const backend = await resolveRegenBackend({ sourceModelId: sourceMeta.modelId });
   if (!backend.available) {
     throw new ServerError(backend.reason, { status: 400, code: 'REGEN_BACKEND_UNAVAILABLE' });
   }
 
-  const strength = body.strength ?? DEFAULT_REGEN_STRENGTH;
+  // Provider-aware default (issue #912): SynthID-bearing sources keep the
+  // known-good 0.25; local FLUX sources use a lighter pass. The explicit
+  // `strength` override always wins.
+  const strength = body.strength ?? resolveRegenStrengthDefault(sourceMeta);
   const params = buildRegenParams({
     filename,
     sourceAbsPath,
