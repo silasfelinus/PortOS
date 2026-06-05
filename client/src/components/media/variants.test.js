@@ -62,6 +62,22 @@ describe('computeImageVariantGroup', () => {
     ]);
   });
 
+  it('labels a SynthID-defeat regen variant "Regenerated" (grouped via cleanedFrom)', () => {
+    const orig = img('a.png');
+    const regen = img('regen-uuid.png', { cleanedFrom: 'a.png', regenerated: true, regenStrength: 0.4 });
+    const result = computeImageVariantGroup(orig, [orig, regen]);
+    expect(result.group.map((g) => g.label)).toEqual(['Original', 'Regenerated']);
+  });
+
+  it('mixes cleaned and regenerated variants under one source with distinct labels', () => {
+    const orig = img('a.png');
+    const cleaned = img('a_clean-aggressive.png', { cleanedFrom: 'a.png', cleanLevel: 'aggressive', createdAt: '2024-01-01' });
+    const regen = img('regen-uuid.png', { cleanedFrom: 'a.png', regenerated: true, createdAt: '2024-01-02' });
+    const result = computeImageVariantGroup(regen, [orig, cleaned, regen]);
+    expect(result.group.map((g) => g.label)).toEqual(['Original', 'Cleaned (aggressive)', 'Regenerated']);
+    expect(result.active.label).toBe('Regenerated');
+  });
+
   it('returns null when only the original exists (no clean siblings yet — no toggle needed)', () => {
     const orig = img('a.png');
     const unrelated = img('b.png');

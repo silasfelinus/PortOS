@@ -287,6 +287,13 @@ export function buildSidecarMeta({
   initImageStrength = null,
   referenceImagePaths = [],
   referenceImageStrengths = [],
+  // SynthID-defeat regen lineage. When `regenOf` is set, this render is a
+  // post-hoc round-trip of an existing gallery image through local FLUX
+  // img2img (issue #912) — stamp the source filename as `cleanedFrom` (so the
+  // lightbox variant toggle groups the regen under its source the same way a
+  // cleaned copy is) plus explicit `regenerated`/`regenSteps`/`regenStrength`/
+  // `regenModelId` so the sidecar lineage stays honest about how it was made.
+  regenOf = null,
   resolveInputPath,
   loraExists,
   now = () => new Date().toISOString(),
@@ -361,6 +368,21 @@ export function buildSidecarMeta({
   // each reference's V slice by the corresponding strength (1.0 = upstream
   // baseline, 0.0 = ignored). Mirrors the Python sidecar's `referenceStrengths`.
   const meta = { id: jobId, prompt, negativePrompt, modelId, seed: actualSeed, width: Number(width), height: Number(height), steps: actualSteps, guidance: actualGuidance, quantize, filename, loraFilenames: validLoraFilenames, loraPaths: validLoras, loraScales, initImageFilename: validInitImagePath ? basename(validInitImagePath) : null, initImageStrength: validInitImageStrength, referenceImageFilenames: validReferenceImagePaths.map((p) => basename(p)), referenceImageStrengths: validReferenceImageStrengths, createdAt: now() };
+  // Regen lineage (issue #912). `regenOf` is the source gallery filename this
+  // render was generated from. We reuse the existing `cleanedFrom` field so the
+  // lightbox's `computeImageVariantGroup` groups the regen under its source with
+  // zero changes to the grouping key, and add explicit regen* fields so the
+  // sidecar honestly records that the per-pixel watermark was overwritten by a
+  // fresh sampling pass rather than stripped. `regenStrength`/`regenSteps`/
+  // `regenModelId` mirror the resolved render params (not the raw inputs) so a
+  // replayed/clamped value is what's recorded.
+  if (typeof regenOf === 'string' && regenOf) {
+    meta.cleanedFrom = regenOf;
+    meta.regenerated = true;
+    meta.regenStrength = validInitImageStrength;
+    meta.regenSteps = actualSteps;
+    meta.regenModelId = modelId;
+  }
   return {
     meta,
     actualSeed,
@@ -374,7 +396,7 @@ export function buildSidecarMeta({
   };
 }
 
-export async function generateImage({ pythonPath, prompt, negativePrompt = '', modelId = 'dev', width = 1024, height = 1024, steps, guidance, seed, quantize = '8', loraFilenames = [], loraPaths = [], loraScales = [], initImagePath = null, initImageStrength = null, referenceImagePaths = [], referenceImageStrengths = [], jobId: providedJobId = null, cleanC2PA = false, denoise = false }) {
+export async function generateImage({ pythonPath, prompt, negativePrompt = '', modelId = 'dev', width = 1024, height = 1024, steps, guidance, seed, quantize = '8', loraFilenames = [], loraPaths = [], loraScales = [], initImagePath = null, initImageStrength = null, referenceImagePaths = [], referenceImageStrengths = [], jobId: providedJobId = null, cleanC2PA = false, denoise = false, regenOf = null }) {
   if (!prompt?.trim()) throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
   // Single-flight is enforced by the mediaJobQueue worker upstream. Direct
   // callers that bypass the queue must not run two concurrent renders — the
@@ -435,6 +457,7 @@ export async function generateImage({ pythonPath, prompt, negativePrompt = '', m
     initImageStrength,
     referenceImagePaths,
     referenceImageStrengths,
+    regenOf,
     resolveInputPath: resolveImageInputPath,
     loraExists: existsSync,
   });

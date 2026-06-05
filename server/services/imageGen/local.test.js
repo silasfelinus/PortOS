@@ -520,6 +520,29 @@ describe('imageGen local.buildSidecarMeta', () => {
     expect(meta.referenceImageStrengths).toEqual([0.85, 0.5]);
   });
 
+  it('stamps regen lineage (cleanedFrom + regen* fields) when regenOf is set', () => {
+    const { meta } = buildSidecarMeta({
+      ...baseMetaInput,
+      initImagePath: '/data/images/source.png',
+      initImageStrength: 0.4,
+      regenOf: 'source.png',
+    });
+    // cleanedFrom mirrors the source so computeImageVariantGroup groups it.
+    expect(meta.cleanedFrom).toBe('source.png');
+    expect(meta.regenerated).toBe(true);
+    // regen* mirror the RESOLVED render params, not the raw inputs.
+    expect(meta.regenStrength).toBe(0.4);
+    expect(meta.regenSteps).toBe(8);
+    expect(meta.regenModelId).toBe('flux2-klein-9b');
+  });
+
+  it('omits regen lineage entirely for a normal (non-regen) render', () => {
+    const { meta } = buildSidecarMeta({ ...baseMetaInput });
+    expect(meta.cleanedFrom).toBeUndefined();
+    expect(meta.regenerated).toBeUndefined();
+    expect(meta.regenStrength).toBeUndefined();
+  });
+
   it('defaults each missing reference strength to 1.0 (full influence)', () => {
     const { meta } = buildSidecarMeta({
       ...baseMetaInput,

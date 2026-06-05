@@ -38,6 +38,10 @@ import { join } from 'node:path';
 import { readFile, writeFile, stat } from 'fs/promises';
 import { STYLE_PRESETS } from '../lib/writersRoomStylePresets.js';
 import { cleanImageBuffer } from '../lib/imageClean.js';
+import {
+  resolveRegenBackend, getRegenAvailability, readImageDimensions, buildRegenParams,
+  DEFAULT_REGEN_STRENGTH, REGEN_STRENGTH_MIN, REGEN_STRENGTH_MAX,
+} from '../services/imageGen/regen.js';
 import { purgeImageRefFromAllUniverses } from '../services/universeCanon.js';
 import { listCollections, addItem, ERR_DUPLICATE } from '../services/mediaCollections.js';
 import { itemKey } from '../lib/mediaItemKey.js';
@@ -144,6 +148,13 @@ const avatarSchema = z.object({
   prompt: z.string().max(2000).optional(),
 });
 
+// SynthID-defeat regen (issue #912). Body is optional — both fields default
+// server-side (strength → DEFAULT_REGEN_STRENGTH, steps → the model default).
+const regenerateSchema = z.object({
+  strength: z.number().min(REGEN_STRENGTH_MIN).max(REGEN_STRENGTH_MAX).optional(),
+  steps: z.number().int().min(1).max(50).optional(),
+});
+
 router.get('/status', asyncHandler(async (req, res) => {
   // Optional ?mode= override lets the Image Gen page probe a specific
   // backend (e.g. when the user flips the per-render chip to Codex but
@@ -158,6 +169,12 @@ router.get('/status', asyncHandler(async (req, res) => {
 
 router.get('/active', asyncHandler(async (_req, res) => {
   res.json({ activeJob: await imageGen.getActiveJob() });
+}));
+
+// SynthID-defeat regen availability (issue #912). Drives whether the lightbox
+// shows the "Regenerate" action — it's hardware-gated on a local FLUX runner.
+router.get('/regen/availability', asyncHandler(async (_req, res) => {
+  res.json(await getRegenAvailability());
 }));
 
 // Shape returned for any image-gen job that goes through the mediaJobQueue
@@ -603,6 +620,46 @@ router.post('/:filename/clean', asyncHandler(async (req, res) => {
     cleanLevel: 'aggressive',
     c2paStripped: result.c2paStripped,
   });
+}));
+
+// SynthID-defeat regeneration (issue #912). Round-trips an existing gallery
+// image through local FLUX img2img at low–moderate denoise so the per-pixel
+// watermark is overwritten by fresh sampling — the only honest defeat path
+// (the lossless clean above can't touch SynthID). Post-hoc + history-only:
+// enqueues a normal local image job (GPU lane) using the source's own prompt;
+// the new render lands in the gallery as a variant of the source. Hardware-
+// gated — 400s with an actionable message when no local FLUX runner exists.
+router.post('/:filename/regenerate', asyncHandler(async (req, res) => {
+  const filename = req.params.filename;
+  local.assertGalleryFilename(filename);
+  const body = validateRequest(regenerateSchema, req.body || {});
+
+  const sourceAbsPath = resolveGalleryImage(filename);
+  if (!sourceAbsPath) {
+    throw new ServerError('Image not found', { status: 404, code: 'NOT_FOUND' });
+  }
+  const { metadata: sourceMeta } = await local.readImageSidecar(filename);
+
+  const backend = await resolveRegenBackend({ sourceModelId: sourceMeta.modelId });
+  if (!backend.available) {
+    throw new ServerError(backend.reason, { status: 400, code: 'REGEN_BACKEND_UNAVAILABLE' });
+  }
+
+  const sourceDims = await readImageDimensions(sourceAbsPath);
+  const strength = body.strength ?? DEFAULT_REGEN_STRENGTH;
+  const params = buildRegenParams({
+    filename,
+    sourceAbsPath,
+    sourceMeta,
+    sourceDims,
+    model: backend.model,
+    pythonPath: backend.pythonPath,
+    strength,
+    steps: body.steps,
+  });
+  const queued = enqueueJob({ kind: 'image', params });
+  console.log(`♻️ Regenerating ${filename} via ${backend.model.id} (strength=${strength}) → job ${queued.jobId.slice(0, 8)}`);
+  return res.json(queuedImageResponse({ ...queued, mode: IMAGE_GEN_MODE.LOCAL, model: backend.model.id }));
 }));
 
 // Add the cleaned-image filename to every collection that already contains

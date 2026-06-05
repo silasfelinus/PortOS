@@ -26,6 +26,18 @@ export const cleanGalleryImage = (filename) => request(`/image-gen/${encodeURICo
   method: 'POST',
   body: JSON.stringify({}),
 });
+// SynthID-defeat regen (issue #912). Enqueues a local-FLUX img2img round-trip
+// of a gallery image; returns the queue ack ({ jobId, position, ... }) — the
+// finished render lands in the gallery via the normal queue-completion refresh.
+// `silent` so the lightbox owns its own error toast (single-layer rule).
+export const regenerateGalleryImage = (filename, { strength, steps } = {}) =>
+  request(`/image-gen/${encodeURIComponent(filename)}/regenerate`, {
+    method: 'POST',
+    body: JSON.stringify({ ...(strength != null ? { strength } : {}), ...(steps != null ? { steps } : {}) }),
+    silent: true,
+  });
+// Whether the local FLUX regen backend is installed (hardware gate). `{ available, modelId, reason }`.
+export const getRegenAvailability = () => request('/image-gen/regen/availability', { silent: true });
 
 // HuggingFace token (gated local Flux models). Stored in settings.imageGen.hfToken;
 // reads fall back to HF_TOKEN env var and then ~/.cache/huggingface/token.

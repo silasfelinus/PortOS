@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  X, Copy, Sparkles, Film, Image as ImageIcon, Download, Eraser,
+  X, Copy, Sparkles, Film, Image as ImageIcon, Download, Eraser, Wand2,
   ChevronLeft, ChevronRight, Maximize2, Minimize2, Star,
 } from 'lucide-react';
 import PromptRefineModal from './PromptRefineModal';
@@ -72,6 +72,8 @@ export default function MediaLightbox({
   onSendToVideo,
   onContinue,
   onClean,
+  onRegenerate,
+  regenAvailable = false,
   onPrevious,
   onNext,
   hasPrevious = false,
@@ -313,6 +315,8 @@ export default function MediaLightbox({
             onSendToVideo={onSendToVideo}
             onContinue={onContinue}
             onClean={onClean}
+            onRegenerate={onRegenerate}
+            regenAvailable={regenAvailable}
             copy={copy}
             onRefine={() => setRefineOpen(true)}
             annotation={annotation}
@@ -354,13 +358,14 @@ function PeerNotes({ others }) {
 
 function SettingsPane({
   item, meta, isVideo,
-  onClose, onRemix, onSendToVideo, onContinue, onClean,
+  onClose, onRemix, onSendToVideo, onContinue, onClean, onRegenerate, regenAvailable,
   copy, onRefine,
   annotation, onAnnotationChange,
   variantGroup, onSelectVariant,
 }) {
   const asideClasses = 'md:w-80 lg:w-96 shrink-0 flex flex-col border-t md:border-t-0 md:border-l border-port-border max-h-[40vh] md:max-h-[92vh]';
   const [cleaning, setCleaning] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
   const starred = !!annotation?.starred;
   const closeThenRun = (handler) => {
     onClose?.();
@@ -605,6 +610,31 @@ function SettingsPane({
             className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-port-warning/80 text-white hover:opacity-90 rounded disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Eraser className="w-3.5 h-3.5" /> {cleaning ? 'Cleaning…' : 'Clean'}
+          </button>
+        )}
+        {!isVideo && onRegenerate && regenAvailable && (
+          <button
+            type="button"
+            disabled={regenerating}
+            onClick={async () => {
+              if (regenerating) return;
+              setRegenerating(true);
+              let ok = false;
+              try {
+                await onRegenerate(item);
+                ok = true;
+              } catch {
+                // Caller toasts its own error; stay open so the user can retry.
+              } finally {
+                setRegenerating(false);
+              }
+              if (ok) onClose();
+            }}
+            title="Regenerate through a local FLUX model (img2img) to overwrite SynthID watermarking. Creates a new variant; the original is kept."
+            aria-label="Regenerate image to defeat SynthID watermark"
+            className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-port-accent/80 text-white hover:opacity-90 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Wand2 className="w-3.5 h-3.5" /> {regenerating ? 'Queuing…' : 'Regenerate'}
           </button>
         )}
         {isVideo && onContinue && (
