@@ -224,3 +224,26 @@ describe('dumpPostgres status classification', () => {
     expect(result.tableCount).toBe(2);
   });
 });
+
+describe('runBackup pg status propagation', () => {
+  let backup;
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.resetModules();
+  });
+
+  it('maps dumpPostgres failed -> overall status degraded', async () => {
+    const { backupStatusForPg } = await import('./backup.js');
+    expect(backupStatusForPg({ status: 'failed', reason: 'dump_error' })).toBe('degraded');
+  });
+
+  it('maps dumpPostgres skipped -> overall status ok', async () => {
+    const { backupStatusForPg } = await import('./backup.js');
+    expect(backupStatusForPg({ status: 'skipped', reason: 'not_configured' })).toBe('ok');
+  });
+
+  it('maps dumpPostgres ok -> overall status ok', async () => {
+    const { backupStatusForPg } = await import('./backup.js');
+    expect(backupStatusForPg({ status: 'ok', sizeBytes: 10, tableCount: 1 })).toBe('ok');
+  });
+});

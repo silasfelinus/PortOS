@@ -13,6 +13,8 @@ import { join, resolve, relative, isAbsolute } from 'path';
 import { PATHS, ensureDir, readJSONFile, sha256File } from '../lib/fileUtils.js';
 import { getEvent } from './eventScheduler.js';
 import { checkHealth } from '../lib/db.js';
+import { emitErrorEvent, ServerError } from '../lib/errorHandler.js';
+import { getIo } from './socket.js';
 
 // Module-level state
 let isRunning = false;
@@ -57,6 +59,17 @@ const DEFAULT_STATE = {
   filesChanged: 0,
   error: null
 };
+
+/**
+ * Map a dumpPostgres result to the overall backup status. Only a *failed*
+ * dump (PG configured but the dump errored) degrades the backup; a *skipped*
+ * dump (no PG — file mode) is benign and stays 'ok'.
+ * @param {{status: string}} pgResult
+ * @returns {'ok'|'degraded'}
+ */
+export function backupStatusForPg(pgResult) {
+  return pgResult?.status === 'failed' ? 'degraded' : 'ok';
+}
 
 // =============================================================================
 // INTERNAL HELPERS
@@ -178,24 +191,39 @@ export async function runBackup(destPath, io = null, { excludePaths = [], disabl
   changedFiles = await runRsync(PATHS.data, dataDestDir, excludeFlags).catch(fail);
   console.log(`💾 Backup rsync complete: ${changedFiles.length} files changed (exit 0)`);
 
-  // Dump PostgreSQL alongside the file backup
+  // Dump PostgreSQL alongside the file backup. Result is NO LONGER swallowed —
+  // a configured-but-failed dump must degrade the backup and alert the user.
   const pgDumpPath = join(snapshotDir, 'portos-db.sql');
-  const pgResult = await dumpPostgres(pgDumpPath).catch(() => ({ success: false }));
+  const pgResult = await dumpPostgres(pgDumpPath);
 
-  manifest = await generateManifest(dataDestDir, join(snapshotDir, 'manifest.json')).catch(fail);
+  manifest = await generateManifest(dataDestDir, join(snapshotDir, 'manifest.json'), pgDumpPath).catch(fail);
 
+  const status = backupStatusForPg(pgResult);
   const lastRun = new Date().toISOString();
   await saveState({
     lastRun,
     lastSnapshotId: snapshotId,
-    status: 'ok',
+    status,
     filesChanged: changedFiles.length,
-    error: null
+    pgBackup: pgResult,
+    error: pgResult.status === 'failed' ? `DB dump ${pgResult.reason}` : null
   }).catch(fail);
 
-  if (io) io.emit('backup:completed', { snapshotId, filesChanged: changedFiles.length });
+  if (io) io.emit('backup:completed', { snapshotId, filesChanged: changedFiles.length, status, pgBackup: pgResult });
 
-  return complete({ snapshotId, filesChanged: changedFiles.length, lastRun, manifest, pgDump: pgResult });
+  // Loud-on-failure: surface a degraded DB dump as a warning toast, even on
+  // unattended scheduled runs (which pass io=null) via the module-level io.
+  if (pgResult.status === 'failed') {
+    const errIo = io || getIo();
+    if (errIo) {
+      emitErrorEvent(errIo, new ServerError(
+        `Backup DB dump failed: ${pgResult.reason}`,
+        { status: 500, code: 'BACKUP_DB_DUMP_FAILED', severity: 'warning' }
+      ));
+    }
+  }
+
+  return complete({ snapshotId, filesChanged: changedFiles.length, status, lastRun, manifest, pgBackup: pgResult });
 }
 
 /**
@@ -268,11 +296,14 @@ export async function dumpPostgres(outputPath) {
 }
 
 /**
- * Generate a SHA-256 manifest for all files in snapshotDataDir.
+ * Generate a SHA-256 manifest for all files in snapshotDataDir, plus the
+ * sibling pg dump (which lives outside the data/ tree). Hashing the dump means
+ * a truncated/corrupt portos-db.sql is detectable, not silently trusted.
  * @param {string} snapshotDataDir - Directory to hash
  * @param {string} manifestPath - Path to write manifest.json
+ * @param {string|null} [pgDumpPath=null] - Sibling SQL dump to also hash
  */
-export async function generateManifest(snapshotDataDir, manifestPath) {
+export async function generateManifest(snapshotDataDir, manifestPath, pgDumpPath = null) {
   const entries = await readdir(snapshotDataDir, { recursive: true }).catch(() => []);
   const files = {};
 
@@ -281,6 +312,13 @@ export async function generateManifest(snapshotDataDir, manifestPath) {
     const info = await stat(filePath).catch(() => null);
     if (!info || !info.isFile()) continue;
     files[entry] = await sha256File(filePath);
+  }
+
+  if (pgDumpPath) {
+    const dumpInfo = await stat(pgDumpPath).catch(() => null);
+    if (dumpInfo?.isFile()) {
+      files['../portos-db.sql'] = await sha256File(pgDumpPath);
+    }
   }
 
   const manifest = {
