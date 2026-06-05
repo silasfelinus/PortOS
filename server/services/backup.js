@@ -400,6 +400,76 @@ export async function restoreSnapshot(destPath, snapshotId, { dryRun = true, sub
 }
 
 /**
+ * Restore the PostgreSQL dump from a snapshot. Dry-run by default — mirrors
+ * restoreSnapshot's safety default. A real restore pipes the snapshot's
+ * portos-db.sql into psql; the dump was written with --no-owner --no-acl so
+ * it replays cleanly.
+ *   { status: 'ok', dryRun, sizeBytes, tableCount }   (dry-run or applied)
+ *   { status: 'skipped', reason: 'no_dump' }           (no sql file in snapshot)
+ *   { status: 'skipped', reason: 'not_configured' }    (real restore, PG unreachable)
+ *   { status: 'failed', reason: 'restore_error', error }
+ * @param {string} destPath - Backup destination root
+ * @param {string} snapshotId
+ * @param {{dryRun?: boolean}} [options]
+ */
+export async function restorePostgres(destPath, snapshotId, { dryRun = true } = {}) {
+  if (!snapshotId || !/^[\w\-.:T]+$/.test(snapshotId)) {
+    throw new Error(`Invalid snapshotId: ${snapshotId}`);
+  }
+  const snapshotsRoot = resolve(join(destPath, 'snapshots', MACHINE_HOST));
+  const sqlPath = join(snapshotsRoot, snapshotId, 'portos-db.sql');
+  const rel = relative(snapshotsRoot, resolve(sqlPath));
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error(`Path traversal detected for snapshotId: ${snapshotId}`);
+  }
+
+  const info = await stat(sqlPath).catch(() => null);
+  if (!info || !info.isFile?.()) {
+    return { status: 'skipped', reason: 'no_dump' };
+  }
+  const sql = await readFile(sqlPath, 'utf-8').catch(() => '');
+  const tableCount = (sql.match(/^CREATE TABLE /gm) || []).length;
+
+  if (dryRun) {
+    return { status: 'ok', dryRun: true, sizeBytes: info.size, tableCount };
+  }
+
+  // Never half-restore: require a reachable DB before replaying.
+  const health = await checkHealth();
+  if (!health.connected) {
+    return { status: 'skipped', reason: 'not_configured' };
+  }
+
+  const pgHost = process.env.PGHOST || 'localhost';
+  const pgPort = process.env.PGPORT || '5432';
+  const pgDb = process.env.PGDATABASE || 'portos';
+  const pgUser = process.env.PGUSER || 'portos';
+
+  return new Promise((resolveP) => {
+    const proc = spawn('psql', [
+      '-h', pgHost, '-p', pgPort, '-U', pgUser, '-d', pgDb, '-f', sqlPath
+    ], { shell: false, env: { ...process.env, PGPASSWORD: process.env.PGPASSWORD || 'portos' } });
+
+    let stderr = '';
+    proc.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        console.log(`💾 psql restore complete from snapshot ${snapshotId}: ${tableCount} tables`);
+        resolveP({ status: 'ok', dryRun: false, sizeBytes: info.size, tableCount });
+      } else {
+        console.warn(`⚠️ psql restore failed (code ${code}): ${stderr.trim()}`);
+        resolveP({ status: 'failed', reason: 'restore_error', error: stderr.trim() });
+      }
+    });
+    proc.on('error', (err) => {
+      console.warn(`⚠️ psql not available: ${err.message}`);
+      resolveP({ status: 'failed', reason: 'restore_error', error: err.message });
+    });
+  });
+}
+
+/**
  * Get current backup state from disk.
  */
 export async function getState() {

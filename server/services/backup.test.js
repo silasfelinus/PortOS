@@ -225,6 +225,45 @@ describe('dumpPostgres status classification', () => {
   });
 });
 
+describe('restorePostgres', () => {
+  let restorePostgres;
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    ({ restorePostgres } = await import('./backup.js'));
+  });
+
+  it('rejects a path-traversal snapshotId', async () => {
+    await expect(restorePostgres('/dest', '../../etc', { dryRun: true }))
+      .rejects.toThrow(/Invalid snapshotId/);
+  });
+
+  it('returns skipped/no_dump when the sql file is absent', async () => {
+    vi.spyOn(fs, 'stat').mockRejectedValue(new Error('ENOENT'));
+    const result = await restorePostgres('/dest', '2026-06-05T00-00-00', { dryRun: true });
+    expect(result).toEqual({ status: 'skipped', reason: 'no_dump' });
+  });
+
+  it('dry-run reports size/tableCount without spawning psql', async () => {
+    vi.spyOn(fs, 'stat').mockResolvedValue({ size: 4096, isFile: () => true });
+    vi.spyOn(fs, 'readFile').mockResolvedValue('CREATE TABLE a (...);\n');
+    const result = await restorePostgres('/dest', '2026-06-05T00-00-00', { dryRun: true });
+    expect(result.status).toBe('ok');
+    expect(result.dryRun).toBe(true);
+    expect(result.sizeBytes).toBe(4096);
+    expect(result.tableCount).toBe(1);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('refuses a real restore when PG is not connected', async () => {
+    vi.spyOn(fs, 'stat').mockResolvedValue({ size: 4096, isFile: () => true });
+    vi.spyOn(fs, 'readFile').mockResolvedValue('CREATE TABLE a (...);\n');
+    checkHealth.mockResolvedValue({ connected: false, hasSchema: false });
+    const result = await restorePostgres('/dest', '2026-06-05T00-00-00', { dryRun: false });
+    expect(result).toEqual({ status: 'skipped', reason: 'not_configured' });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+});
+
 describe('runBackup pg status propagation', () => {
   let backup;
   beforeEach(async () => {
