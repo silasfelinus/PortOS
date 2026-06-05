@@ -318,10 +318,12 @@ const RUNNER_TO_BASE_MODELS = {
 };
 
 // Search Civitai for LoRA-family models targeting the given runner family.
-// Returns the raw `items` array from `/api/v1/models` (each entry has its
-// own `modelVersions[]` etc — let the suggestion service shape them).
-// fetchImpl is injectable for tests.
-export const searchCivitaiLoras = async ({ runnerFamily, limit = 12, sort = 'Most Downloaded', nsfw = false, apiKey, fetchImpl = fetch } = {}) => {
+// Returns `{ items, nextCursor }` — `items` is the raw array from
+// `/api/v1/models` (each entry has its own `modelVersions[]` etc — let the
+// suggestion service shape them); `nextCursor` is Civitai's cursor token for
+// the next page (null when exhausted). Pass `query` to filter by keyword and
+// `cursor` to page forward. fetchImpl is injectable for tests.
+export const searchCivitaiLoras = async ({ runnerFamily, limit = 12, sort = 'Most Downloaded', nsfw = false, query, cursor, apiKey, fetchImpl = fetch } = {}) => {
   const baseModels = RUNNER_TO_BASE_MODELS[runnerFamily];
   if (!baseModels) {
     throw new ServerError(`Unknown runner family for Civitai search: ${runnerFamily}`, { status: 400, code: 'CIVITAI_BAD_RUNNER' });
@@ -334,6 +336,13 @@ export const searchCivitaiLoras = async ({ runnerFamily, limit = 12, sort = 'Mos
   params.set('sort', sort);
   params.set('nsfw', String(!!nsfw));
   for (const bm of baseModels) params.append('baseModels', bm);
+  // `query` is Civitai's keyword search over model name/description. Trim and
+  // skip when blank so an empty box falls back to the plain "top" ranking.
+  const trimmedQuery = typeof query === 'string' ? query.trim() : '';
+  if (trimmedQuery) params.set('query', trimmedQuery);
+  // Cursor-based pagination — Civitai returns `metadata.nextCursor`; feed it
+  // back here to fetch the next page. Cursor is opaque (string or number).
+  if (cursor != null && cursor !== '') params.set('cursor', String(cursor));
   const url = `${CIVITAI_API}/models?${params.toString()}`;
   const res = await fetchImpl(url, { headers: { Accept: 'application/json', ...buildAuthHeaders(apiKey) } });
   if (!res.ok) {
@@ -346,7 +355,10 @@ export const searchCivitaiLoras = async ({ runnerFamily, limit = 12, sort = 'Mos
     throw new ServerError(`Civitai search failed: ${res.status}`, { status: 502, code: 'CIVITAI_SEARCH_FAILED' });
   }
   const body = await readResponseJson(res);
-  return Array.isArray(body?.items) ? body.items : [];
+  return {
+    items: Array.isArray(body?.items) ? body.items : [],
+    nextCursor: body?.metadata?.nextCursor ?? null,
+  };
 };
 
 // Pull a sample prompt from Civitai's preview image metadata. The `meta`
