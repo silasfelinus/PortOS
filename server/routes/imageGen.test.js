@@ -802,6 +802,18 @@ describe('Image Gen Routes', () => {
       expect(response.body.available).toBe(true);
       expect(typeof response.body.modelId).toBe('string');
     });
+
+    it('carries the strength slider bounds for the lightbox control', async () => {
+      const response = await request(app).get('/api/image-gen/regen/availability');
+      expect(typeof response.body.strengthMin).toBe('number');
+      expect(typeof response.body.strengthMax).toBe('number');
+      expect(typeof response.body.strengthDefault).toBe('number');
+      // Floor is a small positive value (strength 0 is the degenerate
+      // ignore-the-init-image case), and the default sits within the bounds.
+      expect(response.body.strengthMin).toBeGreaterThan(0);
+      expect(response.body.strengthDefault).toBeGreaterThanOrEqual(response.body.strengthMin);
+      expect(response.body.strengthDefault).toBeLessThanOrEqual(response.body.strengthMax);
+    });
   });
 
   describe('POST /api/image-gen/:filename/regenerate', () => {
