@@ -405,11 +405,10 @@ export function buildSidecarMeta({
 }
 
 export async function generateImage({ pythonPath, prompt, negativePrompt = '', modelId = 'dev', width = 1024, height = 1024, steps, guidance, seed, quantize = '8', loraFilenames = [], loraPaths = [], loraScales = [], initImagePath = null, initImageStrength = null, referenceImagePaths = [], referenceImageStrengths = [], jobId: providedJobId = null, cleanC2PA = false, denoise = false, regenOf = null, upscaleTo = null }) {
-  // A regen pass (issue #912) deliberately runs with an EMPTY prompt for
-  // minimal-mutation, watermark-overwriting img2img — so the usual
-  // prompt-required guard is waived when `regenOf` is set (the init image is
-  // what conditions the render, not text).
-  if (!regenOf && !prompt?.trim()) throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
+  // Empty prompt is allowed: img2img / edit / unconditional renders are driven
+  // by the init image (or run unconditionally), so text isn't required. The
+  // mflux/diffusers runners accept an empty `--prompt` — the regen pass (#912)
+  // has always relied on this for minimal-mutation, watermark-overwriting img2img.
   // Single-flight is enforced by the mediaJobQueue worker upstream. Direct
   // callers that bypass the queue must not run two concurrent renders — the
   // activeProcess handle below would be clobbered and cancel() would orphan

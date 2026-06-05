@@ -145,9 +145,6 @@ export async function generateImage({
   cleanC2PA = false,
   denoise = false,
 }) {
-  if (!prompt?.trim()) {
-    throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
-  }
   await ensureDir(PATHS.images);
 
   // Defense-in-depth: HTTP routes already resolve basenames to absolute paths,
@@ -156,6 +153,12 @@ export async function generateImage({
   const validInitImagePath = (initImagePath && typeof initImagePath === 'string')
     ? resolveGalleryImage(initImagePath)
     : null;
+
+  // An empty prompt is fine when editing an init image (the attached image is
+  // the instruction); a pure text-to-image codex render still needs a prompt.
+  if (!validInitImagePath && !prompt?.trim()) {
+    throw new ServerError('Prompt is required', { status: 400, code: 'VALIDATION_ERROR' });
+  }
 
   const jobId = providedJobId || randomUUID();
   const filename = `${jobId}.png`;
