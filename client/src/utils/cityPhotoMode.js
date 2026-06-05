@@ -42,8 +42,16 @@ export function cyclePreset(currentId, direction = 1) {
 // and `done` (true once settled) so the component can stop invalidating the demand loop.
 export const FLY_DURATION = 1.1;
 
+// Cap the per-step delta to a frame-sized maximum. In demand mode the loop sleeps while the scene
+// is frozen, so the FIRST frame after a freeze (e.g. when the user cycles presets) carries a
+// delta equal to the whole idle gap — often several seconds. Unclamped, that would complete the
+// fly in a single step and the camera would snap instead of animating. Clamping keeps every fly
+// smooth (~at least FLY_DURATION/MAX_FLY_DELTA frames) regardless of how long the scene was idle.
+export const MAX_FLY_DELTA = 1 / 30; // seconds — one 30fps frame
+
 export function stepFly(progress, deltaSeconds) {
-  const safeDelta = Number.isFinite(deltaSeconds) && deltaSeconds > 0 ? deltaSeconds : 0;
+  const rawDelta = Number.isFinite(deltaSeconds) && deltaSeconds > 0 ? deltaSeconds : 0;
+  const safeDelta = Math.min(rawDelta, MAX_FLY_DELTA);
   const next = Math.min(1, (Number.isFinite(progress) ? progress : 1) + safeDelta / FLY_DURATION);
   return { progress: next, t: smoothstep(next), done: next >= 1 };
 }
