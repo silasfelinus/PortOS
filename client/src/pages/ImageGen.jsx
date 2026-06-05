@@ -312,10 +312,13 @@ export default function ImageGen() {
     }).catch(() => {});
   }, [refreshRegenAvailability]);
 
-  // Re-seed the cleaner checkboxes when the user manually picks a different
-  // backend chip — without this, switching external→local would leave the
-  // external values in the form.
-  const handleSelectMode = useCallback((next) => {
+  // Switch the active backend AND re-seed the cleaner checkboxes from the
+  // target backend's saved defaults — without the reseed, switching
+  // external→local would leave the external cleaner values in the form. Shared
+  // by the manual chip, the deferred i2i nudge, and ensureI2iCapableMode so an
+  // auto-switch queues with the right per-backend defaults too (not just the
+  // chip path).
+  const switchMode = useCallback((next) => {
     setSelectedMode(next);
     setCleanC2PA(savedCleanC2PAByMode[next] === true);
     setDenoise(savedDenoiseByMode[next] === true);
@@ -399,9 +402,9 @@ export default function ImageGen() {
     if (i2iCapable) { wantI2iModeRef.current = false; return; }
     if (!availableBackends.length) return; // wait for load
     const mode = pickI2iMode(availableBackends);
-    if (mode) setSelectedMode(mode);
+    if (mode) switchMode(mode);
     wantI2iModeRef.current = false;
-  }, [availableBackends, i2iCapable]);
+  }, [availableBackends, i2iCapable, switchMode]);
 
   // ?lora=<filename> preselects a LoRA when the user clicks "Test" on the
   // /media/loras manager page. Defers until availableLoras has loaded so the
@@ -978,9 +981,9 @@ export default function ImageGen() {
   const ensureI2iCapableMode = useCallback(() => {
     if (i2iCapable) return;
     const mode = pickI2iMode(availableBackends);
-    if (mode) setSelectedMode(mode);
+    if (mode) switchMode(mode);
     else wantI2iModeRef.current = true;
-  }, [i2iCapable, availableBackends]);
+  }, [i2iCapable, availableBackends, switchMode]);
 
   // Send to image-to-image (in-page): reuse the remix settings AND queue this
   // image as the i2i source on an i2i-capable backend.
@@ -1026,7 +1029,7 @@ export default function ImageGen() {
             <BackendChipStrip
               availableBackends={availableBackends}
               value={effectiveMode}
-              onChange={handleSelectMode}
+              onChange={switchMode}
               disabled={statusLoading}
               loadingId={statusLoading ? effectiveMode : null}
               titlePrefix="Use"

@@ -98,6 +98,13 @@ export default function useMediaPreviewActions({ onCleanComplete = null } = {}) 
   const handleSendToImage = useCallback((item) => {
     if (!item?.filename || item.kind === 'video') return;
     const params = buildImageGenParams(item);
+    // Drop modelId: i2i is image-driven and the page may auto-switch the user to
+    // a different (i2i-capable) backend, so the source's model — often a
+    // provider-specific id like `gpt-image-2` or a checkpoint the target backend
+    // lacks — would poison the form and fail on Generate. Let the target keep its
+    // own current/default model. (The in-page handler routes through handleRemix,
+    // which already guards modelId against the loaded model list.)
+    params.delete('modelId');
     params.set('initImageFile', item.filename);
     navigate(`/media/image?${params}`);
   }, [navigate]);
