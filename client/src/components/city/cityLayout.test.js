@@ -44,6 +44,20 @@ describe('computeCityLayout', () => {
     expect(pos.get('y')).toMatchObject({ x: 6, z: 10, district: 'warehouse' });
   });
 
+  it('never stacks two downtown buildings when clearing the core plaza', () => {
+    // 9 apps → 3×3 grid: the centre cell sits on the core and must move, but the
+    // front-edge slot is already taken, so it must dodge to a free ring slot rather
+    // than stack. Assert every resolved position is unique.
+    const pos = computeCityLayout(Array.from({ length: 9 }, (_, i) => online(String(i))));
+    const seen = new Set();
+    for (const p of pos.values()) {
+      const key = `${Math.round(p.x)},${Math.round(p.z)}`;
+      expect(seen.has(key)).toBe(false);
+      seen.add(key);
+    }
+    expect(seen.size).toBe(9);
+  });
+
   it('sorts active apps online-first so status drives grid order', () => {
     const pos = computeCityLayout([
       { id: 'stopped', overallStatus: 'stopped', archived: false },
