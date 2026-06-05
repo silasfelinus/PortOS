@@ -30,6 +30,7 @@ import {
 } from '../services/localLlm.js'
 import { runLocalLlmTest, compareLocalLlmModels } from '../services/localLlmPlayground.js'
 import { abortSignalFromResponse } from '../lib/requestAbort.js'
+import { awaitWritableDrain } from '../lib/streamBackpressure.js'
 import { getLoadedModels as getLoadedOllamaModels, unloadModel as unloadOllamaModel } from '../services/ollamaManager.js'
 
 const router = Router()
@@ -252,27 +253,17 @@ router.post('/test/stream', asyncHandler(async (req, res) => {
   // here. A write after the client disconnected can throw ERR_STREAM_WRITE_AFTER_END;
   // treat any failure as a dead socket and drop the frame.
   //
-  // Honour socket backpressure (mirrors ask.js): when `res.write` returns false the
-  // kernel/send buffer is full, so await the next `drain` (or `close`) before letting
-  // the producer queue more NDJSON. A fast local model writing to a slow reader would
-  // otherwise buffer the whole response in memory. The producer awaits `onToken`, so
-  // returning this promise actually pauses the upstream read until the socket catches
-  // up. Both listeners are torn down on settle so a disconnect mid-drain can't leak them.
+  // Honour socket backpressure: when `res.write` returns false the kernel/send
+  // buffer is full, so await the next `drain` before letting the producer queue
+  // more NDJSON. A fast local model writing to a slow reader would otherwise
+  // buffer the whole response in memory. The producer awaits `onToken`, so
+  // returning this promise actually pauses the upstream read until the socket
+  // catches up. (`awaitWritableDrain` is the same helper routes/ask.js uses.)
   const write = async (frame) => {
     if (res.writableEnded || res.destroyed) return
     let writeOk
     try { writeOk = res.write(`${JSON.stringify(frame)}\n`) } catch { return /* client gone */ }
-    if (!writeOk) {
-      await new Promise((resolve) => {
-        const settle = () => {
-          res.off('drain', settle)
-          res.off('close', settle)
-          resolve()
-        }
-        res.once('drain', settle)
-        res.once('close', settle)
-      })
-    }
+    if (!writeOk) await awaitWritableDrain(res)
   }
 
   // `runLocalLlmTest` resolves for in-stream failures, but can still THROW before
