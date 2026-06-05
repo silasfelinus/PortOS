@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ServerError } from './errorHandler.js';
+import { partialWithoutDefaults } from './zodCompat.js';
 import { ASPECT_RATIOS, QUALITIES, PROJECT_STATUSES, SCENE_STATUSES } from './creativeDirectorPresets.js';
 import { WORK_KINDS, WORK_STATUSES, ANALYSIS_KINDS } from './writersRoomPresets.js';
 import { ALL_STYLE_IDS, STYLE_ID } from './writersRoomStylePresets.js';
@@ -96,7 +97,7 @@ export const agentSchema = z.object({
   aiConfig: agentAiConfigSchema
 });
 
-export const agentUpdateSchema = agentSchema.partial();
+export const agentUpdateSchema = partialWithoutDefaults(agentSchema);
 
 // =============================================================================
 // PLATFORM ACCOUNT SCHEMAS
@@ -120,7 +121,7 @@ export const platformAccountSchema = z.object({
   platformData: z.record(z.unknown()).optional().default({})
 });
 
-export const platformAccountUpdateSchema = platformAccountSchema.partial();
+export const platformAccountUpdateSchema = partialWithoutDefaults(platformAccountSchema);
 
 // Account registration (when creating new Moltbook account)
 export const accountRegistrationSchema = z.object({
@@ -178,7 +179,7 @@ export const automationScheduleSchema = z.object({
   enabled: z.boolean().default(true)
 });
 
-export const automationScheduleUpdateSchema = automationScheduleSchema.partial();
+export const automationScheduleUpdateSchema = partialWithoutDefaults(automationScheduleSchema);
 
 // =============================================================================
 // EXISTING SCHEMAS
@@ -316,7 +317,7 @@ export const referenceRepoUpdateSchema = z.object({
 // Partial schema for updates. referenceRepos is intentionally absent
 // from appSchema (see comment there) so it can't sneak in via PUT
 // either — all ref CRUD goes through /api/apps/:appId/reference-repos.
-export const appUpdateSchema = appSchema.partial();
+export const appUpdateSchema = partialWithoutDefaults(appSchema);
 
 // Provider schema
 export const providerSchema = z.object({
@@ -368,7 +369,7 @@ export const socialAccountSchema = z.object({
   notes: z.string().max(2000).optional().default('')
 });
 
-export const socialAccountUpdateSchema = socialAccountSchema.partial();
+export const socialAccountUpdateSchema = partialWithoutDefaults(socialAccountSchema);
 
 // =============================================================================
 // AGENT TOOLS SCHEMAS
@@ -876,7 +877,10 @@ export const writersRoomWorkUpdateSchema = z.object({
   status: writersRoomWorkStatusSchema.optional(),
   folderId: wrIdNullable.optional(),
   imageStyle: writersRoomImageStyleSchema.optional(),
-  liveMode: writersRoomLiveModeSchema.partial().optional(),
+  // partialWithoutDefaults (not .partial()) so a single-knob PATCH doesn't inject
+  // the other knobs' defaults and clobber their stored values (Zod 4 .partial()
+  // keeps inner defaults — see zodCompat.js). The service field-merges each knob.
+  liveMode: partialWithoutDefaults(writersRoomLiveModeSchema).optional(),
 }).strict();
 
 // Cursor-context payload for the live continuation suggest route. The three
@@ -1058,11 +1062,14 @@ export const featureAgentSchema = z.object({
   description: z.string().min(1).max(2000),
   persona: z.string().max(5000).optional().default(''),
   appId: z.string().min(1),
+  // .prefault({}) (not .default({})) so the nested field defaults still apply
+  // when `schedule` is omitted — Zod 4's .default() no longer re-parses its
+  // value, so a bare .default({}) would yield {} instead of the filled object.
   schedule: z.object({
     mode: featureAgentScheduleModeSchema.default('continuous'),
     intervalMs: z.number().int().min(30000).optional(),
     pauseBetweenRunsMs: z.number().int().min(0).default(60000)
-  }).default({}),
+  }).prefault({}),
   goals: z.array(z.string()).default([]),
   constraints: z.array(z.string()).default([]),
   providerId: z.string().optional().nullable(),
@@ -1101,7 +1108,7 @@ export function validate(schema, data) {
   }
   return {
     success: false,
-    errors: result.error.errors.map(e => ({
+    errors: result.error.issues.map(e => ({
       path: e.path.join('.'),
       message: e.message
     }))
@@ -1220,7 +1227,7 @@ export const localLlmCompareSchema = z.object({
 export function validateRequest(schema, data) {
   const result = schema.safeParse(data);
   if (result.success) return result.data;
-  const errors = result.error.errors.map(e => ({
+  const errors = result.error.issues.map(e => ({
     path: e.path.join('.'),
     message: e.message
   }));

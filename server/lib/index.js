@@ -170,6 +170,7 @@ export * from './objects.js';
 export * from './singleFlight.js';
 export * from './sseUtils.js';
 export * from './uuid.js';
+export * from './zodCompat.js';
 
 // === Test support (consumed by *.test.js files) ===
 export * from './mockPathsDataRoot.js';

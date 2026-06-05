@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { partialWithoutDefaults } from './zodCompat.js';
 
 // =============================================================================
 // LIFE CALENDAR ACTIVITIES
@@ -11,7 +12,7 @@ export const activitySchema = z.object({
   icon: z.string().max(50).optional().default('circle'),
 });
 
-export const activityUpdateSchema = activitySchema.partial();
+export const activityUpdateSchema = partialWithoutDefaults(activitySchema);
 
 // =============================================================================
 // LIFE CALENDAR EVENTS
@@ -28,7 +29,7 @@ export const lifeEventSchema = z.object({
   enabled: z.boolean().optional().default(true),
 });
 
-export const lifeEventUpdateSchema = lifeEventSchema.partial();
+export const lifeEventUpdateSchema = partialWithoutDefaults(lifeEventSchema);
 
 // =============================================================================
 // MEATSPACE CONFIG & LIFESTYLE
@@ -56,7 +57,7 @@ export const configSchema = z.object({
 });
 
 export const configUpdateSchema = configSchema.partial();
-export const lifestyleUpdateSchema = lifestyleSchema.partial();
+export const lifestyleUpdateSchema = partialWithoutDefaults(lifestyleSchema);
 
 // =============================================================================
 // ALCOHOL
