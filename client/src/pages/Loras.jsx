@@ -382,6 +382,7 @@ function SuggestionsSection({ label, hint, cards, alwaysShow = false, runner = n
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={`Search ${RUNNER_LABEL[runner] || runner} LoRAs on Civitai…`}
+              aria-label={`Search ${RUNNER_LABEL[runner] || runner} LoRAs on Civitai`}
               className="w-full bg-port-bg border border-port-border rounded pl-8 pr-3 py-1.5 text-xs text-gray-200 placeholder:text-gray-600"
             />
           </div>
