@@ -53,7 +53,11 @@ export const computeCityLayout = (apps) => {
   // Warehouse district (archived apps): X-centered grid offset along +Z from downtown.
   if (archived.length > 0) {
     const archiveCols = autoColumns(archived.length);
-    const warehouseZ = activeRows * spacing / 2 + DISTRICT_PARAMS.gap;
+    // Floor the downtown row count to 1 so an all-archived install (no active
+    // apps → activeRows 0/NaN) still offsets the warehouse clear of the core
+    // plaza instead of collapsing it onto the origin.
+    const downtownRows = activeRows || 1;
+    const warehouseZ = downtownRows * spacing / 2 + DISTRICT_PARAMS.gap;
 
     archived.forEach((app, i) => {
       const [x, , z] = gridIndexToPosition(i, {
