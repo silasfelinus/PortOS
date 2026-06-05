@@ -1,11 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// applyOrganizationSuggestion resolves the `__new_apex__` sentinel CLIENT-SIDE:
-// it creates the new apex first, rewrites every `__new_apex__` parent ref to the
-// real id, creates sub-apex goals under it, THEN calls the server. So the server's
-// applyGoalOrganization never receives a raw sentinel — its goalMap.has() skip is
-// correct defensive behavior, not a bug. These tests pin that round-trip so a
-// future refactor of this file can't silently regress it (see issue #895).
+// For a VALID new-apex suggestion, applyOrganizationSuggestion resolves the
+// `__new_apex__` sentinel CLIENT-SIDE: it creates the new apex first, rewrites every
+// `__new_apex__` parent ref to the real id, creates sub-apex goals under it, THEN
+// calls the server — so no raw sentinel reaches applyGoalOrganization. The rewrite
+// only runs once an apex id is resolved, so a malformed/drift suggestion that carries
+// `__new_apex__` with no resolvable apex still passes the sentinel through; the
+// server's goalMap.has() skip is the defensive net for that case (correct behavior,
+// not a bug). These tests pin both paths so a future refactor of this file can't
+// silently regress the round-trip (see issue #895).
 vi.mock('../../services/api', () => ({
   createGoal: vi.fn(),
   applyGoalOrganization: vi.fn(() => Promise.resolve(true)),
@@ -94,10 +97,32 @@ describe('applyOrganizationSuggestion — __new_apex__ round-trip', () => {
 
     await applyOrganizationSuggestion(suggestion);
 
-    // First createGoal is the apex; the sub-apex create must be parented under the real apex id
+    // The apex is created first (so its id is available to parent the sub-apex)...
+    expect(api.createGoal.mock.calls[0][0]).toMatchObject({ title: 'Apex', goalType: 'apex' });
+    // ...then the sub-apex create is parented under the real apex id
     expect(api.createGoal).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'Health', goalType: 'sub-apex', parentId: 'apex-real-3' })
     );
+  });
+
+  it('passes the raw sentinel through (server-side skip is the safety net) when no apex resolves', async () => {
+    // Drift case: organization carries __new_apex__ but the suggestion gives no
+    // resolvable apex (no existingId, no suggestedTitle), so the client rewrite is
+    // skipped. The sentinel reaches the server, where goalMap.has('__new_apex__') is
+    // false and the item is silently skipped — the defensive behavior issue #895 noted.
+    const suggestion = {
+      apexGoal: { existingId: null, suggestedTitle: null, suggestedDescription: null },
+      organization: [{ id: 'g-1', goalType: 'sub-apex', suggestedParentId: '__new_apex__' }],
+      suggestedSubApex: [],
+    };
+
+    const ok = await applyOrganizationSuggestion(suggestion);
+    expect(ok).toBe(true);
+    expect(api.createGoal).not.toHaveBeenCalled();
+
+    // No apex resolved → no client-side rewrite → the raw sentinel is still in the payload
+    const sentOrg = api.applyGoalOrganization.mock.calls[0][0];
+    expect(sentOrg[0].suggestedParentId).toBe('__new_apex__');
   });
 
   it('does not mutate the caller-provided organization array', async () => {
