@@ -45,7 +45,7 @@ grep -i "what you want to do" client/src/lib/README.md
 |---|---|
 | `pipelineImageDefaults.js` | Pipeline comic-page image-gen defaults + settings reader. |
 | `wrImageDefaults.js` | Writers Room per-scene image-gen defaults + style discriminators. |
-| `imageGenBackends.js` | `IMAGE_GEN_MODE` enum (local / codex / external) + metadata. |
+| `imageGenBackends.js` | `IMAGE_GEN_MODE` enum (local / codex / external) + metadata; `deriveAvailableBackends`; `I2I_CAPABLE_MODES` / `isI2iCapableMode(mode)` / `pickI2iMode(backends)` — image-to-image capability gating + best-backend selection. |
 | `imageGenDefaults.js` | Shared `DEFAULT_NEGATIVE_PROMPT` used by the Image Gen form and quick-submit entry points. Mirrors server-side default. |
 | `imageGenResolutions.js` | Shared resolution presets for image generation. |
 | `videoGenResolutions.js` | Shared resolution presets for video generation (companion to image side; LTX-2 latent-friendly sizes). |
@@ -73,6 +73,7 @@ grep -i "what you want to do" client/src/lib/README.md
 | `localLlmTargetKey.js` | `localLlmTargetKey({ backend, modelId })` — stable string key for a local-LLM compare target. Shared by the LocalLlmTab checkbox grid and the LocalLlmPlayground compare URL so a delimiter change can't desync the round-trip. |
 | `loopbackHost.js` | `isLoopbackHost(host)` / `isLoopbackOrigin()` / `describeMicAvailability()` — Secure Context / loopback-origin heuristics. Use these in any new mic, clipboard, or `getUserMedia`-gated surface; matches the full `127.0.0.0/8` range, IPv6 `::1`, and the browser-bracketed `[::1]` form. |
 | `mediaNavigation.js` | `getAdjacentMedia(items, item)` — prev/next computation for lightboxes. |
+| `mediaSearch.js` | `buildMediaHaystack`, `tokenizeQuery`, `matchHaystack`, `filterByQuery` — client-side AND-token search over normalized media items (prompt/model/seed/LoRA/universe tags). Shared by MediaHistory + the Image Gen gallery picker. |
 | `sameJsonShape.js` | `sameJsonShape(prev, next)` — JSON.stringify-based equality for `useAutoRefetch`'s `compare` option on small, deterministically-shaped poll payloads. |
 | `unsorted.js` | Synthetic "Unsorted" collection from media not filed in any real collection. |
 | `upsertByIdPrepend.js` | Newest-first upsert into an id-keyed list. |

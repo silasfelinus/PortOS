@@ -4,6 +4,25 @@ import toast from '../components/ui/Toast';
 import { cleanGalleryImage, extractLastFrame } from '../services/apiImageVideo';
 import { VIDEO_TILING_ENUM_SET } from '../lib/videoTilingOptions';
 
+// Common image render-setting params shared by the image branch of Remix and by
+// Send-to-image-to-image — both open /media/image with the same fields prefilled
+// and differ only in their discriminator param (`remix` vs `initImageFile`).
+// `(no prompt)` is the metadata-sidecar placeholder for items that lost their
+// prompt — skip it so the next render doesn't start with that literal.
+function buildImageGenParams(item) {
+  const params = new URLSearchParams();
+  if (item.prompt && item.prompt !== '(no prompt)') params.set('prompt', item.prompt);
+  if (item.negativePrompt) params.set('negativePrompt', item.negativePrompt);
+  if (item.modelId) params.set('modelId', item.modelId);
+  if (item.width) params.set('width', String(item.width));
+  if (item.height) params.set('height', String(item.height));
+  if (item.seed != null) params.set('seed', String(item.seed));
+  if (item.steps) params.set('steps', String(item.steps));
+  if (item.guidance != null) params.set('guidance', String(item.guidance));
+  if (item.quantize) params.set('quantize', String(item.quantize));
+  return params;
+}
+
 /**
  * Shared MediaPreview / MediaLightbox action handlers. The same four
  * callbacks (`onRemix`, `onSendToVideo`, `onContinue`, `onClean`) used to
@@ -65,17 +84,21 @@ export default function useMediaPreviewActions({ onCleanComplete = null } = {}) 
       navigate(`/media/video?${params}`);
       return;
     }
-    const params = new URLSearchParams();
-    if (item.prompt && item.prompt !== '(no prompt)') params.set('prompt', item.prompt);
-    if (item.negativePrompt) params.set('negativePrompt', item.negativePrompt);
-    if (item.modelId) params.set('modelId', item.modelId);
-    if (item.width) params.set('width', String(item.width));
-    if (item.height) params.set('height', String(item.height));
-    if (item.seed != null) params.set('seed', String(item.seed));
-    if (item.steps) params.set('steps', String(item.steps));
-    if (item.guidance != null) params.set('guidance', String(item.guidance));
-    if (item.quantize) params.set('quantize', String(item.quantize));
+    const params = buildImageGenParams(item);
     if (item.filename) params.set('remix', item.filename);
+    navigate(`/media/image?${params}`);
+  }, [navigate]);
+
+  // Send to image-to-image: open the Image Gen page with this image queued as
+  // the i2i init image AND the prompt + render settings pre-filled (like Remix),
+  // so the user lands in a full "iterate on this image" state. Images only — the
+  // ImageGen page resolves `?initImageFile=<basename>` against the gallery and
+  // nudges to an i2i-capable backend. Deliberately omits the `remix` param so it
+  // reads as a distinct intent from plain Remix.
+  const handleSendToImage = useCallback((item) => {
+    if (!item?.filename || item.kind === 'video') return;
+    const params = buildImageGenParams(item);
+    params.set('initImageFile', item.filename);
     navigate(`/media/image?${params}`);
   }, [navigate]);
 
@@ -128,5 +151,5 @@ export default function useMediaPreviewActions({ onCleanComplete = null } = {}) 
     return cleaned;
   }, [onCleanComplete]);
 
-  return { handleRemix, handleSendToVideo, handleContinue, handleClean };
+  return { handleRemix, handleSendToImage, handleSendToVideo, handleContinue, handleClean };
 }
