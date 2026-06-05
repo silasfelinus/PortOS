@@ -993,7 +993,7 @@ export default function Layout() {
           {!collapsed && (pinned.length > 0 || recent.length > 0) && (
             <div className="mb-2">
               {pinned.length > 0 && (
-                <div className="mb-2">
+                <div className="mb-2" data-testid="pinned-section">
                   <div className="px-4 py-1 text-[10px] font-semibold uppercase tracking-wide text-gray-500">Pinned</div>
                   {pinned.map((entry) => (
                     <WorkingSetRow key={`pin-${entry.path}`} entry={entry} pinned onTogglePin={() => unpin(entry.path)} onNavigate={() => setMobileOpen(false)} isActive={entry.end ? location.pathname === entry.path : isActive(entry.path)} />

@@ -67,12 +67,10 @@ const renderLayout = (initialPath = '/brain/inbox') =>
     </MemoryRouter>,
   );
 
-// Find the "Pinned" section heading and return its container so assertions are
-// scoped to the Pinned region (the same label also exists in the main nav tree).
-const pinnedSection = () => {
-  const heading = screen.getByText('Pinned');
-  return heading.parentElement;
-};
+// The Pinned region carries a stable `data-testid` so assertions scope to it
+// without depending on the heading's DOM nesting (a benign style refactor of the
+// label shouldn't break these tests). Returns null when the section isn't rendered.
+const pinnedSection = () => screen.queryByTestId('pinned-section');
 
 beforeEach(() => {
   localStorage.clear();
@@ -111,14 +109,21 @@ describe('Layout — pinned single nav rows', () => {
 
   it('omits the Pinned section entirely when nothing is pinned', () => {
     renderLayout();
-    expect(screen.queryByText('Pinned')).toBeNull();
+    expect(pinnedSection()).toBeNull();
   });
 
-  it('does not surface an unknown pinned path (filtered by resolveNavEntry)', () => {
+  it('filters out an unknown pinned path while keeping the known one', () => {
     // A stored path that maps to no nav leaf and no manifest entry resolves to
-    // null and is dropped — so the Pinned section never renders for it alone.
-    localStorage.setItem(PINNED_KEY, JSON.stringify(['/this/path/does/not/exist']));
+    // null and is dropped by resolveNavEntry; a known path beside it still renders.
+    // Asserting the survivor (not just absence) proves the filter, not merely that
+    // the section failed to render.
+    localStorage.setItem(PINNED_KEY, JSON.stringify(['/this/path/does/not/exist', '/city']));
     renderLayout();
-    expect(screen.queryByText('Pinned')).toBeNull();
+
+    const pinned = pinnedSection();
+    expect(pinned).toBeTruthy();
+    expect(within(pinned).getByRole('link', { name: /City/i })).toHaveAttribute('href', '/city');
+    // The unknown path contributes no row.
+    expect(within(pinned).getAllByRole('link')).toHaveLength(1);
   });
 });
