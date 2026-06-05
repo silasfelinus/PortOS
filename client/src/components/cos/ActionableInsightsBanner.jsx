@@ -16,6 +16,19 @@ import {
   Unlock
 } from 'lucide-react';
 import * as api from '../../services/api';
+import ProvenanceChip from '../ui/ProvenanceChip';
+
+// Actionable insights are surfaced by the Chief of Staff from your current task
+// queue, system state, and recent activity — recommendations it derived, never
+// something you set outright. The chip answers "why am I seeing this?" the same
+// way the taste-identity and health surfaces do.
+const INSIGHT_PROVENANCE = {
+  level: 'inferred',
+  explainer:
+    'Surfaced by your Chief of Staff from your current task queue, system state, and recent activity — a prioritized recommendation it derived, not an alert you configured.',
+  whatWouldChange:
+    'Acting on it, clearing the underlying tasks, or changing your queue updates or removes the recommendation on the next evaluation.',
+};
 
 const ICON_MAP = {
   AlertCircle,
@@ -139,6 +152,7 @@ export default function ActionableInsightsBanner({ onTaskUnblocked }) {
                 Urgent
               </span>
             )}
+            <ProvenanceChip {...INSIGHT_PROVENANCE} />
           </div>
           {primaryInsight.description && !isExpanded && (
             <p className="text-xs text-gray-400 mt-0.5 line-clamp-1">

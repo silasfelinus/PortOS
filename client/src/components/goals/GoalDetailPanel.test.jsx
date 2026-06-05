@@ -109,3 +109,18 @@ describe('GoalDetailPanel badge migration to <Pill>', () => {
     expect(priorityBadge.className).not.toContain('inline-flex');
   });
 });
+
+describe('GoalDetailPanel provenance chip', () => {
+  it('renders an Inferred provenance chip when an AI-derived reading is present', () => {
+    // baseGoal carries urgency: 0.8 → the urgency/feasibility readings are modeled,
+    // so the header must declare provenance the same way the insight surfaces do.
+    renderPanel();
+    expect(screen.getByText('Inferred')).toBeTruthy();
+  });
+
+  it('omits the provenance chip when there is no AI-derived reading', () => {
+    // A goal with neither urgency nor feasibility has nothing modeled to attribute.
+    renderPanel({ ...baseGoal, urgency: undefined, feasibility: undefined });
+    expect(screen.queryByText('Inferred')).toBeNull();
+  });
+});
