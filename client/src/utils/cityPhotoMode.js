@@ -42,10 +42,9 @@ export function cyclePreset(currentId, direction = 1) {
 // and `done` (true once settled) so the component can stop invalidating the demand loop.
 export const FLY_DURATION = 1.1;
 
-export function stepFly(progress, deltaSeconds, duration = FLY_DURATION) {
+export function stepFly(progress, deltaSeconds) {
   const safeDelta = Number.isFinite(deltaSeconds) && deltaSeconds > 0 ? deltaSeconds : 0;
-  const safeDuration = duration > 0 ? duration : FLY_DURATION;
-  const next = Math.min(1, (Number.isFinite(progress) ? progress : 1) + safeDelta / safeDuration);
+  const next = Math.min(1, (Number.isFinite(progress) ? progress : 1) + safeDelta / FLY_DURATION);
   return { progress: next, t: smoothstep(next), done: next >= 1 };
 }
 
