@@ -163,12 +163,16 @@ export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, 
         // dashboard, which reads as a blank white scene.
         gl={{ antialias: true, preserveDrawingBuffer: Boolean(photoMode), alpha: false, powerPreference: 'high-performance' }}
       >
-      <color attach="background" args={[sceneClearColor]} />
-      {/* Mount the galaxy dome only at night — keeps its 2.8MB texture from being
-          fetched/decoded in full daylight, where it's fully faded out anyway.
-          Suspense keeps the useLoader fetch from suspending the whole canvas while
-          it streams in; the error boundary degrades to the plain dark sky if the
-          texture is missing/corrupt (e.g. a partial checkout) instead of crashing. */}
+      {/* By day, the solid clear color is the scene background. At night, the galaxy
+          Environment below owns scene.background (the equirectangular spheremap), so we
+          must NOT also drive <color attach="background"> — both write scene.background and
+          would fight every frame. */}
+      {showGradientBackground && <color attach="background" args={[sceneClearColor]} />}
+      {/* Mount the galaxy environment only at night — keeps its 2.8MB panorama from being
+          fetched/decoded (and PMREM-processed) in full daylight, where it's faded out
+          anyway. Suspense keeps the texture load from suspending the whole canvas while it
+          streams in; the error boundary degrades to the plain dark sky if the texture is
+          missing/corrupt (e.g. a partial checkout) instead of crashing. */}
       {!showGradientBackground && (
         <ErrorBoundary fallback={null}>
           <Suspense fallback={null}>

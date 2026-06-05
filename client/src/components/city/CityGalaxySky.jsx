@@ -1,56 +1,71 @@
-import { useEffect, useMemo } from 'react';
-import { useLoader } from '@react-three/fiber';
+import { useEffect } from 'react';
+import { useThree, useLoader } from '@react-three/fiber';
 import * as THREE from 'three';
 import { cityDayMix } from './cityConstants';
 
-const GALAXY_TEXTURE_URL = '/sky/city-night-galaxy-sphere.png';
+const GALAXY_TEXTURE_URL = '/sky/city-night-galaxy-8k.jpg';
+// Artistic yaw so the brightest stretch of the Milky Way band sits behind the city
+// rather than dead-ahead. Applied to both the visible background and the IBL probe so
+// reflections line up with what's on screen.
+const GALAXY_ROTATION = new THREE.Euler(0, -Math.PI * 0.18, 0);
 
+// Brightness knobs (multiplied by how deep into night we are). The panorama is a real,
+// dark Milky Way, so the background gets a >1 lift to read clearly against the night sky;
+// the IBL multiplier controls how strongly the galaxy tints the metallic facades.
+const BACKGROUND_INTENSITY = 2.4;
+const ENVIRONMENT_INTENSITY = 1.3;
+
+// The night sky is the equirectangular galaxy panorama wired through three.js's
+// environment system the way an HDRI is: the texture is mapped equirectangular, run
+// through a PMREMGenerator, and assigned to BOTH scene.background (the 360° spheremap
+// backdrop, visible in every camera direction) AND scene.environment (image-based
+// lighting, so the galaxy tints reflections/lighting on the PBR building + ground
+// materials). drei's <Environment files> can't load a .png panorama (its loader only
+// recognises .hdr/.exr/cube), so we do the PMREM wiring directly — the canonical setup.
+//
+// Mounted only at night (CityScene gates on !showGradientBackground), so the 2.8MB
+// panorama isn't fetched/decoded or PMREM-processed in daylight.
 export default function CityGalaxySky({ settings }) {
-  const dayMix = cityDayMix(settings);
-  const nightOpacity = Math.max(0, Math.min(1, 1 - dayMix));
+  const { gl, scene } = useThree();
   const texture = useLoader(THREE.TextureLoader, GALAXY_TEXTURE_URL);
+  const nightOpacity = Math.max(0, Math.min(1, 1 - cityDayMix(settings)));
 
+  // Build the PMREM environment once per texture and bind it to the scene; restore the
+  // previous background/environment (and free the GPU targets) when night ends / unmounts.
   useEffect(() => {
+    texture.mapping = THREE.EquirectangularReflectionMapping;
     texture.colorSpace = THREE.SRGBColorSpace;
-    texture.mapping = THREE.UVMapping;
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.ClampToEdgeWrapping;
-    texture.minFilter = THREE.LinearMipmapLinearFilter;
-    texture.magFilter = THREE.LinearFilter;
-    texture.anisotropy = 4;
     texture.needsUpdate = true;
-  }, [texture]);
 
-  // One material shared by the sphere backing and the inner horizon wall — both
-  // sample the same galaxy map at the same opacity, so there's no reason to
-  // allocate two. opacity/transparent track nightOpacity on each render (a
-  // settings-rate change, not per-frame).
-  const galaxyMaterial = useMemo(() => new THREE.MeshBasicMaterial({
-    map: texture,
-    color: '#ffffff',
-    side: THREE.BackSide,
-    depthTest: true,
-    depthWrite: false,
-    toneMapped: false,
-  }), [texture]);
-  useEffect(() => () => galaxyMaterial.dispose(), [galaxyMaterial]);
-  galaxyMaterial.opacity = nightOpacity;
-  galaxyMaterial.transparent = nightOpacity < 0.99;
+    const pmrem = new THREE.PMREMGenerator(gl);
+    const envTarget = pmrem.fromEquirectangular(texture);
 
-  if (nightOpacity <= 0.01) return null;
+    const prevBackground = scene.background;
+    const prevEnvironment = scene.environment;
+    scene.background = texture;
+    scene.environment = envTarget.texture;
+    scene.backgroundRotation.copy(GALAXY_ROTATION);
+    scene.environmentRotation.copy(GALAXY_ROTATION);
 
-  return (
-    <group rotation={[0, -Math.PI * 0.18, 0]}>
-      {/* Distant full-sphere backing for free-look/orbit cameras. */}
-      <mesh renderOrder={-1000} material={galaxyMaterial}>
-        <sphereGeometry args={[1500, 64, 32]} />
-      </mesh>
-      {/* The default City camera points down across the horizon, so the
-          equirectangular sphere can look like plain darkness. This inner
-          horizon wall keeps the custom galaxy band visible behind the city. */}
-      <mesh renderOrder={-999} position={[0, 220, 0]} material={galaxyMaterial}>
-        <cylinderGeometry args={[1420, 1420, 960, 96, 1, true]} />
-      </mesh>
-    </group>
-  );
+    return () => {
+      scene.background = prevBackground;
+      scene.environment = prevEnvironment;
+      // Reset the intensities to three's defaults so the daytime color background (set by
+      // CityScene once this unmounts) isn't left dimmed by the last night value.
+      scene.backgroundIntensity = 1;
+      scene.environmentIntensity = 1;
+      envTarget.dispose();
+      pmrem.dispose();
+    };
+  }, [gl, scene, texture]);
+
+  // Cross-fade with daylight without rebuilding the PMREM map: scale the background and
+  // the IBL by how deep into night we are. The panorama is mostly dark space, so the IBL
+  // gets a >1 multiplier to read as a light source on metallic facades.
+  useEffect(() => {
+    scene.backgroundIntensity = nightOpacity * BACKGROUND_INTENSITY;
+    scene.environmentIntensity = nightOpacity * ENVIRONMENT_INTENSITY;
+  }, [scene, nightOpacity]);
+
+  return null;
 }
