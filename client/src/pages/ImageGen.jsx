@@ -402,8 +402,10 @@ export default function ImageGen() {
     if (i2iCapable) { wantI2iModeRef.current = false; return; }
     if (!availableBackends.length) return; // wait for load
     const mode = pickI2iMode(availableBackends);
-    if (mode) switchMode(mode);
-    wantI2iModeRef.current = false;
+    // Only clear the pending flag once we actually switch — if no i2i backend
+    // exists at first load, leave it set so a later install (Settings drawer
+    // close → reloadBackends) still flips us over.
+    if (mode) { switchMode(mode); wantI2iModeRef.current = false; }
   }, [availableBackends, i2iCapable, switchMode]);
 
   // ?lora=<filename> preselects a LoRA when the user clicks "Test" on the
@@ -505,7 +507,7 @@ export default function ImageGen() {
   // — gallery PNGs are already baked correct.
   const handlePickGalleryInitImage = (item) => {
     if (!item?.filename) return;
-    if (item.raw) handleRemix(item.raw);
+    if (item.raw) handleRemix(item.raw, { applyModel: false });
     revokeIfBlob(initImage.previewUrl);
     setInitImage({ source: 'gallery', file: null, name: item.filename, previewUrl: item.previewUrl || `/data/images/${item.filename}` });
   };
@@ -541,7 +543,7 @@ export default function ImageGen() {
   // upload path — the server has no gallery-basename field for references (unlike
   // the init image). Gallery PNGs are already EXIF-correct, so no re-encode.
   const galleryImageToFile = async (filename) => {
-    const res = await fetch(`/data/images/${filename}`);
+    const res = await fetch(`/data/images/${encodeURIComponent(filename)}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const blob = await res.blob();
     return new File([blob], filename, { type: blob.type || 'image/png' });
@@ -604,6 +606,11 @@ export default function ImageGen() {
   // submit button + show a hint rather than letting the user hit a failed job.
   const isEditOnlyModel = currentModel?.editOnly === true;
   const editImageMissing = isLocalMode && isEditOnlyModel && initImage.source == null;
+  // Codex text-to-image (no init image) still needs a prompt — mirror the server
+  // rule (codex.js requires a prompt only when there's no init image) so the user
+  // sees a disabled button + hint instead of a failed job toast. Local runs
+  // unconditionally and external (A1111) accepts an empty prompt, so neither gates.
+  const codexNeedsPrompt = isCodexMode && initImage.source == null && !prompt.trim();
   // mflux is the default runner for entries with no explicit `runner` field.
   // LoraPicker filters compatible weights itself; we pass the family (for the
   // "install one matching X" copy) and the fine-grained compat key (which
@@ -830,8 +837,8 @@ export default function ImageGen() {
     // Empty prompt is allowed (e.g. i2i / unconditional generation). The disabled
     // submit button blocks clicks, but an Enter keypress in a number input still
     // fires onSubmit — gate here too so an edit-only model without a source image
-    // hits the inline hint, not a server 400 toast.
-    if (editImageMissing) return;
+    // (or codex text-to-image with no prompt) hits the inline hint, not a 400 toast.
+    if (editImageMissing || codexNeedsPrompt) return;
     const batchN = isAsyncMode ? Math.max(1, batchCount) : 1;
     if (generating) return queueAdditional(batchN);
     setGenerating(true);
@@ -958,7 +965,12 @@ export default function ImageGen() {
     navigate(`/media/video?${params}`);
   };
 
-  const handleRemix = (img) => {
+  // applyModel=false skips restoring the source's modelId — used by the i2i
+  // paths, which are image-driven: switching to the source's model can flip the
+  // active family (e.g. away from FLUX.2), silently unmounting the reference
+  // picker and dropping staged reference slots. Mirrors the cross-page
+  // handleSendToImage, which drops modelId from the nav params for the same reason.
+  const handleRemix = (img, { applyModel = true } = {}) => {
     // Preset was already folded into the recorded prompt at submit time;
     // clear the picker so the user sees what actually produced the image.
     setStylePreset(null);
@@ -970,7 +982,7 @@ export default function ImageGen() {
     if (img.quantize) setQuantize(String(img.quantize));
     if (img.width) setWidth(img.width);
     if (img.height) setHeight(img.height);
-    if (img.modelId && models.some((m) => m.id === img.modelId)) setModelId(img.modelId);
+    if (applyModel && img.modelId && models.some((m) => m.id === img.modelId)) setModelId(img.modelId);
 
     // Restore LoRAs from the new `loraFilenames` field; fall back to the
     // legacy `loraPaths` (absolute server paths) for older sidecar metadata
@@ -990,9 +1002,10 @@ export default function ImageGen() {
 
   // The i2i init image only applies on an i2i-capable backend (local or codex).
   // Switch to one now if installed; otherwise flag the deferred effect to retry
-  // once availableBackends resolves. Shared by the in-page send-to-i2i handler
-  // and the ?initImageFile URL effect. No-op when already on local/codex, so an
-  // explicit codex user stays on codex.
+  // once availableBackends resolves. Called by the in-page send-to-i2i handler;
+  // the cross-page ?initImageFile path instead sets wantI2iModeRef directly and
+  // lets the deferred effect do the switch. No-op when already on local/codex, so
+  // an explicit codex user stays on codex.
   const ensureI2iCapableMode = useCallback(() => {
     if (i2iCapable) return;
     const mode = pickI2iMode(availableBackends);
@@ -1004,7 +1017,7 @@ export default function ImageGen() {
   // image as the i2i source on an i2i-capable backend.
   const handleSendToImage = (img) => {
     if (!img?.filename) return;
-    handleRemix(img);
+    handleRemix(img, { applyModel: false });
     ensureI2iCapableMode();
     revokeIfBlob(initImage.previewUrl);
     setInitImage({ source: 'gallery', file: null, name: img.filename, previewUrl: `/data/images/${img.filename}` });
@@ -1197,8 +1210,8 @@ export default function ImageGen() {
           <div className="flex items-center gap-2 pt-1 flex-wrap">
             <button
               type="submit"
-              disabled={notConnected || editImageMissing}
-              title={editImageMissing ? 'This image-edit model needs a source image — upload one below first' : undefined}
+              disabled={notConnected || editImageMissing || codexNeedsPrompt}
+              title={editImageMissing ? 'This image-edit model needs a source image — upload one below first' : codexNeedsPrompt ? 'Codex text-to-image needs a prompt — add one, or attach a source image to edit' : undefined}
               className="flex items-center gap-2 px-4 py-2 bg-port-accent hover:bg-port-accent/80 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg min-h-[40px]"
             >
               <Sparkles className="w-4 h-4" /> {generating ? 'Queue' : 'Generate'}
@@ -1206,6 +1219,9 @@ export default function ImageGen() {
             </button>
             {editImageMissing && (
               <span className="text-xs text-port-warning">Upload a source image to use this edit model</span>
+            )}
+            {codexNeedsPrompt && (
+              <span className="text-xs text-port-warning">Codex needs a prompt, or attach a source image to edit</span>
             )}
             {isAsyncMode && (
               <label className="flex items-center gap-1.5 text-xs text-gray-400" title="Batch size: number of renders to queue per submit">

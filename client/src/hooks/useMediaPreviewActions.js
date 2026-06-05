@@ -5,10 +5,12 @@ import { cleanGalleryImage, extractLastFrame } from '../services/apiImageVideo';
 import { VIDEO_TILING_ENUM_SET } from '../lib/videoTilingOptions';
 
 // Common image render-setting params shared by the image branch of Remix and by
-// Send-to-image-to-image — both open /media/image with the same fields prefilled
-// and differ only in their discriminator param (`remix` vs `initImageFile`).
-// `(no prompt)` is the metadata-sidecar placeholder for items that lost their
-// prompt — skip it so the next render doesn't start with that literal.
+// Send-to-image-to-image — both open /media/image with these fields prefilled.
+// The callers diverge after: Remix adds `remix`, while Send-to-i2i adds
+// `initImageFile` AND drops `modelId` (i2i may auto-switch backends, so the
+// source's model must not poison the target form). `(no prompt)` is the
+// metadata-sidecar placeholder for items that lost their prompt — skip it so the
+// next render doesn't start with that literal.
 function buildImageGenParams(item) {
   const params = new URLSearchParams();
   if (item.prompt && item.prompt !== '(no prompt)') params.set('prompt', item.prompt);

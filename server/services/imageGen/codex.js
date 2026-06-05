@@ -139,7 +139,7 @@ const describeFidelity = (strength) => {
 // `initImageStrength` is mapped to a fidelity phrase via describeFidelity —
 // codex CLI exposes no numeric denoise knob.
 export async function generateImage({
-  codexPath, model, prompt, width, height, negativePrompt,
+  codexPath, model, prompt = '', width, height, negativePrompt,
   initImagePath, initImageStrength,
   jobId: providedJobId = null,
   cleanC2PA = false,
