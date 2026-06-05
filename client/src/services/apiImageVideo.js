@@ -177,13 +177,15 @@ export const getCivitaiSuggestions = ({ force = false } = {}) =>
 // per-category search box and "Load more" button on /media/loras. `query`
 // blank pages the plain top-ranking; pass the previous response's `nextCursor`
 // to load the next page. Returns `{ runnerFamily, query, items, nextCursor }`.
-export const searchCivitaiLoras = ({ runner, query = '', cursor = null, limit } = {}) => {
+// `silent` defaults true because the caller (SuggestionsSection.fetchPage) owns
+// its own error toast — leaving it false would double-toast on a failed search.
+export const searchCivitaiLoras = ({ runner, query = '', cursor = null, limit, silent = true } = {}) => {
   const params = new URLSearchParams();
   params.set('runner', runner);
   if (query) params.set('query', query);
   if (cursor) params.set('cursor', cursor);
   if (limit) params.set('limit', String(limit));
-  return request(`/loras/search?${params.toString()}`);
+  return request(`/loras/search?${params.toString()}`, { silent });
 };
 
 // Civitai auth — read/save/clear the API key. The key never round-trips back

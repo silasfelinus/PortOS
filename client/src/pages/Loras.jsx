@@ -342,6 +342,7 @@ function SuggestionsSection({ label, hint, cards, alwaysShow = false, runner = n
 
   const handleSearch = (e) => {
     e?.preventDefault?.();
+    if (loading) return; // Enter while a fetch is in flight → no overlapping requests
     const q = query.trim();
     if (!q) { resetToCached(); return; } // empty box → cached top-N
     fetchPage(q, { append: false, useCursor: null });
