@@ -156,7 +156,7 @@ async function generateTaskFromJob(job) {
       autonomyLevel: job.autonomyLevel,
       // App-scoped jobs carry the target app id so prepareAgentWorkspace resolves
       // the agent's workspace to the app's repoPath. Absent = runs in PortOS root.
-      ...(job.appId ? { app: job.appId } : {}),
+      ...(job.appId != null ? { app: job.appId } : {}),
       // Forward git-workflow options so an app-scoped task can isolate via a
       // worktree and open a PR (same metadata flags the built-in task types use).
       ...(meta.useWorktree != null ? { useWorktree: meta.useWorktree } : {}),

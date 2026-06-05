@@ -91,8 +91,16 @@ function scheduleSummary(job) {
 
 function TaskForm({ form, setForm, onSave, onCancel, saveLabel }) {
   const update = (key, val) => setForm(f => ({ ...f, [key]: val }));
+  // Toggle a git-workflow flag while preserving the system-wide invariant that
+  // openPR implies useWorktree (matches toggleAppMetadataOverride used elsewhere):
+  // turning openPR on forces useWorktree on; turning useWorktree off forces openPR off.
   const toggleMeta = (field) =>
-    setForm(f => ({ ...f, taskMetadata: { ...f.taskMetadata, [field]: !f.taskMetadata?.[field] } }));
+    setForm(f => {
+      const meta = { ...f.taskMetadata, [field]: !f.taskMetadata?.[field] };
+      if (field === 'openPR' && meta.openPR) meta.useWorktree = true;
+      if (field === 'useWorktree' && !meta.useWorktree) meta.openPR = false;
+      return { ...f, taskMetadata: meta };
+    });
 
   return (
     <div className="space-y-3 bg-port-card border border-port-accent/50 rounded-lg p-4">

@@ -87,8 +87,11 @@ function normalizeJobPayload(formData) {
     payload.command = null;
     payload.triggerAction = null;
   }
-  // Empty app picker selection ('') → undefined so the server treats it as a global job.
-  if (!payload.appId) payload.appId = undefined;
+  // Empty app picker selection ('') → null so a PUT actively un-scopes the job
+  // back to global (undefined would be dropped from JSON and updateJob would
+  // preserve the old scope). The schema maps '' → null too; sending null directly
+  // is unambiguous across create and update.
+  if (!payload.appId) payload.appId = null;
   if (payload.scheduleMode === 'cron') {
     payload.cronExpression = payload.cronExpression?.trim() || null;
     payload.scheduledTime = null;

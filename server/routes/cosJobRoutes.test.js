@@ -218,7 +218,7 @@ describe('CoS Job Routes', () => {
       );
     });
 
-    it('should coerce empty-string appId to undefined (global job)', async () => {
+    it('should coerce empty-string appId to null (global job)', async () => {
       autonomousJobs.createJob.mockResolvedValue({ id: 'j1' });
 
       const response = await request(app)
@@ -227,7 +227,7 @@ describe('CoS Job Routes', () => {
 
       expect(response.status).toBe(200);
       expect(autonomousJobs.createJob).toHaveBeenCalledWith(
-        expect.objectContaining({ appId: undefined })
+        expect.objectContaining({ appId: null })
       );
     });
   });
@@ -252,6 +252,22 @@ describe('CoS Job Routes', () => {
         .send({ name: 'Fail' });
 
       expect(response.status).toBe(404);
+    });
+
+    it('un-scopes a job to global when the client sends empty appId', async () => {
+      autonomousJobs.updateJob.mockResolvedValue({ id: 'j1', appId: null });
+
+      // The Global picker sends appId:'' (or null); the schema maps '' → null so
+      // updateJob actually clears the scope (it only skips `undefined`).
+      const response = await request(app)
+        .put('/api/cos/jobs/j1')
+        .send({ name: 'Now Global', appId: '' });
+
+      expect(response.status).toBe(200);
+      expect(autonomousJobs.updateJob).toHaveBeenCalledWith(
+        'j1',
+        expect.objectContaining({ appId: null })
+      );
     });
   });
 
