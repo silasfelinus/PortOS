@@ -193,7 +193,7 @@ export async function getActiveApps() {
  * behind both `getAppStatusSummary()` (counts) and the CyberCity snapshot
  * pipeline (per-building status), so the two never drift.
  *
- * @returns {Promise<Array<{ id, name, type, overallStatus, managed: boolean }>>}
+ * @returns {Promise<Array<{ id, name, type, repoPath, overallStatus, managed: boolean }>>}
  */
 export async function getAppStatuses() {
   const apps = await getAllApps({ includeArchived: false });
@@ -214,8 +214,12 @@ export async function getAppStatuses() {
 
   return apps.map(app => {
     const managed = usesPm2(app.type);
+    // repoPath is carried so callers can map an agent's workspacePath back to its
+    // app (the CyberCity snapshot's agent-assignment mapping, mirroring the
+    // client's agentMap) without a second apps read.
+    const base = { id: app.id, name: app.name, type: app.type, repoPath: app.repoPath };
     if (!managed) {
-      return { id: app.id, name: app.name, type: app.type, overallStatus: 'n/a', managed: false };
+      return { ...base, overallStatus: 'n/a', managed: false };
     }
     const procMap = procMaps.get(app.pm2Home || null) || new Map();
     const names = app.pm2ProcessNames || [];
@@ -226,7 +230,7 @@ export async function getAppStatuses() {
       else if (statuses.some(s => s === 'stopped')) overallStatus = 'stopped';
       else overallStatus = 'not_started';
     }
-    return { id: app.id, name: app.name, type: app.type, overallStatus, managed: true };
+    return { ...base, overallStatus, managed: true };
   });
 }
 

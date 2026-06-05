@@ -29,6 +29,9 @@ import { createFileWriteQueue } from '../lib/fileWriteQueue.js';
 import { getSettings } from './settings.js';
 import * as apps from './apps.js';
 import * as cos from './cos.js';
+import { getAgents } from './cosAgents.js';
+import { getCosTasks } from './cosTaskStore.js';
+import { getPendingCounts } from './review.js';
 import { getSelf, getPeers } from './instances.js';
 import * as backup from './backup.js';
 import { getCountsByType } from './notifications.js';
@@ -38,6 +41,12 @@ import os from 'os';
 
 const DATA_DIR = PATHS.data;
 const SNAPSHOTS_FILE = join(DATA_DIR, 'city-snapshots.jsonl');
+
+// Sentinel a getter falls back to when it throws — distinct from a successful
+// empty read. `null` for object/array sources means "source unavailable at
+// capture time" (CLAUDE.md's absent-vs-empty rule), so a transient failure
+// never reads as a legitimate "zero apps / zero peers" in the history.
+const FAILED = null;
 
 // Bump when the snapshot shape changes incompatibly so a future scrubber can
 // gate on frame shape and skip / migrate older frames rather than mis-render.
@@ -87,70 +96,105 @@ async function loadSnapshots() {
   return snapshotCache;
 }
 
+// Map a CoS agent to the app it's working in by matching its workspacePath
+// against each app's repoPath — the same rule the client's `agentMap` uses.
+// workspacePath may sit on the agent or in its metadata depending on spawn path.
+function resolveAgentApp(agent, appStatuses) {
+  const workspacePath = agent?.workspacePath || agent?.metadata?.workspacePath;
+  if (!workspacePath || !Array.isArray(appStatuses)) return null;
+  const match = appStatuses.find(a => a.repoPath && workspacePath.startsWith(a.repoPath));
+  return match?.id ?? null;
+}
+
 /**
  * Assemble a compact city-state frame from server-side service getters.
  *
- * Each source is wrapped so one failing getter degrades that field to a
- * sentinel (null / empty) rather than dropping the whole frame — a partial
- * snapshot is more useful to a scrubber than a missing one, and a captured
- * `null` distinguishes "source unavailable at capture time" from "absent."
+ * Each source is wrapped so one failing getter degrades to the `FAILED` (null)
+ * sentinel rather than dropping the whole frame — a partial snapshot is more
+ * useful to a scrubber than a missing one. Crucially, a thrown getter records
+ * `null` (source unavailable), NOT an empty array / zero count, so a transient
+ * failure can't masquerade as a legitimate "zero apps / zero peers" in the
+ * history (CLAUDE.md's absent-vs-empty rule). Counts derived from a FAILED
+ * source are likewise `null`, distinct from a real `0` on a successful read.
  */
 async function buildSnapshot() {
-  const [appStatuses, cosStatus, self, peers, backupState, notifCounts, character, memStats] =
+  const [appStatuses, cosStatus, agents, taskState, reviewCounts, self, peers, backupState, notifCounts, character, memStats] =
     await Promise.all([
-      apps.getAppStatuses().catch(() => []),
-      cos.getStatus().catch(() => null),
-      getSelf().catch(() => null),
-      getPeers().catch(() => []),
-      backup.getState().catch(() => null),
-      getCountsByType().catch(() => null),
-      getCharacter().catch(() => null),
-      getMemoryStats().catch(() => null),
+      apps.getAppStatuses().catch(() => FAILED),
+      cos.getStatus().catch(() => FAILED),
+      getAgents().catch(() => FAILED),
+      getCosTasks().catch(() => FAILED),
+      getPendingCounts().catch(() => FAILED),
+      getSelf().catch(() => FAILED),
+      getPeers().catch(() => FAILED),
+      backup.getState().catch(() => FAILED),
+      getCountsByType().catch(() => FAILED),
+      getCharacter().catch(() => FAILED),
+      getMemoryStats().catch(() => FAILED),
     ]);
 
-  const onlineApps = appStatuses.filter(a => a.overallStatus === 'online').length;
-  const onlinePeers = (peers || []).filter(p => p?.status === 'online').length;
+  // Per-app state + agent→app assignments — the minimum a scrubber needs to
+  // re-render buildings and diff adjacent frames for construction/teardown.
+  // `null` (not `[]`) when the source failed, so the scrubber can skip vs. clear.
+  const appsFrame = Array.isArray(appStatuses)
+    ? appStatuses.map(a => ({ id: a.id, name: a.name, status: a.overallStatus }))
+    : null;
+  const assignmentsFrame = Array.isArray(agents)
+    ? agents
+        .filter(a => a?.status === 'running')
+        .map(a => ({ agentId: a.id, appId: resolveAgentApp(a, appStatuses), status: a.status }))
+    : null;
+
+  const tasks = Array.isArray(taskState?.tasks) ? taskState.tasks : null;
+  const taskCount = (status) => tasks === null ? null : tasks.filter(t => t?.status === status).length;
 
   const memUsagePercent = memStats && memStats.total > 0
     ? Math.round((memStats.used / memStats.total) * 100)
     : null;
-  const cpuCount = os.cpus().length || 1;
-  const cpuUsagePercent = Math.round((os.loadavg()[0] / cpuCount) * 100);
+  // os.loadavg() returns [0,0,0] on Windows (no load average) — record null
+  // there rather than a misleading 0% so it reads as "unavailable," not "idle."
+  const cpuPercent = process.platform === 'win32'
+    ? null
+    : Math.min(100, Math.round((os.loadavg()[0] / (os.cpus().length || 1)) * 100));
+
+  // Successful-empty reads yield real 0s; FAILED sources yield null.
+  const onlineApps = appsFrame === null ? null : appsFrame.filter(a => a.status === 'online').length;
+  const onlinePeers = peers === null ? null : peers.filter(p => p?.status === 'online').length;
 
   return {
     ts: new Date().toISOString(),
     schemaVersion: SNAPSHOT_SCHEMA_VERSION,
-    // Per-building state — the minimum a scrubber needs to re-render and
-    // diff adjacent frames for construction/teardown animations.
-    apps: appStatuses.map(a => ({ id: a.id, name: a.name, status: a.overallStatus })),
+    apps: appsFrame,
+    assignments: assignmentsFrame,
     counts: {
       appsOnline: onlineApps,
-      appsTotal: appStatuses.length,
-      agentsActive: cosStatus?.activeAgents ?? 0,
-      agentsPaused: cosStatus?.pausedAgents ?? 0,
-      tasksCompleted: cosStatus?.stats?.tasksCompleted ?? 0,
+      appsTotal: appsFrame === null ? null : appsFrame.length,
+      agentsActive: cosStatus === null ? null : (cosStatus.activeAgents ?? 0),
+      agentsPaused: cosStatus === null ? null : (cosStatus.pausedAgents ?? 0),
+      tasksCompleted: cosStatus === null ? null : (cosStatus.stats?.tasksCompleted ?? 0),
+      tasksPending: taskCount('pending'),
+      tasksInProgress: taskCount('in_progress'),
       peersOnline: onlinePeers,
-      peersTotal: (peers || []).length,
-      notificationsUnread: notifCounts?.unread ?? 0,
+      peersTotal: peers === null ? null : peers.length,
+      notificationsUnread: notifCounts === null ? null : (notifCounts.unread ?? 0),
+      reviewTotal: reviewCounts === null ? null : (reviewCounts.total ?? 0),
     },
-    cos: {
-      running: cosStatus?.running ?? false,
-      paused: cosStatus?.paused ?? false,
+    cos: cosStatus === null ? null : {
+      running: cosStatus.running ?? false,
+      paused: cosStatus.paused ?? false,
     },
-    backup: {
-      status: backupState?.status ?? null,
-      lastRun: backupState?.lastRun ?? null,
+    backup: backupState === null ? null : {
+      status: backupState.status ?? null,
+      lastRun: backupState.lastRun ?? null,
     },
     health: {
-      cpuPercent: Number.isFinite(cpuUsagePercent) ? cpuUsagePercent : null,
+      cpuPercent,
       memPercent: memUsagePercent,
     },
-    character: {
-      level: character?.level ?? null,
-    },
-    instance: {
-      id: self?.instanceId ?? null,
-      name: self?.name ?? null,
+    character: { level: character === null ? null : (character.level ?? null) },
+    instance: self === null ? null : {
+      id: self.instanceId ?? null,
+      name: self.name ?? null,
     },
   };
 }
@@ -164,9 +208,12 @@ async function buildSnapshot() {
  */
 export async function captureSnapshot() {
   const frame = await buildSnapshot();
-  const { maxSnapshots } = await getSnapshotConfig();
 
   return queueSnapshotWrite(async () => {
+    // Resolve the cap inside the queued turn so the trim reads the freshest
+    // config alongside the persisted series (mirrors history.js keeping MAX in
+    // its write path).
+    const { maxSnapshots } = await getSnapshotConfig();
     const existing = await loadSnapshots();
     const next = [...existing, frame];
 

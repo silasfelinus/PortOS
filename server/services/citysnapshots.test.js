@@ -21,6 +21,9 @@ describe('citysnapshots service', () => {
     vi.doUnmock('./settings.js');
     vi.doUnmock('./apps.js');
     vi.doUnmock('./cos.js');
+    vi.doUnmock('./cosAgents.js');
+    vi.doUnmock('./cosTaskStore.js');
+    vi.doUnmock('./review.js');
     vi.doUnmock('./instances.js');
     vi.doUnmock('./backup.js');
     vi.doUnmock('./notifications.js');
@@ -30,10 +33,15 @@ describe('citysnapshots service', () => {
 
   // Load the service with the data dir redirected and all data-source services
   // mocked. `sources`/`settings` overrides let individual tests vary inputs.
-  async function loadService({ settings = {}, sources = {}, fileOverrides = {} } = {}) {
+  async function loadService({ settings = {}, sources = {}, reject = [], fileOverrides = {} } = {}) {
     // Honor an explicitly-provided override (including `null`) over the default;
     // `key in sources` distinguishes "not provided" from "provided as null".
     const src = (key, fallback) => (key in sources ? sources[key] : fallback);
+    // A getter named in `reject` rejects (simulating a failed source) so the
+    // service's .catch(() => FAILED) sentinel path is exercised.
+    const mock = (key, value) => reject.includes(key)
+      ? vi.fn().mockRejectedValue(new Error(`${key} unavailable`))
+      : vi.fn().mockResolvedValue(value);
     vi.doMock('../lib/fileUtils.js', async (importOriginal) => {
       const actual = await importOriginal();
       return { ...actual, PATHS: { ...actual.PATHS, data: dataDir }, ...fileOverrides };
@@ -42,31 +50,45 @@ describe('citysnapshots service', () => {
       getSettings: vi.fn().mockResolvedValue(settings),
     }));
     vi.doMock('./apps.js', () => ({
-      getAppStatuses: vi.fn().mockResolvedValue(src('appStatuses', [
-        { id: 'a1', name: 'App One', type: 'express', overallStatus: 'online', managed: true },
-        { id: 'a2', name: 'App Two', type: 'express', overallStatus: 'stopped', managed: true },
+      getAppStatuses: mock('appStatuses', src('appStatuses', [
+        { id: 'a1', name: 'App One', type: 'express', repoPath: '/repos/a1', overallStatus: 'online', managed: true },
+        { id: 'a2', name: 'App Two', type: 'express', repoPath: '/repos/a2', overallStatus: 'stopped', managed: true },
       ])),
     }));
     vi.doMock('./cos.js', () => ({
-      getStatus: vi.fn().mockResolvedValue(src('cosStatus', {
+      getStatus: mock('cosStatus', src('cosStatus', {
         running: true, paused: false, activeAgents: 2, pausedAgents: 0,
         stats: { tasksCompleted: 7 },
       })),
     }));
+    vi.doMock('./cosAgents.js', () => ({
+      getAgents: mock('agents', src('agents', [
+        { id: 'agent-1', status: 'running', workspacePath: '/repos/a1/sub' },
+        { id: 'agent-2', status: 'completed', workspacePath: '/repos/a2' },
+      ])),
+    }));
+    vi.doMock('./cosTaskStore.js', () => ({
+      getCosTasks: mock('taskState', src('taskState', {
+        tasks: [{ status: 'pending' }, { status: 'pending' }, { status: 'in_progress' }],
+      })),
+    }));
+    vi.doMock('./review.js', () => ({
+      getPendingCounts: mock('reviewCounts', src('reviewCounts', { total: 4, alert: 1, todo: 3 })),
+    }));
     vi.doMock('./instances.js', () => ({
-      getSelf: vi.fn().mockResolvedValue(src('self', { instanceId: 'inst-1', name: 'void' })),
-      getPeers: vi.fn().mockResolvedValue(src('peers', [
+      getSelf: mock('self', src('self', { instanceId: 'inst-1', name: 'void' })),
+      getPeers: mock('peers', src('peers', [
         { status: 'online' }, { status: 'offline' },
       ])),
     }));
     vi.doMock('./backup.js', () => ({
-      getState: vi.fn().mockResolvedValue(src('backupState', { status: 'success', lastRun: '2026-06-05T00:00:00.000Z' })),
+      getState: mock('backupState', src('backupState', { status: 'success', lastRun: '2026-06-05T00:00:00.000Z' })),
     }));
     vi.doMock('./notifications.js', () => ({
-      getCountsByType: vi.fn().mockResolvedValue(src('notifCounts', { total: 5, unread: 3, byType: {} })),
+      getCountsByType: mock('notifCounts', src('notifCounts', { total: 5, unread: 3, byType: {} })),
     }));
     vi.doMock('./character.js', () => ({
-      getCharacter: vi.fn().mockResolvedValue(src('character', { level: 4 })),
+      getCharacter: mock('character', src('character', { level: 4 })),
     }));
     return import('./citysnapshots.js');
   }
@@ -81,9 +103,14 @@ describe('citysnapshots service', () => {
       { id: 'a1', name: 'App One', status: 'online' },
       { id: 'a2', name: 'App Two', status: 'stopped' },
     ]);
+    // Only the running agent is captured, mapped to its app via repoPath prefix.
+    expect(frame.assignments).toEqual([
+      { agentId: 'agent-1', appId: 'a1', status: 'running' },
+    ]);
     expect(frame.counts).toMatchObject({
       appsOnline: 1, appsTotal: 2, agentsActive: 2, tasksCompleted: 7,
-      peersOnline: 1, peersTotal: 2, notificationsUnread: 3,
+      tasksPending: 2, tasksInProgress: 1,
+      peersOnline: 1, peersTotal: 2, notificationsUnread: 3, reviewTotal: 4,
     });
     expect(frame.cos).toEqual({ running: true, paused: false });
     expect(frame.backup).toEqual({ status: 'success', lastRun: '2026-06-05T00:00:00.000Z' });
@@ -132,16 +159,44 @@ describe('citysnapshots service', () => {
     }
   });
 
-  it('degrades a missing data source to a sentinel rather than dropping the frame', async () => {
+  it('degrades a null data source to a sentinel rather than dropping the frame', async () => {
     const svc = await loadService({
       sources: { character: null, backupState: null, self: null },
     });
     const frame = await svc.captureSnapshot();
     expect(frame.character).toEqual({ level: null });
-    expect(frame.backup).toEqual({ status: null, lastRun: null });
-    expect(frame.instance).toEqual({ id: null, name: null });
+    expect(frame.backup).toBeNull();
+    expect(frame.instance).toBeNull();
     // Frame still recorded despite missing sources.
     expect(readLines(snapshotsFile)).toHaveLength(1);
+  });
+
+  it('records null (not zero/empty) when a source throws, distinguishing failure from a real empty read', async () => {
+    const svc = await loadService({ reject: ['appStatuses', 'peers', 'reviewCounts'] });
+    const frame = await svc.captureSnapshot();
+
+    // Failed array sources → null, NOT [] — so the scrubber can skip the frame
+    // rather than rendering a transient outage as "all buildings demolished."
+    expect(frame.apps).toBeNull();
+    // Counts derived from a failed source are null, not a misleading 0.
+    expect(frame.counts.appsOnline).toBeNull();
+    expect(frame.counts.appsTotal).toBeNull();
+    expect(frame.counts.peersOnline).toBeNull();
+    expect(frame.counts.peersTotal).toBeNull();
+    expect(frame.counts.reviewTotal).toBeNull();
+    // Frame is still captured (partial > missing).
+    expect(readLines(snapshotsFile)).toHaveLength(1);
+  });
+
+  it('distinguishes a real empty read (0) from a failed one (null)', async () => {
+    const svc = await loadService({ sources: { appStatuses: [], peers: [], reviewCounts: { total: 0 } } });
+    const frame = await svc.captureSnapshot();
+    // Successful but empty → real zeros, not null.
+    expect(frame.apps).toEqual([]);
+    expect(frame.counts.appsOnline).toBe(0);
+    expect(frame.counts.appsTotal).toBe(0);
+    expect(frame.counts.peersOnline).toBe(0);
+    expect(frame.counts.reviewTotal).toBe(0);
   });
 
   it('getSnapshots honors limit (most-recent N) and since filters', async () => {
