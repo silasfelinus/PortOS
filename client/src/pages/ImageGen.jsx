@@ -37,6 +37,7 @@ import {
 } from 'lucide-react';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt';
 import { deriveAvailableBackends, IMAGE_GEN_MODE, isI2iCapableMode, pickI2iMode } from '../lib/imageGenBackends';
+import { clampImageDimensions } from '../lib/imageGenResolutions';
 import { DEFAULT_NEGATIVE_PROMPT } from '../lib/imageGenDefaults';
 import { resolveCleanersFromConfig } from '../lib/imageCleaners';
 import toast from '../components/ui/Toast';
@@ -493,9 +494,11 @@ export default function ImageGen() {
     const file = await normalizeImageOrientation(raw);
     revokeIfBlob(initImage.previewUrl);
     setInitImage({ source: 'upload', file, name: file.name, previewUrl: URL.createObjectURL(file) });
-    // Default the output resolution to the uploaded image's dimensions.
+    // Default the output resolution to the uploaded image's dimensions, clamped
+    // to the server's edge/pixel caps so a large phone photo doesn't 400 on Generate.
     const dims = await readImageDimensions(file);
-    if (dims) { setWidth(dims.width); setHeight(dims.height); }
+    const clamped = dims && clampImageDimensions(dims.width, dims.height);
+    if (clamped) { setWidth(clamped.width); setHeight(clamped.height); }
   };
   const handleClearInitImage = () => {
     revokeIfBlob(initImage.previewUrl);
