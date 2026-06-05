@@ -148,11 +148,14 @@ const avatarSchema = z.object({
   prompt: z.string().max(2000).optional(),
 });
 
-// SynthID-defeat regen (issue #912). Body is optional — both fields default
-// server-side (strength → DEFAULT_REGEN_STRENGTH, steps → the model default).
+// SynthID-defeat regen (issue #912). Body is optional — every field defaults
+// server-side (strength → DEFAULT_REGEN_STRENGTH, steps → the model default,
+// prompt → empty for minimal mutation). An empty/whitespace `prompt` is treated
+// as "no prompt" by buildRegenParams, so the UI can send '' for the default.
 const regenerateSchema = z.object({
   strength: z.number().min(REGEN_STRENGTH_MIN).max(REGEN_STRENGTH_MAX).optional(),
   steps: z.number().int().min(1).max(50).optional(),
+  prompt: z.string().max(8000).optional(),
 });
 
 router.get('/status', asyncHandler(async (req, res) => {
@@ -660,6 +663,7 @@ router.post('/:filename/regenerate', asyncHandler(async (req, res) => {
     pythonPath: backend.pythonPath,
     strength,
     steps: body.steps,
+    promptOverride: body.prompt,
   });
   const queued = enqueueJob({ kind: 'image', params });
   console.log(`♻️ Regenerating ${filename} via ${backend.model.id} (strength=${strength}) → job ${queued.jobId.slice(0, 8)}`);

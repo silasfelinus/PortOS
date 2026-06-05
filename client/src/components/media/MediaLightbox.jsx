@@ -80,6 +80,7 @@ export default function MediaLightbox({
   onClean,
   onRegenerate,
   regenAvailable = false,
+  regenBounds = null,
   onPrevious,
   onNext,
   hasPrevious = false,
@@ -323,6 +324,7 @@ export default function MediaLightbox({
             onClean={onClean}
             onRegenerate={onRegenerate}
             regenAvailable={regenAvailable}
+            regenBounds={regenBounds}
             copy={copy}
             onRefine={() => setRefineOpen(true)}
             annotation={annotation}
@@ -364,7 +366,7 @@ function PeerNotes({ others }) {
 
 function SettingsPane({
   item, meta, isVideo,
-  onClose, onRemix, onSendToVideo, onContinue, onClean, onRegenerate, regenAvailable,
+  onClose, onRemix, onSendToVideo, onContinue, onClean, onRegenerate, regenAvailable, regenBounds,
   copy, onRefine,
   annotation, onAnnotationChange,
   variantGroup, onSelectVariant,
@@ -372,6 +374,30 @@ function SettingsPane({
   const asideClasses = 'md:w-80 lg:w-96 shrink-0 flex flex-col border-t md:border-t-0 md:border-l border-port-border max-h-[40vh] md:max-h-[92vh]';
   const [cleaning, setCleaning] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  // Regen controls: the button toggles an inline panel (strength slider +
+  // optional prompt) so a watermark-defeat pass can be tuned without leaving the
+  // lightbox. Slider bounds come from the server (`regenBounds`) so the floor
+  // stays in lock-step with route validation.
+  const regenMin = typeof regenBounds?.strengthMin === 'number' ? regenBounds.strengthMin : 0.02;
+  const regenMax = typeof regenBounds?.strengthMax === 'number' ? regenBounds.strengthMax : 0.6;
+  const regenDefault = typeof regenBounds?.strengthDefault === 'number' ? regenBounds.strengthDefault : 0.25;
+  const [regenOpen, setRegenOpen] = useState(false);
+  const [regenStrength, setRegenStrength] = useState(regenDefault);
+  const [regenPrompt, setRegenPrompt] = useState('');
+  const runRegen = async () => {
+    if (regenerating) return;
+    setRegenerating(true);
+    let ok = false;
+    try {
+      await onRegenerate(item, { strength: regenStrength, prompt: regenPrompt.trim() || undefined });
+      ok = true;
+    } catch {
+      // Caller toasts its own error; stay open so the user can retry.
+    } finally {
+      setRegenerating(false);
+    }
+    if (ok) onClose();
+  };
   const starred = !!annotation?.starred;
   const closeThenRun = (handler) => {
     onClose?.();
@@ -625,14 +651,58 @@ function SettingsPane({
         {!isVideo && onRegenerate && regenAvailable && (
           <button
             type="button"
-            disabled={regenerating}
-            onClick={runBusyAction(regenerating, setRegenerating, onRegenerate)}
+            onClick={() => setRegenOpen((o) => !o)}
+            aria-expanded={regenOpen}
             title="Regenerate through a local FLUX model (img2img) to overwrite SynthID watermarking. Creates a new variant; the original is kept."
             aria-label="Regenerate image to defeat SynthID watermark"
-            className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-port-accent/80 text-white hover:opacity-90 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+            className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs text-white hover:opacity-90 rounded ${regenOpen ? 'bg-port-accent' : 'bg-port-accent/80'}`}
           >
-            <Wand2 className="w-3.5 h-3.5" /> {regenerating ? 'Queuing…' : 'Regenerate'}
+            <Wand2 className="w-3.5 h-3.5" /> Regenerate
           </button>
+        )}
+        {!isVideo && onRegenerate && regenAvailable && regenOpen && (
+          <div className="w-full mt-1 p-2.5 rounded border border-port-border bg-port-bg/60 space-y-2">
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label htmlFor="regen-strength" className="text-[11px] uppercase tracking-wide text-gray-400">Strength</label>
+                <span className="text-xs text-gray-200 tabular-nums">{regenStrength.toFixed(2)}</span>
+              </div>
+              <input
+                id="regen-strength"
+                type="range"
+                min={regenMin}
+                max={regenMax}
+                step={0.01}
+                value={regenStrength}
+                onChange={(e) => setRegenStrength(Number(e.target.value))}
+                disabled={regenerating}
+                className="w-full accent-port-accent"
+              />
+              <p className="mt-1 text-[10px] leading-snug text-gray-500">
+                Lower = more faithful (a re-encode floor of ~8% change). The watermark is overwritten by the round-trip regardless; raise it only if a low value doesn’t clear your detector.
+              </p>
+            </div>
+            <div>
+              <label htmlFor="regen-prompt" className="block mb-1 text-[11px] uppercase tracking-wide text-gray-400">Prompt <span className="normal-case text-gray-500">(optional)</span></label>
+              <input
+                id="regen-prompt"
+                type="text"
+                value={regenPrompt}
+                onChange={(e) => setRegenPrompt(e.target.value)}
+                disabled={regenerating}
+                placeholder="Leave empty for minimal change"
+                className="w-full px-2 py-1 text-xs rounded bg-port-card border border-port-border text-gray-100 placeholder:text-gray-600 focus:outline-none focus:border-port-accent"
+              />
+            </div>
+            <button
+              type="button"
+              disabled={regenerating}
+              onClick={runRegen}
+              className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-port-accent text-white hover:opacity-90 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Wand2 className="w-3.5 h-3.5" /> {regenerating ? 'Queuing…' : `Regenerate at ${regenStrength.toFixed(2)}`}
+            </button>
+          </div>
         )}
         {isVideo && onContinue && (
           <button

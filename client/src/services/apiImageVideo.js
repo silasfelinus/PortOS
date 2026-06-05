@@ -30,13 +30,18 @@ export const cleanGalleryImage = (filename) => request(`/image-gen/${encodeURICo
 // of a gallery image; returns the queue ack ({ jobId, position, ... }) — the
 // finished render lands in the gallery via the normal queue-completion refresh.
 // `silent` so the lightbox owns its own error toast (single-layer rule).
-export const regenerateGalleryImage = (filename, { strength, steps } = {}) =>
+export const regenerateGalleryImage = (filename, { strength, steps, prompt } = {}) =>
   request(`/image-gen/${encodeURIComponent(filename)}/regenerate`, {
     method: 'POST',
-    body: JSON.stringify({ ...(strength != null ? { strength } : {}), ...(steps != null ? { steps } : {}) }),
+    body: JSON.stringify({
+      ...(strength != null ? { strength } : {}),
+      ...(steps != null ? { steps } : {}),
+      ...(prompt != null ? { prompt } : {}),
+    }),
     silent: true,
   });
-// Whether the local FLUX regen backend is installed (hardware gate). `{ available, modelId, reason }`.
+// Whether the local FLUX regen backend is installed (hardware gate). Also carries
+// the strength slider bounds: `{ available, modelId, reason, strengthMin, strengthMax, strengthDefault }`.
 export const getRegenAvailability = () => request('/image-gen/regen/availability', { silent: true });
 
 // HuggingFace token (gated local Flux models). Stored in settings.imageGen.hfToken;

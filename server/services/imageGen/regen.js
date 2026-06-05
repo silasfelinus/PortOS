@@ -42,7 +42,16 @@ const IS_WIN = process.platform === 'win32';
 // minimum their SynthID detector still clears. Tune the default once that floor
 // is known.
 export const DEFAULT_REGEN_STRENGTH = 0.25;
-export const REGEN_STRENGTH_MIN = 0.1;
+// Floor is a small POSITIVE value, not 0. Empirically, mflux special-cases
+// strength 0.0 as "ignore the init image" — it regenerates a fresh, near-random
+// image (~49% pixel change) instead of round-tripping the source, which defeats
+// the whole point. 0.02 is the lowest value that still does a faithful pass; in
+// the 0.02–0.25 range the change is a flat ~8% (the VAE round-trip's own
+// reconstruction error — the irreducible minimum for this approach), so
+// "minimal processing" is already reached at the low end. The default stays at
+// a known-good 0.25 until a lower value is confirmed to still clear a SynthID
+// detector.
+export const REGEN_STRENGTH_MIN = 0.02;
 export const REGEN_STRENGTH_MAX = 0.6;
 
 // FLUX runs self-attention over latent tokens (~pixels/256) and the cost is
@@ -160,13 +169,17 @@ export async function resolveRegenBackend({ sourceModelId } = {}) {
 }
 
 // Slim shape for the UI gate — drives whether the lightbox shows the
-// Regenerate action at all.
+// Regenerate action, and carries the strength bounds so the in-lightbox slider
+// stays in lock-step with server validation (one place to tune the floor).
 export async function getRegenAvailability() {
   const resolved = await resolveRegenBackend();
   return {
     available: resolved.available,
     modelId: resolved.model?.id || null,
     reason: resolved.available ? null : resolved.reason,
+    strengthMin: REGEN_STRENGTH_MIN,
+    strengthMax: REGEN_STRENGTH_MAX,
+    strengthDefault: DEFAULT_REGEN_STRENGTH,
   };
 }
 

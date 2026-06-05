@@ -250,9 +250,12 @@ export default function ImageGen() {
   // Re-checked on mount AND when the Settings drawer closes (via
   // reloadBackends) so installing the FLUX venv mid-session reveals the action
   // without a hard reload, matching how the other backend gates refresh.
-  const [regenAvailable, setRegenAvailable] = useState(false);
+  // Full availability payload ({ available, strengthMin/Max/Default, … }) so the
+  // lightbox slider reads its bounds from the server.
+  const [regenInfo, setRegenInfo] = useState(null);
+  const regenAvailable = !!regenInfo?.available;
   const refreshRegenAvailability = useCallback(() => {
-    getRegenAvailability().then((r) => setRegenAvailable(!!r?.available)).catch(() => {});
+    getRegenAvailability().then((r) => setRegenInfo(r || null)).catch(() => {});
   }, []);
   useEffect(() => { refreshRegenAvailability(); }, [refreshRegenAvailability]);
 
@@ -834,9 +837,9 @@ export default function ImageGen() {
   // FLUX render: it returns a job ack, and the finished variant lands in the
   // gallery via the queue-completion refresh (useMediaCompletionRefresh /
   // pollQueue). Bump pendingQueued so the queue indicator + 4s poll engage.
-  const handleRegenerate = async (img) => {
+  const handleRegenerate = async (img, opts = {}) => {
     if (!img?.filename) throw new Error('Missing filename');
-    await regenerateGalleryImage(img.filename).catch((err) => {
+    await regenerateGalleryImage(img.filename, { strength: opts.strength, prompt: opts.prompt }).catch((err) => {
       toast.error(err.message || 'Failed to start regeneration');
       throw err;
     });
@@ -1318,8 +1321,9 @@ export default function ImageGen() {
         onRemix={(item) => item?.raw && handleRemix(item.raw)}
         onSendToVideo={(item) => item?.raw?.filename && sendToVideo(item.raw)}
         onClean={(item) => handleClean(item?.raw)}
-        onRegenerate={(item) => handleRegenerate(item?.raw)}
+        onRegenerate={(item, opts) => handleRegenerate(item?.raw, opts)}
         regenAvailable={regenAvailable}
+        regenBounds={regenInfo}
       />
 
 
