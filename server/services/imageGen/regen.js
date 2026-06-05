@@ -54,6 +54,33 @@ export const DEFAULT_REGEN_STRENGTH = 0.25;
 export const REGEN_STRENGTH_MIN = 0.02;
 export const REGEN_STRENGTH_MAX = 0.6;
 
+// Lighter default for sources that DON'T carry Google's SynthID. The big tools
+// tune denoise by generator (remove-ai-watermarks: OpenAI 0.10 / Gemini 0.15)
+// rather than using one flat value. We do the same, but conservatively: the
+// known-good 0.25 is preserved for SynthID-bearing generators (never lower the
+// SynthID path below the value confirmed to clear a detector), while local FLUX
+// renders — which have no Google watermark — use a lighter pass for better
+// fidelity when regenerated for other reasons.
+export const REGEN_LIGHT_STRENGTH_DEFAULT = 0.15;
+
+// Provider-aware denoise default for a regen of `sourceMeta`. SynthID rides on
+// gpt-image (codex) / Imagen / Gemini / Nano-Banana output; those keep the
+// conservative 0.25. Local FLUX sources (a `modelId` with no external `mode`,
+// or `mode: 'local'`) carry no SynthID, so default to the lighter pass.
+// Anything unidentified falls back to the conservative 0.25. The API `strength`
+// override and the [MIN, MAX] bounds are unaffected — this only sets the
+// *default* when the caller doesn't pin a value.
+export function resolveRegenStrengthDefault(sourceMeta = {}) {
+  const meta = sourceMeta || {};
+  const mode = typeof meta.mode === 'string' ? meta.mode.toLowerCase() : null;
+  const model = (typeof meta.modelId === 'string' ? meta.modelId
+    : typeof meta.model === 'string' ? meta.model : '').toLowerCase();
+  const synthIdBearing = mode === 'codex' || /gpt-image|imagen|gemini|nano-?banana/.test(model);
+  if (synthIdBearing) return DEFAULT_REGEN_STRENGTH;
+  const isLocalFlux = (!mode || mode === 'local') && !!model;
+  return isLocalFlux ? REGEN_LIGHT_STRENGTH_DEFAULT : DEFAULT_REGEN_STRENGTH;
+}
+
 // FLUX runs self-attention over latent tokens (~pixels/256) and the cost is
 // O(tokens²), so render resolution can't track the source for large images:
 // a 12.6 MP (4096×3072) codex render is ~60× the attention compute of a 1.5 MP
@@ -73,13 +100,30 @@ export const DEFAULT_MAX_REGEN_MEGAPIXELS = (() => {
 // a tiny input can't collapse to 0.
 const floor16 = (n) => Math.max(16, Math.floor(n / 16) * 16);
 
+// Deliberate resolution shift applied to EVERY regen, not just over-budget
+// images. SynthID's invisible carriers live at resolution-dependent FFT bins
+// (the key finding from the reverse-SynthID project: a codebook built at one
+// resolution can't locate the watermark at another), so a downscale→upscale
+// "resize-squeeze" disrupts them at essentially zero cost. The render runs at
+// this fraction of the source and is upscaled back to the exact source dims, so
+// every regen gets a second, GPU-free disruption vector layered on top of the
+// VAE round-trip. 0.9 reliably clears at least one /16 step for typical sizes
+// while keeping the upscale-back blur minimal.
+export const REGEN_SQUEEZE_FACTOR = 0.9;
+
 /**
- * Resolve the render dimensions for a regen pass: clamp the source to a
- * FLUX-sane megapixel budget (aspect-preserved) and round to multiples of 16.
- * Pure. Returns `{ width, height, scaled }` where `scaled` is true whenever the
- * render dims differ from the source (either because it was downscaled to fit
- * the budget OR because the source wasn't already /16) — i.e. whenever the
- * caller must upscale the result back to the source's exact dimensions.
+ * Resolve the render dimensions for a regen pass. Two reasons the render runs
+ * off the source's native resolution, both delivered back at the exact source
+ * dims via `upscaleTo`:
+ *   1. Over the megapixel budget → downscale (aspect-preserved) to fit FLUX's
+ *      O(tokens²) attention budget (a hard ceiling — see DEFAULT_MAX_REGEN_MEGAPIXELS).
+ *   2. Under budget → still apply the deliberate `REGEN_SQUEEZE_FACTOR` resize-
+ *      squeeze so the resolution always shifts, disrupting SynthID's
+ *      resolution-dependent frequency carriers.
+ * Pure. Returns `{ width, height, scaled }`; `scaled` is true whenever the
+ * render dims differ from the source — i.e. whenever the caller must upscale
+ * the result back to the source's exact dimensions (which, with the universal
+ * squeeze, is every real image).
  */
 export function clampRegenDimensions(srcWidth, srcHeight, maxMegapixels = DEFAULT_MAX_REGEN_MEGAPIXELS) {
   const w = Math.round(Number(srcWidth));
@@ -90,7 +134,8 @@ export function clampRegenDimensions(srcWidth, srcHeight, maxMegapixels = DEFAUL
     return { width: 1024, height: 1024, scaled: false };
   }
   const budgetPx = Math.max(1, maxMegapixels) * 1_000_000;
-  const scale = w * h > budgetPx ? Math.sqrt(budgetPx / (w * h)) : 1;
+  // Over budget: downscale to fit. Under budget: apply the universal squeeze.
+  const scale = w * h > budgetPx ? Math.sqrt(budgetPx / (w * h)) : REGEN_SQUEEZE_FACTOR;
   const rw = floor16(w * scale);
   const rh = floor16(h * scale);
   return { width: rw, height: rh, scaled: rw !== w || rh !== h };
@@ -180,6 +225,13 @@ export async function getRegenAvailability() {
     strengthMin: REGEN_STRENGTH_MIN,
     strengthMax: REGEN_STRENGTH_MAX,
     strengthDefault: DEFAULT_REGEN_STRENGTH,
+    // CPU-only spatial fallback. Always available (sharp is a hard dependency),
+    // so installs without a FLUX runner can still attempt a SynthID-disrupting
+    // pass — clearly labeled as less reliable than the GPU round-trip.
+    lightAvailable: true,
+    lightReason: resolved.available
+      ? 'CPU-only spatial pass — faster but less reliable than the FLUX round-trip.'
+      : 'No local FLUX runner installed. The light CPU pass is a best-effort, lower-reliability fallback.',
   };
 }
 
@@ -242,4 +294,89 @@ export function buildRegenParams({ filename, sourceAbsPath, sourceMeta = {}, sou
   }
   if (steps != null) params.steps = steps;
   return params;
+}
+
+// PSNR (dB) reported for a byte-identical pair — a finite sentinel above any
+// realistic regen PSNR (an 8% VAE-floor change lands near 30 dB), used instead
+// of Infinity so the value survives JSON serialization.
+export const PSNR_IDENTICAL = 100;
+
+// Measure how much a regen actually changed the image — source vs. delivered.
+// Every serious watermark tool gates on a fidelity metric (reverse-SynthID
+// PSNR-gates each stage); we only stamped the *requested* strength, never the
+// realized delta. This turns "trust me" into a number that catches the failure
+// modes a blind pass can't see: the mflux strength-0.0 footgun (~49% change), a
+// silent txt2img fallback, or plain over-mutation. Both images are decoded to a
+// small common raster (cheap, resolution-independent) and compared per-channel.
+// `a`/`b` are each a file path OR an in-memory Buffer (sharp accepts both) — the
+// caller passes buffers when it already has the bytes to skip a disk re-read.
+// Returns `{ pixelDeltaPct, psnr }` (psnr in dB; capped at PSNR_IDENTICAL for a
+// byte-identical pair so the value always survives JSON serialization — a raw
+// Infinity would round-trip to null through res.json/JSON.stringify), or null on
+// a decode failure so the caller can skip the stamp without failing the render.
+export async function computePixelDelta(a, b, sampleSize = 256) {
+  const toRaster = (src) => sharp(src)
+    .resize(sampleSize, sampleSize, { fit: 'fill', kernel: 'cubic' })
+    .removeAlpha()
+    .raw()
+    .toBuffer()
+    .catch(() => null);
+  const [ra, rb] = await Promise.all([toRaster(a), toRaster(b)]);
+  if (!ra || !rb || ra.length !== rb.length) return null;
+  let sumAbs = 0;
+  let sumSq = 0;
+  for (let i = 0; i < ra.length; i++) {
+    const d = ra[i] - rb[i];
+    sumAbs += d < 0 ? -d : d;
+    sumSq += d * d;
+  }
+  const pixelDeltaPct = Math.round((sumAbs / ra.length / 255) * 1000) / 10;
+  const mse = sumSq / ra.length;
+  // Finite cap for the identical case — JSON has no Infinity (it serializes to
+  // null), and a real regen never reaches it anyway (the pass always mutates).
+  const psnr = mse === 0 ? PSNR_IDENTICAL : Math.round(10 * Math.log10((255 * 255) / mse) * 10) / 10;
+  return { pixelDeltaPct, psnr };
+}
+
+// CPU-only "light" regen — the no-GPU fallback for installs without a local
+// FLUX runner (Windows mflux, no-GPU boxes, diffusers-only setups), which today
+// get NOTHING: imageClean.js's median+sharpen explicitly can't touch SynthID.
+// This layers the cheap spatial-domain stages the research tools use when no
+// diffusion model is available (reverse-SynthID's resize-squeeze + color nudge,
+// Synthid-Bypass's recompress):
+//   1. resize-squeeze (cubic down → lanczos up) — disrupts the resolution-
+//      dependent SynthID carriers, same idea as clampRegenDimensions but CPU-side.
+//   2. micro color/contrast nudge (modulate + linear) — imperceptible, shifts
+//      pixel statistics the watermark detector keys on.
+//   3. high-frequency perturbation (median + sharpen) — perturbs the band the
+//      invisible mark rides in.
+// HONESTLY less reliable than the VAE round-trip — spatial transforms can't do
+// the FFT phase-subtraction the GPU tools layer on top, so the caller MUST
+// label this as best-effort. Pure-ish: sharp in, `{ data, width, height }` out.
+// `sharpImpl` is injectable for tests.
+export async function applyLightRegen(buffer, { sharpImpl = sharp } = {}) {
+  const meta = await sharpImpl(buffer).metadata().catch(() => null);
+  const w = Math.round(Number(meta?.width));
+  const h = Math.round(Number(meta?.height));
+  if (!(w > 0) || !(h > 0)) return null;
+  const sw = floor16(w * REGEN_SQUEEZE_FACTOR);
+  const sh = floor16(h * REGEN_SQUEEZE_FACTOR);
+  // sharp applies only ONE resize per pipeline (a later .resize() OVERWRITES an
+  // earlier one — they don't chain), so the downscale→upscale squeeze MUST be
+  // two separate pipelines: render the squeezed buffer first, then upscale THAT
+  // back to the source dims. A single chained `.resize(sw,sh).resize(w,h)` would
+  // silently drop the downscale and skip the resolution shift that disrupts
+  // SynthID's resolution-dependent carriers — i.e. the light pass's whole point.
+  // No EXIF auto-orient: the gallery is PNG-only (no orientation tag), so the
+  // squeeze targets from un-rotated metadata keep the aspect and upscale-back exact.
+  const squeezed = await sharpImpl(buffer).resize(sw, sh, { kernel: 'cubic' }).png().toBuffer();
+  const data = await sharpImpl(squeezed)
+    .resize(w, h, { fit: 'fill', kernel: 'lanczos3' })
+    .modulate({ brightness: 1.01, saturation: 0.99, hue: 1 })
+    .linear(1.02, -2)
+    .median(2)
+    .sharpen()
+    .png({ compressionLevel: 6 })
+    .toBuffer();
+  return { data, width: w, height: h };
 }

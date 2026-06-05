@@ -839,6 +839,18 @@ export default function ImageGen() {
   // pollQueue). Bump pendingQueued so the queue indicator + 4s poll engage.
   const handleRegenerate = async (img, opts = {}) => {
     if (!img?.filename) throw new Error('Missing filename');
+    // CPU-only light path is synchronous (like Clean): it returns the new
+    // variant directly, so insert it into the gallery rather than waiting on
+    // the render queue.
+    if (opts.method === 'light') {
+      const variant = await regenerateGalleryImage(img.filename, { method: 'light' }).catch((err) => {
+        toast.error(err.message || 'Failed to run light regen');
+        throw err;
+      });
+      setGallery((g) => [variant, ...g.filter((x) => x.filename !== variant.filename)]);
+      toast.success(`Light regen → ${variant.filename}`);
+      return;
+    }
     await regenerateGalleryImage(img.filename, { strength: opts.strength, prompt: opts.prompt }).catch((err) => {
       toast.error(err.message || 'Failed to start regeneration');
       throw err;

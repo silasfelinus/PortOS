@@ -28,6 +28,7 @@ import { resolveFlux2Python, FLUX2_VENV_DEFAULT } from '../../lib/pythonSetup.js
 import { hfTokenEnv } from '../../lib/hfToken.js';
 import { safeChildProcessEnv } from '../../lib/processEnv.js';
 import { IMAGE_GEN_MODE } from './modes.js';
+import { computePixelDelta } from './regen.js';
 
 const IS_WIN = process.platform === 'win32';
 
@@ -383,6 +384,9 @@ export function buildSidecarMeta({
   if (typeof regenOf === 'string' && regenOf && validInitImagePath) {
     meta.cleanedFrom = regenOf;
     meta.regenerated = true;
+    // Explicit method so consumers never infer it by absence — the CPU path
+    // stamps 'light-spatial', this GPU round-trip stamps 'flux'.
+    meta.regenMethod = 'flux';
     meta.regenStrength = validInitImageStrength;
     meta.regenSteps = actualSteps;
     meta.regenModelId = modelId;
@@ -724,6 +728,19 @@ export async function generateImage({ pythonPath, prompt, negativePrompt = '', m
           meta.width = targetW;
           meta.height = targetH;
           console.log(`🔍 Upscaled regen [${jobId.slice(0, 8)}] ${meta.renderWidth}x${meta.renderHeight} → ${targetW}x${targetH}`);
+        }
+      }
+      // Regen fidelity (issue #912): for a regen pass, measure how much the
+      // delivered image actually changed vs. the source so the sidecar records
+      // the *realized* delta, not just the requested strength. Catches the
+      // mflux strength-0.0 footgun, silent txt2img fallbacks, and over-mutation.
+      // Best-effort — a decode failure just skips the stamp.
+      if (regenOf && validInitImagePath) {
+        const delta = await computePixelDelta(validInitImagePath, outputPath).catch(() => null);
+        if (delta) {
+          meta.regenPixelDeltaPct = delta.pixelDeltaPct;
+          meta.regenPsnr = delta.psnr;
+          console.log(`📐 Regen fidelity [${jobId.slice(0, 8)}]: ${delta.pixelDeltaPct}% changed, PSNR ${delta.psnr}dB`);
         }
       }
       // Sidecar: persist a metadata record next to the PNG so the gallery

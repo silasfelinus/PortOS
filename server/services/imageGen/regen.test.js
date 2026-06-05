@@ -25,7 +25,8 @@ import { existsSync } from 'node:fs';
 import {
   orderRegenCandidates, modelSupportsRegen, modelUsesFluxVenv,
   resolveRegenBackend, buildRegenParams, DEFAULT_REGEN_STRENGTH,
-  clampRegenDimensions,
+  REGEN_LIGHT_STRENGTH_DEFAULT, REGEN_SQUEEZE_FACTOR,
+  clampRegenDimensions, resolveRegenStrengthDefault, computePixelDelta,
 } from './regen.js';
 
 const FLUX2 = { id: 'flux2-klein-9b', runner: 'flux2', cfgDisabled: true };
@@ -155,11 +156,12 @@ describe('buildRegenParams', () => {
       initImagePath: '/data/images/source.png',
       initImageStrength: DEFAULT_REGEN_STRENGTH,
       regenOf: 'source.png',
-      width: 1024,
-      height: 768,
     });
-    // 1024x768 is ≤2MP and /16, so no scale-back is needed.
-    expect(params.upscaleTo).toBeUndefined();
+    // Universal resize-squeeze: even an under-budget /16 image renders smaller
+    // and is upscaled back to the source dims (the SynthID carrier-disruption pass).
+    expect(params.width).toBeLessThan(1024);
+    expect(params.height).toBeLessThan(768);
+    expect(params.upscaleTo).toEqual({ width: 1024, height: 768 });
   });
 
   it('honors an explicit promptOverride (creative re-roll) and carries the source negative', () => {
@@ -199,8 +201,11 @@ describe('buildRegenParams', () => {
       sourceMeta: { prompt: 'x', width: 100, height: 100 },
       sourceDims: { width: 1280, height: 720 },
     });
-    expect(params.width).toBe(1280);
-    expect(params.height).toBe(720);
+    // The render is squeezed, but it's delivered back at the MEASURED 1280x720
+    // (not the bogus 100x100 sidecar) — proving measured dims won.
+    expect(params.upscaleTo).toEqual({ width: 1280, height: 720 });
+    expect(params.width).toBeLessThan(1280);
+    expect(params.width).toBeGreaterThan(1280 * 0.8);
   });
 
   it('keeps the prompt empty even when the source has one (minimal mutation)', () => {
@@ -244,8 +249,18 @@ describe('buildRegenParams', () => {
 });
 
 describe('clampRegenDimensions', () => {
-  it('leaves a /16 image under budget untouched (no scale-back)', () => {
-    expect(clampRegenDimensions(1024, 1536)).toEqual({ width: 1024, height: 1536, scaled: false });
+  it('applies the universal resize-squeeze to an under-budget /16 image', () => {
+    // Even though 1024x1536 is ≤2MP and /16, the deliberate squeeze shifts the
+    // resolution (disrupting SynthID's resolution-dependent carriers) and flags
+    // scaled so the caller upscales back to the exact source dims.
+    const r = clampRegenDimensions(1024, 1536);
+    expect(r.scaled).toBe(true);
+    expect(r.width).toBeLessThan(1024);
+    expect(r.height).toBeLessThan(1536);
+    expect(r.width % 16).toBe(0);
+    expect(r.height % 16).toBe(0);
+    // Stays close to the source (≈ REGEN_SQUEEZE_FACTOR), not a drastic downscale.
+    expect(r.width).toBeGreaterThan(1024 * REGEN_SQUEEZE_FACTOR - 16);
   });
 
   it('downscales a 12.6MP image under the 2MP budget, /16, aspect-preserved', () => {
@@ -274,5 +289,28 @@ describe('clampRegenDimensions', () => {
   it('falls back to 1024x1024 for garbage dims', () => {
     expect(clampRegenDimensions(0, 500)).toEqual({ width: 1024, height: 1024, scaled: false });
     expect(clampRegenDimensions(NaN, NaN)).toEqual({ width: 1024, height: 1024, scaled: false });
+  });
+});
+
+describe('resolveRegenStrengthDefault', () => {
+  it('keeps the known-good 0.25 for SynthID-bearing codex sources', () => {
+    expect(resolveRegenStrengthDefault({ mode: 'codex', model: 'gpt-image-2' })).toBe(DEFAULT_REGEN_STRENGTH);
+  });
+
+  it('keeps 0.25 for gemini / imagen / nano-banana sources by model id', () => {
+    expect(resolveRegenStrengthDefault({ modelId: 'gemini-2.5-flash-image' })).toBe(DEFAULT_REGEN_STRENGTH);
+    expect(resolveRegenStrengthDefault({ modelId: 'imagen-3' })).toBe(DEFAULT_REGEN_STRENGTH);
+    expect(resolveRegenStrengthDefault({ modelId: 'nano-banana-pro' })).toBe(DEFAULT_REGEN_STRENGTH);
+  });
+
+  it('uses the lighter default for local FLUX sources (no Google watermark)', () => {
+    expect(resolveRegenStrengthDefault({ modelId: 'flux2-klein-9b' })).toBe(REGEN_LIGHT_STRENGTH_DEFAULT);
+    expect(resolveRegenStrengthDefault({ mode: 'local', modelId: 'dev' })).toBe(REGEN_LIGHT_STRENGTH_DEFAULT);
+  });
+
+  it('falls back to the conservative 0.25 for unidentified sources', () => {
+    expect(resolveRegenStrengthDefault({})).toBe(DEFAULT_REGEN_STRENGTH);
+    expect(resolveRegenStrengthDefault({ mode: 'external' })).toBe(DEFAULT_REGEN_STRENGTH);
+    expect(resolveRegenStrengthDefault(null)).toBe(DEFAULT_REGEN_STRENGTH);
   });
 });
