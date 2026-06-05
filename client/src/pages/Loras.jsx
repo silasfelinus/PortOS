@@ -409,36 +409,39 @@ function SuggestionsSection({ label, hint, cards, alwaysShow = false, runner = n
       {list.length === 0 ? (
         <p className="text-xs text-gray-600 italic">
           {activeQuery
-            ? `No LoRAs match “${activeQuery}” for this base model.`
+            ? `No LoRAs match “${activeQuery}” for this base model${canLoadMore ? ' on this page — try Load more.' : '.'}`
             : 'No LoRAs found on Civitai for this base model yet.'}
         </p>
       ) : (
-        <>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-            {list.map((card) => (
-              <SuggestionCard
-                key={cardKey(card)}
-                card={card}
-                installedFilenames={installedFilenames}
-                installingSuggestionKey={installingSuggestionKey}
-                onInstall={onInstall}
-              />
-            ))}
-          </div>
-          {canLoadMore && (
-            <div className="mt-3 flex justify-center">
-              <button
-                type="button"
-                onClick={loadMore}
-                disabled={loading}
-                className="text-xs text-gray-300 hover:text-white px-4 py-1.5 rounded border border-port-border hover:border-port-accent/40 disabled:opacity-50 flex items-center gap-1.5"
-              >
-                {loading ? <RefreshCw size={12} className="animate-spin" /> : <Download size={12} />}
-                {loading ? 'Loading…' : 'Load more'}
-              </button>
-            </div>
-          )}
-        </>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          {list.map((card) => (
+            <SuggestionCard
+              key={cardKey(card)}
+              card={card}
+              installedFilenames={installedFilenames}
+              installingSuggestionKey={installingSuggestionKey}
+              onInstall={onInstall}
+            />
+          ))}
+        </div>
+      )}
+      {/* "Load more" sits OUTSIDE the empty/non-empty branch on purpose: a live
+          Civitai page can come back empty yet carry a nextCursor (later pages
+          hold matches for some keyword + base-model combos), so the control
+          must stay reachable to advance past empty pages instead of trapping
+          the user on a false "no matches" state. */}
+      {canLoadMore && (
+        <div className="mt-3 flex justify-center">
+          <button
+            type="button"
+            onClick={loadMore}
+            disabled={loading}
+            className="text-xs text-gray-300 hover:text-white px-4 py-1.5 rounded border border-port-border hover:border-port-accent/40 disabled:opacity-50 flex items-center gap-1.5"
+          >
+            {loading ? <RefreshCw size={12} className="animate-spin" /> : <Download size={12} />}
+            {loading ? 'Loading…' : 'Load more'}
+          </button>
+        </div>
       )}
     </div>
   );
