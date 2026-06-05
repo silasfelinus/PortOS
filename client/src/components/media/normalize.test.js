@@ -115,6 +115,33 @@ describe('getRenderConfigForItem - image', () => {
   });
 });
 
+describe('normalizeImage - regen lineage (issue #912)', () => {
+  it('carries the regen lineage fields through normalization', () => {
+    const n = normalizeImage({
+      filename: 'r.png',
+      cleanedFrom: 'src.png',
+      regenerated: true,
+      regenStrength: 0.4,
+      regenSteps: 8,
+      regenModelId: 'flux2-klein-9b',
+    });
+    // These MUST survive normalization — computeImageVariantGroup reads
+    // `regenerated` off normalized items to label the variant "Regenerated".
+    expect(n.regenerated).toBe(true);
+    expect(n.regenStrength).toBe(0.4);
+    expect(n.regenSteps).toBe(8);
+    expect(n.regenModelId).toBe('flux2-klein-9b');
+    expect(n.cleanedFrom).toBe('src.png');
+  });
+
+  it('defaults regen fields off for a normal (non-regen) image', () => {
+    const n = normalizeImage({ filename: 'a.png' });
+    expect(n.regenerated).toBe(false);
+    expect(n.regenStrength).toBeNull();
+    expect(n.regenModelId).toBeNull();
+  });
+});
+
 describe('normalize loraNames - snake_case sidecar coverage', () => {
   // MediaCard chips/search read `item.loraNames`; these must surface for
   // sidecars written in any of the four supported field shapes so the UI

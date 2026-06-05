@@ -46,7 +46,7 @@ import { useModelDownloadStatus } from '../hooks/useModelDownloadStatus';
 import {
   getImageGenStatus, generateImage, listImageModels, listLorasFull, listImageGallery,
   cancelImageGen, deleteImage, setImageHidden, cleanGalleryImage, getActiveImageJob, getSettings,
-  buildFormData, listMediaJobs,
+  buildFormData, listMediaJobs, regenerateGalleryImage, getRegenAvailability,
 } from '../services/api';
 
 // Multi-reference editing (FLUX.2 only) — 4 fixed slots, each carrying an
@@ -245,9 +245,21 @@ export default function ImageGen() {
   }, []);
   useMediaCompletionRefresh({ onImageCompleted: refreshGallery });
 
+  // SynthID-defeat regen (issue #912) is hardware-gated on a local FLUX
+  // runner — only surface the lightbox action when the backend is installed.
+  // Re-checked on mount AND when the Settings drawer closes (via
+  // reloadBackends) so installing the FLUX venv mid-session reveals the action
+  // without a hard reload, matching how the other backend gates refresh.
+  const [regenAvailable, setRegenAvailable] = useState(false);
+  const refreshRegenAvailability = useCallback(() => {
+    getRegenAvailability().then((r) => setRegenAvailable(!!r?.available)).catch(() => {});
+  }, []);
+  useEffect(() => { refreshRegenAvailability(); }, [refreshRegenAvailability]);
+
   // Re-runnable so the Settings drawer can trigger a refresh on close
   // without forcing a full page reload.
   const reloadBackends = useCallback(() => {
+    refreshRegenAvailability();
     return getSettings().then((s) => {
       const backends = deriveAvailableBackends(s);
       // Per-mode saved defaults via the shared helper (mirrored from
@@ -278,7 +290,7 @@ export default function ImageGen() {
       setCleanC2PA(c2[next] === true);
       setDenoise(dn[next] === true);
     }).catch(() => {});
-  }, []);
+  }, [refreshRegenAvailability]);
 
   // Re-seed the cleaner checkboxes when the user manually picks a different
   // backend chip — without this, switching external→local would leave the
@@ -815,6 +827,20 @@ export default function ImageGen() {
     toast.success(`Cleaned → ${cleaned.filename}`);
   };
 
+  // SynthID-defeat regen (issue #912) — unlike clean, this is a queued local
+  // FLUX render: it returns a job ack, and the finished variant lands in the
+  // gallery via the queue-completion refresh (useMediaCompletionRefresh /
+  // pollQueue). Bump pendingQueued so the queue indicator + 4s poll engage.
+  const handleRegenerate = async (img) => {
+    if (!img?.filename) throw new Error('Missing filename');
+    await regenerateGalleryImage(img.filename).catch((err) => {
+      toast.error(err.message || 'Failed to start regeneration');
+      throw err;
+    });
+    setPendingQueued((n) => n + 1);
+    toast.success('Regenerating — the new image will appear when it finishes');
+  };
+
   const sendToVideo = (img) => {
     if (!img?.filename) return;
     const params = new URLSearchParams({ sourceImageFile: img.filename });
@@ -1288,6 +1314,8 @@ export default function ImageGen() {
         onRemix={(item) => item?.raw && handleRemix(item.raw)}
         onSendToVideo={(item) => item?.raw?.filename && sendToVideo(item.raw)}
         onClean={(item) => handleClean(item?.raw)}
+        onRegenerate={(item) => handleRegenerate(item?.raw)}
+        regenAvailable={regenAvailable}
       />
 
 

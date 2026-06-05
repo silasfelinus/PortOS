@@ -70,6 +70,14 @@ export function normalizeImage(i) {
     cleanLevel: i.cleanLevel || null,
     autoCleaned: i.autoCleaned === true,
     c2paStripped: typeof i.c2paStripped === 'boolean' ? i.c2paStripped : null,
+    // SynthID-defeat regen lineage (issue #912) — stamped by
+    // /api/image-gen/:filename/regenerate. `regenerated` is the discriminator
+    // computeImageVariantGroup uses to label a `cleanedFrom` sibling as
+    // "Regenerated" rather than "Cleaned", so it MUST survive normalization.
+    regenerated: i.regenerated === true,
+    regenStrength: typeof i.regenStrength === 'number' ? i.regenStrength : null,
+    regenSteps: typeof i.regenSteps === 'number' ? i.regenSteps : null,
+    regenModelId: i.regenModelId || null,
     raw: i,
   };
 }

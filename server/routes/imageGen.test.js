@@ -31,6 +31,8 @@ vi.mock('../services/imageGen/index.js', () => ({
     listLoraFilenames: vi.fn(async () => []),
     listGallery: vi.fn(async () => []),
     deleteImage: vi.fn(async () => ({ ok: true })),
+    assertGalleryFilename: vi.fn(),
+    readImageSidecar: vi.fn(async () => ({ path: '', metadata: {} })),
   },
 }));
 
@@ -787,6 +789,36 @@ describe('Image Gen Routes', () => {
       expect(r.body.archMismatch).toBe(false);
       expect(r.body.suggestedArm64Python).toBeNull();
       expect(detectArm64Python).not.toHaveBeenCalled();
+    });
+  });
+
+  // SynthID-defeat regen (issue #912).
+  describe('GET /api/image-gen/regen/availability', () => {
+    it('reports the local FLUX backend as available when the venv is healthy', async () => {
+      // isFlux2VenvHealthy is mocked to true and the real model registry
+      // carries FLUX.2 models, so a flux-venv model resolves.
+      const response = await request(app).get('/api/image-gen/regen/availability');
+      expect(response.status).toBe(200);
+      expect(response.body.available).toBe(true);
+      expect(typeof response.body.modelId).toBe('string');
+    });
+  });
+
+  describe('POST /api/image-gen/:filename/regenerate', () => {
+    it('rejects an out-of-range strength before touching the filesystem (400)', async () => {
+      const response = await request(app)
+        .post('/api/image-gen/whatever.png/regenerate')
+        .send({ strength: 0.95 }); // max is 0.6
+      expect(response.status).toBe(400);
+      expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
+    });
+
+    it('404s when the source image is not in the gallery', async () => {
+      const response = await request(app)
+        .post('/api/image-gen/does-not-exist.png/regenerate')
+        .send({});
+      expect(response.status).toBe(404);
+      expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
     });
   });
 });
