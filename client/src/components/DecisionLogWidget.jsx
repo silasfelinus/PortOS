@@ -254,7 +254,7 @@ const DecisionLogWidget = memo(function DecisionLogWidget() {
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <ProvenanceChip {...DECISION_PROVENANCE} />
+          <ProvenanceChip {...DECISION_PROVENANCE} align="end" />
           <Link
             to="/cos/learning"
             className="flex items-center gap-1 text-sm text-port-accent hover:text-port-accent/80 transition-colors min-h-[40px] px-2"

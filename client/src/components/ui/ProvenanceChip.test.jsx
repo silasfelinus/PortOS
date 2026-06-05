@@ -71,4 +71,22 @@ describe('ProvenanceChip', () => {
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByText('What would change this?')).toBeNull();
   });
+
+  it('anchors the popover left by default and right when align="end"', () => {
+    // Right-aligned headers (dashboard widgets, the goal detail panel) sit inside
+    // overflow-hidden cells, so a left-anchored (rightward-opening) popover would
+    // clip off the card edge. align="end" opens it leftward instead.
+    const { unmount } = render(<ProvenanceChip level="inferred" />);
+    fireEvent.click(screen.getByRole('button'));
+    let popover = screen.getByText('What would change this?').closest('div');
+    expect(popover.className).toContain('left-0');
+    expect(popover.className).not.toContain('right-0');
+    unmount();
+
+    render(<ProvenanceChip level="inferred" align="end" />);
+    fireEvent.click(screen.getByRole('button'));
+    popover = screen.getByText('What would change this?').closest('div');
+    expect(popover.className).toContain('right-0');
+    expect(popover.className).not.toContain('left-0');
+  });
 });

@@ -37,6 +37,7 @@ export default function ProvenanceChip({
   explainer,
   whatWouldChange,
   className = '',
+  align = 'start',
 }) {
   const meta = getProvenanceLevel(level);
   const [open, setOpen] = useState(false);
@@ -78,7 +79,11 @@ export default function ProvenanceChip({
       {open && (
         <div
           id={popId}
-          className="absolute left-0 top-full z-30 mt-1.5 w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-port-border bg-port-card p-3 text-left shadow-xl"
+          // `align="end"` anchors the popover to the chip's right edge (opens
+          // leftward) so a chip sitting in a right-aligned header — dashboard
+          // widget headers, the goal detail panel — doesn't push its 16rem panel
+          // off the card's right edge (dashboard cells clip with overflow-hidden).
+          className={`absolute ${align === 'end' ? 'right-0' : 'left-0'} top-full z-30 mt-1.5 w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-port-border bg-port-card p-3 text-left shadow-xl`}
         >
           <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-gray-200 normal-case tracking-normal">
             <Icon size={12} aria-hidden="true" className={`shrink-0 ${iconTone}`} />

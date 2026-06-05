@@ -91,7 +91,7 @@ const ProactiveAlertsWidget = memo(function ProactiveAlertsWidget() {
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {hasAlerts && <ProvenanceChip {...ALERT_PROVENANCE} />}
+          {hasAlerts && <ProvenanceChip {...ALERT_PROVENANCE} align="end" />}
           {hasAlerts && counts.total > 5 && (
             <Link
               to="/cos"
