@@ -228,31 +228,36 @@ export const loadHistory = () => readJSONFile(HISTORY_FILE, []);
 export const saveHistory = (h) => atomicWrite(HISTORY_FILE, h);
 
 // FFLF/ltx2 stage-2 peak memory scales with the pixel-frame count
-// (width × height × numFrames), so the cap is on that product. Two anchors,
-// both measured on real renders:
+// (width × height × numFrames), so the cap is on that product. Anchors are
+// measured on real renders:
 //   •  48 GB unified RAM → 704×448×25 ≈ 7.9M pixel-frames is the largest that
-//      fits stage 2 (704×448×97 OOMs there). This stays the floor.
+//      fits stage 2 (704×448×97 OOMs there). This is the tested-safe value.
 //   • 128 GB unified RAM → 768×512×97 ≈ 38.1M pixel-frames renders comfortably
 //      (validated for issue #737). 97 frames is the threshold below which FFLF
 //      interpolation visibly strobes (frames advance in near-duplicate pairs),
 //      so a budget that can't reach 97 frames at a usable resolution forces the
 //      poor-motion regime — the whole reason this scales with RAM now.
-// Linearly interpolate per detected total RAM, floored at the 48 GB value so
-// machines at or below 48 GB are never given LESS than the previously-shipped
-// (tested-safe) cap — i.e. this only ever raises the budget, never lowers it.
-const FFLF_BUDGET_48GB = 704 * 448 * 25; //  7,884,800 — tested-safe floor (≤48 GB)
+// HOLD the tested-safe value through 64 GB, THEN ramp 64→128 GB up to the
+// validated value. The stage-2 path is documented to OOM on 64 GB Macs at full
+// resolution (see buildLtx2Args below), so the 48–64 GB band keeps EXACTLY the
+// previously-shipped cap — no machine that already ran is handed a larger,
+// untested budget. The bump is reserved for the headroom above 64 GB, and the
+// curve only ever raises the cap, never lowers it. FFLF_LTX2_PIXEL_BUDGET
+// overrides entirely (raise it on a roomy box, lower it if a render OOMs).
+const FFLF_BUDGET_FLOOR = 704 * 448 * 25; //  7,884,800 — tested-safe (held ≤64 GB)
 const FFLF_BUDGET_128GB = 768 * 512 * 97; // 38,141,952 — validated on 128 GB (#737)
-const FFLF_BUDGET_SLOPE = (FFLF_BUDGET_128GB - FFLF_BUDGET_48GB) / (128 - 48); // px-frames per GB above 48
+const FFLF_RAMP_START_GB = 64; // below this, hold the floor (64 GB Macs OOM at full res)
+const FFLF_BUDGET_SLOPE = (FFLF_BUDGET_128GB - FFLF_BUDGET_FLOOR) / (128 - FFLF_RAMP_START_GB); // px-frames/GB above 64
 const BYTES_PER_GB = 1024 ** 3;
 
 // Pure: pixel-frame budget for a machine with `totalMemBytes` of unified RAM.
-// Anchored on the two measured points above, floored at the 48 GB value.
+// Held at the tested-safe floor through 64 GB, then linear to the 128 GB anchor.
 // Exported for unit testing; resolveFflfLtx2PixelBudget wraps it with os.totalmem().
 export const computeFflfLtx2PixelBudget = (totalMemBytes) => {
   const gb = Number(totalMemBytes) / BYTES_PER_GB;
-  if (!(gb > 0)) return FFLF_BUDGET_48GB;
-  const scaled = FFLF_BUDGET_48GB + (gb - 48) * FFLF_BUDGET_SLOPE;
-  return Math.round(Math.max(FFLF_BUDGET_48GB, scaled));
+  if (!(gb > 0)) return FFLF_BUDGET_FLOOR;
+  const overRamp = Math.max(0, gb - FFLF_RAMP_START_GB);
+  return Math.round(FFLF_BUDGET_FLOOR + overRamp * FFLF_BUDGET_SLOPE);
 };
 
 // Effective FFLF/ltx2 stage-2 pixel-frame budget. FFLF_LTX2_PIXEL_BUDGET wins

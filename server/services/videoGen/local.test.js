@@ -454,23 +454,29 @@ describe('FFLF/ltx2 pixel-budget helpers', () => {
   });
 
   describe('computeFflfLtx2PixelBudget (RAM-scaled, pure)', () => {
-    it('hits the measured anchors exactly: 48 GB floor and 128 GB validated', () => {
+    it('hits the measured anchors exactly: 128 GB validated, tested-safe value at 48 GB', () => {
       expect(computeFflfLtx2PixelBudget(48 * GB)).toBe(DEFAULT_BUDGET);
       expect(computeFflfLtx2PixelBudget(128 * GB)).toBe(BUDGET_128GB);
     });
 
-    it('never drops below the 48 GB floor on smaller machines', () => {
-      expect(computeFflfLtx2PixelBudget(32 * GB)).toBe(DEFAULT_BUDGET);
-      expect(computeFflfLtx2PixelBudget(16 * GB)).toBe(DEFAULT_BUDGET);
+    it('holds the tested-safe floor through 64 GB so no already-running machine gets a larger untested cap', () => {
+      // 64 GB Macs are documented to OOM at full resolution — keep their cap
+      // EXACTLY where it shipped, don't extrapolate them upward.
       expect(computeFflfLtx2PixelBudget(8 * GB)).toBe(DEFAULT_BUDGET);
+      expect(computeFflfLtx2PixelBudget(16 * GB)).toBe(DEFAULT_BUDGET);
+      expect(computeFflfLtx2PixelBudget(32 * GB)).toBe(DEFAULT_BUDGET);
+      expect(computeFflfLtx2PixelBudget(48 * GB)).toBe(DEFAULT_BUDGET);
+      expect(computeFflfLtx2PixelBudget(64 * GB)).toBe(DEFAULT_BUDGET);
+      // Just past the ramp start it begins to rise.
+      expect(computeFflfLtx2PixelBudget(65 * GB)).toBeGreaterThan(DEFAULT_BUDGET);
     });
 
-    it('scales monotonically with RAM between and above the anchors', () => {
-      const b64 = computeFflfLtx2PixelBudget(64 * GB);
+    it('scales monotonically with RAM above the 64 GB ramp start', () => {
+      const b80 = computeFflfLtx2PixelBudget(80 * GB);
       const b96 = computeFflfLtx2PixelBudget(96 * GB);
       const b256 = computeFflfLtx2PixelBudget(256 * GB);
-      expect(b64).toBeGreaterThan(DEFAULT_BUDGET);
-      expect(b96).toBeGreaterThan(b64);
+      expect(b80).toBeGreaterThan(DEFAULT_BUDGET);
+      expect(b96).toBeGreaterThan(b80);
       expect(BUDGET_128GB).toBeGreaterThan(b96);
       expect(b256).toBeGreaterThan(BUDGET_128GB);
     });
