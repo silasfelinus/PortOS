@@ -2073,6 +2073,7 @@ export default function UniverseBuilder() {
         annotations={annotations}
         updateAnnotation={updateAnnotation}
         onRemix={preview?.key?.startsWith('canon-sheet:') ? undefined : previewActions.handleRemix}
+        onSendToImage={preview?.key?.startsWith('canon-sheet:') ? undefined : previewActions.handleSendToImage}
         onSendToVideo={preview?.key?.startsWith('canon-sheet:') ? undefined : previewActions.handleSendToVideo}
         onClean={preview?.key?.startsWith('canon-sheet:') ? undefined : (item) => previewActions.handleClean(item?.raw || item)}
         onContinue={preview?.key?.startsWith('canon-sheet:') ? undefined : (item) => previewActions.handleContinue(item?.raw || item)}

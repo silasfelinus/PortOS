@@ -79,6 +79,7 @@ export default function MediaLightbox({
   item,
   onClose,
   onRemix,
+  onSendToImage,
   onSendToVideo,
   onContinue,
   onClean,
@@ -323,6 +324,7 @@ export default function MediaLightbox({
             isVideo={isVideo}
             onClose={onClose}
             onRemix={onRemix}
+            onSendToImage={onSendToImage}
             onSendToVideo={onSendToVideo}
             onContinue={onContinue}
             onClean={onClean}
@@ -370,7 +372,7 @@ function PeerNotes({ others }) {
 
 function SettingsPane({
   item, meta, isVideo,
-  onClose, onRemix, onSendToVideo, onContinue, onClean, onRegenerate, regenAvailable, regenBounds,
+  onClose, onRemix, onSendToImage, onSendToVideo, onContinue, onClean, onRegenerate, regenAvailable, regenBounds,
   copy, onRefine,
   annotation, onAnnotationChange,
   variantGroup, onSelectVariant,
@@ -623,6 +625,16 @@ function SettingsPane({
             className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-port-accent text-white hover:opacity-90 rounded"
           >
             <Sparkles className="w-3.5 h-3.5" /> Remix
+          </button>
+        )}
+        {!isVideo && onSendToImage && (
+          <button
+            type="button"
+            onClick={() => closeThenRun(onSendToImage)}
+            title="Open this image in Image Gen as the image-to-image source"
+            className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-port-accent/80 text-white hover:opacity-90 rounded"
+          >
+            <Wand2 className="w-3.5 h-3.5" /> Send to i2i
           </button>
         )}
         {!isVideo && onSendToVideo && (

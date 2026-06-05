@@ -160,13 +160,27 @@ describe('Image Gen Routes', () => {
       expect(imageGen.generateImage).toHaveBeenCalledWith(expect.objectContaining({ prompt: 'a fantasy landscape' }));
     });
 
-    it('should return 400 if prompt is missing', async () => {
+    it('accepts a missing/empty prompt (i2i / edit / unconditional), defaulting it to empty', async () => {
+      imageGen.generateImage.mockResolvedValue({
+        generationId: 'gen-empty',
+        filename: 'test.png',
+        path: '/data/images/test.png'
+      });
       const response = await request(app)
         .post('/api/image-gen/generate')
         .send({});
 
+      expect(response.status).toBe(200);
+      expect(imageGen.generateImage).toHaveBeenCalledWith(expect.objectContaining({ prompt: '' }));
+    });
+
+    it('rejects a Codex text-to-image request with no prompt and no init image (synchronous 400)', async () => {
+      const response = await request(app)
+        .post('/api/image-gen/generate')
+        .send({ mode: 'codex' });
+
       expect(response.status).toBe(400);
-      expect(imageGen.generateImage).not.toHaveBeenCalled();
+      expect(response.body.code).toBe('VALIDATION_ERROR');
     });
 
     it('should validate width and height bounds', async () => {
