@@ -30,6 +30,7 @@
 - **[issue-895] Internal: pinned the goal-organization apex round-trip with a test** — Confirmed "create a new apex from AI suggestions" already works end-to-end and added regression coverage so it can't silently break. No user-facing change.
 - **Internal: restored a green lint build** — Added the standard DOM element globals the client lint config was missing, so the build's lint check passes again. No user-facing change.
 - **[issue-739] LTX-2 video runtime updated to v0.14.8** — Bumped the bundled LTX-2 (Apple Silicon) video generator to a newer upstream release with better memory behavior on HD and long renders and a fix that stops character LoRAs from silently dropping on Extend and high-quality modes. All five render modes (text, image, keyframe, extend, audio-to-video) keep working across the upgrade, and the previous version stays supported until an install re-runs its image/video setup.
+- **[issue-907] Internal: upgraded the server validation library to Zod 4** — Migrated the server's request-validation layer to the Zod 4 major release, preserving the exact accept/reject behavior of every existing rule (including a fix so partial-update saves no longer risk silently resetting fields you didn't touch). No user-facing change.
 
 ## Fixed
 
