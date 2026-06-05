@@ -53,7 +53,37 @@ function classifyProbeError(err, peer) {
   // (used for HTTPS peer hops via peerFetch) destroys the request with a
   // plain `new Error('Request aborted')` instead — both are timeouts here.
   if (code === 'ETIMEDOUT' || err?.name === 'AbortError' || err?.message === 'Request aborted') return `🌐 ⏱️ Probe timeout (${PROBE_TIMEOUT_MS}ms)`;
+  // The peer is reachable but gated by an auth proxy (Tailscale serve, Caddy,
+  // nginx Basic auth). Point the user at the per-peer credential field rather
+  // than letting it read like a generic failure.
+  if (err?.httpStatus === 401 || err?.httpStatus === 403) {
+    return `🔒 Authentication required (HTTP ${err.httpStatus}) — set a username/password for this peer in the Instances UI`;
+  }
   return err?.message || String(err);
+}
+
+// Normalize a credential object off a peer add/update payload. Returns:
+//   - `undefined` for absent / malformed input (caller leaves the field as-is)
+//   - `null` for an explicit clear (both fields blank)
+//   - `{ username, password }` for a credential to store
+// Username defaults to '' so a password-only credential is valid Basic auth.
+function sanitizePeerAuth(auth) {
+  if (auth === null) return null;
+  if (!auth || typeof auth !== 'object' || Array.isArray(auth)) return undefined;
+  const username = typeof auth.username === 'string' ? auth.username.trim() : '';
+  const password = typeof auth.password === 'string' ? auth.password : '';
+  if (!username && !password) return null;
+  return { username, password };
+}
+
+// Strip the locally-stored proxy credential before a peer record crosses the
+// wire (e.g. the announce response echoes the matched local peer back to the
+// announcing instance). The password is OUR secret for reaching THEM and must
+// never leak to the peer itself.
+export function redactPeerForWire(peer) {
+  if (!peer || typeof peer !== 'object' || !('auth' in peer)) return peer;
+  const { auth: _auth, ...rest } = peer;
+  return rest;
 }
 
 // Default data shape
@@ -174,13 +204,18 @@ const DEFAULT_SYNC_CATEGORIES = {
 
 export { DEFAULT_SYNC_CATEGORIES };
 
-export async function addPeer({ address, port = DEFAULT_PEER_PORT, name, host }) {
+export async function addPeer({ address, port = DEFAULT_PEER_PORT, name, host, auth }) {
   const peer = await withData(async (data) => {
     const normalizedHost = validHost(host);
+    const normalizedAuth = sanitizePeerAuth(auth);
     const entry = {
       id: crypto.randomUUID(),
       address,
       host: normalizedHost || null,
+      // Optional HTTP Basic credential for peers gated behind an auth proxy.
+      // null when unset; `peerAuthHeaders` no-ops on it. Stays local — never
+      // synced or announced (see redactPeerForWire).
+      auth: normalizedAuth || null,
       // Set to true once the user explicitly chooses a host (set/clear via UI).
       // Once true, handleAnnounce never auto-overwrites — it's the only way to
       // honor "the user explicitly cleared this; stay on IP" against a peer
@@ -248,6 +283,16 @@ export async function updatePeer(id, updates) {
       peer.syncCategories = { ...prev, ...incoming };
       if (turnedOnKinds.length > 0) backfillPeerInstanceId = peer.instanceId || null;
     }
+    // Optional proxy credential. `null` (or both fields blank) clears it; a
+    // valid object replaces it; malformed input (sanitizePeerAuth → undefined)
+    // is ignored so a stray payload can't wipe a working credential.
+    if (updates.auth !== undefined) {
+      const normalizedAuth = sanitizePeerAuth(updates.auth);
+      if (normalizedAuth !== undefined) {
+        peer.auth = normalizedAuth; // null clears, object sets
+        console.log(`🌐 Peer credential ${peer.auth ? 'set' : 'cleared'}: ${peer.name}`);
+      }
+    }
     if (updates.host !== undefined) {
       const normalized = validHost(updates.host);
       if (normalized !== undefined && normalized !== peer.host) {
@@ -313,14 +358,22 @@ export async function probePeer(peer) {
 
   const previousStatus = peer.status;
   let status, lastHealth, lastSeen, remoteInstanceId, remoteVersion, remoteApps, remoteSyncSeqs;
+  // Latches when the peer answers 401/403 — a reachable-but-auth-gated peer, as
+  // opposed to an unreachable one. The Instances UI reads this to prompt for a
+  // credential instead of showing a generic offline state.
+  let authRequired = false;
   try {
     // Fetch health details, apps, and sync status in parallel
     const [healthRes, appsRes, syncRes] = await Promise.all([
-      peerFetch(`${baseUrl}/api/system/health/details`, { signal: controller.signal }),
-      peerFetch(`${baseUrl}/api/apps`, { signal: controller.signal }).catch(() => null),
-      peerFetch(`${baseUrl}/api/instances/sync-status`, { signal: controller.signal }).catch(() => null)
+      peerFetch(`${baseUrl}/api/system/health/details`, { signal: controller.signal }, peer),
+      peerFetch(`${baseUrl}/api/apps`, { signal: controller.signal }, peer).catch(() => null),
+      peerFetch(`${baseUrl}/api/instances/sync-status`, { signal: controller.signal }, peer).catch(() => null)
     ]);
-    if (!healthRes.ok) throw new Error(`HTTP ${healthRes.status}`);
+    if (!healthRes.ok) {
+      const err = new Error(`HTTP ${healthRes.status}`);
+      err.httpStatus = healthRes.status;
+      throw err;
+    }
     const json = await healthRes.json();
     status = 'online';
     lastHealth = json;
@@ -342,6 +395,7 @@ export async function probePeer(peer) {
   } catch (err) {
     console.log(`⚠️ Probe failed for ${baseUrl}: ${classifyProbeError(err, peer)}`);
     status = 'offline';
+    authRequired = err?.httpStatus === 401 || err?.httpStatus === 403;
     lastHealth = peer.lastHealth; // preserve last known
     lastSeen = peer.lastSeen;
   } finally {
@@ -354,6 +408,9 @@ export async function probePeer(peer) {
     entry.status = status;
     entry.lastSeen = lastSeen;
     entry.lastHealth = lastHealth;
+    // Surface "reachable but needs a credential" distinctly from plain offline.
+    // Cleared on any successful probe (including after the user adds the password).
+    entry.authRequired = authRequired;
     entry.lastApps = remoteApps ?? entry.lastApps ?? null;
     entry.remoteSyncSeqs = remoteSyncSeqs ?? entry.remoteSyncSeqs ?? null;
     if (remoteInstanceId) entry.instanceId = remoteInstanceId;
@@ -430,7 +487,7 @@ export async function queryPeer(id, apiPath) {
   const timeout = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
 
   try {
-    const res = await peerFetch(url, { signal: controller.signal });
+    const res = await peerFetch(url, { signal: controller.signal }, peer);
     const json = await res.json();
     return { success: true, data: json };
   } catch (err) {
@@ -484,6 +541,10 @@ export async function handleAnnounce({ address, port, instanceId, name, host }) 
       id: crypto.randomUUID(),
       address,
       host: normalizedHost || null,
+      // A credential can only be entered locally, never learned from an
+      // announce — start null. If this peer needs auth, our probe to it will
+      // 401 and the user sets the password from the Instances UI.
+      auth: null,
       // The host came from the peer's announce, not from a user — leave
       // hostManual false so subsequent updates from the peer can still refine.
       hostManual: false,
@@ -538,7 +599,7 @@ async function announceSelf(peer) {
         host: selfHost
       }),
       signal: controller.signal
-    });
+    }, peer);
     if (res.ok) {
       console.log(`🌐 Announced self to ${url}`);
       await markDirection(peer.id, 'outbound');

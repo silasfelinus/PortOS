@@ -59,6 +59,7 @@ import {
   probeAllPeers,
   queryPeer,
   handleAnnounce,
+  redactPeerForWire,
   startPolling,
   stopPolling
 } from './instances.js';
@@ -251,6 +252,33 @@ describe('instances.js', () => {
       expect(peer.host).toBe('machine.taile8179.ts.net');
       expect(peer.hostManual).toBe(true);
     });
+
+    it('should default auth to null when no credential is provided', async () => {
+      readJSONFile.mockResolvedValue({ self: null, peers: [] });
+      fetch.mockRejectedValue(new Error('not reachable'));
+
+      const peer = await addPeer({ address: '10.0.0.8' });
+
+      expect(peer.auth).toBeNull();
+    });
+
+    it('should store a sanitized credential when provided', async () => {
+      readJSONFile.mockResolvedValue({ self: null, peers: [] });
+      fetch.mockRejectedValue(new Error('not reachable'));
+
+      const peer = await addPeer({ address: '10.0.0.9', auth: { username: '  alice  ', password: 's3cret' } });
+
+      expect(peer.auth).toEqual({ username: 'alice', password: 's3cret' });
+    });
+
+    it('should treat a blank credential as no auth', async () => {
+      readJSONFile.mockResolvedValue({ self: null, peers: [] });
+      fetch.mockRejectedValue(new Error('not reachable'));
+
+      const peer = await addPeer({ address: '10.0.0.10', auth: { username: '', password: '' } });
+
+      expect(peer.auth).toBeNull();
+    });
   });
 
   describe('removePeer', () => {
@@ -275,6 +303,23 @@ describe('instances.js', () => {
 
       expect(removed).toBeNull();
       expect(disconnectFromPeer).toHaveBeenCalledWith('non-existent');
+    });
+  });
+
+  describe('redactPeerForWire', () => {
+    it('strips the auth credential before a peer crosses the wire', () => {
+      const peer = { id: 'peer-1', name: 'host', auth: { username: 'a', password: 'b' }, status: 'online' };
+      const redacted = redactPeerForWire(peer);
+
+      expect(redacted).not.toHaveProperty('auth');
+      expect(redacted).toMatchObject({ id: 'peer-1', name: 'host', status: 'online' });
+      // Does not mutate the original
+      expect(peer.auth).toEqual({ username: 'a', password: 'b' });
+    });
+
+    it('is a no-op for a peer without auth', () => {
+      const peer = { id: 'peer-1', name: 'host' };
+      expect(redactPeerForWire(peer)).toBe(peer);
     });
   });
 
@@ -313,6 +358,33 @@ describe('instances.js', () => {
       const result = await updatePeer('peer-1', { name: 'undefined' });
 
       expect(result.name).toBe('undefined');
+    });
+
+    it('should set a credential on a peer', async () => {
+      const peers = [{ id: 'peer-1', name: 'host', enabled: true, auth: null }];
+      readJSONFile.mockResolvedValue({ self: null, peers });
+
+      const result = await updatePeer('peer-1', { auth: { username: 'bob', password: 'pw' } });
+
+      expect(result.auth).toEqual({ username: 'bob', password: 'pw' });
+    });
+
+    it('should clear a credential when auth is null', async () => {
+      const peers = [{ id: 'peer-1', name: 'host', enabled: true, auth: { username: 'bob', password: 'pw' } }];
+      readJSONFile.mockResolvedValue({ self: null, peers });
+
+      const result = await updatePeer('peer-1', { auth: null });
+
+      expect(result.auth).toBeNull();
+    });
+
+    it('should ignore a malformed auth value rather than wiping a working credential', async () => {
+      const peers = [{ id: 'peer-1', name: 'host', enabled: true, auth: { username: 'bob', password: 'pw' } }];
+      readJSONFile.mockResolvedValue({ self: null, peers });
+
+      const result = await updatePeer('peer-1', { auth: 'not-an-object' });
+
+      expect(result.auth).toEqual({ username: 'bob', password: 'pw' });
     });
 
     it('should not disconnect when enabling a peer', async () => {
@@ -451,6 +523,39 @@ describe('instances.js', () => {
       const result = await probePeer(peer);
 
       expect(result.status).toBe('offline');
+      expect(result.authRequired).toBe(false);
+    });
+
+    it('should set authRequired when the peer responds 401', async () => {
+      const peer = makePeer();
+      const peers = [peer];
+      readJSONFile.mockResolvedValue({ self: null, peers });
+
+      fetch
+        .mockResolvedValueOnce({ ok: false, status: 401 }) // health — auth-gated proxy
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null);
+
+      const result = await probePeer(peer);
+
+      expect(result.status).toBe('offline');
+      expect(result.authRequired).toBe(true);
+    });
+
+    it('should clear authRequired on a successful probe', async () => {
+      const peer = makePeer({ authRequired: true });
+      const peers = [peer];
+      readJSONFile.mockResolvedValue({ self: null, peers });
+
+      fetch
+        .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ instanceId: 'r-id' }) })
+        .mockResolvedValueOnce({ ok: false })
+        .mockResolvedValueOnce({ ok: false });
+
+      const result = await probePeer(peer);
+
+      expect(result.status).toBe('online');
+      expect(result.authRequired).toBe(false);
     });
 
     it('should auto-update name from hostname when name is an IP', async () => {

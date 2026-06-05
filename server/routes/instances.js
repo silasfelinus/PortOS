@@ -29,6 +29,14 @@ function safeJsonParse(str) {
 
 const router = Router();
 
+// Optional HTTP Basic credential for a peer behind an auth proxy. `null` clears
+// it; an object sets it (username optional — a password-only credential is
+// valid Basic auth). The service's sanitizePeerAuth does the final normalize.
+const peerAuthSchema = z.object({
+  username: z.string().max(256).optional(),
+  password: z.string().max(2048).optional()
+}).nullable().optional();
+
 // Validation schemas
 const addPeerSchema = z.object({
   address: z.string()
@@ -36,7 +44,8 @@ const addPeerSchema = z.object({
     .refine(ip => !ip.startsWith('127.') && !ip.startsWith('169.254.'), 'Loopback and link-local addresses are not allowed'),
   port: z.number().int().min(1).max(65535).default(DEFAULT_PEER_PORT),
   name: z.string().optional(),
-  host: z.string().optional()
+  host: z.string().optional(),
+  auth: peerAuthSchema
 });
 
 const syncCategoriesSchema = z.object({
@@ -65,7 +74,8 @@ const updatePeerSchema = z.object({
   syncEnabled: z.boolean().optional(),
   syncCategories: syncCategoriesSchema,
   // Accept empty string to clear; any other string is validated/normalized in the service
-  host: z.string().optional().nullable()
+  host: z.string().optional().nullable(),
+  auth: peerAuthSchema
 });
 
 const announceSchema = z.object({
@@ -174,7 +184,10 @@ router.post('/peers/announce', asyncHandler(async (req, res) => {
   const self = await instances.getSelf();
   res.status(result.created ? 201 : 200).json({
     self: { instanceId: self?.instanceId, name: self?.name },
-    peer: result.peer
+    // Strip our locally-stored proxy credential before echoing the matched
+    // peer back to the announcing instance — that password is our secret for
+    // reaching them, not theirs to receive.
+    peer: instances.redactPeerForWire(result.peer)
   });
 }));
 
