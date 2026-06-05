@@ -15,7 +15,7 @@ import { getPreset, stepFly } from '../../utils/cityPhotoMode';
 // once when a fly begins (activation / preset change) and again every frame until the fly
 // settles. After that nothing invalidates, so the scene holds frozen until the next fly.
 
-export default function CityPhotoCamera({ active, presetId, onReady }) {
+export default function CityPhotoCamera({ active, presetId, onReady, composerRef }) {
   const { camera, gl, scene, invalidate } = useThree();
   const progressRef = useRef(1);
   const startPosRef = useRef(new THREE.Vector3());
@@ -23,17 +23,21 @@ export default function CityPhotoCamera({ active, presetId, onReady }) {
 
   // Register the capture function with the page. Reading the canvas requires the renderer to
   // have been created with preserveDrawingBuffer:true (set on the Canvas gl prop). We force one
-  // synchronous render of the current scene/camera first so the buffer matches what's on screen
-  // even when the frameloop is paused ("demand") in photo mode.
+  // synchronous render first so the buffer matches what's on screen even when the frameloop is
+  // paused ("demand") in photo mode. When the depth-of-field composer is mounted (DoF on), render
+  // THROUGH it so the captured postcard carries the same bokeh as the live preview; otherwise fall
+  // back to a plain renderer pass.
   useEffect(() => {
     if (!onReady) return;
     const capture = () => {
-      gl.render(scene, camera);
+      const composer = composerRef?.current;
+      if (composer) composer.render();
+      else gl.render(scene, camera);
       return gl.domElement.toDataURL('image/png');
     };
     onReady(capture);
     return () => onReady(null);
-  }, [onReady, gl, scene, camera]);
+  }, [onReady, gl, scene, camera, composerRef]);
 
   // Start a new fly whenever photo mode turns on or the preset changes. This MUST live in an
   // effect (fired on the React commit), not inside useFrame: in frameloop="demand" the loop is

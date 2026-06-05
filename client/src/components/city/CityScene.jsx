@@ -41,10 +41,11 @@ import CityEnergyOverlay from './CityEnergyOverlay';
 import PlayerController from './PlayerController';
 import CameraTransition from './CameraTransition';
 import CityPhotoCamera from './CityPhotoCamera';
+import CityDepthOfField from './CityDepthOfField';
 import { cityDayMix } from './cityConstants';
 import ErrorBoundary from '../ErrorBoundary';
 
-export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, reviewCounts, instances, backupStatus, cosTasks, healthMetrics, voiceState, aiActivity, productivityData, activityCalendar, goals, character, chronotype, memoryGraph, inboxDepth, jiraTickets, photoMode, photoPresetId, onPhotoCaptureReady, settings, playSfx, keysRef, dimmedAppIds, background }) {
+export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, reviewCounts, instances, backupStatus, cosTasks, healthMetrics, voiceState, aiActivity, productivityData, activityCalendar, goals, character, chronotype, memoryGraph, inboxDepth, jiraTickets, photoMode, photoPresetId, photoDof, onPhotoCaptureReady, settings, playSfx, keysRef, dimmedAppIds, background }) {
   const [positions, setPositions] = useState(null);
   const [proximityApp, setProximityApp] = useState(null);
   const [transitioning, setTransitioning] = useState(false);
@@ -54,6 +55,10 @@ export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, 
   const contextCleanupRef = useRef(null);
   const contextLostTimerRef = useRef(null);
   const activeCanvasRef = useRef(null);
+  // Shared between CityDepthOfField (which owns the EffectComposer while photo mode is on) and
+  // CityPhotoCamera (whose capture path renders through that composer so the postcard matches the
+  // DoF preview). Null whenever DoF isn't mounted — capture then falls back to a plain render.
+  const photoComposerRef = useRef(null);
 
   const explorationMode = settings?.explorationMode || false;
 
@@ -272,7 +277,13 @@ export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, 
         active={explorationMode}
         onTransitionComplete={handleTransitionComplete}
       />
-      <CityPhotoCamera active={photoMode} presetId={photoPresetId} onReady={onPhotoCaptureReady} />
+      <CityPhotoCamera active={photoMode} presetId={photoPresetId} onReady={onPhotoCaptureReady} composerRef={photoComposerRef} />
+      {/* Depth-of-field is photo-mode-only: mounting it here (never in the live dashboard) keeps the
+          extra composer render targets off the always-on frameloop. It stays mounted for the whole
+          photo session and toggles only the bokeh pass via `enabled` — mounting/unmounting per
+          toggle would churn render-loop ownership and could strand a blurred frozen frame on screen
+          when DoF flips off mid-freeze. */}
+      {photoMode && <CityDepthOfField presetId={photoPresetId} enabled={photoDof} composerRef={photoComposerRef} />}
       </Canvas>
     </div>
   );

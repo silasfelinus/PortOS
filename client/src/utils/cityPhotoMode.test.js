@@ -9,6 +9,9 @@ import {
   MAX_FLY_DELTA,
   buildPostcardStats,
   screenshotFilename,
+  DOF_DEFAULTS,
+  presetFocusDistance,
+  getDofParams,
 } from './cityPhotoMode';
 import { smoothstep } from './easing';
 
@@ -123,5 +126,44 @@ describe('screenshotFilename', () => {
   it('is deterministic for the same date', () => {
     const d = new Date(2026, 0, 1, 0, 0, 0);
     expect(screenshotFilename(d)).toBe(screenshotFilename(d));
+  });
+});
+
+describe('presetFocusDistance', () => {
+  it('is the euclidean distance from camera position to look-at target', () => {
+    // position 3-4-0 from origin target → 5 (3-4-5 triangle)
+    expect(presetFocusDistance({ position: [3, 4, 0], target: [0, 0, 0] })).toBe(5);
+  });
+  it('is always positive and finite for every shipped preset', () => {
+    for (const p of PHOTO_PRESETS) {
+      const d = presetFocusDistance(p);
+      expect(Number.isFinite(d)).toBe(true);
+      expect(d).toBeGreaterThan(0);
+    }
+  });
+  it('falls back to 1 for malformed presets (never zero focal plane)', () => {
+    expect(presetFocusDistance(undefined)).toBe(1);
+    expect(presetFocusDistance({})).toBe(1);
+    expect(presetFocusDistance({ position: [0, 0, 0], target: [0, 0, 0] })).toBe(1); // distance 0 → fallback
+  });
+});
+
+describe('getDofParams', () => {
+  it('derives focus from the preset framing and applies the default aperture/maxblur', () => {
+    const params = getDofParams('downtown');
+    expect(params.focus).toBe(presetFocusDistance(getPreset('downtown')));
+    expect(params.aperture).toBe(DOF_DEFAULTS.aperture);
+    expect(params.maxblur).toBe(DOF_DEFAULTS.maxblur);
+  });
+  it('falls back to the default preset for an unknown id', () => {
+    expect(getDofParams('nope').focus).toBe(getDofParams(DEFAULT_PRESET_ID).focus);
+  });
+  it('honors a per-preset aperture override while still defaulting unspecified fields', () => {
+    // low-angle ships a wider aperture override but no maxblur override.
+    const lowAngle = getPreset('low-angle');
+    expect(lowAngle.dof?.aperture).toBe(0.09); // guards the shipped override against drift
+    const params = getDofParams('low-angle');
+    expect(params.aperture).toBe(0.09);
+    expect(params.maxblur).toBe(DOF_DEFAULTS.maxblur); // unspecified → default
   });
 });

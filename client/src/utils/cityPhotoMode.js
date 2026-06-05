@@ -15,7 +15,9 @@ export const PHOTO_PRESETS = [
   { id: 'skyline', label: 'SKYLINE', position: [44, 6, 44], target: [-6, 8, -6] },
   { id: 'overhead', label: 'OVERHEAD', position: [0, 70, 0.01], target: [0, 0, 0] },
   { id: 'horizon', label: 'HORIZON', position: [0, 4, 60], target: [0, 10, -60] },
-  { id: 'low-angle', label: 'LOW ANGLE', position: [-18, 2, 30], target: [0, 12, 0] },
+  // Low-angle is the most dramatic, close-in framing — a wider aperture pushes a shallower,
+  // more cinematic falloff so the foreground subject pops against a soft background.
+  { id: 'low-angle', label: 'LOW ANGLE', position: [-18, 2, 30], target: [0, 12, 0], dof: { aperture: 0.09 } },
 ];
 
 export const DEFAULT_PRESET_ID = 'establishing';
@@ -24,6 +26,41 @@ export const DEFAULT_PRESET_ID = 'establishing';
 // stale persisted id can never strand the camera with no framing.
 export function getPreset(id) {
   return PHOTO_PRESETS.find(p => p.id === id) || PHOTO_PRESETS.find(p => p.id === DEFAULT_PRESET_ID);
+}
+
+// Depth-of-field defaults for cinematic photo-mode shots (roadmap 3.3). `aperture` and `maxblur`
+// shape the blur falloff for three's BokehPass; both are intentionally gentle so the effect reads
+// as "cinematic" rather than "broken". A preset may override either via an optional `dof: { … }`
+// field. The focal distance is NOT a default — it's derived per preset from the camera framing
+// (see `presetFocusDistance`) so the subject the camera is pointed at always stays sharp without
+// hand-tuning a separate focus number that could drift from the framing.
+export const DOF_DEFAULTS = { aperture: 0.05, maxblur: 0.012 };
+
+// Distance (world units) from a preset's camera position to its look-at target. This is the focal
+// plane: BokehPass keeps geometry at this depth sharp and blurs nearer/farther geometry. Deriving
+// it from the preset's own position→target keeps focus locked to whatever the shot frames. Pure
+// (no three.js) so it stays unit-testable alongside the other helpers.
+export function presetFocusDistance(preset) {
+  if (!Array.isArray(preset?.position) || !Array.isArray(preset?.target)) return 1;
+  const [px, py, pz] = preset.position;
+  const [tx, ty, tz] = preset.target;
+  const dx = px - tx;
+  const dy = py - ty;
+  const dz = pz - tz;
+  const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  return Number.isFinite(dist) && dist > 0 ? dist : 1;
+}
+
+// Resolve the BokehPass parameters for a preset: derived focal distance + (per-preset-overridable)
+// aperture/maxblur. Used by CityDepthOfField to build and re-tune the pass when the preset changes.
+export function getDofParams(presetId) {
+  const preset = getPreset(presetId);
+  const override = preset?.dof || {};
+  return {
+    focus: presetFocusDistance(preset),
+    aperture: Number.isFinite(override.aperture) ? override.aperture : DOF_DEFAULTS.aperture,
+    maxblur: Number.isFinite(override.maxblur) ? override.maxblur : DOF_DEFAULTS.maxblur,
+  };
 }
 
 // Step to the next/previous preset in the ring (wraps). Used by the ‹ › controls and arrow keys.

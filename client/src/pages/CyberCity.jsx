@@ -107,6 +107,9 @@ function CyberCityInner() {
   // the overlay (outside the Canvas) can trigger a grab. Exiting photo mode clears the fn.
   const [photoMode, setPhotoMode] = useState(false);
   const [photoPresetId, setPhotoPresetId] = useState(DEFAULT_PRESET_ID);
+  // Depth-of-field for cinematic shots (roadmap 3.3) — on by default since it's the point of the
+  // mode; the user can toggle it off (D / overlay button) for a fully-sharp frame.
+  const [photoDof, setPhotoDof] = useState(true);
   const captureFnRef = useRef(null);
   const handlePhotoCaptureReady = useCallback((fn) => { captureFnRef.current = fn; }, []);
 
@@ -118,8 +121,8 @@ function CyberCityInner() {
   }, [updateSetting]);
   const exitPhotoMode = useCallback(() => setPhotoMode(false), []);
 
-  // Esc exits photo mode; ←/→ cycle the framing preset. Bound only while photo mode is on so it
-  // doesn't shadow other shortcuts. Ignores key events while typing in an input.
+  // Esc exits photo mode; ←/→ cycle the framing preset; D toggles depth-of-field. Bound only while
+  // photo mode is on so it doesn't shadow other shortcuts. Ignores key events while typing.
   useEffect(() => {
     if (!photoMode) return;
     const onKey = (e) => {
@@ -128,6 +131,7 @@ function CyberCityInner() {
       if (e.key === 'Escape') setPhotoMode(false);
       else if (e.key === 'ArrowLeft') setPhotoPresetId(id => cyclePreset(id, -1));
       else if (e.key === 'ArrowRight') setPhotoPresetId(id => cyclePreset(id, 1));
+      else if (e.key === 'd' || e.key === 'D') setPhotoDof(v => !v);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -295,6 +299,7 @@ function CyberCityInner() {
         jiraTickets={jiraTickets}
         photoMode={photoMode}
         photoPresetId={photoPresetId}
+        photoDof={photoDof}
         onPhotoCaptureReady={handlePhotoCaptureReady}
         settings={sceneSettings}
         playSfx={playSfx}
@@ -333,6 +338,8 @@ function CyberCityInner() {
         onExit={exitPhotoMode}
         captureFnRef={captureFnRef}
         statsSnapshot={photoStats}
+        dofEnabled={photoDof}
+        onToggleDof={() => setPhotoDof(v => !v)}
       />
       <CityScanlines settings={settings} crt={cityPalette.crt} />
       {showSettings && <CitySettingsPanel />}
