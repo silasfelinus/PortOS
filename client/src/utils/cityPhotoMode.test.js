@@ -4,6 +4,8 @@ import {
   DEFAULT_PRESET_ID,
   getPreset,
   cyclePreset,
+  stepFly,
+  FLY_DURATION,
   buildPostcardStats,
   screenshotFilename,
 } from './cityPhotoMode';
@@ -46,6 +48,34 @@ describe('cyclePreset', () => {
   });
   it('treats an unknown current id as the first preset', () => {
     expect(cyclePreset('bogus', 1)).toBe(PHOTO_PRESETS[1].id);
+  });
+});
+
+describe('stepFly', () => {
+  it('advances progress by delta/duration and eases t', () => {
+    const { progress, t, done } = stepFly(0, FLY_DURATION / 2);
+    expect(progress).toBeCloseTo(0.5, 5);
+    expect(t).toBeCloseTo(0.5, 5); // smoothstep(0.5) === 0.5
+    expect(done).toBe(false);
+  });
+  it('clamps progress to 1 and reports done at/after the duration', () => {
+    const { progress, t, done } = stepFly(0.9, FLY_DURATION);
+    expect(progress).toBe(1);
+    expect(t).toBe(1);
+    expect(done).toBe(true);
+  });
+  it('reports done when already settled (no negative drift)', () => {
+    expect(stepFly(1, 0.016).done).toBe(true);
+    expect(stepFly(1, 0.016).progress).toBe(1);
+  });
+  it('treats a non-positive or non-finite delta as no advance', () => {
+    expect(stepFly(0.3, 0).progress).toBeCloseTo(0.3, 5);
+    expect(stepFly(0.3, -1).progress).toBeCloseTo(0.3, 5);
+    expect(stepFly(0.3, NaN).progress).toBeCloseTo(0.3, 5);
+  });
+  it('treats a non-finite progress as settled', () => {
+    expect(stepFly(undefined, 0.016).progress).toBe(1);
+    expect(stepFly(NaN, 0.016).done).toBe(true);
   });
 });
 

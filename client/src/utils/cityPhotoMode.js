@@ -1,8 +1,9 @@
 // Pure, deterministic helpers for CyberCity's photo mode (roadmap 3.3): cinematic camera
-// presets, the "city postcard" stats overlay, and screenshot filename generation. No three.js
-// / React imports so it's unit-testable (mirrors the other city helpers). The component reads
-// these presets to fly the camera and composites the postcard caption from a live stats
-// snapshot the page passes in.
+// presets, the camera-fly stepper, the "city postcard" stats overlay, and screenshot filename
+// generation. No three.js / React imports so it's unit-testable (mirrors the other city
+// helpers). The component reads these presets to fly the camera and composites the postcard
+// caption from a live stats snapshot the page passes in.
+import { smoothstep } from './easing';
 
 // Cinematic camera presets. Each is a stable framing of the city — position + look-at target —
 // the photo UI cycles through. Tuned against the default orbital view (camera at [0,25,45]
@@ -31,6 +32,21 @@ export function cyclePreset(currentId, direction = 1) {
   const base = idx === -1 ? 0 : idx;
   const next = (base + direction + PHOTO_PRESETS.length) % PHOTO_PRESETS.length;
   return PHOTO_PRESETS[next].id;
+}
+
+// Photo mode runs the Canvas frameloop in "demand" mode (roadmap 3.6): the scene animates only
+// while the camera is flying to a preset, then freezes for a clean, deliberate still. This pure
+// stepper advances the fly progress by an elapsed delta and reports whether the loop still needs
+// pumping. `FLY_DURATION` is the seconds the cinematic ease takes (slower than the exploration
+// transition). `stepFly` returns the clamped next progress, the eased interpolation factor `t`,
+// and `done` (true once settled) so the component can stop invalidating the demand loop.
+export const FLY_DURATION = 1.1;
+
+export function stepFly(progress, deltaSeconds, duration = FLY_DURATION) {
+  const safeDelta = Number.isFinite(deltaSeconds) && deltaSeconds > 0 ? deltaSeconds : 0;
+  const safeDuration = duration > 0 ? duration : FLY_DURATION;
+  const next = Math.min(1, (Number.isFinite(progress) ? progress : 1) + safeDelta / safeDuration);
+  return { progress: next, t: smoothstep(next), done: next >= 1 };
 }
 
 // Build the short stat lines printed on a "city postcard". Pulls a handful of headline numbers
