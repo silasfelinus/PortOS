@@ -188,7 +188,7 @@ function StreamingPanel({ stream }) {
         </div>
         <span className="flex items-center gap-2 text-xs px-2 py-1 rounded bg-port-accent/15 text-port-accent">
           <BrailleSpinner />
-          {hasText ? 'Streaming' : hasReasoning ? 'Thinking' : 'Streaming'}
+          {!hasText && hasReasoning ? 'Thinking' : 'Streaming'}
         </span>
       </div>
       {hasReasoning && (
