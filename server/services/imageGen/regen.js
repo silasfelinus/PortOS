@@ -212,7 +212,7 @@ export async function readImageDimensions(absPath) {
 export function buildRegenParams({ filename, sourceAbsPath, sourceMeta = {}, sourceDims = null, model, pythonPath, strength, steps, promptOverride }) {
   const src = sourceDims
     || (sourceMeta.width && sourceMeta.height ? { width: Math.round(sourceMeta.width), height: Math.round(sourceMeta.height) } : null);
-  const hasPrompt = typeof promptOverride === 'string' && promptOverride.trim();
+  const trimmedPrompt = typeof promptOverride === 'string' ? promptOverride.trim() : '';
   // Anchor the variant-grouping lineage at the ROOT original, not the clicked
   // image. computeImageVariantGroup groups siblings under a single original
   // (an item with no `cleanedFrom`); regenerating a cleaned/regenerated variant
@@ -226,8 +226,8 @@ export function buildRegenParams({ filename, sourceAbsPath, sourceMeta = {}, sou
     mode: IMAGE_GEN_MODE.LOCAL,
     pythonPath,
     modelId: model.id,
-    prompt: hasPrompt ? promptOverride : '',
-    negativePrompt: hasPrompt && typeof sourceMeta.negativePrompt === 'string' ? sourceMeta.negativePrompt : '',
+    prompt: trimmedPrompt,
+    negativePrompt: trimmedPrompt && typeof sourceMeta.negativePrompt === 'string' ? sourceMeta.negativePrompt : '',
     initImagePath: sourceAbsPath,
     initImageStrength: strength,
     regenOf: groupRoot,

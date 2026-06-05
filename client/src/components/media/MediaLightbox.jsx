@@ -378,26 +378,10 @@ function SettingsPane({
   // optional prompt) so a watermark-defeat pass can be tuned without leaving the
   // lightbox. Slider bounds come from the server (`regenBounds`) so the floor
   // stays in lock-step with route validation.
-  const regenMin = typeof regenBounds?.strengthMin === 'number' ? regenBounds.strengthMin : 0.02;
-  const regenMax = typeof regenBounds?.strengthMax === 'number' ? regenBounds.strengthMax : 0.6;
-  const regenDefault = typeof regenBounds?.strengthDefault === 'number' ? regenBounds.strengthDefault : 0.25;
+  const { strengthMin: regenMin = 0.02, strengthMax: regenMax = 0.6, strengthDefault: regenDefault = 0.25 } = regenBounds || {};
   const [regenOpen, setRegenOpen] = useState(false);
   const [regenStrength, setRegenStrength] = useState(regenDefault);
   const [regenPrompt, setRegenPrompt] = useState('');
-  const runRegen = async () => {
-    if (regenerating) return;
-    setRegenerating(true);
-    let ok = false;
-    try {
-      await onRegenerate(item, { strength: regenStrength, prompt: regenPrompt.trim() || undefined });
-      ok = true;
-    } catch {
-      // Caller toasts its own error; stay open so the user can retry.
-    } finally {
-      setRegenerating(false);
-    }
-    if (ok) onClose();
-  };
   const starred = !!annotation?.starred;
   const closeThenRun = (handler) => {
     onClose?.();
@@ -697,7 +681,7 @@ function SettingsPane({
             <button
               type="button"
               disabled={regenerating}
-              onClick={runRegen}
+              onClick={runBusyAction(regenerating, setRegenerating, (it) => onRegenerate(it, { strength: regenStrength, prompt: regenPrompt.trim() || undefined }))}
               className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-port-accent text-white hover:opacity-90 rounded disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Wand2 className="w-3.5 h-3.5" /> {regenerating ? 'Queuing…' : `Regenerate at ${regenStrength.toFixed(2)}`}

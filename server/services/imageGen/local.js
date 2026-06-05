@@ -707,13 +707,14 @@ export async function generateImage({ pythonPath, prompt, negativePrompt = '', m
       // the watermark-free copy matches the original's resolution. `meta.width/
       // height` currently hold the render dims; record those as render* and
       // promote the delivered dims so the gallery shows the real file size.
-      if (upscaleTo && Number(upscaleTo.width) > 0 && Number(upscaleTo.height) > 0
-          && (Math.round(upscaleTo.width) !== meta.width || Math.round(upscaleTo.height) !== meta.height)) {
-        const targetW = Math.round(upscaleTo.width);
-        const targetH = Math.round(upscaleTo.height);
+      const targetW = Math.round(Number(upscaleTo?.width));
+      const targetH = Math.round(Number(upscaleTo?.height));
+      if (targetW > 0 && targetH > 0 && (targetW !== meta.width || targetH !== meta.height)) {
         const resized = await sharp(outputPath)
           .resize(targetW, targetH, { fit: 'fill', kernel: 'lanczos3' })
-          .png({ compressionLevel: 9 })
+          // compressionLevel 6 (sharp default) — near-identical size to 9 but
+          // markedly faster, and this re-encode is on the render-completion path.
+          .png({ compressionLevel: 6 })
           .toBuffer()
           .catch((err) => { console.warn(`⚠️ Regen upscale failed for ${filename}: ${err?.message || err}`); return null; });
         if (resized) {
