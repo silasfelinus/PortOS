@@ -310,6 +310,24 @@ const navItems = [
 
 const SIDEBAR_KEY = 'portos-sidebar-collapsed';
 
+// The pin/unpin toggle shared by every pinnable sidebar row (Pinned/Recent rows
+// and the top-level single rows). It must not navigate, so it swallows the click
+// (preventDefault + stopPropagation). A pinned row shows a filled pin in the
+// accent color; an unpinned row reveals the affordance only on hover/focus of
+// the enclosing `group`.
+function PinButton({ label, pinned, onTogglePin }) {
+  return (
+    <button
+      type="button"
+      aria-label={pinned ? `Unpin ${label}` : `Pin ${label}`}
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); onTogglePin(); }}
+      className={`px-2 rounded-lg hover:bg-port-border/50 ${pinned ? 'text-port-accent' : 'text-gray-500 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'}`}
+    >
+      {pinned ? <PinOff size={14} /> : <Pin size={14} />}
+    </button>
+  );
+}
+
 // One row in the sidebar's Pinned/Recent sections: a nav link plus a pin/unpin
 // toggle that does not navigate (stops propagation). Pinned rows show a filled
 // pin; recent rows reveal the pin affordance on hover/focus.
@@ -328,14 +346,7 @@ function WorkingSetRow({ entry, pinned, onTogglePin, onNavigate, isActive }) {
         {Icon && <Icon size={16} className="shrink-0" />}
         <span className="min-w-0 truncate">{entry.label}</span>
       </NavLink>
-      <button
-        type="button"
-        aria-label={pinned ? `Unpin ${entry.label}` : `Pin ${entry.label}`}
-        onClick={(e) => { e.preventDefault(); e.stopPropagation(); onTogglePin(); }}
-        className={`px-2 rounded-lg hover:bg-port-border/50 ${pinned ? 'text-port-accent' : 'text-gray-500 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'}`}
-      >
-        {pinned ? <PinOff size={14} /> : <Pin size={14} />}
-      </button>
+      <PinButton label={entry.label} pinned={pinned} onTogglePin={onTogglePin} />
     </div>
   );
 }
@@ -388,16 +399,7 @@ export function SingleNavRow({ item, collapsed, active, badgeCount, pinned, onTo
           </span>
         )}
       </NavLink>
-      {!collapsed && (
-        <button
-          type="button"
-          aria-label={pinned ? `Unpin ${item.label}` : `Pin ${item.label}`}
-          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onTogglePin(); }}
-          className={`px-2 rounded-lg hover:bg-port-border/50 ${pinned ? 'text-port-accent' : 'text-gray-500 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'}`}
-        >
-          {pinned ? <PinOff size={14} /> : <Pin size={14} />}
-        </button>
-      )}
+      {!collapsed && <PinButton label={item.label} pinned={pinned} onTogglePin={onTogglePin} />}
     </div>
   );
 }
@@ -707,7 +709,7 @@ export default function Layout() {
       );
     }
 
-    // "More" section divider (Task 5 will add pin/recent logic here)
+    // "More" section divider — visually groups the long-tail sections below it.
     if (item.moreLabel) {
       return <div key="more-label" className="mx-4 mt-3 mb-1 pt-2 border-t border-port-border text-[10px] font-semibold uppercase tracking-wide text-gray-500">More</div>;
     }
