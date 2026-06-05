@@ -37,7 +37,21 @@ import * as backup from './backup.js';
 import { getCountsByType } from './notifications.js';
 import { getCharacter } from './character.js';
 import { getMemoryStats } from '../lib/memoryStats.js';
+import { statfs } from 'fs/promises';
 import os from 'os';
+
+// Root-filesystem disk usage percent, derived the same way the
+// /api/system/health/details route does (bavail = blocks available to the
+// user). Returns null when statfs is unavailable so a failed read reads as
+// "unknown," not "0% full".
+async function getDiskPercent() {
+  const stats = await statfs('/').catch(() => null);
+  if (!stats) return null;
+  const total = stats.blocks * stats.bsize;
+  if (!(total > 0)) return null;
+  const used = total - stats.bavail * stats.bsize;
+  return Math.round((used / total) * 100);
+}
 
 const DATA_DIR = PATHS.data;
 const SNAPSHOTS_FILE = join(DATA_DIR, 'city-snapshots.jsonl');
@@ -118,7 +132,7 @@ function resolveAgentApp(agent, appStatuses) {
  * source are likewise `null`, distinct from a real `0` on a successful read.
  */
 async function buildSnapshot() {
-  const [appStatuses, cosStatus, agents, taskState, reviewCounts, self, peers, backupState, notifCounts, character, memStats] =
+  const [appStatuses, cosStatus, agents, taskState, reviewCounts, self, peers, backupState, notifCounts, character, memStats, diskPercent] =
     await Promise.all([
       apps.getAppStatuses().catch(() => FAILED),
       cos.getStatus().catch(() => FAILED),
@@ -131,6 +145,7 @@ async function buildSnapshot() {
       getCountsByType().catch(() => FAILED),
       getCharacter().catch(() => FAILED),
       getMemoryStats().catch(() => FAILED),
+      getDiskPercent().catch(() => null),
     ]);
 
   // Per-app state + agent→app assignments — the minimum a scrubber needs to
@@ -190,6 +205,7 @@ async function buildSnapshot() {
     health: {
       cpuPercent,
       memPercent: memUsagePercent,
+      diskPercent,
     },
     character: { level: character === null ? null : (character.level ?? null) },
     instance: self === null ? null : {
@@ -253,7 +269,10 @@ export async function getSnapshots({ limit, since } = {}) {
   }
 
   const total = frames.length;
-  if (Number.isFinite(limit) && limit >= 0 && limit < frames.length) {
+  // `limit > 0` (not `>= 0`): a direct caller passing 0 means "none," but
+  // slice(-0) returns the whole array — guard against that footgun. The route's
+  // Zod schema already enforces limit >= 1, so this only hardens direct callers.
+  if (Number.isFinite(limit) && limit > 0 && limit < frames.length) {
     frames = frames.slice(-limit); // most-recent N, still chronological
   }
 

@@ -116,6 +116,13 @@ describe('citysnapshots service', () => {
     expect(frame.backup).toEqual({ status: 'success', lastRun: '2026-06-05T00:00:00.000Z' });
     expect(frame.character).toEqual({ level: 4 });
     expect(frame.instance).toEqual({ id: 'inst-1', name: 'void' });
+    // Health triad — cpu/mem/disk are number-or-null (real values from the host).
+    expect(frame.health).toHaveProperty('cpuPercent');
+    expect(frame.health).toHaveProperty('memPercent');
+    expect(frame.health).toHaveProperty('diskPercent');
+    for (const v of [frame.health.cpuPercent, frame.health.memPercent, frame.health.diskPercent]) {
+      expect(v === null || typeof v === 'number').toBe(true);
+    }
 
     expect(existsSync(snapshotsFile)).toBe(true);
     expect(readLines(snapshotsFile)).toHaveLength(1);
