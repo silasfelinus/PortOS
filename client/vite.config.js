@@ -73,31 +73,27 @@ export default defineConfig(({ mode }) => {
       }
     },
     build: {
-      rollupOptions: {
+      rolldownOptions: {
         output: {
-          // Vite 8's rolldown bundler requires manualChunks to be a function;
-          // the object-map form Rollup accepted is no longer supported. Match
-          // each module id against the vendor package's node_modules path to
-          // produce the same vendor chunks as before.
-          manualChunks(id) {
-            if (!id.includes('node_modules')) return undefined;
-            // Core React dependencies
-            if (/[\\/]node_modules[\\/](react|react-dom|react-router|react-router-dom)[\\/]/.test(id)) {
-              return 'vendor-react';
-            }
-            // Socket dependencies
-            if (/[\\/]node_modules[\\/]socket\.io-client[\\/]/.test(id)) {
-              return 'vendor-realtime';
-            }
-            // Drag and drop library (only used in CoS)
-            if (/[\\/]node_modules[\\/]@dnd-kit[\\/]/.test(id)) {
-              return 'vendor-dnd';
-            }
-            // Icon library (largest dependency)
-            if (/[\\/]node_modules[\\/]lucide-react[\\/]/.test(id)) {
-              return 'vendor-icons';
-            }
-            return undefined;
+          // Vite 8 ships the rolldown bundler, whose canonical chunking API is
+          // `output.codeSplitting.groups` — each group captures the modules whose
+          // id matches `test` into a named chunk. This replaces the legacy
+          // `rollupOptions.output.manualChunks` function (still accepted via
+          // rolldown's compat layer, but slated to drop in a future Vite). The
+          // groups below reproduce the same four vendor chunks as before.
+          // Note: use `[\\/]` (not `/`) for the path separator so the regexes
+          // also match on Windows.
+          codeSplitting: {
+            groups: [
+              // Core React dependencies
+              { name: 'vendor-react', test: /[\\/]node_modules[\\/](react|react-dom|react-router|react-router-dom)[\\/]/ },
+              // Socket dependencies
+              { name: 'vendor-realtime', test: /[\\/]node_modules[\\/]socket\.io-client[\\/]/ },
+              // Drag and drop library (only used in CoS)
+              { name: 'vendor-dnd', test: /[\\/]node_modules[\\/]@dnd-kit[\\/]/ },
+              // Icon library (largest dependency)
+              { name: 'vendor-icons', test: /[\\/]node_modules[\\/]lucide-react[\\/]/ },
+            ]
           }
         }
       },
