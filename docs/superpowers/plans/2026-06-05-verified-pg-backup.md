@@ -974,6 +974,19 @@ Per the project workflow, run `/simplify` to review the changed code for reuse/q
 
 ## Deferred follow-ups (from review)
 
+- [ ] **Verify the DB dump against its manifest hash before restore** (codex P2,
+  declined for this PR). `restorePostgres` trusts a non-empty `portos-db.sql` on
+  size alone; the manifest now records `../portos-db.sql`'s sha256, so a restore
+  could re-hash and compare before replaying. Declined now because it's outside
+  PortOS's stated threat model (single-user, Tailscale-private, never public — so
+  post-write tampering isn't a defended threat), and the truncation case it
+  guards is already largely covered: the empty-dump guard rejects 0-byte files
+  and the `--single-transaction` restore rolls back a syntactically broken dump.
+  The residual risk is a dump truncated at a clean statement boundary — narrow.
+  Add the hash check if PortOS ever relaxes the private-network assumption, or if
+  a real truncated-restore incident occurs. `server/services/backup.js`
+  `restorePostgres` ~line 444.
+
 - [ ] **Integration test for `runBackup` pg-status wiring.** Task 3 covered only
   the pure `backupStatusForPg` helper (the plan scoped out `runBackup` integration
   testing because it touches many fs helpers). The wiring — `saveState` writing

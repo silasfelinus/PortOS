@@ -232,13 +232,21 @@ export async function runBackup(destPath, io = null, { excludePaths = [], disabl
  * Returns an explicit status so the caller can distinguish "no PG configured"
  * (benign, file mode) from "PG configured but dump failed" (data at risk):
  *   { status: 'ok', sizeBytes, tableCount, path }
- *   { status: 'skipped', reason: 'not_configured' }
- *   { status: 'failed', reason: 'pg_dump_missing'|'dump_error'|'empty_dump', error }
+ *   { status: 'skipped', reason: 'not_configured' }   (file/auto mode, no PG)
+ *   { status: 'failed', reason: 'pg_unreachable'|'pg_dump_missing'|'dump_error'|'empty_dump', error }
  * @param {string} outputPath - Path to write the SQL dump file
  */
 export async function dumpPostgres(outputPath) {
   const health = await checkHealth();
   if (!health.connected || !health.hasSchema) {
+    // PG unreachable or uninitialized. In file/auto mode this is the expected,
+    // benign case (the install legitimately runs without Postgres). But when the
+    // install EXPLICITLY requires Postgres (MEMORY_BACKEND=postgres), an
+    // unreachable DB is a real backup failure — data that lives only in PG won't
+    // be captured — so degrade the backup and alert rather than silently skip.
+    if (process.env.MEMORY_BACKEND === 'postgres') {
+      return { status: 'failed', reason: 'pg_unreachable', error: health.error || 'PostgreSQL required (MEMORY_BACKEND=postgres) but not reachable' };
+    }
     return { status: 'skipped', reason: 'not_configured' };
   }
 

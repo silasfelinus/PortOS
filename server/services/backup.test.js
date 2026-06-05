@@ -154,11 +154,25 @@ describe('dumpPostgres status classification', () => {
     ({ dumpPostgres } = await import('./backup.js'));
   });
 
-  it('returns skipped/not_configured when PG is not connected', async () => {
+  it('returns skipped/not_configured when PG is not connected (file/auto mode)', async () => {
+    const prev = process.env.MEMORY_BACKEND;
+    delete process.env.MEMORY_BACKEND;
     checkHealth.mockResolvedValue({ connected: false, hasSchema: false });
     const result = await dumpPostgres('/tmp/x.sql');
     expect(result).toEqual({ status: 'skipped', reason: 'not_configured' });
     expect(spawn).not.toHaveBeenCalled();
+    if (prev === undefined) delete process.env.MEMORY_BACKEND; else process.env.MEMORY_BACKEND = prev;
+  });
+
+  it('returns failed/pg_unreachable when PG is required (MEMORY_BACKEND=postgres) but down', async () => {
+    const prev = process.env.MEMORY_BACKEND;
+    process.env.MEMORY_BACKEND = 'postgres';
+    checkHealth.mockResolvedValue({ connected: false, hasSchema: false, error: 'ECONNREFUSED' });
+    const result = await dumpPostgres('/tmp/x.sql');
+    expect(result.status).toBe('failed');
+    expect(result.reason).toBe('pg_unreachable');
+    expect(spawn).not.toHaveBeenCalled();
+    if (prev === undefined) delete process.env.MEMORY_BACKEND; else process.env.MEMORY_BACKEND = prev;
   });
 
   it('returns skipped/not_configured when connected but no schema', async () => {
