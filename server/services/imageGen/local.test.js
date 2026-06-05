@@ -543,6 +543,18 @@ describe('imageGen local.buildSidecarMeta', () => {
     expect(meta.regenStrength).toBeUndefined();
   });
 
+  it('does NOT stamp regen lineage when the init image fails to resolve (no false claim)', () => {
+    const { meta } = buildSidecarMeta({
+      ...baseMetaInput,
+      initImagePath: '/data/images/gone.png',
+      initImageStrength: 0.4,
+      regenOf: 'gone.png',
+      resolveInputPath: () => null, // source path rejected → degraded to txt2img
+    });
+    expect(meta.regenerated).toBeUndefined();
+    expect(meta.cleanedFrom).toBeUndefined();
+  });
+
   it('defaults each missing reference strength to 1.0 (full influence)', () => {
     const { meta } = buildSidecarMeta({
       ...baseMetaInput,

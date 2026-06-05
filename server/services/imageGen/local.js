@@ -376,7 +376,10 @@ export function buildSidecarMeta({
   // fresh sampling pass rather than stripped. `regenStrength`/`regenSteps`/
   // `regenModelId` mirror the resolved render params (not the raw inputs) so a
   // replayed/clamped value is what's recorded.
-  if (typeof regenOf === 'string' && regenOf) {
+  // Only stamp the lineage when the init image actually resolved — if the
+  // source path was rejected/missing, this render degraded to txt2img and is
+  // NOT a regen of anything, so claiming `regenerated: true` would be a lie.
+  if (typeof regenOf === 'string' && regenOf && validInitImagePath) {
     meta.cleanedFrom = regenOf;
     meta.regenerated = true;
     meta.regenStrength = validInitImageStrength;

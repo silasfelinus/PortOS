@@ -51,6 +51,12 @@ function describeCleanedLineage(item) {
   if (item.autoCleaned) {
     return `Auto-cleaned (${item.cleanLevel || 'aggressive'})${item.c2paStripped ? ' · C2PA stripped' : ''}`;
   }
+  // SynthID-defeat regen reuses `cleanedFrom` for grouping but is a generative
+  // round-trip, not a clean — describe it honestly (issue #912).
+  if (item.regenerated && item.cleanedFrom) {
+    const pct = typeof item.regenStrength === 'number' ? ` · ${Math.round(item.regenStrength * 100)}% denoise` : '';
+    return `Regenerated from ${item.cleanedFrom}${pct}`;
+  }
   if (item.cleanedFrom) {
     return `${item.cleanLevel ? `Cleaned (${item.cleanLevel}) ` : 'Cleaned '}from ${item.cleanedFrom}`;
   }

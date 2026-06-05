@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { computeImageVariantGroup } from './variants';
+import { normalizeImage } from './normalize';
 
 const img = (filename, extra = {}) => ({ kind: 'image', filename, ...extra });
 
@@ -75,6 +76,17 @@ describe('computeImageVariantGroup', () => {
     const regen = img('regen-uuid.png', { cleanedFrom: 'a.png', regenerated: true, createdAt: '2024-01-02' });
     const result = computeImageVariantGroup(regen, [orig, cleaned, regen]);
     expect(result.group.map((g) => g.label)).toEqual(['Original', 'Cleaned (aggressive)', 'Regenerated']);
+    expect(result.active.label).toBe('Regenerated');
+  });
+
+  it('labels a regen variant correctly through the real normalizeImage path (issue #912)', () => {
+    // Guards the actual UI path: the gallery feeds normalizeImage output (not
+    // raw sidecars) into computeImageVariantGroup, so the `regenerated`
+    // discriminator must survive normalization or the variant mislabels.
+    const orig = normalizeImage({ filename: 'a.png', prompt: 'x' });
+    const regen = normalizeImage({ filename: 'r.png', cleanedFrom: 'a.png', regenerated: true, regenStrength: 0.4 });
+    const result = computeImageVariantGroup(regen, [orig, regen]);
+    expect(result.group.map((g) => g.label)).toEqual(['Original', 'Regenerated']);
     expect(result.active.label).toBe('Regenerated');
   });
 

@@ -247,14 +247,19 @@ export default function ImageGen() {
 
   // SynthID-defeat regen (issue #912) is hardware-gated on a local FLUX
   // runner — only surface the lightbox action when the backend is installed.
+  // Re-checked on mount AND when the Settings drawer closes (via
+  // reloadBackends) so installing the FLUX venv mid-session reveals the action
+  // without a hard reload, matching how the other backend gates refresh.
   const [regenAvailable, setRegenAvailable] = useState(false);
-  useEffect(() => {
+  const refreshRegenAvailability = useCallback(() => {
     getRegenAvailability().then((r) => setRegenAvailable(!!r?.available)).catch(() => {});
   }, []);
+  useEffect(() => { refreshRegenAvailability(); }, [refreshRegenAvailability]);
 
   // Re-runnable so the Settings drawer can trigger a refresh on close
   // without forcing a full page reload.
   const reloadBackends = useCallback(() => {
+    refreshRegenAvailability();
     return getSettings().then((s) => {
       const backends = deriveAvailableBackends(s);
       // Per-mode saved defaults via the shared helper (mirrored from
@@ -285,7 +290,7 @@ export default function ImageGen() {
       setCleanC2PA(c2[next] === true);
       setDenoise(dn[next] === true);
     }).catch(() => {});
-  }, []);
+  }, [refreshRegenAvailability]);
 
   // Re-seed the cleaner checkboxes when the user manually picks a different
   // backend chip — without this, switching external→local would leave the
