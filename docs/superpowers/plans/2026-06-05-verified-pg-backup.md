@@ -972,6 +972,18 @@ Per the project workflow, run `/simplify` to review the changed code for reuse/q
 
 ---
 
+## Deferred follow-ups (from review)
+
+- [ ] **Integration test for `runBackup` pg-status wiring.** Task 3 covered only
+  the pure `backupStatusForPg` helper (the plan scoped out `runBackup` integration
+  testing because it touches many fs helpers). The wiring — `saveState` writing
+  `degraded` + `pgBackup`, the `backup:completed` emit carrying the new fields, the
+  `emitErrorEvent` warning fire on failure, and `generateManifest`'s `pgDumpPath`
+  branch hashing into `files['../portos-db.sql']` — is verified by code-reading
+  only. `generateManifest`'s new branch in particular is cheap to test in isolation
+  (mostly fs, already mocked in the suite) and would lock in the parent-relative
+  key contract. Promote to a `plan` issue if this path regresses.
+
 ## Self-Review Notes (plan author)
 
 - **Spec coverage:** §1 dump classification → Task 1. §2 state/manifest/propagation → Task 3 (+ getIo in Task 2). §3 degraded notification → Task 3. §4 restorePostgres → Task 4. §5 route+schema → Task 5. §6 UI → Task 7 (+ Task 6 wrapper). Testing → Tasks 1,3,4,5. Changelog → Task 8. All sections mapped.
