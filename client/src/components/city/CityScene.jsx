@@ -156,6 +156,11 @@ export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, 
         camera={{ position: [0, 25, 45], fov: 50 }}
         dpr={dpr}
         shadows={false}
+        // Photo mode freezes the scene for a clean still (roadmap 3.6): "demand" stops the
+        // frameloop once the camera-fly settles, so particles/streams/weather/pulses pause for a
+        // deliberate shot. CityPhotoCamera pumps invalidate() during the fly; capture renders
+        // directly via gl.render(). Live mode keeps the always-on loop the dashboard relies on.
+        frameloop={photoMode ? 'demand' : 'always'}
         onCreated={handleCanvasCreated}
         style={{ background: sceneClearColor, cursor: explorationMode ? 'crosshair' : 'auto', opacity: webglLost ? 0 : 1 }}
         // preserveDrawingBuffer is only needed while taking postcards. Keeping it

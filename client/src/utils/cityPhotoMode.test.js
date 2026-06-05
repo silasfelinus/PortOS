@@ -4,9 +4,13 @@ import {
   DEFAULT_PRESET_ID,
   getPreset,
   cyclePreset,
+  stepFly,
+  FLY_DURATION,
+  MAX_FLY_DELTA,
   buildPostcardStats,
   screenshotFilename,
 } from './cityPhotoMode';
+import { smoothstep } from './easing';
 
 describe('PHOTO_PRESETS', () => {
   it('has unique ids and a position + target each', () => {
@@ -46,6 +50,41 @@ describe('cyclePreset', () => {
   });
   it('treats an unknown current id as the first preset', () => {
     expect(cyclePreset('bogus', 1)).toBe(PHOTO_PRESETS[1].id);
+  });
+});
+
+describe('stepFly', () => {
+  it('advances progress by delta/duration and eases t for a frame-sized delta', () => {
+    const { progress, t, done } = stepFly(0, MAX_FLY_DELTA);
+    expect(progress).toBeCloseTo(MAX_FLY_DELTA / FLY_DURATION, 5);
+    expect(t).toBeCloseTo(smoothstep(progress), 5);
+    expect(done).toBe(false);
+  });
+  it('clamps a huge idle delta to one frame so a fly never snaps in a single step', () => {
+    // In demand mode the first frame after a freeze carries the whole idle gap as delta. The fly
+    // must still advance only one frame's worth, not jump straight to settled.
+    const { progress, done } = stepFly(0, 9999);
+    expect(progress).toBeCloseTo(MAX_FLY_DELTA / FLY_DURATION, 5);
+    expect(done).toBe(false);
+  });
+  it('clamps progress to 1 and reports done once enough frames accumulate', () => {
+    const { progress, t, done } = stepFly(0.999, MAX_FLY_DELTA);
+    expect(progress).toBe(1);
+    expect(t).toBe(1);
+    expect(done).toBe(true);
+  });
+  it('reports done when already settled (no negative drift)', () => {
+    expect(stepFly(1, 0.016).done).toBe(true);
+    expect(stepFly(1, 0.016).progress).toBe(1);
+  });
+  it('treats a non-positive or non-finite delta as no advance', () => {
+    expect(stepFly(0.3, 0).progress).toBeCloseTo(0.3, 5);
+    expect(stepFly(0.3, -1).progress).toBeCloseTo(0.3, 5);
+    expect(stepFly(0.3, NaN).progress).toBeCloseTo(0.3, 5);
+  });
+  it('treats a non-finite progress as settled', () => {
+    expect(stepFly(undefined, 0.016).progress).toBe(1);
+    expect(stepFly(NaN, 0.016).done).toBe(true);
   });
 });
 

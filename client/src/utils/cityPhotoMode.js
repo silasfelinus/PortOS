@@ -1,8 +1,9 @@
 // Pure, deterministic helpers for CyberCity's photo mode (roadmap 3.3): cinematic camera
-// presets, the "city postcard" stats overlay, and screenshot filename generation. No three.js
-// / React imports so it's unit-testable (mirrors the other city helpers). The component reads
-// these presets to fly the camera and composites the postcard caption from a live stats
-// snapshot the page passes in.
+// presets, the camera-fly stepper, the "city postcard" stats overlay, and screenshot filename
+// generation. No three.js / React imports so it's unit-testable (mirrors the other city
+// helpers). The component reads these presets to fly the camera and composites the postcard
+// caption from a live stats snapshot the page passes in.
+import { smoothstep } from './easing';
 
 // Cinematic camera presets. Each is a stable framing of the city — position + look-at target —
 // the photo UI cycles through. Tuned against the default orbital view (camera at [0,25,45]
@@ -31,6 +32,28 @@ export function cyclePreset(currentId, direction = 1) {
   const base = idx === -1 ? 0 : idx;
   const next = (base + direction + PHOTO_PRESETS.length) % PHOTO_PRESETS.length;
   return PHOTO_PRESETS[next].id;
+}
+
+// Photo mode runs the Canvas frameloop in "demand" mode (roadmap 3.6): the scene animates only
+// while the camera is flying to a preset, then freezes for a clean, deliberate still. This pure
+// stepper advances the fly progress by an elapsed delta and reports whether the loop still needs
+// pumping. `FLY_DURATION` is the seconds the cinematic ease takes (slower than the exploration
+// transition). `stepFly` returns the clamped next progress, the eased interpolation factor `t`,
+// and `done` (true once settled) so the component can stop invalidating the demand loop.
+export const FLY_DURATION = 1.1;
+
+// Cap the per-step delta to a frame-sized maximum. In demand mode the loop sleeps while the scene
+// is frozen, so the FIRST frame after a freeze (e.g. when the user cycles presets) carries a
+// delta equal to the whole idle gap — often several seconds. Unclamped, that would complete the
+// fly in a single step and the camera would snap instead of animating. Clamping keeps every fly
+// smooth (~at least FLY_DURATION/MAX_FLY_DELTA frames) regardless of how long the scene was idle.
+export const MAX_FLY_DELTA = 1 / 30; // seconds — one 30fps frame
+
+export function stepFly(progress, deltaSeconds) {
+  const rawDelta = Number.isFinite(deltaSeconds) && deltaSeconds > 0 ? deltaSeconds : 0;
+  const safeDelta = Math.min(rawDelta, MAX_FLY_DELTA);
+  const next = Math.min(1, (Number.isFinite(progress) ? progress : 1) + safeDelta / FLY_DURATION);
+  return { progress: next, t: smoothstep(next), done: next >= 1 };
 }
 
 // Build the short stat lines printed on a "city postcard". Pulls a handful of headline numbers
