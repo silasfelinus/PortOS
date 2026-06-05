@@ -387,6 +387,26 @@ describe('instances.js', () => {
       expect(result.auth).toEqual({ username: 'bob', password: 'pw' });
     });
 
+    it('should reconnect the socket relay when the credential changes', async () => {
+      const peers = [{ id: 'peer-1', name: 'host', enabled: true, auth: { username: 'bob', password: 'old' } }];
+      readJSONFile.mockResolvedValue({ self: null, peers });
+
+      await updatePeer('peer-1', { auth: { username: 'bob', password: 'new' } });
+
+      // Relay pins the Basic header at connect time, so a credential change
+      // must tear it down to reconnect with the new extraHeaders.
+      expect(disconnectFromPeer).toHaveBeenCalledWith('peer-1');
+    });
+
+    it('should NOT reconnect the socket relay on a no-op credential write', async () => {
+      const peers = [{ id: 'peer-1', name: 'host', enabled: true, auth: { username: 'bob', password: 'pw' } }];
+      readJSONFile.mockResolvedValue({ self: null, peers });
+
+      await updatePeer('peer-1', { auth: { username: 'bob', password: 'pw' } });
+
+      expect(disconnectFromPeer).not.toHaveBeenCalled();
+    });
+
     it('should not disconnect when enabling a peer', async () => {
       const peers = [{ id: 'peer-1', name: 'host', enabled: false }];
       readJSONFile.mockResolvedValue({ self: null, peers });

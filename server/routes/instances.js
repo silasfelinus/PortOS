@@ -31,7 +31,9 @@ const router = Router();
 
 // Optional HTTP Basic credential for a peer behind an auth proxy. `null` clears
 // it; an object sets it (username optional — a password-only credential is
-// valid Basic auth). The service's sanitizePeerAuth does the final normalize.
+// valid Basic auth). The service's sanitizePeerAuth does the final normalize,
+// and treats a username-only payload (no password) as a clear, not a store —
+// a password is required to store a credential.
 const peerAuthSchema = z.object({
   username: z.string().max(256).optional(),
   password: z.string().max(2048).optional()

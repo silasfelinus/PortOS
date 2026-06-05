@@ -76,6 +76,15 @@ function sanitizePeerAuth(auth) {
   return { username, password };
 }
 
+// True when two credential values (null or { username, password }) are
+// equivalent — used to skip a needless socket-relay reconnect on a no-op
+// credential write.
+function sameAuth(a, b) {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return a.username === b.username && a.password === b.password;
+}
+
 // Strip the locally-stored proxy credential before a peer record crosses the
 // wire (e.g. the announce response echoes the matched local peer back to the
 // announcing instance). The password is OUR secret for reaching THEM and must
@@ -258,6 +267,11 @@ export async function removePeer(id) {
 
 export async function updatePeer(id, updates) {
   let hostChanged = false;
+  // Credential edits must reconnect the live socket relay (it pins the
+  // Basic-auth header into extraHeaders at connect time), not just the next
+  // probe cycle — otherwise an online relayed peer keeps the stale credential
+  // until a natural reconnect. Tracked like hostChanged, consumed below.
+  let authChanged = false;
   // Track false→true transitions for the per-record-subscribable categories
   // so we can backfill-subscribe existing local records after the data write
   // settles. Set inside withData (where we have the merged before/after
@@ -288,8 +302,9 @@ export async function updatePeer(id, updates) {
     // is ignored so a stray payload can't wipe a working credential.
     if (updates.auth !== undefined) {
       const normalizedAuth = sanitizePeerAuth(updates.auth);
-      if (normalizedAuth !== undefined) {
+      if (normalizedAuth !== undefined && !sameAuth(peer.auth, normalizedAuth)) {
         peer.auth = normalizedAuth; // null clears, object sets
+        authChanged = true;
         console.log(`🌐 Peer credential ${peer.auth ? 'set' : 'cleared'}: ${peer.name}`);
       }
     }
@@ -324,7 +339,7 @@ export async function updatePeer(id, updates) {
   // Tear down the socket relay only after a real state transition so it can
   // reconnect using the new URL on the next probe cycle. Invalid/no-op host
   // writes no longer disrupt an already-healthy connection.
-  if (updates.enabled === false || hostChanged) disconnectFromPeer(id);
+  if (updates.enabled === false || hostChanged || authChanged) disconnectFromPeer(id);
   // Backfill-subscribe every local record of any kind whose category just
   // flipped on. Fire-and-forget — `autoSubscribePeerToAllRecords` is
   // idempotent + per-record-error tolerant, and we don't want to block the
