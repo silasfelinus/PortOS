@@ -20,8 +20,6 @@ export default function CityPhotoCamera({ active, presetId, onReady }) {
   const progressRef = useRef(1);
   const startPosRef = useRef(new THREE.Vector3());
   const startTargetRef = useRef(new THREE.Vector3());
-  const lastPresetRef = useRef(null);
-  const wasActiveRef = useRef(false);
 
   // Register the capture function with the page. Reading the canvas requires the renderer to
   // have been created with preserveDrawingBuffer:true (set on the Canvas gl prop). We force one
@@ -37,29 +35,22 @@ export default function CityPhotoCamera({ active, presetId, onReady }) {
     return () => onReady(null);
   }, [onReady, gl, scene, camera]);
 
-  // Begin a fly whenever photo mode turns on or the preset changes. Kick the demand loop once so
-  // useFrame starts ticking again even though the scene is otherwise frozen.
-  const beginFly = () => {
+  // Start a new fly whenever photo mode turns on or the preset changes. This MUST live in an
+  // effect (fired on the React commit), not inside useFrame: in frameloop="demand" the loop is
+  // asleep once a fly settles, so a useFrame-gated start would never run when the user cycles
+  // presets on a frozen scene — the camera would stay parked on the old preset. The effect kicks
+  // the demand loop via invalidate() so useFrame resumes and steps the fly to completion.
+  useEffect(() => {
+    if (!active) return;
     progressRef.current = 0;
     startPosRef.current.copy(camera.position);
     const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
     startTargetRef.current.copy(camera.position).add(dir.multiplyScalar(10));
     invalidate();
-  };
+  }, [active, presetId, camera, invalidate]);
 
   useFrame((_, delta) => {
-    if (!active) {
-      wasActiveRef.current = false;
-      lastPresetRef.current = null;
-      return;
-    }
-    // Detect activation or preset change → start a new fly from the current pose.
-    if (!wasActiveRef.current || lastPresetRef.current !== presetId) {
-      wasActiveRef.current = true;
-      lastPresetRef.current = presetId;
-      beginFly();
-    }
-    if (progressRef.current >= 1) return; // settled — leave the camera where the fly left it, scene frozen
+    if (!active || progressRef.current >= 1) return; // inactive, or settled — scene stays frozen
 
     const { progress, t, done } = stepFly(progressRef.current, delta);
     progressRef.current = progress;

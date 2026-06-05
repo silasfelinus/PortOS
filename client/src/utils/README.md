@@ -81,7 +81,7 @@ its tunable constants and placement helpers.
 | `cityJiraDistrict` | Jira ticket district: ticket state, sprint structures, placement (`computeJiraDistrict`). |
 | `cityMemoryDistrict` | Brain-graph memory district: category clustering, bridges, placement (`computeMemoryDistrict`). |
 | `cityMiniMap` | Mini-map projection of building positions into 2D bounds (`computeMiniMap`, `projectPoint`). |
-| `cityPhotoMode` | Photo-mode camera presets, postcard stats, and screenshot filename (`getPreset`, `cyclePreset`). |
+| `cityPhotoMode` | Photo-mode camera presets, the demand-loop fly stepper, postcard stats, and screenshot filename (`getPreset`, `cyclePreset`, `stepFly`). |
 | `cityProductivity` | Productivity monument from streak/velocity tiers (`computeProductivityMonument`). |
 | `citySeasonalDecor` | Season/holiday resolution → seasonal decoration placements (`computeSeasonalDecor`). |
 | `citySoundscape` | Ambient soundscape: mood/energy classification and chord selection (`computeSoundscape`). |
