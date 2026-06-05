@@ -5,20 +5,37 @@ import useClickOutside from '../../hooks/useClickOutside';
 
 const POPOVER_WIDTH = 256; // w-64
 const VIEWPORT_MARGIN = 8;
-const POPOVER_GAP = 6; // ~mt-1.5 below the chip
+const POPOVER_GAP = 6; // ~mt-1.5 between chip and popover
 
-// Position the fixed popover from the chip's viewport rect, biased to `align`
-// (start = popover's left edge under the chip; end = its right edge under the
-// chip) and then clamped to the viewport so it never runs off-screen. Fixed
-// positioning is what lets the popover escape the `overflow-hidden` dashboard
-// grid cell it can live inside — an absolutely-positioned panel would clip
-// against the cell on narrow widget widths regardless of which edge it anchored.
-function popoverStyleFor(rect, align) {
+// Hidden placeholder applied for the one layout-effect pass before the popover is
+// measured — keeps it in the DOM (so its height is measurable) without flashing
+// at the wrong spot.
+const HIDDEN_POPOVER_STYLE = { position: 'fixed', top: 0, left: 0, visibility: 'hidden' };
+
+// Position the fixed popover from the chip's viewport rect, then clamp it fully
+// inside the viewport. Horizontally it's biased to `align` (start = popover's left
+// edge under the chip; end = its right edge under the chip) before clamping.
+// Vertically it prefers opening below the chip, flips above when there isn't room
+// below, and clamps either way. Fixed positioning is what lets the popover escape
+// the `overflow-hidden` dashboard grid cell it can live inside — an absolutely-
+// positioned panel would clip against the cell on narrow widget widths or near
+// the viewport bottom regardless of which edge it anchored. `popHeight` is the
+// measured popover height (0 on the pre-measure pass → defaults to below).
+function popoverStyleFor(rect, align, popHeight) {
   const vw = window.innerWidth;
+  const vh = window.innerHeight;
   const width = Math.min(POPOVER_WIDTH, vw - VIEWPORT_MARGIN * 2);
   const rawLeft = align === 'end' ? rect.right - width : rect.left;
   const left = Math.max(VIEWPORT_MARGIN, Math.min(rawLeft, vw - width - VIEWPORT_MARGIN));
-  return { position: 'fixed', top: rect.bottom + POPOVER_GAP, left, width };
+
+  const h = popHeight || 0;
+  const belowTop = rect.bottom + POPOVER_GAP;
+  const aboveTop = rect.top - POPOVER_GAP - h;
+  let top;
+  if (!h || belowTop + h <= vh - VIEWPORT_MARGIN) top = belowTop;        // fits below
+  else if (aboveTop >= VIEWPORT_MARGIN) top = aboveTop;                  // flip above
+  else top = Math.max(VIEWPORT_MARGIN, vh - VIEWPORT_MARGIN - h);        // clamp into view
+  return { position: 'fixed', top, left, width, visibility: 'visible' };
 }
 
 // Source-style provenance chip for health/longevity insights. Tap (or click) to
@@ -59,20 +76,28 @@ export default function ProvenanceChip({
 }) {
   const meta = getProvenanceLevel(level);
   const [open, setOpen] = useState(false);
-  const [popStyle, setPopStyle] = useState(null);
+  const [popStyle, setPopStyle] = useState(HIDDEN_POPOVER_STYLE);
   const wrapRef = useRef(null);
   const btnRef = useRef(null);
+  const popRef = useRef(null);
   const popId = useId();
   const close = useCallback(() => setOpen(false), []);
 
   useClickOutside(wrapRef, open, close);
 
-  // Measure the chip and place the fixed popover before paint so it never flashes
-  // at the wrong spot; re-measure on scroll/resize while open since fixed coords
-  // are viewport-relative and the chip can move under them.
+  // Measure the chip (and the popover's own height, for the below/above flip) and
+  // place the fixed popover before paint so it never flashes at the wrong spot;
+  // re-measure on scroll/resize while open since fixed coords are viewport-relative
+  // and the chip can move under them. Reset to hidden on close so the next open
+  // re-measures from scratch instead of reusing a stale rect.
   useLayoutEffect(() => {
-    if (!open || !btnRef.current) return undefined;
-    const reposition = () => setPopStyle(popoverStyleFor(btnRef.current.getBoundingClientRect(), align));
+    if (!open || !btnRef.current) {
+      setPopStyle(HIDDEN_POPOVER_STYLE);
+      return undefined;
+    }
+    const reposition = () => setPopStyle(
+      popoverStyleFor(btnRef.current.getBoundingClientRect(), align, popRef.current?.offsetHeight),
+    );
     reposition();
     window.addEventListener('scroll', reposition, true);
     window.addEventListener('resize', reposition);
@@ -112,12 +137,15 @@ export default function ProvenanceChip({
         <span>{label ?? meta.label}</span>
         <HelpCircle size={10} aria-hidden="true" className="shrink-0 opacity-60" />
       </button>
-      {open && popStyle && (
+      {open && (
         <div
+          ref={popRef}
           id={popId}
           // Fixed + viewport-clamped (see popoverStyleFor) so the panel escapes
           // any overflow-hidden ancestor — e.g. the dashboard grid cell — and
-          // never renders off-screen, on a narrow widget or near the viewport edge.
+          // never renders off-screen, on a narrow widget or near any viewport edge.
+          // Rendered hidden for one layout-effect pass so its height is measurable
+          // before it's placed (the below/above flip needs that height).
           style={popStyle}
           className="z-30 rounded-lg border border-port-border bg-port-card p-3 text-left shadow-xl"
         >

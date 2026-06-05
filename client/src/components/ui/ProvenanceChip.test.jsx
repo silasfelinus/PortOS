@@ -85,6 +85,11 @@ describe('ProvenanceChip', () => {
     });
   };
 
+  // jsdom reports offsetHeight as 0; stub it so the below/above flip is testable.
+  const stubPopHeight = (h) => {
+    vi.spyOn(HTMLDivElement.prototype, 'offsetHeight', 'get').mockReturnValue(h);
+  };
+
   const openPopover = (props = {}) => {
     render(<ProvenanceChip level="inferred" {...props} />);
     fireEvent.click(screen.getByRole('button'));
@@ -121,5 +126,24 @@ describe('ProvenanceChip', () => {
     const popover = openPopover();
     // 1024 - 256 - 8 = 760.
     expect(popover.style.left).toBe('760px');
+  });
+
+  it('flips the popover above the chip when there is no room below', () => {
+    // jsdom viewport height is 768. A chip near the bottom with a 120px popover
+    // can't open below (740 + 6 + 120 > 768 - 8), so it flips above the chip:
+    // top - gap - height = 730 - 6 - 120 = 604.
+    stubPopHeight(120);
+    stubChipRect({ left: 500, right: 560, top: 730, bottom: 750 });
+    const popover = openPopover();
+    expect(popover.style.top).toBe('604px');
+  });
+
+  it('opens below the chip when there is room', () => {
+    // Same 120px popover, but the chip is high up: 40 + 6 + 120 fits in 768, so
+    // it stays below at bottom + gap = 46.
+    stubPopHeight(120);
+    stubChipRect({ left: 500, right: 560, top: 20, bottom: 40 });
+    const popover = openPopover();
+    expect(popover.style.top).toBe('46px');
   });
 });
