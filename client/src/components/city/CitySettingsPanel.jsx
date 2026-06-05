@@ -167,44 +167,12 @@ export default function CitySettingsPanel() {
 
           {/* Visual Effects */}
           <div>
-            <SectionHeader title="VISUAL FX" subtitle="Post-processing and atmosphere" />
-            <SettingToggle
-              label="BLOOM"
-              value={settings.bloomEnabled}
-              onChange={(v) => updateSetting('bloomEnabled', v)}
-              description="Glowing light bloom around bright surfaces"
-            />
-            {settings.bloomEnabled && (
-              <SettingSlider
-                label="STRENGTH"
-                value={settings.bloomStrength}
-                onChange={(v) => updateSetting('bloomStrength', v)}
-                description="Intensity of the bloom glow effect"
-              />
-            )}
+            <SectionHeader title="VISUAL FX" subtitle="Reflections and atmosphere" />
             <SettingToggle
               label="REFLECTIONS"
               value={settings.reflectionsEnabled}
               onChange={(v) => updateSetting('reflectionsEnabled', v)}
               description="Wet street reflections and puddles"
-            />
-            <SettingToggle
-              label="CHROMATIC ABERRATION"
-              value={settings.chromaticAberration}
-              onChange={(v) => updateSetting('chromaticAberration', v)}
-              description="Color fringing at screen edges"
-            />
-            <SettingToggle
-              label="FILM GRAIN"
-              value={settings.filmGrain}
-              onChange={(v) => updateSetting('filmGrain', v)}
-              description="Subtle animated noise overlay"
-            />
-            <SettingToggle
-              label="COLOR GRADING"
-              value={settings.colorGrading}
-              onChange={(v) => updateSetting('colorGrading', v)}
-              description="Cinematic color correction"
             />
             <SettingToggle
               label="SCANLINES"
@@ -228,16 +196,6 @@ export default function CitySettingsPanel() {
           {/* Scene Lighting */}
           <div>
             <SectionHeader title="SCENE LIGHTING" subtitle="Brightness and time of day" />
-            <SettingSlider
-              label="EXPOSURE"
-              value={settings.sceneExposure ?? 1.0}
-              onChange={(v) => updateSetting('sceneExposure', v)}
-              min={0.5}
-              max={2.5}
-              step={0.1}
-              format={(v) => `${v.toFixed(1)}x`}
-              description="Post-bloom exposure adjustment — darkens or brightens assets without adding bloom"
-            />
             <SettingSlider
               label="AMBIENT BRIGHTNESS"
               value={settings.ambientBrightness}
