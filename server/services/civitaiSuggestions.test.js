@@ -186,6 +186,63 @@ describe('getSuggestions', () => {
     expect(card.installs.flux2.installUrl).toMatch(/modelVersionId=100/);
   });
 
+  it('searchLorasInFamily passes the keyword + cursor through to Civitai and returns nextCursor', async () => {
+    let seenUrl = null;
+    const fetchImpl = async (url) => {
+      seenUrl = url;
+      return mockJsonResponse({
+        items: [buildModel(7001, 'Cyberpunk City', 'ZImageTurbo')],
+        metadata: { nextCursor: 'CURSOR_2' },
+      });
+    };
+    const out = await svc.searchLorasInFamily({
+      runnerFamily: 'z-image',
+      query: '  cyberpunk  ',
+      cursor: 'CURSOR_1',
+      limit: 12,
+      fetchImpl,
+    });
+    const u = new URL(seenUrl);
+    expect(u.searchParams.get('query')).toBe('cyberpunk'); // trimmed
+    expect(u.searchParams.get('cursor')).toBe('CURSOR_1');
+    expect(u.searchParams.get('limit')).toBe('12');
+    expect(u.searchParams.getAll('baseModels')).toContain('ZImageTurbo');
+    expect(out.runnerFamily).toBe('z-image');
+    expect(out.query).toBe('cyberpunk');
+    expect(out.items.length).toBe(1);
+    expect(out.items[0].name).toBe('Cyberpunk City');
+    expect(out.nextCursor).toBe('CURSOR_2');
+  });
+
+  it('searchLorasInFamily omits the query param for a blank keyword (top ranking) and returns null cursor when exhausted', async () => {
+    let seenUrl = null;
+    const fetchImpl = async (url) => {
+      seenUrl = url;
+      return mockJsonResponse({ items: [buildModel(7002, 'Top One', 'Flux.1 D')] }); // no metadata
+    };
+    const out = await svc.searchLorasInFamily({ runnerFamily: 'mflux', query: '', fetchImpl });
+    const u = new URL(seenUrl);
+    expect(u.searchParams.has('query')).toBe(false);
+    expect(u.searchParams.has('cursor')).toBe(false);
+    expect(out.query).toBe('');
+    expect(out.nextCursor).toBe(null);
+    expect(out.items[0].modelId).toBe(7002);
+  });
+
+  it('searchLorasInFamily does not touch the cached suggestions (live, uncached)', async () => {
+    let searchCalls = 0;
+    const fetchImpl = async (url) => {
+      const m = url.match(/api\/v1\/models\/(\d+)$/);
+      if (m) return mockJsonResponse(buildModel(Number(m[1]), 'Curated', 'Flux.1 D'));
+      searchCalls += 1;
+      return mockJsonResponse({ items: [buildModel(1, 'X', 'Flux.1 D')] });
+    };
+    await svc.searchLorasInFamily({ runnerFamily: 'mflux', query: 'a', fetchImpl });
+    await svc.searchLorasInFamily({ runnerFamily: 'mflux', query: 'a', fetchImpl });
+    // Two live searches → two HTTP calls (no caching).
+    expect(searchCalls).toBe(2);
+  });
+
   it('curated card derives runnerFamilies from ALL the model versions', async () => {
     const fetchImpl = async (url) => {
       const m = url.match(/api\/v1\/models\/(\d+)$/);

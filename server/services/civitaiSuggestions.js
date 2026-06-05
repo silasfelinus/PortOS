@@ -169,7 +169,7 @@ const fetchSuggestionsFor = async (runnerFamily, { fetchImpl, force = false } = 
   const apiKey = await resolveCivitaiKey();
   // Civitai's API doesn't strictly require auth for SFW LoRA search but a
   // configured key gets cleaner ranking and avoids anonymous rate limits.
-  const items = await searchCivitaiLoras({
+  const { items } = await searchCivitaiLoras({
     runnerFamily,
     limit: MAX_SUGGESTIONS,
     apiKey,
@@ -178,6 +178,31 @@ const fetchSuggestionsFor = async (runnerFamily, { fetchImpl, force = false } = 
   const cards = items.map(buildCard).filter(Boolean);
   cache.set(runnerFamily, { fetchedAt: now(), items: cards });
   return cards;
+};
+
+// Live (uncached) search/pagination within one runner family. Backs the
+// per-category search box and "Load more" button on /media/loras:
+//   - `query` filters by keyword (model name/description) — blank = top ranking
+//   - `cursor` pages forward; pass the previous response's `nextCursor`
+// Uncached because results are query-/cursor-specific and short-lived; the
+// curated + top-N panel stays on the 1-hour cache. Returns the same card
+// shape `buildCard` produces plus Civitai's `nextCursor` for the next page.
+export const searchLorasInFamily = async ({ runnerFamily, query = '', cursor = null, limit = 12, fetchImpl } = {}) => {
+  const apiKey = await resolveCivitaiKey();
+  const { items, nextCursor } = await searchCivitaiLoras({
+    runnerFamily,
+    limit,
+    query,
+    cursor,
+    apiKey,
+    fetchImpl,
+  });
+  return {
+    runnerFamily,
+    query: typeof query === 'string' ? query.trim() : '',
+    items: items.map(buildCard).filter(Boolean),
+    nextCursor: nextCursor || null,
+  };
 };
 
 // Public API. Returns:

@@ -173,6 +173,19 @@ export const installLoraFromCivitai = ({ url, silent = false } = {}) => request(
 export const getCivitaiSuggestions = ({ force = false } = {}) =>
   request(`/loras/suggestions${force ? '?force=1' : ''}`);
 
+// Live keyword search + cursor pagination within one runner family. Backs the
+// per-category search box and "Load more" button on /media/loras. `query`
+// blank pages the plain top-ranking; pass the previous response's `nextCursor`
+// to load the next page. Returns `{ runnerFamily, query, items, nextCursor }`.
+export const searchCivitaiLoras = ({ runner, query = '', cursor = null, limit } = {}) => {
+  const params = new URLSearchParams();
+  params.set('runner', runner);
+  if (query) params.set('query', query);
+  if (cursor) params.set('cursor', cursor);
+  if (limit) params.set('limit', String(limit));
+  return request(`/loras/search?${params.toString()}`);
+};
+
 // Civitai auth — read/save/clear the API key. The key never round-trips back
 // to the client; the GET only returns `{ hasKey, source }`.
 export const getCivitaiAuth = () => request('/loras/auth/civitai');

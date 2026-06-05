@@ -801,7 +801,7 @@ export const restoreRequestSchema = z.object({
 // as "use the default" rather than a bogus id. Both the autofixer (file edits
 // + pm2) and Google Calendar MCP sync require an agentic CLI provider; the
 // picker resolution layer (`pickCliProvider`) enforces type 'cli'.
-const emptyToUndefined = (v) => (v === '' ? undefined : v);
+export const emptyToUndefined = (v) => (v === '' ? undefined : v);
 export const featureProviderConfigSchema = z.object({
   providerId: z.preprocess(emptyToUndefined, z.string().optional()),
   model: z.preprocess(emptyToUndefined, z.string().optional()),
