@@ -638,14 +638,18 @@ router.post('/:filename/regenerate', asyncHandler(async (req, res) => {
   if (!sourceAbsPath) {
     throw new ServerError('Image not found', { status: 404, code: 'NOT_FOUND' });
   }
-  const { metadata: sourceMeta } = await local.readImageSidecar(filename);
+  // Sidecar (for prompt/model) and the on-disk dimension probe have no data
+  // dependency — overlap the two reads.
+  const [{ metadata: sourceMeta }, sourceDims] = await Promise.all([
+    local.readImageSidecar(filename),
+    readImageDimensions(sourceAbsPath),
+  ]);
 
   const backend = await resolveRegenBackend({ sourceModelId: sourceMeta.modelId });
   if (!backend.available) {
     throw new ServerError(backend.reason, { status: 400, code: 'REGEN_BACKEND_UNAVAILABLE' });
   }
 
-  const sourceDims = await readImageDimensions(sourceAbsPath);
   const strength = body.strength ?? DEFAULT_REGEN_STRENGTH;
   const params = buildRegenParams({
     filename,

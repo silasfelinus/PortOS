@@ -371,6 +371,23 @@ function SettingsPane({
     onClose?.();
     handler?.(item);
   };
+  // Shared handler for the in-place async actions (Clean / Regenerate): guard
+  // against double-fire, flip the busy flag, run the action (the caller toasts
+  // its own error so we just stay open on throw), and close on success.
+  const runBusyAction = (busy, setBusy, action) => async () => {
+    if (busy) return;
+    setBusy(true);
+    let ok = false;
+    try {
+      await action(item);
+      ok = true;
+    } catch {
+      // Caller toasts its own error; stay open so the user can retry.
+    } finally {
+      setBusy(false);
+    }
+    if (ok) onClose();
+  };
   // Local draft state debounces saves so each keystroke doesn't PATCH.
   // onSaveRef keeps the debounce effect off the parent's render churn —
   // page components pass inline-arrow onAnnotationChange callbacks, which
@@ -591,20 +608,7 @@ function SettingsPane({
           <button
             type="button"
             disabled={cleaning}
-            onClick={async () => {
-              if (cleaning) return;
-              setCleaning(true);
-              let ok = false;
-              try {
-                await onClean(item);
-                ok = true;
-              } catch {
-                // Caller toasts its own error; stay open so the user can retry.
-              } finally {
-                setCleaning(false);
-              }
-              if (ok) onClose();
-            }}
+            onClick={runBusyAction(cleaning, setCleaning, onClean)}
             title={CLEAN_TOOLTIP}
             aria-label="Clean image"
             className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-port-warning/80 text-white hover:opacity-90 rounded disabled:opacity-50 disabled:cursor-not-allowed"
@@ -616,20 +620,7 @@ function SettingsPane({
           <button
             type="button"
             disabled={regenerating}
-            onClick={async () => {
-              if (regenerating) return;
-              setRegenerating(true);
-              let ok = false;
-              try {
-                await onRegenerate(item);
-                ok = true;
-              } catch {
-                // Caller toasts its own error; stay open so the user can retry.
-              } finally {
-                setRegenerating(false);
-              }
-              if (ok) onClose();
-            }}
+            onClick={runBusyAction(regenerating, setRegenerating, onRegenerate)}
             title="Regenerate through a local FLUX model (img2img) to overwrite SynthID watermarking. Creates a new variant; the original is kept."
             aria-label="Regenerate image to defeat SynthID watermark"
             className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-port-accent/80 text-white hover:opacity-90 rounded disabled:opacity-50 disabled:cursor-not-allowed"
