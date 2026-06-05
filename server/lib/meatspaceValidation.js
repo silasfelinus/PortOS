@@ -56,7 +56,13 @@ export const configSchema = z.object({
   lifestyle: lifestyleSchema.optional()
 });
 
-export const configUpdateSchema = configSchema.partial();
+// configSchema has no top-level defaults, but its nested `lifestyle` object is
+// field-merged by updateConfig() — so a config PATCH carrying `lifestyle` must
+// strip that object's inner defaults too, or the untouched lifestyle fields get
+// reset to their defaults on every save (top-level .partial() doesn't recurse).
+export const configUpdateSchema = configSchema.partial().extend({
+  lifestyle: partialWithoutDefaults(lifestyleSchema).optional(),
+});
 export const lifestyleUpdateSchema = partialWithoutDefaults(lifestyleSchema);
 
 // =============================================================================

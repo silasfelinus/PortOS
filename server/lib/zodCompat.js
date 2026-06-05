@@ -42,6 +42,17 @@ function stripDefault(schema) {
  * first — so the parsed result contains only the keys the caller actually sent.
  * Use for any PATCH/update schema derived from a base that carries field defaults.
  *
+ * The base's strict-mode is preserved: a `.strict()` source produces a strict
+ * partial (unknown keys still rejected), matching what `objectSchema.partial()`
+ * did. Only the field-level defaults are unwound — field bounds/refinements,
+ * optional/nullable wrappers, and the object's unknown-key policy survive.
+ *
+ * Note this only strips *top-level* field defaults. A field that is itself a
+ * defaulted nested object still inflates its own inner defaults when present —
+ * if a PATCH route field-merges such a nested object onto stored state, apply
+ * `partialWithoutDefaults` to that nested field too (don't rely on the
+ * top-level partial to recurse).
+ *
  * @param {import('zod').ZodObject} objectSchema
  * @returns {import('zod').ZodObject} partial schema with defaults stripped
  */
@@ -50,5 +61,9 @@ export function partialWithoutDefaults(objectSchema) {
   const stripped = Object.fromEntries(
     Object.entries(shape).map(([key, field]) => [key, stripDefault(field)]),
   );
-  return z.object(stripped).partial();
+  const rebuilt = z.object(stripped).partial();
+  // z.object() rebuild defaults to stripping unknown keys; re-apply .strict()
+  // when the source schema rejected them, so the rebuild doesn't loosen the
+  // unknown-key contract.
+  return objectSchema.def?.catchall?.def?.type === 'never' ? rebuilt.strict() : rebuilt;
 }

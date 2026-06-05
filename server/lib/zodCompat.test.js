@@ -46,4 +46,21 @@ describe('partialWithoutDefaults', () => {
     // The helper does not:
     expect(partialWithoutDefaults(base).parse({})).toEqual({});
   });
+
+  it('preserves .strict() from the source schema (rejects unknown keys)', () => {
+    const strictBase = z.object({
+      enabled: z.boolean().default(false),
+      debounceMs: z.number().int().default(2500),
+    }).strict();
+    const schema = partialWithoutDefaults(strictBase);
+    expect(schema.safeParse({ enabled: true }).success).toBe(true);
+    expect(schema.safeParse({}).success).toBe(true);
+    // Unknown key still rejected, matching the strict source's contract.
+    expect(schema.safeParse({ enabled: true, bogus: 1 }).success).toBe(false);
+  });
+
+  it('stays loose when the source schema is loose (strips unknown keys)', () => {
+    const schema = partialWithoutDefaults(base); // base is not .strict()
+    expect(schema.parse({ debounceMs: 3000, bogus: 1 })).toEqual({ debounceMs: 3000 });
+  });
 });

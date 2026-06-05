@@ -97,7 +97,13 @@ export const agentSchema = z.object({
   aiConfig: agentAiConfigSchema
 });
 
-export const agentUpdateSchema = partialWithoutDefaults(agentSchema);
+// partialWithoutDefaults handles the top-level fields; the nested `personality`
+// object is also field-merged by updateAgent(), so it needs its own default-free
+// partial — otherwise a PATCH of one personality key (e.g. just `style`) injects
+// the other keys' defaults and clobbers the stored tone/topics/quirks/promptPrefix.
+export const agentUpdateSchema = partialWithoutDefaults(agentSchema).extend({
+  personality: partialWithoutDefaults(agentPersonalitySchema).optional(),
+});
 
 // =============================================================================
 // PLATFORM ACCOUNT SCHEMAS
