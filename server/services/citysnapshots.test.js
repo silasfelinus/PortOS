@@ -221,6 +221,37 @@ describe('citysnapshots service', () => {
     expect(sinceResult.snapshots.every(f => Date.parse(f.ts) >= Date.parse(since))).toBe(true);
   });
 
+  it('maps an agent to the longest matching repoPath, not a sibling-prefix app', async () => {
+    const svc = await loadService({
+      sources: {
+        // App order deliberately puts the prefix-only app FIRST; boundary +
+        // longest-match must still pick the nested app the agent actually works in.
+        appStatuses: [
+          { id: 'proj', name: 'Proj', repoPath: '/repos/proj', overallStatus: 'online' },
+          { id: 'project', name: 'Project', repoPath: '/repos/project', overallStatus: 'online' },
+        ],
+        agents: [
+          { id: 'agent-1', status: 'running', workspacePath: '/repos/project/sub/dir' },
+          // A bare-prefix path that is NOT under /repos/proj (no boundary) maps to nothing.
+          { id: 'agent-2', status: 'running', workspacePath: '/repos/projectile' },
+        ],
+      },
+    });
+    const frame = await svc.captureSnapshot();
+    expect(frame.assignments).toEqual([
+      { agentId: 'agent-1', appId: 'project', status: 'running' },
+      { agentId: 'agent-2', appId: null, status: 'running' },
+    ]);
+  });
+
+  it('getSnapshots({ limit: 0 }) returns no frames (not the whole series)', async () => {
+    const svc = await loadService();
+    for (let i = 0; i < 3; i += 1) await svc.captureSnapshot();
+    const result = await svc.getSnapshots({ limit: 0 });
+    expect(result.total).toBe(3);
+    expect(result.snapshots).toEqual([]);
+  });
+
   it('serializes concurrent captures so none are lost', async () => {
     const svc = await loadService();
     await Promise.all(Array.from({ length: 12 }, () => svc.captureSnapshot()));

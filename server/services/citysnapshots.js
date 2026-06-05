@@ -110,14 +110,30 @@ async function loadSnapshots() {
   return snapshotCache;
 }
 
+// True when `child` is `parent` itself or a path strictly nested under it.
+// Plain `startsWith` would mis-match sibling-prefix repos (/repos/proj would
+// "contain" /repos/project), so require a path boundary at the join.
+function isPathUnder(child, parent) {
+  if (child === parent) return true;
+  const base = parent.endsWith('/') ? parent : `${parent}/`;
+  return child.startsWith(base);
+}
+
 // Map a CoS agent to the app it's working in by matching its workspacePath
-// against each app's repoPath — the same rule the client's `agentMap` uses.
-// workspacePath may sit on the agent or in its metadata depending on spawn path.
+// against each app's repoPath. workspacePath may sit on the agent or in its
+// metadata depending on spawn path. Unlike the client's live agentMap (which
+// recomputes every render), this mapping is persisted replay data, so it must
+// be unambiguous: match on a path boundary and let the LONGEST matching
+// repoPath win, so a nested app repo beats its parent.
 function resolveAgentApp(agent, appStatuses) {
   const workspacePath = agent?.workspacePath || agent?.metadata?.workspacePath;
   if (!workspacePath || !Array.isArray(appStatuses)) return null;
-  const match = appStatuses.find(a => a.repoPath && workspacePath.startsWith(a.repoPath));
-  return match?.id ?? null;
+  let best = null;
+  for (const a of appStatuses) {
+    if (!a.repoPath || !isPathUnder(workspacePath, a.repoPath)) continue;
+    if (!best || a.repoPath.length > best.repoPath.length) best = a;
+  }
+  return best?.id ?? null;
 }
 
 /**
@@ -269,11 +285,11 @@ export async function getSnapshots({ limit, since } = {}) {
   }
 
   const total = frames.length;
-  // `limit > 0` (not `>= 0`): a direct caller passing 0 means "none," but
-  // slice(-0) returns the whole array — guard against that footgun. The route's
-  // Zod schema already enforces limit >= 1, so this only hardens direct callers.
-  if (Number.isFinite(limit) && limit > 0 && limit < frames.length) {
-    frames = frames.slice(-limit); // most-recent N, still chronological
+  // A direct caller passing limit 0 means "none" — but slice(-0) returns the
+  // WHOLE array, so handle 0 explicitly. The route's Zod schema enforces
+  // limit >= 1, so this only hardens direct callers.
+  if (Number.isFinite(limit) && limit >= 0 && limit < frames.length) {
+    frames = limit === 0 ? [] : frames.slice(-limit); // most-recent N, chronological
   }
 
   return { total, snapshots: frames };
