@@ -52,8 +52,10 @@ const router = Router();
 router.get('/style-presets', (_req, res) => res.json(STYLE_PRESETS));
 
 const generateSchema = z.object({
-  // Empty prompt allowed — i2i / edit / unconditional generation don't require one.
-  prompt: z.string().max(8000),
+  // Empty prompt allowed — i2i / edit / unconditional generation don't require
+  // one. The multipart FormData builder drops empty-string fields, so an empty
+  // prompt arrives as `undefined`; default it to '' rather than rejecting.
+  prompt: z.string().max(8000).optional().default(''),
   negativePrompt: z.string().max(8000).optional(),
   // Per-request backend override. If omitted, the dispatcher uses
   // `imageGen.mode` from settings.json.
