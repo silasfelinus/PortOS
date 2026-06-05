@@ -357,8 +357,11 @@ export default function Building({ app, position, agentCount, onClick, playSfx, 
   const initialScale = playback && !exiting ? 0.001 : 1;
   const exitedFiredRef = useRef(false);
   // Smoothly-lerped status color so a status change recolors over a beat rather
-  // than snapping. Seeded to the current color; the target is recomputed below.
+  // than snapping. `displayed` is the current on-screen color; `target` is the
+  // status color it eases toward. Both are persistent THREE.Color instances so
+  // the per-frame lerp allocates nothing.
   const displayedColorRef = useRef(null);
+  const targetColorRef = useRef(null);
 
   const height = getBuildingHeight(app);
   const edgeColor = getBuildingColor(app.overallStatus, app.archived);
@@ -429,12 +432,23 @@ export default function Building({ app, position, agentCount, onClick, playSfx, 
     const t = clock.getElapsedTime();
 
     // Status recolor: ease the body emissive toward the current status color so a
-    // scrub that flips online→stopped fades cyan→red rather than snapping.
+    // scrub that flips online→stopped fades cyan→red rather than snapping. Skip
+    // the work entirely once the displayed color has converged (the common case,
+    // including all of live mode) so it costs nothing per frame at rest.
     const mat = meshRef.current.material;
     if (mat?.emissive) {
       if (!displayedColorRef.current) displayedColorRef.current = new THREE.Color(edgeColor);
-      displayedColorRef.current.lerp(new THREE.Color(edgeColor), Math.min(1, (delta || 0.016) * 6));
-      mat.emissive.copy(displayedColorRef.current);
+      if (!targetColorRef.current) targetColorRef.current = new THREE.Color();
+      targetColorRef.current.set(edgeColor);
+      const disp = displayedColorRef.current;
+      const tgt = targetColorRef.current;
+      if (Math.abs(disp.r - tgt.r) + Math.abs(disp.g - tgt.g) + Math.abs(disp.b - tgt.b) > 0.002) {
+        disp.lerp(tgt, Math.min(1, (delta || 0.016) * 6));
+        mat.emissive.copy(disp);
+      } else if (!disp.equals(tgt)) {
+        disp.copy(tgt);
+        mat.emissive.copy(disp);
+      }
     }
 
     const nb = neonBrightness;
