@@ -211,7 +211,7 @@ async function classifyInBackground(entryId, text, meta, providerOverride, model
       if (validationResult.success) {
         classification = validationResult.data;
       } else {
-        console.error(`🧠 Classification validation failed: ${validationResult.error.errors.length} issues, first: ${validationResult.error.errors[0]?.message}`);
+        console.error(`🧠 Classification validation failed: ${validationResult.error.issues.length} issues, first: ${validationResult.error.issues[0]?.message}`);
         aiError = new Error('Invalid classification output from AI');
       }
     } else {
@@ -508,7 +508,7 @@ export async function runDailyDigest(providerOverride, modelOverride) {
   const validationResult = digestOutputSchema.safeParse(parsed);
 
   if (!validationResult.success) {
-    throw new Error(`Invalid digest output: ${JSON.stringify(validationResult.error.errors)}`);
+    throw new Error(`Invalid digest output: ${JSON.stringify(validationResult.error.issues)}`);
   }
 
   const digestData = validationResult.data;
@@ -570,7 +570,7 @@ export async function runWeeklyReview(providerOverride, modelOverride) {
   const validationResult = reviewOutputSchema.safeParse(parsed);
 
   if (!validationResult.success) {
-    throw new Error(`Invalid review output: ${JSON.stringify(validationResult.error.errors)}`);
+    throw new Error(`Invalid review output: ${JSON.stringify(validationResult.error.issues)}`);
   }
 
   const reviewData = validationResult.data;

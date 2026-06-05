@@ -82,7 +82,7 @@ const updatePeerSchema = z.object({
 
 const announceSchema = z.object({
   port: z.number().int().min(1).max(65535),
-  instanceId: z.string().uuid(),
+  instanceId: z.string().guid(),
   name: z.string().optional(),
   // Tailscale-issued DNS name announcing peer reaches itself at; receiver
   // stores it on the peer record so callbacks use https://<host>:<port>.
