@@ -62,6 +62,34 @@ describe('applyLightRegen', () => {
     expect(delta.pixelDeltaPct).toBeGreaterThan(0);
   });
 
+  it('actually applies the resize-squeeze, not just the color/sharpen ops', async () => {
+    // Regression guard: sharp collapses chained .resize() calls to the last one,
+    // so a single-pipeline implementation silently skips the downscale→upscale
+    // squeeze. Build a 1px-stripe (max high-frequency) image where the squeeze
+    // measurably blurs, and assert the real output differs from the same ops
+    // WITHOUT the squeeze — if the squeeze regresses, the two become identical.
+    const w = 256, h = 64;
+    const raw = Buffer.alloc(w * h * 3);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const v = x % 2 ? 255 : 0;
+        const o = (y * w + x) * 3;
+        raw[o] = raw[o + 1] = raw[o + 2] = v;
+      }
+    }
+    const stripes = await sharp(raw, { raw: { width: w, height: h, channels: 3 } }).png().toBuffer();
+    const withSqueeze = (await applyLightRegen(stripes)).data;
+    const noSqueeze = await sharp(stripes)
+      .modulate({ brightness: 1.01, saturation: 0.99, hue: 1 })
+      .linear(1.02, -2)
+      .median(2)
+      .sharpen()
+      .png({ compressionLevel: 6 })
+      .toBuffer();
+    const delta = await computePixelDelta(withSqueeze, noSqueeze);
+    expect(delta.pixelDeltaPct).toBeGreaterThan(0);
+  });
+
   it('returns null for an undecodable buffer', async () => {
     expect(await applyLightRegen(Buffer.from('nope'))).toBeNull();
   });

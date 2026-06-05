@@ -389,6 +389,12 @@ function SettingsPane({
   const regenLightAvailable = !!regenBounds?.lightAvailable;
   const [regenOpen, setRegenOpen] = useState(false);
   const [regenStrength, setRegenStrength] = useState(regenDefault);
+  // Track whether the user actually moved the slider. When untouched, the
+  // request OMITS strength so the server picks its provider-aware default
+  // (lighter for local-FLUX sources, conservative 0.25 for SynthID-bearing
+  // ones). Always sending the slider's initialized value would pin 0.25 and
+  // make that adaptive default unreachable from the UI.
+  const [strengthTouched, setStrengthTouched] = useState(false);
   const [regenPrompt, setRegenPrompt] = useState('');
   const starred = !!annotation?.starred;
   const closeThenRun = (handler) => {
@@ -666,7 +672,7 @@ function SettingsPane({
                 max={regenMax}
                 step={0.01}
                 value={regenStrength}
-                onChange={(e) => setRegenStrength(Number(e.target.value))}
+                onChange={(e) => { setRegenStrength(Number(e.target.value)); setStrengthTouched(true); }}
                 disabled={regenerating}
                 className="w-full accent-port-accent"
               />
@@ -689,10 +695,10 @@ function SettingsPane({
             <button
               type="button"
               disabled={regenerating || lightRegenerating}
-              onClick={runBusyAction(regenerating, setRegenerating, (it) => onRegenerate(it, { strength: regenStrength, prompt: regenPrompt.trim() || undefined }))}
+              onClick={runBusyAction(regenerating, setRegenerating, (it) => onRegenerate(it, { strength: strengthTouched ? regenStrength : undefined, prompt: regenPrompt.trim() || undefined }))}
               className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs bg-port-accent text-white hover:opacity-90 rounded disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <Wand2 className="w-3.5 h-3.5" /> {regenerating ? 'Queuing…' : `Regenerate at ${regenStrength.toFixed(2)}`}
+              <Wand2 className="w-3.5 h-3.5" /> {regenerating ? 'Queuing…' : strengthTouched ? `Regenerate at ${regenStrength.toFixed(2)}` : 'Regenerate'}
             </button>
             {regenLightAvailable && (
               <button

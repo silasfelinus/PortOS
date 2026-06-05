@@ -361,12 +361,16 @@ export async function applyLightRegen(buffer, { sharpImpl = sharp } = {}) {
   if (!(w > 0) || !(h > 0)) return null;
   const sw = floor16(w * REGEN_SQUEEZE_FACTOR);
   const sh = floor16(h * REGEN_SQUEEZE_FACTOR);
-  // No EXIF auto-orient: the gallery is PNG-only and PNGs carry no orientation
-  // tag, so a .rotate() would be a no-op whose dim math silently depends on that
-  // invariant. The squeeze targets (sw/sh) come from the un-rotated metadata, so
-  // skipping rotation keeps the resize aspect and the upscale-back dims exact.
-  const data = await sharpImpl(buffer)
-    .resize(sw, sh, { kernel: 'cubic' })
+  // sharp applies only ONE resize per pipeline (a later .resize() OVERWRITES an
+  // earlier one — they don't chain), so the downscale→upscale squeeze MUST be
+  // two separate pipelines: render the squeezed buffer first, then upscale THAT
+  // back to the source dims. A single chained `.resize(sw,sh).resize(w,h)` would
+  // silently drop the downscale and skip the resolution shift that disrupts
+  // SynthID's resolution-dependent carriers — i.e. the light pass's whole point.
+  // No EXIF auto-orient: the gallery is PNG-only (no orientation tag), so the
+  // squeeze targets from un-rotated metadata keep the aspect and upscale-back exact.
+  const squeezed = await sharpImpl(buffer).resize(sw, sh, { kernel: 'cubic' }).png().toBuffer();
+  const data = await sharpImpl(squeezed)
     .resize(w, h, { fit: 'fill', kernel: 'lanczos3' })
     .modulate({ brightness: 1.01, saturation: 0.99, hue: 1 })
     .linear(1.02, -2)
