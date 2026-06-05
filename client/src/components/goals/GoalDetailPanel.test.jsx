@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 
 // The panel fires getActivities()/getCalendarAccounts() on mount; stub them so the
 // read view renders without network. The badge assertions below only care about
@@ -121,6 +121,15 @@ describe('GoalDetailPanel provenance chip', () => {
   it('omits the provenance chip when there is no AI-derived reading', () => {
     // A goal with neither urgency nor feasibility has nothing modeled to attribute.
     renderPanel({ ...baseGoal, urgency: undefined, feasibility: undefined });
+    expect(screen.queryByText('Inferred')).toBeNull();
+  });
+
+  it('suppresses the provenance chip in edit mode (readings are off-screen)', async () => {
+    // Edit mode swaps the urgency/activity-budget read view for the edit form, so
+    // a chip attributing those readings would point at content no longer shown.
+    renderPanel();
+    expect(screen.getByText('Inferred')).toBeTruthy(); // read mode: present
+    fireEvent.click(screen.getByText('Edit'));
     expect(screen.queryByText('Inferred')).toBeNull();
   });
 });

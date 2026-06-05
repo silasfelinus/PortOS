@@ -52,8 +52,12 @@ export default function GoalDetailPanel({ goal, allGoals, onClose, onRefresh }) 
   const excludedIds = s.getDescendantIds(goal.id);
   const parentOptions = (allGoals || []).filter(g => !excludedIds.has(g.id));
 
-  // Only declare provenance when an AI-derived reading is actually on the panel.
-  const hasDerivedReading = goal.urgency != null || goal.feasibility != null;
+  // Only declare provenance when an AI-derived reading is actually on the panel:
+  // a modeled urgency, or an activity-budget block (which needs `feasibility.links`
+  // to render). Edit mode replaces these readings with the edit form, so the chip
+  // is also suppressed there — see the `!s.editing` gate in the header below.
+  const hasDerivedReading = goal.urgency != null
+    || (goal.feasibility && Array.isArray(goal.feasibility.links));
 
   return (
     <div className="w-full sm:w-80 bg-port-card border-l border-port-border h-full overflow-y-auto p-4 space-y-4">
@@ -73,7 +77,7 @@ export default function GoalDetailPanel({ goal, allGoals, onClose, onRefresh }) 
           )}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          {hasDerivedReading && <ProvenanceChip {...READING_PROVENANCE} />}
+          {!s.editing && hasDerivedReading && <ProvenanceChip {...READING_PROVENANCE} />}
           <button onClick={onClose} className="p-1 text-gray-500 hover:text-white shrink-0">
             <X className="w-4 h-4" />
           </button>

@@ -72,18 +72,18 @@ const ProactiveAlertsWidget = memo(function ProactiveAlertsWidget() {
   return (
     <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-3">
-          <div className={`p-2 rounded-lg ${hasAlerts ? 'bg-port-warning/10' : 'bg-port-success/10'}`}>
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className={`shrink-0 p-2 rounded-lg ${hasAlerts ? 'bg-port-warning/10' : 'bg-port-success/10'}`}>
             {hasAlerts ? (
               <Bell className="w-5 h-5 text-port-warning" />
             ) : (
               <CheckCircle className="w-5 h-5 text-port-success" />
             )}
           </div>
-          <div>
-            <h3 className="text-lg font-semibold text-white">Proactive Alerts</h3>
-            <p className="text-sm text-gray-500">
+          <div className="min-w-0">
+            <h3 className="text-lg font-semibold text-white truncate">Proactive Alerts</h3>
+            <p className="text-sm text-gray-500 truncate">
               {hasAlerts
                 ? `${counts.total} alert${counts.total !== 1 ? 's' : ''} detected`
                 : 'All systems nominal'}

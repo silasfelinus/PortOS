@@ -239,14 +239,14 @@ const DecisionLogWidget = memo(function DecisionLogWidget() {
   return (
     <div className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <div className="text-2xl" aria-hidden="true">
+      <div className="flex items-center justify-between gap-2 mb-4">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="shrink-0 text-2xl" aria-hidden="true">
             <Eye className="w-6 h-6 text-purple-400" />
           </div>
-          <div>
-            <h3 className="text-lg font-semibold text-white">Decision Log</h3>
-            <p className="text-sm text-gray-500">
+          <div className="min-w-0">
+            <h3 className="text-lg font-semibold text-white truncate">Decision Log</h3>
+            <p className="text-sm text-gray-500 truncate">
               {last24Hours.total > 0
                 ? `${last24Hours.total} decisions in last 24h`
                 : 'No recent decisions'}
