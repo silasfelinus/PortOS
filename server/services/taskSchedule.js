@@ -510,6 +510,15 @@ export async function updateTaskInterval(taskType, settings) {
   // gets the locked value back in its response.
   enforceManagedAgentOptions(taskType, schedule.tasks[taskType]);
 
+  // Globally disabling pr-watcher also drops its execution cooldown so a later
+  // re-enable baselines on the very next tick rather than waiting out the prior
+  // 30-min interval — otherwise PRs opened in that delayed window slip past the
+  // firstRun baseline and are never dispatched. Paired with clearAllPrWatcherState
+  // below (the per-app disable paths in apps.js do the same via resetExecutionHistory).
+  if (taskType === 'pr-watcher' && settings.enabled === false) {
+    delete schedule.executions['task:pr-watcher'];
+  }
+
   await saveSchedule(schedule);
 
   // Globally disabling pr-watcher clears every app's high-water mark, mirroring
