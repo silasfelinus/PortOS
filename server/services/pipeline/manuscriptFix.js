@@ -165,6 +165,36 @@ function locateFind(text, find, anchorQuote) {
   return best;
 }
 
+// LLMs routinely reformat whitespace when "quoting" a passage (an extra blank
+// line between a page header and its first panel, collapsed indentation, etc.),
+// so an exact `find` often isn't a verbatim substring even when it clearly
+// targets a real span. Locate the span tolerating whitespace-only differences:
+// try exact first (with nearest-anchor disambiguation), then a regex where every
+// run of whitespace in `find` matches any run of whitespace in the text. Returns
+// the matched { start, end } in the ORIGINAL text (so the splice covers the real
+// span, whose length may differ from `find.length`), or null if not found.
+function buildWhitespaceTolerantRegex(find) {
+  const escaped = find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(escaped.replace(/\s+/g, '\\s+'));
+}
+
+export function locateFindSpan(text, find, anchorQuote) {
+  if (!find) return null;
+  const exact = locateFind(text, find, anchorQuote);
+  if (exact !== -1) return { start: exact, end: exact + find.length };
+
+  const re = new RegExp(buildWhitespaceTolerantRegex(find).source, 'g');
+  const anchorIdx = anchorQuote ? text.indexOf(anchorQuote) : -1;
+  let best = null;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    const cand = { start: m.index, end: m.index + m[0].length };
+    if (!best) best = cand;
+    else if (anchorIdx !== -1 && Math.abs(cand.start - anchorIdx) < Math.abs(best.start - anchorIdx)) best = cand;
+    if (m.index === re.lastIndex) re.lastIndex += 1; // guard against zero-width matches
+  }
+  return best;
+}
+
 // Shape one manuscript section response from a freshly-written stage.
 const sectionFrom = (issue, stageId, stage) => ({
   issueId: issue.id,
@@ -203,11 +233,11 @@ async function planEditsBySection(edits, comment) {
     const originalText = stageTextOf(issue.stages?.[group.stageId]);
     const spans = [];
     for (const edit of group.edits) {
-      const idx = locateFind(originalText, edit.find, comment.anchorQuote);
-      if (idx === -1) {
+      const located = locateFindSpan(originalText, edit.find, comment.anchorQuote);
+      if (!located) {
         throw makeErr('Anchor text is no longer present in the manuscript — regenerate the fix', ERR_VALIDATION);
       }
-      const span = { start: idx, end: idx + edit.find.length, replace: edit.replace };
+      const span = { start: located.start, end: located.end, replace: edit.replace };
       if (spans.some((other) => span.start < other.end && other.start < span.end)) {
         throw makeErr('Selected edits overlap in the manuscript — regenerate the fix', ERR_VALIDATION);
       }

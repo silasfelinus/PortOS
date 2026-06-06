@@ -9,19 +9,20 @@
  * mutating anything. Shares `locateFind` with `manuscriptAnchors.js`.
  */
 
-import { locateFind } from './manuscriptAnchors.js';
+import { locateFindSpan } from './manuscriptAnchors.js';
 
 // Apply `edits` (each { find, replace, anchorQuote? }) to `content`. Edits whose
-// `find` isn't present are skipped; overlapping edits keep the earlier one.
+// `find` isn't present (even tolerating whitespace) are skipped; overlapping
+// edits keep the earlier one. Whitespace tolerance mirrors the server accept.
 export function applyEditsToContent(content, edits, anchorQuote) {
   const text = content || '';
   const located = [];
   (edits || []).forEach((e) => {
     const find = e?.find || '';
     if (!find) return;
-    const start = locateFind(text, find, e.anchorQuote ?? anchorQuote);
-    if (start === -1) return;
-    located.push({ start, end: start + find.length, replace: e.replace ?? '' });
+    const span = locateFindSpan(text, find, e.anchorQuote ?? anchorQuote);
+    if (!span) return;
+    located.push({ start: span.start, end: span.end, replace: e.replace ?? '' });
   });
 
   // Drop overlaps (keep the earlier span), then splice high-to-low.

@@ -11,15 +11,32 @@
  */
 
 import { useMemo, useState } from 'react';
-import { Loader2, Sparkles, Check, X, CornerDownRight, Columns2, Rows2 } from 'lucide-react';
+import { Loader2, Sparkles, Check, X, CornerDownRight, Columns2, Rows2, Copy } from 'lucide-react';
 import InlineDiff from '../../ui/InlineDiff';
 import SideBySideDiff from '../../ui/SideBySideDiff';
 import toast from '../../ui/Toast';
+import { copyToClipboard } from '../../../lib/clipboard';
 import { useAsyncAction } from '../../../hooks/useAsyncAction';
 import {
   patchPipelineManuscriptComment, generatePipelineManuscriptFix, acceptPipelineManuscriptFix,
 } from '../../../services/api';
 import { SEVERITY_TONE, CATEGORY_LABEL } from './constants';
+
+// Truncated comment id + copy button — so a note that looks wrong can be quoted
+// by id when reporting/debugging.
+export function CopyId({ id }) {
+  const short = id.length > 14 ? `${id.slice(0, 14)}…` : id;
+  return (
+    <button
+      type="button"
+      onClick={() => { copyToClipboard(id); toast.success('Comment id copied'); }}
+      title={`Copy comment id: ${id}`}
+      className="inline-flex items-center gap-1 text-[10px] font-mono text-gray-500 hover:text-gray-300"
+    >
+      <Copy size={10} /> {short}
+    </button>
+  );
+}
 
 export function Badge({ comment }) {
   return (
@@ -133,17 +150,20 @@ export default function ManuscriptCommentCard({
     <div className="border border-port-border rounded-lg bg-port-bg/40 p-2.5 space-y-2">
       <div className="flex items-center justify-between gap-2">
         <Badge comment={comment} />
-        {onJump ? (
-          <button
-            type="button"
-            onClick={() => onJump(comment)}
-            className="text-[11px] text-port-accent hover:underline inline-flex items-center gap-1"
-            title="Reveal this spot in the manuscript"
-          >
-            <CornerDownRight size={11} />
-            {comment.issueNumber != null ? `Issue ${comment.issueNumber}` : 'Reveal'}
-          </button>
-        ) : null}
+        <div className="flex items-center gap-2">
+          <CopyId id={comment.id} />
+          {onJump ? (
+            <button
+              type="button"
+              onClick={() => onJump(comment)}
+              className="text-[11px] text-port-accent hover:underline inline-flex items-center gap-1"
+              title="Reveal this spot in the manuscript"
+            >
+              <CornerDownRight size={11} />
+              {comment.issueNumber != null ? `Issue ${comment.issueNumber}` : 'Reveal'}
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <p className="text-xs text-gray-200">{comment.problem}</p>
@@ -191,7 +211,7 @@ export default function ManuscriptCommentCard({
                     onChange={(e) => setSelectedEdits((prev) => ({ ...prev, [i]: e.target.checked }))}
                     className="accent-port-accent"
                   />
-                  <span className="font-medium">{label}{edit.title ? ` — ${edit.title}` : ''}</span>
+                  <span className="font-medium">{label}{edit.title && edit.title !== label ? ` — ${edit.title}` : ''}</span>
                   {edit.fuzzy ? <span className="ml-auto text-port-warning">fuzzy</span> : null}
                 </label>
                 {edit.note ? <p className="px-2 pt-1.5 text-[11px] text-gray-500">{edit.note}</p> : null}
@@ -208,7 +228,7 @@ export default function ManuscriptCommentCard({
             );
           })}
           {fuzzy ? (
-            <p className="text-[10px] text-port-warning">Anchor not found verbatim — accepting may fail; edit the manuscript directly if so.</p>
+            <p className="text-[10px] text-port-warning">Quote isn’t an exact match for the draft (often just spacing) — accepting matches it flexibly; if it truly can’t be located you’ll get an error and can edit directly.</p>
           ) : null}
         </div>
       ) : null}

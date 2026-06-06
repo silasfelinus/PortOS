@@ -39,6 +39,29 @@ export function locateFind(text, find, anchorQuote) {
   return best;
 }
 
+// Locate `find` tolerating whitespace-only differences (LLMs reformat spacing
+// when quoting). Tries exact first, then a regex where each run of whitespace
+// matches any run of whitespace. Returns the matched { start, end } in the
+// original text (the span length may differ from find.length) or null. Mirrors
+// `locateFindSpan` in `server/services/pipeline/manuscriptFix.js`.
+export function locateFindSpan(text, find, anchorQuote) {
+  if (!find) return null;
+  const exact = locateFind(text, find, anchorQuote);
+  if (exact !== -1) return { start: exact, end: exact + find.length };
+
+  const escaped = find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(escaped.replace(/\s+/g, '\\s+'), 'g');
+  const anchorIdx = anchorQuote ? text.indexOf(anchorQuote) : -1;
+  let best = null;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    const cand = { start: m.index, end: m.index + m[0].length };
+    if (!best) best = cand;
+    else if (anchorIdx !== -1 && Math.abs(cand.start - anchorIdx) < Math.abs(best.start - anchorIdx)) best = cand;
+    if (m.index === re.lastIndex) re.lastIndex += 1;
+  }
+  return best;
+}
+
 // Resolve each comment's anchorQuote to a [start, end) span in `content`.
 // Comments whose anchor isn't present (edited since review, or fuzzy) are
 // dropped — they stay listed in the sidebar but show no in-text highlight.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { locateFind, locateAnchors, buildHighlightSegments } from './manuscriptAnchors.js';
+import { locateFind, locateFindSpan, locateAnchors, buildHighlightSegments } from './manuscriptAnchors.js';
 
 describe('locateFind', () => {
   it('returns the only occurrence when unique', () => {
@@ -22,6 +22,26 @@ describe('locateFind', () => {
   it('falls back to the first match when no anchor is given', () => {
     const text = 'door ... door';
     expect(locateFind(text, 'door')).toBe(0);
+  });
+});
+
+describe('locateFindSpan', () => {
+  it('returns the exact span when present', () => {
+    const text = 'PAGE 56\nPANEL 1\nGiant.';
+    expect(locateFindSpan(text, 'PANEL 1')).toEqual({ start: 8, end: 15 });
+  });
+
+  it('tolerates whitespace-only differences and returns the original span', () => {
+    const text = 'PAGE 56\nPANEL 1\nGiant stands.';
+    const find = 'PAGE 56\n\nPANEL 1\nGiant stands.';
+    const span = locateFindSpan(text, find);
+    expect(text.slice(span.start, span.end)).toBe('PAGE 56\nPANEL 1\nGiant stands.');
+    expect(span.end - span.start).toBe(find.length - 1);
+  });
+
+  it('returns null when truly absent or empty', () => {
+    expect(locateFindSpan('hello', 'nope')).toBeNull();
+    expect(locateFindSpan('hello', '')).toBeNull();
   });
 });
 

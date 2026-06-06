@@ -38,4 +38,11 @@ describe('applyEditsToContent', () => {
   it('returns content unchanged for empty edit list', () => {
     expect(applyEditsToContent('text', [])).toBe('text');
   });
+
+  it('applies an edit whose find differs only in whitespace (LLM reformatting)', () => {
+    const content = 'PAGE 56\nPANEL 1\nGiant stands.';
+    // find has an extra blank line the manuscript does not — still applies.
+    const out = applyEditsToContent(content, [{ find: 'PAGE 56\n\nPANEL 1\nGiant stands.', replace: 'PAGE 56\nPANEL 1\nGiant kneels.' }]);
+    expect(out).toBe('PAGE 56\nPANEL 1\nGiant kneels.');
+  });
 });
