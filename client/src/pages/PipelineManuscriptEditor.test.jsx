@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 
 const api = vi.hoisted(() => ({
@@ -27,10 +27,10 @@ const comment = {
   status: 'open', fix: null, createdAt: 't', updatedAt: 't',
 };
 
-const renderEditor = () => render(
-  <MemoryRouter initialEntries={['/pipeline/series/ser-1/manuscript']}>
+const renderEditor = (path = '/pipeline/series/ser-1/manuscript') => render(
+  <MemoryRouter initialEntries={[path]}>
     <Routes>
-      <Route path="/pipeline/series/:seriesId/manuscript" element={<PipelineManuscriptEditor />} />
+      <Route path="/pipeline/series/:seriesId/manuscript/*" element={<PipelineManuscriptEditor />} />
       <Route path="/pipeline/series/:seriesId" element={<div>series page</div>} />
     </Routes>
   </MemoryRouter>,
@@ -117,6 +117,52 @@ describe('PipelineManuscriptEditor', () => {
     expect(api.acceptPipelineManuscriptFix).toHaveBeenCalledWith('ser-1', 'mrc-1', {
       edits: [{ issueNumber: 1, issueId: 'iss-1', stageId: 'prose', find: 'She left.', replace: 'She left, but paused.', fuzzy: undefined }],
     });
+  });
+
+  it('shows issue tabs and focuses one issue; a deep link opens that issue', async () => {
+    const twoIssues = {
+      sections: [
+        { issueId: 'iss-1', number: 1, title: 'One', stageId: 'prose', content: 'Issue one body.' },
+        { issueId: 'iss-2', number: 2, title: 'Two', stageId: 'prose', content: 'Issue two body.' },
+      ],
+      viewType: 'prose', primaryStageId: 'prose', pinnedPrimary: 'prose', availableTypes: ['prose'],
+    };
+    api.getPipelineManuscript.mockResolvedValue(twoIssues);
+    renderEditor('/pipeline/series/ser-1/manuscript/2');
+    await screen.findByText('My Series');
+    // Deep link focuses issue 2 only — issue 1's body is not rendered.
+    expect(await screen.findByDisplayValue('Issue two body.')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('Issue one body.')).not.toBeInTheDocument();
+    // Both issues appear as tabs.
+    const tabs = within(screen.getByRole('navigation', { name: 'Issues' })).getAllByRole('link');
+    expect(tabs).toHaveLength(2);
+  });
+
+  it('redirects the bare /manuscript URL to the first issue', async () => {
+    renderEditor('/pipeline/series/ser-1/manuscript');
+    await screen.findByText('My Series');
+    // The single issue (number 1) renders; the canonical issue tab is current.
+    expect(await screen.findByDisplayValue('The hero walked in. She left.')).toBeInTheDocument();
+    const tab = within(screen.getByRole('navigation', { name: 'Issues' })).getByRole('link');
+    expect(tab).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('switches issues via the tabs without refetching the manuscript', async () => {
+    api.getPipelineManuscript.mockResolvedValue({
+      sections: [
+        { issueId: 'iss-1', number: 1, title: 'One', stageId: 'prose', content: 'Issue one body.' },
+        { issueId: 'iss-2', number: 2, title: 'Two', stageId: 'prose', content: 'Issue two body.' },
+      ],
+      viewType: 'prose', primaryStageId: 'prose', pinnedPrimary: 'prose', availableTypes: ['prose'],
+    });
+    renderEditor('/pipeline/series/ser-1/manuscript/1');
+    expect(await screen.findByDisplayValue('Issue one body.')).toBeInTheDocument();
+    const callsBefore = api.getPipelineManuscript.mock.calls.length;
+
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Issues' })).getByRole('link', { name: /Issue 2/ }));
+    expect(await screen.findByDisplayValue('Issue two body.')).toBeInTheDocument();
+    // Tab navigation is pure routing — no extra manuscript fetch.
+    expect(api.getPipelineManuscript.mock.calls.length).toBe(callsBefore);
   });
 
   it('switches manuscript format on demand', async () => {

@@ -299,7 +299,9 @@ export default function App() {
           <Route path="pipeline" element={<Pipeline />} />
           <Route path="pipeline/series/:seriesId" element={<PipelineSeries />} />
           <Route path="pipeline/series/:seriesId/roadmap" element={<PipelineSeriesRoadmap />} />
-          <Route path="pipeline/series/:seriesId/manuscript" element={<PipelineManuscriptEditor />} />
+          {/* Splat (not a :param route) so navigating between issues reuses the
+              same component instance instead of remounting + refetching. */}
+          <Route path="pipeline/series/:seriesId/manuscript/*" element={<PipelineManuscriptEditor />} />
           <Route path="pipeline/series/:seriesId/sync" element={<SyncView kind="series" param="seriesId" backPath="/pipeline" />} />
           <Route path="pipeline/issues/:issueId" element={<Navigate to="idea" replace />} />
           <Route path="pipeline/issues/:issueId/:stage" element={<PipelineIssue />} />

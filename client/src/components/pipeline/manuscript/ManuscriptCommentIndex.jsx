@@ -7,7 +7,7 @@
 
 import { useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, Check, X, MapPin } from 'lucide-react';
-import { Badge } from './ManuscriptCommentCard';
+import ManuscriptCommentCard, { Badge } from './ManuscriptCommentCard';
 
 const SEVERITIES = ['high', 'medium', 'low'];
 
@@ -54,7 +54,7 @@ function ResolvedGroup({ label, icon: Icon, items, located, openCommentId, onRev
   );
 }
 
-export default function ManuscriptCommentIndex({ comments, locatedCommentIds, openCommentId, onReveal }) {
+export default function ManuscriptCommentIndex({ comments, locatedCommentIds, openCommentId, onReveal, commentCardProps }) {
   const [severityFilter, setSeverityFilter] = useState(null); // null = all
 
   const grouped = useMemo(() => ({
@@ -115,7 +115,25 @@ export default function ManuscriptCommentIndex({ comments, locatedCommentIds, op
 
       <div className="space-y-1.5">
         {openFiltered.map((c) => (
-          <CommentRow key={c.id} comment={c} located={locatedCommentIds.has(c.id)} active={c.id === openCommentId} onReveal={onReveal} />
+          <div key={c.id} className="space-y-1.5">
+            <CommentRow comment={c} located={locatedCommentIds.has(c.id)} active={c.id === openCommentId} onReveal={onReveal} />
+            {/* Story-level notes (no issueNumber) have no issue tab to live on, so
+                they expand and stay actionable right here in the index. */}
+            {c.id === openCommentId && c.issueNumber == null && commentCardProps ? (
+              <ManuscriptCommentCard
+                comment={c}
+                idScope={`index-${c.id}`}
+                seriesId={commentCardProps.seriesId}
+                providerOverride={commentCardProps.providerOverride}
+                modelOverride={commentCardProps.modelOverride}
+                onCommentChange={commentCardProps.onCommentChange}
+                onAccepted={commentCardProps.onAccepted}
+                draft={commentCardProps.fixDrafts[c.id]}
+                onDraftChange={(entry) => commentCardProps.setCommentDraft(c.id, entry)}
+                onJump={undefined}
+              />
+            ) : null}
+          </div>
         ))}
       </div>
 

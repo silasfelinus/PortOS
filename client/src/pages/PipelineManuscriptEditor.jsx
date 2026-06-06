@@ -35,6 +35,7 @@ import { locateAnchors } from '../lib/manuscriptAnchors';
 import ManuscriptLiveSection from '../components/pipeline/manuscript/ManuscriptLiveSection';
 import AnnotatedManuscriptSection from '../components/pipeline/manuscript/AnnotatedManuscriptSection';
 import ManuscriptCommentIndex from '../components/pipeline/manuscript/ManuscriptCommentIndex';
+import ManuscriptIssueTabs from '../components/pipeline/manuscript/ManuscriptIssueTabs';
 import ManuscriptImpactPreview from '../components/pipeline/manuscript/ManuscriptImpactPreview';
 import { MANUSCRIPT_TYPES, STAGE_LABEL } from '../components/pipeline/manuscript/constants';
 import {
@@ -54,8 +55,16 @@ const initialViewMode = () => {
 };
 
 export default function PipelineManuscriptEditor() {
-  const { seriesId } = useParams();
+  const params = useParams();
+  const { seriesId } = params;
   const navigate = useNavigate();
+  // The issue (by number) the editor is focused on — one issue per view,
+  // deep-linkable at /pipeline/series/:id/manuscript/:issueNumber. Read from the
+  // route splat (a single splat route, not two :param routes, so issue→issue
+  // navigation reuses this component instead of remounting). null on the bare
+  // /manuscript URL; a reconcile effect canonicalizes it to the first issue.
+  const issueParam = params['*'];
+  const activeNumber = issueParam ? Number(issueParam) : null;
   const [series, setSeries] = useState(null);
   const [sections, setSections] = useState([]);
   const [viewType, setViewType] = useState(null);          // format currently shown
@@ -122,7 +131,10 @@ export default function PipelineManuscriptEditor() {
       })
       .finally(() => { if (!canceled) setLoading(false); });
     return () => { canceled = true; };
-  }, [seriesId, navigate]);
+    // Keyed on seriesId only — `navigate`'s identity changes when the issue-tab
+    // URL changes, and including it would re-run this initial load (clobbering a
+    // format switch with a stale default-format refetch).
+  }, [seriesId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     let canceled = false;
@@ -246,18 +258,18 @@ export default function PipelineManuscriptEditor() {
     return result;
   };
 
-  // Reveal a comment in context: open its card and scroll its section into view.
-  // The section element is registered in every mode (Live + Review, editing or
-  // not), so this works regardless of which surface is showing. A comment with
-  // no issueNumber is genuinely unanchored — say so rather than scroll nowhere.
+  // Reveal a comment in context: switch to its issue tab and open its card. An
+  // issue-anchored note navigates to that issue (the section scrolls the card
+  // into view on arrival); a story-level note with no issueNumber has no tab, so
+  // it expands inline in the sidebar index instead.
   const revealComment = (comment) => {
     setOpenCommentId(comment.id);
-    if (comment.issueNumber == null) {
-      toast('This comment is not anchored to a specific issue');
-      return;
+    if (comment.issueNumber == null) return; // unanchored — shown in the sidebar
+    if (comment.issueNumber !== activeNumber) {
+      navigate(`/pipeline/series/${seriesId}/manuscript/${comment.issueNumber}`);
+    } else {
+      sectionRefs.current.get(comment.issueNumber)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
     }
-    const el = sectionRefs.current.get(comment.issueNumber);
-    el?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
     if (comment.stageId && viewType && comment.stageId !== viewType) {
       toast(`This note is on the ${STAGE_LABEL[comment.stageId] || comment.stageId} — switch formats to edit it in context`);
     }
@@ -308,6 +320,24 @@ export default function PipelineManuscriptEditor() {
     sectionSpans.forEach((spans) => spans.forEach((span) => set.add(span.commentId)));
     return set;
   }, [sectionSpans]);
+
+  // Open-note count per issue, for the tab badges.
+  const openCountByNumber = useMemo(() => {
+    const map = new Map();
+    openCommentsByNumber.forEach((list, number) => map.set(number, list.length));
+    return map;
+  }, [openCommentsByNumber]);
+
+  // The one issue the editor is focused on. On the bare /manuscript URL (or an
+  // unknown issue) fall back to the first issue so there's no blank frame, and
+  // canonicalize the URL to it so the tab highlights and deep links/back work.
+  const matchedSection = sections.find((s) => s.number === activeNumber) || null;
+  const activeSection = matchedSection || sections[0] || null;
+  useEffect(() => {
+    if (!activeSection) return;
+    if (activeNumber === activeSection.number) return;
+    navigate(`/pipeline/series/${seriesId}/manuscript/${activeSection.number}`, { replace: true });
+  }, [activeSection, activeNumber, seriesId, navigate]);
 
   // Plain object (not memoized): its handlers close over viewType/sections, so a
   // stale memo would apply accepts against the wrong format. Children read
@@ -419,33 +449,40 @@ export default function PipelineManuscriptEditor() {
               No drafted manuscript yet — write a comic script, prose, or teleplay on at least one issue, then run “Finish the draft” from the series arc.
             </p>
           ) : (
-            sections.map((section) => {
-              const sectionComments = openCommentsByNumber.get(section.number) || EMPTY;
-              const common = {
-                key: section.issueId,
-                section,
-                comments: sectionComments,
-                spans: sectionSpans.get(section.issueId) || EMPTY,
-                saveState: saveState[section.issueId],
-                openCommentId,
-                onOpenComment: setOpenCommentId,
-                onCloseComment: () => setOpenCommentId(null),
-                onContentChange: (content) => setSectionContent(section.issueId, content),
-                onBlurSave: () => saveSection(section),
-                onRevert: (runId) => revertSection(section, runId),
-                registerRef: registerSectionRef(section.number),
-                commentCardProps,
-              };
-              return viewMode === 'live' ? (
-                <ManuscriptLiveSection {...common} />
-              ) : (
-                <AnnotatedManuscriptSection
-                  {...common}
-                  editing={editingIssueId === section.issueId}
-                  onToggleEdit={() => setEditingIssueId((cur) => (cur === section.issueId ? null : section.issueId))}
-                />
-              );
-            })
+            <>
+              <ManuscriptIssueTabs
+                seriesId={seriesId}
+                sections={sections}
+                activeNumber={activeNumber}
+                openCountByNumber={openCountByNumber}
+              />
+              {activeSection ? (() => {
+                const section = activeSection;
+                const common = {
+                  section,
+                  comments: openCommentsByNumber.get(section.number) || EMPTY,
+                  spans: sectionSpans.get(section.issueId) || EMPTY,
+                  saveState: saveState[section.issueId],
+                  openCommentId,
+                  onOpenComment: setOpenCommentId,
+                  onCloseComment: () => setOpenCommentId(null),
+                  onContentChange: (content) => setSectionContent(section.issueId, content),
+                  onBlurSave: () => saveSection(section),
+                  onRevert: (runId) => revertSection(section, runId),
+                  registerRef: registerSectionRef(section.number),
+                  commentCardProps,
+                };
+                return viewMode === 'live' ? (
+                  <ManuscriptLiveSection {...common} />
+                ) : (
+                  <AnnotatedManuscriptSection
+                    {...common}
+                    editing={editingIssueId === section.issueId}
+                    onToggleEdit={() => setEditingIssueId((cur) => (cur === section.issueId ? null : section.issueId))}
+                  />
+                );
+              })() : null}
+            </>
           )}
         </section>
 
@@ -535,6 +572,7 @@ export default function PipelineManuscriptEditor() {
             locatedCommentIds={locatedCommentIds}
             openCommentId={openCommentId}
             onReveal={revealComment}
+            commentCardProps={commentCardProps}
           />
         </aside>
       </div>
