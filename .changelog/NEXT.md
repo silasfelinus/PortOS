@@ -12,4 +12,6 @@
 
 ## Fixed
 
+- **[issue-984] Chief of Staff daily action cap holds firm when several jobs come due at once** — scheduled jobs that fired in the same instant could each slip past a small daily action cap before the others were counted, letting the cap be exceeded by one. The cap is now enforced the moment each job is admitted, so simultaneously-due jobs can no longer overshoot it.
+
 - **[issue-968] A PM2 hiccup no longer makes running apps look offline** — when PortOS briefly can't read process state, affected apps now show "status unavailable" instead of being silently reported as stopped. The Apps list and detail pages replace the (misleading) Start button with a refresh-to-retry control, the dashboard counts these separately, the system health page flags the degraded read, and CyberCity no longer rains on apps whose status simply couldn't be read.
