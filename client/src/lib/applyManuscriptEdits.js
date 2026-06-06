@@ -11,31 +11,41 @@
 
 import { locateFindSpan } from './manuscriptAnchors.js';
 
-// Apply `edits` (each { find, replace, anchorQuote? }) to `content`. Edits whose
-// `find` isn't present (even tolerating whitespace) are skipped; overlapping
-// edits keep the earlier one. Whitespace tolerance mirrors the server accept.
-export function applyEditsToContent(content, edits, anchorQuote) {
+// Plan how `edits` (each { find, replace, anchorQuote? }) apply to `content`:
+// locate each (whitespace-tolerant, mirroring the server accept), splice the
+// kept spans high-to-low, and report what couldn't apply. Edits whose `find`
+// isn't present count as `notFound`; edits overlapping an earlier kept span
+// count as `overlapping`. The server accept THROWS on overlap, so the preview
+// uses `overlapping` to warn that accepting will fail rather than render a
+// partial result the accept won't actually produce.
+export function planManuscriptEdits(content, edits, anchorQuote) {
   const text = content || '';
   const located = [];
+  let notFound = 0;
   (edits || []).forEach((e) => {
     const find = e?.find || '';
     if (!find) return;
     const span = locateFindSpan(text, find, e.anchorQuote ?? anchorQuote);
-    if (!span) return;
+    if (!span) { notFound += 1; return; }
     located.push({ start: span.start, end: span.end, replace: e.replace ?? '' });
   });
 
-  // Drop overlaps (keep the earlier span), then splice high-to-low.
   located.sort((a, b) => a.start - b.start);
   const kept = [];
+  let overlapping = 0;
   let lastEnd = -1;
   located.forEach((l) => {
-    if (l.start >= lastEnd) { kept.push(l); lastEnd = l.end; }
+    if (l.start >= lastEnd) { kept.push(l); lastEnd = l.end; } else overlapping += 1;
   });
 
-  let out = text;
-  kept.sort((a, b) => b.start - a.start).forEach((l) => {
-    out = out.slice(0, l.start) + l.replace + out.slice(l.end);
+  let output = text;
+  kept.slice().sort((a, b) => b.start - a.start).forEach((l) => {
+    output = output.slice(0, l.start) + l.replace + output.slice(l.end);
   });
-  return out;
+  return { output, applied: kept.length, notFound, overlapping };
+}
+
+// Convenience: just the resulting text (drops overlaps/not-found silently).
+export function applyEditsToContent(content, edits, anchorQuote) {
+  return planManuscriptEdits(content, edits, anchorQuote).output;
 }

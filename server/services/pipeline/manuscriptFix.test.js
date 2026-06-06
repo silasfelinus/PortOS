@@ -26,13 +26,22 @@ describe('locateFindSpan', () => {
     expect(locateFindSpan('anything', '')).toBeNull();
   });
 
-  it('disambiguates a recurring fuzzy match by the nearest anchorQuote', () => {
+  it('prefers an exact match over a fuzzy one when both exist', () => {
+    // "run away." matches exactly at index 0; the second occurrence only matches
+    // via whitespace tolerance (tab). Exact wins regardless of the anchor.
     const text = 'run away.\n\n[marker] run\taway.';
-    // "run away." (exact) appears first; with whitespace tolerance the second
-    // (tab instead of space) also matches — anchor picks the nearer one.
-    const span = locateFindSpan(text, 'run away.'.replace(' ', ' '), '[marker]');
-    // exact match exists at index 0, so it wins (nearest-occurrence among exacts).
-    expect(span.start).toBe(0);
+    expect(locateFindSpan(text, 'run away.', '[marker]').start).toBe(0);
+  });
+
+  it('disambiguates between two fuzzy-only matches by the nearest anchorQuote', () => {
+    // No exact match (find uses a space; both occurrences use a tab), so both
+    // resolve only via the whitespace-tolerant regex. The anchor sits beside the
+    // SECOND occurrence, so that span is chosen.
+    const text = 'run\taway. ... ... ... [marker] run\taway.';
+    const span = locateFindSpan(text, 'run away.', '[marker]');
+    const second = text.indexOf('run\taway.', 1);
+    expect(span.start).toBe(second);
+    expect(text.slice(span.start, span.end)).toBe('run\taway.');
   });
 
   it('escapes regex metacharacters in the quote', () => {

@@ -125,6 +125,14 @@ export default function ManuscriptLiveSection({
           onBlur={onBlurSave}
           onClick={handleCaret}
           onKeyUp={handleCaret}
+          // Keep the underline backdrop aligned when a section longer than the
+          // row cap scrolls internally (the backdrop is overflow-hidden).
+          onScroll={(e) => {
+            if (backdropRef.current) {
+              backdropRef.current.scrollTop = e.target.scrollTop;
+              backdropRef.current.scrollLeft = e.target.scrollLeft;
+            }
+          }}
           rows={rowsFor(content)}
           spellCheck
           className={`relative w-full bg-transparent border border-port-border rounded text-gray-100 resize-y focus:border-port-accent/50 focus:outline-none ${EDITOR_TYPO}`}
