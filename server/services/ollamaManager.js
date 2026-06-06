@@ -441,9 +441,14 @@ async function getModelContextLength(name) {
   if (!name) return null
   if (modelContextCache.has(name)) return modelContextCache.get(name)
   const data = await ollamaRequest('/api/show', { method: 'POST', body: JSON.stringify({ name }) }).catch(() => null)
-  const info = data?.model_info || {}
+  // A transient /api/show failure must NOT be cached as a permanent null —
+  // that would pin the model with no context label until restart. Only cache
+  // when the daemon actually answered; a present-but-no-context_length response
+  // legitimately caches null ("daemon doesn't report it"). Mirrors the
+  // null-vs-empty sentinel rule used by the installed-model caches.
+  if (!data) return null
   let ctx = null
-  for (const [key, value] of Object.entries(info)) {
+  for (const [key, value] of Object.entries(data.model_info || {})) {
     if (key.endsWith('.context_length') && Number.isFinite(value)) { ctx = value; break }
   }
   modelContextCache.set(name, ctx)

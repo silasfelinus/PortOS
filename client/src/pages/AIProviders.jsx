@@ -643,7 +643,10 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [] }) {
     return backend ? localModels[backend] : [];
   };
 
-  const availableModels = mergeModelLists(formData.models, liveModelsFor(formData));
+  // Generation pickers (default + light/medium/heavy tiers) — drop embedding-only
+  // models (and internal sentinels) so an embedding can't be chosen as a model
+  // that runs prompts, consistent with the fallback picker below.
+  const availableModels = filterGenerationModels(mergeModelLists(formData.models, liveModelsFor(formData)));
 
   // Filter out current provider from fallback options (treat undefined enabled as enabled)
   const fallbackOptions = allProviders.filter(p => p.id !== provider?.id && p.enabled !== false);
