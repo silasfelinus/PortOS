@@ -280,6 +280,28 @@ function shapeProcStatus(proc) {
 }
 
 /**
+ * Parse the stdout of a `pm2 jlist` (custom PM2_HOME CLI path) into a raw
+ * process array, or `null` when the read effectively failed.
+ *
+ * PM2 jlist always emits a JSON array (`[]` when there are no processes), so an
+ * exit-0 with empty or garbage stdout (no array literal at all) is a FAILED read
+ * — not a successful "no processes." Returning `[]` there would reintroduce the
+ * absent-vs-empty footgun (issue #968) for custom PM2_HOME reads. `extractJSONArray`
+ * itself falls back to `'[]'` on garbage, so we must detect a real array literal
+ * before trusting it (mirroring extractJSONArray's own detection) and return null
+ * otherwise — matching the default-home path, which resolves null for a non-array.
+ *
+ * @param {string} stdout Raw `pm2 jlist` stdout (may carry ANSI noise).
+ * @returns {Array|null} The parsed process array (incl. `[]`), or `null` on failure.
+ */
+export function parseJlistStdout(stdout) {
+  const hasArrayLiteral = typeof stdout === 'string' && (stdout.includes('[{') || /\[\](?![0-9])/.test(stdout));
+  if (!hasArrayLiteral) return null;
+  const list = safeJSONParse(extractJSONArray(stdout), null);
+  return Array.isArray(list) ? list : null;
+}
+
+/**
  * Fetch PM2 process list with TTL caching.
  * Uses the PM2 Node.js API for the default PM2_HOME (no subprocess spawning — avoids
  * visible cmd windows on Windows). Falls back to CLI only for custom PM2_HOME paths.
@@ -335,7 +357,11 @@ function fetchJlist(pm2Home = null) {
           resolve(null);
           return;
         }
-        const list = safeJSONParse(extractJSONArray(stdout), []);
+        const list = parseJlistStdout(stdout);
+        if (list === null) {
+          resolve(null);
+          return;
+        }
         jlistCache.set(key, { data: list, ts: Date.now() });
         resolve(list);
       });
