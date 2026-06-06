@@ -26,6 +26,7 @@ import { getUserTimezone, getLocalParts, nextLocalTime } from '../lib/timezone.j
 import { formatDuration } from '../lib/fileUtils.js';
 import { loadState, isDaemonRunning } from './cosState.js';
 import { getDomainMode } from '../lib/domainAutonomy.js';
+import { getDomainBudgetStatus } from './domainUsage.js';
 import { cosEvents, emitLog } from './cosEvents.js';
 import { getCosTasks } from './cosTaskStore.js';
 import { queueEligibleImprovementTasks } from './cosTaskGenerator.js';
@@ -182,7 +183,18 @@ export async function executeScheduledJob(jobId) {
   // re-registration computes a FUTURE fire time — re-registering a past-due job
   // with stale lastRun would refire every second (the same 1s-loop the spawn
   // branch's comment warns about).
-  const cosAutonomyMode = getDomainMode(state.config, 'cos');
+  let cosAutonomyMode = getDomainMode(state.config, 'cos');
+
+  // Daily CoS budget (#711): a scheduled job firing is an autonomous run, so
+  // once today's actions/minutes cap is hit, withhold it like `off` (and skip
+  // the dry-run "would fire" log — over budget means stop, not narrate). Same
+  // gate-skip bookkeeping below advances lastRun so re-registration is future-dated.
+  const cosBudget = await getDomainBudgetStatus('cos');
+  if (cosAutonomyMode !== 'off' && !cosBudget.withinBudget) {
+    emitLog('info', `CoS auto-run paused — daily ${cosBudget.exceeded} budget reached, withholding scheduled job: ${job.name}`, { jobId, domainBudget: 'cos', exceeded: cosBudget.exceeded });
+    cosAutonomyMode = 'off';
+  }
+
   if (cosAutonomyMode !== 'execute') {
     if (cosAutonomyMode === 'dry-run') {
       emitLog('info', `[dry-run] CoS auto-run would fire scheduled job: ${job.name}`, { jobId, domainAutonomy: 'cos' });

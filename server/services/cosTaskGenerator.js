@@ -26,6 +26,7 @@ import { sanitizeTaskMetadata, PIPELINE_BEHAVIOR_FLAGS, MAX_TOTAL_SPAWNS, normal
 import { parsePlanItems, extractAllIds, findInProgressIds, pickFirstAvailable, diagnoseUnpickablePlan } from '../lib/planIds.js';
 import { loadState, saveState, withStateLock, isImprovementEnabled, isDaemonRunning } from './cosState.js';
 import { getDomainMode } from '../lib/domainAutonomy.js';
+import { getDomainBudgetStatus } from './domainUsage.js';
 import { cosEvents, emitLog } from './cosEvents.js';
 import { addTask, updateTask, getAllTasks, getCosTasks, firstLine, PRIORITY_VALUES } from './cosTaskStore.js';
 import { recordDecision, DECISION_TYPES } from './decisionLog.js';
@@ -314,7 +315,18 @@ export async function evaluateTasks(options) {
   // spawns (auto-approved system tasks, mission, feature-agent, idle-review);
   // user and on-demand tasks are unaffected. dry-run logs the concrete already-
   // queued auto-approved tasks it would have spawned without emitting them.
-  const cosAutonomyMode = getDomainMode(state.config, 'cos');
+  let cosAutonomyMode = getDomainMode(state.config, 'cos');
+
+  // Daily CoS budget (#711): once today's autonomous-run actions/minutes reach
+  // the cap, hold all automatic spawns for the rest of the day — treat it as
+  // `off`. Usage is tallied in completeAgent (autonomous runs only), so a pure
+  // dry-run never accrues and never trips this; user/on-demand spawns above are
+  // already past this gate and stay unaffected.
+  const cosBudget = await getDomainBudgetStatus('cos');
+  if (cosAutonomyMode !== 'off' && !cosBudget.withinBudget) {
+    emitLog('info', `CoS auto-run paused — daily ${cosBudget.exceeded} budget reached`, { domainBudget: 'cos', exceeded: cosBudget.exceeded });
+    cosAutonomyMode = 'off';
+  }
 
   // Helper: check if a task can spawn (within both global and per-project limits)
   const canSpawnTask = (task) => {

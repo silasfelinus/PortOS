@@ -28,6 +28,7 @@ import { safeJSONParse } from '../lib/fileUtils.js';
 import { addNotification, NOTIFICATION_TYPES } from './notifications.js';
 import { getUserTimezone, todayInTimezone } from '../lib/timezone.js';
 import { normalizeDomainAutonomy, getDomainMode } from '../lib/domainAutonomy.js';
+import { normalizeDomainBudgets } from '../lib/domainBudgets.js';
 
 // Shared state management (extracted to avoid circular deps)
 import { loadState, saveState, withStateLock, ensureDirectories, isImprovementEnabled, AGENTS_DIR, REPORTS_DIR, SCRIPTS_DIR, ROOT_DIR, isDaemonRunning, setDaemonRunning } from './cosState.js';
@@ -154,12 +155,22 @@ export async function updateConfig(updates) {
     // Capture the prior map BEFORE the spread clobbers it, then normalize the
     // merge so an unknown/invalid stored value resolves to the `execute` default.
     const priorDomainAutonomy = state.config.domainAutonomy;
+    // Same for domainBudgets — a PATCH naming one domain (or one cap on one
+    // domain) must merge field-by-field over the rest, not replace the map.
+    const priorDomainBudgets = state.config.domainBudgets;
     state.config = { ...state.config, ...updates };
     if (updates.domainAutonomy !== undefined) {
       state.config.domainAutonomy = normalizeDomainAutonomy({
         ...priorDomainAutonomy,
         ...updates.domainAutonomy
       });
+    }
+    if (updates.domainBudgets !== undefined) {
+      const mergedBudgets = { ...priorDomainBudgets };
+      for (const [id, caps] of Object.entries(updates.domainBudgets)) {
+        mergedBudgets[id] = { ...(priorDomainBudgets?.[id] || {}), ...caps };
+      }
+      state.config.domainBudgets = normalizeDomainBudgets(mergedBudgets);
     }
     await saveState(state);
     return state.config;

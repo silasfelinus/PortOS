@@ -14,6 +14,7 @@ import { homedir } from 'os';
 import { tryReadFile } from '../lib/fileUtils.js';
 import { notificationEvents, NOTIFICATION_TYPES } from './notifications.js';
 import { getDomainAutonomyMode } from './cosState.js';
+import { getDomainBudgetStatus, recordDomainUsage } from './domainUsage.js';
 
 const CHANNELS_DIR = join(homedir(), '.claude', 'channels', 'telegram');
 const ENV_FILE = join(CHANNELS_DIR, '.env');
@@ -240,6 +241,14 @@ async function forwardNotification(notification) {
     return;
   }
 
+  // Daily messages budget (#711, mirrors telegram.js): once today's auto-send
+  // count reaches the cap, suppress further forwarding for the rest of the day.
+  const budget = await getDomainBudgetStatus('messages');
+  if (!budget.withinBudget) {
+    console.log(`📨 Messages auto-send daily ${budget.exceeded} budget reached — suppressing forward: ${notification.type} — "${notification.title}"`);
+    return;
+  }
+
   const emoji = NOTIFICATION_EMOJI[notification.type] || '🔔';
   const priorityEmoji = PRIORITY_EMOJI[notification.priority] || '';
   const lines = [`${emoji} <b>${escapeHtml(notification.title)}</b>`];
@@ -247,6 +256,9 @@ async function forwardNotification(notification) {
   if (notification.priority) lines.push(`Priority: ${priorityEmoji} ${notification.priority}`);
 
   await sendMessage(lines.join('\n'));
+  // Count the forward against the messages domain's daily budget (#711).
+  await recordDomainUsage('messages', { actions: 1 })
+    .catch(err => console.error(`❌ Failed to record messages budget usage: ${err.message}`));
 }
 
 /**

@@ -1,3 +1,7 @@
+## Added
+
+- **Daily budgets for the Chief of Staff's domains** — each domain (Brain auto-classify, Memory auto-extract, CoS auto-run, Messages auto-send) can now carry a daily cap on how many automatic actions it takes and how many minutes of work it does. When a domain reaches its cap it pauses that automatic work for the rest of the day and resumes after the counters reset at midnight; the Chief of Staff config panel shows each domain's usage so far today. Caps are off by default (blank means unlimited), so nothing changes until you set one. This rounds out the per-domain guardrails alongside the off / dry-run / execute controls.
+
 ## Changed
 
 - Code quality: extracted the duplicated cron-expression validation in `cosJobRoutes.js` (job create/update) into a single `validateCronExpression()` helper, and unified the two slightly-divergent error messages.
