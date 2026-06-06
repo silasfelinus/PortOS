@@ -144,6 +144,14 @@ describe('getSelfLogin', () => {
     execGhMock.mockRejectedValueOnce(new Error('not authed'));
     expect(await getSelfLogin()).toBe(null);
   });
+  it('does not cache a failed lookup — retries on the next call', async () => {
+    execGhMock.mockRejectedValueOnce(new Error('keychain locked'));
+    expect(await getSelfLogin()).toBe(null);
+    // A transient failure must not wedge the cache: the next call retries.
+    execGhMock.mockResolvedValueOnce('bob');
+    expect(await getSelfLogin()).toBe('bob');
+    expect(execGhMock).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('checkPullRequests', () => {

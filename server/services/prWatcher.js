@@ -51,10 +51,15 @@ let _selfLoginCache;
  * author gate must treat null as "can't gate, don't fire blindly".
  */
 export async function getSelfLogin() {
-  if (_selfLoginCache !== undefined) return _selfLoginCache;
+  if (_selfLoginCache) return _selfLoginCache;
   const login = await execGh(['api', 'user', '--jq', '.login']).catch(() => null);
-  _selfLoginCache = login ? login.trim() : null;
-  return _selfLoginCache;
+  // Only memoize a SUCCESSFUL lookup. Caching a null from a transient gh/auth
+  // failure (keychain locked mid-tick, gh re-auth in progress) would wedge every
+  // later self/others gate into 'self-login-unavailable' until process restart;
+  // leaving the cache unset lets the next tick retry once auth recovers.
+  const trimmed = login && login.trim();
+  if (trimmed) _selfLoginCache = trimmed;
+  return _selfLoginCache || null;
 }
 
 // Test seam — reset the memoized login between cases.

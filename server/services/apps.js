@@ -435,6 +435,13 @@ export async function updateAppTaskTypeOverride(id, taskType, { enabled, interva
     overrides[taskType] = updated;
   }
 
+  // Disabling pr-watcher clears its high-water mark so a later re-enable
+  // baselines silently (like first enable) instead of dispatching the backlog
+  // of PRs opened while it was off. See prWatcher.js / cosTaskGenerator.js.
+  if (taskType === 'pr-watcher' && enabled === false) {
+    delete data.apps[id].prWatcherState;
+  }
+
   data.apps[id].taskTypeOverrides = overrides;
   delete data.apps[id].disabledTaskTypes; // Remove legacy field
   data.apps[id].updatedAt = new Date().toISOString();
@@ -464,6 +471,11 @@ export async function bulkUpdateAppTaskTypeOverride(taskType, { enabled } = {}) 
       overrides[taskType] = updated;
     }
 
+    // See updateAppTaskTypeOverride: clear pr-watcher's high-water mark on disable.
+    if (taskType === 'pr-watcher' && enabled === false) {
+      delete data.apps[id].prWatcherState;
+    }
+
     data.apps[id].taskTypeOverrides = overrides;
     delete data.apps[id].disabledTaskTypes;
     data.apps[id].updatedAt = new Date().toISOString();
@@ -488,6 +500,12 @@ export async function toggleAllAppTaskTypes(id, enabled) {
   for (const taskType of SELF_IMPROVEMENT_TASK_TYPES) {
     const existing = overrides[taskType] || {};
     overrides[taskType] = { ...existing, enabled };
+  }
+
+  // Disabling everything disables pr-watcher too — clear its high-water mark so
+  // a later re-enable baselines silently. See updateAppTaskTypeOverride.
+  if (enabled === false) {
+    delete data.apps[id].prWatcherState;
   }
 
   data.apps[id].taskTypeOverrides = overrides;
