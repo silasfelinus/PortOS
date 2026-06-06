@@ -29,10 +29,16 @@ import { getAppById, updateApp } from './apps.js';
 import { getOriginInfo } from '../lib/gitRemote.js';
 import { PR_AUTHOR_FILTERS } from '../lib/validation.js';
 
-// Bound the gh query + the per-run dispatch. An app left unwatched for a long
-// time could otherwise surface a huge batch; 50 open PRs is already far beyond
-// a single-user app's normal state.
-const PR_LIST_LIMIT = 50;
+// Bound the gh query. The high-water mark (computePrCheck) advances to the max
+// open PR number it saw, so it can only correctly drain a backlog it received
+// in full: if `gh pr list` truncated the page, new PRs numbered below the
+// page's minimum would be marked seen without ever dispatching. gh returns
+// newest-first, so truncation drops the OLDEST new PRs. We set the cap high
+// enough (200) that a single-user app's default branch realistically never
+// truncates, and `checkPullRequests` emits a loud warning (never silent) if it
+// ever does — at which point the operator should run the watcher again or raise
+// the cap. 200 matches the limit github.js#syncRepos already uses.
+const PR_LIST_LIMIT = 200;
 
 // Cache the gh-authenticated login for the process lifetime. It's the PortOS
 // operator's identity and effectively never changes within a run; re-resolving
@@ -189,6 +195,12 @@ export async function checkPullRequests(app, { authorFilter = 'any' } = {}) {
   const prs = await listOpenPullRequests(repoFullName, defaultBranch);
   if (prs === null) {
     return { ok: false, reason: 'pr-list-failed', repoFullName, defaultBranch };
+  }
+  // No silent caps: if the page was truncated, the high-water mark could skip
+  // the oldest new PRs (gh returns newest-first). Surface it rather than drop
+  // them quietly — realistically unreachable for a single-user repo.
+  if (prs.length >= PR_LIST_LIMIT) {
+    console.warn(`⚠️ pr-watcher: ${repoFullName} returned ${prs.length} open PRs (cap ${PR_LIST_LIMIT}) — the oldest new PRs beyond the page may be skipped this cycle. Re-run the watcher or raise PR_LIST_LIMIT.`);
   }
 
   const lastSeen = readPrWatcherState(app).lastSeenPrNumber;
