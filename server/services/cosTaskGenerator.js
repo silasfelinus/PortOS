@@ -26,6 +26,7 @@ import { sanitizeTaskMetadata, PIPELINE_BEHAVIOR_FLAGS, MAX_TOTAL_SPAWNS, normal
 import { parsePlanItems, extractAllIds, findInProgressIds, pickFirstAvailable, diagnoseUnpickablePlan } from '../lib/planIds.js';
 import { loadState, saveState, withStateLock, isImprovementEnabled, isDaemonRunning } from './cosState.js';
 import { getDomainMode } from '../lib/domainAutonomy.js';
+import { remainingActionBudget } from '../lib/domainBudgets.js';
 import { getDomainBudgetStatus } from './domainUsage.js';
 import { cosEvents, emitLog } from './cosEvents.js';
 import { addTask, updateTask, getAllTasks, getCosTasks, firstLine, PRIORITY_VALUES } from './cosTaskStore.js';
@@ -317,20 +318,39 @@ export async function evaluateTasks(options) {
   // queued auto-approved tasks it would have spawned without emitting them.
   let cosAutonomyMode = getDomainMode(state.config, 'cos');
 
-  // Daily CoS budget (#711): once today's autonomous-run actions/minutes reach
-  // the cap, hold all automatic spawns for the rest of the day — treat it as
-  // `off`. Usage is tallied in completeAgent (autonomous runs only), so a pure
-  // dry-run never accrues and never trips this; user/on-demand spawns above are
-  // already past this gate and stay unaffected.
+  // Daily CoS budget (#711). Two dimensions, handled differently so a single
+  // evaluation can't overshoot a small cap by spawning a whole concurrent batch:
+  //  - minutes: binary — a run's wall-clock isn't known at spawn time, so once
+  //    today's autonomous minutes reach the cap we withhold all automatic spawns
+  //    (treat as `off`); a single in-flight run's overshoot is unavoidable.
+  //  - actions: precise — cap THIS cycle's autonomous admissions to the remaining
+  //    daily allowance, counting both completed (ledger) and in-flight autonomous
+  //    runs. `autonomousActionsRemaining` flows into `autonomousSlotCeiling` below.
+  // Usage is tallied in completeAgent for autonomous runs only, so a pure dry-run
+  // never accrues; user/on-demand spawns above are already past this gate.
   const cosBudget = await getDomainBudgetStatus('cos');
-  if (cosAutonomyMode !== 'off' && !cosBudget.withinBudget) {
-    emitLog('info', `CoS auto-run paused — daily ${cosBudget.exceeded} budget reached`, { domainBudget: 'cos', exceeded: cosBudget.exceeded });
-    cosAutonomyMode = 'off';
+  let autonomousActionsRemaining = Infinity;
+  if (cosAutonomyMode !== 'off') {
+    if (cosBudget.exceeded === 'minutes') {
+      emitLog('info', `CoS auto-run paused — daily minutes budget reached`, { domainBudget: 'cos', exceeded: 'minutes' });
+      cosAutonomyMode = 'off';
+    } else if (cosBudget.budget?.maxActionsPerDay != null) {
+      const runningAutonomous = runningAgentEntries.filter(
+        (a) => a.metadata?.taskType && a.metadata.taskType !== 'user'
+      ).length;
+      autonomousActionsRemaining = remainingActionBudget(cosBudget.budget, cosBudget.usage, runningAutonomous);
+      if (autonomousActionsRemaining === 0) {
+        emitLog('info', `CoS auto-run paused — daily actions budget reached`, { domainBudget: 'cos', exceeded: 'actions' });
+        cosAutonomyMode = 'off';
+      }
+    }
   }
 
-  // Helper: check if a task can spawn (within both global and per-project limits)
-  const canSpawnTask = (task) => {
-    if (tasksToSpawn.length >= availableSlots) return false;
+  // Helper: check if a task can spawn (within both global and per-project limits).
+  // `ceiling` defaults to the global slot count; autonomous sections pass the
+  // lower `autonomousSlotCeiling` so the CoS action budget (#711) caps them.
+  const canSpawnTask = (task, ceiling = availableSlots) => {
+    if (tasksToSpawn.length >= ceiling) return false;
     const project = task.metadata?.app || '_self';
     return (spawnProjectCounts[project] || 0) < perProjectLimit;
   };
@@ -431,16 +451,23 @@ export async function evaluateTasks(options) {
     trackSpawn(userTask);
   }
 
+  // Ceiling for AUTONOMOUS admissions this cycle (#711). On-demand + user tasks
+  // are already in `tasksToSpawn` and never count against the CoS action budget,
+  // so the autonomous sections below may add at most `autonomousActionsRemaining`
+  // more. With no action cap this equals `availableSlots`, so the default path is
+  // unchanged. The autonomous sections use this in place of `availableSlots`.
+  const autonomousSlotCeiling = Math.min(availableSlots, tasksToSpawn.length + autonomousActionsRemaining);
+
   // Priority 2: Auto-approved system tasks (if slots available) — gated by the
   // CoS auto-run domain. off/dry-run withhold the unattended spawn; dry-run logs
   // what would have run so the user can see the plan without it executing.
-  if (tasksToSpawn.length < availableSlots && cosTaskData.exists && cosAutonomyMode !== 'execute') {
+  if (tasksToSpawn.length < autonomousSlotCeiling && cosTaskData.exists && cosAutonomyMode !== 'execute') {
     if (cosAutonomyMode === 'dry-run') {
       // Log only the tasks execute mode would ACTUALLY spawn — applying the same
       // max-spawns / cooldown / per-project gates against virtual capacity —
       // rather than every auto-approved task regardless of eligibility.
       const wouldSpawn = await selectDryRunAutoApproved(cosTaskData.autoApproved || [], {
-        availableSlots,
+        availableSlots: autonomousSlotCeiling,
         alreadySpawned: tasksToSpawn.length,
         perProjectLimit,
         spawnProjectCounts,
@@ -451,10 +478,10 @@ export async function evaluateTasks(options) {
         emitLog('info', `[dry-run] CoS auto-run would spawn system task: ${task.id}`, { taskId: task.id, domainAutonomy: 'cos' });
       }
     }
-  } else if (tasksToSpawn.length < availableSlots && cosTaskData.exists) {
+  } else if (tasksToSpawn.length < autonomousSlotCeiling && cosTaskData.exists) {
     const autoApproved = cosTaskData.autoApproved || [];
     for (const task of autoApproved) {
-      if (tasksToSpawn.length >= availableSlots) break;
+      if (tasksToSpawn.length >= autonomousSlotCeiling) break;
 
       if (await blockIfExceedsMaxSpawns(task, 'internal')) continue;
 
@@ -475,7 +502,7 @@ export async function evaluateTasks(options) {
       }
 
       const sysTask = { ...task, taskType: 'internal' };
-      if (!canSpawnTask(sysTask)) {
+      if (!canSpawnTask(sysTask, autonomousSlotCeiling)) {
         const sysProject = appId || '_self';
         emitLog('debug', `⏳ Queued system task ${task.id} - per-project limit reached for ${sysProject}`);
         await recordDecision(
@@ -504,14 +531,14 @@ export async function evaluateTasks(options) {
 
   // Priority 3: Mission-driven proactive tasks (if no user tasks). Autonomous —
   // gated by the CoS auto-run domain (off/dry-run skip generation entirely).
-  if (tasksToSpawn.length < availableSlots && !hasPendingUserTasks && state.config.proactiveMode && cosAutonomyMode === 'execute') {
-    const missionTasks = await generateMissionTasks({ maxTasks: availableSlots - tasksToSpawn.length }).catch(err => {
+  if (tasksToSpawn.length < autonomousSlotCeiling && !hasPendingUserTasks && state.config.proactiveMode && cosAutonomyMode === 'execute') {
+    const missionTasks = await generateMissionTasks({ maxTasks: autonomousSlotCeiling - tasksToSpawn.length }).catch(err => {
       emitLog('debug', `Mission task generation failed: ${err.message}`);
       return [];
     });
 
     for (const missionTask of missionTasks) {
-      if (tasksToSpawn.length >= availableSlots) break;
+      if (tasksToSpawn.length >= autonomousSlotCeiling) break;
       // Convert mission task to COS task format
       const cosTask = {
         id: missionTask.id,
@@ -522,7 +549,7 @@ export async function evaluateTasks(options) {
         taskType: 'internal',
         approvalRequired: !missionTask.autoApprove
       };
-      if (!canSpawnTask(cosTask)) continue;
+      if (!canSpawnTask(cosTask, autonomousSlotCeiling)) continue;
       tasksToSpawn.push(cosTask);
       trackSpawn(cosTask);
       emitLog('info', `Generated mission task: ${missionTask.id} (${missionTask.metadata?.missionName})`, {
@@ -540,16 +567,16 @@ export async function evaluateTasks(options) {
 
   // Priority 3.6: Feature Agents (after autonomous jobs, yield to user tasks).
   // Autonomous — gated by the CoS auto-run domain.
-  if (tasksToSpawn.length < availableSlots && !hasPendingUserTasks && cosAutonomyMode === 'execute') {
+  if (tasksToSpawn.length < autonomousSlotCeiling && !hasPendingUserTasks && cosAutonomyMode === 'execute') {
     const { getDueFeatureAgents, generateTaskFromFeatureAgent, setCurrentAgent } = await import('./featureAgents.js');
     const dueAgents = await getDueFeatureAgents().catch(err => {
       emitLog('debug', `Feature agents check failed: ${err.message}`);
       return [];
     });
     for (const fa of dueAgents) {
-      if (tasksToSpawn.length >= availableSlots) break;
+      if (tasksToSpawn.length >= autonomousSlotCeiling) break;
       const task = generateTaskFromFeatureAgent(fa);
-      if (!canSpawnTask(task)) continue;
+      if (!canSpawnTask(task, autonomousSlotCeiling)) continue;
       tasksToSpawn.push(task);
       trackSpawn(task);
       // Mark agent as having a pending task to prevent duplicate spawns
@@ -567,7 +594,7 @@ export async function evaluateTasks(options) {
     const pendingSystemTasks = freshCosTasks.autoApproved?.length || 0;
     if (pendingSystemTasks === 0) {
       const idleTask = await generateIdleReviewTask(state);
-      if (idleTask && canSpawnTask(idleTask)) {
+      if (idleTask && canSpawnTask(idleTask, autonomousSlotCeiling)) {
         tasksToSpawn.push(idleTask);
         trackSpawn(idleTask);
       }

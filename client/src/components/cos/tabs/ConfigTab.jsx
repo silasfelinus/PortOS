@@ -218,7 +218,9 @@ function DomainBudgetControl({ config, usage, onBudgetChange }) {
                 {DOMAIN_BUDGET_FIELDS.map((field) => {
                   const inputId = `budget-${domain.id}-${field.id}`;
                   const cap = budget[field.id];
-                  const used = field.usageKey === 'actions' ? (u.actions || 0) : minutesUsed;
+                  // Compare exact minutes (not the rounded display) so the
+                  // highlight matches server enforcement, which gates on raw ms.
+                  const used = field.usageKey === 'actions' ? (u.actions || 0) : (u.ms || 0) / 60000;
                   const over = cap != null && used >= cap;
                   return (
                     <div key={field.id} className="flex flex-col">

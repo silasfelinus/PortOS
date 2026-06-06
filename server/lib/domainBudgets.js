@@ -119,6 +119,25 @@ export function hasBudget(budget) {
  * @param {{actions?: number, ms?: number}} usage - today's accumulated usage
  * @returns {{withinBudget: boolean, exceeded: 'actions'|'minutes'|null}}
  */
+/**
+ * How many more autonomous actions a domain may take today, given its budget,
+ * today's recorded usage, and the count of in-flight (spawned-but-not-yet-
+ * recorded) autonomous runs. Returns `Infinity` when no action cap is set, and
+ * never goes negative. Used by the CoS evaluator to cap a single cycle's
+ * autonomous admissions so a small cap can't be overshot by a concurrent batch.
+ *
+ * @param {{maxActionsPerDay: number|null}} budget
+ * @param {{actions?: number}} usage - today's recorded usage
+ * @param {number} [inFlight=0] - autonomous runs spawned today but not yet recorded
+ * @returns {number}
+ */
+export function remainingActionBudget(budget, usage, inFlight = 0) {
+  const max = budget?.maxActionsPerDay;
+  if (max == null) return Infinity;
+  const used = (Number(usage?.actions) || 0) + (Number(inFlight) || 0);
+  return Math.max(0, max - used);
+}
+
 export function evaluateBudget(budget, usage) {
   const actions = Number(usage?.actions) || 0;
   const ms = Number(usage?.ms) || 0;

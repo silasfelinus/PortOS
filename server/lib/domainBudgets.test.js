@@ -7,7 +7,8 @@ import {
   normalizeDomainBudgets,
   getDomainBudget,
   hasBudget,
-  evaluateBudget
+  evaluateBudget,
+  remainingActionBudget
 } from './domainBudgets.js';
 
 describe('domainBudgets constants', () => {
@@ -116,5 +117,27 @@ describe('evaluateBudget', () => {
     const budget = { maxActionsPerDay: 1, maxMinutesPerDay: 1 };
     expect(evaluateBudget(budget, {})).toEqual({ withinBudget: true, exceeded: null });
     expect(evaluateBudget(budget, undefined)).toEqual({ withinBudget: true, exceeded: null });
+  });
+});
+
+describe('remainingActionBudget', () => {
+  it('is Infinity when no action cap is set', () => {
+    expect(remainingActionBudget({ maxActionsPerDay: null }, { actions: 100 }, 50)).toBe(Infinity);
+    expect(remainingActionBudget({}, { actions: 5 })).toBe(Infinity);
+  });
+
+  it('subtracts both recorded usage and in-flight runs from the cap', () => {
+    // cap 5, 2 completed, 1 in-flight → 2 remaining (prevents a 3-slot batch
+    // from overshooting when only 2 actions are actually left).
+    expect(remainingActionBudget({ maxActionsPerDay: 5 }, { actions: 2 }, 1)).toBe(2);
+  });
+
+  it('never goes negative even when usage already exceeds the cap', () => {
+    expect(remainingActionBudget({ maxActionsPerDay: 1 }, { actions: 3 }, 2)).toBe(0);
+  });
+
+  it('defaults in-flight to 0 and tolerates missing usage', () => {
+    expect(remainingActionBudget({ maxActionsPerDay: 4 }, {})).toBe(4);
+    expect(remainingActionBudget({ maxActionsPerDay: 4 }, undefined)).toBe(4);
   });
 });

@@ -255,9 +255,11 @@ async function forwardNotification(notification) {
   if (notification.description) lines.push(escapeHtml(notification.description));
   if (notification.priority) lines.push(`Priority: ${priorityEmoji} ${notification.priority}`);
 
+  const startTime = Date.now();
   await sendMessage(lines.join('\n'));
-  // Count the forward against the messages domain's daily budget (#711).
-  await recordDomainUsage('messages', { actions: 1 })
+  // Count the forward (and its wall-clock) against the messages daily budget
+  // (#711) so both the actions and minutes caps are enforced for this domain.
+  await recordDomainUsage('messages', { actions: 1, ms: Date.now() - startTime })
     .catch(err => console.error(`❌ Failed to record messages budget usage: ${err.message}`));
 }
 
