@@ -440,7 +440,9 @@ const modelContextCache = new Map() // name -> number|null
 async function getModelContextLength(name) {
   if (!name) return null
   if (modelContextCache.has(name)) return modelContextCache.get(name)
-  const data = await ollamaRequest('/api/show', { method: 'POST', body: JSON.stringify({ name }) }).catch(() => null)
+  // /api/show documents the id under `model`; current Ollama also accepts the
+  // legacy `name`, so send both (extra fields are ignored) for cross-version safety.
+  const data = await ollamaRequest('/api/show', { method: 'POST', body: JSON.stringify({ model: name, name }) }).catch(() => null)
   // A transient /api/show failure must NOT be cached as a permanent null —
   // that would pin the model with no context label until restart. Only cache
   // when the daemon actually answered; a present-but-no-context_length response

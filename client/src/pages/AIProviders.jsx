@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
 import socket from '../services/socket';
-import { filterSelectableModels, filterGenerationModels, mergeModelLists, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, isClaudeCodePlanCli } from '../utils/providers';
+import { filterSelectableModels, filterGenerationModels, isEmbeddingModel, mergeModelLists, localBackendForProvider, modelOptionLabel, providerTypeClass, isTuiProvider, isApiProvider, isProcessProvider, isClaudeCodePlanCli } from '../utils/providers';
 import useLocalModels from '../hooks/useLocalModels';
 import EmptyState from '../components/EmptyState';
 import {
@@ -681,6 +681,14 @@ function ProviderForm({ provider, onClose, onSave, allProviders = [] }) {
       args: formData.args ? formData.args.split(' ').filter(Boolean) : [],
       headlessArgs: formData.headlessArgs ? formData.headlessArgs.split(' ').filter(Boolean) : [],
     };
+    // The generation/fallback pickers filter out embedding-only models, so a
+    // stored embedding (from an older config) would be hidden in the UI yet
+    // still spread into `data` and silently persisted on an unrelated edit.
+    // Clear any embedding value that slipped through so the saved record matches
+    // what the picker allows.
+    for (const field of ['defaultModel', 'lightModel', 'mediumModel', 'heavyModel', 'fallbackModel']) {
+      if (isEmbeddingModel(data[field])) data[field] = '';
+    }
     if (parsedTimeout != null) {
       data.timeout = parsedTimeout;
     } else if (timeoutInput === '') {
