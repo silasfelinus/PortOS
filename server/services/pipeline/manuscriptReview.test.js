@@ -91,3 +91,56 @@ describe('manuscriptReview — record-event emission on write', () => {
     expect(mergedById['mrc-mc'].replacementStrategy).toBe('delta');
   });
 });
+
+describe('manuscriptReview — re-run merge vs fresh mode', () => {
+  beforeEach(() => { fileStore.clear(); });
+
+  // Seed three findings, then flip one accepted and one dismissed, leaving one
+  // open — the realistic state when a user re-runs the editorial pass.
+  async function seedDecidedState(seriesId) {
+    const seeded = await seedReviewFromFindings(seriesId, [
+      { problem: 'kept-dismissed', anchorQuote: 'a' },
+      { problem: 'was-accepted', anchorQuote: 'b' },
+      { problem: 'stale-open', anchorQuote: 'c' },
+    ]);
+    const byProblem = Object.fromEntries(seeded.comments.map((c) => [c.problem, c]));
+    await updateComment(seriesId, byProblem['kept-dismissed'].id, { status: 'dismissed' });
+    await updateComment(seriesId, byProblem['was-accepted'].id, { status: 'accepted' });
+    return byProblem;
+  }
+
+  it("merge (default) preserves every prior comment and appends new findings", async () => {
+    await seedDecidedState('ser-merge');
+    const next = await seedReviewFromFindings('ser-merge', [{ problem: 'brand new', anchorQuote: 'd' }]);
+    const problems = next.comments.map((c) => c.problem).sort();
+    expect(problems).toEqual(['brand new', 'kept-dismissed', 'stale-open', 'was-accepted']);
+  });
+
+  it('fresh drops prior open + accepted, keeps dismissed, and seeds the new pass', async () => {
+    await seedDecidedState('ser-fresh');
+    const next = await seedReviewFromFindings(
+      'ser-fresh',
+      [{ problem: 'brand new', anchorQuote: 'd' }],
+      { mode: 'fresh' },
+    );
+    const byStatus = (s) => next.comments.filter((c) => c.status === s).map((c) => c.problem).sort();
+    // dismissed survives; open is exactly the new run; accepted is gone.
+    expect(byStatus('dismissed')).toEqual(['kept-dismissed']);
+    expect(byStatus('open')).toEqual(['brand new']);
+    expect(byStatus('accepted')).toEqual([]);
+    expect(next.comments.find((c) => c.problem === 'stale-open')).toBeUndefined();
+  });
+
+  it('fresh does NOT resurrect a finding the user dismissed (deduped against survivors)', async () => {
+    await seedDecidedState('ser-fresh-dedup');
+    // The new pass re-reports the same finding the user already dismissed.
+    const next = await seedReviewFromFindings(
+      'ser-fresh-dedup',
+      [{ problem: 'kept-dismissed', anchorQuote: 'a' }],
+      { mode: 'fresh' },
+    );
+    const kept = next.comments.filter((c) => c.problem === 'kept-dismissed');
+    expect(kept).toHaveLength(1);
+    expect(kept[0].status).toBe('dismissed');
+  });
+});

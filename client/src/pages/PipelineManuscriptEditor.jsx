@@ -75,6 +75,10 @@ export default function PipelineManuscriptEditor() {
   // chunked run means the model couldn't hold the whole manuscript at once
   // (small context window) — surfaced so the review's coverage isn't ambiguous.
   const [reviewMeta, setReviewMeta] = useState(null);
+  // Re-run mode for the editorial pass: false = merge (augment existing notes),
+  // true = fresh (clear prior open/accepted notes, keep dismissed). See the
+  // route's seedReviewFromFindings.
+  const [freshReview, setFreshReview] = useState(false);
   const [loading, setLoading] = useState(true);
   const [switching, setSwitching] = useState(false);
   const [pinning, setPinning] = useState(false);
@@ -162,10 +166,12 @@ export default function PipelineManuscriptEditor() {
 
   // Re-run the editorial completeness pass over the manuscript with the chosen
   // provider. The route persists findings as the review comment set, so we just
-  // swap in the returned comments.
+  // swap in the returned comments. `mode`: 'merge' (default) augments existing
+  // comments; 'fresh' clears prior open/accepted notes and shows only this
+  // run's findings (kept dismissals still suppress resurfacing).
   const [runEditorialReview, reviewing] = useAsyncAction(
-    async () => {
-      const result = await analyzePipelineManuscriptCompleteness(seriesId, { providerOverride, modelOverride });
+    async (mode = 'merge') => {
+      const result = await analyzePipelineManuscriptCompleteness(seriesId, { providerOverride, modelOverride, mode });
       const next = Array.isArray(result?.review?.comments) ? result.review.comments : [];
       setComments(next);
       setReviewMeta({ chunked: !!result?.chunked, chunkCount: result?.chunkCount || 1 });
@@ -297,6 +303,10 @@ export default function PipelineManuscriptEditor() {
     dismissed: comments.filter((c) => c.status === 'dismissed'),
   }), [comments]);
 
+  // How many notes a "Start fresh" re-run would replace (open + accepted;
+  // dismissed are kept). Drives the checkbox's explanatory count.
+  const freshClearCount = grouped.open.length + grouped.accepted.length;
+
   // Only pin still-open comments — accepting/dismissing flips the status, which
   // resolves this to null and closes the overlay automatically (resolved
   // comments are navigational only, with no actions to keep on screen).
@@ -419,7 +429,7 @@ export default function PipelineManuscriptEditor() {
             </div>
             <button
               type="button"
-              onClick={runEditorialReview}
+              onClick={() => runEditorialReview(freshReview ? 'fresh' : 'merge')}
               disabled={reviewing || sections.length === 0}
               title={sections.length === 0
                 ? 'Draft at least one issue before running an editorial review'
@@ -429,6 +439,27 @@ export default function PipelineManuscriptEditor() {
               {reviewing ? <Loader2 size={12} className="animate-spin" /> : <ClipboardCheck size={12} />}
               {reviewing ? 'Running editorial review…' : 'Run editorial review'}
             </button>
+            {/* Re-run mode. Merge keeps prior notes; fresh clears the current
+                open/accepted notes and shows only the new pass (dismissed are
+                kept so they don't resurface). */}
+            <label htmlFor="ms-fresh-review" className="flex items-start gap-1.5 text-[11px] text-gray-400 cursor-pointer">
+              <input
+                id="ms-fresh-review"
+                type="checkbox"
+                checked={freshReview}
+                onChange={(e) => setFreshReview(e.target.checked)}
+                disabled={reviewing}
+                className="mt-0.5 accent-port-accent"
+              />
+              <span>
+                Start fresh
+                <span className="text-gray-600">
+                  {' '}— replace the current {grouped.open.length} open
+                  {grouped.accepted.length > 0 ? ` + ${grouped.accepted.length} accepted` : ''}
+                  {' '}note{freshClearCount === 1 ? '' : 's'} with this run; dismissed kept.
+                </span>
+              </span>
+            </label>
           </div>
 
           <h2 className="text-xs uppercase tracking-wider text-gray-500 flex items-center justify-between">

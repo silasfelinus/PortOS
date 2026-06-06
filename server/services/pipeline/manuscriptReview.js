@@ -30,6 +30,10 @@ const SCHEMA_VERSION = 1;
 export const COMMENT_STATUSES = Object.freeze(['open', 'accepted', 'dismissed']);
 const STATUS_SET = new Set(COMMENT_STATUSES);
 
+// Re-run modes for seedReviewFromFindings — see its doc comment. Exported so the
+// route's Zod enum validates against the same source (mirrors COMMENT_STATUSES).
+export const REVIEW_RUN_MODES = Object.freeze(['merge', 'fresh']);
+
 const REVIEW_FILE = 'manuscript-review.json';
 const reviewPath = (seriesId) => join(seriesStore().recordDir(seriesId), REVIEW_FILE);
 
@@ -143,20 +147,40 @@ export async function getReview(seriesId) {
 const findingKey = (c) => `${c.issueNumber ?? ''}|${c.anchorQuote}|${c.problem}`;
 
 /**
- * Merge a fresh set of shaped completeness findings into the review. ALL
- * existing comments are preserved — open ones (the user may be mid-fix, with a
- * generated replacement attached) as well as accepted/dismissed decisions. Only
- * findings not already present (by (issueNumber, anchorQuote, problem)) are
- * appended, so re-running "Finish the draft" augments the list instead of
- * piling up duplicates or wiping work in progress. New findings resolve their
- * issueId/stageId from the current manuscript sections by issueNumber.
+ * Merge a fresh set of shaped completeness findings into the review.
+ *
+ * `mode` controls what survives a re-run:
+ *
+ *  - 'merge' (default): ALL existing comments are preserved — open ones (the
+ *    user may be mid-fix, with a generated replacement attached) as well as
+ *    accepted/dismissed decisions. Only findings not already present (by
+ *    (issueNumber, anchorQuote, problem)) are appended, so re-running augments
+ *    the list instead of piling up duplicates or wiping work in progress.
+ *
+ *  - 'fresh': clears the prior `open` and `accepted` comments and seeds only
+ *    this run's findings, so the editor shows just the new editorial pass.
+ *    `dismissed` comments are KEPT — they're the user's standing "ignore this"
+ *    decisions and are NOT reflected in the manuscript, so dropping them would
+ *    silently resurrect those findings as new open comments on the next run.
+ *    `accepted` comments are dropped: their fix is already applied to the
+ *    manuscript (see acceptManuscriptFix), so the record is only a historical
+ *    marker. Fresh findings still dedupe against the surviving dismissed set.
+ *
+ * New findings resolve their issueId/stageId from the current manuscript
+ * sections by issueNumber.
  */
-export async function seedReviewFromFindings(seriesId, findings, { runId = null } = {}) {
+export async function seedReviewFromFindings(seriesId, findings, { runId = null, mode = 'merge' } = {}) {
   const sections = await collectManuscriptSections(seriesId);
   const byNumber = new Map(sections.map((s) => [s.number, s]));
   return queueReviewWrite(seriesId, async () => {
     const review = await readReview(seriesId);
-    const seenKeys = new Set(review.comments.map(findingKey));
+    // In 'fresh' mode the surviving base is just the dismissed decisions; in
+    // 'merge' mode every existing comment is carried forward.
+    const base = mode === 'fresh'
+      ? review.comments.filter((c) => c.status === 'dismissed')
+      : review.comments;
+    const removed = review.comments.length - base.length;
+    const seenKeys = new Set(base.map(findingKey));
     const now = new Date().toISOString();
 
     const fresh = [];
@@ -174,15 +198,15 @@ export async function seedReviewFromFindings(seriesId, findings, { runId = null 
       fresh.push(candidate);
     }
 
-    const next = { schemaVersion: SCHEMA_VERSION, comments: [...review.comments, ...fresh] };
+    const next = { schemaVersion: SCHEMA_VERSION, comments: [...base, ...fresh] };
     await writeReview(seriesId, next);
     // The review is a sibling of the series record, so a review-only change
     // doesn't move the series `index.json` — emit a series `updated` event so
     // the peer-sync push + bucket re-export fire (both hash the review into
-    // their payload). Only when something actually changed; a no-op seed
-    // would just be short-circuited by the push hash anyway. Skipped on the
-    // sync RECEIVE path (`mergeReviewFromSync`) to avoid an echo loop.
-    if (fresh.length > 0) emitRecordUpdated('series', seriesId);
+    // their payload). Only when something actually changed — appended findings
+    // OR comments dropped by a 'fresh' re-run. Skipped on the sync RECEIVE path
+    // (`mergeReviewFromSync`) to avoid an echo loop.
+    if (fresh.length > 0 || removed > 0) emitRecordUpdated('series', seriesId);
     return next;
   });
 }
