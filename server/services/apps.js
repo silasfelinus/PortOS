@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from '../lib/uuid.js';
 import EventEmitter from 'events';
 import { atomicWrite, ensureDir, readJSONFile, PATHS } from '../lib/fileUtils.js';
 import { NON_PM2_TYPES, usesPm2 } from './streamingDetect.js';
-import { listProcesses } from './pm2.js';
+import { listProcessesStrict } from './pm2.js';
 import { SELF_IMPROVEMENT_TASK_TYPES } from './taskSchedule.js';
 import { sanitizeTaskMetadata } from '../lib/validation.js';
 import { PORTS } from '../lib/ports.js';
@@ -193,8 +193,9 @@ export async function getActiveApps() {
  * primitive behind both `getAppStatusSummary()` (counts) and the CyberCity
  * snapshot pipeline (per-building status), so the two never drift.
  *
- * Absent-vs-empty rule (CLAUDE.md): a `listProcesses(home)` that *throws* is a
- * failed read, NOT a successful "no processes." Folding it into `[]` would
+ * Absent-vs-empty rule (CLAUDE.md): `listProcessesStrict(home)` returns `null`
+ * when the PM2 read FAILED (vs `[]` for a successful read with no processes).
+ * The generic `listProcesses` flattens a failed read into `[]`, which would
  * record every app in that home as `not_started` (status known: never launched)
  * when the truth is `unknown` (status unavailable: PM2 unreachable). We track
  * failed homes explicitly and mark their apps `overallStatus: 'unknown'` +
@@ -217,8 +218,8 @@ export async function getAppStatuses() {
   const procMaps = new Map();
   const failedHomes = new Set();
   for (const home of homeGroups.keys()) {
-    // `null` sentinel on throw distinguishes a failed read from an empty list.
-    const procs = await listProcesses(home).catch(() => null);
+    // `null` = PM2 read failed (vs `[]` = read OK, no processes).
+    const procs = await listProcessesStrict(home);
     if (procs === null) {
       failedHomes.add(home);
       procMaps.set(home, new Map());

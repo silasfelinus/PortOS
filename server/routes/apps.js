@@ -68,14 +68,15 @@ router.get('/', asyncHandler(async (req, res) => {
   }
 
   // Fetch PM2 processes for each unique PM2_HOME.
-  // A thrown listProcesses is a failed read, not an empty list — track those
-  // homes so we report `unknown` (status unavailable) instead of `not_started`
-  // (confidently not running) for their apps. See getAppStatuses() in the
-  // service for the same absent-vs-empty distinction.
+  // listProcessesStrict returns `null` on a failed read (vs `[]` for a
+  // successful read with no processes) — track those homes so we report
+  // `unknown` (status unavailable) instead of `not_started` (confidently not
+  // running) for their apps. See getAppStatuses() in the service for the same
+  // absent-vs-empty distinction.
   const pm2Maps = new Map();
   const failedHomes = new Set();
   for (const pm2Home of pm2HomeGroups.keys()) {
-    const processes = await pm2Service.listProcesses(pm2Home).catch(() => null);
+    const processes = await pm2Service.listProcessesStrict(pm2Home);
     if (processes === null) {
       failedHomes.add(pm2Home);
       pm2Maps.set(pm2Home, new Map());
@@ -168,22 +169,27 @@ router.get('/:id', loadApp, asyncHandler(async (req, res) => {
 
   let degraded = false;
   if (usesPm2(app.type)) {
-    // Get PM2 status for each process (using app's custom PM2_HOME if set).
-    // A thrown getAppStatus is a failed read, not a confident "not running" —
-    // mark `degraded` so the detail UI can disable lifecycle controls rather
-    // than offer a misleading Start. Mirrors the list endpoint's `degraded`.
+    // getAppStatusStrict returns `null` when the PM2 read failed (vs a real
+    // status object). A failed read is genuinely unknown, not "not running" —
+    // mark `degraded` so the detail UI can offer refresh-to-retry rather than a
+    // misleading Start. Mirrors the list endpoint's `degraded`.
     for (const processName of app.pm2ProcessNames || []) {
-      const status = await pm2Service.getAppStatus(processName, app.pm2Home).catch(() => {
+      const status = await pm2Service.getAppStatusStrict(processName, app.pm2Home);
+      if (status === null) {
         degraded = true;
-        return { status: 'unknown' };
-      });
-      statuses[processName] = status;
+        statuses[processName] = { name: processName, status: 'unknown', pm2_env: null };
+      } else {
+        statuses[processName] = status;
+      }
     }
 
-    // Compute overall status (same logic as list endpoint)
+    // Compute overall status (same logic as list endpoint). A degraded read
+    // short-circuits to `unknown` rather than collapsing to `not_started`.
     const statusValues = Object.values(statuses);
     overallStatus = 'unknown';
-    if (statusValues.some(s => s.status === 'online')) {
+    if (degraded) {
+      overallStatus = 'unknown';
+    } else if (statusValues.some(s => s.status === 'online')) {
       overallStatus = 'online';
     } else if (statusValues.some(s => s.status === 'stopped')) {
       overallStatus = 'stopped';

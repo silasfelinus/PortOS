@@ -20,7 +20,9 @@ vi.mock('../services/apps.js', () => ({
 
 vi.mock('../services/pm2.js', () => ({
   listProcesses: vi.fn(),
+  listProcessesStrict: vi.fn(),
   getAppStatus: vi.fn(),
+  getAppStatusStrict: vi.fn(),
   startWithCommand: vi.fn(),
   stopApp: vi.fn(),
   restartApp: vi.fn(),
@@ -105,7 +107,7 @@ describe('Apps Routes', () => {
       ];
 
       appsService.getAllApps.mockResolvedValue(mockApps);
-      pm2Service.listProcesses.mockResolvedValue(mockPm2Processes);
+      pm2Service.listProcessesStrict.mockResolvedValue(mockPm2Processes);
       streamingDetect.parseEcosystemFromPath.mockResolvedValue([]);
 
       const response = await request(app).get('/api/apps');
@@ -121,7 +123,7 @@ describe('Apps Routes', () => {
       ];
 
       appsService.getAllApps.mockResolvedValue(mockApps);
-      pm2Service.listProcesses.mockResolvedValue([]);
+      pm2Service.listProcessesStrict.mockResolvedValue([]);
       streamingDetect.parseEcosystemFromPath.mockResolvedValue([]);
 
       const response = await request(app).get('/api/apps');
@@ -136,8 +138,9 @@ describe('Apps Routes', () => {
       ];
 
       appsService.getAllApps.mockResolvedValue(mockApps);
-      // A failed PM2 read must not collapse into a confident "not started."
-      pm2Service.listProcesses.mockRejectedValue(new Error('pm2 daemon unreachable'));
+      // Strict read returns null on a failed PM2 read — must not collapse into
+      // a confident "not started."
+      pm2Service.listProcessesStrict.mockResolvedValue(null);
       streamingDetect.parseEcosystemFromPath.mockResolvedValue([]);
 
       const response = await request(app).get('/api/apps');
@@ -150,7 +153,7 @@ describe('Apps Routes', () => {
 
     it('should return empty array when no apps exist', async () => {
       appsService.getAllApps.mockResolvedValue([]);
-      pm2Service.listProcesses.mockResolvedValue([]);
+      pm2Service.listProcessesStrict.mockResolvedValue([]);
 
       const response = await request(app).get('/api/apps');
 
@@ -167,7 +170,7 @@ describe('Apps Routes', () => {
         pm2ProcessNames: ['test-app']
       };
       appsService.getAppById.mockResolvedValue(mockApp);
-      pm2Service.getAppStatus.mockResolvedValue({ status: 'online' });
+      pm2Service.getAppStatusStrict.mockResolvedValue({ name: 'test-app', status: 'online' });
 
       const response = await request(app).get('/api/apps/app-001');
 
@@ -183,9 +186,10 @@ describe('Apps Routes', () => {
         pm2ProcessNames: ['test-app']
       };
       appsService.getAppById.mockResolvedValue(mockApp);
-      // Detail endpoint reads per-process status; a thrown read must surface
-      // as degraded, not collapse into a confident not_started.
-      pm2Service.getAppStatus.mockRejectedValue(new Error('pm2 daemon unreachable'));
+      // Detail endpoint reads per-process status via the strict variant, which
+      // returns null on a failed read — must surface as degraded, not collapse
+      // into a confident not_started.
+      pm2Service.getAppStatusStrict.mockResolvedValue(null);
 
       const response = await request(app).get('/api/apps/app-001');
 
@@ -383,7 +387,7 @@ describe('Apps Routes', () => {
         processes: [{ name: 'test-app', ports: { devUi: 5554 } }]
       }];
       appsService.getAllApps.mockResolvedValue(mockApps);
-      pm2Service.listProcesses.mockResolvedValue([]);
+      pm2Service.listProcessesStrict.mockResolvedValue([]);
 
       const response = await request(app).get('/api/apps');
 
@@ -403,7 +407,7 @@ describe('Apps Routes', () => {
         ]
       }];
       appsService.getAllApps.mockResolvedValue(mockApps);
-      pm2Service.listProcesses.mockResolvedValue([]);
+      pm2Service.listProcessesStrict.mockResolvedValue([]);
 
       const response = await request(app).get('/api/apps');
 
@@ -423,7 +427,7 @@ describe('Apps Routes', () => {
         processes: [{ name: 'test-app', ports: { devUi: 5554 } }]
       }];
       appsService.getAllApps.mockResolvedValue(mockApps);
-      pm2Service.listProcesses.mockResolvedValue([]);
+      pm2Service.listProcessesStrict.mockResolvedValue([]);
 
       const response = await request(app).get('/api/apps');
 
