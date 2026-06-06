@@ -201,11 +201,15 @@ export async function checkPullRequests(app, { authorFilter = 'any' } = {}) {
   if (prs === null) {
     return { ok: false, reason: 'pr-list-failed', repoFullName, defaultBranch };
   }
-  // No silent caps: if the page was truncated, the high-water mark could skip
-  // the oldest new PRs (gh returns newest-first). Surface it rather than drop
-  // them quietly — realistically unreachable for a single-user repo.
+  // Truncated page: gh returns newest-first, so advancing the high-water mark
+  // to the page's max would mark the oldest unseen new PRs as seen without ever
+  // dispatching them — and they'd never recover. Bail WITHOUT advancing the
+  // mark instead; the next run retries, and once the open-PR count drops below
+  // the cap the watcher resumes. No silent skip, no data loss. Realistically
+  // unreachable for a single-user repo at a 200 cap.
   if (prs.length >= PR_LIST_LIMIT) {
-    console.warn(`⚠️ pr-watcher: ${repoFullName} returned ${prs.length} open PRs (cap ${PR_LIST_LIMIT}) — the oldest new PRs beyond the page may be skipped this cycle. Re-run the watcher or raise PR_LIST_LIMIT.`);
+    console.warn(`⚠️ pr-watcher: ${repoFullName} has ≥${PR_LIST_LIMIT} open PRs — deferring (not advancing the high-water mark) so no newly-opened PR is skipped.`);
+    return { ok: false, reason: 'too-many-open-prs', repoFullName, defaultBranch };
   }
 
   const lastSeen = readPrWatcherState(app).lastSeenPrNumber;

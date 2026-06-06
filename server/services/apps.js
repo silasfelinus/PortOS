@@ -452,6 +452,26 @@ export async function updateAppTaskTypeOverride(id, taskType, { enabled, interva
 }
 
 /**
+ * Clear the pr-watcher high-water mark on every app. Called when pr-watcher is
+ * disabled GLOBALLY (CoS → Schedule), the counterpart to the per-app disable
+ * clears in updateAppTaskTypeOverride/bulk/toggle-all — so a later global
+ * re-enable baselines silently instead of dispatching the backlog of PRs
+ * opened while it was paused. See prWatcher.js.
+ */
+export async function clearAllPrWatcherState() {
+  const data = await loadApps();
+  let changed = false;
+  for (const app of Object.values(data.apps)) {
+    if (app.prWatcherState) {
+      delete app.prWatcherState;
+      changed = true;
+    }
+  }
+  if (changed) await saveApps(data);
+  return { changed };
+}
+
+/**
  * Bulk update a task type override for all active (non-archived) apps
  */
 export async function bulkUpdateAppTaskTypeOverride(taskType, { enabled } = {}) {

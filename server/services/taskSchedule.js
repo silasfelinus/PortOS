@@ -20,7 +20,7 @@ import { cosEvents, emitLog } from './cosEvents.js';
 import { DAY, ensureDir, HOUR, readJSONFile, PATHS, safeDate } from '../lib/fileUtils.js';
 import { isPlainObject } from '../lib/objects.js';
 import { getAdaptiveCooldownMultiplier } from './taskLearning.js';
-import { isTaskTypeEnabledForApp, getAppTaskTypeInterval, getActiveApps, getAppTaskTypeOverrides } from './apps.js';
+import { isTaskTypeEnabledForApp, getAppTaskTypeInterval, getActiveApps, getAppTaskTypeOverrides, clearAllPrWatcherState } from './apps.js';
 import { loadState, isImprovementEnabled } from './cosState.js';
 import { getUserTimezone, getLocalParts } from '../lib/timezone.js';
 import { parseCronToNextRun, parseCronToPrevRun } from './eventScheduler.js';
@@ -511,6 +511,17 @@ export async function updateTaskInterval(taskType, settings) {
   enforceManagedAgentOptions(taskType, schedule.tasks[taskType]);
 
   await saveSchedule(schedule);
+
+  // Globally disabling pr-watcher clears every app's high-water mark, mirroring
+  // the per-app disable clears in apps.js — so a later global re-enable
+  // baselines silently instead of dispatching the backlog of PRs opened while
+  // it was paused. (`enabled` arrives as a real boolean from the schedule route.)
+  if (taskType === 'pr-watcher' && settings.enabled === false) {
+    await clearAllPrWatcherState().catch((err) => {
+      emitLog('warn', `pr-watcher global-disable state clear failed: ${err.message}`, {}, '📅 TaskSchedule');
+    });
+  }
+
   emitLog('info', `Updated task interval for ${taskType}`, { taskType, settings }, '📅 TaskSchedule');
   cosEvents.emit('schedule:changed', { taskType, settings });
 
