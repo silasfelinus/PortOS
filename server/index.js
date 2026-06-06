@@ -252,7 +252,7 @@ const aiToolkitHooks = {
     errorEvents.emit('error', {
       code: isRefusal ? 'AI_PROVIDER_CONTENT_REFUSED' : 'AI_PROVIDER_EXECUTION_FAILED',
       message: isRefusal
-        ? `${metadata.providerName} declined this prompt on content/safety grounds — attempting a fallback model.`
+        ? `${metadata.providerName} declined this prompt on content/safety grounds — trying a fallback model if one is configured.`
         : `AI provider ${metadata.providerName} execution failed: ${errorMessage}`,
       severity: isRefusal ? 'warning' : 'error',
       canAutoFix: !isRefusal,
