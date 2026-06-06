@@ -513,8 +513,13 @@ Run steps 1–5 in order.
 2. List candidate open issues **oldest-first**, honoring the author filter described above. \`gh issue list\` defaults to newest-first, so order on the SERVER with \`--search "sort:created-asc"\` — a client-side \`jq\` sort would only reorder the already-truncated newest page, dropping the true oldest issues on repos with more than \`--limit\` open issues:
    \`\`\`bash
    git fetch --prune 2>/dev/null
-   # OWNER_FLAG is "--author <owner>" for owner-only mode, or empty for any-author mode (see the author-filter block above)
-   gh issue list --state open $OWNER_FLAG --search "sort:created-asc" --json number,title,author,assignees,labels,createdAt --limit 100
+   # Author filter (see the block above). Pass --author as a QUOTED single token —
+   # do NOT pack flag+value into one variable: a bare \`$VAR\` holding "--author x"
+   # is a single argv token in zsh (no word-splitting) and gh rejects it.
+   #   Owner-only mode (default): resolve the owner, then add  --author "$OWNER"
+   OWNER="$(gh repo view --json owner -q .owner.login)"
+   gh issue list --state open --author "$OWNER" --search "sort:created-asc" --json number,title,author,assignees,labels,createdAt --limit 100
+   #   Any-author mode: run the SAME command WITHOUT the --author "$OWNER" flag.
    \`\`\`
 3. Build the in-flight set. Collect every branch/PR ref:
    \`\`\`bash
