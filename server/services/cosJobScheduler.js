@@ -26,7 +26,8 @@ import { getUserTimezone, getLocalParts, nextLocalTime } from '../lib/timezone.j
 import { formatDuration } from '../lib/fileUtils.js';
 import { loadState, isDaemonRunning } from './cosState.js';
 import { getDomainMode } from '../lib/domainAutonomy.js';
-import { getDomainBudgetStatus } from './domainUsage.js';
+import { remainingActionBudget } from '../lib/domainBudgets.js';
+import { getDomainBudgetStatus, recordDomainUsage } from './domainUsage.js';
 import { cosEvents, emitLog } from './cosEvents.js';
 import { getCosTasks } from './cosTaskStore.js';
 import { queueEligibleImprovementTasks } from './cosTaskGenerator.js';
@@ -185,14 +186,27 @@ export async function executeScheduledJob(jobId) {
   // branch's comment warns about).
   let cosAutonomyMode = getDomainMode(state.config, 'cos');
 
-  // Daily CoS budget (#711): a scheduled job firing is an autonomous run, so
-  // once today's actions/minutes cap is hit, withhold it like `off` (and skip
-  // the dry-run "would fire" log — over budget means stop, not narrate). Same
-  // gate-skip bookkeeping below advances lastRun so re-registration is future-dated.
+  // Daily CoS budget (#711): a scheduled job firing is one autonomous action, so
+  // once today's actions/minutes cap is hit, withhold it like `off` (and skip the
+  // dry-run "would fire" log — over budget means stop, not narrate). The action
+  // check counts in-flight autonomous runs too (recorded usage lags behind spawn),
+  // so concurrent scheduled jobs can't slip past a small cap. Same gate-skip
+  // bookkeeping below advances lastRun so re-registration is future-dated.
   const cosBudget = await getDomainBudgetStatus('cos');
-  if (cosAutonomyMode !== 'off' && !cosBudget.withinBudget) {
-    emitLog('info', `CoS auto-run paused — daily ${cosBudget.exceeded} budget reached, withholding scheduled job: ${job.name}`, { jobId, domainBudget: 'cos', exceeded: cosBudget.exceeded });
-    cosAutonomyMode = 'off';
+  if (cosAutonomyMode !== 'off') {
+    let overBudget = false;
+    if (cosBudget.exceeded === 'minutes') {
+      overBudget = true;
+    } else if (cosBudget.budget?.maxActionsPerDay != null) {
+      const runningAutonomous = Object.values(state.agents).filter(
+        (a) => a.status === 'running' && a.metadata?.taskType && a.metadata.taskType !== 'user'
+      ).length;
+      if (remainingActionBudget(cosBudget.budget, cosBudget.usage, runningAutonomous) < 1) overBudget = true;
+    }
+    if (overBudget) {
+      emitLog('info', `CoS auto-run paused — daily ${cosBudget.exceeded || 'actions'} budget reached, withholding scheduled job: ${job.name}`, { jobId, domainBudget: 'cos', exceeded: cosBudget.exceeded || 'actions' });
+      cosAutonomyMode = 'off';
+    }
   }
 
   if (cosAutonomyMode !== 'execute') {
@@ -206,19 +220,32 @@ export async function executeScheduledJob(jobId) {
     return;
   }
 
-  // Script jobs and shell jobs execute directly without spawning an AI agent
+  // Script jobs and shell jobs execute directly without spawning an AI agent —
+  // so they never reach completeAgent's budget tally. Record them against the CoS
+  // daily budget (#711) here on success, since a fired scheduled job is exactly
+  // the autonomous action the gate above withholds when over budget.
   if (isScriptJob(job)) {
+    const startedAt = Date.now();
     const scriptOk = await executeScriptJob(job).then(() => true, err => {
       emitLog('error', `Script job failed: ${job.name} - ${err.message}`, { jobId: job.id });
       return false;
     });
-    if (scriptOk) emitLog('info', `Script job executed: ${job.name}`, { jobId: job.id });
+    if (scriptOk) {
+      emitLog('info', `Script job executed: ${job.name}`, { jobId: job.id });
+      await recordDomainUsage('cos', { actions: 1, ms: Date.now() - startedAt })
+        .catch(err => console.error(`❌ Failed to record CoS budget usage for script job ${job.id}: ${err.message}`));
+    }
   } else if (isShellJob(job)) {
+    const startedAt = Date.now();
     const shellOk = await executeShellJob(job).then(() => true, err => {
       emitLog('error', `Shell job failed: ${job.name} - ${err.message}`, { jobId: job.id });
       return false;
     });
-    if (shellOk) emitLog('info', `Shell job executed: ${job.name}`, { jobId: job.id });
+    if (shellOk) {
+      emitLog('info', `Shell job executed: ${job.name}`, { jobId: job.id });
+      await recordDomainUsage('cos', { actions: 1, ms: Date.now() - startedAt })
+        .catch(err => console.error(`❌ Failed to record CoS budget usage for shell job ${job.id}: ${err.message}`));
+    }
   } else {
     // Check if this job is already being spawned or has a running agent.
     // Don't re-register the timer here — the job:spawned handler will do it
