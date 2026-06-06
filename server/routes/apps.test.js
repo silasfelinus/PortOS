@@ -130,6 +130,24 @@ describe('Apps Routes', () => {
       expect(response.body[0].overallStatus).toBe('not_started');
     });
 
+    it('reports unknown + degraded (not not_started) when the PM2 read fails', async () => {
+      const mockApps = [
+        { id: 'app-001', name: 'Test App', pm2ProcessNames: ['test-app'], repoPath: '/tmp/test' }
+      ];
+
+      appsService.getAllApps.mockResolvedValue(mockApps);
+      // A failed PM2 read must not collapse into a confident "not started."
+      pm2Service.listProcesses.mockRejectedValue(new Error('pm2 daemon unreachable'));
+      streamingDetect.parseEcosystemFromPath.mockResolvedValue([]);
+
+      const response = await request(app).get('/api/apps');
+
+      expect(response.status).toBe(200);
+      expect(response.body[0].overallStatus).toBe('unknown');
+      expect(response.body[0].degraded).toBe(true);
+      expect(response.body[0].pm2Status['test-app'].status).toBe('unknown');
+    });
+
     it('should return empty array when no apps exist', async () => {
       appsService.getAllApps.mockResolvedValue([]);
       pm2Service.listProcesses.mockResolvedValue([]);

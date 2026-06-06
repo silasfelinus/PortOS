@@ -67,11 +67,21 @@ router.get('/', asyncHandler(async (req, res) => {
     pm2HomeGroups.get(home).push(app);
   }
 
-  // Fetch PM2 processes for each unique PM2_HOME
+  // Fetch PM2 processes for each unique PM2_HOME.
+  // A thrown listProcesses is a failed read, not an empty list — track those
+  // homes so we report `unknown` (status unavailable) instead of `not_started`
+  // (confidently not running) for their apps. See getAppStatuses() in the
+  // service for the same absent-vs-empty distinction.
   const pm2Maps = new Map();
+  const failedHomes = new Set();
   for (const pm2Home of pm2HomeGroups.keys()) {
-    const processes = await pm2Service.listProcesses(pm2Home).catch(() => []);
-    pm2Maps.set(pm2Home, new Map(processes.map(p => [p.name, p])));
+    const processes = await pm2Service.listProcesses(pm2Home).catch(() => null);
+    if (processes === null) {
+      failedHomes.add(pm2Home);
+      pm2Maps.set(pm2Home, new Map());
+    } else {
+      pm2Maps.set(pm2Home, new Map(processes.map(p => [p.name, p])));
+    }
   }
 
   // Enrich with PM2 status and auto-populate processes if needed
@@ -83,17 +93,24 @@ router.get('/', asyncHandler(async (req, res) => {
 
     const pm2Home = app.pm2Home || null;
     const pm2Map = pm2Maps.get(pm2Home) || new Map();
+    const homeFailed = failedHomes.has(pm2Home);
 
     const statuses = {};
     for (const processName of app.pm2ProcessNames || []) {
       const pm2Proc = pm2Map.get(processName);
-      statuses[processName] = pm2Proc ?? { name: processName, status: 'not_found', pm2_env: null };
+      // A failed PM2 read leaves status genuinely unknown — don't claim
+      // `not_found` (which the UI reads as "registered but never launched").
+      statuses[processName] = pm2Proc
+        ?? { name: processName, status: homeFailed ? 'unknown' : 'not_found', pm2_env: null };
     }
 
-    // Compute overall status
+    // Compute overall status. A failed PM2 home short-circuits to `unknown`
+    // with a `degraded` flag rather than collapsing to `not_started`.
     const statusValues = Object.values(statuses);
     let overallStatus = 'unknown';
-    if (statusValues.some(s => s.status === 'online')) {
+    if (homeFailed) {
+      overallStatus = 'unknown';
+    } else if (statusValues.some(s => s.status === 'online')) {
       overallStatus = 'online';
     } else if (statusValues.some(s => s.status === 'stopped')) {
       overallStatus = 'stopped';
@@ -132,6 +149,7 @@ router.get('/', asyncHandler(async (req, res) => {
       apiPort,
       pm2Status: statuses,
       overallStatus,
+      degraded: homeFailed,
       hasDeployScript: hasDeployScript(app),
       xcodeScripts: checkScripts(app)
     };
