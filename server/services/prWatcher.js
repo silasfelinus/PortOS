@@ -77,13 +77,17 @@ async function listOpenPullRequests(repoFullName, baseBranch) {
     '--json', 'number,title,author,url,createdAt,isDraft,headRefName'
   ]).catch(() => null);
   if (raw === null) return null;
-  const parsed = JSON.parse(raw);
+  // Guard the parse: a success-exit gh that emits empty/malformed stdout would
+  // otherwise throw a SyntaxError, breaking this module's "never throws"
+  // contract and aborting the scheduler tick (the generator calls
+  // checkPullRequests with no try/catch). Degrade to the pr-list-failed path.
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { return null; }
   if (!Array.isArray(parsed)) return [];
   return parsed.map((pr) => ({
     number: pr.number,
     title: pr.title || '',
     authorLogin: pr.author?.login || null,
-    authorIsBot: pr.author?.is_bot === true || pr.author?.type === 'Bot',
     url: pr.url || '',
     createdAt: pr.createdAt || null,
     isDraft: pr.isDraft === true,
