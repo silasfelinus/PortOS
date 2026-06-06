@@ -1228,8 +1228,18 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
     const check = await prWatcher.checkPullRequests(app, { authorFilter });
     const checkedAt = new Date().toISOString();
 
+    // The gh poll IS the cadence-bearing work for pr-watcher, so a poll that
+    // dispatches nothing still has to advance the interval. The queue path
+    // (queueEligibleImprovementTasks) only records execution AFTER a task is
+    // queued, so a bare `return null` would leave lastRun unset — and a CUSTOM
+    // task with no lastRun reads as perpetually "due", re-polling GitHub every
+    // scheduler tick and (being CUSTOM-priority) starving the app's other task
+    // types until a PR appears. Record the poll here on every no-dispatch path.
+    const recordPoll = () => taskSchedule.recordExecution(taskType, app.id);
+
     if (!check.ok) {
       await prWatcher.persistPrWatcherState(app.id, { lastCheckedAt: checkedAt, lastError: check.reason });
+      await recordPoll();
       emitLog('info', `Skipping pr-watcher for ${app.name}: ${check.reason}`, { appId: app.id });
       return null;
     }
@@ -1244,10 +1254,12 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
     });
 
     if (check.firstRun) {
+      await recordPoll();
       emitLog('info', `pr-watcher baselined ${app.name} at PR #${check.newLastSeen} — no dispatch on first run`, { appId: app.id });
       return null;
     }
     if (check.newPrs.length === 0) {
+      await recordPoll();
       emitLog('info', `Skipping pr-watcher for ${app.name}: no new PRs (author filter: ${authorFilter})`, { appId: app.id });
       return null;
     }
