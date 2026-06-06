@@ -454,9 +454,8 @@ export default function PipelineManuscriptEditor() {
               <span>
                 Start fresh
                 <span className="text-gray-600">
-                  {' '}— replace the current {grouped.open.length} open
-                  {grouped.accepted.length > 0 ? ` + ${grouped.accepted.length} accepted` : ''}
-                  {' '}note{freshClearCount === 1 ? '' : 's'} with this run; dismissed kept.
+                  {' '}— replace the current {freshClearCount} note{freshClearCount === 1 ? '' : 's'}
+                  {' '}(open + accepted) with this run; dismissed kept.
                 </span>
               </span>
             </label>
