@@ -1339,6 +1339,12 @@ export const MAX_TOTAL_SPAWNS = 5;
 
 const ALLOWED_TASK_METADATA_KEYS = [...PIPELINE_BEHAVIOR_FLAGS, 'readOnly'];
 
+// pr-watcher author-gate values. 'self' = PRs opened by the gh-authenticated
+// user (the PortOS operator / their automation); 'others' = everyone else;
+// 'any' = no gate. Kept here so both the sanitizer and the prWatcher service
+// agree on the vocabulary.
+export const PR_AUTHOR_FILTERS = ['any', 'self', 'others'];
+
 /**
  * Sanitize taskMetadata to an allow-list of agent-option keys. Boolean flags
  * (`useWorktree`/`openPR`/`simplify`/`reviewLoop`/`readOnly`/`reviewerApplies`)
@@ -1380,6 +1386,13 @@ export function sanitizeTaskMetadata(raw) {
   }
   if (Object.prototype.hasOwnProperty.call(raw, 'reviewerApplies') && typeof raw.reviewerApplies === 'boolean') {
     clean.reviewerApplies = raw.reviewerApplies;
+    hasKeys = true;
+  }
+  // `prAuthorFilter` gates pr-watcher dispatch on PR authorship — constrained
+  // to a known value so a hand-edited config can't smuggle in an arbitrary
+  // string the watcher would silently treat as "any".
+  if (Object.prototype.hasOwnProperty.call(raw, 'prAuthorFilter') && PR_AUTHOR_FILTERS.includes(raw.prAuthorFilter)) {
+    clean.prAuthorFilter = raw.prAuthorFilter;
     hasKeys = true;
   }
   // Pass through pipeline config (validated shape: object with stages array)

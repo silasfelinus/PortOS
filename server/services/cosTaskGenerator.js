@@ -1210,6 +1210,56 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
     referenceDataBlock = blocks.join('\n\n---\n\n');
   }
 
+  // pr-watcher: poll the app's GitHub repo for PRs newly opened against the
+  // default branch, gated on authorship (self / others / any). Dispatches one
+  // agent run covering all new PRs; injects {prData}/{repoFullName}/
+  // {defaultBranch}. State (the lastSeenPrNumber high-water mark) is persisted
+  // inline on the app, mirroring reference-watch's lastReviewedSha.
+  let prDataBlock = '';
+  let prRepoFullName = '';
+  let prDefaultBranch = '';
+  if (taskType === 'pr-watcher') {
+    const prWatcher = await import('./prWatcher.js');
+    // prAuthorFilter was already merged (global → per-app override) and
+    // value-constrained into `metadata` by sanitizeTaskMetadata above, so read
+    // it from there rather than re-merging the raw configs.
+    const authorFilter = metadata.prAuthorFilter || 'any';
+
+    const check = await prWatcher.checkPullRequests(app, { authorFilter });
+    const checkedAt = new Date().toISOString();
+
+    if (!check.ok) {
+      await prWatcher.persistPrWatcherState(app.id, { lastCheckedAt: checkedAt, lastError: check.reason });
+      emitLog('info', `Skipping pr-watcher for ${app.name}: ${check.reason}`, { appId: app.id });
+      return null;
+    }
+
+    // Always advance the high-water mark + clear any prior error. First run
+    // baselines silently; later runs mark every evaluated PR (dispatched AND
+    // gated-out) as seen so a fixed author filter doesn't re-fire them.
+    await prWatcher.persistPrWatcherState(app.id, {
+      lastSeenPrNumber: check.newLastSeen,
+      lastCheckedAt: checkedAt,
+      lastError: null
+    });
+
+    if (check.firstRun) {
+      emitLog('info', `pr-watcher baselined ${app.name} at PR #${check.newLastSeen} — no dispatch on first run`, { appId: app.id });
+      return null;
+    }
+    if (check.newPrs.length === 0) {
+      emitLog('info', `Skipping pr-watcher for ${app.name}: no new PRs (author filter: ${authorFilter})`, { appId: app.id });
+      return null;
+    }
+
+    prDataBlock = prWatcher.formatPullRequestsForPrompt(check.newPrs, {
+      repoFullName: check.repoFullName, defaultBranch: check.defaultBranch
+    });
+    prRepoFullName = check.repoFullName;
+    prDefaultBranch = check.defaultBranch;
+    emitLog('info', `pr-watcher dispatching for ${app.name}: ${check.newPrs.length} new PR(s)`, { appId: app.id, analysisType: taskType });
+  }
+
   const planMeta = await applyPlanIdMetadata(taskType, app.repoPath, metadata);
   if (planMeta.skipReason) {
     emitLog('info', `Skipping ${taskType} for ${app.name}: ${planMeta.skipReason}`, { appId: app.id });
@@ -1228,6 +1278,9 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
     // legitimately contain `$` (env-var docs, prices, awk snippets) and
     // would get mangled. The function form passes the value verbatim.
     .replace(/\{referenceData\}/g, () => referenceDataBlock)
+    .replace(/\{prData\}/g, () => prDataBlock)
+    .replace(/\{repoFullName\}/g, () => prRepoFullName)
+    .replace(/\{defaultBranch\}/g, () => prDefaultBranch)
     .replace(/\{planConstraint\}/g, () => planConstraintBlock);
 
   applyAppWorktreeDefault(metadata, app);
