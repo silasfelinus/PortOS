@@ -289,6 +289,20 @@ export default function Apps() {
                             <span className="text-xs">{actionLoading[app.id] === 'restart' ? 'Restarting...' : 'Restart'}</span>
                           </button>
                         </>
+                      ) : (app.degraded || app.overallStatus === 'unknown') ? (
+                        // PM2 read failed — status is genuinely unknown, so don't
+                        // offer a misleading Start. Surface "Status unavailable"
+                        // and let the user re-check rather than act on bad info.
+                        <button
+                          onClick={() => fetchApps()}
+                          disabled={actionLoading[app.id]}
+                          className="px-3 py-1.5 bg-port-warning/20 text-port-warning enabled:hover:bg-port-warning/30 transition-colors disabled:opacity-50 flex items-center gap-1 focus:outline-hidden focus:ring-2 focus:ring-port-warning"
+                          aria-label={`${app.name} status unavailable — refresh`}
+                          title="PM2 status could not be read — refresh to retry"
+                        >
+                          <RefreshCw size={14} aria-hidden="true" />
+                          <span className="text-xs">Status unavailable</span>
+                        </button>
                       ) : (
                         <button
                           onClick={() => handleStart(app)}

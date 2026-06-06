@@ -166,10 +166,17 @@ router.get('/:id', loadApp, asyncHandler(async (req, res) => {
   let statuses = {};
   let overallStatus = 'n/a';
 
+  let degraded = false;
   if (usesPm2(app.type)) {
-    // Get PM2 status for each process (using app's custom PM2_HOME if set)
+    // Get PM2 status for each process (using app's custom PM2_HOME if set).
+    // A thrown getAppStatus is a failed read, not a confident "not running" —
+    // mark `degraded` so the detail UI can disable lifecycle controls rather
+    // than offer a misleading Start. Mirrors the list endpoint's `degraded`.
     for (const processName of app.pm2ProcessNames || []) {
-      const status = await pm2Service.getAppStatus(processName, app.pm2Home).catch(() => ({ status: 'unknown' }));
+      const status = await pm2Service.getAppStatus(processName, app.pm2Home).catch(() => {
+        degraded = true;
+        return { status: 'unknown' };
+      });
       statuses[processName] = status;
     }
 
@@ -209,7 +216,7 @@ router.get('/:id', loadApp, asyncHandler(async (req, res) => {
     appVersion = pkg?.version || null;
   }
 
-  res.json({ ...app, uiPort, devUiPort, apiPort, overallStatus, pm2Status: statuses, appVersion, hasDeployScript: hasDeployScript(app), xcodeScripts: checkScripts(app) });
+  res.json({ ...app, uiPort, devUiPort, apiPort, overallStatus, degraded, pm2Status: statuses, appVersion, hasDeployScript: hasDeployScript(app), xcodeScripts: checkScripts(app) });
 }));
 
 // POST /api/apps/:id/xcode-scripts/install - Install missing management scripts

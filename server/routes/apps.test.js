@@ -176,6 +176,24 @@ describe('Apps Routes', () => {
       expect(response.body.pm2Status).toBeDefined();
     });
 
+    it('returns degraded + unknown when the PM2 status read fails', async () => {
+      const mockApp = {
+        id: 'app-001',
+        name: 'Test App',
+        pm2ProcessNames: ['test-app']
+      };
+      appsService.getAppById.mockResolvedValue(mockApp);
+      // Detail endpoint reads per-process status; a thrown read must surface
+      // as degraded, not collapse into a confident not_started.
+      pm2Service.getAppStatus.mockRejectedValue(new Error('pm2 daemon unreachable'));
+
+      const response = await request(app).get('/api/apps/app-001');
+
+      expect(response.status).toBe(200);
+      expect(response.body.overallStatus).toBe('unknown');
+      expect(response.body.degraded).toBe(true);
+    });
+
     it('should return 404 if app not found', async () => {
       appsService.getAppById.mockResolvedValue(null);
 
