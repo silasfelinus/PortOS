@@ -30,10 +30,10 @@ function safeJsonParse(str) {
 const router = Router();
 
 // Optional HTTP Basic credential for a peer behind an auth proxy. `null` clears
-// it; an object sets it (username optional — a password-only credential is
-// valid Basic auth). The service's sanitizePeerAuth does the final normalize,
-// and treats a username-only payload (no password) as a clear, not a store —
-// a password is required to store a credential.
+// it; an object sets it. The service's sanitizePeerAuth does the final
+// normalize: a payload with both fields blank is a clear, but any non-blank
+// field (username-only or password-only) stores a credential — both are valid
+// Basic auth (username defaults to '' so a password-only credential works).
 const peerAuthSchema = z.object({
   username: z.string().max(256).optional(),
   password: z.string().max(2048).optional()

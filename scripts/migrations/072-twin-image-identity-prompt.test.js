@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import migration from './070-twin-image-identity-prompt.js';
+import migration from './072-twin-image-identity-prompt.js';
 
 const STAGE = 'twin-image-identity-analyze';
 const readJson = (path) => JSON.parse(readFileSync(path, 'utf-8'));
