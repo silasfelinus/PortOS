@@ -95,12 +95,13 @@ export async function startAppCooldown(appId, cooldownMs) {
  * Advance an app's review cooldown WITHOUT binding an active agent.
  *
  * Stamps `lastReviewedAt` (which `isAppActivityOnCooldown` reads) so the app
- * isn't re-picked on the very next idle tick — the re-pick-storm guard. This is
- * the half of the old `markAppReviewStarted` that must run *before* the per-app
- * task generator, since a no-op poll (task generator returns `null`) still has
- * to advance the cooldown. Crucially it does NOT touch `activeAgentId`, so a
- * null result can't leave a phantom "in review" marker. See `bindAppReviewAgent`
- * for the agent-binding half, called only once a task actually exists.
+ * isn't re-picked on the very next idle tick — the re-pick-storm guard. This
+ * runs *before* the per-app task generator, since a no-op poll (task generator
+ * returns `null`) still has to advance the cooldown. Crucially it does NOT
+ * touch `activeAgentId`, so a null result can't leave a phantom "in review"
+ * marker. See `bindAppReviewAgent` for the agent-binding half, called only once
+ * a task actually exists. These two were previously a single eager
+ * `markAppReviewStarted` step, which stranded the marker on no-op polls (#978).
  */
 export async function markAppReviewCooldown(appId) {
   return updateAppActivity(appId, {
@@ -117,19 +118,6 @@ export async function markAppReviewCooldown(appId) {
 export async function bindAppReviewAgent(appId, agentId) {
   return updateAppActivity(appId, {
     activeAgentId: agentId
-  });
-}
-
-/**
- * Mark an app review as started — advances the cooldown AND binds the active
- * agent in one step. Use only when a task is guaranteed to follow (the agent
- * id is known up front). When the task may be `null`, prefer the split pair:
- * `markAppReviewCooldown` eagerly + `bindAppReviewAgent` once the task exists.
- */
-export async function markAppReviewStarted(appId, agentId) {
-  return updateAppActivity(appId, {
-    activeAgentId: agentId,
-    lastReviewedAt: new Date().toISOString()
   });
 }
 
