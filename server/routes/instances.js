@@ -31,9 +31,11 @@ const router = Router();
 
 // Optional HTTP Basic credential for a peer behind an auth proxy. `null` clears
 // it; an object sets it. The service's sanitizePeerAuth does the final
-// normalize: a payload with both fields blank is a clear, but any non-blank
-// field (username-only or password-only) stores a credential — both are valid
-// Basic auth (username defaults to '' so a password-only credential works).
+// normalize: the password is the secret that defines the credential, so a
+// payload with a password stores it (username optional — password-only is
+// valid Basic auth), both fields blank is a clear, and a username-only payload
+// is ignored (it's most likely a redacted client peer being round-tripped, and
+// must not wipe a stored password).
 const peerAuthSchema = z.object({
   username: z.string().max(256).optional(),
   password: z.string().max(2048).optional()

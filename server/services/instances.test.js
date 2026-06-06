@@ -280,6 +280,27 @@ describe('instances.js', () => {
 
       expect(peer.auth).toBeNull();
     });
+
+    it('should store a password-only credential (username defaults to "")', async () => {
+      readJSONFile.mockResolvedValue({ self: null, peers: [] });
+      fetch.mockRejectedValue(new Error('not reachable'));
+
+      const peer = await addPeer({ address: '10.0.0.11', auth: { password: 'tok3n' } });
+
+      expect(peer.auth).toEqual({ username: '', password: 'tok3n' });
+    });
+
+    it('should ignore a username-only payload (no blank-password store)', async () => {
+      readJSONFile.mockResolvedValue({ self: null, peers: [] });
+      fetch.mockRejectedValue(new Error('not reachable'));
+
+      const peer = await addPeer({ address: '10.0.0.12', auth: { username: 'alice' } });
+
+      // A username-only payload (e.g. a redacted client peer round-tripped back)
+      // must not store a blank-password credential — it's ignored, so a new peer
+      // is left with no auth.
+      expect(peer.auth).toBeNull();
+    });
   });
 
   describe('removePeer', () => {
@@ -404,6 +425,19 @@ describe('instances.js', () => {
       const result = await updatePeer('peer-1', { auth: 'not-an-object' });
 
       expect(result.auth).toEqual({ username: 'bob', password: 'pw' });
+    });
+
+    it('should ignore a username-only payload rather than wiping a working password', async () => {
+      // The client only ever receives a redacted peer ({ username, hasPassword }).
+      // Round-tripping that shape back into a PATCH sends auth.username with no
+      // password — it must not clear the stored secret with a blank password.
+      const peers = [{ id: 'peer-1', name: 'host', enabled: true, auth: { username: 'bob', password: 'pw' } }];
+      readJSONFile.mockResolvedValue({ self: null, peers });
+
+      const result = await updatePeer('peer-1', { auth: { username: 'bob' } });
+
+      expect(result.auth).toEqual({ username: 'bob', password: 'pw' });
+      expect(disconnectFromPeer).not.toHaveBeenCalled();
     });
 
     it('should reconnect the relay and re-probe immediately when the credential changes', async () => {

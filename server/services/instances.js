@@ -63,16 +63,22 @@ function classifyProbeError(err, peer) {
 }
 
 // Normalize a credential object off a peer add/update payload. Returns:
-//   - `undefined` for absent / malformed input (caller leaves the field as-is)
+//   - `undefined` for absent / malformed input, or a username-only payload
+//     (caller leaves the field as-is — see below)
 //   - `null` for an explicit clear (both fields blank)
 //   - `{ username, password }` for a credential to store
-// Username defaults to '' so a password-only credential is valid Basic auth.
+// The password is the secret that defines the credential; username defaults to
+// '' so a password-only credential is valid Basic auth. A payload with a
+// username but no password is treated as "ignore", NOT a blank-password store:
+// the client only ever receives a redacted peer (`{ username, hasPassword }`),
+// so round-tripping that shape back into a PATCH must not silently wipe a
+// working password. An explicit clear always goes through `auth: null`.
 function sanitizePeerAuth(auth) {
   if (auth === null) return null;
   if (!auth || typeof auth !== 'object' || Array.isArray(auth)) return undefined;
   const username = typeof auth.username === 'string' ? auth.username.trim() : '';
   const password = typeof auth.password === 'string' ? auth.password : '';
-  if (!username && !password) return null;
+  if (!password) return username ? undefined : null;
   return { username, password };
 }
 
