@@ -95,6 +95,22 @@ describe('PipelineManuscriptEditor', () => {
     await waitFor(() => expect(screen.getAllByText('The ending is abrupt')).toHaveLength(1));
   });
 
+  it('Live mode: Escape closes the popover and the trailing keyup does not reopen it', async () => {
+    renderEditor(); // Live is the default mode
+    await screen.findByText('My Series');
+    const ta = screen.getByDisplayValue('The hero walked in. She left.');
+    // Put the caret inside the "She left." anchor span and click to open.
+    const idx = 'The hero walked in. She left.'.indexOf('She left.') + 2;
+    ta.selectionStart = idx; ta.selectionEnd = idx;
+    fireEvent.click(ta);
+    expect(await screen.findByText('Editorial note')).toBeInTheDocument();
+
+    // Esc (keydown) closes; the trailing keyup must NOT re-open it.
+    fireEvent.keyDown(window, { key: 'Escape' });
+    fireEvent.keyUp(ta, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByText('Editorial note')).not.toBeInTheDocument());
+  });
+
   it('generates a fix, then accepts it — moving the comment to Accepted and updating the section', async () => {
     api.generatePipelineManuscriptFix.mockResolvedValue({
       fix: { find: 'She left.', replace: 'She left, but paused.' },

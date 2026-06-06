@@ -124,7 +124,9 @@ export default function ManuscriptLiveSection({
           onChange={(e) => onContentChange(e.target.value)}
           onBlur={onBlurSave}
           onClick={handleCaret}
-          onKeyUp={handleCaret}
+          // Escape closes the popover (useEscapeKey); don't let the trailing
+          // keyup re-open it because the caret still sits inside the span.
+          onKeyUp={(e) => { if (e.key !== 'Escape') handleCaret(); }}
           // Keep the underline backdrop aligned when a section longer than the
           // row cap scrolls internally (the backdrop is overflow-hidden).
           onScroll={(e) => {
