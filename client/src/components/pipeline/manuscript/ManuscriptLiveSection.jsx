@@ -12,10 +12,11 @@
  * docs/plans/2026-06-06-manuscript-editor-inline-feedback.md.
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
+import useEscapeKey from '../../../hooks/useEscapeKey';
 import { buildHighlightSegments } from '../../../lib/manuscriptAnchors';
-import ManuscriptCommentCard from './ManuscriptCommentCard';
+import { CommentCardFromProps } from './ManuscriptCommentCard';
 import ManuscriptSectionFrame from './ManuscriptSectionFrame';
 import { SEVERITY_UNDERLINE, SEVERITY_TONE, CATEGORY_LABEL, rowsFor } from './constants';
 
@@ -62,12 +63,7 @@ export default function ManuscriptLiveSection({
   }, [openComment, content, segments]);
 
   // Esc closes the popover.
-  useEffect(() => {
-    if (!openComment) return undefined;
-    const onKey = (e) => { if (e.key === 'Escape') onCloseComment(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [openComment, onCloseComment]);
+  useEscapeKey(openComment, onCloseComment);
 
   return (
     <ManuscriptSectionFrame section={section} saveState={saveState} onRevert={onRevert} registerRef={registerRef}>
@@ -144,18 +140,7 @@ export default function ManuscriptLiveSection({
                 </button>
               </div>
               <div className="p-2">
-                <ManuscriptCommentCard
-                  comment={openComment}
-                  idScope={`live-${openComment.id}`}
-                  seriesId={commentCardProps.seriesId}
-                  providerOverride={commentCardProps.providerOverride}
-                  modelOverride={commentCardProps.modelOverride}
-                  onCommentChange={commentCardProps.onCommentChange}
-                  onAccepted={commentCardProps.onAccepted}
-                  draft={commentCardProps.fixDrafts[openComment.id]}
-                  onDraftChange={(entry) => commentCardProps.setCommentDraft(openComment.id, entry)}
-                  onJump={undefined}
-                />
+                <CommentCardFromProps comment={openComment} commentCardProps={commentCardProps} idScope={`live-${openComment.id}`} />
               </div>
             </div>
           </div>

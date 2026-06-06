@@ -106,7 +106,10 @@ function normalizeFix(content, targets) {
         replace,
       };
       if (typeof raw.note === 'string' && raw.note.trim()) edit.note = raw.note.trim().slice(0, 1000);
-      if (!(section.content || '').includes(find)) edit.fuzzy = true;
+      // Flag fuzzy only when the find can't be located even tolerating
+      // whitespace differences — i.e. accept would actually fail. A quote that
+      // differs only in spacing still applies, so it shouldn't warn.
+      if (!locateFindSpan(section.content || '', find)) edit.fuzzy = true;
       return edit;
     })
     .filter(Boolean);

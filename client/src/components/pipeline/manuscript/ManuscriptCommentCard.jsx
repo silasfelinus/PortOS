@@ -11,7 +11,7 @@
  */
 
 import { useMemo, useState } from 'react';
-import { Loader2, Sparkles, Check, X, CornerDownRight, Columns2, Rows2, Copy } from 'lucide-react';
+import { Loader2, Sparkles, Check, X, Columns2, Rows2, Copy } from 'lucide-react';
 import InlineDiff from '../../ui/InlineDiff';
 import SideBySideDiff from '../../ui/SideBySideDiff';
 import toast from '../../ui/Toast';
@@ -87,8 +87,28 @@ export function selectedEditsFor(comment, draft) {
     .filter((e) => e.selected);
 }
 
+// Bind a comment card to the page's shared `commentCardProps` (handlers + the
+// per-comment draft keyed by id). The card renders identically in the Live
+// popover, the Review inline expansion, and the sidebar index — only `idScope`
+// differs — so this wrapper is the single place that prop shape lives.
+export function CommentCardFromProps({ comment, commentCardProps, idScope }) {
+  return (
+    <ManuscriptCommentCard
+      comment={comment}
+      idScope={idScope}
+      seriesId={commentCardProps.seriesId}
+      providerOverride={commentCardProps.providerOverride}
+      modelOverride={commentCardProps.modelOverride}
+      onCommentChange={commentCardProps.onCommentChange}
+      onAccepted={commentCardProps.onAccepted}
+      draft={commentCardProps.fixDrafts[comment.id]}
+      onDraftChange={(entry) => commentCardProps.setCommentDraft(comment.id, entry)}
+    />
+  );
+}
+
 export default function ManuscriptCommentCard({
-  comment, seriesId, providerOverride, modelOverride, onJump, onCommentChange, onAccepted, idScope, draft, onDraftChange,
+  comment, seriesId, providerOverride, modelOverride, onCommentChange, onAccepted, idScope, draft, onDraftChange,
 }) {
   // Namespace form ids so two copies of an open comment don't share ids.
   const scope = idScope || comment.id;
@@ -150,20 +170,7 @@ export default function ManuscriptCommentCard({
     <div className="border border-port-border rounded-lg bg-port-bg/40 p-2.5 space-y-2">
       <div className="flex items-center justify-between gap-2">
         <Badge comment={comment} />
-        <div className="flex items-center gap-2">
-          <CopyId id={comment.id} />
-          {onJump ? (
-            <button
-              type="button"
-              onClick={() => onJump(comment)}
-              className="text-[11px] text-port-accent hover:underline inline-flex items-center gap-1"
-              title="Reveal this spot in the manuscript"
-            >
-              <CornerDownRight size={11} />
-              {comment.issueNumber != null ? `Issue ${comment.issueNumber}` : 'Reveal'}
-            </button>
-          ) : null}
-        </div>
+        <CopyId id={comment.id} />
       </div>
 
       <p className="text-xs text-gray-200">{comment.problem}</p>

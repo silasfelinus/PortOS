@@ -7,7 +7,7 @@
 
 import { useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, Check, X, MapPin } from 'lucide-react';
-import ManuscriptCommentCard, { Badge } from './ManuscriptCommentCard';
+import { Badge, CommentCardFromProps } from './ManuscriptCommentCard';
 
 const SEVERITIES = ['high', 'medium', 'low'];
 
@@ -120,18 +120,7 @@ export default function ManuscriptCommentIndex({ comments, locatedCommentIds, op
             {/* Story-level notes (no issueNumber) have no issue tab to live on, so
                 they expand and stay actionable right here in the index. */}
             {c.id === openCommentId && c.issueNumber == null && commentCardProps ? (
-              <ManuscriptCommentCard
-                comment={c}
-                idScope={`index-${c.id}`}
-                seriesId={commentCardProps.seriesId}
-                providerOverride={commentCardProps.providerOverride}
-                modelOverride={commentCardProps.modelOverride}
-                onCommentChange={commentCardProps.onCommentChange}
-                onAccepted={commentCardProps.onAccepted}
-                draft={commentCardProps.fixDrafts[c.id]}
-                onDraftChange={(entry) => commentCardProps.setCommentDraft(c.id, entry)}
-                onJump={undefined}
-              />
+              <CommentCardFromProps comment={c} commentCardProps={commentCardProps} idScope={`index-${c.id}`} />
             ) : null}
           </div>
         ))}

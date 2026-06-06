@@ -8,8 +8,9 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import { Pencil, Check, X } from 'lucide-react';
+import useEscapeKey from '../../../hooks/useEscapeKey';
 import ManuscriptHighlightedProse from './ManuscriptHighlightedProse';
-import ManuscriptCommentCard from './ManuscriptCommentCard';
+import { CommentCardFromProps } from './ManuscriptCommentCard';
 import ManuscriptSectionFrame from './ManuscriptSectionFrame';
 import { rowsFor } from './constants';
 
@@ -31,12 +32,7 @@ export default function AnnotatedManuscriptSection({
   }, [openComment?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Esc closes the open note — parity with the Live popover.
-  useEffect(() => {
-    if (!openComment) return undefined;
-    const onKey = (e) => { if (e.key === 'Escape') onCloseComment(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [openComment, onCloseComment]);
+  useEscapeKey(openComment, onCloseComment);
 
   const editToggle = (
     <button
@@ -81,18 +77,7 @@ export default function AnnotatedManuscriptSection({
           >
             <X size={14} />
           </button>
-          <ManuscriptCommentCard
-            comment={openComment}
-            idScope={`review-${openComment.id}`}
-            seriesId={commentCardProps.seriesId}
-            providerOverride={commentCardProps.providerOverride}
-            modelOverride={commentCardProps.modelOverride}
-            onCommentChange={commentCardProps.onCommentChange}
-            onAccepted={commentCardProps.onAccepted}
-            draft={commentCardProps.fixDrafts[openComment.id]}
-            onDraftChange={(entry) => commentCardProps.setCommentDraft(openComment.id, entry)}
-            onJump={undefined}
-          />
+          <CommentCardFromProps comment={openComment} commentCardProps={commentCardProps} idScope={`review-${openComment.id}`} />
         </div>
       ) : null}
     </ManuscriptSectionFrame>
