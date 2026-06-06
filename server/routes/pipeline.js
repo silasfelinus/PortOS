@@ -649,9 +649,9 @@ const arcDeriveCommitSchema = z.object({
 });
 
 // Manuscript-completeness ("finish the draft") editor pass — override shape plus
-// the re-run merge mode: 'merge' (default) augments existing comments; 'fresh'
-// clears prior open/accepted comments and shows only this run's findings (kept
-// dismissals still suppress resurfacing). See seedReviewFromFindings.
+// the re-run mode: 'merge' (default) leaves prior comments as-is and appends new
+// findings; 'fresh' also auto-dismisses open comments this pass no longer finds
+// (accepted/dismissed untouched). See seedReviewFromFindings.
 const manuscriptCompletenessSchema = z.object({
   ...providerOverrideShape,
   mode: z.enum(manuscriptReview.REVIEW_RUN_MODES).optional(),

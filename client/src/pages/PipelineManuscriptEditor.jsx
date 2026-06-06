@@ -166,9 +166,9 @@ export default function PipelineManuscriptEditor() {
 
   // Re-run the editorial completeness pass over the manuscript with the chosen
   // provider. The route persists findings as the review comment set, so we just
-  // swap in the returned comments. `mode`: 'merge' (default) augments existing
-  // comments; 'fresh' clears prior open/accepted notes and shows only this
-  // run's findings (kept dismissals still suppress resurfacing).
+  // swap in the returned comments. `mode`: 'merge' (default) leaves prior notes
+  // as-is and appends new findings; 'fresh' also auto-dismisses open notes this
+  // pass no longer finds (accepted/dismissed untouched).
   const [runEditorialReview, reviewing] = useAsyncAction(
     async (mode = 'merge') => {
       const result = await analyzePipelineManuscriptCompleteness(seriesId, { providerOverride, modelOverride, mode });
@@ -303,10 +303,6 @@ export default function PipelineManuscriptEditor() {
     dismissed: comments.filter((c) => c.status === 'dismissed'),
   }), [comments]);
 
-  // How many notes a "Start fresh" re-run would replace (open + accepted;
-  // dismissed are kept). Drives the checkbox's explanatory count.
-  const freshClearCount = grouped.open.length + grouped.accepted.length;
-
   // Only pin still-open comments — accepting/dismissing flips the status, which
   // resolves this to null and closes the overlay automatically (resolved
   // comments are navigational only, with no actions to keep on screen).
@@ -439,9 +435,9 @@ export default function PipelineManuscriptEditor() {
               {reviewing ? <Loader2 size={12} className="animate-spin" /> : <ClipboardCheck size={12} />}
               {reviewing ? 'Running editorial review…' : 'Run editorial review'}
             </button>
-            {/* Re-run mode. Merge keeps prior notes; fresh clears the current
-                open/accepted notes and shows only the new pass (dismissed are
-                kept so they don't resurface). */}
+            {/* Re-run mode. Merge keeps every prior note as-is; fresh reconciles
+                the open list against this run — open notes it no longer finds
+                are auto-dismissed (accepted & dismissed are left untouched). */}
             <label htmlFor="ms-fresh-review" className="flex items-start gap-1.5 text-[11px] text-gray-400 cursor-pointer">
               <input
                 id="ms-fresh-review"
@@ -454,8 +450,8 @@ export default function PipelineManuscriptEditor() {
               <span>
                 Start fresh
                 <span className="text-gray-600">
-                  {' '}— replace the current {freshClearCount} note{freshClearCount === 1 ? '' : 's'}
-                  {' '}(open + accepted) with this run; dismissed kept.
+                  {' '}— auto-dismiss open notes this pass no longer finds; still-valid,
+                  accepted &amp; dismissed notes are kept.
                 </span>
               </span>
             </label>

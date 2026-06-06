@@ -149,22 +149,24 @@ const findingKey = (c) => `${c.issueNumber ?? ''}|${c.anchorQuote}|${c.problem}`
 /**
  * Merge a fresh set of shaped completeness findings into the review.
  *
- * `mode` controls what survives a re-run:
+ * In BOTH modes, existing comments are carried forward and only findings not
+ * already present (by (issueNumber, anchorQuote, problem)) are appended — so
+ * re-running augments the list instead of piling up duplicates or wiping work
+ * in progress, and a `dismissed` decision keeps suppressing its finding.
  *
- *  - 'merge' (default): ALL existing comments are preserved — open ones (the
- *    user may be mid-fix, with a generated replacement attached) as well as
- *    accepted/dismissed decisions. Only findings not already present (by
- *    (issueNumber, anchorQuote, problem)) are appended, so re-running augments
- *    the list instead of piling up duplicates or wiping work in progress.
+ * `mode` controls how the OPEN list reconciles against this run:
  *
- *  - 'fresh': clears the prior `open` and `accepted` comments and seeds only
- *    this run's findings, so the editor shows just the new editorial pass.
- *    `dismissed` comments are KEPT — they're the user's standing "ignore this"
- *    decisions and are NOT reflected in the manuscript, so dropping them would
- *    silently resurrect those findings as new open comments on the next run.
- *    `accepted` comments are dropped: their fix is already applied to the
- *    manuscript (see acceptManuscriptFix), so the record is only a historical
- *    marker. Fresh findings still dedupe against the surviving dismissed set.
+ *  - 'merge' (default): every existing comment is left exactly as-is. A prior
+ *    open comment the new pass no longer surfaces still lingers as open.
+ *
+ *  - 'fresh': an existing `open` comment the new pass no longer surfaces is
+ *    auto-dismissed, so the open list reflects this run's findings (still-found
+ *    opens stay open; newly-absent ones move to dismissed; genuinely-new ones
+ *    are appended). Clearing is a status FLIP, never a deletion — a deletion
+ *    would not propagate across synced peers (`mergeReviewFromSync` is additive
+ *    LWW-per-id and never removes a comment), so an omitted comment would be
+ *    resurrected on the next inbound sync. A flip to `dismissed` rides the same
+ *    LWW path and converges. `accepted`/`dismissed` comments are untouched.
  *
  * New findings resolve their issueId/stageId from the current manuscript
  * sections by issueNumber.
@@ -174,21 +176,37 @@ export async function seedReviewFromFindings(seriesId, findings, { runId = null,
   const byNumber = new Map(sections.map((s) => [s.number, s]));
   return queueReviewWrite(seriesId, async () => {
     const review = await readReview(seriesId);
-    // In 'fresh' mode the surviving base is just the dismissed decisions; in
-    // 'merge' mode every existing comment is carried forward.
-    const base = mode === 'fresh'
-      ? review.comments.filter((c) => c.status === 'dismissed')
-      : review.comments;
-    const removed = review.comments.length - base.length;
-    const seenKeys = new Set(base.map(findingKey));
     const now = new Date().toISOString();
 
-    const fresh = [];
+    // Shape incoming findings up front so we can both dedupe against them and
+    // (in fresh mode) reconcile existing open comments against what's still found.
+    const candidates = [];
     for (const f of Array.isArray(findings) ? findings : []) {
       const candidate = sanitizeComment({ ...f, status: 'open', sourceRunId: runId, createdAt: now, updatedAt: now });
-      if (!candidate) continue;
+      if (candidate) candidates.push(candidate);
+    }
+    const freshKeys = new Set(candidates.map(findingKey));
+
+    // Carry every existing comment forward. In 'fresh' mode, an open comment the
+    // new pass no longer surfaces is flipped to dismissed (a synced status
+    // change, not a deletion — see the doc comment). Accepted/dismissed are
+    // always left untouched.
+    let dismissedCount = 0;
+    const carried = review.comments.map((c) => {
+      if (mode === 'fresh' && c.status === 'open' && !freshKeys.has(findingKey(c))) {
+        dismissedCount += 1;
+        return sanitizeComment({ ...c, status: 'dismissed', updatedAt: now });
+      }
+      return c;
+    });
+
+    // Append only findings not already represented by an existing comment (any
+    // status) — re-reported findings don't duplicate, dismissed stay suppressed.
+    const seenKeys = new Set(review.comments.map(findingKey));
+    const fresh = [];
+    for (const candidate of candidates) {
       const key = findingKey(candidate);
-      if (seenKeys.has(key)) continue; // already present (open or resolved) — don't duplicate
+      if (seenKeys.has(key)) continue;
       const section = candidate.issueNumber != null ? byNumber.get(candidate.issueNumber) : null;
       if (section) {
         candidate.issueId = section.issueId;
@@ -198,15 +216,15 @@ export async function seedReviewFromFindings(seriesId, findings, { runId = null,
       fresh.push(candidate);
     }
 
-    const next = { schemaVersion: SCHEMA_VERSION, comments: [...base, ...fresh] };
+    const next = { schemaVersion: SCHEMA_VERSION, comments: [...carried, ...fresh] };
     await writeReview(seriesId, next);
     // The review is a sibling of the series record, so a review-only change
     // doesn't move the series `index.json` — emit a series `updated` event so
     // the peer-sync push + bucket re-export fire (both hash the review into
     // their payload). Only when something actually changed — appended findings
-    // OR comments dropped by a 'fresh' re-run. Skipped on the sync RECEIVE path
-    // (`mergeReviewFromSync`) to avoid an echo loop.
-    if (fresh.length > 0 || removed > 0) emitRecordUpdated('series', seriesId);
+    // OR opens auto-dismissed by a 'fresh' re-run. Skipped on the sync RECEIVE
+    // path (`mergeReviewFromSync`) to avoid an echo loop.
+    if (fresh.length > 0 || dismissedCount > 0) emitRecordUpdated('series', seriesId);
     return next;
   });
 }

@@ -92,16 +92,21 @@ describe('manuscriptReview — record-event emission on write', () => {
   });
 });
 
-describe('manuscriptReview — re-run merge vs fresh mode', () => {
+describe('manuscriptReview — re-run merge vs fresh reconcile', () => {
   beforeEach(() => { fileStore.clear(); });
 
-  // Seed three findings, then flip one accepted and one dismissed, leaving one
-  // open — the realistic state when a user re-runs the editorial pass.
+  const byStatus = (review, s) =>
+    review.comments.filter((c) => c.status === s).map((c) => c.problem).sort();
+
+  // Seed four findings, then flip one accepted and one dismissed, leaving two
+  // open ('still-found' + 'gone-open') — the realistic state when a user re-runs
+  // the editorial pass.
   async function seedDecidedState(seriesId) {
     const seeded = await seedReviewFromFindings(seriesId, [
       { problem: 'kept-dismissed', anchorQuote: 'a' },
       { problem: 'was-accepted', anchorQuote: 'b' },
-      { problem: 'stale-open', anchorQuote: 'c' },
+      { problem: 'still-found', anchorQuote: 'c' },
+      { problem: 'gone-open', anchorQuote: 'd' },
     ]);
     const byProblem = Object.fromEntries(seeded.comments.map((c) => [c.problem, c]));
     await updateComment(seriesId, byProblem['kept-dismissed'].id, { status: 'dismissed' });
@@ -109,26 +114,39 @@ describe('manuscriptReview — re-run merge vs fresh mode', () => {
     return byProblem;
   }
 
-  it("merge (default) preserves every prior comment and appends new findings", async () => {
+  it('merge (default) leaves every prior comment as-is and appends new findings', async () => {
     await seedDecidedState('ser-merge');
-    const next = await seedReviewFromFindings('ser-merge', [{ problem: 'brand new', anchorQuote: 'd' }]);
-    const problems = next.comments.map((c) => c.problem).sort();
-    expect(problems).toEqual(['brand new', 'kept-dismissed', 'stale-open', 'was-accepted']);
+    // 'gone-open' is NOT in this run, but merge must keep it open regardless.
+    const next = await seedReviewFromFindings('ser-merge', [
+      { problem: 'still-found', anchorQuote: 'c' },
+      { problem: 'brand new', anchorQuote: 'e' },
+    ]);
+    expect(byStatus(next, 'open')).toEqual(['brand new', 'gone-open', 'still-found']);
+    expect(byStatus(next, 'accepted')).toEqual(['was-accepted']);
+    expect(byStatus(next, 'dismissed')).toEqual(['kept-dismissed']);
   });
 
-  it('fresh drops prior open + accepted, keeps dismissed, and seeds the new pass', async () => {
-    await seedDecidedState('ser-fresh');
+  it('fresh reconciles: keeps still-found opens, auto-dismisses gone opens, appends new', async () => {
+    const before = await seedDecidedState('ser-fresh');
     const next = await seedReviewFromFindings(
       'ser-fresh',
-      [{ problem: 'brand new', anchorQuote: 'd' }],
+      [
+        { problem: 'still-found', anchorQuote: 'c' },
+        { problem: 'brand new', anchorQuote: 'e' },
+      ],
       { mode: 'fresh' },
     );
-    const byStatus = (s) => next.comments.filter((c) => c.status === s).map((c) => c.problem).sort();
-    // dismissed survives; open is exactly the new run; accepted is gone.
-    expect(byStatus('dismissed')).toEqual(['kept-dismissed']);
-    expect(byStatus('open')).toEqual(['brand new']);
-    expect(byStatus('accepted')).toEqual([]);
-    expect(next.comments.find((c) => c.problem === 'stale-open')).toBeUndefined();
+    // still-found stays open (same id — a flip-free carry-forward), gone-open is
+    // auto-dismissed, brand new is appended, accepted/dismissed untouched.
+    expect(byStatus(next, 'open')).toEqual(['brand new', 'still-found']);
+    expect(byStatus(next, 'accepted')).toEqual(['was-accepted']);
+    expect(byStatus(next, 'dismissed')).toEqual(['gone-open', 'kept-dismissed']);
+    const stillFound = next.comments.find((c) => c.problem === 'still-found');
+    expect(stillFound.id).toBe(before['still-found'].id);
+    expect(stillFound.status).toBe('open');
+    // Nothing is deleted — every prior comment is still present (synced flips,
+    // not omissions), so a peer can't resurrect a cleared note.
+    expect(next.comments).toHaveLength(5);
   });
 
   it('fresh does NOT resurrect a finding the user dismissed (deduped against survivors)', async () => {
