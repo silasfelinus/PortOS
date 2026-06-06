@@ -30,6 +30,14 @@ export default function AnnotatedManuscriptSection({
     if (openComment) cardRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
   }, [openComment?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Esc closes the open note — parity with the Live popover.
+  useEffect(() => {
+    if (!openComment) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') onCloseComment(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [openComment, onCloseComment]);
+
   const editToggle = (
     <button
       type="button"

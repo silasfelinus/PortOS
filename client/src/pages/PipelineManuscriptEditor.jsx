@@ -258,17 +258,18 @@ export default function PipelineManuscriptEditor() {
     return result;
   };
 
-  // Reveal a comment in context: switch to its issue tab and open its card. An
-  // issue-anchored note navigates to that issue (the section scrolls the card
-  // into view on arrival); a story-level note with no issueNumber has no tab, so
-  // it expands inline in the sidebar index instead.
+  // Reveal a comment in context: drop into Review mode (where the note expands
+  // as an in-context card) and open it, switching to its issue tab if needed.
+  // The section's card-scroll effect brings the card into view — on arrival for
+  // a cross-issue jump, or immediately when it's the active issue. A story-level
+  // note with no issueNumber has no tab, so it expands inline in the sidebar.
   const revealComment = (comment) => {
     setOpenCommentId(comment.id);
-    if (comment.issueNumber == null) return; // unanchored — shown in the sidebar
+    setViewMode('review');     // surface the in-context review card…
+    setEditingIssueId(null);   // …and make sure it's the card showing, not the editor
+    if (comment.issueNumber == null) return; // unanchored — expands in the sidebar
     if (comment.issueNumber !== activeNumber) {
       navigate(`/pipeline/series/${seriesId}/manuscript/${comment.issueNumber}`);
-    } else {
-      sectionRefs.current.get(comment.issueNumber)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
     }
     if (comment.stageId && viewType && comment.stageId !== viewType) {
       toast(`This note is on the ${STAGE_LABEL[comment.stageId] || comment.stageId} — switch formats to edit it in context`);
@@ -472,10 +473,13 @@ export default function PipelineManuscriptEditor() {
                   registerRef: registerSectionRef(section.number),
                   commentCardProps,
                 };
+                // Key on issueId so switching issues mounts a fresh section —
+                // the card-scroll-into-view effect then fires on arrival.
                 return viewMode === 'live' ? (
-                  <ManuscriptLiveSection {...common} />
+                  <ManuscriptLiveSection key={section.issueId} {...common} />
                 ) : (
                   <AnnotatedManuscriptSection
+                    key={section.issueId}
                     {...common}
                     editing={editingIssueId === section.issueId}
                     onToggleEdit={() => setEditingIssueId((cur) => (cur === section.issueId ? null : section.issueId))}

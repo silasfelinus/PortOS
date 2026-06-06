@@ -67,18 +67,21 @@ describe('PipelineManuscriptEditor', () => {
     expect(screen.getByText(/1 open/)).toBeInTheDocument();
   });
 
-  it('reveals a comment in-context (Live mode) when its index row is clicked, and closes it', async () => {
+  it('revealing a comment from the sidebar switches to Review mode and opens it in-context, then closes', async () => {
     renderEditor();
     await screen.findByText('My Series');
 
-    // Initially only the sidebar index row references the comment.
+    // Initially only the sidebar index row references the comment, and we're in
+    // Live mode (the section is an editable textarea).
     expect(screen.getAllByText('The ending is abrupt')).toHaveLength(1);
+    expect(screen.getByDisplayValue('The hero walked in. She left.')).toBeInTheDocument();
 
     revealFromIndex('The ending is abrupt');
-    // Now an in-context note card also shows the problem text → two instances.
+    // Reveal drops into Review mode (read-only prose, no textarea) and opens the
+    // note in-context — the problem text now shows in both the index and card.
     await waitFor(() => expect(screen.getAllByText('The ending is abrupt')).toHaveLength(2));
+    expect(screen.queryByDisplayValue('The hero walked in. She left.')).not.toBeInTheDocument();
 
-    // Closing the in-context note leaves the sidebar index intact.
     fireEvent.click(screen.getByLabelText('Close note'));
     await waitFor(() => expect(screen.getAllByText('The ending is abrupt')).toHaveLength(1));
   });
@@ -104,7 +107,7 @@ describe('PipelineManuscriptEditor', () => {
 
     renderEditor();
     await screen.findByText('My Series');
-    revealFromIndex('The ending is abrupt');
+    revealFromIndex('The ending is abrupt'); // → Review mode + opens the card
 
     fireEvent.click(await screen.findByText('Generate fix'));
     expect(await screen.findByDisplayValue('She left, but paused.')).toBeInTheDocument();
@@ -112,7 +115,8 @@ describe('PipelineManuscriptEditor', () => {
 
     fireEvent.click(screen.getByText('Accept'));
 
-    expect(await screen.findByDisplayValue('The hero walked in. She left, but paused.')).toBeInTheDocument();
+    // Review mode is read-only prose (no textarea) — the accepted text shows there.
+    expect(await screen.findByText('The hero walked in. She left, but paused.')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText(/0 open/)).toBeInTheDocument());
     expect(api.acceptPipelineManuscriptFix).toHaveBeenCalledWith('ser-1', 'mrc-1', {
       edits: [{ issueNumber: 1, issueId: 'iss-1', stageId: 'prose', find: 'She left.', replace: 'She left, but paused.', fuzzy: undefined }],
