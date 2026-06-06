@@ -75,6 +75,17 @@ export const REVIEWER_OPTIONS = [
   { value: 'ollama', label: 'Ollama', description: 'Local Ollama model reviews the diff (set model on AI Providers)' }
 ];
 export const LOCAL_LLM_REVIEWERS = ['lmstudio', 'ollama'];
+
+// pr-watcher author gate (taskMetadata.prAuthorFilter). Mirrors
+// PR_AUTHOR_FILTERS in server/lib/validation.js. 'self' = PRs opened by the
+// gh-authenticated operator (or their automation); 'others' = external
+// contributors; 'any' = react to every opened PR.
+export const PR_AUTHOR_FILTER_OPTIONS = [
+  { value: 'any', label: 'Any author', description: 'React to every PR opened on the default branch' },
+  { value: 'self', label: 'Opened by me', description: 'Only PRs opened by the gh-authenticated user (or their automation)' },
+  { value: 'others', label: 'Opened by others', description: 'Only PRs opened by someone other than the gh-authenticated user' }
+];
+
 export const DEFAULT_REVIEWER = 'copilot';
 export const DEFAULT_REVIEWERS = ['copilot'];
 

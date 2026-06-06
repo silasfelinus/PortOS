@@ -435,6 +435,15 @@ export async function updateAppTaskTypeOverride(id, taskType, { enabled, interva
     overrides[taskType] = updated;
   }
 
+  // Disabling pr-watcher clears its high-water mark AND its execution cooldown
+  // so a later re-enable baselines promptly (like first enable) instead of
+  // dispatching the backlog of PRs opened while it was off. See prWatcher.js /
+  // cosTaskGenerator.js.
+  if (taskType === 'pr-watcher' && enabled === false) {
+    delete data.apps[id].prWatcherState;
+    await resetPrWatcherCooldown(id);
+  }
+
   data.apps[id].taskTypeOverrides = overrides;
   delete data.apps[id].disabledTaskTypes; // Remove legacy field
   data.apps[id].updatedAt = new Date().toISOString();
@@ -442,6 +451,38 @@ export async function updateAppTaskTypeOverride(id, taskType, { enabled, interva
   appsEvents.emit('changed', { action: 'update-task-types', timestamp: Date.now() });
 
   return { id, ...data.apps[id] };
+}
+
+/**
+ * Reset the schedule execution cooldown for an app's pr-watcher so a re-enable
+ * baselines on the next tick instead of waiting out the prior 30-min custom
+ * interval — otherwise PRs opened in that delayed window slip past the firstRun
+ * baseline. Dynamic import avoids a static apps↔taskSchedule cycle (taskSchedule
+ * already imports this module). Best-effort: a missing history is a no-op.
+ */
+async function resetPrWatcherCooldown(appId) {
+  const { resetExecutionHistory } = await import('./taskSchedule.js');
+  await resetExecutionHistory('pr-watcher', appId).catch(() => {});
+}
+
+/**
+ * Clear the pr-watcher high-water mark on every app. Called when pr-watcher is
+ * disabled GLOBALLY (CoS → Schedule), the counterpart to the per-app disable
+ * clears in updateAppTaskTypeOverride/bulk/toggle-all — so a later global
+ * re-enable baselines silently instead of dispatching the backlog of PRs
+ * opened while it was paused. See prWatcher.js.
+ */
+export async function clearAllPrWatcherState() {
+  const data = await loadApps();
+  let changed = false;
+  for (const app of Object.values(data.apps)) {
+    if (app.prWatcherState) {
+      delete app.prWatcherState;
+      changed = true;
+    }
+  }
+  if (changed) await saveApps(data);
+  return { changed };
 }
 
 /**
@@ -462,6 +503,12 @@ export async function bulkUpdateAppTaskTypeOverride(taskType, { enabled } = {}) 
       delete overrides[taskType];
     } else {
       overrides[taskType] = updated;
+    }
+
+    // See updateAppTaskTypeOverride: clear pr-watcher's mark + cooldown on disable.
+    if (taskType === 'pr-watcher' && enabled === false) {
+      delete data.apps[id].prWatcherState;
+      await resetPrWatcherCooldown(id);
     }
 
     data.apps[id].taskTypeOverrides = overrides;
@@ -488,6 +535,13 @@ export async function toggleAllAppTaskTypes(id, enabled) {
   for (const taskType of SELF_IMPROVEMENT_TASK_TYPES) {
     const existing = overrides[taskType] || {};
     overrides[taskType] = { ...existing, enabled };
+  }
+
+  // Disabling everything disables pr-watcher too — clear its mark + cooldown so
+  // a later re-enable baselines promptly. See updateAppTaskTypeOverride.
+  if (enabled === false) {
+    delete data.apps[id].prWatcherState;
+    await resetPrWatcherCooldown(id);
   }
 
   data.apps[id].taskTypeOverrides = overrides;
