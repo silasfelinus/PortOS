@@ -37,15 +37,20 @@ const layerSchema = z.object({
   notes: str(svc.FIELD_MAX_LENGTH).optional().default(''),
 });
 
+// No `.default('')` on these fields: `.partial()` (used for PUT) materializes a
+// default for an *omitted* key, which would turn a single-field PUT into a
+// wipe of every other field via updateSong's `'key' in patch` merge. Leaving
+// them plain-optional keeps omitted keys absent (preserve) vs present-empty
+// (clear); the service's `trimField` coerces a present `undefined`/'' anyway.
 const songInputSchema = z.object({
-  title: str(svc.TITLE_MAX_LENGTH).optional().default(''),
-  artist: str(svc.ARTIST_MAX_LENGTH).optional().default(''),
-  key: str(svc.KEY_MAX_LENGTH).optional().default(''),
+  title: str(svc.TITLE_MAX_LENGTH).optional(),
+  artist: str(svc.ARTIST_MAX_LENGTH).optional(),
+  key: str(svc.KEY_MAX_LENGTH).optional(),
   // null clears the tempo; a number is clamped server-side into the band.
   tempo: z.number().int().min(svc.TEMPO_MIN).max(svc.TEMPO_MAX).nullable().optional(),
-  rhythmShapeId: str(svc.ID_MAX_LENGTH).optional().default(''),
-  notation: str(svc.FIELD_MAX_LENGTH).optional().default(''),
-  notes: str(svc.FIELD_MAX_LENGTH).optional().default(''),
+  rhythmShapeId: str(svc.ID_MAX_LENGTH).optional(),
+  notation: str(svc.FIELD_MAX_LENGTH).optional(),
+  notes: str(svc.FIELD_MAX_LENGTH).optional(),
   learned: z.boolean().optional(),
   sections: z.array(sectionSchema).max(svc.SECTIONS_MAX).optional(),
   layers: z.array(layerSchema).max(svc.LAYERS_MAX).optional(),
