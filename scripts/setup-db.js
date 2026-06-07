@@ -174,12 +174,17 @@ function setPgMode(mode) {
 
 // Prompt user to choose storage mode (TTY only)
 function promptStorageChoice(message, hint) {
-  // Stdout redirected means we can't show the prompt — warn and exit 0 without changing mode.
+  // Non-interactive (stdout/stdin redirected, e.g. `npm start` under PM2): we
+  // can't prompt. By the time we reach here, handleDockerUnavailable() has
+  // already ruled out a healthy native PostgreSQL, so there is no usable DB and
+  // no file fallback anymore — setup genuinely failed. Exit NON-ZERO so the
+  // `&&`-chained `npm start` / `npm run setup` halts here instead of launching
+  // a server that would immediately fail-fast and crash-loop under PM2.
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    console.error(`⚠️  ${message}`);
+    console.error(`❌ ${message}`);
     console.error(`   ${hint}`);
-    console.error('   Start Docker then run: npm run setup');
-    process.exit(0);
+    console.error('   PostgreSQL is required. Start Docker (or set up native PostgreSQL) then run: npm run setup');
+    process.exit(1);
   }
 
   return new Promise((resolve) => {
