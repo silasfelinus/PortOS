@@ -111,6 +111,17 @@ describe('RoundStack', () => {
     expect(playerCalls.players[0].stop).toHaveBeenCalled();
   });
 
+  it('keeps playing across unrelated re-renders that do not change the recordings', () => {
+    const { rerender } = renderStack(SONGS);
+    fireEvent.click(screen.getByRole('button', { name: /Play all parts/i }));
+    expect(playerCalls.players).toHaveLength(1);
+    // Simulate an unrelated parent render (e.g. Save): a brand-new songs array of
+    // cloned song objects with identical recordings. Playback must NOT tear down.
+    rerender(<MemoryRouter><RoundStack songs={SONGS.map((s) => ({ ...s }))} /></MemoryRouter>);
+    expect(playerCalls.players[0].stop).not.toHaveBeenCalled();
+    expect(playerCalls.players).toHaveLength(1); // no new mixer spun up either
+  });
+
   it('does not start the mix if stopped while still decoding', async () => {
     playerCalls.deferPlay = true; // play() stays pending until the test resolves it
     renderStack(SONGS);

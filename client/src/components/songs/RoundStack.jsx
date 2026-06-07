@@ -33,13 +33,27 @@ export default function RoundStack({ songs = [] }) {
   // before awaiting and silence the player if it advanced while we were decoding.
   const playGenRef = useRef(0);
 
+  // Value-stable content signature of every take across the stacked songs.
+  // ReadView hands us a fresh `[song, ...partners]` array on each render, so
+  // keying `takes` off array identity (`[songs]`) would rebuild it — and trip the
+  // takes-changed cleanup that stops playback — on EVERY unrelated parent render
+  // (Save, recording-state updates). This string changes only when the takes
+  // themselves do, keeping `takes` (and the running mix) steady otherwise.
+  const takesKey = songs
+    .flatMap((s) => (s.recordings || []).map((r) => `${s.id}:${r.id}:${r.filename}:${r.muted ? 1 : 0}`))
+    .join('|');
   // Every saved take across all stacked songs, keyed by a song-namespaced id so
   // two songs' recordings can't collide in the mixer's id map.
-  const takes = useMemo(() => songs.flatMap((s) => (s.recordings || []).map((r) => ({
-    id: `${s.id}:${r.id}`,
-    url: getUploadUrl(r.filename),
-    muted: r.muted,
-  }))), [songs]);
+  const takes = useMemo(
+    () => songs.flatMap((s) => (s.recordings || []).map((r) => ({
+      id: `${s.id}:${r.id}`,
+      url: getUploadUrl(r.filename),
+      muted: r.muted,
+    }))),
+    // `songs` intentionally excluded — takesKey is its content signature, so an
+    // equivalent-but-new songs array doesn't churn `takes`.
+    [takesKey], // eslint-disable-line react-hooks/exhaustive-deps
+  );
   const audibleCount = useMemo(() => takes.filter((t) => !t.muted).length, [takes]);
 
   // Stop and release the mixer on unmount AND whenever the stacked takes change
