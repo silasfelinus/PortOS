@@ -753,11 +753,43 @@ ensureSelf()
     // Catalog backfill: promote universe canon (characters/places/objects)
     // into the Postgres ingredients catalog. Idempotent — marker in
     // data/catalog-backfill.applied.json gates the walk after the first run.
-    // Fire-and-forget so a DB hiccup doesn't block server boot — the route
-    // surface tolerates an empty catalog and the user can re-trigger via
-    // the admin endpoint.
+    // Individual migration steps stay inside a try/catch so a transient hiccup
+    // mid-walk doesn't crash an otherwise-healthy boot; the route surface
+    // tolerates an empty catalog and the user can re-trigger via the admin
+    // endpoint.
+    //
+    // PostgreSQL is a mandatory dependency. Before running any DB-dependent
+    // boot work, verify the database is reachable and the required schema is
+    // present. If not — and we're NOT in a sanctioned escape-hatch/test mode —
+    // this is a fatal misconfiguration: the creative catalog has no file-backed
+    // equivalent, so booting "successfully" would silently serve a broken
+    // install. Fail fast with an actionable message instead.
+    //
+    // Escape hatches (dev/tests only, UNSUPPORTED for production):
+    //   - MEMORY_BACKEND=file  (explicit file backend)
+    //   - NODE_ENV=test        (test suites boot without a database)
+    const dbEscapeHatch =
+      process.env.MEMORY_BACKEND === 'file' || process.env.NODE_ENV === 'test';
+    const { checkHealth, ensureSchema } = await import('./lib/db.js');
+    const health = await checkHealth();
+    const dbReady = health.connected && health.hasSchema;
+    if (!dbEscapeHatch && !dbReady) {
+      const reason = health.connected ? 'required schema missing' : `unreachable (${health.error || 'connection failed'})`;
+      console.error(`❌ PostgreSQL is required but ${reason} — refusing to start.`);
+      console.error('   Set up the database with: npm run setup:db');
+      console.error('   Dev/test only: set MEMORY_BACKEND=file in .env to boot without PostgreSQL (unsupported for production).');
+      process.exit(1);
+    }
+    if (dbEscapeHatch && !dbReady) {
+      console.warn(`⚠️  PostgreSQL unavailable (${health.error || 'no schema'}) — booting via escape hatch; catalog/DB features are disabled.`);
+    }
+
     try {
-      const { ensureSchema } = await import('./lib/db.js');
+      // Skip DB-dependent boot work entirely when running on the escape hatch
+      // without a healthy database — ensureSchema/migrations would throw.
+      if (!dbReady) {
+        return;
+      }
       await ensureSchema();
       const { migrateBibleToCatalog } = await import('./scripts/migrateBibleToCatalog.js');
       await migrateBibleToCatalog();

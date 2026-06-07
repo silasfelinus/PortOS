@@ -186,19 +186,21 @@ function promptStorageChoice(message, hint) {
     console.log(`⚠️  ${message}`);
     console.log(`   ${hint}`);
     console.log('');
-    console.log('   Choose a storage backend:');
+    console.log('   Choose a PostgreSQL hosting mode:');
     console.log('');
     console.log('   1) Docker PostgreSQL (recommended — containerized, no system install)');
     console.log('   2) Native PostgreSQL (use system-installed PostgreSQL on port 5432)');
-    console.log('   3) File-based JSON storage (deprecated — no vector search)');
     console.log('');
+    // NOTE: File-based JSON storage is intentionally NOT offered here. PostgreSQL
+    // is a mandatory dependency (the creative catalog has no file-backed
+    // equivalent). `PGMODE=file` survives only as an advanced/unsupported dev
+    // escape hatch honored when already present in .env — never a menu choice.
 
     const rl = createInterface({ input: process.stdin, output: process.stdout });
-    rl.question('   Enter choice [1/2/3]: ', (answer) => {
+    rl.question('   Enter choice [1/2]: ', (answer) => {
       rl.close();
       const trimmed = answer.trim();
       if (trimmed === '2') resolve('native');
-      else if (trimmed === '3') resolve('file');
       else resolve('exit'); // 1 or default = they want docker, so exit to install it
     });
   });
@@ -243,6 +245,17 @@ function exitNativeSetupFailed() {
 }
 
 async function handleDockerUnavailable(message, issue) {
+  // Default to native when a healthy local PortOS PostgreSQL is already
+  // reachable — no need to prompt or fall back to Docker. The schema-ready
+  // probe (role can auth + memories table present) is the proof that a usable
+  // native PostgreSQL 17 + pgvector install is in place.
+  if (isPortOSDbReady()) {
+    console.log('   Healthy native PostgreSQL detected — using native mode.');
+    setPgMode('native');
+    console.log(`✅ PortOS database ready on port ${PG_PORT_NATIVE}`);
+    process.exit(0);
+  }
+
   const hint = getDockerHints(issue);
   const choice = await promptStorageChoice(message, hint);
 
@@ -264,12 +277,6 @@ async function handleDockerUnavailable(message, issue) {
     exitNativeSetupFailed();
   }
 
-  if (choice === 'file') {
-    setPgMode('file');
-    console.log('   Memory system will use file-based JSON storage (deprecated)');
-    process.exit(0);
-  }
-
   // choice === 'exit' — user wants Docker, tell them to install/start it
   console.log(`   ${hint}`);
   console.log('   Install/start Docker and re-run setup');
@@ -279,8 +286,13 @@ async function handleDockerUnavailable(message, issue) {
 const mode = getMode();
 
 if (mode === 'file') {
-  console.log('🗄️  Storage mode: file-based JSON (deprecated)');
-  console.log('   Tip: switch to PostgreSQL with: scripts/db.sh set-mode docker');
+  // Advanced/unsupported escape hatch: PGMODE=file is honored ONLY when a user
+  // has explicitly set it in .env. It is not a normal setup choice — PostgreSQL
+  // is a mandatory dependency for production installs and the creative catalog
+  // has no file-backed equivalent. Kept for development/tests.
+  console.error('🚫 PGMODE=file is UNSUPPORTED for production — PostgreSQL is required.');
+  console.error('   File-based storage has no creative-catalog or vector-search support.');
+  console.log('   Switch to a supported mode with: scripts/db.sh set-mode native (or docker)');
   process.exit(0);
 }
 
@@ -329,9 +341,10 @@ try {
     cwd: rootDir
   });
 } catch (err) {
-  console.error(`⚠️  Failed to start PostgreSQL: ${err.message}`);
-  console.log('   Memory system will use file-based JSON storage');
-  process.exit(0);
+  console.error(`❌ Failed to start PostgreSQL container: ${err.message}`);
+  console.error('   PostgreSQL is required — try native mode instead:');
+  console.error('   scripts/db.sh set-mode native && npm run setup');
+  process.exit(1);
 }
 
 // Wait for health
