@@ -851,6 +851,13 @@ ensureSelf()
       // a half-applied import racing a request. listIds() is the cheapest call
       // that forces backend selection. Idempotent (marker-gated import).
       await universeStore().listIds();
+      // Pipeline series + issues PG warm (#1015): same contract as the universe
+      // warm — touch each store so it selects Postgres and runs its one-time
+      // file→DB import (migrateSeriesToDB / migrateIssuesToDB) BEFORE
+      // httpServer.listen, so the first request/sync sees migrated records.
+      // Series first (issues soft-ref it for universe resolution / lists).
+      await seriesStore().listIds();
+      await issueStore().listIds();
       // Authoritative catalog user-type warm (#1001): with the DB confirmed +
       // schema ensured, load the registry from the catalog_user_types store
       // (running the one-time settings→DB import on first access). This runs
