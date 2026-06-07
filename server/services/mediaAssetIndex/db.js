@@ -18,9 +18,10 @@
  * without it.
  */
 
+import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { query } from '../../lib/db.js';
-import { PATHS, tryReadFile } from '../../lib/fileUtils.js';
+import { PATHS } from '../../lib/fileUtils.js';
 import { imageToRow, videoToRow } from './logic.js';
 
 function rowToAsset(row) {
@@ -92,9 +93,18 @@ export async function listAssets({ kind } = {}) {
 // wipe every video row whose file is still on disk. This reader distinguishes
 // the two: file absent → genuinely empty (ok); present-but-unparseable → failure
 // (not ok), so the caller skips pruning videos. Returns { ok, list }.
-async function readVideoHistoryStrict() {
-  const raw = await tryReadFile(join(PATHS.data, 'video-history.json'));
-  if (raw == null) return { ok: true, list: [] }; // file absent → no videos yet
+export async function readVideoHistoryStrict(historyPath = join(PATHS.data, 'video-history.json')) {
+  // Read with explicit error-code handling — NOT tryReadFile/readJSONFile, which
+  // both collapse "missing" and "unreadable" to the same value. Only a genuine
+  // ENOENT (file never written) counts as trusted-empty; an EACCES/EIO/transient
+  // failure must be a non-ok read so the caller skips pruning videos.
+  let raw;
+  try {
+    raw = await readFile(historyPath, 'utf-8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return { ok: true, list: [] }; // never written → no videos yet
+    return { ok: false, list: [] }; // unreadable → do NOT treat as empty
+  }
   let parsed;
   try {
     parsed = JSON.parse(raw);
