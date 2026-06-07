@@ -30,14 +30,19 @@ import {
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import { useAsyncAction } from '../hooks/useAsyncAction';
-import { getSong, updateSong, refreshSongTemplate } from '../services/api';
+import { getSong, updateSong, refreshSongTemplate, listSongs } from '../services/api';
 import { RHYTHM_SHAPES, VOICE_LAYERS, rhythmShapeLabel } from '../lib/songCraft';
 import Pill from '../components/ui/Pill';
 import SongAiPanel from '../components/songs/SongAiPanel';
 import SongRecordings from '../components/songs/SongRecordings';
 import SongScoreEditor from '../components/songs/SongScoreEditor';
 import ScoreSheet from '../components/songs/ScoreSheet';
+import RoundStack from '../components/songs/RoundStack';
 import { scoreHasMusic } from '../lib/scoreNotation';
+
+// Cap on partner songs — mirrors services/songs.js PARTNERS_MAX. Used only to
+// disable adding more in the editor; the server enforces the real bound.
+const PARTNERS_MAX = 12;
 
 // Extract a TikTok video id from a share/watch URL so we can render TikTok's
 // documented iframe Embed Player (https://www.tiktok.com/player/v1/<id>)
@@ -102,17 +107,69 @@ export default function SongEditor() {
       return next;
     }, { replace: true });
   }, [setSearchParams]);
+  // Round-stack view lives in the URL (?stack=1) so the stacked parts are a
+  // linkable view, like ?mode — per the "linkable routes for all views" rule.
+  const stackOpen = searchParams.get('stack') === '1';
+  const setStack = useCallback((open) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (open) next.set('stack', '1');
+      else next.delete('stack');
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
   const [song, setSong] = useState(null);
   const [loading, setLoading] = useState(true);
+  // All songs — resolves partner records for the round stack and the "Sings
+  // with" editor's pick list. Best-effort; the page works without it.
+  const [allSongs, setAllSongs] = useState([]);
 
   useEffect(() => {
     let cancelled = false;
+    // Reset to the loading state on every id change — partner links navigate
+    // song→song without unmounting this component, so without this the previous
+    // draft would render under the new id and a Save during the load window would
+    // write the old draft into the new song's record. The loading guard below
+    // hides the editor (and its Save button) until the new song arrives.
+    setLoading(true);
+    setSong(null);
     getSong(id, { silent: true })
       .then((data) => { if (!cancelled) setSong(data?.song || null); })
       .catch((err) => { if (!cancelled) toast.error(err?.message || 'Failed to load song'); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [id]);
+
+  // Refresh the all-songs list whenever the open song changes — this component
+  // stays mounted across /songs/:id navigation, so a once-on-mount fetch would
+  // leave partner records (titles, saved takes) stale after editing a partner
+  // and navigating back. The list is small and single-user, so re-fetching on
+  // navigation is cheap and keeps the round stack honest.
+  useEffect(() => {
+    let cancelled = false;
+    listSongs({ silent: true })
+      .then((data) => { if (!cancelled) setAllSongs(data?.songs || []); })
+      .catch(() => { /* the page degrades to no partner resolution */ });
+    return () => { cancelled = true; };
+  }, [id]);
+
+  // Resolve this song's partner ids to records (skip any that no longer exist).
+  const partnerSongs = useMemo(() => {
+    const byId = new Map(allSongs.map((s) => [s.id, s]));
+    return (song?.partnerSongIds || []).map((pid) => byId.get(pid)).filter(Boolean);
+  }, [allSongs, song?.partnerSongIds]);
+  // Other songs to offer as partners in the editor, alphabetical.
+  const otherSongs = useMemo(
+    () => allSongs.filter((s) => s.id !== id).sort((a, b) => (a.title || '').localeCompare(b.title || '')),
+    [allSongs, id],
+  );
+  const togglePartner = useCallback((pid) => setSong((prev) => {
+    if (!prev) return prev;
+    const cur = prev.partnerSongIds || [];
+    if (cur.includes(pid)) return { ...prev, partnerSongIds: cur.filter((x) => x !== pid) };
+    if (cur.length >= PARTNERS_MAX) return prev;
+    return { ...prev, partnerSongIds: [...cur, pid] };
+  }), []);
 
   // Field setters merge into the in-memory draft; nothing persists until Save.
   const setField = useCallback((key, value) => {
@@ -130,6 +187,7 @@ export default function SongEditor() {
       layers: (song.layers || []).map(stripTempId),
       recordings: (song.recordings || []).map(stripTempId),
       references: (song.references || []).map(stripTempId),
+      partnerSongIds: song.partnerSongIds || [],
     };
     const data = await updateSong(id, patch, { silent: true });
     if (data?.song) setSong(data.song);
@@ -299,6 +357,9 @@ export default function SongEditor() {
             setField={setField}
             onRefreshTemplate={refreshTemplate}
             refreshing={refreshing}
+            partnerSongs={partnerSongs}
+            stackOpen={stackOpen}
+            onToggleStack={setStack}
           />
         )}
 
@@ -465,6 +526,40 @@ export default function SongEditor() {
             )}
           </section>
 
+          {/* Sings with — partner songs for the round-stack (quodlibet) view */}
+          <section>
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-white mb-2">
+              <Layers size={15} className="text-port-accent" /> Sings with (round partners)
+            </h2>
+            <p className="text-xs text-gray-500 mb-2">
+              Link songs that are sung at the same time — rounds that share a chord cycle. In View, a “Stack parts” button
+              renders them together and plays their takes layered.
+            </p>
+            {otherSongs.length === 0 ? (
+              <p className="text-xs text-gray-500">No other songs yet to pair with.</p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {otherSongs.map((s) => {
+                  const checked = (song.partnerSongIds || []).includes(s.id);
+                  const atMax = !checked && (song.partnerSongIds || []).length >= PARTNERS_MAX;
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => togglePartner(s.id)}
+                      disabled={atMax}
+                      aria-pressed={checked}
+                      title={atMax ? `Up to ${PARTNERS_MAX} partners` : undefined}
+                      className={`px-2.5 py-1 text-xs rounded-full border transition-colors disabled:opacity-40 ${checked ? 'bg-port-accent/15 border-port-accent/60 text-white' : 'border-port-border text-gray-300 hover:text-white hover:border-port-accent/60'}`}
+                    >
+                      {checked ? '✓ ' : '+ '}{s.title || 'Untitled song'}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
           {/* Vocal takes — record & layered playback */}
           <SongRecordings
             recordings={song.recordings || []}
@@ -569,7 +664,7 @@ export default function SongEditor() {
 // (no sub-scrollable textareas) and laid out in a responsive grid so short
 // sections sit side-by-side and use the available desktop width. The recorder
 // stays interactive (recording mutates the draft; the header Save persists it).
-function ReadView({ song, setField, onRefreshTemplate, refreshing }) {
+function ReadView({ song, setField, onRefreshTemplate, refreshing, partnerSongs = [], stackOpen = false, onToggleStack }) {
   const sections = song.sections || [];
   const layers = song.layers || [];
   const references = song.references || [];
@@ -579,6 +674,10 @@ function ReadView({ song, setField, onRefreshTemplate, refreshing }) {
   // so a recording-driven re-render doesn't re-parse the score each time
   // (ScoreSheet parses it again internally only when it actually renders).
   const hasScore = useMemo(() => scoreHasMusic(song.score), [song.score]);
+  // Only actually swap to the stacked view when there are partners to stack —
+  // otherwise `?stack=1` with no partners would hide the single-song view and
+  // render nothing.
+  const showingStack = stackOpen && partnerSongs.length > 0;
 
   // Label + value badge, two-toned, built on the shared Pill primitive.
   const metaBadge = (label, value) => (
@@ -602,8 +701,34 @@ function ReadView({ song, setField, onRefreshTemplate, refreshing }) {
         </Pill>
       </div>
 
+      {/* Sings with — partner rounds, with a toggle for the stacked all-parts view. */}
+      {partnerSongs.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-gray-500">Sings with:</span>
+          {partnerSongs.map((p) => (
+            <Link key={p.id} to={`/songs/${p.id}`} className="px-2.5 py-1 text-xs rounded-full border border-port-border text-gray-300 hover:text-white hover:border-port-accent/60">
+              {p.title || 'Untitled song'}
+            </Link>
+          ))}
+          <button
+            type="button"
+            onClick={() => onToggleStack?.(!stackOpen)}
+            aria-pressed={stackOpen}
+            className={`flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full border transition-colors ${stackOpen ? 'bg-port-accent text-white border-port-accent' : 'border-port-border text-gray-300 hover:text-white hover:border-port-accent/60'}`}
+          >
+            <Layers size={13} /> {stackOpen ? 'Hide stack' : 'Stack parts'}
+          </button>
+        </div>
+      )}
+
+      {/* Round stack — every part at once, replacing the single-song reading
+          surface while open. */}
+      {showingStack && (
+        <RoundStack songs={[song, ...partnerSongs]} />
+      )}
+
       {/* Sheet music — the rendered staff, full-width so a row of bars fits. */}
-      {hasScore && (
+      {!showingStack && hasScore && (
         <section className="space-y-2">
           <h2 className="text-sm font-semibold text-white">Sheet music</h2>
           <div className="bg-port-card border border-port-border rounded-lg p-4 overflow-x-auto">
@@ -612,6 +737,7 @@ function ReadView({ song, setField, onRefreshTemplate, refreshing }) {
         </section>
       )}
 
+      {!showingStack && (
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Lyrics — the main reading surface, given the most width. */}
         <section className="lg:col-span-2 space-y-3">
@@ -668,6 +794,7 @@ function ReadView({ song, setField, onRefreshTemplate, refreshing }) {
           )}
         </aside>
       </div>
+      )}
 
       {/* Reference material — TikTok videos embed; other links render as cards. */}
       {references.length > 0 && (

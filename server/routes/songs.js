@@ -83,6 +83,9 @@ const songInputSchema = z.object({
   layers: z.array(layerSchema).max(svc.LAYERS_MAX).optional(),
   recordings: z.array(recordingSchema).max(svc.RECORDINGS_MAX).optional(),
   references: z.array(referenceSchema).max(svc.REFERENCES_MAX).optional(),
+  // Ids of other songs sung together with this one (round-stack partners). The
+  // service dedupes and drops self-references; the schema only bounds the list.
+  partnerSongIds: z.array(str(svc.ID_MAX_LENGTH)).max(svc.PARTNERS_MAX).optional(),
 });
 
 // AI generate/evaluate inputs. providerId/model are optional overrides; the

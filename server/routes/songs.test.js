@@ -157,6 +157,23 @@ describe('songs route', () => {
     expect(res.status).toBe(200);
   });
 
+  it('PUT /:id accepts a partnerSongIds array', async () => {
+    mocks.updateSong.mockResolvedValue({ id: 'song-1' });
+    const res = await request(makeApp()).put('/api/songs/song-1').send({
+      partnerSongIds: ['seed-ah-poor-bird', 'seed-rose-rose-rose-red'],
+    });
+    expect(res.status).toBe(200);
+    const [, patch] = mocks.updateSong.mock.calls[0];
+    expect(patch.partnerSongIds).toEqual(['seed-ah-poor-bird', 'seed-rose-rose-rose-red']);
+  });
+
+  it('PUT /:id rejects more than PARTNERS_MAX partner ids', async () => {
+    const tooMany = Array.from({ length: 20 }, (_, i) => `seed-${i}`);
+    const res = await request(makeApp()).put('/api/songs/song-1').send({ partnerSongIds: tooMany });
+    expect(res.status).toBe(400);
+    expect(mocks.updateSong).not.toHaveBeenCalled();
+  });
+
   it('POST /:id/refresh-template returns the refreshed built-in song', async () => {
     mocks.refreshSongFromTemplate.mockResolvedValue({ id: 'seed-500-miles', title: '500 Miles', builtIn: true });
     const res = await request(makeApp()).post('/api/songs/seed-500-miles/refresh-template');

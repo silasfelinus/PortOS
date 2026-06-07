@@ -42,9 +42,14 @@ const BEAT_PX = 30;         // horizontal px per quarter-note beat
 const MAX_STRETCH = 1.45;   // cap row justification so a short row isn't blown out
 
 const ROW_TOP_PAD = 34;     // room above the staff for chord symbols
-const ROW_STAFF_TO_LYRIC = 30; // room below the staff for lyrics
+const LYRIC_BELOW_NOTE = 14;   // gap from the lowest notehead down to the lyric baseline
+const LYRIC_MIN_BELOW_STAFF = 22; // floor so a high-only row keeps lyrics close to the staff
+const LYRIC_DESCENDER = 8;  // room below the lyric baseline for text descenders
 const ROW_GAP = 18;         // gap between rows
-const ROW_HEIGHT = ROW_TOP_PAD + 4 * GAP + ROW_STAFF_TO_LYRIC + ROW_GAP;
+// A row's height is derived from its content (see rowLyricOffset) rather than a
+// fixed constant, so a row of low ledger notes reserves enough space for its
+// lyrics instead of letting them spill into the next row.
+const STAFF_BLOCK = 4 * GAP; // the five staff lines span four gaps
 
 // Ink is driven off the PortOS theme text/accent CSS variables so the score
 // adapts to the active theme — near-black notes & lyrics in day mode, light ink
@@ -110,12 +115,39 @@ const packRows = (measures, keySigCount) => {
   return rows;
 };
 
+// Vertical room a row needs below the staff: from the staff's bottom line down
+// to the lyric baseline, enough to clear the row's LOWEST notehead before the
+// lyric sits under it. Floored at LYRIC_MIN_BELOW_STAFF so a row of only high
+// notes still tucks its lyrics close under the staff. `bottomLineStep` is the
+// diatonic step on the staff's bottom line. Single pass over the row's notes.
+const rowLyricOffset = (row, bottomLineStep) => {
+  let lowestStep = bottomLineStep;
+  for (const rm of row.rowMeasures) {
+    for (const note of rm.measure.notes) {
+      if (!note.rest && note.step < lowestStep) lowestStep = note.step;
+    }
+  }
+  const belowStaffPx = Math.max(0, bottomLineStep - lowestStep) * STEP; // staffBottom → lowest head
+  return Math.max(LYRIC_MIN_BELOW_STAFF, belowStaffPx + LYRIC_BELOW_NOTE);
+};
+
 export default function ScoreSheet({ text, className = '' }) {
   const score = useMemo(() => parseScore(text), [text]);
 
   const { rows, height } = useMemo(() => {
     const packed = packRows(score.measures, score.keySig.count);
-    return { rows: packed, height: Math.max(ROW_HEIGHT, packed.length * ROW_HEIGHT) + 8 };
+    const blStep = BOTTOM_LINE_STEP[score.clef] ?? BOTTOM_LINE_STEP.treble;
+    // Lay rows out with content-derived heights and cumulative tops, so a row of
+    // low notes reserves more vertical space and never overlaps the next row.
+    let top = 0;
+    const laid = packed.map((row) => {
+      const lyricOffset = rowLyricOffset(row, blStep);
+      const rowHeight = ROW_TOP_PAD + STAFF_BLOCK + lyricOffset + LYRIC_DESCENDER + ROW_GAP;
+      const annotated = { ...row, top, lyricOffset };
+      top += rowHeight;
+      return annotated;
+    });
+    return { rows: laid, height: top + 8 };
   }, [score]);
 
   if (!score.measures.some((m) => m.notes.length > 0)) return null;
@@ -125,13 +157,16 @@ export default function ScoreSheet({ text, className = '' }) {
 
   const els = [];
   rows.forEach((row, ri) => {
-    const rowTop = ri * ROW_HEIGHT;
+    const rowTop = row.top;
     const staffTop = rowTop + ROW_TOP_PAD;
-    const staffBottom = staffTop + 4 * GAP;
+    const staffBottom = staffTop + STAFF_BLOCK;
     const chordY = rowTop + 16;
-    const lyricY = staffBottom + 22;
     // y for a diatonic step within this row.
     const yForStep = (step) => staffBottom - (step - bottomLineStep) * STEP;
+    // Lyric baseline sits below the row's lowest notehead (row.lyricOffset is the
+    // content-derived gap), so below-staff ledger notes (e.g. A3) never draw on
+    // top of the lyric text and the row height already reserves the space.
+    const lyricY = staffBottom + row.lyricOffset;
 
     // Staff: five lines across the full content width.
     for (let line = 0; line < 5; line += 1) {
