@@ -84,6 +84,17 @@ describe('ScoreSheet renderer', () => {
     expect(lyricY).toBeGreaterThan(headY);
   });
 
+  it('grows the row height for low ledger notes so lyrics never clip the next row', () => {
+    const vb = (html) => Number(/viewBox="0 0 \d+ ([\d.]+)"/.exec(html)?.[1]);
+    const low = renderToStaticMarkup(<ScoreSheet text={'| C3q(low) |'} />);   // well below the staff
+    const high = renderToStaticMarkup(<ScoreSheet text={'| C5q(high) |'} />);  // above the staff
+    // A low-note row reserves more vertical space than a high-note row.
+    expect(vb(low)).toBeGreaterThan(vb(high));
+    // The low note's lyric baseline stays inside the SVG height (not clipped).
+    const lyricY = Number(new RegExp('<text[^>]*\\by="([\\d.]+)"[^>]*>low<').exec(low)?.[1]);
+    expect(lyricY).toBeLessThan(vb(low));
+  });
+
   it('renders a bass clef score without error', () => {
     const html = renderToStaticMarkup(<ScoreSheet text={'clef: bass\n| G2q C3q |'} />);
     expect(html).not.toMatch(/NaN/);

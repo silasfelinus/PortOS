@@ -15,6 +15,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { Play, Square, Music, Layers } from 'lucide-react';
+import toast from '../ui/Toast';
 import ScoreSheet from './ScoreSheet';
 import { scoreHasMusic } from '../../lib/scoreNotation';
 import { createLayeredPlayer } from '../../lib/songPlayback';
@@ -36,9 +37,11 @@ export default function RoundStack({ songs = [] }) {
   }))), [songs]);
   const audibleCount = useMemo(() => takes.filter((t) => !t.muted).length, [takes]);
 
-  // Stop and release the mixer on unmount or when the take set changes (a new
-  // recording elsewhere shouldn't keep an old mix playing).
-  useEffect(() => () => { playerRef.current?.stop(); }, []);
+  // Stop and release the mixer on unmount AND whenever the stacked takes change
+  // — otherwise navigating to another partner (or any songs-prop change) while
+  // ?stack=1 is open would leave the previous mix audibly playing under the new
+  // stack. Resetting `playing` keeps the button in sync with the silenced mix.
+  useEffect(() => () => { playerRef.current?.stop(); setPlaying(false); }, [takes]);
 
   const stop = useCallback(() => {
     playerRef.current?.stop();
@@ -51,7 +54,12 @@ export default function RoundStack({ songs = [] }) {
     player.onEnded(() => setPlaying(false));
     playerRef.current = player;
     setPlaying(true);
-    await player.play();
+    // A take URL that 404s or fails to decode rejects play() — without this the
+    // button would stay stuck on "Stop" with no mix running (mirrors SongRecordings).
+    await player.play().catch((err) => {
+      toast.error(err?.message || 'Playback failed');
+      setPlaying(false);
+    });
   }, [takes]);
 
   if (songs.length === 0) return null;

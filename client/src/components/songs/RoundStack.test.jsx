@@ -1,20 +1,26 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import toast from '../ui/Toast';
 
-// Mock the audio mixer — jsdom has no Web Audio. Capture the takes it receives
-// so we can assert RoundStack flattens recordings across ALL stacked songs.
-const playerCalls = vi.hoisted(() => ({ takes: null, play: null, stop: null }));
+// Mock the audio mixer — jsdom has no Web Audio. Track every created player so
+// tests can assert which takes were passed and that old players get stopped.
+const playerCalls = vi.hoisted(() => ({ takes: null, players: [], rejectPlay: false }));
 vi.mock('../../lib/songPlayback', () => ({
   createLayeredPlayer: (takes) => {
     playerCalls.takes = takes;
-    playerCalls.play = vi.fn().mockResolvedValue(undefined);
-    playerCalls.stop = vi.fn();
-    return { play: playerCalls.play, stop: playerCalls.stop, onEnded: vi.fn() };
+    const player = {
+      play: vi.fn(() => (playerCalls.rejectPlay ? Promise.reject(new Error('boom')) : Promise.resolve())),
+      stop: vi.fn(),
+      onEnded: vi.fn(),
+    };
+    playerCalls.players.push(player);
+    return player;
   },
 }));
 // getUploadUrl is the only thing RoundStack needs from the api barrel.
 vi.mock('../../services/api', () => ({ getUploadUrl: (f) => `/api/uploads/${f}` }));
+vi.mock('../ui/Toast', () => ({ default: { error: vi.fn(), success: vi.fn() } }));
 
 import RoundStack from './RoundStack.jsx';
 
@@ -39,7 +45,12 @@ const renderStack = (songs) => render(
 );
 
 describe('RoundStack', () => {
-  beforeEach(() => { playerCalls.takes = null; });
+  beforeEach(() => {
+    playerCalls.takes = null;
+    playerCalls.players = [];
+    playerCalls.rejectPlay = false;
+    toast.error.mockClear();
+  });
 
   it('renders nothing for an empty list', () => {
     const { container } = renderStack([]);
@@ -65,12 +76,31 @@ describe('RoundStack', () => {
       'seed-hey-ho-nobody-home:rec-1',
       'seed-ah-poor-bird:rec-2',
     ]);
-    expect(playerCalls.play).toHaveBeenCalled();
+    expect(playerCalls.players[0].play).toHaveBeenCalled();
   });
 
   it('hides the play button when no song has an audible take', () => {
     const muted = SONGS.map((s) => ({ ...s, recordings: [] }));
     renderStack(muted);
     expect(screen.queryByRole('button', { name: /Play all parts/i })).toBeNull();
+  });
+
+  it('resets to Play (and toasts) when playback fails', async () => {
+    playerCalls.rejectPlay = true;
+    renderStack(SONGS);
+    fireEvent.click(screen.getByRole('button', { name: /Play all parts/i }));
+    // The failed play() must not leave the button stuck on "Stop".
+    await waitFor(() => expect(screen.getByRole('button', { name: /Play all parts/i })).toBeTruthy());
+    expect(screen.queryByRole('button', { name: /^Stop$/i })).toBeNull();
+    expect(toast.error).toHaveBeenCalled();
+  });
+
+  it('stops the previous mix when the stacked songs change', () => {
+    const { rerender } = renderStack(SONGS);
+    fireEvent.click(screen.getByRole('button', { name: /Play all parts/i }));
+    expect(playerCalls.players).toHaveLength(1);
+    // Navigating to a different stack (songs prop changes) must silence the old mix.
+    rerender(<MemoryRouter><RoundStack songs={[SONGS[0]]} /></MemoryRouter>);
+    expect(playerCalls.players[0].stop).toHaveBeenCalled();
   });
 });
