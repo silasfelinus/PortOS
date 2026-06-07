@@ -21,6 +21,7 @@ import {
 } from '../lib/schemaVersions.js';
 import { mergeUniversesFromSync, listUniverses } from './universeBuilder.js';
 import { getUniverseMutationEpoch } from './universeBuilder/store.js';
+import { getPipelineMutationEpoch } from './pipeline/syncEpoch.js';
 import { mergeSeriesFromSync, listSeries } from './pipeline/series.js';
 import { mergeIssuesFromSync, listIssues } from './pipeline/issues.js';
 import { mergeMediaCollectionsFromSync, listCollections, itemKey } from './mediaCollections.js';
@@ -36,8 +37,22 @@ const CHRONOTYPE_FILE = join(PATHS.digitalTwin, 'chronotype.json');
 const LONGEVITY_FILE = join(PATHS.digitalTwin, 'longevity.json');
 const FEEDBACK_FILE = join(PATHS.digitalTwin, 'feedback.json');
 const MEATSPACE_DIR = PATHS.meatspace;
+// Pipeline series + issues used to live under data/pipeline-series/<id> and
+// data/pipeline-issues/<id>; #1015 moved the RECORDS into PostgreSQL
+// (`pipeline_series` / `pipeline_issues`). Same federation-invisibility problem
+// as universes (#1014): a PG-backed pipeline edit no longer touches these
+// directories, so the dir fingerprint alone would go stale and peers would stop
+// receiving pipeline edits. The pipeline store exports a monotonic mutation
+// epoch (bumped on every series/issue record write/delete) folded into this
+// path's fingerprint via PIPELINE_EPOCH_KEY below. The series dir is still
+// stat'd because its `manuscript-review.json` siblings remain file-primary —
+// a review-only edit must still invalidate the pipeline checksum.
 const PIPELINE_SERIES_DIR = join(PATHS.data, 'pipeline-series');
 const PIPELINE_ISSUES_DIR = join(PATHS.data, 'pipeline-issues');
+// Sentinel fingerprint-map key (not a real path — readFingerprintMap special-
+// cases it) carrying the pipeline mutation epoch into the pipeline +
+// mediaCollections checksum caches.
+const PIPELINE_EPOCH_KEY = '__pipelineEpoch';
 // Universes used to live in a single `universe-builder.json`; migration 034
 // split them into `data/universes/<id>/index.json`, and #1014 moved them again
 // into PostgreSQL (`universes` + `universe_runs`). Sync reads them through the
@@ -749,13 +764,17 @@ const CHECKSUM_PATHS = {
   // the cache — see UNIVERSE_BUILDER_DIR's note. PEER_SUBSCRIPTIONS_FILE so a
   // subscribe/unsubscribe re-checksums the per-peer scoped snapshot.
   universe: [UNIVERSE_BUILDER_DIR, UNIVERSE_EPOCH_KEY, PEER_SUBSCRIPTIONS_FILE],
-  pipeline: [PIPELINE_SERIES_DIR, PIPELINE_ISSUES_DIR, PEER_SUBSCRIPTIONS_FILE],
+  // PIPELINE_EPOCH_KEY folds in the pipeline store's mutation epoch so a
+  // PG-backed series/issue edit (which doesn't touch these dirs) still
+  // invalidates the cache — see PIPELINE_SERIES_DIR's note. The series dir is
+  // still stat'd for the file-primary manuscript-review.json siblings.
+  pipeline: [PIPELINE_SERIES_DIR, PIPELINE_ISSUES_DIR, PIPELINE_EPOCH_KEY, PEER_SUBSCRIPTIONS_FILE],
   // mediaCollections invalidates on its own record dir AND on the parent
   // record files — `getMediaCollectionsSnapshot` filters collections whose
   // linked universe/series is ephemeral, so a "mark ephemeral" PATCH on a
   // universe must re-checksum the collections snapshot even though no
   // media-collections record file moved. Same goes for un-ephemeral.
-  mediaCollections: [MEDIA_COLLECTIONS_DIR, UNIVERSE_BUILDER_DIR, UNIVERSE_EPOCH_KEY, PIPELINE_SERIES_DIR, PEER_SUBSCRIPTIONS_FILE],
+  mediaCollections: [MEDIA_COLLECTIONS_DIR, UNIVERSE_BUILDER_DIR, UNIVERSE_EPOCH_KEY, PIPELINE_SERIES_DIR, PIPELINE_EPOCH_KEY, PEER_SUBSCRIPTIONS_FILE],
   // videoHistory is a flat history file with no parent-record dependency —
   // its checksum invalidates only when video-history.json itself moves.
   videoHistory: [VIDEO_HISTORY_FILE],
@@ -878,6 +897,7 @@ async function readFingerprintMap(paths) {
     // a file stat, so a PG-backed universe edit invalidates the cache even
     // though no file moved. fingerprintsEqual compares these like any value.
     if (p === UNIVERSE_EPOCH_KEY) { out[p] = `epoch:${getUniverseMutationEpoch()}`; return; }
+    if (p === PIPELINE_EPOCH_KEY) { out[p] = `epoch:${getPipelineMutationEpoch()}`; return; }
     const s = await stat(p).catch(() => null);
     if (!s) { out[p] = null; return; }
     if (s.isDirectory()) {

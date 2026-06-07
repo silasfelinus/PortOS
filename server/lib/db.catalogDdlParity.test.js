@@ -232,6 +232,35 @@ describe('catalog DDL parity (init-db.sql ↔ db.js ensureSchema)', () => {
     expect(sqlIdx.size).toBeGreaterThan(0);
   });
 
+  // Pipeline series (#1015) — non-`catalog_`-prefixed table in BOTH DDL
+  // sources, with non-`idx_catalog_`-prefixed indexes, so its own assertion.
+  it('pipeline_series has the same columns and indexes in both files', () => {
+    const sqlBody = extractCreateTable(INIT_SQL, 'pipeline_series');
+    const jsBody = extractCreateTable(DB_JS, 'pipeline_series');
+    expect(sqlBody, 'init-db.sql missing CREATE TABLE pipeline_series').toBeTruthy();
+    expect(jsBody, 'db.js missing CREATE TABLE pipeline_series').toBeTruthy();
+    expect([...new Set(extractColumnNames(sqlBody))].sort())
+      .toEqual([...new Set(extractColumnNames(jsBody))].sort());
+    const sqlIdx = extractIndexNames(INIT_SQL, 'idx_series_');
+    const jsIdx = extractIndexNames(DB_JS, 'idx_series_');
+    expect([...sqlIdx].sort()).toEqual([...jsIdx].sort());
+    expect(sqlIdx.size).toBeGreaterThan(0);
+  });
+
+  // Pipeline issues (#1015) — same drift risk; its own table + indexes.
+  it('pipeline_issues has the same columns and indexes in both files', () => {
+    const sqlBody = extractCreateTable(INIT_SQL, 'pipeline_issues');
+    const jsBody = extractCreateTable(DB_JS, 'pipeline_issues');
+    expect(sqlBody, 'init-db.sql missing CREATE TABLE pipeline_issues').toBeTruthy();
+    expect(jsBody, 'db.js missing CREATE TABLE pipeline_issues').toBeTruthy();
+    expect([...new Set(extractColumnNames(sqlBody))].sort())
+      .toEqual([...new Set(extractColumnNames(jsBody))].sort());
+    const sqlIdx = extractIndexNames(INIT_SQL, 'idx_issues_');
+    const jsIdx = extractIndexNames(DB_JS, 'idx_issues_');
+    expect([...sqlIdx].sort()).toEqual([...jsIdx].sort());
+    expect(sqlIdx.size).toBeGreaterThan(0);
+  });
+
   it('search_tsv payload field set matches', () => {
     // Both files re-declare the GENERATED ALWAYS expression character-for-
     // character today. If one side adds a payload key (e.g. voiceNotes) and
