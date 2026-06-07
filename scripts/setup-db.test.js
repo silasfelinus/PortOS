@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 
 // setup-db.js executes top-level setup logic on import (it's a CLI entrypoint),
 // so we can't import it without running the whole flow. Following the repo
@@ -29,5 +32,18 @@ describe('setup-db menu choice resolver (Phase 1: Postgres mandatory)', () => {
     // Any out-of-range answer falls through to the docker-install path.
     expect(resolveMenuChoice('3')).toBe('exit');
     expect(resolveMenuChoice('file')).toBe('exit');
+  });
+
+  // Guard against drift: setup-db.js runs its CLI flow on import so we can't
+  // import promptStorageChoice directly. Instead assert the real source still
+  // matches the inline copy's contract — the [1/2] prompt is present and no
+  // numbered "file" branch was re-added. If promptStorageChoice changes, this
+  // forces the copy above to be updated in lockstep.
+  it('real setup-db.js source matches the inline resolver contract', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const src = readFileSync(join(here, 'setup-db.js'), 'utf8');
+    expect(src).toContain("Enter choice [1/2]:");
+    expect(src).toContain("if (trimmed === '2') resolve('native');");
+    expect(src).not.toMatch(/resolve\('file'\)/);
   });
 });

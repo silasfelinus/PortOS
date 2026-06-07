@@ -785,8 +785,10 @@ ensureSelf()
     }
 
     try {
-      // Skip DB-dependent boot work entirely when running on the escape hatch
-      // without a healthy database — ensureSchema/migrations would throw.
+      // Two early exits guard the migrations below: (1) the fail-fast
+      // process.exit(1) above when the DB is required but missing, and (2) this
+      // return when on the escape hatch with no healthy DB — ensureSchema and
+      // the migrations would throw otherwise.
       if (!dbReady) {
         return;
       }
