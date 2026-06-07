@@ -106,4 +106,28 @@ describe.skipIf(!dbReady)('media asset index DB round-trip', () => {
     const vids = await db.listAssets({ kind: 'video' });
     expect(vids.some((x) => x.id === `${PFX}vid1`)).toBe(true);
   });
+
+  it('does NOT prune a kind whose disk read failed — skips, keeps live rows', async () => {
+    // Seed an image row that a healthy reconcile would normally prune (its file
+    // is not in the "disk" set), and a video row that the healthy video read
+    // SHOULD prune.
+    await db.upsertAsset({ mediaKey: `image:${PFX}keep.png`, kind: 'image', ref: `${PFX}keep.png`, data: { filename: `${PFX}keep.png` }, createdAt: '2026-01-01T00:00:00.000Z' });
+    await db.upsertAsset({ mediaKey: `video:${PFX}vidstale`, kind: 'video', ref: `${PFX}vidstale`, data: { id: `${PFX}vidstale` }, createdAt: '2026-01-01T00:00:00.000Z' });
+
+    // Image reader THROWS (simulated transient I/O fault); video reader is fine.
+    const listGallery = async () => { throw new Error('EIO: simulated disk fault'); };
+    const loadHistory = async () => []; // videos read fine, empty
+    const res = await db.reconcileMediaAssets({ listGallery, loadHistory });
+    expect(res.skippedPrune).toContain('images');
+    expect(res.skippedPrune).not.toContain('videos');
+
+    // The image row survives (its kind's read failed → prune skipped)...
+    const imgs = await db.listAssets({ kind: 'image' });
+    expect(imgs.some((x) => x.filename === `${PFX}keep.png`)).toBe(true);
+    // ...while the video kind, which read cleanly-empty, IS pruned.
+    const vids = await db.listAssets({ kind: 'video' });
+    expect(vids.some((x) => x.id === `${PFX}vidstale`)).toBe(false);
+
+    await db.removeAsset(`image:${PFX}keep.png`);
+  });
 });

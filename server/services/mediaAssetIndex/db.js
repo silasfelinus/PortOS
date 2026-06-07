@@ -18,7 +18,9 @@
  * without it.
  */
 
+import { join } from 'path';
 import { query } from '../../lib/db.js';
+import { PATHS, tryReadFile } from '../../lib/fileUtils.js';
 import { imageToRow, videoToRow } from './logic.js';
 
 function rowToAsset(row) {
@@ -83,56 +85,97 @@ export async function listAssets({ kind } = {}) {
   return result.rows.map(rowToAsset);
 }
 
+// Strict video-history reader for reconcile. The live store's loadHistory()
+// (readJSONFile w/ [] default) intentionally collapses a MISSING file AND a
+// corrupt/unreadable one to [] — fine for the live store, but catastrophic for
+// reconcile's prune: "corrupt history" would look like "no videos exist" and
+// wipe every video row whose file is still on disk. This reader distinguishes
+// the two: file absent → genuinely empty (ok); present-but-unparseable → failure
+// (not ok), so the caller skips pruning videos. Returns { ok, list }.
+async function readVideoHistoryStrict() {
+  const raw = await tryReadFile(join(PATHS.data, 'video-history.json'));
+  if (raw == null) return { ok: true, list: [] }; // file absent → no videos yet
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, list: [] }; // corrupt → do NOT treat as empty
+  }
+  if (!Array.isArray(parsed)) return { ok: false, list: [] };
+  return { ok: true, list: parsed };
+}
+
+// Wrap a reader so a thrown error becomes { ok:false } rather than a trusted
+// empty list (the listGallery path throws on real I/O errors like EACCES/EIO).
+async function readListStrict(fn) {
+  const list = await fn().catch(() => null);
+  if (!Array.isArray(list)) return { ok: false, list: [] };
+  return { ok: true, list };
+}
+
 /**
  * Full reconcile: make the index match what's on disk RIGHT NOW.
  *
  * 1. Read every image (gallery scan) + every video (history file).
  * 2. Upsert a row for each — refreshing metadata for any that changed.
- * 3. Prune index rows whose media_key is no longer on disk (deleted out-of-band,
- *    e.g. a file removed while the server was down, or by a path this slice
- *    doesn't hook yet). This is what keeps the derived index honest without a
- *    delete hook on every removal path.
+ * 3. Prune index rows whose media_key is no longer on disk — but ONLY for a
+ *    kind whose disk read provably SUCCEEDED. A transient read failure (a
+ *    throwing gallery scan, a corrupt video-history.json) must NOT be mistaken
+ *    for "nothing on disk" and wipe live rows whose files still exist; in that
+ *    case we upsert what we did read and skip pruning that kind, leaving the
+ *    existing rows until a later clean reconcile. (This is the absent-vs-empty
+ *    sentinel rule from CLAUDE.md — failed-read ≠ legitimately-empty.)
  *
- * Idempotent: re-running with no disk changes is a no-op upsert per row + an
- * empty prune. Cheap enough to run unconditionally at boot.
+ * Idempotent: re-running with no disk changes is a no-op upsert + empty prune.
+ * Cheap enough to run unconditionally at boot.
  *
  * The disk readers are injected (defaulting to the real services) so tests can
- * drive reconcile without the media-gen stack.
+ * drive reconcile without the media-gen stack. Both injected and default
+ * readers go through the same strict failure-vs-empty wrapper, so a throwing
+ * reader uniformly skips that kind's prune rather than wiping it.
  */
 export async function reconcileMediaAssets(deps = {}) {
   const now = new Date().toISOString();
-  const listGallery = deps.listGallery
-    || (await import('../imageGen/local.js')).listGallery;
-  const loadHistory = deps.loadHistory
-    || (await import('../videoGen/local.js')).loadHistory;
 
-  const [images, videos] = await Promise.all([
-    listGallery().catch(() => []),
-    loadHistory().catch(() => []),
-  ]);
+  const imageRead = await readListStrict(
+    deps.listGallery || (await import('../imageGen/local.js')).listGallery,
+  );
+  // The video default path needs the file-level missing-vs-corrupt distinction
+  // (loadHistory collapses both to []); an injected reader returns an array, so
+  // readListStrict suffices for it.
+  const videoRead = deps.loadHistory
+    ? await readListStrict(deps.loadHistory)
+    : await readVideoHistoryStrict();
 
-  const rows = [
-    ...(Array.isArray(images) ? images : []).map((it) => imageToRow(it, { now })),
-    ...(Array.isArray(videos) ? videos : []).map((v) => videoToRow(v, { now })),
-  ].filter(Boolean);
+  const imageRows = (Array.isArray(imageRead.list) ? imageRead.list : [])
+    .map((it) => imageToRow(it, { now })).filter(Boolean);
+  const videoRows = (Array.isArray(videoRead.list) ? videoRead.list : [])
+    .map((v) => videoToRow(v, { now })).filter(Boolean);
 
-  await upsertAssets(rows);
+  await upsertAssets([...imageRows, ...videoRows]);
 
-  // Prune: any row whose media_key isn't in the current on-disk set is stale.
-  const liveKeys = rows.map((r) => r.mediaKey);
+  // Per-kind prune, gated on a successful read for that kind. Pruning one kind
+  // never touches the other's rows (an image-read failure can't wipe videos).
   let pruned = 0;
-  if (liveKeys.length === 0) {
-    // Nothing on disk → the whole index is stale.
-    const res = await query(`DELETE FROM media_assets`);
-    pruned = res.rowCount || 0;
-  } else {
-    const res = await query(
-      `DELETE FROM media_assets WHERE media_key <> ALL($1::text[])`,
-      [liveKeys],
-    );
-    pruned = res.rowCount || 0;
-  }
+  if (imageRead.ok) pruned += await pruneKind('image', imageRows.map((r) => r.mediaKey));
+  if (videoRead.ok) pruned += await pruneKind('video', videoRows.map((r) => r.mediaKey));
 
-  console.log(`🗂️  Media asset index reconciled: ${rows.length} on disk (${images.length || 0} img / ${videos.length || 0} vid), ${pruned} stale row(s) pruned`);
-  return { ok: true, indexed: rows.length, pruned };
+  const skipped = [!imageRead.ok && 'images', !videoRead.ok && 'videos'].filter(Boolean);
+  const skipNote = skipped.length ? ` — SKIPPED prune for ${skipped.join('+')} (disk read failed)` : '';
+  console.log(`🗂️  Media asset index reconciled: ${imageRows.length} img / ${videoRows.length} vid on disk, ${pruned} stale row(s) pruned${skipNote}`);
+  return { ok: true, indexed: imageRows.length + videoRows.length, pruned, skippedPrune: skipped };
+}
+
+// Delete index rows of `kind` whose media_key isn't in `liveKeys`. An empty
+// liveKeys set legitimately means "this kind has no assets on disk" — safe to
+// prune all of that kind — but the CALLER only reaches here when the read for
+// that kind succeeded, so empty is trustworthy.
+async function pruneKind(kind, liveKeys) {
+  const res = liveKeys.length === 0
+    ? await query(`DELETE FROM media_assets WHERE kind = $1`, [kind])
+    : await query(
+      `DELETE FROM media_assets WHERE kind = $1 AND media_key <> ALL($2::text[])`,
+      [kind, liveKeys],
+    );
+  return res.rowCount || 0;
 }
