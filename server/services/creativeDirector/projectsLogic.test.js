@@ -122,8 +122,12 @@ describe('mirrorStatus / mirrorTimestamp (typed-column safety)', () => {
     expect(mirrorStatus(null)).toBe('draft');
     expect(mirrorStatus(undefined)).toBe('draft');
   });
-  it('mirrorTimestamp passes valid ISO through and falls back otherwise', () => {
+  it('mirrorTimestamp returns a NORMALIZED ISO string and falls back otherwise', () => {
     expect(mirrorTimestamp('2026-01-01T00:00:00.000Z', 'fb')).toBe('2026-01-01T00:00:00.000Z');
+    // Out-of-range calendar date: Date.parse rolls it over (Feb 31 → Mar 3).
+    // The mirror column must get the NORMALIZED value PG accepts, not the raw
+    // string PG would reject — otherwise the INSERT throws and blocks boot.
+    expect(mirrorTimestamp('2026-02-31T00:00:00.000Z', 'fb')).toBe('2026-03-03T00:00:00.000Z');
     expect(mirrorTimestamp('not-a-date', 'fb')).toBe('fb');
     expect(mirrorTimestamp(12345, 'fb')).toBe('fb');
     expect(mirrorTimestamp(null, 'fb')).toBe('fb');

@@ -65,9 +65,22 @@ export function mirrorStatus(status) {
   return (typeof status === 'string' && status ? status : 'draft').slice(0, STATUS_COLUMN_MAX);
 }
 
-/** Safe ISO timestamp for a TIMESTAMPTZ mirror column, falling back to `now`. */
+/**
+ * Safe ISO timestamp for a TIMESTAMPTZ mirror column, falling back to `fallback`.
+ *
+ * Returns the NORMALIZED canonical ISO string (`Date#toISOString`), not the raw
+ * input — because `Date.parse` accepts out-of-range calendar dates by rolling
+ * them over (`2026-02-31` → Mar 3), and echoing that raw string would still
+ * make Postgres reject the TIMESTAMPTZ bind and throw. Normalizing guarantees a
+ * value PG always accepts. The raw original is still preserved verbatim in the
+ * JSONB `data` (callers stringify the full record separately), so this only
+ * affects the queryable mirror column.
+ */
 export function mirrorTimestamp(value, fallback) {
-  if (typeof value === 'string' && !Number.isNaN(Date.parse(value))) return value;
+  if (typeof value === 'string') {
+    const ms = Date.parse(value);
+    if (!Number.isNaN(ms)) return new Date(ms).toISOString();
+  }
   return fallback;
 }
 
