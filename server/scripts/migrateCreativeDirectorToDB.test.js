@@ -113,6 +113,24 @@ describe('migrateCreativeDirectorToDB', () => {
     expect(table.get('cd-1').data.runs).toHaveLength(350);
   });
 
+  it('sanitizes malformed status/timestamp mirror columns without dropping the row', async () => {
+    // A legacy record with a junk timestamp or over-long status must still
+    // import (data verbatim) — the typed mirror columns get safe fallbacks so
+    // the INSERT can't throw and block backend init on upgrade.
+    files[LEGACY] = JSON.stringify([
+      { id: 'cd-1', status: 'x'.repeat(80), createdAt: 'not-a-date', updatedAt: 12345, data: 'keep' },
+    ]);
+    const result = await migrateCreativeDirectorToDB();
+    expect(result.imported).toBe(1);
+    const inserted = query.mock.calls.find((c) => /INSERT/.test(c[0]));
+    const [, status, , createdAt, updatedAt] = inserted[1];
+    expect(status.length).toBeLessThanOrEqual(32);
+    expect(Number.isNaN(Date.parse(createdAt))).toBe(false);
+    expect(Number.isNaN(Date.parse(updatedAt))).toBe(false);
+    // The full record (including the bad fields) is preserved verbatim in data.
+    expect(table.get('cd-1').data.createdAt).toBe('not-a-date');
+  });
+
   it('does NOT stamp the marker when the legacy rename fails (retries next boot)', async () => {
     files[LEGACY] = JSON.stringify([{ id: 'cd-1', status: 'draft' }]);
     renameShouldFail = true;

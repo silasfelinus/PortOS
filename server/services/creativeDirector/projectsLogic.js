@@ -51,6 +51,26 @@ export function trimRuns(runs) {
   return kept.reverse();
 }
 
+// Postgres `status` column is VARCHAR(32) and created_at/updated_at are
+// TIMESTAMPTZ. A legacy/hand-edited project with an over-long status or a
+// malformed timestamp would make the INSERT throw — and because the PG backend
+// inits (and imports) during boot, one bad record could block the whole backend
+// from coming up. The JSONB `data` is always written verbatim (lossless); these
+// helpers only sanitize the typed MIRROR columns so they can never reject a row
+// the file backend would have tolerated as plain JSON.
+const STATUS_COLUMN_MAX = 32;
+
+/** Safe value for the `status` mirror column — bounded, never null. */
+export function mirrorStatus(status) {
+  return (typeof status === 'string' && status ? status : 'draft').slice(0, STATUS_COLUMN_MAX);
+}
+
+/** Safe ISO timestamp for a TIMESTAMPTZ mirror column, falling back to `now`. */
+export function mirrorTimestamp(value, fallback) {
+  if (typeof value === 'string' && !Number.isNaN(Date.parse(value))) return value;
+  return fallback;
+}
+
 /**
  * Build a fresh project record. The caller supplies the already-created media
  * collection id (collection creation is a side effect both backends perform

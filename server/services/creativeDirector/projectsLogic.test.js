@@ -8,6 +8,8 @@ import { describe, it, expect } from 'vitest';
 import {
   MAX_PERSISTED_RUNS,
   trimRuns,
+  mirrorStatus,
+  mirrorTimestamp,
   buildProjectRecord,
   applyProjectPatch,
   applyTreatment,
@@ -109,6 +111,22 @@ describe('appendRun / applyRunUpdate', () => {
     const { project, updated } = applyRunUpdate(input, 'nope', { status: 'completed' });
     expect(updated).toBeNull();
     expect(project).toBe(input);
+  });
+});
+
+describe('mirrorStatus / mirrorTimestamp (typed-column safety)', () => {
+  it('mirrorStatus bounds to 32 chars and falls back to draft', () => {
+    expect(mirrorStatus('rendering')).toBe('rendering');
+    expect(mirrorStatus('x'.repeat(80)).length).toBe(32);
+    expect(mirrorStatus('')).toBe('draft');
+    expect(mirrorStatus(null)).toBe('draft');
+    expect(mirrorStatus(undefined)).toBe('draft');
+  });
+  it('mirrorTimestamp passes valid ISO through and falls back otherwise', () => {
+    expect(mirrorTimestamp('2026-01-01T00:00:00.000Z', 'fb')).toBe('2026-01-01T00:00:00.000Z');
+    expect(mirrorTimestamp('not-a-date', 'fb')).toBe('fb');
+    expect(mirrorTimestamp(12345, 'fb')).toBe('fb');
+    expect(mirrorTimestamp(null, 'fb')).toBe('fb');
   });
 });
 

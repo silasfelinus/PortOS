@@ -23,6 +23,8 @@ import { ServerError } from '../../lib/errorHandler.js';
 import { createCollection } from '../mediaCollections.js';
 import {
   trimRuns,
+  mirrorStatus,
+  mirrorTimestamp,
   buildProjectRecord,
   applyProjectPatch,
   applyTreatment,
@@ -47,6 +49,11 @@ async function persist(exec, project) {
   // Cap runs[] at the single write chokepoint (mirrors the file backend's
   // saveAll) so legacy over-cap rows shrink on first write.
   if (Array.isArray(project.runs)) project.runs = trimRuns(project.runs);
+  // `data` is written verbatim (lossless); the typed mirror columns are
+  // sanitized so a malformed status/timestamp on a legacy record can't make
+  // the INSERT throw (which, during boot init, would block the whole backend).
+  const now = new Date().toISOString();
+  const createdAt = mirrorTimestamp(project.createdAt, now);
   await exec(
     `INSERT INTO creative_director_projects (id, status, data, created_at, updated_at)
      VALUES ($1, $2, $3::jsonb, $4, $5)
@@ -54,7 +61,13 @@ async function persist(exec, project) {
        status = EXCLUDED.status,
        data = EXCLUDED.data,
        updated_at = EXCLUDED.updated_at`,
-    [project.id, project.status, JSON.stringify(project), project.createdAt, project.updatedAt],
+    [
+      project.id,
+      mirrorStatus(project.status),
+      JSON.stringify(project),
+      createdAt,
+      mirrorTimestamp(project.updatedAt, createdAt),
+    ],
   );
   return project;
 }

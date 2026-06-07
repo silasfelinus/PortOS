@@ -33,6 +33,7 @@ import { readFile, writeFile, rename } from 'fs/promises';
 import { join } from 'path';
 import { PATHS } from '../lib/fileUtils.js';
 import { query } from '../lib/db.js';
+import { mirrorStatus, mirrorTimestamp } from '../services/creativeDirector/projectsLogic.js';
 
 const LEGACY_FILENAME = 'creative-director-projects.json';
 const IMPORTED_SUFFIX = '.imported';
@@ -87,18 +88,22 @@ export async function migrateCreativeDirectorToDB() {
       skipped += 1;
       continue;
     }
-    // Import verbatim — including the full runs[] history. The cap is enforced
-    // by the live store on the next write, not here, so the migration is lossless.
+    // Import verbatim — the full record (runs[] included) goes into `data`. The
+    // typed mirror columns are sanitized via the shared helpers so a legacy
+    // record with a malformed timestamp or over-long status can't make the
+    // INSERT throw and abort the whole import (which runs during backend init).
+    const now = new Date().toISOString();
+    const createdAt = mirrorTimestamp(project.createdAt, now);
     const result = await query(
       `INSERT INTO creative_director_projects (id, status, data, created_at, updated_at)
        VALUES ($1, $2, $3::jsonb, $4, $5)
        ON CONFLICT (id) DO NOTHING`,
       [
         project.id,
-        project.status || 'draft',
+        mirrorStatus(project.status),
         JSON.stringify(project),
-        project.createdAt || new Date().toISOString(),
-        project.updatedAt || project.createdAt || new Date().toISOString(),
+        createdAt,
+        mirrorTimestamp(project.updatedAt, createdAt),
       ],
     );
     if (result.rowCount > 0) imported += 1;
