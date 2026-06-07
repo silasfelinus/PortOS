@@ -42,7 +42,9 @@ const BEAT_PX = 30;         // horizontal px per quarter-note beat
 const MAX_STRETCH = 1.45;   // cap row justification so a short row isn't blown out
 
 const ROW_TOP_PAD = 34;     // room above the staff for chord symbols
-const ROW_STAFF_TO_LYRIC = 30; // room below the staff for lyrics
+const ROW_STAFF_TO_LYRIC = 48; // room below the staff for lyrics + below-staff notes
+const LYRIC_BELOW_NOTE = 14;   // gap from the lowest notehead to the lyric baseline
+const LYRIC_MIN_BELOW_STAFF = 22; // floor so high-only rows keep lyrics close to the staff
 const ROW_GAP = 18;         // gap between rows
 const ROW_HEIGHT = ROW_TOP_PAD + 4 * GAP + ROW_STAFF_TO_LYRIC + ROW_GAP;
 
@@ -129,9 +131,15 @@ export default function ScoreSheet({ text, className = '' }) {
     const staffTop = rowTop + ROW_TOP_PAD;
     const staffBottom = staffTop + 4 * GAP;
     const chordY = rowTop + 16;
-    const lyricY = staffBottom + 22;
     // y for a diatonic step within this row.
     const yForStep = (step) => staffBottom - (step - bottomLineStep) * STEP;
+    // Lyrics sit below the LOWEST notehead in the row, not at a fixed offset —
+    // otherwise notes that dip below the staff (ledger-line pitches like A3) draw
+    // on top of the lyric text. Floor at LYRIC_MIN_BELOW_STAFF so a row of only
+    // high notes still keeps its lyrics tucked close under the staff.
+    const rowPitchedNotes = row.rowMeasures.flatMap((rm) => rm.measure.notes).filter((n) => !n.rest);
+    const lowestStep = rowPitchedNotes.length ? Math.min(...rowPitchedNotes.map((n) => n.step)) : bottomLineStep;
+    const lyricY = Math.max(staffBottom + LYRIC_MIN_BELOW_STAFF, yForStep(lowestStep) + LYRIC_BELOW_NOTE);
 
     // Staff: five lines across the full content width.
     for (let line = 0; line < 5; line += 1) {

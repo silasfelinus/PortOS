@@ -21,6 +21,9 @@ vi.mock('../lib/fileUtils.js', async () => {
 });
 
 import * as svc from './songs.js';
+// The score DSL parser is a pure, dependency-free client module — import it here
+// so the seeded scores are validated against the real parser at the source.
+import { parseScore } from '../../client/src/lib/scoreNotation.js';
 
 const STATE_FILE = join(scratch.dir, 'data', 'songs.json');
 
@@ -261,5 +264,60 @@ describe('songs service', () => {
     const custom = await svc.createSong({ title: 'Mine' });
     await expect(svc.refreshSongFromTemplate(custom.id)).rejects.toMatchObject({ code: svc.ERR_NOT_BUILTIN });
     await expect(svc.refreshSongFromTemplate('song-nope')).rejects.toMatchObject({ code: svc.ERR_NOT_FOUND });
+  });
+
+  it('seeds the four traditional rounds as built-ins with parseable scores', async () => {
+    const songs = await svc.listSongs();
+    for (const title of ['Hey Ho Nobody Home', 'Ah Poor Bird', 'Rose Rose Rose Red', 'Zum Gali Gali']) {
+      const round = songs.find((s) => s.title === title);
+      expect(round, `missing seed "${title}"`).toBeTruthy();
+      expect(round.builtIn).toBe(true);
+      expect(round.score).toContain('clef: treble');
+    }
+  });
+
+  it('ships parseable sheet-music scores on every seeded song', async () => {
+    const songs = await svc.listSongs();
+    const withScore = songs.filter((s) => s.score);
+    expect(withScore.length).toBeGreaterThan(0);
+    for (const s of withScore) {
+      const parsed = parseScore(s.score);
+      expect(parsed.errors, `${s.title}: ${parsed.errors.join('; ')}`).toEqual([]);
+      // Every measure should be a full bar (4 beats in these 4/4 scores) and the
+      // score must contain at least one note.
+      expect(parsed.measures.some((m) => m.notes.length > 0)).toBe(true);
+      for (const [i, m] of parsed.measures.entries()) {
+        expect(Math.abs(m.beats - 4) < 1e-9, `${s.title} bar ${i + 1} = ${m.beats} beats`).toBe(true);
+      }
+    }
+  });
+
+  it('links the three classic quodlibet rounds to each other as partners', async () => {
+    const songs = await svc.listSongs();
+    const heyHo = songs.find((s) => s.id === 'seed-hey-ho-nobody-home');
+    expect(heyHo.partnerSongIds).toEqual(
+      expect.arrayContaining(['seed-ah-poor-bird', 'seed-rose-rose-rose-red', 'seed-zum-gali-gali']),
+    );
+    // The link is symmetric — each partner names Hey Ho back.
+    for (const id of heyHo.partnerSongIds) {
+      const partner = songs.find((s) => s.id === id);
+      expect(partner.partnerSongIds).toContain('seed-hey-ho-nobody-home');
+    }
+  });
+
+  it('sanitizes partnerSongIds — drops blanks, dedupes, and drops self-references', () => {
+    const song = svc.sanitizeSong({
+      id: 'seed-rose-rose-rose-red',
+      partnerSongIds: ['seed-ah-poor-bird', '', '  ', 'seed-ah-poor-bird', 'seed-rose-rose-rose-red', 42],
+    });
+    // 'seed-rose-rose-rose-red' (self) and the dup/blanks/non-string are removed.
+    expect(song.partnerSongIds).toEqual(['seed-ah-poor-bird']);
+  });
+
+  it('defaults partnerSongIds to [] and round-trips a patch', async () => {
+    const song = await svc.createSong({ title: 'Solo' });
+    expect(song.partnerSongIds).toEqual([]);
+    const patched = await svc.updateSong(song.id, { partnerSongIds: [song.id, 'song-other'] });
+    expect(patched.partnerSongIds).toEqual(['song-other']); // self dropped
   });
 });

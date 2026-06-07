@@ -1,0 +1,128 @@
+/**
+ * RoundStack — render several songs as simultaneous parts (a quodlibet / round
+ * stack). Rounds like "Hey Ho Nobody Home", "Ah Poor Bird" and "Rose Rose Rose
+ * Red" share one chord cycle and are sung at the same time; this view stacks
+ * each partner song's melody (ScoreSheet) and lyrics in one column so a singer
+ * can see every part at once, and plays the recorded takes from ALL of them
+ * together on a single AudioContext.
+ *
+ * Read-only. It reuses ScoreSheet (the same SVG staff the editor renders) and
+ * createLayeredPlayer (the within-song mixer) widened across songs — no new
+ * rendering or audio machinery. `songs` is the primary song followed by its
+ * resolved partners; the caller fetches the partner records.
+ */
+
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { Link } from 'react-router-dom';
+import { Play, Square, Music, Layers } from 'lucide-react';
+import ScoreSheet from './ScoreSheet';
+import { scoreHasMusic } from '../../lib/scoreNotation';
+import { createLayeredPlayer } from '../../lib/songPlayback';
+import { getUploadUrl } from '../../services/api';
+import { rhythmShapeLabel } from '../../lib/songCraft';
+
+const hasText = (v) => typeof v === 'string' && v.trim().length > 0;
+
+export default function RoundStack({ songs = [] }) {
+  const [playing, setPlaying] = useState(false);
+  const playerRef = useRef(null);
+
+  // Every saved take across all stacked songs, keyed by a song-namespaced id so
+  // two songs' recordings can't collide in the mixer's id map.
+  const takes = useMemo(() => songs.flatMap((s) => (s.recordings || []).map((r) => ({
+    id: `${s.id}:${r.id}`,
+    url: getUploadUrl(r.filename),
+    muted: r.muted,
+  }))), [songs]);
+  const audibleCount = useMemo(() => takes.filter((t) => !t.muted).length, [takes]);
+
+  // Stop and release the mixer on unmount or when the take set changes (a new
+  // recording elsewhere shouldn't keep an old mix playing).
+  useEffect(() => () => { playerRef.current?.stop(); }, []);
+
+  const stop = useCallback(() => {
+    playerRef.current?.stop();
+    setPlaying(false);
+  }, []);
+
+  const playAll = useCallback(async () => {
+    playerRef.current?.stop();
+    const player = createLayeredPlayer(takes);
+    player.onEnded(() => setPlaying(false));
+    playerRef.current = player;
+    setPlaying(true);
+    await player.play();
+  }, [takes]);
+
+  if (songs.length === 0) return null;
+
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="flex items-center gap-2 text-sm font-semibold text-white">
+          <Layers size={15} className="text-port-accent" /> Round stack — {songs.length} parts together
+        </h2>
+        {audibleCount > 0 && (
+          <button
+            type="button"
+            onClick={playing ? stop : playAll}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-port-accent text-white hover:bg-port-accent/90"
+          >
+            {playing ? <Square size={14} /> : <Play size={14} />}
+            {playing ? 'Stop' : `Play all parts (${audibleCount})`}
+          </button>
+        )}
+      </div>
+      <p className="text-xs text-gray-500">
+        These rounds share a chord cycle — each line is a different melody sung at the same time. Record a take on each
+        song, then play them stacked.
+      </p>
+
+      <div className="space-y-4">
+        {songs.map((s, i) => {
+          const feel = s.rhythmShapeId ? rhythmShapeLabel(s.rhythmShapeId) : '';
+          const sections = s.sections || [];
+          return (
+            <div key={s.id} className="bg-port-card border border-port-border rounded-lg p-4 space-y-3">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <h3 className="flex items-center gap-2 text-sm font-semibold text-white">
+                  <Music size={14} className="text-port-accent shrink-0" />
+                  {/* The primary song is the one being viewed; partners link out. */}
+                  {i === 0 ? (
+                    <span>{s.title || 'Untitled song'}</span>
+                  ) : (
+                    <Link to={`/songs/${s.id}`} className="hover:text-port-accent transition-colors">
+                      {s.title || 'Untitled song'}
+                    </Link>
+                  )}
+                </h3>
+                <span className="text-xs text-gray-500">
+                  {[hasText(s.key) && s.key, feel].filter(Boolean).join(' · ')}
+                </span>
+              </div>
+
+              {scoreHasMusic(s.score) && (
+                <div className="overflow-x-auto">
+                  <ScoreSheet text={s.score} />
+                </div>
+              )}
+
+              {sections.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {sections.map((sec) => (
+                    <div key={sec.id}>
+                      <h4 className="text-xs font-semibold uppercase tracking-wide text-port-accent mb-1">{sec.label || 'Section'}</h4>
+                      {hasText(sec.lyrics)
+                        ? <p className="text-sm text-gray-100 whitespace-pre-wrap leading-relaxed">{sec.lyrics}</p>
+                        : <p className="text-xs text-gray-600 italic">No lyrics</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}

@@ -47,6 +47,7 @@ export const SECTIONS_MAX = 60;
 export const LAYERS_MAX = 24;
 export const RECORDINGS_MAX = 64;      // saved vocal takes for layered playback
 export const REFERENCES_MAX = 12;      // reference links/videos (e.g. TikTok)
+export const PARTNERS_MAX = 12;        // partner-song ids (rounds sung together)
 export const URL_MAX_LENGTH = 512;     // uploaded-file path/url
 
 // Trim a string field, returning '' for non-strings. Mirrors the
@@ -142,6 +143,19 @@ const sanitizeList = (arr, fn, max) =>
     .filter(Boolean)
     .slice(0, max);
 
+// Partner-song ids — the "symbiotic" link that lets rounds declare which other
+// songs they're sung together with (a quodlibet stack). Keeps only non-empty
+// strings, dedupes, and drops a self-reference (a song can't partner itself —
+// that would make the round-stack render the same song twice). `selfId` is the
+// owning song's id so the self-drop survives a hand-edited file.
+const sanitizePartnerIds = (arr, selfId) => {
+  const seen = new Set();
+  return (Array.isArray(arr) ? arr : [])
+    .map((v) => trimField(v, ID_MAX_LENGTH))
+    .filter((id) => id && id !== selfId && !seen.has(id) && seen.add(id))
+    .slice(0, PARTNERS_MAX);
+};
+
 // Project a stored or inbound record onto the canonical song shape. Used on
 // read (defends hand-edited JSON) and on write (normalizes the input).
 export const sanitizeSong = (raw) => {
@@ -166,6 +180,8 @@ export const sanitizeSong = (raw) => {
     layers: sanitizeList(raw.layers, sanitizeLayer, LAYERS_MAX),
     recordings: sanitizeList(raw.recordings, sanitizeRecording, RECORDINGS_MAX),
     references: sanitizeList(raw.references, sanitizeReference, REFERENCES_MAX),
+    // Ids of other songs this one is sung together with (round-stack partners).
+    partnerSongIds: sanitizePartnerIds(raw.partnerSongIds, id),
     // Derived from the shipped-seed id set, NOT from `raw` — so the flag can't
     // be lost on edit or spoofed on a hand-edited custom song. A built-in
     // default can be restored to its shipped content via refreshSongFromTemplate.
@@ -225,6 +241,150 @@ export const SEED_SONGS = [
     ],
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
+  },
+  // --- Traditional rounds -------------------------------------------------
+  // Four singable rounds that the user learned as a set. The first three —
+  // Hey Ho Nobody Home, Ah Poor Bird, Rose Rose Rose Red — are the classic
+  // English quodlibet: all in the same minor key, they can be sung at the same
+  // time. Zum Gali Gali shares the key and rounds out the set. Each links the
+  // others via partnerSongIds, so the editor's round-stack view can render them
+  // together. Melodies are scored with no key signature (D Dorian / D minor,
+  // all naturals) so they stack cleanly; the `key` field names the tonality.
+  {
+    id: 'seed-hey-ho-nobody-home',
+    title: 'Hey Ho Nobody Home',
+    artist: 'Traditional',
+    key: 'D minor (Dorian)',
+    tempo: 76,
+    rhythmShapeId: 'slow-4-4',
+    notation: 'A round in up to six voices (Ravenscroft\'s Pammelia, 1609). New voices enter one two-bar phrase behind the last. Scored in D with no key signature — D Dorian, B natural. Melody after Jack Campin\'s D-minor round transcription.',
+    score: [
+      'clef: treble',
+      'key: C',
+      'time: 4/4',
+      'tempo: 76',
+      '',
+      '| G4h(Hey) D4h(ho) | G4q(no-) G4e(bo-) G4e(dy) D4h(home) |',
+      '| G4q(Meat) G4q(nor) A4q(drink) A4q(nor) | B4e(mon-) B4e(ey) B4e(have) B4e(I) A4h(none) |',
+      '| D5q(Still) C5q(I) D5q(will) C5q(be) | B4h(mer-) A4h(ry) |',
+    ].join('\n'),
+    notes: 'One of the oldest English rounds. Sung with Ah Poor Bird and Rose Rose Rose Red it forms a classic three-round quodlibet — all three share one minor chord cycle and can be sung at the same time. Keep it light and lilting despite the minor key.',
+    learned: false,
+    sections: [
+      { id: 'sec-round', label: 'Round', lyrics: 'Hey, ho, nobody home,\nMeat nor drink nor money have I none,\nStill I will be merry.\nHey, ho, nobody home.' },
+    ],
+    layers: [
+      { id: 'voice-1', label: 'Voice 1 (lead)', part: 'Any', notes: 'Starts the round and sings it straight through. Everyone learns this line first.' },
+      { id: 'voice-2', label: 'Voice 2', part: 'Any', notes: 'Enters as Voice 1 reaches "Meat nor drink…" (phrase 2) — one full phrase behind the lead.' },
+      { id: 'voice-3', label: 'Voice 3', part: 'Any', notes: 'Enters at "Still I will be merry" (phrase 3); the three phrases stack into the full minor chord.' },
+      { id: 'voice-4', label: 'Voice 4', part: 'Any', notes: 'Optional fourth entry: comes in as Voice 1 loops back to the top, doubling the lead in unison or an octave up.' },
+    ],
+    references: [],
+    partnerSongIds: ['seed-ah-poor-bird', 'seed-rose-rose-rose-red', 'seed-zum-gali-gali'],
+    createdAt: '2026-06-07T00:00:00.000Z',
+    updatedAt: '2026-06-07T00:00:00.000Z',
+  },
+  {
+    id: 'seed-ah-poor-bird',
+    title: 'Ah Poor Bird',
+    artist: 'Traditional',
+    key: 'D minor',
+    tempo: 72,
+    rhythmShapeId: 'slow-4-4',
+    notation: 'A four-phrase round (8 bars). Voices enter every two bars. The melody climbs the minor scale to a leap in the third phrase, then settles back to the tonic. Scored in D minor with no key signature (all naturals).',
+    score: [
+      'clef: treble',
+      'key: C',
+      'time: 4/4',
+      'tempo: 72',
+      '',
+      '| D4h(Ah) E4h(poor) | F4w(bird) |',
+      '| F4h(take) G4h(thy) | A4w(flight) |',
+      '| A4q(far) D5q(a-) D5q(bove) C5q(the) | D5h(sor-) A4q(rows) G4q(of) |',
+      '| F4h(this) E4h(sad) | D4w(night) |',
+    ].join('\n'),
+    notes: 'A gentle English lament-round. Combines with Hey Ho Nobody Home and Rose Rose Rose Red as a quodlibet. Two lyric sets ship: the common "take thy flight" verse and the "Oh poor bird, why art thou…" variant.',
+    learned: false,
+    sections: [
+      { id: 'sec-verse', label: 'Verse', lyrics: 'Ah, poor bird,\nTake thy flight,\nFar above the sorrows\nOf this sad night.' },
+      { id: 'sec-alt', label: 'Alternate (as learned)', lyrics: 'Oh, poor bird, why art thou\nHiding in the shadows\nOf this dark house?' },
+    ],
+    layers: [
+      { id: 'voice-1', label: 'Voice 1 (lead)', part: 'Any', notes: 'Sings the climbing phrase straight through. The round is four 2-bar phrases.' },
+      { id: 'voice-2', label: 'Voice 2', part: 'Any', notes: 'Enters at "take thy flight" (bar 3), two bars behind the lead.' },
+      { id: 'voice-3', label: 'Voice 3', part: 'Any', notes: 'Enters at "far above the sorrows" (bar 5).' },
+      { id: 'voice-4', label: 'Voice 4', part: 'Any', notes: 'Enters at "of this sad night" (bar 7) — four voices fill the lament.' },
+    ],
+    references: [],
+    partnerSongIds: ['seed-hey-ho-nobody-home', 'seed-rose-rose-rose-red', 'seed-zum-gali-gali'],
+    createdAt: '2026-06-07T00:00:00.000Z',
+    updatedAt: '2026-06-07T00:00:00.000Z',
+  },
+  {
+    id: 'seed-rose-rose-rose-red',
+    title: 'Rose Rose Rose Red',
+    artist: 'Traditional',
+    key: 'D minor',
+    tempo: 76,
+    rhythmShapeId: 'slow-4-4',
+    notation: 'A four-phrase English round (i–VII–V harmony), 8 bars. Voices enter every two bars. Scored in D minor with no key signature (all naturals).',
+    score: [
+      'clef: treble',
+      'key: C',
+      'time: 4/4',
+      'tempo: 76',
+      '',
+      '| D4h(Rose) C4h(rose) | D4h(rose) A3h(red) |',
+      '| D4q(Will) D4q(I) E4q(ev-) E4q(er) | F4q(see) G4q(thee) E4h(wed) |',
+      '| A4q(I) A4q(will) G4q(mar-) A4q(ry) | F4q(at) G4e(thy) F4e E4q(will) A3q(sir) |',
+      '| D4h(At) C4q(thy) E4q(will) | D4w |',
+    ].join('\n'),
+    notes: 'The third of the classic quodlibet trio with Hey Ho Nobody Home and Ah Poor Bird — all three stack in the same key. A favourite singing-round.',
+    learned: false,
+    sections: [
+      { id: 'sec-round', label: 'Round', lyrics: 'Rose, rose, rose, red,\nWill I ever see thee wed?\nI will marry at thy will, sire,\nAt thy will.' },
+    ],
+    layers: [
+      { id: 'voice-1', label: 'Voice 1 (lead)', part: 'Any', notes: 'Sings the round straight through. Four 2-bar phrases.' },
+      { id: 'voice-2', label: 'Voice 2', part: 'Any', notes: 'Enters at "Will I ever see thee wed" (bar 3).' },
+      { id: 'voice-3', label: 'Voice 3', part: 'Any', notes: 'Enters at "I will marry…" (bar 5).' },
+      { id: 'voice-4', label: 'Voice 4', part: 'Any', notes: 'Enters at "At thy will" (bar 7) — four voices complete the harmony.' },
+    ],
+    references: [],
+    partnerSongIds: ['seed-hey-ho-nobody-home', 'seed-ah-poor-bird', 'seed-zum-gali-gali'],
+    createdAt: '2026-06-07T00:00:00.000Z',
+    updatedAt: '2026-06-07T00:00:00.000Z',
+  },
+  {
+    id: 'seed-zum-gali-gali',
+    title: 'Zum Gali Gali',
+    artist: 'Traditional',
+    key: 'D minor',
+    tempo: 112,
+    rhythmShapeId: 'driving-4-4',
+    notation: 'The refrain chant, repeated. Scored in D minor with no key signature (all naturals). Loop it as many times as you like; a second voice entering one phrase behind turns it into a round.',
+    score: [
+      'clef: treble',
+      'key: C',
+      'time: 4/4',
+      'tempo: 112',
+      '',
+      '| D4q(Zoom) D4e(gul-) E4e(ly) F4e(gul-) E4e(ly) F4e(gul-) E4e(ly) | D4q(zoom) D4e(gul-) D4e(ly) A3q(gul-) C4q(ly) |',
+      '| D4q(Zoom) D4e(gul-) E4e(ly) F4e(gul-) E4e(ly) F4e(gul-) E4e(ly) | D4q(zoom) D4e(gul-) D4e(ly) A3q(gul-) C4q(ly) |',
+    ].join('\n'),
+    notes: 'A simple chant on repeat — sung here as "zoom gully gully gully, zoom gully gully" (the refrain of the Israeli round Zum Gali Gali). Loop it as a driving ostinato; a second voice entering a phrase late turns it into a round. Shares the key with the English trio and rounds out the set.',
+    learned: false,
+    sections: [
+      { id: 'sec-chant', label: 'Chant', lyrics: 'Zoom gully gully gully, zoom gully gully,\nZoom gully gully gully, zoom gully gully.' },
+    ],
+    layers: [
+      { id: 'voice-1', label: 'Voice 1 (lead)', part: 'Any', notes: 'Chants the line and keeps it going on repeat — the engine the others ride on.' },
+      { id: 'voice-2', label: 'Voice 2', part: 'Any', notes: 'Enters a phrase behind Voice 1 so the two halves of the chant overlap into harmony.' },
+    ],
+    references: [],
+    partnerSongIds: ['seed-hey-ho-nobody-home', 'seed-ah-poor-bird', 'seed-rose-rose-rose-red'],
+    createdAt: '2026-06-07T00:00:00.000Z',
+    updatedAt: '2026-06-07T00:00:00.000Z',
   },
 ];
 
@@ -300,7 +460,7 @@ export async function updateSong(id, patch) {
     // Merge field-by-field so an absent key preserves the stored value while a
     // present key (including empty string / empty array) applies the change.
     const merged = { ...songs[idx] };
-    for (const key of ['title', 'artist', 'key', 'tempo', 'rhythmShapeId', 'notation', 'score', 'notes', 'learned', 'sections', 'layers', 'recordings', 'references']) {
+    for (const key of ['title', 'artist', 'key', 'tempo', 'rhythmShapeId', 'notation', 'score', 'notes', 'learned', 'sections', 'layers', 'recordings', 'references', 'partnerSongIds']) {
       if (key in patch) merged[key] = patch[key];
     }
     merged.id = id;

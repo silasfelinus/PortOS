@@ -72,6 +72,18 @@ describe('ScoreSheet renderer', () => {
     expect(count(withLedger, 'line')).toBeGreaterThan(6); // 5 staff + 2 barlines + ledger
   });
 
+  it('places a lyric below a low ledger note, not under its notehead', () => {
+    // Regression: A3 sits below the treble staff; with a fixed lyric baseline the
+    // notehead drew on top of the syllable. The lyric must sit below the head.
+    const html = renderToStaticMarkup(<ScoreSheet text={'| A3q(low) F5q(high) |'} />);
+    const headY = Number(/<ellipse[^>]*\bcy="([\d.]+)"/.exec(html)?.[1]);
+    const lyricY = Number(new RegExp('<text[^>]*\\by="([\\d.]+)"[^>]*>low<').exec(html)?.[1]);
+    expect(Number.isFinite(headY)).toBe(true);
+    expect(Number.isFinite(lyricY)).toBe(true);
+    // Larger y is further down the page — the lyric baseline must be below the head.
+    expect(lyricY).toBeGreaterThan(headY);
+  });
+
   it('renders a bass clef score without error', () => {
     const html = renderToStaticMarkup(<ScoreSheet text={'clef: bass\n| G2q C3q |'} />);
     expect(html).not.toMatch(/NaN/);
