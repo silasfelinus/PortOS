@@ -42,6 +42,24 @@ function isFileBackend() {
   return process.env.MEMORY_BACKEND === 'file' || process.env.NODE_ENV === 'test';
 }
 
+// Record-id allowlist — IDENTICAL to the collectionStore idPattern the file
+// backend enforced. The facade must reject the same ids on the PG path so the
+// two backends accept the same records: a malformed synced/imported id (e.g.
+// `bad/id`, or >128 chars) that the file store threw on must NOT silently land
+// in the `universes` table (where it can't round-trip back to files and could
+// break path/route consumers). queueRecordWrite/writeRecord/deleteRecord throw
+// on a bad id, so mergeUniversesFromSync's per-id `.catch` skips it exactly as
+// it did against the file backend.
+const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+/** True when `id` matches the universe record-id allowlist (collectionStore parity). */
+export const isValidUniverseId = (id) => typeof id === 'string' && ID_PATTERN.test(id);
+const isValidId = isValidUniverseId;
+function assertValidId(id) {
+  if (!isValidId(id)) {
+    throw new Error(`universeStore: invalid record id "${id}" — must match ${ID_PATTERN}`);
+  }
+}
+
 // --- Mutation epoch (the dataSync federation-invisibility fix) ---
 // Module-level so dataSync reads ONE monotonic counter regardless of how many
 // times the facade is rebuilt (test PATHS.data swaps). Bumped on every record
@@ -163,6 +181,7 @@ function createFacade({ dir, sanitizeRecord }) {
   // and PG serialize identically. Mirrors collectionStore's queueRecordWrite.
   const recordTails = new Map();
   function queueRecordWrite(id, fn) {
+    assertValidId(id); // parity with collectionStore.queueRecordWrite
     const prev = recordTails.get(id) || Promise.resolve();
     const next = prev.then(fn, fn);
     const silenced = next.catch(() => {});
@@ -204,11 +223,13 @@ function createFacade({ dir, sanitizeRecord }) {
     // ensureDir+atomicWrite(recordPath) / rm(recordDir) the service used to do.
     // Both bump the mutation epoch so dataSync re-sends the universe snapshot.
     writeRecord: async (id, record) => {
+      assertValidId(id); // parity with collectionStore.saveOneNow — reject bad ids on BOTH backends
       const out = await (await getBackend()).writeRaw(id, record);
       mutationEpoch += 1;
       return out ?? record;
     },
     deleteRecord: async (id) => {
+      assertValidId(id); // parity with collectionStore.deleteOneNow
       await (await getBackend()).deleteRaw(id);
       mutationEpoch += 1;
     },

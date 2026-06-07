@@ -28,7 +28,7 @@
 import { join, basename } from 'path';
 import { randomUUID } from 'crypto';
 import { PATHS, ensureDir, resolveImageRef } from '../lib/fileUtils.js';
-import { getUniverseStore } from './universeBuilder/store.js';
+import { getUniverseStore, isValidUniverseId } from './universeBuilder/store.js';
 import { composeStyledPrompt } from '../lib/composeStyledPrompt.js';
 import { flattenCanonDescriptorFragments, richCanonDescriptorFragments } from '../lib/canonPrompt.js';
 import {
@@ -1456,6 +1456,15 @@ export async function mergeUniversesFromSync(remoteUniverses, { source = { via: 
   const writeTasks = [];
   for (const remote of remoteUniverses) {
     if (!remote || typeof remote !== 'object' || !isStr(remote.id)) continue;
+    // Skip a peer record whose id falls outside the store allowlist BEFORE the
+    // store throws on it — the store's writeRecord/queueRecordWrite reject such
+    // ids synchronously (collectionStore parity), which would otherwise abort
+    // this whole sync batch. A buggy/malicious peer can't poison the batch or
+    // plant a non-round-trippable id in `universes`.
+    if (!isValidUniverseId(remote.id)) {
+      console.warn(`⚠️ universe sync: skipping peer record with invalid id "${remote.id}"`);
+      continue;
+    }
     const sanitized = sanitizeTemplate(remote);
     if (!sanitized) continue;
     // `ephemeral` is a LOCAL-only marker — never trust the inbound value.

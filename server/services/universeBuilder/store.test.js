@@ -107,6 +107,23 @@ describe('universe store facade — file backend', () => {
     expect((await s.loadRuns()).map((r) => r.id)).toEqual(['r-new', 'r-old']);
   });
 
+  it('rejects ids outside the collectionStore allowlist on writeRecord/deleteRecord (backend parity)', async () => {
+    const s = getUniverseStore(passthroughSanitize);
+    await expect(s.writeRecord('bad/id', { id: 'bad/id', name: 'X' })).rejects.toThrow(/invalid record id/);
+    await expect(s.writeRecord('a'.repeat(129), { id: 'a'.repeat(129), name: 'X' })).rejects.toThrow(/invalid record id/);
+    await expect(s.deleteRecord('bad/id')).rejects.toThrow(/invalid record id/);
+    // A valid id still works.
+    await s.writeRecord('ok-1', { id: 'ok-1', name: 'X' });
+    expect(await s.loadOneRaw('ok-1')).toEqual({ id: 'ok-1', name: 'X' });
+  });
+
+  it('queueRecordWrite throws on a bad id so mergeUniversesFromSync .catch skips it (parity)', async () => {
+    const s = getUniverseStore(passthroughSanitize);
+    // Throws synchronously, exactly like collectionStore.queueRecordWrite — the
+    // merge path wraps each write in a try/.catch so the bad record is skipped.
+    expect(() => s.queueRecordWrite('bad/id', async () => 'never')).toThrow(/invalid record id/);
+  });
+
   it('verifySchemaVersion reports the file collection version', async () => {
     const s = getUniverseStore(passthroughSanitize);
     await s.writeRecord('u-1', { id: 'u-1', name: 'X' });
