@@ -52,6 +52,15 @@ const recordingSchema = z.object({
   createdAt: z.string().optional(),
 });
 
+// A reference link/video (e.g. a TikTok performance). `url` is required; the
+// client renders TikTok urls as embeds and everything else as a link.
+const referenceSchema = z.object({
+  id: str(svc.ID_MAX_LENGTH).optional(),
+  url: str(svc.URL_MAX_LENGTH),
+  label: str(svc.LABEL_MAX_LENGTH).optional().default(''),
+  note: str(svc.FIELD_MAX_LENGTH).optional().default(''),
+});
+
 // No `.default('')` on these fields: `.partial()` (used for PUT) materializes a
 // default for an *omitted* key, which would turn a single-field PUT into a
 // wipe of every other field via updateSong's `'key' in patch` merge. Leaving
@@ -70,6 +79,7 @@ const songInputSchema = z.object({
   sections: z.array(sectionSchema).max(svc.SECTIONS_MAX).optional(),
   layers: z.array(layerSchema).max(svc.LAYERS_MAX).optional(),
   recordings: z.array(recordingSchema).max(svc.RECORDINGS_MAX).optional(),
+  references: z.array(referenceSchema).max(svc.REFERENCES_MAX).optional(),
 });
 
 // AI generate/evaluate inputs. providerId/model are optional overrides; the
@@ -96,6 +106,7 @@ const evaluateSchema = z.object({
 // this, asyncHandler defaults everything to 500.
 const mapSongError = (err) => {
   if (err?.code === svc.ERR_NOT_FOUND) return new ServerError(err.message, { status: 404, code: err.code });
+  if (err?.code === svc.ERR_NOT_BUILTIN) return new ServerError(err.message, { status: 400, code: err.code });
   return err;
 };
 const rethrowSongError = (err) => { throw mapSongError(err); };
@@ -126,6 +137,14 @@ router.put('/:id', asyncHandler(async (req, res) => {
 router.delete('/:id', asyncHandler(async (req, res) => {
   const result = await svc.deleteSong(req.params.id).catch(rethrowSongError);
   res.json(result);
+}));
+
+// POST /api/songs/:id/refresh-template → reset a built-in default song's shipped
+// content (metadata/lyrics/layers/notation) to the current bundled template,
+// preserving the user's own recordings + learned progress. 400 if not built-in.
+router.post('/:id/refresh-template', asyncHandler(async (req, res) => {
+  const song = await svc.refreshSongFromTemplate(req.params.id).catch(rethrowSongError);
+  res.json({ song });
 }));
 
 // --- AI generate / evaluate -------------------------------------------------

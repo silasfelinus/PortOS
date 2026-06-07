@@ -27,6 +27,9 @@ const STATE_PATH = join(PATHS.data, 'songs.json');
 // Service errors carry a `code` field so routes map to HTTP status without
 // string-matching on err.message (which breaks on rename).
 export const ERR_NOT_FOUND = 'NOT_FOUND';
+// Raised when a refresh-from-template is requested for a song that isn't a
+// bundled built-in default (no shipped template to restore from).
+export const ERR_NOT_BUILTIN = 'NOT_BUILTIN';
 const makeErr = (message, code) => Object.assign(new Error(message), { code });
 
 // --- Shape bounds (shared with routes/songs.js#songInputSchema) -------------
@@ -42,6 +45,7 @@ export const TEMPO_MAX = 320;
 export const SECTIONS_MAX = 60;
 export const LAYERS_MAX = 24;
 export const RECORDINGS_MAX = 64;      // saved vocal takes for layered playback
+export const REFERENCES_MAX = 12;      // reference links/videos (e.g. TikTok)
 export const URL_MAX_LENGTH = 512;     // uploaded-file path/url
 
 // Trim a string field, returning '' for non-strings. Mirrors the
@@ -111,6 +115,23 @@ const sanitizeRecording = (r) => {
   };
 };
 
+// One reference link/video ({ id, url, label, note }) — external study
+// material for the song (a TikTok performance, a tutorial, a chord chart).
+// `url` is required (a reference without a target is meaningless); label/note
+// are free text. The client decides how to render each url (TikTok videos
+// embed; everything else is a link).
+const sanitizeReference = (r) => {
+  if (!r || typeof r !== 'object') return null;
+  const url = trimField(r.url, URL_MAX_LENGTH);
+  if (!url) return null;
+  return {
+    id: trimField(r.id, ID_MAX_LENGTH) || `ref-${randomUUID().slice(0, 8)}`,
+    url,
+    label: trimField(r.label, LABEL_MAX_LENGTH),
+    note: trimField(r.note, FIELD_MAX_LENGTH),
+  };
+};
+
 const sanitizeList = (arr, fn, max) =>
   (Array.isArray(arr) ? arr : [])
     .map(fn)
@@ -136,6 +157,11 @@ export const sanitizeSong = (raw) => {
     sections: sanitizeList(raw.sections, sanitizeSection, SECTIONS_MAX),
     layers: sanitizeList(raw.layers, sanitizeLayer, LAYERS_MAX),
     recordings: sanitizeList(raw.recordings, sanitizeRecording, RECORDINGS_MAX),
+    references: sanitizeList(raw.references, sanitizeReference, REFERENCES_MAX),
+    // Derived from the shipped-seed id set, NOT from `raw` — so the flag can't
+    // be lost on edit or spoofed on a hand-edited custom song. A built-in
+    // default can be restored to its shipped content via refreshSongFromTemplate.
+    builtIn: BUILTIN_SONG_IDS.has(id),
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : new Date().toISOString(),
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : new Date().toISOString(),
   };
@@ -156,8 +182,13 @@ export const SEED_SONGS = [
     notes: 'A travelling lament — keep it spacious and mournful. Sustain the vowels on the downbeats. Works beautifully with a soft hummed drone under the verses.',
     learned: false,
     sections: [
-      { id: 'sec-verse-1', label: 'Verse 1', lyrics: 'If you miss the train I\'m on, you will know that I am gone\nYou can hear the whistle blow a hundred miles' },
-      { id: 'sec-chorus', label: 'Chorus', lyrics: 'A hundred miles, a hundred miles, a hundred miles, a hundred miles\nYou can hear the whistle blow a hundred miles' },
+      { id: 'sec-verse-1', label: 'Verse 1', lyrics: 'If you miss the train I\'m on\nYou will know that I am gone\nYou can hear the whistle blow\nA hundred miles' },
+      { id: 'sec-chorus-1', label: 'Chorus 1', lyrics: 'A hundred miles\nA hundred miles\nA hundred miles\nA hundred miles\nA hundred miles\nYou can hear the whistle blow a hundred miles' },
+      { id: 'sec-verse-2', label: 'Verse 2', lyrics: 'Lord, I\'m one\nLord, I\'m two\nLord, I\'m three\nLord, I\'m four\nLord, I\'m five hundred miles from my home' },
+      { id: 'sec-chorus-2', label: 'Chorus 2', lyrics: 'Five hundred miles\nFive hundred miles\nFive hundred miles\nFive hundred miles\nLord, I\'m five hundred miles from my home' },
+      { id: 'sec-verse-3', label: 'Verse 3', lyrics: 'Not a shirt on my back\nNot a penny to my name\nLord, I can\'t go home\nThis a-way' },
+      { id: 'sec-chorus-3', label: 'Chorus 3', lyrics: 'This a-way\nThis a-way\nThis a-way\nThis a-way\nThis a-way\nLord, I can\'t go home this a-way' },
+      { id: 'sec-verse-4', label: 'Verse 4 (reprise)', lyrics: 'If you miss the train I\'m on\nYou will know that I am gone\nYou can hear the whistle blow a hundred miles' },
     ],
     layers: [
       { id: 'lead', label: 'Lead melody', part: 'Soprano / Tenor', notes: 'The tune everyone knows. Lock this first, in tune, before stacking anything.' },
@@ -165,10 +196,21 @@ export const SEED_SONGS = [
       { id: 'harmony-3rd', label: 'Harmony (third)', part: 'Alto', notes: 'A third under the melody. The first colour — keep it close and warm.' },
       { id: 'drone', label: 'Drone / pedal', part: 'Bass / Alto', notes: 'Optional held tonic (C) under the verse to make the lament feel ancient.' },
     ],
+    references: [
+      { id: 'ref-tt-marie', url: 'https://www.tiktok.com/@marie.celestinee/video/7638358831205977376', label: 'TikTok · @marie.celestinee', note: 'Reference performance.' },
+      { id: 'ref-tt-eric', url: 'https://www.tiktok.com/@ericolsith/video/7633158760659176718', label: 'TikTok · @ericolsith', note: 'Reference performance.' },
+    ],
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
   },
 ];
+
+// Ids of the bundled built-in default songs. The sanitizer stamps each read
+// song with `builtIn` from this set, and refreshSongFromTemplate restores a
+// built-in's shipped content from the matching SEED_SONGS entry. A user who
+// already has the song installed (older shipped lyrics) renews it on demand.
+export const BUILTIN_SONG_IDS = new Set(SEED_SONGS.map((s) => s.id));
+const seedTemplate = (id) => SEED_SONGS.find((s) => s.id === id) || null;
 
 // Serialize the read-modify-write cycle so two mutations issued back-to-back
 // (e.g. a rename PUT followed by a layer edit) each merge against the freshest
@@ -235,7 +277,7 @@ export async function updateSong(id, patch) {
     // Merge field-by-field so an absent key preserves the stored value while a
     // present key (including empty string / empty array) applies the change.
     const merged = { ...songs[idx] };
-    for (const key of ['title', 'artist', 'key', 'tempo', 'rhythmShapeId', 'notation', 'notes', 'learned', 'sections', 'layers', 'recordings']) {
+    for (const key of ['title', 'artist', 'key', 'tempo', 'rhythmShapeId', 'notation', 'notes', 'learned', 'sections', 'layers', 'recordings', 'references']) {
       if (key in patch) merged[key] = patch[key];
     }
     merged.id = id;
@@ -245,6 +287,34 @@ export async function updateSong(id, patch) {
     songs[idx] = song;
     await atomicWrite(STATE_PATH, { songs });
     console.log(`🎵 Updated song "${song.title}" (${id})`);
+    return song;
+  });
+}
+
+// Restore a built-in default song's shipped content (metadata, lyrics, layers,
+// notation, notes) to the current bundled template — for installs that seeded
+// an older version of the song and want the newer shipped one. User-owned state
+// is preserved: their recorded takes, their `learned` progress, and the
+// original createdAt. Throws ERR_NOT_BUILTIN for a non-default song.
+export async function refreshSongFromTemplate(id) {
+  return enqueue(async () => {
+    const songs = await readSongs();
+    const idx = songs.findIndex((s) => s.id === id);
+    if (idx === -1) throw makeErr(`Song ${id} not found`, ERR_NOT_FOUND);
+    const template = seedTemplate(id);
+    if (!template) throw makeErr(`Song ${id} is not a built-in default`, ERR_NOT_BUILTIN);
+    const existing = songs[idx];
+    const song = sanitizeSong({
+      ...template,
+      id,
+      learned: existing.learned,
+      recordings: existing.recordings,
+      createdAt: existing.createdAt,
+      updatedAt: new Date().toISOString(),
+    });
+    songs[idx] = song;
+    await atomicWrite(STATE_PATH, { songs });
+    console.log(`🔄 Refreshed built-in song "${song.title}" (${id}) from template`);
     return song;
   });
 }

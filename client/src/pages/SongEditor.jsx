@@ -1,30 +1,50 @@
 /**
  * Song editor — /songs/:id.
  *
- * Edit one a cappella song: metadata (title/artist/key/tempo/rhythm shape),
- * lyric sections, the voice layers being stacked, and free-text notation +
- * arrangement notes. Full-width route (Layout.jsx isFullWidth matches
- * `/songs/`) so this page owns its own vertical scroll, mirroring
- * WritersRoomGuide's column layout.
+ * Two URL-param-driven modes (`?mode=read` default, `?mode=edit`):
+ *  - READ: a clean, desktop-wide performance view — lyrics rendered in full
+ *    (no sub-scrollable textareas), sections laid out in a responsive grid to
+ *    use horizontal real-estate and cut vertical scrolling, with the recorder
+ *    front-and-centre for playing/recording.
+ *  - EDIT: the editing workbench — metadata, lyric sections, voice layers, and
+ *    free-text notation + arrangement notes.
+ *
+ * Full-width route (Layout.jsx isFullWidth matches `/songs/`) so this page owns
+ * its own vertical scroll, mirroring WritersRoomGuide's column layout. The mode
+ * lives in the URL (not local state) so a view is linkable — per the project's
+ * "linkable routes for all views" convention.
  *
  * Saves are explicit (a Save button) rather than per-keystroke — the workbench
- * is a focused editing surface, and a single PUT keeps the merge simple. The
- * "Add layer from ladder" picker seeds a layer pre-filled from songCraft's
+ * is a focused editing surface, and a single PUT keeps the merge simple. Save
+ * stays available in READ mode too, because recording a take mutates the draft.
+ * The "Add layer from ladder" picker seeds a layer pre-filled from songCraft's
  * foundation-first VOICE_LAYERS so the user can build harmony in the
  * recommended order.
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import {
-  Music, ArrowLeft, Plus, Trash2, Save, BookOpen, CheckCircle2, Circle, Layers,
+  Music, ArrowLeft, Plus, Trash2, Save, BookOpen, CheckCircle2, Circle, Layers, Eye, Pencil,
+  Sparkles, RefreshCw, Video, ExternalLink,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import { useAsyncAction } from '../hooks/useAsyncAction';
-import { getSong, updateSong } from '../services/api';
-import { RHYTHM_SHAPES, VOICE_LAYERS } from '../lib/songCraft';
+import { getSong, updateSong, refreshSongTemplate } from '../services/api';
+import { RHYTHM_SHAPES, VOICE_LAYERS, rhythmShapeLabel } from '../lib/songCraft';
+import Pill from '../components/ui/Pill';
 import SongAiPanel from '../components/songs/SongAiPanel';
 import SongRecordings from '../components/songs/SongRecordings';
+
+// Extract a TikTok video id from a share/watch URL so we can render TikTok's
+// documented iframe Embed Player (https://www.tiktok.com/player/v1/<id>)
+// instead of loading their embed.js. Returns null for anything that isn't a
+// TikTok video URL — those references render as plain links.
+const tiktokVideoId = (url) => {
+  const m = /tiktok\.com\/(?:@[\w.-]+\/video|v|embed(?:\/v2)?|player\/v1)\/(\d+)/.exec(url || '');
+  return m ? m[1] : null;
+};
+const tiktokEmbedSrc = (id) => `https://www.tiktok.com/player/v1/${id}`;
 
 // In-session-only id for a freshly-added section/layer, used purely as a React
 // key until the row is saved. Counter-based (not Math.random, which is
@@ -63,6 +83,16 @@ const clampTempo = (n) => {
 export default function SongEditor() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const editing = searchParams.get('mode') === 'edit';
+  const setMode = useCallback((mode) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (mode === 'edit') next.set('mode', 'edit');
+      else next.delete('mode');
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
   const [song, setSong] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -90,12 +120,24 @@ export default function SongEditor() {
       sections: (song.sections || []).map(stripTempId),
       layers: (song.layers || []).map(stripTempId),
       recordings: (song.recordings || []).map(stripTempId),
+      references: (song.references || []).map(stripTempId),
     };
     const data = await updateSong(id, patch, { silent: true });
     if (data?.song) setSong(data.song);
     toast.success('Song saved');
     return data?.song;
   }, { errorMessage: 'Failed to save song' });
+
+  // Restore a built-in default to its shipped content (lyrics, layers,
+  // references). Persists server-side immediately and preserves the user's
+  // recordings + learned progress; replaces any local unsaved edits, so the
+  // BuiltInBanner gates this behind an inline confirm.
+  const [refreshTemplate, refreshing] = useAsyncAction(async () => {
+    const data = await refreshSongTemplate(id, { silent: true });
+    if (data?.song) setSong(data.song);
+    toast.success('Refreshed from the bundled template');
+    return data?.song;
+  }, { errorMessage: 'Failed to refresh from template' });
 
   // Merge an AI-generated draft into the editor. The server returns canonical
   // fields with server-assigned ids; we replace the editable content (metadata,
@@ -151,6 +193,19 @@ export default function SongEditor() {
     ...prev, layers: prev.layers.filter((l) => l.id !== lid),
   }));
 
+  // --- Reference helpers --------------------------------------------------
+  const addReference = () => setSong((prev) => ({
+    ...prev,
+    references: [...(prev.references || []), { id: localId('ref'), url: '', label: '', note: '' }],
+  }));
+  const updateReference = (rid, key, value) => setSong((prev) => ({
+    ...prev,
+    references: prev.references.map((r) => (r.id === rid ? { ...r, [key]: value } : r)),
+  }));
+  const removeReference = (rid) => setSong((prev) => ({
+    ...prev, references: prev.references.filter((r) => r.id !== rid),
+  }));
+
   // Layer presets the user hasn't added yet, in foundation-first order. Match
   // on the preset id: preset layers (seed or ladder-added) carry the bare
   // preset id like `lead`, so renaming a layer's label can't make its preset
@@ -190,6 +245,25 @@ export default function SongEditor() {
         </button>
         <Music size={18} className="text-port-accent shrink-0" />
         <span className="text-white font-semibold truncate flex-1 min-w-0">{song.title || 'Untitled song'}</span>
+        {/* View / Edit toggle — mode lives in the URL so each view is linkable. */}
+        <div className="flex items-center rounded-lg border border-port-border overflow-hidden shrink-0">
+          <button
+            type="button"
+            onClick={() => setMode('read')}
+            aria-pressed={!editing}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs transition-colors ${!editing ? 'bg-port-accent text-white' : 'text-gray-300 hover:text-white hover:bg-port-border/50'}`}
+          >
+            <Eye size={14} /> View
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode('edit')}
+            aria-pressed={editing}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs transition-colors border-l border-port-border ${editing ? 'bg-port-accent text-white' : 'text-gray-300 hover:text-white hover:bg-port-border/50'}`}
+          >
+            <Pencil size={14} /> Edit
+          </button>
+        </div>
         <Link
           to="/songs/guide"
           className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border border-port-border text-gray-300 hover:text-white hover:bg-port-border/50"
@@ -210,7 +284,18 @@ export default function SongEditor() {
 
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto p-4 md:p-6">
-        <div className="max-w-3xl mx-auto space-y-6">
+        {!editing && (
+          <ReadView
+            song={song}
+            setField={setField}
+            onRefreshTemplate={refreshTemplate}
+            refreshing={refreshing}
+          />
+        )}
+
+        {editing && (
+        <div className="max-w-5xl mx-auto space-y-6">
+          {song.builtIn && <BuiltInBanner onRefresh={refreshTemplate} refreshing={refreshing} />}
           {/* Metadata */}
           <section className="bg-port-card border border-port-border rounded-lg p-4 space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -245,7 +330,7 @@ export default function SongEditor() {
                 <select id="rhythm" value={song.rhythmShapeId} onChange={(e) => setField('rhythmShapeId', e.target.value)} className={inputCls}>
                   <option value="">— Choose a feel —</option>
                   {RHYTHM_SHAPES.map((s) => (
-                    <option key={s.id} value={s.id}>{s.label}{s.dirge ? ' · dirge' : ''} ({s.bpm.label})</option>
+                    <option key={s.id} value={s.id}>{rhythmShapeLabel(s.id)}</option>
                   ))}
                 </select>
               </div>
@@ -271,7 +356,7 @@ export default function SongEditor() {
             {(song.sections || []).length === 0 ? (
               <p className="text-xs text-gray-500">No sections yet. Add a verse, chorus, or bridge.</p>
             ) : (
-              <div className="space-y-3">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                 {song.sections.map((s) => (
                   <div key={s.id} className="bg-port-card border border-port-border rounded-lg p-3">
                     <div className="flex items-center gap-2 mb-2">
@@ -378,6 +463,63 @@ export default function SongEditor() {
             onChange={(recordings) => setField('recordings', recordings)}
           />
 
+          {/* Reference material — links / videos (TikTok embeds in read view) */}
+          <section>
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="flex items-center gap-2 text-sm font-semibold text-white">
+                <Video size={15} className="text-port-accent" /> Reference material
+              </h2>
+              <button type="button" onClick={addReference} className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border border-port-border text-gray-300 hover:text-white hover:bg-port-border/50">
+                <Plus size={14} /> Add reference
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mb-2">
+              Paste a link to a performance, tutorial, or chart. TikTok video links play inline in the View tab.
+            </p>
+            {(song.references || []).length === 0 ? (
+              <p className="text-xs text-gray-500">No references yet. Add a TikTok or other link to study from.</p>
+            ) : (
+              <div className="space-y-3">
+                {song.references.map((r) => (
+                  <div key={r.id} className="bg-port-card border border-port-border rounded-lg p-3 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="url"
+                        value={r.url}
+                        onChange={(e) => updateReference(r.id, 'url', e.target.value)}
+                        placeholder="https://www.tiktok.com/@user/video/…"
+                        aria-label="Reference URL"
+                        className="flex-1 min-w-0 bg-port-bg border border-port-border rounded-lg px-3 py-1.5 text-sm text-white focus:border-port-accent focus:outline-none"
+                      />
+                      <button type="button" onClick={() => removeReference(r.id)} className="p-1.5 text-gray-500 hover:text-port-error shrink-0" aria-label="Remove reference">
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <input
+                        type="text"
+                        value={r.label}
+                        onChange={(e) => updateReference(r.id, 'label', e.target.value)}
+                        placeholder="Label (e.g. TikTok · @user)"
+                        aria-label="Reference label"
+                        className="bg-port-bg border border-port-border rounded-lg px-3 py-1.5 text-sm text-white focus:border-port-accent focus:outline-none"
+                      />
+                      <input
+                        type="text"
+                        value={r.note}
+                        onChange={(e) => updateReference(r.id, 'note', e.target.value)}
+                        placeholder="Note (what to listen for…)"
+                        aria-label="Reference note"
+                        className="bg-port-bg border border-port-border rounded-lg px-3 py-1.5 text-sm text-white focus:border-port-accent focus:outline-none"
+                      />
+                    </div>
+                    {tiktokVideoId(r.url) && <p className="text-xs text-port-success">✓ TikTok video — embeds in View</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
           {/* Notation + notes */}
           <section className="grid grid-cols-1 gap-4">
             <div>
@@ -404,7 +546,208 @@ export default function SongEditor() {
             </div>
           </section>
         </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+// --- Read-only performance view -------------------------------------------
+// Renders the song for reading / playing / recording: lyrics shown in full
+// (no sub-scrollable textareas) and laid out in a responsive grid so short
+// sections sit side-by-side and use the available desktop width. The recorder
+// stays interactive (recording mutates the draft; the header Save persists it).
+function ReadView({ song, setField, onRefreshTemplate, refreshing }) {
+  const sections = song.sections || [];
+  const layers = song.layers || [];
+  const references = song.references || [];
+  const hasText = (v) => typeof v === 'string' && v.trim().length > 0;
+  const feel = song.rhythmShapeId ? rhythmShapeLabel(song.rhythmShapeId) : '';
+
+  // Label + value badge, two-toned, built on the shared Pill primitive.
+  const metaBadge = (label, value) => (
+    <Pill tone="muted">
+      <span className="text-gray-500">{label}</span>
+      <span className="text-gray-200">{value}</span>
+    </Pill>
+  );
+
+  return (
+    <div className="max-w-6xl mx-auto space-y-6">
+      {song.builtIn && <BuiltInBanner onRefresh={onRefreshTemplate} refreshing={refreshing} />}
+      {/* Compact meta line — no form fields, just the at-a-glance facts. */}
+      <div className="flex flex-wrap items-center gap-2">
+        {hasText(song.artist) && metaBadge('Artist', song.artist)}
+        {hasText(song.key) && metaBadge('Key', song.key)}
+        {song.tempo != null && metaBadge('Tempo', `${song.tempo} BPM`)}
+        {feel && metaBadge('Feel', feel)}
+        <Pill tone={song.learned ? 'success' : 'muted'} icon={song.learned ? CheckCircle2 : Circle}>
+          {song.learned ? 'Learned' : 'Learning'}
+        </Pill>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Lyrics — the main reading surface, given the most width. */}
+        <section className="lg:col-span-2 space-y-3">
+          <h2 className="text-sm font-semibold text-white">Lyrics</h2>
+          {sections.length === 0 ? (
+            <p className="text-xs text-gray-500">No lyrics yet. Switch to Edit to add a verse or chorus.</p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {sections.map((s) => (
+                <div key={s.id} className="bg-port-card border border-port-border rounded-lg p-4">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-port-accent mb-2">{s.label || 'Section'}</h3>
+                  {hasText(s.lyrics)
+                    ? <p className="text-sm text-gray-100 whitespace-pre-wrap leading-relaxed">{s.lyrics}</p>
+                    : <p className="text-xs text-gray-600 italic">No lyrics</p>}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* Side rail — notation, layers, and notes. */}
+        <aside className="space-y-6">
+          {hasText(song.notation) && (
+            <section>
+              <h2 className="text-sm font-semibold text-white mb-2">Notation / chords</h2>
+              <p className="bg-port-card border border-port-border rounded-lg p-4 text-sm text-gray-100 whitespace-pre-wrap leading-relaxed font-mono">{song.notation}</p>
+            </section>
+          )}
+
+          {layers.length > 0 && (
+            <section>
+              <h2 className="flex items-center gap-2 text-sm font-semibold text-white mb-2">
+                <Layers size={15} className="text-port-accent" /> Voice layers
+              </h2>
+              <ul className="space-y-2">
+                {layers.map((l) => (
+                  <li key={l.id} className="bg-port-card border border-port-border rounded-lg p-3">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-sm text-white">{l.label || 'Layer'}</span>
+                      {hasText(l.part) && <span className="text-xs text-gray-500">{l.part}</span>}
+                    </div>
+                    {hasText(l.notes) && <p className="mt-1 text-xs text-gray-400 whitespace-pre-wrap leading-relaxed">{l.notes}</p>}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {hasText(song.notes) && (
+            <section>
+              <h2 className="text-sm font-semibold text-white mb-2">Arrangement & notes</h2>
+              <p className="bg-port-card border border-port-border rounded-lg p-4 text-sm text-gray-200 whitespace-pre-wrap leading-relaxed">{song.notes}</p>
+            </section>
+          )}
+        </aside>
+      </div>
+
+      {/* Reference material — TikTok videos embed; other links render as cards. */}
+      {references.length > 0 && (
+        <section>
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-white mb-3">
+            <Video size={15} className="text-port-accent" /> Reference material
+          </h2>
+          <div className="flex flex-wrap gap-4">
+            {references.map((r) => <ReferenceCard key={r.id} reference={r} />)}
+          </div>
+        </section>
+      )}
+
+      {/* Vocal takes — recording/playback stays available in read mode. */}
+      <SongRecordings
+        recordings={song.recordings || []}
+        layers={song.layers || []}
+        onChange={(recordings) => setField('recordings', recordings)}
+      />
+    </div>
+  );
+}
+
+// One reference: a TikTok video renders as the official embed iframe; any other
+// URL renders as a link card (label + note + the raw URL).
+function ReferenceCard({ reference }) {
+  const ttId = tiktokVideoId(reference.url);
+  const title = reference.label || reference.url;
+  if (ttId) {
+    return (
+      <div className="w-full sm:w-[325px] space-y-2">
+        <iframe
+          title={title}
+          src={tiktokEmbedSrc(ttId)}
+          className="w-full h-[575px] rounded-lg border border-port-border bg-port-card"
+          loading="lazy"
+          allow="encrypted-media; fullscreen"
+          referrerPolicy="strict-origin-when-cross-origin"
+        />
+        {(reference.label || reference.note) && (
+          <div className="px-1">
+            {reference.label && <p className="text-sm text-white truncate">{reference.label}</p>}
+            {reference.note && <p className="text-xs text-gray-500">{reference.note}</p>}
+          </div>
+        )}
+      </div>
+    );
+  }
+  return (
+    <a
+      href={reference.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="w-full sm:w-[325px] bg-port-card border border-port-border rounded-lg p-4 hover:border-port-accent/50 transition-colors"
+    >
+      <div className="flex items-center gap-2 text-white">
+        <ExternalLink size={15} className="text-port-accent shrink-0" />
+        <span className="text-sm truncate">{title}</span>
+      </div>
+      {reference.note && <p className="mt-1 text-xs text-gray-500">{reference.note}</p>}
+      <p className="mt-1 text-xs text-gray-600 truncate">{reference.url}</p>
+    </a>
+  );
+}
+
+// Built-in default banner — shows the shipped-default label and an inline-
+// confirmed "Refresh from template" action (restores shipped content, keeps the
+// user's recordings + learned progress). Inline confirm rather than a two-click
+// arm so the destructive-of-edits nature is explicit without a hidden re-click.
+function BuiltInBanner({ onRefresh, refreshing }) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <div className="flex flex-wrap items-center gap-3 bg-port-accent/5 border border-port-accent/20 rounded-lg px-3 py-2">
+      <Pill tone="accent" icon={Sparkles}>Built-in default</Pill>
+      <span className="text-xs text-gray-400 flex-1 min-w-0">
+        Shipped with PortOS. Refresh to restore the latest bundled lyrics, arrangement & references — your recordings and learned progress are kept.
+      </span>
+      {confirming ? (
+        <span className="flex items-center gap-2">
+          <span className="text-xs text-gray-300">Replace local edits?</span>
+          <button
+            type="button"
+            onClick={() => { onRefresh(); setConfirming(false); }}
+            disabled={refreshing}
+            className="px-2.5 py-1 text-xs rounded-lg bg-port-accent text-white hover:bg-port-accent/90 disabled:opacity-50"
+          >
+            {refreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setConfirming(false)}
+            className="px-2.5 py-1 text-xs rounded-lg border border-port-border text-gray-300 hover:text-white"
+          >
+            Cancel
+          </button>
+        </span>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setConfirming(true)}
+          disabled={refreshing}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border border-port-border text-gray-300 hover:text-white hover:bg-port-border/50 disabled:opacity-50 shrink-0"
+        >
+          <RefreshCw size={14} /> Refresh from template
+        </button>
+      )}
     </div>
   );
 }

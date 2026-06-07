@@ -157,4 +157,65 @@ describe('songs service', () => {
     const song = svc.sanitizeSong({ id: 'x', recordings: [{ id: 'rec-keep', filename: 'k.wav' }] });
     expect(song.recordings[0].id).toBe('rec-keep');
   });
+
+  it('stamps builtIn from the seed-id set, ignoring the raw value', () => {
+    const seedId = [...svc.BUILTIN_SONG_IDS][0];
+    expect(svc.sanitizeSong({ id: seedId }).builtIn).toBe(true);
+    // A custom song can't spoof builtIn even if the raw record claims it.
+    expect(svc.sanitizeSong({ id: 'song-custom', builtIn: true }).builtIn).toBe(false);
+  });
+
+  it('seeds the 500 Miles default as a built-in with reference videos', async () => {
+    const songs = await svc.listSongs();
+    const seed = songs.find((s) => s.title === '500 Miles');
+    expect(seed.builtIn).toBe(true);
+    expect(seed.references.length).toBeGreaterThan(0);
+    expect(seed.references.every((r) => r.url.includes('tiktok.com'))).toBe(true);
+  });
+
+  it('sanitizes references — drops urlless entries, mints ids', () => {
+    const song = svc.sanitizeSong({
+      id: 'x',
+      references: [
+        { url: 'https://www.tiktok.com/@u/video/123', label: 'A' },
+        { label: 'no url' },          // no url → dropped
+        { id: 'ref-keep', url: 'https://example.com' },
+      ],
+    });
+    expect(song.references).toHaveLength(2);
+    expect(song.references[0].id).toMatch(/^ref-/);
+    expect(song.references[1].id).toBe('ref-keep');
+  });
+
+  it('refreshes a built-in from template, preserving recordings + learned', async () => {
+    await svc.listSongs(); // seed
+    const seedId = [...svc.BUILTIN_SONG_IDS][0];
+    // User edits the song and records a take + marks it learned.
+    const edited = await svc.updateSong(seedId, {
+      title: 'My edited title',
+      sections: [{ label: 'Custom', lyrics: 'changed' }],
+      learned: true,
+      recordings: [{ filename: 'my-take.wav', durationMs: 1000 }],
+      references: [{ url: 'https://example.com/mine' }],
+    });
+    expect(edited.title).toBe('My edited title');
+
+    const refreshed = await svc.refreshSongFromTemplate(seedId);
+    // Shipped content restored…
+    expect(refreshed.title).toBe('500 Miles');
+    expect(refreshed.references.every((r) => r.url.includes('tiktok.com'))).toBe(true);
+    expect(refreshed.sections.some((s) => s.lyrics.includes('miss the train'))).toBe(true);
+    // …user-owned state preserved.
+    expect(refreshed.learned).toBe(true);
+    expect(refreshed.recordings).toHaveLength(1);
+    expect(refreshed.recordings[0].filename).toBe('my-take.wav');
+    expect(refreshed.createdAt).toBe(edited.createdAt);
+    expect(refreshed.builtIn).toBe(true);
+  });
+
+  it('refresh throws NOT_BUILTIN for a custom song and NOT_FOUND for a missing one', async () => {
+    const custom = await svc.createSong({ title: 'Mine' });
+    await expect(svc.refreshSongFromTemplate(custom.id)).rejects.toMatchObject({ code: svc.ERR_NOT_BUILTIN });
+    await expect(svc.refreshSongFromTemplate('song-nope')).rejects.toMatchObject({ code: svc.ERR_NOT_FOUND });
+  });
 });

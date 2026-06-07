@@ -70,6 +70,16 @@ export const RHYTHM_SHAPES = [
   },
 ];
 
+// Human-readable label for a rhythm shape id — `Slow 4/4 ballad · dirge
+// (56–76 BPM)`. Shared by the editor's <select> options and the read-only
+// performance view so the format lives in one place. Empty string for an
+// unknown id.
+export const rhythmShapeLabel = (id) => {
+  const shape = RHYTHM_SHAPES.find((s) => s.id === id);
+  if (!shape) return '';
+  return `${shape.label}${shape.dirge ? ' · dirge' : ''} (${shape.bpm.label})`;
+};
+
 // --- Voice layers ----------------------------------------------------------
 // The order singers stack parts when arranging a cappella, foundation-first.
 // `order` is the recommended build sequence; `voices` names the typical

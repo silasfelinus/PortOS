@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   createSong: vi.fn(),
   updateSong: vi.fn(),
   deleteSong: vi.fn(),
+  refreshSongFromTemplate: vi.fn(),
 }));
 vi.mock('../services/songs.js', async () => {
   const actual = await vi.importActual('../services/songs.js');
@@ -125,6 +126,39 @@ describe('songs route', () => {
     });
     expect(res.status).toBe(400);
     expect(mocks.updateSong).not.toHaveBeenCalled();
+  });
+
+  it('PUT /:id accepts a references array', async () => {
+    mocks.updateSong.mockResolvedValue({ id: 'song-1' });
+    const res = await request(makeApp()).put('/api/songs/song-1').send({
+      references: [{ url: 'https://www.tiktok.com/@u/video/123', label: 'TikTok' }],
+    });
+    expect(res.status).toBe(200);
+    const [, patch] = mocks.updateSong.mock.calls[0];
+    expect(patch.references[0].url).toBe('https://www.tiktok.com/@u/video/123');
+  });
+
+  it('PUT /:id rejects a reference without a url', async () => {
+    const res = await request(makeApp()).put('/api/songs/song-1').send({
+      references: [{ label: 'no url' }],
+    });
+    expect(res.status).toBe(400);
+    expect(mocks.updateSong).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/refresh-template returns the refreshed built-in song', async () => {
+    mocks.refreshSongFromTemplate.mockResolvedValue({ id: 'seed-500-miles', title: '500 Miles', builtIn: true });
+    const res = await request(makeApp()).post('/api/songs/seed-500-miles/refresh-template');
+    expect(res.status).toBe(200);
+    expect(res.body.song.builtIn).toBe(true);
+    expect(mocks.refreshSongFromTemplate).toHaveBeenCalledWith('seed-500-miles');
+  });
+
+  it('POST /:id/refresh-template maps NOT_BUILTIN to a 400', async () => {
+    mocks.refreshSongFromTemplate.mockRejectedValue(Object.assign(new Error('nope'), { code: 'NOT_BUILTIN' }));
+    const res = await request(makeApp()).post('/api/songs/song-custom/refresh-template');
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('NOT_BUILTIN');
   });
 
   it('POST /generate returns the generated fields (no id needed)', async () => {

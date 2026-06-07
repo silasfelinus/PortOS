@@ -20,6 +20,12 @@ export const updateSong = (id, patch, options) =>
 export const deleteSong = (id, options) =>
   request(`/songs/${enc(id)}`, { method: 'DELETE', ...options });
 
+// Reset a built-in default song's shipped content (metadata/lyrics/layers/
+// references) to the current bundled template → { song }. Preserves the user's
+// recordings + learned progress. 400 if the song isn't a built-in default.
+export const refreshSongTemplate = (id, options) =>
+  request(`/songs/${enc(id)}/refresh-template`, { method: 'POST', ...options });
+
 // AI: draft a brand-new arrangement from a brief (no id, not persisted) →
 // { song, llm }. body: { title?, artist?, brief?, mood?, providerId?, model? }.
 export const generateSong = (body = {}, options) =>
