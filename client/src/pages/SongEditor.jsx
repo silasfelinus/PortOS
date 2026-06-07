@@ -45,6 +45,10 @@ const tiktokVideoId = (url) => {
   return m ? m[1] : null;
 };
 const tiktokEmbedSrc = (id) => `https://www.tiktok.com/player/v1/${id}`;
+// Only http(s) URLs are safe to render as a clickable link — reject
+// javascript:/data: and other schemes so a stored reference can't smuggle a
+// script into an href.
+const isHttpUrl = (url) => /^https?:\/\//i.test(url || '');
 
 // In-session-only id for a freshly-added section/layer, used purely as a React
 // key until the row is saved. Counter-based (not Math.random, which is
@@ -670,6 +674,7 @@ function ReadView({ song, setField, onRefreshTemplate, refreshing }) {
 function ReferenceCard({ reference }) {
   const ttId = tiktokVideoId(reference.url);
   const title = reference.label || reference.url;
+  const safeHref = isHttpUrl(reference.url);
   if (ttId) {
     return (
       <div className="w-full sm:w-[325px] space-y-2">
@@ -690,12 +695,16 @@ function ReferenceCard({ reference }) {
       </div>
     );
   }
+  // Non-http(s) URLs render as a non-clickable card so a javascript:/data:
+  // scheme can't ride into an href.
+  const Wrapper = safeHref ? 'a' : 'div';
+  const wrapperProps = safeHref
+    ? { href: reference.url, target: '_blank', rel: 'noopener noreferrer' }
+    : {};
   return (
-    <a
-      href={reference.url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="w-full sm:w-[325px] bg-port-card border border-port-border rounded-lg p-4 hover:border-port-accent/50 transition-colors"
+    <Wrapper
+      {...wrapperProps}
+      className={`w-full sm:w-[325px] bg-port-card border border-port-border rounded-lg p-4 ${safeHref ? 'hover:border-port-accent/50 transition-colors' : ''}`}
     >
       <div className="flex items-center gap-2 text-white">
         <ExternalLink size={15} className="text-port-accent shrink-0" />
@@ -703,7 +712,7 @@ function ReferenceCard({ reference }) {
       </div>
       {reference.note && <p className="mt-1 text-xs text-gray-500">{reference.note}</p>}
       <p className="mt-1 text-xs text-gray-600 truncate">{reference.url}</p>
-    </a>
+    </Wrapper>
   );
 }
 
