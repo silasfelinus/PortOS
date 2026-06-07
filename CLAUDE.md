@@ -163,6 +163,7 @@ PortOS has reached the size where re-implementing a helper is now cheaper to *st
 - **HTTP / Socket / browser clients** → `client/src/services/`. API wrappers start with `api*`.
 - **Express handlers** → `server/routes/`. Use `validateRequest` + `lib/validation.js` schemas.
 - **Domain orchestration (multi-step business logic over models + services)** → `server/services/`.
+- **Persisted data (where a record lives — PostgreSQL vs a `data/` file)** → decide via the storage-classification contract in `docs/STORAGE.md` *before* defaulting to a new `data/*.json`. App-native relational records are `db-primary` (PostgreSQL); the doc's "Adding a new data store?" checklist is required in PR review.
 
 One concern per file. Tests live next to their source as `<name>.test.js`. Naming is camelCase with a domain prefix (`brainValidation.js`, `creativeDirectorPrompts.js`).
 

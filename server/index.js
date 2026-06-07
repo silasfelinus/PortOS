@@ -753,11 +753,67 @@ ensureSelf()
     // Catalog backfill: promote universe canon (characters/places/objects)
     // into the Postgres ingredients catalog. Idempotent — marker in
     // data/catalog-backfill.applied.json gates the walk after the first run.
-    // Fire-and-forget so a DB hiccup doesn't block server boot — the route
-    // surface tolerates an empty catalog and the user can re-trigger via
-    // the admin endpoint.
+    // Individual migration steps stay inside a try/catch so a transient hiccup
+    // mid-walk doesn't crash an otherwise-healthy boot; the route surface
+    // tolerates an empty catalog and the user can re-trigger via the admin
+    // endpoint.
+    //
+    // PostgreSQL is a mandatory dependency. Before running any DB-dependent
+    // boot work, verify the database is reachable and the required schema is
+    // present. If not — and we're NOT in a sanctioned escape-hatch/test mode —
+    // this is a fatal misconfiguration: the creative catalog has no file-backed
+    // equivalent, so booting "successfully" would silently serve a broken
+    // install. Fail fast with an actionable message instead.
+    //
+    // Escape hatches (dev/tests only, UNSUPPORTED for production):
+    //   - MEMORY_BACKEND=file  (explicit file backend)
+    //   - NODE_ENV=test        (test suites boot without a database)
+    const dbEscapeHatch =
+      process.env.MEMORY_BACKEND === 'file' || process.env.NODE_ENV === 'test';
+    const { checkHealth, ensureSchema } = await import('./lib/db.js');
+    let health = await checkHealth();
+    // An EXISTING install can be reachable but lag the current schema — e.g.
+    // `memories` exists but a newer column (`sync_sequence`) is missing, which
+    // is exactly what checkHealth() requires for hasSchema. ensureSchema() is
+    // idempotent and exists to bring such installs up to date, so when the DB
+    // is connected but reports incomplete schema, run the upgrade and re-probe
+    // BEFORE declaring the install unbootable. A truly uninitialized DB (base
+    // tables absent) makes ensureSchema() throw — we catch, log, and fall
+    // through to the fail-fast below. (try/catch is appropriate here: this runs
+    // outside the request lifecycle, so an uncaught throw would crash boot.)
+    if (health.connected && (!health.hasSchema || !health.hasCatalogSchema)) {
+      try {
+        await ensureSchema();
+        health = await checkHealth();
+      } catch (err) {
+        console.error(`🗄️  Schema upgrade on boot failed: ${err.message}`);
+      }
+    }
+    // Both the memory schema AND the creative-catalog schema are required —
+    // the catalog has no file-backed equivalent. ensureSchema() creates the
+    // catalog tables idempotently, but if that DDL fails (e.g. the role can't
+    // CREATE) the swallowed error in the migration block below would otherwise
+    // let the server boot with the catalog missing. Gate boot on both.
+    const dbReady = health.connected && health.hasSchema && health.hasCatalogSchema;
+    if (!dbEscapeHatch && !dbReady) {
+      const reason = health.connected ? 'required schema missing' : `unreachable (${health.error || 'connection failed'})`;
+      console.error(`❌ PostgreSQL is required but ${reason} — refusing to start.`);
+      console.error('   Set up the database with: npm run setup:db');
+      console.error('   Dev/test only: set PGMODE=file in .env to boot without PostgreSQL (unsupported for production).');
+      process.exit(1);
+    }
+    if (dbEscapeHatch && !dbReady) {
+      console.warn(`⚠️  PostgreSQL unavailable (${health.error || 'no schema'}) — booting via escape hatch; catalog/DB features are disabled.`);
+    }
+
     try {
-      const { ensureSchema } = await import('./lib/db.js');
+      // Two early exits guard the migrations below: (1) the fail-fast
+      // process.exit(1) above when the DB is required but missing, and (2) this
+      // return when on the escape hatch with no healthy DB — ensureSchema and
+      // the migrations would throw otherwise.
+      if (!dbReady) {
+        return;
+      }
       await ensureSchema();
       const { migrateBibleToCatalog } = await import('./scripts/migrateBibleToCatalog.js');
       await migrateBibleToCatalog();
