@@ -189,6 +189,19 @@ describe('catalog DDL parity (init-db.sql ↔ db.js ensureSchema)', () => {
     expect(sqlIdx.size).toBeGreaterThan(0);
   });
 
+  // Catalog user-defined types (#1001) — non-`catalog_`-prefixed table name in
+  // BOTH DDL sources (the parity `CATALOG_TABLES` loop matches by literal table
+  // name, and this one isn't in that list), so it gets its own column assertion.
+  // It declares no secondary index, so nothing to compare there.
+  it('catalog_user_types has the same columns in both files', () => {
+    const sqlBody = extractCreateTable(INIT_SQL, 'catalog_user_types');
+    const jsBody = extractCreateTable(DB_JS, 'catalog_user_types');
+    expect(sqlBody, 'init-db.sql missing CREATE TABLE catalog_user_types').toBeTruthy();
+    expect(jsBody, 'db.js missing CREATE TABLE catalog_user_types').toBeTruthy();
+    expect([...new Set(extractColumnNames(sqlBody))].sort())
+      .toEqual([...new Set(extractColumnNames(jsBody))].sort());
+  });
+
   it('search_tsv payload field set matches', () => {
     // Both files re-declare the GENERATED ALWAYS expression character-for-
     // character today. If one side adds a payload key (e.g. voiceNotes) and

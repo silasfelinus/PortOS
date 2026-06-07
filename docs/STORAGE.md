@@ -32,8 +32,9 @@ PostgreSQL is a **required** install/runtime dependency (see [Backup & Restore](
 - `catalog_ingredient_relations` — directed ingredient→ingredient graph edges (the strongest argument for Postgres as the catalog graph store).
 - `memories` / `memory_links` — long-term memory + pgvector similarity.
 - `creative_director_projects` — Creative Director project/treatment/scene/run state, one row per project (`id`/`status`/timestamps as columns, the full record in `data` JSONB). Migrated from the monolithic `data/creative-director-projects.json` in Phase 3 (#997); CD is local-only, so the row carries no sync cursor/tombstone. Adapter: `server/services/creativeDirector/projectsDB.js`.
+- `catalog_user_types` — user-defined ingredient types (the registry that defines catalog row semantics), one row per type (`id` PK, the definition in `data` JSONB, `updated_at`/`deleted_at` mirroring the federation LWW clock + tombstone). Migrated from the `data/settings.json` `catalogUserTypes` slice in Phase 4 lead-in (#1001) so type evolution versions/syncs alongside the catalog data it governs. Federates via the catalog sync `catalogTypes` envelope block (wire shape unchanged by the move). Adapter: `server/services/catalogUserTypes/db.js`, dispatched via `store.js`.
 
-**Postgres-First target.** Universes, pipeline series/issues, Story Builder sessions, and searchable media metadata are still `db-primary` targets — they currently live in `data/` JSON but carry relationships and status that belong in the DB. Catalog user-defined types should also move from `settings.json` into catalog DB tables. (Creative Director project/scene/run state moved to Postgres in Phase 3 / #997.)
+**Postgres-First target.** Universes, pipeline series/issues, Story Builder sessions, and searchable media metadata are still `db-primary` targets — they currently live in `data/` JSON but carry relationships and status that belong in the DB. (Creative Director project/scene/run state moved to Postgres in Phase 3 / #997; catalog user-defined types moved in Phase 4 lead-in / #1001.)
 
 ---
 

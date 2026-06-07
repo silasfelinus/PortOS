@@ -37,7 +37,7 @@ import {
   REF_KINDS,
 } from '../lib/catalogValidation.js';
 import { getActiveCatalogTypes, setUserCatalogTypes } from '../lib/catalogTypes.js';
-import { getSettings, updateSettings } from '../services/settings.js';
+import { readUserTypes as readUserTypeSlice, writeUserTypes } from '../services/catalogUserTypes/store.js';
 import { parseBulkPayload, bundleToMarkdown, toYamlString } from '../lib/catalogBulkParsers.js';
 import { resolveImageInputPath } from '../lib/fileUtils.js';
 import { embedIngredient, embedBatch, ingredientEmbedSeed } from '../services/embeddings.js';
@@ -723,17 +723,18 @@ router.post('/migration/rerun', asyncHandler(async (req, res) => {
 }));
 
 // --- User-defined ingredient types --------------------------------------
-// User types live in settings.json (`catalogUserTypes`) and merge into the
-// active type registry. These routes are the CRUD surface the Settings →
-// Catalog tab drives. Every mutating route persists through the settings
-// service AND calls `setUserCatalogTypes` so the in-process registry refreshes
-// without a restart. The GET returns the FULL active registry (system + user)
-// normalized for the client merge, with each entry's `system` flag.
+// User types live in PostgreSQL (`catalog_user_types`, #1001 — formerly the
+// settings.json `catalogUserTypes` slice) and merge into the active type
+// registry. These routes are the CRUD surface the Settings → Catalog tab
+// drives. Every mutating route persists through the catalogUserTypes store AND
+// calls `setUserCatalogTypes` so the in-process registry refreshes without a
+// restart. The GET returns the FULL active registry (system + user) normalized
+// for the client merge, with each entry's `system` flag.
 
 // Read the persisted user-type slice as a plain array (tolerates absent/junk).
 const readUserTypes = async () => {
-  const settings = await getSettings();
-  return Array.isArray(settings.catalogUserTypes) ? settings.catalogUserTypes : [];
+  const list = await readUserTypeSlice();
+  return Array.isArray(list) ? list : [];
 };
 
 router.get('/types', asyncHandler(async (req, res) => {
@@ -769,7 +770,7 @@ router.post('/types', asyncHandler(async (req, res) => {
   // Validate the whole slice (unique-id + system-collision refinements) before
   // persisting — a system-id collision (e.g. "character") is rejected here.
   validateRequest(catalogUserTypesSettingsSchema, next);
-  await updateSettings({ catalogUserTypes: next });
+  await writeUserTypes(next);
   setUserCatalogTypes(next);
   console.log(`🧩 Catalog: added user type "${body.id}"`);
   res.status(201).json({ types: getActiveCatalogTypes() });
@@ -786,7 +787,7 @@ router.patch('/types/:id', asyncHandler(async (req, res) => {
   const next = [...current];
   next[idx] = stampUserType(merged);
   validateRequest(catalogUserTypesSettingsSchema, next);
-  await updateSettings({ catalogUserTypes: next });
+  await writeUserTypes(next);
   setUserCatalogTypes(next);
   console.log(`🧩 Catalog: updated user type "${req.params.id}"`);
   res.json({ types: getActiveCatalogTypes() });
@@ -822,7 +823,7 @@ router.delete('/types/:id', asyncHandler(async (req, res) => {
     i === idx ? { ...t, deletedAt, updatedAt: deletedAt } : t
   ));
   validateRequest(catalogUserTypesSettingsSchema, next);
-  await updateSettings({ catalogUserTypes: next });
+  await writeUserTypes(next);
   setUserCatalogTypes(next);
   console.log(`🧩 Catalog: deleted user type "${req.params.id}"${force ? ' (forced)' : ''}`);
   res.json({ types: getActiveCatalogTypes() });

@@ -566,6 +566,26 @@ async function ensureSchemaImpl() {
     // created_at DESC is the gallery/history sort order; kind narrows
     // images-vs-videos. A composite (kind, created_at DESC) serves both.
     `CREATE INDEX IF NOT EXISTS idx_media_assets_kind_created ON media_assets (kind, created_at DESC)`,
+
+    // Catalog user-defined types (Phase 4 lead-in, issue #1001). One row per
+    // user-defined ingredient type — the registry that defines catalog row
+    // semantics, moved out of data/settings.json (`catalogUserTypes`) so type
+    // evolution versions/syncs alongside the catalog data it governs. `id` is
+    // the type discriminator (the `type` column on catalog_ingredients + the
+    // `cat-<prefix>-<uuid>` mint seed); the full definition lives in `data`
+    // JSONB. updated_at / deleted_at mirror the federation LWW clock + tombstone
+    // (a soft-deleted type is KEPT as a tombstone row so the deletion federates
+    // — setUserCatalogTypes filters tombstones out of the active registry).
+    // ≤64 rows, read whole on every warm/sync, so no secondary index (an unused
+    // index is just write amplification). Mirrors the catalog_user_types block
+    // in init-db.sql.
+    `CREATE TABLE IF NOT EXISTS catalog_user_types (
+      id TEXT PRIMARY KEY,
+      data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      deleted_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
   ];
   for (const sql of catalogDDL) {
     await pool.query(sql);
