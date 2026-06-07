@@ -15,6 +15,9 @@ vi.mock('../lib/fileUtils.js', () => ({
   PATHS: { data: '/fake/data' },
 }));
 
+// Rename can be made to fail per-test via `renameShouldFail`.
+let renameShouldFail = false;
+
 vi.mock('fs/promises', () => ({
   readFile: vi.fn(async (path) => {
     if (!(path in files)) {
@@ -26,6 +29,7 @@ vi.mock('fs/promises', () => ({
   }),
   writeFile: vi.fn(async (path, content) => { files[path] = content; }),
   rename: vi.fn(async (from, to) => {
+    if (renameShouldFail) throw new Error('EACCES: rename failed');
     files[to] = files[from];
     delete files[from];
   }),
@@ -38,7 +42,7 @@ const query = vi.fn(async (sql, params) => {
   if (/INSERT INTO creative_director_projects/.test(sql)) {
     const [id, status, data] = params;
     if (table.has(id)) return { rowCount: 0, rows: [] };
-    table.set(id, { id, status, data });
+    table.set(id, { id, status, data: JSON.parse(data) });
     return { rowCount: 1, rows: [] };
   }
   return { rowCount: 0, rows: [] };
@@ -54,6 +58,7 @@ const { migrateCreativeDirectorToDB } = await import('./migrateCreativeDirectorT
 beforeEach(() => {
   files = {};
   table = new Map();
+  renameShouldFail = false;
   query.mockClear();
 });
 
@@ -90,12 +95,33 @@ describe('migrateCreativeDirectorToDB', () => {
   });
 
   it('does not clobber a row already in the table (ON CONFLICT DO NOTHING)', async () => {
-    table.set('cd-1', { id: 'cd-1', status: 'rendering', data: '{"fresher":true}' });
+    table.set('cd-1', { id: 'cd-1', status: 'rendering', data: { fresher: true } });
     files[LEGACY] = JSON.stringify([{ id: 'cd-1', status: 'draft' }]);
     const result = await migrateCreativeDirectorToDB();
     expect(result.imported).toBe(0);
     expect(result.skipped).toBe(1);
-    expect(table.get('cd-1').data).toBe('{"fresher":true}');
+    expect(table.get('cd-1').data).toEqual({ fresher: true });
+  });
+
+  it('imports run history LOSSLESSLY — does not trim a >200-run project', async () => {
+    // Regression: the importer must NOT apply the live-store runs[] cap, or
+    // existing installs with long CD histories silently lose run rows on migrate.
+    const runs = Array.from({ length: 350 }, (_, i) => ({ runId: `r${i}`, status: 'completed' }));
+    files[LEGACY] = JSON.stringify([{ id: 'cd-1', status: 'complete', runs }]);
+    const result = await migrateCreativeDirectorToDB();
+    expect(result.imported).toBe(1);
+    expect(table.get('cd-1').data.runs).toHaveLength(350);
+  });
+
+  it('does NOT stamp the marker when the legacy rename fails (retries next boot)', async () => {
+    files[LEGACY] = JSON.stringify([{ id: 'cd-1', status: 'draft' }]);
+    renameShouldFail = true;
+    const result = await migrateCreativeDirectorToDB();
+    expect(result).toMatchObject({ ok: false, reason: 'rename-failed', imported: 1 });
+    // Row landed, but legacy file still present and marker NOT written → retry.
+    expect(table.has('cd-1')).toBe(true);
+    expect(files[LEGACY]).toBeTruthy();
+    expect(files[MARKER]).toBeUndefined();
   });
 
   it('skips malformed records (missing id) without aborting the import', async () => {

@@ -562,11 +562,15 @@ CREATE TRIGGER trg_catalog_tag_updated_at
 -- ===========================================================================
 -- Creative Director projects (Phase 3, issue #997)
 -- ===========================================================================
--- One row per project. `id` / `status` / `created_at` / `updated_at` are
--- promoted to real columns (the recovery scan and the project list filter on
--- status + sort by updatedAt); the full project record — treatment, scenes,
--- runs[], and the misc back-pointers (collectionId / timelineProjectId /
--- finalVideoId / sourceIssueId) — lives in `data` JSONB.
+-- One row per project. The full project record — treatment, scenes, runs[],
+-- and the misc back-pointers (collectionId / timelineProjectId / finalVideoId
+-- / sourceIssueId) — lives in `data` JSONB. `status` / `created_at` /
+-- `updated_at` are mirrored into columns (kept in lockstep with the JSONB on
+-- every write) so future queries CAN filter/sort on them without a JSONB
+-- expression; `listProjects` sorts by `created_at`. No index on status/
+-- updated_at yet — nothing queries them today (the recovery scan filters
+-- p.status in JS over the loaded record), and an unused index is just write
+-- amplification. Add one alongside the query that needs it.
 --
 -- Why JSONB and not normalized scene/run tables: no code queries INTO scenes
 -- or runs relationally (the orchestrator loads the whole project, mutates a
@@ -588,5 +592,3 @@ CREATE TABLE IF NOT EXISTS creative_director_projects (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_cd_projects_status ON creative_director_projects (status);
-CREATE INDEX IF NOT EXISTS idx_cd_projects_updated_at ON creative_director_projects (updated_at);

@@ -16,8 +16,11 @@
  *   - The legacy JSON is RENAMED to .imported (not deleted) so it remains a
  *     recovery source for at least one release (per the plan's Phase 5 note),
  *     and so a re-run can't re-import stale rows over fresher DB state.
- *   - Runs[] is trimmed to the same cap the live store enforces, so a legacy
- *     over-cap array doesn't bloat the row on import.
+ *   - The import is LOSSLESS: each project is copied verbatim, runs[] included.
+ *     Trimming the runs[] cap is the LIVE store's job (projectsDB.persist /
+ *     projectsFile.saveAll both call trimRuns on the next write) — doing it here
+ *     would silently drop run history the file still holds. A legacy over-cap
+ *     array shrinks on the project's first post-import write instead.
  *
  * NOT marker-gated via data/migrations.applied.json: that list is driven by the
  * prompt-replace runner under scripts/migrations/ and runs at a different boot
@@ -30,7 +33,6 @@ import { readFile, writeFile, rename } from 'fs/promises';
 import { join } from 'path';
 import { PATHS } from '../lib/fileUtils.js';
 import { query } from '../lib/db.js';
-import { trimRuns } from '../services/creativeDirector/projectsLogic.js';
 
 const LEGACY_FILENAME = 'creative-director-projects.json';
 const IMPORTED_SUFFIX = '.imported';
@@ -85,7 +87,8 @@ export async function migrateCreativeDirectorToDB() {
       skipped += 1;
       continue;
     }
-    if (Array.isArray(project.runs)) project.runs = trimRuns(project.runs);
+    // Import verbatim — including the full runs[] history. The cap is enforced
+    // by the live store on the next write, not here, so the migration is lossless.
     const result = await query(
       `INSERT INTO creative_director_projects (id, status, data, created_at, updated_at)
        VALUES ($1, $2, $3::jsonb, $4, $5)
@@ -105,9 +108,20 @@ export async function migrateCreativeDirectorToDB() {
   // Rename the legacy file aside AFTER all rows land, so a crash mid-import
   // leaves the marker unwritten and the file in place → next boot retries
   // (ON CONFLICT DO NOTHING makes the retry safe for already-imported rows).
+  //
+  // The marker is written ONLY if the rename succeeds. If the rename fails, the
+  // live file is still in place — stamping the marker would leave Postgres
+  // authoritative while data/creative-director-projects.json lingers, so a
+  // rollback or MEMORY_BACKEND=file boot would silently read stale pre-migration
+  // state, and the marker would block any retry. Leaving the marker unwritten
+  // makes the next boot retry the (idempotent) import + rename instead.
+  let renamed = true;
   await rename(legacyPath, legacyPath + IMPORTED_SUFFIX).catch((err) => {
-    console.warn(`⚠️ CD→DB import: could not rename ${LEGACY_FILENAME} aside (${err.message}); rows imported, marker still written`);
+    renamed = false;
+    console.warn(`⚠️ CD→DB import: imported ${imported} row(s) but could not rename ${LEGACY_FILENAME} aside (${err.message}) — NOT stamping marker; will retry the rename next boot`);
   });
+  if (!renamed) return { ok: false, reason: 'rename-failed', imported, skipped };
+
   await writeMarker({ migratedAt: new Date().toISOString(), imported, skipped });
   console.log(`🎬 CD→DB import: imported ${imported} project(s) into creative_director_projects (${skipped} skipped); legacy file renamed to ${LEGACY_FILENAME}${IMPORTED_SUFFIX}`);
   return { ok: true, reason: 'imported', imported, skipped };

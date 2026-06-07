@@ -50,7 +50,7 @@ async function selectBackend() {
   // self-sufficient regardless of boot ordering.
   const health = await checkHealth();
   if (!health.connected) {
-    throw new Error('Creative Director requires PostgreSQL — run `npm run setup:db` (or set PGMODE=file for the unsupported file backend)');
+    throw new Error('Creative Director requires PostgreSQL — run `npm run setup:db` (dev/test only: set PGMODE=file in .env; the launcher maps it to MEMORY_BACKEND=file for the unsupported file backend)');
   }
   await ensureSchema();
   const { migrateCreativeDirectorToDB } = await import('../../scripts/migrateCreativeDirectorToDB.js');

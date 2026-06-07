@@ -31,10 +31,10 @@ import {
   applyRunUpdate,
 } from './projectsLogic.js';
 
-// The `data` JSONB is the whole record. `id`/`status`/`createdAt`/`updatedAt`
-// are mirrored into columns for indexed reads; on the way out we trust the
-// columns (status/updated_at are bumped together with data on every write) but
-// return the JSONB so callers see the exact record shape the file backend gave.
+// The `data` JSONB is the whole record. status/created_at/updated_at are
+// mirrored into columns (kept in lockstep with the JSONB on every write) for
+// future queries, but reads always return `data` verbatim so callers see the
+// exact record shape the file backend gave — the columns are never read back.
 function rowToProject(row) {
   if (!row) return null;
   // `data` already holds id/status/createdAt/updatedAt; the columns are a
