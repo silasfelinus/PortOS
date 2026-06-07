@@ -163,8 +163,12 @@ describe('PipelineManuscriptEditor', () => {
     await screen.findByText('My Series');
     // The single issue (number 1) renders; the canonical issue tab is current.
     expect(await screen.findByDisplayValue('The hero walked in. She left.')).toBeInTheDocument();
-    const tab = within(screen.getByRole('navigation', { name: 'Issues' })).getByRole('link');
-    expect(tab).toHaveAttribute('aria-current', 'page');
+    // The bare→/1 redirect is an effect-driven navigate, so the tab's
+    // aria-current lands a tick after the textarea content paints. Wait for it.
+    await waitFor(() => {
+      const tab = within(screen.getByRole('navigation', { name: 'Issues' })).getByRole('link');
+      expect(tab).toHaveAttribute('aria-current', 'page');
+    });
   });
 
   it('switches issues via the tabs without refetching the manuscript', async () => {
