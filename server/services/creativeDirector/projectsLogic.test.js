@@ -131,6 +131,10 @@ describe('mirrorStatus / mirrorTimestamp (typed-column safety)', () => {
     expect(mirrorTimestamp('not-a-date', 'fb')).toBe('fb');
     expect(mirrorTimestamp(12345, 'fb')).toBe('fb');
     expect(mirrorTimestamp(null, 'fb')).toBe('fb');
+    // Extended-year ISO that Date.parse accepts but is outside Postgres
+    // TIMESTAMPTZ range → must fall back, not bind a ±YYYYYY string that throws.
+    expect(mirrorTimestamp('-100000-01-01T00:00:00.000Z', 'fb')).toBe('fb');
+    expect(mirrorTimestamp('+275760-09-13T00:00:00.000Z', 'fb')).toBe('fb');
   });
 });
 

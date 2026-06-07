@@ -75,11 +75,20 @@ export function mirrorStatus(status) {
  * value PG always accepts. The raw original is still preserved verbatim in the
  * JSONB `data` (callers stringify the full record separately), so this only
  * affects the queryable mirror column.
+ *
+ * Extended-year guard: `toISOString()` emits a plain 4-digit year (`YYYY-…`)
+ * only for years 0000–9999, and a SIGNED expanded form (`±YYYYYY-…`) otherwise.
+ * A normalized year outside 4-digit range (e.g. `-100000-01-01`, which
+ * `Date.parse` accepts) is outside Postgres TIMESTAMPTZ range and would still
+ * throw on bind — so we require the leading 4-digit form and fall back otherwise.
  */
 export function mirrorTimestamp(value, fallback) {
   if (typeof value === 'string') {
     const ms = Date.parse(value);
-    if (!Number.isNaN(ms)) return new Date(ms).toISOString();
+    if (!Number.isNaN(ms)) {
+      const iso = new Date(ms).toISOString();
+      if (/^\d{4}-/.test(iso)) return iso;
+    }
   }
   return fallback;
 }
