@@ -92,6 +92,22 @@ describe('songs service', () => {
     expect(song.layers[0].label).toBe('Layer'); // defaulted when blank but kept (has part/notes)
   });
 
+  it('assigns a unique id to sections/layers submitted with a blank id', async () => {
+    // The editor strips in-session temp ids before save (sends id: '') so the
+    // server mints stable, non-colliding ids — guards against the reload
+    // duplicate-key bug where persisted temp ids could be re-minted.
+    const song = await svc.createSong({
+      title: 'Blank ids',
+      sections: [{ id: '', label: 'A', lyrics: '1' }, { id: '', label: 'B', lyrics: '2' }],
+      layers: [{ id: '', label: 'L1', part: 'x' }, { id: '', label: 'L2', part: 'y' }],
+    });
+    const secIds = song.sections.map((s) => s.id);
+    const layerIds = song.layers.map((l) => l.id);
+    expect(new Set(secIds).size).toBe(2);   // unique
+    expect(new Set(layerIds).size).toBe(2);
+    for (const id of [...secIds, ...layerIds]) expect(id).toBeTruthy();
+  });
+
   it('merges patches field-by-field — absent key preserves, present key applies', async () => {
     const song = await svc.createSong({ title: 'Original', artist: 'Someone', key: 'C' });
     const patched = await svc.updateSong(song.id, { title: 'Renamed', key: '' });

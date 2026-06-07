@@ -24,12 +24,19 @@ import { useAsyncAction } from '../hooks/useAsyncAction';
 import { getSong, updateSong } from '../services/api';
 import { RHYTHM_SHAPES, VOICE_LAYERS } from '../lib/songCraft';
 
-// Stable client-side id for a freshly-added section/layer before the server
-// assigns one. Counter-based (not Math.random, which is unavailable in some
-// harnesses and unnecessary here) — uniqueness only needs to hold within the
-// editing session for React keys; the server re-ids on save.
+// In-session-only id for a freshly-added section/layer, used purely as a React
+// key until the row is saved. Counter-based (not Math.random, which is
+// unavailable in some harnesses and unnecessary here) — uniqueness only needs
+// to hold within the editing session. These TEMP ids are stripped on save (see
+// stripTempId) so the server assigns a stable `sec-<uuid>`/`layer-<uuid>`; if
+// they were persisted, a reload (localSeq → 0) could re-mint `sec-new-0` and
+// collide with a saved row, breaking per-id update/remove.
+const TEMP_ID_RE = /-new-\d+$/;
 let localSeq = 0;
 const localId = (prefix) => `${prefix}-new-${localSeq++}`;
+// Blank a temp id before save so the server re-ids it; keep stable ids
+// (preset ids like `lead`, server-assigned uuids) so dedup + matching survive.
+const stripTempId = (row) => (TEMP_ID_RE.test(row.id) ? { ...row, id: '' } : row);
 
 // Mirror the server tempo band (services/songs.js TEMPO_MIN/MAX). We clamp on
 // BLUR, not on every keystroke — clamping each keystroke would turn typing
@@ -76,7 +83,10 @@ export default function SongEditor() {
       title: song.title, artist: song.artist, key: song.key,
       tempo: song.tempo ?? null, rhythmShapeId: song.rhythmShapeId,
       notation: song.notation, notes: song.notes, learned: song.learned,
-      sections: song.sections, layers: song.layers,
+      // Strip in-session temp ids so the server assigns stable uuids — keeps
+      // them from being persisted and later colliding after a reload.
+      sections: (song.sections || []).map(stripTempId),
+      layers: (song.layers || []).map(stripTempId),
     };
     const data = await updateSong(id, patch, { silent: true });
     if (data?.song) setSong(data.song);
@@ -100,8 +110,12 @@ export default function SongEditor() {
   // --- Layer helpers ------------------------------------------------------
   const addLayer = (preset) => setSong((prev) => ({
     ...prev,
+    // Presets carry the STABLE bare preset id (`lead`) — the picker already
+    // prevents adding the same preset twice, so it's unique among layers, it
+    // survives save (not a temp id), and it keeps remainingPresets dedup
+    // working. Blank layers use a temp id stripped on save.
     layers: [...(prev.layers || []), preset
-      ? { id: localId(preset.id), label: preset.label, part: preset.voices, notes: preset.advice }
+      ? { id: preset.id, label: preset.label, part: preset.voices, notes: preset.advice }
       : { id: localId('layer'), label: 'Layer', part: '', notes: '' }],
   }));
   const updateLayer = (lid, key, value) => setSong((prev) => ({
@@ -113,11 +127,11 @@ export default function SongEditor() {
   }));
 
   // Layer presets the user hasn't added yet, in foundation-first order. Match
-  // on the preset id (seed layers carry the bare id like `lead`; ladder-added
-  // layers carry `${id}-new-N`), so renaming a layer's label doesn't make its
-  // preset reappear and two presets sharing a label can't collide.
+  // on the preset id: preset layers (seed or ladder-added) carry the bare
+  // preset id like `lead`, so renaming a layer's label can't make its preset
+  // reappear and two presets sharing a label can't collide.
   const remainingPresets = useMemo(() => {
-    const have = new Set((song?.layers || []).map((l) => l.id.replace(/-new-\d+$/, '')));
+    const have = new Set((song?.layers || []).map((l) => l.id));
     return VOICE_LAYERS.filter((p) => !have.has(p.id));
   }, [song?.layers]);
 
