@@ -1042,7 +1042,7 @@ function canonEntryContentEqual(a, b) {
 // canon→catalog projection would skip a genuine change. Untouched entries keep
 // their old timestamp so this never manufactures projection churn.
 function stampChangedCanonEntries(prev, next) {
-  const now = new Date().toISOString();
+  const nowMs = Date.now();
   for (const key of CANON_ARRAY_KEYS) {
     const nextList = Array.isArray(next[key]) ? next[key] : null;
     if (!nextList) continue;
@@ -1053,7 +1053,14 @@ function stampChangedCanonEntries(prev, next) {
       if (!entry?.id) return entry;
       const before = prevById.get(entry.id);
       if (before && canonEntryContentEqual(before, entry)) return entry;
-      return { ...entry, updatedAt: now };
+      // Monotonic bump: a content change MUST advance the LWW clock past the
+      // entry's prior `updatedAt`, even when the edit lands in the same
+      // millisecond as the create/last-edit (Date.now() granularity). Without
+      // this, a same-ms edit stamps an equal timestamp, and the canon→catalog
+      // projection's `>`-based LWW merge would not treat the change as newer.
+      const beforeMs = before?.updatedAt ? Date.parse(before.updatedAt) : NaN;
+      const stampMs = Number.isNaN(beforeMs) ? nowMs : Math.max(nowMs, beforeMs + 1);
+      return { ...entry, updatedAt: new Date(stampMs).toISOString() };
     });
   }
 }

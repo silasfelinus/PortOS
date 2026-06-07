@@ -143,8 +143,9 @@ import { startBackupScheduler } from './services/backupScheduler.js';
 import { startCitySnapshotScheduler } from './services/citySnapshotScheduler.js';
 import * as telegram from './services/telegram.js';
 import * as telegramBridge from './services/telegramBridge.js';
-import { getSettings as getInitSettings, settingsEvents } from './services/settings.js';
+import { getSettings as getInitSettings } from './services/settings.js';
 import { setUserCatalogTypes } from './lib/catalogTypes.js';
+import { readUserTypes as readUserTypeSlice } from './services/catalogUserTypes/store.js';
 import { startUpdateScheduler, recordUpdateResult, clearStaleUpdateInProgress, getCurrentVersion } from './services/updateChecker.js';
 import { restoreLoops } from './services/loops.js';
 import { startBrainScheduler } from './services/brainScheduler.js';
@@ -555,18 +556,18 @@ startCitySnapshotScheduler().catch(err => console.error(`❌ City snapshot sched
 // Periodically GC orphan zero-issue/zero-canon importer shells left by an
 // abandoned analyze (issue #727).
 startOrphanShellGc();
-// Warm the catalog user-type registry from settings before any catalog request
-// can land, so user-defined types validate + mint ids immediately on boot.
-// Refresh on every settings write (the Settings → Catalog tab persists through
-// updateSettings, which emits this event) so the in-process registry tracks
-// edits without a restart.
-getInitSettings()
-  .then(s => setUserCatalogTypes(s.catalogUserTypes || []))
+// Warm the catalog user-type registry from the user-type store (Postgres as of
+// #1001; the settings.json slice under the escape hatch) before any catalog
+// request can land, so user-defined types validate + mint ids immediately on
+// boot. The store's PG backend self-runs ensureSchema + the one-time settings→DB
+// import, so this is safe even though it fires before the boot DB gate. No
+// settings:updated listener anymore: the registry's only writers are the
+// `/api/catalog/types` routes and the sync merge, both of which call
+// setUserCatalogTypes(next) directly — a settings save no longer touches types,
+// and a listener reading the now-absent settings key would wipe the registry.
+readUserTypeSlice()
+  .then(list => setUserCatalogTypes(Array.isArray(list) ? list : []))
   .catch(err => console.error(`❌ Catalog user-type warm failed: ${err.message}`));
-settingsEvents.on('settings:updated', (s) => {
-  try { setUserCatalogTypes(s?.catalogUserTypes || []); }
-  catch (err) { console.error(`❌ Catalog user-type refresh failed: ${err.message}`); }
-});
 // Initialize Telegram (manual bot or MCP bridge based on settings)
 getInitSettings().then(s => {
   if (s.telegram?.method === 'mcp-bridge') {
@@ -843,6 +844,14 @@ ensureSelf()
       // queryable index over them. Idempotent, safe to run every boot.
       const { initMediaAssetIndex } = await import('./services/mediaAssetIndex/index.js');
       await initMediaAssetIndex();
+      // Authoritative catalog user-type warm (#1001): with the DB confirmed +
+      // schema ensured, load the registry from the catalog_user_types store
+      // (running the one-time settings→DB import on first access). This runs
+      // BEFORE httpServer.listen, so a normal install always serves with the
+      // registry warm even if the early fire-and-forget warm above raced a cold
+      // DB. Idempotent with that early warm (same setUserCatalogTypes result).
+      const warmTypes = await readUserTypeSlice();
+      setUserCatalogTypes(Array.isArray(warmTypes) ? warmTypes : []);
     } catch (err) {
       console.error(`🪄 catalog migrations failed at boot: ${err.message}`);
     }
