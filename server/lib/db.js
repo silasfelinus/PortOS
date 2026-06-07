@@ -508,6 +508,22 @@ export async function ensureSchema() {
        BEFORE UPDATE ON catalog_tags
        FOR EACH ROW
        EXECUTE FUNCTION update_catalog_tag_timestamp()`,
+
+    // Creative Director projects (Phase 3, issue #997). One row per project;
+    // `id`/`status`/`created_at`/`updated_at` are columns (recovery filters on
+    // status, list sorts by updatedAt) and the full record lives in `data`
+    // JSONB. CD is local-only (not federated) so no sync_sequence/tombstone.
+    // `status` is app-layer gated (PROJECT_STATUSES), no DB CHECK. Mirrors the
+    // creative_director_projects block in init-db.sql.
+    `CREATE TABLE IF NOT EXISTS creative_director_projects (
+      id TEXT PRIMARY KEY,
+      status VARCHAR(32) NOT NULL DEFAULT 'draft',
+      data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_cd_projects_status ON creative_director_projects (status)`,
+    `CREATE INDEX IF NOT EXISTS idx_cd_projects_updated_at ON creative_director_projects (updated_at)`,
   ];
   for (const sql of catalogDDL) {
     await pool.query(sql);
