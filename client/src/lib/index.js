@@ -56,6 +56,7 @@ export * from './voiceLabel.js';
 // === Page-scoped pure helpers ===
 export * from './cityPlaybackFrame.js';
 export * from './scoreNotation.js';
+export * from './scorePlayback.js';
 export * from './songCraft.js';
 export * from './songPlayback.js';
 export * from './universeBuilderExpand.js';

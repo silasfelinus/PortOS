@@ -100,4 +100,31 @@ describe('ScoreSheet renderer', () => {
     expect(html).not.toMatch(/NaN/);
     expect(count(html, 'ellipse')).toBe(2);
   });
+
+  it('renders a melody playback control with a labelled tempo input', () => {
+    const html = renderToStaticMarkup(<ScoreSheet text={FIVE_HUNDRED_MILES} />);
+    expect(html).toContain('aria-label="Play melody"');
+    expect(html).toContain('aria-label="Stop melody"');
+    expect(html).toMatch(/<input[^>]*type="number"/); // tempo input
+    // The tempo input is label-associated (htmlFor/id), not just visually styled.
+    const id = /<input[^>]*\bid="([^"]+)"/.exec(html)?.[1];
+    expect(id).toBeTruthy();
+    expect(html).toContain(`for="${id}"`);
+  });
+
+  it('omits the playback control when controls=false', () => {
+    const html = renderToStaticMarkup(<ScoreSheet text={FIVE_HUNDRED_MILES} controls={false} />);
+    expect(html).not.toContain('aria-label="Play melody"');
+  });
+
+  it('highlights the notehead at activeNoteIndex in the theme accent (playhead)', () => {
+    const plain = renderToStaticMarkup(<ScoreSheet text={FIVE_HUNDRED_MILES} controls={false} />);
+    // With no playhead, no notehead is painted in the accent colour.
+    expect(plain).not.toMatch(/<ellipse[^>]*fill:rgb\(var\(--port-accent\)\)/);
+    // The first note (a filled quarter) lights up when it is the active note.
+    const lit = renderToStaticMarkup(
+      <ScoreSheet text={FIVE_HUNDRED_MILES} controls={false} activeNoteIndex={0} />,
+    );
+    expect(lit).toMatch(/<ellipse[^>]*fill:rgb\(var\(--port-accent\)\)/);
+  });
 });
