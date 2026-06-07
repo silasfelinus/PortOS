@@ -1,8 +1,11 @@
 /**
  * Memory Backend Switcher
  *
- * Selects between file-based (memory.js) and PostgreSQL (memoryDB.js) backends.
- * Checks for MEMORY_BACKEND env var or falls back to DB health check.
+ * Selects the PostgreSQL backend (memoryDB.js) for normal installs. PostgreSQL
+ * is mandatory; when MEMORY_BACKEND is unset we require a healthy DB and do NOT
+ * silently fall back to file storage — an unavailable DB throws. The file
+ * backend (memory.js) is reachable only via the explicit MEMORY_BACKEND=file
+ * escape hatch or NODE_ENV=test (both unsupported for production).
  *
  * Usage:
  *   import * as memory from './memoryBackend.js';
