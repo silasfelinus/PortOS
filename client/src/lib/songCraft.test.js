@@ -78,25 +78,30 @@ describe('songCraft reference data', () => {
     expect(solfegeForDegree('x')).toBeNull();
   });
 
-  it('every harmony part carries id, label, role, register, derivable flag and interval', () => {
+  it('every harmony part carries id, label, role, numeric order, range, derivable flag and voicing', () => {
     const ids = new Set();
-    const registers = new Set(['low', 'mid', 'high']);
     for (const p of HARMONY_PARTS) {
       expect(typeof p.id).toBe('string');
       expect(ids.has(p.id)).toBe(false); // ids unique
       ids.add(p.id);
       expect(typeof p.label).toBe('string');
       expect(typeof p.role).toBe('string');
-      expect(registers.has(p.register)).toBe(true);
+      expect(typeof p.order).toBe('number');
+      expect(typeof p.range).toBe('string');
       expect(typeof p.derivable).toBe('boolean');
-      expect(typeof p.interval).toBe('string');
+      expect(typeof p.voicing).toBe('string');
     }
-    // The melody is the base (not derivable); the rest are.
-    expect(HARMONY_PARTS.find((p) => p.id === 'melody').derivable).toBe(false);
+    // The melody is the base (not derivable, order 0); the rest are derivable.
+    const melody = HARMONY_PARTS.find((p) => p.id === 'melody');
+    expect(melody.derivable).toBe(false);
+    expect(melody.order).toBe(0);
     expect(DERIVABLE_HARMONY_PARTS.every((p) => p.derivable)).toBe(true);
+    // Declaration order is the low→high stack from the guide.
     expect(DERIVABLE_HARMONY_PARTS.map((p) => p.id)).toEqual([
-      'bass', 'mid-harmony-1', 'mid-harmony-2', 'high-harmony-1', 'high-harmony-2',
+      'bass', 'mid-harmony-2', 'mid-harmony-1', 'high-harmony-2', 'high-harmony-1',
     ]);
+    // High Harmony I is the TOP voice (above High Harmony II) — guide ordering.
+    expect(harmonyPartOrder('high-harmony-1')).toBeGreaterThan(harmonyPartOrder('high-harmony-2'));
   });
 
   it('harmonyPartLabel resolves known ids and empties unknown', () => {
@@ -105,11 +110,11 @@ describe('songCraft reference data', () => {
     expect(harmonyPartLabel('nope')).toBe('');
   });
 
-  it('harmonyPartOrder sorts low→high and pushes unknown roles last', () => {
-    expect(harmonyPartOrder('bass')).toBeLessThan(harmonyPartOrder('mid-harmony-1'));
-    expect(harmonyPartOrder('mid-harmony-1')).toBeLessThan(harmonyPartOrder('high-harmony-1'));
-    expect(harmonyPartOrder('custom-unknown')).toBe(3);
-    // Resolves by role too (harmony parts share the 'harmony' role).
-    expect(harmonyPartOrder('harmony')).toBeLessThanOrEqual(3);
+  it('harmonyPartOrder lays the stack low→high and pushes unknown ids last', () => {
+    const order = ['bass', 'mid-harmony-2', 'mid-harmony-1', 'high-harmony-2', 'high-harmony-1'].map(harmonyPartOrder);
+    // Strictly ascending.
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(new Set(order).size).toBe(order.length); // all distinct
+    expect(harmonyPartOrder('custom-unknown')).toBe(99);
   });
 });

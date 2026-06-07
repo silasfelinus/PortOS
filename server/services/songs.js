@@ -218,6 +218,87 @@ export const sanitizeSong = (raw) => {
   };
 };
 
+// Worked-example harmony stack for the built-in "500 Miles" — the chord-tone
+// voicing the AI-derive feature is meant to produce (the song the user pointed
+// at as the first experiment). Each part is a complete lead-sheet score in the
+// PortOS DSL, voiced from the chord-tone map (NOT parallel intervals): a
+// hymn-like root–fifth bass, two sustained inner pads, a sustained upper pad
+// that carries the F#→G leading tone on D7, and a sparse top descant that enters
+// late. Kept as a named export so SEED_SONGS and migration 076 share ONE source
+// (no drift). Voicing roles/ranges mirror songCraft.js HARMONY_PARTS.
+export const SEED_500_MILES_SCORE_PARTS = [
+  {
+    id: 'part-500-bass', label: 'Bass', role: 'bass',
+    score: [
+      'clef: bass', 'key: G', 'time: 4/4', 'tempo: 68', '',
+      '| rh [G] G2h(you) |',
+      '| [G] G2h(miss) D3h(train) |',
+      '| [Em] E2h(on) B2h(will) |',
+      '| [C] C3h(know) G2h(am) |',
+      '| [Am7] A2h(gone) E3h(can) |',
+      '| [D7] D3h(hear) A2h(tle) |',
+      '| [G] G2h(blow) D3h(dred) |',
+      '| [G] G2w(miles) |',
+    ].join('\n'),
+  },
+  {
+    id: 'part-500-mid-2', label: 'Mid Harmony II', role: 'mid-harmony-2',
+    score: [
+      'clef: treble', 'key: G', 'time: 4/4', 'tempo: 68', '',
+      '| rw |',
+      '| [G] B3w(miss) |',
+      '| [Em] B3w(on) |',
+      '| [C] G3w(know) |',
+      '| [Am7] G3w(gone) |',
+      '| [D7] A3w(hear) |',
+      '| [G] B3w(blow) |',
+      '| [G] G3w(miles) |',
+    ].join('\n'),
+  },
+  {
+    id: 'part-500-mid-1', label: 'Mid Harmony I', role: 'mid-harmony-1',
+    score: [
+      'clef: treble', 'key: G', 'time: 4/4', 'tempo: 68', '',
+      '| rw |',
+      '| [G] D4w(miss) |',
+      '| [Em] E4w(on) |',
+      '| [C] E4w(know) |',
+      '| [Am7] E4w(gone) |',
+      '| [D7] C4w(hear) |',
+      '| [G] D4w(blow) |',
+      '| [G] D4w(miles) |',
+    ].join('\n'),
+  },
+  {
+    id: 'part-500-high-2', label: 'High Harmony II', role: 'high-harmony-2',
+    score: [
+      'clef: treble', 'key: G', 'time: 4/4', 'tempo: 68', '',
+      '| rw |',
+      '| [G] G4w(miss) |',
+      '| [Em] G4w(on) |',
+      '| [C] E4w(know) |',
+      '| [Am7] E4w(gone) |',
+      '| [D7] F#4w(hear) |',
+      '| [G] G4w(blow) |',
+      '| [G] G4w(miles) |',
+    ].join('\n'),
+  },
+  {
+    id: 'part-500-high-1', label: 'High Harmony I', role: 'high-harmony-1',
+    score: [
+      'clef: treble', 'key: G', 'time: 4/4', 'tempo: 68', '',
+      '| rw |',
+      '| rw |',
+      '| rw |',
+      '| rw |',
+      '| [Am7] G4w(gone) |',
+      '| [D7] A4w(hear) |',
+      '| [G] B4w(blow) |',
+      '| [G] B4w(miles) |',
+    ].join('\n'),
+  },
+];
+
 // Seeded on first read so a fresh install opens on a worked example — the song
 // the feature was designed around. Mirrors the dirge `slow-4-4` rhythm shape
 // and the foundation-first layer ladder from songCraft.js.
@@ -250,6 +331,9 @@ export const SEED_SONGS = [
       '| [G] G4h(blow) A4e(a) B4e(hun-) C5q(dred) |',
       '| [G] D5w(miles) |',
     ].join('\n'),
+    // A full chord-tone harmony stack (bass + two mid pads + two high pads),
+    // the worked example for the AI-derive feature. See SEED_500_MILES_SCORE_PARTS.
+    scoreParts: SEED_500_MILES_SCORE_PARTS,
     notes: 'A travelling lament — keep it spacious and mournful. Sustain the vowels on the downbeats. Works beautifully with a soft hummed drone under the verses.',
     learned: false,
     sections: [

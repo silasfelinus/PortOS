@@ -147,81 +147,96 @@ export const VOICE_LAYERS = [
 // The set of sheet-music parts a song can carry beyond its base melody. The
 // base score is the `melody`; the rest are harmony variations the AI derive
 // tool produces (and the user edits) — each its own staff in the same lead-sheet
-// DSL, rhythm-aligned to the melody so the parts stack. `register` orders them
-// low→high for the View-tab part switcher; `interval` is the rule of thumb the
-// derive prompt and the UI hint use. Mirrored (id/label/role/register/interval)
-// in server/lib/songCraftRef.js so the AI prompt and the editor agree.
+// DSL, rhythm-aligned to the melody so the parts stack.
+//
+// The voicing model is CHORD-TONE, not parallel-interval: each voice targets a
+// chord tone (sustaining / moving smoothly), rather than tracking the melody a
+// fixed interval away — a folk/a cappella "layered build" where one clear melody
+// sits over a grounded bass, two moving inner voices, and one or two sustained
+// upper pads, with staggered entrances. Building parallel 3rds/6ths under every
+// syllable reads as a "MIDI choir" and is explicitly what this avoids.
+//
+// `order` lays the stack low→high for the View-tab switcher; `range` and
+// `voicing` are the per-voice rules the derive prompt and the UI hint inject.
+// Mirrored (id/label/role/order/range/voicing) in server/lib/songCraftRef.js so
+// the AI prompt and the editor agree.
 export const HARMONY_PARTS = [
   {
     id: 'melody',
     label: 'Melody',
     role: 'melody',
-    register: 'mid',
+    order: 0,
+    range: 'as written',
     derivable: false,
-    interval: 'The tune itself — the base every harmony is built from.',
-    advice: 'This is the base score. Lock it first; every derived part follows its rhythm, chords, and phrasing.',
+    voicing: 'The lead — carries the lyric and rhythmic detail. The base every harmony targets.',
+    advice: 'This is the base score. Lock it first; every derived part is voiced against its chords and phrasing.',
   },
   {
     id: 'bass',
     label: 'Bass',
     role: 'bass',
-    register: 'low',
+    order: 1,
+    range: 'G2–D3 (down to E2)',
     derivable: true,
-    interval: 'Chord roots, low — the harmonic floor, often an octave or more below the melody.',
-    advice: 'Mostly the root of each chord, moving slowly on the strong beats. It is the tuning reference for every voice above.',
-  },
-  {
-    id: 'mid-harmony-1',
-    label: 'Mid Harmony I',
-    role: 'harmony',
-    register: 'mid',
-    derivable: true,
-    interval: 'A third below the melody — the closest inner harmony.',
-    advice: 'The sweetest, most stable harmony. Build this before any wider interval.',
+    voicing: 'Root of each chord, with the fifth as gentle movement — a hymn-like root–fifth–root drone.',
+    advice: 'The harmonic floor and tuning reference. Long tones or soft pulses on beats 1 and 3; keep it simple.',
   },
   {
     id: 'mid-harmony-2',
     label: 'Mid Harmony II',
     role: 'harmony',
-    register: 'mid',
+    order: 2,
+    range: 'B2–E4',
     derivable: true,
-    interval: 'A sixth below the melody (a different chord tone from Mid Harmony I).',
-    advice: 'Fills the inner voice under Mid Harmony I so the mid-register triad is complete.',
+    voicing: 'Low inner pad — sustained chord tones below the melody (often the 3rd or 5th of the chord).',
+    advice: 'Fills the chord under Mid Harmony I. Sustain and move by step; do not chase the melody.',
   },
   {
-    id: 'high-harmony-1',
-    label: 'High Harmony I',
+    id: 'mid-harmony-1',
+    label: 'Mid Harmony I',
     role: 'harmony',
-    register: 'high',
+    order: 3,
+    range: 'D3–G4',
     derivable: true,
-    interval: 'A third above the melody — the first upper harmony.',
-    advice: 'Bright and close over the tune. Keep it locked to the melody contour.',
+    voicing: 'The main moving inner voice — a third/sixth below the melody but landing on chord tones.',
+    advice: 'The richest harmony. Move smoothly, favour common tones between chords, hold on a chord tone when the melody passes through a non-chord note.',
   },
   {
     id: 'high-harmony-2',
     label: 'High Harmony II',
     role: 'harmony',
-    register: 'high',
+    order: 4,
+    range: 'G3–B4',
     derivable: true,
-    interval: 'A fifth or sixth above the melody — the top of the stack.',
-    advice: 'The descant that crowns the chord. Save it for last; it exposes any tuning slip.',
+    voicing: 'Sustained upper chord tone with gentle suspensions — carries the leading tone (the F# on D7) that pulls back to G.',
+    advice: 'A held pad above the inner voices. Keep the dominant-7 third (F# under D7) — it resolves up to the tonic.',
+  },
+  {
+    id: 'high-harmony-1',
+    label: 'High Harmony I',
+    role: 'harmony',
+    order: 5,
+    range: 'B3–E5',
+    derivable: true,
+    voicing: 'Sparse top descant — mostly sustained high chord tones, entering on the emotional phrases.',
+    advice: 'The shimmer on top. Save it for the climaxes; rest through the opening and enter late, mostly long notes.',
   },
 ];
 
 // The parts the AI derive tool generates from the base melody (everything except
-// the melody itself, which is the input). Declaration order is low→high register.
+// the melody itself, which is the input). Declaration order is low→high.
 export const DERIVABLE_HARMONY_PARTS = HARMONY_PARTS.filter((p) => p.derivable);
 
 // Human-readable label for a harmony-part id; empty string for an unknown id so
 // a custom/free-text part falls back to its own stored label at the call site.
 export const harmonyPartLabel = (id) => HARMONY_PARTS.find((p) => p.id === id)?.label || '';
 
-// Sort key for a part role/register so the View-tab switcher lists low→high
-// (bass, mids, highs). Unknown roles sort last, after the known set.
-const REGISTER_ORDER = { low: 0, mid: 1, high: 2 };
+// Sort key so the View-tab switcher lists the stack low→high (Bass, Mid II, Mid
+// I, High II, High I). A scorePart stores the HARMONY_PARTS id in its `role`
+// field, so match on id first, then the generic role; unknown ⇒ after the set.
 export const harmonyPartOrder = (roleOrId) => {
-  const part = HARMONY_PARTS.find((p) => p.id === roleOrId || p.role === roleOrId);
-  return part ? REGISTER_ORDER[part.register] ?? 3 : 3;
+  const part = HARMONY_PARTS.find((p) => p.id === roleOrId) || HARMONY_PARTS.find((p) => p.role === roleOrId);
+  return part ? part.order : 99;
 };
 
 // --- Learning steps --------------------------------------------------------

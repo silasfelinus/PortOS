@@ -246,9 +246,14 @@ const LEAD_SHEET_SPEC = `PortOS lead-sheet notation:
   - Rest = "r" + duration (rq, rh) — no pitch, no lyric.
   - [chord] draws a chord symbol above; (lyric) draws a syllable beneath (trailing "-" = held syllable).`;
 
-// The "parts to write" block — id + interval rule for each requested part.
+// The "parts to write" block — id + range + voicing rule for each requested
+// part, low→high so the model builds the stack in order.
 const partsBrief = (parts) =>
-  parts.map((p) => `- ${p.id} ("${p.label}", ${p.register} register): ${p.interval}`).join('\n');
+  parts
+    .slice()
+    .sort((a, b) => (a.order ?? 99) - (b.order ?? 99))
+    .map((p) => `- ${p.id} ("${p.label}", range ${p.range}): ${p.voicing}`)
+    .join('\n');
 
 const isDerivedPartsShape = (o) =>
   o && typeof o === 'object' && Array.isArray(o.parts);
@@ -256,7 +261,7 @@ const isDerivedPartsShape = (o) =>
 const buildDerivePrompt = ({ song, parts }) => {
   const key = clean(song.key) || 'C major';
   const baseScore = clean(song.score);
-  return `You are an a cappella arranger. Given a base MELODY in PortOS lead-sheet notation, write singable HARMONY parts that stack with it when sung together.
+  return `You are an a cappella arranger building a layered folk vocal stack (think a sparse, TikTok-style harmony build, NOT a dense chorale). Given a base MELODY in PortOS lead-sheet notation, write singable HARMONY parts that stack with it.
 
 # Format (the melody below uses it; your output must too)
 ${LEAD_SHEET_SPEC}
@@ -264,15 +269,22 @@ ${LEAD_SHEET_SPEC}
 # Base melody — key: ${key}
 ${baseScore}
 
-# Parts to write
+# Parts to write (low → high)
 ${partsBrief(parts)}
 
-# Rules
-- Mirror the melody MEASURE-FOR-MEASURE: same number of bars, same note durations and the SAME lyric syllable on each note, so every part lines up rhythmically with the melody and the others.
-- Choose each pitch to be consonant with the chord symbol attached to the corresponding melody note ([G], [Em], [C] …) AND to sit at the requested interval/register relative to the melody. "Below" parts must stay below the melody; "above" parts above it; never cross it.
-- Keep the same key signature as the melody. Use "clef: bass" for the Bass part and "clef: treble" for the others. Keep the same time and tempo headers.
-- Keep every part within a comfortable singing range for its register (Bass roughly G2–C4; mid roughly G3–C5; high roughly C4–G5).
-- Carry the chord symbols ([G] …) through on the same notes as the melody so the part is readable on its own.
+# How to voice each part — CHORD-TONE, not parallel
+- For each chord symbol ([G], [Em], [C], [Am7], [D7] …), spell its chord tones, then give each voice a chord tone from that chord, picking the octave that fits the voice's range. This vertical chord-tone map is the goal — NOT tracking the melody a fixed interval away.
+- DO NOT move every voice in parallel with the melody. Parallel 3rds/6ths under every syllable sound like a MIDI choir. Instead: favour COMMON TONES held across a chord change, and move by the smallest step when the chord changes (smooth voice leading).
+- SUSTAIN. A harmony voice should usually hold one chord tone per chord (whole/half notes) rather than singing every melodic syllable. It does NOT need the melody's rhythm or every lyric — use long notes and rests.
+- When the melody passes through a non-chord (passing) tone, HOLD the harmony on the nearest stable chord tone; don't chase the passing note.
+- Preserve leading tones: the third of a dominant-7 chord (e.g. F# under D7 in the key of G) MUST stay — it pulls up to the tonic. Never flatten it to a modal sound.
+- Stagger entrances. Lower/inner voices can enter after the opening; the top descant ("high-harmony-1") should be SPARSE — rest through the opening bars (use whole rests \`rw\`) and enter only on the later, emotional phrases. The bass and inner pads carry the body.
+- Keep each voice within its stated range, and keep the lower voices below the melody, the upper voices above the inner ones.
+
+# Output rules
+- Same number of measures as the melody, same key signature, same time and tempo headers. Use "clef: bass" for the bass part and "clef: treble" for the others.
+- Carry the chord symbols ([G] …) on each part's downbeats so it is readable on its own.
+- Lyrics are optional on harmony parts — a sustained note can carry the bar's lead word (or none). Do not force a syllable onto every note.
 
 # Output contract
 Return ONLY a JSON object (no prose, no markdown fence):
