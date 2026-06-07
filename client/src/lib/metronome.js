@@ -32,7 +32,15 @@ const START_LEAD_S = 0.1;       // small lead before the first beat absorbs jitt
 let sharedCtx = null;
 function audioContext() {
   if (!sharedCtx) {
-    const Ctor = window.AudioContext || window.webkitAudioContext;
+    // Resolve the constructor lazily and never touch a bare `window` at module
+    // load — the server's vitest run globs this file's tests in the node
+    // environment (no jsdom), where `window` is undefined. Guard with
+    // `typeof window` and fall back to `globalThis` so the pure exports import
+    // cleanly and tests can inject a fake via globalThis.AudioContext.
+    const Ctor =
+      (typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext)) ||
+      globalThis.AudioContext ||
+      globalThis.webkitAudioContext;
     sharedCtx = new Ctor();
   }
   return sharedCtx;

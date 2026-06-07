@@ -43,7 +43,12 @@ function makeFakeAudioContext() {
 
 // The metronome module caches one shared AudioContext, so we reuse a single
 // fake across tests (resetting its state each time) rather than swapping it.
-// `window.AudioContext` must be a real constructor — an arrow fn isn't `new`able.
+// The fake must be a real constructor — an arrow fn isn't `new`able.
+//
+// Inject it via `vi.stubGlobal` on globalThis (the source falls back to
+// globalThis.AudioContext when `window` is absent) rather than `window.…`, so
+// this suite runs under the server's node test environment too — that run globs
+// client lib tests with no jsdom, so a bare `window` reference would throw.
 let fakeCtx = makeFakeAudioContext();
 
 beforeEach(() => {
@@ -51,11 +56,12 @@ beforeEach(() => {
   fakeCtx.state = 'running';
   fakeCtx.started.length = 0;
   function FakeAudioContext() { return fakeCtx; }
-  window.AudioContext = FakeAudioContext;
+  vi.stubGlobal('AudioContext', FakeAudioContext);
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe('clampBpm', () => {
