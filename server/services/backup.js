@@ -464,6 +464,24 @@ export async function restorePostgres(destPath, snapshotId, { dryRun = true } = 
   if (!info || !info.isFile?.() || info.size === 0) {
     return { status: 'skipped', reason: 'no_dump' };
   }
+  // Verify the dump against the manifest's stored SHA-256 before trusting it.
+  // The dump is hashed in generateManifest under the parent-relative key
+  // '../portos-db.sql' (it lives ALONGSIDE the snapshot data/ dir, not inside
+  // it). Backward-compat: snapshots taken before manifests existed — or missing
+  // the dump key — have nothing to verify against, so we SKIP verification and
+  // proceed rather than hard-failing. Only a manifest that IS present AND
+  // carries a mismatching hash refuses the restore.
+  const manifestPath = join(snapshotsRoot, snapshotId, 'manifest.json');
+  const manifest = await readJSONFile(manifestPath, null);
+  const expectedHash = manifest?.files?.['../portos-db.sql'];
+  if (expectedHash) {
+    const actualHash = await sha256File(sqlPath);
+    if (actualHash !== expectedHash) {
+      console.error(`❌ restore: manifest hash mismatch for snapshot ${snapshotId} (expected ${expectedHash}, got ${actualHash})`);
+      return { status: 'failed', reason: 'manifest_mismatch' };
+    }
+  }
+
   const sql = await readFile(sqlPath, 'utf-8').catch(() => '');
   const tableCount = (sql.match(/^CREATE TABLE /gm) || []).length;
 
