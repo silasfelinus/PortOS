@@ -40,7 +40,8 @@ export default function Songs() {
     if (!name) { toast.error('Give the song a title'); return null; }
     const data = await createSong({ title: name, artist: artist.trim() }, { silent: true });
     const song = data?.song;
-    if (song) navigate(`/songs/${song.id}`);
+    // A blank new song has nothing to read — open straight into edit mode.
+    if (song) navigate(`/songs/${song.id}?mode=edit`);
     return song;
   }, { errorMessage: 'Failed to create song' });
 
@@ -58,6 +59,8 @@ export default function Songs() {
     if (!fields) { toast.error('Generation produced nothing — try again'); return null; }
     const created = await createSong(fields, { silent: true });
     const song = created?.song;
+    // Unlike a blank create, a generated draft already has lyrics — open the
+    // read view so the user sees the result, then toggle to Edit to refine.
     if (song) navigate(`/songs/${song.id}`);
     return song;
   }, { errorMessage: 'Failed to generate song' });
@@ -161,6 +164,11 @@ export default function Songs() {
                       : <Circle size={16} className="text-gray-600 shrink-0" aria-label="In progress" />}
                     <span className="text-white font-medium truncate">{song.title}</span>
                     {song.artist && <span className="text-gray-500 text-sm truncate">· {song.artist}</span>}
+                    {song.builtIn && (
+                      <span className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wide bg-port-accent/10 text-port-accent border border-port-accent/20">
+                        Built-in
+                      </span>
+                    )}
                   </div>
                   <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-gray-500 mt-1 pl-6">
                     {song.key && <span>Key: {song.key}</span>}
