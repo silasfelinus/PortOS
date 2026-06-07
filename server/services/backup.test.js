@@ -25,6 +25,7 @@ vi.mock('./memoryBackend.js', () => ({
 }));
 
 import { EventEmitter } from 'events';
+import { createHash } from 'crypto';
 import { spawn } from 'child_process';
 // Partial mock: only override spawn. Preserve execFile et al. because
 // backup.js transitively imports fileUtils.js, which promisifies execFile.
@@ -396,6 +397,65 @@ describe('restorePostgres', () => {
     expect(result.status).toBe('failed');
     expect(result.reason).toBe('restore_error');
     expect(result.error).toContain('already exists');
+  });
+
+  // Manifest SHA-256 verification (#980). The dump is hashed in generateManifest
+  // under the parent-relative key '../portos-db.sql' — these tests assert the
+  // exact key, the mismatch refusal, and the backward-compat skip paths.
+  //
+  // sha256File reads the dump via fs.readFile (small-file path). We mock
+  // readFile path-aware: manifest.json returns the manifest JSON, the dump path
+  // returns the SQL bytes that sha256File hashes. The dump content here is the
+  // small string 'CREATE TABLE a;' — its real sha256 is the constant below.
+  const DUMP_SQL = 'CREATE TABLE a;';
+  // Compute the genuine hash so the "match" test verifies real bytes, not a
+  // hard-coded string that could drift from sha256File's implementation.
+  const REAL_DUMP_SHA256 = createHash('sha256').update(Buffer.from(DUMP_SQL)).digest('hex');
+
+  function mockDumpAndManifest(manifestObj) {
+    vi.spyOn(fs, 'stat').mockResolvedValue({ size: DUMP_SQL.length, isFile: () => true });
+    vi.spyOn(fs, 'readFile').mockImplementation(async (p) => {
+      const path = String(p);
+      if (path.endsWith('manifest.json')) {
+        if (manifestObj === null) {
+          const err = new Error('ENOENT');
+          err.code = 'ENOENT';
+          throw err;
+        }
+        return JSON.stringify(manifestObj);
+      }
+      return DUMP_SQL;
+    });
+  }
+
+  it('proceeds when the dump hash matches the manifest (match)', async () => {
+    mockDumpAndManifest({ files: { '../portos-db.sql': REAL_DUMP_SHA256 } });
+    const result = await restorePostgres('/dest', '2026-06-05T00-00-00', { dryRun: true });
+    expect(result.status).toBe('ok');
+    expect(result.dryRun).toBe(true);
+    expect(result.tableCount).toBe(1);
+  });
+
+  it('refuses with manifest_mismatch when the dump hash differs (mismatch)', async () => {
+    mockDumpAndManifest({ files: { '../portos-db.sql': 'deadbeef'.repeat(8) } });
+    checkHealth.mockResolvedValue({ connected: true, hasSchema: true });
+    const result = await restorePostgres('/dest', '2026-06-05T00-00-00', { dryRun: false });
+    expect(result).toEqual({ status: 'failed', reason: 'manifest_mismatch' });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('skips verification when manifest.json is absent (backward-compat)', async () => {
+    mockDumpAndManifest(null);
+    const result = await restorePostgres('/dest', '2026-06-05T00-00-00', { dryRun: true });
+    expect(result.status).toBe('ok');
+    expect(result.tableCount).toBe(1);
+  });
+
+  it('skips verification when the manifest lacks the dump key (pre-#976 manifest)', async () => {
+    mockDumpAndManifest({ files: { 'instances.json': 'abc123' } });
+    const result = await restorePostgres('/dest', '2026-06-05T00-00-00', { dryRun: true });
+    expect(result.status).toBe('ok');
+    expect(result.tableCount).toBe(1);
   });
 });
 
