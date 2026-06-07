@@ -7,6 +7,10 @@ import {
   NOTATION_HELP,
   SOLFEGE_DEGREES,
   solfegeForDegree,
+  HARMONY_PARTS,
+  DERIVABLE_HARMONY_PARTS,
+  harmonyPartLabel,
+  harmonyPartOrder,
 } from './songCraft.js';
 
 describe('songCraft reference data', () => {
@@ -72,5 +76,40 @@ describe('songCraft reference data', () => {
     expect(solfegeForDegree(9)).toBe('Re');
     expect(solfegeForDegree(null)).toBeNull();
     expect(solfegeForDegree('x')).toBeNull();
+  });
+
+  it('every harmony part carries id, label, role, register, derivable flag and interval', () => {
+    const ids = new Set();
+    const registers = new Set(['low', 'mid', 'high']);
+    for (const p of HARMONY_PARTS) {
+      expect(typeof p.id).toBe('string');
+      expect(ids.has(p.id)).toBe(false); // ids unique
+      ids.add(p.id);
+      expect(typeof p.label).toBe('string');
+      expect(typeof p.role).toBe('string');
+      expect(registers.has(p.register)).toBe(true);
+      expect(typeof p.derivable).toBe('boolean');
+      expect(typeof p.interval).toBe('string');
+    }
+    // The melody is the base (not derivable); the rest are.
+    expect(HARMONY_PARTS.find((p) => p.id === 'melody').derivable).toBe(false);
+    expect(DERIVABLE_HARMONY_PARTS.every((p) => p.derivable)).toBe(true);
+    expect(DERIVABLE_HARMONY_PARTS.map((p) => p.id)).toEqual([
+      'bass', 'mid-harmony-1', 'mid-harmony-2', 'high-harmony-1', 'high-harmony-2',
+    ]);
+  });
+
+  it('harmonyPartLabel resolves known ids and empties unknown', () => {
+    expect(harmonyPartLabel('bass')).toBe('Bass');
+    expect(harmonyPartLabel('high-harmony-2')).toBe('High Harmony II');
+    expect(harmonyPartLabel('nope')).toBe('');
+  });
+
+  it('harmonyPartOrder sorts low→high and pushes unknown roles last', () => {
+    expect(harmonyPartOrder('bass')).toBeLessThan(harmonyPartOrder('mid-harmony-1'));
+    expect(harmonyPartOrder('mid-harmony-1')).toBeLessThan(harmonyPartOrder('high-harmony-1'));
+    expect(harmonyPartOrder('custom-unknown')).toBe(3);
+    // Resolves by role too (harmony parts share the 'harmony' role).
+    expect(harmonyPartOrder('harmony')).toBeLessThanOrEqual(3);
   });
 });

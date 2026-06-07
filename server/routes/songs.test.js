@@ -24,6 +24,7 @@ vi.mock('../services/songs.js', async () => {
 const aiMocks = vi.hoisted(() => ({
   generateSong: vi.fn(),
   evaluateSong: vi.fn(),
+  deriveSongParts: vi.fn(),
 }));
 vi.mock('../services/songsAI.js', () => aiMocks);
 
@@ -234,5 +235,51 @@ describe('songs route', () => {
     const res = await request(makeApp()).post('/api/songs/song-x/evaluate').send({});
     expect(res.status).toBe(404);
     expect(aiMocks.evaluateSong).not.toHaveBeenCalled();
+  });
+
+  it('PUT /:id accepts a scoreParts array', async () => {
+    mocks.updateSong.mockResolvedValue({ id: 'song-1' });
+    const res = await request(makeApp())
+      .put('/api/songs/song-1')
+      .send({ scoreParts: [{ label: 'Bass', role: 'bass', score: '| G2w(x) |' }] });
+    expect(res.status).toBe(200);
+    const [, patch] = mocks.updateSong.mock.calls[0];
+    expect(patch.scoreParts).toHaveLength(1);
+    expect(patch.scoreParts[0].score).toBe('| G2w(x) |');
+  });
+
+  it('PUT /:id rejects a scorePart without a score', async () => {
+    const res = await request(makeApp())
+      .put('/api/songs/song-1')
+      .send({ scoreParts: [{ label: 'Bass', role: 'bass' }] });
+    expect(res.status).toBe(400);
+    expect(mocks.updateSong).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/derive-parts returns the derived scoreParts', async () => {
+    mocks.getSong.mockResolvedValue({ id: 'song-1', title: '500 Miles', score: '| [G] B4q |' });
+    aiMocks.deriveSongParts.mockResolvedValue({
+      scoreParts: [{ role: 'bass', label: 'Bass', score: '| G2w |' }], llm: { provider: 'p' },
+    });
+    const res = await request(makeApp()).post('/api/songs/song-1/derive-parts').send({});
+    expect(res.status).toBe(200);
+    expect(res.body.scoreParts).toHaveLength(1);
+    const [arg] = aiMocks.deriveSongParts.mock.calls[0];
+    expect(arg.song.id).toBe('song-1');
+  });
+
+  it('POST /:id/derive-parts 404s when the song is missing', async () => {
+    mocks.getSong.mockResolvedValue(null);
+    const res = await request(makeApp()).post('/api/songs/song-x/derive-parts').send({});
+    expect(res.status).toBe(404);
+    expect(aiMocks.deriveSongParts).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/derive-parts forwards a partIds restriction', async () => {
+    mocks.getSong.mockResolvedValue({ id: 'song-1', score: '| [G] B4q |' });
+    aiMocks.deriveSongParts.mockResolvedValue({ scoreParts: [], llm: {} });
+    await request(makeApp()).post('/api/songs/song-1/derive-parts').send({ partIds: ['bass', 'high-harmony-1'] });
+    const [arg] = aiMocks.deriveSongParts.mock.calls[0];
+    expect(arg.partIds).toEqual(['bass', 'high-harmony-1']);
   });
 });

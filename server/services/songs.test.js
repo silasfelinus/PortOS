@@ -190,6 +190,27 @@ describe('songs service', () => {
     expect(svc.sanitizeSong({ id: 'x', score: long }).score.length).toBe(svc.SCORE_MAX_LENGTH);
   });
 
+  it('sanitizes scoreParts — drops scoreless entries, mints ids, defaults labels', () => {
+    const song = svc.sanitizeSong({
+      id: 'x',
+      scoreParts: [
+        { id: 'part-keep', label: 'Bass', role: 'bass', score: '| G2w(x) |' },
+        { role: 'mid-harmony-1', score: '  | B4q |  ' }, // no id/label → minted id, default label
+        { label: 'No notes', role: 'bass' },             // no score → dropped
+        { score: '   ' },                                // blank score → dropped
+      ],
+    });
+    expect(song.scoreParts).toHaveLength(2);
+    expect(song.scoreParts[0].id).toBe('part-keep');
+    expect(song.scoreParts[1].id).toMatch(/^part-/);
+    expect(song.scoreParts[1].label).toBe('Part');   // default when blank
+    expect(song.scoreParts[1].score).toBe('| B4q |'); // trimmed
+  });
+
+  it('defaults scoreParts to [] when absent (backward compatible)', () => {
+    expect(svc.sanitizeSong({ id: 'x' }).scoreParts).toEqual([]);
+  });
+
   it('sanitizes references — drops urlless entries, mints ids', () => {
     const song = svc.sanitizeSong({
       id: 'x',

@@ -18,7 +18,7 @@ import { z } from 'zod';
 import { asyncHandler, ServerError } from '../lib/errorHandler.js';
 import { validateRequest } from '../lib/validation.js';
 import * as svc from '../services/songs.js';
-import { generateSong, evaluateSong } from '../services/songsAI.js';
+import { generateSong, evaluateSong, deriveSongParts } from '../services/songsAI.js';
 
 const router = Router();
 
@@ -52,6 +52,16 @@ const recordingSchema = z.object({
   createdAt: z.string().optional(),
 });
 
+// A sheet-music part — a harmony variation of the base score, in the same
+// lead-sheet DSL. `score` is required (a part without notation is meaningless);
+// `role` is a HARMONY_PARTS id when known but free-text-safe.
+const scorePartSchema = z.object({
+  id: str(svc.ID_MAX_LENGTH).optional(),
+  label: str(svc.LABEL_MAX_LENGTH).optional().default(''),
+  role: str(svc.ID_MAX_LENGTH).optional().default(''),
+  score: str(svc.SCORE_MAX_LENGTH),
+});
+
 // A reference link/video (e.g. a TikTok performance). `url` is required; the
 // client renders TikTok urls as embeds and everything else as a link.
 const referenceSchema = z.object({
@@ -77,6 +87,9 @@ const songInputSchema = z.object({
   // Sheet-music notation (PortOS lead-sheet DSL) — bounded free text; the client
   // parses/renders it. Longer cap than `notation` since a full score is verbose.
   score: str(svc.SCORE_MAX_LENGTH).optional(),
+  // Harmony variations of the base score (bass, mid/high harmonies). The service
+  // drops parts with no notation and defaults the label; the schema bounds the list.
+  scoreParts: z.array(scorePartSchema).max(svc.SCORE_PARTS_MAX).optional(),
   notes: str(svc.FIELD_MAX_LENGTH).optional(),
   learned: z.boolean().optional(),
   sections: z.array(sectionSchema).max(svc.SECTIONS_MAX).optional(),
@@ -104,6 +117,14 @@ const generateSchema = z.object({
   model: optProvider,
 });
 const evaluateSchema = z.object({
+  providerId: optProvider,
+  model: optProvider,
+});
+// Derive harmony parts from the song's base score. `partIds` optionally restricts
+// which harmony parts to generate (a HARMONY_PARTS id list); the service defaults
+// to the full derivable set and only ever derives harmony (never the melody).
+const derivePartsSchema = z.object({
+  partIds: z.array(str(svc.ID_MAX_LENGTH)).max(svc.SCORE_PARTS_MAX).optional(),
   providerId: optProvider,
   model: optProvider,
 });
@@ -189,6 +210,20 @@ router.post('/:id/evaluate', asyncHandler(async (req, res) => {
   const song = await svc.getSong(req.params.id);
   if (!song) throw new ServerError('Song not found', { status: 404, code: svc.ERR_NOT_FOUND });
   const result = await evaluateSong({ song, providerId: body.providerId, model: body.model });
+  res.json(result);
+}));
+
+// POST /api/songs/:id/derive-parts → derive harmony parts (bass, mid/high
+// harmonies) from the song's base melody. Returns { scoreParts, llm }; the
+// client merges the parts into the editor draft (does NOT auto-save), matching
+// the generate/expand flow. 400 if the song has no base score to derive from.
+router.post('/:id/derive-parts', asyncHandler(async (req, res) => {
+  const body = validateRequest(derivePartsSchema, req.body || {});
+  const song = await svc.getSong(req.params.id);
+  if (!song) throw new ServerError('Song not found', { status: 404, code: svc.ERR_NOT_FOUND });
+  const result = await deriveSongParts({
+    song, partIds: body.partIds, providerId: body.providerId, model: body.model,
+  });
   res.json(result);
 }));
 

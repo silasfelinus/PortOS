@@ -41,3 +41,20 @@ export const VOICE_LAYERS = [
 
 // The dirge-family shapes (the lament the workbench centers on), in order.
 export const DIRGE_RHYTHM_SHAPES = RHYTHM_SHAPES.filter((s) => s.dirge);
+
+// Sheet-music harmony parts: { id, label, role, register, derivable, interval }.
+// The base score is the `melody`; the derivable parts are what the AI derive
+// tool produces from it. Injected into the derive prompt so the model returns
+// part ids the editor's switcher already understands. Mirrors HARMONY_PARTS in
+// client/src/lib/songCraft.js — keep id/label/role/register/interval in sync.
+export const HARMONY_PARTS = [
+  { id: 'melody', label: 'Melody', role: 'melody', register: 'mid', derivable: false, interval: 'The tune itself — the base every harmony is built from.' },
+  { id: 'bass', label: 'Bass', role: 'bass', register: 'low', derivable: true, interval: 'Chord roots, low — the harmonic floor, often an octave or more below the melody.' },
+  { id: 'mid-harmony-1', label: 'Mid Harmony I', role: 'harmony', register: 'mid', derivable: true, interval: 'A third below the melody — the closest inner harmony.' },
+  { id: 'mid-harmony-2', label: 'Mid Harmony II', role: 'harmony', register: 'mid', derivable: true, interval: 'A sixth below the melody (a different chord tone from Mid Harmony I).' },
+  { id: 'high-harmony-1', label: 'High Harmony I', role: 'harmony', register: 'high', derivable: true, interval: 'A third above the melody — the first upper harmony.' },
+  { id: 'high-harmony-2', label: 'High Harmony II', role: 'harmony', register: 'high', derivable: true, interval: 'A fifth or sixth above the melody — the top of the stack.' },
+];
+
+// The parts the derive tool generates (all but the melody, which is the input).
+export const DERIVABLE_HARMONY_PARTS = HARMONY_PARTS.filter((p) => p.derivable);

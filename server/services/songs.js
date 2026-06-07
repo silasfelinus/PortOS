@@ -38,6 +38,7 @@ export const ARTIST_MAX_LENGTH = 200;
 export const KEY_MAX_LENGTH = 24;
 export const FIELD_MAX_LENGTH = 4000;      // lyrics body / general notes
 export const SCORE_MAX_LENGTH = 8000;      // sheet-music notation (lead-sheet DSL)
+export const SCORE_PARTS_MAX = 12;         // harmony variations of the sheet music
 export const LABEL_MAX_LENGTH = 120;       // section + layer labels
 export const PART_MAX_LENGTH = 60;         // layer voice (e.g. "Bass")
 export const ID_MAX_LENGTH = 60;           // rhythm-shape / layer ids
@@ -137,6 +138,27 @@ const sanitizeReference = (r) => {
   };
 };
 
+// One sheet-music part — a harmony variation of the song's base score
+// ({ id, label, role, score }). `score` is the PortOS lead-sheet DSL (same
+// format as the base `score`); a part without notation is meaningless, so it's
+// dropped. `role` references a songCraft HARMONY_PARTS id when known (bass,
+// mid-harmony-1, high-harmony-1 …) but is free-text-safe so a newer/older client
+// vocabulary can't 400. `label` defaults from the role/`Part` so a part card is
+// never headerless.
+const sanitizeScorePart = (p) => {
+  if (!p || typeof p !== 'object') return null;
+  const score = trimField(p.score, SCORE_MAX_LENGTH);
+  if (!score) return null;
+  const label = trimField(p.label, LABEL_MAX_LENGTH);
+  const role = trimField(p.role, ID_MAX_LENGTH);
+  return {
+    id: trimField(p.id, ID_MAX_LENGTH) || `part-${randomUUID().slice(0, 8)}`,
+    label: label || 'Part',
+    role,
+    score,
+  };
+};
+
 const sanitizeList = (arr, fn, max) =>
   (Array.isArray(arr) ? arr : [])
     .map(fn)
@@ -174,6 +196,11 @@ export const sanitizeSong = (raw) => {
     // scoreNotation.js). A bounded free-text string — the client parses + renders
     // it; the server only length-caps it, so a newer/older DSL revision can't 400.
     score: trimField(raw.score, SCORE_MAX_LENGTH),
+    // Harmony variations of the base `score` (bass, mid/high harmonies …), each
+    // its own lead-sheet DSL. Absent ⇒ [] — purely additive, so an older peer or
+    // a pre-feature record reads back as a song with no parts (no migration of
+    // the on-disk shape needed; the field simply appears when the user adds one).
+    scoreParts: sanitizeList(raw.scoreParts, sanitizeScorePart, SCORE_PARTS_MAX),
     notes: trimField(raw.notes, FIELD_MAX_LENGTH),
     learned: raw.learned === true,
     sections: sanitizeList(raw.sections, sanitizeSection, SECTIONS_MAX),
@@ -199,23 +226,29 @@ export const SEED_SONGS = [
     id: 'seed-500-miles',
     title: '500 Miles',
     artist: 'Peter, Paul and Mary',
-    key: 'C major',
+    key: 'G major',
     tempo: 68,
     rhythmShapeId: 'slow-4-4',
-    notation: 'Verse chords (key of C): C — Am — F — G, four slow bars per line. A gentle 4/4 ballad; let each line breathe across the bar rather than chopping it.',
+    notation: 'Verse chords (key of G, after Hedy West): G — Em — C — Am7 — D7 — G, four slow bars per line. A gentle 4/4 ballad; let each line breathe across the bar rather than chopping it.',
     // Sheet music in the PortOS lead-sheet DSL — the verse melody with chords and
-    // lyrics. A singable arrangement in C (edit it in the Sheet music tab); see
-    // client/src/lib/scoreNotation.js for the format.
+    // lyrics, transcribed from the Hedy West lead sheet in G major. Edit it in the
+    // Sheet music tab; see client/src/lib/scoreNotation.js for the format. NOTE:
+    // migration 073's SCORE_500_MILES constant must stay identical to this (the
+    // 073 drift test asserts it) — update both together.
     score: [
       'clef: treble',
-      'key: C',
+      'key: G',
       'time: 4/4',
       'tempo: 68',
       '',
-      '| [C] E4q(If) G4q(you) G4q(miss) G4q(the) | [Am] A4h(train) G4q(I\'m) E4q(on) |',
-      '| [F] F4q(You) A4q(will) A4q(know) A4q(that) | [C] G4h(I) E4q(am) C4q(gone) |',
-      '| [F] F4q(You) A4q(can) A4q(hear) A4q(the) | [C] G4q(whis-) E4q(tle) C4h(blow) |',
-      '| [G] D4q(A) F4q(hun-) G4q(dred) rq | [C] C4w(miles) |',
+      '| rh [G] D4q(If) D4q(you) |',
+      '| [G] B4q.(miss) A4e(the) B4q.(train) A4e(I\'m) |',
+      '| [Em] B4h(on) A4q(you) G4q(will) |',
+      '| [C] C5q.(know) B4e(that) A4q(I) G4q(am) |',
+      '| [Am7] E4h.(gone) F#4e(you) G4e(can) |',
+      '| [D7] A4q.(hear) F#4e(the) A4q.(whis-) F#4e(tle) |',
+      '| [G] G4h(blow) A4e(a) B4e(hun-) C5q(dred) |',
+      '| [G] D5w(miles) |',
     ].join('\n'),
     notes: 'A travelling lament — keep it spacious and mournful. Sustain the vowels on the downbeats. Works beautifully with a soft hummed drone under the verses.',
     learned: false,
@@ -460,7 +493,7 @@ export async function updateSong(id, patch) {
     // Merge field-by-field so an absent key preserves the stored value while a
     // present key (including empty string / empty array) applies the change.
     const merged = { ...songs[idx] };
-    for (const key of ['title', 'artist', 'key', 'tempo', 'rhythmShapeId', 'notation', 'score', 'notes', 'learned', 'sections', 'layers', 'recordings', 'references', 'partnerSongIds']) {
+    for (const key of ['title', 'artist', 'key', 'tempo', 'rhythmShapeId', 'notation', 'score', 'scoreParts', 'notes', 'learned', 'sections', 'layers', 'recordings', 'references', 'partnerSongIds']) {
       if (key in patch) merged[key] = patch[key];
     }
     merged.id = id;

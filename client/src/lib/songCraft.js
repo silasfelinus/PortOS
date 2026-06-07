@@ -143,6 +143,87 @@ export const VOICE_LAYERS = [
   },
 ];
 
+// --- Harmony parts (sheet-music variations) --------------------------------
+// The set of sheet-music parts a song can carry beyond its base melody. The
+// base score is the `melody`; the rest are harmony variations the AI derive
+// tool produces (and the user edits) — each its own staff in the same lead-sheet
+// DSL, rhythm-aligned to the melody so the parts stack. `register` orders them
+// low→high for the View-tab part switcher; `interval` is the rule of thumb the
+// derive prompt and the UI hint use. Mirrored (id/label/role/register/interval)
+// in server/lib/songCraftRef.js so the AI prompt and the editor agree.
+export const HARMONY_PARTS = [
+  {
+    id: 'melody',
+    label: 'Melody',
+    role: 'melody',
+    register: 'mid',
+    derivable: false,
+    interval: 'The tune itself — the base every harmony is built from.',
+    advice: 'This is the base score. Lock it first; every derived part follows its rhythm, chords, and phrasing.',
+  },
+  {
+    id: 'bass',
+    label: 'Bass',
+    role: 'bass',
+    register: 'low',
+    derivable: true,
+    interval: 'Chord roots, low — the harmonic floor, often an octave or more below the melody.',
+    advice: 'Mostly the root of each chord, moving slowly on the strong beats. It is the tuning reference for every voice above.',
+  },
+  {
+    id: 'mid-harmony-1',
+    label: 'Mid Harmony I',
+    role: 'harmony',
+    register: 'mid',
+    derivable: true,
+    interval: 'A third below the melody — the closest inner harmony.',
+    advice: 'The sweetest, most stable harmony. Build this before any wider interval.',
+  },
+  {
+    id: 'mid-harmony-2',
+    label: 'Mid Harmony II',
+    role: 'harmony',
+    register: 'mid',
+    derivable: true,
+    interval: 'A sixth below the melody (a different chord tone from Mid Harmony I).',
+    advice: 'Fills the inner voice under Mid Harmony I so the mid-register triad is complete.',
+  },
+  {
+    id: 'high-harmony-1',
+    label: 'High Harmony I',
+    role: 'harmony',
+    register: 'high',
+    derivable: true,
+    interval: 'A third above the melody — the first upper harmony.',
+    advice: 'Bright and close over the tune. Keep it locked to the melody contour.',
+  },
+  {
+    id: 'high-harmony-2',
+    label: 'High Harmony II',
+    role: 'harmony',
+    register: 'high',
+    derivable: true,
+    interval: 'A fifth or sixth above the melody — the top of the stack.',
+    advice: 'The descant that crowns the chord. Save it for last; it exposes any tuning slip.',
+  },
+];
+
+// The parts the AI derive tool generates from the base melody (everything except
+// the melody itself, which is the input). Declaration order is low→high register.
+export const DERIVABLE_HARMONY_PARTS = HARMONY_PARTS.filter((p) => p.derivable);
+
+// Human-readable label for a harmony-part id; empty string for an unknown id so
+// a custom/free-text part falls back to its own stored label at the call site.
+export const harmonyPartLabel = (id) => HARMONY_PARTS.find((p) => p.id === id)?.label || '';
+
+// Sort key for a part role/register so the View-tab switcher lists low→high
+// (bass, mids, highs). Unknown roles sort last, after the known set.
+const REGISTER_ORDER = { low: 0, mid: 1, high: 2 };
+export const harmonyPartOrder = (roleOrId) => {
+  const part = HARMONY_PARTS.find((p) => p.id === roleOrId || p.role === roleOrId);
+  return part ? REGISTER_ORDER[part.register] ?? 3 : 3;
+};
+
 // --- Learning steps --------------------------------------------------------
 // The practice sequence for learning a new a cappella song, in order.
 export const LEARNING_STEPS = [
