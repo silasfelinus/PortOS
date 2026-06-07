@@ -57,6 +57,7 @@ export * from './voiceLabel.js';
 export * from './cityPlaybackFrame.js';
 export * from './pitchDetect.js';
 export * from './scoreNotation.js';
+export * from './scorePlayback.js';
 export * from './songCraft.js';
 export * from './songPlayback.js';
 export * from './universeBuilderExpand.js';

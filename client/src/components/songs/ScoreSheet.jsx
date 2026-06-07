@@ -19,8 +19,9 @@
  * missing music font degrades only the clef glyph, never the staff.
  */
 
-import { useMemo } from 'react';
+import { useMemo, useState, useRef, useEffect, useId } from 'react';
 import { parseScore } from '../../lib/scoreNotation.js';
+import { createScorePlayer, DEFAULT_BPM } from '../../lib/scorePlayback.js';
 
 // --- Geometry (all in internal SVG units; the <svg> scales via viewBox) ------
 const WIDTH = 720;          // internal coordinate width — viewBox scales to fit
@@ -59,6 +60,9 @@ const STAFF_BLOCK = 4 * GAP; // the five staff lines span four gaps
 // fill="…"/stroke="…" attributes. Staff lines sit at a dimmed muted tone so the
 // noteheads (full text colour) read as the foreground in both themes.
 const INK = 'rgb(var(--port-text))';
+// The currently-sounding note (playhead) is painted in the theme accent so it
+// reads as the foreground against the neutral-ink staff, in both day and dark.
+const ACTIVE = 'rgb(var(--port-accent))';
 const STAFF = 'rgb(var(--port-text-muted) / 0.55)';
 const CHORD = 'rgb(var(--port-accent))';
 const LYRIC = 'rgb(var(--port-text-muted))';
@@ -131,8 +135,63 @@ const rowLyricOffset = (row, bottomLineStep) => {
   return Math.max(LYRIC_MIN_BELOW_STAFF, belowStaffPx + LYRIC_BELOW_NOTE);
 };
 
-export default function ScoreSheet({ text, className = '' }) {
+export default function ScoreSheet({ text, className = '', controls = true, activeNoteIndex = null }) {
   const score = useMemo(() => parseScore(text), [text]);
+
+  // --- Reference-tone playback (synthesize the written melody) ---------------
+  // The player lives in scorePlayback.js (pure schedule + a lookahead oscillator
+  // scheduler); this component only owns the transport UI + the playhead index.
+  // Hooks run unconditionally, before the no-music early return below.
+  const uid = useId();
+  const playerRef = useRef(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [activeIdx, setActiveIdx] = useState(-1);
+  const scoreBpm = Number.isFinite(score.tempo) && score.tempo > 0 ? score.tempo : DEFAULT_BPM;
+  const [tempo, setTempo] = useState(scoreBpm);
+
+  // A changed score (live editing, switching songs) invalidates the player and
+  // resets the transport; tempo re-syncs to the new score's marking.
+  useEffect(() => {
+    if (playerRef.current) { playerRef.current.stop(); playerRef.current = null; }
+    setIsPlaying(false);
+    setActiveIdx(-1);
+    setTempo(scoreBpm);
+  }, [score, scoreBpm]);
+
+  // Tear down any live oscillators + lookahead interval on unmount.
+  useEffect(() => () => {
+    if (playerRef.current) { playerRef.current.stop(); playerRef.current = null; }
+  }, []);
+
+  // Tempo edits take effect on the running (or next) player.
+  useEffect(() => { if (playerRef.current) playerRef.current.setTempo(tempo); }, [tempo]);
+
+  const ensurePlayer = () => {
+    if (!playerRef.current) {
+      playerRef.current = createScorePlayer(score, {
+        bpm: tempo,
+        onNote: (i) => setActiveIdx(i == null ? -1 : i),
+        onEnded: () => { setIsPlaying(false); setActiveIdx(-1); },
+      });
+    }
+    return playerRef.current;
+  };
+
+  const togglePlay = () => {
+    const player = ensurePlayer();
+    if (isPlaying) { player.pause(); setIsPlaying(false); return; }
+    setIsPlaying(true);
+    Promise.resolve(player.play()).catch(() => setIsPlaying(false));
+  };
+
+  const handleStop = () => {
+    if (playerRef.current) playerRef.current.stop();
+    setIsPlaying(false);
+    setActiveIdx(-1);
+  };
+
+  // A passed `activeNoteIndex` (controlled use / tests) wins over internal play.
+  const highlight = activeNoteIndex == null ? activeIdx : activeNoteIndex;
 
   const { rows, height } = useMemo(() => {
     const packed = packRows(score.measures, score.keySig.count);
@@ -156,6 +215,10 @@ export default function ScoreSheet({ text, className = '' }) {
   const middleLineStep = bottomLineStep + 4;
 
   const els = [];
+  // Global note index across the whole score, in the same order scorePlayback's
+  // buildSchedule walks it — so `highlight` (the now-sounding note) lines up with
+  // the correct notehead for the playhead.
+  let noteCounter = 0;
   rows.forEach((row, ri) => {
     const rowTop = row.top;
     const staffTop = rowTop + ROW_TOP_PAD;
@@ -222,10 +285,12 @@ export default function ScoreSheet({ text, className = '' }) {
         const cx = cursor + slot / 2;
         cursor += slot;
         const key = `m${index}-n${ni}`;
+        const ink = noteCounter === highlight ? ACTIVE : INK;
+        noteCounter += 1;
         if (note.rest) {
-          els.push(...renderRest(note, cx, yForStep, bottomLineStep, key));
+          els.push(...renderRest(note, cx, yForStep, bottomLineStep, key, ink));
         } else {
-          els.push(...renderNote(note, cx, yForStep, bottomLineStep, middleLineStep, key));
+          els.push(...renderNote(note, cx, yForStep, bottomLineStep, middleLineStep, key, ink));
         }
         if (note.chord) {
           els.push(<text key={`${key}-ch`} x={cx} y={chordY} fontSize={12} fontWeight="600" style={fillStyle(CHORD)} textAnchor="middle" fontFamily="ui-sans-serif, system-ui, sans-serif">{note.chord}</text>);
@@ -240,21 +305,62 @@ export default function ScoreSheet({ text, className = '' }) {
   });
 
   return (
-    <svg
-      className={className}
-      viewBox={`0 0 ${WIDTH} ${height}`}
-      width="100%"
-      role="img"
-      aria-label="Sheet music notation"
-      style={{ height: 'auto', display: 'block' }}
-    >
-      {els}
-    </svg>
+    <div className="w-full">
+      {controls && (
+        <div className="flex flex-wrap items-center gap-2 mb-2 text-xs text-gray-400">
+          <button
+            type="button"
+            onClick={togglePlay}
+            aria-label={isPlaying ? 'Pause melody' : 'Play melody'}
+            className="flex items-center gap-1 rounded-md border border-port-border bg-port-card px-2 py-1 text-white hover:border-port-accent transition-colors"
+          >
+            <span aria-hidden="true">{isPlaying ? '⏸' : '▶'}</span>
+            <span className="hidden sm:inline">{isPlaying ? 'Pause' : 'Play melody'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleStop}
+            aria-label="Stop melody"
+            disabled={!isPlaying && activeIdx < 0}
+            className="flex items-center gap-1 rounded-md border border-port-border bg-port-card px-2 py-1 text-white hover:border-port-accent transition-colors disabled:opacity-40 disabled:hover:border-port-border"
+          >
+            <span aria-hidden="true">⏹</span>
+            <span className="hidden sm:inline">Stop</span>
+          </button>
+          <label htmlFor={`${uid}-tempo`} className="ml-auto flex items-center gap-1">
+            <span>Tempo</span>
+            <input
+              id={`${uid}-tempo`}
+              type="number"
+              min={20}
+              max={300}
+              value={tempo}
+              onChange={(e) => {
+                const next = Number(e.target.value);
+                if (Number.isFinite(next) && next > 0) setTempo(next);
+              }}
+              className="w-16 rounded-md border border-port-border bg-port-card px-2 py-1 text-white"
+            />
+            <span>BPM</span>
+          </label>
+        </div>
+      )}
+      <svg
+        className={className}
+        viewBox={`0 0 ${WIDTH} ${height}`}
+        width="100%"
+        role="img"
+        aria-label="Sheet music notation"
+        style={{ height: 'auto', display: 'block' }}
+      >
+        {els}
+      </svg>
+    </div>
   );
 }
 
 // --- Per-note drawing -------------------------------------------------------
-function renderNote(note, cx, yForStep, bottomLineStep, middleLineStep, key) {
+function renderNote(note, cx, yForStep, bottomLineStep, middleLineStep, key, ink = INK) {
   const out = [];
   const step = note.step;
   const y = yForStep(step);
@@ -278,7 +384,7 @@ function renderNote(note, cx, yForStep, bottomLineStep, middleLineStep, key) {
 
   // Accidental glyph, left of the head.
   if (note.pitch.accidental && ACCIDENTAL_GLYPH[note.pitch.accidental]) {
-    out.push(<text key={`${key}-acc`} x={cx - NOTE_RX - 6} y={y + 5} fontSize={16} style={fillStyle(INK)} textAnchor="middle" fontFamily={MUSIC_FONT}>{ACCIDENTAL_GLYPH[note.pitch.accidental]}</text>);
+    out.push(<text key={`${key}-acc`} x={cx - NOTE_RX - 6} y={y + 5} fontSize={16} style={fillStyle(ink)} textAnchor="middle" fontFamily={MUSIC_FONT}>{ACCIDENTAL_GLYPH[note.pitch.accidental]}</text>);
   }
 
   // Notehead — open for half/whole, solid otherwise. A slight rotation gives
@@ -286,21 +392,21 @@ function renderNote(note, cx, yForStep, bottomLineStep, middleLineStep, key) {
   out.push(
     <ellipse key={`${key}-head`} cx={cx} cy={y} rx={NOTE_RX} ry={NOTE_RY}
       transform={`rotate(-18 ${cx} ${y})`}
-      style={{ fill: filled ? INK : "none", stroke: INK }} strokeWidth={filled ? 0 : 1.4} />,
+      style={{ fill: filled ? ink : "none", stroke: ink }} strokeWidth={filled ? 0 : 1.4} />,
   );
 
   // Stem + flags (whole notes have neither).
   if (note.duration.stem) {
     const stemX = up ? cx + NOTE_RX - 0.6 : cx - NOTE_RX + 0.6;
     const stemEndY = up ? y - STEM_LEN : y + STEM_LEN;
-    out.push(<line key={`${key}-stem`} x1={stemX} y1={y} x2={stemX} y2={stemEndY} style={strokeStyle(INK)} strokeWidth={1.3} />);
+    out.push(<line key={`${key}-stem`} x1={stemX} y1={y} x2={stemX} y2={stemEndY} style={strokeStyle(ink)} strokeWidth={1.3} />);
     for (let f = 0; f < note.duration.flags; f += 1) {
       const fy = up ? stemEndY + f * FLAG_GAP : stemEndY - f * FLAG_GAP;
       const dir = up ? 1 : -1;
       out.push(
         <path key={`${key}-flag${f}`}
           d={`M ${stemX} ${fy} Q ${stemX + 11} ${fy + dir * 5} ${stemX + 8} ${fy + dir * 16}`}
-          style={{ fill: "none", stroke: INK }} strokeWidth={1.6} strokeLinecap="round" />,
+          style={{ fill: "none", stroke: ink }} strokeWidth={1.6} strokeLinecap="round" />,
       );
     }
   }
@@ -311,7 +417,7 @@ function renderNote(note, cx, yForStep, bottomLineStep, middleLineStep, key) {
     const onLine = ((step - bottomLineStep) % 2 + 2) % 2 === 0;
     const dy = onLine ? y - STEP : y;
     for (let d = 0; d < note.duration.dots; d += 1) {
-      out.push(<circle key={`${key}-dot${d}`} cx={cx + NOTE_RX + 4 + d * 4} cy={dy} r={1.5} style={fillStyle(INK)} />);
+      out.push(<circle key={`${key}-dot${d}`} cx={cx + NOTE_RX + 4 + d * 4} cy={dy} r={1.5} style={fillStyle(ink)} />);
     }
   }
   return out;
@@ -320,29 +426,29 @@ function renderNote(note, cx, yForStep, bottomLineStep, middleLineStep, key) {
 // --- Per-rest drawing -------------------------------------------------------
 // Rests are drawn from primitives (not Unicode) so they render identically on
 // every platform. Positions are relative to the middle staff line.
-function renderRest(note, cx, yForStep, bottomLineStep, key) {
+function renderRest(note, cx, yForStep, bottomLineStep, key, ink = INK) {
   const code = note.duration.code;
   const midLine = yForStep(bottomLineStep + 4);
   const secondTop = yForStep(bottomLineStep + 6); // 2nd line from top (whole rest hangs here)
   const out = [];
   if (code === 'w') {
-    out.push(<rect key={`${key}-r`} x={cx - 5} y={secondTop} width={10} height={GAP * 0.4} style={fillStyle(INK)} />);
+    out.push(<rect key={`${key}-r`} x={cx - 5} y={secondTop} width={10} height={GAP * 0.4} style={fillStyle(ink)} />);
   } else if (code === 'h') {
-    out.push(<rect key={`${key}-r`} x={cx - 5} y={midLine - GAP * 0.4} width={10} height={GAP * 0.4} style={fillStyle(INK)} />);
+    out.push(<rect key={`${key}-r`} x={cx - 5} y={midLine - GAP * 0.4} width={10} height={GAP * 0.4} style={fillStyle(ink)} />);
   } else if (code === 'q') {
     // Stylized quarter rest — a zig-zag down the middle of the staff.
     const top = yForStep(bottomLineStep + 6);
     out.push(
       <path key={`${key}-r`}
         d={`M ${cx - 3} ${top} L ${cx + 3} ${top + GAP} L ${cx - 2.5} ${top + GAP * 1.7} Q ${cx + 4} ${top + GAP * 2.2} ${cx + 1} ${top + GAP * 3}`}
-        style={{ fill: "none", stroke: INK }} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />,
+        style={{ fill: "none", stroke: ink }} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />,
     );
   } else {
     // Eighth / sixteenth / 32nd rest — a diagonal stroke with one blob per flag.
     const top = yForStep(bottomLineStep + 5);
-    out.push(<line key={`${key}-rstroke`} x1={cx + 3} y1={top} x2={cx - 3} y2={top + GAP * 2} style={strokeStyle(INK)} strokeWidth={1.4} />);
+    out.push(<line key={`${key}-rstroke`} x1={cx + 3} y1={top} x2={cx - 3} y2={top + GAP * 2} style={strokeStyle(ink)} strokeWidth={1.4} />);
     for (let f = 0; f < (note.duration.flags || 1); f += 1) {
-      out.push(<circle key={`${key}-rb${f}`} cx={cx + 2} cy={top + f * GAP * 0.9} r={2} style={fillStyle(INK)} />);
+      out.push(<circle key={`${key}-rb${f}`} cx={cx + 2} cy={top + f * GAP * 0.9} r={2} style={fillStyle(ink)} />);
     }
   }
   return out;
