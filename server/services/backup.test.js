@@ -156,6 +156,18 @@ describe('computeEffectiveExcludes', () => {
     const result = computeEffectiveExcludes();
     expect(result).toEqual(DEFAULT_EXCLUDES.map(e => e.path));
   });
+
+  it('does NOT exclude legacy file→DB migration artifacts (they are the recovery source while a prune is blocked)', () => {
+    // The boot-time prune deletes these on disk once the DB is authoritative;
+    // excluding them from snapshots would strip the only recovery source during
+    // a blocked (wiped/partial-restore) prune, while pg_dump captures the
+    // incomplete DB. So none of these patterns may appear in the default set.
+    const mustNotExclude = ['/*.imported', '/*.bak-034', '/*.migrated.json', '/writers-room/works/*/manifest.imported.json'];
+    const paths = DEFAULT_EXCLUDES.map(e => e.path);
+    for (const p of mustNotExclude) {
+      expect(paths, `${p} must NOT be a default exclude`).not.toContain(p);
+    }
+  });
 });
 
 describe('pickPgDump', () => {

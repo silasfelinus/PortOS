@@ -46,6 +46,16 @@ export const DEFAULT_EXCLUDES = [
   { path: '/repos/', reason: 'Cloned git repositories — large, re-cloneable from origin', overridable: true },
   { path: '/cos/reference-repos/', reason: 'Reference upstream repos used by agents — re-cloneable', overridable: true },
   { path: '/browser-downloads/', reason: 'Browser downloads cache — large, re-downloadable', overridable: true }
+  // NOTE: legacy file→Postgres migration artifacts (`.imported` / `.bak-NNN`)
+  // are intentionally NOT excluded here. They are deleted on disk by the
+  // boot-time prune (pruneImportedLegacyFiles.js) the same boot the migration
+  // runs — but ONLY once the DB is provably authoritative. While the prune is
+  // *blocked* (a wiped/partial-restore DB short of the migration markers) those
+  // parked files are the only recovery source, and `pg_dump` is capturing the
+  // incomplete DB — so excluding them from snapshots would mean a backup taken
+  // in that window restores neither the missing rows nor the source to rebuild
+  // them. Letting rsync copy them is the safe default; once the prune removes
+  // them from disk they leave subsequent snapshots naturally.
 ];
 
 // Snapshots live under snapshots/<hostname>/<snapshotId> so a single shared
