@@ -100,6 +100,43 @@ Defaulting a new Create feature to a fresh `data/*.json` file is the anti-patter
 
 ---
 
+## PostgreSQL is required — `MEMORY_BACKEND=file` is test-only
+
+PortOS treats **PostgreSQL as a mandatory install/runtime dependency** for every install and every federated peer machine (decision: [ADR — PostgreSQL as the Primary Datastore](./decisions/2026-06-07-postgres-as-primary-datastore.md)). Run it as either:
+
+- **System (native) PostgreSQL on `:5432`** — `PGMODE=native`, or
+- **Docker PostgreSQL on `:5561`** — `PGMODE=docker` (the default).
+
+Provision either path with **`npm run setup:db`** (also run automatically by `npm run setup` and `npm start`). It auto-detects an already-healthy local PostgreSQL and uses native mode; otherwise it starts/initializes the Docker container, or — when Docker is unavailable — offers to bootstrap native PostgreSQL. See [Setup path](#setup-path-npm-run-setupdb) below.
+
+### `MEMORY_BACKEND=file` is a development/test-only escape hatch — NOT a deployment mode
+
+The file backend (`server/services/memory.js`, JSON under `./data/`) is **unsupported for production and for federated peers.** It exists only so the test suite (and ad-hoc local development) can boot without a database. It is **not** a fallback, a "lite" mode, or a way to run PortOS without Postgres:
+
+- It is reached **only** via the explicit `MEMORY_BACKEND=file` env var (set from `PGMODE=file` in `.env`, mapped by the launcher) **or** automatically under `NODE_ENV=test`. There is no menu choice for it (`scripts/setup-db.js` offers only Docker and Native), and `npm run setup:db` with `PGMODE=file` prints an "unsupported" notice and refuses to provision it.
+- When `MEMORY_BACKEND` is unset, PortOS **requires** a healthy database and **does NOT silently fall back to file storage** — an unreachable/unmigrated DB is an error condition. `server/services/memoryBackend.js` fails fast with an actionable message (`run npm run setup:db`) rather than serving a half-broken install. This no-silent-fallback behavior is intentional; do not "fix" it.
+
+**Why file storage cannot be a supported mode:**
+
+- **No creative-catalog / vector equivalent.** The catalog graph, memory similarity, and hybrid search depend on PostgreSQL + pgvector (HNSW vector search fused with `tsvector` full-text). There is no file-backed implementation of these — a file-backed install would serve a half-broken app the moment a user touched the catalog, memory search, or any `db-primary` Create domain. As each Create domain migrates to Postgres (universes #1014, pipeline #1015, Story Builder #1016, Writers Room #1017, catalog refs #1018), its file path survives **only** under this dev/test escape hatch.
+- **Federation assumes Postgres.** Cross-machine sync (snapshot/push + last-writer-wins) and the `db-primary` sequence cursors/tombstones are designed around the database. A file-backed peer is not a supported member of a federation.
+- **Backup assumes Postgres.** The backup/restore contract treats the `pg_dump` logical dump as **required system state** (see [Backup & Restore](./BACKUP.md)) — a file-backed install has no dump to capture or verify.
+
+The escape hatch is **guarded from bitrot by the test suite** (tests boot with `NODE_ENV=test` and exercise the file backend), so the path stays runnable — but "the tests use it" is **not** an argument that it is a deployment option. It isn't.
+
+### Setup path (`npm run setup:db`)
+
+`npm run setup:db` → `scripts/setup-db.js` is the single command that makes PostgreSQL ready, and is wired into `npm run setup` and `npm start` so a normal install never has to think about it. Its happy path:
+
+1. **Already healthy?** If the configured role can authenticate to the configured database **and** the `memories` table from `server/scripts/init-db.sql` exists, it reports ready and exits (fast path — no re-provisioning on every `npm start`).
+2. **`PGMODE=docker` (default):** starts the `pgvector/pgvector:pg17` container (`docker-compose.yml`), waits for it to accept connections **and** finish applying the init schema, then reports ready on `:5561`. If Docker is missing or not running, it prints platform-specific install/start hints and — if a healthy native PostgreSQL is already present — switches to native automatically.
+3. **`PGMODE=native`:** runs `scripts/db.sh setup-native` (idempotent: brew install, role, db, extensions, schema) and verifies at the domain level (role can auth + schema present) before reporting ready on `:5432`.
+4. **Failure is non-zero exit.** A started-but-unresponsive container, a failed native bootstrap, or a non-interactive context with no usable DB exits non-zero with an actionable message — so the `&&`-chained `npm start` halts here instead of crash-looping under PM2 against an unready database.
+
+`PGPASSWORD`/`PGUSER`/`PGDATABASE`/`PGPORT` are resolved from `process.env` first, then `.env`, then the backward-compatible defaults (`portos`/`portos`/`portos`/`5432`). The default `portos` password is an **intentional** local-development fallback (see the Distribution model note in [`CLAUDE.md`](../CLAUDE.md)); production deployments override it via `PGPASSWORD`.
+
+---
+
 ## Adding a new data store? Answer these
 
 Apply this checklist to **every new feature that persists data**, and require it in PR review. A new `data/*.json` store must *justify* itself against these questions — the default for app-native records is PostgreSQL.
