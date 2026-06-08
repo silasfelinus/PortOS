@@ -35,6 +35,15 @@ const PG_USER = envVar('PGUSER', 'portos');
 const PG_DATABASE = envVar('PGDATABASE', 'portos');
 const PG_PASSWORD = envVar('PGPASSWORD', 'portos');
 const PG_PORT_NATIVE = parsePgPort(envVar('PGPORT', 5432));
+// Docker host-port mapping (docker-compose.yml maps `${PGPORT_DOCKER:-5561}:5432`).
+// Resolve it the same tolerant way so the "ready on port N" log can't lie when a
+// user overrides PGPORT_DOCKER — a misleading success port is exactly the kind of
+// "looks fine but points at the wrong place" footgun this script exists to avoid.
+const parseDockerPort = (value) => {
+  const parsed = Number.parseInt(String(value).trim(), 10);
+  return Number.isFinite(parsed) ? parsed : 5561;
+};
+const PG_PORT_DOCKER = parseDockerPort(envVar('PGPORT_DOCKER', 5561));
 
 // Environment to pass to `db.sh` and other psql-wrapping subprocesses, so
 // values configured in .env (but not exported into the shell) reach the
@@ -388,7 +397,7 @@ try {
 // Wait for health
 console.log('⏳ Waiting for PostgreSQL to be ready...');
 if (waitForHealth()) {
-  console.log('✅ PostgreSQL ready on port 5561');
+  console.log(`✅ PostgreSQL ready on port ${PG_PORT_DOCKER}`);
 } else {
   // PG is mandatory and boot fail-fasts — a started-but-unresponsive container
   // must fail setup, not warn-and-continue, so the &&-chained `npm start` halts
