@@ -110,14 +110,29 @@ async function readParkedJson(base, file) {
 
 // --- id extractors: pull the record ids a parked artifact holds, off disk. ---
 
-// Immediate subdirectory names under `data/<dir>` (each a record id). Skips a
-// type-level `index.json` and dotfiles. Used by the split-migration layouts
-// where the record id IS the directory name.
-async function idsFromSubdirs(base, dir) {
+// Record ids for a per-record-directory layout. The migrators key the DB row on
+// the PARSED `index.json.id`, NOT the directory name (the two normally match but
+// can drift), so we must verify the same id the migrator inserted. Reads each
+// subdir's `<leaf>` and blocks (throws) on a missing/unparseable/id-less record
+// — an unverifiable record must not let the prune delete its recovery copy.
+// `leaf` defaults to the live record file; pass `index.json.imported` for the
+// in-place rename layout (pipeline-series) and a missing leaf is skipped there.
+async function idsFromRecordDirs(base, dir, { leaf = 'index.json', requireLeaf = false } = {}) {
   const entries = await readdir(join(base, dir), { withFileTypes: true }).catch(() => []);
-  return entries
-    .filter((e) => e.isDirectory() && e.name !== 'index.json' && !e.name.startsWith('.'))
-    .map((e) => e.name);
+  const ids = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === 'index.json' || entry.name.startsWith('.')) continue;
+    const rel = join(dir, entry.name, leaf);
+    if (requireLeaf && !await pathExists(join(base, rel))) continue; // unrelated sibling dir
+    const record = await readParkedJson(base, rel);
+    if (record === null) {
+      if (requireLeaf) continue; // leaf vanished between listing and read — skip
+      throw new ParkedArtifactUnreadable(`${rel}: missing or unreadable record`);
+    }
+    if (typeof record.id !== 'string') throw new ParkedArtifactUnreadable(`${rel}: record has no string id`);
+    ids.push(record.id);
+  }
+  return ids;
 }
 
 // Map array elements to their string `.id`, BLOCKING (throw) on any element
@@ -223,7 +238,7 @@ const DB_DOMAINS = [
     // universes.imported holds both the universe records (subdir names) and the
     // config.runs[] log decomposed into universe_runs — verify both id sets.
     verify: async (base) => [
-      { table: 'universes', ids: await idsFromSubdirs(base, 'universes.imported') },
+      { table: 'universes', ids: await idsFromRecordDirs(base, 'universes.imported') },
       { table: 'universe_runs', ids: await universeRunIds(base) },
     ],
     pending: (base) => pathExists(join(base, 'universes')),
@@ -233,7 +248,7 @@ const DB_DOMAINS = [
     label: 'pipeline-issues',
     markerFile: 'pipeline-issues.migrated.json',
     verify: async (base) => [
-      { table: 'pipeline_issues', ids: await idsFromSubdirs(base, 'pipeline-issues.imported') },
+      { table: 'pipeline_issues', ids: await idsFromRecordDirs(base, 'pipeline-issues.imported') },
     ],
     pending: (base) => pathExists(join(base, 'pipeline-issues')),
     artifacts: ['pipeline-issues.imported'],
@@ -245,7 +260,7 @@ const DB_DOMAINS = [
     // pipeline-series/<id>/ dir (+ manuscript-review.json sibling) intact — so
     // the series ids are the subdir names holding an index.json.imported.
     verify: async (base) => [
-      { table: 'pipeline_series', ids: await idsFromSubdirsWithLeaf(base, 'pipeline-series', 'index.json.imported') },
+      { table: 'pipeline_series', ids: await idsFromRecordDirs(base, 'pipeline-series', { leaf: 'index.json.imported', requireLeaf: true }) },
     ],
     pending: pipelineSeriesPending,
     artifacts: [],
@@ -255,7 +270,7 @@ const DB_DOMAINS = [
     label: 'story-builder',
     markerFile: 'story-builder.migrated.json',
     verify: async (base) => [
-      { table: 'story_builder_sessions', ids: await idsFromSubdirs(base, 'story-builder.imported') },
+      { table: 'story_builder_sessions', ids: await idsFromRecordDirs(base, 'story-builder.imported') },
     ],
     pending: (base) => pathExists(join(base, 'story-builder')),
     artifacts: ['story-builder.imported'],
@@ -297,19 +312,6 @@ async function readJson(base, file) {
   const raw = await readFile(join(base, file), 'utf-8').catch(() => null);
   if (!raw) return null;
   try { return JSON.parse(raw); } catch { return null; }
-}
-
-// Subdir names under `data/<dir>` that contain a `<leaf>` file — the record ids
-// for an in-place rename layout (pipeline-series keeps the live dir, so a bare
-// subdir scan would also pick up unrelated siblings; gate on the leaf).
-async function idsFromSubdirsWithLeaf(base, dir, leaf) {
-  const entries = await readdir(join(base, dir), { withFileTypes: true }).catch(() => []);
-  const ids = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-    if (await pathExists(join(base, dir, entry.name, leaf))) ids.push(entry.name);
-  }
-  return ids;
 }
 
 // Of `ids`, return those NOT present in `table` (the rows a prune would orphan).

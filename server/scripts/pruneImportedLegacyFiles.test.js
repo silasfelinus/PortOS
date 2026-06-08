@@ -45,12 +45,17 @@ afterEach(async () => {
   await rm(dataDir, { recursive: true, force: true });
 });
 
-// Build a universes.imported tree with the given universe-id subdirs and a
-// type-level index.json carrying config.runs[] of the given run ids.
+// Build a universes.imported tree: one subdir per universe id, each holding an
+// index.json whose `.id` IS the record id the migrator inserted (the verifier
+// reads the parsed id, not the folder name), plus a type-level index.json
+// carrying config.runs[] of the given run ids.
 async function seedUniverses(ids, runIds = []) {
   const dir = join(dataDir, 'universes.imported');
   await mkdir(dir, { recursive: true });
-  for (const id of ids) await mkdir(join(dir, id), { recursive: true });
+  for (const id of ids) {
+    await mkdir(join(dir, id), { recursive: true });
+    await writeJSON(join(dir, id, 'index.json'), { id, name: `Universe ${id}` });
+  }
   await writeJSON(join(dir, 'index.json'), { config: { runs: runIds.map((id) => ({ id, universeId: ids[0] })) } });
 }
 
@@ -75,6 +80,7 @@ describe('pruneImportedLegacyFiles', () => {
     await writeJSON(join(dataDir, 'pipeline-issues.migrated.json'), { imported: 1 });
     const imp = join(dataDir, 'pipeline-issues.imported');
     await mkdir(join(imp, 'iss-1'), { recursive: true });
+    await writeJSON(join(imp, 'iss-1', 'index.json'), { id: 'iss-1' });
     await writeFile(join(dataDir, 'pipeline-issues.json.bak-035'), 'monolith', 'utf-8');
     await writeFile(join(dataDir, 'history.json.bak-037'), 'x', 'utf-8');
     await writeFile(join(dataDir, 'history.jsonl'), '', 'utf-8');
@@ -115,6 +121,39 @@ describe('pruneImportedLegacyFiles', () => {
     expect(await exists(join(dataDir, 'universes.imported'))).toBe(true);
   });
 
+  it('verifies the parsed index.json id, not the folder name, when they drift', async () => {
+    // The migrator inserts record.id from the JSON; the folder name can differ.
+    // A DB that has the folder name but NOT the real id must block.
+    await writeJSON(join(dataDir, 'universes.migrated.json'), { imported: 1, runs: 0 });
+    const dir = join(dataDir, 'universes.imported');
+    await mkdir(join(dir, 'folder-name'), { recursive: true });
+    await writeJSON(join(dir, 'folder-name', 'index.json'), { id: 'real-id' });
+    await writeJSON(join(dir, 'index.json'), { config: { runs: [] } });
+
+    // DB only has the folder name, not the real record id → block.
+    const blocked = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ universes: ['folder-name'] }) });
+    expect(blocked.blocked).toBe(1);
+    expect(await exists(dir)).toBe(true);
+
+    // DB has the real id → prunes.
+    const ok = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ universes: ['real-id'] }) });
+    expect(ok.markerWritten).toBe(true);
+    expect(await exists(dir)).toBe(false);
+  });
+
+  it('BLOCKS a record directory whose index.json has no string id', async () => {
+    await writeJSON(join(dataDir, 'universes.migrated.json'), { imported: 1, runs: 0 });
+    const dir = join(dataDir, 'universes.imported');
+    await mkdir(join(dir, 'u1'), { recursive: true });
+    await writeJSON(join(dir, 'u1', 'index.json'), { name: 'no id here' });
+    await writeJSON(join(dir, 'index.json'), { config: { runs: [] } });
+
+    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ universes: ['u1'] }) });
+
+    expect(res.blocked).toBe(1);
+    expect(await exists(dir)).toBe(true);
+  });
+
   it('does NOT pass identity verification just because the table has unrelated rows', async () => {
     // The count-based predecessor would have passed (1 row >= 1 imported); the
     // id check must fail because the DB row is a DIFFERENT universe.
@@ -150,10 +189,10 @@ describe('pruneImportedLegacyFiles', () => {
     const seriesB = join(dataDir, 'pipeline-series', 'ser-b');
     await mkdir(seriesA, { recursive: true });
     await mkdir(seriesB, { recursive: true });
-    await writeFile(join(seriesA, 'index.json.imported'), '{}', 'utf-8');
+    await writeJSON(join(seriesA, 'index.json.imported'), { id: 'ser-a' });
     await writeFile(join(seriesA, 'index.json'), '{}', 'utf-8');            // live record
     await writeFile(join(seriesA, 'manuscript-review.json'), '{}', 'utf-8'); // live sibling
-    await writeFile(join(seriesB, 'index.json.imported'), '{}', 'utf-8');
+    await writeJSON(join(seriesB, 'index.json.imported'), { id: 'ser-b' });
 
     const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ pipeline_series: ['ser-a', 'ser-b'] }) });
 
