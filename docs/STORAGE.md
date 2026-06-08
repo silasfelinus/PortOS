@@ -98,6 +98,10 @@ The contract draws a single line:
 
 Defaulting a new Create feature to a fresh `data/*.json` file is the anti-pattern this contract exists to stop. Monolithic JSON in hot paths (`media-jobs.json`, `video-history.json` — and `creative-director-projects.json` before #997 moved it to Postgres) causes write contention and growth risk; string-id cross-references across separate JSON stores drift with no integrity check. New relational surfaces should be `db-primary` from the start.
 
+### Legacy migration-source cleanup
+
+Each file→Postgres migrator parks its source aside (`<domain>.imported`, per-record `index.json.imported` / `manifest.imported.json`, split-migration `*.bak-NNN`) instead of deleting it, as a one-release recovery copy. `server/scripts/pruneImportedLegacyFiles.js` (run at boot from `server/index.js`, after every store's file→DB warm, registered in the ledger by `scripts/migrations/077-prune-imported-legacy-files.js`) removes those copies **only** when the live Postgres row count is `>=` the count the migrator's `<domain>.migrated.json` marker recorded — so a wiped/restored DB keeps its recovery files and a future boot retries. Until pruned, the artifacts are excluded from rsync backups (`DEFAULT_EXCLUDES` in `server/services/backup.js`) since the authoritative copy already ships in the pg_dump.
+
 ---
 
 ## PostgreSQL is required — `MEMORY_BACKEND=file` is test-only
