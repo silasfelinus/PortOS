@@ -1114,6 +1114,19 @@ describe('resolveEffectiveModel — embedding-model skip', () => {
     const p = { id: 'ollama', type: 'api', defaultModel: null, models: ['nomic-embed-text:latest', 'mxbai-embed-large'] };
     expect(resolveEffectiveModel(p, null)).toBe('nomic-embed-text:latest');
   });
+
+  it('skips a stale embedding-only defaultModel (older config the UI never re-edited)', () => {
+    // A pre-existing local provider can carry an embedding id in defaultModel;
+    // a generation/fallback run must not route to it — fall through to the
+    // first generation model in the list.
+    const p = { id: 'ollama', type: 'api', defaultModel: 'nomic-embed-text:latest', models: ['nomic-embed-text:latest', 'qwen3.6:35b'] };
+    expect(resolveEffectiveModel(p, null)).toBe('qwen3.6:35b');
+  });
+
+  it('skips an embedding-only callerModel and falls through to a generation model', () => {
+    const p = { id: 'ollama', type: 'api', defaultModel: 'qwen3.6:35b', models: ['nomic-embed-text:latest', 'qwen3.6:35b'] };
+    expect(resolveEffectiveModel(p, 'nomic-embed-text:latest')).toBe('qwen3.6:35b');
+  });
 });
 
 describe('resolveProviderAndModel', () => {

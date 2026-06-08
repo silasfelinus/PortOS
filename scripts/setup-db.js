@@ -141,17 +141,22 @@ function isPortOSDbReady(port = PG_PORT_NATIVE) {
 
 // Whether the Docker container has finished applying init-db.sql. pg_isready
 // only proves the server accepts connections — it can pass while the
-// docker-entrypoint-initdb.d schema load is still running, so the `memories`
-// table (and the rest of the required schema) may not exist yet. Probing the
-// schema inside the container avoids reporting "ready" to a server that would
-// then fail-fast on its own boot-time schema gate. `psql -tAc` exits 0 even on
-// an empty result, so we require the literal "1".
+// docker-entrypoint-initdb.d schema load is still running, so the schema may
+// not exist yet. Probing the schema inside the container avoids reporting
+// "ready" to a server that would then fail-fast on its own boot-time schema
+// gate. We probe the LAST table created by init-db.sql (writers_room_exercises),
+// NOT an early one like `memories`: the entrypoint applies the file top-to-bottom
+// in a single connection, so the last table existing proves the whole 800-line
+// schema landed — probing `memories` (first table) would report ready while the
+// later store tables (#1014–1017) are still being created, letting `npm start`
+// race a half-applied schema. `psql -tAc` exits 0 even on an empty result, so we
+// require the literal "1".
 function isDockerSchemaReady() {
   try {
     const output = execFileSync(
       'docker',
       ['compose', 'exec', '-T', 'db', 'psql', '-X', '-U', 'portos', '-d', 'portos', '-tAc',
-        "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'memories' LIMIT 1"],
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'writers_room_exercises' LIMIT 1"],
       { stdio: 'pipe', cwd: rootDir }
     ).toString();
     return output.trim() === '1';

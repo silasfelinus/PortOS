@@ -107,13 +107,28 @@ export const providerHonorsModelOverride = (provider) => (
  */
 export function resolveEffectiveModel(provider, callerModel) {
   if (providerHonorsModelOverride(provider)) {
-    return callerModel || provider?.defaultModel || firstGenerationModel(provider) || null;
+    // A stale config can leave an embedding-only id in callerModel/defaultModel
+    // (the UI only hides+clears embedding models when the provider is edited);
+    // skip those so an unchanged older provider can't route a generation/fallback
+    // run to e.g. nomic-embed-text. Falls through to the first generation model.
+    return firstNonEmbedding(callerModel, provider?.defaultModel)
+      || firstGenerationModel(provider) || null;
   }
   // Non-honoring CLI/TUI path: args-baked model id wins over defaultModel.
   const baked = (provider?.type === PROVIDER_TYPES.CLI || provider?.type === PROVIDER_TYPES.TUI) && hasModelFlag(provider?.args)
     ? extractBakedModel(provider.args)
     : null;
-  return baked || provider?.defaultModel || firstGenerationModel(provider) || null;
+  return firstNonEmbedding(baked, provider?.defaultModel)
+    || firstGenerationModel(provider) || null;
+}
+
+/**
+ * First of the given candidate model ids that is a usable generation model
+ * (skips null/empty and embedding-only ids). Returns null when none qualify, so
+ * callers can fall through to `firstGenerationModel(provider)`.
+ */
+function firstNonEmbedding(...candidates) {
+  return candidates.find((m) => m && isGenerationModel(m)) || null;
 }
 
 /**

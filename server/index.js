@@ -865,62 +865,66 @@ ensureSelf()
       // queryable index over them. Idempotent, safe to run every boot.
       const { initMediaAssetIndex } = await import('./services/mediaAssetIndex/index.js');
       await initMediaAssetIndex();
-      // Universe Builder PG warm (#1014): with the DB confirmed + schema ensured,
-      // touch the universe store so it selects the Postgres backend and runs the
-      // one-time data/universes file→DB import (migrateUniversesToDB) BEFORE
-      // httpServer.listen — so the first request/sync sees migrated records, not
-      // a half-applied import racing a request. listIds() is the cheapest call
-      // that forces backend selection. Idempotent (marker-gated import).
-      await universeStore().listIds();
-      // Pipeline series + issues PG warm (#1015): same contract as the universe
-      // warm — touch each store so it selects Postgres and runs its one-time
-      // file→DB import (migrateSeriesToDB / migrateIssuesToDB) BEFORE
-      // httpServer.listen, so the first request/sync sees migrated records.
-      // Series first (issues soft-ref it for universe resolution / lists).
-      await seriesStore().listIds();
-      await issueStore().listIds();
-      // Story Builder sessions PG warm (#1016): same contract — touch the store
-      // so it selects Postgres and runs its one-time file→DB import
-      // (migrateStoryBuilderToDB) BEFORE httpServer.listen, so the first
-      // request/sync sees migrated sessions. Universe + series warmed first
-      // (sessions soft-ref both for the staleness recompute / linked-record view).
-      await storyBuilderStore().listIds();
-      // Writers Room PG warm (#1017): same contract — touch the store so it
-      // selects Postgres and runs its one-time file→DB import
-      // (migrateWritersRoomToDB) BEFORE httpServer.listen. listWorkIds() is the
-      // cheapest call that forces backend selection. The draft .md bodies stay on
-      // disk (file-primary); only the metadata migrates. Idempotent (marker-gated).
-      await writersRoomStore().listWorkIds();
-      // Authoritative catalog user-type warm (#1001): with the DB confirmed +
-      // schema ensured, load the registry from the catalog_user_types store
-      // (running the one-time settings→DB import on first access). This runs
-      // BEFORE httpServer.listen, so a normal install always serves with the
-      // registry warm even if the early fire-and-forget warm above raced a cold
-      // DB. Idempotent with that early warm (same setUserCatalogTypes result).
-      const warmTypes = await readUserTypeSlice();
-      setUserCatalogTypes(Array.isArray(warmTypes) ? warmTypes : []);
-      // Creative Director PG warm (#997): unlike the other stores, CD's file→DB
-      // import (migrateCreativeDirectorToDB) is triggered lazily on first
-      // backend access, and at boot the only trigger is the fire-and-forget
-      // recoverInFlightProjects() in an earlier .then() — NOT awaited, so it can
-      // still be in flight here. The prune below stamps a single completion
-      // marker once no domain is blocked, so it must not run while CD's import
-      // (and its creative-director-projects.migrated.json marker) is unfinished,
-      // or CD's .imported file would never be pruned. listProjects() forces
-      // selectBackend() → the (idempotent, marker-gated) import to completion.
-      const { listProjects: warmCdProjects } = await import('./services/creativeDirector/local.js');
-      await warmCdProjects();
-      // Legacy artifact prune: runs LAST, after every file→DB warm above has
-      // imported + stamped its marker, so both the migration markers AND the
-      // authoritative DB rows exist. Removes the `.imported` / `.bak-NNN`
-      // recovery copies the migrators parked aside, but ONLY when the live row
-      // count matches the marker's recorded import (a wiped/restored DB keeps
-      // the recovery files). Marker-gated in data/legacy-prune.applied.json;
-      // never runs under the file escape hatch (gated by the dbReady block).
-      const { pruneImportedLegacyFiles } = await import('./scripts/pruneImportedLegacyFiles.js');
-      await pruneImportedLegacyFiles();
     } catch (err) {
       console.error(`🪄 catalog migrations failed at boot: ${err.message}`);
+    }
+
+    // Mandatory PostgreSQL store warmups (#1014–1017, #1001, #997) + legacy
+    // prune. Each touch forces backend selection and runs a one-time, marker-
+    // gated file→DB import that MUST complete before httpServer.listen — so the
+    // first request/sync sees fully-migrated records, never a half-applied
+    // import racing a request. Unlike the best-effort catalog migrations above
+    // (which log-and-continue), a failure here is FATAL: a store that couldn't
+    // select its backend or finish its import would serve unmigrated/empty data,
+    // which is worse than a hard stop. So this gets its own try/catch (a process
+    // boundary, like runDbMigrations above) that exits loudly instead of
+    // swallowing the error and booting a partially-migrated install. Skipped
+    // when not dbReady (escape hatch), matching the early return above.
+    if (dbReady) {
+      try {
+        // Universe Builder PG warm (#1014): listIds() is the cheapest call that
+        // forces backend selection + the migrateUniversesToDB import.
+        await universeStore().listIds();
+        // Pipeline series + issues PG warm (#1015): same contract. Series first
+        // (issues soft-ref it for universe resolution / lists).
+        await seriesStore().listIds();
+        await issueStore().listIds();
+        // Story Builder sessions PG warm (#1016): same contract. Universe +
+        // series warmed first (sessions soft-ref both for staleness recompute).
+        await storyBuilderStore().listIds();
+        // Writers Room PG warm (#1017): listWorkIds() forces backend selection +
+        // migrateWritersRoomToDB. Draft .md bodies stay on disk (file-primary);
+        // only the metadata migrates.
+        await writersRoomStore().listWorkIds();
+        // Authoritative catalog user-type warm (#1001): load the registry from
+        // the catalog_user_types store (runs the one-time settings→DB import on
+        // first access), so a normal install always serves with the registry
+        // warm even if the early fire-and-forget warm raced a cold DB.
+        const warmTypes = await readUserTypeSlice();
+        setUserCatalogTypes(Array.isArray(warmTypes) ? warmTypes : []);
+        // Creative Director PG warm (#997): unlike the other stores, CD's file→DB
+        // import is triggered lazily on first backend access; at boot the only
+        // other trigger is a NOT-awaited fire-and-forget recoverInFlightProjects()
+        // in an earlier .then(), so it can still be in flight here. The prune
+        // below stamps a single completion marker once no domain is blocked, so
+        // it must not run while CD's import (and its
+        // creative-director-projects.migrated.json marker) is unfinished, or CD's
+        // .imported file would never be pruned. listProjects() forces
+        // selectBackend() → the (idempotent, marker-gated) import to completion.
+        const { listProjects: warmCdProjects } = await import('./services/creativeDirector/local.js');
+        await warmCdProjects();
+        // Legacy artifact prune: runs LAST, after every file→DB warm above has
+        // imported + stamped its marker, so both the migration markers AND the
+        // authoritative DB rows exist. Removes the `.imported` / `.bak-NNN`
+        // recovery copies the migrators parked aside, but ONLY when the live row
+        // count matches the marker's recorded import (a wiped/restored DB keeps
+        // the recovery files). Marker-gated in data/legacy-prune.applied.json.
+        const { pruneImportedLegacyFiles } = await import('./scripts/pruneImportedLegacyFiles.js');
+        await pruneImportedLegacyFiles();
+      } catch (err) {
+        console.error(`❌ Mandatory store warmup failed at boot — refusing to start: ${err?.stack ?? err.message}`);
+        process.exit(1);
+      }
     }
   })
   .then(() => {
