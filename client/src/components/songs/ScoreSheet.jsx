@@ -311,6 +311,8 @@ export default function ScoreSheet({ text, className = '', controls = true, acti
         if (note.chord) {
           els.push(<text key={`${key}-ch`} x={cx} y={chordY} fontSize={12} fontWeight="600" style={fillStyle(CHORD)} textAnchor="middle" fontFamily="ui-sans-serif, system-ui, sans-serif">{note.chord}</text>);
         }
+        // `hideLyrics` lets training mode obscure the words (sing from memory)
+        // without stripping them from the score text the editor still owns.
         if (note.lyric && !hideLyrics) {
           els.push(<text key={`${key}-ly`} x={cx} y={lyricY} fontSize={11} style={fillStyle(LYRIC)} textAnchor="middle" fontFamily="ui-sans-serif, system-ui, sans-serif">{note.lyric}</text>);
         }

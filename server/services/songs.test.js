@@ -260,6 +260,16 @@ describe('songs service', () => {
     expect(song.progress.history['sec-2']).toHaveLength(1);
   });
 
+  it('drops prototype-pollution-prone scope keys from a hand-edited file', () => {
+    const song = svc.sanitizeSong({
+      id: 'x',
+      progress: { history: { '__proto__': [{ percentInTune: 90, graded: 3 }], 'sec-1': [{ percentInTune: 70, graded: 3 }] } },
+    });
+    expect(Object.keys(song.progress.history)).toEqual(['sec-1']);
+    // The Object prototype was not polluted.
+    expect({}.percentInTune).toBeUndefined();
+  });
+
   it('clamps an oversized per-scope history to PROGRESS_HISTORY_MAX', () => {
     const attempts = Array.from({ length: svc.PROGRESS_HISTORY_MAX + 20 }, () => ({ percentInTune: 80, graded: 3 }));
     const song = svc.sanitizeSong({ id: 'x', progress: { history: { 'sec-1': attempts } } });

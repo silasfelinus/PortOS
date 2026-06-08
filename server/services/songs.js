@@ -191,7 +191,10 @@ const sanitizeProgress = (p) => {
   for (const [scope, attempts] of Object.entries(rawHistory)) {
     if (scopeCount >= PROGRESS_SCOPES_MAX) break;
     const key = trimField(scope, ID_MAX_LENGTH);
-    if (!key) continue;
+    // Skip empty keys and the prototype-pollution-prone keys — a section id is
+    // always `sec-N` (or the `__whole__` sentinel), never one of these, so a
+    // hand-edited `__proto__`/`constructor` scope is a malformed file, not data.
+    if (!key || key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
     const cleaned = sanitizeList(attempts, sanitizeAttempt, PROGRESS_HISTORY_MAX);
     if (!cleaned.length) continue;
     history[key] = cleaned;
