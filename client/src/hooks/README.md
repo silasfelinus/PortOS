@@ -113,6 +113,7 @@ grep -i "what you want to do" client/src/hooks/README.md
 | `useCityData` | CyberCity environment data + physics. | CyberCity only. |
 | `useCityPlayback` | Timeline-scrubber transport: loads the snapshot series, steps a frame index, play/pause/speed. | CyberCity playback (history) mode only. |
 | `useCitySettings` | CyberCity quality presets + persistence. | CyberCity only. |
+| `useColorMatch` | Drives a song color-match run: counts the singer in with the metronome, walks the notated score in tempo, grades each note against the live mic pitch (#1022 tracker + colorMatch lib), and exposes `{ running, countingIn, noteColors, summary, activeIndex, start, stop }` for the `<ScoreSheet>` + an accuracy readout. Taps the passed recording stream (no second mic); tears down on stop/unmount. | The Song editor's color-match panel. Don't re-wire the metronome + tracker + grading loop by hand. |
 | `useCodeReviewDefaults` | Global Code Review Defaults (Review Loop reviewer chain + per-backend local-LLM model) via a small Provider/hook pair. | TaskAddForm, ScheduleTab, anywhere a default reviewer picker is shown. |
 | `useCatalogTypes` | Catalog ingredient type registry (system + user-defined) merged with the static fallback via a Provider/hook pair; synchronous fallback to the built-in six so first render never blanks. | Catalog list/picker/editor; anywhere the catalog type list/lookup is needed. |
 | `useDeathClock` | 1-second countdown for death-clock display. | Mortality / death-clock surfaces. |
