@@ -43,9 +43,16 @@
  *
  * A wiped / partially-restored DB that is missing ANY parked id WITHHOLDS the
  * whole domain's prune and leaves the completion marker unwritten, so a future
- * boot retries once the DB is whole. This repair is also gated upstream by the
- * `dbReady` block in server/index.js, so it never runs under the
- * MEMORY_BACKEND=file escape hatch (no DB → no prune → recovery files kept).
+ * boot retries once the DB is whole. Two more conditions also withhold: (a) a
+ * parked artifact that EXISTS but can't be read/parsed (truncated after a crash,
+ * hand-edited) blocks its domain rather than being mistaken for "zero records"
+ * and deleted; (b) a domain whose migration is still PENDING — its legacy source
+ * is on disk but no marker was stamped (migration failed or hasn't run) — blocks
+ * the GLOBAL completion marker, so a later boot (after the source is repaired and
+ * finally parked) still prunes it instead of skipping forever via the applied
+ * marker. This repair is also gated upstream by the `dbReady` block in
+ * server/index.js, so it never runs under the MEMORY_BACKEND=file escape hatch
+ * (no DB → no prune → recovery files kept).
  *
  * File-split backups (037 history.json, 059 media-collections.json) are NOT a
  * Postgres move — their successors live on disk — so they use a successor-exists
@@ -63,6 +70,32 @@ import { PATHS } from '../lib/fileUtils.js';
 const MARKER_VERSION = 1;
 const MARKER_FILENAME = 'legacy-prune.applied.json';
 
+// Thrown by an id extractor when a parked artifact EXISTS but can't be read /
+// parsed (truncated after a crash, hand-edited to invalid JSON). The verify
+// loop treats this as a block — a domain whose recovery source we can't read is
+// NOT proven safe to delete, so we must keep it rather than treat the
+// unreadable file as "zero records" and prune it. (Distinct from a genuinely
+// absent file, which legitimately yields no ids.)
+class ParkedArtifactUnreadable extends Error {}
+
+// Read a parked JSON artifact. Returns null when ABSENT; throws
+// ParkedArtifactUnreadable when present-but-unreadable/unparseable — so a
+// corrupt recovery file blocks its domain instead of being mistaken for empty.
+async function readParkedJson(base, file) {
+  let raw;
+  try {
+    raw = await readFile(join(base, file), 'utf-8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return null; // genuinely absent → no records
+    throw new ParkedArtifactUnreadable(`${file}: ${err.message}`);
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    throw new ParkedArtifactUnreadable(`${file}: invalid JSON (${err.message})`);
+  }
+}
+
 // --- id extractors: pull the record ids a parked artifact holds, off disk. ---
 
 // Immediate subdirectory names under `data/<dir>` (each a record id). Skips a
@@ -77,20 +110,22 @@ async function idsFromSubdirs(base, dir) {
 
 // `.id` of every element of a top-level JSON array file (the CD export, and the
 // writers-room folders.imported.json / exercises.imported.json bare arrays).
+// A present-but-corrupt file throws (blocks the domain); absent → no ids.
 async function idsFromJsonArray(base, file) {
-  const arr = await readJson(base, file);
+  const arr = await readParkedJson(base, file);
   return Array.isArray(arr) ? arr.map((r) => r?.id).filter((id) => typeof id === 'string') : [];
 }
 
 // Universe run ids: the type-level index.json's `config.runs[]`, each `{ id }`.
 // (migrateUniversesToDB reads runs from `universes.imported/index.json`.)
 async function universeRunIds(base) {
-  const typeIndex = await readJson(base, 'universes.imported/index.json');
+  const typeIndex = await readParkedJson(base, 'universes.imported/index.json');
   const runs = Array.isArray(typeIndex?.config?.runs) ? typeIndex.config.runs : [];
   return runs.map((r) => r?.id).filter((id) => typeof id === 'string');
 }
 
 // Writers-room work ids + draft-version ids, read from each parked manifest.
+// A present-but-corrupt manifest throws (blocks the domain).
 async function writersRoomManifestIds(base) {
   const worksDir = 'writers-room/works';
   const subdirs = await readdir(join(base, worksDir), { withFileTypes: true }).catch(() => []);
@@ -98,13 +133,44 @@ async function writersRoomManifestIds(base) {
   const draftIds = [];
   for (const entry of subdirs) {
     if (!entry.isDirectory()) continue;
-    const manifest = await readJson(base, join(worksDir, entry.name, 'manifest.imported.json'));
+    const manifest = await readParkedJson(base, join(worksDir, entry.name, 'manifest.imported.json'));
     if (typeof manifest?.id === 'string') workIds.push(manifest.id);
     if (Array.isArray(manifest?.drafts)) {
       for (const d of manifest.drafts) if (typeof d?.id === 'string') draftIds.push(d.id);
     }
   }
   return { workIds, draftIds };
+}
+
+// Per-domain "is a legacy migration still pending?" predicate — true when the
+// migrator's SOURCE is still on disk but its marker is absent (migration not
+// run, or it failed leaving the source in place). Used ONLY when a domain has
+// no marker: if its source is still present we must NOT let the global
+// completion marker be written, or a later boot (after the user repairs the
+// source and the migration finally parks a `.imported` artifact) would skip the
+// prune forever. The rename-away migrators (universes/pipeline-issues/story-
+// builder/creative-director) leave nothing at the source path post-migration,
+// so the path's presence alone signals "pending". The in-place migrators
+// (pipeline-series/writers-room) keep their dir, so we look for the specific
+// un-renamed legacy file.
+async function pipelineSeriesPending(base) {
+  const entries = await readdir(join(base, 'pipeline-series'), { withFileTypes: true }).catch(() => []);
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const live = join(base, 'pipeline-series', e.name, 'index.json');
+    const parked = join(base, 'pipeline-series', e.name, 'index.json.imported');
+    if (await pathExists(live) && !await pathExists(parked)) return true;
+  }
+  return false;
+}
+async function writersRoomPending(base) {
+  if (await pathExists(join(base, 'writers-room/folders.json'))) return true;
+  if (await pathExists(join(base, 'writers-room/exercises.json'))) return true;
+  const works = await readdir(join(base, 'writers-room/works'), { withFileTypes: true }).catch(() => []);
+  for (const e of works) {
+    if (e.isDirectory() && await pathExists(join(base, 'writers-room/works', e.name, 'manifest.json'))) return true;
+  }
+  return false;
 }
 
 // DB-gated domains. `markerFile` is the migrator's completion marker (used only
@@ -123,6 +189,7 @@ const DB_DOMAINS = [
       { table: 'universes', ids: await idsFromSubdirs(base, 'universes.imported') },
       { table: 'universe_runs', ids: await universeRunIds(base) },
     ],
+    pending: (base) => pathExists(join(base, 'universes')),
     artifacts: ['universes.imported', 'universe-builder.json.bak-034'],
   },
   {
@@ -131,6 +198,7 @@ const DB_DOMAINS = [
     verify: async (base) => [
       { table: 'pipeline_issues', ids: await idsFromSubdirs(base, 'pipeline-issues.imported') },
     ],
+    pending: (base) => pathExists(join(base, 'pipeline-issues')),
     artifacts: ['pipeline-issues.imported', 'pipeline-issues.json.bak-035'],
   },
   {
@@ -142,6 +210,7 @@ const DB_DOMAINS = [
     verify: async (base) => [
       { table: 'pipeline_series', ids: await idsFromSubdirsWithLeaf(base, 'pipeline-series', 'index.json.imported') },
     ],
+    pending: pipelineSeriesPending,
     artifacts: ['pipeline-series.json.bak-036'],
     nestedGlobs: [{ baseDir: 'pipeline-series', leaf: 'index.json.imported' }],
   },
@@ -151,6 +220,7 @@ const DB_DOMAINS = [
     verify: async (base) => [
       { table: 'story_builder_sessions', ids: await idsFromSubdirs(base, 'story-builder.imported') },
     ],
+    pending: (base) => pathExists(join(base, 'story-builder')),
     artifacts: ['story-builder.imported'],
   },
   {
@@ -167,6 +237,7 @@ const DB_DOMAINS = [
         { table: 'writers_room_draft_versions', ids: draftIds },
       ];
     },
+    pending: writersRoomPending,
     artifacts: ['writers-room/folders.imported.json', 'writers-room/exercises.imported.json'],
     nestedGlobs: [{ baseDir: 'writers-room/works', leaf: 'manifest.imported.json' }],
   },
@@ -176,6 +247,7 @@ const DB_DOMAINS = [
     verify: async (base) => [
       { table: 'creative_director_projects', ids: await idsFromJsonArray(base, 'creative-director-projects.json.imported') },
     ],
+    pending: (base) => pathExists(join(base, 'creative-director-projects.json')),
     artifacts: ['creative-director-projects.json.imported'],
   },
 ];
@@ -270,17 +342,37 @@ export async function pruneImportedLegacyFiles({ force = false, db, dataDir } = 
   const totals = { removed: 0, blocked: 0, pruned: [] };
 
   for (const domain of DB_DOMAINS) {
-    // No marker → migrator never completed for this install (or fresh install
-    // with no legacy data). Nothing parked aside to prune; not a block.
     const marker = await readJson(base, domain.markerFile);
-    if (!marker) continue;
+    if (!marker) {
+      // No marker → migrator hasn't completed for this domain. Usually a fresh
+      // install with nothing parked (skip silently). BUT if the migrator's
+      // SOURCE is still on disk, the migration is pending/failed — count it as
+      // blocked so the global completion marker is withheld; otherwise a later
+      // boot (after the source is repaired and finally parked) would skip the
+      // prune forever via the applied marker.
+      if (await domain.pending(base)) {
+        console.warn(`🧹 legacy-prune: ${domain.label} pending — no migration marker but legacy source still on disk; withholding completion so a later boot prunes it`);
+        totals.blocked++;
+      }
+      continue;
+    }
 
     // Identity guard: every id the parked artifacts hold must still be present
     // in its table. A missing id means the DB lost a migrated record (wipe /
     // partial restore) — the parked files are the recovery source, so WITHHOLD
-    // the whole domain and let a future boot retry once the DB is whole.
-    const checks = await domain.verify(base);
+    // the whole domain and let a future boot retry once the DB is whole. A
+    // present-but-unreadable parked artifact (ParkedArtifactUnreadable) also
+    // blocks: we can't prove its records exist, so we must not delete it.
     let blocked = false;
+    let checks;
+    try {
+      checks = await domain.verify(base);
+    } catch (err) {
+      if (!(err instanceof ParkedArtifactUnreadable)) throw err;
+      console.warn(`🧹 legacy-prune: ${domain.label} blocked — parked recovery artifact unreadable (${err.message}); keeping recovery files`);
+      totals.blocked++;
+      continue;
+    }
     for (const { table, ids } of checks) {
       const missing = await missingIds(query, table, ids);
       if (missing.length > 0) {

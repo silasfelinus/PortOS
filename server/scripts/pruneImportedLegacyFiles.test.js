@@ -204,6 +204,34 @@ describe('pruneImportedLegacyFiles', () => {
     expect(await exists(join(work, 'manifest.imported.json'))).toBe(true);
   });
 
+  it('BLOCKS a domain whose parked JSON is present but unparseable (not treated as empty)', async () => {
+    // A truncated/corrupt recovery file must not be deleted just because it
+    // can't be read — that would treat it as zero records and prune the only
+    // recovery source without proving anything is in the DB.
+    await writeJSON(join(dataDir, 'creative-director-projects.migrated.json'), { imported: 1 });
+    await writeFile(join(dataDir, 'creative-director-projects.json.imported'), '[{"id":"cd-1"', 'utf-8'); // truncated
+
+    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ creative_director_projects: ['cd-1'] }) });
+
+    expect(res.blocked).toBe(1);
+    expect(res.markerWritten).toBe(false);
+    expect(await exists(join(dataDir, 'creative-director-projects.json.imported'))).toBe(true);
+  });
+
+  it('WITHHOLDS completion when a domain migration is pending (source on disk, no marker)', async () => {
+    // creative-director migration failed/never ran: the legacy source is still
+    // on disk with no marker. The prune must NOT stamp the global completion
+    // marker, or a later boot (after repair + migration parks .imported) would
+    // skip the prune forever.
+    await writeJSON(join(dataDir, 'creative-director-projects.json'), [{ id: 'cd-1' }]);
+
+    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({}) });
+
+    expect(res.blocked).toBe(1);
+    expect(res.markerWritten).toBe(false);
+    expect(await exists(join(dataDir, 'legacy-prune.applied.json'))).toBe(false);
+  });
+
   it('prunes the creative-director JSON export when its project ids are present', async () => {
     await writeJSON(join(dataDir, 'creative-director-projects.migrated.json'), { imported: 1 });
     await writeJSON(join(dataDir, 'creative-director-projects.json.imported'), [{ id: 'cd-1' }]);
