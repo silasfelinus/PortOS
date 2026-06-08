@@ -45,7 +45,7 @@ vi.mock('fs/promises', async (importOriginal) => {
   return { ...actual, stat: vi.fn(actual.stat), readFile: vi.fn(actual.readFile) };
 });
 
-import { checkHealth } from '../lib/db.js';
+import { checkHealth, getServerMajorVersion } from '../lib/db.js';
 import { getBackendName } from './memoryBackend.js';
 import * as fs from 'fs/promises';
 import { DEFAULT_EXCLUDES, computeEffectiveExcludes, pickPgDump } from './backup.js';
@@ -308,6 +308,31 @@ describe('dumpPostgres status classification', () => {
     expect(result.status).toBe('failed');
     expect(result.reason).toBe('dump_error');
     expect(result.error).toContain('auth failed');
+  });
+
+  it('honors the PORTOS_PGDUMP override outright, even when the server version is known', async () => {
+    // Escape hatch: an explicit override must win over auto-discovery's
+    // closest-major selection, not be funneled through it (a known server
+    // version triggers resolvePgDump, which is where the override short-circuits).
+    checkHealth.mockResolvedValue({ connected: true, hasSchema: true });
+    getServerMajorVersion.mockResolvedValue(17);
+    vi.spyOn(fs, 'stat').mockResolvedValue({ size: 2048 });
+    vi.spyOn(fs, 'readFile').mockResolvedValue('CREATE TABLE memories (...);\n');
+    const proc = fakeProc();
+    spawn.mockReturnValue(proc);
+    process.env.PORTOS_PGDUMP = '/custom/bin/pg_dump';
+    try {
+      const p = dumpPostgres('/tmp/x.sql');
+      await flush();
+      proc.emit('close', 0);
+      await p;
+      expect(spawn).toHaveBeenCalledWith('/custom/bin/pg_dump', expect.any(Array), expect.any(Object));
+    } finally {
+      delete process.env.PORTOS_PGDUMP;
+      // clearAllMocks() doesn't reset implementations — restore the null default
+      // so later tests keep the bare-pg_dump path (no live binary discovery).
+      getServerMajorVersion.mockResolvedValue(null);
+    }
   });
 
   it('classifies a "server version mismatch" stderr as failed/version_mismatch, not dump_error', async () => {

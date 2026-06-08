@@ -271,9 +271,10 @@ async function pgDumpMajor(binary) {
  * majors coexist and PATH order silently picks the wrong one).
  */
 async function discoverPgDumpCandidates() {
-  const paths = [];
-  if (process.env.PORTOS_PGDUMP) paths.push(process.env.PORTOS_PGDUMP);
-  paths.push('pg_dump'); // whatever PATH resolves — preserves the old default
+  // Note: the PORTOS_PGDUMP override is NOT a candidate here — resolvePgDump
+  // honors it outright before discovery runs, so it's never subject to the
+  // closest-major auto-selection below.
+  const paths = ['pg_dump']; // whatever PATH resolves — preserves the old default
   const kegDirs = ['/opt/homebrew/opt', '/usr/local/opt', '/Applications/Postgres.app/Contents/Versions'];
   for (const dir of kegDirs) {
     const entries = await readdir(dir).catch(() => []);
@@ -285,7 +286,7 @@ async function discoverPgDumpCandidates() {
   }
   // Probe versions concurrently (each `pg_dump --version` is an independent
   // spawn); [...new Set(paths)] de-dups while preserving priority order, which
-  // Promise.all keeps — so pickPgDump still sees env > PATH > kegs.
+  // Promise.all keeps — so pickPgDump still sees PATH > kegs.
   const probed = await Promise.all(
     [...new Set(paths)].map(async (binary) => ({ binary, major: await pgDumpMajor(binary) }))
   );
@@ -297,10 +298,19 @@ async function discoverPgDumpCandidates() {
  * chosen path and whether it satisfies the server's version (false ⇒ the dump
  * will fail with a version mismatch and there's nothing newer installed).
  *
+ * An explicit `PORTOS_PGDUMP` is the user's deliberate escape hatch, so it wins
+ * outright — it must NOT be funneled through the closest-major auto-selection
+ * (which could otherwise pick a different discovered binary over it). We assume
+ * it satisfies the server and let the stderr classifier catch the rare case
+ * where the user deliberately pointed at something too old.
+ *
  * @param {number|null} serverMajor
  * @returns {Promise<{binary: string, satisfies: boolean}>}
  */
 async function resolvePgDump(serverMajor) {
+  if (process.env.PORTOS_PGDUMP) {
+    return { binary: process.env.PORTOS_PGDUMP, satisfies: true };
+  }
   const candidates = await discoverPgDumpCandidates();
   const binary = pickPgDump(serverMajor, candidates) || 'pg_dump';
   const chosen = candidates.find(c => c.binary === binary);
