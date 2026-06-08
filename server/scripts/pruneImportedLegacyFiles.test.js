@@ -1,15 +1,17 @@
 /**
  * Isolated unit test for the legacy-artifact prune. No live DB needed — the
- * module accepts an injectable `db` (a `{ query }` stub returning row counts)
- * and a `dataDir` override pointing at a temp tree. Proves the contract:
- *   1. prunes a domain's parked artifacts when the live row count >= the marker,
- *   2. WITHHOLDS (keeps the recovery files) when the count is short of the
- *      marker — the wiped/restored-DB signature,
- *   3. prunes the genuinely-empty case (imported:0 / 0 rows),
+ * module accepts an injectable `db` (a `{ query }` stub backed by a per-table
+ * id-set) and a `dataDir` override pointing at a temp tree. Proves the contract:
+ *   1. prunes a domain's parked artifacts when EVERY parked record id is present
+ *      in its table (identity verification, not a row count),
+ *   2. WITHHOLDS (keeps the recovery files) when ANY parked id is missing — the
+ *      wiped / partial-restore signature — including the secondary id sets
+ *      (universe_runs, writers_room_draft_versions) that share a domain,
+ *   3. prunes the genuinely-empty case (no ids on disk → nothing to verify),
  *   4. removes the per-record nested artifacts but leaves live siblings + bodies,
- *   5. file-split backups gate on the successor existing,
+ *   5. file-split backups gate on the successor existing (+ timestamped variant),
  *   6. marker-gated: a clean pass stamps the marker and the next run no-ops; a
- *      blocked pass withholds the marker so a future boot retries.
+ *      blocked pass withholds the marker; a force-blocked run drops a stale one.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -23,13 +25,15 @@ let dataDir;
 const exists = (p) => stat(p).then(() => true, () => false);
 const writeJSON = (p, obj) => writeFile(p, JSON.stringify(obj), 'utf-8');
 
-// A db stub whose COUNT(*) result is driven by a per-table map.
-function stubDb(counts) {
+// A db stub backed by a per-table set of present ids. Answers the prune's only
+// query shape: `SELECT id FROM <table> WHERE id = ANY($1)`.
+function stubDb(tables) {
   return {
-    async query(text) {
-      const m = text.match(/FROM (\w+)/);
-      const table = m?.[1];
-      return { rows: [{ n: counts[table] ?? 0 }] };
+    async query(text, params) {
+      const table = text.match(/FROM (\w+)/)?.[1];
+      const present = new Set(tables[table] ?? []);
+      const asked = params?.[0] ?? [];
+      return { rows: asked.filter((id) => present.has(id)).map((id) => ({ id })) };
     },
   };
 }
@@ -41,13 +45,22 @@ afterEach(async () => {
   await rm(dataDir, { recursive: true, force: true });
 });
 
+// Build a universes.imported tree with the given universe-id subdirs and a
+// type-level index.json carrying config.runs[] of the given run ids.
+async function seedUniverses(ids, runIds = []) {
+  const dir = join(dataDir, 'universes.imported');
+  await mkdir(dir, { recursive: true });
+  for (const id of ids) await mkdir(join(dir, id), { recursive: true });
+  await writeJSON(join(dir, 'index.json'), { config: { runs: runIds.map((id) => ({ id, universeId: ids[0] })) } });
+}
+
 describe('pruneImportedLegacyFiles', () => {
-  it('prunes a domain whose row count matches the marker', async () => {
-    await writeJSON(join(dataDir, 'universes.migrated.json'), { imported: 13, runs: 2 });
-    await mkdir(join(dataDir, 'universes.imported'), { recursive: true });
+  it('prunes a domain when every parked record id is present in the DB', async () => {
+    await writeJSON(join(dataDir, 'universes.migrated.json'), { imported: 2, runs: 1 });
+    await seedUniverses(['u1', 'u2'], ['r1']);
     await writeFile(join(dataDir, 'universe-builder.json.bak-034'), 'legacy', 'utf-8');
 
-    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ universes: 13, universe_runs: 2 }) });
+    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ universes: ['u1', 'u2'], universe_runs: ['r1'] }) });
 
     expect(res.skipped).toBe(false);
     expect(await exists(join(dataDir, 'universes.imported'))).toBe(false);
@@ -56,45 +69,55 @@ describe('pruneImportedLegacyFiles', () => {
     expect(await exists(join(dataDir, 'legacy-prune.applied.json'))).toBe(true);
   });
 
-  it('WITHHOLDS prune + marker when the row count is short of the marker (wiped/restored DB)', async () => {
-    await writeJSON(join(dataDir, 'universes.migrated.json'), { imported: 13, runs: 2 });
-    await mkdir(join(dataDir, 'universes.imported'), { recursive: true });
+  it('WITHHOLDS prune + marker when a parked universe id is missing (wiped/restored DB)', async () => {
+    await writeJSON(join(dataDir, 'universes.migrated.json'), { imported: 2, runs: 0 });
+    await seedUniverses(['u1', 'u2']);
 
-    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ universes: 0, universe_runs: 0 }) });
+    // DB only has u1 — u2 was lost. Must keep the recovery dir.
+    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ universes: ['u1'] }) });
 
     expect(res.blocked).toBe(1);
     expect(res.markerWritten).toBe(false);
-    // Recovery files survive, and no completion marker is written so a future
-    // boot (once the DB is whole) retries.
     expect(await exists(join(dataDir, 'universes.imported'))).toBe(true);
     expect(await exists(join(dataDir, 'legacy-prune.applied.json'))).toBe(false);
   });
 
-  it('WITHHOLDS universe prune when universe_runs is short even though universes is whole', async () => {
-    // Partial restore: universe rows came back, run history did not. The
-    // .imported dir is the only recovery source for universe_runs, so keep it.
-    await writeJSON(join(dataDir, 'universes.migrated.json'), { imported: 13, runs: 2 });
-    await mkdir(join(dataDir, 'universes.imported'), { recursive: true });
+  it('WITHHOLDS universe prune when a run id is missing even though all universes are present', async () => {
+    // Partial restore: universe rows back, run history lost. universes.imported
+    // is the only recovery source for universe_runs, so keep it.
+    await writeJSON(join(dataDir, 'universes.migrated.json'), { imported: 1, runs: 2 });
+    await seedUniverses(['u1'], ['r1', 'r2']);
 
-    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ universes: 13, universe_runs: 0 }) });
+    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ universes: ['u1'], universe_runs: ['r1'] }) });
 
     expect(res.blocked).toBe(1);
     expect(res.markerWritten).toBe(false);
     expect(await exists(join(dataDir, 'universes.imported'))).toBe(true);
   });
 
-  it('prunes the genuinely-empty case (imported:0, 0 rows)', async () => {
+  it('does NOT pass identity verification just because the table has unrelated rows', async () => {
+    // The count-based predecessor would have passed (1 row >= 1 imported); the
+    // id check must fail because the DB row is a DIFFERENT universe.
+    await writeJSON(join(dataDir, 'universes.migrated.json'), { imported: 1, runs: 0 });
+    await seedUniverses(['u1']);
+
+    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ universes: ['some-other-universe'] }) });
+
+    expect(res.blocked).toBe(1);
+    expect(await exists(join(dataDir, 'universes.imported'))).toBe(true);
+  });
+
+  it('prunes the genuinely-empty case (no ids on disk → nothing to verify)', async () => {
     await writeJSON(join(dataDir, 'story-builder.migrated.json'), { imported: 0 });
     await mkdir(join(dataDir, 'story-builder.imported'), { recursive: true });
 
-    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ story_builder_sessions: 0 }) });
+    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ story_builder_sessions: [] }) });
 
     expect(res.markerWritten).toBe(true);
     expect(await exists(join(dataDir, 'story-builder.imported'))).toBe(false);
   });
 
   it('skips a domain with no migration marker (never parked anything)', async () => {
-    // creative-director never migrated on this install — no marker, no files.
     const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({}) });
     expect(res.blocked).toBe(0);
     expect(res.removed).toBe(0);
@@ -103,16 +126,16 @@ describe('pruneImportedLegacyFiles', () => {
 
   it('removes per-record nested artifacts but keeps live siblings', async () => {
     await writeJSON(join(dataDir, 'pipeline-series.migrated.json'), { imported: 2 });
-    const seriesA = join(dataDir, 'pipeline-series', 'aaa');
-    const seriesB = join(dataDir, 'pipeline-series', 'bbb');
+    const seriesA = join(dataDir, 'pipeline-series', 'ser-a');
+    const seriesB = join(dataDir, 'pipeline-series', 'ser-b');
     await mkdir(seriesA, { recursive: true });
     await mkdir(seriesB, { recursive: true });
     await writeFile(join(seriesA, 'index.json.imported'), '{}', 'utf-8');
-    await writeFile(join(seriesA, 'index.json'), '{}', 'utf-8');           // live record
+    await writeFile(join(seriesA, 'index.json'), '{}', 'utf-8');            // live record
     await writeFile(join(seriesA, 'manuscript-review.json'), '{}', 'utf-8'); // live sibling
     await writeFile(join(seriesB, 'index.json.imported'), '{}', 'utf-8');
 
-    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ pipeline_series: 2 }) });
+    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ pipeline_series: ['ser-a', 'ser-b'] }) });
 
     expect(res.markerWritten).toBe(true);
     expect(await exists(join(seriesA, 'index.json.imported'))).toBe(false);
@@ -123,19 +146,20 @@ describe('pruneImportedLegacyFiles', () => {
   });
 
   it('removes writers-room metadata artifacts but keeps .md draft bodies', async () => {
-    await writeJSON(join(dataDir, 'writers-room.migrated.json'), { folders: 2, works: 1, exercises: 3 });
+    await writeJSON(join(dataDir, 'writers-room.migrated.json'), { folders: 1, works: 1, exercises: 1 });
     const wr = join(dataDir, 'writers-room');
     const work = join(wr, 'works', 'work-1');
     const drafts = join(work, 'drafts');
     await mkdir(drafts, { recursive: true });
-    await writeFile(join(wr, 'folders.imported.json'), '[]', 'utf-8');
-    await writeFile(join(wr, 'exercises.imported.json'), '[]', 'utf-8');
-    // Manifest carries 2 drafts → decomposed into 2 writers_room_draft_versions.
+    await writeJSON(join(wr, 'folders.imported.json'), [{ id: 'f1' }]);
+    await writeJSON(join(wr, 'exercises.imported.json'), [{ id: 'e1' }]);
     await writeJSON(join(work, 'manifest.imported.json'), { id: 'work-1', drafts: [{ id: 'd1' }, { id: 'd2' }] });
     await writeFile(join(drafts, 'draft-1.md'), '# body', 'utf-8'); // file-primary body
 
-    // All guarded tables (incl. draft versions) meet their expected counts.
-    const db = stubDb({ writers_room_folders: 2, writers_room_works: 1, writers_room_exercises: 3, writers_room_draft_versions: 2 });
+    const db = stubDb({
+      writers_room_folders: ['f1'], writers_room_exercises: ['e1'],
+      writers_room_works: ['work-1'], writers_room_draft_versions: ['d1', 'd2'],
+    });
     const res = await pruneImportedLegacyFiles({ dataDir, db });
 
     expect(res.markerWritten).toBe(true);
@@ -146,35 +170,16 @@ describe('pruneImportedLegacyFiles', () => {
     expect(await exists(join(drafts, 'draft-1.md'))).toBe(true);
   });
 
-  it('WITHHOLDS writers-room prune when draft-version rows are short of the parked manifests', async () => {
-    // Restore brought back folders/works/exercises but lost draft-version rows.
-    // The manifests are the only recovery source for that version metadata, so
-    // keep them even though every table-count guard passes.
-    await writeJSON(join(dataDir, 'writers-room.migrated.json'), { folders: 0, works: 1, exercises: 0 });
+  it('WITHHOLDS writers-room prune when a folder id is missing, not just works', async () => {
+    await writeJSON(join(dataDir, 'writers-room.migrated.json'), { folders: 1, works: 1, exercises: 0 });
     const wr = join(dataDir, 'writers-room');
     const work = join(wr, 'works', 'work-1');
     await mkdir(work, { recursive: true });
-    await writeJSON(join(work, 'manifest.imported.json'), { id: 'work-1', drafts: [{ id: 'd1' }, { id: 'd2' }, { id: 'd3' }] });
+    await writeJSON(join(wr, 'folders.imported.json'), [{ id: 'f1' }]);
+    await writeJSON(join(work, 'manifest.imported.json'), { id: 'work-1', drafts: [] });
 
-    // 3 drafts on disk, but only 1 draft-version row survived.
-    const db = stubDb({ writers_room_folders: 0, writers_room_works: 1, writers_room_exercises: 0, writers_room_draft_versions: 1 });
-    const res = await pruneImportedLegacyFiles({ dataDir, db });
-
-    expect(res.blocked).toBe(1);
-    expect(res.markerWritten).toBe(false);
-    expect(await exists(join(work, 'manifest.imported.json'))).toBe(true);
-  });
-
-  it('WITHHOLDS writers-room prune when ANY guarded table is short, not just works', async () => {
-    // Works restored fully, but folders lost on a partial restore → must NOT
-    // delete the folders recovery file. The single-table-on-works guard would
-    // have wrongly pruned here.
-    await writeJSON(join(dataDir, 'writers-room.migrated.json'), { folders: 2, works: 1, exercises: 0 });
-    const wr = join(dataDir, 'writers-room');
-    await mkdir(wr, { recursive: true });
-    await writeFile(join(wr, 'folders.imported.json'), '[]', 'utf-8');
-
-    const db = stubDb({ writers_room_folders: 0, writers_room_works: 1, writers_room_exercises: 0 });
+    // Works present, folder f1 lost.
+    const db = stubDb({ writers_room_folders: [], writers_room_works: ['work-1'], writers_room_draft_versions: [] });
     const res = await pruneImportedLegacyFiles({ dataDir, db });
 
     expect(res.blocked).toBe(1);
@@ -182,8 +187,34 @@ describe('pruneImportedLegacyFiles', () => {
     expect(await exists(join(wr, 'folders.imported.json'))).toBe(true);
   });
 
+  it('WITHHOLDS writers-room prune when a draft-version id is missing', async () => {
+    // Restore kept folders/works/exercises but lost a draft-version row. The
+    // manifest is the only recovery source for that version metadata.
+    await writeJSON(join(dataDir, 'writers-room.migrated.json'), { folders: 0, works: 1, exercises: 0 });
+    const wr = join(dataDir, 'writers-room');
+    const work = join(wr, 'works', 'work-1');
+    await mkdir(work, { recursive: true });
+    await writeJSON(join(work, 'manifest.imported.json'), { id: 'work-1', drafts: [{ id: 'd1' }, { id: 'd2' }, { id: 'd3' }] });
+
+    const db = stubDb({ writers_room_works: ['work-1'], writers_room_draft_versions: ['d1', 'd2'] });
+    const res = await pruneImportedLegacyFiles({ dataDir, db });
+
+    expect(res.blocked).toBe(1);
+    expect(res.markerWritten).toBe(false);
+    expect(await exists(join(work, 'manifest.imported.json'))).toBe(true);
+  });
+
+  it('prunes the creative-director JSON export when its project ids are present', async () => {
+    await writeJSON(join(dataDir, 'creative-director-projects.migrated.json'), { imported: 1 });
+    await writeJSON(join(dataDir, 'creative-director-projects.json.imported'), [{ id: 'cd-1' }]);
+
+    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ creative_director_projects: ['cd-1'] }) });
+
+    expect(res.markerWritten).toBe(true);
+    expect(await exists(join(dataDir, 'creative-director-projects.json.imported'))).toBe(false);
+  });
+
   it('prunes a file-split backup only when its successor exists', async () => {
-    // history: successor present → backup removed.
     await writeFile(join(dataDir, 'history.json.bak-037'), 'x', 'utf-8');
     await writeFile(join(dataDir, 'history.jsonl'), '', 'utf-8');
     // media-collections: successor ABSENT → backup kept.
@@ -197,7 +228,6 @@ describe('pruneImportedLegacyFiles', () => {
   });
 
   it('prunes timestamped file-split backup variants (re-run collision suffix)', async () => {
-    // Migration 037 appends -<timestamp> when a bare .bak-037 already exists.
     await writeFile(join(dataDir, 'history.json.bak-037'), 'x', 'utf-8');
     await writeFile(join(dataDir, 'history.json.bak-037-1717000000000'), 'x', 'utf-8');
     await writeFile(join(dataDir, 'history.jsonl'), '', 'utf-8');
@@ -211,7 +241,7 @@ describe('pruneImportedLegacyFiles', () => {
   it('is marker-gated: a current marker no-ops without touching the DB', async () => {
     await writeJSON(join(dataDir, 'legacy-prune.applied.json'), { version: 1, completedAt: 'x', removed: 0 });
     let queried = false;
-    const db = { async query() { queried = true; return { rows: [{ n: 0 }] }; } };
+    const db = { async query() { queried = true; return { rows: [] }; } };
 
     const res = await pruneImportedLegacyFiles({ dataDir, db });
 
@@ -222,40 +252,35 @@ describe('pruneImportedLegacyFiles', () => {
   it('force re-runs even with a current marker', async () => {
     await writeJSON(join(dataDir, 'legacy-prune.applied.json'), { version: 1, completedAt: 'x', removed: 0 });
     await writeJSON(join(dataDir, 'creative-director-projects.migrated.json'), { imported: 1 });
-    await writeFile(join(dataDir, 'creative-director-projects.json.imported'), '[]', 'utf-8');
+    await writeJSON(join(dataDir, 'creative-director-projects.json.imported'), [{ id: 'cd-1' }]);
 
-    const res = await pruneImportedLegacyFiles({ dataDir, force: true, db: stubDb({ creative_director_projects: 1 }) });
+    const res = await pruneImportedLegacyFiles({ dataDir, force: true, db: stubDb({ creative_director_projects: ['cd-1'] }) });
 
     expect(res.skipped).toBe(false);
     expect(await exists(join(dataDir, 'creative-director-projects.json.imported'))).toBe(false);
   });
 
   it('force re-run that ends blocked drops the stale clean marker so a normal boot retries', async () => {
-    // Pre-existing clean marker + a domain that will block (DB short of marker).
     await writeJSON(join(dataDir, 'legacy-prune.applied.json'), { version: 1, completedAt: 'x', removed: 0 });
-    await writeJSON(join(dataDir, 'universes.migrated.json'), { imported: 13 });
-    await mkdir(join(dataDir, 'universes.imported'), { recursive: true });
+    await writeJSON(join(dataDir, 'universes.migrated.json'), { imported: 1, runs: 0 });
+    await seedUniverses(['u1']);
 
-    const res = await pruneImportedLegacyFiles({ dataDir, force: true, db: stubDb({ universes: 0 }) });
+    const res = await pruneImportedLegacyFiles({ dataDir, force: true, db: stubDb({ universes: [] }) });
 
     expect(res.blocked).toBe(1);
     expect(res.markerWritten).toBe(false);
-    // Stale clean marker removed → a subsequent normal (non-force) boot will
-    // re-evaluate instead of short-circuiting on `skipped`.
     expect(await exists(join(dataDir, 'legacy-prune.applied.json'))).toBe(false);
-    // Recovery files untouched.
     expect(await exists(join(dataDir, 'universes.imported'))).toBe(true);
   });
 
   it('is idempotent across runs (second run finds nothing to remove)', async () => {
-    await writeJSON(join(dataDir, 'universes.migrated.json'), { imported: 5 });
-    await mkdir(join(dataDir, 'universes.imported'), { recursive: true });
-    const db = stubDb({ universes: 5 });
+    await writeJSON(join(dataDir, 'universes.migrated.json'), { imported: 1, runs: 0 });
+    await seedUniverses(['u1']);
+    const db = stubDb({ universes: ['u1'] });
 
     const first = await pruneImportedLegacyFiles({ dataDir, db });
     expect(first.removed).toBe(1);
 
-    // Marker now current → second run skips entirely.
     const second = await pruneImportedLegacyFiles({ dataDir, db });
     expect(second.skipped).toBe(true);
   });
