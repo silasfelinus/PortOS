@@ -7,6 +7,10 @@ import {
   NOTATION_HELP,
   SOLFEGE_DEGREES,
   solfegeForDegree,
+  HARMONY_PARTS,
+  DERIVABLE_HARMONY_PARTS,
+  harmonyPartLabel,
+  harmonyPartOrder,
 } from './songCraft.js';
 
 describe('songCraft reference data', () => {
@@ -72,5 +76,45 @@ describe('songCraft reference data', () => {
     expect(solfegeForDegree(9)).toBe('Re');
     expect(solfegeForDegree(null)).toBeNull();
     expect(solfegeForDegree('x')).toBeNull();
+  });
+
+  it('every harmony part carries id, label, role, numeric order, range, derivable flag and voicing', () => {
+    const ids = new Set();
+    for (const p of HARMONY_PARTS) {
+      expect(typeof p.id).toBe('string');
+      expect(ids.has(p.id)).toBe(false); // ids unique
+      ids.add(p.id);
+      expect(typeof p.label).toBe('string');
+      expect(typeof p.role).toBe('string');
+      expect(typeof p.order).toBe('number');
+      expect(typeof p.range).toBe('string');
+      expect(typeof p.derivable).toBe('boolean');
+      expect(typeof p.voicing).toBe('string');
+    }
+    // The melody is the base (not derivable, order 0); the rest are derivable.
+    const melody = HARMONY_PARTS.find((p) => p.id === 'melody');
+    expect(melody.derivable).toBe(false);
+    expect(melody.order).toBe(0);
+    expect(DERIVABLE_HARMONY_PARTS.every((p) => p.derivable)).toBe(true);
+    // Declaration order is the low→high stack from the guide.
+    expect(DERIVABLE_HARMONY_PARTS.map((p) => p.id)).toEqual([
+      'bass', 'mid-harmony-2', 'mid-harmony-1', 'high-harmony-2', 'high-harmony-1',
+    ]);
+    // High Harmony I is the TOP voice (above High Harmony II) — guide ordering.
+    expect(harmonyPartOrder('high-harmony-1')).toBeGreaterThan(harmonyPartOrder('high-harmony-2'));
+  });
+
+  it('harmonyPartLabel resolves known ids and empties unknown', () => {
+    expect(harmonyPartLabel('bass')).toBe('Bass');
+    expect(harmonyPartLabel('high-harmony-2')).toBe('High Harmony II');
+    expect(harmonyPartLabel('nope')).toBe('');
+  });
+
+  it('harmonyPartOrder lays the stack low→high and pushes unknown ids last', () => {
+    const order = ['bass', 'mid-harmony-2', 'mid-harmony-1', 'high-harmony-2', 'high-harmony-1'].map(harmonyPartOrder);
+    // Strictly ascending.
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(new Set(order).size).toBe(order.length); // all distinct
+    expect(harmonyPartOrder('custom-unknown')).toBe(99);
   });
 });

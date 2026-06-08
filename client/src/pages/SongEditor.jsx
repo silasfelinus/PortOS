@@ -36,9 +36,11 @@ import Pill from '../components/ui/Pill';
 import SongAiPanel from '../components/songs/SongAiPanel';
 import SongRecordings from '../components/songs/SongRecordings';
 import SongScoreEditor from '../components/songs/SongScoreEditor';
+import SongScoreParts from '../components/songs/SongScoreParts';
 import ScoreSheet from '../components/songs/ScoreSheet';
 import RoundStack from '../components/songs/RoundStack';
 import { scoreHasMusic } from '../lib/scoreNotation';
+import { harmonyPartOrder } from '../lib/songCraft';
 
 // Cap on partner songs — mirrors services/songs.js PARTNERS_MAX. Used only to
 // disable adding more in the editor; the server enforces the real bound.
@@ -120,6 +122,17 @@ export default function SongEditor() {
   }, [setSearchParams]);
   const [song, setSong] = useState(null);
   const [loading, setLoading] = useState(true);
+  // The last server-persisted base melody (score + key). Used to gate the AI
+  // "Derive harmony parts" action, which reads the SAVED score server-side — so
+  // it must be disabled while the base melody has unsaved edits (the project's
+  // "Run Now actions gate on saved state" rule). Updated wherever a canonical
+  // server song lands (load, save, refresh-from-template).
+  const [savedBase, setSavedBase] = useState({ score: '', key: '' });
+  // Adopt a server-canonical song: set the draft AND snapshot its saved base.
+  const setServerSong = useCallback((s) => {
+    setSong(s);
+    setSavedBase({ score: s?.score || '', key: s?.key || '' });
+  }, []);
   // All songs — resolves partner records for the round stack and the "Sings
   // with" editor's pick list. Best-effort; the page works without it.
   const [allSongs, setAllSongs] = useState([]);
@@ -134,11 +147,11 @@ export default function SongEditor() {
     setLoading(true);
     setSong(null);
     getSong(id, { silent: true })
-      .then((data) => { if (!cancelled) setSong(data?.song || null); })
+      .then((data) => { if (!cancelled) setServerSong(data?.song || null); })
       .catch((err) => { if (!cancelled) toast.error(err?.message || 'Failed to load song'); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [id]);
+  }, [id, setServerSong]);
 
   // Refresh the all-songs list whenever the open song changes — this component
   // stays mounted across /songs/:id navigation, so a once-on-mount fetch would
@@ -185,12 +198,13 @@ export default function SongEditor() {
       // them from being persisted and later colliding after a reload.
       sections: (song.sections || []).map(stripTempId),
       layers: (song.layers || []).map(stripTempId),
+      scoreParts: (song.scoreParts || []).map(stripTempId),
       recordings: (song.recordings || []).map(stripTempId),
       references: (song.references || []).map(stripTempId),
       partnerSongIds: song.partnerSongIds || [],
     };
     const data = await updateSong(id, patch, { silent: true });
-    if (data?.song) setSong(data.song);
+    if (data?.song) setServerSong(data.song);
     toast.success('Song saved');
     return data?.song;
   }, { errorMessage: 'Failed to save song' });
@@ -201,7 +215,7 @@ export default function SongEditor() {
   // BuiltInBanner gates this behind an inline confirm.
   const [refreshTemplate, refreshing] = useAsyncAction(async () => {
     const data = await refreshSongTemplate(id, { silent: true });
-    if (data?.song) setSong(data.song);
+    if (data?.song) setServerSong(data.song);
     toast.success('Refreshed from the bundled template');
     return data?.song;
   }, { errorMessage: 'Failed to refresh from template' });
@@ -629,6 +643,16 @@ export default function SongEditor() {
           {/* Sheet music — live-rendered staff from the lead-sheet notation. */}
           <SongScoreEditor value={song.score} onChange={(v) => setField('score', v)} />
 
+          {/* Harmony variations — bass / mid / high parts derived from the melody.
+              `baseDirty` gates the AI derive (it reads the SAVED base score). */}
+          <SongScoreParts
+            songId={id}
+            baseScore={song.score}
+            baseDirty={(song.score || '') !== savedBase.score || (song.key || '') !== savedBase.key}
+            scoreParts={song.scoreParts || []}
+            onChange={(scoreParts) => setField('scoreParts', scoreParts)}
+          />
+
           {/* Notation + notes */}
           <section className="grid grid-cols-1 gap-4">
             <div>
@@ -672,10 +696,6 @@ function ReadView({ song, setField, onRefreshTemplate, refreshing, partnerSongs 
   const references = song.references || [];
   const hasText = (v) => typeof v === 'string' && v.trim().length > 0;
   const feel = song.rhythmShapeId ? rhythmShapeLabel(song.rhythmShapeId) : '';
-  // Gate the whole sheet-music section on whether the score has notes. Memoized
-  // so a recording-driven re-render doesn't re-parse the score each time
-  // (ScoreSheet parses it again internally only when it actually renders).
-  const hasScore = useMemo(() => scoreHasMusic(song.score), [song.score]);
   // Only actually swap to the stacked view when there are partners to stack —
   // otherwise `?stack=1` with no partners would hide the single-song view and
   // render nothing.
@@ -731,14 +751,10 @@ function ReadView({ song, setField, onRefreshTemplate, refreshing, partnerSongs 
 
       {/* Sheet music — the rendered staff, full-width so a row of bars fits.
           Kept at the top with the metronome + recorder so the practice tools
-          (read the chart, set the tempo, record against it) lead the view. */}
-      {!showingStack && hasScore && (
-        <section className="space-y-2">
-          <h2 className="text-sm font-semibold text-white">Sheet music</h2>
-          <div className="bg-port-card border border-port-border rounded-lg p-4 overflow-x-auto">
-            <ScoreSheet text={song.score} />
-          </div>
-        </section>
+          (read the chart, set the tempo, record against it) lead the view. A
+          part switcher appears when the song carries harmony variations. */}
+      {!showingStack && (
+        <SheetMusicViewer baseScore={song.score} scoreParts={song.scoreParts || []} />
       )}
 
       {/* Vocal takes — metronome + recording/playback, front-and-centre with the
@@ -823,6 +839,57 @@ function ReadView({ song, setField, onRefreshTemplate, refreshing, partnerSongs 
         </section>
       )}
     </div>
+  );
+}
+
+// Sheet-music card for the read view: the base melody plus any harmony
+// variations, switchable via a pill row (Melody first, then parts low→high). Each
+// part renders through <ScoreSheet> with its own reference-tone playback; keying
+// the staff on the active tab tears down the previous part's audio on switch.
+// Returns null when there's no music anywhere, so the caller can mount it
+// unconditionally.
+function SheetMusicViewer({ baseScore, scoreParts = [] }) {
+  const tabs = useMemo(() => {
+    const out = [];
+    if (scoreHasMusic(baseScore)) out.push({ key: 'melody', label: 'Melody', score: baseScore });
+    (scoreParts || [])
+      .filter((p) => scoreHasMusic(p.score))
+      .slice()
+      .sort((a, b) => harmonyPartOrder(a.role) - harmonyPartOrder(b.role))
+      .forEach((p) => out.push({ key: p.id, label: p.label || 'Part', score: p.score }));
+    return out;
+  }, [baseScore, scoreParts]);
+  const [active, setActive] = useState(0);
+
+  if (!tabs.length) return null;
+  // Clamp if the tab set shrank since the last render (a part removed/cleared).
+  const idx = active < tabs.length ? active : 0;
+  const current = tabs[idx];
+
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <h2 className="text-sm font-semibold text-white">Sheet music</h2>
+        {tabs.length > 1 && (
+          <div className="flex flex-wrap gap-1.5">
+            {tabs.map((t, i) => (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setActive(i)}
+                aria-pressed={i === idx}
+                className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${i === idx ? 'bg-port-accent text-white border-port-accent' : 'border-port-border text-gray-300 hover:text-white hover:border-port-accent/60'}`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="bg-port-card border border-port-border rounded-lg p-4 overflow-x-auto">
+        <ScoreSheet key={current.key} text={current.score} />
+      </div>
+    </section>
   );
 }
 

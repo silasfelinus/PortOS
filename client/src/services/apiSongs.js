@@ -39,3 +39,10 @@ export const generateSongFor = (id, body = {}, options) =>
 // AI: critique a stored arrangement → { evaluation, llm }. Read-only server-side.
 export const evaluateSong = (id, body = {}, options) =>
   request(`/songs/${enc(id)}/evaluate`, { method: 'POST', body: JSON.stringify(body), ...options });
+
+// AI: derive harmony parts (bass, mid/high harmonies) from the song's base
+// melody → { scoreParts, llm }. Not persisted server-side; the client merges the
+// returned parts into the editor draft and the user Saves. body: { partIds?,
+// providerId?, model? } — partIds optionally restricts which harmony parts.
+export const deriveSongParts = (id, body = {}, options) =>
+  request(`/songs/${enc(id)}/derive-parts`, { method: 'POST', body: JSON.stringify(body), ...options });

@@ -41,3 +41,24 @@ export const VOICE_LAYERS = [
 
 // The dirge-family shapes (the lament the workbench centers on), in order.
 export const DIRGE_RHYTHM_SHAPES = RHYTHM_SHAPES.filter((s) => s.dirge);
+
+// Sheet-music harmony parts: { id, label, role, order, range, derivable, voicing }.
+// The base score is the `melody`; the derivable parts are what the AI derive tool
+// produces from it. The voicing model is CHORD-TONE (each voice targets a chord
+// tone and moves smoothly), NOT parallel-interval tracking of the melody — see
+// client/src/lib/songCraft.js for the full rationale. Injected into the derive
+// prompt so the model voices each part correctly and returns ids the editor's
+// switcher understands. Mirrors HARMONY_PARTS in songCraft.js — keep
+// id/label/role/order/range/voicing in sync.
+export const HARMONY_PARTS = [
+  { id: 'melody', label: 'Melody', role: 'melody', order: 0, range: 'as written', derivable: false, voicing: 'The lead — carries the lyric and rhythmic detail. The base every harmony targets.' },
+  { id: 'bass', label: 'Bass', role: 'bass', order: 1, range: 'G2–D3 (down to E2)', derivable: true, voicing: 'Root of each chord, with the fifth as gentle movement — a hymn-like root–fifth–root drone.' },
+  { id: 'mid-harmony-2', label: 'Mid Harmony II', role: 'harmony', order: 2, range: 'B2–E4', derivable: true, voicing: 'Low inner pad — sustained chord tones below the melody (often the 3rd or 5th of the chord).' },
+  { id: 'mid-harmony-1', label: 'Mid Harmony I', role: 'harmony', order: 3, range: 'D3–G4', derivable: true, voicing: 'The main moving inner voice — a third/sixth below the melody but landing on chord tones.' },
+  { id: 'high-harmony-2', label: 'High Harmony II', role: 'harmony', order: 4, range: 'G3–B4', derivable: true, voicing: 'Sustained upper chord tone with gentle suspensions — carries the leading tone (the F# on D7) that pulls back to G.' },
+  { id: 'high-harmony-1', label: 'High Harmony I', role: 'harmony', order: 5, range: 'B3–E5', derivable: true, voicing: 'Sparse top descant — mostly sustained high chord tones, entering on the emotional phrases.' },
+];
+
+// The parts the derive tool generates (all but the melody, which is the input),
+// declaration order low→high.
+export const DERIVABLE_HARMONY_PARTS = HARMONY_PARTS.filter((p) => p.derivable);

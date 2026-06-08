@@ -23,17 +23,23 @@ const SONG_ID = 'seed-500-miles';
 
 // The shipped verse melody — kept identical to SEED_SONGS[seed-500-miles].score
 // in server/services/songs.js (the migration test asserts they match, so a drift
-// fails CI rather than silently shipping two different scores).
+// fails CI rather than silently shipping two different scores). Updated to the
+// correct G-major transcription (Hedy West) alongside the seed; migration 075
+// upgrades installs that already hold the earlier C-major backfill.
 export const SCORE_500_MILES = [
   'clef: treble',
-  'key: C',
+  'key: G',
   'time: 4/4',
   'tempo: 68',
   '',
-  '| [C] E4q(If) G4q(you) G4q(miss) G4q(the) | [Am] A4h(train) G4q(I\'m) E4q(on) |',
-  '| [F] F4q(You) A4q(will) A4q(know) A4q(that) | [C] G4h(I) E4q(am) C4q(gone) |',
-  '| [F] F4q(You) A4q(can) A4q(hear) A4q(the) | [C] G4q(whis-) E4q(tle) C4h(blow) |',
-  '| [G] D4q(A) F4q(hun-) G4q(dred) rq | [C] C4w(miles) |',
+  '| rh [G] D4q(If) D4q(you) |',
+  '| [G] B4q.(miss) A4e(the) B4q.(train) A4e(I\'m) |',
+  '| [Em] B4h(on) A4q(you) G4q(will) |',
+  '| [C] C5q.(know) B4e(that) A4q(I) G4q(am) |',
+  '| [Am7] E4h.(gone) F#4e(you) G4e(can) |',
+  '| [D7] A4q.(hear) F#4e(the) A4q.(whis-) F#4e(tle) |',
+  '| [G] G4h(blow) A4e(a) B4e(hun-) C5q(dred) |',
+  '| [G] D5w(miles) |',
 ].join('\n');
 
 const fileExists = (path) => stat(path).then(() => true, (err) => {
