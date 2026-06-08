@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, mkdir, writeFile, stat, readFile } from 'fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, stat } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pruneImportedLegacyFiles } from './pruneImportedLegacyFiles.js';

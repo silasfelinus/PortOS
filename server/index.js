@@ -899,6 +899,17 @@ ensureSelf()
       // DB. Idempotent with that early warm (same setUserCatalogTypes result).
       const warmTypes = await readUserTypeSlice();
       setUserCatalogTypes(Array.isArray(warmTypes) ? warmTypes : []);
+      // Creative Director PG warm (#997): unlike the other stores, CD's file→DB
+      // import (migrateCreativeDirectorToDB) is triggered lazily on first
+      // backend access, and at boot the only trigger is the fire-and-forget
+      // recoverInFlightProjects() in an earlier .then() — NOT awaited, so it can
+      // still be in flight here. The prune below stamps a single completion
+      // marker once no domain is blocked, so it must not run while CD's import
+      // (and its creative-director-projects.migrated.json marker) is unfinished,
+      // or CD's .imported file would never be pruned. listProjects() forces
+      // selectBackend() → the (idempotent, marker-gated) import to completion.
+      const { listProjects: warmCdProjects } = await import('./services/creativeDirector/local.js');
+      await warmCdProjects();
       // Legacy artifact prune: runs LAST, after every file→DB warm above has
       // imported + stamped its marker, so both the migration markers AND the
       // authoritative DB rows exist. Removes the `.imported` / `.bak-NNN`
