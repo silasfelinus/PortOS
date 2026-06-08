@@ -44,9 +44,11 @@
  * A wiped / partially-restored DB that is missing ANY parked id WITHHOLDS the
  * whole domain's prune and leaves the completion marker unwritten, so a future
  * boot retries once the DB is whole. Two more conditions also withhold: (a) a
- * parked artifact that EXISTS but can't be read/parsed (truncated after a crash,
- * hand-edited) blocks its domain rather than being mistaken for "zero records"
- * and deleted; (b) a domain whose migration is still PENDING — its legacy source
+ * parked artifact that EXISTS but can't be turned into a verifiable id set —
+ * unreadable/truncated, wrong top-level shape, or an id-less record (one the
+ * original migrator may have SKIPPED and parked) — blocks its domain rather than
+ * being mistaken for "zero records" and deleted; (b) a domain whose migration is
+ * still PENDING — its legacy source
  * is on disk but no marker was stamped (migration failed or hasn't run) — blocks
  * the GLOBAL completion marker, so a later boot (after the source is repaired and
  * finally parked) still prunes it instead of skipping forever via the applied
@@ -54,9 +56,19 @@
  * server/index.js, so it never runs under the MEMORY_BACKEND=file escape hatch
  * (no DB → no prune → recovery files kept).
  *
- * File-split backups (037 history.json, 059 media-collections.json) are NOT a
- * Postgres move — their successors live on disk — so they use a successor-exists
- * gate instead of id verification.
+ * SCOPE — only the `.imported` file→DB artifacts are pruned. The `.bak-NNN`
+ * monolith backups (the file→FILE split migrations 034–036) and the file-split
+ * backups (037 history.json, 059 media-collections.json) are deliberately LEFT
+ * for manual cleanup: they are a deeper, separate recovery layer that can hold
+ * records the split migrator SKIPPED (invalid records `makeSplitMigration`
+ * leaves only in the `.bak` file), and they predate the DB so their record set
+ * is a superset of (and not identity-verifiable against) the live DB — e.g.
+ * `universe-builder.json.bak-034` carries 30 universes incl. soft-deleted ones
+ * the DB legitimately won't have, so any id check against the DB would block
+ * forever. Auto-deleting them unverified would risk losing skipped records;
+ * verifying them is impossible. So we don't touch them. The big wins
+ * (`universes.imported`, `pipeline-issues.imported` — multiple MB each) are
+ * still pruned.
  *
  * Idempotent: `rm({ recursive: true, force: true })` no-ops on already-removed
  * paths, and a marker in `data/legacy-prune.applied.json` skips the walk once a
@@ -108,24 +120,44 @@ async function idsFromSubdirs(base, dir) {
     .map((e) => e.name);
 }
 
+// Map array elements to their string `.id`, BLOCKING (throw) on any element
+// that lacks one. An unidentifiable record can't be verified against the DB, so
+// treating it as "not there" and pruning anyway could delete the only copy of a
+// record the original migrator skipped — block the domain instead.
+function idsOrBlock(arr, label) {
+  return arr.map((r, i) => {
+    if (!r || typeof r.id !== 'string') {
+      throw new ParkedArtifactUnreadable(`${label}: record ${i} has no string id`);
+    }
+    return r.id;
+  });
+}
+
 // `.id` of every element of a top-level JSON array file (the CD export, and the
 // writers-room folders.imported.json / exercises.imported.json bare arrays).
-// A present-but-corrupt file throws (blocks the domain); absent → no ids.
+// Present-but-corrupt OR wrong-shape OR any id-less record throws (blocks the
+// domain); absent → no ids.
 async function idsFromJsonArray(base, file) {
   const arr = await readParkedJson(base, file);
-  return Array.isArray(arr) ? arr.map((r) => r?.id).filter((id) => typeof id === 'string') : [];
+  if (arr === null) return [];
+  if (!Array.isArray(arr)) throw new ParkedArtifactUnreadable(`${file}: expected a JSON array`);
+  return idsOrBlock(arr, file);
 }
 
 // Universe run ids: the type-level index.json's `config.runs[]`, each `{ id }`.
 // (migrateUniversesToDB reads runs from `universes.imported/index.json`.)
 async function universeRunIds(base) {
-  const typeIndex = await readParkedJson(base, 'universes.imported/index.json');
-  const runs = Array.isArray(typeIndex?.config?.runs) ? typeIndex.config.runs : [];
-  return runs.map((r) => r?.id).filter((id) => typeof id === 'string');
+  const file = 'universes.imported/index.json';
+  const typeIndex = await readParkedJson(base, file);
+  if (typeIndex === null) return [];
+  const runs = typeIndex?.config?.runs;
+  if (runs == null) return []; // no runs key → no run history was parked
+  if (!Array.isArray(runs)) throw new ParkedArtifactUnreadable(`${file}: config.runs is not an array`);
+  return idsOrBlock(runs, `${file}#config.runs`);
 }
 
 // Writers-room work ids + draft-version ids, read from each parked manifest.
-// A present-but-corrupt manifest throws (blocks the domain).
+// A present-but-corrupt manifest, or one with an id-less work / draft, throws.
 async function writersRoomManifestIds(base) {
   const worksDir = 'writers-room/works';
   const subdirs = await readdir(join(base, worksDir), { withFileTypes: true }).catch(() => []);
@@ -133,10 +165,15 @@ async function writersRoomManifestIds(base) {
   const draftIds = [];
   for (const entry of subdirs) {
     if (!entry.isDirectory()) continue;
-    const manifest = await readParkedJson(base, join(worksDir, entry.name, 'manifest.imported.json'));
-    if (typeof manifest?.id === 'string') workIds.push(manifest.id);
-    if (Array.isArray(manifest?.drafts)) {
-      for (const d of manifest.drafts) if (typeof d?.id === 'string') draftIds.push(d.id);
+    const file = join(worksDir, entry.name, 'manifest.imported.json');
+    const manifest = await readParkedJson(base, file);
+    if (manifest === null) continue; // no parked manifest in this dir
+    if (typeof manifest.id !== 'string') throw new ParkedArtifactUnreadable(`${file}: work has no string id`);
+    workIds.push(manifest.id);
+    const drafts = manifest.drafts;
+    if (drafts != null) {
+      if (!Array.isArray(drafts)) throw new ParkedArtifactUnreadable(`${file}: drafts is not an array`);
+      draftIds.push(...idsOrBlock(drafts, `${file}#drafts`));
     }
   }
   return { workIds, draftIds };
@@ -190,7 +227,7 @@ const DB_DOMAINS = [
       { table: 'universe_runs', ids: await universeRunIds(base) },
     ],
     pending: (base) => pathExists(join(base, 'universes')),
-    artifacts: ['universes.imported', 'universe-builder.json.bak-034'],
+    artifacts: ['universes.imported'],
   },
   {
     label: 'pipeline-issues',
@@ -199,7 +236,7 @@ const DB_DOMAINS = [
       { table: 'pipeline_issues', ids: await idsFromSubdirs(base, 'pipeline-issues.imported') },
     ],
     pending: (base) => pathExists(join(base, 'pipeline-issues')),
-    artifacts: ['pipeline-issues.imported', 'pipeline-issues.json.bak-035'],
+    artifacts: ['pipeline-issues.imported'],
   },
   {
     label: 'pipeline-series',
@@ -211,7 +248,7 @@ const DB_DOMAINS = [
       { table: 'pipeline_series', ids: await idsFromSubdirsWithLeaf(base, 'pipeline-series', 'index.json.imported') },
     ],
     pending: pipelineSeriesPending,
-    artifacts: ['pipeline-series.json.bak-036'],
+    artifacts: [],
     nestedGlobs: [{ baseDir: 'pipeline-series', leaf: 'index.json.imported' }],
   },
   {
@@ -250,15 +287,6 @@ const DB_DOMAINS = [
     pending: (base) => pathExists(join(base, 'creative-director-projects.json')),
     artifacts: ['creative-director-projects.json.imported'],
   },
-];
-
-// File-split backups: data reshaped file→file (NOT moved to Postgres), so they
-// gate on the reshaped successor existing on disk. `backupPrefix` is a prefix:
-// migration 037/059 normally write the bare `.bak-NNN`, but on a re-run
-// collision they append `-<timestamp>`, so match the prefix to catch those too.
-const FILE_SPLIT_BACKUPS = [
-  { label: 'history', backupPrefix: 'history.json.bak-037', successor: 'history.jsonl' },
-  { label: 'media-collections', backupPrefix: 'media-collections.json.bak-059', successor: 'media-collections' },
 ];
 
 async function pathExists(p) {
@@ -309,17 +337,6 @@ async function removeNestedGlob(base, baseDir, leaf) {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (await removeUnder(base, join(baseDir, entry.name, leaf))) removed++;
-  }
-  return removed;
-}
-
-// Remove every top-level entry of `base` whose name starts with `prefix` (the
-// bare `.bak-NNN` plus any `-<timestamp>` re-run collision variant).
-async function removeByPrefix(base, prefix) {
-  const entries = await readdir(base).catch(() => []);
-  let removed = 0;
-  for (const name of entries) {
-    if (name.startsWith(prefix) && await removeUnder(base, name)) removed++;
   }
   return removed;
 }
@@ -396,17 +413,6 @@ export async function pruneImportedLegacyFiles({ force = false, db, dataDir } = 
     if (domainRemoved > 0) {
       totals.removed += domainRemoved;
       totals.pruned.push(`${domain.label}(${domainRemoved})`);
-    }
-  }
-
-  // File-split backups: prune only when the reshaped successor is present on
-  // disk (proof the split landed). Absent successor → leave the backup alone.
-  for (const item of FILE_SPLIT_BACKUPS) {
-    if (!await pathExists(join(base, item.successor))) continue;
-    const removed = await removeByPrefix(base, item.backupPrefix);
-    if (removed > 0) {
-      totals.removed += removed;
-      totals.pruned.push(item.label);
     }
   }
 

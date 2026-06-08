@@ -58,15 +58,35 @@ describe('pruneImportedLegacyFiles', () => {
   it('prunes a domain when every parked record id is present in the DB', async () => {
     await writeJSON(join(dataDir, 'universes.migrated.json'), { imported: 2, runs: 1 });
     await seedUniverses(['u1', 'u2'], ['r1']);
+    // The .bak-034 monolith is a deeper recovery layer and is intentionally NOT
+    // pruned — it must survive the prune.
     await writeFile(join(dataDir, 'universe-builder.json.bak-034'), 'legacy', 'utf-8');
 
     const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ universes: ['u1', 'u2'], universe_runs: ['r1'] }) });
 
     expect(res.skipped).toBe(false);
     expect(await exists(join(dataDir, 'universes.imported'))).toBe(false);
-    expect(await exists(join(dataDir, 'universe-builder.json.bak-034'))).toBe(false);
+    expect(await exists(join(dataDir, 'universe-builder.json.bak-034'))).toBe(true); // kept
     expect(res.markerWritten).toBe(true);
     expect(await exists(join(dataDir, 'legacy-prune.applied.json'))).toBe(true);
+  });
+
+  it('does NOT delete the .bak-NNN monolith or file-split backups (deeper recovery layer)', async () => {
+    await writeJSON(join(dataDir, 'pipeline-issues.migrated.json'), { imported: 1 });
+    const imp = join(dataDir, 'pipeline-issues.imported');
+    await mkdir(join(imp, 'iss-1'), { recursive: true });
+    await writeFile(join(dataDir, 'pipeline-issues.json.bak-035'), 'monolith', 'utf-8');
+    await writeFile(join(dataDir, 'history.json.bak-037'), 'x', 'utf-8');
+    await writeFile(join(dataDir, 'history.jsonl'), '', 'utf-8');
+
+    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ pipeline_issues: ['iss-1'] }) });
+
+    // The .imported tree is pruned…
+    expect(await exists(imp)).toBe(false);
+    // …but every .bak backup survives for manual recovery.
+    expect(await exists(join(dataDir, 'pipeline-issues.json.bak-035'))).toBe(true);
+    expect(await exists(join(dataDir, 'history.json.bak-037'))).toBe(true);
+    expect(res.markerWritten).toBe(true);
   });
 
   it('WITHHOLDS prune + marker when a parked universe id is missing (wiped/restored DB)', async () => {
@@ -242,28 +262,28 @@ describe('pruneImportedLegacyFiles', () => {
     expect(await exists(join(dataDir, 'creative-director-projects.json.imported'))).toBe(false);
   });
 
-  it('prunes a file-split backup only when its successor exists', async () => {
-    await writeFile(join(dataDir, 'history.json.bak-037'), 'x', 'utf-8');
-    await writeFile(join(dataDir, 'history.jsonl'), '', 'utf-8');
-    // media-collections: successor ABSENT → backup kept.
-    await writeFile(join(dataDir, 'media-collections.json.bak-059'), 'x', 'utf-8');
+  it('BLOCKS a domain whose parked array has an id-less record (skipped by the original migrator)', async () => {
+    // A record with no string id can't be verified against the DB; treating it
+    // as absent and pruning would lose the only copy of a record the migrator
+    // skipped. Must block the domain.
+    await writeJSON(join(dataDir, 'creative-director-projects.migrated.json'), { imported: 1 });
+    await writeJSON(join(dataDir, 'creative-director-projects.json.imported'), [{ id: 'cd-1' }, { name: 'no-id project' }]);
 
-    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({}) });
+    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ creative_director_projects: ['cd-1'] }) });
 
-    expect(await exists(join(dataDir, 'history.json.bak-037'))).toBe(false);
-    expect(await exists(join(dataDir, 'media-collections.json.bak-059'))).toBe(true);
-    expect(res.markerWritten).toBe(true);
+    expect(res.blocked).toBe(1);
+    expect(res.markerWritten).toBe(false);
+    expect(await exists(join(dataDir, 'creative-director-projects.json.imported'))).toBe(true);
   });
 
-  it('prunes timestamped file-split backup variants (re-run collision suffix)', async () => {
-    await writeFile(join(dataDir, 'history.json.bak-037'), 'x', 'utf-8');
-    await writeFile(join(dataDir, 'history.json.bak-037-1717000000000'), 'x', 'utf-8');
-    await writeFile(join(dataDir, 'history.jsonl'), '', 'utf-8');
+  it('BLOCKS a domain whose parked JSON has the wrong top-level shape', async () => {
+    await writeJSON(join(dataDir, 'creative-director-projects.migrated.json'), { imported: 1 });
+    await writeJSON(join(dataDir, 'creative-director-projects.json.imported'), { not: 'an array' });
 
-    await pruneImportedLegacyFiles({ dataDir, db: stubDb({}) });
+    const res = await pruneImportedLegacyFiles({ dataDir, db: stubDb({ creative_director_projects: ['cd-1'] }) });
 
-    expect(await exists(join(dataDir, 'history.json.bak-037'))).toBe(false);
-    expect(await exists(join(dataDir, 'history.json.bak-037-1717000000000'))).toBe(false);
+    expect(res.blocked).toBe(1);
+    expect(await exists(join(dataDir, 'creative-director-projects.json.imported'))).toBe(true);
   });
 
   it('is marker-gated: a current marker no-ops without touching the DB', async () => {
