@@ -10,6 +10,7 @@
 // === Default-exporting hooks (re-exported as named) ===
 export { default as useCityAudio } from './useCityAudio.js';
 export { default as useClickOutside } from './useClickOutside.js';
+export { default as useColorMatch } from './useColorMatch.js';
 export { default as useContainerWidth } from './useContainerWidth.js';
 export { default as useEscapeKey } from './useEscapeKey.js';
 export { default as useFieldDraft } from './useFieldDraft.js';

@@ -22,6 +22,7 @@ import { uploadFile, getUploadUrl } from '../../services/api';
 import { formatDurationMs } from '../../utils/formatters';
 import Metronome from './Metronome';
 import PitchTuner from './PitchTuner';
+import ColorMatch from './ColorMatch';
 
 // Lower bound peak amplitude — below this the take is effectively silence
 // (dead mic / muted input), worth warning about before it joins the stack.
@@ -188,6 +189,13 @@ export default function SongRecordings({ recordings = [], layers = [], onChange,
         {/* Live tuner — taps the recording mic while a take is live, else offers
             a standalone "just tune" mode that opens its own mic. */}
         <PitchTuner stream={liveStream} />
+      </div>
+
+      {/* Color-match — walks the written score in tempo while recording and
+          grades each note by sung accuracy. Only shows when the song has a
+          notated melody to sing against. */}
+      <div className="mb-3">
+        <ColorMatch score={score} stream={liveStream} tempo={tempo} />
       </div>
 
       {/* Layer the next take targets (optional) */}
