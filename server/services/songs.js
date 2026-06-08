@@ -50,6 +50,17 @@ export const RECORDINGS_MAX = 64;      // saved vocal takes for layered playback
 export const REFERENCES_MAX = 12;      // reference links/videos (e.g. TikTok)
 export const PARTNERS_MAX = 12;        // partner-song ids (rounds sung together)
 export const URL_MAX_LENGTH = 512;     // uploaded-file path/url
+// Per-take pitch analysis (#1027). The pitch track is a DOWNSAMPLED tuner trace
+// kept for replay/training so it isn't recomputed on every open; bound it so a
+// long take can't bloat data/songs.json. `accuracy.perNote` mirrors the
+// color-match grade-per-note array (#1025), bounded the same way a score can't
+// be arbitrarily long.
+export const PITCH_TRACK_MAX = 4000;   // downsampled tuner samples per take
+export const PER_NOTE_GRADES_MAX = 2000; // per-note color-match grades per take
+// Valid color-match grades — mirrors client/src/lib/colorMatch.js GRADE. An
+// unrecognized grade is dropped (a newer/older client vocabulary can't 400 or
+// poison the persisted array).
+export const RECORDING_GRADES = ['in-tune', 'close', 'off', 'missed', 'pending'];
 
 // Trim a string field, returning '' for non-strings. Mirrors the
 // absent-vs-empty rule in CLAUDE.md: callers decide whether '' clears.
@@ -92,12 +103,68 @@ const sanitizeLayer = (l) => {
   };
 };
 
+// A finite number or null — used by the pitch-analysis fields so a missing
+// sample component (e.g. a silent frame with no detectable pitch) round-trips
+// as null rather than NaN/0.
+const finiteOrNull = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+// One downsampled tuner sample ({ tMs, hz, cents, clarity }) from a take's
+// pitch trace (#1027). `tMs` is the elapsed time in the take; hz/cents/clarity
+// are the detected pitch, cents-from-target, and confidence. Drops shapeless
+// entries; a sample with no time and no pitch carries no information.
+const sanitizePitchSample = (s) => {
+  if (!s || typeof s !== 'object') return null;
+  const tMs = finiteOrNull(s.tMs);
+  const hz = finiteOrNull(s.hz);
+  if (tMs === null && hz === null) return null;
+  return {
+    tMs: tMs === null ? 0 : Math.max(0, Math.round(tMs)),
+    hz,
+    cents: finiteOrNull(s.cents),
+    clarity: finiteOrNull(s.clarity),
+  };
+};
+
+// The per-take accuracy summary (#1027), mirroring color-match's
+// summarizeAccuracy output ({ percentInTune, graded, counts, perNote }). All
+// fields are optional/absent-tolerant — a take recorded before color-match (or
+// without scoring) has no accuracy at all, which is distinct from a scored take
+// that graded zero notes (graded: 0). Returns null when there's nothing to
+// persist so the field stays absent rather than an empty husk.
+const sanitizeAccuracy = (a) => {
+  if (!a || typeof a !== 'object') return null;
+  const counts = a.counts && typeof a.counts === 'object' ? a.counts : {};
+  const perNote = (Array.isArray(a.perNote) ? a.perNote : [])
+    .map((g) => trimField(g, LABEL_MAX_LENGTH))
+    .filter((g) => RECORDING_GRADES.includes(g))
+    .slice(0, PER_NOTE_GRADES_MAX);
+  const clampPercent = finiteOrNull(a.percentInTune);
+  const clampGraded = finiteOrNull(a.graded);
+  return {
+    percentInTune: clampPercent === null ? 0 : Math.max(0, Math.min(100, Math.round(clampPercent))),
+    graded: clampGraded === null ? perNote.length : Math.max(0, Math.round(clampGraded)),
+    counts: {
+      'in-tune': Math.max(0, Math.round(finiteOrNull(counts['in-tune']) ?? 0)),
+      close: Math.max(0, Math.round(finiteOrNull(counts.close) ?? 0)),
+      off: Math.max(0, Math.round(finiteOrNull(counts.off) ?? 0)),
+      missed: Math.max(0, Math.round(finiteOrNull(counts.missed) ?? 0)),
+    },
+    perNote,
+  };
+};
+
 // One saved vocal take ({ id, layerId, filename, label, durationMs, peak,
 // mutedByDefault }). `filename` is the /api/uploads file name the audio is
 // served from; a recording without one is meaningless, so it's dropped.
 // `layerId` ties a take to a voice layer for the layered-playback mixer (free
 // text — empty means "unassigned"). Numbers are coerced/clamped; bad values
 // fall to sensible defaults rather than throwing.
+//
+// Optional pitch analysis (#1027): `pitchTrack` (a bounded, downsampled tuner
+// trace) and `accuracy` (a color-match summary) are persisted so the tuner
+// history and grading aren't recomputed on every open. Both are absent on
+// legacy takes and on takes recorded without scoring — the fields only appear
+// when there's analysis to keep, so a pre-feature record reads back unchanged.
 const sanitizeRecording = (r) => {
   if (!r || typeof r !== 'object') return null;
   const filename = trimField(r.filename, URL_MAX_LENGTH);
@@ -106,7 +173,7 @@ const sanitizeRecording = (r) => {
     ? Math.max(0, Math.round(r.durationMs)) : 0;
   const peak = typeof r.peak === 'number' && Number.isFinite(r.peak)
     ? Math.max(0, Math.min(1, r.peak)) : 0;
-  return {
+  const rec = {
     id: trimField(r.id, ID_MAX_LENGTH) || `rec-${randomUUID().slice(0, 8)}`,
     layerId: trimField(r.layerId, ID_MAX_LENGTH),
     label: trimField(r.label, LABEL_MAX_LENGTH),
@@ -116,6 +183,14 @@ const sanitizeRecording = (r) => {
     muted: r.muted === true,
     createdAt: typeof r.createdAt === 'string' ? r.createdAt : new Date().toISOString(),
   };
+  // Absent ⇒ omit (legacy/unscored take); present ⇒ sanitize + bound via the
+  // shared sanitizeList. Keeping the keys off the object when there's no
+  // analysis avoids a wave of empty arrays in data/songs.json on every take.
+  const pitchTrack = sanitizeList(r.pitchTrack, sanitizePitchSample, PITCH_TRACK_MAX);
+  if (pitchTrack.length) rec.pitchTrack = pitchTrack;
+  const accuracy = sanitizeAccuracy(r.accuracy);
+  if (accuracy) rec.accuracy = accuracy;
+  return rec;
 };
 
 // One reference link/video ({ id, url, label, note }) — external study

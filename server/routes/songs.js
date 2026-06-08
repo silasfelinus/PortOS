@@ -38,9 +38,35 @@ const layerSchema = z.object({
   notes: str(svc.FIELD_MAX_LENGTH).optional().default(''),
 });
 
+// One downsampled tuner sample from a take's pitch trace (#1027). hz/cents/
+// clarity are nullable so a silent frame round-trips; the service clamps tMs.
+const pitchSampleSchema = z.object({
+  tMs: z.number().optional(),
+  hz: z.number().nullable().optional(),
+  cents: z.number().nullable().optional(),
+  clarity: z.number().nullable().optional(),
+});
+
+// Per-take color-match accuracy summary (#1027), mirroring colorMatch's
+// summarizeAccuracy output. All fields optional/absent-tolerant; the service
+// clamps the percentage and drops unrecognized grades.
+const accuracySchema = z.object({
+  percentInTune: z.number().optional(),
+  graded: z.number().optional(),
+  counts: z.object({
+    'in-tune': z.number().optional(),
+    close: z.number().optional(),
+    off: z.number().optional(),
+    missed: z.number().optional(),
+  }).partial().optional(),
+  perNote: z.array(z.string()).max(svc.PER_NOTE_GRADES_MAX).optional(),
+});
+
 // A saved vocal take. `filename` is the /api/uploads file the audio is served
 // from (the client uploads the WAV first, then PUTs the song with the returned
 // filename). Numbers are accepted for the mixer; the service clamps them.
+// `pitchTrack`/`accuracy` are optional per-take pitch analysis (#1027) — absent
+// on legacy/unscored takes, persisted so the tuner history isn't recomputed.
 const recordingSchema = z.object({
   id: str(svc.ID_MAX_LENGTH).optional(),
   layerId: str(svc.ID_MAX_LENGTH).optional().default(''),
@@ -50,6 +76,8 @@ const recordingSchema = z.object({
   peak: z.number().min(0).max(1).optional(),
   muted: z.boolean().optional(),
   createdAt: z.string().optional(),
+  pitchTrack: z.array(pitchSampleSchema).max(svc.PITCH_TRACK_MAX).optional(),
+  accuracy: accuracySchema.optional(),
 });
 
 // A sheet-music part — a harmony variation of the base score, in the same
