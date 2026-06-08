@@ -52,30 +52,30 @@ const MARKER_VERSION = 1;
 const MARKER_FILENAME = 'legacy-prune.applied.json';
 
 // DB-gated domains: each was migrated file→Postgres. `markerFile` is the
-// migrator's own completion marker; `table` + `expected(marker)` form the
-// count-vs-marker guard; `artifacts` are the parked sources to remove (relative
-// to data/, file OR dir — rm handles both); `nestedGlobs` are per-record
-// artifacts that sit inside a still-live directory (one level of subdirs).
+// migrator's own completion marker; `guards` is the count-vs-marker check — one
+// `{ table, expected(marker) }` per DB table whose data this domain's artifacts
+// hold, so a wipe/restore that lost rows in ANY of them withholds the prune (a
+// domain is pruned only when EVERY guard's live row count >= the marker's
+// recorded count for that table); `artifacts` are the parked sources to remove
+// (relative to data/, file OR dir — rm handles both); `nestedGlobs` are
+// per-record artifacts that sit inside a still-live directory (one level deep).
 const DB_DOMAINS = [
   {
     label: 'universes',
     markerFile: 'universes.migrated.json',
-    table: 'universes',
-    expected: (m) => num(m?.imported),
+    guards: [{ table: 'universes', expected: (m) => num(m?.imported) }],
     artifacts: ['universes.imported', 'universe-builder.json.bak-034'],
   },
   {
     label: 'pipeline-issues',
     markerFile: 'pipeline-issues.migrated.json',
-    table: 'pipeline_issues',
-    expected: (m) => num(m?.imported),
+    guards: [{ table: 'pipeline_issues', expected: (m) => num(m?.imported) }],
     artifacts: ['pipeline-issues.imported', 'pipeline-issues.json.bak-035'],
   },
   {
     label: 'pipeline-series',
     markerFile: 'pipeline-series.migrated.json',
-    table: 'pipeline_series',
-    expected: (m) => num(m?.imported),
+    guards: [{ table: 'pipeline_series', expected: (m) => num(m?.imported) }],
     artifacts: ['pipeline-series.json.bak-036'],
     // migrateSeriesToDB renamed each record's index.json IN PLACE, leaving the
     // pipeline-series/<id>/ dir (+ manuscript-review.json sibling) intact.
@@ -84,33 +84,44 @@ const DB_DOMAINS = [
   {
     label: 'story-builder',
     markerFile: 'story-builder.migrated.json',
-    table: 'story_builder_sessions',
-    expected: (m) => num(m?.imported),
+    guards: [{ table: 'story_builder_sessions', expected: (m) => num(m?.imported) }],
     artifacts: ['story-builder.imported'],
   },
   {
     label: 'writers-room',
     markerFile: 'writers-room.migrated.json',
-    table: 'writers_room_works',
-    // The writers-room marker records works/folders/exercises, not `imported`.
-    expected: (m) => num(m?.works),
+    // The writers-room marker records folders/works/exercises separately, and
+    // this domain deletes the recovery copy of ALL THREE (folders.imported.json,
+    // each work's manifest.imported.json, exercises.imported.json) — so guard on
+    // all three tables, not just works. (The migrator writes the marker only
+    // after all three import, so on a clean migration works alone would proxy
+    // the rest; the per-table guards make the wipe/restore case correct too — a
+    // restore that brought back works but lost folders won't delete the folders
+    // recovery file.)
+    guards: [
+      { table: 'writers_room_folders', expected: (m) => num(m?.folders) },
+      { table: 'writers_room_works', expected: (m) => num(m?.works) },
+      { table: 'writers_room_exercises', expected: (m) => num(m?.exercises) },
+    ],
     artifacts: ['writers-room/folders.imported.json', 'writers-room/exercises.imported.json'],
     nestedGlobs: [{ baseDir: 'writers-room/works', leaf: 'manifest.imported.json' }],
   },
   {
     label: 'creative-director',
     markerFile: 'creative-director-projects.migrated.json',
-    table: 'creative_director_projects',
-    expected: (m) => num(m?.imported),
+    guards: [{ table: 'creative_director_projects', expected: (m) => num(m?.imported) }],
     artifacts: ['creative-director-projects.json.imported'],
   },
 ];
 
 // File-split backups: data reshaped file→file (NOT moved to Postgres), so they
-// gate on the successor existing on disk rather than a DB row count.
+// gate on the successor existing on disk rather than a DB row count. `backup` is
+// a prefix: migration 037/059 normally write the bare `.bak-NNN`, but on a
+// re-run collision they append `-<timestamp>`, so match the prefix to catch
+// those variants too.
 const FILE_SPLIT_BACKUPS = [
-  { label: 'history', backup: 'history.json.bak-037', successor: 'history.jsonl' },
-  { label: 'media-collections', backup: 'media-collections.json.bak-059', successor: 'media-collections' },
+  { label: 'history', backupPrefix: 'history.json.bak-037', successor: 'history.jsonl' },
+  { label: 'media-collections', backupPrefix: 'media-collections.json.bak-059', successor: 'media-collections' },
 ];
 
 function num(v) {
@@ -147,6 +158,17 @@ async function removeNestedGlob(base, baseDir, leaf) {
   return removed;
 }
 
+// Remove every top-level entry of `base` whose name starts with `prefix` (the
+// bare `.bak-NNN` plus any `-<timestamp>` re-run collision variant).
+async function removeByPrefix(base, prefix) {
+  const entries = await readdir(base).catch(() => []);
+  let removed = 0;
+  for (const name of entries) {
+    if (name.startsWith(prefix) && await removeUnder(base, name)) removed++;
+  }
+  return removed;
+}
+
 /**
  * @param {object} [opts]
  * @param {boolean} [opts.force] - re-run even if the marker is current (tests/admin).
@@ -170,14 +192,22 @@ export async function pruneImportedLegacyFiles({ force = false, db, dataDir } = 
     // with no legacy data). Nothing parked aside to prune; not a block.
     if (!marker) continue;
 
-    const expected = domain.expected(marker);
-    const { rows } = await query(`SELECT COUNT(*)::int AS n FROM ${domain.table}`);
-    const count = num(rows?.[0]?.n);
-    // Count-vs-marker guard: a short count means the DB lost rows the marker
-    // says were imported (wipe / restore) — the parked files are the recovery
-    // source, so WITHHOLD and let a future boot retry once the DB is whole.
-    if (count < expected) {
-      console.warn(`🧹 legacy-prune: ${domain.label} blocked — ${domain.table} has ${count} row(s) but marker recorded ${expected}; keeping recovery files`);
+    // Count-vs-marker guard: a short count in ANY guarded table means the DB
+    // lost rows the marker says were imported (wipe / restore) — the parked
+    // files are the recovery source, so WITHHOLD and let a future boot retry
+    // once the DB is whole. Check every table whose data this domain deletes.
+    let blocked = false;
+    for (const guard of domain.guards) {
+      const expected = guard.expected(marker);
+      const { rows } = await query(`SELECT COUNT(*)::int AS n FROM ${guard.table}`);
+      const count = num(rows?.[0]?.n);
+      if (count < expected) {
+        console.warn(`🧹 legacy-prune: ${domain.label} blocked — ${guard.table} has ${count} row(s) but marker recorded ${expected}; keeping recovery files`);
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) {
       totals.blocked++;
       continue;
     }
@@ -199,8 +229,9 @@ export async function pruneImportedLegacyFiles({ force = false, db, dataDir } = 
   // disk (proof the split landed). Absent successor → leave the backup alone.
   for (const item of FILE_SPLIT_BACKUPS) {
     if (!await pathExists(join(base, item.successor))) continue;
-    if (await removeUnder(base, item.backup)) {
-      totals.removed++;
+    const removed = await removeByPrefix(base, item.backupPrefix);
+    if (removed > 0) {
+      totals.removed += removed;
       totals.pruned.push(item.label);
     }
   }
@@ -215,6 +246,13 @@ export async function pruneImportedLegacyFiles({ force = false, db, dataDir } = 
       JSON.stringify({ version: MARKER_VERSION, completedAt: new Date().toISOString(), removed: totals.removed }, null, 2) + '\n',
       'utf-8',
     );
+  } else if (existing) {
+    // A forced re-run that ended blocked must not leave a STALE clean marker on
+    // disk — otherwise the next normal boot reads it, short-circuits via the
+    // `skipped` branch above, and silently never retries the blocked domain.
+    // Drop it so a normal boot re-evaluates. (Only reachable on the force path:
+    // a non-forced run with a current marker returned `skipped` before any work.)
+    await rm(join(base, MARKER_FILENAME), { force: true });
   }
 
   console.log(
