@@ -59,6 +59,15 @@ CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories USING gin (tags);
 -- Sync sequence index for federation
 CREATE INDEX IF NOT EXISTS idx_memories_sync_sequence ON memories (sync_sequence);
 
+-- Versioned DB-migration tracker (#1029). Records which ordered migration files
+-- in server/scripts/db-migrations/ have been applied on THIS install. Part of
+-- the base schema (mirrored in db.js ensureSchema, parity-locked by
+-- db.catalogDdlParity.test.js) so the boot-time runner can always read it.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  id TEXT PRIMARY KEY,
+  applied_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Memory relationships (bidirectional links)
 CREATE TABLE IF NOT EXISTS memory_links (
   source_id UUID REFERENCES memories(id) ON DELETE CASCADE,

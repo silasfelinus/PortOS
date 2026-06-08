@@ -297,6 +297,18 @@ describe('catalog DDL parity (init-db.sql ↔ db.js ensureSchema)', () => {
     });
   }
 
+  // Versioned DB-migration tracker (#1029) — non-`catalog_`-prefixed table in
+  // BOTH DDL sources (base schema), so it gets its own column parity assertion.
+  // No secondary index, nothing to compare there.
+  it('schema_migrations has the same columns in both files', () => {
+    const sqlBody = extractCreateTable(INIT_SQL, 'schema_migrations');
+    const jsBody = extractCreateTable(DB_JS, 'schema_migrations');
+    expect(sqlBody, 'init-db.sql missing CREATE TABLE schema_migrations').toBeTruthy();
+    expect(jsBody, 'db.js missing CREATE TABLE schema_migrations').toBeTruthy();
+    expect([...new Set(extractColumnNames(sqlBody))].sort())
+      .toEqual([...new Set(extractColumnNames(jsBody))].sort());
+  });
+
   it('search_tsv payload field set matches', () => {
     // Both files re-declare the GENERATED ALWAYS expression character-for-
     // character today. If one side adds a payload key (e.g. voiceNotes) and
