@@ -271,7 +271,7 @@ async function pgDumpMajor(binary) {
  * majors coexist and PATH order silently picks the wrong one).
  */
 async function discoverPgDumpCandidates() {
-  // Note: the PORTOS_PGDUMP override is NOT a candidate here — resolvePgDump
+  // Note: the PORTOS_PGDUMP override is NOT a candidate here — dumpPostgres
   // honors it outright before discovery runs, so it's never subject to the
   // closest-major auto-selection below.
   const paths = ['pg_dump']; // whatever PATH resolves — preserves the old default
@@ -294,23 +294,20 @@ async function discoverPgDumpCandidates() {
 }
 
 /**
- * Resolve the pg_dump binary to use for a server at `serverMajor`. Returns the
- * chosen path and whether it satisfies the server's version (false ⇒ the dump
- * will fail with a version mismatch and there's nothing newer installed).
+ * Auto-select a pg_dump binary for a server at `serverMajor` by discovering
+ * installed binaries and picking the closest whose major is >= the server's.
+ * Returns the chosen path and whether it satisfies the server's version
+ * (false ⇒ the dump will fail with a version mismatch and there's nothing
+ * newer installed).
  *
- * An explicit `PORTOS_PGDUMP` is the user's deliberate escape hatch, so it wins
- * outright — it must NOT be funneled through the closest-major auto-selection
- * (which could otherwise pick a different discovered binary over it). We assume
- * it satisfies the server and let the stderr classifier catch the rare case
- * where the user deliberately pointed at something too old.
+ * The explicit `PORTOS_PGDUMP` override is NOT handled here — the caller
+ * (`dumpPostgres`) honors it before reaching this resolver, so the override
+ * works even when the server version is unknown and this resolver is skipped.
  *
- * @param {number|null} serverMajor
+ * @param {number} serverMajor - known server major (caller guards on isFinite)
  * @returns {Promise<{binary: string, satisfies: boolean}>}
  */
 async function resolvePgDump(serverMajor) {
-  if (process.env.PORTOS_PGDUMP) {
-    return { binary: process.env.PORTOS_PGDUMP, satisfies: true };
-  }
   const candidates = await discoverPgDumpCandidates();
   const binary = pickPgDump(serverMajor, candidates) || 'pg_dump';
   const chosen = candidates.find(c => c.binary === binary);
@@ -366,11 +363,23 @@ export async function dumpPostgres(outputPath) {
   // PATH) the bare `pg_dump` is often the wrong one, so select a matching binary
   // instead of trusting PATH order.
   const serverMajor = await getServerMajorVersion();
-  // Only probe for a matching binary when we actually know the server version;
-  // if detection failed, keep the prior behavior (bare `pg_dump` off PATH).
-  const { binary: pgDumpBin, satisfies } = Number.isFinite(serverMajor)
-    ? await resolvePgDump(serverMajor)
-    : { binary: 'pg_dump', satisfies: true };
+  // Choose the pg_dump binary:
+  //  - an explicit PORTOS_PGDUMP override always wins — the escape hatch must
+  //    work even when version detection failed (its main use case);
+  //  - else, when we know the server version, auto-select a binary whose major
+  //    is >= it (resolvePgDump scans Homebrew kegs / Postgres.app);
+  //  - else keep the prior behavior (bare `pg_dump` off PATH) without paying
+  //    for discovery I/O we couldn't act on.
+  let pgDumpBin, satisfies;
+  if (process.env.PORTOS_PGDUMP) {
+    pgDumpBin = process.env.PORTOS_PGDUMP;
+    satisfies = true; // user forced it; the stderr classifier still catches a too-old pick
+  } else if (Number.isFinite(serverMajor)) {
+    ({ binary: pgDumpBin, satisfies } = await resolvePgDump(serverMajor));
+  } else {
+    pgDumpBin = 'pg_dump';
+    satisfies = true;
+  }
   if (!satisfies) {
     console.warn(`⚠️ No installed pg_dump satisfies server major ${serverMajor} (using ${pgDumpBin})`);
   }

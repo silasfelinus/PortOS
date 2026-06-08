@@ -335,6 +335,28 @@ describe('dumpPostgres status classification', () => {
     }
   });
 
+  it('honors the PORTOS_PGDUMP override even when the server version is unknown (detection failed)', async () => {
+    // The override is the documented escape hatch for exactly this case — when
+    // getServerMajorVersion() returns null, dumpPostgres must still use the
+    // override instead of falling back to bare pg_dump.
+    checkHealth.mockResolvedValue({ connected: true, hasSchema: true });
+    getServerMajorVersion.mockResolvedValue(null);
+    vi.spyOn(fs, 'stat').mockResolvedValue({ size: 2048 });
+    vi.spyOn(fs, 'readFile').mockResolvedValue('CREATE TABLE memories (...);\n');
+    const proc = fakeProc();
+    spawn.mockReturnValue(proc);
+    process.env.PORTOS_PGDUMP = '/custom/bin/pg_dump';
+    try {
+      const p = dumpPostgres('/tmp/x.sql');
+      await flush();
+      proc.emit('close', 0);
+      await p;
+      expect(spawn).toHaveBeenCalledWith('/custom/bin/pg_dump', expect.any(Array), expect.any(Object));
+    } finally {
+      delete process.env.PORTOS_PGDUMP;
+    }
+  });
+
   it('classifies a "server version mismatch" stderr as failed/version_mismatch, not dump_error', async () => {
     // Even with the server version unknown (default mock → bare pg_dump), the
     // stderr regex must reclassify pg_dump's own mismatch error so the UI can
