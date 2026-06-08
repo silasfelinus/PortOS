@@ -139,24 +139,24 @@ function isPortOSDbReady(port = PG_PORT_NATIVE) {
   }
 }
 
-// Whether the Docker container has finished applying init-db.sql. pg_isready
-// only proves the server accepts connections — it can pass while the
-// docker-entrypoint-initdb.d schema load is still running, so the schema may
-// not exist yet. Probing the schema inside the container avoids reporting
-// "ready" to a server that would then fail-fast on its own boot-time schema
-// gate. We probe the LAST table created by init-db.sql (writers_room_exercises),
-// NOT an early one like `memories`: the entrypoint applies the file top-to-bottom
-// in a single connection, so the last table existing proves the whole 800-line
-// schema landed — probing `memories` (first table) would report ready while the
-// later store tables (#1014–1017) are still being created, letting `npm start`
-// race a half-applied schema. `psql -tAc` exits 0 even on an empty result, so we
-// require the literal "1".
+// Whether the Docker container's base schema exists. We probe `memories` (the
+// first, always-present base table) — NOT a newest fresh-install table: an
+// install whose volume was initialized before a later table (e.g.
+// writers_room_exercises, #1017) existed is a valid UPGRADEABLE install, and
+// `npm start` runs this BEFORE the server's idempotent boot-time ensureSchema()
+// that adds the missing tables. Requiring the newest table here would wedge
+// every pre-existing Docker install (the probe would never go true). The
+// half-applied-init race that motivated checking the schema at all is handled
+// by the TCP readiness gate in waitForHealth() below — the postgres image runs
+// docker-entrypoint-initdb.d against a SOCKET-ONLY temp server and only opens
+// the TCP listener after init finishes, so a TCP probe is false mid-init.
+// `psql -tAc` exits 0 even on an empty result, so we require the literal "1".
 function isDockerSchemaReady() {
   try {
     const output = execFileSync(
       'docker',
       ['compose', 'exec', '-T', 'db', 'psql', '-X', '-U', 'portos', '-d', 'portos', '-tAc',
-        "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'writers_room_exercises' LIMIT 1"],
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'memories' LIMIT 1"],
       { stdio: 'pipe', cwd: rootDir }
     ).toString();
     return output.trim() === '1';
@@ -165,19 +165,26 @@ function isDockerSchemaReady() {
   }
 }
 
-// Wait for PostgreSQL to accept connections AND for the required schema to be
+// Wait for PostgreSQL to accept TCP connections AND for the base schema to be
 // in place. Both must hold before we report success, since PortOS now
-// fail-fasts at boot when the schema is missing.
+// fail-fasts at boot when the schema is missing. pg_isready is forced over TCP
+// (-h 127.0.0.1): during first-time init the entrypoint runs the schema load
+// against a socket-only temp server (listen_addresses=''), so a default
+// socket-based pg_isready would pass mid-init and let `npm start` race a
+// half-applied schema. The TCP listener opens only after init completes, so a
+// TCP probe cleanly distinguishes mid-init from done — for both fresh and
+// upgraded volumes (an upgraded volume skips init entirely and is TCP-ready at
+// once, then ensureSchema() backfills any newer tables at boot).
 function waitForHealth(maxAttempts = 30) {
   for (let i = 0; i < maxAttempts; i++) {
     try {
-      execFileSync('docker', ['compose', 'exec', '-T', 'db', 'pg_isready', '-U', 'portos'], {
+      execFileSync('docker', ['compose', 'exec', '-T', 'db', 'pg_isready', '-h', '127.0.0.1', '-U', 'portos'], {
         stdio: 'pipe',
         cwd: rootDir
       });
       if (isDockerSchemaReady()) return true;
     } catch {
-      // not accepting connections yet — fall through to the wait below
+      // not accepting TCP connections yet (mid-init or starting) — wait below
     }
     if (i < maxAttempts - 1) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
