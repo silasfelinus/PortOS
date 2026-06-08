@@ -103,6 +103,33 @@ const safeCall = (cb, ...args) => {
 const LEAD = 0.08;          // seconds of lead-in before beat 0 sounds
 const LOOKAHEAD_MS = 25;    // how often the scheduler wakes
 const SCHEDULE_AHEAD = 0.12; // seconds of audio scheduled past "now"
+const TONE_PEAK = 0.18;     // per-voice gain peak for a single sounding tone
+
+// Schedule one tone with a short attack/release gain envelope so it doesn't
+// click. Triangle wave reads as a soft reference tone. Routed into `destination`
+// (the context output for the solo player; a per-part gain → master bus for the
+// multi-part player). Returns the live { osc, gain } so the caller can track it
+// for teardown. Pure of any module state — both players share it.
+const scheduleTone = (c, freq, startAt, durSec, destination, peak = TONE_PEAK) => {
+  const osc = c.createOscillator();
+  const gain = c.createGain();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(freq, startAt);
+
+  const attack = Math.min(0.012, durSec * 0.25);
+  const release = Math.min(0.07, durSec * 0.4);
+  const end = startAt + durSec;
+  const sustainEnd = Math.max(startAt + attack, end - release);
+  gain.gain.setValueAtTime(0.0001, startAt);
+  gain.gain.exponentialRampToValueAtTime(peak, startAt + attack);
+  gain.gain.setValueAtTime(peak, sustainEnd);
+  gain.gain.exponentialRampToValueAtTime(0.0001, end);
+
+  osc.connect(gain).connect(destination);
+  osc.start(startAt);
+  osc.stop(end + 0.03);
+  return { osc, gain };
+};
 
 /**
  * Build a melody player over a parsed score.
@@ -129,6 +156,10 @@ export const createScorePlayer = (score, options = {}) => {
   let nextNotifyIdx = 0;   // next event to fire onNote for
   let lastNotified = -1;
   let nodes = [];          // live { osc, gain } for teardown
+  // Bumped on every stop/pause; play() captures it before its `await ctx.resume()`
+  // and bails if a teardown landed during that await, so a stop/score-change/unmount
+  // mid–first-play can't re-arm an orphaned interval after the await resolves.
+  let playToken = 0;
 
   const stopNodes = () => {
     for (const n of nodes) {
@@ -142,30 +173,10 @@ export const createScorePlayer = (score, options = {}) => {
     if (interval != null) { clearInterval(interval); interval = null; }
   };
 
-  // Schedule one tone with a short attack/release gain envelope so it doesn't
-  // click. Triangle wave reads as a soft reference tone.
-  const scheduleTone = (freq, startAt, durSec) => {
-    const c = ctx();
-    const osc = c.createOscillator();
-    const gain = c.createGain();
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(freq, startAt);
-
-    const peak = 0.18;
-    const attack = Math.min(0.012, durSec * 0.25);
-    const release = Math.min(0.07, durSec * 0.4);
-    const end = startAt + durSec;
-    const sustainEnd = Math.max(startAt + attack, end - release);
-    gain.gain.setValueAtTime(0.0001, startAt);
-    gain.gain.exponentialRampToValueAtTime(peak, startAt + attack);
-    gain.gain.setValueAtTime(peak, sustainEnd);
-    gain.gain.exponentialRampToValueAtTime(0.0001, end);
-
-    osc.connect(gain).connect(c.destination);
-    osc.start(startAt);
-    osc.stop(end + 0.03);
-    const entry = { osc, gain };
-    osc.onended = () => { nodes = nodes.filter((n) => n !== entry); };
+  // Hand one due tone to the audio clock and track it for teardown.
+  const playTone = (freq, startAt, durSec) => {
+    const entry = scheduleTone(ctx(), freq, startAt, durSec, ctx().destination);
+    entry.osc.onended = () => { nodes = nodes.filter((n) => n !== entry); };
     nodes.push(entry);
   };
 
@@ -179,7 +190,7 @@ export const createScorePlayer = (score, options = {}) => {
       const ev = events[nextScheduleIdx];
       const at = startTime + ev.startSec;
       if (at > now + SCHEDULE_AHEAD) break;
-      if (!ev.rest && ev.freq) scheduleTone(ev.freq, Math.max(at, now), ev.durSec);
+      if (!ev.rest && ev.freq) playTone(ev.freq, Math.max(at, now), ev.durSec);
       nextScheduleIdx += 1;
     }
 
@@ -224,7 +235,9 @@ export const createScorePlayer = (score, options = {}) => {
   const play = async () => {
     if (playing) return;
     const c = ctx();
+    const token = ++playToken;
     if (c.state === 'suspended' && c.resume) await c.resume();
+    if (token !== playToken) return; // a stop/pause landed during the resume await
     if (!schedule.events.length || schedule.totalSec <= 0) { safeCall(onEnded); return; }
 
     schedule = buildSchedule(score, bpm); // pick up a tempo change made while idle
@@ -238,6 +251,7 @@ export const createScorePlayer = (score, options = {}) => {
 
   // Pause — stop sounding, remember position, keep the cursor for resume.
   const pause = () => {
+    playToken++; // abort an in-flight play() still awaiting ctx.resume()
     if (!playing) return;
     offsetSec = Math.min(Math.max(0, ctx().currentTime - startTime), schedule.totalSec);
     clearTick();
@@ -247,6 +261,7 @@ export const createScorePlayer = (score, options = {}) => {
 
   // Stop — full teardown back to the top, clears the playhead.
   const stop = () => {
+    playToken++; // abort an in-flight play() still awaiting ctx.resume()
     clearTick();
     stopNodes();
     playing = false;
@@ -269,5 +284,193 @@ export const createScorePlayer = (score, options = {}) => {
     isPlaying: () => playing,
     setTempo,
     schedule: () => schedule,
+  };
+};
+
+// Master gain for the multi-part bus: back the level off as more voices stack so
+// the summed triangle waves don't clip, while a lone voice still plays at the
+// same level as the solo player (1.0 for n=1, ~0.35 for a 4-part stack).
+const masterGainFor = (count) => Math.min(1, 1.4 / Math.max(1, count));
+
+/**
+ * Build a player that synthesizes MULTIPLE parts at once — the melody plus any
+ * checked harmony parts — so any combination of lead-sheet voices sounds
+ * together, sample-aligned on the one shared AudioContext. Each part is scheduled
+ * through its own gain into a shared master bus whose level backs off as more
+ * voices stack so the sum doesn't clip. The transport mirrors `createScorePlayer`
+ * (play / pause / stop / setTempo) but iterates every part each tick, and the
+ * playhead callback is per-part so a viewer can highlight the staff it's showing.
+ *
+ * @param {Array<{id:string, score:object}>} parts — parsed scores to play together.
+ * @param {object} [options]
+ * @param {number} [options.bpm] — tempo override applied to every part.
+ * @param {(partId:string, index:number|null)=>void} [options.onNote] — the
+ *   now-sounding note index for a part (null for every part when playback ends).
+ * @param {()=>void} [options.onEnded] — called once when the longest part finishes.
+ * @returns {{ play, pause, stop, isPlaying, setTempo }}
+ */
+export const createMultiScorePlayer = (parts, options = {}) => {
+  const { onNote, onEnded } = options;
+  let bpm = Number.isFinite(options.bpm) && options.bpm > 0 ? options.bpm : null;
+
+  // A voice carries its part id, its schedule, and per-voice scheduler cursors.
+  // `endNotified` tracks whether this voice's playhead has been cleared at its
+  // own end — voices have different lengths, so a short part must clear when IT
+  // finishes, not when the longest part does (else its last note stays lit).
+  const buildVoices = () => (parts || []).map((p) => ({
+    id: p.id,
+    schedule: buildSchedule(p.score, bpm),
+    nextScheduleIdx: 0,
+    nextNotifyIdx: 0,
+    lastNotified: -1,
+    endNotified: false,
+  }));
+
+  let voices = [];
+  let totalSec = 0;        // longest voice (seconds) — cached, refreshed on rebuild
+  // Rebuild the voice schedules (and cache totalSec) — on init, on play, and on a
+  // tempo change while idle. Cheaper than reducing over voices every 25ms tick.
+  const rebuild = () => {
+    voices = buildVoices();
+    totalSec = voices.reduce((m, v) => Math.max(m, v.schedule.totalSec), 0);
+  };
+  rebuild();
+
+  let playing = false;
+  let interval = null;
+  let startTime = 0;       // ctx time at which beat 0 plays
+  let offsetSec = 0;       // resume position (seconds into the score)
+  let master = null;       // shared bus GainNode (created per play)
+  let nodes = [];          // live { osc, gain } across all voices, for teardown
+  // Bumped on every stop/pause; play() captures it before its `await ctx.resume()`
+  // and bails if a teardown landed during that await — otherwise a checkbox toggle
+  // (which tears the player down) mid–first-play re-arms an orphaned, un-stoppable
+  // interval after the await resolves.
+  let playToken = 0;
+
+  const stopNodes = () => {
+    for (const n of nodes) {
+      n.osc.onended = null;
+      try { n.osc.stop(); } catch { /* already stopped */ }
+    }
+    nodes = [];
+    master = null;
+  };
+
+  const clearTick = () => {
+    if (interval != null) { clearInterval(interval); interval = null; }
+  };
+
+  const resetCursors = (offset = 0) => {
+    for (const v of voices) {
+      const events = v.schedule.events;
+      let idx = events.findIndex((e) => e.startSec + e.durSec > offset + 1e-6);
+      if (idx < 0) idx = events.length;
+      v.nextScheduleIdx = idx;
+      v.nextNotifyIdx = idx;
+      v.lastNotified = -1;
+      v.endNotified = false;
+    }
+  };
+
+  const playTone = (freq, startAt, durSec) => {
+    const entry = scheduleTone(ctx(), freq, startAt, durSec, master);
+    entry.osc.onended = () => { nodes = nodes.filter((n) => n !== entry); };
+    nodes.push(entry);
+  };
+
+  const tick = () => {
+    const now = ctx().currentTime;
+    for (const v of voices) {
+      const events = v.schedule.events;
+      while (v.nextScheduleIdx < events.length) {
+        const ev = events[v.nextScheduleIdx];
+        const at = startTime + ev.startSec;
+        if (at > now + SCHEDULE_AHEAD) break;
+        if (!ev.rest && ev.freq) playTone(ev.freq, Math.max(at, now), ev.durSec);
+        v.nextScheduleIdx += 1;
+      }
+
+      let newest = -1;
+      while (v.nextNotifyIdx < events.length && startTime + events[v.nextNotifyIdx].startSec <= now) {
+        newest = events[v.nextNotifyIdx].index;
+        v.nextNotifyIdx += 1;
+      }
+      if (newest >= 0 && newest !== v.lastNotified) {
+        v.lastNotified = newest;
+        safeCall(onNote, v.id, newest);
+      }
+
+      // Clear this voice's playhead the moment IT finishes (its last note's
+      // duration has elapsed), independent of longer voices still sounding.
+      if (!v.endNotified && now - startTime >= v.schedule.totalSec) {
+        v.endNotified = true;
+        safeCall(onNote, v.id, null);
+      }
+    }
+
+    if (now - startTime >= totalSec) finish();
+  };
+
+  function finish() {
+    clearTick();
+    stopNodes();
+    playing = false;
+    offsetSec = 0;
+    resetCursors(0);
+    for (const v of voices) safeCall(onNote, v.id, null);
+    safeCall(onEnded);
+  }
+
+  const play = async () => {
+    if (playing) return;
+    const c = ctx();
+    const token = ++playToken;
+    if (c.state === 'suspended' && c.resume) await c.resume();
+    if (token !== playToken) return; // a stop/pause landed during the resume await
+    rebuild(); // pick up a tempo change made while idle
+    if (!totalSec) { safeCall(onEnded); return; }
+
+    master = c.createGain();
+    master.gain.setValueAtTime(masterGainFor(voices.length), c.currentTime);
+    master.connect(c.destination);
+
+    playing = true;
+    startTime = c.currentTime + LEAD - offsetSec;
+    resetCursors(offsetSec);
+    tick(); // schedule the immediate window now so playback starts promptly
+    interval = setInterval(tick, LOOKAHEAD_MS);
+  };
+
+  const pause = () => {
+    playToken++; // abort an in-flight play() still awaiting ctx.resume()
+    if (!playing) return;
+    offsetSec = Math.min(Math.max(0, ctx().currentTime - startTime), totalSec);
+    clearTick();
+    stopNodes();
+    playing = false;
+  };
+
+  const stop = () => {
+    playToken++; // abort an in-flight play() still awaiting ctx.resume()
+    clearTick();
+    stopNodes();
+    playing = false;
+    offsetSec = 0;
+    resetCursors(0);
+    for (const v of voices) safeCall(onNote, v.id, null);
+  };
+
+  const setTempo = (nextBpm) => {
+    bpm = Number.isFinite(nextBpm) && nextBpm > 0 ? nextBpm : null;
+    if (!playing) rebuild();
+  };
+
+  return {
+    play,
+    pause,
+    stop,
+    isPlaying: () => playing,
+    setTempo,
   };
 };

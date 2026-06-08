@@ -28,15 +28,16 @@ export const RHYTHM_SHAPES = [
 ];
 
 // Voice layers in foundation-first build order: { id, label, voices, role }.
-// Mirrors VOICE_LAYERS in songCraft.js.
+// SAME vocabulary as HARMONY_PARTS (ids + labels match) so recording "take types"
+// stay in step with the parts the derive tool generates. Mirrors VOICE_LAYERS in
+// songCraft.js.
 export const VOICE_LAYERS = [
-  { id: 'lead', label: 'Lead melody', voices: 'Any — the tune everyone knows', role: 'The song itself. Everyone learns this first so the harmony has a home to orbit.' },
-  { id: 'bass', label: 'Bass / root', voices: 'Bass', role: 'The harmonic floor — usually the root of each chord, moving slowly.' },
-  { id: 'harmony-3rd', label: 'Harmony (third)', voices: 'Alto / Tenor', role: 'A line a third above or below the melody — the first taste of chord color.' },
-  { id: 'harmony-5th', label: 'Harmony (fifth)', voices: 'Tenor / Soprano', role: 'The fifth fills out the triad and opens the sound up.' },
-  { id: 'drone', label: 'Drone / pedal', voices: 'Bass / Alto', role: 'A sustained held note (often the tonic or fifth) under everything.' },
-  { id: 'counter', label: 'Counter-melody', voices: 'Soprano / Tenor', role: 'An independent melodic line that answers the lead in its gaps.' },
-  { id: 'vocal-perc', label: 'Vocal percussion / texture', voices: 'Any', role: 'Breath, hums, clicks, "doo"/"ah" pads, or beatbox — rhythmic and textural glue.' },
+  { id: 'melody', label: 'Melody', voices: 'Any — the tune everyone knows', role: 'The lead — the song itself. Everyone learns this first so the harmony has a home to orbit.' },
+  { id: 'bass', label: 'Bass', voices: 'Bass', role: 'The harmonic floor — the root of each chord with the fifth as gentle movement.' },
+  { id: 'mid-harmony-1', label: 'Mid Harmony I', voices: 'Alto / Tenor', role: 'The main moving inner voice — a third/sixth below the melody but landing on chord tones.' },
+  { id: 'mid-harmony-2', label: 'Mid Harmony II', voices: 'Alto', role: 'A low inner pad — sustained chord tones below the melody (often the 3rd or 5th of the chord).' },
+  { id: 'high-harmony-2', label: 'High Harmony II', voices: 'Soprano / Tenor', role: 'A sustained upper chord tone with gentle suspensions — carries the leading tone that pulls back to the tonic.' },
+  { id: 'high-harmony-1', label: 'High Harmony I', voices: 'Soprano', role: 'The sparse top descant — mostly sustained high chord tones, entering on the emotional phrases.' },
 ];
 
 // The dirge-family shapes (the lament the workbench centers on), in order.

@@ -43,13 +43,28 @@ describe('songCraft reference data', () => {
     const orders = VOICE_LAYERS.map((l) => l.order);
     expect(orders).toEqual([...orders].sort((a, b) => a - b));
     expect(new Set(orders).size).toBe(orders.length);
-    // Lead melody is always the first layer learned.
-    expect(VOICE_LAYERS[0].id).toBe('lead');
+    // The melody (lead) is always the first layer learned.
+    expect(VOICE_LAYERS[0].id).toBe('melody');
     for (const l of VOICE_LAYERS) {
       expect(typeof l.label).toBe('string');
       expect(typeof l.role).toBe('string');
       expect(typeof l.advice).toBe('string');
+      expect(typeof l.voices).toBe('string');
     }
+  });
+
+  it('voice-layer vocabulary matches the harmony-parts stack (recording take types == notated parts)', () => {
+    // Every recordable voice layer must correspond to a sheet-music part of the
+    // same id AND label, so a take assigned to a layer lines up with the staff of
+    // the same name and the two vocabularies can't drift apart.
+    const partById = new Map(HARMONY_PARTS.map((p) => [p.id, p]));
+    for (const l of VOICE_LAYERS) {
+      const part = partById.get(l.id);
+      expect(part, `voice layer "${l.id}" has no matching harmony part`).toBeTruthy();
+      expect(l.label).toBe(part.label);
+    }
+    // And the layer set covers the full stack (melody + every derivable part).
+    expect(new Set(VOICE_LAYERS.map((l) => l.id))).toEqual(new Set(HARMONY_PARTS.map((p) => p.id)));
   });
 
   it('every learning step and notation group has the documented shape', () => {

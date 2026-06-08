@@ -88,7 +88,7 @@ ${want || 'Write a short, mournful a cappella ballad.'}${existingBlock}
 ${rhythmVocab()}
 Dirge/lament shapes: ${DIRGE_RHYTHM_SHAPES.map((s) => s.id).join(', ')}.
 
-# Voice layers — return these foundation-first (lead, then bass, then thirds/fifths, then drone/counter). Use the id when it matches.
+# Voice layers — return these foundation-first (melody, then bass, then the mid harmonies, then the high harmonies). Use the id when it matches.
 ${layerVocab()}
 
 # Output contract
@@ -102,7 +102,7 @@ Return ONLY a JSON object (no prose, no markdown fence) with this shape:
   "notation": "string — chord progression / lead-sheet notes / solfège, e.g. 'C — Am — F — G'",
   "notes": "string — how it should feel, dynamics, where to breathe, what to drill",
   "sections": [ { "label": "Verse 1", "lyrics": "..." } ],   // max ${SECTIONS_MAX}
-  "layers":   [ { "id": "lead", "label": "Lead melody", "part": "Soprano/Tenor", "notes": "learning notes — intervals, entrances, breaths" } ]  // max ${LAYERS_MAX}
+  "layers":   [ { "id": "melody", "label": "Melody", "part": "Soprano/Tenor", "notes": "learning notes — intervals, entrances, breaths" } ]  // max ${LAYERS_MAX}
 }
 Keep lyrics original (do not reproduce copyrighted lyrics verbatim). Each string field under ${FIELD_MAX_LENGTH} characters.`;
 };
@@ -174,9 +174,9 @@ ${songBlock}
 
 # What to assess
 - Singability: are the parts in comfortable ranges, do entrances/breaths work unaccompanied?
-- Harmony: do the layers build foundation-first (lead, bass, thirds, fifths) and stay in tune as a stack?
+- Harmony: do the layers build foundation-first (melody, bass, mid harmonies, high harmonies) and stay in tune as a stack?
 - Structure & lyrics: does the form serve the mood; do lyrics scan and breathe across the bar?
-- Layer balance: is anything missing (a drone, a counter-melody) or overcrowded?
+- Layer balance: is anything missing (the bass floor, a sustained high pad) or overcrowded?
 
 # Output contract
 Return ONLY a JSON object (no prose, no markdown fence):

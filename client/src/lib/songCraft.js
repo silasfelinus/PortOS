@@ -82,64 +82,64 @@ export const rhythmShapeLabel = (id) => {
 
 // --- Voice layers ----------------------------------------------------------
 // The order singers stack parts when arranging a cappella, foundation-first.
-// `order` is the recommended build sequence; `voices` names the typical
-// SATB-ish home for the part. The editor offers these as part labels.
+// This is the SAME vocabulary as the sheet-music HARMONY_PARTS stack below — ids
+// and labels match — so a recorded take's layer lines up with the notated part of
+// the same name (Melody, Bass, Mid/High Harmony I & II), and the recording
+// "take types" stay in step with the parts the AI derive tool generates. The
+// difference is framing: here `voices`/`role`/`advice` teach how to *build and
+// sing* each layer, where HARMONY_PARTS carries the `range`/`voicing` rules the
+// derive prompt needs. `order` is the recommended build sequence (melody → bass →
+// inner voices → upper voices); `voices` names the typical SATB-ish home.
+// songCraft.test.js guards that every layer id+label still exists in
+// HARMONY_PARTS so the two vocabularies can't drift apart.
 export const VOICE_LAYERS = [
   {
-    id: 'lead',
-    label: 'Lead melody',
+    id: 'melody',
+    label: 'Melody',
     order: 1,
     voices: 'Any — the tune everyone knows',
-    role: 'The song itself. Everyone learns this first so the harmony has a home to orbit.',
+    role: 'The lead — the song itself. Everyone learns this first so the harmony has a home to orbit.',
     advice: 'Lock the lead before adding anything. If the melody is shaky, every layer above it wobbles.',
   },
   {
     id: 'bass',
-    label: 'Bass / root',
+    label: 'Bass',
     order: 2,
     voices: 'Bass',
-    role: 'The harmonic floor — usually the root of each chord, moving slowly.',
+    role: 'The harmonic floor — the root of each chord with the fifth as gentle movement.',
     advice: 'Add the bass second. It defines the chord under the melody and gives the upper voices their tuning reference.',
   },
   {
-    id: 'harmony-3rd',
-    label: 'Harmony (third)',
+    id: 'mid-harmony-1',
+    label: 'Mid Harmony I',
     order: 3,
     voices: 'Alto / Tenor',
-    role: 'A line a third above or below the melody — the first taste of chord color.',
-    advice: 'Thirds are the sweet spot: close enough to feel like the tune, far enough to bloom into harmony. Build this before stacking wider intervals.',
+    role: 'The main moving inner voice — a third/sixth below the melody but landing on chord tones.',
+    advice: 'The richest harmony, so build it first among the inner voices. Move smoothly and favour common tones between chords.',
   },
   {
-    id: 'harmony-5th',
-    label: 'Harmony (fifth)',
+    id: 'mid-harmony-2',
+    label: 'Mid Harmony II',
     order: 4,
-    voices: 'Tenor / Soprano',
-    role: 'The fifth fills out the triad and opens the sound up.',
-    advice: 'With root, third and fifth you have a full chord. Add this once the third is solid so the stack stays in tune.',
+    voices: 'Alto',
+    role: 'A low inner pad — sustained chord tones below the melody (often the 3rd or 5th of the chord).',
+    advice: 'Fills the chord under Mid Harmony I. Sustain and move by step; do not chase the melody.',
   },
   {
-    id: 'drone',
-    label: 'Drone / pedal',
+    id: 'high-harmony-2',
+    label: 'High Harmony II',
     order: 5,
-    voices: 'Bass / Alto',
-    role: 'A sustained held note (often the tonic or fifth) under everything.',
-    advice: 'A drone is the cheapest way to make a lament feel ancient and grounded. One held vowel under the whole verse does enormous work.',
-  },
-  {
-    id: 'counter',
-    label: 'Counter-melody',
-    order: 6,
     voices: 'Soprano / Tenor',
-    role: 'An independent melodic line that answers the lead in its gaps.',
-    advice: 'Save this for last. It fills the lead\'s breathing spaces — write it into the rests, not on top of the words.',
+    role: 'A sustained upper chord tone with gentle suspensions — carries the leading tone that pulls back to the tonic.',
+    advice: 'A held pad above the inner voices. Keep the dominant-7 third so it resolves up to the tonic.',
   },
   {
-    id: 'vocal-perc',
-    label: 'Vocal percussion / texture',
-    order: 7,
-    voices: 'Any',
-    role: 'Breath, hums, clicks, "doo"/"ah" pads, or beatbox — rhythmic and textural glue.',
-    advice: 'Optional and genre-dependent. For a dirge, a soft hummed pad beats a beatbox; keep texture serving the mood.',
+    id: 'high-harmony-1',
+    label: 'High Harmony I',
+    order: 6,
+    voices: 'Soprano',
+    role: 'The sparse top descant — mostly sustained high chord tones, entering on the emotional phrases.',
+    advice: 'The shimmer on top. Save it for the climaxes; rest through the opening and enter late.',
   },
 ];
 
