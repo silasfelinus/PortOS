@@ -817,6 +817,26 @@ ensureSelf()
         return;
       }
       await ensureSchema();
+      // Versioned DB-migration runner (#1029): apply ordered schema-DELTA
+      // migrations (renames / type changes / data transforms / embedding-dim
+      // changes) that ensureSchema()'s additive IF NOT EXISTS gates can't
+      // express. Runs AFTER ensureSchema() (base schema + schema_migrations
+      // tracking table present) and AFTER the DB-ready gate, but BEFORE any
+      // store warm or httpServer.listen — so a half-applied delta can't race a
+      // request. Skipped under the file backend by the !dbReady early return
+      // above. A FAILED migration is FATAL: each migration runs in a transaction
+      // so a failure rolls back (NOT marked applied), but we must NOT let boot
+      // continue — a partially-migrated install serving requests is worse than a
+      // hard stop. So this gets its own try/catch (not the generic catalog one
+      // below, which only logs and continues) that exits the process loudly.
+      // This is a process boundary, so the explicit try/catch is sanctioned.
+      const { runDbMigrations } = await import('./scripts/run-db-migrations.js');
+      try {
+        await runDbMigrations();
+      } catch (err) {
+        console.error(`❌ DB migration failed at boot — refusing to start: ${err?.stack ?? err.message}`);
+        process.exit(1);
+      }
       const { migrateBibleToCatalog } = await import('./scripts/migrateBibleToCatalog.js');
       await migrateBibleToCatalog();
       // One-time data repair: rewrite legacy machine universe tags
