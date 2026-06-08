@@ -31,6 +31,10 @@ const FRAME_INTERVAL_MS = 30;
 // Count-in length before capture begins (bars). One bar is the conventional lead.
 const COUNT_IN_BARS = 1;
 
+// Monotonic-ish wall clock for frame timestamps; `performance.now()` is more
+// precise but may be absent in some test/SSR contexts, so fall back to Date.
+const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
 /**
  * @param {object} opts
  * @param {number|string} [opts.tempo] — song BPM (defaults to 120 when absent).
@@ -114,7 +118,7 @@ export default function useSingToScore({ tempo, score = '', musicKey = 'C' } = {
       intervalMs: FRAME_INTERVAL_MS,
       onUpdate: (u) => {
         if (!capturingRef.current) return;
-        const tMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - captureStartRef.current;
+        const tMs = nowMs() - captureStartRef.current;
         trackRef.current.push({ tMs, hz: u.hz, clarity: u.clarity });
       },
     });
@@ -131,7 +135,7 @@ export default function useSingToScore({ tempo, score = '', musicKey = 'C' } = {
       },
       onCountInComplete: () => {
         if (!mountedRef.current) return;
-        captureStartRef.current = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        captureStartRef.current = nowMs();
         capturingRef.current = true;
         setPhase(SING_RECORDING);
       },
