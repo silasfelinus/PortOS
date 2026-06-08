@@ -6,6 +6,7 @@ import {
   pitchToMidi,
   noteToFrequency,
   createScorePlayer,
+  createMultiScorePlayer,
   DEFAULT_BPM,
 } from './scorePlayback.js';
 
@@ -159,6 +160,79 @@ describe('createScorePlayer', () => {
   it('does nothing (and reports ended) for a score with no notes', async () => {
     const ended = vi.fn();
     const player = createScorePlayer(parseScore('time: 4/4\n|  |'), { onEnded: ended });
+    await player.play();
+    expect(audio.oscillators).toHaveLength(0);
+    expect(ended).toHaveBeenCalled();
+  });
+});
+
+// --- Multi-part player (layered MIDI) --------------------------------------
+describe('createMultiScorePlayer', () => {
+  beforeEach(() => {
+    audio.now = 0;
+    audio.oscillators = [];
+    vi.stubGlobal('AudioContext', FakeAudioContext);
+    vi.useFakeTimers();
+  });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  const MELODY = parseScore('time: 4/4\ntempo: 120\n| C4q D4q E4q F4q |'); // 4 notes
+  const BASS = parseScore('time: 4/4\ntempo: 120\n| C3h G3h |');           // 2 notes
+
+  it('synthesizes every selected part together (sum of pitched notes across voices)', async () => {
+    const player = createMultiScorePlayer(
+      [{ id: 'melody', score: MELODY }, { id: 'bass', score: BASS }],
+      { bpm: 120 },
+    );
+    await player.play();
+    drive(3); // past the longest part (2 s)
+    expect(audio.oscillators).toHaveLength(6); // 4 melody + 2 bass
+    player.stop();
+  });
+
+  it('emits a per-part playhead index, then null for every part at the end', async () => {
+    const seen = [];
+    const ended = vi.fn();
+    const player = createMultiScorePlayer(
+      [{ id: 'melody', score: MELODY }, { id: 'bass', score: BASS }],
+      { bpm: 120, onNote: (id, i) => seen.push([id, i]), onEnded: ended },
+    );
+    await player.play();
+    drive(3);
+    expect(seen).toContainEqual(['melody', 0]);
+    expect(seen).toContainEqual(['bass', 0]);
+    // Last event per part clears its playhead with null.
+    expect(seen).toContainEqual(['melody', null]);
+    expect(seen).toContainEqual(['bass', null]);
+    expect(ended).toHaveBeenCalledTimes(1);
+  });
+
+  it('plays only the parts it is given (a deselected part contributes nothing)', async () => {
+    const player = createMultiScorePlayer([{ id: 'bass', score: BASS }], { bpm: 120 });
+    await player.play();
+    drive(3);
+    expect(audio.oscillators).toHaveLength(2); // bass only
+    player.stop();
+  });
+
+  it('stop() cancels the lookahead and stops live nodes across all voices', async () => {
+    const player = createMultiScorePlayer(
+      [{ id: 'melody', score: MELODY }, { id: 'bass', score: BASS }],
+      { bpm: 120 },
+    );
+    await player.play();
+    const scheduledSoFar = audio.oscillators.length;
+    expect(scheduledSoFar).toBeGreaterThan(0);
+    player.stop();
+    expect(audio.oscillators.every((o) => o.stopped !== null)).toBe(true);
+    drive(3);
+    expect(audio.oscillators).toHaveLength(scheduledSoFar); // nothing new after stop
+    expect(player.isPlaying()).toBe(false);
+  });
+
+  it('reports ended for an empty selection without scheduling audio', async () => {
+    const ended = vi.fn();
+    const player = createMultiScorePlayer([], { onEnded: ended });
     await player.play();
     expect(audio.oscillators).toHaveLength(0);
     expect(ended).toHaveBeenCalled();

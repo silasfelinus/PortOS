@@ -102,7 +102,7 @@ Return ONLY a JSON object (no prose, no markdown fence) with this shape:
   "notation": "string — chord progression / lead-sheet notes / solfège, e.g. 'C — Am — F — G'",
   "notes": "string — how it should feel, dynamics, where to breathe, what to drill",
   "sections": [ { "label": "Verse 1", "lyrics": "..." } ],   // max ${SECTIONS_MAX}
-  "layers":   [ { "id": "lead", "label": "Lead melody", "part": "Soprano/Tenor", "notes": "learning notes — intervals, entrances, breaths" } ]  // max ${LAYERS_MAX}
+  "layers":   [ { "id": "melody", "label": "Melody", "part": "Soprano/Tenor", "notes": "learning notes — intervals, entrances, breaths" } ]  // max ${LAYERS_MAX}
 }
 Keep lyrics original (do not reproduce copyrighted lyrics verbatim). Each string field under ${FIELD_MAX_LENGTH} characters.`;
 };

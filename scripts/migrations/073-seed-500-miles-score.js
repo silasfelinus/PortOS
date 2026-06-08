@@ -21,11 +21,11 @@ import { join } from 'path';
 
 const SONG_ID = 'seed-500-miles';
 
-// The shipped verse melody — kept identical to SEED_SONGS[seed-500-miles].score
-// in server/services/songs.js (the migration test asserts they match, so a drift
-// fails CI rather than silently shipping two different scores). Updated to the
-// correct G-major transcription (Hedy West) alongside the seed; migration 075
-// upgrades installs that already hold the earlier C-major backfill.
+// The shipped melody — kept identical to SEED_SONGS[seed-500-miles].score in
+// server/services/songs.js (the migration test asserts they match, so a drift
+// fails CI rather than silently shipping two different scores). Now the full
+// song (all verses + closing coda) in G major; migration 075 upgrades installs
+// that still hold the earlier C-major backfill.
 export const SCORE_500_MILES = [
   'clef: treble',
   'key: G',
@@ -40,6 +40,50 @@ export const SCORE_500_MILES = [
   '| [D7] A4q.(hear) F#4e(the) A4q.(whis-) F#4e(tle) |',
   '| [G] G4h(blow) A4e(a) B4e(hun-) C5q(dred) |',
   '| [G] D5w(miles) |',
+  '',
+  '| [G] D5h(A) B4q(hun-) A4q(dred) |',
+  '| [Em] B4q.(miles) A4e(a) B4q.(hun-) A4e(dred) |',
+  '| [C] C5q.(miles) B4e(a) A4q(hun-) G4q(dred) |',
+  '| [Am7] E4h.(miles) F#4e(you) G4e(can) |',
+  '| [D7] A4q.(hear) F#4e(the) A4q.(whis-) F#4e(tle) |',
+  '| [G] G4h(blow) A4e(a) B4e(hun-) C5q(dred) |',
+  '| [G] D5w(miles) |',
+  '',
+  '| [G] D5h(Lord,) B4q(I\'m) A4q(one,) |',
+  '| [Em] B4h(Lord,) A4q(I\'m) G4q(two,) |',
+  '| [C] C5q.(Lord,) B4e(I\'m) A4q(three,) G4q(Lord,) |',
+  '| [Am7] E4h.(I\'m) F#4e(four,) G4e(Lord,) |',
+  '| [D7] A4q.(I\'m) F#4e(five) A4q.(hun-) F#4e(dred) |',
+  '| [G] G4h(miles) A4e(a-) B4e(way) C5q(from) |',
+  '| [G] D5w(home) |',
+  '',
+  '| [G] D5h(A-) B4q(way) A4q(from) |',
+  '| [Em] B4h(home,) A4q(a-) G4q(way) |',
+  '| [C] C5q.(from) B4e(home,) A4q(a-) G4q(way) |',
+  '| [Am7] E4h.(from) F#4e(home,) G4e(Lord,) |',
+  '| [D7] A4q.(I\'m) F#4e(five) A4q.(hun-) F#4e(dred) |',
+  '| [G] G4h(miles) A4e(a-) B4e(way) C5q(from) |',
+  '| [G] D5w(home) |',
+  '',
+  '| [G] D5h(Not) B4q(a) A4q(shirt) |',
+  '| [Em] B4h(on) A4q(my) G4q(back,) |',
+  '| [C] C5q.(not) B4e(a) A4q(pen-) G4q(ny) |',
+  '| [Am7] E4h.(to) F#4e(my) G4e(name,) |',
+  '| [D7] A4q.(Lord,) F#4e(I) A4q.(can\'t) F#4e(go) |',
+  '| [G] G4h(back) A4e(home) B4e(this-) C5q(a-) |',
+  '| [G] D5w(way) |',
+  '',
+  '| [G] D5h(This-) B4q(a-) A4q(way,) |',
+  '| [Em] B4h(this-) A4q(a-) G4q(way,) |',
+  '| [C] C5q.(this-) B4e(a-) A4q(way,) G4q(Lord,) |',
+  '| [Am7] E4h.(I) F#4e(can\'t) G4e(go) |',
+  '| [D7] A4q.(back) F#4e(home) A4q.(this-) F#4e(a-) |',
+  '| [G] G4h(way) D5h |',
+  '',
+  '| [G] D5h(You) B4q(can) A4q(hear) |',
+  '| [C] C5q.(the) B4e(whis-) A4q(tle) G4q(blow) |',
+  '| [D7] A4q(a) F#4q(hun-) A4q(dred) F#4q(miles) |',
+  '| [G] G4w(miles) |',
 ].join('\n');
 
 const fileExists = (path) => stat(path).then(() => true, (err) => {
