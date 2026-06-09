@@ -98,6 +98,16 @@ export const TRANSIT = {
 // players on land). `margin` extends the water zone toward land (positive = stricter).
 export const isInWater = (x, z, margin = 0) => z < WORLD.shorelineZ + margin;
 
+// True where a ground-level player may stand: any land, plus the Data Harbor's piers —
+// the one parcel built over the water (reached by the avenue gangway). Flying players
+// (above rooftop height) ignore this entirely.
+export const isWalkable = (x, z) => {
+  if (!isInWater(x, z)) return true;
+  const harbor = PARCELS.dataHarbor;
+  return Math.abs(x - harbor.anchor[0]) <= harbor.w / 2
+    && z >= harbor.anchor[2] - harbor.d / 2;
+};
+
 // ---------------------------------------------------------------------------
 // Streets: ring road + spokes + the harbor avenue, as flat rotated rectangles.
 // ---------------------------------------------------------------------------
