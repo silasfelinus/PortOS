@@ -999,10 +999,11 @@ async function resolveConfidenceApproval(state, taskTypeKey, logLabel) {
  */
 export async function generateSelfImprovementTaskForType(taskType, state) {
   const taskSchedule = await import('./taskSchedule.js');
+  const { getTaskPrompt } = await import('./taskPromptService.js');
   const interval = await taskSchedule.getTaskInterval(taskType);
 
   // Get the effective prompt (custom or default)
-  const description = await taskSchedule.getTaskPrompt(taskType);
+  const description = await getTaskPrompt(taskType);
 
   const metadata = {
     analysisType: taskType,
@@ -1222,6 +1223,7 @@ async function generateManagedAppImprovementTask(app, state) {
 export async function generateManagedAppImprovementTaskForType(taskType, app, state, { skipPreconditions = false } = {}) {
   const { updateAppActivity } = await import('./appActivity.js');
   const taskSchedule = await import('./taskSchedule.js');
+  const { getTaskPrompt, getStagePrompt } = await import('./taskPromptService.js');
 
   // NOTE: `updateAppActivity` + the "Generating improvement task" log are
   // intentionally deferred until AFTER every gate returns non-null (see end
@@ -1272,8 +1274,8 @@ export async function generateManagedAppImprovementTaskForType(taskType, app, st
   if (!skipPreconditions && shouldSkipForPrecondition(metadata, app, taskType)) return null;
 
   const promptTemplate = metadata.pipeline?.stages
-    ? await taskSchedule.getStagePrompt(taskType, 0)
-    : await taskSchedule.getTaskPrompt(taskType);
+    ? await getStagePrompt(taskType, 0)
+    : await getTaskPrompt(taskType);
 
   // reference-watch: dynamically inject {referenceData} — a Markdown chunk
   // describing each ref configured on the app + commits since lastReviewedSha.
