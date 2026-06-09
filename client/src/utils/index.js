@@ -40,6 +40,7 @@ export * from './cityAiCore.js';
 export * from './cityArtifacts.js';
 export * from './cityBackupVault.js';
 export * from './cityChronotype.js';
+export * from './cityDataHarbor.js';
 export * from './cityDistrictLayout.js';
 export * from './cityEasterEggs.js';
 export * from './cityFederation.js';
