@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  WORLD, PARCELS, PLAZA, TRANSIT, isInWater, computeStreets, computeStreetProps,
+  WORLD, PARCELS, PLAZA, TRANSIT, isInWater, isWalkable, computeStreets, computeStreetProps,
 } from './cityPlan';
 
 const staticParcels = Object.entries(PARCELS).filter(([, p]) => !p.dynamic);
@@ -62,6 +62,17 @@ describe('isInWater', () => {
   it('margin extends the water zone toward land', () => {
     expect(isInWater(0, WORLD.shorelineZ + 2, 4)).toBe(true);
     expect(isInWater(0, WORLD.shorelineZ + 6, 4)).toBe(false);
+  });
+});
+
+describe('isWalkable', () => {
+  it('allows all land, blocks open water, but keeps the harbor piers reachable', () => {
+    expect(isWalkable(0, 0)).toBe(true); // downtown
+    expect(isWalkable(50, WORLD.shorelineZ - 5)).toBe(false); // open bay
+    const harbor = PARCELS.dataHarbor;
+    expect(isWalkable(harbor.anchor[0], harbor.anchor[2])).toBe(true); // on the pier
+    expect(isWalkable(0, WORLD.shorelineZ - 2)).toBe(true); // the gangway off the avenue
+    expect(isWalkable(harbor.anchor[0] + harbor.w, harbor.anchor[2])).toBe(false); // beside the pier
   });
 });
 
