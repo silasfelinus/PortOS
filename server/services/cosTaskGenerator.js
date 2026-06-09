@@ -693,7 +693,6 @@ export async function evaluateTasks(options) {
   // global-slot tiers (0–1) settle, below.
   const ctx = {
     state,
-    userTaskData,
     cosTaskData,
     availableSlots,
     perProjectLimit,
