@@ -34,6 +34,16 @@ import { getUserTimezone, todayInTimezone } from '../lib/timezone.js';
 
 const SETTINGS_FILE = join(PATHS.brain, 'journal-settings.json');
 
+// Where each day's note was ACTUALLY mirrored, kept in a LOCAL sidecar that is
+// deliberately NOT a synced brain store. Obsidian vault ids and note paths are
+// machine-local: a peer's vault id is meaningless here, and federating it would
+// (1) make removeFromObsidian refuse to unlink this machine's own mirror when a
+// peer's id is stamped on the record, and (2) poison the brain reconcile
+// checksum so two machines with the same day but different vaults never
+// converge (endless reconcile churn — the #1077 amplification class). Shape:
+// { [date]: { obsidianPath, obsidianVaultId } }.
+const OBSIDIAN_LOCATIONS_FILE = join(PATHS.brain, 'journal-obsidian-locations.json');
+
 const DEFAULT_SETTINGS = {
   obsidianVaultId: null,
   obsidianFolder: 'Daily Log',
@@ -69,31 +79,73 @@ export async function updateSettings(partial) {
 // sync log so the edit federates. We never touch journals.json directly here.
 const storeMutex = createMutex();
 
+// ── Local Obsidian-location sidecar (NOT synced) ─────────────────────────────
+// Read/write the machine-local map of where each day was mirrored. Kept out of
+// the synced journal record (see OBSIDIAN_LOCATIONS_FILE rationale above).
+async function loadObsidianLocations() {
+  await ensureDir(PATHS.brain);
+  return readJSONFile(OBSIDIAN_LOCATIONS_FILE, {});
+}
+
+async function getObsidianLocation(date) {
+  const map = await loadObsidianLocations();
+  return map[date] || { obsidianPath: null, obsidianVaultId: null };
+}
+
+// Serialized via storeMutex by callers; persists the location for one date (or
+// drops it when both fields are null, e.g. after a delete).
+async function saveObsidianLocation(date, { obsidianPath, obsidianVaultId }) {
+  const map = await loadObsidianLocations();
+  if (obsidianPath == null && obsidianVaultId == null) {
+    delete map[date];
+  } else {
+    map[date] = { obsidianPath: obsidianPath ?? null, obsidianVaultId: obsidianVaultId ?? null };
+  }
+  await writeFile(OBSIDIAN_LOCATIONS_FILE, JSON.stringify(map, null, 2));
+}
+
+// ── Synced journal entry store ───────────────────────────────────────────────
+
 // Daily Log entries are keyed by calendar date in the entity store, so the
 // record id IS the date — that's what lets two peers editing the same day
 // converge (LWW on one record) instead of forking into per-machine uuids.
-const getEntry = (date) => brainStorage.getById('journals', date);
+// Reads merge the local Obsidian location back onto the entry so callers
+// (summaries, UI, delete) still see obsidianPath/obsidianVaultId, even though
+// those fields live in the non-synced sidecar.
+async function getEntry(date) {
+  const entry = await brainStorage.getById('journals', date);
+  if (!entry) return null;
+  const loc = await getObsidianLocation(date);
+  return { ...entry, obsidianPath: loc.obsidianPath, obsidianVaultId: loc.obsidianVaultId };
+}
 
-// Persist a fully-formed entry under its date key. The inner `id` is stripped
-// before storage: the map key IS the id (matching every other entity store and
-// the 081 migration), and getById re-attaches it. Keeping an inner `id` would be
-// redundant and would pollute the synced record / reconcile checksum.
-// `emitEvent:false` because this module emits its own richer bridge-shaped events
-// (journals:upserted with the segment, journals:appended, etc.) right after, and
-// we don't want the generic brainStorage `journals:upserted` to double-fire.
-const putEntry = (date, entry) => {
+// Persist a fully-formed entry under its date key. The inner `id` AND the
+// machine-local Obsidian fields are stripped before storage: the map key IS the
+// id (so an inner `id` would be redundant and pollute the synced record /
+// reconcile checksum), and obsidianPath/obsidianVaultId must never federate
+// (they live in the local sidecar — see OBSIDIAN_LOCATIONS_FILE). `emitEvent:false`
+// because this module emits its own richer bridge-shaped events (journals:upserted
+// with the segment, journals:appended, etc.) right after, and we don't want the
+// generic brainStorage `journals:upserted` to double-fire.
+async function putEntry(date, entry) {
   // eslint-disable-next-line no-unused-vars
-  const { id: _id, ...rest } = entry;
-  return brainStorage.upsertWithId('journals', date, rest, { emitEvent: false });
-};
+  const { id: _id, obsidianPath: _op, obsidianVaultId: _ov, ...rest } = entry;
+  const saved = await brainStorage.upsertWithId('journals', date, rest, { emitEvent: false });
+  // Re-attach the local location so the returned entry shape is unchanged for callers.
+  const loc = await getObsidianLocation(date);
+  return { ...saved, obsidianPath: loc.obsidianPath, obsidianVaultId: loc.obsidianVaultId };
+}
 
 // The legacy journals:changed event carried the full date→entry map. Rebuild it
 // from the store (tombstones stripped) so existing consumers keep working. The
 // brainStorage 2s cache absorbs dictation bursts so this isn't a hot re-read.
 async function rawRecords() {
+  const locations = await loadObsidianLocations();
   const records = {};
   for (const entry of await brainStorage.getAll('journals')) {
-    records[entry.date || entry.id] = entry;
+    const date = entry.date || entry.id;
+    const loc = locations[date] || { obsidianPath: null, obsidianVaultId: null };
+    records[date] = { ...entry, obsidianPath: loc.obsidianPath, obsidianVaultId: loc.obsidianVaultId };
   }
   return records;
 }
@@ -143,8 +195,16 @@ export async function listJournals({ limit = 50, offset = 0, includeContent = fa
   records.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   const total = records.length;
   const page = records.slice(offset, offset + limit);
+  // Hydrate just the page with each day's local Obsidian location (the
+  // obsidianPath/obsidianVaultId fields live in the non-synced sidecar, not the
+  // synced record) so summaries still report the mirror status.
+  const locations = await loadObsidianLocations();
+  const hydrated = page.map((entry) => {
+    const loc = locations[entry.date || entry.id] || { obsidianPath: null, obsidianVaultId: null };
+    return { ...entry, obsidianPath: loc.obsidianPath, obsidianVaultId: loc.obsidianVaultId };
+  });
   return {
-    records: includeContent ? page : page.map(toJournalSummary),
+    records: includeContent ? hydrated : hydrated.map(toJournalSummary),
     total,
   };
 }
@@ -161,12 +221,12 @@ export async function getJournal(date) {
 // we only seed the Daily-Log-specific fields. `id` is the date (the entity-store
 // key) so it converges across peers; upsertWithId returns it as `id` too.
 function newEntry(date) {
+  // Obsidian location is tracked in the local sidecar, never on the synced
+  // record, so it's intentionally absent here (putEntry strips it regardless).
   return {
     date,
     content: '',
     segments: [],
-    obsidianPath: null,
-    obsidianVaultId: null,
   };
 }
 
@@ -258,6 +318,8 @@ export async function deleteJournal(date) {
   if (entry.obsidianPath) {
     await removeFromObsidian(entry).catch((err) => console.error(`📓 Obsidian delete failed: ${err.message}`));
   }
+  // Drop the local mirror-location record for this day (sidecar is not synced).
+  await saveObsidianLocation(date, { obsidianPath: null, obsidianVaultId: null });
   brainEvents.emit('journals:changed', { records: await rawRecords() });
   // Explicit deletion signal so memory bridges / integrations can archive
   // the corresponding vector entry — the changed event alone doesn't tell
@@ -328,19 +390,16 @@ export async function syncToObsidian(entry, { force = false } = {}) {
   return notePath;
 }
 
-// Record the note location (path + vault) on the store entry whenever it
-// changes. Serialized via storeMutex so a fire-and-forget Obsidian persist
-// can't clobber concurrent appendJournal writes. Goes through putEntry like
-// every other write, so the path stamp federates too — harmless: obsidianVaultId
-// is machine-local and removeFromObsidian refuses to unlink when a peer's vault
-// id doesn't match the locally-configured one. The `!==` guard keeps this from
-// minting a redundant sync-log entry on every Obsidian sync of an unchanged day.
+// Record the note location (path + vault) in the LOCAL sidecar whenever it
+// changes — NOT on the synced journal record (these fields are machine-local;
+// see OBSIDIAN_LOCATIONS_FILE). Serialized via storeMutex so a fire-and-forget
+// Obsidian persist can't clobber concurrent appendJournal writes. The `!==`
+// guard skips a redundant sidecar write on every sync of an unchanged day.
 async function persistObsidianLocation(date, notePath, vaultId) {
   return storeMutex(async () => {
-    const entry = await getEntry(date);
-    if (!entry) return;
-    if (entry.obsidianPath !== notePath || entry.obsidianVaultId !== vaultId) {
-      await putEntry(date, { ...entry, obsidianPath: notePath, obsidianVaultId: vaultId });
+    const loc = await getObsidianLocation(date);
+    if (loc.obsidianPath !== notePath || loc.obsidianVaultId !== vaultId) {
+      await saveObsidianLocation(date, { obsidianPath: notePath, obsidianVaultId: vaultId });
     }
   });
 }

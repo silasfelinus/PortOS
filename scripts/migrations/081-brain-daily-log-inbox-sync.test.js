@@ -88,6 +88,37 @@ describe('computeDailyLogInboxMigration (pure)', () => {
     expect(journalsChanged).toBe(false);
   });
 
+  it('extracts machine-local Obsidian fields off the synced record into the sidecar', () => {
+    const journals = {
+      records: {
+        '2026-04-18': {
+          id: 'uuid-1', date: '2026-04-18', content: 'hi', segments: [],
+          obsidianPath: 'Daily Log/2026-04-18.md', obsidianVaultId: 'vault-A',
+        },
+      },
+    };
+    const { journalsStore, obsidianLocations, obsidianExtracted } =
+      computeDailyLogInboxMigration(journals, [], { ...opts, obsidianLocations: {} });
+    const entry = journalsStore.records['2026-04-18'];
+    expect(entry).not.toHaveProperty('obsidianPath');
+    expect(entry).not.toHaveProperty('obsidianVaultId');
+    expect(obsidianExtracted).toBe(1);
+    expect(obsidianLocations['2026-04-18']).toEqual({
+      obsidianPath: 'Daily Log/2026-04-18.md', obsidianVaultId: 'vault-A',
+    });
+  });
+
+  it('does not overwrite a newer sidecar entry on re-run (idempotent extraction)', () => {
+    const journals = {
+      records: { '2026-04-18': { date: '2026-04-18', content: 'hi', segments: [], obsidianPath: 'old.md', obsidianVaultId: 'v1' } },
+    };
+    const existing = { '2026-04-18': { obsidianPath: 'new.md', obsidianVaultId: 'v2' } };
+    const { obsidianLocations, obsidianExtracted } =
+      computeDailyLogInboxMigration(journals, [], { ...opts, obsidianLocations: existing });
+    expect(obsidianExtracted).toBe(0);
+    expect(obsidianLocations['2026-04-18']).toEqual({ obsidianPath: 'new.md', obsidianVaultId: 'v2' });
+  });
+
   it('re-keys journal memory-bridge entries from uuid to date, leaving others alone', () => {
     const journals = { records: { '2026-04-18': { id: 'uuid-1', date: '2026-04-18', content: 'hi', segments: [] } } };
     const bridgeMap = {
@@ -162,6 +193,29 @@ describe('migration 081 up()', () => {
     await migration.up({ rootDir });
     expect(readJson('inbox.json')).toEqual(inboxAfter1);
     expect(readJson('journals.json')).toEqual(journalsAfter1);
+  });
+
+  it('writes the Obsidian-locations sidecar and strips those fields from journals.json', async () => {
+    writeInstanceId('inst-x');
+    writeJson('journals.json', {
+      records: {
+        '2026-04-18': {
+          id: 'uuid-1', date: '2026-04-18', content: 'hi', segments: [],
+          obsidianPath: 'Daily Log/2026-04-18.md', obsidianVaultId: 'vault-A',
+        },
+      },
+    });
+
+    await migration.up({ rootDir });
+
+    const journals = readJson('journals.json');
+    expect(journals.records['2026-04-18']).not.toHaveProperty('obsidianPath');
+    expect(journals.records['2026-04-18']).not.toHaveProperty('obsidianVaultId');
+    expect(existsSync(join(brainDir, 'journal-obsidian-locations.json'))).toBe(true);
+    const sidecar = readJson('journal-obsidian-locations.json');
+    expect(sidecar['2026-04-18']).toEqual({
+      obsidianPath: 'Daily Log/2026-04-18.md', obsidianVaultId: 'vault-A',
+    });
   });
 
   it('re-keys the on-disk memory-bridge map for journal entries', async () => {

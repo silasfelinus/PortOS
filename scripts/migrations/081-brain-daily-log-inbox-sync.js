@@ -16,8 +16,11 @@
  *
  *   1. journals.json — STRIP the inner `id` field from each entry (the map key is
  *      the record id now, and an inner `id` would clobber the date key that
- *      getById re-attaches), then stamp the sync fields (originInstanceId +
- *      createdAt/updatedAt fallbacks) any entry is missing.
+ *      getById re-attaches), STRIP the machine-local `obsidianPath`/
+ *      `obsidianVaultId` into a non-synced sidecar (journal-obsidian-locations.json
+ *      — federating them would poison the reconcile checksum across peers with
+ *      different vaults and break local mirror cleanup), then stamp the sync
+ *      fields (originInstanceId + createdAt/updatedAt fallbacks) any entry is missing.
  *   2. inbox_log.jsonl → inbox.json — re-key each JSONL row by its `id` into a
  *      records map, drop the now-redundant inner `id`, and stamp the same sync
  *      fields (createdAt/updatedAt seeded from capturedAt so the LWW clock is
@@ -69,8 +72,11 @@ async function readInstanceId(rootDir) {
 // journals we pass the existing updatedAt/createdAt or now()). Returns a new
 // object with the inner `id` removed (the map key is the id).
 function normalizeRecord(record, { instanceId, seedTime, nowIso }) {
+  // Strip the inner `id` (map key is the id) AND the machine-local Obsidian
+  // fields (extracted to the sidecar by the caller; they must never federate).
+  // The Obsidian keys are no-ops on inbox records, which never carry them.
   // eslint-disable-next-line no-unused-vars
-  const { id: _innerId, ...rest } = record;
+  const { id: _innerId, obsidianPath: _op, obsidianVaultId: _ov, ...rest } = record;
   const normalized = {
     ...rest,
     createdAt: rest.createdAt || seedTime || nowIso,
@@ -95,14 +101,21 @@ function normalizeRecord(record, { instanceId, seedTime, nowIso }) {
  *   - journalsStore: parsed journals.json (or null if absent).
  *   - inboxRows: array of parsed inbox_log.jsonl rows (empty if absent).
  *   - bridgeMap: parsed memory-bridge-map.json (or null if absent).
- * Returns { journalsStore, inboxStore, bridgeMap, bridgeRemapped, journalsChanged, inboxCount }.
+ *   - obsidianLocations: parsed journal-obsidian-locations.json (or null if absent).
+ * Returns { journalsStore, inboxStore, bridgeMap, bridgeRemapped, obsidianLocations,
+ *           obsidianExtracted, journalsChanged, inboxCount }.
  */
-export function computeDailyLogInboxMigration(journalsStore, inboxRows, { instanceId, nowIso, bridgeMap = null } = {}) {
-  // 1. Journals: normalize each entry in place (strip inner id, stamp sync fields).
-  //    Capture oldUuid→date so step 3 can re-key the memory bridge.
+export function computeDailyLogInboxMigration(journalsStore, inboxRows, { instanceId, nowIso, bridgeMap = null, obsidianLocations = null } = {}) {
+  // 1. Journals: normalize each entry (strip inner id + machine-local Obsidian
+  //    fields, stamp sync fields). Capture oldUuid→date so step 3 can re-key the
+  //    memory bridge, and extract Obsidian location into the local sidecar so it
+  //    stops federating (it would poison the reconcile checksum across peers with
+  //    different vaults — see brainJournal.OBSIDIAN_LOCATIONS_FILE).
   let journalsChanged = false;
   let outJournals = null;
   const uuidToDate = new Map();
+  const outLocations = { ...(obsidianLocations && typeof obsidianLocations === 'object' ? obsidianLocations : {}) };
+  let obsidianExtracted = 0;
   if (journalsStore && typeof journalsStore === 'object') {
     const records = journalsStore.records && typeof journalsStore.records === 'object'
       ? journalsStore.records
@@ -111,6 +124,16 @@ export function computeDailyLogInboxMigration(journalsStore, inboxRows, { instan
     for (const [date, entry] of Object.entries(records)) {
       if (!entry || typeof entry !== 'object') continue;
       if (entry.id) uuidToDate.set(entry.id, date);
+      // Move Obsidian location to the sidecar (only when the record carries one
+      // and the sidecar doesn't already have an entry for this day — don't
+      // overwrite a newer local sidecar on re-run).
+      if ((entry.obsidianPath != null || entry.obsidianVaultId != null) && !(date in outLocations)) {
+        outLocations[date] = {
+          obsidianPath: entry.obsidianPath ?? null,
+          obsidianVaultId: entry.obsidianVaultId ?? null,
+        };
+        obsidianExtracted++;
+      }
       const before = JSON.stringify(entry);
       // Seed from the entry's own updatedAt/createdAt so we don't bump the LWW
       // clock of days that already have one.
@@ -158,7 +181,16 @@ export function computeDailyLogInboxMigration(journalsStore, inboxRows, { instan
     }
   }
 
-  return { journalsStore: outJournals, inboxStore, bridgeMap: outBridge, bridgeRemapped, journalsChanged, inboxCount };
+  // Only surface the sidecar when something was extracted (or one was passed in),
+  // so a fresh install with no Obsidian usage doesn't get an empty file written.
+  const outObsidian = (obsidianExtracted > 0 || obsidianLocations) ? outLocations : null;
+
+  return {
+    journalsStore: outJournals, inboxStore,
+    bridgeMap: outBridge, bridgeRemapped,
+    obsidianLocations: outObsidian, obsidianExtracted,
+    journalsChanged, inboxCount,
+  };
 }
 
 function parseJsonl(content) {
@@ -181,6 +213,7 @@ export async function up({ rootDir }) {
   const legacyInboxPath = join(brainDir, 'inbox_log.jsonl');
   const inboxPath = join(brainDir, 'inbox.json');
   const bridgeMapPath = join(brainDir, 'memory-bridge-map.json');
+  const obsidianLocationsPath = join(brainDir, 'journal-obsidian-locations.json');
 
   const instanceId = await readInstanceId(rootDir);
   const nowIso = new Date().toISOString();
@@ -203,6 +236,16 @@ export async function up({ rootDir }) {
     }
   }
 
+  // Load the local Obsidian-locations sidecar if a prior run already created one
+  // (so we merge into it rather than clobber a newer local value).
+  let obsidianLocations = null;
+  if (existsSync(obsidianLocationsPath)) {
+    const raw = await readFile(obsidianLocationsPath, 'utf-8').catch(() => null);
+    if (raw != null) {
+      try { obsidianLocations = JSON.parse(raw); } catch { obsidianLocations = null; }
+    }
+  }
+
   // Load legacy inbox JSONL if present AND we haven't already produced inbox.json
   // (idempotency: once migrated, the .jsonl is renamed aside so this is skipped).
   let inboxRows = [];
@@ -212,11 +255,19 @@ export async function up({ rootDir }) {
     if (raw != null) inboxRows = parseJsonl(raw);
   }
 
-  const { journalsStore: outJournals, inboxStore, bridgeMap: outBridge, bridgeRemapped, journalsChanged, inboxCount } =
-    computeDailyLogInboxMigration(journalsStore, inboxRows, { instanceId, nowIso, bridgeMap });
+  const {
+    journalsStore: outJournals, inboxStore,
+    bridgeMap: outBridge, bridgeRemapped,
+    obsidianLocations: outObsidian, obsidianExtracted,
+    journalsChanged, inboxCount,
+  } = computeDailyLogInboxMigration(journalsStore, inboxRows, { instanceId, nowIso, bridgeMap, obsidianLocations });
 
   if (outJournals && journalsChanged) {
     await writeFile(journalsPath, JSON.stringify(outJournals, null, 2));
+  }
+
+  if (outObsidian && obsidianExtracted > 0) {
+    await writeFile(obsidianLocationsPath, JSON.stringify(outObsidian, null, 2));
   }
 
   if (outBridge && bridgeRemapped > 0) {
@@ -245,6 +296,7 @@ export async function up({ rootDir }) {
   console.log(
     `🧠 daily-log/inbox-sync: journals ${journalsChanged ? 'normalized' : 'already current'}, ` +
     `inbox ${hasLegacyInbox ? `migrated ${inboxCount} entr${inboxCount === 1 ? 'y' : 'ies'} → inbox.json` : 'already current'}` +
+    `${obsidianExtracted > 0 ? `, moved ${obsidianExtracted} Obsidian location${obsidianExtracted === 1 ? '' : 's'} to local sidecar` : ''}` +
     `${bridgeRemapped > 0 ? `, re-keyed ${bridgeRemapped} journal memory-bridge entr${bridgeRemapped === 1 ? 'y' : 'ies'}` : ''}`
   );
 }
