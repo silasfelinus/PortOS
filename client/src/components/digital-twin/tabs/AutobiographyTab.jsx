@@ -551,6 +551,7 @@ export default function AutobiographyTab({ onRefresh }) {
                             <button
                               onClick={() => setNarrative(null)}
                               className="p-0.5 text-gray-500 hover:text-white"
+                              aria-label="Dismiss narrative"
                             >
                               <X size={12} />
                             </button>
