@@ -2,7 +2,7 @@ import { useRef, useMemo, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useCityPalette } from './CityPaletteContext';
-import { dampFactor, dampAngle } from '../../utils/cityPlayerRig';
+import { dampFactor, dampAngle, EYE_HEIGHT } from '../../utils/cityPlayerRig';
 
 // The exploration-mode cyber-runner: a stylized articulated character (~1.7 units tall)
 // rendered in third person. Reads the PlayerController's mutable rig every frame — no
@@ -42,7 +42,7 @@ GEO.helmet.computeVertexNormals();
 const HIP_Y = 0.76;
 const SHOULDER_Y = 1.3;
 
-export default function PlayerAvatar({ rigRef, eyeHeight = 1.6 }) {
+export default function PlayerAvatar({ rigRef }) {
   const { accent, buildingBody, tintStructure } = useCityPalette();
 
   // Theme-tinted materials. Trim/visor glow the accent; the animated ones (visor, vents,
@@ -86,7 +86,7 @@ export default function PlayerAvatar({ rigRef, eyeHeight = 1.6 }) {
   const elbowL = useRef();
   const elbowR = useRef();
   const phaseRef = useRef(0);
-  const groundOffsetRef = useRef(-eyeHeight);
+  const groundOffsetRef = useRef(-EYE_HEIGHT);
 
   useFrame(({ clock }, delta) => {
     const root = rootRef.current;
@@ -101,7 +101,7 @@ export default function PlayerAvatar({ rigRef, eyeHeight = 1.6 }) {
 
     // Root follows the rig: feet on the ground normally; in hover the body floats
     // closer to the camera anchor with legs tucked.
-    const targetOffset = hovering ? -1.05 : -eyeHeight;
+    const targetOffset = hovering ? -1.05 : -EYE_HEIGHT;
     groundOffsetRef.current += (targetOffset - groundOffsetRef.current) * f;
     const bob = state === 'idle' ? Math.sin(t * 1.6) * 0.03 : hovering ? Math.sin(t * 2.2) * 0.06 : 0;
     root.position.set(rig.position.x, rig.position.y + groundOffsetRef.current + bob, rig.position.z);

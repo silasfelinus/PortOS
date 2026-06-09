@@ -1,27 +1,30 @@
-import { useRef, useEffect, useCallback } from 'react';
+import { useRef, useEffect, useCallback, useMemo } from 'react';
 import { useThree, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import PlayerAvatar from './PlayerAvatar';
 import {
-  THIRD_PERSON, thirdPersonCamera, resolveBoomT,
+  THIRD_PERSON, EYE_HEIGHT, BUILDING_COLLISION_RADIUS,
+  thirdPersonCamera, resolveBoom,
   dampFactor, dampAngle, moveFacing, avatarState, bankAngle,
 } from '../../utils/cityPlayerRig';
-import { isWalkable } from '../../utils/cityPlan';
+import { isWalkable, WORLD } from '../../utils/cityPlan';
 
 const WALK_SPEED = 10;
 const SPRINT_SPEED = 20;
 const VERTICAL_SPEED = 8;
-const BUILDING_EXCLUSION_RADIUS = 3.5;
 const PROXIMITY_DISTANCE = 6;
-const WORLD_BOUND = 180;
-const EYE_HEIGHT = 1.6;
 const MAX_CAMERA_HEIGHT = 160;
 const BUILDING_FLYOVER_HEIGHT = 12; // above this the player clears rooftops, so skip collision
 const AIRBORNE_HEIGHT = EYE_HEIGHT + 0.6; // above this the avatar reads as flying (hover state)
 const MOUSE_SENSITIVITY = 0.002;
 const PITCH_LIMIT = Math.PI / 2 - 0.02;
 
-// Frame-loop scratch vectors (module scope — no per-frame allocation on the camera path).
+// Frame-loop scratch vectors (module scope — no per-frame allocation in useFrame).
+const _forward = new THREE.Vector3();
+const _right = new THREE.Vector3();
+const _moveDir = new THREE.Vector3();
+const _nextPos = new THREE.Vector3();
+const _lookDir = new THREE.Vector3();
 const _camTarget = new THREE.Vector3();
 const _lookTarget = new THREE.Vector3();
 
@@ -50,13 +53,13 @@ export default function PlayerController({
     position: new THREE.Vector3(0, EYE_HEIGHT, 0),
     yaw: 0, // camera heading; forward is (-sin yaw, 0, -cos yaw)
     pitch: 0,
-    moving: false,
-    sprinting: false,
-    airborne: false,
     facing: 0, // the character's body heading (damped toward movement direction)
     bank: 0, // lean into turns
     state: 'idle',
   });
+  // Stable array view of the positions Map for the per-frame boom collision test —
+  // re-collected only when the layout itself changes, never per frame.
+  const buildingList = useMemo(() => (positions ? [...positions.values()] : []), [positions]);
   const lastSpawnRef = useRef(null);
   const pointerLockedRef = useRef(false);
   const proximityAppRef = useRef(null);
@@ -158,14 +161,14 @@ export default function PlayerController({
     const verticalSpeed = (isSprinting ? SPRINT_SPEED : VERTICAL_SPEED) * delta;
 
     // Movement direction relative to camera yaw
-    const forward = new THREE.Vector3(-Math.sin(rig.yaw), 0, -Math.cos(rig.yaw));
-    const right = new THREE.Vector3(-forward.z, 0, forward.x);
+    const forward = _forward.set(-Math.sin(rig.yaw), 0, -Math.cos(rig.yaw));
+    const right = _right.set(-forward.z, 0, forward.x);
 
     const forwardInput = (keys.has('w') || keys.has('arrowup') ? 1 : 0)
       - (keys.has('s') || keys.has('arrowdown') ? 1 : 0);
     const strafeInput = (keys.has('d') || keys.has('arrowright') ? 1 : 0)
       - (keys.has('a') || keys.has('arrowleft') ? 1 : 0);
-    const moveDir = new THREE.Vector3(0, 0, 0)
+    const moveDir = _moveDir.set(0, 0, 0)
       .addScaledVector(forward, forwardInput)
       .addScaledVector(right, strafeInput);
 
@@ -175,7 +178,7 @@ export default function PlayerController({
 
     if (moving) {
       if (hasHorizontal) moveDir.normalize().multiplyScalar(speed);
-      const nextPos = rig.position.clone().add(moveDir);
+      const nextPos = _nextPos.copy(rig.position).add(moveDir);
       nextPos.y += verticalDir * verticalSpeed;
 
       // Collision detection with buildings — skipped above rooftop height so the
@@ -186,7 +189,7 @@ export default function PlayerController({
           const dx = nextPos.x - pos.x;
           const dz = nextPos.z - pos.z;
           const dist = Math.sqrt(dx * dx + dz * dz);
-          if (dist < BUILDING_EXCLUSION_RADIUS) {
+          if (dist < BUILDING_COLLISION_RADIUS) {
             // Slide along boundary tangent
             const nx = dx / dist;
             const nz = dz / dist;
@@ -198,7 +201,7 @@ export default function PlayerController({
               // Re-check distance after slide
               const dx2 = nextPos.x - pos.x;
               const dz2 = nextPos.z - pos.z;
-              if (Math.sqrt(dx2 * dx2 + dz2 * dz2) < BUILDING_EXCLUSION_RADIUS) {
+              if (Math.sqrt(dx2 * dx2 + dz2 * dz2) < BUILDING_COLLISION_RADIUS) {
                 blocked = true;
               }
             }
@@ -211,18 +214,19 @@ export default function PlayerController({
 
       if (!blocked) {
         // World bounds
-        nextPos.x = Math.max(-WORLD_BOUND, Math.min(WORLD_BOUND, nextPos.x));
+        nextPos.x = Math.max(-WORLD.bound, Math.min(WORLD.bound, nextPos.x));
         nextPos.y = Math.max(EYE_HEIGHT, Math.min(MAX_CAMERA_HEIGHT, nextPos.y));
-        nextPos.z = Math.max(-WORLD_BOUND, Math.min(WORLD_BOUND, nextPos.z));
+        nextPos.z = Math.max(-WORLD.bound, Math.min(WORLD.bound, nextPos.z));
         rig.position.copy(nextPos);
       }
     }
 
     // Pose classification for the avatar + facing/banking toward movement.
-    rig.moving = moving;
-    rig.sprinting = isSprinting && moving;
-    rig.airborne = rig.position.y > AIRBORNE_HEIGHT;
-    rig.state = avatarState(rig);
+    rig.state = avatarState({
+      moving,
+      sprinting: isSprinting && moving,
+      airborne: rig.position.y > AIRBORNE_HEIGHT,
+    });
     if (hasHorizontal) {
       const target = moveFacing(rig.yaw, { forward: forwardInput, strafe: strafeInput });
       const prevFacing = rig.facing;
@@ -259,12 +263,12 @@ export default function PlayerController({
 
     if (cameraView === 'first') {
       camera.position.copy(rig.position);
-      const lookDir = new THREE.Vector3(
+      const lookDir = _lookDir.set(
         -Math.sin(rig.yaw) * Math.cos(rig.pitch),
         Math.sin(rig.pitch),
         -Math.cos(rig.yaw) * Math.cos(rig.pitch),
       );
-      camera.lookAt(rig.position.clone().add(lookDir));
+      camera.lookAt(_lookTarget.copy(rig.position).add(lookDir));
       return;
     }
 
@@ -272,10 +276,7 @@ export default function PlayerController({
     // damped so the camera glides while the aim stays tight.
     const desired = thirdPersonCamera({ pos: rig.position, yaw: rig.yaw, pitch: rig.pitch });
     const anchor = { x: rig.position.x, y: rig.position.y + THIRD_PERSON.lookHeight, z: rig.position.z };
-    const t = resolveBoomT({ anchor, camera: desired.camera, buildings: positions?.values() });
-    const camX = anchor.x + (desired.camera.x - anchor.x) * t;
-    const camY = Math.max(THIRD_PERSON.minCamY, anchor.y + (desired.camera.y - anchor.y) * t);
-    const camZ = anchor.z + (desired.camera.z - anchor.z) * t;
+    const { point: resolvedCam } = resolveBoom({ anchor, camera: desired.camera, buildings: buildingList });
 
     if (!lookInitRef.current) {
       // First third-person frame (mode entry): aim snaps so the camera doesn't swing
@@ -285,7 +286,7 @@ export default function PlayerController({
     }
     const posFactor = dampFactor(THIRD_PERSON.camDampRate, delta);
     const lookFactor = dampFactor(THIRD_PERSON.lookDampRate, delta);
-    camera.position.lerp(_camTarget.set(camX, camY, camZ), posFactor);
+    camera.position.lerp(_camTarget.set(resolvedCam.x, resolvedCam.y, resolvedCam.z), posFactor);
     lookRef.current.lerp(_lookTarget.set(desired.lookAt.x, desired.lookAt.y, desired.lookAt.z), lookFactor);
     camera.lookAt(lookRef.current);
   });
@@ -294,5 +295,5 @@ export default function PlayerController({
 
   // The visible character exists only in third person — first person stays the
   // classic invisible camera (and can't self-clip).
-  return cameraView === 'third' ? <PlayerAvatar rigRef={rigRef} eyeHeight={EYE_HEIGHT} /> : null;
+  return cameraView === 'third' ? <PlayerAvatar rigRef={rigRef} /> : null;
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  THIRD_PERSON, clampPitch, thirdPersonCamera, resolveBoomT,
+  THIRD_PERSON, clampPitch, thirdPersonCamera, resolveBoom,
   dampFactor, dampAngle, moveFacing, avatarState, bankAngle,
 } from './cityPlayerRig';
 
@@ -40,32 +40,32 @@ describe('thirdPersonCamera', () => {
   });
 });
 
-describe('resolveBoomT', () => {
+describe('resolveBoom', () => {
   const anchor = { x: 0, y: 2, z: 0 };
 
   it('keeps the full boom with no obstructions', () => {
-    expect(resolveBoomT({ anchor, camera: { x: 0, y: 3, z: 7 }, buildings: [] })).toBe(1);
-    expect(resolveBoomT({ anchor, camera: { x: 0, y: 3, z: 7 }, buildings: null })).toBe(1);
+    const clear = resolveBoom({ anchor, camera: { x: 0, y: 3, z: 7 }, buildings: [] });
+    expect(clear.t).toBe(1);
+    expect(clear.point).toEqual({ x: 0, y: 3, z: 7 });
+    expect(resolveBoom({ anchor, camera: { x: 0, y: 3, z: 7 }, buildings: null }).t).toBe(1);
   });
 
   it('shortens the boom when the camera lands inside a building cylinder', () => {
     const buildings = [{ x: 0, z: 7, height: 10 }];
-    const t = resolveBoomT({ anchor, camera: { x: 0, y: 3, z: 7 }, buildings });
+    const { t, point } = resolveBoom({ anchor, camera: { x: 0, y: 3, z: 7 }, buildings });
     expect(t).toBeLessThan(1);
     // The resolved point actually clears the cylinder.
-    const z = anchor.z + (7 - anchor.z) * t;
-    expect(Math.abs(z - 7)).toBeGreaterThanOrEqual(3.5);
+    expect(Math.abs(point.z - 7)).toBeGreaterThanOrEqual(3.5);
   });
 
   it('ignores buildings the camera clears above (flyover)', () => {
     const buildings = [{ x: 0, z: 7, height: 4 }];
-    const t = resolveBoomT({ anchor, camera: { x: 0, y: 12, z: 7 }, buildings });
-    expect(t).toBe(1);
+    expect(resolveBoom({ anchor, camera: { x: 0, y: 12, z: 7 }, buildings }).t).toBe(1);
   });
 
   it('accepts any iterable (e.g. Map.values())', () => {
     const map = new Map([['a', { x: 0, z: 7, height: 10 }]]);
-    const t = resolveBoomT({ anchor, camera: { x: 0, y: 3, z: 7 }, buildings: map.values() });
+    const { t } = resolveBoom({ anchor, camera: { x: 0, y: 3, z: 7 }, buildings: map.values() });
     expect(t).toBeLessThan(1);
   });
 });

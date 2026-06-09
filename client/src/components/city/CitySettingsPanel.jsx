@@ -61,6 +61,33 @@ function SettingSlider({ label, value, onChange, min = 0, max = 1, step = 0.05, 
   );
 }
 
+// Segmented enum picker — one glowing button per option, with an optional hint line.
+// `isActive` defaults to strict equality; pass a predicate for legacy-value mapping.
+function SettingSegment({ label, options, value, onChange, hint, isActive }) {
+  const activeFor = isActive ?? ((key) => value === key);
+  return (
+    <div className="py-1.5">
+      {label && <div className="font-pixel text-[10px] text-gray-400 tracking-wide mb-2">{label}</div>}
+      <div className={`grid gap-1.5 ${options.length === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
+        {options.map(({ key, label: optionLabel }) => (
+          <button
+            key={key}
+            onClick={() => onChange(key)}
+            className={`font-pixel text-[9px] py-2 rounded border transition-all tracking-wide ${
+              activeFor(key)
+                ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.2)]'
+                : 'bg-gray-800/40 border-gray-700/40 text-gray-500 hover:border-gray-600 hover:text-gray-400'
+            }`}
+          >
+            {optionLabel}
+          </button>
+        ))}
+      </div>
+      {hint && <div className="font-pixel text-[8px] text-gray-600 tracking-wide mt-1.5">{hint}</div>}
+    </div>
+  );
+}
+
 function SectionHeader({ title, subtitle }) {
   return (
     <div className="mb-2">
@@ -216,35 +243,21 @@ export default function CitySettingsPanel() {
               format={(v) => `${v.toFixed(1)}x`}
               description="Brightness of neon lights and building glow"
             />
-            <div className="py-1.5">
-              <div className="font-pixel text-[10px] text-gray-400 tracking-wide mb-2">TIME OF DAY</div>
-              <div className="grid grid-cols-3 gap-1.5">
-                {[
-                  { key: 'auto', label: 'AUTO' },
-                  { key: 'day', label: 'DAY' },
-                  { key: 'night', label: 'NIGHT' },
-                ].map(({ key, label }) => {
-                  // Legacy presets (sunrise/noon/sunset/midnight) read as Auto now.
-                  const active = (settings.timeOfDay === 'day' || settings.timeOfDay === 'night')
-                    ? settings.timeOfDay === key
-                    : key === 'auto';
-                  return (
-                    <button
-                      key={key}
-                      onClick={() => updateSetting('timeOfDay', key)}
-                      className={`font-pixel text-[9px] py-2 rounded border transition-all tracking-wide ${
-                        active
-                          ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.2)]'
-                          : 'bg-gray-800/40 border-gray-700/40 text-gray-500 hover:border-gray-600 hover:text-gray-400'
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="font-pixel text-[8px] text-gray-600 tracking-wide mt-1.5">AUTO FOLLOWS YOUR THEME (DAY / NIGHT)</div>
-            </div>
+            <SettingSegment
+              label="TIME OF DAY"
+              options={[
+                { key: 'auto', label: 'AUTO' },
+                { key: 'day', label: 'DAY' },
+                { key: 'night', label: 'NIGHT' },
+              ]}
+              value={settings.timeOfDay}
+              onChange={(key) => updateSetting('timeOfDay', key)}
+              hint="AUTO FOLLOWS YOUR THEME (DAY / NIGHT)"
+              // Legacy presets (sunrise/noon/sunset/midnight) read as Auto now.
+              isActive={(key) => (settings.timeOfDay === 'day' || settings.timeOfDay === 'night')
+                ? settings.timeOfDay === key
+                : key === 'auto'}
+            />
           </div>
 
           <div className="border-t border-cyan-500/10" />
@@ -258,30 +271,15 @@ export default function CitySettingsPanel() {
               onChange={(v) => updateSetting('explorationMode', v)}
               description="Toggle street-level exploration (Tab)"
             />
-            <div className="mt-2">
-              <div className="grid grid-cols-2 gap-1.5">
-                {[
-                  { key: 'third', label: 'CHARACTER' },
-                  { key: 'first', label: 'FIRST PERSON' },
-                ].map(({ key, label }) => {
-                  const active = (settings.cameraView ?? 'third') === key;
-                  return (
-                    <button
-                      key={key}
-                      onClick={() => updateSetting('cameraView', key)}
-                      className={`font-pixel text-[9px] py-2 rounded border transition-all tracking-wide ${
-                        active
-                          ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.2)]'
-                          : 'bg-gray-800/40 border-gray-700/40 text-gray-500 hover:border-gray-600 hover:text-gray-400'
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="font-pixel text-[8px] text-gray-600 tracking-wide mt-1.5">CAMERA WHILE EXPLORING (V SWAPS IN-WORLD)</div>
-            </div>
+            <SettingSegment
+              options={[
+                { key: 'third', label: 'CHARACTER' },
+                { key: 'first', label: 'FIRST PERSON' },
+              ]}
+              value={settings.cameraView ?? 'third'}
+              onChange={(key) => updateSetting('cameraView', key)}
+              hint="CAMERA WHILE EXPLORING (V SWAPS IN-WORLD)"
+            />
           </div>
 
           <div className="border-t border-cyan-500/10" />

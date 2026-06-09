@@ -7,6 +7,11 @@
 // Convention (matches PlayerController): forward at yaw is (-sin(yaw), 0, -cos(yaw));
 // the camera hangs BEHIND the character at (+sin(yaw), 0, +cos(yaw)) scaled by the boom.
 
+// Shared rig dimensions — the controller, the avatar, and the boom collision all read
+// these (restating them at call sites is how walk collision and camera collision drift).
+export const EYE_HEIGHT = 1.6;
+export const BUILDING_COLLISION_RADIUS = 3.5;
+
 export const THIRD_PERSON = {
   boom: 6.5, // camera distance behind the character
   shoulder: 0.6, // lateral over-the-shoulder offset (positive = right)
@@ -54,22 +59,25 @@ const insideBuilding = (point, building, radius) =>
   point.y < (building.height ?? 4) + 0.5
   && Math.hypot(point.x - building.x, point.z - building.z) < radius;
 
-// Boom-shortening fraction in (0, 1]: walk the camera in toward the aim anchor until it
-// clears every building cylinder. "Collision-aware enough" — a sampled pull-in, not a
-// raycast. `buildings` is any iterable of { x, z, height }.
-export function resolveBoomT({ anchor, camera, buildings, radius = 3.5 }) {
-  const list = buildings ? [...buildings] : [];
-  if (list.length === 0) return 1;
+// Walk the camera in toward the aim anchor until it clears every building cylinder,
+// returning `{ t, point }` — the boom fraction and the resolved camera position (so the
+// caller never re-derives the lerp). "Collision-aware enough" — a sampled pull-in, not a
+// raycast. `buildings` is an array or any iterable of { x, z, height }; pass a memoized
+// array on hot paths (an iterable is re-collected per call).
+export function resolveBoom({ anchor, camera, buildings, radius = BUILDING_COLLISION_RADIUS }) {
+  const list = Array.isArray(buildings) ? buildings : buildings ? [...buildings] : [];
+  const at = (t) => ({
+    x: anchor.x + (camera.x - anchor.x) * t,
+    y: anchor.y + (camera.y - anchor.y) * t,
+    z: anchor.z + (camera.z - anchor.z) * t,
+  });
+  if (list.length === 0) return { t: 1, point: at(1) };
   const steps = [1, 0.85, 0.7, 0.55, 0.4, 0.3];
   for (const t of steps) {
-    const point = {
-      x: anchor.x + (camera.x - anchor.x) * t,
-      y: anchor.y + (camera.y - anchor.y) * t,
-      z: anchor.z + (camera.z - anchor.z) * t,
-    };
-    if (!list.some((b) => insideBuilding(point, b, radius))) return t;
+    const point = at(t);
+    if (!list.some((b) => insideBuilding(point, b, radius))) return { t, point };
   }
-  return 0.25;
+  return { t: 0.25, point: at(0.25) };
 }
 
 // Frame-rate-independent damping factor: lerp by this each frame and the closure rate
