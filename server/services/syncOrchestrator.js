@@ -766,6 +766,11 @@ export function initSyncOrchestrator() {
     runTombstoneSweep().catch(err => {
       console.error(`❌ Tombstone sweep tick failed: ${err.message}`);
     });
+    // Brain entity tombstones ride the same tick — same once-a-minute cadence,
+    // same rejection (a rejected dynamic import would otherwise crash the tick).
+    runBrainTombstoneSweep().catch(err => {
+      console.error(`❌ Brain tombstone sweep tick failed: ${err.message}`);
+    });
   }, SYNC_INTERVAL_MS);
 
   console.log(`🔄 Sync orchestrator started (${SYNC_INTERVAL_MS / 1000}s interval)`);
@@ -796,6 +801,23 @@ async function runTombstoneSweep() {
   }
   if (result && result.orphanSubscriptions > 0) {
     console.log(`🧹 Tombstone GC: swept ${result.orphanSubscriptions} orphaned peer subscription${result.orphanSubscriptions === 1 ? '' : 's'}`);
+  }
+}
+
+/**
+ * Run a single brain-tombstone GC sweep, fire-and-forget. Dynamic import keeps
+ * brainTombstoneGc (→ brainStorage) off the orchestrator's module-load path,
+ * matching runTombstoneSweep above. Logs a one-line summary only when something
+ * was actually pruned — quiet on no-op cycles.
+ */
+async function runBrainTombstoneSweep() {
+  const { sweepBrainTombstones } = await import('./brainTombstoneGc.js');
+  const result = await sweepBrainTombstones().catch((err) => {
+    console.error(`❌ Brain tombstone sweep failed: ${err.message}`);
+    return null;
+  });
+  if (result && result.pruned > 0) {
+    console.log(`🪦 Brain tombstone GC: pruned ${result.pruned} tombstone${result.pruned === 1 ? '' : 's'}`);
   }
 }
 
