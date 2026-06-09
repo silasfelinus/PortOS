@@ -59,6 +59,21 @@ describe('brainStorage tombstones', () => {
     expect(second).toBe(false); // already tombstoned → no-op, no extra sync entry
   });
 
+  it('getRawRecords surfaces tombstones that getAll hides (sync reconcile path #1077)', async () => {
+    const created = await brainStorage.create('ideas', { title: 'RawIdea', oneLiner: 'x' });
+    await brainStorage.remove('ideas', created.id);
+
+    // getAll strips the tombstone…
+    const visible = await brainStorage.getAll('ideas');
+    expect(visible.find((r) => r.id === created.id)).toBeUndefined();
+
+    // …but getRawRecords keeps it (with its LWW clock) for snapshot reconcile.
+    const raw = await brainStorage.getRawRecords('ideas');
+    expect(raw[created.id]).toBeDefined();
+    expect(raw[created.id]._deleted).toBe(true);
+    expect(raw[created.id].updatedAt).toBeTruthy();
+  });
+
   it('applyRemoteRecord delete tombstones an unknown id (delete-before-create)', async () => {
     const res = await brainStorage.applyRemoteRecord(
       'projects', 'ghost-1', { updatedAt: ISO('2026-01-02') }, 'delete'

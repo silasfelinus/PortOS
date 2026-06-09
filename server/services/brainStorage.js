@@ -212,6 +212,21 @@ export async function getAll(type) {
 }
 
 /**
+ * Get the RAW records map for a store, INCLUDING tombstones, keyed by id.
+ *
+ * Unlike `getAll` (which strips tombstones for user-facing reads), the sync
+ * reconcile path needs tombstones too: they carry the LWW `updatedAt` clock a
+ * peer must see to keep a delete from resurrecting. Returns a shallow copy of
+ * the `{ id: record }` map — the map itself is safe to mutate, but the record
+ * objects are shared with the cache by reference, so callers must treat them as
+ * read-only (the reconcile path only serializes them, never mutates).
+ */
+export async function getRawRecords(type) {
+  const data = await loadJsonStore(type);
+  return { ...data.records };
+}
+
+/**
  * Get a record by ID
  */
 export async function getById(type, id) {
