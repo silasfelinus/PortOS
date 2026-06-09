@@ -3,7 +3,7 @@
  * Runs npm install only for workspaces with missing node_modules.
  * Handles ENOTEMPTY npm bug by retrying with clean node_modules.
  */
-import { existsSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, rmSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { join, dirname } from 'path';
@@ -68,6 +68,24 @@ function lockfileIsGitignored(dir) {
   }
 }
 
+// Filesystem fallback for the no-baseline case (first run after this feature
+// lands, or a fresh manual checkout): npm writes node_modules/.package-lock.json
+// at the end of every install, so its mtime is the last-install time. If
+// package.json was modified more recently — e.g. a `git pull` just brought a
+// new manifest over a still-present node_modules — the tree is stale and must
+// be clean-reinstalled even though we have no stored hash to compare against.
+// Returns false when we can't tell (missing marker, stat error) so we never
+// wipe a tree we can't prove is stale.
+function manifestNewerThanInstall(dir) {
+  const markerPath = join(dir, 'node_modules', '.package-lock.json');
+  const installMarker = existsSync(markerPath) ? markerPath : join(dir, 'node_modules');
+  try {
+    return statSync(join(dir, 'package.json')).mtimeMs > statSync(installMarker).mtimeMs;
+  } catch {
+    return false;
+  }
+}
+
 function cleanWorkspaceDeps(dir) {
   try {
     rmSync(join(dir, 'node_modules'), { recursive: true, force: true });
@@ -110,9 +128,14 @@ for (const { dir, label } of WORKSPACES) {
   const currentHash = pkgHash(dir);
   const nodeModulesMissing = !existsSync(join(dir, 'node_modules'));
   const storedHash = storedHashes[label];
-  // Only treat as "deps changed" when we have a baseline to compare against —
-  // a first run (no stored hash) seeds the baseline without a needless wipe.
-  const depsChanged = storedHash != null && currentHash != null && storedHash !== currentHash;
+  // With a stored baseline, a differing hash means the manifest moved since the
+  // last install. Without one (first run after this feature lands, or a fresh
+  // manual checkout), fall back to the install-marker mtime so a `git pull` +
+  // `npm start` that changed package.json over a present node_modules is still
+  // caught — instead of silently seeding the stale tree.
+  const depsChanged = storedHash != null
+    ? currentHash != null && storedHash !== currentHash
+    : !nodeModulesMissing && manifestNewerThanInstall(dir);
 
   if (nodeModulesMissing || depsChanged) {
     if (depsChanged && !nodeModulesMissing) {
