@@ -24,6 +24,12 @@ describe('diffSeq', () => {
     expect(diffSeq(big, lo)).toBe(3);
   });
 
+  it('caps a delta beyond MAX_SAFE_INTEGER instead of returning a lossy value', () => {
+    // ahead is 2^53 + 100 over behind=0 → delta exceeds the safe range.
+    const huge = (BigInt(Number.MAX_SAFE_INTEGER) + 100n).toString();
+    expect(diffSeq(huge, '0')).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
   it('returns null when either side is absent', () => {
     expect(diffSeq(undefined, 5)).toBeNull();
     expect(diffSeq(5, null)).toBeNull();

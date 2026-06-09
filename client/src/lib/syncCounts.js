@@ -33,7 +33,14 @@ export function diffSeq(ahead, behind) {
   const b = toBig(behind);
   if (a === null || b === null) return null;
   const d = a - b;
-  return d > 0n ? Number(d) : 0;
+  if (d <= 0n) return 0;
+  // The seqs themselves can exceed Number.MAX_SAFE_INTEGER (that's why we
+  // compare as BigInt), but the DELTA is a pending-item backlog between two
+  // syncs — realistically tiny. Should it ever exceed the safe integer range,
+  // cap at MAX_SAFE_INTEGER so the count degrades to a still-honest "very large
+  // backlog" rather than a precise-looking-but-wrong Number from a lossy cast.
+  const MAX = BigInt(Number.MAX_SAFE_INTEGER);
+  return Number(d > MAX ? MAX : d);
 }
 
 // { toPull, toPush } — each a non-negative Number, or null when unknown.

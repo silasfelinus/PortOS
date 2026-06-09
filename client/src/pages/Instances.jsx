@@ -997,8 +997,11 @@ function PeerCard({ peer, onRefresh, syncStatus, tailnetInfo }) {
       } else if (payload.phase === 'complete') {
         setSyncing(false);
         // Pull the freshest cursors/seqs so the card settles to the new
-        // directional summary without waiting for the next 60s probe.
-        if (payload.totalApplied > 0) onRefresh();
+        // directional summary without waiting for the next 60s probe. Refresh
+        // even on a zero-applied complete: a convergence/no-op sync still
+        // advances `lastSyncAt` and snapshot checksums, so the badge would
+        // otherwise read stale until the next manual probe.
+        onRefresh();
       }
       // `applied` events are informational (and drive the server-side log) —
       // the global `syncing` flag already animates every badge, so the client
@@ -1086,11 +1089,18 @@ function PeerCard({ peer, onRefresh, syncStatus, tailnetInfo }) {
     // error UI, so request() must stay silent to avoid a double toast.
     setSyncing(true);
     const result = await syncPeer(peer.id, { silent: true }).catch(() => null);
+    // The POST awaits the full sync server-side, so its resolution IS the
+    // authoritative completion for a manual sync — clear here rather than
+    // relying solely on the fire-and-forget `complete` socket event, which a
+    // transient socket disconnect could drop and leave the card stuck spinning.
+    setSyncing(false);
     if (!result) {
-      setSyncing(false);
       toast.error(`Couldn't sync with ${peer.name} — is it online?`);
+    } else {
+      // Settle to the new directional summary (the socket `complete` also
+      // refreshes when records moved; this covers the no-op/socket-miss case).
+      onRefresh();
     }
-    // On success the `complete` progress event clears `syncing` and refreshes.
   };
 
   const handleRemove = async () => {
@@ -1141,10 +1151,12 @@ function PeerCard({ peer, onRefresh, syncStatus, tailnetInfo }) {
         </div>
         <div className="flex items-center gap-1">
           <button
+            type="button"
             onClick={handleSync}
             disabled={syncing || peer.status !== 'online'}
             className="p-1.5 text-gray-500 hover:text-port-accent transition-colors disabled:opacity-40 disabled:hover:text-gray-500"
             title={peer.status === 'online' ? 'Sync now' : 'Peer offline — cannot sync'}
+            aria-label={peer.status === 'online' ? 'Sync now' : 'Peer offline — cannot sync'}
           >
             <RefreshCcw size={14} className={syncing ? 'animate-spin text-port-accent' : ''} />
           </button>
