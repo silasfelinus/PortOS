@@ -166,7 +166,10 @@ for (const { dir, label } of WORKSPACES) {
     : !nodeModulesMissing && manifestNewerThanInstall(dir);
 
   if (nodeModulesMissing || depsChanged) {
-    if (depsChanged && !nodeModulesMissing) {
+    if (depsChanged) {
+      // Clean whenever the manifest changed — even if node_modules is already
+      // gone — so the stale gitignored lockfile is removed and npm resolves the
+      // tree from scratch instead of reusing the old per-install lock.
       console.log(`🧹 ${label} package.json changed since last install — clean reinstall...`);
       cleanWorkspaceDeps(dir);
     } else {
