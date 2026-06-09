@@ -650,7 +650,11 @@ describe('cos.js source — priority + capacity invariants', () => {
     // drops either fence, idle could spawn alongside autoSystem/mission and
     // double-load the agent pool.
     const dequeueFn = extractFnBody(COS_SRC, COS_SRC.indexOf('async function dequeueNextTask'));
-    const evalFn    = extractFnBody(GEN_SRC, GEN_SRC.indexOf('export async function evaluateTasks'));
+    // The generator engine's tiers are now decomposed into named spawnPriority*
+    // helpers (issue #1082), so this gate lives in `spawnPriority4IdleReview`
+    // rather than the `evaluateTasks` orchestrator body — scope to the whole
+    // cosTaskGenerator module (the engine) instead of the single function.
+    const evalFn    = GEN_SRC;
 
     expect(dequeueFn).toMatch(/spawned\s*===\s*0\s*&&\s*state\.config\.idleReviewEnabled/);
     expect(evalFn).toMatch(/tasksToSpawn\.length\s*===\s*0\s*&&\s*state\.config\.idleReviewEnabled/);
@@ -663,9 +667,12 @@ describe('cos.js source — priority + capacity invariants', () => {
     // the cos mode and fence their mission / idle / auto-approved blocks on it,
     // or "off"/"dry-run" leaks autonomous agents through the un-gated engine.
     const dequeueFn = extractFnBody(COS_SRC, COS_SRC.indexOf('async function dequeueNextTask'));
-    const evalFn    = extractFnBody(GEN_SRC, GEN_SRC.indexOf('export async function evaluateTasks'));
+    // evaluateTasks resolves the mode in `resolveAutonomyBudget` and fences each
+    // autonomous tier inside its spawnPriority* helper (issue #1082) — both still
+    // live in the cosTaskGenerator module, so scope to the whole engine source.
+    const evalFn    = GEN_SRC;
 
-    for (const [name, fnBody] of [['dequeueNextTask', dequeueFn], ['evaluateTasks', evalFn]]) {
+    for (const [name, fnBody] of [['dequeueNextTask', dequeueFn], ['evaluateTasks (cosTaskGenerator)', evalFn]]) {
       expect(fnBody, `${name} must resolve the cos autonomy mode`).toMatch(/getDomainMode\(\s*state\.config\s*,\s*['"]cos['"]\s*\)/);
       // The mission/idle blocks must be fenced on execute so off/dry-run skip them.
       expect(fnBody, `${name} must fence autonomous spawns on cosAutonomyMode === 'execute'`).toMatch(/cosAutonomyMode\s*===\s*['"]execute['"]/);
@@ -701,9 +708,11 @@ describe('cos.js source — priority + capacity invariants', () => {
     // startup/manual `evaluateTasks` loop AND the event-driven `dequeueNextTask`
     // loop (the common "Run Now" path). Pin (a) the set is declared and (b) the
     // cooldown stamp is gated on it in each.
-    // evaluateTasks now lives in cosTaskGenerator.js; dequeueNextTask stays in cos.js.
+    // evaluateTasks now lives in cosTaskGenerator.js, and its Priority-0 on-demand
+    // loop is the extracted `spawnPriority0OnDemand` helper (issue #1082);
+    // dequeueNextTask stays monolithic in cos.js.
     for (const { fnName, src } of [
-      { fnName: 'export async function evaluateTasks', src: GEN_SRC },
+      { fnName: 'async function spawnPriority0OnDemand', src: GEN_SRC },
       { fnName: 'async function dequeueNextTask', src: COS_SRC },
     ]) {
       const fnBody = extractFnBody(src, src.indexOf(fnName));
@@ -725,7 +734,7 @@ describe('cos.js source — priority + capacity invariants', () => {
     // markAppReviewCooldown, NOT markAppReviewStarted, and (b) only bind the
     // active agent inside an `if (task)` guard after generation.
     for (const { fnName, src } of [
-      { fnName: 'export async function evaluateTasks', src: GEN_SRC },
+      { fnName: 'async function spawnPriority0OnDemand', src: GEN_SRC },
       { fnName: 'async function dequeueNextTask', src: COS_SRC },
     ]) {
       const fnBody = extractFnBody(src, src.indexOf(fnName));
