@@ -1,23 +1,18 @@
 /**
  * Tests for the Data Harbor introspection service: DB section shape (including
- * the down-DB → `db: null` absent-vs-empty contract), the data/ domain walk
- * (sizes, file counts, symlink skip, "(root)" pseudo-domain), and the
- * TTL + stale-while-revalidate cache discipline.
+ * the down-DB → `db: null` absent-vs-empty contract), the data/ domain section
+ * (delegated to dataManager's getDataOverview so the harbor and the Data page
+ * always agree), and the TTL + stale-while-revalidate cache discipline.
  */
 
-import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
-import { makePathsProxy } from '../lib/mockPathsDataRoot.js';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-const TEST_DATA_ROOT = mkdtempSync(join(tmpdir(), 'city-introspection-test-'));
-
-vi.mock('../lib/fileUtils.js', async (importOriginal) =>
-  makePathsProxy(await importOriginal(), { dataRoot: TEST_DATA_ROOT }));
-
-const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
+const { queryMock, overviewMock } = vi.hoisted(() => ({
+  queryMock: vi.fn(),
+  overviewMock: vi.fn(),
+}));
 vi.mock('../lib/db.js', () => ({ query: queryMock }));
+vi.mock('./dataManager.js', () => ({ getDataOverview: overviewMock }));
 
 const {
   getCityIntrospection,
@@ -44,27 +39,23 @@ const happyQueries = (sql) => {
   throw new Error(`unexpected query: ${sql}`);
 };
 
-const writeFixtureTree = () => {
-  rmSync(TEST_DATA_ROOT, { recursive: true, force: true });
-  mkdirSync(join(TEST_DATA_ROOT, 'images', 'sub'), { recursive: true });
-  mkdirSync(join(TEST_DATA_ROOT, 'brain'), { recursive: true });
-  writeFileSync(join(TEST_DATA_ROOT, 'images', 'a.png'), 'aaaaa'); // 5 bytes
-  writeFileSync(join(TEST_DATA_ROOT, 'images', 'sub', 'b.png'), 'bbb'); // 3 bytes
-  writeFileSync(join(TEST_DATA_ROOT, 'brain', 'x.json'), 'ccccccc'); // 7 bytes
-  writeFileSync(join(TEST_DATA_ROOT, 'loose.json'), 'dd'); // 2 bytes
-  // A symlinked directory must not be walked (or counted).
-  symlinkSync(join(TEST_DATA_ROOT, 'images'), join(TEST_DATA_ROOT, 'linked'));
-};
+const happyOverview = () => ({
+  totalSize: 3_100_800_000,
+  dataDir: 'data',
+  categories: [
+    { key: 'images', path: 'data/images', size: 3_100_000_000, fileCount: 2400 },
+    { key: 'brain', path: 'data/brain', size: 800_000, fileCount: 60 },
+  ],
+});
 
 beforeEach(() => {
   resetIntrospectionCache();
   vi.restoreAllMocks();
   queryMock.mockReset();
   queryMock.mockImplementation(async (sql) => happyQueries(sql));
-  writeFixtureTree();
+  overviewMock.mockReset();
+  overviewMock.mockResolvedValue(happyOverview());
 });
-
-afterAll(() => rmSync(TEST_DATA_ROOT, { recursive: true, force: true }));
 
 describe('getCityIntrospection — db section', () => {
   it('maps tables with coerced numbers, embedding flags, size, and migrations', async () => {
@@ -108,19 +99,21 @@ describe('getCityIntrospection — db section', () => {
 });
 
 describe('getCityIntrospection — fs section', () => {
-  it('walks domains recursively, rolls loose files into (root), sorts by size', async () => {
+  it('maps the data overview into harbor domains + totals', async () => {
     const { fs } = await getCityIntrospection();
-    expect(fs.domains.map((d) => d.name)).toEqual(['images', 'brain', '(root)']);
-    expect(fs.domains[0]).toEqual({ name: 'images', bytes: 8, files: 2 });
-    expect(fs.domains[1]).toEqual({ name: 'brain', bytes: 7, files: 1 });
-    expect(fs.domains[2]).toEqual({ name: '(root)', bytes: 2, files: 1 });
-    expect(fs.totalBytes).toBe(17);
-    expect(fs.totalFiles).toBe(4);
+    expect(fs.domains).toEqual([
+      { name: 'images', bytes: 3_100_000_000, files: 2400 },
+      { name: 'brain', bytes: 800_000, files: 60 },
+    ]);
+    expect(fs.totalBytes).toBe(3_100_800_000);
+    expect(fs.totalFiles).toBe(2460);
   });
 
-  it('skips symlinked directories entirely', async () => {
-    const { fs } = await getCityIntrospection();
-    expect(fs.domains.find((d) => d.name === 'linked')).toBeUndefined();
+  it('returns fs: null (absent) when the overview fails, keeping the db section', async () => {
+    overviewMock.mockRejectedValue(new Error('du exploded'));
+    const result = await getCityIntrospection();
+    expect(result.fs).toBeNull();
+    expect(result.db.tables).toHaveLength(3);
   });
 });
 
@@ -131,12 +124,13 @@ describe('getCityIntrospection — cache discipline', () => {
     const second = await getCityIntrospection();
     expect(second).toBe(first);
     expect(queryMock.mock.calls.length).toBe(callsAfterFirst);
+    expect(overviewMock).toHaveBeenCalledTimes(1);
   });
 
   it('serves stale immediately past the TTL while revalidating in the background', async () => {
     const first = await getCityIntrospection();
     // Jump past the TTL without fake timers — the background rebuild does real
-    // (mocked-fs) I/O that fake timers can't flush.
+    // async work that fake timers can't flush.
     vi.spyOn(Date, 'now').mockReturnValue(Date.now() + INTROSPECTION_TTL_MS + 1000);
 
     // Make the rebuild distinguishable.
@@ -146,7 +140,7 @@ describe('getCityIntrospection — cache discipline', () => {
     });
 
     const stale = await getCityIntrospection();
-    expect(stale).toBe(first); // immediate stale answer, no blocking on the walk
+    expect(stale).toBe(first); // immediate stale answer, no blocking on the rebuild
 
     // Once the background rebuild settles, the fresh payload is served.
     await vi.waitFor(async () => {

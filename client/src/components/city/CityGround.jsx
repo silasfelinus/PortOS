@@ -9,8 +9,8 @@ import { WORLD } from '../../utils/cityPlan';
 // The city ground stops at the master plan's shoreline (z = WORLD.shorelineZ) — the bay
 // (CityWater) owns everything north of it. Both the pavement plane and the neon grid are
 // sized/offset to end exactly at the water's edge.
-const GROUND_HALF = 60;
-const GROUND_DEPTH = GROUND_HALF - WORLD.shorelineZ; // shoreline → +60
+const GROUND_HALF = WORLD.landHalf;
+const GROUND_DEPTH = GROUND_HALF - WORLD.shorelineZ; // shoreline → +landHalf
 const GROUND_CENTER_Z = (GROUND_HALF + WORLD.shorelineZ) / 2;
 
 // Reflective puddle/wet-ground patches
@@ -115,7 +115,7 @@ export default function CityGround({ settings }) {
     <group>
       {/* Reflective dark ground plane */}
       {reflectionsEnabled && (
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.02, GROUND_CENTER_Z]}>
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, WORLD.groundY, GROUND_CENTER_Z]}>
           <planeGeometry args={[GROUND_HALF * 2, GROUND_DEPTH]} />
           <meshStandardMaterial
             ref={groundMatRef}

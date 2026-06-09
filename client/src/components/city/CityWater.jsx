@@ -49,7 +49,6 @@ export default function CityWater({ settings }) {
   const waveTex = useMemo(() => makeWaveTexture(), []);
   useEffect(() => () => waveTex.dispose(), [waveTex]);
 
-  const matRef = useRef();
   const shimmerRef = useRef();
 
   const waterColor = mixHex(NIGHT_WATER, DAY_WATER, dayMix);
@@ -76,7 +75,6 @@ export default function CityWater({ settings }) {
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, WORLD.waterY, centerZ]}>
         <planeGeometry args={[span * 2, span]} />
         <meshStandardMaterial
-          ref={matRef}
           color={waterColor}
           roughness={0.18}
           metalness={0.55}

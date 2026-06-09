@@ -1,7 +1,7 @@
 import { useMemo, useRef, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { cityDayMix, mixHex } from './cityConstants';
+import { cityDayMix, cityShowDetail, mixHex } from './cityConstants';
 import { useCityPalette } from './CityPaletteContext';
 import { TRANSIT } from '../../utils/cityPlan';
 
@@ -15,7 +15,7 @@ const TRAM_SIZE = [0.9, 0.5, 0.42];
 export default function CityTransitLoop({ settings }) {
   const { accent, tintStructure } = useCityPalette();
   const dayMix = cityDayMix(settings);
-  const showTrams = (settings?.particleDensity ?? 1) > 0.5;
+  const showTrams = cityShowDetail(settings);
 
   const curve = useMemo(() => {
     const points = TRANSIT.stops.map((s) => new THREE.Vector3(...s.point));

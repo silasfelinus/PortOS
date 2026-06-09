@@ -6,20 +6,23 @@
 // head. The `data/` filesystem becomes the **archive racks** — one shipping-container rack
 // per domain directory, lit slats log-scaled by disk usage. Data arrives from
 // GET /api/city/introspection; `db: null` (unreachable) renders as a dimmed offline quay,
-// distinct from a reachable-but-empty database. No three.js / React imports so the topology
-// is unit-testable (mirrors cityMemoryDistrict.js / cityTaskQueue.js).
+// distinct from a reachable-but-empty database. Structure colors are resolved by the
+// component from the live theme palette (deterministic per name via getAccentColor). No
+// three.js / React imports so the topology is unit-testable (mirrors cityMemoryDistrict.js).
 
-import { hashString } from './hashString';
-import { formatBytes } from './formatters';
+import { formatBytes, formatCompactCount } from './formatters';
+import { scaleMetricToHeight } from './cityDistrictLayout';
 import { PARCELS } from './cityPlan';
 
 export const DATA_HARBOR = {
   base: PARCELS.dataHarbor.anchor, // pier district over the bay (see cityPlan.js)
   deckY: 0.55, // pier deck height above the water
+  quayOffsetX: 11, // west quay (silos) / east yard (racks) x-distance from the pier axis
   maxSilos: 10, // visible table-silo cap; the rest fold into the overflow count
   maxRacks: 8, // visible domain-rack cap
   siloSpacing: 3.6, // x-distance between adjacent silos
-  siloRowGap: 4.4, // z-distance between the two silo rows
+  rowGap: 4.4, // z-distance between the two rows of a quay/yard
+  rowFrontZ: 1.5, // front (bay-side) row's z offset from the district base
   diskHeight: 0.42, // one disk in a silo stack
   diskGap: 0.14, // vertical gap between disks
   minDisks: 1,
@@ -33,45 +36,41 @@ export const DATA_HARBOR = {
   rackSlats: 8, // emissive slat rows per rack; lit count tracks the fill ratio
 };
 
-// Deterministic silo color per table name — the city's neon spread, hashed so a table keeps
-// its color across refetches and installs.
-const PALETTE = ['#06b6d4', '#ec4899', '#8b5cf6', '#22c55e', '#f59e0b', '#3b82f6', '#f43f5e', '#a855f7'];
-export function tableColor(name) {
-  return PALETTE[hashString(String(name || '')) % PALETTE.length];
-}
-
 const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
 
-// log2-scale `value` into [0, 1] against `max` (both floored at 0). A zero max yields 0.
+// log2-scale `value` into [0, 1] against `max`. Delegates the curve to the shared
+// scaleMetricToHeight so every district's log scaling stays one implementation.
 const logRatio = (value, max) => {
-  const v = Math.max(0, Number.isFinite(value) ? value : 0);
-  const m = Math.max(0, Number.isFinite(max) ? max : 0);
-  if (m <= 0) return 0;
-  return clamp(Math.log2(1 + v) / Math.log2(1 + m), 0, 1);
+  const scaledMax = scaleMetricToHeight(max, { k: 1 });
+  if (scaledMax <= 0) return 0;
+  return clamp(scaleMetricToHeight(value, { k: 1 }) / scaledMax, 0, 1);
 };
 
-const shortCount = (n) => {
-  if (!Number.isFinite(n)) return '0';
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
+// Two-row layout shared by the silo quay and the rack yard: items split into a front
+// (bay-side) row and a back row, each row x-centered; `stagger` shifts the back row by a
+// half-step (the silo quay uses it so stacks read brick-laid rather than gridded).
+const twoRowOffset = (index, total, spacing, stagger = 0) => {
+  const perRow = Math.ceil(total / 2);
+  const row = index < perRow ? 0 : 1;
+  const col = row === 0 ? index : index - perRow;
+  const rowCount = row === 0 ? perRow : total - perRow;
+  return {
+    dx: col * spacing - ((rowCount - 1) * spacing) / 2 + row * stagger,
+    dz: DATA_HARBOR.rowFrontZ - row * DATA_HARBOR.rowGap,
+  };
 };
 
 // Silo geometry for the visible top-N tables (already size-sorted by the server; re-sorted
-// here defensively). Two rows: the heavyweights up front (bay side), the rest behind.
+// here defensively).
 function computeSilos(tables) {
   const sorted = [...tables].sort((a, b) => (b.totalBytes ?? 0) - (a.totalBytes ?? 0));
   const visible = sorted.slice(0, DATA_HARBOR.maxSilos);
   const maxRows = Math.max(...visible.map((t) => t.rowEstimate ?? 0), 0);
   const maxBytes = Math.max(...visible.map((t) => t.totalBytes ?? 0), 0);
   const [bx, , bz] = DATA_HARBOR.base;
-  const perRow = Math.ceil(visible.length / 2);
 
   return visible.map((table, i) => {
-    const row = i < perRow ? 0 : 1;
-    const col = row === 0 ? i : i - perRow;
-    const rowCount = row === 0 ? perRow : visible.length - perRow;
-    const rowWidth = (rowCount - 1) * DATA_HARBOR.siloSpacing;
+    const { dx, dz } = twoRowOffset(i, visible.length, DATA_HARBOR.siloSpacing, DATA_HARBOR.siloSpacing / 2);
     const diskCount = clamp(
       Math.round(1 + logRatio(table.rowEstimate, maxRows) * (DATA_HARBOR.maxDisks - 1)),
       DATA_HARBOR.minDisks,
@@ -81,41 +80,36 @@ function computeSilos(tables) {
       + logRatio(table.totalBytes, maxBytes) * (DATA_HARBOR.maxDiskRadius - DATA_HARBOR.minDiskRadius);
     return {
       name: table.name,
-      x: bx - 11 + col * DATA_HARBOR.siloSpacing - rowWidth / 2 + (row === 0 ? 0 : DATA_HARBOR.siloSpacing / 2),
-      z: bz + (row === 0 ? 1.5 : 1.5 - DATA_HARBOR.siloRowGap),
+      x: bx - DATA_HARBOR.quayOffsetX + dx,
+      z: bz + dz,
       diskCount,
       diskRadius,
       height: diskCount * (DATA_HARBOR.diskHeight + DATA_HARBOR.diskGap),
       hasEmbedding: Boolean(table.hasEmbedding),
-      color: tableColor(table.name),
       rowEstimate: table.rowEstimate ?? 0,
       totalBytes: table.totalBytes ?? 0,
       label: String(table.name || '').toUpperCase(),
-      sublabel: `${shortCount(table.rowEstimate ?? 0)} ROWS`,
+      sublabel: `${formatCompactCount(table.rowEstimate ?? 0)} ROWS`,
       bytesLabel: formatBytes(table.totalBytes ?? 0),
     };
   });
 }
 
 // Rack geometry for the visible top-N data/ domains (server sorts by size; defensively
-// re-sorted). Two rows on the east pier — a tight container yard.
+// re-sorted). Same two-row layout — a tight container yard.
 function computeRacks(domains) {
   const sorted = [...domains].sort((a, b) => (b.bytes ?? 0) - (a.bytes ?? 0));
   const visible = sorted.slice(0, DATA_HARBOR.maxRacks);
   const maxBytes = Math.max(...visible.map((d) => d.bytes ?? 0), 0);
   const [bx, , bz] = DATA_HARBOR.base;
-  const perRow = Math.ceil(visible.length / 2);
 
   return visible.map((domain, i) => {
-    const row = i < perRow ? 0 : 1;
-    const col = row === 0 ? i : i - perRow;
-    const rowCount = row === 0 ? perRow : visible.length - perRow;
-    const rowWidth = (rowCount - 1) * DATA_HARBOR.rackSpacing;
+    const { dx, dz } = twoRowOffset(i, visible.length, DATA_HARBOR.rackSpacing);
     const fillRatio = logRatio(domain.bytes, maxBytes);
     return {
       name: domain.name,
-      x: bx + 11 + col * DATA_HARBOR.rackSpacing - rowWidth / 2,
-      z: bz + (row === 0 ? 1.5 : 1.5 - DATA_HARBOR.siloRowGap),
+      x: bx + DATA_HARBOR.quayOffsetX + dx,
+      z: bz + dz,
       width: DATA_HARBOR.rackWidth,
       depth: DATA_HARBOR.rackDepth,
       height: DATA_HARBOR.rackHeight,
@@ -127,6 +121,20 @@ function computeRacks(domains) {
       sublabel: formatBytes(domain.bytes ?? 0),
     };
   });
+}
+
+// A deck sized to contain a set of structures (plus a margin) — so a spacing or cap
+// retune can never strand a silo off the pier. Falls back to a minimum platform so an
+// empty quay still reads as a deck, not open water.
+function deckFor(structures, centerX, centerZ, margin = 2.2) {
+  let maxHalfW = 5;
+  let maxHalfD = 4;
+  for (const s of structures) {
+    const r = s.diskRadius ?? Math.max(s.width ?? 0, s.depth ?? 0) / 2;
+    maxHalfW = Math.max(maxHalfW, Math.abs(s.x - centerX) + r);
+    maxHalfD = Math.max(maxHalfD, Math.abs(s.z - centerZ) + r);
+  }
+  return { x: centerX, z: centerZ, w: (maxHalfW + margin) * 2, d: (maxHalfD + margin) * 2 };
 }
 
 // The whole district model from one introspection payload.
@@ -141,14 +149,23 @@ export function computeDataHarbor(introspection) {
   const tables = db?.tables ?? [];
   const domains = fsSection?.domains ?? [];
 
+  const [bx, , bz] = DATA_HARBOR.base;
+  const silos = computeSilos(tables);
+  const racks = computeRacks(domains);
+  const rowCenterZ = bz + DATA_HARBOR.rowFrontZ - DATA_HARBOR.rowGap / 2;
+
   return {
     empty: false,
     dbDown: !db,
     base: DATA_HARBOR.base,
-    silos: computeSilos(tables),
-    racks: computeRacks(domains),
+    silos,
+    racks,
+    decks: [
+      deckFor(silos, bx - DATA_HARBOR.quayOffsetX, rowCenterZ),
+      deckFor(racks, bx + DATA_HARBOR.quayOffsetX, rowCenterZ),
+    ],
     obelisk: db?.migrations
-      ? { applied: db.migrations.applied ?? 0, lastApplied: db.migrations.lastApplied ?? null }
+      ? { applied: db.migrations.applied ?? 0, lastApplied: db.migrations.lastApplied ?? null, x: bx, z: bz - 7 }
       : null,
     totals: {
       tableCount: tables.length,

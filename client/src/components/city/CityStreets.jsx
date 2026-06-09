@@ -78,7 +78,7 @@ export default function CityStreets({ settings }) {
     // The pad color is each district's deterministic neon accent (same picker the
     // buildings use), well under the labels so it never competes with them.
     for (const [id, parcel] of Object.entries(PARCELS)) {
-      if (parcel.dynamic || parcel.water || id === 'aiCore') continue;
+      if (parcel.dynamic || parcel.water || parcel.noPad) continue;
       const tint = new THREE.Color(getAccentColor({ name: id }, neonAccents)).multiplyScalar(0.5);
       pushColored(flatRect(parcel.anchor[0], parcel.anchor[2], parcel.w, parcel.d, 0, 0.012), tint);
     }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeDataHarbor, tableColor, DATA_HARBOR } from './cityDataHarbor';
+import { computeDataHarbor, DATA_HARBOR } from './cityDataHarbor';
 import { PARCELS, isInWater, WORLD } from './cityPlan';
 
 const table = (name, rowEstimate, totalBytes, hasEmbedding = false) =>
@@ -78,17 +78,25 @@ describe('computeDataHarbor', () => {
     expect(district.silos.map((s) => s.name)).not.toContain('t0');
   });
 
-  it('keeps every structure inside the harbor parcel, over the water', () => {
+  it('keeps every structure inside the harbor parcel, over the water, on a deck', () => {
     const intro = happyIntrospection();
     intro.db.tables = Array.from({ length: 14 }, (_, i) => table(`t${i}`, i * 10, i * 1000));
     intro.fs.domains = Array.from({ length: 11 }, (_, i) => domain(`d${i}`, i * 1000, i));
     const district = computeDataHarbor(intro);
     const parcel = PARCELS.dataHarbor;
+    const inParcel = (x, z, name) => {
+      expect(Math.abs(x - parcel.anchor[0]), name).toBeLessThanOrEqual(parcel.w / 2);
+      expect(Math.abs(z - parcel.anchor[2]), name).toBeLessThanOrEqual(parcel.d / 2);
+    };
     for (const s of [...district.silos, ...district.racks]) {
-      expect(Math.abs(s.x - parcel.anchor[0]), s.name).toBeLessThanOrEqual(parcel.w / 2);
-      expect(Math.abs(s.z - parcel.anchor[2]), s.name).toBeLessThanOrEqual(parcel.d / 2);
+      inParcel(s.x, s.z, s.name);
       expect(isInWater(s.x, s.z), s.name).toBe(true);
+      // Every structure stands on one of the decks the helper emitted.
+      const onDeck = district.decks.some((deck) =>
+        Math.abs(s.x - deck.x) <= deck.w / 2 && Math.abs(s.z - deck.z) <= deck.d / 2);
+      expect(onDeck, `${s.name} on a deck`).toBe(true);
     }
+    inParcel(district.obelisk.x, district.obelisk.z, 'obelisk');
   });
 
   it('scales rack slats by log byte share with a lit floor for non-empty domains', () => {
@@ -103,7 +111,7 @@ describe('computeDataHarbor', () => {
 
   it('carries totals and the migration obelisk', () => {
     const district = computeDataHarbor(happyIntrospection());
-    expect(district.obelisk).toEqual({ applied: 12, lastApplied: '2026-06-01T00:00:00.000Z' });
+    expect(district.obelisk).toMatchObject({ applied: 12, lastApplied: '2026-06-01T00:00:00.000Z' });
     expect(district.totals.tableCount).toBe(3);
     expect(district.totals.dbSizeLabel).toBe('4.8 MB');
     expect(district.totals.fsLabel).toBe('2.9 GB');
@@ -112,14 +120,6 @@ describe('computeDataHarbor', () => {
 
   it('is deterministic', () => {
     expect(computeDataHarbor(happyIntrospection())).toEqual(computeDataHarbor(happyIntrospection()));
-  });
-});
-
-describe('tableColor', () => {
-  it('is stable per name and varies across names', () => {
-    expect(tableColor('memories')).toBe(tableColor('memories'));
-    const colors = new Set(['memories', 'catalog_scraps', 'universes', 'memory_links'].map(tableColor));
-    expect(colors.size).toBeGreaterThan(1);
   });
 });
 

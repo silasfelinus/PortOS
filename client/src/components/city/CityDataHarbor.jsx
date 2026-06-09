@@ -5,7 +5,7 @@ import { PIXEL_FONT_URL, cityDayMix } from './cityConstants';
 import { useCityPalette } from './CityPaletteContext';
 import CityLabel from './CityLabel';
 import { computeDataHarbor, DATA_HARBOR } from '../../utils/cityDataHarbor';
-import { WORLD } from '../../utils/cityPlan';
+import { WORLD, AVENUE_WIDTH } from '../../utils/cityPlan';
 
 // CyberCity's Data Harbor: a pier district over the bay (master plan, north shore) that
 // renders GET /api/city/introspection — the database quay (one disk-stack silo per Postgres
@@ -27,19 +27,21 @@ function HarborHoloCard({ selected }) {
     <Html position={[data.x, DATA_HARBOR.deckY + data.height + 2.6, data.z]} center distanceFactor={12} style={{ pointerEvents: 'none' }}>
       <div className={`bg-black/90 border ${accentClass} rounded-md px-3 py-2 whitespace-nowrap backdrop-blur-sm`} style={{ boxShadow: '0 0 16px rgba(6,182,212,0.25)' }}>
         <div className="font-pixel tracking-wider font-bold text-[12px] max-w-[180px] truncate">{data.label}</div>
-        {kind === 'silo' ? (
-          <div className="text-[9px] font-pixel tracking-wide mt-1 space-y-0.5 text-gray-300">
-            <div>{data.rowEstimate.toLocaleString()} rows</div>
-            <div>{data.bytesLabel}</div>
-            {data.hasEmbedding && <div className="text-pink-400">pgvector embeddings</div>}
-          </div>
-        ) : (
-          <div className="text-[9px] font-pixel tracking-wide mt-1 space-y-0.5 text-gray-300">
-            <div>{data.sublabel}</div>
-            <div>{data.files.toLocaleString()} files</div>
-            <div className="text-gray-500">data/{data.name === '(root)' ? '' : data.name}</div>
-          </div>
-        )}
+        <div className="text-[9px] font-pixel tracking-wide mt-1 space-y-0.5 text-gray-300">
+          {kind === 'silo' ? (
+            <>
+              <div>{data.rowEstimate.toLocaleString()} rows</div>
+              <div>{data.bytesLabel}</div>
+              {data.hasEmbedding && <div className="text-pink-400">pgvector embeddings</div>}
+            </>
+          ) : (
+            <>
+              <div>{data.sublabel}</div>
+              <div>{data.files.toLocaleString()} files</div>
+              <div className="text-gray-500">data/{data.name}</div>
+            </>
+          )}
+        </div>
       </div>
     </Html>
   );
@@ -47,7 +49,7 @@ function HarborHoloCard({ selected }) {
 
 // One database table: a stack of glowing disks on a dark plinth; pgvector tables carry a
 // slowly orbiting ring (rotated by the parent's single useFrame via ringRefs).
-function TableSilo({ silo, onSelect, registerRing, dayMix }) {
+function TableSilo({ silo, color, onSelect, registerRing, dayMix }) {
   const disks = useMemo(() => Array.from({ length: silo.diskCount }, (_, i) => i), [silo.diskCount]);
   const [hovered, setHovered] = useState(false);
   const step = DATA_HARBOR.diskHeight + DATA_HARBOR.diskGap;
@@ -67,8 +69,8 @@ function TableSilo({ silo, onSelect, registerRing, dayMix }) {
           <mesh key={i} position={[0, 0.2 + step * i + DATA_HARBOR.diskHeight / 2, 0]}>
             <cylinderGeometry args={[silo.diskRadius, silo.diskRadius, DATA_HARBOR.diskHeight, 20]} />
             <meshStandardMaterial
-              color={silo.color}
-              emissive={silo.color}
+              color={color}
+              emissive={color}
               // The top disk reads as the silo's "live" surface; lower disks dim slightly.
               emissiveIntensity={(i === silo.diskCount - 1 ? 0.55 : 0.28) + (hovered ? 0.3 : 0)}
               metalness={0.4}
@@ -81,10 +83,10 @@ function TableSilo({ silo, onSelect, registerRing, dayMix }) {
       {silo.hasEmbedding && (
         <mesh ref={registerRing} position={[0, 0.2 + step * silo.diskCount + 0.35, 0]} rotation={[Math.PI / 2.6, 0, 0]}>
           <torusGeometry args={[silo.diskRadius + 0.45, 0.05, 8, 32]} />
-          <meshBasicMaterial color={silo.color} transparent opacity={0.7} toneMapped={false} />
+          <meshBasicMaterial color={color} transparent opacity={0.7} toneMapped={false} />
         </mesh>
       )}
-      <CityLabel position={[0, silo.height + 1.5, 0]} fontSize={0.42} color={silo.color} dayMix={dayMix} anchorX="center" anchorY="middle" font={PIXEL_FONT_URL} maxWidth={7}>
+      <CityLabel position={[0, silo.height + 1.5, 0]} fontSize={0.42} color={color} dayMix={dayMix} anchorX="center" anchorY="middle" font={PIXEL_FONT_URL} maxWidth={7}>
         {silo.label}
       </CityLabel>
       <CityLabel position={[0, silo.height + 1.05, 0]} fontSize={0.3} color="#94a3b8" dayMix={dayMix} anchorX="center" anchorY="middle" font={PIXEL_FONT_URL} maxWidth={7}>
@@ -164,22 +166,26 @@ function PierDeck({ x, z, width, depth, tintStructure }) {
 }
 
 export default function CityDataHarbor({ introspection, settings }) {
-  const { accent, tintStructure } = useCityPalette();
+  const { accent, tintStructure, getAccentColor } = useCityPalette();
   const district = useMemo(() => computeDataHarbor(introspection), [introspection]);
   const [selected, setSelected] = useState(null);
   const dayMix = cityDayMix(settings);
   const animate = (settings?.particleDensity ?? 1) >= 0.5;
 
-  // All pgvector rings spin from one frame callback (single mutation site).
-  const ringRefs = useRef([]);
-  ringRefs.current = [];
-  const registerRing = useCallback((el) => { if (el) ringRefs.current.push(el); }, []);
+  // All pgvector rings spin from one frame callback (single mutation site). Keyed by
+  // silo name (set on mount, cleared on unmount) so a re-render that doesn't remount
+  // the silos can't strand the registry empty.
+  const ringRefs = useRef(new Map());
+  const makeRingRef = useCallback((name) => (el) => {
+    if (el) ringRefs.current.set(name, el);
+    else ringRefs.current.delete(name);
+  }, []);
   const offlineRef = useRef();
 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
     if (animate) {
-      for (const ring of ringRefs.current) ring.rotation.z = t * 0.6;
+      for (const ring of ringRefs.current.values()) ring.rotation.z = t * 0.6;
     }
     if (offlineRef.current) {
       offlineRef.current.material.emissiveIntensity = 0.5 + ((Math.sin(t * 2.2) + 1) / 2) * 0.6;
@@ -189,31 +195,35 @@ export default function CityDataHarbor({ introspection, settings }) {
   if (district.empty) return null;
 
   const [bx, , bz] = district.base;
-  const { silos, racks, obelisk, totals, overflow, dbDown } = district;
+  const { silos, racks, decks, obelisk, totals, overflow, dbDown } = district;
   const select = (kind, data) => setSelected((prev) =>
     prev && prev.kind === kind && prev.data.name === data.name ? null : { kind, data });
 
   return (
     <group>
-      {/* Gangway from the shoreline avenue out to the pier head. */}
-      <PierDeck x={bx} z={(WORLD.shorelineZ + bz) / 2} width={4.6} depth={Math.abs(bz - WORLD.shorelineZ) + 2} tintStructure={tintStructure} />
-      {/* West quay (database silos) + east yard (archive racks). */}
-      <PierDeck x={bx - 11} z={bz - 0.6} width={15} depth={11} tintStructure={tintStructure} />
-      <PierDeck x={bx + 11} z={bz - 0.6} width={15} depth={11} tintStructure={tintStructure} />
+      {/* Gangway from the shoreline avenue out to the pier head — same width as the
+          avenue it continues, so the shoreline joint stays seamless. */}
+      <PierDeck x={bx} z={(WORLD.shorelineZ + bz) / 2} width={AVENUE_WIDTH} depth={Math.abs(bz - WORLD.shorelineZ) + 2} tintStructure={tintStructure} />
+      {/* West quay (database silos) + east yard (archive racks) — sized by the helper
+          to contain whatever stands on them. */}
+      {decks.map((deck, i) => (
+        <PierDeck key={i} x={deck.x} z={deck.z} width={deck.w} depth={deck.d} tintStructure={tintStructure} />
+      ))}
 
       {silos.map((silo) => (
         <TableSilo
           key={silo.name}
           silo={silo}
+          color={getAccentColor({ name: silo.name })}
           onSelect={() => select('silo', silo)}
-          registerRing={registerRing}
+          registerRing={silo.hasEmbedding ? makeRingRef(silo.name) : undefined}
           dayMix={dayMix}
         />
       ))}
 
       {/* DB offline: the quay keeps its deck but flies a pulsing red beacon. */}
       {dbDown && (
-        <group position={[bx - 11, DATA_HARBOR.deckY, bz - 0.6]}>
+        <group position={[decks[0].x, DATA_HARBOR.deckY, decks[0].z]}>
           <mesh ref={offlineRef} position={[0, 1.6, 0]}>
             <octahedronGeometry args={[0.9, 0]} />
             <meshStandardMaterial color={OFFLINE_COLOR} emissive={OFFLINE_COLOR} emissiveIntensity={0.8} toneMapped={false} />
@@ -237,7 +247,7 @@ export default function CityDataHarbor({ introspection, settings }) {
 
       {/* Migration obelisk at the pier head. */}
       {obelisk && (
-        <group position={[bx, DATA_HARBOR.deckY, bz - 7]}>
+        <group position={[obelisk.x, DATA_HARBOR.deckY, obelisk.z]}>
           <mesh position={[0, 1.8, 0]}>
             <boxGeometry args={[0.7, 3.6, 0.7]} />
             <meshStandardMaterial color={tintStructure('#16213a')} emissive={accent} emissiveIntensity={0.18} roughness={0.4} toneMapped={false} />

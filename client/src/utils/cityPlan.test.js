@@ -81,6 +81,17 @@ describe('TRANSIT', () => {
     const ids = TRANSIT.stops.map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
+
+  it('derives district stops from their parcel anchors — moving a parcel moves its stop', () => {
+    for (const stop of TRANSIT.stops) {
+      const parcel = PARCELS[stop.id];
+      if (!parcel) continue; // harborGate / warehouse promenade are explicit
+      expect(stop.point[0], stop.id).toBeCloseTo(parcel.anchor[0] * (1 - TRANSIT.stopPull), 6);
+      expect(stop.point[2], stop.id).toBeCloseTo(parcel.anchor[2] * (1 - TRANSIT.stopPull), 6);
+    }
+    // The loop serves most quarters: at least 7 stops are parcel-derived.
+    expect(TRANSIT.stops.filter((s) => PARCELS[s.id]).length).toBeGreaterThanOrEqual(7);
+  });
 });
 
 describe('computeStreets', () => {

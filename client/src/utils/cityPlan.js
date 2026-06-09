@@ -25,7 +25,11 @@
 export const WORLD = {
   bound: 180, // hard XZ world bound (matches PlayerController)
   shorelineZ: -56, // land for z > shorelineZ; water (the bay) beyond
-  waterY: -0.04, // water plane height — above the terrain (-0.08), below the city ground (-0.02)
+  landHalf: 60, // half-extent of the paved city ground plane (x ±landHalf, z shoreline→+landHalf)
+  // The ground y-stack, bottom to top: terrain shader < water plane < city ground.
+  terrainY: -0.08,
+  waterY: -0.04,
+  groundY: -0.02,
   waterSpan: 520, // how far the water plane extends past the shoreline / to each side
 };
 
@@ -36,7 +40,8 @@ export const WORLD = {
 // pre-plan positions except: the voice beacon steps aside for the harbor avenue, and the
 // Data Harbor is new — piers over the bay, straight ahead of the default camera.
 export const PARCELS = {
-  aiCore: { anchor: [0, 0, 0], w: 24, d: 24, label: 'AI CORE PLAZA' },
+  // noPad: the plaza paints its own sidewalk ring — no tinted ground pad.
+  aiCore: { anchor: [0, 0, 0], w: 24, d: 24, noPad: true, label: 'AI CORE PLAZA' },
   downtown: { anchor: [0, 0, 0], w: 60, d: 60, dynamic: true, label: 'DOWNTOWN' },
   warehouse: { anchor: [0, 0, 30], w: 60, d: 60, dynamic: true, label: 'ARCHIVE DISTRICT' },
   backupVault: { anchor: [-34, 0, -10], w: 7, d: 7, label: 'BACKUP VAULT' },
@@ -59,21 +64,30 @@ export const PARCELS = {
 export const PLAZA = { center: [0, 0, 0], radius: 12, sidewalkOuter: 14.5 };
 
 // Elevated transit loop — a closed ride through every quarter, rendered as a glowing tube
-// with trams orbiting it. Stops are pulled toward the loop's centerline (offset from each
-// parcel anchor) so the track skims districts instead of impaling their monuments.
+// with trams orbiting it. District stops are DERIVED from their parcel anchors (pulled 10%
+// toward the city center so the track skims districts instead of impaling their monuments)
+// — move a parcel and its tram stop follows. The harbor-gate stop (on the shoreline, since
+// the track stays over land) is the one explicit point.
+const TRANSIT_Y = 9; // track height — above street props, below most rooftops
+const TRANSIT_STOP_PULL = 0.1;
+const districtStop = (id) => {
+  const [x, , z] = PARCELS[id].anchor;
+  return { id, point: [x * (1 - TRANSIT_STOP_PULL), TRANSIT_Y, z * (1 - TRANSIT_STOP_PULL)] };
+};
 export const TRANSIT = {
-  y: 9, // track height — above street props, below most rooftops
+  y: TRANSIT_Y,
+  stopPull: TRANSIT_STOP_PULL,
   stops: [
-    { id: 'productivity', point: [-44, 9, 24] },
-    { id: 'backupVault', point: [-32, 9, -8] },
-    { id: 'memory', point: [-40, 9, -27] },
-    { id: 'jira', point: [-20, 9, -40] },
-    { id: 'harborGate', point: [0, 9, -47] },
-    { id: 'goals', point: [26, 9, -36] },
-    { id: 'artifacts', point: [40, 9, -25] },
-    { id: 'taskQueue', point: [32, 9, -8] },
-    { id: 'health', point: [44, 9, 24] },
-    { id: 'warehouse', point: [0, 9, 38] },
+    districtStop('productivity'),
+    districtStop('backupVault'),
+    districtStop('memory'),
+    districtStop('jira'),
+    { id: 'harborGate', point: [0, TRANSIT_Y, WORLD.shorelineZ + 9] },
+    districtStop('goals'),
+    districtStop('artifacts'),
+    districtStop('taskQueue'),
+    districtStop('health'),
+    districtStop('warehouse'),
   ],
   tramCount: 3,
   tramSpeed: 0.012, // loop fraction per second — a leisurely orbit (~80s per lap)
@@ -90,7 +104,9 @@ export const isInWater = (x, z, margin = 0) => z < WORLD.shorelineZ + margin;
 
 const RING_RADIUS = 30; // octagonal ring road just outside the downtown grid
 const ROAD_WIDTH = 3.2;
-const AVENUE_WIDTH = 4.6;
+// Exported: the Data Harbor's pier gangway continues the avenue over the water, so the
+// two widths must agree or the shoreline joint shows a seam.
+export const AVENUE_WIDTH = 4.6;
 const SPOKE_CLEARANCE = 6; // stop a spoke this short of the district anchor
 
 // Static parcels that get a street spoke from the ring road. The harbor is served by the
