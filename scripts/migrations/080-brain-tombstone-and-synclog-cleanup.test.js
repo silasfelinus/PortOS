@@ -90,6 +90,27 @@ describe('migration 080 — brain tombstone + sync-log cleanup', () => {
     expect(lines.find((l) => l.id === 'b').seq).toBe(5);
   });
 
+  it('keeps the DELETE as the terminal entry when a stale create has the highest seq (LWW, not seq-max)', async () => {
+    // The ping-pong: original create (older updatedAt), the winning delete
+    // (newest updatedAt), then a stale echoed create that re-uses the OLD
+    // updatedAt but lands at the highest SEQ. A fresh peer must pull the delete,
+    // not the stale create, or the record resurrects.
+    writeLog([
+      { seq: 1, op: 'create', type: 'links', id: 'x', record: { updatedAt: '2026-01-01T00:00:00.000Z' } },
+      { seq: 2, op: 'delete', type: 'links', id: 'x', record: { updatedAt: '2026-01-02T00:00:00.000Z' } },
+      { seq: 99, op: 'create', type: 'links', id: 'x', record: { updatedAt: '2026-01-01T00:00:00.000Z' } },
+    ]);
+
+    await migration.up({ rootDir });
+
+    const lines = readLogLines();
+    expect(lines).toHaveLength(1);
+    const terminal = lines[0];
+    expect(terminal.op).toBe('delete'); // LWW winner, NOT the seq-99 stale create
+    expect(terminal.record.updatedAt).toBe('2026-01-02T00:00:00.000Z');
+    expect(terminal.seq).toBe(99); // max seq preserved by stamping the winner
+  });
+
   it('is idempotent — a second run is a no-op', async () => {
     writeStore('links', {
       'ghost-1': { url: 'https://x', updatedAt: '2026-01-01T00:00:00.000Z', originInstanceId: 'peer-a' },
