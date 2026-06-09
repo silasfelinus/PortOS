@@ -51,6 +51,7 @@ export * from './cityJiraDistrict.js';
 export * from './cityMemoryDistrict.js';
 export * from './cityMiniMap.js';
 export * from './cityPhotoMode.js';
+export * from './cityPlan.js';
 export * from './cityProductivity.js';
 export * from './citySeasonalDecor.js';
 export * from './citySoundscape.js';

@@ -37,6 +37,7 @@ import CitySignalBeacons from './CitySignalBeacons';
 import CitySky from './CitySky';
 import CityGalaxySky from './CityGalaxySky';
 import CityLandscape from './CityLandscape';
+import CityWater from './CityWater';
 import CityEnergyOverlay from './CityEnergyOverlay';
 import PlayerController from './PlayerController';
 import CameraTransition from './CameraTransition';
@@ -201,6 +202,7 @@ export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, 
       <CitySky settings={settings} />
       <CityLights settings={settings} />
       <CityLandscape settings={settings} />
+      <CityWater settings={settings} />
       <CityEnergyOverlay chronotype={chronotype} settings={settings} />
       <CityStarfield settings={settings} />
       <CityShootingStars playSfx={playSfx} settings={settings} />
