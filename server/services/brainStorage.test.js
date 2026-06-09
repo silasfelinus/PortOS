@@ -92,6 +92,27 @@ describe('brainStorage tombstones', () => {
     expect(rec.updatedAt).toBe(tombstoneTime);
   });
 
+  it('rejects a create with no updatedAt (cannot defeat the tombstone guard)', async () => {
+    await brainStorage.applyRemoteRecord('people', 'no-ts', { updatedAt: ISO('2026-01-01') }, 'delete');
+    const res = await brainStorage.applyRemoteRecord('people', 'no-ts', { name: 'X' }, 'create');
+    expect(res.applied).toBe(false);
+    expect(res.reason).toBe('missing_timestamp');
+    expect(await brainStorage.getById('people', 'no-ts')).toBeNull();
+  });
+
+  it('persists a _deleted create as a proper tombstone (defense-in-depth)', async () => {
+    const res = await brainStorage.applyRemoteRecord(
+      'projects', 'fwd-1',
+      { _deleted: true, updatedAt: ISO('2026-04-01'), originInstanceId: 'peer-z' },
+      'create'
+    );
+    expect(res.applied).toBe(true);
+    const rec = await rawRecord('projects', 'fwd-1');
+    expect(rec._deleted).toBe(true);
+    expect(rec.deletedAt).toBe(ISO('2026-04-01')); // not a malformed live record
+    expect(await brainStorage.getById('projects', 'fwd-1')).toBeNull();
+  });
+
   it('allows a genuinely newer create to resurrect a tombstone', async () => {
     await brainStorage.applyRemoteRecord(
       'admin', 'r1', { updatedAt: ISO('2026-01-01') }, 'delete'

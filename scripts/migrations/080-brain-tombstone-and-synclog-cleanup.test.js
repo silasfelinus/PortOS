@@ -117,4 +117,14 @@ describe('migration 080 — brain tombstone + sync-log cleanup', () => {
     const seqs = compactedLines.map((l) => JSON.parse(l).seq);
     expect(Math.max(...seqs)).toBe(99);
   });
+
+  it('preserves max seq even when the highest-seq entry lacks type/id', () => {
+    const log = [
+      { seq: 10, op: 'create', type: 'links', id: 'a', record: { updatedAt: '2026-01-01T00:00:00.000Z' } },
+      { seq: 200 }, // a malformed/typeless high-seq entry — must still anchor the cursor
+    ];
+    const { compactedLines } = computeBrainCleanup(log, {}, { nowIso: '2026-06-08T00:00:00.000Z' });
+    const seqs = compactedLines.map((l) => JSON.parse(l).seq);
+    expect(Math.max(...seqs)).toBe(200);
+  });
 });

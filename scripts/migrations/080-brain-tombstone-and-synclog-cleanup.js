@@ -92,11 +92,21 @@ export function computeBrainCleanup(logEntries, stores, { nowIso }) {
   // 2. Compact the log to the terminal entry per (type, id), preserving seq.
   //    Keep insertion order by seq so the file stays monotonic for peers.
   const terminal = new Map(); // key -> entry (last wins)
+  let maxSeqEntry = null; // the single highest-seq entry, type/id or not
   for (const e of logEntries) {
-    if (e?.seq == null || !e.type || !e.id) continue;
+    if (e?.seq == null) continue;
+    if (!maxSeqEntry || e.seq > maxSeqEntry.seq) maxSeqEntry = e;
+    if (!e.type || !e.id) continue;
     terminal.set(`${e.type}/${e.id}`, e);
   }
-  const compactedLines = [...terminal.values()]
+  const kept = [...terminal.values()];
+  // Guarantee the max seq survives even if the highest-seq entry lacks type/id
+  // (every real appendChange sets both today, but the peer-cursor-validity
+  // invariant must not depend on that). Append it only if not already kept.
+  if (maxSeqEntry && !kept.some((e) => e.seq === maxSeqEntry.seq)) {
+    kept.push(maxSeqEntry);
+  }
+  const compactedLines = kept
     .sort((a, b) => a.seq - b.seq)
     .map((e) => JSON.stringify(e));
 
@@ -124,7 +134,12 @@ export async function up({ rootDir }) {
     if (raw == null) continue;
     try {
       const parsed = JSON.parse(raw);
-      stores[type] = parsed && typeof parsed === 'object' && parsed.records ? parsed : { records: {} };
+      // Preserve any other top-level keys the store may carry — only normalize
+      // the `records` map. (Brain stores hold only `records` today, but dropping
+      // unknown keys would be a latent data-loss path if the shape ever grows.)
+      stores[type] = parsed && typeof parsed === 'object'
+        ? { ...parsed, records: parsed.records ?? {} }
+        : { records: {} };
     } catch {
       // Skip an unparseable store rather than abort — the migration is idempotent.
     }

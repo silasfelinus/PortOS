@@ -701,6 +701,13 @@ export async function applyRemoteRecord(type, id, record, op) {
         record.originInstanceId ?? existing?.originInstanceId
       );
     } else {
+      // A create/update with no updatedAt has no LWW clock — `existing.updatedAt
+      // >= undefined` is always false, which would let it silently overwrite a
+      // tombstone and resurrect a deleted record. Reject it (mirrors the delete
+      // path) so the loop-breaker can't be defeated by a timestamp-less create.
+      if (!record?.updatedAt) {
+        return { applied: false, reason: 'missing_timestamp' };
+      }
       const existing = data.records[id];
       // Guard now also fires when `existing` is a tombstone — a stale create
       // (older updatedAt than the recorded delete) is rejected, breaking the
@@ -709,7 +716,12 @@ export async function applyRemoteRecord(type, id, record, op) {
       if (existing && existing.updatedAt >= record.updatedAt) {
         return { applied: false, reason: 'local_newer' };
       }
-      data.records[id] = { ...record };
+      // Defense-in-depth: a create carrying `_deleted` (a future peer, or a
+      // direct caller bypassing brainSync's reroute) must persist as a proper
+      // tombstone, never as a malformed live record missing `deletedAt`.
+      data.records[id] = record._deleted
+        ? makeTombstone(record.updatedAt, record.originInstanceId ?? existing?.originInstanceId)
+        : { ...record };
     }
 
     await ensureBrainDir();
