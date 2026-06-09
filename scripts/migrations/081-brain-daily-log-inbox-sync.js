@@ -23,6 +23,13 @@
  *      fields (createdAt/updatedAt seeded from capturedAt so the LWW clock is
  *      meaningful). The old .jsonl is renamed aside (.migrated) as a recovery
  *      copy rather than deleted.
+ *   3. memory-bridge-map.json — the brain→memory vector bridge keys each
+ *      vectorized journal as `journals:<innerUuid>`. Now that the journal record
+ *      id is the DATE, re-key those entries to `journals:<date>` using the inner
+ *      uuid we strip in step 1. Without this, the next edit to an existing day
+ *      computes the new date-key, finds no match, and mints a DUPLICATE memory
+ *      entry — orphaning the uuid-keyed one. (Inbox is not vectorized, so it has
+ *      no bridge entries to remap.)
  *
  * Idempotent: re-running finds the inner `id` already stripped and the sync
  * fields already present, and skips a missing/renamed inbox_log.jsonl. The wire
@@ -76,12 +83,15 @@ function normalizeRecord(record, { instanceId, seedTime, nowIso }) {
  * Pure transform over parsed inputs, exported for unit tests.
  *   - journalsStore: parsed journals.json (or null if absent).
  *   - inboxRows: array of parsed inbox_log.jsonl rows (empty if absent).
- * Returns { journalsStore, inboxStore, journalsChanged, inboxCount }.
+ *   - bridgeMap: parsed memory-bridge-map.json (or null if absent).
+ * Returns { journalsStore, inboxStore, bridgeMap, bridgeRemapped, journalsChanged, inboxCount }.
  */
-export function computeDailyLogInboxMigration(journalsStore, inboxRows, { instanceId, nowIso }) {
+export function computeDailyLogInboxMigration(journalsStore, inboxRows, { instanceId, nowIso, bridgeMap = null } = {}) {
   // 1. Journals: normalize each entry in place (strip inner id, stamp sync fields).
+  //    Capture oldUuid→date so step 3 can re-key the memory bridge.
   let journalsChanged = false;
   let outJournals = null;
+  const uuidToDate = new Map();
   if (journalsStore && typeof journalsStore === 'object') {
     const records = journalsStore.records && typeof journalsStore.records === 'object'
       ? journalsStore.records
@@ -89,6 +99,7 @@ export function computeDailyLogInboxMigration(journalsStore, inboxRows, { instan
     const nextRecords = {};
     for (const [date, entry] of Object.entries(records)) {
       if (!entry || typeof entry !== 'object') continue;
+      if (entry.id) uuidToDate.set(entry.id, date);
       const before = JSON.stringify(entry);
       // Seed from the entry's own updatedAt/createdAt so we don't bump the LWW
       // clock of days that already have one.
@@ -117,7 +128,26 @@ export function computeDailyLogInboxMigration(journalsStore, inboxRows, { instan
   }
   const inboxStore = { records: inboxRecords };
 
-  return { journalsStore: outJournals, inboxStore, journalsChanged, inboxCount };
+  // 3. Memory bridge: re-key `journals:<oldUuid>` → `journals:<date>`. Only
+  //    touches journal entries whose uuid we just mapped; leaves every other
+  //    bridge entry (people/projects/…) and any already-date-keyed journal
+  //    entry untouched (idempotent).
+  let outBridge = null;
+  let bridgeRemapped = 0;
+  if (bridgeMap && typeof bridgeMap === 'object') {
+    outBridge = { ...bridgeMap };
+    for (const [oldUuid, date] of uuidToDate) {
+      const oldKey = `journals:${oldUuid}`;
+      const newKey = `journals:${date}`;
+      if (oldKey in outBridge && !(newKey in outBridge)) {
+        outBridge[newKey] = outBridge[oldKey];
+        delete outBridge[oldKey];
+        bridgeRemapped++;
+      }
+    }
+  }
+
+  return { journalsStore: outJournals, inboxStore, bridgeMap: outBridge, bridgeRemapped, journalsChanged, inboxCount };
 }
 
 function parseJsonl(content) {
@@ -139,6 +169,7 @@ export async function up({ rootDir }) {
   const journalsPath = join(brainDir, 'journals.json');
   const legacyInboxPath = join(brainDir, 'inbox_log.jsonl');
   const inboxPath = join(brainDir, 'inbox.json');
+  const bridgeMapPath = join(brainDir, 'memory-bridge-map.json');
 
   const instanceId = await readInstanceId(rootDir);
   const nowIso = new Date().toISOString();
@@ -152,6 +183,15 @@ export async function up({ rootDir }) {
     }
   }
 
+  // Load the memory-bridge map if present (for journal uuid→date re-keying).
+  let bridgeMap = null;
+  if (existsSync(bridgeMapPath)) {
+    const raw = await readFile(bridgeMapPath, 'utf-8').catch(() => null);
+    if (raw != null) {
+      try { bridgeMap = JSON.parse(raw); } catch { bridgeMap = null; }
+    }
+  }
+
   // Load legacy inbox JSONL if present AND we haven't already produced inbox.json
   // (idempotency: once migrated, the .jsonl is renamed aside so this is skipped).
   let inboxRows = [];
@@ -161,11 +201,15 @@ export async function up({ rootDir }) {
     if (raw != null) inboxRows = parseJsonl(raw);
   }
 
-  const { journalsStore: outJournals, inboxStore, journalsChanged, inboxCount } =
-    computeDailyLogInboxMigration(journalsStore, inboxRows, { instanceId, nowIso });
+  const { journalsStore: outJournals, inboxStore, bridgeMap: outBridge, bridgeRemapped, journalsChanged, inboxCount } =
+    computeDailyLogInboxMigration(journalsStore, inboxRows, { instanceId, nowIso, bridgeMap });
 
   if (outJournals && journalsChanged) {
     await writeFile(journalsPath, JSON.stringify(outJournals, null, 2));
+  }
+
+  if (outBridge && bridgeRemapped > 0) {
+    await writeFile(bridgeMapPath, JSON.stringify(outBridge, null, 2));
   }
 
   // Only write inbox.json + retire the legacy file when there was a legacy file
@@ -189,7 +233,8 @@ export async function up({ rootDir }) {
 
   console.log(
     `🧠 daily-log/inbox-sync: journals ${journalsChanged ? 'normalized' : 'already current'}, ` +
-    `inbox ${hasLegacyInbox ? `migrated ${inboxCount} entr${inboxCount === 1 ? 'y' : 'ies'} → inbox.json` : 'already current'}`
+    `inbox ${hasLegacyInbox ? `migrated ${inboxCount} entr${inboxCount === 1 ? 'y' : 'ies'} → inbox.json` : 'already current'}` +
+    `${bridgeRemapped > 0 ? `, re-keyed ${bridgeRemapped} journal memory-bridge entr${bridgeRemapped === 1 ? 'y' : 'ies'}` : ''}`
   );
 }
 

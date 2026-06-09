@@ -87,6 +87,32 @@ describe('computeDailyLogInboxMigration (pure)', () => {
     expect(journalsStore).toBeNull();
     expect(journalsChanged).toBe(false);
   });
+
+  it('re-keys journal memory-bridge entries from uuid to date, leaving others alone', () => {
+    const journals = { records: { '2026-04-18': { id: 'uuid-1', date: '2026-04-18', content: 'hi', segments: [] } } };
+    const bridgeMap = {
+      'journals:uuid-1': 'mem-journal',
+      'people:p1': 'mem-person', // untouched
+    };
+    const { bridgeMap: out, bridgeRemapped } = computeDailyLogInboxMigration(journals, [], { ...opts, bridgeMap });
+    expect(bridgeRemapped).toBe(1);
+    expect(out['journals:2026-04-18']).toBe('mem-journal');
+    expect(out).not.toHaveProperty('journals:uuid-1');
+    expect(out['people:p1']).toBe('mem-person');
+  });
+
+  it('does not clobber an existing date-keyed bridge entry (idempotent)', () => {
+    const journals = { records: { '2026-04-18': { id: 'uuid-1', date: '2026-04-18', content: 'hi', segments: [] } } };
+    const bridgeMap = { 'journals:uuid-1': 'old', 'journals:2026-04-18': 'already' };
+    const { bridgeMap: out, bridgeRemapped } = computeDailyLogInboxMigration(journals, [], { ...opts, bridgeMap });
+    expect(bridgeRemapped).toBe(0);
+    expect(out['journals:2026-04-18']).toBe('already');
+  });
+
+  it('returns null bridge map when none provided', () => {
+    const { bridgeMap } = computeDailyLogInboxMigration(null, [], opts);
+    expect(bridgeMap).toBeNull();
+  });
 });
 
 describe('migration 081 up()', () => {
@@ -136,6 +162,21 @@ describe('migration 081 up()', () => {
     await migration.up({ rootDir });
     expect(readJson('inbox.json')).toEqual(inboxAfter1);
     expect(readJson('journals.json')).toEqual(journalsAfter1);
+  });
+
+  it('re-keys the on-disk memory-bridge map for journal entries', async () => {
+    writeInstanceId('inst-x');
+    writeJson('journals.json', {
+      records: { '2026-04-18': { id: 'uuid-1', date: '2026-04-18', content: 'hi', segments: [] } },
+    });
+    writeJson('memory-bridge-map.json', { 'journals:uuid-1': 'mem-1', 'people:p1': 'mem-2' });
+
+    await migration.up({ rootDir });
+
+    const bridge = readJson('memory-bridge-map.json');
+    expect(bridge['journals:2026-04-18']).toBe('mem-1');
+    expect(bridge).not.toHaveProperty('journals:uuid-1');
+    expect(bridge['people:p1']).toBe('mem-2');
   });
 
   it('falls back to the unknown sentinel when instances.json is absent', async () => {
