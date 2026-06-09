@@ -21,6 +21,15 @@ const withRemoteLock = createMutex();
 
 const DATA_DIR = PATHS.brain;
 
+// The JSON entity stores that participate in peer sync (have records with IDs).
+// Canonical list — sync, tombstone GC, and origin backfill all derive from it
+// so adding an 8th type can't silently drop out of one of those paths. (The
+// boot-time migration keeps its own copy by necessity — migrations run before
+// the service layer is wired up — see scripts/migrations/080-*.js.)
+export const BRAIN_ENTITY_TYPES = Object.freeze([
+  'people', 'projects', 'ideas', 'admin', 'memories', 'links', 'buckets',
+]);
+
 // A tombstone is a deleted-record marker kept IN PLACE in `data.records[id]`
 // (rather than removing the key) so the last-writer-wins guard in
 // applyRemoteRecord can reject a stale `create` echoed back from a peer.
@@ -745,10 +754,9 @@ export async function pruneTombstones(type, cutoffMs) {
  */
 export async function backfillOriginInstanceId() {
   const instanceId = await getInstanceId();
-  const entityTypes = ['people', 'projects', 'ideas', 'admin', 'memories', 'links', 'buckets'];
   let totalBackfilled = 0;
 
-  for (const type of entityTypes) {
+  for (const type of BRAIN_ENTITY_TYPES) {
     const data = await loadJsonStore(type);
     let changed = false;
 

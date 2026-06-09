@@ -31,6 +31,9 @@ import { readFile, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 
+// Deliberately a standalone copy of brainStorage.BRAIN_ENTITY_TYPES: migrations
+// run in the boot-time runner BEFORE the service layer is wired up, so this file
+// must not import from server/services. Keep in sync with that canonical list.
 const ENTITY_TYPES = ['people', 'projects', 'ideas', 'admin', 'memories', 'links', 'buckets'];
 
 function parseLog(content) {

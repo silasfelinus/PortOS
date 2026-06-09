@@ -19,8 +19,6 @@
 
 import * as brainStorage from './brainStorage.js';
 
-const ENTITY_TYPES = ['people', 'projects', 'ideas', 'admin', 'memories', 'links', 'buckets'];
-
 /**
  * Prune brain tombstones older than the grace period.
  * @param {{ now?: number, graceMs?: number }} [opts]
@@ -29,7 +27,7 @@ const ENTITY_TYPES = ['people', 'projects', 'ideas', 'admin', 'memories', 'links
 export async function sweepBrainTombstones({ now = Date.now(), graceMs = brainStorage.BRAIN_TOMBSTONE_GRACE_MS } = {}) {
   const cutoff = now - graceMs;
   let pruned = 0;
-  for (const type of ENTITY_TYPES) {
+  for (const type of brainStorage.BRAIN_ENTITY_TYPES) {
     pruned += await brainStorage.pruneTombstones(type, cutoff);
   }
   return { pruned };

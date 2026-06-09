@@ -10,10 +10,8 @@
  */
 
 import * as brainStorage from './brainStorage.js';
+import { BRAIN_ENTITY_TYPES } from './brainStorage.js';
 import * as brainSyncLog from './brainSyncLog.js';
-
-// Entity types stored as JSON (have records with IDs)
-const ENTITY_TYPES = ['people', 'projects', 'ideas', 'admin', 'memories', 'links', 'buckets'];
 
 /**
  * Apply remote changes from a peer instance.
@@ -28,7 +26,7 @@ export async function applyRemoteChanges(changes) {
   for (const change of changes) {
     let { op, type, id, record, originInstanceId } = change;
 
-    if (!ENTITY_TYPES.includes(type)) {
+    if (!BRAIN_ENTITY_TYPES.includes(type)) {
       skipped++;
       continue;
     }

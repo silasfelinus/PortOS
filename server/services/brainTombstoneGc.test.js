@@ -1,14 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const ENTITY_TYPES = ['people', 'projects', 'ideas', 'admin', 'memories', 'links', 'buckets'];
+
 const pruneTombstones = vi.fn();
 vi.mock('./brainStorage.js', () => ({
   pruneTombstones: (...args) => pruneTombstones(...args),
   BRAIN_TOMBSTONE_GRACE_MS: 30 * 24 * 60 * 60 * 1000,
+  BRAIN_ENTITY_TYPES: ['people', 'projects', 'ideas', 'admin', 'memories', 'links', 'buckets'],
 }));
 
 import { sweepBrainTombstones } from './brainTombstoneGc.js';
-
-const ENTITY_TYPES = ['people', 'projects', 'ideas', 'admin', 'memories', 'links', 'buckets'];
 
 describe('brainTombstoneGc', () => {
   beforeEach(() => {
