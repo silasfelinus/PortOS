@@ -1,4 +1,4 @@
-import { useRef, useMemo } from 'react';
+import { useRef, useMemo, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { cityDayMix } from './cityConstants';
@@ -52,6 +52,16 @@ function LightBeam({ position, color, height = 15, radius = 2, intensity = 1, ph
   });
 
   const colorVec = useMemo(() => new THREE.Color(color), [color]);
+
+  // The shader material persists across a theme switch (no more full-scene remount),
+  // so push the new accent/intensity into its uniforms imperatively — re-rendering
+  // with a new `uniforms` object does not re-upload them to an already-built material.
+  useEffect(() => {
+    const mat = matRef.current;
+    if (!mat) return;
+    mat.uniforms.uColor.value.copy(colorVec);
+    mat.uniforms.uIntensity.value = intensity;
+  }, [colorVec, intensity]);
 
   return (
     <group position={position}>

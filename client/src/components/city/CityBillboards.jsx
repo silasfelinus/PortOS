@@ -1,4 +1,4 @@
-import { useRef, useMemo } from 'react';
+import { useRef, useMemo, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Text } from '@react-three/drei';
 import * as THREE from 'three';
@@ -51,6 +51,14 @@ function Billboard({ position, rotation, messages, color, width = 3.5, height = 
   const displayLabel = useRef(messages[0]?.label || '');
 
   const colorVec = useMemo(() => new THREE.Color(color), [color]);
+
+  // The scan-overlay shader material persists across a theme switch (no more full-scene
+  // remount), so push the new accent into its uColor uniform imperatively — the inline
+  // `uniforms` object isn't re-uploaded to an already-built material on re-render. The
+  // other billboard surfaces use declarative `color={color}` props, which R3F reconciles.
+  useEffect(() => {
+    if (scanRef.current) scanRef.current.uniforms.uColor.value.copy(colorVec);
+  }, [colorVec]);
 
   useFrame(({ clock }) => {
     if (!groupRef.current) return;

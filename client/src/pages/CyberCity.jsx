@@ -321,14 +321,15 @@ function CyberCityInner() {
     <CityPaletteProvider palette={cityPalette}>
     <div className="relative w-full h-full cybercity-themed" style={{ background: sceneBackground, isolation: 'isolate' }}>
       <CityScene
-        // Remount the whole scene subtree on a theme switch so the ~8 components that
-        // cache themed neon colors in useMemo / GPU uniforms (CityGround, CitySky,
-        // CityBillboards, CityVolumetricLights, CityTraffic, CityLandscape, …) pick up
-        // the new palette. The during-render singleton mutation is gone; the remount
-        // remains as the (rare, user-initiated) refresh path. Threading the palette
-        // into every cached dep array + imperative uniform update is the separable,
-        // riskier half — tracked as a follow-up issue.
-        key={cityPalette.themeId}
+        // A theme switch recolors the live scene in place — NO full-scene remount.
+        // Every themed surface either reads the palette fresh each render (declarative
+        // `color=` props, palette helper fns) or carries the palette value in its
+        // useMemo deps so it rebuilds on a new palette object (CityGround, CityLandscape,
+        // CityTraffic, CityNeonSigns, …). The two persistent GPU shader materials whose
+        // uniforms are set once at construction (CityBillboards scan overlay,
+        // CityVolumetricLights cones) push the new accent into their uColor uniform
+        // imperatively, mirroring CitySky's per-frame uniform updates. Dropping the old
+        // `key={cityPalette.themeId}` avoids the jarring full-scene rebuild flash.
         palette={cityPalette}
         background={sceneBackground}
         apps={v('apps', apps)}
