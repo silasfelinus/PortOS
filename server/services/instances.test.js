@@ -565,6 +565,18 @@ describe('instances.js', () => {
       expect(changed).toBe(false);
     });
 
+    it('echo guard treats absent-vs-false alike: adding goals:false to a partial map is a no-op', async () => {
+      // prev is a partial map missing `goals`; incoming sets goals:false, which
+      // is already the effective state → must NOT report changed (the baseline
+      // is defaulted so `false !== undefined` can't spuriously trip the guard).
+      const peers = [{ id: 'p1', instanceId: 'inst-A', name: 'A', syncCategories: { brain: true } }];
+      readJSONFile.mockResolvedValue({ self: { instanceId: 'me' }, peers });
+
+      const { changed } = await applyReciprocalSync('inst-A', { goals: false });
+
+      expect(changed).toBe(false);
+    });
+
     it('returns changed:false for an unknown peer instanceId', async () => {
       readJSONFile.mockResolvedValue({ self: { instanceId: 'me' }, peers: [] });
       const { changed, peer } = await applyReciprocalSync('nope', { brain: true });

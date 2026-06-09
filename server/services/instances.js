@@ -728,7 +728,10 @@ export async function applyReciprocalSync(instanceId, categories) {
   const peer = await withData(async (data) => {
     const entry = data.peers.find(p => p.instanceId === instanceId);
     if (!entry) return null;
-    const prev = entry.syncCategories || { ...DEFAULT_SYNC_CATEGORIES };
+    // Default the baseline so a partial stored map doesn't make absent-vs-false
+    // diverge — otherwise sanitized adding `goals:false` to a `prev` missing
+    // `goals` reads as a change (`false !== undefined`) and defeats the guard.
+    const prev = { ...DEFAULT_SYNC_CATEGORIES, ...(entry.syncCategories || {}) };
     const next = { ...prev, ...sanitized };
     // No-op when nothing actually flips — the echo guard.
     if (Object.keys(next).every(k => next[k] === prev[k])) return entry;

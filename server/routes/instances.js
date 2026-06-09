@@ -100,8 +100,10 @@ const querySchema = z.object({
 // announcing peer's identity (matched against our peer record).
 const reciprocalSyncSchema = z.object({
   instanceId: z.string().guid(),
-  // `.unwrap()` strips the `.optional()` from the shared schema — the category
-  // map is required on this endpoint (an empty/absent map has nothing to mirror).
+  // `.unwrap()` strips the `.optional()` from the shared schema so the
+  // syncCategories KEY is required. An empty `{}` still parses (all fields are
+  // optional) and simply no-ops downstream in applyReciprocalSync
+  // (sanitizeSyncCategories returns null → changed:false).
   syncCategories: syncCategoriesSchema.unwrap()
 });
 
@@ -255,10 +257,14 @@ router.post('/peers/:id/connect', asyncHandler(async (req, res) => {
 // instanceId in the body (we may not know its local-peer-id mapping).
 router.post('/peers/sync-categories', asyncHandler(async (req, res) => {
   const data = reciprocalSyncSchema.parse(req.body);
-  const { changed, peer } = await instances.applyReciprocalSync(data.instanceId, data.syncCategories);
+  const { changed } = await instances.applyReciprocalSync(data.instanceId, data.syncCategories);
   // 200 even when the peer is unknown to us / nothing changed — this is a
-  // best-effort convergence signal, not a command that must succeed.
-  res.json({ applied: changed, peer: peer ? instances.sanitizePeerForClient(peer) : null });
+  // best-effort convergence signal, not a command that must succeed. We return
+  // only `applied` (not the peer record) — the remote caller doesn't consume it,
+  // and echoing our peer entry would leak our stored proxy-credential metadata
+  // (username + hasPassword) for reaching them across the peer boundary, the
+  // same leak the /announce route guards against with redactPeerForWire.
+  res.json({ applied: changed });
 }));
 
 // POST /api/instances/peers/:id/reciprocate — explicit "make all enabled
