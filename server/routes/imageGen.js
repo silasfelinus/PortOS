@@ -695,8 +695,20 @@ router.post('/:filename/remove-watermark', asyncHandler(async (req, res) => {
     ? sourceMeta.cleanedFrom : filename;
   const createdAt = new Date().toISOString();
   // Strip hidden/filename/id so listGallery's `...metadata` spread doesn't
-  // overwrite the disk-derived filename or re-hide the deliberate variant.
-  const { hidden: _hidden, filename: _srcFilename, id: _srcId, ...sourceMetaForVariant } = sourceMeta;
+  // overwrite the disk-derived filename or re-hide the deliberate variant. Also
+  // drop the regen lineage fields: de-watermarking a REGENERATED source would
+  // otherwise inherit `regenerated:true` + stale fidelity numbers, and both the
+  // lightbox lineage (`describeCleanedLineage`) and variant grouping check
+  // `regenerated` BEFORE `watermarkRemoved` — so the variant would mislabel as
+  // "Regenerated … % changed" instead of "Watermark removed from …".
+  const {
+    hidden: _hidden, filename: _srcFilename, id: _srcId,
+    regenerated: _regenerated, regenStrength: _regenStrength,
+    regenSteps: _regenSteps, regenModelId: _regenModelId,
+    regenPixelDeltaPct: _regenPixelDeltaPct, regenPsnr: _regenPsnr,
+    regenMethod: _regenMethod,
+    ...sourceMetaForVariant
+  } = sourceMeta;
   const variantMeta = {
     ...sourceMetaForVariant,
     createdAt,

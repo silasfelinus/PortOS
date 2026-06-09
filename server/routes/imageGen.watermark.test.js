@@ -119,6 +119,36 @@ describe('POST /api/image-gen/:filename/remove-watermark', () => {
     expect(existsSync(join(sandbox, 'wm-1_nowatermark.metadata.json'))).toBe(true);
   });
 
+  it('strips regen lineage from a de-watermarked REGEN source so it labels as watermark-removed, not regenerated', async () => {
+    // Source is itself a SynthID-defeat regen (issue #912). Removing the ✦ from
+    // it must NOT inherit `regenerated:true` + stale fidelity numbers — both the
+    // lightbox lineage and variant grouping check `regenerated` BEFORE
+    // `watermarkRemoved`, so it would otherwise mislabel as "Regenerated …".
+    await writeFile(join(sandbox, 'regen-1.png'), watermarkedPng);
+    await writeFile(join(sandbox, 'regen-1.metadata.json'), JSON.stringify({
+      prompt: 'a sunset', seed: 7, modelId: 'gemini',
+      cleanedFrom: 'orig.png',
+      regenerated: true, regenStrength: 0.4, regenSteps: 28,
+      regenModelId: 'flux', regenPixelDeltaPct: 12, regenPsnr: 31, regenMethod: 'flux',
+    }));
+
+    const res = await request(app).post('/api/image-gen/regen-1.png/remove-watermark').send({});
+    expect(res.status).toBe(200);
+    expect(res.body.watermarkRemoved).toBe(true);
+    // Regen lineage fields gone → describeCleanedLineage falls to the
+    // watermarkRemoved branch, not the regenerated branch.
+    expect(res.body.regenerated).toBeUndefined();
+    expect(res.body.regenStrength).toBeUndefined();
+    expect(res.body.regenSteps).toBeUndefined();
+    expect(res.body.regenModelId).toBeUndefined();
+    expect(res.body.regenPixelDeltaPct).toBeUndefined();
+    expect(res.body.regenPsnr).toBeUndefined();
+    expect(res.body.regenMethod).toBeUndefined();
+    // Non-regen lineage still carried + group anchored at the root original.
+    expect(res.body.prompt).toBe('a sunset');
+    expect(res.body.cleanedFrom).toBe('orig.png');
+  });
+
   it('actually erases the bright corner mark', async () => {
     await writeFile(join(sandbox, 'wm-erase.png'), watermarkedPng);
     const res = await request(app).post('/api/image-gen/wm-erase.png/remove-watermark').send({});
