@@ -140,9 +140,6 @@ function Safe-Install {
 # the update completes (we don't auto-pop because the rest of the script
 # needs to keep running with main's contents).
 Step "git-pull" "running" "Pulling latest changes..."
-# Record the revision we're updating FROM (before any branch switch) so we can
-# tell afterward which workspaces' package.json the pull changed → clean reinstall.
-$prePullSha = git rev-parse HEAD 2>$null
 $originUrl = git remote get-url origin 2>$null
 if ($originUrl) {
     # Redact any embedded credentials (https://user:token@host/...) before logging
@@ -189,6 +186,12 @@ if ($currentBranch -ne "main") {
     Invoke-Logged git checkout main
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
+# Record main's pre-pull HEAD — captured AFTER any checkout so it's the commit
+# the installed node_modules was built from (main, which the rest of this script
+# installs/builds), not a feature branch we just left. Diffing this against
+# post-pull HEAD yields exactly the pull's delta on main, so a manifest change
+# the update brings is detected even when launched from another branch.
+$prePullSha = git rev-parse HEAD 2>$null
 Invoke-Logged git pull --rebase --autostash
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Step "git-pull" "done" "Latest changes pulled"
