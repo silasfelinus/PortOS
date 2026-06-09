@@ -12,9 +12,7 @@ import { validateRequest } from '../../lib/validation.js';
 import * as seriesSvc from '../../services/pipeline/series.js';
 import * as arcPlanner from '../../services/pipeline/arcPlanner.js';
 import * as volumeBeatsRunner from '../../services/pipeline/volumeBeatsRunner.js';
-import { extractCanonFromProse } from '../../services/universeCanon.js';
-import { resolveSeriesLlmOverride } from '../../lib/seriesLlmOverride.js';
-import { mapServiceError, providerOverrideShape, countExtractedCanon } from './shared.js';
+import { mapServiceError, providerOverrideShape } from './shared.js';
 
 const router = Router();
 
@@ -133,45 +131,12 @@ router.post('/series/:id/seasons/:seasonId/episodes/generate', asyncHandler(asyn
     // failure must not invalidate the user's accepted breakdown. Phase B.4:
     // canon lives on the linked universe — orphan series (no universeId)
     // skip extraction.
-    const corpus = result.episodes
-      .map((ep) => `## E${ep.number} — ${ep.title}\n\n${ep.logline || ''}\n\n${ep.synopsis || ''}`.trim())
-      .filter(Boolean)
-      .join('\n\n');
-    if (corpus.trim() && series?.universeId) {
-      // Fall back to the series' configured LLM when the client doesn't pass an
-      // explicit override — matches the extract-canon and extract-scenes routes
-      // so continuity extraction honors the provider/model picked in the series
-      // header instead of the global active provider. A model id is
-      // provider-specific, so only inherit the series model when the effective
-      // provider is still the series provider; an override that switches
-      // providers without naming a model leaves it blank so the new provider's
-      // default resolves.
-      const { provider, model } = resolveSeriesLlmOverride(series, {
-        overrideProvider: body.providerOverride,
-        overrideModel: body.modelOverride,
-      });
-      // Stamp new inserts as series-extracted (autoLock + sourceSeriesId) so
-      // continuity-derived canon survives later AI refines and stays
-      // attributable to this series. Matches the pre-B.4 series-side
-      // extract semantics.
-      const extractRes = await extractCanonFromProse(series.universeId, {
-        corpus,
-        providerOverride: provider,
-        modelOverride: model,
-        parallel: true,
-        autoLock: true,
-        sourceSeriesId: series.id,
-      }).catch((err) => {
-        console.warn(`⚠️ Continuity extraction failed for season ${req.params.seasonId}: ${err.message}`);
-        return null;
-      });
-      if (extractRes) {
-        bibleExtracted = {
-          ...countExtractedCanon(extractRes.results),
-          universe: extractRes.universe,
-        };
-      }
-    }
+    bibleExtracted = await arcPlanner.extractEpisodeCanon({
+      series,
+      episodes: result.episodes,
+      providerOverride: body.providerOverride,
+      modelOverride: body.modelOverride,
+    });
   }
 
   res.json({

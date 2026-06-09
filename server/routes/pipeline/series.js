@@ -7,7 +7,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, ServerError } from '../../lib/errorHandler.js';
-import { validateRequest, optionalBooleanMap } from '../../lib/validation.js';
+import { validateRequest, optionalBooleanMap, llmSchema } from '../../lib/validation.js';
 import * as seriesSvc from '../../services/pipeline/series.js';
 import * as issuesSvc from '../../services/pipeline/issues.js';
 import * as seasonsSvc from '../../services/pipeline/seasons.js';
@@ -19,7 +19,6 @@ import {
   LENGTH_PROFILE_NAMES,
   CUSTOM_PAGE_MIN, CUSTOM_PAGE_MAX, CUSTOM_MINUTE_MIN, CUSTOM_MINUTE_MAX,
 } from '../../lib/issueLength.js';
-import { llmSchema } from '../universeBuilder.js';
 import { ARC_LIMITS, ARC_STATUSES, ARC_SHAPE_IDS, SEASON_STATUSES } from '../../lib/storyArc.js';
 import { mapServiceError } from './shared.js';
 
