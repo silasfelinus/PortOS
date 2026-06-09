@@ -120,6 +120,21 @@ export default function SongTraining({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stream]);
 
+  // When a run finishes NATURALLY and we're not looping, close the mic and drop
+  // out of the Stop state — otherwise the mic stays open (and the UI stuck on
+  // Stop) until the user clicks Stop by hand. Looping keeps the mic open across
+  // the relaunch gap; an armed-but-not-yet-started run (stream just landed,
+  // `start()` pending) is gated by `armedRef` so this can't close the mic before
+  // the first run even begins.
+  const armedRef = useRef(false);
+  useEffect(() => { if (running) armedRef.current = true; }, [running]);
+  useEffect(() => {
+    if (armedRef.current && !running && !loop) {
+      armedRef.current = false;
+      closeMic();
+    }
+  }, [running, loop, closeMic]);
+
   // Tear the mic down on unmount.
   useEffect(() => () => {
     if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());

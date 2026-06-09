@@ -71,4 +71,29 @@ describe('SongTraining', () => {
     expect(screen.getByText(/last take/i)).toBeTruthy();
     expect(screen.getByText(/75%/)).toBeTruthy();
   });
+
+  it('closes the mic when a non-loop run finishes naturally', async () => {
+    // Track stop() on the mic's track so we can assert teardown without a real
+    // AudioContext. The hook is mocked, so we drive `running` true→false by hand
+    // and re-render — that edge is the natural-completion signal.
+    const trackStop = vi.fn();
+    const getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [{ stop: trackStop }] });
+    Object.defineProperty(global.navigator, 'mediaDevices', {
+      value: { getUserMedia }, configurable: true,
+    });
+
+    const { rerender } = render(<SongTraining score={SCORE} />);
+    fireEvent.click(screen.getByRole('button', { name: /start/i }));
+    await screen.findByRole('button', { name: /stop/i }); // mic landed → armed run
+
+    // Hook reports the run started, then finished (running flips true → false).
+    hookState = { ...hookState, running: true };
+    rerender(<SongTraining score={SCORE} />);
+    hookState = { ...hookState, running: false };
+    rerender(<SongTraining score={SCORE} />);
+
+    // Natural completion (loop off) must stop the mic track and drop back to Start.
+    expect(trackStop).toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /start/i })).toBeTruthy();
+  });
 });
