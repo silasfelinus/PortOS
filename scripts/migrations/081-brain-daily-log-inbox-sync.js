@@ -71,12 +71,23 @@ async function readInstanceId(rootDir) {
 function normalizeRecord(record, { instanceId, seedTime, nowIso }) {
   // eslint-disable-next-line no-unused-vars
   const { id: _innerId, ...rest } = record;
-  return {
+  const normalized = {
     ...rest,
-    originInstanceId: rest.originInstanceId || instanceId,
     createdAt: rest.createdAt || seedTime || nowIso,
     updatedAt: rest.updatedAt || seedTime || rest.createdAt || nowIso,
   };
+  // Only stamp originInstanceId when we have a REAL id (or the record already
+  // carries one). Migrations run before ensureSelf() creates instances.json, so
+  // on a data dir copied in without it `instanceId` is the 'unknown' sentinel.
+  // Baking 'unknown' onto a LIVE record is permanent — backfillOriginInstanceId
+  // only repairs falsy values, so it would never fix it and the bogus provenance
+  // would federate. Leaving the field absent instead lets that boot-time backfill
+  // (which runs AFTER ensureSelf) fill the real id. (A tombstone legitimately
+  // carries 'unknown', but tombstones never flow through this path.)
+  if (rest.originInstanceId || instanceId !== UNKNOWN_INSTANCE) {
+    normalized.originInstanceId = rest.originInstanceId || instanceId;
+  }
+  return normalized;
 }
 
 /**

@@ -179,11 +179,14 @@ describe('migration 081 up()', () => {
     expect(bridge['people:p1']).toBe('mem-2');
   });
 
-  it('falls back to the unknown sentinel when instances.json is absent', async () => {
+  it('leaves originInstanceId absent (not "unknown") when instances.json is missing, so boot-time backfill can repair it', async () => {
     writeJsonl('inbox_log.jsonl', [
       { id: 'a', capturedText: 'x', status: 'done', capturedAt: '2026-03-01T00:00:00.000Z' },
     ]);
     await migration.up({ rootDir });
-    expect(readJson('inbox.json').records.a.originInstanceId).toBe('unknown');
+    // Baking the 'unknown' sentinel onto a live record would be permanent
+    // (backfillOriginInstanceId only fills falsy values). Leaving it absent lets
+    // the post-ensureSelf backfill stamp the real instance id.
+    expect(readJson('inbox.json').records.a).not.toHaveProperty('originInstanceId');
   });
 });
