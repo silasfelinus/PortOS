@@ -97,10 +97,38 @@ function cleanWorkspaceDeps(dir) {
   }
 }
 
+// Trusted install scripts skipped by `ignore-scripts=true` in the repo .npmrc,
+// per workspace. Mirrors the explicit `npm rebuild` calls in update.sh / the
+// `setup` script: a plain `npm install` leaves these native/scripted deps
+// unbuilt, so the server crashes on a missing node-pty/sharp binding. Run after
+// every (re)install — not just the clean-reinstall path — so a fresh install
+// into a missing node_modules is equally whole.
+const TRUSTED_REBUILDS = {
+  client: [{ pkgs: ['esbuild'], fatal: true }],
+  server: [{ pkgs: ['esbuild'], fatal: false }, { pkgs: ['node-pty', 'sharp'], fatal: true }]
+};
+
+function rebuildTrusted(dir, label) {
+  const groups = TRUSTED_REBUILDS[label];
+  if (!groups) return true;
+  for (const { pkgs, fatal } of groups) {
+    try {
+      execFileSync(NPM, ['rebuild', ...pkgs], { cwd: dir, stdio: 'inherit', windowsHide: true });
+    } catch (err) {
+      // esbuild on the server is a test-only transitive (fatal: false) — its
+      // absence never breaks runtime, matching update.sh's `|| true`. node-pty
+      // and sharp are runtime-critical, so a failure there fails the install.
+      console.error(`⚠️  npm rebuild ${pkgs.join(' ')} failed for ${label}: ${err.message ?? err}`);
+      if (fatal) return false;
+    }
+  }
+  return true;
+}
+
 function install(dir, label) {
   try {
     execFileSync(NPM, ['install'], { cwd: dir, stdio: 'inherit', windowsHide: true });
-    return true;
+    return rebuildTrusted(dir, label);
   } catch (err) {
     console.error(`⚠️  npm install failed for ${label}: ${err.message ?? err}`);
     console.log(`⚠️  Cleaning node_modules and retrying...`);
@@ -112,7 +140,7 @@ function install(dir, label) {
     }
     try {
       execFileSync(NPM, ['install'], { cwd: dir, stdio: 'inherit', windowsHide: true });
-      return true;
+      return rebuildTrusted(dir, label);
     } catch (retryErr) {
       console.error(`❌ npm install failed for ${label} after retry: ${retryErr.message ?? retryErr}`);
       return false;
