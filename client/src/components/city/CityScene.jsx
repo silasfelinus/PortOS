@@ -39,6 +39,9 @@ import CitySky from './CitySky';
 import CityGalaxySky from './CityGalaxySky';
 import CityLandscape from './CityLandscape';
 import CityWater from './CityWater';
+import CityStreets from './CityStreets';
+import CityStreetProps from './CityStreetProps';
+import CityTransitLoop from './CityTransitLoop';
 import CityEnergyOverlay from './CityEnergyOverlay';
 import PlayerController from './PlayerController';
 import CameraTransition from './CameraTransition';
@@ -226,6 +229,9 @@ export default function CityScene({ apps, agentMap, onBuildingClick, cosStatus, 
       <CityJiraDistrict jiraTickets={jiraTickets} settings={settings} />
       <CityAiCore aiActivity={aiActivity} positions={positions} apps={apps} settings={settings} />
       <CityGround settings={settings} />
+      <CityStreets settings={settings} />
+      <CityStreetProps settings={settings} />
+      <CityTransitLoop settings={settings} />
 
       <BuildingCluster
         apps={apps}

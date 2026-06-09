@@ -46,6 +46,7 @@ export default function Borough({ app, position, agentMap, onBuildingClick, play
         agentCount={agents.length}
         onClick={() => onBuildingClick?.(app)}
         playSfx={playSfx}
+        rooftops={(settings?.particleDensity ?? 1) > 0.5}
         neonBrightness={neonBrightness}
         isProximity={isProximity}
         dimmed={dimmed}

@@ -84,6 +84,7 @@ its tunable constants and placement helpers.
 | `cityMiniMap` | Mini-map projection of building positions into 2D bounds (`computeMiniMap`, `projectPoint`). |
 | `cityPhotoMode` | Photo-mode camera presets, the demand-loop fly stepper, postcard stats, and screenshot filename (`getPreset`, `cyclePreset`, `stepFly`). |
 | `cityPlan` | Master town plan: district parcels, shoreline/bay, plaza, transit loop, street network (`PARCELS`, `WORLD`, `computeStreets`, `computeStreetProps`, `isInWater`). |
+| `cityRooftops` | Deterministic rooftop fixture kits (antenna/tank/AC/dish) per app name (`computeRooftopKit`). |
 | `cityProductivity` | Productivity monument from streak/velocity tiers (`computeProductivityMonument`). |
 | `citySeasonalDecor` | Season/holiday resolution → seasonal decoration placements (`computeSeasonalDecor`). |
 | `citySoundscape` | Ambient soundscape: mood/energy classification and chord selection (`computeSoundscape`). |
