@@ -62,6 +62,28 @@ describe('brainReconcile checksum', () => {
     expect(live).not.toBe(tomb);
   });
 
+  // Release review finding: `deletedAt` is a machine-local GC clock — two peers
+  // stamp it at different instants for the same logical delete (and migration 080
+  // sets it to its own run time). Hashing it would make two converged peers
+  // mismatch forever and re-pull the snapshot every cycle. It must be EXCLUDED
+  // from the checksum; `updatedAt` (the LWW clock) still distinguishes deletes.
+  it('ignores deletedAt (the local GC clock) so two peers converge on a delete', async () => {
+    emptyStores({ links: { a: { _deleted: true, updatedAt: '2026-01-05T00:00:00.000Z', deletedAt: '2026-01-05T00:00:00.000Z', originInstanceId: 'x' } } });
+    const peerA = await getBrainChecksum();
+    // Same logical tombstone, different deletedAt (saw the delete a day later).
+    emptyStores({ links: { a: { _deleted: true, updatedAt: '2026-01-05T00:00:00.000Z', deletedAt: '2026-01-06T12:34:56.000Z', originInstanceId: 'x' } } });
+    const peerB = await getBrainChecksum();
+    expect(peerA).toBe(peerB);
+  });
+
+  it('still distinguishes two tombstones with different updatedAt (LWW clock)', async () => {
+    emptyStores({ links: { a: { _deleted: true, updatedAt: '2026-01-05T00:00:00.000Z', deletedAt: '2026-01-05T00:00:00.000Z', originInstanceId: 'x' } } });
+    const older = await getBrainChecksum();
+    emptyStores({ links: { a: { _deleted: true, updatedAt: '2026-01-09T00:00:00.000Z', deletedAt: '2026-01-05T00:00:00.000Z', originInstanceId: 'x' } } });
+    const newer = await getBrainChecksum();
+    expect(older).not.toBe(newer);
+  });
+
   // #1077 review finding: plain JSON.stringify preserves field-insertion order,
   // so two installs holding the SAME logical record (e.g. one migrated by
   // backfillOriginInstanceId, which appends originInstanceId LAST) would hash

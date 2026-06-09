@@ -70,14 +70,44 @@ function stableStringify(value) {
 }
 
 /**
+ * Strip machine-local fields that are NOT part of converged LWW state before
+ * hashing. `deletedAt` is a tombstone's GC clock (when this machine first saw
+ * the delete) — two peers stamp it at different wall-clock instants (and the
+ * #080 cleanup migration sets it to its own run time), so it differs even when
+ * both peers agree on the record's logical state (`_deleted` + `updatedAt`).
+ * Hashing it would make the reconcile checksum permanently mismatch and force a
+ * full snapshot exchange every cycle until GC prunes the tombstones. The delete
+ * instant that actually matters for convergence is `updatedAt` (the LWW clock),
+ * which IS hashed; `deletedAt` is still SENT in snapshots so the receiver can GC.
+ */
+function checksumView(rawMap) {
+  const view = {};
+  for (const type of Object.keys(rawMap)) {
+    const records = {};
+    for (const id of Object.keys(rawMap[type])) {
+      const rec = rawMap[type][id];
+      if (rec && typeof rec === 'object' && !Array.isArray(rec) && 'deletedAt' in rec) {
+        const { deletedAt, ...rest } = rec;
+        records[id] = rest;
+      } else {
+        records[id] = rec;
+      }
+    }
+    view[type] = records;
+  }
+  return view;
+}
+
+/**
  * Deterministic md5 over the canonical brain record map. Matches `dataSync`'s
  * `computeChecksum` shape (md5 of a JSON string) but uses a key-sorted
  * serialization so two installs with identical brain state hash identically
  * regardless of per-record field order. `buildRawMap` sorts the type + id
- * levels; `stableStringify` extends order-independence into each record's fields.
+ * levels; `stableStringify` extends order-independence into each record's fields;
+ * `checksumView` drops the machine-local `deletedAt` GC clock from convergence.
  */
 function computeChecksum(rawMap) {
-  return createHash('md5').update(stableStringify(rawMap)).digest('hex');
+  return createHash('md5').update(stableStringify(checksumView(rawMap))).digest('hex');
 }
 
 /**

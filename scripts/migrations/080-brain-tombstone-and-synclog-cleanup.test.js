@@ -53,6 +53,10 @@ describe('migration 080 — brain tombstone + sync-log cleanup', () => {
     const rec = readStore('links').records['ghost-1'];
     expect(rec._deleted).toBe(true);
     expect(rec.updatedAt).toBe('2026-01-02T00:00:00.000Z');
+    // deletedAt must equal updatedAt (the delete instant), matching the runtime
+    // makeTombstone invariant — NOT the migration's own run time. Otherwise two
+    // peers running the cleanup independently stamp different deletedAt values.
+    expect(rec.deletedAt).toBe('2026-01-02T00:00:00.000Z');
   });
 
   it('leaves a live record whose delete is OLDER than the record (legit re-create) alone', async () => {
@@ -153,7 +157,7 @@ describe('migration 080 — brain tombstone + sync-log cleanup', () => {
       { seq: 10, op: 'create', type: 'links', id: 'a', record: { updatedAt: '2026-01-01T00:00:00.000Z' } },
       { seq: 99, op: 'delete', type: 'links', id: 'a', record: { updatedAt: '2026-01-02T00:00:00.000Z' } },
     ];
-    const { compactedLines } = computeBrainCleanup(log, {}, { nowIso: '2026-06-08T00:00:00.000Z' });
+    const { compactedLines } = computeBrainCleanup(log, {});
     const seqs = compactedLines.map((l) => JSON.parse(l).seq);
     expect(Math.max(...seqs)).toBe(99);
   });
@@ -163,7 +167,7 @@ describe('migration 080 — brain tombstone + sync-log cleanup', () => {
       { seq: 10, op: 'create', type: 'links', id: 'a', record: { updatedAt: '2026-01-01T00:00:00.000Z' } },
       { seq: 200 }, // a malformed/typeless high-seq entry — must still anchor the cursor
     ];
-    const { compactedLines } = computeBrainCleanup(log, {}, { nowIso: '2026-06-08T00:00:00.000Z' });
+    const { compactedLines } = computeBrainCleanup(log, {});
     const seqs = compactedLines.map((l) => JSON.parse(l).seq);
     expect(Math.max(...seqs)).toBe(200);
   });

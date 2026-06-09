@@ -80,7 +80,7 @@ function replayTerminal(entries) {
  * Returns { stores, compactedLines, ghostsTombstoned } with mutated stores and
  * the compacted JSONL line array (seq numbers preserved).
  */
-export function computeBrainCleanup(logEntries, stores, { nowIso }) {
+export function computeBrainCleanup(logEntries, stores) {
   // Newest delete updatedAt per (type/id), for ghost detection.
   const newestDelete = new Map();
   for (const e of logEntries) {
@@ -105,7 +105,12 @@ export function computeBrainCleanup(logEntries, stores, { nowIso }) {
           _deleted: true,
           updatedAt: del.updatedAt,
           originInstanceId: record.originInstanceId ?? del.originInstanceId ?? 'unknown',
-          deletedAt: nowIso,
+          // Match the runtime tombstone invariant (makeTombstone: deletedAt ===
+          // updatedAt at birth) rather than this migration's own run time, so
+          // two peers that run the cleanup independently produce identical
+          // tombstones. (The reconcile checksum also excludes deletedAt, so this
+          // is belt-and-suspenders for any code that DOES compare the field.)
+          deletedAt: del.updatedAt,
         };
         ghostsTombstoned++;
       }
@@ -190,8 +195,7 @@ export async function up({ rootDir }) {
     }
   }
 
-  const nowIso = new Date().toISOString();
-  const { compactedLines, ghostsTombstoned } = computeBrainCleanup(logEntries, stores, { nowIso });
+  const { compactedLines, ghostsTombstoned } = computeBrainCleanup(logEntries, stores);
 
   // Persist tombstoned stores (only those we loaded; only when changed is fine
   // to skip — rewriting an unchanged store is harmless and keeps the code simple).

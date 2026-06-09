@@ -154,4 +154,23 @@ describe('summarizeAccuracy', () => {
     expect(summarizeAccuracy({}).percentInTune).toBe(0);
     expect(summarizeAccuracy([]).percentInTune).toBe(0);
   });
+
+  // Release review finding: a note the singer WALKED PAST but never produced a
+  // usable pitch for must be recorded as MISSED (not absent) so it counts
+  // against the take. useColorMatch.stop() fills these before summarizing; here
+  // we pin the lib contract that MISSED is in the denominator (unlike PENDING).
+  it('counts MISSED notes in the denominator (a skipped note lowers the score)', () => {
+    const grades = { 0: GRADE.IN_TUNE, 1: GRADE.MISSED, 2: GRADE.MISSED, 3: GRADE.IN_TUNE };
+    const s = summarizeAccuracy(grades);
+    expect(s.graded).toBe(4);
+    expect(s.counts.missed).toBe(2);
+    expect(s.percentInTune).toBe(50);
+  });
+
+  it('an all-MISSED take scores 0% over every walked note', () => {
+    const grades = { 0: GRADE.MISSED, 1: GRADE.MISSED, 2: GRADE.MISSED };
+    const s = summarizeAccuracy(grades);
+    expect(s.graded).toBe(3);
+    expect(s.percentInTune).toBe(0);
+  });
 });

@@ -737,6 +737,14 @@ export const deleteBucket = (id) => remove('buckets', id);
  * Apply a remote record to a JSON store (last-writer-wins by updatedAt)
  */
 export async function applyRemoteRecord(type, id, record, op) {
+  // Reject prototype-polluting ids before they reach `data.records[id]`. JSON
+  // serialization drops a `__proto__` key so there's no live data corruption,
+  // but accepting it would return `applied:true` and append a phantom relay
+  // entry that can never converge (the reconcile snapshot path guards this too;
+  // centralizing it here covers BOTH the delta-sync and snapshot callers).
+  if (id === '__proto__' || id === 'constructor' || id === 'prototype') {
+    return { applied: false, reason: 'invalid_id' };
+  }
   return withStoreWriteLock(async () => {
     const data = await loadJsonStore(type);
 

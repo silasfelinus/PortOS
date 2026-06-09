@@ -129,6 +129,10 @@ export default function PitchTuner({ stream = null, a4 = 440 }) {
   }, []);
 
   const startStandalone = useCallback(async () => {
+    // Guard against a double-activation opening two mics (only the last lands in
+    // ownStreamRef, leaking the first). The button hides once standaloneOn flips,
+    // but a fast double event can re-enter before the re-render.
+    if (standaloneOn || trackerRef.current) return;
     const src = await navigator.mediaDevices.getUserMedia({ audio: true }).catch((err) => {
       toast.error(err?.message || 'Microphone access denied');
       return null;
@@ -138,7 +142,7 @@ export default function PitchTuner({ stream = null, a4 = 440 }) {
     ownStreamRef.current = src;
     setStandaloneOn(true);
     attach(src);
-  }, [attach]);
+  }, [attach, standaloneOn]);
 
   const active = Boolean(stream) || standaloneOn;
   const quality = tuningQuality(reading.cents);

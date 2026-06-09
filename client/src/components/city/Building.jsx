@@ -1,4 +1,4 @@
-import { useRef, useState, useMemo } from 'react';
+import { useRef, useState, useMemo, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { getBuildingHeight, BUILDING_PARAMS, PIXEL_FONT_URL, mixHex, seededRand } from './cityConstants';
@@ -407,6 +407,12 @@ export default function Building({ app, position, agentCount, onClick, playSfx, 
     () => createWindowTexture(accentColor, width, height, seed, tintStructure),
     [accentColor, width, height, seed, tintStructure]
   );
+
+  // R3F does NOT dispose a CanvasTexture handed in via `map`/`emissiveMap` — it
+  // only frees objects it owns on unmount. Since the city no longer remounts on
+  // theme switch (issue-1064), each recolor recreates this texture and would
+  // strand the previous one in VRAM per building. Dispose it on replace + unmount.
+  useEffect(() => () => windowTexture.dispose(), [windowTexture]);
 
   // Format name for building face
   const displayName = useMemo(() => {

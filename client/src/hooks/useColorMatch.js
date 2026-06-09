@@ -61,6 +61,7 @@ export default function useColorMatch({ score, stream, bpm = null, countInBars =
   const pitchRef = useRef({ hz: null });  // latest tracked pitch, read each rAF frame
   const gradesRef = useRef({});           // mutable accumulator; flushed to state
   const cursorRef = useRef(0);            // lower-bound index hint for noteAtTime
+  const maxReachedRef = useRef(-1);       // furthest note.index the timeline walked
   const rafRef = useRef(null);
 
   // Tear down the audio graph, tracker, metronome, and rAF loop. Idempotent.
@@ -83,6 +84,22 @@ export default function useColorMatch({ score, stream, bpm = null, countInBars =
   const stop = useCallback(() => {
     teardown();
     if (!mountedRef.current) return;
+    // Fill MISSED for every note the timeline WALKED PAST (index <= maxReached)
+    // that never received a usable grade — so a note the singer skipped counts
+    // against the take. Notes never reached on an early stop stay absent, so
+    // they're correctly excluded from the denominator (summarizeAccuracy's
+    // contract). Iterate the timeline so we only seed real (non-rest) notes.
+    const timeline = timelineRef.current;
+    if (timeline && maxReachedRef.current >= 0) {
+      const filled = { ...gradesRef.current };
+      for (const n of timeline.notes) {
+        if (n.index <= maxReachedRef.current && !(n.index in filled)) {
+          filled[n.index] = GRADE.MISSED;
+        }
+      }
+      gradesRef.current = filled;
+      setNoteColors(filled);
+    }
     setSummary(summarizeAccuracy(gradesRef.current));
     setRunning(false);
     setCountingIn(false);
@@ -104,6 +121,10 @@ export default function useColorMatch({ score, stream, bpm = null, countInBars =
     const hit = noteAtTime(timeline, elapsedMs, cursorRef.current);
     if (hit) {
       cursorRef.current = hit.idx;
+      // Track the furthest note the timeline actually reached, so finalize() can
+      // fill MISSED for notes WALKED PAST but never sung (they count against the
+      // take) while still EXCLUDING notes never reached on an early stop.
+      if (hit.note.index > maxReachedRef.current) maxReachedRef.current = hit.note.index;
       const g = gradeNote(pitchRef.current.hz, hit.note.targetHz);
       const prev = gradesRef.current[hit.note.index] ?? GRADE.MISSED;
       const next = bestGrade(prev, g);
@@ -127,6 +148,7 @@ export default function useColorMatch({ score, stream, bpm = null, countInBars =
     teardown();
     gradesRef.current = {};
     cursorRef.current = 0;
+    maxReachedRef.current = -1;
     timelineRef.current = timeline;
     setNoteColors({});
     setSummary(null);

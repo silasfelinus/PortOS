@@ -74,7 +74,13 @@ function TerrainPlane({ dayMix, accent }) {
     },
     side: THREE.DoubleSide,
     depthWrite: true,
-  }), [dayMix, accent]);
+    // accent intentionally NOT a dep — a theme switch updates the uniform in
+    // place (effect below) rather than recompiling the GLSL program. Matches the
+    // imperative-uniform pattern in CitySky / CityBillboards / CityVolumetricLights.
+  }), [dayMix]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Push the accent into the existing material on theme change — no rebuild.
+  useEffect(() => { material.uniforms.uAccent.value.set(accent); }, [material, accent]);
 
   // R3F doesn't dispose a material handed in via the `material` prop, so free the
   // prior one when dayMix flips (Day/Night toggle) and on unmount.
