@@ -111,6 +111,25 @@ describe('migration 080 — brain tombstone + sync-log cleanup', () => {
     expect(terminal.seq).toBe(99); // max seq preserved by stamping the winner
   });
 
+  it('keeps the record LIVE when a create and an equal-timestamp delete replay to live (matches runtime LWW)', async () => {
+    // Runtime applyRemoteRecord rejects a delete when existing.updatedAt >=
+    // delete.updatedAt. So create@T then delete@T (same timestamp, delete later
+    // in seq) leaves the record LIVE — the delete is rejected. The compacted log
+    // must therefore keep the CREATE as terminal, not the delete; otherwise a
+    // fresh peer would tombstone a record the runtime keeps alive.
+    writeLog([
+      { seq: 1, op: 'create', type: 'links', id: 'eq', record: { updatedAt: '2026-01-01T00:00:00.000Z' } },
+      { seq: 2, op: 'delete', type: 'links', id: 'eq', record: { updatedAt: '2026-01-01T00:00:00.000Z' } },
+    ]);
+
+    await migration.up({ rootDir });
+
+    const lines = readLogLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0].op).toBe('create'); // incumbent wins the tie — record stays live
+    expect(lines[0].seq).toBe(2); // max seq preserved by stamping the survivor
+  });
+
   it('is idempotent — a second run is a no-op', async () => {
     writeStore('links', {
       'ghost-1': { url: 'https://x', updatedAt: '2026-01-01T00:00:00.000Z', originInstanceId: 'peer-a' },

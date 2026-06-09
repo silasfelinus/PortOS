@@ -50,20 +50,27 @@ function parseLog(content) {
   return entries;
 }
 
-// Does log entry `candidate` win last-writer-wins over the current winner
-// `cur` for the same (type, id)? Mirrors applyRemoteRecord's runtime guard:
-// strictly newer updatedAt wins; on an EQUAL timestamp a delete beats a
-// create/update (the runtime delete path applies on `>=`, i.e. a delete is
-// accepted when not strictly older). A missing updatedAt never wins.
-function lwwReplaces(candidate, cur) {
-  const a = candidate?.record?.updatedAt;
-  const b = cur?.record?.updatedAt;
-  if (a == null) return false;
-  if (b == null) return true;
-  if (a > b) return true;
-  if (a < b) return false;
-  // Equal timestamps: prefer the delete (tie-break matches runtime LWW).
-  return candidate.op === 'delete' && cur.op !== 'delete';
+// Replay one (type, id)'s log entries the way applyRemoteRecord would on a
+// fresh peer, and return the surviving terminal entry. The runtime processes
+// entries in SEQ ORDER and accepts an incoming op only when it is STRICTLY
+// newer than the currently-stored copy (the guard rejects on
+// `existing.updatedAt >= record.updatedAt`, for both create/update AND delete).
+// So the rule is order-dependent and the incumbent wins ties — a `create@T`
+// followed by a `delete@T` leaves the record LIVE (the delete is rejected),
+// and the terminal entry must be that create, not the delete. A hand-rolled
+// "delete beats create on equal timestamp" tie-break gets this case wrong and
+// would make the compacted log advertise a delete the runtime never applies,
+// causing fresh/reset peers to tombstone a live record. Simulating the replay
+// guarantees the compacted single entry produces the identical net state.
+// An entry with no updatedAt is never accepted (mirrors missing_timestamp).
+function replayTerminal(entries) {
+  let accepted = null; // the last accepted entry (the survivor)
+  for (const e of [...entries].sort((a, b) => a.seq - b.seq)) {
+    const ts = e?.record?.updatedAt;
+    if (ts == null) continue; // no LWW clock → rejected
+    if (accepted == null || ts > accepted.record.updatedAt) accepted = e;
+  }
+  return accepted;
 }
 
 /**
@@ -105,32 +112,36 @@ export function computeBrainCleanup(logEntries, stores, { nowIso }) {
     }
   }
 
-  // 2. Compact the log to the LAST-WRITER-WINS winner per (type, id) — NOT the
-  //    highest-seq entry. The ping-pong appends create→delete repeatedly with
-  //    FIXED updatedAt values (create's is always older than delete's), each
-  //    cycle getting a fresh seq. So the highest-SEQ entry for a deleted record
-  //    can be a stale `create` whose updatedAt LOSES to an earlier `delete`. If
-  //    that stale create became the sole surviving log entry (the delete dropped
-  //    by compaction), a fresh/lagging peer would pull a create with no delete
-  //    to supersede it and resurrect the record — restarting the loop. Choosing
-  //    the LWW winner makes the compacted log's net replay identical to the full
-  //    log's.
-  const winners = new Map(); // key -> LWW-winning entry
+  // 2. Compact the log to the entry that SURVIVES a faithful runtime replay per
+  //    (type, id) — NOT the highest-seq entry. The ping-pong appends
+  //    create→delete repeatedly with FIXED updatedAt values (create's always
+  //    older than delete's), each cycle getting a fresh seq. So the highest-SEQ
+  //    entry for a deleted record can be a stale `create` whose updatedAt LOSES
+  //    to an earlier `delete`. Keeping it would let a fresh/lagging peer pull a
+  //    create with no delete to supersede it and resurrect the record. Replaying
+  //    each key (see replayTerminal) makes the compacted log's net effect on any
+  //    peer identical to the full log's.
+  const byKey = new Map(); // key -> entries[]
   let maxSeqEntry = null; // the single highest-seq entry, type/id or not
   for (const e of logEntries) {
     if (e?.seq == null) continue;
     if (!maxSeqEntry || e.seq > maxSeqEntry.seq) maxSeqEntry = e;
     if (!e.type || !e.id) continue;
     const key = `${e.type}/${e.id}`;
-    const cur = winners.get(key);
-    if (!cur || lwwReplaces(e, cur)) winners.set(key, e);
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(e);
+  }
+  const winners = new Map(); // key -> surviving terminal entry
+  for (const [key, entries] of byKey) {
+    const terminal = replayTerminal(entries);
+    if (terminal) winners.set(key, terminal);
   }
   const kept = [...winners.values()];
   // Preserve the global max seq so peer brainSeq cursors stay valid (dropping it
   // makes our currentSeq fall below a peer's cursor and forces a full re-sync) —
-  // but NEVER by re-introducing an LWW-losing entry. If the max-seq entry is
+  // but NEVER by re-introducing a replay-losing entry. If the max-seq entry is
   // inert (no type/id) keep it verbatim; if it belongs to a kept key, stamp that
-  // key's winner with the max seq instead of resurrecting the raw stale line.
+  // key's surviving entry with the max seq instead of resurrecting the raw line.
   if (maxSeqEntry && !kept.some((e) => e.seq === maxSeqEntry.seq)) {
     if (!maxSeqEntry.type || !maxSeqEntry.id) {
       kept.push(maxSeqEntry);
