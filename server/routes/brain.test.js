@@ -90,11 +90,11 @@ vi.mock('../services/brainSync.js', () => ({
   applyRemoteChanges: vi.fn()
 }));
 
-// Mock the brain anti-entropy reconcile service (#1077)
+// Mock the brain anti-entropy reconcile service (#1077). Only the two read
+// endpoints are exposed over HTTP; applyBrainSnapshot is orchestrator-only.
 vi.mock('../services/brainReconcile.js', () => ({
   getBrainChecksum: vi.fn(),
-  getBrainSnapshot: vi.fn(),
-  applyBrainSnapshot: vi.fn()
+  getBrainSnapshot: vi.fn()
 }));
 
 // Mock the brain journal service

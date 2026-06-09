@@ -61,6 +61,21 @@ describe('brainReconcile checksum', () => {
     const tomb = await getBrainChecksum();
     expect(live).not.toBe(tomb);
   });
+
+  // #1077 review finding: plain JSON.stringify preserves field-insertion order,
+  // so two installs holding the SAME logical record (e.g. one migrated by
+  // backfillOriginInstanceId, which appends originInstanceId LAST) would hash
+  // differently and re-pull the snapshot every cycle for no reason.
+  it('is independent of per-record FIELD order (stable stringify)', async () => {
+    emptyStores({ links: { a: { id: 'a', title: 'A', updatedAt: '2026-01-01T00:00:00.000Z', originInstanceId: 'inst-1' } } });
+    const c1 = await getBrainChecksum();
+
+    // Identical record, fields in a different order (as a migrated record would be).
+    emptyStores({ links: { a: { originInstanceId: 'inst-1', updatedAt: '2026-01-01T00:00:00.000Z', id: 'a', title: 'A' } } });
+    const c2 = await getBrainChecksum();
+
+    expect(c1).toBe(c2);
+  });
 });
 
 describe('brainReconcile snapshot', () => {
@@ -124,5 +139,28 @@ describe('applyBrainSnapshot', () => {
     const res = await applyBrainSnapshot({});
     expect(res).toEqual({ inserted: 0, updated: 0, deleted: 0, skipped: 0 });
     expect(brainStorage.applyRemoteRecord).not.toHaveBeenCalled();
+  });
+
+  // #1077 review finding: a peer record under a dangerous prototype id can
+  // never persist/converge (dropped on write) but would still report applied
+  // and emit a phantom relay. Reject those ids up front.
+  it('skips dangerous prototype ids without applying or relaying', async () => {
+    brainStorage.applyRemoteRecord.mockResolvedValue({ applied: true });
+    // Build via JSON.parse to match the production path (res.json()): a JSON
+    // `"__proto__"` key becomes a real OWN enumerable property, unlike an object
+    // literal where `__proto__:` would set the prototype and never reach the loop.
+    const snapshot = JSON.parse(JSON.stringify({ records: { links: {} } }));
+    snapshot.records.links = JSON.parse(`{
+      "__proto__": { "updatedAt": "2026-01-02T00:00:00.000Z", "title": "evil" },
+      "constructor": { "updatedAt": "2026-01-02T00:00:00.000Z", "title": "evil" },
+      "prototype": { "updatedAt": "2026-01-02T00:00:00.000Z", "title": "evil" },
+      "ok": { "id": "ok", "updatedAt": "2026-01-02T00:00:00.000Z", "title": "good" }
+    }`);
+    const res = await applyBrainSnapshot(snapshot);
+    // Only the legitimate id is applied; the three prototype keys are skipped.
+    expect(brainStorage.applyRemoteRecord).toHaveBeenCalledTimes(1);
+    expect(brainStorage.applyRemoteRecord).toHaveBeenCalledWith(
+      'links', 'ok', expect.objectContaining({ id: 'ok' }), 'update');
+    expect(res.updated).toBe(1);
   });
 });

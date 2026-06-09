@@ -53,12 +53,31 @@ async function buildRawMap() {
 }
 
 /**
+ * Stable JSON stringify: serialize object keys in sorted order at every depth,
+ * so the output is independent of key-insertion order. Plain `JSON.stringify`
+ * preserves insertion order, which would let two installs holding the SAME
+ * logical record hash differently — e.g. `backfillOriginInstanceId` appends
+ * `originInstanceId` last on a migrated record, while a freshly-created record
+ * carries it mid-object. That benign field-order skew would otherwise force a
+ * wasted snapshot fetch+merge every cycle. Arrays keep their order (significant);
+ * only object keys are sorted. Records are JSON-safe (no Date/Map/Set/cycles).
+ */
+function stableStringify(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map(k => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
+}
+
+/**
  * Deterministic md5 over the canonical brain record map. Matches `dataSync`'s
- * `computeChecksum` (md5 of a JSON string) so the two reconcile layers behave
- * the same. Stable across installs because `buildRawMap` sorts types + ids.
+ * `computeChecksum` shape (md5 of a JSON string) but uses a key-sorted
+ * serialization so two installs with identical brain state hash identically
+ * regardless of per-record field order. `buildRawMap` sorts the type + id
+ * levels; `stableStringify` extends order-independence into each record's fields.
  */
 function computeChecksum(rawMap) {
-  return createHash('md5').update(JSON.stringify(rawMap)).digest('hex');
+  return createHash('md5').update(stableStringify(rawMap)).digest('hex');
 }
 
 /**
@@ -95,6 +114,11 @@ export async function getBrainSnapshot() {
  * @returns {Promise<{inserted:number, updated:number, deleted:number, skipped:number}>}
  */
 export async function applyBrainSnapshot(snapshot) {
+  // `inserted` stays 0 by design: brainStorage.applyRemoteRecord doesn't
+  // distinguish insert vs update (it returns only `{ applied }`), so every
+  // applied upsert is counted as `updated`. The key is kept for shape-parity
+  // with brainSync.applyRemoteChanges; the caller sums all three so the total
+  // is correct either way.
   let inserted = 0, updated = 0, deleted = 0, skipped = 0;
   const relayBatch = [];
 
@@ -109,6 +133,11 @@ export async function applyBrainSnapshot(snapshot) {
     if (!byId || typeof byId !== 'object') continue;
 
     for (const [id, record] of Object.entries(byId)) {
+      // Skip dangerous prototype keys: a peer record under id `__proto__`
+      // hits Object.prototype's setter (or is dropped by JSON.stringify on
+      // write) — it can never persist or converge, but would still report
+      // applied and emit a phantom relay entry. Reject up front.
+      if (id === '__proto__' || id === 'constructor' || id === 'prototype') { skipped++; continue; }
       if (!record || !record.updatedAt) { skipped++; continue; }
       const op = record._deleted === true ? 'delete' : 'update';
       // For a delete, hand applyRemoteRecord the wire-shape tombstone fields
