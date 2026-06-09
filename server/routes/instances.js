@@ -95,6 +95,18 @@ const querySchema = z.object({
   path: z.string().startsWith('/api/', 'Path must start with /api/')
 });
 
+// Reciprocal sync request from a peer: it enabled `syncCategories` toward us
+// and asks us to mirror them so the sync is bidirectional. instanceId is the
+// announcing peer's identity (matched against our peer record).
+const reciprocalSyncSchema = z.object({
+  instanceId: z.string().guid(),
+  // `.unwrap()` strips the `.optional()` from the shared schema so the
+  // syncCategories KEY is required. An empty `{}` still parses (all fields are
+  // optional) and simply no-ops downstream in applyReciprocalSync
+  // (sanitizeSyncCategories returns null → changed:false).
+  syncCategories: syncCategoriesSchema.unwrap()
+});
+
 // GET /api/instances — list self + all peers
 router.get('/', asyncHandler(async (req, res) => {
   const [self, peers, syncStatus] = await Promise.all([
@@ -237,6 +249,36 @@ router.post('/peers/:id/connect', asyncHandler(async (req, res) => {
   const result = await instances.connectPeer(req.params.id);
   if (!result) throw new ServerError('Peer not found', { status: 404 });
   res.json(instances.sanitizePeerForClient(result));
+}));
+
+// POST /api/instances/peers/sync-categories — reciprocal-sync callback from a
+// peer. The peer enabled some categories toward us and is asking us to mirror
+// them so the sync is bidirectional. No :id — the peer is identified by the
+// instanceId in the body (we may not know its local-peer-id mapping).
+router.post('/peers/sync-categories', asyncHandler(async (req, res) => {
+  const data = reciprocalSyncSchema.parse(req.body);
+  const { changed } = await instances.applyReciprocalSync(data.instanceId, data.syncCategories);
+  // 200 even when the peer is unknown to us / nothing changed — this is a
+  // best-effort convergence signal, not a command that must succeed. We return
+  // only `applied` (not the peer record) — the remote caller doesn't consume it,
+  // and echoing our peer entry would leak our stored proxy-credential metadata
+  // (username + hasPassword) for reaching them across the peer boundary, the
+  // same leak the /announce route guards against with redactPeerForWire.
+  res.json({ applied: changed });
+}));
+
+// POST /api/instances/peers/:id/reciprocate — explicit "make all enabled
+// categories mutual" for an existing (likely one-directional) peer. Pushes our
+// current category map to the peer so it enables the same toward us.
+router.post('/peers/:id/reciprocate', asyncHandler(async (req, res) => {
+  const peers = await instances.getPeers();
+  const peer = peers.find(p => p.id === req.params.id);
+  if (!peer) throw new ServerError('Peer not found', { status: 404 });
+  // Go through the per-peer serialized queue (same path as the auto-reciprocate
+  // on toggle) so a manual "Make mutual" can't race an in-flight toggle send and
+  // land a stale map. The queue re-reads the freshest persisted categories.
+  const result = await instances.enqueueReciprocalSync(peer.id);
+  res.json(result ?? { ok: false, reason: 'no-result' });
 }));
 
 // POST /api/instances/peers/:id/probe — force immediate probe
