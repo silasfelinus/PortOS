@@ -21,6 +21,32 @@ const withRemoteLock = createMutex();
 
 const DATA_DIR = PATHS.brain;
 
+// A tombstone is a deleted-record marker kept IN PLACE in `data.records[id]`
+// (rather than removing the key) so the last-writer-wins guard in
+// applyRemoteRecord can reject a stale `create` echoed back from a peer.
+// Without it, a hard delete leaves `existing === undefined`, the LWW guard is
+// skipped, and the record resurrects — then the newer delete re-kills it, and
+// both ops relay to every peer forever (the federated brain-sync loop).
+// Shape: { _deleted: true, updatedAt, originInstanceId, deletedAt }. The
+// `updatedAt` is the LWW clock; `deletedAt` is the GC clock.
+const isTombstone = (rec) => !!(rec && rec._deleted);
+
+// Build the in-place tombstone marker. `updatedAt` is the LWW clock (must be the
+// delete's timestamp); `deletedAt` is the GC clock — equal at birth, kept
+// separate so the GC sweep reads its own field.
+const makeTombstone = (updatedAt, originInstanceId) => ({
+  _deleted: true,
+  updatedAt,
+  originInstanceId: originInstanceId ?? 'unknown',
+  deletedAt: updatedAt,
+});
+
+// GC grace period: how long a tombstone is retained before it can be hard-
+// pruned. Must comfortably exceed the longest realistic peer-offline window so
+// a peer that reconnects still sees the delete (not a since-vanished id that it
+// would re-create). 30 days matches the sharing-side tombstone grace buffer.
+export const BRAIN_TOMBSTONE_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
+
 // File paths
 const FILES = {
   meta: join(DATA_DIR, 'meta.json'),
@@ -169,7 +195,11 @@ async function saveJsonStore(type, data) {
  */
 export async function getAll(type) {
   const data = await loadJsonStore(type);
-  return Object.entries(data.records).map(([id, record]) => ({ id, ...record }));
+  // Tombstones (deleted markers) are excluded from all read paths — they exist
+  // only to anchor the LWW sync guard, never as user-visible records.
+  return Object.entries(data.records)
+    .filter(([, record]) => !isTombstone(record))
+    .map(([id, record]) => ({ id, ...record }));
 }
 
 /**
@@ -178,7 +208,7 @@ export async function getAll(type) {
 export async function getById(type, id) {
   const data = await loadJsonStore(type);
   const record = data.records[id];
-  return record ? { id, ...record } : null;
+  return record && !isTombstone(record) ? { id, ...record } : null;
 }
 
 /**
@@ -213,7 +243,8 @@ export async function create(type, recordData) {
 export async function update(type, id, updates) {
   const data = await loadJsonStore(type);
 
-  if (!data.records[id]) {
+  // A tombstoned record is gone — treat it as not-found rather than reviving it.
+  if (!data.records[id] || isTombstone(data.records[id])) {
     return null;
   }
 
@@ -252,7 +283,7 @@ export async function updateMany(type, updates) {
   const applied = [];
   for (const { id, ...fields } of updates) {
     const existing = data.records[id];
-    if (!existing) continue;
+    if (!existing || isTombstone(existing)) continue;
     const record = {
       ...existing,
       ...fields,
@@ -282,17 +313,25 @@ export async function updateMany(type, updates) {
 export async function remove(type, id) {
   const data = await loadJsonStore(type);
 
-  if (!data.records[id]) {
+  const existing = data.records[id];
+  // Already gone (absent) or already tombstoned — nothing to delete, and
+  // re-tombstoning would mint a redundant sync-log entry that relays needlessly.
+  if (!existing || isTombstone(existing)) {
     return false;
   }
 
-  const originInstanceId = data.records[id]?.originInstanceId ?? 'unknown';
-  const deletedRecord = { id, ...data.records[id] };
-  const deleteRecord = { updatedAt: now() };
-  delete data.records[id];
+  const originInstanceId = existing.originInstanceId ?? 'unknown';
+  const deletedRecord = { id, ...existing };
+  const ts = now();
+  // Retain a tombstone in place (not a hard delete) so a stale `create` echoed
+  // from a peer is rejected by the LWW guard in applyRemoteRecord.
+  data.records[id] = makeTombstone(ts, originInstanceId);
   await saveJsonStore(type, data);
   brainEvents.emit(`${type}:deleted`, { id, record: deletedRecord });
-  await brainSyncLog.appendChange('delete', type, id, deleteRecord, originInstanceId)
+  // Wire format unchanged: the sync-log delete entry still carries only
+  // { updatedAt } so an older peer (no tombstone support) applies it as a
+  // plain hard delete exactly as before.
+  await brainSyncLog.appendChange('delete', type, id, { updatedAt: ts }, originInstanceId)
     .catch(err => console.error(`⚠️ Sync log append failed for delete ${type}/${id}: ${err.message}`));
 
   console.log(`🧠 Deleted ${type} record: ${id}`);
@@ -634,18 +673,30 @@ export async function applyRemoteRecord(type, id, record, op) {
     const data = await loadJsonStore(type);
 
     if (op === 'delete') {
-      if (!data.records[id]) return { applied: false, reason: 'not_found' };
       // Require updatedAt on delete operations for last-writer-wins conflict resolution
       if (!record?.updatedAt) {
         return { applied: false, reason: 'missing_timestamp' };
       }
-      // LWW: only delete if local record isn't newer than the remote delete (>= for consistency with update path)
-      if (data.records[id].updatedAt >= record.updatedAt) {
+      const existing = data.records[id];
+      // LWW: skip if our copy (live record OR existing tombstone) is at least as
+      // new as the incoming delete. The tombstone-vs-tombstone case makes a
+      // repeated delete idempotent → not relayed → the echo loop converges.
+      if (existing && existing.updatedAt >= record.updatedAt) {
         return { applied: false, reason: 'local_newer' };
       }
-      delete data.records[id];
+      // Tombstone in place even when no local record exists. A delete that
+      // arrives before we ever saw a create still leaves a marker, so a later
+      // stale create for that id is rejected instead of resurrecting.
+      data.records[id] = makeTombstone(
+        record.updatedAt,
+        record.originInstanceId ?? existing?.originInstanceId
+      );
     } else {
       const existing = data.records[id];
+      // Guard now also fires when `existing` is a tombstone — a stale create
+      // (older updatedAt than the recorded delete) is rejected, breaking the
+      // resurrection loop. A genuinely newer create (later updatedAt than the
+      // tombstone) still wins and legitimately revives the record.
       if (existing && existing.updatedAt >= record.updatedAt) {
         return { applied: false, reason: 'local_newer' };
       }
@@ -662,6 +713,34 @@ export async function applyRemoteRecord(type, id, record, op) {
 }
 
 /**
+ * Hard-prune tombstones older than `cutoffMs` (a Date.now()-style epoch ms).
+ * Called by the brain tombstone GC sweep on the orchestrator's interval.
+ * Load-modify-save per store; writes only when something was pruned.
+ * Returns the number of tombstones removed.
+ */
+export async function pruneTombstones(type, cutoffMs) {
+  return withRemoteLock(async () => {
+    const data = await loadJsonStore(type);
+    let pruned = 0;
+    for (const [id, record] of Object.entries(data.records)) {
+      if (!isTombstone(record)) continue;
+      const deletedAt = Date.parse(record.deletedAt ?? record.updatedAt ?? '');
+      if (Number.isFinite(deletedAt) && deletedAt < cutoffMs) {
+        delete data.records[id];
+        pruned++;
+      }
+    }
+    if (pruned > 0) {
+      await ensureBrainDir();
+      await writeFile(FILES[type], JSON.stringify(data, null, 2));
+      caches[type].data = data;
+      caches[type].timestamp = Date.now();
+    }
+    return pruned;
+  });
+}
+
+/**
  * Backfill originInstanceId on records missing it (run once at startup)
  */
 export async function backfillOriginInstanceId() {
@@ -674,6 +753,8 @@ export async function backfillOriginInstanceId() {
     let changed = false;
 
     for (const [, record] of Object.entries(data.records)) {
+      // Tombstones always carry originInstanceId; skip them.
+      if (isTombstone(record)) continue;
       if (!record.originInstanceId) {
         record.originInstanceId = instanceId;
         changed = true;
