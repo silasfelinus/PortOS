@@ -997,11 +997,13 @@ function PeerCard({ peer, onRefresh, syncStatus, tailnetInfo }) {
       } else if (payload.phase === 'complete') {
         setSyncing(false);
         // Pull the freshest cursors/seqs so the card settles to the new
-        // directional summary without waiting for the next 60s probe. Refresh
-        // even on a zero-applied complete: a convergence/no-op sync still
-        // advances `lastSyncAt` and snapshot checksums, so the badge would
-        // otherwise read stale until the next manual probe.
-        onRefresh();
+        // directional summary. Only when records actually moved — otherwise the
+        // 60s background `syncAllPeers` cycle would fire a full page refetch per
+        // peer on every idle tick (a refetch herd). The manual "Sync now" path
+        // (`handleSync`) does its own authoritative refetch on the awaited POST,
+        // so a no-op manual sync still settles; this branch covers the
+        // records-moved case for both manual and background syncs.
+        if (payload.totalApplied > 0) onRefresh();
       }
       // `applied` events are informational (and drive the server-side log) —
       // the global `syncing` flag already animates every badge, so the client
@@ -1090,16 +1092,14 @@ function PeerCard({ peer, onRefresh, syncStatus, tailnetInfo }) {
     setSyncing(true);
     const result = await syncPeer(peer.id, { silent: true }).catch(() => null);
     // The POST awaits the full sync server-side, so its resolution IS the
-    // authoritative completion for a manual sync — clear here rather than
-    // relying solely on the fire-and-forget `complete` socket event, which a
-    // transient socket disconnect could drop and leave the card stuck spinning.
+    // authoritative completion for a manual sync — clear the spinner here
+    // rather than relying solely on the fire-and-forget `complete` socket
+    // event, which a transient socket disconnect could drop and leave the card
+    // stuck. The refetch itself is owned by the `complete` handler (gated on
+    // records-moved); a no-op manual sync changes nothing worth refetching.
     setSyncing(false);
     if (!result) {
       toast.error(`Couldn't sync with ${peer.name} — is it online?`);
-    } else {
-      // Settle to the new directional summary (the socket `complete` also
-      // refreshes when records moved; this covers the no-op/socket-miss case).
-      onRefresh();
     }
   };
 

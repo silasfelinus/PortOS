@@ -621,6 +621,28 @@ describe('syncOrchestrator', () => {
       expect(complete.totalApplied).toBeGreaterThanOrEqual(1);
     });
 
+    it('releases the per-peer lock and still emits complete when the cursor read throws', async () => {
+      // readCursors → loadCursors → readJSONFile. A throw here (corrupt cursor
+      // file, disk error) happens AFTER the lock is acquired and the `start`
+      // emit fires — the finally must release the lock and emit a terminal
+      // `complete`, or the peer is wedged "syncing" until restart.
+      readJSONFile.mockRejectedValueOnce(new Error('cursor file corrupt'));
+      await expect(syncWithPeer({ ...mockPeer, syncCategories: { brain: true } })).rejects.toThrow('cursor file corrupt');
+
+      const progress = instanceEvents.emit.mock.calls
+        .filter(([event]) => event === 'sync:progress')
+        .map(([, payload]) => payload);
+      expect(progress).toContainEqual({ phase: 'start', peerId: 'peer-inst-1' });
+      expect(progress).toContainEqual({ phase: 'complete', peerId: 'peer-inst-1', totalApplied: 0 });
+
+      // Lock released: a subsequent sync is NOT short-circuited by syncingPeers.
+      mockFetch.mockResolvedValue({ ok: true, json: async () => ({ changes: [], maxSeq: 0, hasMore: false }) });
+      instanceEvents.emit.mockClear();
+      await syncWithPeer({ ...mockPeer, syncCategories: { brain: true } });
+      const reran = instanceEvents.emit.mock.calls.some(([event, p]) => event === 'sync:progress' && p.phase === 'start');
+      expect(reran).toBe(true);
+    });
+
     it('emits exactly one complete (totalApplied 0) for a no-op sync — card never sticks on "syncing"', async () => {
       // A category enabled but no changes available: lifecycle still settles.
       mockFetch.mockResolvedValue({ ok: true, json: async () => ({ changes: [], maxSeq: 0, hasMore: false }) });

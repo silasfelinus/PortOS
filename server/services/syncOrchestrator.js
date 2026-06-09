@@ -587,27 +587,6 @@ export async function syncWithPeer(peer) {
   if (syncingPeers.has(peerId)) return { brain: { totalApplied: 0 }, memory: { totalApplied: 0 } };
   syncingPeers.add(peerId);
 
-  // Our own instanceId — sent as `forPeer` so the SOURCE peer can scope each
-  // snapshot it serves us (excludes records it already pushes to us
-  // per-record). Resolved once per sync, best-effort; null/UNKNOWN → no
-  // scoping (full snapshots, legacy behavior).
-  const ourInstanceId = await getInstanceId().catch(() => null);
-  const scopedInstanceId = isNonEmptyStr(ourInstanceId) && ourInstanceId !== UNKNOWN_INSTANCE_ID
-    ? ourInstanceId
-    : null;
-
-  const categories = getEffectiveCategories(peer);
-  const enabledNames = Object.entries(categories).filter(([, on]) => on).map(([k]) => k);
-  console.log(`🔄 Sync starting with ${peer.name || peerId}: categories=${enabledNames.join(',') || 'none'}`);
-  emitSyncProgress({ phase: 'start', peerId });
-
-  // Read cursor snapshot outside lock so network I/O doesn't block other peers
-  // Also detect and reset stale cursors (e.g. peer DB was rebuilt)
-  const cursor = await readCursors((cursors) => {
-    const raw = { ...(cursors[peerId] || {}) };
-    return detectCursorReset(raw, peer);
-  });
-
   // Emit an `applied` progress event for a category when it actually moved
   // records — keeps the per-category emits DRY across the delta + snapshot legs.
   const reportApplied = (category, applied) => {
@@ -618,7 +597,33 @@ export async function syncWithPeer(peer) {
   // a card whose sync threw mid-flight instead of leaving it spinning forever.
   let completed = false;
 
+  // Everything after acquiring the lock runs inside the try so the `finally`
+  // ALWAYS releases `syncingPeers` and emits a terminal `complete` — even if
+  // `getInstanceId`/`readCursors` throws before the sync body. Otherwise a
+  // throw here would both leak the per-peer lock (permanent until restart) and
+  // strand the card spinning with no `complete`.
   try {
+    // Our own instanceId — sent as `forPeer` so the SOURCE peer can scope each
+    // snapshot it serves us (excludes records it already pushes to us
+    // per-record). Resolved once per sync, best-effort; null/UNKNOWN → no
+    // scoping (full snapshots, legacy behavior).
+    const ourInstanceId = await getInstanceId().catch(() => null);
+    const scopedInstanceId = isNonEmptyStr(ourInstanceId) && ourInstanceId !== UNKNOWN_INSTANCE_ID
+      ? ourInstanceId
+      : null;
+
+    const categories = getEffectiveCategories(peer);
+    const enabledNames = Object.entries(categories).filter(([, on]) => on).map(([k]) => k);
+    console.log(`🔄 Sync starting with ${peer.name || peerId}: categories=${enabledNames.join(',') || 'none'}`);
+    emitSyncProgress({ phase: 'start', peerId });
+
+    // Read cursor snapshot outside lock so network I/O doesn't block other peers
+    // Also detect and reset stale cursors (e.g. peer DB was rebuilt)
+    const cursor = await readCursors((cursors) => {
+      const raw = { ...(cursors[peerId] || {}) };
+      return detectCursorReset(raw, peer);
+    });
+
     // --- Brain sync (delta-based) ---
     let brainResult = { brainSeq: cursor.brainSeq ?? 0, totalApplied: 0 };
     if (categories.brain) {
