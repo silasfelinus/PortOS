@@ -101,6 +101,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `fileUtils.js` | `PATHS` constants, `atomicWrite`, `tryReadFile`, `safeJSONParse`, `expandHome` (`~/foo` → absolute), JSONL append/read/write helpers, dir scans, hashes, JSON helpers. Most paths/file work goes through here. |
 | `fileWriteQueue.js` | Single-tail promise chain for serializing writes to a file. |
 | `imageClean.js` | `cleanImageBuffer` (sharp-based denoise + C2PA strip) + `autoCleanGeneratedImage` (in-place clean for post-generation hook). HTTP route in `routes/imageClean.js` wraps `cleanImageBuffer`. |
+| `imageWatermark.js` | `removeCornerWatermark` (erases the visible Gemini/Nano-Banana bottom-right ✦ via dependency-free harmonic/Laplace inpaint) + pure helpers `resolveWatermarkRegion` / `inpaintRegion`. Distinct from SynthID regen — this targets the *visible* corner logo. |
 | `multipart.js` | Streaming multipart/form-data parser. |
 | `safetensors.js` | `readSafetensorsHeader(path)` reads only the JSON header of a `.safetensors` file (never the tensor payload). `detectFlux2VariantFromHeader(header)` / `detectFlux2Variant(path)` classify a LoRA as FLUX.2 Klein `'4b'` (hidden dim 3072) vs `'9b'` (4096) by transformer-block tensor shapes, so the LoRA picker can hide off-variant weights that would silently fail to load. |
 | `pdfImageEmbed.js` | PDF image embed helpers for comic / volume PDFs. |
