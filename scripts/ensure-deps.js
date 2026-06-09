@@ -3,19 +3,81 @@
  * Runs npm install only for workspaces with missing node_modules.
  * Handles ENOTEMPTY npm bug by retrying with clean node_modules.
  */
-import { existsSync, rmSync } from 'fs';
+import { existsSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { execFileSync } from 'child_process';
+import { createHash } from 'crypto';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
+// Persisted package.json hashes (per workspace) from the last successful install.
+// A changed hash means the manifest moved since we last resolved the tree, so an
+// in-place `npm install` over the existing node_modules could leave a stale /
+// duplicated tree (e.g. a react@18 copy lingering beside react@19 after a major
+// bump) — which builds fine but throws "Invalid hook call" at runtime. When the
+// hash changes we wipe node_modules first and reinstall from scratch instead.
+// This mirrors update.sh's pull-diff clean-reinstall for the manual
+// `git pull` + `npm start` path, which has no pull context to diff against.
+const HASH_FILE = join(ROOT, 'data', 'deps-hashes.json');
+
 const WORKSPACES = [
   { dir: ROOT, label: 'root' },
   { dir: join(ROOT, 'client'), label: 'client' },
-  { dir: join(ROOT, 'server'), label: 'server' }
+  { dir: join(ROOT, 'server'), label: 'server' },
+  { dir: join(ROOT, 'autofixer'), label: 'autofixer' }
 ];
+
+function pkgHash(dir) {
+  const pkgPath = join(dir, 'package.json');
+  if (!existsSync(pkgPath)) return null;
+  return createHash('sha256').update(readFileSync(pkgPath)).digest('hex');
+}
+
+function loadHashes() {
+  try {
+    return JSON.parse(readFileSync(HASH_FILE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function saveHashes(hashes) {
+  try {
+    mkdirSync(dirname(HASH_FILE), { recursive: true });
+    writeFileSync(HASH_FILE, JSON.stringify(hashes, null, 2));
+  } catch (err) {
+    // Non-fatal — the worst case is we re-evaluate the hash next boot.
+    console.error(`⚠️  Could not persist deps hashes: ${err.message ?? err}`);
+  }
+}
+
+// True only when the lockfile is gitignored (the per-install client/server
+// locks). A tracked root lockfile is kept — it's consistent with package.json.
+function lockfileIsGitignored(dir) {
+  try {
+    execFileSync('git', ['check-ignore', '-q', join(dir, 'package-lock.json')], {
+      cwd: ROOT,
+      stdio: 'ignore',
+      windowsHide: true
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function cleanWorkspaceDeps(dir) {
+  try {
+    rmSync(join(dir, 'node_modules'), { recursive: true, force: true });
+  } catch { /* best effort */ }
+  if (lockfileIsGitignored(dir)) {
+    try {
+      rmSync(join(dir, 'package-lock.json'), { force: true });
+    } catch { /* best effort */ }
+  }
+}
 
 function install(dir, label) {
   try {
@@ -40,12 +102,32 @@ function install(dir, label) {
   }
 }
 
+const storedHashes = loadHashes();
+let hashesDirty = false;
 let needed = false;
+
 for (const { dir, label } of WORKSPACES) {
-  if (!existsSync(join(dir, 'node_modules'))) {
-    console.log(`📦 Missing node_modules for ${label} — installing...`);
+  const currentHash = pkgHash(dir);
+  const nodeModulesMissing = !existsSync(join(dir, 'node_modules'));
+  const storedHash = storedHashes[label];
+  // Only treat as "deps changed" when we have a baseline to compare against —
+  // a first run (no stored hash) seeds the baseline without a needless wipe.
+  const depsChanged = storedHash != null && currentHash != null && storedHash !== currentHash;
+
+  if (nodeModulesMissing || depsChanged) {
+    if (depsChanged && !nodeModulesMissing) {
+      console.log(`🧹 ${label} package.json changed since last install — clean reinstall...`);
+      cleanWorkspaceDeps(dir);
+    } else {
+      console.log(`📦 Missing node_modules for ${label} — installing...`);
+    }
     if (!install(dir, label)) process.exit(1);
     needed = true;
+  }
+
+  if (currentHash != null && storedHashes[label] !== currentHash) {
+    storedHashes[label] = currentHash;
+    hashesDirty = true;
   }
 }
 
@@ -78,5 +160,7 @@ for (const [dir, { label, pkgs }] of criticalByDir) {
     process.exit(1);
   }
 }
+
+if (hashesDirty) saveHashes(storedHashes);
 
 if (needed) console.log('✅ Dependencies verified');
