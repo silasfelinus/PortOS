@@ -168,6 +168,7 @@ export * from './ports.js';
 export * from './timezone.js';
 
 // === General utilities ===
+export * from './apiRegistry.js';
 export * from './asyncMutex.js';
 export * from './authGate.js';
 export * from './domainAutonomy.js';
@@ -175,6 +176,7 @@ export * from './domainBudgets.js';
 export * from './errorHandler.js';
 export * from './mapWithConcurrency.js';
 export * from './objects.js';
+export * from './openapiSpec.js';
 export * from './singleFlight.js';
 export * from './streamBackpressure.js';
 export * from './sseUtils.js';

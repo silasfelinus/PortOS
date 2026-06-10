@@ -29,6 +29,7 @@ const backend = (engine) => {
  * @param {AbortSignal} [opts.signal]
  * @param {string} [opts.voice]  transient voice override
  * @param {string} [opts.engine] transient engine override ('kokoro'|'piper')
+ * @param {number} [opts.rate]   transient speech-rate override (0.25–4)
  * @returns {Promise<{ wav: Buffer, latencyMs: number, engine: string }>}
  */
 export const synthesize = async (text, opts = {}) => {
@@ -36,9 +37,17 @@ export const synthesize = async (text, opts = {}) => {
   const engine = resolveEngine(opts.engine || cfg.tts.engine);
   const { synth } = backend(engine);
   let ttsCfg = cfg.tts;
+  // Transient rate override (external public API lets a caller set speed per
+  // request without persisting it). Clamp defensively even though the route
+  // schema already bounds it — direct in-process callers bypass the route.
+  if (typeof opts.rate === 'number' && Number.isFinite(opts.rate)) {
+    ttsCfg = { ...ttsCfg, rate: Math.min(4, Math.max(0.25, opts.rate)) };
+  }
   if (opts.voice) {
+    // Spread from `ttsCfg` (not `cfg.tts`) so a transient rate override applied
+    // above is preserved alongside the voice override.
     if (engine === 'kokoro') {
-      ttsCfg = { ...cfg.tts, kokoro: { ...cfg.tts.kokoro, voice: opts.voice } };
+      ttsCfg = { ...ttsCfg, kokoro: { ...ttsCfg.kokoro, voice: opts.voice } };
     } else {
       // Reject Piper voice overrides that aren't in the curated catalog —
       // otherwise `voice` would change but `voicePath` would remain the
@@ -51,9 +60,9 @@ export const synthesize = async (text, opts = {}) => {
         });
       }
       ttsCfg = {
-        ...cfg.tts,
+        ...ttsCfg,
         piper: {
-          ...cfg.tts.piper,
+          ...ttsCfg.piper,
           voice: opts.voice,
           voicePath: piperVoiceTildePath(opts.voice),
           speakerId: null,
