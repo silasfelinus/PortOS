@@ -73,8 +73,12 @@ export default function SongRecordings({ recordings = [], layers = [], onChange,
   // notes — mirrors the old <ColorMatch> self-arm, now lifted up. The take's
   // stopRecording explicitly stops grading to harvest the trace, so we only
   // need to start here. The hook also self-stops if the stream vanishes.
+  // We mark this take "armed" ONLY when startMatch() reports it actually began a
+  // run — a rest-only score makes hasMusic true but the hook bails (zero gradable
+  // notes) without resetting its accumulators, so a falsely-armed take would
+  // harvest the previous take's stale analysis.
   useEffect(() => {
-    if (liveStream && hasMusic && !matchRunning) { armedThisTakeRef.current = true; startMatch(); }
+    if (liveStream && hasMusic && !matchRunning && startMatch()) armedThisTakeRef.current = true;
     // start is stable; react only to stream/hasMusic (the arm trigger).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveStream, hasMusic]);

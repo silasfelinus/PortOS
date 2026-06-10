@@ -11,7 +11,11 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 // wiring: stop() is harvested before the stream drops, and its analysis lands
 // on the new recording entry.
 
-const matchStart = vi.fn();
+// startMatch returns true when a grading run actually armed (mirrors the real
+// hook: false on no-stream / rest-only / already-running). The owner gates
+// "armed for this take" on that, so the default success case returns true.
+let matchStartResult = true;
+const matchStart = vi.fn(() => matchStartResult);
 let matchStopResult = null;
 const matchStop = vi.fn(() => matchStopResult);
 let hookState = { running: false, countingIn: false, noteColors: {}, summary: null, activeIndex: null };
@@ -59,6 +63,7 @@ describe('SongRecordings — pitch analysis wiring (#1092)', () => {
     matchStop.mockClear();
     handleStop.mockClear();
     uploadFile.mockClear();
+    matchStartResult = true;
     matchStopResult = null;
     hookState = { running: false, countingIn: false, noteColors: {}, summary: null, activeIndex: null };
   });
@@ -129,6 +134,33 @@ describe('SongRecordings — pitch analysis wiring (#1092)', () => {
     expect(next[0]).not.toHaveProperty('pitchTrack');
     // Keep rerender referenced (used to prove the harness can swap props).
     rerender(<SongRecordings recordings={next} score="" tempo={120} onChange={onChange} />);
+  });
+
+  it('does not arm (or harvest) when the score has notation but no gradable notes', async () => {
+    // Regression (codex iteration 2): a rest-only score makes scoreHasMusic()
+    // true, so the auto-arm effect runs — but the hook's start() bails (zero
+    // gradable notes) WITHOUT resetting its accumulators. The owner must trust
+    // startMatch()'s return value: a false arm means no harvest, so a rest-only
+    // take can't inherit the prior take's analysis.
+    matchStartResult = false; // hook reports it didn't actually start a run
+    matchStopResult = {
+      summary: { graded: 4, counts: { 'in-tune': 4, close: 0, off: 0, missed: 0 }, percentInTune: 100, perNote: ['in-tune', 'in-tune', 'in-tune', 'in-tune'] },
+      pitchTrack: [{ tMs: 0, hz: 261.6, cents: 0, clarity: 0.99 }],
+    };
+    const onChange = vi.fn();
+    // A score with a measure (scoreHasMusic true) but only a rest.
+    const restOnly = ['time: 4/4', 'tempo: 120', '| rw |'].join('\n');
+    render(<SongRecordings recordings={[]} score={restOnly} tempo={120} onChange={onChange} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /record take/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /stop & save/i })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /stop & save/i }));
+
+    await waitFor(() => expect(onChange).toHaveBeenCalled());
+    expect(matchStop).not.toHaveBeenCalled(); // unarmed → no harvest attempt
+    const next = onChange.mock.calls.at(-1)[0];
+    expect(next[0]).not.toHaveProperty('accuracy');
+    expect(next[0]).not.toHaveProperty('pitchTrack');
   });
 
   it('shows a saved take’s accuracy badge and a Review button to replay its grading', () => {

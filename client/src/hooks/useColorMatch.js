@@ -176,11 +176,15 @@ export default function useColorMatch({ score, stream, bpm = null, countInBars =
     rafRef.current = requestAnimationFrame(grade);
   }, [stop]);
 
-  // Start a session: requires a live mic stream and a score with notes.
+  // Start a session: requires a live mic stream and a score with at least one
+  // gradable (non-rest) note. Returns true when a run actually armed (the
+  // accumulators were reset and grading began), false when it bailed early —
+  // callers gate "this take is being graded" on that so a rest-only / no-stream
+  // score can't leave a take falsely armed (which would harvest stale analysis).
   const start = useCallback(() => {
-    if (!stream || running) return;
+    if (!stream || running) return false;
     const timeline = buildColorMatchTimeline(score, { bpm, a4 });
-    if (!timeline.notes.length) return;
+    if (!timeline.notes.length) return false;
 
     teardown();
     gradesRef.current = {};
@@ -230,6 +234,7 @@ export default function useColorMatch({ score, stream, bpm = null, countInBars =
     });
     metronomeRef.current = metro;
     Promise.resolve(metro.start()).catch(() => { if (mountedRef.current) stop(); });
+    return true;
   }, [stream, running, score, bpm, a4, countInBars, teardown, grade, stop, mountedRef]);
 
   // A vanished stream (recording stopped) or score change ends an active session.
