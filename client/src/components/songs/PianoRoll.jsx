@@ -67,6 +67,10 @@ export default function PianoRoll({ parts, tempo, getPosition, playing, height =
   // hands a fresh closure each render; the rAF loop should not restart for that).
   const getPositionRef = useRef(getPosition);
   getPositionRef.current = getPosition;
+  // Read inside draw() (a ref, not a dep) so a key only lights while audio is
+  // actually sounding — paused/idle freezes the bars but presses no keys.
+  const playingRef = useRef(playing);
+  playingRef.current = playing;
 
   // Parse + schedule every part once per parts/tempo change → flat note list.
   const { notes, range } = useMemo(() => {
@@ -88,8 +92,15 @@ export default function PianoRoll({ parts, tempo, getPosition, playing, height =
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const pos = Math.max(0, getPositionRef.current?.() ?? 0);
-    const hitLineY = height - KEYBOARD_HEIGHT;
+    // Keep the negative LEAD-in pre-roll intact (only guard non-finite) so a
+    // falling note reaches the hit line exactly when its audio starts.
+    const rawPos = getPositionRef.current?.() ?? 0;
+    const pos = Number.isFinite(rawPos) ? rawPos : 0;
+    const isPlaying = playingRef.current;
+    // Clamp the keyboard band so a small `height` degrades gracefully instead of
+    // a negative hitLineY (which would invert the fall direction).
+    const kbH = Math.min(KEYBOARD_HEIGHT, height);
+    const hitLineY = height - kbH;
     const pps = hitLineY / VISIBLE_SECONDS; // pixels per second of fall
     const layout = buildKeyboardLayout({ lowMidi: range.lowMidi, highMidi: range.highMidi, width });
     const keyByMidi = new Map(layout.keys.map((k) => [k.midi, k]));
@@ -117,7 +128,7 @@ export default function PianoRoll({ parts, tempo, getPosition, playing, height =
       const h = Math.max(2, n.durSec * pps);
       const bottom = hitLineY - (n.startSec - pos) * pps;
       const top = bottom - h;
-      if (n.startSec <= pos && pos < n.startSec + n.durSec) active.set(n.midi, n.color);
+      if (isPlaying && n.startSec <= pos && pos < n.startSec + n.durSec) active.set(n.midi, n.color);
       if (top >= hitLineY || bottom <= 0) return; // outside the visible fall window
       const pad = key.isBlack ? 1 : 1.5;
       roundRect(ctx, key.x + pad, top, Math.max(2, key.w - pad * 2), h, NOTE_RADIUS);
@@ -134,20 +145,20 @@ export default function PianoRoll({ parts, tempo, getPosition, playing, height =
 
     // Keyboard — white keys first, then black overlaid. Active keys glow in the
     // sounding note's layer color.
-    const blackH = KEYBOARD_HEIGHT * BLACK_KEY_HEIGHT_RATIO;
+    const blackH = kbH * BLACK_KEY_HEIGHT_RATIO;
     layout.keys.filter((k) => !k.isBlack).forEach((k) => {
       const lit = active.get(k.midi);
       ctx.fillStyle = lit || WHITE_KEY_FILL;
-      ctx.fillRect(k.x, hitLineY, k.w, KEYBOARD_HEIGHT);
+      ctx.fillRect(k.x, hitLineY, k.w, kbH);
       ctx.strokeStyle = WHITE_KEY_EDGE;
       ctx.lineWidth = 1;
-      ctx.strokeRect(k.x + 0.5, hitLineY + 0.5, k.w - 1, KEYBOARD_HEIGHT - 1);
+      ctx.strokeRect(k.x + 0.5, hitLineY + 0.5, k.w - 1, kbH - 1);
       // Octave label on each C.
       if (k.midi % 12 === 0 && k.w > 14) {
         ctx.fillStyle = lit ? '#0c0c0e' : '#71717a';
         ctx.font = '9px ui-sans-serif, system-ui, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(midiNoteName(k.midi), k.x + k.w / 2, hitLineY + KEYBOARD_HEIGHT - 5);
+        ctx.fillText(midiNoteName(k.midi), k.x + k.w / 2, hitLineY + kbH - 5);
       }
     });
     layout.keys.filter((k) => k.isBlack).forEach((k) => {
@@ -160,6 +171,12 @@ export default function PianoRoll({ parts, tempo, getPosition, playing, height =
       ctx.stroke();
     });
   }, [notes, range, height]);
+
+  // Latest draw without making it an observer dependency — keeps the
+  // ResizeObserver created once per height (not torn down on every notes/tempo
+  // change, which only needs a redraw, not a re-observe).
+  const drawRef = useRef(draw);
+  drawRef.current = draw;
 
   // Size the canvas to the container (devicePixelRatio-aware) and redraw.
   useEffect(() => {
@@ -178,13 +195,13 @@ export default function PianoRoll({ parts, tempo, getPosition, playing, height =
       canvas.style.height = `${height}px`;
       const ctx = canvas.getContext('2d');
       if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      draw();
+      drawRef.current();
     };
     resize();
     const ro = new ResizeObserver(resize);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [height, draw]);
+  }, [height]);
 
   // rAF clock: animate the fall while playing, otherwise draw a single frame.
   useEffect(() => {

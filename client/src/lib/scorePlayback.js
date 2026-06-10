@@ -468,11 +468,13 @@ export const createMultiScorePlayer = (parts, options = {}) => {
   };
 
   // Current playback head in score-seconds, for a continuous visualizer (the
-  // piano-roll). While playing it's the live audio clock (clamped to the score
-  // length); paused/stopped it's the remembered resume offset. Note: during the
-  // LEAD-in this can read slightly below 0 — callers clamp for display.
+  // piano-roll). While playing it's the live audio clock (capped at the score
+  // length); paused/stopped it's the remembered resume offset. During the LEAD-in
+  // before beat 0 sounds this is NEGATIVE (down to −LEAD) — intentionally NOT
+  // clamped to 0, so the visualizer keeps the first note above the hit line until
+  // its oscillator actually starts rather than lighting the key early.
   const position = () => (playing
-    ? Math.min(Math.max(0, ctx().currentTime - startTime), totalSec)
+    ? Math.min(ctx().currentTime - startTime, totalSec)
     : offsetSec);
 
   return {

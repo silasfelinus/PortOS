@@ -261,6 +261,9 @@ describe('createMultiScorePlayer', () => {
     expect(player.duration()).toBeCloseTo(2.0, 6); // 4 quarters @120 = the longest voice
     expect(player.position()).toBe(0);             // idle → resume offset 0
     await player.play();
+    // During the LEAD-in (before beat 0 sounds) the head is NEGATIVE, not clamped
+    // to 0 — so the piano roll keeps the first note above the hit line until audio.
+    expect(player.position()).toBeLessThan(0);
     audio.now = 1.0;                               // advance the fake audio clock
     expect(player.position()).toBeGreaterThan(0.5);
     expect(player.position()).toBeLessThanOrEqual(player.duration());

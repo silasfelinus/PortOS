@@ -62,6 +62,24 @@ describe('<PianoRoll>', () => {
     expect(getPosition).toHaveBeenCalled();
   });
 
+  it('starts the rAF loop while playing and cancels it on unmount', () => {
+    const raf = vi.fn(() => 1); // return a handle; do not invoke the loop (no recursion)
+    const caf = vi.fn();
+    vi.stubGlobal('requestAnimationFrame', raf);
+    vi.stubGlobal('cancelAnimationFrame', caf);
+    const { unmount } = render(
+      <PianoRoll
+        parts={[{ id: 'm', label: 'Melody', color: '#3b82f6', score: 'time: 4/4\ntempo: 120\n| C4q |' }]}
+        tempo={120}
+        getPosition={() => 0}
+        playing
+      />,
+    );
+    expect(raf).toHaveBeenCalled();        // animation loop scheduled while playing
+    unmount();
+    expect(caf).toHaveBeenCalledWith(1);   // and torn down on unmount (no leak)
+  });
+
   it('renders the default keyboard without crashing when there are no parts', () => {
     expect(() => render(
       <PianoRoll parts={[]} tempo={120} getPosition={() => 0} playing={false} />,
