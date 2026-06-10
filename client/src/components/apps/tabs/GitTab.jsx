@@ -806,6 +806,7 @@ export default function GitTab({ appId: _appId, appName, repoPath }) {
         open={showDiff}
         onClose={() => setShowDiff(false)}
         size="none"
+        align="none"
         backdropClassName="bg-black/50"
         panelClassName="bg-port-card border border-port-border rounded-xl w-3/4 max-h-[80vh] overflow-hidden"
         ariaLabelledBy="git-diff-modal-title"
@@ -831,6 +832,7 @@ export default function GitTab({ appId: _appId, appName, repoPath }) {
         open={showReleaseConfirm}
         onClose={() => setShowReleaseConfirm(false)}
         size="md"
+        align="none"
         backdropClassName="bg-black/50"
         panelClassName="bg-port-card border border-port-border rounded-xl overflow-hidden"
         ariaLabelledBy="git-release-modal-title"
