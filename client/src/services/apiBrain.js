@@ -197,8 +197,11 @@ export const reorderBrainBuckets = (ids) => request('/brain/buckets/reorder', {
 // Brain - Graph
 export const getBrainGraph = () => request('/brain/graph');
 
-// Brain - Bridge Sync (brain data to CoS memory system)
-export const syncBrainData = () => request('/brain/bridge-sync', { method: 'POST' });
+// Brain - Bridge Sync (brain data to CoS memory system).
+// refresh:true re-embeds already-mapped records to heal memory entries that
+// went stale before the per-record sync signal existed (issue #1080).
+export const syncBrainData = ({ refresh = false } = {}) =>
+  request('/brain/bridge-sync', { method: 'POST', body: JSON.stringify({ refresh }) });
 
 // Brain - Daily Log
 export const listDailyLogs = (options = {}) => {
