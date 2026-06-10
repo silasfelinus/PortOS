@@ -64,6 +64,7 @@ export const buildSchedule = (score, bpmOverride) => {
       events.push({
         index,
         rest: !!note.rest,
+        midi: note.rest ? null : pitchToMidi(note.pitch),
         freq: note.rest ? null : noteToFrequency(note.pitch),
         startBeat: beat,
         durBeats,
@@ -466,11 +467,21 @@ export const createMultiScorePlayer = (parts, options = {}) => {
     if (!playing) rebuild();
   };
 
+  // Current playback head in score-seconds, for a continuous visualizer (the
+  // piano-roll). While playing it's the live audio clock (clamped to the score
+  // length); paused/stopped it's the remembered resume offset. Note: during the
+  // LEAD-in this can read slightly below 0 — callers clamp for display.
+  const position = () => (playing
+    ? Math.min(Math.max(0, ctx().currentTime - startTime), totalSec)
+    : offsetSec);
+
   return {
     play,
     pause,
     stop,
     isPlaying: () => playing,
     setTempo,
+    position,
+    duration: () => totalSec,
   };
 };
