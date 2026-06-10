@@ -119,7 +119,13 @@ export function ApiAccessTab() {
 
       {API_CARDS.map((card) => {
         const entry = entryFor(card.id);
-        const busy = savingId === card.id;
+        // Disable EVERY card's toggles while ANY save is in flight, not just
+        // this card's. Each PUT sends a full apiAccess snapshot and the server
+        // replaces the whole key, so two overlapping saves could let the older
+        // one land last and clobber the newer toggle. Serializing to one save
+        // at a time removes the race. `cardBusy` still drives this card's spinner.
+        const cardBusy = savingId === card.id;
+        const busy = savingId !== null;
         return (
           <div key={card.id} className="bg-port-card border border-port-border rounded-xl p-4 sm:p-6 space-y-4">
             <div className="flex items-start justify-between gap-3">
@@ -136,7 +142,7 @@ export function ApiAccessTab() {
                 </div>
                 <p className="text-xs text-gray-500 mt-1">{card.description}</p>
               </div>
-              {busy && <BrailleSpinner />}
+              {cardBusy && <BrailleSpinner />}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

@@ -64,6 +64,29 @@ describe('ApiAccessTab', () => {
     expect(sentBody.apiAccess.voice.exposed).toBe(true);
   });
 
+  it('CONTRACT: disables ALL toggles while a save is in flight (serialize saves)', async () => {
+    // Overlapping saves could let an older full-snapshot PUT land last and
+    // clobber a newer toggle. While one save is pending, every toggle (this
+    // card's and the other card's) must be disabled so saves serialize.
+    getSettings.mockResolvedValue({
+      apiAccess: { voice: { exposed: false, requireAuth: false }, sdapi: { exposed: false, requireAuth: false } },
+    });
+    let resolveSave;
+    updateSettings.mockReturnValue(new Promise((res) => { resolveSave = res; }));
+    await renderTab();
+
+    const exposeToggles = screen.getAllByLabelText(/Expose on the network/i);
+    fireEvent.click(exposeToggles[0]); // start voice save (never resolves yet)
+
+    // While the voice save is in flight, the OTHER card's expose toggle is disabled.
+    await waitFor(() => {
+      const toggles = screen.getAllByLabelText(/Expose on the network/i);
+      expect(toggles[1].disabled).toBe(true);
+    });
+
+    resolveSave({}); // let the save settle so the test exits cleanly
+  });
+
   it('reverts optimistic state when the save fails', async () => {
     getSettings.mockResolvedValue({ apiAccess: { voice: { exposed: false, requireAuth: false }, sdapi: { exposed: false, requireAuth: false } } });
     updateSettings.mockRejectedValue(new Error('boom'));
