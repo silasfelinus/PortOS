@@ -103,6 +103,34 @@ describe('SongRecordings — pitch analysis wiring (#1092)', () => {
     expect(next[0]).not.toHaveProperty('pitchTrack');
   });
 
+  it('does not inherit a prior take’s analysis when a later take has no score to grade', async () => {
+    // Regression (codex review): the hook only resets its trace/grade accumulators
+    // on start(). A no-score take never arms grading, so an unguarded stopMatch()
+    // would return the PREVIOUS take's analysis. The owner gates harvest on
+    // "armed for THIS take", so a no-score take must persist no analysis — even
+    // though the mocked stopMatch() still returns stale data if called.
+    matchStopResult = {
+      summary: { graded: 4, counts: { 'in-tune': 4, close: 0, off: 0, missed: 0 }, percentInTune: 100, perNote: ['in-tune', 'in-tune', 'in-tune', 'in-tune'] },
+      pitchTrack: [{ tMs: 0, hz: 261.6, cents: 0, clarity: 0.99 }],
+    };
+    const onChange = vi.fn();
+    // No score → scoreHasMusic() is false → grading never auto-arms.
+    const { rerender } = render(<SongRecordings recordings={[]} score="" tempo={120} onChange={onChange} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /record take/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /stop & save/i })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /stop & save/i }));
+
+    await waitFor(() => expect(onChange).toHaveBeenCalled());
+    // stopMatch() must not even be consulted for an unarmed take.
+    expect(matchStop).not.toHaveBeenCalled();
+    const next = onChange.mock.calls.at(-1)[0];
+    expect(next[0]).not.toHaveProperty('accuracy');
+    expect(next[0]).not.toHaveProperty('pitchTrack');
+    // Keep rerender referenced (used to prove the harness can swap props).
+    rerender(<SongRecordings recordings={next} score="" tempo={120} onChange={onChange} />);
+  });
+
   it('shows a saved take’s accuracy badge and a Review button to replay its grading', () => {
     const recordings = [{
       id: 'rec-1', label: 'Take', filename: 'a.wav', durationMs: 1000, peak: 0.4, muted: false,

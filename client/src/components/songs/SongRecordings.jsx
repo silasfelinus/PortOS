@@ -61,12 +61,20 @@ export default function SongRecordings({ recordings = [], layers = [], onChange,
     start: startMatch, stop: stopMatch,
   } = useColorMatch({ score: parsedScore, stream: liveStream, bpm });
 
+  // True once grading has armed for the CURRENT take. The hook's accumulators
+  // (trace/grades) only reset on start(), so stopMatch() returns whatever the
+  // last run left behind even when no run armed for this take (e.g. the score
+  // was cleared between takes). We harvest the analysis only when this take
+  // actually armed grading — otherwise a no-score take would inherit the prior
+  // take's pitchTrack/accuracy. Reset at each record start, set when arming.
+  const armedThisTakeRef = useRef(false);
+
   // Auto-arm grading the moment a take starts (stream appears) and the score has
   // notes — mirrors the old <ColorMatch> self-arm, now lifted up. The take's
   // stopRecording explicitly stops grading to harvest the trace, so we only
   // need to start here. The hook also self-stops if the stream vanishes.
   useEffect(() => {
-    if (liveStream && hasMusic && !matchRunning) startMatch();
+    if (liveStream && hasMusic && !matchRunning) { armedThisTakeRef.current = true; startMatch(); }
     // start is stable; react only to stream/hasMusic (the arm trigger).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveStream, hasMusic]);
@@ -90,6 +98,7 @@ export default function SongRecordings({ recordings = [], layers = [], onChange,
 
   const startRecording = useCallback(async () => {
     setReviewId(null); // a fresh take takes over the staff from any saved-take review
+    armedThisTakeRef.current = false; // until the auto-arm effect fires for THIS take
     if (playerRef.current) { playerRef.current.stop(); setPlaying(false); }
     const handle = await startMemoRecording().catch((err) => {
       toast.error(err?.message || 'Microphone access denied');
@@ -106,9 +115,14 @@ export default function SongRecordings({ recordings = [], layers = [], onChange,
     if (!handle) return;
     handleRef.current = null;
     // Stop grading FIRST (while the analyser graph is still alive) to harvest the
-    // finished take's pitch trace + accuracy summary, THEN drop the stream. stop()
-    // returns null if grading wasn't running (no score / unmounted).
-    const analysis = stopMatch();
+    // finished take's pitch trace + accuracy summary, THEN drop the stream. Only
+    // trust the harvest when grading armed for THIS take — otherwise stopMatch()
+    // would return the previous take's stale accumulators (the hook only resets
+    // them on start(), which a no-score take never calls). stop() also returns
+    // null when unmounted.
+    const armed = armedThisTakeRef.current;
+    armedThisTakeRef.current = false;
+    const analysis = armed ? stopMatch() : null;
     setLiveStream(null); // stream is being torn down with the take
     setRecording(false);
     setSaving(true);
@@ -163,6 +177,10 @@ export default function SongRecordings({ recordings = [], layers = [], onChange,
   );
   // Repaint the reviewed take's SAVED grades onto the staff — read from disk via
   // gradesFromPerNote, never re-graded from audio (the migration's purpose).
+  // Alignment is positional (i-th saved grade → i-th current timeline note), so
+  // editing the score's note count after recording can shift the repaint — an
+  // inherent limit of the positional perNote shape (#1027); gradesFromPerNote
+  // truncates to the shorter side so it can't paint past the staff.
   const reviewColors = useMemo(() => {
     if (!reviewTake) return null;
     const timeline = buildColorMatchTimeline(parsedScore, { bpm });
