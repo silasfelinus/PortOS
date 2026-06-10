@@ -9,12 +9,14 @@ import socket from '../services/socket';
 export function useSidebarApps() {
   const [apps, setApps] = useState([]);
   useEffect(() => {
+    let cancelled = false;
     const fetchApps = () => {
       api.getApps({ silent: true })
         .then((result) => {
+          if (cancelled) return;
           setApps((result || [])
             .filter((a) => !a.archived)
-            .sort((a, b) => a.name.localeCompare(b.name)));
+            .sort((a, b) => (a.name || '').localeCompare(b.name || '')));
         })
         .catch((err) => {
           console.warn(`⚠️ Layout: getApps refresh failed: ${err?.message || err}`);
@@ -22,7 +24,10 @@ export function useSidebarApps() {
     };
     fetchApps();
     socket.on('apps:changed', fetchApps);
-    return () => socket.off('apps:changed', fetchApps);
+    return () => {
+      cancelled = true;
+      socket.off('apps:changed', fetchApps);
+    };
   }, []);
   return apps;
 }
