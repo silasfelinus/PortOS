@@ -37,6 +37,7 @@ import {
   bucketReorderSchema,
   brainSyncQuerySchema,
   brainSyncPushSchema,
+  brainBridgeSyncSchema,
   dailyLogSettingsSchema
 } from '../lib/brainValidation.js';
 import * as githubCloner from '../services/githubCloner.js';
@@ -963,12 +964,16 @@ router.get('/graph', asyncHandler(async (req, res) => {
 
 /**
  * POST /api/brain/bridge-sync
- * Sync all brain data to CoS memory system (generates embeddings)
+ * Sync all brain data to CoS memory system (generates embeddings).
+ * Body: { refresh?: boolean } — refresh:true re-embeds already-mapped records
+ * to heal memory entries that diverged before the per-record sync:applied
+ * signal existed (issue #1080).
  * (Renamed from /sync to avoid conflict with federation sync)
  */
 router.post('/bridge-sync', asyncHandler(async (req, res) => {
-  const stats = await syncAllBrainData();
-  console.log(`🧠🔗 Brain bridge sync complete: ${stats.synced} synced, ${stats.skipped} skipped, ${stats.errors} errors`);
+  const { refresh } = validateRequest(brainBridgeSyncSchema, req.body ?? {});
+  const stats = await syncAllBrainData({ refresh });
+  console.log(`🧠🔗 Brain bridge sync complete${refresh ? ' (refresh)' : ''}: ${stats.synced} synced, ${stats.skipped} skipped, ${stats.archived} archived, ${stats.errors} errors`);
   res.json(stats);
 }));
 
