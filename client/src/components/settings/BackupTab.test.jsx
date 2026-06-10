@@ -228,15 +228,49 @@ describe('BackupTab', () => {
       // Save advances savedDestPath to the new value, clearing dirty → enabled.
       expect(screen.getByRole('button', { name: /Run Backup Now/i }).disabled).toBe(false);
     });
+
+    it('disables Run Backup Now while a save is in flight (not just when dirty)', async () => {
+      getSettings.mockResolvedValue({ backup: { destPath: '/backups', enabled: false, cronExpression: '0 2 * * *', excludePaths: [], disabledDefaultExcludes: [] } });
+      // Hold the save pending so we can observe the in-flight window. The
+      // invariant is "disable while dirty *or* a save is in flight" — the
+      // pending save (not dirtiness) is what must keep the action locked here.
+      let resolveSave;
+      updateSettings.mockReturnValue(new Promise((res) => { resolveSave = res; }));
+      await renderTab();
+
+      // Clean + saved → enabled at rest.
+      expect(screen.getByRole('button', { name: /Run Backup Now/i }).disabled).toBe(false);
+
+      // Fire Save without awaiting — it stays pending.
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+      });
+
+      const runBtn = screen.getByRole('button', { name: /Run Backup Now/i });
+      expect(runBtn.disabled).toBe(true);
+      expect(runBtn.title).toMatch(/Waiting for save to finish/i);
+
+      // Let the save settle → unlock.
+      await act(async () => { resolveSave({}); });
+      expect(screen.getByRole('button', { name: /Run Backup Now/i }).disabled).toBe(false);
+    });
   });
 
   describe('Run Now — backup-already-running skip path', () => {
-    it('toasts "Backup already running" and leaves status/snapshots untouched when skipped', async () => {
+    it('toasts "Backup already running" and leaves rendered status/snapshots untouched when skipped', async () => {
       getSettings.mockResolvedValue({ backup: { destPath: '/backups', enabled: false, cronExpression: '0 2 * * *', excludePaths: [], disabledDefaultExcludes: [] } });
+      // Seed real prior state so the test catches a regression that mutates the
+      // VISIBLE status/snapshots (not just one that triggers a refetch): a healthy
+      // last-dump line and one existing snapshot must both survive the skip.
+      getBackupStatus.mockResolvedValue({ status: 'ok', defaultExcludes: [], pgBackup: { status: 'ok', sizeBytes: 1024, tableCount: 7 } });
+      getBackupSnapshots.mockResolvedValue([{ id: 'snap-existing' }]);
       triggerBackup.mockResolvedValue({ skipped: true });
       await renderTab();
 
-      // One snapshot fetch from the initial load; none from the skip path.
+      // Baseline: existing status + snapshot are on screen, fetched once on mount.
+      expect(screen.getByText(/7 tables/i)).toBeTruthy();
+      expect(screen.getByText('snap-existing')).toBeTruthy();
+      expect(getBackupStatus).toHaveBeenCalledTimes(1);
       expect(getBackupSnapshots).toHaveBeenCalledTimes(1);
 
       await act(async () => {
@@ -247,16 +281,24 @@ describe('BackupTab', () => {
       // Bare-callable toast (not .success/.error) announces the skip.
       expect(toast).toHaveBeenCalledWith('Backup already running');
       expect(toast.success).not.toHaveBeenCalled();
-      // Status + snapshots must NOT be refreshed — the skip is a no-op.
+      // The skip is a pure no-op: no refetch AND the rendered state is unchanged.
+      expect(getBackupStatus).toHaveBeenCalledTimes(1);
       expect(getBackupSnapshots).toHaveBeenCalledTimes(1);
+      expect(screen.getByText(/7 tables/i)).toBeTruthy();
+      expect(screen.getByText('snap-existing')).toBeTruthy();
     });
 
     it('refreshes snapshots and toasts success on a non-skipped run', async () => {
       getSettings.mockResolvedValue({ backup: { destPath: '/backups', enabled: false, cronExpression: '0 2 * * *', excludePaths: [], disabledDefaultExcludes: [] } });
+      // Empty on mount, a named snapshot on the post-run refetch — so the test
+      // proves the returned snapshots are actually applied to state and rendered,
+      // not merely that a second fetch happened.
+      getBackupSnapshots.mockResolvedValueOnce([]).mockResolvedValueOnce([{ id: 'snap-fresh' }]);
       triggerBackup.mockResolvedValue({ status: 'ok', filesChanged: 3, pgBackup: { status: 'ok', sizeBytes: 1024, tableCount: 7 } });
       await renderTab();
 
       expect(getBackupSnapshots).toHaveBeenCalledTimes(1);
+      expect(screen.queryByText('snap-fresh')).toBeNull();
 
       await act(async () => {
         fireEvent.click(screen.getByRole('button', { name: /Run Backup Now/i }));
@@ -264,8 +306,9 @@ describe('BackupTab', () => {
 
       expect(toast).not.toHaveBeenCalledWith('Backup already running');
       expect(toast.success).toHaveBeenCalledWith('Backup complete — 3 files changed', { icon: '💾' });
-      // A real run refreshes the snapshot list (initial load + post-run).
+      // A real run refetches AND applies the result — the new snapshot renders.
       expect(getBackupSnapshots).toHaveBeenCalledTimes(2);
+      await waitFor(() => expect(screen.getByText('snap-fresh')).toBeTruthy());
     });
   });
 
