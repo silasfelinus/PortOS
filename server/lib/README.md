@@ -212,6 +212,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `sseUtils.js` | Per-job SSE stream helpers (imageGen + others). |
 | `streamBackpressure.js` | `awaitWritableDrain(res)` — park a streaming-response producer on the socket's next `drain` (or `close`) when `res.write()` returned false, so SSE/NDJSON writes stay bounded for a slow reader. Shared by `routes/ask.js` (SSE) and `routes/localLlm.js` (NDJSON). |
 | `uuid.js` | `v4()` thin wrapper over `crypto.randomUUID()`. |
+| `workspaceRoots.js` | Shared allow-list for routes that take a caller-supplied filesystem path. `ALLOWED_WORKSPACE_ROOTS` (defaults + `PORTOS_WORKSPACE_ROOTS`, symlink-resolved), `isWithinRoot(resolvedPath, root)` (separator-safe containment), `isWithinAllowedRoots(realPath)`, and `WORKSPACE_ROOTS_CONFIGURED` (true when the operator set the env var — lets a permissive-by-default route like `routes/detect.js` opt into confinement). Used by `routes/commands.js` (always scoped) and `routes/detect.js` (scoped only when configured). |
 | `zodCompat.js` | Zod 4 compatibility helpers. `partialWithoutDefaults(objectSchema)` — like `.partial()` but strips inner field defaults first, so a PATCH/update schema doesn't inject (and clobber) the stored values of fields the caller didn't send. Use for any update schema derived from a defaulted base. |
 
 ## Test support
