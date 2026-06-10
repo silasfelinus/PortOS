@@ -29,7 +29,7 @@ export const clampPitch = (pitch) =>
   Math.min(THIRD_PERSON.maxPitch, Math.max(THIRD_PERSON.minPitch, pitch));
 
 // Desired third-person camera + aim point for a rig pose. Pure — collision is applied
-// separately via resolveBoomT so callers can damp toward the resolved point.
+// separately via resolveBoom so callers can damp toward the resolved point.
 export function thirdPersonCamera({ pos, yaw, pitch, boom = THIRD_PERSON.boom }) {
   const p = clampPitch(pitch);
   const back = boom * Math.cos(p);

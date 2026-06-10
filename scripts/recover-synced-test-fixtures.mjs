@@ -123,8 +123,9 @@ if (existsSync(subsPath)) {
   const serIds = new Set(psql(`SELECT id FROM pipeline_series WHERE ${jsonbTombstoned()} IS NOT TRUE`).split('\n').filter(Boolean));
   copyFileSync(subsPath, `${subsPath}.bak`);
   const j = JSON.parse(readFileSync(subsPath, 'utf8'));
-  const before = j.subscriptions.length;
-  j.subscriptions = j.subscriptions.filter((s) => {
+  const subs = Array.isArray(j.subscriptions) ? j.subscriptions : [];
+  const before = subs.length;
+  j.subscriptions = subs.filter((s) => {
     if (s.recordKind === 'universe') return uniIds.has(s.recordId);
     if (s.recordKind === 'series') return serIds.has(s.recordId);
     return true; // keep mediaCollection + other kinds
