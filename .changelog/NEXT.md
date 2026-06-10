@@ -16,6 +16,7 @@
 - **[issue-1084] Maintenance:** AI provider/run/prompt API errors now report the same structured shape (with an error code and timestamp) as the rest of PortOS, so error-handling UI behaves consistently across every API.
 - **[issue-1085] Maintenance:** The AI run executors now take a single named-options argument instead of long positional parameter lists, making their call sites less order-fragile — no behavior change.
 - **[issue-1086] Maintenance:** Extracted the sidebar's apps/series/universes data-fetch loops into dedicated, independently-tested hooks — no behavior change.
+- **[issue-1087] Maintenance:** Extracted the duplicated install-progress streaming logic shared by the FLUX.2 and video-runtime installer dialogs into one tested hook — no behavior change.
 
 ## Fixed
 
