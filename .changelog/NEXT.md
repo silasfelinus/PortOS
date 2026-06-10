@@ -22,4 +22,6 @@
 
 ## Fixed
 
+- **[issue-1090] Git tab dialogs are now screen-reader friendly** — the diff and release-confirmation pop-ups announce themselves as dialogs, their close buttons are labeled, and pressing Escape (or clicking outside) dismisses them.
+
 ## Removed
