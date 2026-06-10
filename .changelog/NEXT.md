@@ -6,6 +6,10 @@
 
 - **Public API surface with per-API auth gating (Voice/TTS + sdapi):** PortOS can now serve individual services as HTTP APIs on your tailnet. A new **Settings → API Access** tab exposes per-API toggles — *Expose on the network* (off by default) and *Require auth* (off = passwordless) — so you can keep the whole app behind your PortOS password while leaving the **Voice/TTS** and **Image Gen (sdapi)** APIs open for other machines to call. A deliberately-minimal `POST /api/voice/public/synthesize` (plus `/voices` and `/engines`) turns text into WAV audio with any engine/voice/rate; config and process-control endpoints always stay gated. A single in-tree registry (`server/lib/apiRegistry.js`) drives the auth-gate exemptions, the settings UI, and a native **OpenAPI 3.1 spec** at `GET /api/api-docs/openapi.json` (no swagger dependency — request bodies are generated from the same Zod schemas the routes validate against). The API Access tab shows each API's public base URL and a copy-paste `curl` example, and the Voice settings tab links to it. Defaults are safe: both APIs ship not-exposed and passwordless-once-exposed, with a migration seeding the key for existing installs.
 
+## Fixed
+
+- **[issue-1080] Notes synced from other machines become searchable promptly** — a Brain note, daily-log entry, person, project, or idea created or edited on one of your machines is now re-indexed into semantic memory on the others as soon as it syncs, instead of waiting for a full manual re-sync. Edits and deletes that arrive from a peer also refresh or retire the matching memory entry, so search no longer surfaces stale copies of records that changed elsewhere. A new **Refresh embeddings** button on the Brain graph re-indexes everything in one pass to heal anything that drifted before this fix.
+
 ## Changed
 
 - **[issue-1094] Federation "Make mutual" sync behavior clarified** — documented and locked in how toggling a sync category toward a peer stays mirrored on both machines. No change to how syncing behaves.
