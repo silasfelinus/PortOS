@@ -221,7 +221,8 @@ export default function BrainGraph() {
     });
     setSyncing(false);
     if (stats) {
-      toast.success(`Synced ${stats.synced} records (${stats.skipped} skipped)`);
+      const archivedNote = stats.archived ? `, ${stats.archived} archived` : '';
+      toast.success(`Synced ${stats.synced} records (${stats.skipped} skipped${archivedNote})`);
       // Reload graph data to pick up new embeddings
       const fresh = await api.getBrainGraph().catch(() => null);
       if (fresh) setGraphData(fresh);

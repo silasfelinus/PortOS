@@ -973,7 +973,7 @@ router.get('/graph', asyncHandler(async (req, res) => {
 router.post('/bridge-sync', asyncHandler(async (req, res) => {
   const { refresh } = validateRequest(brainBridgeSyncSchema, req.body ?? {});
   const stats = await syncAllBrainData({ refresh });
-  console.log(`🧠🔗 Brain bridge sync complete${refresh ? ' (refresh)' : ''}: ${stats.synced} synced, ${stats.skipped} skipped, ${stats.errors} errors`);
+  console.log(`🧠🔗 Brain bridge sync complete${refresh ? ' (refresh)' : ''}: ${stats.synced} synced, ${stats.skipped} skipped, ${stats.archived} archived, ${stats.errors} errors`);
   res.json(stats);
 }));
 

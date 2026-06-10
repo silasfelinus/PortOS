@@ -977,6 +977,17 @@ describe('Brain Routes', () => {
       expect(response.body.synced).toBe(5);
       expect(response.body.skipped).toBe(2);
       expect(response.body.errors).toBe(0);
+      // No body → refresh defaults false (issue #1080).
+      expect(syncAllBrainData).toHaveBeenCalledWith({ refresh: false });
+    });
+
+    it('passes refresh:true through for the recovery re-embed path (issue #1080)', async () => {
+      syncAllBrainData.mockResolvedValue({ synced: 3, skipped: 0, errors: 0, archived: 1 });
+
+      const response = await request(app).post('/api/brain/bridge-sync').send({ refresh: true });
+      expect(response.status).toBe(200);
+      expect(response.body.archived).toBe(1);
+      expect(syncAllBrainData).toHaveBeenCalledWith({ refresh: true });
     });
 
     it('should return 500 when sync fails', async () => {

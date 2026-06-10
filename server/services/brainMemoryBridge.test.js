@@ -152,6 +152,33 @@ describe('brainMemoryBridge — queueResync debounce + dedup', () => {
     expect(getById).not.toHaveBeenCalled();
   });
 
+  it('single-flights overlapping flushes so a record is never embedded twice', async () => {
+    const bridge = await loadBridge();
+    // Slow embed for p1 — while the first flush is awaiting it, a second
+    // sync:applied for the SAME not-yet-mapped record arrives. Without the
+    // single-flight guard, a second flush would start and createMemory twice.
+    let resolveFirst;
+    const gate = new Promise((r) => { resolveFirst = r; });
+    let calls = 0;
+    getById.mockImplementation(async (_type, id) => {
+      calls += 1;
+      if (id === 'p1' && calls === 1) await gate; // hold the first resync open
+      return { id, name: id };
+    });
+
+    bridge.queueResync([{ type: 'people', id: 'p1' }]);
+    const inFlight = bridge.flushPendingResync(); // begins, awaits the gate on p1
+    // Same record re-queued mid-flush + a direct flush attempt (the re-arm path).
+    bridge.queueResync([{ type: 'people', id: 'p1' }]);
+    const second = bridge.flushPendingResync(); // must early-return (guard), not run concurrently
+    resolveFirst();
+    await Promise.all([inFlight, second]);
+
+    // p1 was mapped by the first create; the re-drain sees it mapped → update,
+    // not a second create. Exactly one memory created for p1.
+    expect(createMemory).toHaveBeenCalledTimes(1);
+  });
+
   it('re-vectorizes when brainEvents emits sync:applied (end-to-end wiring)', async () => {
     const bridge = await loadBridge();
     const { brainEvents } = await import('./brainStorage.js');
@@ -180,5 +207,36 @@ describe('brainMemoryBridge — syncAllBrainData refresh mode (issue #1080 recov
     const refreshed = await bridge.syncAllBrainData({ refresh: true });
     expect(refreshed.synced).toBeGreaterThanOrEqual(1);
     expect(updateMemory).toHaveBeenCalledWith('mem-old', expect.any(Object));
+  });
+
+  it('refresh reconcile archives a mapped entry whose record was deleted on a peer pre-fix', async () => {
+    const bridge = await loadBridge();
+    // p-gone is mapped but its canonical record no longer resolves (deleted/
+    // tombstoned on a peer before the fix) — getAll won't surface it, so only
+    // the reconcile pass can retire its stale, still-searchable memory entry.
+    getAll.mockResolvedValue([]);
+    getById.mockResolvedValue(null);
+    bridgeFileContents = JSON.stringify({ [bridge.bridgeKey('people', 'p-gone')]: 'mem-orphan' });
+
+    // Default mode does NOT reconcile (no archival).
+    await bridge.syncAllBrainData();
+    expect(updateMemory).not.toHaveBeenCalled();
+
+    const refreshed = await bridge.syncAllBrainData({ refresh: true });
+    expect(updateMemory).toHaveBeenCalledWith('mem-orphan', { status: 'archived' });
+    expect(refreshed.archived).toBe(1);
+  });
+
+  it('refresh reconcile leaves live mapped records alone (no spurious archive)', async () => {
+    const bridge = await loadBridge();
+    getAll.mockImplementation(async (type) => (type === 'people' ? [{ id: 'p1', name: 'Alice' }] : []));
+    getById.mockResolvedValue({ id: 'p1', name: 'Alice' }); // still live
+    bridgeFileContents = JSON.stringify({ [bridge.bridgeKey('people', 'p1')]: 'mem-live' });
+
+    const refreshed = await bridge.syncAllBrainData({ refresh: true });
+
+    // Re-embedded (update via syncBrainRecord), never archived.
+    expect(refreshed.archived).toBe(0);
+    expect(updateMemory).not.toHaveBeenCalledWith('mem-live', { status: 'archived' });
   });
 });

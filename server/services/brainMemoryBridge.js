@@ -218,11 +218,14 @@ export async function syncBrainRecord(brainType, record) {
  *   leave the local memory copy stale and searchable forever, and a normal
  *   bulk sync skipped it precisely because it was mapped. `refresh` forces a
  *   re-embed of every live record so a one-time catch-up heals the staleness.
- * @returns {Promise<{synced:number, skipped:number, errors:number}>}
+ *   In refresh mode a reconcile pass also archives memory entries whose brain
+ *   record was deleted/archived on a peer before this fix (orphaned map keys
+ *   the live-record walks can't reach) — reported as `archived`.
+ * @returns {Promise<{synced:number, skipped:number, errors:number, archived:number}>}
  */
 export async function syncAllBrainData({ dryRun = false, refresh = false } = {}) {
   const map = await loadBridgeMap();
-  const stats = { synced: 0, skipped: 0, errors: 0 };
+  const stats = { synced: 0, skipped: 0, errors: 0, archived: 0 };
 
   // Entity stores (JSON-based)
   const entityTypes = ['people', 'projects', 'ideas', 'admin', 'memories'];
@@ -308,6 +311,37 @@ export async function syncAllBrainData({ dryRun = false, refresh = false } = {})
     }
   }
 
+  // Refresh-mode reconcile (issue #1080 recovery): the live-record walks above
+  // re-embed edited records, but they iterate ONLY live records — getAll /
+  // listJournals strip tombstones and archived entities are skipped — so a
+  // record DELETED or ARCHIVED on a peer BEFORE this fix shipped leaves an
+  // orphaned bridge-map entry whose memory copy stays active and searchable.
+  // The going-forward sync:applied path archives those, but it can't reach the
+  // pre-fix backlog. Walk the bridge map and archive any mapped entry whose
+  // canonical record no longer resolves as live. Only for deletable, bridge-
+  // mirrored stores: digests/reviews are append-only (never deleted) and
+  // links/buckets/inbox aren't mirrored, so neither can orphan a memory entry.
+  if (refresh && !dryRun) {
+    const reconcilableTypes = new Set(['people', 'projects', 'ideas', 'admin', 'memories', 'journals']);
+    for (const mapKey of Object.keys(map)) {
+      const sep = mapKey.indexOf(':');
+      if (sep === -1) continue;
+      const type = mapKey.slice(0, sep);
+      const id = mapKey.slice(sep + 1);
+      if (!reconcilableTypes.has(type)) continue;
+      const record = type === 'journals'
+        ? await getJournal(id)
+        : await brainStorage.getById(type, id);
+      if (record && !record.archived) continue; // still live — already re-embedded above
+      const archived = await archiveMappedMemory(type, id).catch(err => {
+        console.error(`❌ Failed to archive stale ${type}/${id}: ${err.message}`);
+        stats.errors++;
+        return false;
+      });
+      if (archived) stats.archived++;
+    }
+  }
+
   return stats;
 }
 
@@ -325,6 +359,21 @@ export async function syncAllBrainData({ dryRun = false, refresh = false } = {})
 const RESYNC_DEBOUNCE_MS = 250;
 const pendingResync = new Map(); // bridgeKey → { type, id } (dedups repeated touches)
 let resyncTimer = null;
+let resyncFlushing = false; // single-flight guard so two flushes can't overlap
+
+/**
+ * Archive the memory entry mapped to a brain record (if any). Used when the
+ * canonical record is gone (tombstoned), archived, or otherwise should no
+ * longer be searchable.
+ */
+async function archiveMappedMemory(brainType, id) {
+  const map = await loadBridgeMap();
+  const memoryId = map[bridgeKey(brainType, id)];
+  if (!memoryId) return false;
+  await memory.updateMemory(memoryId, { status: 'archived' });
+  console.log(`🧠🔗 Archived brain→memory: ${brainType}/${id} → ${memoryId}`);
+  return true;
+}
 
 /**
  * Re-vectorize (or archive) a single brain record from its CANONICAL stored
@@ -344,36 +393,49 @@ export async function resyncBrainRecord(brainType, id) {
     ? await getJournal(id)
     : await brainStorage.getById(brainType, id);
   if (!record || record.archived) {
-    const map = await loadBridgeMap();
-    const memoryId = map[bridgeKey(brainType, id)];
-    if (memoryId) {
-      await memory.updateMemory(memoryId, { status: 'archived' });
-      console.log(`🧠🔗 Archived synced-in brain→memory: ${brainType}/${id} → ${memoryId}`);
-    }
+    await archiveMappedMemory(brainType, id);
     return;
   }
   await syncBrainRecord(brainType, record);
 }
 
 /**
- * Drain the pending resync queue sequentially. Sequential (not parallel) so a
+ * Drain the pending resync queue sequentially. Single-flight + re-draining:
+ * only one flush runs at a time (the `resyncFlushing` guard), and it loops
+ * until the queue is empty so records enqueued mid-flush are still processed —
+ * without a second flush running concurrently. Sequential (not parallel) so a
  * large catch-up sync doesn't fire hundreds of concurrent embedding calls and
- * saturate the embedding backend. Exported for deterministic flushing in tests.
+ * saturate the embedding backend; single-flight also prevents two flushes from
+ * both creating a memory for the same not-yet-mapped record (duplicate entries).
+ * Exported for deterministic flushing in tests.
  */
 export async function flushPendingResync() {
-  resyncTimer = null;
-  const batch = [...pendingResync.values()];
-  pendingResync.clear();
-  for (const { type, id } of batch) {
-    await resyncBrainRecord(type, id).catch((err) => {
-      console.error(`❌ Brain bridge resync failed for ${type}/${id}: ${err.message}`);
-    });
+  if (resyncTimer) { clearTimeout(resyncTimer); resyncTimer = null; }
+  if (resyncFlushing) return; // an in-flight flush will pick up newly-queued items
+  resyncFlushing = true;
+  try {
+    // The queue only grows during an `await` below; the loop re-checks size at
+    // the top of each pass, and the gap between the final size===0 check and
+    // clearing `resyncFlushing` contains no await — so nothing can be stranded.
+    while (pendingResync.size > 0) {
+      const batch = [...pendingResync.values()];
+      pendingResync.clear();
+      for (const { type, id } of batch) {
+        await resyncBrainRecord(type, id).catch((err) => {
+          console.error(`❌ Brain bridge resync failed for ${type}/${id}: ${err.message}`);
+        });
+      }
+    }
+  } finally {
+    resyncFlushing = false;
   }
 }
 
 /**
  * Queue applied-change records for a debounced resync. Records touching a type
  * the bridge doesn't mirror are dropped here so they never schedule a flush.
+ * No timer is armed while a flush is in flight — that flush re-drains the queue
+ * itself, so a second concurrent flush can never start.
  */
 export function queueResync(records) {
   if (!Array.isArray(records)) return;
@@ -381,7 +443,7 @@ export function queueResync(records) {
     if (!id || !TYPE_MAP[type]) continue;
     pendingResync.set(bridgeKey(type, id), { type, id });
   }
-  if (pendingResync.size === 0 || resyncTimer) return;
+  if (pendingResync.size === 0 || resyncTimer || resyncFlushing) return;
   resyncTimer = setTimeout(() => {
     flushPendingResync().catch((err) => {
       console.error(`❌ Brain bridge resync flush failed: ${err.message}`);
