@@ -53,7 +53,12 @@ const buildApp = async () => {
   const app = express();
   app.use(express.json());
   app.use(authGate);
-  app.set('io', { emit: () => {} });
+  // Intentionally do NOT set `io`: asyncHandler's error path only fires
+  // emitErrorEvent (→ errorEvents.emit('error', …)) when `io` is present, and
+  // vi.resetModules() re-imports a FRESH errorHandler each buildApp() with no
+  // 'error' listener — a bare EventEmitter throws on an unhandled 'error'
+  // event. Leaving `io` unset skips that path; the 400 response is still sent.
+  // None of the routes exercised here need `io` (we don't hit /api/voice/speak).
   app.use('/api/voice/public', voicePublicRoutes);
   app.use('/api/voice', voiceRoutes);
   return app;
@@ -71,6 +76,26 @@ describe('public voice API — end-to-end through authGate', () => {
     const res = await request(app).post('/api/voice/public/synthesize').send({ text: 'hello' });
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toMatch(/audio\/wav/);
+  });
+
+  it('400 UNKNOWN_VOICE for an unknown Kokoro voice override', async () => {
+    // synthesize() validates Kokoro voices against the catalog (symmetric with
+    // Piper) so a bogus id returns the documented 400 instead of erroring in
+    // the model. tts.js + kokoro-voices.js are real here; only the backend is mocked.
+    const app = await buildApp();
+    const res = await request(app)
+      .post('/api/voice/public/synthesize')
+      .send({ text: 'hi', engine: 'kokoro', voice: 'not_a_real_voice' });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('UNKNOWN_VOICE');
+  });
+
+  it('accepts a valid Kokoro voice override', async () => {
+    const app = await buildApp();
+    const res = await request(app)
+      .post('/api/voice/public/synthesize')
+      .send({ text: 'hi', engine: 'kokoro', voice: 'af_heart' });
+    expect(res.status).toBe(200);
   });
 
   it('auth ON + exposed + passwordless: public synthesize works WITHOUT a token', async () => {

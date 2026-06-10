@@ -59,15 +59,21 @@ export const API_REGISTRY = [
 ];
 
 // Resolve one registry entry's runtime flags against persisted settings,
-// falling back to the entry's defaults when `apiAccess.<settingsKey>` (or a
-// specific flag) is absent. The `?? defaults` fallback is what keeps an install
-// with no `apiAccess` key (fresh / pre-migration) fully gated.
+// falling back to the entry's defaults when `apiAccess.<settingsKey>` is absent
+// OR carries a non-boolean value. Accepting ONLY real booleans is a security
+// requirement, not just hygiene: the auth gate calls this against settings read
+// straight off disk (it bypasses the PUT /api/settings Zod validation), so a
+// hand-edited / corrupted `"exposed": "false"` must NOT be treated as truthy
+// and open the route. A non-boolean falls back to the (closed-by-default)
+// value, so corruption fails safe.
+const asBool = (value, fallback) => (typeof value === 'boolean' ? value : fallback);
+
 const resolveEntry = (entry, settings) => {
   const persisted = settings?.apiAccess?.[entry.settingsKey] ?? {};
   return {
     ...entry,
-    exposed: persisted.exposed ?? entry.defaults.exposed,
-    requireAuth: persisted.requireAuth ?? entry.defaults.requireAuth,
+    exposed: asBool(persisted.exposed, entry.defaults.exposed),
+    requireAuth: asBool(persisted.requireAuth, entry.defaults.requireAuth),
   };
 };
 

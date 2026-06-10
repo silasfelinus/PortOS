@@ -4,6 +4,7 @@ import { getVoiceConfig, piperVoiceTildePath } from './config.js';
 import { synthesizeKokoro, listKokoroVoices } from './tts-kokoro.js';
 import { synthesizePiper, listPiperVoices } from './tts-piper.js';
 import { findPiperVoice } from './piper-voices.js';
+import { isKokoroVoice } from './kokoro-voices.js';
 import { ServerError } from '../../lib/errorHandler.js';
 
 // Single source of truth for the supported TTS engine names. Imported by
@@ -47,6 +48,15 @@ export const synthesize = async (text, opts = {}) => {
     // Spread from `ttsCfg` (not `cfg.tts`) so a transient rate override applied
     // above is preserved alongside the voice override.
     if (engine === 'kokoro') {
+      // Reject unknown Kokoro voice overrides (symmetric with the Piper branch
+      // below) so the public synth API returns the documented 400 UNKNOWN_VOICE
+      // instead of forwarding a bogus id to the model and erroring/wrong-voicing.
+      if (!isKokoroVoice(opts.voice)) {
+        throw new ServerError(`unknown kokoro voice: ${opts.voice}`, {
+          status: 400,
+          code: 'UNKNOWN_VOICE',
+        });
+      }
       ttsCfg = { ...ttsCfg, kokoro: { ...ttsCfg.kokoro, voice: opts.voice } };
     } else {
       // Reject Piper voice overrides that aren't in the curated catalog —

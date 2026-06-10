@@ -82,6 +82,18 @@ describe('apiRegistry', () => {
     it('returns false for non-string path', () => {
       expect(isRegistryPublic(settingsWith({ voice: { exposed: true } }), null)).toBe(false);
     });
+
+    it('fails safe when a corrupted settings.json has non-boolean flags', () => {
+      // The auth gate reads settings straight off disk (no Zod), so a
+      // hand-edited string like "false" must NOT be treated as truthy.
+      const s = settingsWith({ voice: { exposed: 'true', requireAuth: 'false' } });
+      expect(isRegistryPublic(s, '/api/voice/public/synthesize')).toBe(false);
+    });
+
+    it('treats a non-boolean exposed as the (closed) default', () => {
+      const s = settingsWith({ voice: { exposed: 1, requireAuth: false } });
+      expect(isRegistryPublic(s, '/api/voice/public/synthesize')).toBe(false);
+    });
   });
 
   describe('resolveApiAccess', () => {
@@ -107,6 +119,12 @@ describe('apiRegistry', () => {
       const voice = resolved.find((a) => a.id === 'voice');
       expect(voice.exposed).toBe(true);
       expect(voice.requireAuth).toBe(false); // default
+    });
+
+    it('coerces non-boolean persisted flags to the default', () => {
+      const resolved = resolveApiAccess(settingsWith({ voice: { exposed: 'true' } }));
+      const voice = resolved.find((a) => a.id === 'voice');
+      expect(voice.exposed).toBe(false); // string "true" is not a boolean → default
     });
   });
 });
