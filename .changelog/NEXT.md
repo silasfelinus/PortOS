@@ -23,5 +23,6 @@
 ## Fixed
 
 - **[issue-1090] Git tab dialogs are now screen-reader friendly** — the diff and release-confirmation pop-ups announce themselves as dialogs, their close buttons are labeled, and pressing Escape (or clicking outside) dismisses them.
+- **[issue-1091] Cleared two dependency security advisories** — pinned patched versions of two transitive packages to resolve a pair of moderate denial-of-service advisories flagged by `npm audit`, with no breaking changes. A couple of remaining advisories stay blocked on upstream projects publishing compatible major releases.
 
 ## Removed
