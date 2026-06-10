@@ -178,6 +178,11 @@ describe('useInstallStream', () => {
     expect(result.current.error).toBeNull();
     expect(second.closed).toBe(false);
 
+    // A stale onerror on the superseded stream is likewise ignored.
+    act(() => { first.fail(); });
+    expect(result.current.error).toBeNull();
+    expect(second.closed).toBe(false);
+
     // The live stream still works.
     act(() => { second.emit({ type: 'log', message: 'live' }); });
     expect(result.current.logs.map((e) => e.text)).toEqual(['live']);
@@ -201,6 +206,26 @@ describe('useInstallStream', () => {
     expect(result.current.logs).toEqual([]);
     act(() => { vi.advanceTimersByTime(100); });
     expect(result.current.logs.map((e) => e.text)).toEqual(['a', 'b']);
+  });
+
+  it('drops a superseded stream\'s un-flushed buffer on url change (flushMs > 0)', () => {
+    vi.useFakeTimers();
+    const { result, rerender } = renderHook(
+      ({ url }) => useInstallStream(url, { enabled: true, flushMs: 100 }),
+      { initialProps: { url: '/a' } },
+    );
+    const first = MockEventSource.instances[0];
+    // Buffer a line on stream A but DON'T let the debounce fire.
+    act(() => { first.emit({ type: 'log', message: 'stale-A' }); });
+    expect(result.current.logs).toEqual([]);
+
+    // url change re-runs the effect: cleanup cancels A's timer + drops its buffer.
+    rerender({ url: '/b' });
+    const second = MockEventSource.instances[1];
+    act(() => { second.emit({ type: 'log', message: 'live-B' }); });
+    act(() => { vi.advanceTimersByTime(100); });
+    // Only B's line lands — A's buffered 'stale-A' must not leak in.
+    expect(result.current.logs.map((e) => e.text)).toEqual(['live-B']);
   });
 
   it('flushes buffered lines immediately on a terminal frame even with flushMs > 0', () => {

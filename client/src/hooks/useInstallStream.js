@@ -19,6 +19,12 @@ import { safeParseJSON } from '../lib/genUtils';
  * Closing the EventSource (via `close()` on cancel, or unmount/disable) is what
  * the server interprets as a cancel — it SIGTERMs the underlying pip/bash child.
  *
+ * Deliberately NOT built on `useSseProgress`: this needs kind-tagged log
+ * accumulation with a cap + optional debounced flush, stage tracking, a
+ * `streamStarted` signal, `doneRef`-gated connection-lost suppression, an
+ * `onComplete` callback, and auto-scroll — all beyond what `useSseProgress`
+ * exposes. Wrapping it would add indirection without removing code.
+ *
  * `flushMs` controls log batching: 0 flushes each line synchronously (fine for
  * the structured, bounded FLUX.2 stream); >0 buffers and flushes on a debounce
  * so a chatty pip/git stream re-renders the log list at ~1/flushMs Hz instead
@@ -86,6 +92,10 @@ export function useInstallStream(url, {
   useEffect(() => {
     const clearFlush = () => {
       if (flushTimerRef.current != null) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
+      // Drop any un-flushed lines too: with flushMs > 0 a superseded stream can
+      // leave buffered lines behind, and the next stream's flush would render
+      // them into its own log.
+      pendingRef.current = [];
     };
     const closeStream = () => {
       if (esRef.current) { esRef.current.close(); esRef.current = null; }
@@ -98,7 +108,6 @@ export function useInstallStream(url, {
       doneRef.current = false;
       setError(null);
       setStreamStarted(false);
-      pendingRef.current = [];
       clearFlush();
       closeStream();
       return undefined;
