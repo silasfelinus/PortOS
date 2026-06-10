@@ -789,6 +789,22 @@ export const backupConfigSchema = z.object({
   disabledDefaultExcludes: z.array(z.string()).optional().default([])
 });
 
+// Per-API external-access flags (issue: public API surface). Stored under the
+// top-level `apiAccess` settings key (client-readable — NOT under `secrets`).
+// Drives `server/lib/apiRegistry.js`: an entry that is `exposed && !requireAuth`
+// re-opens its public mount even when the PortOS password is on. Both flags are
+// optional so a partial PUT only patches what it carries; the registry fills
+// absent flags from its per-API defaults (exposed:false, requireAuth:false).
+export const apiAccessEntrySchema = z.object({
+  exposed: z.boolean().optional(),
+  requireAuth: z.boolean().optional(),
+}).strict();
+
+export const apiAccessSettingsSchema = z.object({
+  voice: apiAccessEntrySchema.optional(),
+  sdapi: apiAccessEntrySchema.optional(),
+}).strict();
+
 export const restoreRequestSchema = z.object({
   snapshotId: z.string().min(1),
   subdirFilter: z.string().optional().nullable(),

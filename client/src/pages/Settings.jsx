@@ -1,4 +1,5 @@
 import { useParams, Navigate } from 'react-router-dom';
+import { ApiAccessTab } from '../components/settings/ApiAccessTab';
 import { AutofixerTab } from '../components/settings/AutofixerTab';
 import AiAssignmentsTab from '../components/settings/AiAssignmentsTab';
 import { BackupTab } from '../components/settings/BackupTab';
@@ -33,6 +34,7 @@ export default function Settings() {
     switch (activeTab) {
       case 'general': return <GeneralTab />;
       case 'ai-assignments': return <AiAssignmentsTab />;
+      case 'api-access': return <ApiAccessTab />;
       case 'autofixer': return <AutofixerTab />;
       case 'backup': return <BackupTab />;
       case 'catalog': return <CatalogTypesTab />;
