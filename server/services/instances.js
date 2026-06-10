@@ -737,6 +737,22 @@ export async function connectPeer(id) {
 // toward peer B only makes US pull B's C. For B to pull OUR C, B must enable C
 // toward US. `requestReciprocalSync` asks B to do exactly that; the peer side
 // is `applyReciprocalSync`, invoked by the POST /sync-categories route.
+//
+// SEMANTICS — full mirror, NOT enable-only (resolved, issue #1094). A peer's
+// announced map is applied as a full replace (`{ ...prev, ...sanitized }`), so
+// a peer sending `C:false` DISABLES C on our record for that peer even when we
+// had independently enabled C toward them. This is intentional, not a bug:
+//   - The 'Make mutual' UI deliberately pushes the sender's *current* set
+//     (including its disables) so a previously-offline / one-directional peer
+//     converges to the sender's view in one round-trip.
+//   - It's the recovery path for clearing a stale enabled category after a peer
+//     was offline during a disable (the all-false / offline-disable test below).
+// Treating sync categories as a symmetric mirror (rather than two strictly
+// independent per-direction switches) is the chosen model. If a future change
+// wants per-direction-independent semantics, 'Make mutual' must grow a separate
+// explicit-disable path so reciprocation never clobbers an independent enable —
+// don't quietly switch this to enable-only, which would regress the two paths
+// above. The full-mirror behavior is pinned by tests in instances.test.js.
 
 // Keep only the keys DEFAULT_SYNC_CATEGORIES defines, coerced to booleans, so a
 // peer can never inject unknown/garbage category flags onto our peer record.
