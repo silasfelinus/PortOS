@@ -107,8 +107,13 @@ export function useInstallStream(url, {
     setStreamStarted(true);
     const es = new EventSource(url);
     esRef.current = es;
+    // Close the instance that fired this event, not whatever esRef currently
+    // points at — so a late callback from a superseded stream can't tear down
+    // (or null out) a newer one after a url/enabled change.
+    const closeThis = () => { if (esRef.current === es) esRef.current = null; es.close(); };
 
     es.onmessage = (ev) => {
+      if (esRef.current !== es) return; // stale callback from a superseded stream
       const msg = safeParseJSON(ev.data);
       if (!msg) return;
       if (msg.type === 'stage') {
@@ -121,27 +126,28 @@ export function useInstallStream(url, {
         doneRef.current = true;
         appendLog({ kind: 'success', text: msg.message });
         flush();
-        closeStream();
+        closeThis();
         onCompleteRef.current?.();
       } else if (msg.type === 'error') {
         setError(msg.message);
         appendLog({ kind: 'error', text: msg.message });
         flush();
-        closeStream();
+        closeThis();
       }
     };
 
     es.onerror = () => {
+      if (esRef.current !== es) return; // stale callback from a superseded stream
       // Network drop or server killed the stream. If we already saw `complete`
       // this is harmless; otherwise surface it so the user isn't stuck on a
       // forever-spinning modal.
       setError((prev) => prev ?? (doneRef.current ? null : CONNECTION_LOST_MESSAGE));
-      closeStream();
+      closeThis();
     };
 
     return () => {
       clearFlush();
-      closeStream();
+      closeThis();
     };
     // onComplete intentionally excluded — it lives in onCompleteRef.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -160,6 +160,29 @@ describe('useInstallStream', () => {
     expect(result.current.error).toBeNull();
   });
 
+  it('ignores a stale callback from a superseded stream after url change', () => {
+    const { result, rerender } = renderHook(
+      ({ url }) => useInstallStream(url, { enabled: true }),
+      { initialProps: { url: '/a' } },
+    );
+    const first = MockEventSource.instances[0];
+    // url change re-runs the effect: cleanup closes `first`, a second stream opens.
+    rerender({ url: '/b' });
+    const second = MockEventSource.instances[1];
+    expect(first.closed).toBe(true);
+    expect(second.closed).toBe(false);
+
+    // A late frame on the now-superseded first stream must NOT mutate state
+    // nor close the live second stream.
+    act(() => { first.emit({ type: 'error', message: 'stale boom' }); });
+    expect(result.current.error).toBeNull();
+    expect(second.closed).toBe(false);
+
+    // The live stream still works.
+    act(() => { second.emit({ type: 'log', message: 'live' }); });
+    expect(result.current.logs.map((e) => e.text)).toEqual(['live']);
+  });
+
   it('close() tears down the active stream', () => {
     const { result } = renderHook(() => useInstallStream('/x', { enabled: true }));
     expect(last().closed).toBe(false);
