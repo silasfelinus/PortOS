@@ -84,7 +84,11 @@ export function ApiAccessTab() {
     setAccess((a) => ({ ...a, [id]: next }));
     setSavingId(id);
     try {
-      await updateSettings({ apiAccess: { [id]: next } }, { silent: true });
+      // PUT /api/settings shallow-merges only TOP-LEVEL keys, so sending just
+      // `{ apiAccess: { [id]: next } }` would REPLACE the whole apiAccess object
+      // and wipe the other API's persisted flags. Send the full merged map so
+      // every API's entry survives.
+      await updateSettings({ apiAccess: { ...access, [id]: next } }, { silent: true });
       loadSpec(); // exposed-set changed → refresh the documented paths
     } catch (err) {
       setAccess((a) => ({ ...a, [id]: prev })); // revert

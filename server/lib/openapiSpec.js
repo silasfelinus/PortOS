@@ -31,7 +31,11 @@ const synthesizeBodySchema = z.object({
   text: z.string().trim().min(1).max(4000),
   engine: z.enum(['kokoro', 'piper']).optional(),
   voice: z.string().max(128).optional(),
-  rate: z.number().min(0.25).max(4).optional(),
+  // Range 0.25–4 is the validated bound (Piper honors the full range). Kokoro
+  // clamps speed to 0.5–2.0 internally (tts-kokoro.js), so values outside that
+  // are silently clamped when engine=kokoro — documented here so callers know.
+  rate: z.number().min(0.25).max(4).optional()
+    .describe('Speech rate. Validated 0.25–4 (Piper). Kokoro clamps to 0.5–2.0.'),
 });
 
 const jsonSchema = (schema) => {
