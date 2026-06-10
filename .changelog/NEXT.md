@@ -17,6 +17,7 @@
 - **[issue-1085] Maintenance:** The AI run executors now take a single named-options argument instead of long positional parameter lists, making their call sites less order-fragile — no behavior change.
 - **[issue-1086] Maintenance:** Extracted the sidebar's apps/series/universes data-fetch loops into dedicated, independently-tested hooks — no behavior change.
 - **[issue-1087] Maintenance:** Extracted the duplicated install-progress streaming logic shared by the FLUX.2 and video-runtime installer dialogs into one tested hook — no behavior change.
+- **[issue-1088] Maintenance:** Added behavioral tests for the Backup settings tab covering settings save, the database restore confirmation gate, and backup-status rendering — no behavior change.
 
 ## Fixed
 
