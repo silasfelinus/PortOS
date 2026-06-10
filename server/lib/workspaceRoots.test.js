@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { homedir } from 'os';
 import { join } from 'path';
 import {
@@ -50,5 +50,40 @@ describe('ALLOWED_WORKSPACE_ROOTS', () => {
     // exact strings (e.g. /tmp -> /private/tmp on macOS).
     expect(ALLOWED_WORKSPACE_ROOTS.length).toBeGreaterThanOrEqual(DEFAULT_WORKSPACE_ROOTS.length);
     expect(ALLOWED_WORKSPACE_ROOTS.every(r => typeof r === 'string' && r.length > 0)).toBe(true);
+  });
+});
+
+// PORTOS_WORKSPACE_ROOTS is read once at module load, so these re-import a fresh
+// copy of the module under a stubbed env to exercise the opt-in gate (the actual
+// subject of issue #1089) in both states.
+describe('PORTOS_WORKSPACE_ROOTS opt-in gate', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it('WORKSPACE_ROOTS_CONFIGURED is false when the env var is unset', async () => {
+    vi.stubEnv('PORTOS_WORKSPACE_ROOTS', '');
+    vi.resetModules();
+    const mod = await import('./workspaceRoots.js');
+    expect(mod.WORKSPACE_ROOTS_CONFIGURED).toBe(false);
+    expect(mod.EXTRA_WORKSPACE_ROOTS).toEqual([]);
+  });
+
+  it('parses colon-separated roots, trimming and dropping empties', async () => {
+    vi.stubEnv('PORTOS_WORKSPACE_ROOTS', ' /srv/repos : : /data/projects ');
+    vi.resetModules();
+    const mod = await import('./workspaceRoots.js');
+    expect(mod.WORKSPACE_ROOTS_CONFIGURED).toBe(true);
+    expect(mod.EXTRA_WORKSPACE_ROOTS).toEqual(['/srv/repos', '/data/projects']);
+  });
+
+  it('folds the configured roots into the allow-list so paths under them pass', async () => {
+    vi.stubEnv('PORTOS_WORKSPACE_ROOTS', '/srv/repos');
+    vi.resetModules();
+    const mod = await import('./workspaceRoots.js');
+    // /srv/repos likely does not exist on the test host, so the root falls back
+    // to its resolved (non-realpath) form — containment still matches descendants.
+    expect(mod.isWithinAllowedRoots('/srv/repos/myapp')).toBe(true);
   });
 });

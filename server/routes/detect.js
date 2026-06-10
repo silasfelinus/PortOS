@@ -56,8 +56,17 @@ router.post('/repo', asyncHandler(async (req, res) => {
 
   // Optional confinement: only when the operator has configured workspace roots.
   // realpath() first so a symlink can't smuggle a path past the containment check.
+  // realpathSync can throw on a permission/TOCTOU edge (path deleted between the
+  // stat above and here) — convert that to the same valid:false shape the rest of
+  // this route returns for unusable paths, rather than leaking a 500. This is the
+  // sanctioned fs-edge-case exception to the no-try/catch rule (see commands.js).
   if (WORKSPACE_ROOTS_CONFIGURED) {
-    const realPath = realpathSync(resolve(path));
+    let realPath;
+    try {
+      realPath = realpathSync(resolve(path));
+    } catch {
+      return res.json({ valid: false, error: 'Path is not accessible' });
+    }
     if (!isWithinAllowedRoots(realPath)) {
       return res.json({
         valid: false,
