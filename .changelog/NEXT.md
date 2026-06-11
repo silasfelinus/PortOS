@@ -35,6 +35,8 @@
 
 ## Changed
 
+- **[issue-1152] Internal reorganization of the story-arc planning service** — the arc-planning code (overview, episode seeding, manuscript completeness, arc-from-manuscript derivation) split from one 2,100-line file into focused modules. No behavior change.
+
 - **[issue-1151] Internal reorganization of request validation** — the peer-sync, Creative Director, importer, and Story Builder validation rules moved into their own focused files. No behavior change.
 
 - **[issue-1150] Sturdier federation internals** — the machinery that auto-shares newly created universes, series, and collections with your other machines no longer depends on fragile module load ordering. No change to how syncing behaves.
