@@ -207,6 +207,25 @@ ${prompt}`;
   let outputBufferTruncated = false;
 
   const streamingStrip = createStreamingAnsiStripper();
+
+  // The wrapped prompt directs the model to write its COMPLETE response to
+  // `responseFilePath` and then finish. That file appearing is the model's
+  // explicit "done" signal — more reliable than output-idle and, unlike idle,
+  // authoritative even while a human watches (the task is finished; there's
+  // nothing left to intervene in). Returns true once the file has non-empty
+  // content whose length held steady across two consecutive polls (~1s apart),
+  // so a half-flushed write isn't read as complete. `lastResponseLen = -1`
+  // means "not yet seen / reset"; a real reading seeds it and the next equal
+  // reading confirms stability.
+  let lastResponseLen = -1;
+  const responseFileSettled = async () => {
+    const txt = await tryReadFile(responseFilePath);
+    if (typeof txt !== 'string' || !txt.trim()) { lastResponseLen = -1; return false; }
+    if (txt.length === lastResponseLen) return true;
+    lastResponseLen = txt.length;
+    return false;
+  };
+
   let readyTimer = null;
   let pasteEnterTimer = null;
   let idleWatchTimer = null;
@@ -299,13 +318,25 @@ ${prompt}`;
         // Defer the idle-watch timer until the first response chunk so we
         // don't run a 1Hz no-op throughout the 5-30s spawn + paste window.
         // Significant on parallel fan-out paths (arc planner).
-        idleWatchTimer = setInterval(() => {
+        idleWatchTimer = setInterval(async () => {
           if (finalized) return;
-          // Don't auto-complete a run a human is actively watching in the Shell
-          // page — they may be reading the output or about to type a correction
-          // or an answer the model is waiting on. The run then ends only on
-          // natural process exit or an explicit Stop. Unattended pipeline runs
-          // keep the snappy idle threshold for throughput.
+          // The model writing its response file is the authoritative completion
+          // signal (it's what the wrapped prompt asks for) — check it FIRST and
+          // unconditionally. Claude Code's TUI never exits after a one-shot task
+          // (it returns to its interactive prompt), so without this a watched run
+          // has no terminus but the hard timeout. This is intentionally NOT gated
+          // on attach: once the file exists the task is done, so completing it is
+          // correct even while a human is watching.
+          if (await responseFileSettled()) {
+            finish({ success: true, exitCode: 0, reason: 'response-file' });
+            return;
+          }
+          // Idle-completion fallback (no response file yet — e.g. the model
+          // printed inline instead of writing the file). Don't auto-complete a
+          // run a human is actively watching in the Shell page — they may be
+          // reading the output or about to type a correction or an answer the
+          // model is waiting on. Unattended pipeline runs keep the snappy idle
+          // threshold for throughput.
           if (isExternalSessionAttached(runId)) return;
           const idle = Date.now() - lastOutputAt;
           if (idle >= idleThresholdMs) {
@@ -410,8 +441,19 @@ ${prompt}`;
     // a backgrounded tab (idle-completion is paused while watched, but this is
     // not — a run can't exceed its configured max time). Provider-configurable
     // via `timeout`; defaults to 5 min.
-    hardTimeoutTimer = setTimeout(() => {
+    hardTimeoutTimer = setTimeout(async () => {
       if (finalized) return;
+      // Salvage net: if the model already wrote its response file, the run truly
+      // finished — the TUI just never exited — so the timeout is a false failure.
+      // Complete as success with the written result instead of discarding it and
+      // triggering a pointless fallback retry. (The response-file watcher above
+      // normally catches this within ~2s; this covers the boundary case where the
+      // file lands right at the deadline or the watcher hadn't confirmed yet.)
+      const salvaged = await tryReadFile(responseFilePath);
+      if (typeof salvaged === 'string' && salvaged.trim()) {
+        finish({ success: true, exitCode: 0, reason: 'timeout-response-file' });
+        return;
+      }
       finish({
         success: false,
         exitCode: 124,
