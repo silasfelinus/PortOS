@@ -2088,3 +2088,17 @@ export const llmSchema = z.object({
   provider: z.string().trim().max(80).nullable().optional(),
   model: z.string().trim().max(200).nullable().optional(),
 }).optional();
+
+// =============================================================================
+// DOCUMENT EDITING SCHEMAS  (shared by apps.js and gsd.js document routes)
+// =============================================================================
+
+/**
+ * Body schema for PUT /api/apps/:id/documents/:filename and
+ * PUT /api/cos/gsd/projects/:appId/documents/:docName.
+ * Both routes accept a content string plus an optional commit message.
+ */
+export const documentUpdateSchema = z.object({
+  content: z.string().max(500000),
+  commitMessage: z.string().max(200).optional()
+});

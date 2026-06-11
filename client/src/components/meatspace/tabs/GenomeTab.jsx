@@ -55,6 +55,7 @@ async function parseZipText(arrayBuffer, ext = '.txt') {
   throw new Error(`No ${ext} file found inside the zip`);
 }
 import * as api from '../../../services/api';
+import { ATTACHMENT_MAX_FILE_SIZE } from '../../../utils/fileUpload';
 import GenomeCategoryCard from '../GenomeCategoryCard';
 import EpigeneticTracker from '../EpigeneticTracker';
 import ProvenanceChip from '../../ui/ProvenanceChip';
@@ -191,7 +192,7 @@ export default function GenomeTab() {
 
   const handleFileUpload = useCallback(async (file) => {
     if (!file) return;
-    if (file.size > 50 * 1024 * 1024) {
+    if (file.size > ATTACHMENT_MAX_FILE_SIZE) {
       toast.error('File too large (max 50MB)');
       return;
     }
