@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Plus, Trash2, RefreshCw, Globe, Calendar, Eye, EyeOff, ChevronDown, ChevronRight, Search, Key, ExternalLink, Wand2, Monitor } from 'lucide-react';
 import toast from '../ui/Toast';
 import * as api from '../../services/api';
@@ -26,6 +27,21 @@ export default function ConfigTab({ accounts, setAccounts }) {
   };
 
   useEffect(() => { fetchGoogleAuth(); }, []);
+
+  // The Google OAuth callback is a browser redirect (not an SPA fetch) — a
+  // failure lands back here as ?oauthError=… . Toast it once and strip the
+  // param so a reload doesn't re-toast.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const oauthError = searchParams.get('oauthError');
+  useEffect(() => {
+    if (!oauthError) return;
+    toast.error(`Google OAuth failed: ${oauthError}`);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete('oauthError');
+      return next;
+    }, { replace: true });
+  }, [oauthError, setSearchParams]);
 
   const handleSaveOAuthCredentials = async () => {
     if (!oauthForm.clientId || !oauthForm.clientSecret) return toast.error('Both Client ID and Client Secret are required');
