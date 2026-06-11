@@ -11,6 +11,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { collectManuscriptSections } from '../server/services/pipeline/arcPlanner.js';
 import { seedReviewFromFindings, getReview } from '../server/services/pipeline/manuscriptReview.js';
+import { getRunsPath } from '../server/services/runner.js';
 
 const [seriesId, runId] = process.argv.slice(2);
 const dry = process.argv.includes('--dry');
@@ -19,7 +20,9 @@ if (!seriesId || !runId) {
   process.exit(1);
 }
 
-const responsePath = join(process.cwd(), 'data', 'runs', runId, 'tui-response.txt');
+// Resolve via the runner's own runs-path helper (honors a non-default dataDir)
+// rather than hardcoding ./data, matching where the TUI runner wrote the file.
+const responsePath = join(getRunsPath(), runId, 'tui-response.txt');
 const parsed = JSON.parse(readFileSync(responsePath, 'utf8'));
 const issues = Array.isArray(parsed.issues) ? parsed.issues : [];
 console.log(`📥 ${issues.length} findings in ${responsePath}`);

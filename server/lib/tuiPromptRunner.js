@@ -20,11 +20,16 @@
  *   - shellService wraps a login shell around the TUI; pasting `${cmd}\n`
  *     into a zsh prompt is slower and noisier than spawning the TUI directly.
  *
- * Completion detection is intentionally minimal: idle-after-response, with a
- * hard timeout fallback. Per-binary input-prompt regexes were considered but
- * are fragile across versions and screen sizes; the idle threshold (~8s)
- * works universally and matches how a human knows the TUI finished — output
- * stopped scrolling.
+ * Completion detection, in priority order: the model's response-file write
+ * is the authoritative "done" signal (the wrapped prompt directs it to write
+ * its full answer to `tui-response.txt` and then finish) — checked
+ * unconditionally, even while a human watches. Output-idle is the fallback for
+ * runs that print inline instead of writing the file (paused while watched, so
+ * a viewer isn't snapped shut mid-read). The hard timeout is the backstop, and
+ * salvages an already-written file before failing. Per-binary input-prompt
+ * regexes were considered for idle but are fragile across versions and screen
+ * sizes; the idle threshold (~8s) works universally and matches how a human
+ * knows the TUI finished — output stopped scrolling.
  */
 
 import { spawn as ptySpawn } from 'node-pty';
