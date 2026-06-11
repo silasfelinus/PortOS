@@ -531,6 +531,17 @@ describe('peerSync', () => {
       vi.mocked(peerFetch).mockResolvedValue({ ok: true, json: async () => ({}) });
     });
 
+    it('is registered with the recordEvents subscription adapter at module load', async () => {
+      // Domain services (universeBuilder/series/mediaCollections/instances)
+      // reach these functions only through the adapter — this pins the
+      // module-scope registerSubscriptionAdapter(...) call that wires it.
+      const adapter = await import('./recordEvents.js');
+      vi.mocked(getPeers).mockResolvedValue([]);
+      // Registered → the real implementation's no-peers [] (an unregistered
+      // adapter would resolve to undefined instead).
+      await expect(adapter.autoSubscribeRecordToAllPeers('universe', 'u1')).resolves.toEqual([]);
+    });
+
     it('subscribes the record to every peer with the matching category enabled', async () => {
       vi.mocked(getPeers).mockResolvedValue([
         { instanceId: 'peer-a', name: 'A', enabled: true, syncCategories: { universe: true } },
