@@ -426,8 +426,8 @@ export default function Shell() {
       sessionsRef.current = sessionList;
       setSessions(sessionList);
       // Auto-pick helper: skip sessions already attached to another socket so we don't
-      // steal them via the shell:detached takeover. Also skip external read-only TUI
-      // runs — those are opt-in views the user clicks into, never the default landing
+      // steal them via the shell:detached takeover. Also skip external TUI runs —
+      // those are opt-in views the user clicks into, never the default landing
       // session. Manual tab clicks bypass this.
       const pickUnattachedSurvivor = (list) => {
         const free = list.filter(s => !s.attached && !s.external);
@@ -567,7 +567,7 @@ export default function Shell() {
         // response will install the new session and the user's intent wins.
         if (pendingAttachRef.current.target) return;
         // Auto-attach to a survivor not already driving another tab (don't steal,
-        // and don't auto-adopt a read-only TUI-run view).
+        // and don't auto-adopt a TUI-run view).
         const free = sessionsRef.current.filter(s => s.sessionId !== sid && !s.attached && !s.external);
         if (free.length > 0) {
           // Claim pending immediately so the shell:sessions broadcast that follows

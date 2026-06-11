@@ -8,7 +8,7 @@ const shellSessions = new Map();
 // Soft ceiling on concurrent user-spawned interactive shells. Each session is a
 // single idle PTY (a few MB, one OS process), and the deployment is single-user
 // on a private network — so this is a sanity bound against runaway tab-spamming,
-// not a resource/abuse defense. External read-only views (TUI runs) don't count.
+// not a resource/abuse defense. External views (TUI runs) don't count.
 const MAX_TOTAL_SESSIONS = 20;
 
 // PTY event handlers run outside the Express middleware chain — uncaught throws here
@@ -62,9 +62,9 @@ function getDefaultShell() {
  * Create a new shell session
  */
 export function createShellSession(socket, options = {}) {
-  // Only user-spawned interactive shells count toward the cap. External
-  // read-only views (one-shot TUI runs registered via registerExternalSession)
-  // are governed by their own runner and must not consume a shell slot.
+  // Only user-spawned interactive shells count toward the cap. External views
+  // (one-shot TUI runs registered via registerExternalSession) are governed by
+  // their own runner and must not consume a shell slot.
   const interactiveCount = [...shellSessions.values()].filter(s => !s.external).length;
   if (interactiveCount >= MAX_TOTAL_SESSIONS) {
     console.warn(`🐚 Max total sessions reached (${MAX_TOTAL_SESSIONS})`);
