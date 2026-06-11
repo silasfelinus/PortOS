@@ -12,6 +12,8 @@
 
 ## Fixed
 
+- **Catalog user-type sync now converges instead of re-applying every cycle** — federated catalog *user-defined types* used an at-or-newer (`>=`) last-write-wins comparison, so a peer re-sending a type you already held at the same timestamp was re-adopted, re-written, and re-counted as a change on every sync cycle. The logs showed a constant non-zero count (e.g. `Synced with <peer>: 3 catalog changes`) once a minute forever, and the slice was rewritten needlessly each pass. The merge now uses strict-newer (`>`), matching the SQL LWW guard every other catalog kind already uses (`EXCLUDED.updated_at > …updated_at`): an equal-clock echo is a skip, so the merge is idempotent and the cycle settles to zero changes. (`server/services/catalogSync.js`)
+
 - **[issue-1080] Notes synced from other machines become searchable promptly** — a Brain note, daily-log entry, person, project, or idea created or edited on one of your machines is now re-indexed into semantic memory on the others as soon as it syncs, instead of waiting for a full manual re-sync. Edits and deletes that arrive from a peer also refresh or retire the matching memory entry, so search no longer surfaces stale copies of records that changed elsewhere. A new **Refresh embeddings** button on the Brain graph re-indexes everything in one pass to heal anything that drifted before this fix.
 
 ## Changed
