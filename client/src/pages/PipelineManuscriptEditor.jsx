@@ -205,8 +205,10 @@ export default function PipelineManuscriptEditor() {
 
   // Streamed generate-edits review — `reviewActive` gates the SSE subscription;
   // the latest frame drives the per-chunk button label. The terminal frame
-  // re-fetches the review (comments now carry pre-built fixes).
-  const { latest: reviewLatest } = usePipelineManuscriptCompletenessProgress(seriesId, { enabled: reviewActive });
+  // re-fetches the review (comments now carry pre-built fixes). `closed` flips
+  // true when the stream ends for ANY reason, including a non-terminal death
+  // (attach 404, dropped connection) where no terminal frame ever arrives.
+  const { latest: reviewLatest, closed: reviewClosed } = usePipelineManuscriptCompletenessProgress(seriesId, { enabled: reviewActive });
 
   // On mount, re-attach to an in-flight streamed run (e.g. after a reload mid-run).
   useEffect(() => {
@@ -217,6 +219,22 @@ export default function PipelineManuscriptEditor() {
     return () => { canceled = true; };
   }, [seriesId]);
 
+  // Re-fetch the persisted review after a streamed run lands (the runner seeds
+  // it server-side; comments now carry pre-built fixes). `meta` populates the
+  // chunk badge from the terminal frame when there was one.
+  const reloadReviewAfterRun = (meta = null) =>
+    getPipelineManuscriptReview(seriesId)
+      .then((review) => {
+        const next = Array.isArray(review?.comments) ? review.comments : [];
+        setComments(next);
+        if (meta) setReviewMeta({ chunked: !!meta.chunked, chunkCount: meta.chunkCount || 1 });
+        const openCount = next.filter((c) => c.status === 'open').length;
+        toast.success(meta?.chunked
+          ? `Editorial review complete — ${openCount} open notes with drafted edits (reviewed in ${meta.chunkCount} chunks)`
+          : `Editorial review complete — ${openCount} open notes with drafted edits`);
+      })
+      .catch((err) => toast.error(err.message || 'Failed to load review'));
+
   // Terminal-frame handler for the streamed run: refresh comments + toast, then
   // tear the subscription down. Per-chunk frames only drive the button label.
   useEffect(() => {
@@ -224,24 +242,24 @@ export default function PipelineManuscriptEditor() {
     const type = reviewLatest.type;
     if (type !== 'complete' && type !== 'canceled' && type !== 'error') return;
     setReviewActive(false);
-    if (type === 'complete') {
-      getPipelineManuscriptReview(seriesId)
-        .then((review) => {
-          const next = Array.isArray(review?.comments) ? review.comments : [];
-          setComments(next);
-          setReviewMeta({ chunked: !!reviewLatest.chunked, chunkCount: reviewLatest.chunkCount || 1 });
-          const openCount = next.filter((c) => c.status === 'open').length;
-          toast.success(reviewLatest.chunked
-            ? `Editorial review complete — ${openCount} open notes with drafted edits (reviewed in ${reviewLatest.chunkCount} chunks)`
-            : `Editorial review complete — ${openCount} open notes with drafted edits`);
-        })
-        .catch((err) => toast.error(err.message || 'Failed to load review'));
-    } else if (type === 'canceled') {
-      toast.success('Editorial review canceled');
-    } else {
-      toast.error(reviewLatest.error || 'Editorial review failed');
-    }
+    if (type === 'complete') reloadReviewAfterRun(reviewLatest);
+    else if (type === 'canceled') toast.success('Editorial review canceled');
+    else toast.error(reviewLatest.error || 'Editorial review failed');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reviewActive, reviewLatest, seriesId]);
+
+  // Recovery: the stream died WITHOUT a terminal frame (attach 404, dropped
+  // connection, server restart). Don't strand the UI with the Run button stuck
+  // disabled — drop the active flag and re-fetch the review, since the runner
+  // may have completed + seeded server-side even though we lost the stream.
+  useEffect(() => {
+    if (!reviewActive || !reviewClosed) return;
+    const t = reviewLatest?.type;
+    if (t === 'complete' || t === 'canceled' || t === 'error') return; // handled above
+    setReviewActive(false);
+    reloadReviewAfterRun();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewActive, reviewClosed, reviewLatest, seriesId]);
 
   const startGenerateEditsReview = async (mode) => {
     setReviewStarting(true);

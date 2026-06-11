@@ -367,6 +367,10 @@ class MockEventSource {
   }
   close() { this.readyState = MockEventSource.CLOSED; }
   emit(payload) { this.onmessage?.({ data: JSON.stringify(payload) }); }
+  // Simulate a non-terminal stream death (attach 404, dropped connection): the
+  // hook flips `closed` true via onerror when readyState is CLOSED, with no
+  // terminal frame ever delivered.
+  fail() { this.readyState = MockEventSource.CLOSED; this.onerror?.(); }
 }
 MockEventSource.CONNECTING = 0;
 MockEventSource.OPEN = 1;
@@ -429,5 +433,25 @@ describe('PipelineManuscriptEditor — generate-edits streamed review', () => {
     expect(await screen.findByDisplayValue('She left, but paused.')).toBeInTheDocument();
     expect(screen.getByText('Accept')).toBeInTheDocument();
     expect(screen.queryByText('Generate fix')).not.toBeInTheDocument();
+  });
+
+  it('recovers when the SSE stream dies without a terminal frame (button re-enables, review re-fetched)', async () => {
+    api.startPipelineManuscriptCompleteness.mockResolvedValue({ runId: 'cr-1', sseUrl: '/sse' });
+    api.getPipelineManuscriptReview.mockResolvedValue({ schemaVersion: 1, comments: [comment] });
+    renderEditor();
+    await screen.findByText('My Series');
+
+    fireEvent.click(screen.getByLabelText(/Generate edits for every finding/i));
+    fireEvent.click(screen.getByText('Run editorial review'));
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    // Mid-run the button is disabled (busy) showing progress text.
+    await screen.findByText(/Starting editorial review|Drafting edits/);
+
+    // Connection drops with no complete/canceled/error frame.
+    lastEs().fail();
+
+    // Recovery: button re-enables (no longer stuck) and the review is re-fetched.
+    expect(await screen.findByText('Run editorial review')).toBeInTheDocument();
+    await waitFor(() => expect(api.getPipelineManuscriptReview).toHaveBeenCalledTimes(2));
   });
 });
