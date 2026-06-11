@@ -15,6 +15,10 @@ import { BUDGET_LIMIT_FIELDS } from '../lib/domainBudgets.js';
 
 const router = Router();
 
+const pauseSchema = z.object({
+  reason: z.string().optional(),
+});
+
 export const cosConfigSchema = z.object({
   userTasksFile: z.string().optional(),
   cosTasksFile: z.string().optional(),
@@ -93,7 +97,7 @@ router.post('/stop', asyncHandler(async (req, res) => {
 
 // POST /api/cos/pause - Pause CoS daemon (stays running but skips evaluations)
 router.post('/pause', asyncHandler(async (req, res) => {
-  const { reason } = req.body;
+  const { reason } = validateRequest(pauseSchema, req.body);
   const result = await cos.pause(reason);
   res.json(result);
 }));
