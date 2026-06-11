@@ -214,4 +214,49 @@ describe('manuscriptReview — with-edits fix seeding', () => {
     ]);
     expect(seeded.comments[0].fix).toBeNull();
   });
+
+  it('does NOT pre-seed a fix for a full-page (comic-structure) finding — anchor is only the page opening', async () => {
+    // The anchor ("The hero") is present, but for full-page the replace is the
+    // whole rewritten page; splicing it over just the anchor would corrupt the
+    // page, so the seed defers to the manual full-page fix path (fix stays null).
+    const seeded = await seedReviewFromFindings('ser-fullpage', [
+      {
+        category: 'comic-structure', replacementStrategy: 'full-page',
+        problem: 'page is prose', anchorQuote: 'The hero',
+        replace: 'Panel 1\nDescription: …\nPanel 2\nDescription: …', issueNumber: 1,
+      },
+    ]);
+    expect(seeded.comments[0].fix).toBeNull();
+  });
+
+  it('backfills a fix onto an existing open comment that lacked one when a with-edits re-run re-surfaces it', async () => {
+    // First pass: findings-only (no replace) → comment lands advice-only.
+    const first = await seedReviewFromFindings('ser-backfill', [
+      { problem: 'abrupt ending', anchorQuote: 'She left.', issueNumber: 1 },
+    ]);
+    expect(first.comments[0].fix).toBeNull();
+    const id = first.comments[0].id;
+
+    // Second pass: same finding (same key) now carries a replace. It's deduped
+    // out of the append path, but the carried-forward open comment is backfilled.
+    const second = await seedReviewFromFindings('ser-backfill', [
+      { problem: 'abrupt ending', anchorQuote: 'She left.', replace: 'She left, but paused.', issueNumber: 1 },
+    ]);
+    expect(second.comments).toHaveLength(1);
+    const c = second.comments[0];
+    expect(c.id).toBe(id); // same comment, not a duplicate
+    expect(c.fix).toBeTruthy();
+    expect(c.fix.replace).toBe('She left, but paused.');
+  });
+
+  it('does NOT overwrite an existing fix on backfill (only fills comments that lack one)', async () => {
+    const first = await seedReviewFromFindings('ser-backfill-keep', [
+      { problem: 'abrupt ending', anchorQuote: 'She left.', replace: 'She left, but paused.', issueNumber: 1 },
+    ]);
+    const original = first.comments[0].fix.replace;
+    const second = await seedReviewFromFindings('ser-backfill-keep', [
+      { problem: 'abrupt ending', anchorQuote: 'She left.', replace: 'A DIFFERENT rewrite.', issueNumber: 1 },
+    ]);
+    expect(second.comments[0].fix.replace).toBe(original); // untouched
+  });
 });
