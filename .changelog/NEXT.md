@@ -17,3 +17,5 @@
 - **[issue-1094] Federation "Make mutual" sync behavior clarified** — documented and locked in how toggling a sync category toward a peer stays mirrored on both machines. No change to how syncing behaves.
 
 - **[issue-1114] Hardened backup-settings test coverage** — added tests pinning the "Run Backup Now" button's saved-state gating and the already-running skip path, so a regression can't silently break them.
+
+- **[issue-1104] CyberCity mini-map now shows the waterfront** — the HUD mini-map draws the bay and a Data Harbor marker, so the top-down map matches the city's real geography instead of plotting only the buildings.

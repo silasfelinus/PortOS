@@ -186,9 +186,8 @@ describe('computeMiniMap', () => {
     ];
     const vm = computeMiniMap(apps, positions([['a', -20, 20], ['b', 20, 40]]), { geography: true });
     const { shorelineY, harbor } = vm.geography;
-    // Shoreline (z = -56) is north of the harbor anchor's projected dot... actually the
-    // harbor sits OUT in the bay (z = -64, beyond the shoreline), so it projects ABOVE the
-    // shoreline line — i.e. a smaller ny.
+    // The harbor sits out in the bay (z = -64, beyond the shoreline at z = -56), so it
+    // projects above the shoreline line — a smaller ny (north reads as the top of the map).
     expect(harbor.ny).toBeLessThan(shorelineY);
     for (const v of [shorelineY, harbor.nx, harbor.ny]) {
       expect(v).toBeGreaterThanOrEqual(0);
