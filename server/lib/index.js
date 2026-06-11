@@ -109,6 +109,7 @@ export * from './gitArgs.js';
 export * from './gitForge.js';
 export * from './gitOutputParsers.js';
 export * from './gitRemote.js';
+export * from './openFolder.js';
 export * from './processEnv.js';
 export * from './pythonSetup.js';
 
@@ -131,6 +132,7 @@ export * from './tailscale.js';
 export * from './bm25.js';
 export * from './memoryQuery.js';
 export * from './memoryStats.js';
+export * from './rrfRanking.js';
 export * from './vectorMath.js';
 
 // === Extraction & parsing ===
