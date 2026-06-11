@@ -896,6 +896,7 @@ export default function Layout() {
           {/* Collapsed: just logo, clickable to expand */}
           {collapsed && (
             <button
+              type="button"
               onClick={() => setCollapsed(false)}
               className="hidden lg:block opacity-95 transition-opacity hover:opacity-80"
               title="Expand sidebar"
@@ -907,6 +908,7 @@ export default function Layout() {
           {/* Expanded: collapse button */}
           {!collapsed && (
             <button
+              type="button"
               onClick={() => setCollapsed(true)}
               className="hidden lg:flex p-1 text-gray-500 hover:text-white transition-colors"
               title="Collapse sidebar"
@@ -917,6 +919,7 @@ export default function Layout() {
           )}
           {/* Mobile close button */}
           <button
+            type="button"
             onClick={() => setMobileOpen(false)}
             className="lg:hidden inline-flex items-center justify-center min-w-[40px] min-h-[40px] rounded-lg text-gray-500 hover:text-white"
             aria-label="Close sidebar"
