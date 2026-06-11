@@ -35,6 +35,8 @@
 
 ## Changed
 
+- **[issue-1136] Debug and status responses no longer echo raw upstream payloads** — the OpenClaw status check and the message-account token test now return only the summary fields they're meant to (connection state, counts, errors) instead of passing through whatever the upstream service responded with.
+
 - **[issue-1094] Federation "Make mutual" sync behavior clarified** — documented and locked in how toggling a sync category toward a peer stays mirrored on both machines. No change to how syncing behaves.
 
 - **[issue-1114] Hardened backup-settings test coverage** — added tests pinning the "Run Backup Now" button's saved-state gating and the already-running skip path, so a regression can't silently break them.
