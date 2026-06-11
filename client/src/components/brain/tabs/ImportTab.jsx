@@ -15,6 +15,7 @@ import toast from '../../ui/Toast';
 import Banner from '../../ui/Banner';
 import BrailleSpinner from '../../BrailleSpinner';
 import { formatBytes, formatDateShort } from '../../../utils/formatters';
+import { ATTACHMENT_MAX_FILE_SIZE } from '../../../utils/fileUpload';
 
 // Sources we plan to support. Only `available` ones are clickable.
 const SOURCES = [
@@ -146,7 +147,7 @@ function ChatGPTWizard({ onExit, navigate }) {
       setError('Please select the conversations.json file from your ChatGPT export.');
       return;
     }
-    if (file.size > 50 * 1024 * 1024) {
+    if (file.size > ATTACHMENT_MAX_FILE_SIZE) {
       setError(`File is ${formatBytes(file.size)}, larger than the 50 MB upload limit. See instructions for splitting the file.`);
       return;
     }
