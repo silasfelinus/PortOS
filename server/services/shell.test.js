@@ -448,6 +448,29 @@ describe('registerExternalSession / unregisterExternalSession', () => {
     expect(shell.isExternalSessionAttached(runB)).toBe(true);
   });
 
+  it('releaseExternalViewsForSocket releases watched runs and broadcasts when something changed', () => {
+    const observer = makeSocket('obs');
+    shell.subscribeSessionList(observer);
+    const viewer = makeSocket('viewer');
+    const runId = shell.registerExternalSession('run-leave', makeFakePty(), {});
+    shell.attachSession(runId, viewer);
+    expect(shell.isExternalSessionAttached(runId)).toBe(true);
+    observer.emit.mockClear();
+    // Viewer navigated away from /shell — release without disconnecting.
+    shell.releaseExternalViewsForSocket(viewer);
+    expect(shell.isExternalSessionAttached(runId)).toBe(false);
+    expect(shell.getSession(runId)).toBeTruthy(); // run still alive, just unwatched
+    expect(observer.emit).toHaveBeenCalledWith('shell:sessions', expect.anything());
+  });
+
+  it('releaseExternalViewsForSocket is a no-op (no broadcast) when the socket held no runs', () => {
+    const observer = makeSocket('obs');
+    shell.subscribeSessionList(observer);
+    observer.emit.mockClear();
+    shell.releaseExternalViewsForSocket(makeSocket('stranger'));
+    expect(observer.emit).not.toHaveBeenCalledWith('shell:sessions', expect.anything());
+  });
+
   it('unregister removes the session, emits shell:exit to the viewer, broadcasts', () => {
     const observer = makeSocket('obs');
     shell.subscribeSessionList(observer);

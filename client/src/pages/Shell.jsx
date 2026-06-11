@@ -719,6 +719,12 @@ export default function Shell() {
       socket.off('shell:exit', handleShellExit);
       socket.off('shell:detached', handleShellDetached);
       socket.off('shell:error', handleShellError);
+      // Leaving the Shell page: tell the server we've stopped viewing so any
+      // watched TUI run resumes normal idle completion instead of staying
+      // paused for a page we've left (the singleton socket stays connected
+      // across navigations, so `disconnect` won't fire). This effect only
+      // re-binds on socket identity change, so this runs on real unmount.
+      if (socket.connected) socket.emit('shell:release-views');
       // Don't kill session on unmount — it persists server-side
       sessionIdRef.current = null;
     };

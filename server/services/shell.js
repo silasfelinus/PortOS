@@ -275,6 +275,21 @@ export function isExternalSessionAttached(sessionId) {
 }
 
 /**
+ * Public "stopped viewing" signal — the client emits this when it leaves the
+ * Shell page (the SocketProvider socket persists across navigations, so a plain
+ * disconnect doesn't fire). Releases every external (TUI-run) view bound to this
+ * socket so those runs resume normal idle completion instead of staying paused
+ * for a page the user has navigated away from. Tab-switching already releases via
+ * attach/create; this covers navigating away from /shell entirely.
+ */
+export function releaseExternalViewsForSocket(socket) {
+  if (!socket) return;
+  const held = [...shellSessions.values()].some(s => s.external && s.socket === socket);
+  releaseExternalViews(socket);
+  if (held) broadcastSessionList();
+}
+
+/**
  * Attach an existing session to a new socket
  *
  * A shell session has a single attached socket — PTY output is fanned to that one

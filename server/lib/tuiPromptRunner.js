@@ -13,8 +13,10 @@
  * promptRunner needs when `provider.type === 'tui'`.
  *
  * Spawning bypasses `services/shell.js` deliberately:
- *   - shellService caps total sessions at 5, which the central handler can
- *     exceed easily (arc planner fans out parallel calls).
+ *   - shellService caps interactive sessions, which the central handler can
+ *     exceed easily (arc planner fans out parallel calls). We still *register*
+ *     the spawned PTY as an external view afterward (see below) — that path is
+ *     exempt from the cap, so surfacing the run doesn't re-introduce the limit.
  *   - shellService wraps a login shell around the TUI; pasting `${cmd}\n`
  *     into a zsh prompt is slower and noisier than spawning the TUI directly.
  *
