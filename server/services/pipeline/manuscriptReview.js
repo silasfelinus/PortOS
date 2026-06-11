@@ -21,6 +21,7 @@ import { atomicWrite, readJSONFile } from '../../lib/fileUtils.js';
 import { createFileWriteQueue } from '../../lib/fileWriteQueue.js';
 import { seriesStore } from './series.js';
 import { collectManuscriptSections, REPLACEMENT_STRATEGIES, replacementStrategyForCategory } from './arcPlanner.js';
+import { shapeAnchoredEdit, fixFromEdits } from './manuscriptFix.js';
 import { emitRecordUpdated } from '../sharing/recordEvents.js';
 
 // Storage-layout version for the review document. Bump + migrate if the
@@ -183,7 +184,12 @@ export async function seedReviewFromFindings(seriesId, findings, { runId = null,
     const candidates = [];
     for (const f of Array.isArray(findings) ? findings : []) {
       const candidate = sanitizeComment({ ...f, status: 'open', sourceRunId: runId, createdAt: now, updatedAt: now });
-      if (candidate) candidates.push(candidate);
+      if (!candidate) continue;
+      // `replace` (the with-edits in-place rewrite) isn't part of the stored
+      // comment shape, so sanitizeComment drops it — stash it on the candidate so
+      // the append loop below can build the comment's `fix` from it.
+      if (typeof f?.replace === 'string' && f.replace) candidate.replace = f.replace;
+      candidates.push(candidate);
     }
     const freshKeys = new Set(candidates.map(findingKey));
 
@@ -212,6 +218,23 @@ export async function seedReviewFromFindings(seriesId, findings, { runId = null,
         candidate.issueId = section.issueId;
         candidate.stageId = section.stageId;
       }
+      // With-edits pass: the finding carried a concrete `replace` rewrite of its
+      // `anchorQuote`. Pre-seed the comment's fix from { find: anchorQuote,
+      // replace } via the same shaper the manual "Generate fix" path uses, so the
+      // editor shows the diff + Accept with no per-comment fix call. Skipped when
+      // there's no anchor to splice over, no resolved section, or no replace —
+      // those findings stay advice-only and fall back to manual fix generation.
+      // Also skipped when the anchor can't be located even whitespace-tolerantly
+      // (shapeAnchoredEdit flags that as `fuzzy`): unlike the manual path, the
+      // bulk pass has no per-comment warning, so an unappliable fix would present
+      // a diff whose Accept silently fails — leave it advice-only instead.
+      if (candidate.replace && candidate.anchorQuote && section) {
+        const edit = shapeAnchoredEdit(section, { find: candidate.anchorQuote, replace: candidate.replace });
+        if (edit && !edit.fuzzy) candidate.fix = fixFromEdits([edit]);
+      }
+      // `replace` is consumed into `fix` (or dropped) — it's not part of the
+      // stored comment shape (sanitizeComment ignores unknown keys, but be tidy).
+      delete candidate.replace;
       seenKeys.add(key);
       fresh.push(candidate);
     }
