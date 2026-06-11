@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 
-const TERMINAL_TYPES = new Set(['complete', 'canceled', 'error']);
+// Both cancel spellings are terminal: pipeline runners emit `canceled`,
+// the video-timeline renderer emits `cancelled`.
+const TERMINAL_TYPES = new Set(['complete', 'canceled', 'cancelled', 'error']);
 
 /**
  * Subscribe to a server-side EventSource stream of JSON-payload progress
