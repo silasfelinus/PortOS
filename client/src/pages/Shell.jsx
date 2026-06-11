@@ -456,10 +456,12 @@ export default function Shell() {
           const survivor = pickUnattachedSurvivor(sessionList);
           if (survivor) {
             attachToSession(survivor.sessionId, { claim: true });
-          } else if (sessionList.length < MAX_SESSIONS) {
+          } else if (sessionList.filter(s => !s.external).length < MAX_SESSIONS) {
             // Every live session is attached elsewhere but we have capacity. The user
             // landed here (probably via a now-dead deep link) intending to get a
             // shell — start a fresh one rather than leaving them at bare /shell.
+            // Capacity counts only interactive shells: external TUI runs are exempt
+            // from the cap server-side, so they must not block a new shell here.
             startSession();
           } else {
             // At session cap with all attached elsewhere — nothing safe to do here.
