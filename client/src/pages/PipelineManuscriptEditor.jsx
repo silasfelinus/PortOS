@@ -19,7 +19,7 @@
  *   scrolling back to the sidebar in between.
  *   An "Impact preview" button shows a hunked before/after diff (unchanged
  *   context collapsed, word-level highlights) of how the selected fixes change
- *   the whole manuscript.
+ *   the whole manuscript, with an "Accept all" that applies them in bulk.
  *
  * Data: GET /pipeline/series/:id/manuscript (sections) + .../manuscript/review
  * (comments). Section saves reuse PATCH /pipeline/issues/:id; fixes go through
@@ -781,9 +781,11 @@ export default function PipelineManuscriptEditor() {
       <ManuscriptImpactPreview
         open={showImpact}
         onClose={() => setShowImpact(false)}
+        seriesId={seriesId}
         sections={sections}
         comments={comments.filter((c) => c.status === 'open' && c.fix)}
         fixDrafts={fixDrafts}
+        onAccepted={applyAccepted}
       />
     </div>
   );

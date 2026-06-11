@@ -472,10 +472,11 @@ export const generatePipelineManuscriptFix = (seriesId, commentId, { providerOve
 
 // Apply one or more optionally edited fixes into stage output + mark accepted.
 // Returns { comment, section, sections }.
-export const acceptPipelineManuscriptFix = (seriesId, commentId, { find, replace, edits }) =>
+export const acceptPipelineManuscriptFix = (seriesId, commentId, { find, replace, edits }, options = {}) =>
   request(`/pipeline/series/${encodeURIComponent(seriesId)}/manuscript/review/comments/${encodeURIComponent(commentId)}/accept`, {
     method: 'POST',
     body: JSON.stringify({ find, replace, edits }),
+    ...options,
   });
 
 // Versioned free-text save of one manuscript section. Snapshots the prior text
