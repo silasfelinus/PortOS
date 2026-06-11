@@ -299,7 +299,8 @@ export async function applyRemoteChanges(envelope = {}) {
 
   // User-defined type definitions (catalog v8). LWW-merge the incoming
   // definitions into the local settings slice: a peer's type whose `updatedAt`
-  // is newer than (or equal to, for a first-seen) the local copy wins; a type
+  // is strictly newer than the local copy wins (or the local copy is absent —
+  // first-seen); an equal clock is a no-op skip so the merge converges; a type
   // colliding with a built-in system id is skipped. The merge writes the
   // settings slice ONCE (not per-row) and refreshes the in-process registry so
   // the synced types resolve immediately. Wrapped so a settings write failure
