@@ -5,6 +5,9 @@ import { useEffect, useRef, useState } from 'react';
 // emitter that drifts back to the double-l spelling still terminates.
 const TERMINAL_TYPES = new Set(['complete', 'canceled', 'cancelled', 'error']);
 
+/** True when a frame is one of the stream-ending types this hook closes on. */
+export const isTerminalSseFrame = (frame) => TERMINAL_TYPES.has(frame?.type);
+
 /**
  * Subscribe to a server-side EventSource stream of JSON-payload progress
  * frames. Used by both the per-issue auto-runner and the per-volume

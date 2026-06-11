@@ -8,13 +8,18 @@ const TABS = [
   { id: 'runs', label: 'Runs' },
 ];
 
-const wrapperAt = (path) => ({ children }) => (
-  <MemoryRouter initialEntries={[path]}>
-    <Routes>
-      <Route path="/page/:tab?" element={children} />
-    </Routes>
-  </MemoryRouter>
-);
+const wrapperAt = (path) => {
+  function RouteWrapper({ children }) {
+    return (
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route path="/page/:tab?" element={children} />
+        </Routes>
+      </MemoryRouter>
+    );
+  }
+  return RouteWrapper;
+};
 
 describe('useValidTab', () => {
   it('returns the tab param when it names a real tab', () => {

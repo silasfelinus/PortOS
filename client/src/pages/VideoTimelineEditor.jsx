@@ -20,7 +20,7 @@ import {
 import toast from '../components/ui/Toast';
 import * as api from '../services/api';
 import { formatTimecode } from '../utils/formatters';
-import { useSseProgress } from '../hooks/useSseProgress';
+import { useSseProgress, isTerminalSseFrame } from '../hooks/useSseProgress';
 
 // Map project-time t (every clip contributes its trimmed duration) to the
 // (clipIndex, withinClipSec) pair the preview <video> element needs. The
@@ -417,25 +417,36 @@ export default function VideoTimelineEditor() {
   );
   useEffect(() => {
     if (!renderJobId || !renderFrame) return;
-    if (renderFrame.type === 'progress') setRenderProgress(renderFrame.progress);
-    else if (renderFrame.type === 'complete') {
+    if (renderFrame.type === 'progress') {
+      setRenderProgress(renderFrame.progress);
+      return;
+    }
+    // A genuine terminal frame sets `latest` and `closed` in the same commit,
+    // so they're visible together here. A STALE terminal frame — the hook
+    // keeps `latest` across the disabled gap, so starting a second render
+    // briefly re-exposes the previous job's final frame — arrives with
+    // `closed === false`; without this gate it would duplicate the toast and
+    // tear down the new render's UI while ffmpeg keeps running.
+    if (!renderStreamClosed || !isTerminalSseFrame(renderFrame)) return;
+    if (renderFrame.type === 'complete') {
       toast.success('Timeline rendered');
       setRenderJobId(null);
       navigate(`/media/history?focus=${renderFrame.result.id}`);
     } else if (renderFrame.type === 'error') {
       toast.error(renderFrame.error || 'Render failed');
       setRenderJobId(null);
-    } else if (renderFrame.type === 'canceled') {
+    } else {
+      // canceled (either spelling — the hook treats both as terminal)
       toast('Render cancelled');
       setRenderJobId(null);
       setRenderProgress(0);
     }
-  }, [renderJobId, renderFrame, navigate]);
+  }, [renderJobId, renderFrame, renderStreamClosed, navigate]);
   useEffect(() => {
     // Stream ended without a terminal frame — connection lost. Terminal frames
     // are handled (and clear renderJobId) in the frame effect above.
     if (!renderJobId || !renderStreamClosed) return;
-    if (['complete', 'error', 'canceled'].includes(renderFrame?.type)) return;
+    if (isTerminalSseFrame(renderFrame)) return;
     toast.error('Lost connection to render — check Media History');
     setRenderJobId(null);
     setRenderProgress(0);

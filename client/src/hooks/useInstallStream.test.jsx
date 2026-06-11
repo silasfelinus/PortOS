@@ -213,4 +213,27 @@ describe('useInstallStream', () => {
     expect(result.current.logs.map((e) => e.text)).toEqual(['a', 'done']);
     expect(result.current.done).toBe(true);
   });
+
+  it('resets error/done/log state when the url changes while enabled (retry path)', () => {
+    const { result, rerender } = renderHook(
+      ({ url }) => useInstallStream(url, { enabled: true }),
+      { initialProps: { url: '/install?attempt=1' } },
+    );
+    act(() => { last().emit({ type: 'error', message: 'pip exited with code 1' }); });
+    expect(result.current.error).toBe('pip exited with code 1');
+    expect(result.current.logs).toHaveLength(1);
+
+    // A retry bumps the url (attempt counter) without toggling enabled — the
+    // new stream must start clean or `error` wedges the consumer's
+    // "installing" derivation and the old log lines leak into the new run.
+    rerender({ url: '/install?attempt=2' });
+    expect(result.current.error).toBeNull();
+    expect(result.current.done).toBe(false);
+    expect(result.current.logs).toEqual([]);
+    expect(result.current.streamStarted).toBe(true);
+
+    act(() => { last().emit({ type: 'complete', message: 'ok' }); });
+    expect(result.current.done).toBe(true);
+    expect(result.current.error).toBeNull();
+  });
 });
