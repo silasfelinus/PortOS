@@ -6,14 +6,17 @@
  * uses) to a COPY of each section client-side. Preview only — accept still goes
  * through the authoritative server route.
  *
- * Diffs per changed section (never one giant concatenation) so the diff cell
- * cap isn't tripped on a long manuscript.
+ * Sections are diffed with the hunked `HunkDiff` (line-level blocks, unchanged
+ * context collapsed, word-level highlights inside each changed block) — a whole
+ * section is thousands of words, so a flat word diff would either drown the
+ * change in unchanged text or trip the diff cell cap and render everything
+ * red/green. Diffs per changed section, never one giant concatenation.
  */
 
 import { useMemo } from 'react';
 import { X } from 'lucide-react';
 import Modal from '../../ui/Modal';
-import SideBySideDiff from '../../ui/SideBySideDiff';
+import HunkDiff from '../../ui/HunkDiff';
 import { planManuscriptEdits } from '../../../lib/applyManuscriptEdits';
 import { selectedEditsFor } from './ManuscriptCommentCard';
 import { STAGE_LABEL } from './constants';
@@ -94,7 +97,7 @@ export default function ManuscriptImpactPreview({ open, onClose, sections, comme
                     {overlapping} of these edits overlap — accepting will be rejected; regenerate the fix. Preview below shows the non-overlapping subset.
                   </p>
                 ) : null}
-                <SideBySideDiff oldText={before} newText={after} oldLabel="Current" newLabel="With edits" />
+                <HunkDiff oldText={before} newText={after} oldLabel="Current" newLabel="With edits" />
               </div>
             ))
           )}

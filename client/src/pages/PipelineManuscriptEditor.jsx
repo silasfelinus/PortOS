@@ -13,8 +13,13 @@
  *             cards and an Edit toggle per section.
  *   - Right : a navigable/filterable INDEX of editorial comments — click a row
  *             to reveal + open that note in the manuscript.
- *   An "Impact preview" button shows a before/after side-by-side diff of how the
- *   selected fixes change the whole manuscript.
+ *   The open note's card carries a ‹ N of M › stepper over every open note (in
+ *   story/anchor order), and resolving a note (Accept/Dismiss) auto-advances to
+ *   the next one — triaging a long review pass is one action per note, with no
+ *   scrolling back to the sidebar in between.
+ *   An "Impact preview" button shows a hunked before/after diff (unchanged
+ *   context collapsed, word-level highlights) of how the selected fixes change
+ *   the whole manuscript.
  *
  * Data: GET /pipeline/series/:id/manuscript (sections) + .../manuscript/review
  * (comments). Section saves reuse PATCH /pipeline/issues/:id; fixes go through
@@ -376,26 +381,43 @@ export default function PipelineManuscriptEditor() {
     return result;
   };
 
-  // Reveal a comment in context: drop into Review mode (where the note expands
-  // as an in-context card) and open it, switching to its issue tab if needed.
+  // Step to a note without disturbing the current view mode — shared by the
+  // card's ‹ › stepper, the auto-advance after a resolve, and revealComment.
   // The section's card-scroll effect brings the card into view — on arrival for
   // a cross-issue jump, or immediately when it's the active issue. A story-level
   // note with no issueNumber has no tab, so it expands inline in the sidebar.
-  const revealComment = (comment) => {
+  const advanceTo = (comment) => {
     setOpenCommentId(comment.id);
-    setViewMode('review');     // surface the in-context review card…
-    setEditingIssueId(null);   // …and make sure it's the card showing, not the editor
+    setEditingIssueId(null); // make sure it's the card showing, not the editor
     if (comment.issueNumber == null) return; // unanchored — expands in the sidebar
     if (comment.issueNumber !== activeNumber) {
       navigate(`/pipeline/series/${seriesId}/manuscript/${comment.issueNumber}`);
     }
+  };
+
+  // Reveal a comment in context from the sidebar: drop into Review mode (where
+  // the note expands as an in-context card) and open it.
+  const revealComment = (comment) => {
+    setViewMode('review');
+    advanceTo(comment);
+    if (comment.issueNumber == null) return;
     if (comment.stageId && viewType && comment.stageId !== viewType) {
       toast(`This note is on the ${STAGE_LABEL[comment.stageId] || comment.stageId} — switch formats to edit it in context`);
     }
   };
 
-  const updateCommentLocal = (next) =>
+  // Local comment swap + triage auto-advance: resolving the open note (accept
+  // or dismiss) steps straight to the next open one, so a long editorial pass
+  // is one action per note with no scroll-back in between. `openOrder` is
+  // declared below; by the time these handlers run it's populated.
+  const updateCommentLocal = (next) => {
     setComments((prev) => prev.map((c) => (c.id === next.id ? next : c)));
+    if (next.id !== openCommentId || next.status === 'open') return;
+    const idx = openOrder.findIndex((c) => c.id === next.id);
+    const following = idx === -1 ? [] : [...openOrder.slice(idx + 1), ...openOrder.slice(0, idx)];
+    if (following.length) advanceTo(following[0]);
+    else setOpenCommentId(null);
+  };
 
   const applyAccepted = ({ comment, section, sections: changedSections }) => {
     const list = Array.isArray(changedSections) && changedSections.length ? changedSections : [section].filter(Boolean);
@@ -447,6 +469,30 @@ export default function PipelineManuscriptEditor() {
     return map;
   }, [openCommentsByNumber]);
 
+  // Triage order over the open notes that can actually display in the current
+  // format: story order across issues, anchor position within an issue
+  // (unlocated notes after located ones), story-level notes last. Drives the
+  // card's ‹ N of M › stepper and the auto-advance after Accept/Dismiss.
+  const openOrder = useMemo(() => {
+    const startBy = new Map();
+    sectionSpans.forEach((spans) => spans.forEach((s) => {
+      const cur = startBy.get(s.commentId);
+      if (cur == null || s.start < cur) startBy.set(s.commentId, s.start);
+    }));
+    const ordered = [];
+    sections.forEach((s) => {
+      const list = (openCommentsByNumber.get(s.number) || [])
+        .slice()
+        .sort((a, b) => (startBy.get(a.id) ?? Infinity) - (startBy.get(b.id) ?? Infinity));
+      ordered.push(...list);
+    });
+    comments.forEach((c) => {
+      if (c.status === 'open' && c.issueNumber == null) ordered.push(c);
+    });
+    return ordered;
+  }, [sections, sectionSpans, openCommentsByNumber, comments]);
+  const openOrderIds = useMemo(() => openOrder.map((c) => c.id), [openOrder]);
+
   // The one issue the editor is focused on. On the bare /manuscript URL (or an
   // unknown issue) fall back to the first issue so there's no blank frame, and
   // canonicalize the URL to it so the tab highlights and deep links/back work.
@@ -469,6 +515,13 @@ export default function PipelineManuscriptEditor() {
     onAccepted: applyAccepted,
     fixDrafts,
     setCommentDraft,
+    openNav: {
+      order: openOrderIds,
+      goto: (id) => {
+        const target = comments.find((c) => c.id === id);
+        if (target) advanceTo(target);
+      },
+    },
   };
 
   const registerSectionRef = (number) => (el) => {
