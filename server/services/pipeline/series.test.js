@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockNoPeerSync, mockNoPeers } from '../../lib/mockPathsDataRoot.js';
 
 const fileStore = new Map();
@@ -27,6 +27,12 @@ describe('pipeline series service', () => {
   beforeEach(() => {
     fileStore.clear();
     uuidCounter = 0;
+  });
+
+  // A test that registers a subscription-adapter double must not leak it into
+  // later tests even when its assertions fail mid-body.
+  afterEach(() => {
+    __resetSubscriptionAdapter();
   });
 
   it('listSeries returns [] for fresh state', async () => {
@@ -184,7 +190,6 @@ describe('pipeline series service', () => {
       expect(subscribeSpy).toHaveBeenCalledWith('series', id);
 
       emitSpy.mockRestore();
-      __resetSubscriptionAdapter();
     });
 
     it('insertSeriesWithId fresh insert does NOT fire emitRecordUpdated', async () => {

@@ -81,6 +81,11 @@ export function registerSubscriptionAdapter(adapter) {
   subscriptionAdapter = adapter;
 }
 
+/** Whether an adapter is wired — initSharing() uses this as a boot sanity check. */
+export function hasSubscriptionAdapter() {
+  return subscriptionAdapter !== null;
+}
+
 /** Test-only: detach the adapter so later suites see the unregistered state. */
 export function __resetSubscriptionAdapter() {
   subscriptionAdapter = null;

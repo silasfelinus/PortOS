@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
 import { mkdtempSync, rmSync, mkdirSync } from "fs";
 import { writeFile, mkdir } from "fs/promises";
 import { tmpdir } from "os";
@@ -124,6 +124,12 @@ describe("universeBuilder service", () => {
     mkdirSync(TEST_DATA_ROOT, { recursive: true });
     uuidCounter = 0;
     refSheetFilesByName.clear();
+  });
+
+  // A test that registers a subscription-adapter double must not leak it into
+  // later tests even when its assertions fail mid-body.
+  afterEach(() => {
+    __resetSubscriptionAdapter();
   });
 
   it("listUniverses returns [] for fresh state", async () => {
@@ -734,7 +740,6 @@ describe("universeBuilder service", () => {
       expect(subscribeSpy).toHaveBeenCalledWith("universe", id);
 
       emitSpy.mockRestore();
-      __resetSubscriptionAdapter();
     });
 
     it("insertUniverseWithId fresh insert does NOT fire emitRecordUpdated", async () => {
