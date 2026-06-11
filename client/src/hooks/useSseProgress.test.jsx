@@ -1,34 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { useSseProgress } from './useSseProgress';
-
-// jsdom has no EventSource — minimal mock that records instances and lets a
-// test drive onmessage / onerror by hand (same shape as useInstallStream's).
-class MockEventSource {
-  constructor(url) {
-    this.url = url;
-    this.onmessage = null;
-    this.onerror = null;
-    this.onopen = null;
-    this.closed = false;
-    this.readyState = MockEventSource.OPEN;
-    MockEventSource.instances.push(this);
-  }
-
-  close() { this.closed = true; this.readyState = MockEventSource.CLOSED; }
-
-  emit(payload) { this.onmessage?.({ data: JSON.stringify(payload) }); }
-
-  fail() { this.readyState = MockEventSource.CLOSED; this.onerror?.(); }
-}
-MockEventSource.CONNECTING = 0;
-MockEventSource.OPEN = 1;
-MockEventSource.CLOSED = 2;
-
-const last = () => MockEventSource.instances[MockEventSource.instances.length - 1];
+import { MockEventSource, lastEventSource as last } from '../test/mockEventSource';
 
 beforeEach(() => {
-  MockEventSource.instances = [];
+  MockEventSource.reset();
   global.EventSource = MockEventSource;
 });
 

@@ -410,7 +410,7 @@ export default function VideoTimelineEditor() {
   // the shared useSseProgress lifecycle), updates the progress bar, and on
   // 'complete' navigates to Media History focused on the new clip. Frame
   // shapes come from server/services/videoTimeline/local.js
-  // (progress / complete / error / cancelled).
+  // (progress / complete / error / canceled).
   const { latest: renderFrame, closed: renderStreamClosed } = useSseProgress(
     renderJobId ? `/api/video-timeline/${renderJobId}/events` : null,
     { enabled: !!renderJobId },
@@ -425,7 +425,7 @@ export default function VideoTimelineEditor() {
     } else if (renderFrame.type === 'error') {
       toast.error(renderFrame.error || 'Render failed');
       setRenderJobId(null);
-    } else if (renderFrame.type === 'cancelled') {
+    } else if (renderFrame.type === 'canceled') {
       toast('Render cancelled');
       setRenderJobId(null);
       setRenderProgress(0);
@@ -435,7 +435,7 @@ export default function VideoTimelineEditor() {
     // Stream ended without a terminal frame — connection lost. Terminal frames
     // are handled (and clear renderJobId) in the frame effect above.
     if (!renderJobId || !renderStreamClosed) return;
-    if (['complete', 'error', 'cancelled'].includes(renderFrame?.type)) return;
+    if (['complete', 'error', 'canceled'].includes(renderFrame?.type)) return;
     toast.error('Lost connection to render — check Media History');
     setRenderJobId(null);
     setRenderProgress(0);

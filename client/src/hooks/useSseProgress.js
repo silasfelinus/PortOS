@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 
-// Both cancel spellings are terminal: pipeline runners emit `canceled`,
-// the video-timeline renderer emits `cancelled`.
+// Both cancel spellings are terminal. Every emitter normalizes on `canceled`
+// (single l); `cancelled` stays tolerated defensively so a stream from an
+// emitter that drifts back to the double-l spelling still terminates.
 const TERMINAL_TYPES = new Set(['complete', 'canceled', 'cancelled', 'error']);
 
 /**

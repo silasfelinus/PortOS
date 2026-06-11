@@ -1,25 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { usePipelineProgress } from './usePipelineProgress';
-
-class MockEventSource {
-  constructor(url) {
-    this.url = url;
-    this.onmessage = null;
-    this.onerror = null;
-    this.onopen = null;
-    this.readyState = MockEventSource.OPEN;
-    MockEventSource.instances.push(this);
-  }
-
-  close() { this.readyState = MockEventSource.CLOSED; }
-}
-MockEventSource.CONNECTING = 0;
-MockEventSource.OPEN = 1;
-MockEventSource.CLOSED = 2;
+import { MockEventSource } from '../test/mockEventSource';
 
 beforeEach(() => {
-  MockEventSource.instances = [];
+  MockEventSource.reset();
   global.EventSource = MockEventSource;
 });
 
