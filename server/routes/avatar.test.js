@@ -100,6 +100,10 @@ describe('avatar routes', () => {
 
     it('rejects path-traversal / illegal variant names with 404', async () => {
       existsSync.mockReturnValue(true);
+      // Stub the stream so the empty-string fallback (which hits the default
+      // model.glb GET success path) is deterministic in isolation — don't rely
+      // on a prior test's mockReturnValue leaking through vi.clearAllMocks().
+      createReadStream.mockReturnValue(Readable.from([Buffer.from('DEFAULT-GLB')]));
       for (const bad of ['../secret', 'a/b', 'foo.glb', 'UP', '']) {
         const res = await request(buildApp()).get(`/api/avatar/model.glb?variant=${encodeURIComponent(bad)}`);
         // Empty string falls back to default model.glb (200); the rest are 404.
