@@ -346,8 +346,14 @@ export async function applyUserTypesFromPeer(incoming = []) {
     // system types always win and are never represented in this slice.
     if (!id || INGREDIENT_TYPE_IDS.includes(id)) { skipped++; continue; }
     const existing = byId.get(id);
-    // LWW: adopt when no local copy, or the peer's clock is at-or-newer.
-    if (!existing || clockOf(peer) >= clockOf(existing)) {
+    // LWW: adopt when no local copy, or the peer's clock is STRICTLY newer.
+    // Must be `>`, not `>=` — an equal clock means the peer is echoing a type
+    // we already hold, so re-adopting it re-writes the slice and re-counts it
+    // as an applied change every cycle, and the merge never converges (the peer
+    // keeps re-sending it on the next envelope). Strict `>` mirrors the SQL LWW
+    // guard every other catalog kind uses (`EXCLUDED.updated_at > … .updated_at`
+    // in upsertScrapFromPeer / upsertTagFromPeer): equal clock = no-op = skip.
+    if (!existing || clockOf(peer) > clockOf(existing)) {
       byId.set(id, { ...peer, id });
       applied++;
     } else {
