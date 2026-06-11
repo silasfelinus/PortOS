@@ -522,6 +522,45 @@ describe('executeTuiRun', () => {
       }));
     });
 
+    it('completes via the response file even when the TUI emits NO post-paste output (watcher is not gated on streamed output)', async () => {
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+      });
+      // Regression guard: the response-file watcher must run independently of
+      // idleWatchTimer (which only arms after the first POST-PASTE output chunk).
+      // A model that writes its file silently would otherwise hang until the
+      // hard-timeout salvage despite the result already being on disk.
+      const provider = { id: 'claude', type: 'tui', command: 'claude', tuiPromptDelayMs: 50 };
+      const runId = 'run-silent-respfile';
+      const promise = executeTuiRun({ runId, provider, prompt: 'do the task quietly then write the file', workspacePath: '/cwd', timeout: 60000 });
+      await flushAsync();
+
+      const pty = ptyInstances[0];
+      // Pre-paste banner lets the ready-watch paste — but NOTHING is emitted
+      // after the paste, so idleWatchTimer never arms.
+      pty.emitData('claude code ready> ');
+      await vi.advanceTimersByTimeAsync(2000); // ready-watch pastes → response-file watcher starts
+      await vi.advanceTimersByTimeAsync(4000); // enter submitted; still zero post-paste output
+
+      const runDir = join(runsTmpDirRef.current, runId);
+      await mkdir(runDir, { recursive: true });
+      await writeFile(join(runDir, 'tui-response.txt'), 'silent result body');
+
+      await vi.advanceTimersByTimeAsync(1100); // poll 1: seed baseline
+      await vi.advanceTimersByTimeAsync(1100); // poll 2: stable → complete
+      await flushAsync();
+      await promise;
+
+      // Completed long before the 60s hard timeout, with no idle output to lean on.
+      expect(runnerMocks.finalizeRunRecord).toHaveBeenCalledWith(expect.objectContaining({
+        runId,
+        success: true,
+        exitCode: 0,
+        output: 'silent result body',
+        extras: expect.objectContaining({ completionReason: 'response-file', usedResponseFile: true }),
+      }));
+    });
+
     it('salvages the response file on hard timeout → success with reason "timeout-response-file" instead of a false failure + fallback', async () => {
       vi.useFakeTimers({
         toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],

@@ -234,12 +234,14 @@ ${prompt}`;
   let readyTimer = null;
   let pasteEnterTimer = null;
   let idleWatchTimer = null;
+  let responseFileWatchTimer = null;
   let hardTimeoutTimer = null;
 
   const cleanupTimers = () => {
     if (readyTimer) { clearInterval(readyTimer); readyTimer = null; }
     if (pasteEnterTimer) { clearInterval(pasteEnterTimer); pasteEnterTimer = null; }
     if (idleWatchTimer) { clearInterval(idleWatchTimer); idleWatchTimer = null; }
+    if (responseFileWatchTimer) { clearInterval(responseFileWatchTimer); responseFileWatchTimer = null; }
     if (hardTimeoutTimer) { clearTimeout(hardTimeoutTimer); hardTimeoutTimer = null; }
   };
 
@@ -323,25 +325,16 @@ ${prompt}`;
         // Defer the idle-watch timer until the first response chunk so we
         // don't run a 1Hz no-op throughout the 5-30s spawn + paste window.
         // Significant on parallel fan-out paths (arc planner).
-        idleWatchTimer = setInterval(async () => {
+        idleWatchTimer = setInterval(() => {
           if (finalized) return;
-          // The model writing its response file is the authoritative completion
-          // signal (it's what the wrapped prompt asks for) — check it FIRST and
-          // unconditionally. Claude Code's TUI never exits after a one-shot task
-          // (it returns to its interactive prompt), so without this a watched run
-          // has no terminus but the hard timeout. This is intentionally NOT gated
-          // on attach: once the file exists the task is done, so completing it is
-          // correct even while a human is watching.
-          if (await responseFileSettled()) {
-            finish({ success: true, exitCode: 0, reason: 'response-file' });
-            return;
-          }
-          // Idle-completion fallback (no response file yet — e.g. the model
-          // printed inline instead of writing the file). Don't auto-complete a
-          // run a human is actively watching in the Shell page — they may be
-          // reading the output or about to type a correction or an answer the
-          // model is waiting on. Unattended pipeline runs keep the snappy idle
-          // threshold for throughput.
+          // Idle-completion is the FALLBACK for runs that print their answer
+          // inline instead of writing the response file (the authoritative
+          // done-signal, handled by responseFileWatchTimer from paste onward).
+          // Don't auto-complete a run a human is actively watching in the Shell
+          // page — they may be reading the output or about to type a correction
+          // or an answer the model is waiting on. The run then ends only on
+          // natural process exit or an explicit Stop. Unattended pipeline runs
+          // keep the snappy idle threshold for throughput.
           if (isExternalSessionAttached(runId)) return;
           const idle = Date.now() - lastOutputAt;
           if (idle >= idleThresholdMs) {
@@ -401,6 +394,21 @@ ${prompt}`;
         return;
       }
       console.log(`📟 Pasted prompt into TUI ${command} (${reason})`);
+
+      // Watch for the response file from paste onward — it's the model's
+      // authoritative "done" signal and must complete the run INDEPENDENTLY of
+      // whether any post-paste PTY output ever arrives. A model that writes the
+      // file silently (no streamed output to arm idleWatchTimer) would otherwise
+      // hang until the hard-timeout salvage. Runs unconditionally, even while a
+      // human watches: once the file exists the task is finished, so there's
+      // nothing left to intervene in. (Idle/attach gating lives only on
+      // idleWatchTimer, the inline-output fallback.)
+      responseFileWatchTimer = setInterval(async () => {
+        if (finalized) return;
+        if (await responseFileSettled()) {
+          finish({ success: true, exitCode: 0, reason: 'response-file' });
+        }
+      }, 1000);
 
       const pasteSentAt = Date.now();
       pasteEnterTimer = setInterval(() => {
