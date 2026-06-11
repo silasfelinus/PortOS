@@ -248,7 +248,12 @@ router.get('/google/oauth/callback', asyncHandler(async (req, res) => {
   const code = req.query.code;
   if (!code) return res.redirect(configUrl('Missing authorization code'));
   const error = await googleAuth.handleCallback(code).then(() => null)
-    .catch((err) => err.message || 'Google OAuth callback failed');
+    .catch((err) => {
+      // This catch replaces asyncHandler's logging (the redirect swallows the
+      // throw), so keep the failure visible in server logs.
+      console.error(`❌ Google OAuth callback failed: ${err.message}`);
+      return err.message || 'Google OAuth callback failed';
+    });
   res.redirect(configUrl(error));
 }));
 

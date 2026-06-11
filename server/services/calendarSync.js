@@ -221,7 +221,7 @@ export async function syncAccount(accountId, io, options = {}) {
     console.error(`📅 Sync failed for ${account.name} (${account.type}): ${error.message}`);
     await updateSyncStatus(accountId, 'error').catch(() => {});
     io?.emit('calendar:sync:failed', { accountId, error: error.message });
-    throw new ServerError(error.message, { status: 502 });
+    throw error instanceof ServerError ? error : new ServerError(error.message, { status: 502 });
   }).finally(() => {
     syncLocks.delete(accountId);
   });

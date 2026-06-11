@@ -180,15 +180,9 @@ export default function ConfigTab({ accounts, setAccounts }) {
       ? await api.apiDiscoverCalendars(account.id).catch(() => null)
       : await api.mcpDiscoverCalendars(account.id).catch(() => null);
     setDiscovering(null);
-    if (!result || result.error) {
-      if (result?.error?.includes('Failed to spawn') || result?.error?.includes('No enabled CLI provider')) {
-        return toast.error(`${result.error}. Check the provider configured for calendar sync above.`);
-      }
-      if (result?.error?.includes('OAuth')) {
-        return toast.error('Google OAuth not configured. Set up credentials below.');
-      }
-      return;
-    }
+    // Failures arrive as throws (the API helper already toasted the server's
+    // error message) — the .catch above turns them into null.
+    if (!result) return;
     toast.success(`Discovered ${result.calendars?.length || 0} calendars`);
     setAccounts(prev => prev.map(a => a.id === account.id ? { ...a, subcalendars: result.calendars } : a));
   };
