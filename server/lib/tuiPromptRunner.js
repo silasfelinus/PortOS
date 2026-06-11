@@ -20,11 +20,16 @@
  *   - shellService wraps a login shell around the TUI; pasting `${cmd}\n`
  *     into a zsh prompt is slower and noisier than spawning the TUI directly.
  *
- * Completion detection is intentionally minimal: idle-after-response, with a
- * hard timeout fallback. Per-binary input-prompt regexes were considered but
- * are fragile across versions and screen sizes; the idle threshold (~8s)
- * works universally and matches how a human knows the TUI finished — output
- * stopped scrolling.
+ * Completion detection, in priority order: the model's response-file write
+ * is the authoritative "done" signal (the wrapped prompt directs it to write
+ * its full answer to `tui-response.txt` and then finish) — checked
+ * unconditionally, even while a human watches. Output-idle is the fallback for
+ * runs that print inline instead of writing the file (paused while watched, so
+ * a viewer isn't snapped shut mid-read). The hard timeout is the backstop, and
+ * salvages an already-written file before failing. Per-binary input-prompt
+ * regexes were considered for idle but are fragile across versions and screen
+ * sizes; the idle threshold (~8s) works universally and matches how a human
+ * knows the TUI finished — output stopped scrolling.
  */
 
 import { spawn as ptySpawn } from 'node-pty';
@@ -207,15 +212,36 @@ ${prompt}`;
   let outputBufferTruncated = false;
 
   const streamingStrip = createStreamingAnsiStripper();
+
+  // The wrapped prompt directs the model to write its COMPLETE response to
+  // `responseFilePath` and then finish. That file appearing is the model's
+  // explicit "done" signal — more reliable than output-idle and, unlike idle,
+  // authoritative even while a human watches (the task is finished; there's
+  // nothing left to intervene in). Returns true once the file has non-empty
+  // content whose length held steady across two consecutive polls (~1s apart),
+  // so a half-flushed write isn't read as complete. `lastResponseLen = -1`
+  // means "not yet seen / reset"; a real reading seeds it and the next equal
+  // reading confirms stability.
+  let lastResponseLen = -1;
+  const responseFileSettled = async () => {
+    const txt = await tryReadFile(responseFilePath);
+    if (typeof txt !== 'string' || !txt.trim()) { lastResponseLen = -1; return false; }
+    if (txt.length === lastResponseLen) return true;
+    lastResponseLen = txt.length;
+    return false;
+  };
+
   let readyTimer = null;
   let pasteEnterTimer = null;
   let idleWatchTimer = null;
+  let responseFileWatchTimer = null;
   let hardTimeoutTimer = null;
 
   const cleanupTimers = () => {
     if (readyTimer) { clearInterval(readyTimer); readyTimer = null; }
     if (pasteEnterTimer) { clearInterval(pasteEnterTimer); pasteEnterTimer = null; }
     if (idleWatchTimer) { clearInterval(idleWatchTimer); idleWatchTimer = null; }
+    if (responseFileWatchTimer) { clearInterval(responseFileWatchTimer); responseFileWatchTimer = null; }
     if (hardTimeoutTimer) { clearTimeout(hardTimeoutTimer); hardTimeoutTimer = null; }
   };
 
@@ -301,6 +327,9 @@ ${prompt}`;
         // Significant on parallel fan-out paths (arc planner).
         idleWatchTimer = setInterval(() => {
           if (finalized) return;
+          // Idle-completion is the FALLBACK for runs that print their answer
+          // inline instead of writing the response file (the authoritative
+          // done-signal, handled by responseFileWatchTimer from paste onward).
           // Don't auto-complete a run a human is actively watching in the Shell
           // page — they may be reading the output or about to type a correction
           // or an answer the model is waiting on. The run then ends only on
@@ -366,6 +395,21 @@ ${prompt}`;
       }
       console.log(`📟 Pasted prompt into TUI ${command} (${reason})`);
 
+      // Watch for the response file from paste onward — it's the model's
+      // authoritative "done" signal and must complete the run INDEPENDENTLY of
+      // whether any post-paste PTY output ever arrives. A model that writes the
+      // file silently (no streamed output to arm idleWatchTimer) would otherwise
+      // hang until the hard-timeout salvage. Runs unconditionally, even while a
+      // human watches: once the file exists the task is finished, so there's
+      // nothing left to intervene in. (Idle/attach gating lives only on
+      // idleWatchTimer, the inline-output fallback.)
+      responseFileWatchTimer = setInterval(async () => {
+        if (finalized) return;
+        if (await responseFileSettled()) {
+          finish({ success: true, exitCode: 0, reason: 'response-file' });
+        }
+      }, 1000);
+
       const pasteSentAt = Date.now();
       pasteEnterTimer = setInterval(() => {
         if (finalized) { clearInterval(pasteEnterTimer); pasteEnterTimer = null; return; }
@@ -410,8 +454,19 @@ ${prompt}`;
     // a backgrounded tab (idle-completion is paused while watched, but this is
     // not — a run can't exceed its configured max time). Provider-configurable
     // via `timeout`; defaults to 5 min.
-    hardTimeoutTimer = setTimeout(() => {
+    hardTimeoutTimer = setTimeout(async () => {
       if (finalized) return;
+      // Salvage net: if the model already wrote its response file, the run truly
+      // finished — the TUI just never exited — so the timeout is a false failure.
+      // Complete as success with the written result instead of discarding it and
+      // triggering a pointless fallback retry. (The response-file watcher above
+      // normally catches this within ~2s; this covers the boundary case where the
+      // file lands right at the deadline or the watcher hadn't confirmed yet.)
+      const salvaged = await tryReadFile(responseFilePath);
+      if (typeof salvaged === 'string' && salvaged.trim()) {
+        finish({ success: true, exitCode: 0, reason: 'timeout-response-file' });
+        return;
+      }
       finish({
         success: false,
         exitCode: 124,
