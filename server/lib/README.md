@@ -113,6 +113,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | Module | Purpose |
 |---|---|
 | `bashResolver.js` | `resolveBashBinary()` — resolves the POSIX `bash` for running bundled `*.sh` scripts (e.g. `scripts/db.sh`). On Windows a bare `bash` often resolves (via PM2's PATH) to WSL, which mounts drives at `/mnt/h` and can't see a `H:/...` drive path (exit 127); this prefers Git Bash (PORTOS_BASH override → standard install dirs → derived from `git` on PATH → bare `bash`). No-op (`bash`) on non-Windows. |
+| `openFolder.js` | `openFolderInSystemExplorer(localPath)` — cross-platform "open in Finder/Explorer/Nautilus" via detached spawn; child `error` handler prevents spawn failures from crashing the process. |
 | `bufferedSpawn.js` | `bufferedSpawn(cmd, args, opts)` (structured non-throwing result) + `bufferedSpawnOrThrow` (throwing adapter), plus `killProcessTree`, `needsShell`, `IS_WIN32`, `WIN_CMD_SHIMS`, `MAX_OUTPUT_BYTES` — shared buffered-spawn machinery with capped stdout/stderr, timeout-kill, and Windows `taskkill /T /F` tree-kill. Used by `appBuilder.js` and `appUpdater.js`. |
 | `commandSecurity.js` | Allowlist of safe shell commands. |
 | `execGit.js` | `execGit` utility imported by `git.js` + worktree manager. |
@@ -150,6 +151,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `vectorMath.js` | Vector math utilities (cosine, etc.). |
 | `memoryQuery.js` | Pure memory-index helpers: meta projection, filter/sort, search/hybrid meta filters, RRF fusion. |
 | `memoryStats.js` | macOS-correct memory accounting (handles "Pages free" quirk). |
+| `rrfRanking.js` | Pure `reciprocalRankFusion(textResults, vectorResults, options)` — merges two ranked lists via RRF scoring (Cormack 2009). Used by `catalogDB.hybridSearchIngredients`. |
 
 ## Extraction & parsing
 
