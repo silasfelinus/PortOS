@@ -11,7 +11,6 @@ vi.mock('fs', () => ({
 }));
 
 vi.mock('../lib/fileUtils.js', () => ({
-tryReadFile: vi.fn().mockResolvedValue(null),
   PATHS: { data: '/mock/data' }
 }));
 
@@ -110,6 +109,18 @@ describe('avatar routes', () => {
           expect(res.status).toBe(404);
         }
       }
+    });
+
+    // The client probes with HEAD before GET, so the HEAD handler runs the
+    // same resolveVariant() guard — pin it independently of the GET path.
+    it('HEAD honors a valid variant and rejects traversal', async () => {
+      existsSync.mockReturnValue(true);
+      statSync.mockReturnValue({ size: 5 });
+      const ok = await request(buildApp()).head('/api/avatar/model.glb?variant=mini-male-c');
+      expect(ok.status).toBe(200);
+      expect(ok.headers['content-type']).toBe('model/gltf-binary');
+      const bad = await request(buildApp()).head('/api/avatar/model.glb?variant=../secret');
+      expect(bad.status).toBe(404);
     });
   });
 });

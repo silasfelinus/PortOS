@@ -1,4 +1,4 @@
-import { useRef, useMemo, useEffect, useState, Suspense } from 'react';
+import { useRef, useMemo, useEffect, useState, Suspense, Component } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { useGLTF, useAnimations } from '@react-three/drei';
 import * as THREE from 'three';
@@ -26,6 +26,11 @@ const FALLBACK = { clip: 'idle', rot: 0.2, timeScale: 1.0 };
 // disc sits here, so they can never drift apart. Lowering this value pushes
 // the whole avatar down in frame (~210px per world unit at this camera).
 const GROUND_Y = -1.4;
+
+// Variants shipped in data.reference/avatar/ and seeded into data/avatar/ by
+// `npm run setup:data`. For these the "missing model" case means the seed
+// hasn't run yet — not that the user must supply their own GLB.
+const BUNDLED_VARIANTS = new Set(['mini-male-c', 'mini-female-d']);
 
 function buildModelUrl(variant) {
   return variant ? `/api/avatar/model.glb?variant=${encodeURIComponent(variant)}` : '/api/avatar/model.glb';
@@ -131,14 +136,43 @@ function Scene({ state, speaking, background, variant }) {
   );
 }
 
-function MissingModelHint({ background = false }) {
+function MissingModelHint({ background = false, bundled = false }) {
   return (
     <div className={`${background ? 'relative w-full h-full min-h-full' : 'relative w-full max-w-[8rem] lg:max-w-[12rem] aspect-[5/6]'} flex flex-col items-center justify-center rounded-lg border border-port-border bg-port-card/60 text-center p-3`}>
       <div className="text-3xl mb-2">🧍</div>
-      <div className="text-xs font-semibold text-slate-200 mb-1">No mini-character model</div>
-      <code className="text-[9px] text-port-accent break-all leading-tight">data/avatar/&lt;variant&gt;.glb</code>
+      {bundled ? (
+        <>
+          <div className="text-xs font-semibold text-slate-200 mb-1">Model not yet seeded</div>
+          <div className="text-[10px] text-slate-400 mb-1.5">Run</div>
+          <code className="text-[9px] text-port-accent break-all leading-tight">npm run setup:data</code>
+        </>
+      ) : (
+        <>
+          <div className="text-xs font-semibold text-slate-200 mb-1">No mini-character model</div>
+          <code className="text-[9px] text-port-accent break-all leading-tight">data/avatar/&lt;variant&gt;.glb</code>
+        </>
+      )}
     </div>
   );
+}
+
+// Error boundary so a corrupt/missing GLB or a GET that returns a non-GLTF
+// body (the HEAD probe only confirms r.ok, not valid GLTF) degrades to the
+// missing-model hint instead of white-screening the whole CoS page.
+class AvatarErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false };
+  }
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(err) {
+    console.warn(`⚠️ Mini-character avatar failed to load: ${err?.message || err}`);
+  }
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
 }
 
 function LoadingPlaceholder({ background = false }) {
@@ -162,20 +196,23 @@ export default function MiniCharacterCoSAvatar({ state, speaking, background = f
     return () => { cancelled = true; };
   }, [url]);
 
+  const bundled = BUNDLED_VARIANTS.has(variant);
   if (modelPresent === null) return <LoadingPlaceholder background={background} />;
-  if (!modelPresent) return <MissingModelHint background={background} />;
+  if (!modelPresent) return <MissingModelHint background={background} bundled={bundled} />;
 
   return (
     <CoSAvatarFrame label="Mini-character avatar. Drag to rotate." background={background}>
-      <Canvas
-        camera={{ position: [0, 0.2, 3.0], fov: 40 }}
-        style={{ width: '100%', height: '100%', background: 'transparent' }}
-        gl={{ alpha: true, antialias: true }}
-      >
-        <Suspense fallback={null}>
-          <Scene state={state} speaking={speaking} background={background} variant={variant} />
-        </Suspense>
-      </Canvas>
+      <AvatarErrorBoundary fallback={<MissingModelHint background={background} bundled={bundled} />}>
+        <Canvas
+          camera={{ position: [0, 0.2, 3.0], fov: 40 }}
+          style={{ width: '100%', height: '100%', background: 'transparent' }}
+          gl={{ alpha: true, antialias: true }}
+        >
+          <Suspense fallback={null}>
+            <Scene state={state} speaking={speaking} background={background} variant={variant} />
+          </Suspense>
+        </Canvas>
+      </AvatarErrorBoundary>
     </CoSAvatarFrame>
   );
 }
