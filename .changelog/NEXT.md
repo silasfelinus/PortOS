@@ -18,6 +18,7 @@
 
 ## Fixed
 
+- **Single LoRA + init/reference image no longer fails validation** — submitting a local FLUX render with exactly one LoRA selected *and* an init or reference image attached used to 400 with "expected array, received string." The multipart path sends one LoRA as a bare repeated field (the parser only builds an array for two or more), and the route never wrapped it before Zod validation. Single-LoRA submissions over multipart now coerce correctly (matching the existing reference-strengths handling). Two-or-more LoRAs and the JSON path were always fine. (`server/routes/imageGen.js`)
 - **Workspace-root validation on git/scaffold routes** — git operations and app scaffolding refuse paths outside allowed workspace roots; file staging uses literal pathspecs (no git glob expansion); `env` removed from the shell command allowlist so process secrets can't land in persisted job output.
 - **Route validation + linkable tabs** — jira, loops, CoS, digital-twin, automation-schedule, and history inputs are now Zod-validated; Prompt Manager and Messages triage tabs live in the URL (deep-linkable); previously-swallowed client errors are logged.
 - **Helper consolidation** — filename sanitization and MIME maps unified in fileUtils (was 3 copies); GSD/app document saves use atomic writes; client components use the canonical formatters and shared command API instead of local re-implementations.

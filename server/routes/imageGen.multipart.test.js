@@ -251,6 +251,28 @@ describe('POST /api/image-gen/generate — multipart reference-image packing', (
     expect(enqueueJob).not.toHaveBeenCalled();
   });
 
+  // Regression: a SINGLE selected LoRA arrives over multipart as a bare
+  // string (multer only builds an array for 2+ repeated keys). coerceFormFields
+  // must wrap it so Zod's `z.array(...)` accepts it — otherwise the request
+  // 400s with "expected array, received string" + a bogus "<=8 characters"
+  // (the .max(8) LoRA-count applied to the string's length).
+  it('accepts a single LoRA (bare-string multipart fields) alongside an init image', async () => {
+    const res = await postMultipart(app, '/api/image-gen/generate', [
+      { name: 'prompt', value: 'single lora i2i' },
+      { name: 'modelId', value: 'dev' },
+      { name: 'loraFilenames', value: 'Hyperdetailed Colored Pencil.safetensors' },
+      { name: 'loraScales', value: '0.9' },
+      { name: 'initImage', filename: 'src.png', contentType: 'image/png', value: PNG_FIXTURE },
+    ]);
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('queued');
+    expect(enqueueJob).toHaveBeenCalledTimes(1);
+    const params = enqueueJob.mock.calls[0][0].params;
+    // The single scale coerced from string to number, not left as '0.9'.
+    expect(params.loraScales).toEqual([0.9]);
+  });
+
   it('rejects refs uploaded for a non-FLUX.2 model before any file is copied', async () => {
     const res = await postMultipart(app, '/api/image-gen/generate', [
       { name: 'prompt', value: 'wrong-model ref' },
