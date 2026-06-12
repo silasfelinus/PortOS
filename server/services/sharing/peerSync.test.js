@@ -434,14 +434,19 @@ describe('peerSync', () => {
       // need an honest count.
       //
       // We force the failure path by racing two `unsubscribeAllForRecord`
-      // calls in parallel. `listPeerSubscriptions` (line 401 of peerSync)
-      // is NOT inside withStateLock — so both calls take an identical
-      // snapshot containing sub1+sub2 before either's first
-      // `unsubscribePeer` runs. The first call's two `unsubscribePeer`
-      // invocations execute under the state lock and remove both subs.
-      // The second call's invocations then hit ERR_NOT_FOUND, so both
-      // ids land in its `failed` array — proving the per-sub catch
-      // honestly separates success from failure.
+      // calls in parallel. `listPeerSubscriptions` is NOT inside the state
+      // lock, so the two calls can race: each takes its own snapshot, and
+      // whichever `unsubscribePeer` lands second for a given sub hits
+      // ERR_NOT_FOUND and routes that id to `failed` instead of `removed`.
+      //
+      // The EXACT split depends on interleaving (whether the second call
+      // snapshots before or after the first call's removals land), so this
+      // asserts the INVARIANTS that must hold under every interleaving
+      // rather than a single timing-specific outcome (the latter flaked in
+      // CI — see #1200): each sub is removed exactly once total, no id is
+      // ever in both `removed` and `failed` of the SAME call, and a
+      // `failed` id always coincides with the other call having `removed`
+      // it (a failure only happens because the racing call already won).
       vi.mocked(getUniverse).mockResolvedValue({ id: 'u1' });
       vi.mocked(peerFetch).mockResolvedValue({ ok: true, json: async () => ({}) });
       const sub1 = await subscribePeer({ peerId: 'peer-a', recordKind: 'universe', recordId: 'u1' });
@@ -450,20 +455,33 @@ describe('peerSync', () => {
         unsubscribeAllForRecord('universe', 'u1'),
         unsubscribeAllForRecord('universe', 'u1'),
       ]);
-      // Exactly one call wins each sub. Across the two results, every sub
-      // must appear in exactly one `removed` (success) and exactly one
-      // `failed` (the racing duplicate).
-      const allRemoved = [...resultA.removed, ...resultB.removed].sort();
-      const allFailed = [...resultA.failed, ...resultB.failed].sort();
-      expect(allRemoved).toEqual([sub1.id, sub2.id].sort());
-      expect(allFailed).toEqual([sub1.id, sub2.id].sort());
-      // No id appears in both removed AND failed of the same call.
-      for (const result of [resultA, resultB]) {
-        for (const id of result.removed) {
-          expect(result.failed).not.toContain(id);
-        }
+
+      const removedA = new Set(resultA.removed);
+      const removedB = new Set(resultB.removed);
+      const failedA = new Set(resultA.failed);
+      const failedB = new Set(resultB.failed);
+
+      // Each sub is removed exactly once across the two calls — never zero
+      // (it must come out) and never twice (the lock serializes the actual
+      // removal, so only one call legitimately removes it).
+      for (const id of [sub1.id, sub2.id]) {
+        const removedCount = (removedA.has(id) ? 1 : 0) + (removedB.has(id) ? 1 : 0);
+        expect(removedCount, `sub ${id} removed exactly once`).toBe(1);
       }
-      // Both subs are actually gone from disk.
+
+      // The honest-accounting guard: within a single call, an id is never
+      // reported as BOTH removed and failed.
+      for (const [removed, failed] of [[removedA, failedA], [removedB, failedB]]) {
+        for (const id of removed) expect(failed.has(id)).toBe(false);
+      }
+
+      // Any `failed` id is one the OTHER call removed — a failure only
+      // arises because the racing call already won that sub (never a
+      // spurious failure for a sub nobody removed).
+      for (const id of failedA) expect(removedB.has(id)).toBe(true);
+      for (const id of failedB) expect(removedA.has(id)).toBe(true);
+
+      // Both subs are actually gone from disk regardless of who won.
       expect(await findPeerSubscription('peer-a', 'universe', 'u1')).toBeNull();
       expect(await findPeerSubscription('peer-b-inbound-only', 'universe', 'u1')).toBeNull();
     });
