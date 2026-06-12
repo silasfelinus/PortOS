@@ -102,6 +102,16 @@ describe('prefixCaption', () => {
     expect(out).toBe('kessa_v2, a woman with copper hair');
   });
 
+  it('does not amputate a body word that the trigger is a substring-prefix of', () => {
+    // `her` prefixes `heroic`; without a token boundary the strip would
+    // mangle this to `her, oic stance`.
+    expect(prefixCaption('her', 'heroic stance')).toBe('her, heroic stance');
+    expect(prefixCaption('her', 'her, heroic stance')).toBe('her, heroic stance');
+    // Re-prefix path: renaming away from a substring-prefix trigger keeps the body.
+    expect(prefixCaption('hero_v2', 'heroic stance', { previousTriggerWord: 'her' }))
+      .toBe('hero_v2, heroic stance');
+  });
+
   it('returns just the trigger word for empty text', () => {
     expect(prefixCaption('kessa', '')).toBe('kessa');
     expect(prefixCaption('kessa', '   ')).toBe('kessa');

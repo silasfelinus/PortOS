@@ -309,6 +309,34 @@ describe('catalog DDL parity (init-db.sql ↔ db.js ensureSchema)', () => {
       .toEqual([...new Set(extractColumnNames(jsBody))].sort());
   });
 
+  // Broad drift guard for the whole upgrade-vs-fresh-install gap (beyond the
+  // catalog tables above). init-db.sql runs ONLY on fresh `db.sh setup-native`
+  // provisioning; existing installs + federated peers get new tables solely
+  // through db.js `ensureSchema()`'s catalogDDL array. A table added to one
+  // source but not the other is invisible until a real upgrade fails in the
+  // wild (e.g. lora_training_runs shipped in init-db.sql but was missing from
+  // ensureSchema — every existing install would 500 on the first training run).
+  it('every table in init-db.sql is also created in db.js ensureSchema', () => {
+    const tableNames = (source) => {
+      const out = new Set();
+      const re = /CREATE TABLE IF NOT EXISTS\s+([a-z0-9_]+)/gi;
+      let m;
+      while ((m = re.exec(source)) !== null) out.add(m[1].toLowerCase());
+      return out;
+    };
+    // The memory subsystem provisions its own tables via a separate path
+    // (server/scripts/migrate*Memories*.js), so they live in init-db.sql but
+    // intentionally NOT in ensureSchema — the documented exception in this
+    // file's header. Everything else must be in both.
+    const PROVISIONED_ELSEWHERE = new Set(['memories', 'memory_links']);
+    const sqlTables = tableNames(INIT_SQL);
+    const jsTables = tableNames(DB_JS);
+    expect(sqlTables.size, 'init-db.sql declares no tables — parser broke').toBeGreaterThan(8);
+    const missing = [...sqlTables]
+      .filter((t) => !jsTables.has(t) && !PROVISIONED_ELSEWHERE.has(t));
+    expect(missing, `tables in init-db.sql but missing from db.js ensureSchema (existing installs won't get them): ${missing.join(', ')}`).toEqual([]);
+  });
+
   it('search_tsv payload field set matches', () => {
     // Both files re-declare the GENERATED ALWAYS expression character-for-
     // character today. If one side adds a payload key (e.g. voiceNotes) and

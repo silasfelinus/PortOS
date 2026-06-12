@@ -152,7 +152,11 @@ export function prefixCaption(triggerWord, text, { previousTriggerWord = null } 
   let body = trim(text);
   const stripPrefix = (value, token) => {
     if (!token) return value;
-    return value.replace(new RegExp(`^${escapeRe(token)}\\s*,?\\s*`, 'i'), '');
+    // The `(?=[\s,]|$)` boundary is load-bearing: trigger words are short
+    // [a-z0-9_] tokens that often prefix a real word (e.g. `her` in `heroic`),
+    // and the trailing comma is optional — without the boundary, stripping
+    // `her` from `heroic stance` would amputate it to `oic stance`.
+    return value.replace(new RegExp(`^${escapeRe(token)}(?=[\\s,]|$)\\s*,?\\s*`, 'i'), '');
   };
   body = stripPrefix(body, word);
   const prev = trim(previousTriggerWord);
