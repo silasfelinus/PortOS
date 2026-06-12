@@ -253,9 +253,9 @@ export default function NotesTab({ onRefresh }) {
   const displayNotes = searchResults ? searchResults.results : notes;
 
   return (
-    <div className="flex h-full -m-4" style={{ height: 'calc(100vh - 180px)' }}>
+    <div className="flex h-full min-h-0">
       {/* Left panel: note list */}
-      <div className="w-80 border-r border-port-border flex flex-col shrink-0">
+      <div className="w-80 border-r border-port-border flex flex-col min-h-0 shrink-0">
         {/* Vault selector and actions */}
         <div className="p-3 border-b border-port-border space-y-2">
           <div className="flex items-center gap-2">
@@ -434,7 +434,7 @@ export default function NotesTab({ onRefresh }) {
       </div>
 
       {/* Right panel: note viewer/editor */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
         {loadingNote ? (
           <div className="flex items-center justify-center h-full">
             <BrailleSpinner text="Loading" />

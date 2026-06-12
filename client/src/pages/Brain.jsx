@@ -26,10 +26,17 @@ import ImportTab from '../components/brain/tabs/ImportTab';
 // graph tab is actually opened.
 const BrainGraph = lazy(() => import('../components/brain/tabs/BrainGraph'));
 
+// Full-bleed tabs fill the available height and own their internal scroll, so
+// the shared content wrapper must NOT add padding or a second scrollbar for
+// them (that produced the double-scroll/clipping in issue #1177). Every other
+// tab is document-style and gets the padded, scrolling wrapper.
+const FULL_BLEED_TABS = new Set(['graph', 'daily-log', 'notes']);
+
 export default function Brain() {
   const { tab } = useParams();
   const navigate = useNavigate();
   const activeTab = tab || 'inbox';
+  const fullBleed = FULL_BLEED_TABS.has(activeTab);
 
   // Let errors throw — `useAutoRefetch` preserves the last-good data on
   // transient failures. `silent: true` keeps the 30s poll from spamming
@@ -129,8 +136,9 @@ export default function Brain() {
         ariaLabel="Brain sections"
       />
 
-      {/* Tab content */}
-      <div className="flex-1 overflow-auto p-4">
+      {/* Tab content — full-bleed tabs own their own scroll and fill height;
+          document-style tabs scroll inside a padded wrapper. */}
+      <div className={`flex-1 min-h-0 ${fullBleed ? 'overflow-hidden' : 'overflow-auto p-3 sm:p-4'}`}>
         {renderTabContent()}
       </div>
     </div>
