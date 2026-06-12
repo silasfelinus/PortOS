@@ -16,7 +16,7 @@
  * red/green. Diffs per changed section, never one giant concatenation.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Loader2, X } from 'lucide-react';
 import Modal from '../../ui/Modal';
 import HunkDiff from '../../ui/HunkDiff';
@@ -46,6 +46,12 @@ function editsBySectionKey(comments, fixDrafts) {
 export default function ManuscriptImpactPreview({ open, onClose, seriesId, sections, comments, fixDrafts, onAccepted }) {
   // null when idle, { done, total } while the accept-all pass runs.
   const [acceptState, setAcceptState] = useState(null);
+
+  // The accept-all pass awaits one network round-trip per note; if the user
+  // closes the preview mid-batch, late callbacks must not fire into a torn-down
+  // parent. Never reset to true (handles dev-mode double-mount cleanly).
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   const changed = useMemo(() => {
     if (!open) return [];
@@ -85,9 +91,11 @@ export default function ManuscriptImpactPreview({ open, onClose, seriesId, secti
           errors.push(err?.message || 'accept failed');
           return null;
         });
+      if (!mountedRef.current) return;
       if (result) onAccepted(result);
       setAcceptState((s) => (s ? { ...s, done: s.done + 1 } : s));
     }
+    if (!mountedRef.current) return;
     setAcceptState(null);
     const applied = targets.length - errors.length;
     if (errors.length) {

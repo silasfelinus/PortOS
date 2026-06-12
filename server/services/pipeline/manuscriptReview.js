@@ -316,7 +316,12 @@ export async function mergeReviewFromSync(seriesId, remoteReview) {
     const byId = new Map(local.comments.map((c) => [c.id, c]));
     for (const rc of remote.comments) {
       const lc = byId.get(rc.id);
-      if (!lc || new Date(rc.updatedAt).getTime() >= new Date(lc.updatedAt).getTime()) {
+      // Strict-newer (`>`) so an equal-clock echo is a skip, matching the
+      // `mergeIssuesFromSync` LWW guard. With `>=`, a peer re-sending a comment
+      // we already hold at the same timestamp re-adopts + re-writes it every
+      // sync cycle (write amplification + non-convergence) — the same bug
+      // catalogSync.js fixed this release.
+      if (!lc || new Date(rc.updatedAt).getTime() > new Date(lc.updatedAt).getTime()) {
         byId.set(rc.id, rc);
       }
     }

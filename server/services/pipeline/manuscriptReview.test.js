@@ -70,6 +70,30 @@ describe('manuscriptReview — record-event emission on write', () => {
     expect(updates).toEqual([]);
   });
 
+  it('mergeReviewFromSync is strict-LWW: newer remote wins, equal-clock echo is a no-op', async () => {
+    // Local holds a comment the user has acted on (status 'accepted').
+    await mergeReviewFromSync('ser-lww', {
+      schemaVersion: 1,
+      comments: [{ id: 'c1', problem: 'note', status: 'accepted', updatedAt: '2026-06-02T00:00:00Z' }],
+    });
+
+    // Equal-clock echo from a peer (same updatedAt) carrying a different status
+    // must NOT overwrite the local copy — otherwise a full-snapshot sync cycle
+    // re-adopts and re-writes it forever (write amplification / non-convergence).
+    let merged = await mergeReviewFromSync('ser-lww', {
+      schemaVersion: 1,
+      comments: [{ id: 'c1', problem: 'note', status: 'open', updatedAt: '2026-06-02T00:00:00Z' }],
+    });
+    expect(merged.comments.find((c) => c.id === 'c1').status).toBe('accepted');
+
+    // A strictly-newer remote DOES win.
+    merged = await mergeReviewFromSync('ser-lww', {
+      schemaVersion: 1,
+      comments: [{ id: 'c1', problem: 'note', status: 'dismissed', updatedAt: '2026-06-03T00:00:00Z' }],
+    });
+    expect(merged.comments.find((c) => c.id === 'c1').status).toBe('dismissed');
+  });
+
   it('persists replacementStrategy (explicit value, derived from category, and legacy fallback)', async () => {
     const seeded = await seedReviewFromFindings('ser-4', [
       { category: 'comic-structure', problem: 'page is prose', suggestion: 'Panel 1 …', anchorQuote: 'PAGE 5' },

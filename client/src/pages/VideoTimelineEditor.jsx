@@ -353,6 +353,10 @@ export default function VideoTimelineEditor() {
       // Wait for metadata before seeking — seek-before-load silently no-ops
       // and the user sees frame 0 of the clip instead of `inSec + within`.
       video.onloadedmetadata = () => {
+        // Rapid scrubbing across clip boundaries reassigns src (and this
+        // handler) before the prior metadata load fires; bail if this src is
+        // no longer the one we want so a stale load can't seek the new clip.
+        if (lastSrcRef.current !== src) return;
         video.currentTime = wantTime;
         if (playingRef.current) video.play().catch(() => {});
       };
