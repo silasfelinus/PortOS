@@ -414,6 +414,37 @@ describe('PipelineManuscriptEditor — generate-edits streamed review', () => {
     expect(screen.queryByText('Generate fix')).not.toBeInTheDocument();
   });
 
+  it('a SECOND streamed review in the same session is not torn down by the prior run\'s stale terminal frame', async () => {
+    api.startPipelineManuscriptCompleteness.mockResolvedValue({ runId: 'cr-1', sseUrl: '/sse' });
+    api.getPipelineManuscriptReview.mockResolvedValue({ schemaVersion: 1, comments: [comment] });
+    renderEditor();
+    await screen.findByText('My Series');
+
+    // Run 1: start, complete, re-fetch (getReview now called twice — initial + post-complete).
+    fireEvent.click(screen.getByLabelText(/Generate edits for every finding/i));
+    fireEvent.click(screen.getByText('Run editorial review'));
+    await waitFor(() => expect(MockEventSource.instances.length).toBe(1));
+    lastEs().emit({ type: 'complete', openCount: 1, chunked: false, chunkCount: 1 });
+    await waitFor(() => expect(api.getPipelineManuscriptReview).toHaveBeenCalledTimes(2));
+    // Run 1's button is back to idle.
+    await screen.findByText('Run editorial review');
+
+    // Run 2: starting it must subscribe a fresh stream and STAY active — the
+    // prior run's `complete` frame is still in useSseProgress's `latest` until
+    // the resubscribe resets it, and without the reviewClosed gate the terminal
+    // effect would consume that stale frame and tear run 2 down on start
+    // (firing a spurious 3rd review re-fetch).
+    fireEvent.click(screen.getByText('Run editorial review'));
+    await waitFor(() => expect(MockEventSource.instances.length).toBe(2));
+    // Button stays busy (run 2 in flight) and no stale re-fetch fired.
+    await screen.findByText(/Starting editorial review|Drafting edits/);
+    expect(api.getPipelineManuscriptReview).toHaveBeenCalledTimes(2);
+
+    // Run 2's own complete frame drives the real re-fetch (3rd call).
+    lastEs().emit({ type: 'complete', openCount: 1, chunked: false, chunkCount: 1 });
+    await waitFor(() => expect(api.getPipelineManuscriptReview).toHaveBeenCalledTimes(3));
+  });
+
   it('recovers when the SSE stream dies without a terminal frame (button re-enables, review re-fetched)', async () => {
     api.startPipelineManuscriptCompleteness.mockResolvedValue({ runId: 'cr-1', sseUrl: '/sse' });
     api.getPipelineManuscriptReview.mockResolvedValue({ schemaVersion: 1, comments: [comment] });

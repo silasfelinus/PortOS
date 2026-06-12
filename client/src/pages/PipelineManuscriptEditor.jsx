@@ -250,8 +250,14 @@ export default function PipelineManuscriptEditor() {
 
   // Terminal-frame handler for the streamed run: refresh comments + toast, then
   // tear the subscription down. Per-chunk frames only drive the button label.
+  // Gate on `reviewClosed` (not just the frame type): `useSseProgress` resets
+  // `latest` only on (re)subscribe, but resets `closed` on disable too — so
+  // between runs `reviewLatest` still holds the prior run's terminal frame while
+  // `reviewClosed` is already back to false. Without the `reviewClosed` gate,
+  // starting a SECOND review in the same editor session sees the stale frame and
+  // tears the new run's subscription down before its EventSource reports.
   useEffect(() => {
-    if (!reviewActive || !reviewLatest) return;
+    if (!reviewActive || !reviewClosed || !reviewLatest) return;
     const type = reviewLatest.type;
     if (type !== 'complete' && type !== 'canceled' && type !== 'error') return;
     setReviewActive(false);
@@ -259,7 +265,7 @@ export default function PipelineManuscriptEditor() {
     else if (type === 'canceled') toast.success('Editorial review canceled');
     else toast.error(reviewLatest.error || 'Editorial review failed');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reviewActive, reviewLatest, seriesId]);
+  }, [reviewActive, reviewClosed, reviewLatest, seriesId]);
 
   // Recovery: the stream died WITHOUT a terminal frame (attach 404, dropped
   // connection, server restart). Don't strand the UI with the Run button stuck
