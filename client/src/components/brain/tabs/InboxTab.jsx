@@ -279,8 +279,11 @@ export default function InboxTab({ onRefresh, settings }) {
         </p>
       </form>
 
-      {/* Needs Review rail — right column on xl+, first after the form on mobile */}
-      <div className="flex flex-col gap-4 xl:col-start-2 xl:row-start-2 xl:sticky xl:top-0 xl:self-start">
+      {/* Needs Review rail — right column on xl+, first after the form on mobile.
+          Capped to the viewport and given its own scroll on xl+ so a long
+          Needs-Review queue stays reachable instead of growing past the fold
+          (the very problem #1173 set out to fix). */}
+      <div className="flex flex-col gap-4 xl:col-start-2 xl:row-start-2 xl:sticky xl:top-0 xl:self-start xl:max-h-[calc(100vh-7rem)] xl:overflow-y-auto">
         {/* Overview stats — desktop rail only (counts also live in the page header) */}
         <div className="hidden xl:block p-3 bg-port-card border border-port-border rounded-lg">
           <div className="flex items-center justify-between mb-3">
