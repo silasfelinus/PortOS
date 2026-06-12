@@ -253,7 +253,7 @@ export default function NotesTab({ onRefresh }) {
   const displayNotes = searchResults ? searchResults.results : notes;
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-[320px_1fr] grid-rows-1 h-full min-h-0 overflow-hidden -m-4">
+    <div className="grid grid-cols-1 md:grid-cols-[320px_1fr] grid-rows-1 h-[calc(100%_+_2rem)] min-h-0 overflow-hidden -m-4">
       {/* Left panel: note list — on mobile it yields to the detail pane once a
           note is opened (the detail pane's back button restores it). On md+ both
           panels are always visible side-by-side. */}
