@@ -289,9 +289,11 @@ export default function InboxTab({ onRefresh, settings }) {
           <div className="flex items-center justify-between mb-3">
             <span className="text-sm font-medium text-gray-300">Overview</span>
             <button
+              type="button"
               onClick={() => { fetchInbox(); onRefresh?.(); }}
               className="p-1 text-gray-400 hover:text-white transition-colors"
               title="Refresh inbox"
+              aria-label="Refresh inbox"
             >
               <RefreshCw size={14} />
             </button>
