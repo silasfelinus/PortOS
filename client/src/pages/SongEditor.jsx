@@ -1117,11 +1117,11 @@ function ReferenceCard({ reference }) {
   const safeHref = isHttpUrl(reference.url);
   if (ttId) {
     return (
-      <div className="w-full sm:w-80 lg:w-96 space-y-2">
+      <div className="w-full sm:w-80 lg:w-96 max-w-[45vh] space-y-2">
         <iframe
           title={title}
           src={tiktokEmbedSrc(ttId)}
-          className="w-full aspect-[9/16] max-h-[80vh] rounded-lg border border-port-border bg-port-card"
+          className="w-full aspect-[9/16] rounded-lg border border-port-border bg-port-card"
           loading="lazy"
           allow="encrypted-media; fullscreen"
           referrerPolicy="strict-origin-when-cross-origin"
