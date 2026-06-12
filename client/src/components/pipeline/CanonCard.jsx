@@ -21,6 +21,7 @@ import EntryCard from '../universe/EntryCard';
 import EntryThumbSlot from '../universe/EntryThumbSlot';
 import CharacterDetailEditor from '../universe/CharacterDetailEditor';
 import CharacterReferenceSheetPanel from '../universe/CharacterReferenceSheetPanel';
+import CharacterLoraChip from '../loraTraining/CharacterLoraChip';
 import { BIBLE_LIMITS } from '../../lib/bibleLimits';
 
 // Place metadata enums — kept in lock-step with `PLACE_INT_EXT` and
@@ -403,6 +404,15 @@ export default function CanonCard({
             onSheetDeleted={characterExtensions.onSheetDeleted}
             onOpenLightbox={(filename) => onPreview?.(filename, { isSheet: true })}
           />
+          {/* Trained-LoRA link + dataset entry point (machine-local — the
+              chip resolves from this machine's lora sidecars). */}
+          <div className="mt-2">
+            <CharacterLoraChip
+              entryId={entry.id}
+              ingredientId={entry.ingredientId || null}
+              universeId={characterExtensions.universeId}
+            />
+          </div>
         </CharacterDetailsToggle>
       ) : null}
     </>

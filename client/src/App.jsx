@@ -42,6 +42,8 @@ const MediaCollectionSyncView = lazyWithReload(() => import('./pages/MediaCollec
 const SyncView = lazyWithReload(() => import('./pages/SyncView'));
 const MediaModels = lazyWithReload(() => import('./pages/MediaModels'));
 const Loras = lazyWithReload(() => import('./pages/Loras'));
+const LoraTraining = lazyWithReload(() => import('./pages/LoraTraining'));
+const LoraDatasetDetail = lazyWithReload(() => import('./pages/LoraDatasetDetail'));
 const UniverseBuilder = lazyWithReload(() => import('./pages/UniverseBuilder'));
 const Universes = lazyWithReload(() => import('./pages/Universes'));
 const Catalog = lazyWithReload(() => import('./pages/Catalog'));
@@ -259,6 +261,8 @@ export default function App() {
             <Route path="timeline/:projectId" element={<VideoTimelineEditor />} />
             <Route path="models" element={<MediaModels />} />
             <Route path="loras" element={<Loras />} />
+            <Route path="training" element={<LoraTraining />} />
+            <Route path="training/:datasetId" element={<LoraDatasetDetail />} />
             {/* Universes live at /universes (Create sidebar link). These
                 redirects keep legacy /media/universe-builder bookmarks working
                 after the MediaGen tab was removed. */}

@@ -20,6 +20,7 @@ import {
   patchLoraSidecar,
 } from '../services/loras.js';
 import { getSuggestions, searchLorasInFamily } from '../services/civitaiSuggestions.js';
+import { findLorasByCharacter } from '../services/characterLoraResolver.js';
 import { getSettings, updateSettingsWith } from '../services/settings.js';
 import { RUNNER_FAMILIES } from '../lib/runners.js';
 
@@ -116,6 +117,18 @@ router.post('/install', asyncHandler(async (req, res) => {
   const data = validateRequest(installSchema, req.body);
   const sidecar = await installFromCivitai(data);
   res.status(201).json(sidecar);
+}));
+
+// Trained LoRAs linked to a universe character — used by the character card
+// chip in the universe editor + catalog detail page. 2-segment path keeps it
+// off the `/:filename` wildcard below.
+const byCharacterSchema = z.object({
+  entryId: z.preprocess(emptyToUndefined, z.string().max(128).optional()),
+  ingredientId: z.preprocess(emptyToUndefined, z.string().max(128).optional()),
+}).refine((q) => q.entryId || q.ingredientId, { message: 'entryId or ingredientId required' });
+router.get('/by-character', asyncHandler(async (req, res) => {
+  const { entryId, ingredientId } = validateRequest(byCharacterSchema, req.query);
+  res.json(await findLorasByCharacter({ entryId: entryId || null, ingredientId: ingredientId || null }));
 }));
 
 router.get('/:filename', asyncHandler(async (req, res) => {

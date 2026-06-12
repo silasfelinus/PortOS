@@ -117,6 +117,10 @@ import { initMediaJobQueue } from './services/mediaJobQueue/index.js';
 import { recoverInFlightProjects } from './services/creativeDirector/recovery.js';
 import imageVideoModelsRoutes from './routes/imageVideoModels.js';
 import lorasRoutes from './routes/loras.js';
+import loraDatasetsRoutes from './routes/loraDatasets.js';
+import loraTrainingRoutes from './routes/loraTraining.js';
+import { loraDatasetStore } from './services/loraDatasets.js';
+import { initLoraTraining } from './services/loraTraining/index.js';
 import sdapiRoutes from './routes/sdapi.js';
 import openclawRoutes from './routes/openclaw.js';
 import sharingRoutes from './routes/sharing.js';
@@ -228,7 +232,7 @@ await runMigrations({ rootDir: join(__dirname, '..') }).catch(err => {
 // but DO NOT crash the server. PortOS is single-user (CLAUDE.md "Security
 // Model"); a hard exit on startup is worse than a noisy log the user can act
 // on. Returns per-store statuses for downstream telemetry; we discard them.
-await verifyCollectionVersions([universeStore(), seriesStore(), issueStore(), conflictJournalStore(), storyBuilderStore(), mediaCollectionStore()]).catch(err => {
+await verifyCollectionVersions([universeStore(), seriesStore(), issueStore(), conflictJournalStore(), storyBuilderStore(), mediaCollectionStore(), loraDatasetStore]).catch(err => {
   console.error(`❌ Collection version check failed at startup: ${err?.stack ?? err}`);
 });
 
@@ -520,6 +524,8 @@ app.use('/api/importer', importerRoutes);
 app.use('/api/story-builder', storyBuilderRoutes);
 app.use('/api/image-video/models', imageVideoModelsRoutes);
 app.use('/api/loras', lorasRoutes);
+app.use('/api/lora-datasets', loraDatasetsRoutes);
+app.use('/api/lora-training', loraTrainingRoutes);
 // AUTOMATIC1111-compatible surface for tailnet clients — gated by
 // settings.imageGen.expose.a1111 so it returns 403 unless the user opted in.
 app.use('/sdapi/v1', sdapiRoutes);
@@ -663,6 +669,8 @@ app.use('/data/images', express.static(PATHS.images, ASSET_STATIC_OPTS));
 // Reference images (multi-ref upload inputs + generated character reference
 // sheets) — served read-only so the UI can render thumbnails by URL.
 app.use('/data/image-refs', express.static(PATHS.imageRefs, ASSET_STATIC_OPTS));
+// LoRA training dataset images (lora-datasets/<id>/images/*.png).
+app.use('/data/lora-datasets', express.static(PATHS.loraDatasets, ASSET_STATIC_OPTS));
 // Serve generated videos + thumbnails so the Media UI and tailnet clients
 // can pull them by URL without going through an explicit download route.
 app.use('/data/videos', express.static(PATHS.videos, ASSET_STATIC_OPTS));
@@ -734,6 +742,10 @@ ensureSelf()
   })
   .then(() => initMediaJobQueue())
   .then(() => {
+    // LoRA training run records reconcile against the live queue (interrupted
+    // runs → failed) and mirror queue-side cancels — must run after the queue
+    // has loaded its persisted jobs.
+    initLoraTraining().catch(err => console.error(`❌ loraTraining init failed: ${err.message}`));
     // Universe Builder needs the media job queue running before it can listen
     // for `completed` events — so initialize the hook here.
     initUniverseBuilderCollectionHook();

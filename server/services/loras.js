@@ -149,6 +149,13 @@ export const listLoras = async () => {
         // before the URL-normalize fix) also benefit without a reinstall.
         previewImageUrl: normalizeCivitaiImageUrl(sidecar?.previewImageUrl) || null,
         description: sidecar?.description || '',
+        // Trained-LoRA surfacing (sidecars written by services/loraTraining):
+        // 'trained' source + the character identity block let the library UI
+        // badge them and characterLoraResolver match them. Null for Civitai
+        // installs and legacy drops.
+        source: sidecar?.source || null,
+        character: sidecar?.character || null,
+        trainedFromDatasetId: sidecar?.datasetId || null,
       };
     },
   });

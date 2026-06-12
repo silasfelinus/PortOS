@@ -822,6 +822,36 @@ export const citySnapshotConfigSchema = z.object({
   maxSnapshots: z.number().int().min(10).max(100000).optional()
 });
 
+// Shared LoRA-training parameter bounds — used by both the settings-slice
+// defaults and the per-run override on POST /api/lora-training/runs.
+const loraTrainingParamsSchema = z.object({
+  steps: z.number().int().min(10).max(10000).optional(),
+  rank: z.number().int().min(1).max(128).optional(),
+  learningRate: z.number().positive().max(0.1).optional(),
+  resolution: z.union([z.literal(512), z.literal(768), z.literal(1024)]).optional(),
+  seed: z.number().int().optional(),
+  checkpointEvery: z.number().int().min(0).max(5000).optional(),
+  sampleEvery: z.number().int().min(0).max(5000).optional(),
+  samplePrompt: z.string().max(2000).optional(),
+});
+
+// LoRA training settings slice (`settings.loraTraining`) — vision-caption
+// provider pick + training parameter defaults. Code-level defaults live in
+// `services/loraTraining/runtimes.js` so an absent slice needs no migration.
+export const loraTrainingConfigSchema = z.object({
+  captionProviderId: z.string().max(128).optional(),
+  captionModel: z.string().max(256).nullable().optional(),
+  defaults: loraTrainingParamsSchema.optional(),
+});
+
+// POST /api/lora-training/runs — start a training run for a dataset.
+export const startTrainingRunSchema = z.object({
+  datasetId: z.string().min(1).max(128),
+  baseModelId: z.string().min(1).max(128),
+  name: z.string().trim().max(120).optional(),
+  params: loraTrainingParamsSchema.optional(),
+});
+
 // Query for GET /api/city/snapshots — `since` (ISO timestamp) and `limit`
 // (most-recent N) both arrive as strings on the query string.
 export const citySnapshotsQuerySchema = z.object({

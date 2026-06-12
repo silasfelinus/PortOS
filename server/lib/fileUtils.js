@@ -76,6 +76,13 @@ export const PATHS = {
   // the whole dir without touching the gallery.
   imageRefs: join(__lib_dirname, '../../data/image-refs'),
   loras: join(__lib_dirname, '../../data/loras'),
+  // Per-character LoRA training datasets (collectionStore layout:
+  // lora-datasets/<id>/index.json + lora-datasets/<id>/images/*.png).
+  // Machine-local like `loras/` — datasets never federate.
+  loraDatasets: join(__lib_dirname, '../../data/lora-datasets'),
+  // LoRA training run artifacts (checkpoints/samples/cache per run). Run
+  // RECORDS live in Postgres (lora_training_runs); only artifacts live here.
+  trainingRuns: join(__lib_dirname, '../../data/training-runs'),
   videos: join(__lib_dirname, '../../data/videos'),
   videoThumbnails: join(__lib_dirname, '../../data/video-thumbnails'),
   // Persisted audio renders (voice-over lines). Kept distinct from

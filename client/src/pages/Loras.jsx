@@ -710,6 +710,20 @@ function LoraCard({ lora, onDelete, deleting }) {
           </span>
         </div>
 
+        {/* Trained-in-PortOS lineage: character chip links back to the
+            training dataset that produced this adapter. */}
+        {lora.source === 'trained' && lora.character && (
+          <div className="mb-2">
+            <Link
+              to={lora.trainedFromDatasetId ? `/media/training/${lora.trainedFromDatasetId}` : '/media/training'}
+              className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-port-success/15 text-port-success border border-port-success/30 hover:bg-port-success/25"
+              title="Trained in PortOS — open the training dataset"
+            >
+              <Sparkles size={11} /> Character: {lora.character.name}
+            </Link>
+          </div>
+        )}
+
         {triggerWords.length > 0 && (
           <div className="mb-2">
             <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Trigger words</div>

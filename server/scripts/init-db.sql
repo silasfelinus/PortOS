@@ -834,3 +834,18 @@ CREATE TABLE IF NOT EXISTS writers_room_exercises (
   finished_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_wr_exercises_work ON writers_room_exercises (work_id, started_at DESC);
+
+-- LoRA training runs (character LoRA training, /api/lora-training). One row
+-- per run: id/status/character_id mirrored as columns for filtering, the
+-- full record in `data` JSONB. Machine-local — no sync cursor/tombstones
+-- (training artifacts live on this machine's disk under data/training-runs/).
+CREATE TABLE IF NOT EXISTS lora_training_runs (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  character_id TEXT,
+  data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_lora_training_runs_status ON lora_training_runs (status);
+CREATE INDEX IF NOT EXISTS idx_lora_training_runs_character ON lora_training_runs (character_id);
