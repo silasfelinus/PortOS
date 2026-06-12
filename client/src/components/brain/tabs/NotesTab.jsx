@@ -227,17 +227,22 @@ export default function NotesTab({ onRefresh }) {
   }
 
   if (showVaultSetup || vaults.length === 0) {
+    // Notes is a full-bleed tab (Brain wraps it in overflow-hidden with no
+    // padding), so this branch must own its scroll + padding — otherwise the
+    // vault manager clips below the fold with no scrollbar (#1177).
     return (
-      <VaultSetup
-        detectedVaults={detectedVaults}
-        vaults={vaults}
-        customPath={customPath}
-        setCustomPath={setCustomPath}
-        adding={addingVault}
-        onAdd={handleAddVault}
-        onDetect={detectAvailableVaults}
-        onClose={() => setShowVaultSetup(false)}
-      />
+      <div className="h-full overflow-y-auto p-3 sm:p-4">
+        <VaultSetup
+          detectedVaults={detectedVaults}
+          vaults={vaults}
+          customPath={customPath}
+          setCustomPath={setCustomPath}
+          adding={addingVault}
+          onAdd={handleAddVault}
+          onDetect={detectAvailableVaults}
+          onClose={() => setShowVaultSetup(false)}
+        />
+      </div>
     );
   }
 
