@@ -7,7 +7,7 @@
  * frames. Completed runs surface the registered LoRA with a deep link.
  */
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { Dumbbell, Loader2, Square, CheckCircle2, XCircle, Sparkles } from 'lucide-react';
 import toast from '../ui/Toast';
@@ -38,9 +38,9 @@ export default function TrainingPanel({ dataset, readiness, triggerSaving, onRun
       setParams((prev) => prev || { ...s.defaults });
     }).catch(() => setStatus({ runtimes: {}, defaults: {} }));
     listImageModels().then((list) => {
-      const trainable = (Array.isArray(list) ? list : []).filter(
-        (m) => m.id === 'dev' || m.runner === 'flux2',
-      );
+      // FLUX.2 Klein only — mflux ≥0.17 dropped FLUX.1 training, and the
+      // torch fallback trains the same bf16 Klein bases.
+      const trainable = (Array.isArray(list) ? list : []).filter((m) => m.runner === 'flux2');
       setModels(trainable);
       setBaseModelId((prev) => prev || trainable[0]?.id || '');
     }).catch(() => setModels([]));
@@ -65,11 +65,9 @@ export default function TrainingPanel({ dataset, readiness, triggerSaving, onRun
     onRunFinished?.();
   }, [closed, activeRun, refreshRuns, onRunFinished]);
 
-  const runtimeForModel = useMemo(() => {
-    const model = models.find((m) => m.id === baseModelId);
-    return model?.runner === 'flux2' ? 'flux2' : 'mflux';
-  }, [models, baseModelId]);
-  const runtimeReady = status?.runtimes?.[runtimeForModel]?.ready;
+  // Engine pick mirrors the server: mflux (MLX) when its trainer is
+  // installed, else the torch venv. Either being ready unblocks training.
+  const engineReady = !!(status?.runtimes?.mflux?.ready || status?.runtimes?.flux2?.ready);
 
   const start = async () => {
     setStarting(true);
@@ -99,7 +97,7 @@ export default function TrainingPanel({ dataset, readiness, triggerSaving, onRun
     ? `Needs ${readiness?.required ?? 10} captioned images (have ${readiness?.captioned ?? 0})`
     : triggerSaving ? 'Saving trigger word…'
     : !baseModelId ? 'Pick a base model'
-    : runtimeReady === false ? `${runtimeForModel} environment not ready — run scripts/setup-image-video.sh`
+    : (status && !engineReady) ? 'No training engine — install mflux ≥0.17 or run scripts/setup-image-video.sh'
     : null;
 
   if (activeRun) {

@@ -2,10 +2,11 @@ import { describe, it, expect } from 'vitest';
 import {
   TRAINING_DEFAULTS,
   buildFlux2TrainArgs,
+  buildMfluxLoraTargets,
   buildMfluxTrainArgs,
   buildMfluxTrainConfig,
+  deriveMfluxMemoryConfig,
   resolveTrainingRuntime,
-  runnerFamilyForRuntime,
 } from './runtimes.js';
 
 const MODELS = [
@@ -17,68 +18,99 @@ const MODELS = [
 ];
 
 describe('resolveTrainingRuntime', () => {
-  it('routes dev to mflux', () => {
-    const out = resolveTrainingRuntime('dev', MODELS);
+  it('routes flux2 models to mflux when its trainer is available', () => {
+    const out = resolveTrainingRuntime('flux2-klein-4b', MODELS, { mlxAvailable: true });
     expect(out.runtime).toBe('mflux');
-    expect(out.trainRepo).toBeNull();
+    expect(out.mfluxModel).toBe('flux2-klein-base-4b');
+    expect(out.trainRepo).toBe('black-forest-labs/FLUX.2-klein-4B');
+    expect(out.variant).toBe('4b');
   });
 
-  it('routes flux2 models to the bf16 train repo for their variant', () => {
-    expect(resolveTrainingRuntime('flux2-klein-4b', MODELS).trainRepo)
-      .toBe('black-forest-labs/FLUX.2-klein-4B');
-    expect(resolveTrainingRuntime('flux2-klein-9b-bf16', MODELS).trainRepo)
-      .toBe('black-forest-labs/FLUX.2-klein-9B');
+  it('falls back to the torch runtime without mflux', () => {
+    const out = resolveTrainingRuntime('flux2-klein-9b-bf16', MODELS, { mlxAvailable: false });
+    expect(out.runtime).toBe('flux2');
+    expect(out.mfluxModel).toBe('flux2-klein-base-9b');
+    expect(out.trainRepo).toBe('black-forest-labs/FLUX.2-klein-9B');
   });
 
-  it('rejects schnell, diffusers families, and unknown ids', () => {
-    expect(() => resolveTrainingRuntime('schnell', MODELS)).toThrow(/training supports/);
-    expect(() => resolveTrainingRuntime('z-image-turbo', MODELS)).toThrow(/training supports/);
+  it('rejects FLUX.1 (training removed upstream), diffusers families, and unknown ids', () => {
+    expect(() => resolveTrainingRuntime('dev', MODELS)).toThrow(/FLUX\.2 Klein models only/);
+    expect(() => resolveTrainingRuntime('schnell', MODELS)).toThrow(/FLUX\.2 Klein models only/);
+    expect(() => resolveTrainingRuntime('z-image-turbo', MODELS)).toThrow(/FLUX\.2 Klein models only/);
     expect(() => resolveTrainingRuntime('ghost', MODELS)).toThrow(/Unknown image model/);
   });
+});
 
-  it('maps runtimes to runner families', () => {
-    expect(runnerFamilyForRuntime('mflux')).toBe('mflux');
-    expect(runnerFamilyForRuntime('flux2')).toBe('flux2');
+describe('buildMfluxLoraTargets', () => {
+  it('pins block ranges per size variant (4b: 5+20, 9b: 8+24)', () => {
+    const t4 = buildMfluxLoraTargets('4b', 16);
+    const double4 = t4.find((t) => t.module_path === 'transformer_blocks.{block}.attn.to_q');
+    const single4 = t4.find((t) => t.module_path === 'single_transformer_blocks.{block}.attn.to_qkv_mlp_proj');
+    expect(double4.blocks).toEqual({ start: 0, end: 5 });
+    expect(single4.blocks).toEqual({ start: 0, end: 20 });
+    const t9 = buildMfluxLoraTargets('9b', 8);
+    expect(t9.find((t) => t.module_path.startsWith('transformer_blocks')).blocks.end).toBe(8);
+    expect(t9.find((t) => t.module_path.startsWith('single_transformer_blocks')).blocks.end).toBe(24);
+    expect(t9.every((t) => t.rank === 8)).toBe(true);
   });
 });
 
 describe('buildMfluxTrainConfig', () => {
   const base = {
-    triggerWord: 'kessa',
-    datasetImagesDir: '/data/lora-datasets/ds1/images',
-    checkpointsDir: '/data/training-runs/r1/checkpoints',
-    manifestImages: [
-      { file: 'a.png', caption: 'kessa, front view' },
-      { file: 'b.png', caption: 'kessa, side view' },
-    ],
+    variant: '4b',
+    mfluxModel: 'flux2-klein-base-4b',
+    dataDir: '/data/training-runs/r1/data',
+    imageCount: 2,
+    outputDir: '/data/training-runs/r1/mflux',
   };
 
-  it('translates the step budget into epochs over the example set', () => {
+  it('matches the mflux ≥0.17 schema and translates steps → epochs', () => {
     const config = buildMfluxTrainConfig({ ...base, params: { steps: 100 } });
-    expect(config.training_loop.num_epochs).toBe(50); // 100 steps / 2 images
-    expect(config.examples.images).toEqual([
-      { image: 'a.png', prompt: 'kessa, front view' },
-      { image: 'b.png', prompt: 'kessa, side view' },
-    ]);
+    expect(config.model).toBe('flux2-klein-base-4b');
+    expect(config.data).toBe(base.dataDir);
+    expect(config.training_loop).toEqual({
+      num_epochs: 50, batch_size: 1, timestep_low: 25, timestep_high: 40,
+    });
+    expect(config.steps).toBe(40); // noise-schedule steps, not training duration
+    expect(config.guidance).toBe(1.0);
+    expect(config.checkpoint.output_path).toBe(base.outputDir);
+    expect(config.lora_layers.targets.length).toBeGreaterThan(10);
+    // mflux rejects unknown keys like the legacy `examples`/`save` shapes.
+    expect(config.examples).toBeUndefined();
+    expect(config.save).toBeUndefined();
   });
 
-  it('applies defaults and per-run params', () => {
-    const config = buildMfluxTrainConfig({ ...base, params: { rank: 8, learningRate: 0.0002, resolution: 768 } });
-    expect(config.lora_layers.transformer_blocks.lora_rank).toBe(8);
+  it('applies params and disables monitoring when samples are off', () => {
+    const config = buildMfluxTrainConfig({
+      ...base,
+      params: { steps: 200, rank: 8, learningRate: 0.0002, resolution: 768, checkpointEvery: 0, sampleEvery: 0 },
+    });
     expect(config.optimizer.learning_rate).toBe(0.0002);
-    expect(config.width).toBe(768);
-    expect(config.model).toBe('dev');
-    expect(config.save.checkpoint_frequency).toBe(TRAINING_DEFAULTS.checkpointEvery);
+    expect(config.max_resolution).toBe(768);
+    expect(config.checkpoint.save_frequency).toBe(200); // only the final save
+    expect(config.monitoring).toBeUndefined();
+    expect(config.lora_layers.targets[0].rank).toBe(8);
   });
 
-  it('disables checkpoint/sample frequency at 0', () => {
-    const config = buildMfluxTrainConfig({ ...base, params: { steps: 200, checkpointEvery: 0, sampleEvery: 0 } });
-    expect(config.save.checkpoint_frequency).toBe(200); // only the final save
-    expect(config.instrumentation.generate_image_frequency).toBe(0);
+  it('enables monitoring with sample dimensions when sampleEvery > 0', () => {
+    const config = buildMfluxTrainConfig({ ...base, params: { sampleEvery: 50, resolution: 512 } });
+    expect(config.monitoring).toEqual({
+      preview_width: 512, preview_height: 512, plot_frequency: 50, generate_image_frequency: 50,
+    });
   });
 
   it('throws on an empty example set', () => {
-    expect(() => buildMfluxTrainConfig({ ...base, manifestImages: [] })).toThrow(/at least one/);
+    expect(() => buildMfluxTrainConfig({ ...base, imageCount: 0 })).toThrow(/at least one/);
+  });
+
+  it('derives quantize/low_ram from total RAM (unknown → most conservative)', () => {
+    expect(deriveMfluxMemoryConfig(128)).toEqual({ quantize: null, low_ram: false });
+    expect(deriveMfluxMemoryConfig(64)).toEqual({ quantize: 8, low_ram: false });
+    expect(deriveMfluxMemoryConfig(48)).toEqual({ quantize: 4, low_ram: true });
+    expect(deriveMfluxMemoryConfig(null)).toEqual({ quantize: 4, low_ram: true });
+    const config = buildMfluxTrainConfig({ ...base, totalMemGb: 48 });
+    expect(config.quantize).toBe(4);
+    expect(config.low_ram).toBe(true);
   });
 });
 
@@ -88,7 +120,7 @@ describe('buildMfluxTrainArgs / buildFlux2TrainArgs', () => {
       scriptPath: '/x/train_mflux_lora.py', configPath: '/r/cfg.json', runDir: '/r', totalSteps: 500,
     });
     expect(args).toEqual([
-      '/x/train_mflux_lora.py', '--train-config', '/r/cfg.json',
+      '/x/train_mflux_lora.py', '--config', '/r/cfg.json',
       '--output-dir', '/r', '--total-steps', '500',
     ]);
   });

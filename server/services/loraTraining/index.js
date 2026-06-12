@@ -14,9 +14,10 @@
  */
 
 import { spawn } from 'child_process';
+import { existsSync } from 'fs';
 import { copyFile, mkdir, stat, writeFile } from 'fs/promises';
-import { join, basename } from 'path';
-import { platform } from 'os';
+import { join, basename, dirname } from 'path';
+import { platform, totalmem } from 'os';
 import { PATHS, ensureDir, atomicWrite, shortId } from '../../lib/fileUtils.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { v4 as uuidv4 } from '../../lib/uuid.js';
@@ -53,6 +54,15 @@ const TRAINER_SCRIPTS = {
 export const runDir = (runId) => join(PATHS.trainingRuns, runId);
 export const runSamplesDir = (runId) => join(runDir(runId), 'samples');
 
+/**
+ * mflux ships its trainer as the `mflux-train` console script — probe for
+ * it next to the configured local-image-gen python (e.g.
+ * /opt/miniconda3/bin/python3 → /opt/miniconda3/bin/mflux-train). Present
+ * only on mflux ≥0.17 installs.
+ */
+export const isMfluxTrainAvailable = (pythonPath) =>
+  !!pythonPath && existsSync(join(dirname(pythonPath), 'mflux-train'));
+
 // GPU lane serializes training with renders, so at most one trainer child
 // exists at a time. Keyed by jobId anyway so a stale cancel can't kill a
 // newer run.
@@ -87,25 +97,22 @@ const mergeParams = (settings, requestParams = {}) => ({
  * `{ runId, jobId, position }` (202-shaped).
  */
 export async function startTrainingRun({ datasetId, baseModelId, name = null, params = {} }) {
-  const routing = resolveTrainingRuntime(baseModelId, getImageModels());
-  const { dataset } = await validateDatasetReady(datasetId);
   const settings = await getSettings();
+  const pythonPath = settings?.imageGen?.local?.pythonPath || null;
+  // Engine pick: prefer mflux's MLX trainer when the user's mflux install
+  // ships it (Apple Silicon native, no second venv); fall back to the
+  // torch/diffusers trainer in venv-flux2.
+  const mlxAvailable = isMfluxTrainAvailable(pythonPath);
+  const routing = resolveTrainingRuntime(baseModelId, getImageModels(), { mlxAvailable });
+  const { dataset } = await validateDatasetReady(datasetId);
 
-  let pythonPath = null;
   if (routing.runtime === TRAINING_RUNTIMES.FLUX2) {
     const healthy = await isFlux2VenvHealthy();
     if (!healthy) {
       throw new ServerError(
-        'FLUX.2 python environment is not ready — run `bash scripts/setup-image-video.sh` (FLUX.2 option) first',
-        { status: 412, code: 'FLUX2_VENV_MISSING' },
-      );
-    }
-  } else {
-    pythonPath = settings?.imageGen?.local?.pythonPath || null;
-    if (!pythonPath) {
-      throw new ServerError(
-        'mflux python environment is not configured — set Settings → Image Gen → Local python path (or run `bash scripts/setup-image-video.sh`)',
-        { status: 412, code: 'MFLUX_VENV_MISSING' },
+        'No training engine available — install mflux ≥0.17 in your local image-gen python (Settings → Image Gen) '
+        + 'or set up the FLUX.2 venv via `bash scripts/setup-image-video.sh`',
+        { status: 412, code: 'TRAINING_ENGINE_MISSING' },
       );
     }
   }
@@ -120,6 +127,7 @@ export async function startTrainingRun({ datasetId, baseModelId, name = null, pa
     baseModelId,
     fluxVariant: routing.variant,
     trainRepo: routing.trainRepo,
+    mfluxModel: routing.mfluxModel,
     name: name || null,
     character: dataset.character,
     datasetId,
@@ -230,17 +238,39 @@ export async function runTraining({ jobId, runId, pythonPath = null }) {
     });
   } else {
     bin = pythonPath;
-    if (!bin) {
-      await runsDb.updateRun(runId, { status: 'failed', error: 'mflux python path not configured' }).catch(() => {});
-      return fail('mflux python path not configured — set it in Settings → Image Gen');
+    if (!bin || !isMfluxTrainAvailable(bin)) {
+      await runsDb.updateRun(runId, { status: 'failed', error: 'mflux trainer not available' }).catch(() => {});
+      return fail('mflux-train not found next to the configured python — update mflux (≥0.17) or set up the FLUX.2 venv');
     }
+    // Stage the dataset in mflux's auto-discovery layout: NNNN.png +
+    // NNNN.txt caption pairs, plus preview_1.txt for the periodic sample
+    // render. mflux resolves everything from the config's `data` dir.
+    const dataDir = join(dir, 'data');
+    await mkdir(dataDir, { recursive: true });
+    for (let i = 0; i < manifest.images.length; i += 1) {
+      const stem = String(i + 1).padStart(4, '0');
+      await copyFile(manifest.images[i].path, join(dataDir, `${stem}.png`));
+      await writeFile(join(dataDir, `${stem}.txt`), `${manifest.images[i].caption}\n`);
+    }
+    if ((run.params?.sampleEvery ?? TRAINING_DEFAULTS.sampleEvery) > 0) {
+      const samplePrompt = run.params?.samplePrompt || `${run.triggerWord} portrait, neutral background`;
+      await writeFile(join(dataDir, 'preview_1.txt'), `${samplePrompt}\n`);
+    }
+    // output_path must NOT pre-exist — mflux appends a timestamp suffix to
+    // an existing dir (its new_folder behavior), which would break the
+    // wrapper's artifact watcher. mflux creates checkpoints/ + preview/
+    // (+ loss/) inside it.
+    const mfluxOutputDir = join(dir, 'mflux');
     const config = buildMfluxTrainConfig({
       params: run.params,
-      triggerWord: run.triggerWord,
-      samplePrompt: run.params?.samplePrompt || null,
-      datasetImagesDir: manifest.imagesDir,
-      manifestImages: manifest.images,
-      checkpointsDir,
+      variant: run.fluxVariant,
+      mfluxModel: run.mfluxModel,
+      dataDir,
+      imageCount: manifest.images.length,
+      outputDir: mfluxOutputDir,
+      // Memory-derived quantize/low_ram (see deriveMfluxMemoryConfig) —
+      // a bf16 base + in-RAM latent cache OOM-killed a 48 GB machine.
+      totalMemGb: totalmem() / 2 ** 30,
     });
     const configPath = join(dir, 'mflux-train.json');
     await atomicWrite(configPath, config);

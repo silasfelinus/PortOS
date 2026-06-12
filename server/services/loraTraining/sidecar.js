@@ -6,7 +6,7 @@
  */
 
 import { slugifyForFilename } from '../../lib/civitai.js';
-import { TRAINING_RUNTIMES, runnerFamilyForRuntime } from './runtimes.js';
+import { RUNNER_FAMILIES } from '../../lib/runners.js';
 
 /** `lora-trained-<slug>-<runId8>.safetensors` — runId suffix prevents collisions. */
 export function trainedLoraFilename({ name, characterName, runId }) {
@@ -26,10 +26,11 @@ export function buildTrainedSidecar({ run, result = {}, filename, previewImageUr
     datasetId: run.datasetId || null,
     runId: run.id,
     civitai: null,
-    runnerFamily: runnerFamilyForRuntime(runtime),
-    // '4b' | '9b' for flux2 (composeCompatKey → flux2-4b/flux2-9b in the
-    // picker); null for mflux (bare 'mflux' compat key).
-    fluxVariant: runtime === TRAINING_RUNTIMES.FLUX2 ? (run.fluxVariant || null) : null,
+    // Both runtimes (mflux MLX + torch diffusers) train FLUX.2 adapters
+    // with diffusers-style key naming, so the family is always flux2 and
+    // the size variant gates the compat key (flux2-4b / flux2-9b).
+    runnerFamily: RUNNER_FAMILIES.FLUX2,
+    fluxVariant: run.fluxVariant || null,
     triggerWords: run.triggerWord ? [run.triggerWord] : [],
     recommendedScale: 1.0,
     training: {

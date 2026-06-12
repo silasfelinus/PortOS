@@ -1,36 +1,40 @@
 #!/usr/bin/env python3
-"""mflux FLUX.1-dev LoRA training wrapper (PortOS).
+"""mflux FLUX.2 LoRA training wrapper (PortOS).
 
-Wraps mflux's own DreamBooth training CLI in a subprocess and translates
-its native output into the PortOS trainer line protocol (see
-train_flux2_lora.py header / server/services/loraTraining/progress.js).
-We deliberately do NOT import mflux's training internals in-process —
-their API churns across versions; the CLI + train-config JSON is the
-stable-ish surface (same wrap-don't-import strategy as generate_wan22.py).
+Wraps mflux's own trainer (`mflux-train`, mflux ≥0.17 — FLUX.1 training
+was removed upstream) in a subprocess and translates its native output
+into the PortOS trainer line protocol (see train_flux2_lora.py header /
+server/services/loraTraining/progress.js). We deliberately do NOT import
+mflux's training internals in-process — their API churns across versions;
+the CLI + config JSON is the stable surface (same wrap-don't-import
+strategy as generate_wan22.py).
 
-Entrypoint probing (mflux moved this across versions):
-  1. <venv python> -m mflux.dreambooth --train-config <json>
-  2. mflux-train (console script next to the interpreter)
+Verified against mflux 0.17.5:
+  - CLI: `mflux-train --config <json>` (resume: `--resume <checkpoint.zip>`).
+  - Progress: a tqdm bar over total iterations (epochs × images), written
+    with carriage returns — the reader splits on \\r AND \\n.
+  - Outputs under the config's checkpoint.output_path:
+      checkpoints/NNNNNNN_checkpoint.zip   (adapter + optimizer + config)
+      preview/NNNNNNN_preview_*.png        (when monitoring is enabled)
+      loss/loss.html
+  - The trained adapter inside each zip is `NNNNNNN_adapter.safetensors`
+    with diffusers-style key naming (`transformer.<module>.lora_A.weight`),
+    so the extracted file loads directly in diffusers flux2 pipelines.
 
-Artifacts: mflux writes checkpoints (zips) + validation images into the
-config's save.output_path (our <runDir>/checkpoints). A watcher thread
-surfaces new checkpoints as CHECKPOINT: lines and copies validation PNGs
-into <runDir>/samples for SAMPLE: lines. On success, the newest adapter
-.safetensors (extracted from the newest checkpoint zip when necessary) is
-reported via RESULT: JSON.
-
-SIGTERM → forwarded to the mflux child; exit 143 after it stops.
+SIGTERM → forwarded to the mflux child; exit 143 after it stops (mflux
+checkpoints at save_frequency boundaries; mid-interval cancels keep the
+last saved checkpoint).
 """
 
 import argparse
 import json
+import os
 import re
 import shutil
 import signal
 import subprocess
 import sys
 import threading
-import time
 import zipfile
 from pathlib import Path
 
@@ -55,103 +59,138 @@ signal.signal(signal.SIGTERM, _on_sigterm)
 
 def parse_args():
     p = argparse.ArgumentParser(description="mflux LoRA training wrapper")
-    p.add_argument("--train-config", required=True)
-    p.add_argument("--output-dir", required=True)
+    p.add_argument("--config", required=True, help="mflux-train config JSON")
+    p.add_argument("--output-dir", required=True, help="PortOS run dir (samples/ lives here)")
     p.add_argument("--total-steps", type=int, default=1000,
-                   help="step budget for progress mapping when mflux reports epoch-relative counts")
-    p.add_argument("--resume-checkpoint", default=None)
+                   help="expected total iterations — used only for logging sanity")
+    p.add_argument("--resume-checkpoint", default=None, help="checkpoint zip to resume from")
     return p.parse_args()
 
 
 def build_command(config_path: str, resume: str | None) -> list:
-    """Probe for mflux's training entrypoint. Prefer the module form (uses
-    THIS interpreter, no PATH ambiguity); fall back to the console script."""
-    module_probe = subprocess.run(
-        [sys.executable, "-c", "import importlib.util as u; raise SystemExit(0 if u.find_spec('mflux.dreambooth') else 1)"],
-        capture_output=True,
-    )
-    if module_probe.returncode == 0:
-        cmd = [sys.executable, "-m", "mflux.dreambooth", "--train-config", config_path]
+    """`mflux-train` console script next to THIS interpreter (no PATH
+    ambiguity); fallback to the module behind it."""
+    console = Path(sys.executable).parent / "mflux-train"
+    if console.exists():
+        cmd = [str(console)]
     else:
-        console = Path(sys.executable).parent / "mflux-train"
-        if not console.exists():
+        probe = subprocess.run(
+            [sys.executable, "-c",
+             "import importlib.util as u; raise SystemExit(0 if u.find_spec('mflux.models.common.cli.train') else 1)"],
+            capture_output=True,
+        )
+        if probe.returncode != 0:
             print(
-                "USER_ERROR:MODULE_NOT_FOUND:mflux training entrypoint not found "
-                "(neither mflux.dreambooth module nor mflux-train script) — "
-                "update mflux via scripts/setup-image-video.sh",
+                "USER_ERROR:MODULE_NOT_FOUND:mflux trainer not found (no mflux-train script and no "
+                "mflux.models.common.cli.train module) — update mflux to ≥0.17",
                 file=sys.stderr, flush=True,
             )
             sys.exit(2)
-        cmd = [str(console), "--train-config", config_path]
+        cmd = [sys.executable, "-m", "mflux.models.common.cli.train"]
     if resume:
-        cmd += ["--resume-checkpoint", resume]
+        cmd += ["--resume", resume]
+    else:
+        cmd += ["--config", config_path]
     return cmd
 
 
-# mflux progress lines vary by version — try, in order:
-#   "... step 12/400 ... loss: 0.123"  /  "Step 12/400, loss=0.123"
-#   "Epoch 3/100 ... loss 0.123"       (epoch-relative; scaled by --total-steps)
-STEP_RES = [
-    re.compile(r"[Ss]teps?[\s:=]+(\d+)\s*/\s*(\d+).*?[Ll]oss[\s:=]+([\d.eE+-]+)"),
-    re.compile(r"(\d+)\s*/\s*(\d+).*?[Ll]oss[\s:=]+([\d.eE+-]+)"),
-]
-EPOCH_RE = re.compile(r"[Ee]poch[\s:=]+(\d+)\s*/\s*(\d+)")
+# tqdm renders like `  3%|▎         | 12/400 [00:30<16:20,  2.53s/it]`.
+TQDM_RE = re.compile(r"(\d+)\s*/\s*(\d+)\s*\[")
+# Belt-and-suspenders for any explicit "step N/M ... loss X" prose a future
+# mflux version might print.
+STEP_LOSS_RE = re.compile(r"[Ss]teps?[\s:=]+(\d+)\s*/\s*(\d+).*?[Ll]oss[\s:=]+([\d.eE+-]+)")
 NOISE_RE = re.compile(r"FutureWarning|UserWarning|DeprecationWarning", re.I)
 
 
-class ArtifactWatcher(threading.Thread):
-    """Poll the checkpoints dir for new checkpoint files + validation PNGs.
-    PNGs copy into samples/ so the server's sample route can serve them."""
+def resolve_mflux_output(configured: Path) -> Path:
+    """mflux appends `_YYYYMMDD_HHMMSS` to checkpoint.output_path when the
+    configured dir already exists (its new-run-folder behavior) — a killed
+    previous attempt leaving the dir behind is enough to trigger it. Pick
+    the newest candidate among the configured path and its timestamped
+    siblings so the watcher + adapter discovery track where mflux actually
+    wrote."""
+    candidates = [p for p in [configured, *configured.parent.glob(f"{configured.name}_2*")] if p.is_dir()]
+    if not candidates:
+        return configured
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
-    def __init__(self, checkpoints_dir: Path, samples_dir: Path, get_step):
+
+class ArtifactWatcher(threading.Thread):
+    """Poll mflux's output dir: new checkpoint zips → CHECKPOINT lines; new
+    preview PNGs → copied into the run's samples/ (where the server's
+    sample route serves from) + SAMPLE lines. The output dir is re-resolved
+    each scan — it may materialize (possibly timestamp-suffixed) only after
+    mflux finishes loading the model."""
+
+    def __init__(self, configured_output: Path, samples_dir: Path, get_step):
         super().__init__(daemon=True)
-        self.checkpoints_dir = checkpoints_dir
+        self.configured_output = configured_output
         self.samples_dir = samples_dir
         self.get_step = get_step
         self.seen = set()
         self.stop_event = threading.Event()
 
     def scan(self):
-        if not self.checkpoints_dir.exists():
-            return
-        for f in sorted(self.checkpoints_dir.rglob("*")):
-            if not f.is_file() or f in self.seen:
+        output = resolve_mflux_output(self.configured_output)
+        checkpoints_dir = output / "checkpoints"
+        preview_dir = output / "preview"
+        for f in sorted(checkpoints_dir.glob("*.zip")) if checkpoints_dir.exists() else []:
+            if f in self.seen:
                 continue
             self.seen.add(f)
-            step = self.get_step()
-            if f.suffix in (".zip", ".safetensors") and "checkpoint" in f.name.lower() or f.suffix == ".zip":
-                log(f"CHECKPOINT:{f}:{step}")
-            elif f.suffix == ".png":
-                dest = self.samples_dir / f"step-{step:06d}-{f.name}"
-                try:
-                    shutil.copyfile(f, dest)
-                    log(f"SAMPLE:{dest}:{step}")
-                except OSError as err:
-                    log(f"STATUS:sample copy failed: {err}")
+            log(f"CHECKPOINT:{f}:{self.get_step()}")
+        for f in sorted(preview_dir.glob("*.png")) if preview_dir.exists() else []:
+            if f in self.seen:
+                continue
+            self.seen.add(f)
+            dest = self.samples_dir / f.name
+            try:
+                shutil.copyfile(f, dest)
+                log(f"SAMPLE:{dest}:{self.get_step()}")
+            except OSError as err:
+                log(f"STATUS:sample copy failed: {err}")
 
     def run(self):
         while not self.stop_event.wait(5.0):
             self.scan()
-        self.scan()  # final sweep
+        self.scan()  # final sweep after the child exits
 
 
 def find_adapter(checkpoints_dir: Path, output_dir: Path) -> Path | None:
-    """Newest adapter .safetensors — direct file first, else extract from
-    the newest checkpoint zip."""
-    direct = sorted(checkpoints_dir.rglob("*.safetensors"), key=lambda f: f.stat().st_mtime)
-    if direct:
-        return direct[-1]
-    zips = sorted(checkpoints_dir.rglob("*.zip"), key=lambda f: f.stat().st_mtime)
+    """Extract the lora adapter (`*_adapter.safetensors`, NOT the optimizer
+    state) from the newest checkpoint zip."""
+    zips = sorted(checkpoints_dir.glob("*.zip"), key=lambda f: f.stat().st_mtime)
     for z in reversed(zips):
         with zipfile.ZipFile(z) as zf:
-            members = [m for m in zf.namelist() if m.endswith(".safetensors")]
+            members = [m for m in zf.namelist()
+                       if m.endswith("_adapter.safetensors") and "optimizer" not in m]
             if not members:
                 continue
             extract_dir = output_dir / "adapter"
             extract_dir.mkdir(parents=True, exist_ok=True)
-            zf.extract(members[0], extract_dir)
-            return extract_dir / members[0]
+            zf.extract(members[-1], extract_dir)
+            return extract_dir / members[-1]
     return None
+
+
+def stream_lines(pipe):
+    """Yield logical lines split on BOTH \\n and \\r — tqdm redraws its bar
+    with carriage returns, so newline-only iteration would buffer the whole
+    bar until completion."""
+    buf = ""
+    while True:
+        chunk = pipe.read(256)
+        if not chunk:
+            if buf:
+                yield buf
+            return
+        buf += chunk
+        while True:
+            cut = min((i for i in (buf.find("\n"), buf.find("\r")) if i >= 0), default=-1)
+            if cut < 0:
+                break
+            yield buf[:cut]
+            buf = buf[cut + 1:]
 
 
 def main():
@@ -160,65 +199,51 @@ def main():
     output_dir = Path(args.output_dir)
     samples_dir = output_dir / "samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
-    config = json.loads(Path(args.train_config).read_text())
-    checkpoints_dir = Path(config.get("save", {}).get("output_path") or (output_dir / "checkpoints"))
-    checkpoints_dir.mkdir(parents=True, exist_ok=True)
+    config = json.loads(Path(args.config).read_text())
+    configured_output = Path(config["checkpoint"]["output_path"])
 
-    total_steps = max(1, args.total_steps)
-    state = {"step": 0, "loss": None}
+    state = {"step": 0, "total": max(1, args.total_steps), "loss": None}
+    last_reported = {"step": -1}
 
-    watcher = ArtifactWatcher(checkpoints_dir, samples_dir, lambda: state["step"])
+    watcher = ArtifactWatcher(configured_output, samples_dir, lambda: state["step"])
     watcher.start()
 
-    cmd = build_command(args.train_config, args.resume_checkpoint)
+    cmd = build_command(args.config, args.resume_checkpoint)
     log("STAGE:load-model")
-    log(f"STATUS:launching {' '.join(Path(cmd[0]).name if i == 0 else c for i, c in enumerate(cmd))}")
+    log(f"STATUS:launching {Path(cmd[0]).name}")
     CHILD = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
     if STOP_REQUESTED:  # SIGTERM raced the spawn
         CHILD.terminate()
 
     in_training = False
-    for raw in CHILD.stdout:
-        line = raw.rstrip("\n")
-        if not line.strip() or NOISE_RE.search(line):
+    for raw in stream_lines(CHILD.stdout):
+        line = raw.strip()
+        if not line or NOISE_RE.search(line):
             continue
 
-        matched = False
-        for step_re in STEP_RES:
-            m = step_re.search(line)
-            if m:
-                cur, total = int(m.group(1)), int(m.group(2))
-                # mflux totals can be epoch-relative; trust them when they
-                # look like our budget, else scale into --total-steps space.
-                if total != total_steps and total > 0:
-                    cur = round(cur / total * total_steps)
-                    total = total_steps
-                state["step"] = cur
-                try:
-                    state["loss"] = float(m.group(3))
-                except ValueError:
-                    pass
+        m = STEP_LOSS_RE.search(line) or TQDM_RE.search(line)
+        if m:
+            cur, total = int(m.group(1)), int(m.group(2))
+            if total > 0 and cur >= 0:
+                state["step"], state["total"] = cur, total
+                if m.lastindex and m.lastindex >= 3:
+                    try:
+                        state["loss"] = float(m.group(3))
+                    except ValueError:
+                        pass
                 if not in_training:
                     in_training = True
                     log("STAGE:training")
-                log(f"STEP:{cur}:{total}:{state['loss'] if state['loss'] is not None else 'nan'}")
-                matched = True
-                break
-        if matched:
-            continue
-
-        em = EPOCH_RE.search(line)
-        if em:
-            if not in_training:
-                in_training = True
-                log("STAGE:training")
-            log(f"STATUS:epoch {em.group(1)}/{em.group(2)}")
+                # tqdm redraws constantly at the same step — only emit on change.
+                if cur != last_reported["step"]:
+                    last_reported["step"] = cur
+                    log(f"STEP:{cur}:{total}:{state['loss'] if state['loss'] is not None else 'nan'}")
             continue
 
         # Forward everything else (truncated) — keeps the JS idle watchdog
-        # fed during model load/quantize phases and aids debugging.
+        # fed during model download/load phases and aids debugging.
         log(f"STATUS:{line[:300]}")
 
     code = CHILD.wait()
@@ -226,23 +251,24 @@ def main():
     watcher.join(timeout=10)
 
     if STOP_REQUESTED:
-        log("STATUS:canceled-checkpoint-saved" if state["step"] else "STATUS:canceled")
+        log("STATUS:canceled — last saved checkpoint retained")
         sys.exit(143)
 
     if code != 0:
         print(f"❌ mflux trainer exited with code {code}", file=sys.stderr, flush=True)
         sys.exit(code or 1)
 
+    checkpoints_dir = resolve_mflux_output(configured_output) / "checkpoints"
     adapter = find_adapter(checkpoints_dir, output_dir)
     if not adapter:
         print(
-            "USER_ERROR:TRAINING_FAILED:mflux finished but no adapter .safetensors found under "
+            "USER_ERROR:TRAINING_FAILED:mflux finished but no *_adapter.safetensors found in "
             f"{checkpoints_dir}", file=sys.stderr, flush=True,
         )
         sys.exit(1)
     log("RESULT:" + json.dumps({
         "adapter_path": str(adapter),
-        "steps": state["step"] or total_steps,
+        "steps": state["step"] or args.total_steps,
         "final_loss": state["loss"],
     }))
 

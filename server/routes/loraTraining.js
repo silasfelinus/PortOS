@@ -19,6 +19,7 @@ import { attachSseClient, cancelJob } from '../services/mediaJobQueue/index.js';
 import {
   deleteRun,
   getRunRequired,
+  isMfluxTrainAvailable,
   listRuns,
   runDir,
   runSamplesDir,
@@ -29,15 +30,17 @@ import { deleteLora } from '../services/loras.js';
 
 const router = Router();
 
-// Runtime readiness + defaults — drives the launch panel's enable/disable
-// state and the params form's initial values.
+// Engine readiness + defaults — drives the launch panel's enable/disable
+// state and the params form's initial values. Both engines train FLUX.2
+// Klein LoRAs; mflux (MLX-native) is preferred when its trainer ships
+// with the user's install, the torch venv is the fallback.
 router.get('/status', asyncHandler(async (_req, res) => {
   const settings = await getSettings();
   const mfluxPython = settings?.imageGen?.local?.pythonPath || null;
   const flux2Python = resolveFlux2Python();
   res.json({
     runtimes: {
-      mflux: { ready: !!mfluxPython, pythonPath: mfluxPython },
+      mflux: { ready: isMfluxTrainAvailable(mfluxPython), pythonPath: mfluxPython },
       flux2: { ready: !!flux2Python && await isFlux2VenvHealthy(), venvPython: flux2Python },
     },
     defaults: { ...TRAINING_DEFAULTS, ...(settings?.loraTraining?.defaults || {}) },

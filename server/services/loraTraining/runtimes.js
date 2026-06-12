@@ -1,21 +1,28 @@
 /**
  * LoRA training runtime routing + argument/config builders. Pure — no I/O.
  *
- * Two runtimes ship:
- *   - 'mflux' — FLUX.1-dev MLX training via mflux's own dreambooth CLI,
- *     wrapped by scripts/train_mflux_lora.py (runs in the user's mflux venv,
- *     the same python the image renders use).
- *   - 'flux2' — FLUX.2 Klein diffusers+peft training via the vendored
- *     scripts/train_flux2_lora.py (runs in ~/.portos/venv-flux2).
+ * Both runtimes train FLUX.2 Klein character LoRAs; they are two ENGINES
+ * for the same output (verified against mflux 0.17.5, which removed
+ * FLUX.1 training entirely):
  *
- * FLUX.2 training ALWAYS targets the bf16 base repos — never the SDNQ/int8
- * quantized inference repos (no useful gradients through quant layers). The
- * trained LoRA still loads onto quantized pipelines of the same size
- * variant because the transformer hidden dims match.
+ *   - 'mflux' — MLX-native training via mflux's `mflux-train` CLI,
+ *     wrapped by scripts/train_mflux_lora.py. Preferred on Apple Silicon
+ *     when the user's mflux install ships the trainer. Trains the
+ *     non-distilled `flux2-klein-base-{4b,9b}` models (mflux's documented
+ *     recommendation) and exports adapters with diffusers-style key
+ *     naming (`transformer.transformer_blocks.N...lora_A.weight`), so
+ *     the result loads in PortOS's diffusers-based flux2 renderer.
+ *   - 'flux2' — torch/diffusers+peft training via the vendored
+ *     scripts/train_flux2_lora.py in ~/.portos/venv-flux2. The fallback
+ *     when mflux's trainer is unavailable (non-Darwin installs, older
+ *     mflux). Trains against the bf16 base repos.
+ *
+ * Either way the trained LoRA is gated to its size variant via the
+ * `flux2-4b` / `flux2-9b` compat key (hidden dims differ between sizes).
  */
 
 import { ServerError } from '../../lib/errorHandler.js';
-import { RUNNER_FAMILIES, isFlux2, flux2VariantFromModel } from '../../lib/runners.js';
+import { isFlux2, flux2VariantFromModel } from '../../lib/runners.js';
 
 export const TRAINING_RUNTIMES = Object.freeze({ MFLUX: 'mflux', FLUX2: 'flux2' });
 
@@ -28,107 +35,166 @@ export const TRAINING_DEFAULTS = Object.freeze({
   sampleEvery: 250,
 });
 
-// bf16 training bases per FLUX.2 size variant. Inference may run quantized
-// repos; training resolves to these regardless of which flux2-* model id
-// the user picked.
+// bf16 training bases per FLUX.2 size variant (torch runtime). Inference
+// may run quantized repos; training resolves to these regardless of which
+// flux2-* model id the user picked.
 export const FLUX2_TRAIN_REPOS = Object.freeze({
   '4b': 'black-forest-labs/FLUX.2-klein-4B',
   '9b': 'black-forest-labs/FLUX.2-klein-9B',
 });
 
+// mflux model ids per size variant. mflux's flux2 README recommends the
+// non-distilled base models for training; the resulting adapter applies to
+// the distilled inference models of the same size (identical module names
+// and hidden dims).
+export const MFLUX_TRAIN_MODELS = Object.freeze({
+  '4b': 'flux2-klein-base-4b',
+  '9b': 'flux2-klein-base-9b',
+});
+
+// Noise-schedule shape for mflux base-model training — mirrors the official
+// flux2 README example (steps 40, guidance 1.0, train the high-noise window
+// [25, 40)). These are INFERENCE-schedule steps, distinct from the training
+// duration (num_epochs × images).
+const MFLUX_SCHED = Object.freeze({ steps: 40, guidance: 1.0, timestepLow: 25, timestepHigh: 40 });
+
 /**
- * Resolve which training runtime a base model id routes to. `models` is the
- * getImageModels() registry (injected so this stays pure/testable).
+ * Memory-derived training knobs — mirrors the FFLF pixel-budget pattern
+ * (videoGen/local.js): pure, with total RAM injected by the caller.
+ * Training a bf16 base + in-RAM latent cache OOM-killed a 48 GB machine
+ * during verification, so anything under 96 GB trains QLoRA-style against
+ * an on-the-fly-quantized base, and under 64 GB also spills the encoded
+ * dataset cache to disk (`low_ram`). Quantizing the FROZEN base is the
+ * standard QLoRA recipe — the LoRA weights themselves stay full precision.
  */
-export function resolveTrainingRuntime(baseModelId, models) {
+export function deriveMfluxMemoryConfig(totalMemGb) {
+  const gb = Number.isFinite(totalMemGb) ? totalMemGb : 0; // unknown → most conservative
+  if (gb >= 96) return { quantize: null, low_ram: false };
+  if (gb >= 64) return { quantize: 8, low_ram: false };
+  return { quantize: 4, low_ram: true };
+}
+
+/**
+ * Resolve the runtime + repos for a base model id. `models` is the
+ * getImageModels() registry; `mlxAvailable` says whether the user's mflux
+ * install ships `mflux-train` (probed by the caller — this stays pure).
+ */
+export function resolveTrainingRuntime(baseModelId, models, { mlxAvailable = false } = {}) {
   const entry = (models || []).find((m) => m.id === baseModelId);
   if (!entry) {
     throw new ServerError(`Unknown image model: ${baseModelId}`, {
       status: 400, code: 'TRAINING_UNSUPPORTED_MODEL',
     });
   }
-  if (isFlux2(entry)) {
-    const variant = flux2VariantFromModel(entry);
-    if (!variant || !FLUX2_TRAIN_REPOS[variant]) {
-      throw new ServerError(
-        `Cannot determine FLUX.2 size variant for ${baseModelId} — training needs a klein-4B/9B model`,
-        { status: 400, code: 'TRAINING_UNSUPPORTED_MODEL' },
-      );
-    }
-    return { runtime: TRAINING_RUNTIMES.FLUX2, entry, variant, trainRepo: FLUX2_TRAIN_REPOS[variant] };
+  if (!isFlux2(entry)) {
+    // mflux ≥0.17 removed FLUX.1 training ("Flux1 training is no longer
+    // supported"), so dev/schnell and the diffusers families are all out.
+    throw new ServerError(
+      `LoRA training supports FLUX.2 Klein models only — not ${baseModelId}`,
+      { status: 400, code: 'TRAINING_UNSUPPORTED_MODEL' },
+    );
   }
-  // mflux family (no `runner` field). Only FLUX.1-dev trains — schnell is
-  // guidance-distilled and not a supported mflux fine-tune target.
-  if (!entry.runner && entry.id === 'dev') {
-    return { runtime: TRAINING_RUNTIMES.MFLUX, entry, variant: null, trainRepo: null };
+  const variant = flux2VariantFromModel(entry);
+  if (!variant || !FLUX2_TRAIN_REPOS[variant]) {
+    throw new ServerError(
+      `Cannot determine FLUX.2 size variant for ${baseModelId} — training needs a klein-4B/9B model`,
+      { status: 400, code: 'TRAINING_UNSUPPORTED_MODEL' },
+    );
   }
-  throw new ServerError(
-    `LoRA training supports FLUX.1-dev (mflux) and FLUX.2 Klein (flux2) — not ${baseModelId}`,
-    { status: 400, code: 'TRAINING_UNSUPPORTED_MODEL' },
-  );
+  return {
+    runtime: mlxAvailable ? TRAINING_RUNTIMES.MFLUX : TRAINING_RUNTIMES.FLUX2,
+    entry,
+    variant,
+    trainRepo: FLUX2_TRAIN_REPOS[variant],
+    mfluxModel: MFLUX_TRAIN_MODELS[variant],
+  };
 }
-
-/** Runner family stamped into the trained LoRA's sidecar per runtime. */
-export const runnerFamilyForRuntime = (runtime) =>
-  (runtime === TRAINING_RUNTIMES.FLUX2 ? RUNNER_FAMILIES.FLUX2 : RUNNER_FAMILIES.MFLUX);
 
 const mergedParams = (params = {}) => ({ ...TRAINING_DEFAULTS, ...params });
 
+// The full attention + feed-forward target set from mflux's flux2 training
+// README, parameterized by rank and the variant's block counts. Klein 4B:
+// 5 double + 20 single blocks; 9B: 8 double + 24 single (counts from the
+// model configs; an over-long range would throw at injection, so these are
+// pinned per variant).
+const FLUX2_BLOCK_COUNTS = Object.freeze({
+  '4b': { double: 5, single: 20 },
+  '9b': { double: 8, single: 24 },
+});
+
+export function buildMfluxLoraTargets(variant, rank) {
+  const counts = FLUX2_BLOCK_COUNTS[variant] || FLUX2_BLOCK_COUNTS['4b'];
+  const doubleRange = { start: 0, end: counts.double };
+  const singleRange = { start: 0, end: counts.single };
+  const doublePaths = [
+    'attn.to_q', 'attn.to_k', 'attn.to_v', 'attn.to_out',
+    'attn.add_q_proj', 'attn.add_k_proj', 'attn.add_v_proj', 'attn.to_add_out',
+    'ff.linear_in', 'ff.linear_out', 'ff_context.linear_in', 'ff_context.linear_out',
+  ];
+  const singlePaths = ['attn.to_qkv_mlp_proj', 'attn.to_out'];
+  return [
+    ...doublePaths.map((p) => ({ module_path: `transformer_blocks.{block}.${p}`, blocks: doubleRange, rank })),
+    ...singlePaths.map((p) => ({ module_path: `single_transformer_blocks.{block}.${p}`, blocks: singleRange, rank })),
+  ];
+}
+
 /**
- * Build the mflux dreambooth train-config JSON. The wrapper script hands
- * this to `python -m mflux.dreambooth --train-config <file>`. mflux trains
- * in epochs over the example set; we translate the requested step budget
- * into epochs (steps / images, min 1) so "steps" means the same thing
- * across both runtimes. Shape follows mflux's documented dreambooth config;
- * the wrapper tolerates unknown-key errors by surfacing mflux's own
- * message (USER_ERROR) rather than guessing.
+ * Build the mflux-train config JSON (mflux ≥0.17 schema — verified against
+ * TrainingSpec.from_conf). Captions are NOT in the config: mflux
+ * auto-discovers `NNNN.png` + `NNNN.txt` pairs under `data`, and preview
+ * prompts come from `data/preview*.txt` — the run-staging step lays those
+ * files out. "steps" in OUR params means total training iterations; mflux
+ * counts epochs over the example set, so we translate.
  */
 export function buildMfluxTrainConfig({
   params = {},
-  triggerWord,
-  samplePrompt = null,
-  datasetImagesDir,
-  manifestImages = [],
-  checkpointsDir,
+  variant,
+  mfluxModel,
+  dataDir,
+  imageCount,
+  outputDir,
+  totalMemGb = null,
 }) {
   const p = mergedParams(params);
-  if (!manifestImages.length) {
+  if (!Number.isInteger(imageCount) || imageCount < 1) {
     throw new ServerError('mflux train config needs at least one example image', {
       status: 400, code: 'VALIDATION_ERROR',
     });
   }
   const totalSteps = p.steps;
-  const epochs = Math.max(1, Math.round(totalSteps / manifestImages.length));
+  const epochs = Math.max(1, Math.round(totalSteps / imageCount));
+  // save_frequency must be > 0; 0/absent checkpointEvery → only the final
+  // save (frequency = total).
+  const saveFrequency = p.checkpointEvery > 0 ? p.checkpointEvery : totalSteps;
+  const memory = deriveMfluxMemoryConfig(totalMemGb);
   return {
-    model: 'dev',
+    model: mfluxModel,
+    data: dataDir,
     seed: Number.isInteger(p.seed) ? p.seed : 42,
-    steps: 20,
-    guidance: 3.0,
-    quantize: null,
-    width: p.resolution,
-    height: p.resolution,
-    training_loop: { num_epochs: epochs, batch_size: 1 },
+    steps: MFLUX_SCHED.steps,
+    guidance: MFLUX_SCHED.guidance,
+    quantize: memory.quantize,
+    max_resolution: p.resolution,
+    low_ram: memory.low_ram,
+    training_loop: {
+      num_epochs: epochs,
+      batch_size: 1,
+      timestep_low: MFLUX_SCHED.timestepLow,
+      timestep_high: MFLUX_SCHED.timestepHigh,
+    },
     optimizer: { name: 'AdamW', learning_rate: p.learningRate },
-    save: {
-      output_path: checkpointsDir,
-      checkpoint_frequency: p.checkpointEvery > 0 ? p.checkpointEvery : totalSteps,
-    },
-    instrumentation: {
-      plot_frequency: 0,
-      generate_image_frequency: p.sampleEvery > 0 ? p.sampleEvery : 0,
-      validation_prompt: samplePrompt || `${triggerWord} portrait, neutral background`,
-    },
-    lora_layers: {
-      transformer_blocks: {
-        block_range: { start: 0, end: 19 },
-        layer_types: ['attn.to_q', 'attn.to_k', 'attn.to_v', 'attn.to_out'],
-        lora_rank: p.rank,
+    checkpoint: { save_frequency: saveFrequency, output_path: outputDir },
+    // monitoring omitted entirely when samples are off — mflux treats the
+    // whole block as optional and skips previews/plots without it.
+    ...(p.sampleEvery > 0 ? {
+      monitoring: {
+        preview_width: p.resolution,
+        preview_height: p.resolution,
+        plot_frequency: p.sampleEvery,
+        generate_image_frequency: p.sampleEvery,
       },
-    },
-    examples: {
-      path: datasetImagesDir,
-      images: manifestImages.map((img) => ({ image: img.file, prompt: img.caption })),
-    },
+    } : {}),
+    lora_layers: { targets: buildMfluxLoraTargets(variant, p.rank) },
   };
 }
 
@@ -136,7 +202,7 @@ export function buildMfluxTrainConfig({
 export function buildMfluxTrainArgs({ scriptPath, configPath, runDir, totalSteps, resumeCheckpoint = null }) {
   const args = [
     scriptPath,
-    '--train-config', configPath,
+    '--config', configPath,
     '--output-dir', runDir,
     '--total-steps', String(totalSteps),
   ];
@@ -144,7 +210,7 @@ export function buildMfluxTrainArgs({ scriptPath, configPath, runDir, totalSteps
   return args;
 }
 
-/** Argv for the vendored FLUX.2 trainer. */
+/** Argv for the vendored torch FLUX.2 trainer. */
 export function buildFlux2TrainArgs({
   scriptPath,
   trainRepo,

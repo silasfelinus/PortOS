@@ -4,8 +4,8 @@ import { buildTrainedSidecar, trainedLoraFilename } from './sidecar.js';
 const baseRun = {
   id: '3f9a21c0-aaaa-bbbb-cccc-dddddddddddd',
   runtime: 'mflux',
-  baseModelId: 'dev',
-  fluxVariant: null,
+  baseModelId: 'flux2-klein-4b',
+  fluxVariant: '4b',
   name: null,
   character: { entryId: 'char-1', ingredientId: 'ing-1', universeId: 'uni-1', name: 'Kessa Brightwater' },
   datasetId: 'ds-1',
@@ -32,8 +32,10 @@ describe('buildTrainedSidecar', () => {
     // Fields the existing listLoras mapEntry consumes:
     expect(sidecar.name).toBe('Kessa Brightwater (trained)');
     expect(sidecar.civitai).toBeNull();
-    expect(sidecar.runnerFamily).toBe('mflux');
-    expect(sidecar.fluxVariant).toBeNull();
+    // Both engines train FLUX.2 adapters — family is always flux2, gated
+    // by size variant.
+    expect(sidecar.runnerFamily).toBe('flux2');
+    expect(sidecar.fluxVariant).toBe('4b');
     expect(sidecar.triggerWords).toEqual(['kessa_brightwater']);
     expect(sidecar.recommendedScale).toBe(1.0);
     expect(sidecar.installedAt).toBeTruthy();
@@ -46,12 +48,12 @@ describe('buildTrainedSidecar', () => {
     expect(sidecar.file.sizeKB).toBe(51200);
   });
 
-  it('stamps fluxVariant for flux2 runs so the compat key gates by size', () => {
+  it('stamps the size variant for the torch runtime too', () => {
     const sidecar = buildTrainedSidecar({
-      run: { ...baseRun, runtime: 'flux2', baseModelId: 'flux2-klein-4b', fluxVariant: '4b' },
+      run: { ...baseRun, runtime: 'flux2', baseModelId: 'flux2-klein-9b-bf16', fluxVariant: '9b' },
       filename: 'x.safetensors',
     });
     expect(sidecar.runnerFamily).toBe('flux2');
-    expect(sidecar.fluxVariant).toBe('4b');
+    expect(sidecar.fluxVariant).toBe('9b');
   });
 });
