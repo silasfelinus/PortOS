@@ -1,4 +1,6 @@
 import { useParams, Navigate } from 'react-router-dom';
+import { Settings as SettingsIcon } from 'lucide-react';
+import PageHeader from '../components/PageHeader';
 import { ApiAccessTab } from '../components/settings/ApiAccessTab';
 import { AutofixerTab } from '../components/settings/AutofixerTab';
 import AiAssignmentsTab from '../components/settings/AiAssignmentsTab';
@@ -52,9 +54,7 @@ export default function Settings() {
 
   return (
     <div className="flex flex-col h-full min-w-0 overflow-hidden">
-      <div className="flex items-center gap-3 p-4 border-b border-port-border shrink-0">
-        <h1 className="text-2xl font-bold text-white">Settings</h1>
-      </div>
+      <PageHeader icon={SettingsIcon} title="Settings" />
 
       <SettingsTabsHeader activeTab={activeTab} />
 
