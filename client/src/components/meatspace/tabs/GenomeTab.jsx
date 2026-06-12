@@ -367,8 +367,17 @@ export default function GenomeTab() {
             onDrop={handleDrop}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
-            className="border-2 border-dashed border-port-border rounded-lg p-12 text-center transition-colors hover:border-gray-500 cursor-pointer"
+            className="border-2 border-dashed border-port-border rounded-lg p-12 text-center transition-colors hover:border-gray-500 cursor-pointer focus:outline-none focus:border-port-accent"
             onClick={() => fileInputRef.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                fileInputRef.current?.click();
+              }
+            }}
+            role="button"
+            tabIndex={0}
+            aria-label="Upload your 23andMe raw data file — drag and drop or activate to browse"
           >
             {uploading ? (
               <div className="space-y-3">
