@@ -232,137 +232,118 @@ export default function Jira() {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6 items-start">
-        <div className="space-y-6 min-w-0">
-          {editingInstance ? (
-            <div className="bg-gray-800 rounded-lg p-4 sm:p-6">
-              <h2 className="text-lg sm:text-xl font-bold text-white mb-4">
-                {editingInstance === 'new' ? 'Add' : 'Edit'} JIRA Instance
-              </h2>
+        {editingInstance ? (
+          <div className="bg-gray-800 rounded-lg p-4 sm:p-6 min-w-0">
+            <h2 className="text-lg sm:text-xl font-bold text-white mb-4">
+              {editingInstance === 'new' ? 'Add' : 'Edit'} JIRA Instance
+            </h2>
 
-              {saveError && (
-                <div className="mb-4 p-3 bg-red-900 border border-red-700 rounded">
-                  <p className="text-red-300 font-medium">Error saving JIRA instance</p>
-                  <p className="text-red-400 text-sm mt-1">{saveError}</p>
-                </div>
-              )}
+            {saveError && (
+              <div className="mb-4 p-3 bg-red-900 border border-red-700 rounded">
+                <p className="text-red-300 font-medium">Error saving JIRA instance</p>
+                <p className="text-red-400 text-sm mt-1">{saveError}</p>
+              </div>
+            )}
 
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
-                    Instance ID
-                  </label>
-                  <input
-                    type="text"
-                    name="id"
-                    value={formData.id}
-                    onChange={handleInputChange}
-                    disabled={editingInstance !== 'new'}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white disabled:opacity-50"
-                    placeholder="e.g., company-jira"
-                  />
-                  <p className="text-xs text-gray-400 mt-1">
-                    Unique identifier (cannot be changed after creation)
-                  </p>
-                </div>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Instance ID
+                </label>
+                <input
+                  type="text"
+                  name="id"
+                  value={formData.id}
+                  onChange={handleInputChange}
+                  disabled={editingInstance !== 'new'}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white disabled:opacity-50"
+                  placeholder="e.g., company-jira"
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Unique identifier (cannot be changed after creation)
+                </p>
+              </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
-                    Display Name
-                  </label>
-                  <input
-                    type="text"
-                    name="name"
-                    value={formData.name}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white"
-                    placeholder="e.g., Company JIRA"
-                  />
-                </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Display Name
+                </label>
+                <input
+                  type="text"
+                  name="name"
+                  value={formData.name}
+                  onChange={handleInputChange}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white"
+                  placeholder="e.g., Company JIRA"
+                />
+              </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
-                    Base URL
-                  </label>
-                  <input
-                    type="url"
-                    name="baseUrl"
-                    value={formData.baseUrl}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white"
-                    placeholder="https://jira.example.com"
-                  />
-                </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Base URL
+                </label>
+                <input
+                  type="url"
+                  name="baseUrl"
+                  value={formData.baseUrl}
+                  onChange={handleInputChange}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white"
+                  placeholder="https://jira.example.com"
+                />
+              </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
-                    Email
-                  </label>
-                  <input
-                    type="email"
-                    name="email"
-                    value={formData.email}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white"
-                    placeholder="your.email@example.com"
-                  />
-                </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Email
+                </label>
+                <input
+                  type="email"
+                  name="email"
+                  value={formData.email}
+                  onChange={handleInputChange}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white"
+                  placeholder="your.email@example.com"
+                />
+              </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
-                    API Token (Personal Access Token)
-                  </label>
-                  <input
-                    type="password"
-                    name="apiToken"
-                    value={formData.apiToken}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white"
-                    placeholder="Enter your JIRA Personal Access Token"
-                  />
-                  <p className="text-xs text-gray-400 mt-1">
-                    Generate this from your JIRA profile → Personal Access Tokens
-                  </p>
-                </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  API Token (Personal Access Token)
+                </label>
+                <input
+                  type="password"
+                  name="apiToken"
+                  value={formData.apiToken}
+                  onChange={handleInputChange}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white"
+                  placeholder="Enter your JIRA Personal Access Token"
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Generate this from your JIRA profile → Personal Access Tokens
+                </p>
+              </div>
 
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <button
-                    onClick={handleSave}
-                    disabled={saving || !formData.name || !formData.baseUrl || !formData.email || !formData.apiToken}
-                    className="w-full sm:w-auto px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {saving ? 'Saving...' : 'Save'}
-                  </button>
-                  <button
-                    onClick={handleCancel}
-                    disabled={saving}
-                    className="w-full sm:w-auto px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded disabled:opacity-50"
-                  >
-                    Cancel
-                  </button>
-                </div>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  onClick={handleSave}
+                  disabled={saving || !formData.name || !formData.baseUrl || !formData.email || !formData.apiToken}
+                  className="w-full sm:w-auto px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {saving ? 'Saving...' : 'Save'}
+                </button>
+                <button
+                  onClick={handleCancel}
+                  disabled={saving}
+                  className="w-full sm:w-auto px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded disabled:opacity-50"
+                >
+                  Cancel
+                </button>
               </div>
             </div>
-          ) : null}
-
-          <div className="bg-gray-800 rounded-lg p-4 sm:p-6">
-            <h2 className="text-base sm:text-lg font-bold text-white mb-3 sm:mb-4">Usage</h2>
-            <div className="space-y-2 text-xs sm:text-sm text-gray-300">
-              <p>1. Add one or more JIRA instances above</p>
-              <p>2. Go to Apps and configure JIRA settings for each app</p>
-              <p>
-                3. When the Chief of Staff works on an app with JIRA enabled, it will:
-              </p>
-              <ul className="list-disc list-inside ml-2 sm:ml-4 space-y-1 text-gray-400">
-                <li>Create a JIRA ticket for the work</li>
-                <li>Create a feature branch (e.g., feature/PROJ-1234)</li>
-                <li>Make commits to that branch</li>
-                <li>Create a pull request with ticket link</li>
-              </ul>
-            </div>
           </div>
-        </div>
+        ) : null}
 
-        <div className="space-y-4">
+        <div className="space-y-4 lg:col-start-2 lg:row-start-1">
           {Object.values(instances).length === 0 ? (
             <div className="bg-gray-800 rounded-lg p-8 text-center">
               <p className="text-gray-400">No JIRA instances configured.</p>
@@ -451,6 +432,23 @@ export default function Jira() {
               </div>
             ))
           )}
+        </div>
+
+        <div className="bg-gray-800 rounded-lg p-4 sm:p-6 min-w-0">
+          <h2 className="text-base sm:text-lg font-bold text-white mb-3 sm:mb-4">Usage</h2>
+          <div className="space-y-2 text-xs sm:text-sm text-gray-300">
+            <p>1. Add one or more JIRA instances above</p>
+            <p>2. Go to Apps and configure JIRA settings for each app</p>
+            <p>
+              3. When the Chief of Staff works on an app with JIRA enabled, it will:
+            </p>
+            <ul className="list-disc list-inside ml-2 sm:ml-4 space-y-1 text-gray-400">
+              <li>Create a JIRA ticket for the work</li>
+              <li>Create a feature branch (e.g., feature/PROJ-1234)</li>
+              <li>Make commits to that branch</li>
+              <li>Create a pull request with ticket link</li>
+            </ul>
+          </div>
         </div>
       </div>
     </div>

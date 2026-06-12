@@ -229,148 +229,132 @@ export default function DataDog() {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6 items-start">
-        <div className="space-y-6 min-w-0">
-          {editingInstance ? (
-            <div className="bg-gray-800 rounded-lg p-4 sm:p-6">
-              <h2 className="text-lg sm:text-xl font-bold text-white mb-4">
-                {editingInstance === 'new' ? 'Add' : 'Edit'} DataDog Instance
-              </h2>
+        {editingInstance ? (
+          <div className="bg-gray-800 rounded-lg p-4 sm:p-6 min-w-0">
+            <h2 className="text-lg sm:text-xl font-bold text-white mb-4">
+              {editingInstance === 'new' ? 'Add' : 'Edit'} DataDog Instance
+            </h2>
 
-              {saveError && (
-                <div className="mb-4 p-3 bg-red-900 border border-red-700 rounded">
-                  <p className="text-red-300 font-medium">Error saving DataDog instance</p>
-                  <p className="text-red-400 text-sm mt-1">{saveError}</p>
-                </div>
-              )}
+            {saveError && (
+              <div className="mb-4 p-3 bg-red-900 border border-red-700 rounded">
+                <p className="text-red-300 font-medium">Error saving DataDog instance</p>
+                <p className="text-red-400 text-sm mt-1">{saveError}</p>
+              </div>
+            )}
 
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
-                    Instance ID
-                  </label>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Instance ID
+                </label>
+                <input
+                  type="text"
+                  name="id"
+                  value={formData.id}
+                  onChange={handleInputChange}
+                  disabled={editingInstance !== 'new'}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white disabled:opacity-50"
+                  placeholder="e.g., company-datadog"
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Unique identifier (cannot be changed after creation)
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Display Name
+                </label>
+                <input
+                  type="text"
+                  name="name"
+                  value={formData.name}
+                  onChange={handleInputChange}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white"
+                  placeholder="e.g., Company DataDog"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Site
+                </label>
+                <select
+                  value={customSite ? 'custom' : formData.site}
+                  onChange={handleSiteChange}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white mb-2"
+                >
+                  {SITE_OPTIONS.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+                {customSite && (
                   <input
                     type="text"
-                    name="id"
-                    value={formData.id}
-                    onChange={handleInputChange}
-                    disabled={editingInstance !== 'new'}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white disabled:opacity-50"
-                    placeholder="e.g., company-datadog"
-                  />
-                  <p className="text-xs text-gray-400 mt-1">
-                    Unique identifier (cannot be changed after creation)
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
-                    Display Name
-                  </label>
-                  <input
-                    type="text"
-                    name="name"
-                    value={formData.name}
+                    name="site"
+                    value={formData.site}
                     onChange={handleInputChange}
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white"
-                    placeholder="e.g., Company DataDog"
+                    placeholder="e.g., api.custom-datadog.com"
                   />
-                </div>
+                )}
+              </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
-                    Site
-                  </label>
-                  <select
-                    value={customSite ? 'custom' : formData.site}
-                    onChange={handleSiteChange}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white mb-2"
-                  >
-                    {SITE_OPTIONS.map(opt => (
-                      <option key={opt.value} value={opt.value}>{opt.label}</option>
-                    ))}
-                  </select>
-                  {customSite && (
-                    <input
-                      type="text"
-                      name="site"
-                      value={formData.site}
-                      onChange={handleInputChange}
-                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white"
-                      placeholder="e.g., api.custom-datadog.com"
-                    />
-                  )}
-                </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  API Key
+                </label>
+                <input
+                  type="password"
+                  name="apiKey"
+                  value={formData.apiKey}
+                  onChange={handleInputChange}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white"
+                  placeholder={editingInstance === 'new' ? 'Enter your DataDog API Key' : 'Leave blank to keep existing key'}
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Found in DataDog Organization Settings &rarr; API Keys
+                </p>
+              </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
-                    API Key
-                  </label>
-                  <input
-                    type="password"
-                    name="apiKey"
-                    value={formData.apiKey}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white"
-                    placeholder={editingInstance === 'new' ? 'Enter your DataDog API Key' : 'Leave blank to keep existing key'}
-                  />
-                  <p className="text-xs text-gray-400 mt-1">
-                    Found in DataDog Organization Settings &rarr; API Keys
-                  </p>
-                </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Application Key
+                </label>
+                <input
+                  type="password"
+                  name="appKey"
+                  value={formData.appKey}
+                  onChange={handleInputChange}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white"
+                  placeholder={editingInstance === 'new' ? 'Enter your DataDog Application Key' : 'Leave blank to keep existing key'}
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Found in DataDog Organization Settings &rarr; Application Keys
+                </p>
+              </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
-                    Application Key
-                  </label>
-                  <input
-                    type="password"
-                    name="appKey"
-                    value={formData.appKey}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-white"
-                    placeholder={editingInstance === 'new' ? 'Enter your DataDog Application Key' : 'Leave blank to keep existing key'}
-                  />
-                  <p className="text-xs text-gray-400 mt-1">
-                    Found in DataDog Organization Settings &rarr; Application Keys
-                  </p>
-                </div>
-
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <button
-                    onClick={handleSave}
-                    disabled={saving || !formData.name || !formData.site || (editingInstance === 'new' && (!formData.apiKey || !formData.appKey))}
-                    className="w-full sm:w-auto px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {saving ? 'Saving...' : 'Save'}
-                  </button>
-                  <button
-                    onClick={handleCancel}
-                    disabled={saving}
-                    className="w-full sm:w-auto px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded disabled:opacity-50"
-                  >
-                    Cancel
-                  </button>
-                </div>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  onClick={handleSave}
+                  disabled={saving || !formData.name || !formData.site || (editingInstance === 'new' && (!formData.apiKey || !formData.appKey))}
+                  className="w-full sm:w-auto px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {saving ? 'Saving...' : 'Save'}
+                </button>
+                <button
+                  onClick={handleCancel}
+                  disabled={saving}
+                  className="w-full sm:w-auto px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded disabled:opacity-50"
+                >
+                  Cancel
+                </button>
               </div>
             </div>
-          ) : null}
-
-          <div className="bg-gray-800 rounded-lg p-4 sm:p-6">
-            <h2 className="text-base sm:text-lg font-bold text-white mb-3 sm:mb-4">Usage</h2>
-            <div className="space-y-2 text-xs sm:text-sm text-gray-300">
-              <p>1. Add one or more DataDog instances above</p>
-              <p>2. Go to Apps and enable DataDog monitoring in each app&apos;s settings</p>
-              <p>3. The error monitor job will periodically check for new errors:</p>
-              <ul className="list-disc list-inside ml-2 sm:ml-4 space-y-1 text-gray-400">
-                <li>Query DataDog for recent error events matching the app&apos;s service name</li>
-                <li>Surface new errors in notifications and app insights</li>
-                <li>Track error trends over time</li>
-              </ul>
-            </div>
           </div>
-        </div>
+        ) : null}
 
-        <div className="space-y-4">
+        <div className="space-y-4 lg:col-start-2 lg:row-start-1">
           {Object.values(instances).length === 0 ? (
             <div className="bg-gray-800 rounded-lg p-8 text-center">
               <p className="text-gray-400">No DataDog instances configured.</p>
@@ -437,6 +421,20 @@ export default function DataDog() {
               </div>
             ))
           )}
+        </div>
+
+        <div className="bg-gray-800 rounded-lg p-4 sm:p-6 min-w-0">
+          <h2 className="text-base sm:text-lg font-bold text-white mb-3 sm:mb-4">Usage</h2>
+          <div className="space-y-2 text-xs sm:text-sm text-gray-300">
+            <p>1. Add one or more DataDog instances above</p>
+            <p>2. Go to Apps and enable DataDog monitoring in each app&apos;s settings</p>
+            <p>3. The error monitor job will periodically check for new errors:</p>
+            <ul className="list-disc list-inside ml-2 sm:ml-4 space-y-1 text-gray-400">
+              <li>Query DataDog for recent error events matching the app&apos;s service name</li>
+              <li>Surface new errors in notifications and app insights</li>
+              <li>Track error trends over time</li>
+            </ul>
+          </div>
         </div>
       </div>
     </div>
