@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import * as api from '../services/api';
 import {Brain as BrainIcon} from 'lucide-react';
 import BrailleSpinner from '../components/BrailleSpinner';
+import PageHeader from '../components/PageHeader';
 import TabPills from '../components/ui/TabPills';
 import { useAutoRefetch } from '../hooks/useAutoRefetch';
 import { sameJsonShape } from '../lib/sameJsonShape';
@@ -90,18 +91,12 @@ export default function Brain() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3 py-2 sm:p-4 border-b border-port-border">
-        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-          <BrainIcon className="w-6 h-6 sm:w-8 sm:h-8 text-port-accent shrink-0" />
-          <div className="min-w-0">
-            <h1 className="text-lg sm:text-xl font-bold text-white leading-tight">Brain</h1>
-            <p className="hidden sm:block text-sm text-gray-500">Second brain for capturing and organizing thoughts</p>
-          </div>
-        </div>
-
-        {/* Quick stats — wrap on small screens; only "needs review" stays loud */}
-        {summary && (
+      <PageHeader
+        icon={BrainIcon}
+        title="Brain"
+        subtitle="Second brain for capturing and organizing thoughts"
+        actions={summary && (
+          // Quick stats — wrap on small screens; only "needs review" stays loud
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:text-sm">
             {summary.needsReview > 0 && (
               <span className="px-2 py-0.5 rounded bg-port-warning/20 text-port-warning">
@@ -124,7 +119,7 @@ export default function Brain() {
             )}
           </div>
         )}
-      </div>
+      />
 
       <TabPills
         tabs={TABS}
