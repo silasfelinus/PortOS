@@ -38,6 +38,8 @@
 
 ## Changed
 
+- **[issue-1175] Brain Digest shows Daily and Weekly side-by-side on wide screens** — the Brain → Digest tab no longer stacks the Daily Digest above the Weekly Review in a narrow centered column; on large screens they now sit in two columns so both are visible at once, while still stacking into a single column on smaller screens.
+
 - **[issue-1174] Brain Config settings use the full width on desktop** — the Brain → Config tab no longer crams its four settings cards (AI Provider, Classification, Schedule, Schedule Summary) into a narrow centered column; on wide screens they now flow into two or three columns so everything fits without scrolling, while still stacking into a single column on mobile.
 
 - **[issue-1173] Brain Inbox reads as a full-page dashboard** — the Inbox tab no longer floats in a narrow centered column with wide empty margins on desktop. On wide screens the capture box now spans the full width, captured/filed thoughts fill the main area, and a persistent rail on the right keeps the at-a-glance counts and the "Needs Review" queue in view so the items waiting on you don't fall below the fold. It collapses back to a single column on smaller screens.
