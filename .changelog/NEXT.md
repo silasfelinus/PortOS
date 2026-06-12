@@ -35,6 +35,8 @@
 
 ## Changed
 
+- **[issue-1200] Stabilized a flaky federation test** — the peer-sync unsubscribe race test now asserts the timing-independent invariants instead of one specific interleaving, so CI stops failing intermittently on it. No behavior change.
+
 - **[issue-1198] Stabilized a flaky pipeline test** — the Series AI-provider picker test no longer races the async option list, so CI stops failing intermittently on it. No behavior change.
 
 - **[issue-1172] Added route-level tests for the Digital Twin and Agent Tools APIs** — pins request validation and error/status handling so a regression in those endpoints surfaces in CI. No behavior change.
