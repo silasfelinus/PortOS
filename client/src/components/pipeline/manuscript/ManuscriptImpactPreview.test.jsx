@@ -85,4 +85,20 @@ describe('ManuscriptImpactPreview accept-all', () => {
     renderPreview({ comments: [] });
     expect(screen.queryByText(/Accept all/)).not.toBeInTheDocument();
   });
+
+  it('does not accept edits for sections that were not previewed (count must not lie)', async () => {
+    acceptPipelineManuscriptFix.mockResolvedValue({ comment: {}, sections: [] });
+    // c3 targets a stage with no matching `sections` entry → it is NOT rendered
+    // in the preview. accept-all must skip it (only c1 + c2 are previewed),
+    // otherwise it would apply an unseen edit and the "2 edits" count would lie.
+    const unseen = { id: 'c3', status: 'open', issueNumber: 3, issueId: 'i3', stageId: 'comic', anchorQuote: 'x', fix: { find: 'x', replace: 'y' } };
+    renderPreview({ comments: [...COMMENTS, unseen] });
+
+    // The button still advertises only the 2 previewed edits.
+    fireEvent.click(screen.getByText('Accept all 2 edits'));
+    await waitFor(() => expect(acceptPipelineManuscriptFix).toHaveBeenCalledTimes(2));
+    const acceptedIds = acceptPipelineManuscriptFix.mock.calls.map((c) => c[1]);
+    expect(acceptedIds).toEqual(['c1', 'c2']);
+    expect(acceptedIds).not.toContain('c3');
+  });
 });

@@ -76,10 +76,19 @@ export default function ManuscriptImpactPreview({ open, onClose, seriesId, secti
   // text the previous one produced). Failures are reported and stay open — the
   // preview re-derives from comment status, so applied sections drop out live.
   const acceptAll = async () => {
+    // Only accept edits that landed in a PREVIEWED section. `changed` drops any
+    // edit whose section isn't in the current `sections` (e.g. a fix for a
+    // different manuscript stage) or that produced no visible change — so
+    // building targets from every comment would apply unseen edits and make the
+    // "Accept all N edits" count lie. Restrict to the same section keys the
+    // modal rendered, filtering at the edit level (a comment may span stages).
+    const previewedKeys = new Set(changed.map((c) => `${c.section.issueId}:${c.section.stageId}`));
     const targets = comments
       .map((c) => ({
         comment: c,
-        edits: selectedEditsFor(c, fixDrafts[c.id]).map(({ selected: _s, ...edit }) => edit),
+        edits: selectedEditsFor(c, fixDrafts[c.id])
+          .filter((e) => previewedKeys.has(`${e.issueId || ''}:${e.stageId || ''}`))
+          .map(({ selected: _s, ...edit }) => edit),
       }))
       .filter((t) => t.edits.length);
     if (!targets.length) return;
