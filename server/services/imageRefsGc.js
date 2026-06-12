@@ -39,7 +39,6 @@
 
 import { readdir, stat, unlink } from 'fs/promises';
 import { join, basename } from 'path';
-import { existsSync } from 'fs';
 import { PATHS, tryReadFile, safeJSONParse } from '../lib/fileUtils.js';
 
 // `init-<uuid>` / `ref-<uuid>` with a decodable image extension — the exact
@@ -71,7 +70,7 @@ let initialSweepTimer = null;
  */
 export async function collectReferencedRefBasenames(imagesDir = PATHS.images) {
   const referenced = new Set();
-  if (!existsSync(imagesDir)) return referenced;
+  // A missing/unreadable images dir yields [] (no sidecars → nothing referenced).
   const entries = await readdir(imagesDir).catch(() => []);
   for (const name of entries) {
     if (!name.endsWith('.metadata.json')) continue;
@@ -103,8 +102,7 @@ export async function sweepOrphanRefImages({
   refsDir = PATHS.imageRefs,
   imagesDir = PATHS.images,
 } = {}) {
-  if (!existsSync(refsDir)) return { deleted: 0, keptReferenced: 0, keptYoung: 0 };
-
+  // A missing/unreadable refs dir yields [] → no candidates → all-zero result.
   const entries = await readdir(refsDir, { withFileTypes: true }).catch(() => []);
   const candidates = entries
     .filter((e) => e.isFile() && STAGED_UPLOAD_RE.test(e.name))
