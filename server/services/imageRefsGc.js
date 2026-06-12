@@ -130,8 +130,10 @@ export async function sweepOrphanRefImages({
       keptYoung += 1;
       continue;
     }
-    await unlink(join(refsDir, name)).catch(() => {});
-    deleted += 1;
+    // Count only a genuine removal so the summary log can't over-report. A
+    // concurrent vanish (ENOENT) or any unlink failure leaves `deleted` untouched.
+    const removed = await unlink(join(refsDir, name)).then(() => true).catch(() => false);
+    if (removed) deleted += 1;
   }
 
   return { deleted, keptReferenced, keptYoung };
