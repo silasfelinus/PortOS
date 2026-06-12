@@ -28,7 +28,6 @@ SIGTERM → finish the current step, save a cancel checkpoint, exit 143.
 import argparse
 import gc
 import json
-import math
 import os
 import signal
 import sys
@@ -36,6 +35,7 @@ from pathlib import Path
 
 os.environ.setdefault("PYTORCH_MPS_FAST_MATH", "1")
 
+import numpy as np
 import torch
 from PIL import Image
 
@@ -90,7 +90,7 @@ def load_image_tensor(path: str, resolution: int) -> torch.Tensor:
     w, h = img.size
     left, top = (w - resolution) // 2, (h - resolution) // 2
     img = img.crop((left, top, left + resolution, top + resolution))
-    t = torch.from_numpy(__import__("numpy").asarray(img)).float() / 127.5 - 1.0
+    t = torch.from_numpy(np.asarray(img)).float() / 127.5 - 1.0
     return t.permute(2, 0, 1).unsqueeze(0)  # (1, 3, H, W)
 
 

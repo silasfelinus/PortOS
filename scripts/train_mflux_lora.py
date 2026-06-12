@@ -101,6 +101,18 @@ TQDM_RE = re.compile(r"(\d+)\s*/\s*(\d+)\s*\[")
 STEP_LOSS_RE = re.compile(r"[Ss]teps?[\s:=]+(\d+)\s*/\s*(\d+).*?[Ll]oss[\s:=]+([\d.eE+-]+)")
 NOISE_RE = re.compile(r"FutureWarning|UserWarning|DeprecationWarning", re.I)
 
+# We merge the mflux child's stderr into its stdout (so tqdm + prints stay in
+# order), which means the Node side tags every line `stream='stdout'` and the
+# JS failure classifier's stderr-tail stays empty for mflux runs. To keep
+# OOM / missing-module / gated-repo errors classifiable, sniff them out of the
+# merged stream and re-emit a structured USER_ERROR line (which the Node line
+# parser captures regardless of stream). Codes mirror failure.js.
+FATAL_PATTERNS = [
+    ("OOM", re.compile(r"out of memory|Insufficient Memory|Metal.*out of memory|std::bad_alloc", re.I)),
+    ("MODULE_NOT_FOUND", re.compile(r"ModuleNotFoundError|No module named", re.I)),
+    ("HF_AUTH", re.compile(r"GatedRepoError|401 Client Error|is restricted|Repo.*is gated", re.I)),
+]
+
 
 def resolve_mflux_output(configured: Path) -> Path:
     """mflux appends `_YYYYMMDD_HHMMSS` to checkpoint.output_path when the
@@ -218,10 +230,20 @@ def main():
         CHILD.terminate()
 
     in_training = False
+    fatal_emitted = False
     for raw in stream_lines(CHILD.stdout):
         line = raw.strip()
         if not line or NOISE_RE.search(line):
             continue
+
+        # Surface the first fatal error in a structured form the Node
+        # classifier can read (once — don't spam if it repeats in a traceback).
+        if not fatal_emitted:
+            for code, pat in FATAL_PATTERNS:
+                if pat.search(line):
+                    print(f"USER_ERROR:{code}:{line[:300]}", file=sys.stderr, flush=True)
+                    fatal_emitted = True
+                    break
 
         m = STEP_LOSS_RE.search(line) or TQDM_RE.search(line)
         if m:

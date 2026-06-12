@@ -199,87 +199,106 @@ export async function runTraining({ jobId, runId, pythonPath = null }) {
   const run = await runsDb.getRun(runId);
   if (!run) return fail(`run record missing: ${runId}`);
 
+  // Terminal failure BEFORE the child spawns: flip the run record to failed
+  // AND release the dataset's `training` status, then emit the failed event.
+  // Every pre-spawn exit funnels through here so none can leave the run row
+  // stuck `running` (lingering until the next boot reconcile) or the dataset
+  // stuck on its `training` chip.
+  const failBeforeSpawn = async (message) => {
+    await runsDb.updateRun(runId, {
+      status: 'failed', error: message, completedAt: new Date().toISOString(),
+    }).catch(() => {});
+    await flipDatasetAfterRun(run.datasetId, { trained: false });
+    return fail(message);
+  };
+
   // Re-validate — the dataset may have been edited/deleted while queued.
   let manifest;
   try {
     ({ manifest } = await validateDatasetReady(run.datasetId));
   } catch (err) {
-    await runsDb.updateRun(runId, { status: 'failed', error: err.message }).catch(() => {});
-    return fail(err.message);
+    return failBeforeSpawn(err.message);
   }
 
   const dir = runDir(runId);
   const checkpointsDir = join(dir, 'checkpoints');
   const samplesDir = join(dir, 'samples');
-  await mkdir(checkpointsDir, { recursive: true });
-  await mkdir(samplesDir, { recursive: true });
 
   let bin;
   let args;
-  if (run.runtime === TRAINING_RUNTIMES.FLUX2) {
-    bin = resolveFlux2Python();
-    if (!bin) {
-      await runsDb.updateRun(runId, { status: 'failed', error: 'FLUX.2 venv missing' }).catch(() => {});
-      return fail('FLUX.2 python environment disappeared — re-run scripts/setup-image-video.sh');
+  // Staging I/O (mkdir + copyFile/writeFile/atomicWrite) is wrapped: a throw
+  // here — e.g. a dataset image deleted in the window after validateDatasetReady's
+  // existence check (TOCTOU), or disk-full — would otherwise propagate to the
+  // queue's catch (no crash) but leave the run record `running` forever.
+  try {
+    await mkdir(checkpointsDir, { recursive: true });
+    await mkdir(samplesDir, { recursive: true });
+
+    if (run.runtime === TRAINING_RUNTIMES.FLUX2) {
+      bin = resolveFlux2Python();
+      if (!bin) {
+        return failBeforeSpawn('FLUX.2 python environment disappeared — re-run scripts/setup-image-video.sh');
+      }
+      const manifestPath = join(dir, 'manifest.json');
+      await atomicWrite(manifestPath, {
+        triggerWord: manifest.triggerWord,
+        images: manifest.images.map((img) => ({ path: img.path, caption: img.caption })),
+      });
+      args = buildFlux2TrainArgs({
+        scriptPath: TRAINER_SCRIPTS.flux2,
+        trainRepo: run.trainRepo,
+        manifestPath,
+        runDir: dir,
+        triggerWord: run.triggerWord,
+        params: run.params,
+        samplePrompt: run.params?.samplePrompt || null,
+      });
+    } else {
+      bin = pythonPath;
+      if (!bin || !isMfluxTrainAvailable(bin)) {
+        return failBeforeSpawn('mflux-train not found next to the configured python — update mflux (≥0.17) or set up the FLUX.2 venv');
+      }
+      // Stage the dataset in mflux's auto-discovery layout: NNNN.png +
+      // NNNN.txt caption pairs, plus preview_1.txt for the periodic sample
+      // render. mflux resolves everything from the config's `data` dir.
+      const dataDir = join(dir, 'data');
+      await mkdir(dataDir, { recursive: true });
+      for (let i = 0; i < manifest.images.length; i += 1) {
+        const stem = String(i + 1).padStart(4, '0');
+        await copyFile(manifest.images[i].path, join(dataDir, `${stem}.png`));
+        await writeFile(join(dataDir, `${stem}.txt`), `${manifest.images[i].caption}\n`);
+      }
+      if ((run.params?.sampleEvery ?? TRAINING_DEFAULTS.sampleEvery) > 0) {
+        const samplePrompt = run.params?.samplePrompt || `${run.triggerWord} portrait, neutral background`;
+        await writeFile(join(dataDir, 'preview_1.txt'), `${samplePrompt}\n`);
+      }
+      // output_path must NOT pre-exist — mflux appends a timestamp suffix to
+      // an existing dir (its new_folder behavior), which would break the
+      // wrapper's artifact watcher. mflux creates checkpoints/ + preview/
+      // (+ loss/) inside it.
+      const mfluxOutputDir = join(dir, 'mflux');
+      const config = buildMfluxTrainConfig({
+        params: run.params,
+        variant: run.fluxVariant,
+        mfluxModel: run.mfluxModel,
+        dataDir,
+        imageCount: manifest.images.length,
+        outputDir: mfluxOutputDir,
+        // Memory-derived quantize/low_ram (see deriveMfluxMemoryConfig) —
+        // a bf16 base + in-RAM latent cache OOM-killed a 48 GB machine.
+        totalMemGb: totalmem() / 2 ** 30,
+      });
+      const configPath = join(dir, 'mflux-train.json');
+      await atomicWrite(configPath, config);
+      args = buildMfluxTrainArgs({
+        scriptPath: TRAINER_SCRIPTS.mflux,
+        configPath,
+        runDir: dir,
+        totalSteps: run.params?.steps || TRAINING_DEFAULTS.steps,
+      });
     }
-    const manifestPath = join(dir, 'manifest.json');
-    await atomicWrite(manifestPath, {
-      triggerWord: manifest.triggerWord,
-      images: manifest.images.map((img) => ({ path: img.path, caption: img.caption })),
-    });
-    args = buildFlux2TrainArgs({
-      scriptPath: TRAINER_SCRIPTS.flux2,
-      trainRepo: run.trainRepo,
-      manifestPath,
-      runDir: dir,
-      triggerWord: run.triggerWord,
-      params: run.params,
-      samplePrompt: run.params?.samplePrompt || null,
-    });
-  } else {
-    bin = pythonPath;
-    if (!bin || !isMfluxTrainAvailable(bin)) {
-      await runsDb.updateRun(runId, { status: 'failed', error: 'mflux trainer not available' }).catch(() => {});
-      return fail('mflux-train not found next to the configured python — update mflux (≥0.17) or set up the FLUX.2 venv');
-    }
-    // Stage the dataset in mflux's auto-discovery layout: NNNN.png +
-    // NNNN.txt caption pairs, plus preview_1.txt for the periodic sample
-    // render. mflux resolves everything from the config's `data` dir.
-    const dataDir = join(dir, 'data');
-    await mkdir(dataDir, { recursive: true });
-    for (let i = 0; i < manifest.images.length; i += 1) {
-      const stem = String(i + 1).padStart(4, '0');
-      await copyFile(manifest.images[i].path, join(dataDir, `${stem}.png`));
-      await writeFile(join(dataDir, `${stem}.txt`), `${manifest.images[i].caption}\n`);
-    }
-    if ((run.params?.sampleEvery ?? TRAINING_DEFAULTS.sampleEvery) > 0) {
-      const samplePrompt = run.params?.samplePrompt || `${run.triggerWord} portrait, neutral background`;
-      await writeFile(join(dataDir, 'preview_1.txt'), `${samplePrompt}\n`);
-    }
-    // output_path must NOT pre-exist — mflux appends a timestamp suffix to
-    // an existing dir (its new_folder behavior), which would break the
-    // wrapper's artifact watcher. mflux creates checkpoints/ + preview/
-    // (+ loss/) inside it.
-    const mfluxOutputDir = join(dir, 'mflux');
-    const config = buildMfluxTrainConfig({
-      params: run.params,
-      variant: run.fluxVariant,
-      mfluxModel: run.mfluxModel,
-      dataDir,
-      imageCount: manifest.images.length,
-      outputDir: mfluxOutputDir,
-      // Memory-derived quantize/low_ram (see deriveMfluxMemoryConfig) —
-      // a bf16 base + in-RAM latent cache OOM-killed a 48 GB machine.
-      totalMemGb: totalmem() / 2 ** 30,
-    });
-    const configPath = join(dir, 'mflux-train.json');
-    await atomicWrite(configPath, config);
-    args = buildMfluxTrainArgs({
-      scriptPath: TRAINER_SCRIPTS.mflux,
-      configPath,
-      runDir: dir,
-      totalSteps: run.params?.steps || TRAINING_DEFAULTS.steps,
-    });
+  } catch (err) {
+    return failBeforeSpawn(`staging failed: ${err.message}`);
   }
 
   await runsDb.updateRun(runId, { status: 'running', startedAt: new Date().toISOString() });
@@ -346,21 +365,35 @@ export async function runTraining({ jobId, runId, pythonPath = null }) {
 
   const makeSplitter = (stream) => {
     let buf = '';
-    return (chunk) => {
-      buf += chunk.toString();
-      let idx;
-      while ((idx = buf.indexOf('\n')) >= 0) {
-        // try/catch: this runs inside a child-process data callback — an
-        // uncaught throw here would crash the server process.
-        try { handleLine(buf.slice(0, idx), stream); } catch (err) {
-          console.error(`❌ training [${shortId(jobId)}] line handler failed: ${err?.message}`);
-        }
-        buf = buf.slice(idx + 1);
+    const safeLine = (text) => {
+      // try/catch: this runs inside a child-process data/end callback — an
+      // uncaught throw here would crash the server process.
+      try { handleLine(text, stream); } catch (err) {
+        console.error(`❌ training [${shortId(jobId)}] line handler failed: ${err?.message}`);
       }
     };
+    return {
+      push: (chunk) => {
+        buf += chunk.toString();
+        let idx;
+        while ((idx = buf.indexOf('\n')) >= 0) {
+          safeLine(buf.slice(0, idx));
+          buf = buf.slice(idx + 1);
+        }
+      },
+      // Flush any trailing line that arrived without a final newline. The
+      // trainers hard-exit via os._exit (teardown-hang defense), which can
+      // truncate the pipe before the final `RESULT:{...}\n` newline flushes
+      // — without this drain that line (the run's only success signal) is lost.
+      flush: () => { if (buf) { safeLine(buf); buf = ''; } },
+    };
   };
-  proc.stdout.on('data', makeSplitter('stdout'));
-  proc.stderr.on('data', makeSplitter('stderr'));
+  const stdoutSplitter = makeSplitter('stdout');
+  const stderrSplitter = makeSplitter('stderr');
+  proc.stdout.on('data', stdoutSplitter.push);
+  proc.stdout.on('end', stdoutSplitter.flush);
+  proc.stderr.on('data', stderrSplitter.push);
+  proc.stderr.on('end', stderrSplitter.flush);
 
   proc.on('error', (err) => {
     if (activeProcess === proc) { activeProcess = null; activeJobId = null; }
@@ -383,6 +416,17 @@ async function finalizeTraining({ jobId, runId, code, signal, state }) {
   const run = await runsDb.getRun(runId);
   const job = getJob(jobId);
   const canceled = !!job?.cancelRequested;
+
+  // Run record vanished mid-training (direct DB edit / race — the DELETE
+  // route blocks active runs, so this is defensive). Don't register a LoRA
+  // with no run to anchor its sidecar lineage — that would leave an orphan
+  // .safetensors in data/loras/. Just settle the job terminally.
+  if (!run) {
+    const msg = canceled ? 'Canceled' : `Run record vanished during finalize (exit ${code})`;
+    console.error(`❌ training [${shortId(jobId)}] ${msg}`);
+    trainingEvents.emit('failed', { generationId: jobId, error: msg });
+    return;
+  }
 
   if (code === 0 && state.result?.adapter_path) {
     const filename = trainedLoraFilename({
@@ -419,8 +463,25 @@ async function finalizeTraining({ jobId, runId, code, signal, state }) {
     // record keeps the checkpoint lineage for a future resume.
     await runsDb.updateRun(runId, { status: 'canceled', completedAt: new Date().toISOString(), error: 'Canceled' })
       .catch(() => {});
-    await flipDatasetAfterRun(run?.datasetId, { trained: false });
+    await flipDatasetAfterRun(run.datasetId, { trained: false });
     trainingEvents.emit('failed', { generationId: jobId, error: 'Canceled' });
+    return;
+  }
+
+  if (code === 0) {
+    // Exited cleanly but emitted no parseable RESULT: line (success with a
+    // result was handled above) — the trainer finished without producing an
+    // adapter. Report the trainer's own USER_ERROR if it surfaced one,
+    // otherwise a clear message instead of the confusing "exited with code 0".
+    const message = state.userError?.message
+      || 'Trainer exited cleanly but produced no adapter — check the dataset and run logs';
+    await runsDb.updateRun(runId, {
+      status: 'failed', completedAt: new Date().toISOString(),
+      error: message, errorCode: state.userError?.kind || 'NO_RESULT',
+    }).catch(() => {});
+    await flipDatasetAfterRun(run.datasetId, { trained: false });
+    console.error(`❌ training [${shortId(jobId)}] no-result: ${message}`);
+    trainingEvents.emit('failed', { generationId: jobId, error: message });
     return;
   }
 

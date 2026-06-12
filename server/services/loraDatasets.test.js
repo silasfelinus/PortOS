@@ -104,6 +104,29 @@ describe('patchDataset / listDatasets', () => {
       .rejects.toMatchObject({ status: 400 });
   });
 
+  it('re-prefixes existing captions when the trigger word changes', async () => {
+    const { dataset } = await createDataset({ universeId: 'uni-1', entryId: 'char-1' });
+    const tmpA = join(TEST_DATA_ROOT, 'a.png');
+    const tmpB = join(TEST_DATA_ROOT, 'b.png');
+    await makePng(tmpA); await makePng(tmpB);
+    const a = await addUploadedImage(dataset.id, { tmpPath: tmpA });
+    const b = await addUploadedImage(dataset.id, { tmpPath: tmpB });
+    await updateImageCaption(dataset.id, a.id, 'kessa_brightwater, front view');
+    // b stays uncaptioned — must not be fabricated.
+
+    const next = await patchDataset(dataset.id, { triggerWord: 'kessa_v2' });
+    const captioned = next.images.find((i) => i.id === a.id);
+    const uncaptioned = next.images.find((i) => i.id === b.id);
+    // Old prefix swapped for the new token, body preserved — so the image
+    // still counts toward computeDatasetReadiness.captioned under the new word.
+    expect(captioned.caption).toBe('kessa_v2, front view');
+    expect(uncaptioned.caption).toBe('');
+    // readiness is attached by getDataset (the route layer); the re-prefixed
+    // caption must still count under the new trigger word.
+    const reread = await getDataset(dataset.id);
+    expect(reread.readiness.captioned).toBe(1);
+  });
+
   it('filters list by character ids', async () => {
     await createDataset({ universeId: 'uni-1', entryId: 'char-1' });
     await createDataset({ universeId: 'uni-1', entryId: 'char-2' });

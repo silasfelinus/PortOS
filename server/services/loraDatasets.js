@@ -23,6 +23,7 @@ import {
   computeDatasetReadiness,
   deriveTriggerWord,
   isValidTriggerWord,
+  prefixCaption,
   sanitizeLoraDataset,
 } from '../lib/loraDataset.js';
 import { ServerError } from '../lib/errorHandler.js';
@@ -164,7 +165,16 @@ export async function patchDataset(id, { triggerWord } = {}) {
   }
   return updateDataset(id, (current) => {
     if (triggerWord === undefined || triggerWord === current.triggerWord) return null;
-    return { ...current, triggerWord };
+    // Re-prefix every captioned image so the binding token follows the
+    // rename. Without this, computeDatasetReadiness (which gates `captioned`
+    // on the caption containing the trigger word) silently drops every
+    // previously-captioned image and any training binds the stale token.
+    // Empty captions are left untouched — don't fabricate a caption.
+    const prev = current.triggerWord;
+    const images = current.images.map((img) => (img.caption
+      ? { ...img, caption: prefixCaption(triggerWord, img.caption, { previousTriggerWord: prev }) }
+      : img));
+    return { ...current, triggerWord, images };
   });
 }
 
@@ -180,7 +190,11 @@ export async function deleteDataset(id) {
 /**
  * Normalize an uploaded image to PNG inside the dataset's images dir and
  * append its entry. `tmpPath` is the multipart parser's staged temp file —
- * always unlinked, success or failure.
+ * always unlinked, success or failure. The route's mimetype `fileFilter` is
+ * only an early reject of obvious non-images (the declared MIME is
+ * client-controlled) — `sharp` below is the real gate: it transcodes any
+ * format it can decode and 422s anything it can't, so a wrong-extension
+ * upload is normalized rather than trusted by its claimed type.
  */
 export async function addUploadedImage(id, { tmpPath, originalname = '' }) {
   await requireDataset(id);
@@ -294,7 +308,8 @@ export async function reconcileRenderingImages(id, { jobLookup = getJob } = {}) 
       return res ? { ...img, status: res.status } : img;
     }),
   }));
-  const healed = [...resolutions.values()];
-  console.log(`🩹 Dataset ${id} reconciled ${healed.length} rendering image(s) (${healed.filter((r) => r.status === 'ready').length} ready)`);
+  const resolved = [...resolutions.values()];
+  const readyCount = resolved.filter((r) => r.status === 'ready').length;
+  console.log(`🩹 Dataset ${id} reconciled ${resolved.length} rendering image(s) → ${readyCount} ready, ${resolved.length - readyCount} failed`);
   return updated;
 }

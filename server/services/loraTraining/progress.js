@@ -43,7 +43,11 @@ export function makeTrainingLineHandler({
     if (!line) return;
     if (PYTHON_NOISE_RE.test(line)) return;
 
-    if (stream === 'stderr') {
+    // Keep a rolling stderr tail for failure classification — but skip the
+    // python heartbeat keep-alives (STAGE:<stage>:heartbeat:Ns), or a stalled
+    // run would fill the tail with heartbeats and classifyTrainingFailure's
+    // "last few lines" would show those instead of the real error.
+    if (stream === 'stderr' && !/:heartbeat:\d+s\b/.test(line)) {
       state.stderrTail.push(line);
       if (state.stderrTail.length > STDERR_TAIL_LINES) state.stderrTail.shift();
     }

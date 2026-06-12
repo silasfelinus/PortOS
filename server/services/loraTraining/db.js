@@ -3,15 +3,35 @@
  *
  * One row per run: id/status/character_id mirrored as columns for
  * filtering, the full record in `data` JSONB (returned verbatim — columns
- * are never read back). Single writer (the training service) per run, so
- * plain read-modify-write suffices; no row locking needed. Mirrors the
- * `creative_director_projects` adapter pattern.
+ * are never read back). Mirrors the `creative_director_projects` adapter
+ * pattern.
+ *
+ * Within a single run, `updateRun` has overlapping callers — the debounced
+ * progress-mirror flush (checkpoint/sample array appends) races the
+ * status/startedAt/completedAt writes. A bare read-modify-write would let a
+ * stale read clobber a concurrent append, so `updateRun` chains every
+ * mutation for the same id onto a per-id tail promise (the same discipline
+ * as `issueWriteTail` in pipeline/issues.js). Writes to DIFFERENT runs stay
+ * parallel; the map entry is pruned once its chain settles.
  */
 
 import { query } from '../../lib/db.js';
 import { ServerError } from '../../lib/errorHandler.js';
 
 const rowToRun = (row) => row?.data ?? null;
+
+// id → tail Promise. Serializes read-modify-write cycles for one run.
+const writeTails = new Map();
+function queueRunWrite(id, fn) {
+  const prev = writeTails.get(id) || Promise.resolve();
+  const next = prev.then(fn, fn);
+  const silenced = next.catch(() => {});
+  writeTails.set(id, silenced);
+  silenced.finally(() => {
+    if (writeTails.get(id) === silenced) writeTails.delete(id);
+  });
+  return next;
+}
 
 async function persist(run) {
   await query(
@@ -51,13 +71,20 @@ export async function getRunRequired(id) {
   return run;
 }
 
-/** Read-modify-write. `patch` is an object merged shallowly, or a function. */
+/**
+ * Read-modify-write, serialized per run id so a concurrent append (e.g. the
+ * debounced checkpoint-array flush) can't be clobbered by a stale read from
+ * a parallel status write. `patch` is an object merged shallowly, or a
+ * function `(current) => next` (return falsy to abort without writing).
+ */
 export async function updateRun(id, patch) {
-  const current = await getRunRequired(id);
-  const next = typeof patch === 'function' ? patch(current) : { ...current, ...patch };
-  if (!next) return current;
-  next.updatedAt = new Date().toISOString();
-  return persist(next);
+  return queueRunWrite(id, async () => {
+    const current = await getRunRequired(id);
+    const next = typeof patch === 'function' ? patch(current) : { ...current, ...patch };
+    if (!next) return current;
+    next.updatedAt = new Date().toISOString();
+    return persist(next);
+  });
 }
 
 export async function listRuns({ status = null, characterId = null, datasetId = null, limit = 50 } = {}) {

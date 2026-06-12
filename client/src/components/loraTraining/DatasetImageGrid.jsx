@@ -109,6 +109,10 @@ export default function DatasetImageGrid({ dataset, onImagesChange, onCaptionRun
                 placeholder={img.status === 'ready' ? 'Caption (must include the trigger word)…' : ''}
                 disabled={img.status !== 'ready'}
                 rows={3}
+                // Per-grid-cell field — a visible label would be noise, so the
+                // accessible name comes from aria-label (the source + view give
+                // a screen-reader user enough to tell cells apart).
+                aria-label={`Caption for ${img.source}${img.variation?.view ? ` ${img.variation.view}` : ''} image`}
                 className="w-full bg-port-bg border border-port-border rounded p-2 text-xs text-gray-200 resize-y disabled:opacity-50"
               />
               <div className="flex items-center justify-between text-xs">
