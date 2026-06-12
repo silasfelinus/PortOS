@@ -342,6 +342,47 @@ describe('loops.js', () => {
   });
 
   // ===========================================================================
+  // successful-completion persistence (regression: onComplete called a bare
+  // `writeFile` that was no longer imported — a ReferenceError thrown inside
+  // the success branch was swallowed by the wrapper but skipped the
+  // updatePersistedLoop call after it, so lastRun/iterationCount never landed)
+  // ===========================================================================
+  describe('successful iteration persistence', () => {
+    it('completes the success branch without throwing and writes the iteration output', async () => {
+      const loop = await createLoop({
+        prompt: 'success test',
+        interval: '30s',
+        runImmediately: false,
+      });
+      const savedBefore = atomicWrite.mock.calls[0][1];
+      readFile.mockResolvedValue(JSON.stringify(savedBefore));
+
+      const completes = [];
+      loopEvents.on('iteration:complete', (data) => completes.push(data));
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      atomicWrite.mockClear();
+
+      await triggerLoop(loop.id);
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+
+      // The success branch must NOT log its swallowed-throw message — that only
+      // fires if onComplete threw (the bare-writeFile ReferenceError regression).
+      expect(consoleSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('onComplete (success branch) threw')
+      );
+      expect(completes.length).toBeGreaterThan(0);
+      // onComplete reached its output write (line that previously crashed).
+      const wroteOutput = atomicWrite.mock.calls.some(
+        ([p]) => typeof p === 'string' && p.includes(`${loop.id}-`) && p.endsWith('.txt')
+      );
+      expect(wroteOutput).toBe(true);
+
+      loopEvents.removeAllListeners('iteration:complete');
+      consoleSpy.mockRestore();
+    });
+  });
+
+  // ===========================================================================
   // provider-fallback branch (#1155 regression)
   // ===========================================================================
   describe('provider fallback rebind', () => {

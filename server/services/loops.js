@@ -137,7 +137,10 @@ async function executeIteration(loop) {
     loopEvents.emit('iteration:complete', { id, ...iterResult });
 
     const outputPath = join(LOOPS_OUTPUT_DIR, `${id}-${iterationNum}.txt`);
-    await writeFile(outputPath, result).catch(() => {});
+    // atomicWrite (not a bare writeFile, which is no longer imported) — a bare
+    // writeFile here throws ReferenceError synchronously, before .catch() can
+    // attach, skipping updatePersistedLoop so lastRun/iterationCount never persist.
+    await atomicWrite(outputPath, result).catch(() => {});
 
     await updatePersistedLoop(id, {
       lastRun: Date.now(),

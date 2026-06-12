@@ -22,6 +22,17 @@ import { loadState, saveState, withState } from './runnerState.js';
 import { getProcessStats, checkProcessRunning } from './processStats.js';
 import { ALLOWED_COMMANDS, isAllowedCommand } from './allowedCommands.js';
 
+// Path + listen constants. These lived adjacent to the command allowlist before
+// it was extracted to ./allowedCommands.js; they must stay here — they're
+// referenced throughout (RUNS_DIR/AGENTS_DIR/ROOT_DIR for spawn cwd + dirs, and
+// server.listen(PORT, HOST)) and dropping them crashes the runner on boot.
+const ROOT_DIR = PATHS.root;
+const AGENTS_DIR = PATHS.cosAgents;
+const RUNS_DIR = PATHS.runs;
+
+const PORT = process.env.PORT || 5558;
+const HOST = process.env.HOST || '127.0.0.1';
+
 // Active agent processes (in memory)
 const activeAgents = new Map();
 
