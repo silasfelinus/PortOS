@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildVariationMatrix,
+  captionHasTriggerWord,
   computeDatasetReadiness,
   deriveTriggerWord,
   isValidTriggerWord,
@@ -195,5 +196,31 @@ describe('computeDatasetReadiness', () => {
       images: [img({ caption: 'KESSA, shouting' })],
     });
     expect(out.captioned).toBe(1);
+  });
+
+  it('counts the trigger as a whole token, not a substring', () => {
+    // A short trigger (`ai`) must NOT count captions where it only appears
+    // inside other words (`captain`, `train`) — those don't bind the token.
+    const out = computeDatasetReadiness({
+      triggerWord: 'ai',
+      images: [
+        img({ id: 'a', caption: 'a captain on a train' }), // substring only → not counted
+        img({ id: 'b', caption: 'ai, a portrait' }), // real token → counted
+      ],
+    });
+    expect(out.captioned).toBe(1);
+  });
+});
+
+describe('captionHasTriggerWord', () => {
+  it('matches whole tokens, edges, and underscores; rejects substrings', () => {
+    expect(captionHasTriggerWord('ai, portrait', 'ai')).toBe(true);
+    expect(captionHasTriggerWord('a captain', 'ai')).toBe(false);
+    expect(captionHasTriggerWord('the train station', 'ai')).toBe(false);
+    expect(captionHasTriggerWord('kessa_v2 stands tall', 'kessa_v2')).toBe(true);
+    expect(captionHasTriggerWord('ends with token: ai', 'ai')).toBe(true);
+    expect(captionHasTriggerWord('', 'ai')).toBe(false);
+    // No trigger configured → any non-empty caption counts.
+    expect(captionHasTriggerWord('anything', '')).toBe(true);
   });
 });

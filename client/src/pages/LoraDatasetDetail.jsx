@@ -28,6 +28,35 @@ import {
 } from '../services/api';
 
 const TRIGGER_RE = /^[a-z0-9_]{2,64}$/;
+// Mirror of server/lib/loraDataset.js MIN_TRAINING_IMAGES + the token-boundary
+// caption match. Kept page-local (UX-advisory only — the server re-validates
+// authoritatively via validateDatasetReady at train time) so the readiness
+// summary + Train gate update the instant a caption is edited or an image
+// deleted, instead of waiting on a server round-trip. Port logic changes here
+// when the server helper changes.
+const MIN_TRAINING_IMAGES = 10;
+const captionHasTriggerWord = (caption, triggerWord) => {
+  const word = (triggerWord || '').trim();
+  const text = (caption || '').trim();
+  if (!text) return false;
+  if (!word) return true;
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[^a-z0-9_])${escaped}(?:[^a-z0-9_]|$)`, 'i').test(text);
+};
+const deriveReadiness = (images, triggerWord) => {
+  const list = Array.isArray(images) ? images : [];
+  const word = (triggerWord || '').trim();
+  const ready = list.filter((img) => img.status === 'ready');
+  const captioned = ready.filter((img) => captionHasTriggerWord(img.caption, word));
+  return {
+    total: list.length,
+    ready: ready.length,
+    captioned: captioned.length,
+    rendering: list.filter((img) => img.status === 'rendering').length,
+    required: MIN_TRAINING_IMAGES,
+    trainable: !!word && captioned.length >= MIN_TRAINING_IMAGES,
+  };
+};
 
 function SliceDialog({ dataset, onClose, onSliced }) {
   const [cols, setCols] = useState(3);
@@ -124,8 +153,16 @@ export default function LoraDatasetDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataset?.character?.universeId, dataset?.character?.entryId]);
 
+  // Readiness is derived from the live local images (not the server's snapshot
+  // on `dataset.readiness`) so manual caption edits / deletes reflect in the
+  // counts + Train gate immediately, without a refetch per keystroke.
+  const readiness = useMemo(
+    () => deriveReadiness(dataset?.images, dataset?.triggerWord),
+    [dataset?.images, dataset?.triggerWord],
+  );
+
   // Poll while any image renders — the server heals stuck images on read.
-  const renderingCount = dataset?.readiness?.rendering || 0;
+  const renderingCount = readiness.rendering;
   useEffect(() => {
     if (!renderingCount) return undefined;
     const timer = setInterval(refresh, 5000);
@@ -208,8 +245,6 @@ export default function LoraDatasetDetail() {
   if (!dataset) {
     return <div className="text-gray-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Loading dataset…</div>;
   }
-
-  const readiness = dataset.readiness || {};
 
   return (
     <div className="space-y-4">

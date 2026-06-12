@@ -6,7 +6,7 @@
 
 import { access } from 'fs/promises';
 import { ServerError } from '../../lib/errorHandler.js';
-import { computeDatasetReadiness } from '../../lib/loraDataset.js';
+import { captionHasTriggerWord, computeDatasetReadiness } from '../../lib/loraDataset.js';
 import { getDataset, datasetImagePath, datasetImagesDir } from '../loraDatasets.js';
 
 /**
@@ -24,11 +24,11 @@ export async function validateDatasetReady(datasetId) {
       { status: 409, code: 'DATASET_NOT_READY' },
     );
   }
-  const trainImages = dataset.images.filter((img) => {
-    if (img.status !== 'ready') return false;
-    const caption = (img.caption || '').trim();
-    return caption && caption.toLowerCase().includes(dataset.triggerWord.toLowerCase());
-  });
+  // Same token-boundary predicate as the readiness gate — share the helper so
+  // the manifest can never include a caption the gate counted differently.
+  const trainImages = dataset.images.filter(
+    (img) => img.status === 'ready' && captionHasTriggerWord(img.caption, dataset.triggerWord),
+  );
   // Every file must actually exist on disk — a missing file at trainer
   // start would fail minutes later with an opaque python traceback.
   for (const img of trainImages) {

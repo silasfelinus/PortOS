@@ -207,18 +207,33 @@ export function buildVariationMatrix({
 }
 
 /**
+ * True when `caption` contains `triggerWord` as a whole token (bounded by a
+ * non-[a-z0-9_] char or a string edge), not merely as a substring. A bare
+ * `.includes()` would count a short trigger like `ai`/`jo` inside unrelated
+ * words (`captain`, `train`), so readiness + the training manifest could
+ * accept captions that don't actually carry the LoRA binding token. The
+ * single source of truth for "does this caption bind the trigger" — used by
+ * both computeDatasetReadiness and the server-side validateDatasetReady so
+ * the gate and the manifest can't drift.
+ */
+export function captionHasTriggerWord(caption, triggerWord) {
+  const word = trim(triggerWord);
+  const text = trim(caption);
+  if (!text) return false;
+  if (!word) return true; // no trigger configured yet — any caption counts
+  return new RegExp(`(?:^|[^a-z0-9_])${escapeRe(word)}(?:[^a-z0-9_]|$)`, 'i').test(text);
+}
+
+/**
  * Compute dataset readiness for training. Pure — callers pass the sanitized
  * record. `trainable` requires a trigger word plus MIN_TRAINING_IMAGES
- * images that are status 'ready' AND carry a caption containing it.
+ * images that are status 'ready' AND carry a caption with the trigger token.
  */
 export function computeDatasetReadiness(dataset) {
   const images = Array.isArray(dataset?.images) ? dataset.images : [];
   const triggerWord = trim(dataset?.triggerWord);
   const readyImages = images.filter((img) => img.status === 'ready');
-  const captioned = readyImages.filter((img) => {
-    const caption = trim(img.caption);
-    return caption && (!triggerWord || caption.toLowerCase().includes(triggerWord.toLowerCase()));
-  });
+  const captioned = readyImages.filter((img) => captionHasTriggerWord(img.caption, triggerWord));
   return {
     total: images.length,
     ready: readyImages.length,
