@@ -10,7 +10,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
-  ArrowLeft, Loader2, Upload, Wand2, Scissors, Tags, AlertTriangle, Images,
+  ArrowLeft, Loader2, Upload, Wand2, Scissors, Tags, RefreshCw, AlertTriangle, Images,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import Modal from '../components/ui/Modal';
@@ -259,15 +259,20 @@ export default function LoraDatasetDetail() {
     ...(captionModel.model ? { model: captionModel.model } : {}),
   });
 
-  const captionAll = async () => {
+  // Caption only images that have no caption yet (overwrite: false). Re-caption
+  // all overwrites every ready image's caption with the picked model — the way
+  // to re-run the whole dataset through a newer/better VLM.
+  const startCaption = async (overwrite) => {
     setCaptionStarting(true);
     try {
-      const run = await startLoraCaptionRun(datasetId, captionOptions({ overwrite: false }));
+      const run = await startLoraCaptionRun(datasetId, captionOptions({ overwrite }));
       setCaptionRun(run);
     } finally {
       setCaptionStarting(false);
     }
   };
+  const captionAll = () => startCaption(false);
+  const recaptionAll = () => startCaption(true);
 
   const expressionOptions = useMemo(
     () => (character?.expressions || []).map((e) => e?.name).filter(Boolean),
@@ -373,13 +378,22 @@ export default function LoraDatasetDetail() {
         <button
           type="button"
           onClick={captionAll}
-          disabled={captionStarting || !!captionRun}
+          disabled={captionStarting || !!captionRun || !readiness.ready}
           className="px-3 py-2 text-sm rounded bg-port-card border border-port-border text-gray-300 hover:text-white flex items-center gap-2 disabled:opacity-50"
         >
           {captionStarting || captionRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <Tags className="w-4 h-4" />}
           {captionRun
             ? `Captioning ${captionSse.latest?.done ?? 0}/${captionSse.latest?.total ?? '…'}`
             : 'Caption all'}
+        </button>
+        <button
+          type="button"
+          onClick={recaptionAll}
+          disabled={captionStarting || !!captionRun || !readiness.ready}
+          title="Re-caption every ready image with the selected model — overwrites all existing captions, including manual edits"
+          className="px-3 py-2 text-sm rounded bg-port-card border border-port-border text-gray-300 hover:text-white flex items-center gap-2 disabled:opacity-50"
+        >
+          <RefreshCw className="w-4 h-4" /> Re-caption all
         </button>
         <CaptionModelPicker onChange={onCaptionModelChange} />
       </div>
