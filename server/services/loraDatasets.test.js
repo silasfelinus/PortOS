@@ -148,6 +148,29 @@ describe('patchDataset / listDatasets', () => {
     expect(next.triggerWord).toBe('moss_v1');
   });
 
+  it('resets trained status when reassigning to a new character', async () => {
+    // The trained LoRA is registered against the OLD character, so a moved
+    // dataset must drop its `trained` status + training metadata rather than
+    // falsely advertise the new character as trained.
+    const { dataset } = await createDataset({ universeId: 'uni-1', entryId: 'char-1' });
+    await updateDataset(dataset.id, (current) => ({
+      ...current, status: 'trained', training: { loraFilename: 'char-1.safetensors', completedAt: 'x' },
+    }));
+    const next = await patchDataset(dataset.id, { universeId: 'uni-1', entryId: 'char-2' });
+    expect(next.status).toBe('draft');
+    expect(next.training).toEqual({});
+  });
+
+  it('keeps trained status on a trigger-only patch (same character)', async () => {
+    const { dataset } = await createDataset({ universeId: 'uni-1', entryId: 'char-1' });
+    await updateDataset(dataset.id, (current) => ({
+      ...current, status: 'trained', training: { loraFilename: 'char-1.safetensors' },
+    }));
+    const next = await patchDataset(dataset.id, { triggerWord: 'kessa_v2' });
+    expect(next.status).toBe('trained');
+    expect(next.training.loraFilename).toBe('char-1.safetensors');
+  });
+
   it('refuses to reassign onto a character that already owns a dataset', async () => {
     const a = await createDataset({ universeId: 'uni-1', entryId: 'char-1' });
     await createDataset({ universeId: 'uni-1', entryId: 'char-2' });

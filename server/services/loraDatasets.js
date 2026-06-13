@@ -240,10 +240,19 @@ export async function patchDataset(id, { triggerWord, universeId, entryId } = {}
         ? { ...img, caption: prefixCaption(triggerWord, img.caption, { previousTriggerWord: prev }) }
         : img))
       : current.images;
+    // A trained dataset's LoRA is registered against the OLD character
+    // (its sidecar drives /loras/by-character + render auto-apply). Moving
+    // the dataset to a new character must NOT carry the `trained` status and
+    // `training.loraFilename` over — that would advertise the new character
+    // as trained while the actual LoRA still resolves only for the old one.
+    // Reset to the untrained baseline so the new character must retrain; the
+    // old character keeps its registered LoRA.
+    const trainingReset = characterChanged ? { status: 'draft', training: {} } : {};
     return {
       ...current,
       ...(characterChanged ? { character: nextCharacter } : {}),
       ...(triggerChanged ? { triggerWord } : {}),
+      ...trainingReset,
       images,
     };
   });
