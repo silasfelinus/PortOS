@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ServerError } from './errorHandler.js';
-import { partialWithoutDefaults, emptyToUndefined } from './zodCompat.js';
+import { partialWithoutDefaults, emptyToUndefined, emptyToNull } from './zodCompat.js';
 import { WORK_KINDS, WORK_STATUSES, ANALYSIS_KINDS } from './writersRoomPresets.js';
 import { ALL_STYLE_IDS, STYLE_ID } from './writersRoomStylePresets.js';
 import { BIBLE_LIMITS } from './storyBible.js';
@@ -728,11 +728,17 @@ export const createCosJobSchema = z.object({
   promptTemplate: z.string().optional(),
   command: z.string().optional(),
   triggerAction: z.preprocess(v => v === '' ? undefined : v, z.string().optional()),
+  // Optional AI provider + model override for agent jobs. Empty string from the
+  // UI picker → null so a PUT can actively clear the override back to the active
+  // provider/default model (updateJob only skips `undefined`). Forwarded into the
+  // generated task's metadata as `provider`/`model` by generateTaskFromJob.
+  providerId: z.preprocess(emptyToNull, z.string().nullable().optional()),
+  model: z.preprocess(emptyToNull, z.string().nullable().optional()),
   // Optional managed-app scope. Empty string from the UI picker → null so a PUT
   // can actively un-scope a job back to global (updateJob only skips `undefined`,
   // so undefined would silently preserve the old scope). Absent key stays
   // undefined (preserve existing on PUT, default null on create).
-  appId: z.preprocess(v => v === '' ? null : v, z.string().nullable().optional()),
+  appId: z.preprocess(emptyToNull, z.string().nullable().optional()),
   // Optional git-workflow options for app-scoped agent jobs.
   taskMetadata: z.object({
     useWorktree: z.boolean().optional(),
