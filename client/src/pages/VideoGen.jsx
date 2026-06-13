@@ -65,7 +65,7 @@ import {
   listLorasFull,
 } from '../services/api';
 import LoraPicker from '../components/imageGen/LoraPicker';
-import { videoLoraFamily } from '../lib/runnerFamilies';
+import { videoLoraFamily, VIDEO_LORA_FAMILIES } from '../lib/runnerFamilies';
 import { randomSeed } from '../lib/genUtils';
 import { VIDEO_RESOLUTIONS } from '../lib/videoGenResolutions';
 import { VIDEO_TILING_OPTIONS, VIDEO_TILING_ENUM_SET } from '../lib/videoTilingOptions';
@@ -320,6 +320,21 @@ export default function VideoGen() {
     if (!fromUrl || !availableLoras.length) return;
     const match = availableLoras.find((l) => l.filename === fromUrl);
     if (match) {
+      // A video (ltx-video) LoRA only renders on an ltx2 model. The default
+      // video model is often mlx_video (e.g. ltx23_distilled_q4 on macOS), where
+      // the picker is hidden and the payload omits the LoRA — so the Test
+      // handoff would silently no-op. Switch to an available ltx2 model first.
+      // Wait for `models` to load before deciding (the LoRA library usually
+      // loads first); the mode is still the default 'text', with which every
+      // ltx2 model is compatible, so the modelId-validation effect won't undo
+      // this. A non-ltx2 LoRA needs no switch (the image picker tolerates it).
+      const isVideoLora = (match.loraCompatKey || match.runnerFamily) === VIDEO_LORA_FAMILIES.LTX_VIDEO;
+      const cur = models.find((m) => m.id === modelId);
+      if (isVideoLora && !videoLoraFamily(cur)) {
+        if (!models.length) return; // re-runs when models loads (in deps)
+        const ltx2Model = models.find((m) => m.runtime === 'ltx2');
+        if (ltx2Model) setModelId(ltx2Model.id);
+      }
       setSelectedLoras((prev) => prev.find((s) => s.filename === fromUrl) ? prev : [...prev, {
         filename: match.filename,
         name: match.name,
@@ -331,7 +346,7 @@ export default function VideoGen() {
     }
     setSearchParams((prev) => { const next = new URLSearchParams(prev); next.delete('lora'); return next; }, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [availableLoras]);
+  }, [availableLoras, models]);
 
   const { visibleHistory, hiddenHistory } = useMemo(() => ({
     visibleHistory: history.filter((v) => !v.hidden),
