@@ -165,11 +165,20 @@ export async function startTrainingRun({ datasetId, baseModelId, name = null, pa
     },
   });
   await runsDb.updateRun(runId, { jobId: queued.jobId });
-  await updateDataset(datasetId, (current) => ({
-    ...current,
-    status: 'training',
-    training: { ...current.training, lastJobId: queued.jobId, lastRunId: runId },
-  })).catch((err) => console.error(`❌ dataset training-status stamp failed: ${err?.message}`));
+  await updateDataset(datasetId, (current) => {
+    // Same-record re-entrancy guard: if the dataset was reassigned to a
+    // different character between validateDatasetReady above and this stamp,
+    // this run no longer owns it. Don't stamp 'training' — flipDatasetAfterRun
+    // skips character-mismatched runs, so a stamp here would strand the
+    // reassigned dataset in 'training' forever. (entryId is a globally-unique
+    // UUID, so it alone identifies the character.)
+    if (current.character?.entryId !== run.character.entryId) return null;
+    return {
+      ...current,
+      status: 'training',
+      training: { ...current.training, lastJobId: queued.jobId, lastRunId: runId },
+    };
+  }).catch((err) => console.error(`❌ dataset training-status stamp failed: ${err?.message}`));
 
   console.log(`🏋️ Training run ${shortId(runId)} queued — ${routing.runtime}/${baseModelId} dataset=${shortId(datasetId)} job=${shortId(queued.jobId)}`);
   return { runId, jobId: queued.jobId, position: queued.position, status: 'queued' };
