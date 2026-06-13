@@ -207,17 +207,8 @@ export async function patchDataset(id, { triggerWord, universeId, entryId } = {}
       resolveCharacterSnapshot(universeId, entryId),
       loraDatasetStore.loadAll(),
     ]);
-    // Refuse while a run is in flight (status 'training' = a queued or running
-    // job exists). A queued run captured this dataset's id + old character
-    // snapshot; if we moved the dataset now, the run would stage the moved
-    // images yet register the adapter under the OLD character. Make the user
-    // cancel first — then reassignment is a clean draft-state operation.
-    const self = all.find((d) => d.id === id);
-    if (self?.status === 'training') {
-      throw new ServerError('Cannot reassign while a training run is in progress — cancel it first', {
-        status: 409, code: 'DATASET_TRAINING',
-      });
-    }
+    // (The in-flight-run guard moved into the write lock below — a pre-write
+    // status snapshot races a concurrent startTrainingRun stamping 'training'.)
     // Enforce the same find-or-create key createDataset uses: at most one
     // dataset per (universeId, entryId). Reassigning onto a character that
     // already owns a dataset would create a duplicate the list can't tell apart.
@@ -239,6 +230,17 @@ export async function patchDataset(id, { triggerWord, universeId, entryId } = {}
       || nextCharacter.universeId !== current.character.universeId
       || nextCharacter.ingredientId !== current.character.ingredientId
       || nextCharacter.name !== current.character.name);
+    // Authoritative in-flight guard, under the per-record write lock: a
+    // concurrent startTrainingRun may have stamped status:'training' since the
+    // pre-write reads above. Reassigning then would move the dataset out from
+    // under a queued run that captured its id + old character — and because
+    // flipDatasetAfterRun skips character-mismatched runs, the dataset would be
+    // left stuck in 'training'. Refuse here so the user cancels the run first.
+    if (characterChanged && current.status === 'training') {
+      throw new ServerError('Cannot reassign while a training run is in progress — cancel it first', {
+        status: 409, code: 'DATASET_TRAINING',
+      });
+    }
     if (!triggerChanged && !characterChanged) return null;
     // Re-prefix every captioned image so the binding token follows a trigger
     // rename. Without this, computeDatasetReadiness (which gates `captioned`
