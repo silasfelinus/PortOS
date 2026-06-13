@@ -35,6 +35,19 @@ describe('classifyTrainingFailure', () => {
     expect(out.repo).toBe('black-forest-labs/FLUX.2-klein-base-9B');
   });
 
+  it('normalizes the torch runner gated_repo USER_ERROR kind to HF_AUTH with a repo', () => {
+    // _runner_common (torch FLUX.2) emits USER_ERROR:gated_repo:… instead of
+    // HF_AUTH — both must classify as HF_AUTH so the UI banner fires.
+    const out = classifyTrainingFailure({
+      userError: {
+        kind: 'gated_repo',
+        message: 'Access to black-forest-labs/FLUX.2-klein-base-9B is restricted. Visit https://huggingface.co/black-forest-labs/FLUX.2-klein-base-9B to request access, then make sure your HF token is set in PortOS.',
+      },
+    });
+    expect(out.code).toBe('HF_AUTH');
+    expect(out.repo).toBe('black-forest-labs/FLUX.2-klein-base-9B');
+  });
+
   it('extracts the gated repo from a raw stderr tail and rewrites the message', () => {
     const out = classifyTrainingFailure({
       stderrTail: ['Cannot access gated repo for url https://huggingface.co/black-forest-labs/FLUX.2-klein-base-9B/resolve/main/config.json.'],

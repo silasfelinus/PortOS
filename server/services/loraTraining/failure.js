@@ -21,10 +21,15 @@ const CLI_MISMATCH_RE = /unrecognized arguments|invalid choice|the following arg
 export function classifyTrainingFailure({ stderrTail = [], exitCode = null, signal = null, userError = null } = {}) {
   const tail = stderrTail.join('\n');
   if (userError?.message) {
-    const code = userError.kind || 'DATASET_ERROR';
+    // Runners label gated-repo failures differently: the mflux wrapper sniffs
+    // FATAL_PATTERNS and emits USER_ERROR:HF_AUTH:…, while the torch
+    // _runner_common walks the exception chain and emits USER_ERROR:gated_repo:….
+    // Normalize both to HF_AUTH so the UI's single gated branch (errorCode ===
+    // 'HF_AUTH') and the repo deep-link fire regardless of runtime.
+    const code = userError.kind === 'gated_repo' ? 'HF_AUTH' : (userError.kind || 'DATASET_ERROR');
     const result = { code, message: userError.message };
-    // The trainer re-emits the raw gated-repo stderr line as USER_ERROR:HF_AUTH:…,
-    // so the repo is usually already in userError.message; fall back to the tail.
+    // The trainer re-emits the raw gated-repo stderr line in the USER_ERROR
+    // message, so the repo is usually already there; fall back to the tail.
     if (code === 'HF_AUTH') result.repo = extractGatedRepo(userError.message) || extractGatedRepo(tail);
     return result;
   }
