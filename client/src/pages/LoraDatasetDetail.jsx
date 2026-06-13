@@ -194,9 +194,13 @@ export default function LoraDatasetDetail() {
     const lastImageError = [...(captionSse.frames || [])]
       .reverse().find((f) => f?.type === 'progress' && f.error)?.error;
     if (last?.type === 'error') {
-      // Whole run failed up front (e.g. every image refused) — show the
-      // actionable server message verbatim.
-      toast.error(last.message || 'Captioning failed');
+      // Every image failed — the server's terminal `error` frame carries only a
+      // generic "check the vision provider" tally, but the per-image `progress`
+      // frames already reported the specific reason (refusal vs. a reasoning
+      // model that exhausted its token budget). Prefer that detail; it's the
+      // whole point for the common single-image failure, which lands here (not
+      // in the `complete` branch) because done===0.
+      toast.error(lastImageError || last.message || 'Captioning failed');
     } else if (last?.type === 'complete' && last.failed > 0) {
       const noun = last.failed === 1 ? 'image' : 'images';
       const detail = lastImageError ? ` ${lastImageError}` : '';
