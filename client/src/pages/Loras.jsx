@@ -14,10 +14,11 @@ import toast from '../components/ui/Toast';
 import Modal from '../components/ui/Modal';
 import Banner from '../components/ui/Banner';
 import { formatBytes } from '../utils/formatters';
-import { RUNNER_FAMILIES } from '../lib/runnerFamilies';
+import { RUNNER_FAMILIES, VIDEO_LORA_FAMILIES } from '../lib/runnerFamilies';
 import {
   listLorasFull,
   installLoraFromCivitai,
+  installLoraFromHuggingface,
   deleteLoraFull,
   getCivitaiAuth,
   setCivitaiAuth,
@@ -56,6 +57,15 @@ export default function Loras() {
   const [error, setError] = useState(null);
   const [installUrl, setInstallUrl] = useState('');
   const [installing, setInstalling] = useState(false);
+  // HuggingFace video-LoRA import (fal / Lightricks LTX LoRAs) — separate from
+  // the Civitai installer above because video LoRAs live on HF.
+  const [hfUrl, setHfUrl] = useState('');
+  const [hfInstalling, setHfInstalling] = useState(false);
+  // When autodetection can't classify the repo (HF_UNKNOWN_FAMILY), hold the
+  // URL here to render an inline "install as LTX-Video?" confirm row — the API
+  // supports an explicit family override, so a valid LTX LoRA with an
+  // unrecognizable id shouldn't dead-end at an error toast.
+  const [hfFamilyPrompt, setHfFamilyPrompt] = useState(null);
   const [deleting, setDeleting] = useState(null);
   // Civitai auth — `auth` is `{ hasKey, source }`; `authPrompt` is set to a
   // pending install URL when a 401/403 redirects the user to the inline key
@@ -124,6 +134,40 @@ export default function Loras() {
     return performInstall(installUrl.trim());
   };
 
+  // Install a video LoRA from a HuggingFace repo. The family is auto-detected
+  // server-side from the repo id/tags (LTX-Video → ltx-video); HF_UNKNOWN_FAMILY
+  // surfaces as a toast asking the user to confirm it's an LTX LoRA.
+  // Shared install runner: `family` is undefined for the first attempt
+  // (server autodetects) and set to the override on the inline-confirm retry.
+  const runHfInstall = useCallback(async (url, family) => {
+    if (!url || hfInstalling) return;
+    setHfInstalling(true);
+    await installLoraFromHuggingface({ url, family, silent: true })
+      .then((sidecar) => {
+        toast.success(`Installed ${sidecar.name}`);
+        setHfUrl('');
+        setHfFamilyPrompt(null);
+        refresh();
+      })
+      .catch((err) => {
+        // Autodetection failed but the install is otherwise valid — offer an
+        // inline confirm to retry with the LTX-Video family rather than toast a
+        // dead-end. (Skip when we already tried with an explicit override.)
+        if (err?.code === 'HF_UNKNOWN_FAMILY' && !family) {
+          setHfFamilyPrompt(url);
+        } else {
+          toast.error(err?.message || 'HuggingFace install failed');
+        }
+      })
+      .finally(() => setHfInstalling(false));
+  }, [hfInstalling, refresh]);
+
+  const handleHfInstall = useCallback((e) => {
+    e?.preventDefault?.();
+    setHfFamilyPrompt(null);
+    return runHfInstall(hfUrl.trim(), undefined);
+  }, [hfUrl, runHfInstall]);
+
   const handleDelete = async (filename) => {
     setDeleting(filename);
     await deleteLoraFull(filename)
@@ -140,7 +184,7 @@ export default function Loras() {
       <div>
         <h1 className="text-2xl font-bold text-white mb-1">LoRA Manager</h1>
         <p className="text-sm text-gray-400">
-          Install LoRA fine-tunes from Civitai and apply them to your Image Gen renders.
+          Install LoRA fine-tunes from Civitai (image) or HuggingFace (video) and apply them to your Image Gen and Video Gen renders.
         </p>
       </div>
 
@@ -178,6 +222,64 @@ export default function Loras() {
           <code className="bg-port-bg px-1 rounded">civitai.red</code> model URL — or just the
           numeric model id. Restricted LoRAs need an API key — PortOS will prompt you for one if a download is rejected.
         </p>
+      </form>
+
+      <form
+        onSubmit={handleHfInstall}
+        className="bg-port-card border border-port-border rounded-lg p-4 space-y-3"
+      >
+        <div className="flex items-center gap-2 text-sm font-medium text-gray-300">
+          <Download size={16} />
+          <span>Install video LoRA from HuggingFace</span>
+        </div>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={hfUrl}
+            onChange={(e) => setHfUrl(e.target.value)}
+            placeholder="https://huggingface.co/fal/ltx2.3-audio-reactive-lora"
+            className="flex-1 bg-port-bg border border-port-border rounded px-3 py-2 text-sm text-gray-200 placeholder:text-gray-600"
+            disabled={hfInstalling}
+          />
+          <button
+            type="submit"
+            disabled={hfInstalling || !hfUrl.trim()}
+            className="bg-port-accent text-white px-4 py-2 rounded text-sm font-medium hover:bg-port-accent/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          >
+            {hfInstalling ? 'Downloading…' : 'Install'}
+          </button>
+        </div>
+        <p className="text-xs text-gray-500">
+          Paste a <code className="bg-port-bg px-1 rounded">huggingface.co</code> repo URL — or an{' '}
+          <code className="bg-port-bg px-1 rounded">org/name</code> id — for an LTX-Video LoRA
+          (e.g. <code className="bg-port-bg px-1 rounded">fal/ltx2.3-audio-reactive-lora</code>).
+          These apply to <Link to="/media/video" className="text-port-accent hover:underline">Video Gen</Link> renders on an LTX-2 (ltx2) model. Gated repos use your HuggingFace token from Image Gen settings.
+        </p>
+        {hfFamilyPrompt && (
+          <div className="flex items-center justify-between gap-3 rounded border border-port-warning/40 bg-port-warning/10 px-3 py-2">
+            <span className="text-xs text-gray-300">
+              Couldn&apos;t detect the model family for <code className="bg-port-bg px-1 rounded">{hfFamilyPrompt}</code>. Install it as an LTX-Video LoRA?
+            </span>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => runHfInstall(hfFamilyPrompt, VIDEO_LORA_FAMILIES.LTX_VIDEO)}
+                disabled={hfInstalling}
+                className="bg-port-accent text-white px-3 py-1 rounded text-xs font-medium hover:bg-port-accent/90 disabled:opacity-50"
+              >
+                {hfInstalling ? 'Installing…' : 'Install as LTX-Video'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setHfFamilyPrompt(null)}
+                disabled={hfInstalling}
+                className="text-gray-400 hover:text-gray-200 px-2 py-1 rounded text-xs disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </form>
 
       {authPrompt && (
@@ -683,9 +785,12 @@ function LoraCard({ lora, onDelete, deleting }) {
   const badgeClass = family ? (RUNNER_BADGE_CLASS[family] || 'bg-gray-600/20 text-gray-300 border-gray-500/30') : 'bg-port-warning/20 text-port-warning border-port-warning/30';
   const triggerWords = lora.triggerWords || [];
   const civitai = lora.civitai;
-  // Image Gen page reads ?lora=<filename> as a preselect hint via query string;
-  // keeps the manager → gen handoff URL-driven (deep-linkable).
-  const testHref = `/media/image?lora=${encodeURIComponent(lora.filename)}`;
+  // The gen pages read ?lora=<filename> as a preselect hint via query string;
+  // keeps the manager → gen handoff URL-driven (deep-linkable). Video-family
+  // LoRAs (ltx-video) deep-link to Video Gen — routing them to Image Gen would
+  // preselect an LTX adapter into an incompatible image render.
+  const isVideoLora = family === VIDEO_LORA_FAMILIES.LTX_VIDEO;
+  const testHref = `${isVideoLora ? '/media/video' : '/media/image'}?lora=${encodeURIComponent(lora.filename)}`;
 
   return (
     <div className="bg-port-card border border-port-border rounded-lg overflow-hidden flex flex-col">

@@ -16,13 +16,14 @@ import {
   deleteLora,
   getLora,
   installFromCivitai,
+  installFromHuggingface,
   listLoras,
   patchLoraSidecar,
 } from '../services/loras.js';
 import { getSuggestions, searchLorasInFamily } from '../services/civitaiSuggestions.js';
 import { findLorasByCharacter } from '../services/characterLoraResolver.js';
 import { getSettings, updateSettingsWith } from '../services/settings.js';
-import { RUNNER_FAMILIES } from '../lib/runners.js';
+import { RUNNER_FAMILIES, VIDEO_LORA_FAMILIES } from '../lib/runners.js';
 
 const router = Router();
 
@@ -116,6 +117,20 @@ const installSchema = z.object({
 router.post('/install', asyncHandler(async (req, res) => {
   const data = validateRequest(installSchema, req.body);
   const sidecar = await installFromCivitai(data);
+  res.status(201).json(sidecar);
+}));
+
+// Install a video LoRA from a HuggingFace repo (fal / Lightricks LTX LoRAs).
+// `family` is an optional override; absence auto-detects from the repo.
+const hfInstallSchema = z.object({
+  url: z.string().min(1).max(1024),
+  family: z.enum(Object.values(VIDEO_LORA_FAMILIES)).optional(),
+  // One-shot token override; absence falls back to the stored/env/CLI HF token.
+  token: z.string().min(1).max(256).optional(),
+});
+router.post('/install/huggingface', asyncHandler(async (req, res) => {
+  const data = validateRequest(hfInstallSchema, req.body);
+  const sidecar = await installFromHuggingface(data);
   res.status(201).json(sidecar);
 }));
 

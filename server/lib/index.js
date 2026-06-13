@@ -150,6 +150,7 @@ export * from './songCraftRef.js';
 export * from './appResolver.js';
 export * from './capabilityMap.js';
 export * from './civitai.js';
+export * from './huggingfaceLora.js';
 export * from './localLlmCatalog.js';
 export * from './localLlmDisk.js';
 export * from './localModelHeuristics.js';
