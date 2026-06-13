@@ -22,26 +22,31 @@
  */
 
 import { ServerError } from '../../lib/errorHandler.js';
-import { isFlux2, flux2VariantFromModel } from '../../lib/runners.js';
+import { isFlux2, flux2VariantFromModel, FLUX2_BF16_BASE_REPOS } from '../../lib/runners.js';
 
 export const TRAINING_RUNTIMES = Object.freeze({ MFLUX: 'mflux', FLUX2: 'flux2' });
 
+// Defaults tuned down after a FLUX.2 Klein face LoRA diverged: at the old
+// 1000 steps / lr 1e-4, the sample collapsed to a black frame by ~step 500
+// while the loss kept dropping. Halving the LR and shortening the run keeps
+// it in the useful window; 768 captures more facial detail than 512 (a 4K
+// source crushed to 512 loses the face) and the memory-derived quantize/low_ram
+// still covers smaller machines. Tighter checkpoint/sample cadence gives the
+// checkpoint picker more healthy steps to choose from.
 export const TRAINING_DEFAULTS = Object.freeze({
-  steps: 1000,
+  steps: 600,
   rank: 16,
-  learningRate: 0.0001,
-  resolution: 512,
-  checkpointEvery: 250,
-  sampleEvery: 250,
+  learningRate: 0.00005,
+  resolution: 768,
+  checkpointEvery: 150,
+  sampleEvery: 150,
 });
 
-// bf16 training bases per FLUX.2 size variant (torch runtime). Inference
-// may run quantized repos; training resolves to these regardless of which
-// flux2-* model id the user picked.
-export const FLUX2_TRAIN_REPOS = Object.freeze({
-  '4b': 'black-forest-labs/FLUX.2-klein-4B',
-  '9b': 'black-forest-labs/FLUX.2-klein-9B',
-});
+// bf16 training bases per FLUX.2 size variant (torch runtime). Inference may
+// run quantized repos; training resolves to these regardless of which flux2-*
+// model id the user picked. Same repos the image runner renders a LoRA against
+// (PEFT can't load onto quantized weights) — one source of truth in runners.js.
+export const FLUX2_TRAIN_REPOS = FLUX2_BF16_BASE_REPOS;
 
 // mflux model ids per size variant. mflux's flux2 README recommends the
 // non-distilled base models for training; the resulting adapter applies to

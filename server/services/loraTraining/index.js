@@ -15,7 +15,7 @@
 
 import { spawn } from 'child_process';
 import { existsSync } from 'fs';
-import { copyFile, mkdir, stat, writeFile } from 'fs/promises';
+import { copyFile, mkdir, writeFile } from 'fs/promises';
 import { join, basename, dirname } from 'path';
 import { platform, totalmem } from 'os';
 import { PATHS, ensureDir, atomicWrite, shortId } from '../../lib/fileUtils.js';
@@ -41,6 +41,11 @@ import { makeTrainingLineHandler } from './progress.js';
 import { classifyTrainingFailure } from './failure.js';
 import { buildTrainedSidecar, trainedLoraFilename } from './sidecar.js';
 import { validateDatasetReady } from './dataset.js';
+import {
+  listRunCheckpoints,
+  resolveCheckpointAdapterBuffer,
+  selectDeployableCheckpoint,
+} from './checkpoints.js';
 import * as runsDb from './db.js';
 
 export { listRuns, getRun, getRunRequired, deleteRun } from './db.js';
@@ -326,23 +331,36 @@ export async function runTraining({ jobId, runId, pythonPath = null }) {
   // channel, the row is the durable snapshot.
   let progressDirty = null;
   let progressTimer = null;
+  // Persist whatever progress/artifacts are pending. Returns the write promise
+  // so the close handler can AWAIT a final flush before finalize reads the run
+  // record — otherwise the final checkpoint + last sample (which the collapse
+  // guard and previewImageUrl both read from run.artifacts) can still be in the
+  // debounce buffer, not on disk.
+  const flushProgress = () => {
+    if (progressTimer) { clearTimeout(progressTimer); progressTimer = null; }
+    if (!progressDirty) return Promise.resolve();
+    const flushing = progressDirty;
+    progressDirty = null;
+    return runsDb.updateRun(runId, (current) => ({
+      ...current,
+      progress: { ...current.progress, ...flushing.progress },
+      artifacts: {
+        ...current.artifacts,
+        ...(flushing.checkpoints ? { checkpoints: [...current.artifacts.checkpoints, ...flushing.checkpoints] } : {}),
+        ...(flushing.samples ? { samples: [...current.artifacts.samples, ...flushing.samples] } : {}),
+      },
+    })).catch((err) => console.error(`❌ training [${shortId(jobId)}] progress persist failed: ${err?.message}`));
+  };
+  // Checkpoints/samples accumulate as arrays so two that land in one debounce
+  // window (common in the final post-exit scan) both survive — a single-value
+  // patch would let the later one clobber the earlier.
   const scheduleProgressPersist = (patch) => {
-    progressDirty = { ...progressDirty, ...patch };
+    progressDirty = progressDirty || {};
+    if (patch.progress) progressDirty.progress = { ...progressDirty.progress, ...patch.progress };
+    if (patch.checkpoint) (progressDirty.checkpoints ||= []).push(patch.checkpoint);
+    if (patch.sample) (progressDirty.samples ||= []).push(patch.sample);
     if (progressTimer) return;
-    progressTimer = setTimeout(() => {
-      progressTimer = null;
-      const flushing = progressDirty;
-      progressDirty = null;
-      runsDb.updateRun(runId, (current) => ({
-        ...current,
-        progress: { ...current.progress, ...flushing.progress },
-        artifacts: {
-          ...current.artifacts,
-          ...(flushing.checkpoint ? { checkpoints: [...current.artifacts.checkpoints, flushing.checkpoint] } : {}),
-          ...(flushing.sample ? { samples: [...current.artifacts.samples, flushing.sample] } : {}),
-        },
-      })).catch((err) => console.error(`❌ training [${shortId(jobId)}] progress persist failed: ${err?.message}`));
-    }, 2000);
+    progressTimer = setTimeout(() => { flushProgress(); }, 2000);
     progressTimer.unref?.();
   };
 
@@ -355,8 +373,8 @@ export async function runTraining({ jobId, runId, pythonPath = null }) {
         scheduleProgressPersist({ progress: { step: payload.step, totalSteps: payload.totalSteps } });
       }
     },
-    onCheckpoint: (path, step) => scheduleProgressPersist({
-      checkpoint: { step, path: basename(path) },
+    onCheckpoint: (path, step, loss) => scheduleProgressPersist({
+      checkpoint: { step, path: basename(path), loss: Number.isFinite(loss) ? loss : null },
       progress: { lastCheckpointStep: step },
     }),
     onSample: (path) => scheduleProgressPersist({ sample: basename(path) }),
@@ -402,13 +420,16 @@ export async function runTraining({ jobId, runId, pythonPath = null }) {
 
   proc.on('close', (code, signal) => {
     if (activeProcess === proc) { activeProcess = null; activeJobId = null; }
-    if (progressTimer) { clearTimeout(progressTimer); progressTimer = null; }
-    // Async finalize wrapped so a rejection can't escape the event handler
-    // (unhandled rejection kills the process on Node ≥15).
-    finalizeTraining({ jobId, runId, code, signal, state: getState() }).catch((err) => {
-      console.error(`❌ training [${shortId(jobId)}] finalize failed: ${err?.message}`);
-      fail(`finalize failed: ${err?.message}`);
-    });
+    // Flush the debounced progress (final checkpoint + last sample) BEFORE
+    // finalize reads the run record — the collapse guard and previewImageUrl
+    // both read run.artifacts. Async finalize wrapped so a rejection can't
+    // escape the event handler (unhandled rejection kills the process on Node ≥15).
+    Promise.resolve(flushProgress())
+      .then(() => finalizeTraining({ jobId, runId, code, signal, state: getState() }))
+      .catch((err) => {
+        console.error(`❌ training [${shortId(jobId)}] finalize failed: ${err?.message}`);
+        fail(`finalize failed: ${err?.message}`);
+      });
   });
 }
 
@@ -429,29 +450,37 @@ async function finalizeTraining({ jobId, runId, code, signal, state }) {
   }
 
   if (code === 0 && state.result?.adapter_path) {
+    const finalStep = Number.isInteger(state.result.steps) ? state.result.steps : (run.progress?.step ?? null);
+    // Collapse guard: deploy the final adapter unless its preview diverged
+    // (near-black/uniform), in which case fall back to the latest healthy
+    // checkpoint. Loss is NOT used to pick — it was anti-correlated with
+    // quality on the divergence run that motivated this (see checkpoints.js).
+    const selection = await selectDeployableCheckpoint(run, state.result.adapter_path, finalStep);
     const filename = trainedLoraFilename({
       name: run?.name, characterName: run?.character?.name, runId,
     });
-    await ensureDir(PATHS.loras);
-    await copyFile(state.result.adapter_path, join(PATHS.loras, filename));
-    const sizeBytes = await stat(join(PATHS.loras, filename)).then((s) => s.size).catch(() => null);
-    const lastSample = run?.artifacts?.samples?.length
-      ? `/api/lora-training/runs/${runId}/samples/${run.artifacts.samples[run.artifacts.samples.length - 1]}`
-      : null;
-    const sidecar = buildTrainedSidecar({
-      run, result: state.result, filename, previewImageUrl: lastSample, sizeBytes,
+    const { sizeBytes } = await registerTrainedLora({
+      run,
+      buffer: selection.buffer,
+      filename,
+      result: state.result,
+      previewImageUrl: selection.previewUrl,
+      selectedStep: selection.step,
+      autoSelected: selection.autoSelected,
     });
-    await writeFile(join(PATHS.loras, `${filename}.metadata.json`), JSON.stringify(sidecar, null, 2) + '\n');
     await runsDb.updateRun(runId, {
       status: 'completed',
       completedAt: new Date().toISOString(),
       output: {
         loraFilename: filename,
         finalLoss: Number.isFinite(state.result.final_loss) ? state.result.final_loss : null,
+        selectedCheckpointStep: selection.step,
+        autoSelectedCheckpoint: selection.autoSelected,
       },
     });
     await flipDatasetAfterRun(run.datasetId, { trained: true, loraFilename: filename });
-    console.log(`✅ training [${shortId(jobId)}] complete — registered ${filename}`);
+    if (selection.autoSelected) console.log(`⚠️ training [${shortId(jobId)}] ${selection.reason} (size ${sizeBytes ?? '?'}B)`);
+    console.log(`✅ training [${shortId(jobId)}] complete — registered ${filename} @ step ${selection.step}`);
     trainingEvents.emit('completed', {
       generationId: jobId, runId, loraFilename: filename, filename,
     });
@@ -494,6 +523,83 @@ async function finalizeTraining({ jobId, runId, code, signal, state }) {
   await flipDatasetAfterRun(run?.datasetId, { trained: false });
   console.error(`❌ training [${shortId(jobId)}] ${failCode}: ${message}`);
   trainingEvents.emit('failed', { generationId: jobId, error: message });
+}
+
+/**
+ * Write an adapter Buffer into data/loras/ as the registered trained LoRA and
+ * emit its sidecar. Shared by finalize (collapse-guarded final) and manual
+ * checkpoint promotion — both deploy a chosen adapter under one filename, so
+ * promoting overwrites in place and the LoRA's identity in the picker is
+ * stable across re-promotes.
+ */
+async function registerTrainedLora({
+  run, buffer, filename, result = {}, previewImageUrl = null, selectedStep = null, autoSelected = false,
+}) {
+  await ensureDir(PATHS.loras);
+  const dest = join(PATHS.loras, filename);
+  await writeFile(dest, buffer);
+  const sizeBytes = buffer.length; // bytes written === on-disk size; no stat round-trip
+  const sidecar = buildTrainedSidecar({
+    run, result, filename, previewImageUrl, sizeBytes, selectedStep, autoSelected,
+  });
+  await writeFile(`${dest}.metadata.json`, JSON.stringify(sidecar, null, 2) + '\n');
+  return { sizeBytes, sidecar };
+}
+
+/** Listable checkpoints (step, loss, preview, deployed flag) for a run. */
+export async function listCheckpoints(runId) {
+  const run = await runsDb.getRunRequired(runId);
+  return { runId, runtime: run.runtime, checkpoints: listRunCheckpoints(run) };
+}
+
+/**
+ * Manually promote a checkpoint to be the deployed LoRA. Re-extracts that
+ * checkpoint's adapter, registers it under the run's existing LoRA filename
+ * (in place), and records the selected step on the run. Lets the user pick by
+ * eye when the collapse guard's near-black veto wasn't enough (subtler
+ * degradation — see the loss-is-misleading note in checkpoints.js).
+ */
+export async function promoteCheckpoint(runId, step) {
+  const run = await runsDb.getRunRequired(runId);
+  if (!['completed', 'failed', 'canceled'].includes(run.status)) {
+    throw new ServerError('Cannot promote a checkpoint while the run is active', {
+      status: 409, code: 'RUN_ACTIVE',
+    });
+  }
+  const listed = listRunCheckpoints(run);
+  const target = listed.find((c) => c.step === step);
+  if (!target) {
+    throw new ServerError(`No checkpoint at step ${step} for run ${runId}`, {
+      status: 404, code: 'CHECKPOINT_NOT_FOUND',
+    });
+  }
+  const buffer = await resolveCheckpointAdapterBuffer(run, step);
+  const filename = run.output?.loraFilename
+    || trainedLoraFilename({ name: run.name, characterName: run.character?.name, runId });
+  // Keep trainedSteps pointing at the run's final step so the sidecar can note
+  // "checkpoint @ step N" whenever the promoted step isn't the final one.
+  const finalStep = Math.max(0, ...listed.map((c) => c.step), run.progress?.step || 0) || null;
+  await registerTrainedLora({
+    run,
+    buffer,
+    filename,
+    result: { steps: finalStep, final_loss: target.loss },
+    previewImageUrl: target.previewUrl,
+    selectedStep: step,
+    autoSelected: false,
+  });
+  await runsDb.updateRun(runId, (current) => ({
+    ...current,
+    output: {
+      ...current.output,
+      loraFilename: filename,
+      selectedCheckpointStep: step,
+      autoSelectedCheckpoint: false,
+    },
+  }));
+  await flipDatasetAfterRun(run.datasetId, { trained: true, loraFilename: filename });
+  console.log(`📌 training [${shortId(runId)}] promoted checkpoint step ${step} → ${filename}`);
+  return { loraFilename: filename, step };
 }
 
 /**

@@ -12,6 +12,7 @@ import { Link } from 'react-router-dom';
 import { Dumbbell, Loader2, Square, CheckCircle2, XCircle, Sparkles } from 'lucide-react';
 import toast from '../ui/Toast';
 import { useSseProgress } from '../../hooks/useSseProgress';
+import CheckpointPicker from './CheckpointPicker';
 import {
   getLoraTrainingStatus,
   listLoraTrainingRuns,
@@ -153,6 +154,9 @@ export default function TrainingPanel({ dataset, readiness, triggerSaving, onRun
             </>
           )}
         </div>
+      )}
+      {lastRun?.status === 'completed' && (
+        <CheckpointPicker run={lastRun} onPromoted={refreshRuns} />
       )}
       <div className="grid grid-cols-2 gap-3">
         <div className="col-span-2">

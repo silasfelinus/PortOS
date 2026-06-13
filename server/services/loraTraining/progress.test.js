@@ -38,8 +38,11 @@ describe('makeTrainingLineHandler', () => {
 
   it('routes CHECKPOINT and SAMPLE lines to callbacks', () => {
     const { handleLine, emit, onCheckpoint, onSample } = setup();
+    // A preceding STEP line sets lastLoss, which CHECKPOINT forwards so the
+    // run record can show a per-checkpoint loss in the picker.
+    handleLine('STEP:250:1000:0.42');
     handleLine('CHECKPOINT:/runs/r1/checkpoints/step-000250:250');
-    expect(onCheckpoint).toHaveBeenCalledWith('/runs/r1/checkpoints/step-000250', 250);
+    expect(onCheckpoint).toHaveBeenCalledWith('/runs/r1/checkpoints/step-000250', 250, 0.42);
     handleLine('SAMPLE:/runs/r1/samples/step-000250.png:250');
     expect(onSample).toHaveBeenCalled();
     const preview = emit.mock.calls.find(([e, p]) => e === 'progress' && p.currentImage)[1];

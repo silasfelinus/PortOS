@@ -20,7 +20,9 @@ import {
   deleteRun,
   getRunRequired,
   isMfluxTrainAvailable,
+  listCheckpoints,
   listRuns,
+  promoteCheckpoint,
   runDir,
   runSamplesDir,
   startTrainingRun,
@@ -106,6 +108,22 @@ router.delete('/runs/:id', asyncHandler(async (req, res) => {
     });
   }
   res.json(await deleteRun(run.id));
+}));
+
+// Checkpoint picker: list every saved checkpoint with its step, loss, and
+// preview thumbnail so the user can promote one by eye. Loss is shown but is
+// NOT a quality ranking — it was anti-correlated with quality on the
+// divergence run this feature was built for (see checkpoints.js).
+router.get('/runs/:id/checkpoints', asyncHandler(async (req, res) => {
+  await getRunRequired(req.params.id); // 404 if the run is unknown
+  res.json(await listCheckpoints(req.params.id));
+}));
+
+const promoteSchema = z.object({ step: z.coerce.number().int().min(0) });
+router.post('/runs/:id/promote-checkpoint', asyncHandler(async (req, res) => {
+  await getRunRequired(req.params.id);
+  const { step } = validateRequest(promoteSchema, req.body);
+  res.json(await promoteCheckpoint(req.params.id, step));
 }));
 
 router.get('/runs/:id/samples/:filename', asyncHandler(async (req, res) => {
