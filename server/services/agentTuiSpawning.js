@@ -30,6 +30,7 @@ import {
   PASTE_MARKER_PATTERN,
   PASTE_TO_ENTER_MIN_DELAY_MS,
   PASTE_TO_ENTER_FALLBACK_MS,
+  scheduleSubmitEnters,
   PASTE_DEADLINE_MS,
   OUTPUT_BUFFER_CAP,
   OUTPUT_BUFFER_HEADROOM,
@@ -231,6 +232,7 @@ export async function spawnTuiAgent({
   let rawBytesWritten = 0;
   let rawSpoolTruncationWarned = false;
   let pasteEnterTimer = null;
+  let submitEnterTimer = null;
 
   const streamingStrip = createStreamingAnsiStripper();
 
@@ -380,6 +382,7 @@ export async function spawnTuiAgent({
     if (agentData?.promptTimer) clearInterval(agentData.promptTimer);
     if (agentData?.doneSentinelTimer) clearInterval(agentData.doneSentinelTimer);
     if (pasteEnterTimer) { clearInterval(pasteEnterTimer); pasteEnterTimer = null; }
+    if (submitEnterTimer) { clearInterval(submitEnterTimer); submitEnterTimer = null; }
     // Release the post-paste accumulator even when finalize fires mid-paste-
     // window. The pasteEnterTimer's own cleanup path nulls this too, but if
     // finalize comes from elsewhere (shell-exit, command-not-found, user
@@ -628,9 +631,15 @@ export async function spawnTuiAgent({
     shellService.writeToSession(sessionId, `\x1b[200~${prompt}\x1b[201~`);
     appendLine(`📟 Prompt pasted into TUI session ${sessionId.slice(0, 8)} (${reason})`);
 
+    // Submit the pasted prompt with repeated Enters — a single `\r` can be
+    // swallowed while the TUI is still reflowing a large paste, stranding the
+    // prompt unsent (the "I had to hit Enter myself" bug). Tracked in
+    // submitEnterTimer so finish() can cancel pending retries if the agent ends.
     const submitEnter = () => {
-      if (finalized) return;
-      shellService.writeToSession(sessionId, '\r');
+      submitEnterTimer = scheduleSubmitEnters(
+        () => shellService.writeToSession(sessionId, '\r'),
+        () => finalized
+      );
     };
 
     const pasteSentAt = Date.now();

@@ -12,4 +12,6 @@
 
 ## Fixed
 
+- **TUI agents no longer leave the prompt sitting unsent in the input box** — CoS agents that run inside a terminal-UI provider (Claude Code, Codex) bracketed-paste their task prompt and then send a single Enter to submit it. On a large multi-line prompt that one `\r` could arrive while the TUI was still reflowing the paste and get swallowed — so the prompt sat typed-but-unsubmitted, the agent did no work, idled out after 3 minutes, and was (wrongly) recorded as a successful run. You'd see it only by opening the Shell tab and hitting Enter yourself. The submit Enter now fires a few times spaced ~700ms apart so one lands after the paste settles; re-sending is safe because once the prompt submits the input box is empty and a bare Enter is a no-op. Applies to both the long-running agent path and the one-shot TUI runner. (`server/lib/tuiHandshake.js`, `server/services/agentTuiSpawning.js`, `server/lib/tuiPromptRunner.js`)
+
 - **`calendarSync` test no longer depends on the developer's machine state** — the "throws 401 when Google OAuth is not configured" test read the REAL Google credentials/tokens off disk, so on a machine with OAuth configured it failed with a `GaxiosError` (400 invalid_grant) instead of the pinned 401. The auth client is now mocked to the not-configured state. (`server/services/calendarSync.test.js`)
