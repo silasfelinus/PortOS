@@ -4,7 +4,7 @@ import { describe, it, expect, vi } from 'vitest';
 // branches are testable without touching the network/DB. The module still
 // pulls in localLlm transitively at import; that's import-only (no calls fire
 // until resolveCaptionModel runs with our stub), so no mocks are needed.
-const { resolveCaptionModel } = await import('./loraDatasetCaption.js');
+const { resolveCaptionModel, buildCaption } = await import('./loraDatasetCaption.js');
 
 const VISION = [
   { providerId: 'lmstudio', backend: 'lmstudio', id: 'qwen2.5-vl-7b', name: 'Qwen2.5-VL 7B', vision: true },
@@ -61,5 +61,26 @@ describe('resolveCaptionModel', () => {
     const listVision = vi.fn(async () => { throw new Error('backend down'); });
     await expect(resolveCaptionModel({ listVision }))
       .rejects.toMatchObject({ status: 409, code: 'LORA_CAPTION_NO_VISION_MODEL' });
+  });
+});
+
+describe('buildCaption', () => {
+  it('prefixes a real description with the trigger word', () => {
+    expect(buildCaption('tamsin_reed', 'close-up bust, neutral expression'))
+      .toBe('tamsin_reed, close-up bust, neutral expression');
+  });
+
+  it('throws on an empty reply instead of returning a trigger-word-only caption', () => {
+    // The regression: a blank vision reply must NOT degrade to just the trigger
+    // word (which the loop would persist as a bogus "success"). It must fail so
+    // the image is surfaced and re-attemptable.
+    expect(() => buildCaption('tamsin_reed', '')).toThrow(/empty description/);
+    expect(() => buildCaption('tamsin_reed', '   \n  ')).toThrow(/empty description/);
+    expect(() => buildCaption('tamsin_reed', null)).toThrow(/empty description/);
+  });
+
+  it('names the model in the error so the user knows which to swap', () => {
+    expect(() => buildCaption('tamsin_reed', '', 'vision model "llava:7b"'))
+      .toThrow(/llava:7b/);
   });
 });
