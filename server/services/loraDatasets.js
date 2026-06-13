@@ -253,11 +253,12 @@ export async function importGalleryImages(id, { filenames = [] } = {}) {
   await ensureDir(datasetImagesDir(id));
   // sharp transcodes are independent CPU/disk work — run them concurrently
   // (single-user trust model; the per-id write queue still serializes the one
-  // dataset mutation below). A single failure rejects the whole import; track
-  // every file actually written so a partial failure doesn't strand orphaned
-  // PNGs (written but never recorded in the dataset).
+  // dataset mutation below). Use allSettled, NOT all: a rejection from all()
+  // returns before sibling toFile() calls finish, so files written *after* the
+  // first failure would escape cleanup and orphan. allSettled waits for every
+  // transcode to land before we either commit them all or unlink them all.
   const written = [];
-  const entries = await Promise.all(filenames.map(async (filename) => {
+  const results = await Promise.allSettled(filenames.map(async (filename) => {
     // Reuse the gallery's own path-traversal/extension guard.
     assertGalleryFilename(filename);
     const sourcePath = join(PATHS.images, basename(filename));
@@ -276,10 +277,15 @@ export async function importGalleryImages(id, { filenames = [] } = {}) {
         );
       });
     return makeImageEntry({ imageId, file, source: 'gallery', info });
-  })).catch(async (err) => {
+  }));
+  const failure = results.find((r) => r.status === 'rejected');
+  if (failure) {
+    // All transcodes have settled now, so `written` is complete — no late write
+    // can re-orphan a file after this cleanup.
     await Promise.all(written.map((p) => unlink(p).catch(() => {})));
-    throw err;
-  });
+    throw failure.reason;
+  }
+  const entries = results.map((r) => r.value);
   await updateDataset(id, (current) => ({ ...current, images: [...current.images, ...entries] }));
   console.log(`🖼️ Dataset ${id} ← imported ${entries.length} gallery image(s)`);
   return entries;

@@ -73,12 +73,20 @@ describe('localModelHeuristics', () => {
       }
     });
 
-    it('prefers explicit backend capability metadata over the id heuristic', () => {
+    it('treats explicit backend metadata as authoritative in both directions', () => {
       // LM Studio tags vision models type: 'vlm' even when the id is opaque.
       expect(isVisionModel({ id: 'some-opaque-id', type: 'vlm' })).toBe(true);
       expect(isVisionModel({ id: 'x', capabilities: ['vision'] })).toBe(true);
       // A text model card with no vision markers stays false.
       expect(isVisionModel({ id: 'llama3.1:8b', type: 'llm' })).toBe(false);
+      // An explicit non-vision type must NOT be overridden by an id that the
+      // regex would otherwise match — `gemma3:1b` is a text-only Gemma 3
+      // (type:'llm'), not a vision model, even though `gemma-?3` matches.
+      expect(isVisionModel({ id: 'gemma3:1b', type: 'llm' })).toBe(false);
+      expect(isVisionModel({ id: 'llava-phi3', type: 'embeddings' })).toBe(false);
+      // …but a regex-matching id with NO type metadata (Ollama /api/tags) still
+      // falls through to the heuristic.
+      expect(isVisionModel({ id: 'gemma3:4b' })).toBe(true);
     });
 
     it('handles non-values', () => {

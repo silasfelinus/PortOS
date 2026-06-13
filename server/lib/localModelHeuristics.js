@@ -69,10 +69,18 @@ export function isVisionModel(model) {
   if (!model) return false;
   if (typeof model === 'string') return VISION_RE.test(model);
   if (typeof model !== 'object') return false;
-  // Explicit metadata wins over the name heuristic.
-  if (model.type && String(model.type).toLowerCase() === 'vlm') return true;
+  // Explicit metadata is authoritative — in BOTH directions. LM Studio tags
+  // every model with a `type` (`vlm` / `llm` / `embeddings`), so a positive
+  // `vlm` (or a `vision` capability) confirms vision, and any OTHER explicit
+  // type means text-only even when the id happens to match the regex (e.g.
+  // `gemma3:1b` is `type:'llm'` — a text-only Gemma 3). Only fall through to
+  // the id heuristic when the backend gave us no capability metadata at all
+  // (Ollama's /api/tags), so a name-only guess never overrides a known type.
+  const type = model.type ? String(model.type).toLowerCase() : null;
+  if (type === 'vlm') return true;
   if (Array.isArray(model.capabilities)
     && model.capabilities.some((c) => String(c).toLowerCase() === 'vision')) return true;
+  if (type) return false; // explicit non-vision type — don't regex-guess past it
   const id = model.id || model.name || '';
   return typeof id === 'string' && VISION_RE.test(id);
 }
