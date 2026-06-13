@@ -374,6 +374,50 @@ describe('spawnTuiAgent runtime', () => {
     );
   });
 
+  // ── 1b. Submit-Enter retries ─────────────────────────────────────────────────
+  // A single `\r` after a large bracketed paste can be swallowed mid-paste-
+  // commit, stranding the prompt unsent (the "I had to hit Enter myself" bug,
+  // which then idles out and is falsely marked success). The fallback path must
+  // fire the Enter SUBMIT_ENTER_ATTEMPTS times, spaced apart, so one lands after
+  // the paste settles. Asserts the bracketed paste is written once and `\r` is
+  // written exactly SUBMIT_ENTER_ATTEMPTS times.
+  it('submit-enter: writes the bracketed paste once and retries the submit Enter SUBMIT_ENTER_ATTEMPTS times', async () => {
+    const { SUBMIT_ENTER_ATTEMPTS, SUBMIT_ENTER_SPACING_MS, PASTE_TO_ENTER_FALLBACK_MS } =
+      await vi.importActual('../lib/tuiHandshake.js');
+
+    runSpawn({ prompt: 'paste me into the box' });
+    await flushMicrotasks();
+
+    // Banner output so firstOutputAt is set, then advance past the prompt-delay
+    // floor + readiness idle threshold so the ready poll fires the paste.
+    await capturedOnData(Buffer.from('Codex booting...\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+
+    const writes = () => vi.mocked(shellService.writeToSession).mock.calls
+      .filter(([id]) => id === SESSION_ID);
+    const pasteWrites = () => writes().filter(([, data]) => data.startsWith('\x1b[200~'));
+    const enterWrites = () => writes().filter(([, data]) => data === '\r');
+
+    // Paste is written exactly once; no Enter has been sent yet (we never
+    // emit the [Pasted text] marker, so the 3500ms fallback drives submit).
+    expect(pasteWrites()).toHaveLength(1);
+    expect(enterWrites()).toHaveLength(0);
+
+    // Advance past the fallback window AND the full spread of retry spacing
+    // intervals. Once the budget is exhausted the interval stops re-sending
+    // (Enter into an empty box would be a no-op anyway).
+    await vi.advanceTimersByTimeAsync(
+      PASTE_TO_ENTER_FALLBACK_MS + SUBMIT_ENTER_SPACING_MS * (SUBMIT_ENTER_ATTEMPTS + 3)
+    );
+    await flushMicrotasks();
+
+    // Exactly SUBMIT_ENTER_ATTEMPTS Enters, and the paste was never re-sent.
+    expect(enterWrites()).toHaveLength(SUBMIT_ENTER_ATTEMPTS);
+    expect(pasteWrites()).toHaveLength(1);
+  });
+
   // ── 2. Command-not-found path ────────────────────────────────────────────────
   it('command-not-found: finalizeAgent called with success:false, exitCode 127, completionReason=command-not-found', async () => {
     const spawnPromise = runSpawn();

@@ -32,6 +32,52 @@ export const PASTE_MARKER_PATTERN = /\[Pasted text #\d+/;
 export const PASTE_TO_ENTER_MIN_DELAY_MS = 200;
 export const PASTE_TO_ENTER_FALLBACK_MS = 3500;
 
+// A SINGLE Enter after a large bracketed paste is unreliable: the TUI can still
+// be processing/reflowing the multi-line paste when the `\r` arrives and
+// swallow it, leaving the whole prompt sitting unsent in the input box. The
+// agent then idles out and is falsely finalized as success — observed as the
+// "the prompt was typed but I had to hit Enter myself" bug. (Modern Claude Code
+// also no longer reliably emits the `[Pasted text #N]` marker, so the fast path
+// above rarely fires and we lean entirely on the fallback Enter.) Send a few
+// Enters spaced apart so at least one lands after the paste settles. Re-sending
+// is safe: once the prompt submits the input box is empty and a bare Enter is a
+// no-op in every TUI we drive (claude/codex/gemini), so the extra Enters can't
+// fire a spurious empty message.
+export const SUBMIT_ENTER_ATTEMPTS = 3;
+export const SUBMIT_ENTER_SPACING_MS = 700;
+
+/**
+ * Submit a freshly-pasted TUI prompt by sending Enter SUBMIT_ENTER_ATTEMPTS
+ * times: once immediately, then on a SUBMIT_ENTER_SPACING_MS interval until the
+ * attempt budget is spent (see the constants above for why a single Enter is
+ * unreliable). Shared by both the agent path and the one-shot runner so the two
+ * can't drift.
+ *
+ * @param {() => void} write — sends one `\r` to the TUI. The caller owns the
+ *   write mechanism (PTY vs shell session) and its error handling.
+ * @param {() => boolean} isFinalized — true once the run has ended; stops the
+ *   retry loop so it can't write into a torn-down session.
+ * @returns {ReturnType<typeof setInterval>|null} the retry interval id (null
+ *   when no retries were scheduled). The caller stores it so its finalize path
+ *   can cancel pending retries; calling clearInterval on an already-self-cleared
+ *   id is a harmless no-op.
+ */
+export function scheduleSubmitEnters(write, isFinalized) {
+  if (isFinalized()) return null;
+  write();
+  let attemptsLeft = SUBMIT_ENTER_ATTEMPTS - 1;
+  if (attemptsLeft <= 0) return null;
+  const timer = setInterval(() => {
+    if (isFinalized() || attemptsLeft <= 0) {
+      clearInterval(timer);
+      return;
+    }
+    attemptsLeft -= 1;
+    write();
+  }, SUBMIT_ENTER_SPACING_MS);
+  return timer;
+}
+
 // Defaults the consumer applies when the provider config doesn't pin
 // per-provider values (provider.tuiPromptDelayMs / .tuiIdleTimeoutMs).
 export const DEFAULT_TUI_PROMPT_DELAY_MS = 2500;

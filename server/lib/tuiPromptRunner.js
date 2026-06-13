@@ -46,6 +46,7 @@ import {
   PASTE_MARKER_PATTERN,
   PASTE_TO_ENTER_MIN_DELAY_MS,
   PASTE_TO_ENTER_FALLBACK_MS,
+  scheduleSubmitEnters,
   PASTE_DEADLINE_MS,
   READY_POLL_INTERVAL_MS,
   READY_IDLE_THRESHOLD_MS,
@@ -233,6 +234,7 @@ ${prompt}`;
 
   let readyTimer = null;
   let pasteEnterTimer = null;
+  let submitEnterTimer = null;
   let idleWatchTimer = null;
   let responseFileWatchTimer = null;
   let hardTimeoutTimer = null;
@@ -240,6 +242,7 @@ ${prompt}`;
   const cleanupTimers = () => {
     if (readyTimer) { clearInterval(readyTimer); readyTimer = null; }
     if (pasteEnterTimer) { clearInterval(pasteEnterTimer); pasteEnterTimer = null; }
+    if (submitEnterTimer) { clearInterval(submitEnterTimer); submitEnterTimer = null; }
     if (idleWatchTimer) { clearInterval(idleWatchTimer); idleWatchTimer = null; }
     if (responseFileWatchTimer) { clearInterval(responseFileWatchTimer); responseFileWatchTimer = null; }
     if (hardTimeoutTimer) { clearTimeout(hardTimeoutTimer); hardTimeoutTimer = null; }
@@ -420,7 +423,14 @@ ${prompt}`;
           || elapsed >= PASTE_TO_ENTER_FALLBACK_MS) {
           clearInterval(pasteEnterTimer);
           pasteEnterTimer = null;
-          try { ptyProcess.write('\r'); } catch { /* PTY may have already exited */ }
+          // Submit with repeated Enters — a single `\r` can be swallowed while
+          // the TUI is still reflowing a large paste, stranding the prompt
+          // unsent. Tracked in submitEnterTimer so finish()'s cleanupTimers()
+          // cancels pending retries if the run ends first.
+          submitEnterTimer = scheduleSubmitEnters(
+            () => { try { ptyProcess.write('\r'); } catch { /* PTY may have already exited */ } },
+            () => finalized
+          );
         }
       }, PASTE_MARKER_POLL_MS);
     };

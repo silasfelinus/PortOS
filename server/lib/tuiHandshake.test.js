@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   READY_POLL_INTERVAL_MS,
   READY_IDLE_THRESHOLD_MS,
@@ -7,6 +7,8 @@ import {
   PASTE_MARKER_PATTERN,
   PASTE_TO_ENTER_MIN_DELAY_MS,
   PASTE_TO_ENTER_FALLBACK_MS,
+  SUBMIT_ENTER_ATTEMPTS,
+  SUBMIT_ENTER_SPACING_MS,
   DEFAULT_TUI_PROMPT_DELAY_MS,
   DEFAULT_TUI_IDLE_TIMEOUT_MS,
   RAW_BUFFER_CAP,
@@ -17,6 +19,7 @@ import {
   applyCommandDefaults,
   buildTuiInvocation,
   detectMissingTuiBinary,
+  scheduleSubmitEnters,
 } from './tuiHandshake.js';
 import { CODEX_CONFIGURED_DEFAULT } from './providerModels.js';
 
@@ -240,5 +243,41 @@ describe('tuiHandshake.detectMissingTuiBinary', () => {
   it('rejects empty / whitespace strings', () => {
     expect(detectMissingTuiBinary('', 'codex')).toBe(false);
     expect(detectMissingTuiBinary('   ', 'codex')).toBe(false);
+  });
+});
+
+describe('tuiHandshake.scheduleSubmitEnters', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('writes SUBMIT_ENTER_ATTEMPTS times: once immediately, the rest spaced apart', () => {
+    const write = vi.fn();
+    const timer = scheduleSubmitEnters(write, () => false);
+
+    // First Enter fires synchronously; the rest come from the interval.
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(timer).not.toBeNull();
+
+    vi.advanceTimersByTime(SUBMIT_ENTER_SPACING_MS * (SUBMIT_ENTER_ATTEMPTS + 2));
+    expect(write).toHaveBeenCalledTimes(SUBMIT_ENTER_ATTEMPTS);
+  });
+
+  it('sends nothing and returns null when already finalized', () => {
+    const write = vi.fn();
+    const timer = scheduleSubmitEnters(write, () => true);
+    expect(write).not.toHaveBeenCalled();
+    expect(timer).toBeNull();
+  });
+
+  it('stops re-sending once finalized mid-flight (no write into a torn-down session)', () => {
+    const write = vi.fn();
+    let finalized = false;
+    scheduleSubmitEnters(write, () => finalized);
+    expect(write).toHaveBeenCalledTimes(1);
+
+    finalized = true;
+    vi.advanceTimersByTime(SUBMIT_ENTER_SPACING_MS * (SUBMIT_ENTER_ATTEMPTS + 2));
+    // The immediate write already happened; no interval-driven writes follow.
+    expect(write).toHaveBeenCalledTimes(1);
   });
 });
