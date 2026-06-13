@@ -61,6 +61,11 @@ export default function Loras() {
   // the Civitai installer above because video LoRAs live on HF.
   const [hfUrl, setHfUrl] = useState('');
   const [hfInstalling, setHfInstalling] = useState(false);
+  // When autodetection can't classify the repo (HF_UNKNOWN_FAMILY), hold the
+  // URL here to render an inline "install as LTX-Video?" confirm row — the API
+  // supports an explicit family override, so a valid LTX LoRA with an
+  // unrecognizable id shouldn't dead-end at an error toast.
+  const [hfFamilyPrompt, setHfFamilyPrompt] = useState(null);
   const [deleting, setDeleting] = useState(null);
   // Civitai auth — `auth` is `{ hasKey, source }`; `authPrompt` is set to a
   // pending install URL when a 401/403 redirects the user to the inline key
@@ -132,20 +137,36 @@ export default function Loras() {
   // Install a video LoRA from a HuggingFace repo. The family is auto-detected
   // server-side from the repo id/tags (LTX-Video → ltx-video); HF_UNKNOWN_FAMILY
   // surfaces as a toast asking the user to confirm it's an LTX LoRA.
-  const handleHfInstall = useCallback(async (e) => {
-    e?.preventDefault?.();
-    const url = hfUrl.trim();
+  // Shared install runner: `family` is undefined for the first attempt
+  // (server autodetects) and set to the override on the inline-confirm retry.
+  const runHfInstall = useCallback(async (url, family) => {
     if (!url || hfInstalling) return;
     setHfInstalling(true);
-    await installLoraFromHuggingface({ url, silent: true })
+    await installLoraFromHuggingface({ url, family, silent: true })
       .then((sidecar) => {
         toast.success(`Installed ${sidecar.name}`);
         setHfUrl('');
+        setHfFamilyPrompt(null);
         refresh();
       })
-      .catch((err) => toast.error(err?.message || 'HuggingFace install failed'))
+      .catch((err) => {
+        // Autodetection failed but the install is otherwise valid — offer an
+        // inline confirm to retry with the LTX-Video family rather than toast a
+        // dead-end. (Skip when we already tried with an explicit override.)
+        if (err?.code === 'HF_UNKNOWN_FAMILY' && !family) {
+          setHfFamilyPrompt(url);
+        } else {
+          toast.error(err?.message || 'HuggingFace install failed');
+        }
+      })
       .finally(() => setHfInstalling(false));
-  }, [hfUrl, hfInstalling, refresh]);
+  }, [hfInstalling, refresh]);
+
+  const handleHfInstall = useCallback((e) => {
+    e?.preventDefault?.();
+    setHfFamilyPrompt(null);
+    return runHfInstall(hfUrl.trim(), undefined);
+  }, [hfUrl, runHfInstall]);
 
   const handleDelete = async (filename) => {
     setDeleting(filename);
@@ -234,6 +255,31 @@ export default function Loras() {
           (e.g. <code className="bg-port-bg px-1 rounded">fal/ltx2.3-audio-reactive-lora</code>).
           These apply to <Link to="/media/video" className="text-port-accent hover:underline">Video Gen</Link> renders on an LTX-2 (ltx2) model. Gated repos use your HuggingFace token from Image Gen settings.
         </p>
+        {hfFamilyPrompt && (
+          <div className="flex items-center justify-between gap-3 rounded border border-port-warning/40 bg-port-warning/10 px-3 py-2">
+            <span className="text-xs text-gray-300">
+              Couldn&apos;t detect the model family for <code className="bg-port-bg px-1 rounded">{hfFamilyPrompt}</code>. Install it as an LTX-Video LoRA?
+            </span>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => runHfInstall(hfFamilyPrompt, VIDEO_LORA_FAMILIES.LTX_VIDEO)}
+                disabled={hfInstalling}
+                className="bg-port-accent text-white px-3 py-1 rounded text-xs font-medium hover:bg-port-accent/90 disabled:opacity-50"
+              >
+                {hfInstalling ? 'Installing…' : 'Install as LTX-Video'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setHfFamilyPrompt(null)}
+                disabled={hfInstalling}
+                className="text-gray-400 hover:text-gray-200 px-2 py-1 rounded text-xs disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </form>
 
       {authPrompt && (
