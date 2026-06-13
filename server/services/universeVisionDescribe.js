@@ -123,13 +123,16 @@ export async function describeEntityFromImages({ kind, name, context, screenshot
     screenshots: images,
   });
 
-  // runPromptThroughProvider's fallback path can swap a failed API provider for
-  // a CLI/TUI one, which has no vision path and silently drops the images — so
-  // a fallback completion would be prose hallucinated from the text prompt
-  // alone, with no signal the references were ignored. Reject that outright
-  // (the whole point of resolving an API provider up front was to never
-  // describe images from nothing).
-  if (result.usedFallback && result.fallbackProvider && result.fallbackProvider.type !== 'api') {
+  // The runner can swap providers two ways: a proactive swap inside createRun
+  // (when the chosen API provider was already benched — leaves
+  // usedFallback/fallbackProvider UNSET) and a retry fallback after a failure
+  // (sets them). Both surface the provider that actually ran as `result.provider`.
+  // A CLI/TUI provider has no vision path and silently drops the images, so the
+  // completion would be prose hallucinated from the text prompt alone — reject
+  // it outright (resolving an API provider up front was meant to guarantee the
+  // model actually sees the references).
+  const ranProvider = result.provider || result.fallbackProvider || provider;
+  if (ranProvider.type && ranProvider.type !== 'api') {
     throw new ServerError(
       'The vision request fell back to a non-vision provider that cannot read images. Configure a reliable vision-capable API provider and retry.',
       { status: 502, code: 'VISION_FALLBACK_DROPPED_IMAGES' },
@@ -146,10 +149,11 @@ export async function describeEntityFromImages({ kind, name, context, screenshot
 
   return {
     description,
-    // Report the provider/model that ACTUALLY ran (a fallback may have swapped
-    // it), so the UI's picker can reflect reality instead of the request.
+    // Report the provider/model that ACTUALLY ran (a proactive or retry swap
+    // may have changed it), so the UI's picker can reflect reality instead of
+    // the request.
     llm: {
-      provider: result.fallbackProvider?.id || provider.id,
+      provider: ranProvider.id || provider.id,
       model: result.model || null,
     },
   };

@@ -234,9 +234,12 @@ export function assertProvider(provider, { message, code, status = 503 } = {}) {
  *   must pass this — without it, the CLI/TUI spawn lands in PortOS's own
  *   cwd and the analysis runs against the wrong files. No-op for API
  *   providers (no spawn).
- * @returns {Promise<{ text: string, runId: string, model: string|null, usedFallback?: boolean, fallbackFrom?: { id: string, name: string }, fallbackProvider?: object }>}
+ * @returns {Promise<{ text: string, runId: string, model: string|null, provider: object, usedFallback?: boolean, fallbackFrom?: { id: string, name: string }, fallbackProvider?: object }>}
  *   — `model` is the resolved model that actually executed (null when
- *   neither override nor provider.defaultModel applies). `runId` always
+ *   neither override nor provider.defaultModel applies). `provider` is the
+ *   provider object that actually ran, reflecting createRun's proactive swap
+ *   (read this to detect a proactive fallback; `usedFallback`/`fallbackProvider`
+ *   only cover the retry-fallback path). `runId` always
  *   points to the run record that *actually* ran — on fallback recovery
  *   this is the fresh fallback runId, NOT the failed primary's. When
  *   `usedFallback` is true, `fallbackFrom` identifies the failed primary
@@ -600,7 +603,14 @@ async function executeProviderRunOnce({ provider, prompt, source, model, runId: 
         const finalText = effectiveProvider.type === PROVIDER_TYPES.TUI
           ? (typeof result?.text === 'string' ? result.text : '')
           : text;
-        safeResolve({ text: finalText, runId, model: effectiveModel });
+        // Report the provider that ACTUALLY ran. `effectiveProvider` reflects
+        // createRun's proactive swap (when the requested provider was already
+        // benched) — distinct from the retry-fallback path, which the outer
+        // runPromptThroughProvider annotates separately. Callers that care
+        // about the effective provider's type (e.g. vision, which only works
+        // on API providers) must read this, since a proactive swap leaves
+        // `usedFallback`/`fallbackProvider` unset.
+        safeResolve({ text: finalText, runId, model: effectiveModel, provider: effectiveProvider });
       }
     };
 

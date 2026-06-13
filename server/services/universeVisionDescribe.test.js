@@ -65,9 +65,25 @@ describe('describeEntityFromImages', () => {
     expect(out.llm).toEqual({ provider: 'openai', model: 'gpt-vision' });
   });
 
-  it('rejects (VISION_FALLBACK_DROPPED_IMAGES) when the runner fell back to a non-API provider that drops images', async () => {
+  it('reports the effective provider on a proactive swap to another API provider', async () => {
+    promptRunner.runPromptThroughProvider.mockResolvedValue({
+      text: 'x', model: 'gpt-vision', provider: { id: 'openai', type: 'api' },
+    });
+    const out = await describeEntityFromImages({ kind: 'place', screenshots: ['a.png'] });
+    expect(out.llm).toEqual({ provider: 'openai', model: 'gpt-vision' });
+  });
+
+  it('rejects (VISION_FALLBACK_DROPPED_IMAGES) on a retry fallback to a non-API provider', async () => {
     promptRunner.runPromptThroughProvider.mockResolvedValue({
       text: 'hallucinated from text alone', model: 'sonnet', usedFallback: true, fallbackProvider: { id: 'claude-code', type: 'cli' },
+    });
+    await expect(describeEntityFromImages({ kind: 'character', screenshots: ['a.png'] }))
+      .rejects.toMatchObject({ code: 'VISION_FALLBACK_DROPPED_IMAGES', status: 502 });
+  });
+
+  it('rejects (VISION_FALLBACK_DROPPED_IMAGES) on a proactive swap to a non-API provider (no usedFallback set)', async () => {
+    promptRunner.runPromptThroughProvider.mockResolvedValue({
+      text: 'hallucinated from text alone', model: 'sonnet', provider: { id: 'claude-code', type: 'cli' },
     });
     await expect(describeEntityFromImages({ kind: 'character', screenshots: ['a.png'] }))
       .rejects.toMatchObject({ code: 'VISION_FALLBACK_DROPPED_IMAGES', status: 502 });

@@ -28,7 +28,9 @@ import { BIBLE_KINDS, BIBLE_LIMITS, pruneStaleReferenceSheets } from '../lib/sto
 import { getUniverseCanonUsage, listLinkedSeriesNames } from '../services/canonUsage.js';
 import { expandWorldTemplate, generateCategoryVariations } from '../services/universeBuilderExpand.js';
 import { describeEntityFromImages, VISION_KINDS, VISION_MAX_IMAGES } from '../services/universeVisionDescribe.js';
-import { sanitizeFilename } from '../lib/fileUtils.js';
+import { sanitizeFilename, PATHS } from '../lib/fileUtils.js';
+import { existsSync } from 'fs';
+import { join } from 'path';
 import { refineWorldPrompts } from '../services/universeBuilderRefine.js';
 import { promoteVariationToCanon, VALID_TARGET_KINDS } from '../services/universeBuilderPromote.js';
 import { autoSortOtherBuckets } from '../services/universeBuilderAutoSort.js';
@@ -423,6 +425,14 @@ router.post('/describe-from-images', asyncHandler(async (req, res) => {
     const safe = sanitizeFilename(f);
     if (safe !== f) {
       throw new ServerError(`Invalid screenshot filename: ${f}`, { status: 400, code: 'VALIDATION_ERROR' });
+    }
+    // Preflight existence: the runner's loadImageAsBase64 silently DROPS a
+    // missing image and still sends the text prompt, so a stale/never-uploaded
+    // filename would otherwise let the model describe with fewer references —
+    // or, if all are missing, hallucinate from the prompt alone. Fail loudly
+    // here instead. data/screenshots is where POST /api/screenshots writes.
+    if (!existsSync(join(PATHS.screenshots, safe))) {
+      throw new ServerError(`Screenshot not found: ${safe} — re-upload the image and retry.`, { status: 400, code: 'SCREENSHOT_NOT_FOUND' });
     }
     return safe;
   });
