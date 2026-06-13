@@ -57,6 +57,7 @@ const deriveReadiness = (images, triggerWord) => {
   const word = (triggerWord || '').trim();
   const ready = list.filter((img) => img.status === 'ready');
   const captioned = ready.filter((img) => captionHasTriggerWord(img.caption, word));
+  const trainable = !!word && captioned.length >= MIN_TRAINING_IMAGES;
   return {
     total: list.length,
     ready: ready.length,
@@ -64,8 +65,10 @@ const deriveReadiness = (images, triggerWord) => {
     rendering: list.filter((img) => img.status === 'rendering').length,
     required: MIN_TRAINING_IMAGES,
     recommended: RECOMMENDED_TRAINING_IMAGES,
-    trainable: !!word && captioned.length >= MIN_TRAINING_IMAGES,
-    quality: qualityTier(captioned.length),
+    trainable,
+    // Mirror of computeDatasetReadiness: gate the tier on trainability so a
+    // record with enough images but no trigger word never shows green.
+    quality: trainable ? qualityTier(captioned.length) : 'insufficient',
   };
 };
 
@@ -345,7 +348,9 @@ export default function LoraDatasetDetail() {
               ? 'Ready to train — strong dataset'
               : readiness.quality === 'minimum'
                 ? `Trainable now · ${Math.max(0, (readiness.recommended ?? 20) - (readiness.captioned ?? 0))} more for best quality`
-                : `Add + caption ${Math.max(0, (readiness.required ?? 10) - (readiness.captioned ?? 0))} more to train`}
+                : (readiness.captioned ?? 0) >= (readiness.required ?? 10)
+                  ? 'Set a trigger word to train'
+                  : `Add + caption ${(readiness.required ?? 10) - (readiness.captioned ?? 0)} more to train`}
           </div>
         </div>
       </div>

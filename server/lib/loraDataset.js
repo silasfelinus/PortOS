@@ -258,6 +258,7 @@ export function computeDatasetReadiness(dataset) {
   const triggerWord = trim(dataset?.triggerWord);
   const readyImages = images.filter((img) => img.status === 'ready');
   const captioned = readyImages.filter((img) => captionHasTriggerWord(img.caption, triggerWord));
+  const trainable = !!triggerWord && captioned.length >= MIN_TRAINING_IMAGES;
   return {
     total: images.length,
     ready: readyImages.length,
@@ -265,7 +266,13 @@ export function computeDatasetReadiness(dataset) {
     rendering: images.filter((img) => img.status === 'rendering').length,
     required: MIN_TRAINING_IMAGES,
     recommended: RECOMMENDED_TRAINING_IMAGES,
-    trainable: !!triggerWord && captioned.length >= MIN_TRAINING_IMAGES,
-    quality: datasetQualityTier(captioned.length),
+    trainable,
+    // Gate the tier on trainability, not the raw captioned count: with no
+    // trigger word captionHasTriggerWord counts every caption, so a record
+    // with enough images but a missing/empty trigger would otherwise report
+    // 'good' while trainable is false — and the UI would turn green "Ready to
+    // train" while the train gate rejects the run. 'minimum'/'good' therefore
+    // imply trainable by construction.
+    quality: trainable ? datasetQualityTier(captioned.length) : 'insufficient',
   };
 }

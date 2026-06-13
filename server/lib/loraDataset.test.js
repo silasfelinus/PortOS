@@ -205,6 +205,17 @@ describe('computeDatasetReadiness', () => {
     expect(mk(RECOMMENDED_TRAINING_IMAGES)).toMatchObject({ quality: 'good', trainable: true });
   });
 
+  it('reports insufficient quality when there is no trigger word, even with plenty of images', () => {
+    // Without a trigger word captionHasTriggerWord counts every caption, so
+    // captioned can clear the recommended target while the dataset is NOT
+    // trainable. quality must stay 'insufficient' so the UI never turns green
+    // "Ready to train" while the train gate rejects the run.
+    const images = Array.from({ length: RECOMMENDED_TRAINING_IMAGES + 5 }, (_, i) => img({ id: `i${i}` }));
+    const out = computeDatasetReadiness({ triggerWord: '', images });
+    expect(out.captioned).toBeGreaterThanOrEqual(RECOMMENDED_TRAINING_IMAGES);
+    expect(out).toMatchObject({ trainable: false, quality: 'insufficient' });
+  });
+
   it('datasetQualityTier brackets on the min and recommended thresholds', () => {
     expect(datasetQualityTier(0)).toBe('insufficient');
     expect(datasetQualityTier(MIN_TRAINING_IMAGES - 1)).toBe('insufficient');
