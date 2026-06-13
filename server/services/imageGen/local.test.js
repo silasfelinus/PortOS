@@ -138,6 +138,32 @@ describe('imageGen local.buildArgs flux2 dispatch', () => {
     expect(args[args.indexOf('--lora-paths') + 1]).toBe('/data/loras/lora-trained-adam-eivy-768ef285.safetensors');
   });
 
+  it('drops reference images when a LoRA forces the bf16 route (no kv pipeline)', () => {
+    mockResolveFlux2Python.mockReturnValue('/fake/venv-flux2/bin/python3');
+    const { args } = buildArgs({
+      ...baseInput,
+      loraPaths: ['/data/loras/x.safetensors'],
+      loraScales: [1.0],
+      referenceImagePaths: ['/data/images/ref1.png', '/data/images/ref2.png'],
+      referenceImageStrengths: [1.0, 0.8],
+      model: {
+        id: 'flux2-klein-4b',
+        runner: 'flux2',
+        quantization: 'sdnq',
+        repo: 'Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic',
+        tokenizerRepo: 'black-forest-labs/FLUX.2-klein-4B',
+      },
+    });
+    // bf16 route taken, and the multi-ref args are dropped so the runner
+    // doesn't hard-fail on the missing kv pipeline.
+    expect(args[args.indexOf('--quantization') + 1]).toBe('none');
+    expect(args).not.toContain('--reference-images');
+    expect(args).not.toContain('--reference-strengths');
+    expect(args).not.toContain('--kv-repo');
+    // The LoRA itself still threads through.
+    expect(args).toContain('--lora-paths');
+  });
+
   it('leaves a LoRA render on a bf16 model untouched (already unquantized)', () => {
     mockResolveFlux2Python.mockReturnValue('/fake/venv-flux2/bin/python3');
     const { args } = buildArgs({

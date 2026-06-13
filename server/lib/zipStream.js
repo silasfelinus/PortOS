@@ -95,7 +95,11 @@ export function parseZip() {
           pipe(dest) {
             piped = true;
             if (method === 8) {
-              passThrough.pipe(createInflateRaw()).pipe(dest);
+              const inflate = createInflateRaw();
+              // Forward inflate failures (corrupt deflate stream) to dest so a
+              // consumer awaiting completion rejects/errors instead of hanging.
+              inflate.on('error', (err) => dest.destroy(err));
+              passThrough.pipe(inflate).pipe(dest);
             } else {
               passThrough.pipe(dest);
             }
