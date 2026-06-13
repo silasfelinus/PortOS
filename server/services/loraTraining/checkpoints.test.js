@@ -168,18 +168,21 @@ describe('loraTraining/checkpoints', () => {
     expect(sel.reason).toMatch(/collapsed/);
   });
 
-  it('guard: keeps the final adapter when its (latest checkpoint) preview is healthy', async () => {
-    // Latest checkpoint is 250 with the noisy (healthy) preview → no override.
-    const run = buildRun({
-      artifacts: {
-        checkpoints: [{ step: 250, path: '0000250_checkpoint.zip', loss: 0.64 }],
-        samples: ['0000250_preview_image_preview_1.png'],
-      },
-    });
-    const sel = await selectDeployableCheckpoint(run, finalAdapterPath, 250);
+  it('guard: keeps the final adapter when its preview is healthy', async () => {
+    // finalStep 250 has the noisy (healthy) preview → no override.
+    const sel = await selectDeployableCheckpoint(buildRun(), finalAdapterPath, 250);
     expect(sel.autoSelected).toBe(false);
     expect(sel.step).toBe(250);
     expect(sel.buffer.toString()).toBe(ADAPTER_500.toString()); // returns the on-disk final adapter as-is
+  });
+
+  it('guard: for flux2 keeps the separate final-step adapter even though it is not a recorded checkpoint', async () => {
+    // flux2 writes the final adapter at finalStep separately (not as a
+    // checkpoint), and renders a sample there. finalStep 500 is past the only
+    // recorded checkpoint (250); its preview (black) collapses → falls back.
+    const sel = await selectDeployableCheckpoint(buildRun(), finalAdapterPath, 500);
+    expect(sel.autoSelected).toBe(true);
+    expect(sel.step).toBe(250); // latest healthy checkpoint
   });
 
   it('guard: trusts the final adapter when there are no previews to judge', async () => {

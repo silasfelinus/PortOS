@@ -192,22 +192,20 @@ export async function resolveCheckpointAdapterBuffer(run, step) {
  */
 export async function selectDeployableCheckpoint(run, finalAdapterPath, finalStep) {
   const samples = sampleByStep(run);
-  const all = listRunCheckpoints(run);
-  const withPreview = all.filter((c) => c.hasPreview);
-  // The step to record as "deployed" is the newest recorded checkpoint (the
-  // one `finalAdapterPath` was extracted from), NOT the trainer's raw end-step
-  // counter — using a listed checkpoint's step keeps the picker's deployed flag
-  // accurate. Fall back to finalStep when no checkpoints were recorded.
-  const finalCkptStep = all.length ? all[all.length - 1].step : finalStep;
-  // Health proxy for the final adapter: its own preview, or — since mflux
-  // saves the final checkpoint a few steps PAST the last sampled step, so the
-  // final usually has no preview of its own — the most recent preview.
+  const withPreview = listRunCheckpoints(run).filter((c) => c.hasPreview);
+  // `finalStep` is the trainer's reported end step, which IS the deployed
+  // adapter: for mflux it equals the final checkpoint's (filename-derived)
+  // step, so the picker's deployed flag matches a listed checkpoint; for flux2
+  // the final adapter is written separately AT finalStep (not as a checkpoint),
+  // and flux2 renders a sample at that step, so the proxy below still finds it.
+  // Health proxy: the final step's own preview, or — since mflux saves the
+  // final checkpoint a few steps PAST the last sampled step — the most recent.
   const latest = withPreview.length ? withPreview[withPreview.length - 1] : null;
-  const finalPreviewName = samples.get(finalCkptStep) || (latest ? samples.get(latest.step) : null);
+  const finalPreviewName = samples.get(finalStep) || (latest ? samples.get(latest.step) : null);
 
   const readFinal = async (reason = null) => ({
     buffer: await readFile(finalAdapterPath),
-    step: finalCkptStep,
+    step: finalStep,
     previewUrl: sampleUrl(run.id, finalPreviewName),
     autoSelected: false,
     reason,
@@ -221,7 +219,7 @@ export async function selectDeployableCheckpoint(run, finalAdapterPath, finalSte
 
   // Final diverged. Walk earlier checkpoints newest→oldest for a healthy one.
   const earlier = withPreview
-    .filter((c) => c.step < finalCkptStep)
+    .filter((c) => c.step < finalStep)
     .sort((a, b) => b.step - a.step);
   for (const cand of earlier) {
     const previewName = samples.get(cand.step);
@@ -239,5 +237,5 @@ export async function selectDeployableCheckpoint(run, finalAdapterPath, finalSte
   }
   // Every preview collapsed (or no earlier adapter recoverable) — keep final
   // so the run still registers a (flawed) LoRA the user can inspect/replace.
-  return readFinal(`all previews collapsed — kept final step ${finalCkptStep}`);
+  return readFinal(`all previews collapsed — kept final step ${finalStep}`);
 }
