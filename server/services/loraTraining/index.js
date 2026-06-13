@@ -250,10 +250,20 @@ export async function runTraining({ jobId, runId, pythonPath = null }) {
 
   // Re-validate — the dataset may have been edited/deleted while queued.
   let manifest;
+  let dataset;
   try {
-    ({ manifest } = await validateDatasetReady(run.datasetId));
+    ({ dataset, manifest } = await validateDatasetReady(run.datasetId));
   } catch (err) {
     return failBeforeSpawn(err.message);
+  }
+  // Stage-time ownership check: if the dataset was reassigned to a different
+  // character after this run was queued, the run no longer owns it. Bail out
+  // rather than training the moved dataset and registering a LoRA under the
+  // run's now-stale character. failBeforeSpawn's flipDatasetAfterRun is
+  // character-guarded, so it won't disturb the reassigned dataset's state.
+  // (entryId is a globally-unique UUID, so it alone identifies the character.)
+  if (dataset.character?.entryId !== run.character.entryId) {
+    return failBeforeSpawn('Dataset was reassigned to a different character after this run was queued — cancel and retrain.');
   }
 
   const dir = runDir(runId);
