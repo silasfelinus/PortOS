@@ -47,13 +47,22 @@ export default function TrainingPanel({ dataset, readiness, triggerSaving, onRun
     }).catch(() => setModels([]));
   }, []);
 
+  // A reassigned dataset keeps its id but its old runs belong to the previous
+  // character. Re-fetch (and re-filter) whenever the character identity moves,
+  // not just the id, and show only runs matching the current (universeId,
+  // entryId) so the panel + checkpoint picker can't surface/promote a stale
+  // run from the prior character.
+  const charEntryId = dataset.character?.entryId;
+  const charUniverseId = dataset.character?.universeId;
   const refreshRuns = useCallback(() => {
     listLoraTrainingRuns({ datasetId: dataset.id, limit: 5 }).then((runs) => {
-      const active = runs.find(isActive) || null;
-      setActiveRun(active);
-      setLastRun(runs.find((r) => !isActive(r)) || null);
+      const own = (Array.isArray(runs) ? runs : []).filter(
+        (r) => r.character?.entryId === charEntryId && r.character?.universeId === charUniverseId,
+      );
+      setActiveRun(own.find(isActive) || null);
+      setLastRun(own.find((r) => !isActive(r)) || null);
     }).catch(() => {});
-  }, [dataset.id]);
+  }, [dataset.id, charEntryId, charUniverseId]);
   useEffect(() => { refreshRuns(); }, [refreshRuns]);
 
   const sseUrl = activeRun ? `/api/lora-training/runs/${activeRun.id}/events` : null;

@@ -185,11 +185,19 @@ const flipDatasetAfterRun = (run, { trained, loraFilename = null }) => {
   // different character mid-run (patchDataset resets it to draft); flipping
   // it here would otherwise mark the NEW character trained with the OLD
   // character's adapter, or clobber a fresh run's 'training' status. Skip the
-  // flip when the dataset has moved on. Pre-reassignment runs predate the
-  // `character` snapshot guarantee, so a missing entryId falls through (flip).
+  // flip when the dataset has moved on. Match on the full (universeId,
+  // entryId) key the dataset store uses — a different universe can reuse the
+  // same entryId, so entryId alone would falsely re-own a moved dataset.
+  // Pre-reassignment runs predate the `character` snapshot guarantee, so a
+  // missing entryId falls through (flip).
   const runEntryId = run?.character?.entryId || null;
+  const runUniverseId = run?.character?.universeId || null;
   return updateDataset(datasetId, (current) => {
-    if (runEntryId && current.character?.entryId !== runEntryId) return null;
+    const mismatch = runEntryId && (
+      current.character?.entryId !== runEntryId
+      || (runUniverseId && current.character?.universeId !== runUniverseId)
+    );
+    if (mismatch) return null;
     return {
       ...current,
       status: trained ? 'trained' : 'draft',
