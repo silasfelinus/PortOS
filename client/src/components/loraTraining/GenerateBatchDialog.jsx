@@ -34,7 +34,10 @@ const ChipToggleList = ({ idPrefix, label, options, selected, onToggle }) => (
 );
 
 export default function GenerateBatchDialog({ dataset, expressionOptions = [], outfitOptions = [], onClose, onStarted }) {
-  const [count, setCount] = useState(12);
+  // Default to the recommended quality target (~20) rather than the bare
+  // minimum so a one-click batch lands a strong dataset. See the tips block
+  // in LoraDatasetDetail for the rationale (variety > volume; ~20–30 sweet spot).
+  const [count, setCount] = useState(20);
   const [expressions, setExpressions] = useState(expressionOptions);
   const [outfits, setOutfits] = useState(outfitOptions);
   const [submitting, setSubmitting] = useState(false);
@@ -84,6 +87,9 @@ export default function GenerateBatchDialog({ dataset, expressionOptions = [], o
             onChange={(e) => setCount(Number(e.target.value))}
             className="w-full"
           />
+          <p className="text-xs text-gray-500 mt-1">
+            Sweet spot ~20–30. Fewer than 10 won&apos;t train; past ~40 mostly adds time and overfitting risk.
+          </p>
         </div>
         {expressionOptions.length > 0 && (
           <ChipToggleList
