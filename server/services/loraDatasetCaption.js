@@ -107,6 +107,24 @@ export async function resolveCaptionModel({
   return { providerId: pick.providerId, model: pick.id };
 }
 
+/**
+ * Build the persisted caption from a vision model's raw reply.
+ *
+ * An empty reply would `prefixCaption` down to just the trigger word — a
+ * degenerate "caption" that still counts as success and gets persisted, leaving
+ * the image bound but undescribed. Vision models commonly return blank content
+ * when they refuse a realistic close-up face (or a thinking model spends its
+ * whole token budget reasoning). Throwing here routes blank output through the
+ * loop's failure path, so it's surfaced and re-attemptable rather than saved as
+ * a trigger-word-only caption.
+ */
+export function buildCaption(triggerWord, text, model = 'vision model') {
+  if (!text || !text.trim()) {
+    throw new Error(`${model} returned an empty description — it may have refused this image; try a different vision model or caption it manually`);
+  }
+  return prefixCaption(triggerWord, text);
+}
+
 const emit = (runId, payload) => {
   const run = captionRuns.get(runId);
   if (run) broadcastSse(run, payload);
@@ -165,7 +183,7 @@ export async function startCaptionRun(datasetId, {
           model: resolvedModel,
           maxTokens: CAPTION_MAX_TOKENS,
         });
-        caption = prefixCaption(dataset.triggerWord, text);
+        caption = buildCaption(dataset.triggerWord, text, `vision model "${resolvedModel}"`);
       } catch (err) {
         failed += 1;
         console.error(`❌ Caption failed [${shortId(runId)} ${img.id}]: ${err?.message || err}`);
