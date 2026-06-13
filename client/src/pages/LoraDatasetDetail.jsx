@@ -187,21 +187,32 @@ export default function LoraDatasetDetail() {
   useEffect(() => {
     if (!captionRun || !captionSse.closed) return;
     const last = captionSse.latest;
+    // The per-image `progress` frames carry the specific failure reason (refusal
+    // vs. a reasoning model that exhausted its token budget). The terminal frame
+    // only has a tally, so pull the most recent per-image error to surface the
+    // actionable detail — invaluable when a single-image run fails.
+    const lastImageError = [...(captionSse.frames || [])]
+      .reverse().find((f) => f?.type === 'progress' && f.error)?.error;
     if (last?.type === 'error') {
-      // Whole run failed up front (e.g. every image refused) — show the
-      // actionable server message verbatim.
-      toast.error(last.message || 'Captioning failed');
+      // Every image failed — the server's terminal `error` frame carries only a
+      // generic "check the vision provider" tally, but the per-image `progress`
+      // frames already reported the specific reason (refusal vs. a reasoning
+      // model that exhausted its token budget). Prefer that detail; it's the
+      // whole point for the common single-image failure, which lands here (not
+      // in the `complete` branch) because done===0.
+      toast.error(lastImageError || last.message || 'Captioning failed');
     } else if (last?.type === 'complete' && last.failed > 0) {
       const noun = last.failed === 1 ? 'image' : 'images';
+      const detail = lastImageError ? ` ${lastImageError}` : '';
       toast.error(last.done > 0
-        ? `Captioned ${last.done}/${last.total} — ${last.failed} ${noun} failed (model refused or returned an empty description). Re-caption individually or pick another vision model.`
-        : `All ${last.failed} ${noun} failed to caption — the vision model refused or returned nothing. Try another vision model.`);
+        ? `Captioned ${last.done}/${last.total} — ${last.failed} ${noun} failed.${detail || ' Re-caption individually or pick another vision model.'}`
+        : `All ${last.failed} ${noun} failed to caption.${detail || ' The vision model refused or returned nothing — try another vision model.'}`);
     } else if (last?.type === 'complete' && last.done > 0) {
       toast.success(`Captioned ${last.done} image${last.done === 1 ? '' : 's'}`);
     }
     setCaptionRun(null);
     refresh();
-  }, [captionRun, captionSse.closed, captionSse.latest, refresh]);
+  }, [captionRun, captionSse.closed, captionSse.latest, captionSse.frames, refresh]);
 
   const onImagesChange = (mutate) => setDataset((prev) => (prev ? { ...prev, images: mutate(prev.images) } : prev));
 
