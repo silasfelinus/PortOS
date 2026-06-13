@@ -10,7 +10,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
-  ArrowLeft, Loader2, Upload, Wand2, Scissors, Tags, RefreshCw, AlertTriangle, Images,
+  ArrowLeft, Loader2, Upload, Wand2, Scissors, Tags, RefreshCw, AlertTriangle, Images, Replace, Lightbulb,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import Modal from '../components/ui/Modal';
@@ -20,6 +20,7 @@ import GenerateBatchDialog from '../components/loraTraining/GenerateBatchDialog'
 import TrainingPanel from '../components/loraTraining/TrainingPanel';
 import CaptionModelPicker from '../components/loraTraining/CaptionModelPicker';
 import ImportGalleryDialog from '../components/loraTraining/ImportGalleryDialog';
+import UniverseCharacterPicker from '../components/loraTraining/UniverseCharacterPicker';
 import {
   getLoraDataset,
   patchLoraDataset,
@@ -37,6 +38,13 @@ const TRIGGER_RE = /^[a-z0-9_]{2,64}$/;
 // deleted, instead of waiting on a server round-trip. Port logic changes here
 // when the server helper changes.
 const MIN_TRAINING_IMAGES = 10;
+const RECOMMENDED_TRAINING_IMAGES = 20;
+const TRAINING_IMAGE_SWEET_SPOT_MAX = 30;
+const qualityTier = (captioned) => {
+  if (captioned < MIN_TRAINING_IMAGES) return 'insufficient';
+  if (captioned < RECOMMENDED_TRAINING_IMAGES) return 'minimum';
+  return 'good';
+};
 const captionHasTriggerWord = (caption, triggerWord) => {
   const word = (triggerWord || '').trim();
   const text = (caption || '').trim();
@@ -50,13 +58,18 @@ const deriveReadiness = (images, triggerWord) => {
   const word = (triggerWord || '').trim();
   const ready = list.filter((img) => img.status === 'ready');
   const captioned = ready.filter((img) => captionHasTriggerWord(img.caption, word));
+  const trainable = !!word && captioned.length >= MIN_TRAINING_IMAGES;
   return {
     total: list.length,
     ready: ready.length,
     captioned: captioned.length,
     rendering: list.filter((img) => img.status === 'rendering').length,
     required: MIN_TRAINING_IMAGES,
-    trainable: !!word && captioned.length >= MIN_TRAINING_IMAGES,
+    recommended: RECOMMENDED_TRAINING_IMAGES,
+    trainable,
+    // Mirror of computeDatasetReadiness: gate the tier on trainability so a
+    // record with enough images but no trigger word never shows green.
+    quality: trainable ? qualityTier(captioned.length) : 'insufficient',
   };
 };
 
@@ -126,6 +139,62 @@ function SliceDialog({ dataset, onClose, onSliced }) {
   );
 }
 
+function ReassignDialog({ dataset, onClose, onReassigned }) {
+  // Default to the current assignment so the picker opens on the dataset's
+  // own universe (characters pre-load) and the user only changes what they want.
+  const [universeId, setUniverseId] = useState(dataset.character.universeId);
+  const [entryId, setEntryId] = useState(dataset.character.entryId);
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async () => {
+    setSubmitting(true);
+    try {
+      const next = await patchLoraDataset(dataset.id, { universeId, entryId });
+      toast.success(`Reassigned to ${next.character.name}`);
+      onReassigned(next);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      size="sm"
+      ariaLabelledBy="lt-reassign-title"
+      panelClassName="bg-port-card border border-port-border rounded-lg p-5"
+    >
+      <div className="space-y-4">
+        <h2 id="lt-reassign-title" className="text-base font-semibold text-white">Reassign character</h2>
+        <p className="text-sm text-gray-400">
+          Move this dataset&apos;s images and trigger word to a different universe character.
+          The trigger word stays the same — edit it separately if the new character needs its own token.
+        </p>
+        <UniverseCharacterPicker
+          idPrefix="lt-reassign"
+          universeId={universeId}
+          entryId={entryId}
+          onUniverseChange={(id) => { setUniverseId(id); setEntryId(''); }}
+          onEntryChange={setEntryId}
+        />
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="px-3 py-2 text-sm text-gray-400 hover:text-white">Cancel</button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={!universeId || !entryId || submitting}
+            className="px-3 py-2 text-sm rounded bg-port-accent text-white disabled:opacity-50 flex items-center gap-2"
+          >
+            {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Replace className="w-4 h-4" />}
+            Reassign
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 export default function LoraDatasetDetail() {
   const { datasetId } = useParams();
   const [dataset, setDataset] = useState(null);
@@ -137,6 +206,7 @@ export default function LoraDatasetDetail() {
   const [showGenerate, setShowGenerate] = useState(false);
   const [showSlice, setShowSlice] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showReassign, setShowReassign] = useState(false);
   const [captionRun, setCaptionRun] = useState(null);
   const [captionStarting, setCaptionStarting] = useState(false);
   // Chosen caption model { providerId, model } — null fields mean "let the
@@ -304,15 +374,28 @@ export default function LoraDatasetDetail() {
           <Link to="/media/training" className="text-xs text-gray-400 hover:text-white flex items-center gap-1 mb-1">
             <ArrowLeft className="w-3 h-3" /> Datasets
           </Link>
-          <h2 className="text-lg font-semibold text-white truncate">
-            <Link
-              to={`/universes/${dataset.character.universeId}`}
-              className="hover:text-port-accent"
-              title="Open in universe editor"
+          <div className="flex items-center gap-2 min-w-0">
+            <h2 className="text-lg font-semibold text-white truncate">
+              <Link
+                to={`/universes/${dataset.character.universeId}`}
+                className="hover:text-port-accent"
+                title="Open in universe editor"
+              >
+                {dataset.character.name}
+              </Link>
+            </h2>
+            <button
+              type="button"
+              onClick={() => setShowReassign(true)}
+              disabled={dataset.status === 'training'}
+              title={dataset.status === 'training'
+                ? 'Cancel the in-progress training run before reassigning'
+                : 'Reassign this dataset to a different universe character'}
+              className="shrink-0 text-xs text-gray-500 hover:text-port-accent flex items-center gap-1 disabled:opacity-40 disabled:hover:text-gray-500"
             >
-              {dataset.character.name}
-            </Link>
-          </h2>
+              <Replace className="w-3.5 h-3.5" /> Reassign
+            </button>
+          </div>
           <div className="flex items-center gap-2 mt-1">
             <label htmlFor="lt-trigger" className="text-xs text-gray-500">Trigger word</label>
             <input
@@ -327,11 +410,19 @@ export default function LoraDatasetDetail() {
           </div>
         </div>
         <div className="text-right text-sm">
-          <div className={readiness.trainable ? 'text-port-success' : 'text-gray-400'}>
+          <div className={readiness.quality === 'good' ? 'text-port-success' : readiness.quality === 'minimum' ? 'text-port-warning' : 'text-gray-400'}>
             {readiness.ready ?? 0} images · {readiness.captioned ?? 0}/{readiness.required ?? 10} captioned
             {renderingCount ? ` · ${renderingCount} rendering` : ''}
           </div>
-          <div className="text-xs text-gray-500">{readiness.trainable ? 'Ready to train' : 'Add + caption more images to train'}</div>
+          <div className="text-xs text-gray-500">
+            {readiness.quality === 'good'
+              ? 'Ready to train — strong dataset'
+              : readiness.quality === 'minimum'
+                ? `Trainable now · ${Math.max(0, (readiness.recommended ?? 20) - (readiness.captioned ?? 0))} more for best quality`
+                : (readiness.captioned ?? 0) >= (readiness.required ?? 10)
+                  ? 'Set a trigger word to train'
+                  : `Add + caption ${(readiness.required ?? 10) - (readiness.captioned ?? 0)} more to train`}
+          </div>
         </div>
       </div>
 
@@ -398,6 +489,31 @@ export default function LoraDatasetDetail() {
         <CaptionModelPicker onChange={onCaptionModelChange} />
       </div>
 
+      <details className="bg-port-card border border-port-border rounded-lg text-sm">
+        <summary className="cursor-pointer select-none px-3 py-2 flex items-center gap-2 text-gray-300 hover:text-white">
+          <Lightbulb className="w-4 h-4 text-port-warning shrink-0" />
+          <span className="font-medium">Tips for a strong character dataset</span>
+          <span className="text-xs text-gray-500">
+            target ~{RECOMMENDED_TRAINING_IMAGES}–{TRAINING_IMAGE_SWEET_SPOT_MAX} images · {MIN_TRAINING_IMAGES} minimum
+          </span>
+        </summary>
+        <div className="px-3 pb-3 pt-1 text-xs text-gray-400 space-y-2 border-t border-port-border/60">
+          <p>
+            Quality beats quantity. {MIN_TRAINING_IMAGES} images is the floor; ~{RECOMMENDED_TRAINING_IMAGES}–{TRAINING_IMAGE_SWEET_SPOT_MAX} sharp,
+            varied shots is the sweet spot. Past ~50 you mostly add training time and overfitting risk —
+            near-duplicate frames teach the model to memorize a pose instead of learning the character.
+          </p>
+          <ul className="list-disc pl-4 space-y-1">
+            <li><span className="text-gray-300">Vary the angle</span> — front, three-quarter, profile, and a back view.</li>
+            <li><span className="text-gray-300">Vary the framing</span> — mix tight face close-ups (for likeness) with mid and full-body shots (for proportions).</li>
+            <li><span className="text-gray-300">Vary pose &amp; expression</span> — standing, sitting, action; neutral, smiling, intense.</li>
+            <li><span className="text-gray-300">Vary outfit, lighting &amp; background</span> — so the LoRA learns the character, not one costume, key light, or backdrop.</li>
+            <li><span className="text-gray-300">Keep it single-subject and on-model</span> — one clearly-visible character per image, consistent identity, no clutter or other people.</li>
+            <li><span className="text-gray-300">Drop the weak ones</span> — blurry, occluded, or off-model frames hurt more than they help; avoid near-duplicates.</li>
+          </ul>
+        </div>
+      </details>
+
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4 items-start">
         <DatasetImageGrid
           dataset={dataset}
@@ -438,6 +554,13 @@ export default function LoraDatasetDetail() {
             if (images?.length) onImagesChange((prev) => [...prev, ...images]);
             refresh();
           }}
+        />
+      )}
+      {showReassign && (
+        <ReassignDialog
+          dataset={dataset}
+          onClose={() => setShowReassign(false)}
+          onReassigned={(next) => { setShowReassign(false); setDataset(next); }}
         />
       )}
     </div>

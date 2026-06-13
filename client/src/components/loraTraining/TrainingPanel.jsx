@@ -13,6 +13,7 @@ import { Dumbbell, Loader2, Square, CheckCircle2, XCircle, Sparkles } from 'luci
 import toast from '../ui/Toast';
 import { useSseProgress } from '../../hooks/useSseProgress';
 import CheckpointPicker from './CheckpointPicker';
+import LiveSampleGallery from './LiveSampleGallery';
 import {
   getLoraTrainingStatus,
   listLoraTrainingRuns,
@@ -47,17 +48,32 @@ export default function TrainingPanel({ dataset, readiness, triggerSaving, onRun
     }).catch(() => setModels([]));
   }, []);
 
+  // A reassigned dataset keeps its id but its old runs belong to the previous
+  // character. Re-fetch (and re-filter) whenever the character identity moves,
+  // not just the id, and show only runs matching the current (universeId,
+  // entryId) so the panel + checkpoint picker can't surface/promote a stale
+  // run from the prior character.
+  const charEntryId = dataset.character?.entryId;
+  const charUniverseId = dataset.character?.universeId;
   const refreshRuns = useCallback(() => {
-    listLoraTrainingRuns({ datasetId: dataset.id, limit: 5 }).then((runs) => {
-      const active = runs.find(isActive) || null;
-      setActiveRun(active);
-      setLastRun(runs.find((r) => !isActive(r)) || null);
+    // Filter by the current character on the SERVER (characterId = entryId) so
+    // the row limit applies to this character's runs — not to other-character
+    // runs left over on the same dataset id after a reassignment (which a
+    // client-side filter-after-limit would drop). The client guard then matches
+    // the full (universeId, entryId) key the dataset store uses, and tolerates
+    // a run missing its character snapshot.
+    listLoraTrainingRuns({ datasetId: dataset.id, characterId: charEntryId, limit: 5 }).then((runs) => {
+      const own = (Array.isArray(runs) ? runs : []).filter(
+        (r) => !r.character || (r.character.entryId === charEntryId && r.character.universeId === charUniverseId),
+      );
+      setActiveRun(own.find(isActive) || null);
+      setLastRun(own.find((r) => !isActive(r)) || null);
     }).catch(() => {});
-  }, [dataset.id]);
+  }, [dataset.id, charEntryId, charUniverseId]);
   useEffect(() => { refreshRuns(); }, [refreshRuns]);
 
   const sseUrl = activeRun ? `/api/lora-training/runs/${activeRun.id}/events` : null;
-  const { latest, closed } = useSseProgress(sseUrl, { enabled: !!activeRun });
+  const { frames, latest, closed } = useSseProgress(sseUrl, { enabled: !!activeRun });
 
   useEffect(() => {
     if (!closed || !activeRun) return;
@@ -122,9 +138,10 @@ export default function TrainingPanel({ dataset, readiness, triggerSaving, onRun
         <div className="h-2 bg-port-bg rounded overflow-hidden">
           <div className="h-full bg-port-accent transition-all" style={{ width: `${Math.round(progress * 100)}%` }} />
         </div>
-        <div className="text-xs text-gray-400">{latest?.message || (activeRun.status === 'queued' ? `Queued (position ${latest?.position ?? '…'})` : 'Starting…')}</div>
-        {latest?.currentImage && (
-          <img src={latest.currentImage} alt="training sample" className="w-32 h-32 object-cover rounded border border-port-border" />
+        {activeRun.status === 'queued' ? (
+          <div className="text-xs text-gray-400">Queued (position {latest?.position ?? '…'})</div>
+        ) : (
+          <LiveSampleGallery run={activeRun} frames={frames} progress={progress} message={latest?.message} />
         )}
       </div>
     );
@@ -152,6 +169,25 @@ export default function TrainingPanel({ dataset, readiness, triggerSaving, onRun
               <XCircle className="w-3.5 h-3.5 text-port-error" />
               <span className="text-gray-400" title={lastRun.error || ''}>Last run {lastRun.status}{lastRun.error ? ` — ${lastRun.error.slice(0, 120)}` : ''}</span>
             </>
+          )}
+        </div>
+      )}
+      {lastRun?.status === 'failed' && lastRun.errorCode === 'HF_AUTH' && (
+        <div className="rounded-lg border border-port-warning/40 bg-port-warning/10 px-3 py-3 text-xs text-port-warning space-y-2">
+          <div className="font-semibold text-sm">Model access required</div>
+          <div className="text-port-warning/90">
+            The training base model is gated on HuggingFace. Accept its license with the account
+            that owns your stored token, then retry — no token change needed.
+          </div>
+          {lastRun.errorRepo && (
+            <a
+              href={`https://huggingface.co/${lastRun.errorRepo}`}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-port-accent text-white text-xs font-medium hover:bg-port-accent/80"
+            >
+              Request access to {lastRun.errorRepo} ↗
+            </a>
           )}
         </div>
       )}
@@ -220,7 +256,12 @@ export default function TrainingPanel({ dataset, readiness, triggerSaving, onRun
         )}
       </div>
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs text-gray-500">{disabledReason || `Trains on ${readiness?.captioned ?? 0} captioned images`}</span>
+        <span className={`text-xs ${!disabledReason && readiness?.quality === 'minimum' ? 'text-port-warning' : 'text-gray-500'}`}>
+          {disabledReason
+            || (readiness?.quality === 'minimum'
+              ? `Trains on ${readiness?.captioned ?? 0} — ${Math.max(0, (readiness?.recommended ?? 20) - (readiness?.captioned ?? 0))} more recommended`
+              : `Trains on ${readiness?.captioned ?? 0} captioned images`)}
+        </span>
         <button
           type="button"
           onClick={start}
