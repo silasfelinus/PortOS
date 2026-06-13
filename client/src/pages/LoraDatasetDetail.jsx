@@ -38,6 +38,7 @@ const TRIGGER_RE = /^[a-z0-9_]{2,64}$/;
 // when the server helper changes.
 const MIN_TRAINING_IMAGES = 10;
 const RECOMMENDED_TRAINING_IMAGES = 20;
+const TRAINING_IMAGE_SWEET_SPOT_MAX = 30;
 const qualityTier = (captioned) => {
   if (captioned < MIN_TRAINING_IMAGES) return 'insufficient';
   if (captioned < RECOMMENDED_TRAINING_IMAGES) return 'minimum';
@@ -417,12 +418,12 @@ export default function LoraDatasetDetail() {
           <Lightbulb className="w-4 h-4 text-port-warning shrink-0" />
           <span className="font-medium">Tips for a strong character dataset</span>
           <span className="text-xs text-gray-500">
-            target ~{RECOMMENDED_TRAINING_IMAGES}–30 images · {MIN_TRAINING_IMAGES} minimum
+            target ~{RECOMMENDED_TRAINING_IMAGES}–{TRAINING_IMAGE_SWEET_SPOT_MAX} images · {MIN_TRAINING_IMAGES} minimum
           </span>
         </summary>
         <div className="px-3 pb-3 pt-1 text-xs text-gray-400 space-y-2 border-t border-port-border/60">
           <p>
-            Quality beats quantity. {MIN_TRAINING_IMAGES} images is the floor; ~{RECOMMENDED_TRAINING_IMAGES}–30 sharp,
+            Quality beats quantity. {MIN_TRAINING_IMAGES} images is the floor; ~{RECOMMENDED_TRAINING_IMAGES}–{TRAINING_IMAGE_SWEET_SPOT_MAX} sharp,
             varied shots is the sweet spot. Past ~50 you mostly add training time and overfitting risk —
             near-duplicate frames teach the model to memorize a pose instead of learning the character.
           </p>
