@@ -24,6 +24,7 @@ import {
   listRuns,
   listSamples,
   promoteCheckpoint,
+  resumeTrainingRun,
   runDir,
   runSamplesDir,
   startTrainingRun,
@@ -93,6 +94,14 @@ router.post('/runs/:id/cancel', asyncHandler(async (req, res) => {
     throw new ServerError(result.error || 'Cancel failed', { status, code: result.code });
   }
   res.json(result);
+}));
+
+// Resume a failed/canceled run from its latest checkpoint — re-enqueues a job
+// against the SAME run id (mflux bakes the output path into the checkpoint, so
+// the resumed trainer must write back into the original run dir). 202-shaped.
+router.post('/runs/:id/resume', asyncHandler(async (req, res) => {
+  await getRunRequired(req.params.id); // 404 if the run is unknown
+  res.status(202).json(await resumeTrainingRun(req.params.id));
 }));
 
 router.delete('/runs/:id', asyncHandler(async (req, res) => {

@@ -141,6 +141,29 @@ describe('buildMfluxTrainArgs / buildFlux2TrainArgs', () => {
     expect(args[args.indexOf('--sample-prompt') + 1]).toContain('kessa');
   });
 
+  it('appends the resume flag for each runtime when a checkpoint is given', () => {
+    const mflux = buildMfluxTrainArgs({
+      scriptPath: '/x/train_mflux_lora.py', configPath: '/r/cfg.json', runDir: '/r', totalSteps: 500,
+      resumeCheckpoint: '/r/mflux/checkpoints/0000150_checkpoint.zip',
+    });
+    expect(mflux[mflux.indexOf('--resume-checkpoint') + 1]).toBe('/r/mflux/checkpoints/0000150_checkpoint.zip');
+
+    const flux2 = buildFlux2TrainArgs({
+      scriptPath: '/x/train_flux2_lora.py',
+      trainRepo: 'black-forest-labs/FLUX.2-klein-4B',
+      manifestPath: '/r/manifest.json', runDir: '/r', triggerWord: 'kessa',
+      resumeFrom: '/r/checkpoints/step-000150',
+    });
+    expect(flux2[flux2.indexOf('--resume-from') + 1]).toBe('/r/checkpoints/step-000150');
+  });
+
+  it('omits the resume flag on a fresh run', () => {
+    const args = buildMfluxTrainArgs({
+      scriptPath: '/x.py', configPath: '/r/cfg.json', runDir: '/r', totalSteps: 500,
+    });
+    expect(args).not.toContain('--resume-checkpoint');
+  });
+
   it('refuses non-bf16 train repos', () => {
     expect(() => buildFlux2TrainArgs({
       scriptPath: '/x.py', trainRepo: 'Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic',

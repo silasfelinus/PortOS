@@ -26,6 +26,7 @@ const {
   listRunSamples,
   isPreviewCollapsed,
   resolveCheckpointAdapterBuffer,
+  resolveLatestCheckpointArtifact,
   selectDeployableCheckpoint,
   COLLAPSE_ENTROPY_MAX,
 } = await import('./checkpoints.js');
@@ -117,6 +118,16 @@ describe('loraTraining/checkpoints', () => {
     expect(list[0]).toMatchObject({ step: 250, loss: 0.64, hasPreview: true, deployed: true });
     expect(list[0].previewUrl).toContain('0000250_preview');
     expect(list[1].deployed).toBe(false);
+  });
+
+  it('resolves the latest on-disk checkpoint zip as the mflux resume point', () => {
+    const latest = resolveLatestCheckpointArtifact(buildRun());
+    expect(latest).toMatchObject({ step: 500 });
+    expect(latest.path).toContain(join('mflux', 'checkpoints', '0000500_checkpoint.zip'));
+  });
+
+  it('returns null when a run has no checkpoint dir to resume from', () => {
+    expect(resolveLatestCheckpointArtifact({ id: 'no-such-run', runtime: 'mflux' })).toBeNull();
   });
 
   it('lists samples as step+url sorted by step (seeds the live gallery)', () => {
