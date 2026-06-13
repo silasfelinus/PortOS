@@ -83,6 +83,27 @@ describe('buildCaption', () => {
     expect(() => buildCaption('tamsin_reed', '', 'vision model "llava:7b"'))
       .toThrow(/llava:7b/);
   });
+
+  it('blames a reasoning model (not a refusal) when it burned the budget thinking', () => {
+    // Qwen3/thinking-Gemma symptom: hidden reasoning + finish_reason 'length'.
+    // The message must point at picking a real VLM, not "it refused".
+    const meta = { finishReason: 'length', usage: { completion_tokens: 600 }, reasoning: 'Let me analyze…' };
+    expect(() => buildCaption('tamsin_reed', '', 'vision model "qwen3:35b"', meta))
+      .toThrow(/hidden reasoning.*600 completion tokens.*reasoning model.*VLM/s);
+  });
+
+  it('calls out plain truncation when cut off with no reasoning trace', () => {
+    const meta = { finishReason: 'length', usage: { completion_tokens: 600 }, reasoning: '' };
+    expect(() => buildCaption('tamsin_reed', '', 'vision model "llava:7b"', meta))
+      .toThrow(/cut off at the token budget.*raise the caption token budget/s);
+  });
+
+  it('falls back to the refusal wording when there is no diagnostic signal', () => {
+    expect(() => buildCaption('tamsin_reed', '', 'vision model "llava:7b"', { finishReason: 'stop' }))
+      .toThrow(/may have refused this image/);
+    // and with no meta at all (back-compat 3-arg callers)
+    expect(() => buildCaption('tamsin_reed', '')).toThrow(/may have refused this image/);
+  });
 });
 
 describe('withCaptionVisionLock', () => {

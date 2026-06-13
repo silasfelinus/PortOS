@@ -28,7 +28,7 @@ import { v4 as uuidv4 } from '../lib/uuid.js';
 import { prefixCaption } from '../lib/loraDataset.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay } from '../lib/sseUtils.js';
 import { createMutex } from '../lib/asyncMutex.js';
-import { describeImageDataUrl } from './visionTest.js';
+import { describeImageDataUrlDetailed } from './visionTest.js';
 import { getSettings } from './settings.js';
 import { listVisionModels } from './localLlm.js';
 import { isVisionModel } from '../lib/localModelHeuristics.js';
@@ -42,7 +42,14 @@ export const CAPTION_PROMPT = [
   'an illustration.',
 ].join(' ');
 
-const CAPTION_MAX_TOKENS = 300;
+// A comma-separated caption fits well under 300, but reasoning models (Qwen3,
+// thinking Gemma builds) spend tokens on a hidden <think> block FIRST and only
+// then emit the caption — at 300 they routinely hit the budget mid-reasoning
+// and return empty content. The extra headroom lets those produce a caption
+// instead of failing; dedicated VLMs stop well before it, so it costs them
+// nothing. The real fix for a reasoning model is to pick a VLM (the failure
+// message now says so), but this keeps a borderline case from failing outright.
+const CAPTION_MAX_TOKENS = 600;
 
 // Module-level mutex serializing every vision call across ALL caption runs.
 // Within one run the loop is already sequential, but nothing stops a user (or
@@ -130,6 +137,38 @@ export async function resolveCaptionModel({
 }
 
 /**
+ * Diagnose WHY a vision reply came back blank, from the response metadata, so
+ * the failure message names the real cause instead of always blaming a refusal.
+ * `meta` is the `{ finishReason, usage, reasoning }` from describeImageDataUrlDetailed.
+ *
+ * The three cases we can tell apart:
+ *   - Reasoning model burned the budget: it emitted hidden reasoning and the
+ *     reply was cut off (`finish_reason: 'length'`) before any caption. The fix
+ *     is a dedicated VLM, not a retry — say so.
+ *   - Plain truncation: cut off at the budget with no reasoning trace — raising
+ *     the budget or a faster model helps.
+ *   - Reasoning with room to spare: it chose to only reason — a non-thinking
+ *     vision model is the answer.
+ * Everything else falls back to the original "it may have refused" wording.
+ */
+function diagnoseEmptyCaption(meta = {}) {
+  const { finishReason = null, usage = null, reasoning = '' } = meta || {};
+  const truncated = finishReason === 'length';
+  const completionTokens = usage?.completion_tokens ?? null;
+  const tokenNote = completionTokens != null ? ` (spent ${completionTokens} completion tokens)` : '';
+  if (reasoning && truncated) {
+    return `it spent its whole token budget on hidden reasoning${tokenNote} and ran out before writing a caption — this is a reasoning model, not a vision model. Pick a dedicated VLM (Qwen2.5-VL, LLaVA, MiniCPM-V, Llama 3.2 Vision) on the dataset`;
+  }
+  if (truncated) {
+    return `the reply was cut off at the token budget${tokenNote} before any caption text — raise the caption token budget or use a faster vision model`;
+  }
+  if (reasoning) {
+    return `it returned only reasoning and no caption${tokenNote} — use a non-thinking vision model`;
+  }
+  return 'it may have refused this image; try a different vision model or caption it manually';
+}
+
+/**
  * Build the persisted caption from a vision model's raw reply.
  *
  * An empty reply would `prefixCaption` down to just the trigger word — a
@@ -138,11 +177,12 @@ export async function resolveCaptionModel({
  * when they refuse a realistic close-up face (or a thinking model spends its
  * whole token budget reasoning). Throwing here routes blank output through the
  * loop's failure path, so it's surfaced and re-attemptable rather than saved as
- * a trigger-word-only caption.
+ * a trigger-word-only caption. `meta` (when supplied) lets the error name the
+ * real cause — refusal vs. token-budget exhaustion by a reasoning model.
  */
-export function buildCaption(triggerWord, text, model = 'vision model') {
+export function buildCaption(triggerWord, text, model = 'vision model', meta = null) {
   if (!text || !text.trim()) {
-    throw new Error(`${model} returned an empty description — it may have refused this image; try a different vision model or caption it manually`);
+    throw new Error(`${model} returned an empty description — ${diagnoseEmptyCaption(meta)}`);
   }
   return prefixCaption(triggerWord, text);
 }
@@ -198,14 +238,14 @@ export async function startCaptionRun(datasetId, {
       try {
         const bytes = await readFile(datasetImagePath(datasetId, img.file));
         const dataUrl = `data:image/png;base64,${bytes.toString('base64')}`;
-        const text = await withCaptionVisionLock(() => describeImageDataUrl({
+        const result = await withCaptionVisionLock(() => describeImageDataUrlDetailed({
           dataUrl,
           prompt: CAPTION_PROMPT,
           providerId: resolvedProvider,
           model: resolvedModel,
           maxTokens: CAPTION_MAX_TOKENS,
         }));
-        caption = buildCaption(dataset.triggerWord, text, `vision model "${resolvedModel}"`);
+        caption = buildCaption(dataset.triggerWord, result.text, `vision model "${resolvedModel}"`, result);
       } catch (err) {
         failed += 1;
         console.error(`❌ Caption failed [${shortId(runId)} ${img.id}]: ${err?.message || err}`);
