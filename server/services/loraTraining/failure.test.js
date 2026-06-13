@@ -24,6 +24,10 @@ describe('classifyTrainingFailure', () => {
 
   it('classifies argparse CLI mismatch as a stale-mflux upgrade hint', () => {
     // The exact tail the wrapper replays when mflux 0.12.x rejects --config.
+    // This is the REAL production path: the wrapper intentionally does NOT emit
+    // a USER_ERROR for argparse rejections (that would short-circuit on the raw
+    // line), so CLI_MISMATCH must be reachable from stderrTail alone — with no
+    // userError set — for the actionable upgrade message to actually surface.
     const tail = [
       'mflux: usage: mflux-train [-h] ...',
       'mflux: mflux-train: error: unrecognized arguments: --config /run/mflux-train.json',

@@ -10,6 +10,10 @@ const HF_AUTH_RE = /GatedRepoError|401 Client Error|Repo.*is gated|Access to mod
 // argparse rejecting the trainer's flags / model choice → the installed mflux
 // predates FLUX.2 LoRA training (0.12.x wants `--train-config`, has no flux2
 // base models). This is the failure that surfaced as a bare "exited with code 2".
+// The wrapper deliberately does NOT emit a USER_ERROR for this (which would
+// short-circuit below on the raw argparse text); the raw line rides the
+// trainer's stderr tail-replay here so this is the single source of the
+// actionable upgrade message. See train_mflux_lora.py FATAL_PATTERNS.
 const CLI_MISMATCH_RE = /unrecognized arguments|invalid choice|the following arguments are required|mflux-train: error/i;
 
 export function classifyTrainingFailure({ stderrTail = [], exitCode = null, signal = null, userError = null } = {}) {

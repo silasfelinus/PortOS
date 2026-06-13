@@ -117,14 +117,15 @@ FATAL_PATTERNS = [
     ("OOM", re.compile(r"out of memory|Insufficient Memory|Metal.*out of memory|std::bad_alloc", re.I)),
     ("MODULE_NOT_FOUND", re.compile(r"ModuleNotFoundError|No module named", re.I)),
     ("HF_AUTH", re.compile(r"GatedRepoError|401 Client Error|is restricted|Repo.*is gated", re.I)),
-    # argparse rejecting our flags / model choice means the installed mflux is
-    # too old for FLUX.2 LoRA training (e.g. 0.12.x wants `--train-config` and
-    # has no flux2 base models) — the exact failure that surfaced as a bare
-    # "exited with code 2". CLI_MISMATCH mirrors failure.js.
-    ("CLI_MISMATCH", re.compile(
-        r"unrecognized arguments|invalid choice|the following arguments are required|"
-        r"mflux-train: error", re.I)),
 ]
+# NOTE: argparse rejections (a too-old mflux that wants `--train-config` / has
+# no flux2 base models — the exact "exited with code 2" failure) are
+# deliberately NOT sniffed here. A USER_ERROR line short-circuits
+# classifyTrainingFailure on its *raw* text (failure.js), so sniffing the
+# argparse line would surface "unrecognized arguments: --config …" instead of
+# the actionable "upgrade mflux>=0.17" hint. Left unsniffed, the line rides the
+# non-zero-exit tail replay to stderr and failure.js's CLI_MISMATCH_RE renders
+# the actionable message — one source of truth for that text, on the JS side.
 
 
 def resolve_mflux_output(configured: Path) -> Path:
