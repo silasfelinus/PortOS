@@ -151,23 +151,26 @@ const generateBodySchema = z.object({
       index: z.number().int().min(0).max(1023),
     })).min(2).max(8).optional(),
   ),
-  // Video LoRAs to fuse for this render (ltx2 runtime only). Each entry is a
-  // basename under data/loras/ + a fusion strength. Multipart bodies send this
-  // as a JSON string (same shape the unified picker writes), so preprocess
-  // parses it before zod. `filename` rejects path separators here — the
-  // service re-validates with assertSafeLoraFilename before touching disk.
-  loras: z.preprocess(
+  // Video LoRAs to fuse for this render (ltx2 runtime only). Sent as the SAME
+  // universal contract image renders use — parallel `loraFilenames` +
+  // `loraScales` arrays — NOT a bespoke shape. This is what lets a history
+  // requeue via getRenderConfigForItem() (which emits exactly these fields)
+  // round-trip with no per-page translation. Multipart sends each array as
+  // repeated keys; a SINGLE entry arrives as a bare string and scales arrive as
+  // strings, so wrap+coerce in preprocess (mirrors server/routes/imageGen.js).
+  // `filename` rejects path separators here; the service re-validates with
+  // assertSafeLoraFilename before touching disk.
+  loraFilenames: z.preprocess(
+    (v) => (v == null || v === '') ? undefined : (Array.isArray(v) ? v : [v]),
+    z.array(z.string().min(1).max(255).regex(/^[^/\\]+\.safetensors$/i, 'filename must be a bare .safetensors basename')).max(8).optional(),
+  ),
+  loraScales: z.preprocess(
     (v) => {
       if (v == null || v === '') return undefined;
-      if (typeof v === 'string') {
-        try { return JSON.parse(v); } catch { return v; }
-      }
-      return v;
+      const raw = Array.isArray(v) ? v : [v];
+      return raw.map((x) => (typeof x === 'string' && x !== '' ? Number(x) : x));
     },
-    z.array(z.object({
-      filename: z.string().min(1).max(255).regex(/^[^/\\]+\.safetensors$/i, 'filename must be a bare .safetensors basename'),
-      scale: z.number().min(0).max(2).optional(),
-    })).max(8).optional(),
+    z.array(z.number().min(0).max(2)).max(8).optional(),
   ),
 });
 
@@ -700,12 +703,22 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     extendFromVideoPath = candidate;
   }
 
+  // Collapse the parallel loraFilenames/loraScales arrays into the internal
+  // `[{ filename, scale }]` shape the service (resolveVideoLoras) and the
+  // resume param echo consume. A defaulted scale keeps the worker contract
+  // simple. Empty (picker cleared) → undefined.
+  const loras = Array.isArray(body.loraFilenames) && body.loraFilenames.length
+    ? body.loraFilenames.map((filename, i) => ({
+        filename,
+        scale: typeof body.loraScales?.[i] === 'number' ? body.loraScales[i] : 1.0,
+      }))
+    : undefined;
+
   // Video LoRAs are an ltx2-runtime primitive — the dgrauet pipeline fuses
   // them via _pending_loras (see scripts/generate_ltx2.py). Reject up-front on
   // any other runtime so a bad modelId can't enqueue a doomed job that only
-  // fails in the worker. `loras: []` (picker cleared) is treated as absent.
-  if (Array.isArray(body.loras) && body.loras.length > 0
-      && effectiveModel && effectiveModel.runtime !== 'ltx2') {
+  // fails in the worker.
+  if (loras && effectiveModel && effectiveModel.runtime !== 'ltx2') {
     await cleanupAllStaged();
     throw new ServerError(
       `LoRAs require an ltx2-runtime model. Model "${effectiveModelId}" runs on "${effectiveModel.runtime || 'mlx_video'}".`,
@@ -743,11 +756,7 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
       mode: body.mode,
       imageStrength: body.imageStrength,
       chunks: effectiveChunks,
-      // Normalize picker entries to { filename, scale } with a defaulted scale
-      // so the service/worker always sees a number. `[]` (cleared) → undefined.
-      loras: Array.isArray(body.loras) && body.loras.length
-        ? body.loras.map((l) => ({ filename: l.filename, scale: typeof l.scale === 'number' ? l.scale : 1.0 }))
-        : undefined,
+      loras,
     },
   });
   // Match the legacy response shape (jobId, generationId, filename, model,

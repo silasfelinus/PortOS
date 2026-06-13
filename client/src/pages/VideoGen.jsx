@@ -311,6 +311,27 @@ export default function VideoGen() {
   // Installed LoRA library — the picker filters this to the current model's
   // video family (ltx-video). Silent: a failure just hides the picker.
   useEffect(() => { listLorasFull().then((l) => setAvailableLoras(Array.isArray(l) ? l : [])).catch(() => {}); }, []);
+  // ?lora=<filename> preselects a video LoRA when the user clicks "Test" on a
+  // video LoRA card in /media/loras. Mirrors the ImageGen ?lora= handoff:
+  // defer until the library has loaded (for name/scale/triggers), append the
+  // LoRA's trigger words, then strip the param so a refresh doesn't re-add it.
+  useEffect(() => {
+    const fromUrl = searchParams.get('lora');
+    if (!fromUrl || !availableLoras.length) return;
+    const match = availableLoras.find((l) => l.filename === fromUrl);
+    if (match) {
+      setSelectedLoras((prev) => prev.find((s) => s.filename === fromUrl) ? prev : [...prev, {
+        filename: match.filename,
+        name: match.name,
+        scale: typeof match.recommendedScale === 'number' ? match.recommendedScale : 1.0,
+      }]);
+      if (match.triggerWords?.length) {
+        setPrompt((p) => { const add = match.triggerWords.join(', '); return p && p.trim() ? `${p}, ${add}` : add; });
+      }
+    }
+    setSearchParams((prev) => { const next = new URLSearchParams(prev); next.delete('lora'); return next; }, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableLoras]);
 
   const { visibleHistory, hiddenHistory } = useMemo(() => ({
     visibleHistory: history.filter((v) => !v.hidden),
@@ -997,14 +1018,14 @@ export default function VideoGen() {
       // arrays element-by-element); the route's zod preprocess JSON-parses it
       // and strips any unknown keys, so sending the entries verbatim is safe.
       keyframes: keyframesActive ? JSON.stringify(keyframes) : '',
-      // Video LoRAs (ltx2 only) ride as a JSON string of { filename, scale } —
-      // same single-string-field trick as keyframes (buildFormData would
-      // otherwise stringify each entry to "[object Object]"). Only included
-      // when the model's runtime actually supports LoRAs; otherwise the route
-      // would 400 with LORAS_REQUIRE_LTX2.
-      loras: (loraFamily && selectedLoras.length)
-        ? JSON.stringify(selectedLoras.map((l) => ({ filename: l.filename, scale: l.scale })))
-        : '',
+      // Video LoRAs (ltx2 only) ride as the universal parallel-array contract
+      // (loraFilenames + loraScales) — the SAME shape ImageGen submits and a
+      // history requeue emits — so buildFormData appends them as repeated
+      // multipart keys and the route needs no bespoke shape. Only sent when the
+      // model's runtime supports LoRAs (else the route 400s LORAS_REQUIRE_LTX2);
+      // undefined fields are dropped by buildFormData.
+      loraFilenames: (loraFamily && selectedLoras.length) ? selectedLoras.map((l) => l.filename) : undefined,
+      loraScales: (loraFamily && selectedLoras.length) ? selectedLoras.map((l) => l.scale) : undefined,
       sourceImageFile: (mode === 'image' || legacyFflf
         || (mode === 'extend' && currentModel?.runtime !== 'ltx2'))
         ? (sourceImageFile || '') : '',

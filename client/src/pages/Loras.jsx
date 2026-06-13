@@ -14,7 +14,7 @@ import toast from '../components/ui/Toast';
 import Modal from '../components/ui/Modal';
 import Banner from '../components/ui/Banner';
 import { formatBytes } from '../utils/formatters';
-import { RUNNER_FAMILIES } from '../lib/runnerFamilies';
+import { RUNNER_FAMILIES, VIDEO_LORA_FAMILIES } from '../lib/runnerFamilies';
 import {
   listLorasFull,
   installLoraFromCivitai,
@@ -739,9 +739,12 @@ function LoraCard({ lora, onDelete, deleting }) {
   const badgeClass = family ? (RUNNER_BADGE_CLASS[family] || 'bg-gray-600/20 text-gray-300 border-gray-500/30') : 'bg-port-warning/20 text-port-warning border-port-warning/30';
   const triggerWords = lora.triggerWords || [];
   const civitai = lora.civitai;
-  // Image Gen page reads ?lora=<filename> as a preselect hint via query string;
-  // keeps the manager → gen handoff URL-driven (deep-linkable).
-  const testHref = `/media/image?lora=${encodeURIComponent(lora.filename)}`;
+  // The gen pages read ?lora=<filename> as a preselect hint via query string;
+  // keeps the manager → gen handoff URL-driven (deep-linkable). Video-family
+  // LoRAs (ltx-video) deep-link to Video Gen — routing them to Image Gen would
+  // preselect an LTX adapter into an incompatible image render.
+  const isVideoLora = family === VIDEO_LORA_FAMILIES.LTX_VIDEO;
+  const testHref = `${isVideoLora ? '/media/video' : '/media/image'}?lora=${encodeURIComponent(lora.filename)}`;
 
   return (
     <div className="bg-port-card border border-port-border rounded-lg overflow-hidden flex flex-col">

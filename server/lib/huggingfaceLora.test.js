@@ -21,6 +21,15 @@ describe('parseHuggingfaceLoraRef', () => {
     expect(parseHuggingfaceLoraRef('https://huggingface.co/fal/x/blob/main/lora.safetensors'))
       .toEqual({ repo: 'fal/x', revision: 'main' });
   });
+  it('preserves slash-containing revisions and drops the trailing file on /blob/', () => {
+    expect(parseHuggingfaceLoraRef('https://huggingface.co/fal/x/tree/feature/foo'))
+      .toEqual({ repo: 'fal/x', revision: 'feature/foo' });
+    expect(parseHuggingfaceLoraRef('https://huggingface.co/fal/x/tree/refs/pr/123'))
+      .toEqual({ repo: 'fal/x', revision: 'refs/pr/123' });
+    expect(parseHuggingfaceLoraRef('https://huggingface.co/fal/x/blob/feature/foo/lora.safetensors'))
+      .toEqual({ repo: 'fal/x', revision: 'feature/foo' });
+  });
+
   it('parses a bare org/name id (optionally @rev or :rev)', () => {
     expect(parseHuggingfaceLoraRef('fal/ltx-lora')).toEqual({ repo: 'fal/ltx-lora', revision: null });
     expect(parseHuggingfaceLoraRef('fal/ltx-lora@v2')).toEqual({ repo: 'fal/ltx-lora', revision: 'v2' });
