@@ -125,9 +125,14 @@ export default function TrainingPanel({ dataset, readiness, triggerSaving, onRun
   const setParam = (key, value) => setParams((prev) => ({ ...prev, [key]: value }));
 
   // A killed run keeps its checkpoints — surface the picker (view + salvage a
-  // partial LoRA) and a Resume button whenever a non-completed run saved one.
+  // partial LoRA) whenever a non-completed run recorded one, and a Resume button
+  // for any failed/canceled mflux run. Gate Resume on status, NOT the recorded
+  // checkpoint count: a crash can kill the run before the debounced record
+  // persists its last checkpoint, yet the server resumes from disk — let its
+  // 409 (NO_RESUMABLE_CHECKPOINT) handle the genuinely-empty case. mflux only;
+  // the FLUX.2 torch trainer's resume restarts the optimizer (server refuses it).
   const lastRunCheckpoints = lastRun?.artifacts?.checkpoints?.length || 0;
-  const canResume = lastRun && ['failed', 'canceled'].includes(lastRun.status) && lastRunCheckpoints > 0;
+  const canResume = lastRun && ['failed', 'canceled'].includes(lastRun.status) && lastRun.runtime === 'mflux';
 
   const disabledReason = !readiness?.trainable
     ? `Needs ${readiness?.required ?? 10} captioned images (have ${readiness?.captioned ?? 0})`
@@ -213,7 +218,9 @@ export default function TrainingPanel({ dataset, readiness, triggerSaving, onRun
       {canResume && (
         <div className="flex items-center justify-between gap-2 rounded-lg border border-port-accent/30 bg-port-accent/5 px-3 py-2">
           <span className="text-xs text-gray-300">
-            {lastRunCheckpoints} checkpoint{lastRunCheckpoints === 1 ? '' : 's'} saved — pick up where it stopped.
+            {lastRunCheckpoints > 0
+              ? `${lastRunCheckpoints} checkpoint${lastRunCheckpoints === 1 ? '' : 's'} saved — pick up where it stopped.`
+              : 'Pick up from the last saved checkpoint.'}
           </span>
           <button
             type="button"

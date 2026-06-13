@@ -130,6 +130,19 @@ describe('loraTraining/checkpoints', () => {
     expect(resolveLatestCheckpointArtifact({ id: 'no-such-run', runtime: 'mflux' })).toBeNull();
   });
 
+  it('resolves the latest flux2 checkpoint dir (the one with adapter weights)', async () => {
+    const id = 'run-flux2-fixture';
+    const ckpts = join(dataRoot, 'training-runs', id, 'checkpoints');
+    mkdirSync(join(ckpts, 'step-000100'), { recursive: true });
+    mkdirSync(join(ckpts, 'step-000200'), { recursive: true });
+    mkdirSync(join(ckpts, 'step-000300'), { recursive: true }); // no weights yet — must be skipped
+    await writeFile(join(ckpts, 'step-000100', 'pytorch_lora_weights.safetensors'), Buffer.from('w1'));
+    await writeFile(join(ckpts, 'step-000200', 'pytorch_lora_weights.safetensors'), Buffer.from('w2'));
+    const latest = resolveLatestCheckpointArtifact({ id, runtime: 'flux2' });
+    expect(latest).toMatchObject({ step: 200 });
+    expect(latest.path).toContain(join('checkpoints', 'step-000200'));
+  });
+
   it('lists samples as step+url sorted by step (seeds the live gallery)', () => {
     const samples = listRunSamples(buildRun());
     expect(samples.map((s) => s.step)).toEqual([250, 500]);
