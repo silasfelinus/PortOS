@@ -928,3 +928,28 @@ describe('generateVideo — video LoRA (--user-loras) arg threading', () => {
     expect(call[1]).not.toContain('--user-loras');
   });
 });
+
+describe('generateVideo — LoRA history-record contract (Remix round-trip)', () => {
+  it('stamps loraFilenames + loraScales (not a bespoke `loras` field) so normalizeVideo/Remix can read them', async () => {
+    let startedMeta = null;
+    videoGenEvents.on('started', (e) => { if (e.generationId === 'lora-history-test') startedMeta = e; });
+
+    await generateVideo({
+      jobId: 'lora-history-test',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'styled clip',
+      width: 512, height: 512, numFrames: 25, fps: 24,
+      mode: 'text',
+      loras: [{ filename: 'a.safetensors', scale: 0.7 }, { filename: 'b.safetensors', scale: 1.0 }],
+    });
+    videoGenEvents.removeAllListeners('started');
+
+    expect(startedMeta).toBeTruthy();
+    // The image LoRA contract that normalize.js#pickLoraFilenames + the Remix
+    // handler consume — parallel arrays, not a `loras: [{filename,scale}]` blob.
+    expect(startedMeta.loraFilenames).toEqual(['a.safetensors', 'b.safetensors']);
+    expect(startedMeta.loraScales).toEqual([0.7, 1.0]);
+    expect(startedMeta.loras).toBeUndefined();
+  });
+});

@@ -442,6 +442,23 @@ export default function VideoGen() {
     setLastImageUpload(null);
     setExtendFromVideoId('');
     setAudioFile(null);
+    // Restore the LoRA picker from the persisted render record. normalizeVideo
+    // exposes filenames as `loraNames`, but scales live on the raw record, so
+    // read the parallel `loraFilenames`/`loraScales` arrays directly (the same
+    // contract ImageGen.handleRemix restores from). Names resolve from the
+    // loaded library, falling back to the filename. The picker self-hides if
+    // the remixed model isn't ltx2, and the payload omits LoRAs there.
+    const raw = item.raw || {};
+    const remixLoraFilenames = item.loraNames?.length ? item.loraNames : raw.loraFilenames;
+    if (Array.isArray(remixLoraFilenames) && remixLoraFilenames.length) {
+      setSelectedLoras(remixLoraFilenames.map((filename, i) => ({
+        filename,
+        name: availableLoras.find((a) => a.filename === filename)?.name || filename,
+        scale: typeof raw.loraScales?.[i] === 'number' ? raw.loraScales[i] : 1.0,
+      })));
+    } else {
+      setSelectedLoras([]);
+    }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 

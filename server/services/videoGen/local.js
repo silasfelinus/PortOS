@@ -855,9 +855,16 @@ export async function generateVideo({ pythonPath, prompt, negativePrompt = '', m
     // render apart from a user who happened to pick 8 steps — comparing it
     // against the default Standard render is the whole point of the knob.
     ...(t2vTwoStage ? { twoStageT2v: true, stage2Steps: actualStage2Steps } : {}),
-    // Stamp the applied LoRAs (basename + strength) so the history entry and
-    // the Remix flow can show/round-trip which LoRAs styled this render.
-    ...(resolvedLoras.length ? { loras: resolvedLoras.map((l) => ({ filename: l.filename, scale: l.strength })) } : {}),
+    // Stamp applied LoRAs using the SAME parallel-array contract image renders
+    // use (`loraFilenames` + `loraScales`) so the existing history consumers —
+    // normalizeVideo / getRenderConfigForItem (client/src/components/media/
+    // normalize.js) and the Remix handler — surface and round-trip them with no
+    // per-shape special-casing. A bespoke `loras` field would be invisible to
+    // those readers.
+    ...(resolvedLoras.length ? {
+      loraFilenames: resolvedLoras.map((l) => l.filename),
+      loraScales: resolvedLoras.map((l) => l.strength),
+    } : {}),
     ...(hidden ? { hidden: true } : {}),
   };
   const job = { ...meta, clients: [], status: 'running' };
@@ -1507,6 +1514,14 @@ export async function stitchVideos(videoIds, opts = {}) {
     thumbnail: thumb,
     createdAt: new Date().toISOString(),
     [historyKey]: videoIds,
+    // Inherit applied LoRAs from the first constituent clip (a chunk chain
+    // shares one LoRA set across all chunks), so the visible stitched entry
+    // round-trips LoRAs on Remix the same way a single render does — mirrors
+    // how modelId/seed/width above are taken from videos[0].
+    ...(Array.isArray(videos[0].loraFilenames) && videos[0].loraFilenames.length ? {
+      loraFilenames: videos[0].loraFilenames,
+      loraScales: videos[0].loraScales,
+    } : {}),
   };
   const h = await loadHistory();
   h.unshift(stitchedMeta);
