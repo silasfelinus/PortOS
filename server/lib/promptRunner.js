@@ -217,6 +217,14 @@ export function assertProvider(provider, { message, code, status = 503 } = {}) {
  *   `text` value — callers receive the full buffered text either way.
  *   For TUI providers the stripped chunks are emitted; the final `text`
  *   is the cleaned response with the prompt-echo elided.
+ * @param {string[]} [args.screenshots] — image paths for a vision/multimodal
+ *   call (relative to the runner's screenshots dir, or absolute). API providers
+ *   only: the toolkit's executeApiRun base64-encodes each and sends them as
+ *   `image_url` content blocks ahead of the prompt text. CLI/TUI providers
+ *   ignore them (no vision path), so callers needing vision must resolve an
+ *   API provider up front. On a fallback to a non-API provider the images are
+ *   silently dropped — the fallback only fires after the primary API call has
+ *   already failed.
  * @param {number} [args.timeout] — per-call timeout in ms; falls back to
  *   `provider.timeout`, then DEFAULT_TIMEOUT_MS. Callers like the loop
  *   runner expose a user-configurable timeout that isn't a provider attr.
@@ -475,7 +483,7 @@ function stripFallbackContext(err) {
  * swapped to a fallback when the requested provider was already marked
  * unavailable).
  */
-async function executeProviderRunOnce({ provider, prompt, source, model, runId: callerRunId, onData: onDataCallback, timeout: timeoutOverride, cwd: cwdOverride }) {
+async function executeProviderRunOnce({ provider, prompt, source, model, runId: callerRunId, onData: onDataCallback, timeout: timeoutOverride, cwd: cwdOverride, screenshots = [] }) {
   // Resolve the model that'll actually run BEFORE creating the run record
   // so the record reflects reality. resolveEffectiveModel handles both
   // the override-honored fallback chain AND the args-baked-CLI case
@@ -622,7 +630,7 @@ async function executeProviderRunOnce({ provider, prompt, source, model, runId: 
         stopRun(runId).catch(() => { /* best-effort cancel */ });
         safeReject(new Error(`API execution timed out after ${effectiveTimeout}ms`));
       }, effectiveTimeout);
-      executeApiRun({ runId, provider: effectiveProvider, model: effectiveModel, prompt, workspacePath: effectiveCwd, screenshots: [], onData, onComplete }).catch(safeReject);
+      executeApiRun({ runId, provider: effectiveProvider, model: effectiveModel, prompt, workspacePath: effectiveCwd, screenshots: Array.isArray(screenshots) ? screenshots : [], onData, onComplete }).catch(safeReject);
     } else if (effectiveProvider.type === PROVIDER_TYPES.TUI) {
       // `source` (e.g. 'pipeline-manuscript-completeness') labels the live,
       // interactive view this TUI run surfaces in the Shell page.

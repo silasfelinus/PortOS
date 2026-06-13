@@ -7,6 +7,7 @@
  *   PATCH  /api/universe-builder/:id                    → Universe
  *   DELETE /api/universe-builder/:id                    → { id }
  *   POST   /api/universe-builder/expand                 → { logline, premise, styleNotes, influences, categories, compositeSheets, characters, places, objects, llm }
+ *   POST   /api/universe-builder/describe-from-images   → { description, llm }
  *   POST   /api/universe-builder/:id/render             → { runId, collectionId, jobIds, promptCount }
  *   GET    /api/universe-builder/:id/runs               → Run[]
  */
@@ -26,6 +27,8 @@ import {
 import { BIBLE_KINDS, BIBLE_LIMITS, pruneStaleReferenceSheets } from '../lib/storyBible.js';
 import { getUniverseCanonUsage, listLinkedSeriesNames } from '../services/canonUsage.js';
 import { expandWorldTemplate, generateCategoryVariations } from '../services/universeBuilderExpand.js';
+import { describeEntityFromImages, VISION_KINDS, VISION_MAX_IMAGES } from '../services/universeVisionDescribe.js';
+import { sanitizeFilename } from '../lib/fileUtils.js';
 import { refineWorldPrompts } from '../services/universeBuilderRefine.js';
 import { promoteVariationToCanon, VALID_TARGET_KINDS } from '../services/universeBuilderPromote.js';
 import { autoSortOtherBuckets } from '../services/universeBuilderAutoSort.js';
@@ -390,6 +393,31 @@ router.post('/expand', asyncHandler(async (req, res) => {
 router.post('/generate-variations', asyncHandler(async (req, res) => {
   const body = validateRequest(generateVariationsSchema, req.body ?? {});
   const result = await generateCategoryVariations(body);
+  res.json(result);
+}));
+
+// Vision-to-prose: turn one or more reference images of a character/place/
+// object into an image-gen-ready prose description (multiple images → the
+// shared/common description). Stateless — the client decides which entry
+// field to write the result into. `screenshots` are filenames the client
+// already uploaded via POST /api/screenshots (server-sanitized again here as
+// defense-in-depth before the runner resolves them under data/screenshots).
+// Keep ahead of `/:id` so "describe-from-images" isn't parsed as a universe id.
+const describeFromImagesSchema = z.object({
+  kind: z.enum(VISION_KINDS),
+  name: z.string().trim().max(BIBLE_LIMITS.NAME_MAX).optional(),
+  context: z.string().trim().max(2000).optional(),
+  screenshots: z.array(z.string().trim().min(1).max(300)).min(1).max(VISION_MAX_IMAGES),
+  providerId: z.string().trim().max(80).optional(),
+  model: z.string().trim().max(200).optional(),
+});
+router.post('/describe-from-images', asyncHandler(async (req, res) => {
+  const body = validateRequest(describeFromImagesSchema, req.body ?? {});
+  // Strip any path components so a crafted filename can't escape the
+  // screenshots dir when the runner joins it (the upload route already
+  // sanitizes on write; this guards a hand-crafted request body too).
+  const screenshots = body.screenshots.map((f) => sanitizeFilename(f));
+  const result = await describeEntityFromImages({ ...body, screenshots });
   res.json(result);
 }));
 

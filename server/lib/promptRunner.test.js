@@ -126,6 +126,32 @@ describe('promptRunner — happy paths', () => {
     expect(runner.executeCliRun).not.toHaveBeenCalled();
   });
 
+  it('forwards screenshots to executeApiRun for a vision/multimodal call', async () => {
+    runner.executeApiRun.mockImplementation(async ({ onComplete }) => onComplete({ success: true }));
+
+    await runPromptThroughProvider({
+      provider: apiProvider(),
+      prompt: 'describe',
+      source: 'test',
+      model: 'gpt-vision',
+      screenshots: ['a.png', 'b.png'],
+    });
+
+    expect(runner.executeApiRun).toHaveBeenCalledWith(
+      expect.objectContaining({ screenshots: ['a.png', 'b.png'] }),
+    );
+  });
+
+  it('defaults screenshots to [] when omitted', async () => {
+    runner.executeApiRun.mockImplementation(async ({ onComplete }) => onComplete({ success: true }));
+
+    await runPromptThroughProvider({ provider: apiProvider(), prompt: 'p', source: 'test' });
+
+    expect(runner.executeApiRun).toHaveBeenCalledWith(
+      expect.objectContaining({ screenshots: [] }),
+    );
+  });
+
   it('runs the fallbackModel (not the primary model) when createRun proactively swaps to a fallback', async () => {
     // Primary is benched at call time, so the toolkit createRun swaps to an
     // API fallback and surfaces the configured fallbackModel. The run must
