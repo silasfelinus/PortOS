@@ -155,6 +155,25 @@ export default function TrainingPanel({ dataset, readiness, triggerSaving, onRun
           )}
         </div>
       )}
+      {lastRun?.status === 'failed' && lastRun.errorCode === 'HF_AUTH' && (
+        <div className="rounded-lg border border-port-warning/40 bg-port-warning/10 px-3 py-3 text-xs text-port-warning space-y-2">
+          <div className="font-semibold text-sm">Model access required</div>
+          <div className="text-port-warning/90">
+            The training base model is gated on HuggingFace. Accept its license with the account
+            that owns your stored token, then retry — no token change needed.
+          </div>
+          {lastRun.errorRepo && (
+            <a
+              href={`https://huggingface.co/${lastRun.errorRepo}`}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-port-accent text-white text-xs font-medium hover:bg-port-accent/80"
+            >
+              Request access to {lastRun.errorRepo} ↗
+            </a>
+          )}
+        </div>
+      )}
       {lastRun?.status === 'completed' && (
         <CheckpointPicker run={lastRun} onPromoted={refreshRuns} />
       )}

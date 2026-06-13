@@ -26,6 +26,7 @@ import { imageGenEvents } from '../imageGenEvents.js';
 import { broadcastSse, attachSseClient as attachSse, closeJobAfterDelay, PYTHON_NOISE_RE } from '../../lib/sseUtils.js';
 import { resolveFlux2Python, FLUX2_VENV_DEFAULT } from '../../lib/pythonSetup.js';
 import { hfTokenEnv } from '../../lib/hfToken.js';
+import { extractGatedRepo } from '../../lib/hfErrors.js';
 import { safeChildProcessEnv } from '../../lib/processEnv.js';
 import { IMAGE_GEN_MODE } from './modes.js';
 import { computePixelDelta } from './regen.js';
@@ -714,13 +715,12 @@ export async function generateImage({ pythonPath, prompt = '', negativePrompt = 
       // page (and we set kind=gated_repo so the client knows to surface the
       // token-entry form).
       if (!userMessage) {
-        const gatedUrlMatch = lines
-          .map((l) => l.match(/Cannot access gated repo for url https?:\/\/huggingface\.co\/([^/\s]+\/[^/\s]+)\//))
-          .find(Boolean);
-        const hasGatedError = lines.some((l) => /GatedRepoError|Access to model .* is restricted/.test(l));
-        if (gatedUrlMatch || hasGatedError) {
+        const gatedText = lines.join('\n');
+        const gatedRepo = extractGatedRepo(gatedText);
+        const hasGatedError = /GatedRepoError|Access to model .* is restricted/.test(gatedText);
+        if (gatedRepo || hasGatedError) {
           userKind = 'gated_repo';
-          userRepo = gatedUrlMatch ? gatedUrlMatch[1] : null;
+          userRepo = gatedRepo;
           const repoText = userRepo || 'the model';
           userMessage = `Access to ${repoText} is gated. Accept the license at https://huggingface.co/${userRepo || '<repo>'} and paste your HuggingFace token into Image Gen settings, then retry.`;
         }

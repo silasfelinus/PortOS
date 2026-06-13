@@ -4,9 +4,11 @@
  * stable `{ code, message }` the run record and SSE error frame carry.
  */
 
+import { extractGatedRepo } from '../../lib/hfErrors.js';
+
 const OOM_RE = /MPS backend out of memory|CUDA out of memory|Insufficient Memory|Metal.*out of memory|std::bad_alloc/i;
 const MODULE_NOT_FOUND_RE = /ModuleNotFoundError|No module named/i;
-const HF_AUTH_RE = /GatedRepoError|401 Client Error|Repo.*is gated|Access to model .* is restricted/i;
+const HF_AUTH_RE = /GatedRepoError|401 Client Error|Repo.*is gated|Access to model .* is restricted|Cannot access gated repo/i;
 // argparse rejecting the trainer's flags / model choice → the installed mflux
 // predates FLUX.2 LoRA training (0.12.x wants `--train-config`, has no flux2
 // base models). This is the failure that surfaced as a bare "exited with code 2".
@@ -17,10 +19,15 @@ const HF_AUTH_RE = /GatedRepoError|401 Client Error|Repo.*is gated|Access to mod
 const CLI_MISMATCH_RE = /unrecognized arguments|invalid choice|the following arguments are required|mflux-train: error/i;
 
 export function classifyTrainingFailure({ stderrTail = [], exitCode = null, signal = null, userError = null } = {}) {
-  if (userError?.message) {
-    return { code: userError.kind || 'DATASET_ERROR', message: userError.message };
-  }
   const tail = stderrTail.join('\n');
+  if (userError?.message) {
+    const code = userError.kind || 'DATASET_ERROR';
+    const result = { code, message: userError.message };
+    // The trainer re-emits the raw gated-repo stderr line as USER_ERROR:HF_AUTH:…,
+    // so the repo is usually already in userError.message; fall back to the tail.
+    if (code === 'HF_AUTH') result.repo = extractGatedRepo(userError.message) || extractGatedRepo(tail);
+    return result;
+  }
   if (OOM_RE.test(tail)) {
     return {
       code: 'OOM',
@@ -34,9 +41,13 @@ export function classifyTrainingFailure({ stderrTail = [], exitCode = null, sign
     };
   }
   if (HF_AUTH_RE.test(tail)) {
+    const repo = extractGatedRepo(tail);
     return {
       code: 'HF_AUTH',
-      message: 'Hugging Face rejected the model download — set HUGGINGFACE_API_KEY and accept the model license on huggingface.co.',
+      message: repo
+        ? `Hugging Face denied access to ${repo} — accept its license at huggingface.co, then retry.`
+        : 'Hugging Face rejected the model download — set your HuggingFace token and accept the model license on huggingface.co.',
+      repo,
     };
   }
   if (CLI_MISMATCH_RE.test(tail)) {

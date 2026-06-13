@@ -514,15 +514,17 @@ async function finalizeTraining({ jobId, runId, code, signal, state }) {
     return;
   }
 
-  const { code: failCode, message } = classifyTrainingFailure({
+  const { code: failCode, message, repo: failRepo = null } = classifyTrainingFailure({
     stderrTail: state.stderrTail, exitCode: code, signal, userError: state.userError,
   });
   await runsDb.updateRun(runId, {
     status: 'failed', completedAt: new Date().toISOString(), error: message, errorCode: failCode,
+    // Gated-repo deep-link target for the UI banner (HF_AUTH only); null otherwise.
+    errorRepo: failRepo,
   }).catch(() => {});
   await flipDatasetAfterRun(run?.datasetId, { trained: false });
   console.error(`❌ training [${shortId(jobId)}] ${failCode}: ${message}`);
-  trainingEvents.emit('failed', { generationId: jobId, error: message });
+  trainingEvents.emit('failed', { generationId: jobId, error: message, code: failCode, repo: failRepo });
 }
 
 /**
