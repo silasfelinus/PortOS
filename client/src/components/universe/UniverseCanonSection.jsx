@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import toast from '../ui/Toast';
 import IngredientPicker from '../IngredientPicker';
+import VisionDescribeModal from './VisionDescribeModal';
 import { linkCatalogIngredient } from '../../services/apiCatalog';
 import {
   extractUniverseCanon,
@@ -136,6 +137,8 @@ export default function UniverseCanonSection({
   const [extractOpen, setExtractOpen] = useState(false);
   // Which kind's "Pick from Catalog" modal is open (a KINDS entry, or null).
   const [catalogPickerKind, setCatalogPickerKind] = useState(null);
+  // `{ kind, entry }` when the vision "Describe from image(s)" modal is open.
+  const [describeTarget, setDescribeTarget] = useState(null);
   const [catalogLinking, setCatalogLinking] = useState(false);
   // Ingredient ids already embedded in the open kind's canon list — passed to
   // the picker so it hides already-linked rows. Only recomputed when the open
@@ -805,6 +808,7 @@ export default function UniverseCanonSection({
           togglingLockId={togglingLockId}
           onPatchEntry={(entryId, patch) => handlePatchEntry(kind, entryId, patch)}
           onRenderCleanPlate={handleRenderCleanPlate}
+          onDescribeImages={(entry) => setDescribeTarget({ kind, entry })}
           seriesNameMap={usage?.seriesNameMap || null}
           onBulkLock={(nextLocked) => handleBulkLockKind(kind, nextLocked)}
           bulkLocking={bulkLockingKindKey === kind.key}
@@ -837,11 +841,30 @@ export default function UniverseCanonSection({
         refKind="universe"
         refId={universeId}
       />
+
+      {/* Vision "Describe from image(s)" — turns reference images into an
+          image-gen-ready description and writes it into the entry's descriptor
+          field (the same field CanonCard's inline editor binds to). */}
+      {describeTarget ? (
+        <VisionDescribeModal
+          open
+          kind={describeTarget.kind.apiKind}
+          entryName={describeTarget.entry.name}
+          onApply={(description) => {
+            if (describeTarget.kind.descField) {
+              handlePatchEntry(describeTarget.kind, describeTarget.entry.id, {
+                [describeTarget.kind.descField]: description,
+              });
+            }
+          }}
+          onClose={() => setDescribeTarget(null)}
+        />
+      ) : null}
     </section>
   );
 }
 
-function KindSection({ kind, universeId, all, totalCount, filtered, usage, renderingJobs, onRender, onJobCompleted, onJobFailed, onPreview, onRefine, refiningId, onExpandCharacter, expandingId, onSheetCompleted, onSheetDeleted, onToggleLock, togglingLockId, onPatchEntry, onRenderCleanPlate, seriesNameMap, onBulkLock, bulkLocking, fullList, externalPendingByEntryId = null, compact = false, onRenderAll = null, renderingAll = false, onPickFromCatalog = null, catalogLinking = false, onAddEntry = null, creating = false }) {
+function KindSection({ kind, universeId, all, totalCount, filtered, usage, renderingJobs, onRender, onJobCompleted, onJobFailed, onPreview, onRefine, refiningId, onExpandCharacter, expandingId, onSheetCompleted, onSheetDeleted, onToggleLock, togglingLockId, onPatchEntry, onRenderCleanPlate, onDescribeImages = null, seriesNameMap, onBulkLock, bulkLocking, fullList, externalPendingByEntryId = null, compact = false, onRenderAll = null, renderingAll = false, onPickFromCatalog = null, catalogLinking = false, onAddEntry = null, creating = false }) {
   // Universe-only character wiring — `null` for non-character kinds so
   // CanonCard's gate stays `kind === 'characters' && characterExtensions`.
   // Memoized so the BASE object is stable across re-renders that aren't
@@ -1039,6 +1062,7 @@ function KindSection({ kind, universeId, all, totalCount, filtered, usage, rende
           togglingLock={togglingLockId === entry.id}
           onPatchEntry={onPatchEntry}
           onRenderCleanPlate={onRenderCleanPlate}
+          onDescribeImages={onDescribeImages}
           seriesNameMap={seriesNameMap}
           characterExtensions={characterExtensions
             ? { ...characterExtensions, expanding: expandingId === entry.id }

@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, ImagePlus, WandSparkles, Lock, Unlock, Shirt, Plus, Trash2, ChevronDown, ChevronRight, Star, Square, BookOpen } from 'lucide-react';
+import { Loader2, ImagePlus, WandSparkles, Lock, Unlock, Shirt, Plus, Trash2, ChevronDown, ChevronRight, Star, Square, BookOpen, ScanText } from 'lucide-react';
 import useMediaJobProgress from '../../hooks/useMediaJobProgress';
 import useRowDraft from '../../hooks/useRowDraft';
 import useFieldDraft from '../../hooks/useFieldDraft';
@@ -264,6 +264,10 @@ export default function CanonCard({
   // Optional — settings-only "Render clean plate" affordance. Called with
   // `(entry)` so the parent can build the no-people prompt variant.
   onRenderCleanPlate = null,
+  // Optional — "Describe from image(s)" affordance. Called with `(entry)` so
+  // the parent can open the vision-describe modal seeded with this entry. When
+  // omitted (e.g. the pipeline series view) the button is hidden.
+  onDescribeImages = null,
   // Optional `{ [seriesId]: name }` lookup so the "from series" chip can
   // render the actual series name. Null/empty falls back to the id-tooltip
   // form for callers that don't have the map handy.
@@ -449,6 +453,20 @@ export default function CanonCard({
           aria-label={`Render clean plate for ${entry.name}`}
         >
           {inFlightJobId ? <Loader2 size={14} className="animate-spin" /> : <Square size={14} />}
+        </button>
+      ) : null}
+      {onDescribeImages ? (
+        <button
+          type="button"
+          onClick={() => onDescribeImages(entry)}
+          disabled={blockedByLock}
+          className="p-1 text-gray-400 hover:text-port-accent disabled:opacity-30 disabled:cursor-not-allowed rounded"
+          title={blockedByLock
+            ? `Unlock ${entry.name} to apply a generated description`
+            : `Describe ${entry.name} from a reference image (or several) using a vision model`}
+          aria-label={`Describe ${entry.name} from images`}
+        >
+          <ScanText size={14} />
         </button>
       ) : null}
       {kind.key === 'characters' && onRefine ? (
