@@ -716,11 +716,15 @@ export async function generateImage({ pythonPath, prompt = '', negativePrompt = 
       // token-entry form).
       if (!userMessage) {
         const gatedText = lines.join('\n');
-        const gatedRepo = extractGatedRepo(gatedText);
-        const hasGatedError = /GatedRepoError|Access to model .* is restricted/.test(gatedText);
-        if (gatedRepo || hasGatedError) {
+        // Classify as gated ONLY on a gated-specific signal — extractGatedRepo
+        // matches any huggingface.co/<owner>/<repo> URL, so a non-gated failure
+        // (404, network error) that merely prints a HF URL must NOT be turned
+        // into a misleading license-request flow. Extract the repo for the link
+        // only after the gated signal is confirmed.
+        const hasGatedError = /GatedRepoError|Access to model .* is restricted|Cannot access gated repo/i.test(gatedText);
+        if (hasGatedError) {
           userKind = 'gated_repo';
-          userRepo = gatedRepo;
+          userRepo = extractGatedRepo(gatedText);
           const repoText = userRepo || 'the model';
           userMessage = `Access to ${repoText} is gated. Accept the license at https://huggingface.co/${userRepo || '<repo>'} and paste your HuggingFace token into Image Gen settings, then retry.`;
         }

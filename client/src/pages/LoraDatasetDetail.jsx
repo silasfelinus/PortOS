@@ -134,9 +134,6 @@ function ReassignDialog({ dataset, onClose, onReassigned }) {
   const [entryId, setEntryId] = useState(dataset.character.entryId);
   const [submitting, setSubmitting] = useState(false);
 
-  const unchanged = universeId === dataset.character.universeId
-    && entryId === dataset.character.entryId;
-
   const submit = async () => {
     setSubmitting(true);
     try {
@@ -174,7 +171,7 @@ function ReassignDialog({ dataset, onClose, onReassigned }) {
           <button
             type="button"
             onClick={submit}
-            disabled={!universeId || !entryId || unchanged || submitting}
+            disabled={!universeId || !entryId || submitting}
             className="px-3 py-2 text-sm rounded bg-port-accent text-white disabled:opacity-50 flex items-center gap-2"
           >
             {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Replace className="w-4 h-4" />}

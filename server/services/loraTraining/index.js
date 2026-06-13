@@ -170,9 +170,10 @@ export async function startTrainingRun({ datasetId, baseModelId, name = null, pa
     // different character between validateDatasetReady above and this stamp,
     // this run no longer owns it. Don't stamp 'training' — flipDatasetAfterRun
     // skips character-mismatched runs, so a stamp here would strand the
-    // reassigned dataset in 'training' forever. (entryId is a globally-unique
-    // UUID, so it alone identifies the character.)
-    if (current.character?.entryId !== run.character.entryId) return null;
+    // reassigned dataset in 'training' forever. Match the full
+    // (universeId, entryId) key the dataset store uses elsewhere.
+    if (current.character?.entryId !== run.character.entryId
+      || current.character?.universeId !== run.character.universeId) return null;
     return {
       ...current,
       status: 'training',
