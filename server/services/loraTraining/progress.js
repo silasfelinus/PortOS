@@ -74,7 +74,9 @@ export function makeTrainingLineHandler({
 
     const checkpoint = line.match(/^CHECKPOINT:(.+):(\d+)$/);
     if (checkpoint) {
-      onCheckpoint?.(checkpoint[1], Number(checkpoint[2]));
+      // Pass the most-recent step loss so the run record can show a
+      // per-checkpoint loss in the picker (mflux/flux2 both lack it inline).
+      onCheckpoint?.(checkpoint[1], Number(checkpoint[2]), state.lastLoss);
       emit('status', { generationId: jobId, message: `Checkpoint saved @ step ${checkpoint[2]}` });
       return;
     }

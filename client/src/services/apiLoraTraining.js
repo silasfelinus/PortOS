@@ -88,6 +88,18 @@ export const getLoraTrainingRun = (runId) => request(`/lora-training/runs/${runI
 export const cancelLoraTrainingRun = (runId) =>
   request(`/lora-training/runs/${runId}/cancel`, { method: 'POST' });
 
+// Checkpoints for a finished run — each with step, loss, preview thumbnail,
+// and which one is currently deployed. Drives the manual checkpoint picker.
+export const listLoraTrainingCheckpoints = (runId) =>
+  request(`/lora-training/runs/${runId}/checkpoints`);
+
+// Promote a checkpoint to be the deployed LoRA (re-extracts that step's
+// adapter and overwrites the run's registered .safetensors in place).
+export const promoteLoraTrainingCheckpoint = (runId, step, { silent = false } = {}) =>
+  request(`/lora-training/runs/${runId}/promote-checkpoint`, {
+    method: 'POST', body: JSON.stringify({ step }), silent,
+  });
+
 export const deleteLoraTrainingRun = (runId, { deleteLora = false } = {}) =>
   request(`/lora-training/runs/${runId}${deleteLora ? '?deleteLora=true' : ''}`, { method: 'DELETE' });
 
