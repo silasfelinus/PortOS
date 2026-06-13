@@ -114,6 +114,64 @@ describe('imageGen local.buildArgs flux2 dispatch', () => {
     expect(args).not.toContain('--tokenizer-repo');
   });
 
+  it('routes a LoRA render off the SDNQ repo onto the bf16 base (PEFT can\'t load onto quantized weights)', () => {
+    mockResolveFlux2Python.mockReturnValue('/fake/venv-flux2/bin/python3');
+    const { args } = buildArgs({
+      ...baseInput,
+      loraPaths: ['/data/loras/lora-trained-adam-eivy-768ef285.safetensors'],
+      loraScales: [1.0],
+      model: {
+        id: 'flux2-klein-4b',
+        runner: 'flux2',
+        quantization: 'sdnq',
+        repo: 'Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic',
+        tokenizerRepo: 'black-forest-labs/FLUX.2-klein-4B',
+      },
+    });
+    // Quantization forced to none + repo swapped to the gated bf16 base.
+    expect(args[args.indexOf('--quantization') + 1]).toBe('none');
+    expect(args[args.indexOf('--repo') + 1]).toBe('black-forest-labs/FLUX.2-klein-4B');
+    // SDNQ tokenizer-repo flag dropped — bf16 reads the tokenizer from the base repo.
+    expect(args).not.toContain('--tokenizer-repo');
+    // The LoRA still threads through to the runner.
+    expect(args).toContain('--lora-paths');
+    expect(args[args.indexOf('--lora-paths') + 1]).toBe('/data/loras/lora-trained-adam-eivy-768ef285.safetensors');
+  });
+
+  it('leaves a LoRA render on a bf16 model untouched (already unquantized)', () => {
+    mockResolveFlux2Python.mockReturnValue('/fake/venv-flux2/bin/python3');
+    const { args } = buildArgs({
+      ...baseInput,
+      loraPaths: ['/data/loras/x.safetensors'],
+      loraScales: [1.0],
+      model: {
+        id: 'flux2-klein-9b-bf16',
+        runner: 'flux2',
+        quantization: 'none',
+        repo: 'black-forest-labs/FLUX.2-klein-9B',
+      },
+    });
+    expect(args[args.indexOf('--quantization') + 1]).toBe('none');
+    expect(args[args.indexOf('--repo') + 1]).toBe('black-forest-labs/FLUX.2-klein-9B');
+  });
+
+  it('keeps a no-LoRA SDNQ render on the quantized repo', () => {
+    mockResolveFlux2Python.mockReturnValue('/fake/venv-flux2/bin/python3');
+    const { args } = buildArgs({
+      ...baseInput,
+      loraPaths: [],
+      model: {
+        id: 'flux2-klein-4b',
+        runner: 'flux2',
+        quantization: 'sdnq',
+        repo: 'Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic',
+        tokenizerRepo: 'black-forest-labs/FLUX.2-klein-4B',
+      },
+    });
+    expect(args[args.indexOf('--quantization') + 1]).toBe('sdnq');
+    expect(args[args.indexOf('--repo') + 1]).toBe('Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic');
+  });
+
   it('throws a setup hint when the flux2 venv is missing', () => {
     mockResolveFlux2Python.mockReturnValue(null);
     expect(() => buildArgs({
