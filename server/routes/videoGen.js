@@ -151,6 +151,24 @@ const generateBodySchema = z.object({
       index: z.number().int().min(0).max(1023),
     })).min(2).max(8).optional(),
   ),
+  // Video LoRAs to fuse for this render (ltx2 runtime only). Each entry is a
+  // basename under data/loras/ + a fusion strength. Multipart bodies send this
+  // as a JSON string (same shape the unified picker writes), so preprocess
+  // parses it before zod. `filename` rejects path separators here — the
+  // service re-validates with assertSafeLoraFilename before touching disk.
+  loras: z.preprocess(
+    (v) => {
+      if (v == null || v === '') return undefined;
+      if (typeof v === 'string') {
+        try { return JSON.parse(v); } catch { return v; }
+      }
+      return v;
+    },
+    z.array(z.object({
+      filename: z.string().min(1).max(255).regex(/^[^/\\]+\.safetensors$/i, 'filename must be a bare .safetensors basename'),
+      scale: z.number().min(0).max(2).optional(),
+    })).max(8).optional(),
+  ),
 });
 
 // Probes required-package imports on each call so a half-installed Python
@@ -682,6 +700,19 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
     extendFromVideoPath = candidate;
   }
 
+  // Video LoRAs are an ltx2-runtime primitive — the dgrauet pipeline fuses
+  // them via _pending_loras (see scripts/generate_ltx2.py). Reject up-front on
+  // any other runtime so a bad modelId can't enqueue a doomed job that only
+  // fails in the worker. `loras: []` (picker cleared) is treated as absent.
+  if (Array.isArray(body.loras) && body.loras.length > 0
+      && effectiveModel && effectiveModel.runtime !== 'ltx2') {
+    await cleanupAllStaged();
+    throw new ServerError(
+      `LoRAs require an ltx2-runtime model. Model "${effectiveModelId}" runs on "${effectiveModel.runtime || 'mlx_video'}".`,
+      { status: 400, code: 'LORAS_REQUIRE_LTX2' },
+    );
+  }
+
   const effectiveChunks = body.mode === 'a2v' ? 1 : (body.chunks ?? 1);
 
   // Enqueue rather than spawn synchronously — the mediaJobQueue worker will
@@ -712,6 +743,11 @@ router.post('/', frameImageUpload, asyncHandler(async (req, res) => {
       mode: body.mode,
       imageStrength: body.imageStrength,
       chunks: effectiveChunks,
+      // Normalize picker entries to { filename, scale } with a defaulted scale
+      // so the service/worker always sees a number. `[]` (cleared) → undefined.
+      loras: Array.isArray(body.loras) && body.loras.length
+        ? body.loras.map((l) => ({ filename: l.filename, scale: typeof l.scale === 'number' ? l.scale : 1.0 }))
+        : undefined,
     },
   });
   // Match the legacy response shape (jobId, generationId, filename, model,
@@ -739,6 +775,9 @@ const ACTIVE_JOB_PARAM_FIELDS = [
   'width', 'height', 'numFrames', 'fps',
   'steps', 'guidanceScale', 'seed',
   'tiling', 'disableAudio', 'mode', 'chunks', 'imageStrength',
+  // loras are { filename, scale } basenames (no server filesystem paths), so
+  // they're safe to echo back for the resuming picker to repopulate.
+  'loras',
 ];
 const pickJobParams = (params) => {
   if (!params || typeof params !== 'object') return {};

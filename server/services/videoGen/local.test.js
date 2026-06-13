@@ -19,6 +19,7 @@ const MOCK_PATHS = {
   images: '/mock/data/images',
   videoThumbnails: '/mock/data/video-thumbnails',
   uploads: '/mock/data/uploads',
+  loras: '/mock/data/loras',
 };
 
 vi.mock('../../lib/fileUtils.js', () => ({
@@ -27,6 +28,10 @@ tryReadFile: vi.fn().mockResolvedValue(null),
   PATHS: MOCK_PATHS,
   readJSONFile: vi.fn(async () => []),
   atomicWrite: vi.fn(async () => {}),
+  // resolveVideoLoras → assertSafeLoraFilename → assertSafeFilename; the
+  // filename safety check is unit-tested in loras.test.js, so a no-op here
+  // lets the LoRA-arg test focus on the spawn-args plumbing.
+  assertSafeFilename: vi.fn(),
   UUID_RE: /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
 }));
 
@@ -850,5 +855,76 @@ describe('generateVideo — panel-side completion watchdog', () => {
     hang.emitStdout('60%|██████    | 6/10\n');
     await vi.advanceTimersByTimeAsync(120000);
     expect(hang.proc.kill).not.toHaveBeenCalled();
+  });
+});
+
+describe('generateVideo — video LoRA (--user-loras) arg threading', () => {
+  it('emits --user-loras JSON with resolved path + strength for ltx2 renders', async () => {
+    const { spawn } = await import('child_process');
+    const spawnMock = vi.mocked(spawn);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'lora-arg-test',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'audio reactive clip',
+      width: 512, height: 512, numFrames: 25, fps: 24,
+      mode: 'text',
+      loras: [{ filename: 'lora-fal-ltx2-3-audio-reactive-lora-hf.safetensors', scale: 0.8 }],
+    });
+
+    const call = spawnMock.mock.calls.find(
+      ([bin, args]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3')
+        && Array.isArray(args) && args.includes('--user-loras'),
+    );
+    expect(call).toBeTruthy();
+    const args = call[1];
+    const payload = JSON.parse(args[args.indexOf('--user-loras') + 1]);
+    expect(payload).toEqual([
+      { path: join(MOCK_PATHS.loras, 'lora-fal-ltx2-3-audio-reactive-lora-hf.safetensors'), strength: 0.8 },
+    ]);
+  });
+
+  it('defaults missing scale to 1.0', async () => {
+    const { spawn } = await import('child_process');
+    const spawnMock = vi.mocked(spawn);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'lora-default-scale',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'clip',
+      width: 512, height: 512, numFrames: 25, fps: 24,
+      mode: 'text',
+      loras: [{ filename: 'style.safetensors' }],
+    });
+
+    const call = spawnMock.mock.calls.find(
+      ([, args]) => Array.isArray(args) && args.includes('--user-loras'),
+    );
+    const payload = JSON.parse(call[1][call[1].indexOf('--user-loras') + 1]);
+    expect(payload[0].strength).toBe(1.0);
+  });
+
+  it('omits --user-loras when no LoRAs are passed', async () => {
+    const { spawn } = await import('child_process');
+    const spawnMock = vi.mocked(spawn);
+    spawnMock.mockClear();
+
+    await generateVideo({
+      jobId: 'no-lora',
+      pythonPath: '/usr/bin/python3',
+      modelId: 'ltx2_unified',
+      prompt: 'clip',
+      width: 512, height: 512, numFrames: 25, fps: 24,
+      mode: 'text',
+    });
+
+    const call = spawnMock.mock.calls.find(
+      ([bin]) => String(bin).includes('.portos/ltx-2-mlx/.venv/bin/python3'),
+    );
+    expect(call[1]).not.toContain('--user-loras');
   });
 });

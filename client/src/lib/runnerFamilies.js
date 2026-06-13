@@ -12,6 +12,20 @@ export const RUNNER_FAMILIES = Object.freeze({
   QWEN: 'qwen',
 });
 
+// Video-LoRA families — kept separate from the image RUNNER_FAMILIES so the
+// Civitai iteration (which only knows image baseModels) never sees them. Video
+// LoRAs are imported from HuggingFace. Mirror of server/lib/runners.js.
+export const VIDEO_LORA_FAMILIES = Object.freeze({
+  LTX_VIDEO: 'ltx-video',
+});
+
+// Map a video model (carries `runtime`, not `runner`) to its LoRA family. Only
+// the dgrauet `ltx2` runtime fuses arbitrary user LoRAs today; everything else
+// returns null so the VideoGen picker hides itself. Mirror of
+// server/lib/runners.js#videoLoraFamily.
+export const videoLoraFamily = (model) =>
+  model?.runtime === 'ltx2' ? VIDEO_LORA_FAMILIES.LTX_VIDEO : null;
+
 // FLUX.2 Klein ships in two sizes with different transformer hidden dims (4B =
 // 3072, 9B = 4096), so a LoRA trained for one can't load on the other. The
 // size is encoded in the model id/repo. Returns '4b' | '9b' | null. Mirror of

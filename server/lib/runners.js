@@ -25,6 +25,28 @@ export const RUNNER_FAMILIES = Object.freeze({
   QWEN: 'qwen',
 });
 
+// Video-LoRA families are tracked SEPARATELY from the image RUNNER_FAMILIES
+// above. The Civitai suggestion/search code iterates Object.values(
+// RUNNER_FAMILIES) and would 400 on any family Civitai has no baseModel
+// mapping for — and video LoRAs (e.g. fal/ltx2.3-audio-reactive-lora) are
+// imported from HuggingFace, not Civitai (see installFromHuggingface), so they
+// must never enter that iteration. The compat-key machinery
+// (composeCompatKey / the picker's familyOf) is family-string-agnostic, so a
+// LoRA tagged `runnerFamily: 'ltx-video'` filters correctly against an
+// `ltx-video` video model without any change there.
+export const VIDEO_LORA_FAMILIES = Object.freeze({
+  LTX_VIDEO: 'ltx-video',
+});
+
+// Map a video-model registry entry (which carries `runtime`, not `runner`) to
+// the LoRA family the picker filters on. Only dgrauet's `ltx2` runtime can
+// fuse arbitrary user LoRAs today — its `ltx_pipelines_mlx` pipelines honor a
+// `_pending_loras` hook (see scripts/generate_ltx2.py). The legacy mlx_video /
+// wan22 / hunyuan runtimes have no general LoRA path, so they return null
+// ("no LoRA support") and the VideoGen picker hides itself.
+export const videoLoraFamily = (model) =>
+  model?.runtime === 'ltx2' ? VIDEO_LORA_FAMILIES.LTX_VIDEO : null;
+
 // Convenience predicate helpers — match the semantics of the existing
 // `isFlux2()` / `isZImage()` / `isErnie()` exports in `mediaModels.js`
 // (which still exist for back-compat with their many call sites). New code
