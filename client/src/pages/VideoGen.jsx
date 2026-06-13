@@ -442,19 +442,18 @@ export default function VideoGen() {
     setLastImageUpload(null);
     setExtendFromVideoId('');
     setAudioFile(null);
-    // Restore the LoRA picker from the persisted render record. normalizeVideo
-    // exposes filenames as `loraNames`, but scales live on the raw record, so
-    // read the parallel `loraFilenames`/`loraScales` arrays directly (the same
-    // contract ImageGen.handleRemix restores from). Names resolve from the
-    // loaded library, falling back to the filename. The picker self-hides if
-    // the remixed model isn't ltx2, and the payload omits LoRAs there.
-    const raw = item.raw || {};
-    const remixLoraFilenames = item.loraNames?.length ? item.loraNames : raw.loraFilenames;
-    if (Array.isArray(remixLoraFilenames) && remixLoraFilenames.length) {
-      setSelectedLoras(remixLoraFilenames.map((filename, i) => ({
+    // Restore the LoRA picker from the render record. `item` here is the RAW
+    // history record (the gallery passes `handleRemixVideo(item.raw)` and every
+    // field above — prompt/modelId/width/… — is read off it directly), so the
+    // LoRAs live on `item.loraFilenames`/`item.loraScales` (the parallel-array
+    // contract the record is stamped with). Names resolve from the loaded
+    // library, falling back to the filename. The picker self-hides when the
+    // remixed model isn't ltx2, and the payload omits LoRAs there.
+    if (Array.isArray(item.loraFilenames) && item.loraFilenames.length) {
+      setSelectedLoras(item.loraFilenames.map((filename, i) => ({
         filename,
         name: availableLoras.find((a) => a.filename === filename)?.name || filename,
-        scale: typeof raw.loraScales?.[i] === 'number' ? raw.loraScales[i] : 1.0,
+        scale: typeof item.loraScales?.[i] === 'number' ? item.loraScales[i] : 1.0,
       })));
     } else {
       setSelectedLoras([]);
@@ -695,6 +694,17 @@ export default function VideoGen() {
   // route would 400 with LORAS_REQUIRE_LTX2). Derived, not state, so it tracks
   // the model dropdown without an effect.
   const loraFamily = videoLoraFamily(currentModel);
+  // Strictly restrict the video picker to LoRAs whose family IS the video
+  // family. The shared LoraPicker treats a missing compat key as "compatible"
+  // (reasonable for image, where an unknown LoRA is usually still some image
+  // family), but for video that would surface hand-dropped / pre-sidecar IMAGE
+  // LoRAs — selecting one would send an incompatible adapter to the LTX
+  // transformer (the route only checks file-exists + ltx2) and fail the render.
+  // Video LoRAs always carry an explicit `ltx-video` family (HF import sets it),
+  // so an exact-match filter here is the correct strict mode.
+  const videoLoras = loraFamily
+    ? availableLoras.filter((l) => (l.loraCompatKey || l.runnerFamily) === loraFamily)
+    : [];
 
   // Multi-keyframe availability + validation. Keyframes are an ltx2-runtime
   // primitive (the route 400s with KEYFRAMES_REQUIRE_LTX2 otherwise), so the
@@ -1465,13 +1475,13 @@ export default function VideoGen() {
               </div>
             )}
 
-            {/* Video LoRAs — only on ltx2-runtime models (loraFamily non-null).
-                The picker filters availableLoras to the model's video family
-                and hides itself when none are compatible. */}
-            {loraFamily && (
+            {/* Video LoRAs — only on ltx2-runtime models (loraFamily non-null)
+                and only when at least one video-family LoRA is installed
+                (videoLoras is the strict ltx-video subset; see above). */}
+            {loraFamily && videoLoras.length > 0 && (
               <div className="col-span-2 sm:col-span-3">
                 <LoraPicker
-                  availableLoras={availableLoras}
+                  availableLoras={videoLoras}
                   selected={selectedLoras}
                   onChange={setSelectedLoras}
                   currentRunnerFamily={loraFamily}
