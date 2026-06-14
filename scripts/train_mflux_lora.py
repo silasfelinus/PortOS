@@ -438,11 +438,22 @@ def run_segment(cmd, *, segment_target, state, last_reported, output_tail,
                 if cur != last_reported["step"]:
                     last_reported["step"] = cur
                     log(f"STEP:{cur}:{total}:{state['loss'] if state['loss'] is not None else 'nan'}")
-                # Segment boundary: wait until the trainer has stepped PAST the
-                # target before killing, so mflux's save at the boundary (which
-                # runs synchronously before the next step is emitted) has fully
-                # flushed the zip — killing the instant the file appears could
-                # truncate a half-written checkpoint.
+                # Segment boundary. Two reasons this gates on state["step"]:
+                #   1. state["step"] is mflux's CUMULATIVE iteration count, not a
+                #      per-process counter — tqdm renders with
+                #      initial=num_iterations (restored from the checkpoint on
+                #      resume) over total_number_of_steps() (the cumulative
+                #      total), so the bar reads 150/600, 151/600… after a resume.
+                #      Comparing it to the cumulative `segment_target` is valid on
+                #      every segment, not just the first.
+                #   2. Waiting until the trainer has stepped PAST the target is
+                #      the flush-safety signal: mflux's save() writes the zip
+                #      IN-PLACE and non-atomically (zipfile.ZipFile(zip_path,"w")
+                #      straight to the final path), and the next tqdm line only
+                #      appears after that synchronous save() returns. Do NOT
+                #      "simplify" this to terminate the moment
+                #      newest_checkpoint() >= segment_target — that would race a
+                #      half-written zip and resume from a truncated checkpoint.
                 if segment_target is not None and state["step"] > segment_target:
                     ck = newest_checkpoint(configured_output)
                     if ck and _checkpoint_step(ck) >= segment_target:
@@ -523,6 +534,11 @@ def main():
         log(f"STATUS:launching {Path(cmd[0]).name}"
             + (f" (segment {segment_index + 1} from step {start_step})" if segmented else ""))
 
+        # Each segment is a fresh mflux process — fatal-error detection (and the
+        # decision to replay the stderr tail) must be per-invocation, so a
+        # FATAL_PATTERN line matched in an earlier segment that still exited 0
+        # can't suppress the tail replay for a later segment's real failure.
+        fatal_holder["v"] = False
         result = run_segment(
             cmd, segment_target=segment_target, state=state, last_reported=last_reported,
             output_tail=output_tail, fatal_holder=fatal_holder,
@@ -542,6 +558,16 @@ def main():
         resume = str(result["checkpoint"]) if result.get("checkpoint") else resume
         new_step = _checkpoint_step(resume)
         if new_step >= total:
+            break
+        # Forward-progress guard: the boundary only fires on a checkpoint whose
+        # step >= segment_target > start_step, so new_step should always advance.
+        # If it somehow didn't (a stalled save, checkpoint renumbering), resuming
+        # would re-run the identical segment forever — fail loudly instead.
+        if new_step <= start_step:
+            print(f"USER_ERROR:TRAINING_FAILED:segment made no checkpoint progress "
+                  f"(still at step {new_step}/{total}) — stopping to avoid a resume loop",
+                  file=sys.stderr, flush=True)
+            final_code = 1
             break
         log(f"STATUS:segment {segment_index} complete at step {new_step}/{total} — cooling down {cooldown}s")
         interruptible_sleep(cooldown)
