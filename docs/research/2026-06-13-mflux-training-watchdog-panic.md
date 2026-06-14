@@ -194,6 +194,27 @@ procedure". **Not yet run** — it can hard-reboot the box, so it waits for an
 explicit go. Upstream issue drafted at
 `docs/research/2026-06-14-upstream-issue-draft-m5-watchdog.md`.
 
+## Bisect log (live — survives session-killing reboots)
+
+Repro: run `15cfeed1…` (FLUX.2 Klein **9B bf16**, 768px, batch 1, 25 img × 24 ep
+= 600 steps), `--segment-steps 0` (segmentation OFF → sustained GPU), telemetry
+armed. Output redirected to a scratch dir so the original run's artifacts are
+untouched. Update this table BEFORE launching each candidate so a hard reboot
+doesn't lose which version was under test.
+
+| When | mflux | mlx | mlx-metal | Result | powermetrics verdict |
+|---|---|---|---|---|---|
+| (baseline, not run) | 0.17.5 | 0.30.6 | 0.30.6 | known-bad (3 panics 06-13/14) | none captured (sudo was off) |
+| 2026-06-14 candidate #1 | 0.17.5 | **0.31.2** | **0.31.2** | ⏳ IN FLIGHT — launching | TBD: read scratch powermetrics.log |
+
+Candidate #1 rationale: bump only the MLX/Metal backend (highest-probability
+driver-hang fix); mflux held at 0.17.5 to isolate the variable. mflux caps
+`mlx<0.32` and its `dev` extra pins `mlx==0.31.0`, so 0.31.2 is in-range and
+closer to what mflux develops against than the installed 0.30.6.
+**If this entry still says IN FLIGHT after a reboot: candidate #1 PANICKED** —
+read the scratch `powermetrics.log` (highest timestamp) for thermal-vs-driver,
+then fall back to 0.30.6 or try mflux 0.18.0.
+
 ## If it recurs — investigation checklist
 
 1. **Read the telemetry.** Open the newest `<run>/powermetrics*.log` from the
