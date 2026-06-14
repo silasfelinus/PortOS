@@ -86,12 +86,32 @@ const MFLUX_SCHED = Object.freeze({ steps: 40, guidance: 1.0, timestepLow: 25, t
  *
  * Callers feed the *available* memory budget (post-unload, see memoryPrep.js),
  * not raw RAM, so the tier reflects real headroom on a shared box.
+ *
+ * Override (`LORA_TRAIN_MAX_QUANT_BITS`): on new M5-class silicon the
+ * unquantized-bf16 9B path is both pathologically slow (couldn't complete a
+ * step in 14 min on an M5 Max 128 GB) AND the config that GPU-watchdog-panicked
+ * the box three times (docs/research/2026-06-13-mflux-training-watchdog-panic.md).
+ * Setting `LORA_TRAIN_MAX_QUANT_BITS=8` caps the top tier at 8-bit QLoRA even
+ * when RAM would allow bf16 — far lighter, standard QLoRA recipe (frozen base
+ * quantized, LoRA weights full precision), minimal fidelity loss for a
+ * character LoRA. Unset → original memory-derived behavior (no change for other
+ * installs). Accepts 8 or 4; anything else is ignored.
  */
 export function deriveMfluxMemoryConfig(totalMemGb) {
   const gb = Number.isFinite(totalMemGb) ? totalMemGb : 0; // unknown → most conservative
-  if (gb >= 96) return { quantize: null, low_ram: true };
-  if (gb >= 64) return { quantize: 8, low_ram: true };
-  return { quantize: 4, low_ram: true };
+  const base = gb >= 96
+    ? { quantize: null, low_ram: true }
+    : gb >= 64
+      ? { quantize: 8, low_ram: true }
+      : { quantize: 4, low_ram: true };
+  const capRaw = Number.parseInt(process.env.LORA_TRAIN_MAX_QUANT_BITS ?? '', 10);
+  if (capRaw === 8 || capRaw === 4) {
+    // null (bf16) is "16+ bits" → always capped; an existing smaller quant
+    // (more aggressive) is kept. Lower bits = smaller = stays.
+    const curBits = base.quantize == null ? 16 : base.quantize;
+    if (curBits > capRaw) return { ...base, quantize: capRaw };
+  }
+  return base;
 }
 
 /**

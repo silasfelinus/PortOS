@@ -130,6 +130,29 @@ describe('buildMfluxTrainConfig', () => {
     expect(config.quantize).toBe(4);
     expect(config.low_ram).toBe(true);
   });
+
+  it('LORA_TRAIN_MAX_QUANT_BITS caps the top tier (M5 bf16-panic mitigation)', () => {
+    const prev = process.env.LORA_TRAIN_MAX_QUANT_BITS;
+    try {
+      // cap=8: a bf16 (null) box is capped to 8-bit; already-8 stays; smaller (4) is kept.
+      process.env.LORA_TRAIN_MAX_QUANT_BITS = '8';
+      expect(deriveMfluxMemoryConfig(128)).toEqual({ quantize: 8, low_ram: true });
+      expect(deriveMfluxMemoryConfig(64)).toEqual({ quantize: 8, low_ram: true });
+      expect(deriveMfluxMemoryConfig(48)).toEqual({ quantize: 4, low_ram: true });
+      // cap=4: everything capped to 4-bit.
+      process.env.LORA_TRAIN_MAX_QUANT_BITS = '4';
+      expect(deriveMfluxMemoryConfig(128)).toEqual({ quantize: 4, low_ram: true });
+      expect(deriveMfluxMemoryConfig(64)).toEqual({ quantize: 4, low_ram: true });
+      // garbage / unsupported values are ignored → original behavior.
+      process.env.LORA_TRAIN_MAX_QUANT_BITS = '16';
+      expect(deriveMfluxMemoryConfig(128)).toEqual({ quantize: null, low_ram: true });
+      process.env.LORA_TRAIN_MAX_QUANT_BITS = 'banana';
+      expect(deriveMfluxMemoryConfig(128)).toEqual({ quantize: null, low_ram: true });
+    } finally {
+      if (prev === undefined) delete process.env.LORA_TRAIN_MAX_QUANT_BITS;
+      else process.env.LORA_TRAIN_MAX_QUANT_BITS = prev;
+    }
+  });
 });
 
 describe('buildMfluxTrainArgs / buildFlux2TrainArgs', () => {
