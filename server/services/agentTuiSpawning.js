@@ -28,7 +28,7 @@ import {
   READY_IDLE_THRESHOLD_MS,
   PASTE_MARKER_POLL_MS,
   detectPasteMarker,
-  detectWorkActivity,
+  createWorkActivityTracker,
   PASTE_TO_ENTER_MIN_DELAY_MS,
   PASTE_TO_ENTER_FALLBACK_MS,
   scheduleSubmitEnters,
@@ -207,13 +207,14 @@ export async function spawnTuiAgent({
   let sentinelIngested = false;
   let hasStartedWorking = false;
   let promptSentAt = null;
-  // True once we've seen evidence the model is actively processing the SUBMITTED
-  // prompt (working counter / interrupt hint / "thinking" — see detectWorkActivity).
+  // Tracks evidence the model is actively processing the SUBMITTED prompt — the
+  // TUI's elapsed working counter advancing through ≥2 distinct values (see
+  // createWorkActivityTracker; echo-proof, unlike word-matching the prompt text).
   // Distinct from `hasStartedWorking`, which flips on ANY post-spawn PTY output
-  // including pure banner/status-line chrome. This flag is what gates the
+  // including pure banner/status-line chrome. `tracker.active` is what gates the
   // fallback idle-complete path from finalizing a never-submitted prompt as
   // success (issue #1229).
-  let sawWorkActivity = false;
+  const workActivity = createWorkActivityTracker();
   let firstOutputAt = null;
   let lastOutputAt = Date.now();
   let lastLine = '';
@@ -538,11 +539,9 @@ export async function spawnTuiAgent({
       if (postPasteBuffer !== null && stripped) postPasteBuffer += stripped;
       // Once the prompt is submitted, watch for proof the model is actually
       // working. The TUI repaints chrome continuously even with an unsent prompt,
-      // so we can't trust mere PTY activity — only a working indicator confirms
-      // the prompt left the input box. Gates idle-complete (issue #1229).
-      if (promptSentAt && !sawWorkActivity && stripped && detectWorkActivity(stripped)) {
-        sawWorkActivity = true;
-      }
+      // so we can't trust mere PTY activity — only the working counter advancing
+      // confirms the prompt left the input box. Gates idle-complete (issue #1229).
+      if (promptSentAt && stripped && !workActivity.active) workActivity.observe(stripped);
       lastOutputAt = Date.now();
       if (firstOutputAt === null) firstOutputAt = lastOutputAt;
 
@@ -718,10 +717,10 @@ export async function spawnTuiAgent({
       // prompt that just idled out. `lastOutputAt > promptSentAt` only proves
       // the TUI repainted SOMETHING — banner/status chrome churns even with the
       // prompt sitting unsent. Only finalize as success when we actually saw the
-      // model working (sawWorkActivity); otherwise this is the #1229 failure mode
-      // (prompt never submitted, zero work done) and must be recorded as a
+      // model working (workActivity.active); otherwise this is the #1229 failure
+      // mode (prompt never submitted, zero work done) and must be recorded as a
       // FAILURE so the orchestrator doesn't treat a no-op run as done.
-      if (sawWorkActivity) {
+      if (workActivity.active) {
         finish({ success: true, exitCode: 0, reason: 'idle-complete' }).catch(err => {
           emitLog('error', `Failed to finalize TUI agent ${agentId}: ${err.message}`, { agentId });
         });

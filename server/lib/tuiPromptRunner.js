@@ -44,6 +44,7 @@ import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
   PASTE_MARKER_POLL_MS,
   detectPasteMarker,
+  createWorkActivityTracker,
   PASTE_TO_ENTER_MIN_DELAY_MS,
   PASTE_TO_ENTER_FALLBACK_MS,
   scheduleSubmitEnters,
@@ -208,6 +209,11 @@ ${prompt}`;
   // path dead (issue #1229). Lives only during the paste→Enter window; nulled
   // when detection resolves or the run finalizes.
   let postPasteStripped = null;
+  // Echo-proof "model is actively working" tracker (working counter advancing).
+  // Gates the inline-output idle-complete fallback so a never-submitted one-shot
+  // prompt can't be scraped as a successful response (issue #1229) — the same
+  // guard the agent path uses; the authoritative path here is the response file.
+  const workActivity = createWorkActivityTracker();
   let firstOutputAt = null;
   let lastOutputAt = startTime;
   let firstResponseAt = null;
@@ -308,6 +314,7 @@ ${prompt}`;
       const stripped = streamingStrip(text);
       if (stripped) {
         if (postPasteStripped !== null) postPasteStripped += stripped;
+        if (promptSentAt && !workActivity.active) workActivity.observe(stripped);
         outputBuffer += stripped;
         if (outputBuffer.length > OUTPUT_BUFFER_HEADROOM) {
           outputBuffer = outputBuffer.slice(-OUTPUT_BUFFER_CAP);
@@ -351,7 +358,21 @@ ${prompt}`;
           if (isExternalSessionAttached(runId)) return;
           const idle = Date.now() - lastOutputAt;
           if (idle >= idleThresholdMs) {
-            finish({ success: true, exitCode: 0, reason: 'idle-complete' });
+            // Mirror the agent path's #1229 guard: idle-complete is the inline-
+            // output fallback (the response file is authoritative), so only trust
+            // it as success when the model actually worked (working counter
+            // advanced). Pure chrome churn from a never-submitted prompt would
+            // otherwise let the screen-scrape fallback masquerade as a response.
+            if (workActivity.active) {
+              finish({ success: true, exitCode: 0, reason: 'idle-complete' });
+            } else {
+              finish({
+                success: false,
+                exitCode: 1,
+                error: 'TUI run idled out with no sign of work — the prompt likely never submitted (no working indicator after paste) and no response file was written.',
+                reason: 'idle-no-activity',
+              });
+            }
           }
         }, 1000);
       }

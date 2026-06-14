@@ -62,28 +62,64 @@ export function detectPasteMarker(strippedText) {
 // its banner/status line continuously even with an UNSUBMITTED prompt sitting in
 // the input box, so "any PTY output after the paste" cannot distinguish real
 // work from chrome churn — that conflation is what finalized a never-submitted
-// agent as `success: idle-complete` (issue #1229). These patterns fire only once
-// a request is in flight and never appear on the idle/stuck input screen:
-//   - an elapsed-time working counter — `(1s · …` (Claude Code) / `(57s • …`
-//     (Codex). The most model-agnostic signal; present in both, absent when stuck.
-//   - `esc to interrupt` — the live-request interrupt hint (Codex; some Claude).
-//   - `thinking` — Claude Code's working spinner caption.
-// Verified against real transcripts: working runs hit these thousands of times;
-// the two confirmed stuck runs (`agent-92ed2c56`, `agent-30a3ab56`) hit them
-// zero times. Heuristic by nature (spinner captions rotate across versions), so
-// it gates only the FALLBACK idle-complete path — the authoritative success
-// signal remains the `.agent-done` sentinel.
-export const WORK_ACTIVITY_PATTERN = /\(\s*\d+s\b|esc to interrupt|\bthinking\b/i;
+// agent as `success: idle-complete` (issue #1229).
+//
+// We key on the TUI's elapsed-time WORKING COUNTER — `(1s · …` (Claude Code) /
+// `(57s • …` (Codex) — which renders only while a request is in flight and
+// INCREMENTS as the model works. This is the most model-agnostic signal (present
+// in both providers, absent on the stuck screen) AND it is echo-proof: the prompt
+// is echoed into the input box BEFORE submission, so word-matching `thinking` or
+// `esc to interrupt` could be tripped by a task description that merely contains
+// those words (flagged in review of #1229). A literal `(5s` in a prompt is a
+// single fixed value; the live counter passes through MANY distinct values, so we
+// require ≥ MIN_WORK_COUNTER_SAMPLES distinct second-counts before trusting it.
+// Verified against real transcripts: the working run cycled through ~29 counter
+// values; the two confirmed stuck runs (`agent-92ed2c56`, `agent-30a3ab56`) had
+// none. Heuristic by nature, so it gates only the FALLBACK idle-complete path —
+// the authoritative success signal remains the `.agent-done` sentinel.
+export const WORK_COUNTER_PATTERN = /\(\s*(\d+)\s*s\b/g;
+export const MIN_WORK_COUNTER_SAMPLES = 2;
 
 /**
- * True when `strippedText` shows the model is actively working on a submitted
- * prompt (see WORK_ACTIVITY_PATTERN). Callers MUST pass ANSI-stripped output.
+ * Extract every elapsed-second value from the TUI working counter in
+ * `strippedText` (e.g. `(1s · …` → 1, `(57s • …` → 57). Callers MUST pass
+ * ANSI-stripped output. Returns an array (possibly empty); non-string input
+ * yields `[]`.
  *
  * @param {string} strippedText — ANSI-stripped output (a chunk or accumulator).
- * @returns {boolean}
+ * @returns {number[]}
  */
-export function detectWorkActivity(strippedText) {
-  return typeof strippedText === 'string' && WORK_ACTIVITY_PATTERN.test(strippedText);
+export function extractWorkCounterSeconds(strippedText) {
+  if (typeof strippedText !== 'string' || !strippedText) return [];
+  const out = [];
+  // Fresh matcher state per call — a module-level /g regex carries lastIndex
+  // across calls and would skip matches on the next invocation.
+  const re = new RegExp(WORK_COUNTER_PATTERN.source, 'g');
+  let m;
+  while ((m = re.exec(strippedText)) !== null) out.push(Number(m[1]));
+  return out;
+}
+
+/**
+ * Stateful tracker for the "model is actively working" signal. Feed it each
+ * ANSI-stripped post-paste chunk via `observe()`; it becomes (and stays)
+ * `active` once it has seen ≥ MIN_WORK_COUNTER_SAMPLES DISTINCT elapsed-second
+ * counter values — i.e. the working counter actually advanced, which a static
+ * echoed prompt cannot fake. Shared by both TUI consumers so the echo-proof
+ * detection logic can't drift between them.
+ *
+ * @returns {{ observe: (strippedText: string) => boolean, readonly active: boolean }}
+ */
+export function createWorkActivityTracker() {
+  const seconds = new Set();
+  const isActive = () => seconds.size >= MIN_WORK_COUNTER_SAMPLES;
+  return {
+    observe(strippedText) {
+      for (const s of extractWorkCounterSeconds(strippedText)) seconds.add(s);
+      return isActive();
+    },
+    get active() { return isActive(); },
+  };
 }
 
 // A SINGLE Enter after a large bracketed paste is unreliable: the TUI can still

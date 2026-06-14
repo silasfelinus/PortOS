@@ -6,8 +6,10 @@ import {
   PASTE_MARKER_POLL_MS,
   PASTE_MARKER_PATTERN,
   detectPasteMarker,
-  WORK_ACTIVITY_PATTERN,
-  detectWorkActivity,
+  WORK_COUNTER_PATTERN,
+  MIN_WORK_COUNTER_SAMPLES,
+  extractWorkCounterSeconds,
+  createWorkActivityTracker,
   PASTE_TO_ENTER_MIN_DELAY_MS,
   PASTE_TO_ENTER_FALLBACK_MS,
   SUBMIT_ENTER_ATTEMPTS,
@@ -97,31 +99,55 @@ describe('tuiHandshake — paste timing constants', () => {
     expect(detectPasteMarker('[Pasted text #1 +3 lines]')).toBe(true);
   });
 
-  it('detectWorkActivity recognizes a model actively processing a submitted prompt', () => {
-    // Elapsed working counter — model-agnostic (Claude Code + Codex).
-    expect(detectWorkActivity('(1s · thinking with high effort)')).toBe(true);
-    expect(detectWorkActivity('(57s • esc to interrupt)')).toBe(true);
-    expect(detectWorkActivity('(0s · Churning…)')).toBe(true);
-    // Codex live-request interrupt hint.
-    expect(detectWorkActivity('Working  (12s · esc to interrupt)')).toBe(true);
-    // Claude Code working caption.
-    expect(detectWorkActivity('✻ thinking with high effort')).toBe(true);
+  it('extractWorkCounterSeconds parses the TUI elapsed working counter', () => {
+    // Claude Code: `(1s · …`; Codex: `(57s • …`.
+    expect(extractWorkCounterSeconds('(1s · thinking with high effort)')).toEqual([1]);
+    expect(extractWorkCounterSeconds('(57s • esc to interrupt)')).toEqual([57]);
+    expect(extractWorkCounterSeconds('(0s · Churning…)')).toEqual([0]);
+    // Multiple counters in one buffer (e.g. an accumulated screen).
+    expect(extractWorkCounterSeconds('(1s) … (2s) … (3s)')).toEqual([1, 2, 3]);
+    // No counter → empty; non-string → empty (guard).
+    expect(extractWorkCounterSeconds('● high · /effort')).toEqual([]);
+    expect(extractWorkCounterSeconds('')).toEqual([]);
+    expect(extractWorkCounterSeconds(null)).toEqual([]);
   });
 
-  it('detectWorkActivity returns false for the stuck/idle input screen (no work signal)', () => {
-    // The chrome present on a never-submitted-prompt screen (from the #1229
-    // false-success transcript): footer + echoed prompt + effort indicator.
-    expect(detectWorkActivity('⏵⏵ bypass permissions on (shift+tab to cycle)')).toBe(false);
-    expect(detectWorkActivity('● high · /effort')).toBe(false);
-    expect(detectWorkActivity('paste again to expand')).toBe(false);
-    expect(detectWorkActivity('Begin working on the task now.')).toBe(false);
-    expect(detectWorkActivity('Opus 4.8 │ agent-92ed2c56')).toBe(false);
-    expect(detectWorkActivity('')).toBe(false);
-    expect(detectWorkActivity(null)).toBe(false);
+  it('extractWorkCounterSeconds is stateless across calls (no lastIndex carryover)', () => {
+    // A module-level /g regex would skip matches on the 2nd call; assert it doesn't.
+    expect(extractWorkCounterSeconds('(4s)')).toEqual([4]);
+    expect(extractWorkCounterSeconds('(4s)')).toEqual([4]);
   });
 
-  it('WORK_ACTIVITY_PATTERN is exported as a RegExp for caller reuse', () => {
-    expect(WORK_ACTIVITY_PATTERN).toBeInstanceOf(RegExp);
+  it('createWorkActivityTracker activates only after the counter ADVANCES (echo-proof)', () => {
+    const tracker = createWorkActivityTracker();
+    expect(tracker.active).toBe(false);
+    // A single counter value — e.g. a literal `(5s` echoed from the prompt text —
+    // must NOT activate. This is the #1229 review fix: word/single-value matching
+    // could be tripped by the echoed prompt before submission.
+    expect(tracker.observe('please respond within (5s) of receiving this')).toBe(false);
+    expect(tracker.observe('still (5s) (5s) repainted chrome')).toBe(false);
+    expect(tracker.active).toBe(false);
+    // A second DISTINCT value — the live counter actually advanced — activates.
+    expect(tracker.observe('(6s · thinking)')).toBe(true);
+    expect(tracker.active).toBe(true);
+    // Stays active once tripped.
+    expect(tracker.observe('● high · /effort')).toBe(true);
+  });
+
+  it('createWorkActivityTracker stays inactive on pure stuck/idle chrome', () => {
+    const tracker = createWorkActivityTracker();
+    // The exact chrome from the #1229 false-success transcript (no counter).
+    tracker.observe('⏵⏵ bypass permissions on (shift+tab to cycle)');
+    tracker.observe('● high · /effort');
+    tracker.observe('paste again to expand');
+    tracker.observe('Begin working on the task now.');
+    tracker.observe('Opus 4.8 │ agent-92ed2c56');
+    expect(tracker.active).toBe(false);
+  });
+
+  it('pins work-activity detection constants', () => {
+    expect(WORK_COUNTER_PATTERN).toBeInstanceOf(RegExp);
+    expect(MIN_WORK_COUNTER_SAMPLES).toBe(2);
   });
 
   it('pins provider-default constants', () => {

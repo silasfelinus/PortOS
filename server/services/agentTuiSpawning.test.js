@@ -348,12 +348,14 @@ describe('spawnTuiAgent runtime', () => {
     await vi.advanceTimersByTimeAsync(2000);
     await flushMicrotasks();
 
-    // Feed a PTY chunk AFTER the paste that proves the model is actually
-    // WORKING — an elapsed working counter (`(1s · …`). This both sets
-    // lastOutputAt > promptSentAt AND trips sawWorkActivity, which the idle
-    // gate now requires before finalizing as success (issue #1229 — pure
-    // chrome churn must NOT count as completion; see the no-activity test below).
+    // Feed PTY chunks AFTER the paste that prove the model is actually WORKING —
+    // the elapsed working counter ADVANCING through two distinct values. This
+    // sets lastOutputAt > promptSentAt AND trips the work-activity tracker, which
+    // the idle gate now requires before finalizing as success (issue #1229 — pure
+    // chrome churn, or a single echoed counter value, must NOT count; see the
+    // no-activity test below).
     await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
+    await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
 
     // Advance past DEFAULT_TUI_MIN_RUNTIME_MS (15 000ms) + idleTimeoutMs (50ms).
     // The idle setInterval ticks every 5 000ms; at the >=15s tick the
@@ -398,7 +400,8 @@ describe('spawnTuiAgent runtime', () => {
 
     // Post-paste output, but ONLY chrome that repaints with an unsent prompt —
     // the input footer + effort indicator from the real #1229 stuck transcript.
-    // None of this is a work-activity signal, so sawWorkActivity stays false.
+    // None of this advances the working counter, so the work-activity tracker
+    // stays inactive.
     await capturedOnData(Buffer.from('⏵⏵ bypass permissions on (shift+tab to cycle)\n'));
     await capturedOnData(Buffer.from('● high · /effort\n'));
 
@@ -710,6 +713,7 @@ describe('spawnTuiAgent runtime', () => {
     await vi.advanceTimersByTimeAsync(2000);
     await flushMicrotasks();
     await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
+    await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
     await vi.advanceTimersByTimeAsync(21000);
     vi.useRealTimers();
     await completeDone;
