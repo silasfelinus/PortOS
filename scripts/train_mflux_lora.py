@@ -24,6 +24,22 @@ Verified against mflux 0.17.5:
 SIGTERM → forwarded to the mflux child; exit 143 after it stops (mflux
 checkpoints at save_frequency boundaries; mid-interval cancels keep the
 last saved checkpoint).
+
+Segmented training (watchdog-panic mitigation). When `--segment-steps N`
+is passed (>0), the run is broken into N-step segments instead of one
+sustained mflux process: train to a checkpoint boundary, **terminate the
+mflux child so its Metal/GPU context is fully torn down**, sleep
+`--cooldown-sec` to let the GPU clock down + the system settle, then
+`--resume` the newest checkpoint for the next segment. mflux resume reads
+`num_epochs` from the checkpoint (the config value is ignored on resume),
+so each segment continues toward the *same* total — segmentation is
+numerically equivalent to one continuous run, just with periodic
+full-process teardown. This directly attacks the macOS GPU
+watchdog-timeout kernel panics that hard-reboot the machine during long
+sustained mflux runs (see docs/research/2026-06-13-mflux-training-watchdog-panic.md):
+sustained GPU pressure never spans more than one segment, and any
+accumulated driver/thermal state resets between segments. `--segment-steps 0`
+(the default) restores the single-process behavior.
 """
 
 import argparse
@@ -36,6 +52,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import zipfile
 from collections import deque
 from datetime import datetime
@@ -70,9 +87,63 @@ def parse_args():
     p.add_argument("--config", required=True, help="mflux-train config JSON")
     p.add_argument("--output-dir", required=True, help="PortOS run dir (samples/ lives here)")
     p.add_argument("--total-steps", type=int, default=1000,
-                   help="expected total iterations — used only for logging sanity")
+                   help="expected total iterations — segment planning + logging sanity")
     p.add_argument("--resume-checkpoint", default=None, help="checkpoint zip to resume from")
+    p.add_argument("--segment-steps", type=int, default=0,
+                   help="0 = single sustained run; >0 = train in N-step segments, tearing "
+                        "down the GPU child + cooling down between each (watchdog-panic mitigation)")
+    p.add_argument("--cooldown-sec", type=int, default=90,
+                   help="seconds to idle the GPU between segments (only with --segment-steps>0)")
     return p.parse_args()
+
+
+# Checkpoint zips are named NNNNNNN_checkpoint.zip where NNNNNNN is the
+# trainer's cumulative iteration count — the canonical "where did we get to".
+CKPT_RE = re.compile(r"(\d+)_checkpoint\.zip$")
+
+
+def _checkpoint_step(path) -> int:
+    if not path:
+        return 0
+    m = CKPT_RE.search(Path(path).name)
+    return int(m.group(1)) if m else 0
+
+
+def newest_checkpoint(configured_output: Path):
+    """Newest checkpoint zip under the (possibly timestamp-suffixed) mflux
+    output dir. mflux `--resume` writes back to the SAME output_path
+    (new_folder=False), so checkpoints accumulate in one dir across segments;
+    ranking by embedded step keeps the pick monotonic even if mtimes tie."""
+    cdir = resolve_mflux_output(configured_output) / "checkpoints"
+    if not cdir.is_dir():
+        return None
+    zips = list(cdir.glob("*_checkpoint.zip"))
+    if not zips:
+        return None
+    return max(zips, key=lambda z: (_checkpoint_step(z), z.stat().st_mtime))
+
+
+def _terminate_child(timeout: float = 15.0) -> None:
+    """SIGTERM the mflux child and reap it (escalate to SIGKILL if it lingers).
+    Used at segment boundaries to fully release the Metal/GPU context."""
+    global CHILD
+    if CHILD and CHILD.poll() is None:
+        CHILD.terminate()
+        try:
+            CHILD.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            CHILD.kill()
+
+
+def interruptible_sleep(seconds: float) -> None:
+    """Sleep up to `seconds`, returning early if a SIGTERM cancel arrives —
+    so the inter-segment cooldown never delays a user-requested stop."""
+    end = time.monotonic() + seconds
+    while not STOP_REQUESTED:
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(1.0, remaining))
 
 
 def build_command(config_path: str, resume: str | None) -> list:
@@ -313,28 +384,22 @@ def stream_lines(pipe):
             buf = buf[cut + 1:]
 
 
-def main():
+def run_segment(cmd, *, segment_target, state, last_reported, output_tail,
+                fatal_holder, configured_output, cooldown):
+    """Run ONE mflux invocation and stream its output.
+
+    Returns a dict with `reason`:
+      - 'segment'   — reached `segment_target`; the child was terminated after
+                      the boundary checkpoint was confirmed on disk. `checkpoint`
+                      holds the zip to resume the next segment from.
+      - 'completed' — the child exited 0 on its own (training finished).
+      - 'stopped'   — a SIGTERM cancel arrived; caller should exit 143.
+      - 'error'     — the child exited non-zero; `code` carries the exit code.
+
+    `segment_target=None` means "let mflux run to completion" (final/only
+    segment) — no boundary kill is armed.
+    """
     global CHILD
-    args = parse_args()
-    output_dir = Path(args.output_dir)
-    samples_dir = output_dir / "samples"
-    samples_dir.mkdir(parents=True, exist_ok=True)
-    config = json.loads(Path(args.config).read_text())
-    configured_output = Path(config["checkpoint"]["output_path"])
-
-    state = {"step": 0, "total": max(1, args.total_steps), "loss": None}
-    last_reported = {"step": -1}
-
-    watcher = ArtifactWatcher(configured_output, samples_dir, lambda: state["step"])
-    watcher.start()
-
-    cmd = build_command(args.config, args.resume_checkpoint)
-    # Start telemetry only once we know the trainer command resolved (build_command
-    # exits early on a missing mflux) so we never leave an orphaned root process.
-    telemetry = TelemetrySidecar(output_dir)
-    telemetry.start()
-    log("STAGE:load-model")
-    log(f"STATUS:launching {Path(cmd[0]).name}")
     CHILD = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
@@ -342,15 +407,6 @@ def main():
         CHILD.terminate()
 
     in_training = False
-    fatal_emitted = False
-    # Ring buffer of the trainer's recent non-progress output. mflux's stderr
-    # is merged into its stdout (so tqdm stays in order), which means the Node
-    # side tags every line `stream='stdout'` and the JS classifier's stderr
-    # tail — its only window into *why* a run died — stays empty. On a non-zero
-    # exit we replay this buffer to stderr so argparse errors, tracebacks, and
-    # version-mismatch complaints actually reach the classifier instead of the
-    # run failing with a bare "exited with code N".
-    output_tail = deque(maxlen=OUTPUT_TAIL_LINES)
     for raw in stream_lines(CHILD.stdout):
         line = raw.strip()
         if not line or NOISE_RE.search(line):
@@ -358,11 +414,11 @@ def main():
 
         # Surface the first fatal error in a structured form the Node
         # classifier can read (once — don't spam if it repeats in a traceback).
-        if not fatal_emitted:
+        if not fatal_holder["v"]:
             for code, pat in FATAL_PATTERNS:
                 if pat.search(line):
                     print(f"USER_ERROR:{code}:{line[:300]}", file=sys.stderr, flush=True)
-                    fatal_emitted = True
+                    fatal_holder["v"] = True
                     break
 
         m = STEP_LOSS_RE.search(line) or TQDM_RE.search(line)
@@ -382,6 +438,18 @@ def main():
                 if cur != last_reported["step"]:
                     last_reported["step"] = cur
                     log(f"STEP:{cur}:{total}:{state['loss'] if state['loss'] is not None else 'nan'}")
+                # Segment boundary: wait until the trainer has stepped PAST the
+                # target before killing, so mflux's save at the boundary (which
+                # runs synchronously before the next step is emitted) has fully
+                # flushed the zip — killing the instant the file appears could
+                # truncate a half-written checkpoint.
+                if segment_target is not None and state["step"] > segment_target:
+                    ck = newest_checkpoint(configured_output)
+                    if ck and _checkpoint_step(ck) >= segment_target:
+                        log(f"STATUS:segment checkpoint @ step {_checkpoint_step(ck)} saved — "
+                            f"tearing down GPU + cooling {cooldown}s (watchdog-panic mitigation)")
+                        _terminate_child()
+                        return {"reason": "segment", "checkpoint": ck, "code": 0}
             continue
 
         # Forward everything else (truncated) — keeps the JS idle watchdog
@@ -390,6 +458,96 @@ def main():
         log(f"STATUS:{line[:300]}")
 
     code = CHILD.wait()
+    if STOP_REQUESTED:
+        return {"reason": "stopped", "code": 143}
+    if code != 0:
+        return {"reason": "error", "code": code}
+    return {"reason": "completed", "checkpoint": newest_checkpoint(configured_output), "code": 0}
+
+
+def main():
+    args = parse_args()
+    output_dir = Path(args.output_dir)
+    samples_dir = output_dir / "samples"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    config = json.loads(Path(args.config).read_text())
+    configured_output = Path(config["checkpoint"]["output_path"])
+
+    total = max(1, args.total_steps)
+    seg = max(0, args.segment_steps)
+    cooldown = max(0, args.cooldown_sec)
+    segmented = seg > 0
+
+    state = {"step": 0, "total": total, "loss": None}
+    last_reported = {"step": -1}
+
+    watcher = ArtifactWatcher(configured_output, samples_dir, lambda: state["step"])
+    watcher.start()
+
+    # Resolve the trainer command up front so a missing mflux exits before we
+    # start telemetry (build_command exits early) — never leave an orphaned
+    # root powermetrics process. One telemetry sidecar + one watcher span ALL
+    # segments so the forensic log and artifact stream stay continuous.
+    _ = build_command(args.config, args.resume_checkpoint)
+    telemetry = TelemetrySidecar(output_dir)
+    telemetry.start()
+
+    fatal_holder = {"v": False}
+    # Ring buffer of the trainer's recent non-progress output. mflux's stderr
+    # is merged into its stdout (so tqdm stays in order), which means the Node
+    # side tags every line `stream='stdout'` and the JS classifier's stderr
+    # tail — its only window into *why* a run died — stays empty. On a non-zero
+    # exit we replay this buffer to stderr so argparse errors, tracebacks, and
+    # version-mismatch complaints actually reach the classifier instead of the
+    # run failing with a bare "exited with code N".
+    output_tail = deque(maxlen=OUTPUT_TAIL_LINES)
+
+    resume = args.resume_checkpoint  # None on a fresh run; a zip on resume
+    final_code = 0
+    segment_index = 0
+    if segmented:
+        log(f"STATUS:segmented training enabled — {seg}-step segments, {cooldown}s GPU cooldown between each")
+    while True:
+        start_step = _checkpoint_step(resume) if resume else 0
+        if start_step >= total:
+            break  # nothing left to train (resumed past the end)
+        # Final/only segment runs to natural completion (no boundary kill); the
+        # estimate `total` may differ slightly from mflux's epoch-rounded total,
+        # so the last segment always lets mflux decide when it's done.
+        segment_target = start_step + seg if segmented else None
+        if segment_target is not None and segment_target >= total:
+            segment_target = None
+
+        cmd = build_command(args.config, resume)
+        log("STAGE:load-model")
+        log(f"STATUS:launching {Path(cmd[0]).name}"
+            + (f" (segment {segment_index + 1} from step {start_step})" if segmented else ""))
+
+        result = run_segment(
+            cmd, segment_target=segment_target, state=state, last_reported=last_reported,
+            output_tail=output_tail, fatal_holder=fatal_holder,
+            configured_output=configured_output, cooldown=cooldown,
+        )
+        segment_index += 1
+
+        if result["reason"] == "stopped":
+            break
+        if result["reason"] == "error":
+            final_code = result["code"] or 1
+            break
+        if result["reason"] == "completed":
+            break
+
+        # reason == 'segment' — cool down, then resume from the boundary checkpoint.
+        resume = str(result["checkpoint"]) if result.get("checkpoint") else resume
+        new_step = _checkpoint_step(resume)
+        if new_step >= total:
+            break
+        log(f"STATUS:segment {segment_index} complete at step {new_step}/{total} — cooling down {cooldown}s")
+        interruptible_sleep(cooldown)
+        if STOP_REQUESTED:
+            break
+
     watcher.stop_event.set()
     watcher.join(timeout=10)
     telemetry.stop()
@@ -398,15 +556,15 @@ def main():
         log("STATUS:canceled — last saved checkpoint retained")
         sys.exit(143)
 
-    if code != 0:
+    if final_code != 0:
         # Replay the trainer's tail to stderr so the Node classifier sees the
         # real error. Skip when a structured USER_ERROR already pinned the
         # cause (its message is more actionable than raw tail lines).
-        if not fatal_emitted:
+        if not fatal_holder["v"]:
             for tail_line in output_tail:
                 print(f"mflux: {tail_line}", file=sys.stderr, flush=True)
-        print(f"❌ mflux trainer exited with code {code}", file=sys.stderr, flush=True)
-        sys.exit(code or 1)
+        print(f"❌ mflux trainer exited with code {final_code}", file=sys.stderr, flush=True)
+        sys.exit(final_code or 1)
 
     checkpoints_dir = resolve_mflux_output(configured_output) / "checkpoints"
     adapter = find_adapter(checkpoints_dir, output_dir)
