@@ -57,9 +57,35 @@ export function isTestDatabase() {
   return /_test$/.test(db) || db === 'portos_test';
 }
 
-// Only guard row deletion — not schema DDL (ensureSchema's CREATE/ALTER/DROP is
-// idempotent and not a data-loss risk). Skips leading line/block comments + space.
-const DESTRUCTIVE_SQL = /^\s*(?:--[^\n]*\n|\/\*[\s\S]*?\*\/|\s)*(DELETE\s+FROM|TRUNCATE)\b/i;
+/**
+ * Are we executing under a test runner?
+ *
+ * `NODE_ENV === 'test'` alone is not reliable: a suite run from a CoS-agent
+ * worktree (or any wrapper that sets NODE_ENV=development / leaves it unset)
+ * still executes test code, and the backend selectors that key off NODE_ENV
+ * (e.g. seriesStore's `useFileBackend()`) then quietly choose the *Postgres*
+ * backend — so the test writes land in the real `portos` DB with the guard
+ * below disarmed. Vitest always sets `process.env.VITEST` in every worker
+ * process, so OR-ing it in arms the guard regardless of how NODE_ENV was
+ * (mis)configured. This is the signal that actually closed the 2026-06-14
+ * fixture leak into prod.
+ *
+ * @returns {boolean}
+ */
+export function isTestRunner() {
+  return process.env.NODE_ENV === 'test' || process.env.VITEST != null;
+}
+
+// Guard ALL row writes — not just deletions. The original guard only blocked
+// DELETE/TRUNCATE, which let a mis-pointed suite INSERT fixtures into prod
+// (their cleanup DELETE then threw, *stranding* the rows) — exactly how test
+// series/issues/story-builder fixtures leaked into the real `portos` DB and
+// federated to peers. INSERT/UPDATE are now blocked too. Schema DDL
+// (CREATE/ALTER/DROP) is still allowed: it is idempotent, carries no row-data,
+// and ensureSchema() needs it to stand up portos_test. Skips leading
+// line/block comments + whitespace before the verb.
+const ROW_WRITE_SQL =
+  /^\s*(?:--[^\n]*\n|\/\*[\s\S]*?\*\/|\s)*(INSERT\s+INTO|UPDATE\s|DELETE\s+FROM|TRUNCATE)\b/i;
 
 /**
  * Execute a query against the connection pool.
@@ -68,19 +94,21 @@ const DESTRUCTIVE_SQL = /^\s*(?:--[^\n]*\n|\/\*[\s\S]*?\*\/|\s)*(DELETE\s+FROM|T
  * @returns {Promise<pg.QueryResult>}
  */
 export async function query(text, params) {
-  // Hard backstop: under the test runner, refuse to delete rows from a non-test
-  // database even if a suite somehow reaches query() without gating on
-  // checkHealth() first (e.g. a new test author calls query('DELETE …')
-  // directly). Throwing fails loudly instead of silently destroying real data.
+  // Hard backstop: under the test runner, refuse to MUTATE a non-test database
+  // even if a suite somehow reaches query() without gating on checkHealth()
+  // first (a new test author calls query('INSERT …') directly, or a backend
+  // selector mis-chose Postgres because NODE_ENV wasn't 'test'). Throwing fails
+  // loudly instead of silently writing — or stranding — real data. Reads
+  // (SELECT) are left alone so health/version probes still work.
   if (
-    process.env.NODE_ENV === 'test' &&
+    isTestRunner() &&
     !isTestDatabase() &&
     typeof text === 'string' &&
-    DESTRUCTIVE_SQL.test(text)
+    ROW_WRITE_SQL.test(text)
   ) {
     throw new Error(
-      `🛑 Refusing destructive query against non-test database '${process.env.PGDATABASE || 'portos'}' under NODE_ENV=test. ` +
-        `Point PGDATABASE at a *_test database (e.g. portos_test) or set TEST_DB_OK=1. Query: ${text.slice(0, 80)}`,
+      `🛑 Refusing to mutate non-test database '${process.env.PGDATABASE || 'portos'}' under the test runner. ` +
+        `Point PGDATABASE at a *_test database (e.g. portos_test), gate the suite on requireDb(), or set TEST_DB_OK=1. Query: ${text.slice(0, 80)}`,
     );
   }
   return pool.query(text, params);
@@ -131,13 +159,15 @@ export async function withTransaction(fn) {
  * @returns {Promise<{connected: boolean, hasSchema: boolean, error?: string}>}
  */
 export async function checkHealth() {
-  // Test-runner safety gate. Under NODE_ENV=test the only database we permit is
-  // a designated test database (see isTestDatabase). Reporting "disconnected"
+  // Test-runner safety gate. Under the test runner the only database we permit
+  // is a designated test database (see isTestDatabase). Reporting "disconnected"
   // here makes every DB-backed `*.db.test.js` suite skip via its existing
   // `if (!health.connected)` branch — instead of running DELETE FROM against the
-  // developer's real universes/series/writing. The mocked checkHealth in
-  // memoryBackend.test.js / backup.test.js is unaffected (it replaces this fn).
-  if (process.env.NODE_ENV === 'test' && !isTestDatabase()) {
+  // developer's real universes/series/writing. Keyed on isTestRunner() (not bare
+  // NODE_ENV) so a worktree run that left NODE_ENV unset is still gated. The
+  // mocked checkHealth in memoryBackend.test.js / backup.test.js is unaffected
+  // (it replaces this fn).
+  if (isTestRunner() && !isTestDatabase()) {
     return {
       connected: false,
       hasSchema: false,

@@ -8,18 +8,23 @@
  *
  * These guards make the test runner refuse to touch a NON-test database:
  *   - isTestDatabase()  — names a DB safe for destructive tests.
- *   - checkHealth()     — reports "disconnected" under NODE_ENV=test on a real DB
- *                         so every db-backed suite skips via its existing branch.
- *   - query()           — hard backstop: throws on DELETE/TRUNCATE under
- *                         NODE_ENV=test on a non-test DB even if a suite reaches
- *                         it without gating on checkHealth first.
+ *   - isTestRunner()    — detects the runner via NODE_ENV=test OR the VITEST env
+ *                         var (set in every vitest worker), so a worktree run
+ *                         that left NODE_ENV unset is still gated.
+ *   - checkHealth()     — reports "disconnected" under the test runner on a real
+ *                         DB so every db-backed suite skips via its existing branch.
+ *   - query()           — hard backstop: throws on ANY row write (INSERT/UPDATE/
+ *                         DELETE/TRUNCATE) under the test runner on a non-test DB
+ *                         even if a suite reaches it without gating on checkHealth
+ *                         first. (DELETE-only guarding let test INSERTs leak
+ *                         fixtures into the real `portos` DB on 2026-06-14.)
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { readdirSync, openSync, readSync, closeSync, existsSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isTestDatabase, checkHealth, query } from './db.js';
+import { isTestDatabase, isTestRunner, checkHealth, query } from './db.js';
 import { DB_TEST_INCLUDE } from '../vitest.config.db.js';
 
 // NODE_ENV is 'test' throughout (vitest default); we vary PGDATABASE / TEST_DB_OK.
@@ -76,8 +81,31 @@ describe('isTestDatabase', () => {
   });
 });
 
+describe('isTestRunner', () => {
+  it('is true under NODE_ENV=test', () => {
+    setEnv('NODE_ENV', 'test');
+    setEnv('VITEST', undefined);
+    expect(isTestRunner()).toBe(true);
+  });
+
+  it('is true via VITEST even when NODE_ENV is not "test"', () => {
+    // The leak path: a worktree wrapper sets NODE_ENV=development, so backend
+    // selectors keyed on bare NODE_ENV quietly choose Postgres. VITEST is still
+    // set, so the runner is still detected and the guard stays armed.
+    setEnv('NODE_ENV', 'development');
+    setEnv('VITEST', 'true');
+    expect(isTestRunner()).toBe(true);
+  });
+
+  it('is false outside the runner (no NODE_ENV=test, no VITEST)', () => {
+    setEnv('NODE_ENV', 'production');
+    setEnv('VITEST', undefined);
+    expect(isTestRunner()).toBe(false);
+  });
+});
+
 describe('checkHealth test-runner gate', () => {
-  it('reports disconnected on a non-test DB under NODE_ENV=test', async () => {
+  it('reports disconnected on a non-test DB under the test runner', async () => {
     setEnv('PGDATABASE', 'portos');
     setEnv('TEST_DB_OK', undefined);
     const health = await checkHealth();
@@ -85,49 +113,84 @@ describe('checkHealth test-runner gate', () => {
     expect(health.hasSchema).toBe(false);
     expect(health.error).toMatch(/test runner blocked/i);
   });
+
+  it('reports disconnected via VITEST even when NODE_ENV is not "test"', async () => {
+    setEnv('PGDATABASE', 'portos');
+    setEnv('TEST_DB_OK', undefined);
+    setEnv('NODE_ENV', 'development');
+    setEnv('VITEST', 'true');
+    const health = await checkHealth();
+    expect(health.connected).toBe(false);
+  });
 });
 
-describe('query destructive backstop', () => {
+describe('query row-write backstop', () => {
   // These all run with a non-test DB so the guard is active. The throw happens
   // BEFORE pool.query, so no live database is needed.
   it('throws on DELETE FROM against a non-test DB', async () => {
     setEnv('PGDATABASE', 'portos');
     setEnv('TEST_DB_OK', undefined);
-    await expect(query('DELETE FROM universes')).rejects.toThrow(/Refusing destructive query/i);
+    await expect(query('DELETE FROM universes')).rejects.toThrow(/Refusing to mutate/i);
   });
 
   it('throws on TRUNCATE against a non-test DB', async () => {
     setEnv('PGDATABASE', 'portos');
     setEnv('TEST_DB_OK', undefined);
-    await expect(query('TRUNCATE pipeline_series')).rejects.toThrow(/Refusing destructive query/i);
+    await expect(query('TRUNCATE pipeline_series')).rejects.toThrow(/Refusing to mutate/i);
+  });
+
+  it('throws on INSERT INTO against a non-test DB (the fixture-leak path)', async () => {
+    setEnv('PGDATABASE', 'portos');
+    setEnv('TEST_DB_OK', undefined);
+    await expect(
+      query("INSERT INTO pipeline_series (id, data) VALUES ('ser-fixed-abc', '{}')"),
+    ).rejects.toThrow(/Refusing to mutate/i);
+  });
+
+  it('throws on UPDATE against a non-test DB', async () => {
+    setEnv('PGDATABASE', 'portos');
+    setEnv('TEST_DB_OK', undefined);
+    await expect(query("UPDATE universes SET deleted = TRUE WHERE id = 'x'")).rejects.toThrow(
+      /Refusing to mutate/i,
+    );
+  });
+
+  it('throws on a write via VITEST even when NODE_ENV is not "test"', async () => {
+    setEnv('PGDATABASE', 'portos');
+    setEnv('TEST_DB_OK', undefined);
+    setEnv('NODE_ENV', 'development');
+    setEnv('VITEST', 'true');
+    await expect(query("INSERT INTO universes (id) VALUES ('x')")).rejects.toThrow(
+      /Refusing to mutate/i,
+    );
   });
 
   it('throws even when the statement is prefixed with comments/whitespace', async () => {
     setEnv('PGDATABASE', 'portos');
     setEnv('TEST_DB_OK', undefined);
     await expect(query('  -- cleanup\n  DELETE FROM writers_room_works')).rejects.toThrow(
-      /Refusing destructive query/i,
+      /Refusing to mutate/i,
     );
   });
 
-  it('does NOT block non-destructive statements via the guard', async () => {
+  it('does NOT block reads via the guard', async () => {
     setEnv('PGDATABASE', 'portos');
     setEnv('TEST_DB_OK', undefined);
-    // A SELECT is not destructive — the guard lets it through to pool.query.
-    // We only assert the guard's own error is NOT thrown; any connection error
+    // A SELECT is not a row write — the guard lets it through to pool.query. We
+    // only assert the guard's own error is NOT thrown; any connection error
     // from pool.query (no DB in CI) is fine and distinct.
     await query('SELECT 1').then(
       () => {},
-      (err) => expect(err.message).not.toMatch(/Refusing destructive query/i),
+      (err) => expect(err.message).not.toMatch(/Refusing to mutate/i),
     );
   });
 
-  it('does not false-positive on a column/word containing "delete"', async () => {
+  it('does not false-positive on a column/word containing "delete"/"update"', async () => {
     setEnv('PGDATABASE', 'portos');
     setEnv('TEST_DB_OK', undefined);
-    await query("SELECT deleted FROM universes WHERE name = 'x'").then(
+    await query("SELECT deleted, updated_at FROM universes WHERE name = 'x'").then(
       () => {},
-      (err) => expect(err.message).not.toMatch(/Refusing destructive query/i),
+      (err) => expect(err.message).not.toMatch(/Refusing to mutate/i),
     );
   });
 });
