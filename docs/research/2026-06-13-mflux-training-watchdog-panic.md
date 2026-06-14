@@ -207,6 +207,21 @@ doesn't lose which version was under test.
 | (baseline, not run) | 0.17.5 | 0.30.6 | 0.30.6 | known-bad (3 panics 06-13/14) | none captured (sudo was off) |
 | 2026-06-14 candidate #1 | 0.17.5 | **0.31.2** | **0.31.2** | ⏳ IN FLIGHT — survived to step ~11/600 @ 13:45 (box up, no panic) | telemetry capturing (`_bisect-mlx0312/powermetrics.log`) |
 
+**Speed finding (2026-06-14 ~14:10) — 9B bf16 is pathologically slow on this box; 4B is ~25× faster.**
+The first Freydis run (`flux2-klein-9b`, bf16, 768px, 600 steps) ran **14 minutes
+without completing a single real `/600` training step** — only the step-0
+checkpoint. On a 128 GB box `deriveMfluxMemoryConfig(≥96)` forces `quantize:null`
+(full bf16); the 32 GB base-9B transformer materialized for the fused
+forward+backward (`nn.value_and_grad`) appears to hit memory/swap pressure (swap
+was ~18 GB) and crawl. Restarted with **`flux2-klein-4b`** (15 GB base), 400
+steps, 768px → steady **~3.5 s/step**, full run **~35 min** incl. 3 segment
+cooldowns. The dominant lever was the **base-model size, not the step count**:
+600→400 steps is minor; 9B-bf16 → 4B is the ~25× win for a single-character LoRA
+(run `d36562a0…`). Open question for `TRAINING_DEFAULTS` / `deriveMfluxMemoryConfig`:
+the ≥96 GB tier picking unquantized 9B may be the wrong default — 4B or 9B-8bit
+is far faster with little fidelity loss for character LoRAs. Tracked as a PLAN
+item rather than changed mid-incident.
+
 **Pivot (2026-06-14 ~13:51):** the seg-OFF scratch bisect was stopped at
 step ~10 (clean, no panic — manually terminated) and replaced with a **real
 Freydis training run** through the live server (run `7de50766…`, dataset
