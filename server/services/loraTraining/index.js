@@ -386,7 +386,9 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
     console.log(`🧹 training [${shortId(jobId)}] freed ${memReport.unloaded.length} resident model(s): ${memReport.unloaded.join(', ')}`);
   }
   console.log(`🧮 training [${shortId(jobId)}] memory budget ${memReport.budgetGb.toFixed(0)} GB free of ${memReport.totalGb.toFixed(0)} GB total`);
-  if (memReport.budgetGb < TRAINING_MIN_HEADROOM_GB) {
+  if (!Number.isFinite(memReport.budgetGb) || memReport.budgetGb < TRAINING_MIN_HEADROOM_GB) {
+    // Fail safe: a non-finite budget (should never happen — both inputs are
+    // finite) must REFUSE the run, not slip past `NaN < x` (always false).
     return failBeforeSpawn(`Not enough free memory to train safely — ${memReport.budgetGb.toFixed(1)} GB available, need ≥ ${TRAINING_MIN_HEADROOM_GB} GB. Stop other model servers or close apps and retry.`);
   }
 

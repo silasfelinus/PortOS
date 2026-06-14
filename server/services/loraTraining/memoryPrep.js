@@ -30,10 +30,14 @@ const GB = 2 ** 30;
 // larger variants are protected by the budget-derived quantize/low_ram tiers.
 export const TRAINING_MIN_HEADROOM_GB = 24;
 
+// Loopback hosts, plus `0.0.0.0` — a backend URL of `0.0.0.0` targets the local
+// machine (the all-interfaces bind, which clients reach via loopback), so it is
+// "local" for the purpose of deciding whether an unload frees local memory.
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1']);
 
 /**
- * True only when `url` points at this machine's loopback interface. Unloading a
+ * True only when `url` points at this machine (loopback, or the `0.0.0.0`
+ * local-bind sentinel). Unloading a
  * model frees memory on the box the backend RUNS on, not the box that issued
  * the request — and PortOS supports pointing `OLLAMA_URL` / `LM_STUDIO_URL` at a
  * remote LAN peer (a common federated-machines setup). Evicting a *remote*
@@ -85,7 +89,7 @@ export async function unloadResidentModels() {
 }
 
 const parsePageSize = (out) => {
-  const m = out.match(/page size of (\d+) bytes/);
+  const m = out.match(/page size of (\d+) bytes/i); // case-insensitive for robustness
   return m ? Number(m[1]) : 4096;
 };
 
