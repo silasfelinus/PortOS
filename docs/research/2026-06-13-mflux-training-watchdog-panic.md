@@ -207,7 +207,20 @@ doesn't lose which version was under test.
 | (baseline, not run) | 0.17.5 | 0.30.6 | 0.30.6 | known-bad (3 panics 06-13/14) | none captured (sudo was off) |
 | 2026-06-14 candidate #1 | 0.17.5 | **0.31.2** | **0.31.2** | ⏳ IN FLIGHT — survived to step ~11/600 @ 13:45 (box up, no panic) | telemetry capturing (`_bisect-mlx0312/powermetrics.log`) |
 
-**Candidate #1 live notes (2026-06-14 ~13:45):** scratch run
+**Pivot (2026-06-14 ~13:51):** the seg-OFF scratch bisect was stopped at
+step ~10 (clean, no panic — manually terminated) and replaced with a **real
+Freydis training run** through the live server (run `7de50766…`, dataset
+`90043893…` = Freydis of Quaervarr, `flux2-klein-9b`, **segmentation ON**:
+`--segment-steps 150 --cooldown-sec 90` = 4 segments). Rationale: her training
+had failed/canceled 3× (the panics; no LoRA existed), and the scratch run was
+already grinding her exact dataset into a throwaway dir. Dual-purposing it on
+the mlx **0.31.2** stack finishes her LoRA *and* gives 0.31.2 a real-world test.
+Trade-off: with segmentation ON a survived run proves "0.31.2 + segmentation
+completes" (the production config), NOT "0.31.2 alone survives sustained GPU" —
+the pure seg-OFF verdict on 0.31.2 remains untested (rerun on the throwaway
+dataset later if wanted). Telemetry still capturing per-run.
+
+**Candidate #1 live notes (2026-06-14 ~13:45, seg-OFF scratch — superseded):** scratch run
 `data/training-runs/_bisect-mlx0312/` (9B bf16, 768px, low_ram, segmentation
 OFF). The wrapper's `STEP:n:40` lines at the start are the **step-0 preview
 image** (40 denoise steps), NOT training — real training is the `STEP:n:600`
