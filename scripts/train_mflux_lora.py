@@ -539,11 +539,18 @@ def main():
         log(f"STATUS:segmented training enabled — {seg}-step segments, {cooldown}s GPU cooldown between each")
     while True:
         start_step = _checkpoint_step(resume) if resume else 0
-        if start_step >= total:
-            break  # nothing left to train (resumed past the end)
-        # Final/only segment runs to natural completion (no boundary kill); the
-        # estimate `total` may differ slightly from mflux's epoch-rounded total,
-        # so the last segment always lets mflux decide when it's done.
+        # `total` is the *requested* step count; mflux's real total is
+        # epoch-rounded (round(total / imageCount) * imageCount) and can be
+        # HIGHER (e.g. 600 requested with 29 images runs 609). So never
+        # short-circuit "done" by comparing a checkpoint step against `total` —
+        # that would skip the last partial epoch when resuming from a checkpoint
+        # at exactly `total`. Once we're within one segment of the requested
+        # total, run a FINAL segment (no boundary kill) and let mflux itself
+        # decide when it's done: it resumes, runs whatever epoch-rounded steps
+        # remain, and exits 0 (StopIteration) — surfaced as 'completed' below.
+        # A resume that really is past the end just reloads, immediately hits
+        # StopIteration, and returns 'completed' — correct, at the cost of one
+        # model load on the rare "resume an already-finished run" path.
         segment_target = start_step + seg if segmented else None
         if segment_target is not None and segment_target >= total:
             segment_target = None
@@ -576,8 +583,11 @@ def main():
         # reason == 'segment' — cool down, then resume from the boundary checkpoint.
         resume = str(result["checkpoint"]) if result.get("checkpoint") else resume
         new_step = _checkpoint_step(resume)
-        if new_step >= total:
-            break
+        # No `new_step >= total` early-stop: a 'segment' result means we killed
+        # at a non-final boundary (segment_target < total), so the next
+        # iteration's segment_target crosses `total`, becomes the final
+        # run-to-completion segment, and lets mflux finish its epoch-rounded
+        # steps — rather than stopping at the approximate requested total.
         # Forward-progress guard: the boundary only fires on a checkpoint whose
         # step >= segment_target > start_step, so new_step should always advance.
         # If it somehow didn't (a stalled save, checkpoint renumbering), resuming
