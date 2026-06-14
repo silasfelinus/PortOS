@@ -14,7 +14,7 @@ import { useEffect, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Save, Loader2, Workflow as WorkflowIcon, Globe, NotebookPen,
-  PanelLeftClose, PanelLeftOpen, Sparkles, BookOpen,
+  PanelLeftClose, PanelLeftOpen, Sparkles, BookOpen, FileInput,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import ArcCanvas from '../components/pipeline/ArcCanvas';
@@ -28,6 +28,7 @@ import {
   SERIES_TITLE_LOGO_MAX,
 } from '../services/api';
 import AuthorPicker from '../components/pipeline/AuthorPicker';
+import { buildImporterLink } from '../lib/importerDeepLink';
 import { recommendStructure, describeStructure } from '../lib/seasonStructure';
 import { useLocalStorageBool } from '../hooks/useLocalStorageBool';
 import { useArcCanvasSync } from '../hooks/useArcCanvasSync';
@@ -185,6 +186,13 @@ export default function PipelineSeries() {
               title="Open the full manuscript editor"
             >
               <BookOpen size={12} /> Manuscript
+            </Link>
+            <Link
+              to={buildImporterLink({ universeId: series.universeId, seriesId: series.id })}
+              className="ml-2 inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-gray-400 hover:text-white border border-port-border bg-port-card"
+              title="Import an existing manuscript, novel, screenplay, or comic script into this series"
+            >
+              <FileInput size={12} /> Import
             </Link>
             <button
               type="button"
