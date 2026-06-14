@@ -403,6 +403,35 @@ def stream_lines(pipe):
             buf = buf[cut + 1:]
 
 
+def compute_effective_total(config: dict, fallback: int) -> int:
+    """mflux's REAL iteration total = ceil(imageCount / batch_size) * num_epochs
+    — identical to Iterator.total_number_of_steps(). The wrapper's --total-steps
+    is the user's *requested* count, which mflux rounds up to whole epochs and
+    can exceed (e.g. 600 requested with 240 images → round(600/240)=3 epochs →
+    720). Segment planning MUST use this real total, or the final segment spans
+    from the last requested-total boundary all the way to the real end in one
+    sustained process — exactly the unbounded GPU window this patch removes.
+
+    Deterministic and known before launch (the config carries num_epochs +
+    batch_size and the staged dataset dir). Falls back to the requested count if
+    the config shape is unexpected; tqdm then corrects state["total"] live after
+    the first segment anyway."""
+    try:
+        loop = config.get("training_loop", {}) or {}
+        epochs = int(loop.get("num_epochs", 0))
+        batch = int(loop.get("batch_size", 1)) or 1
+        data_dir = config.get("data")
+        # mflux auto-discovers NNNN.png + NNNN.txt training pairs; preview prompts
+        # are .txt only, so *.png count is the image count it will encode.
+        n_images = len(list(Path(data_dir).glob("*.png"))) if data_dir else 0
+        if epochs > 0 and n_images > 0:
+            batches_per_epoch = (n_images + batch - 1) // batch
+            return batches_per_epoch * epochs
+    except (ValueError, TypeError, OSError):
+        pass
+    return fallback
+
+
 def run_segment(cmd, *, segment_target, state, last_reported, output_tail,
                 fatal_holder, configured_output, cooldown):
     """Run ONE mflux invocation and stream its output.
@@ -503,7 +532,10 @@ def main():
     config = json.loads(Path(args.config).read_text())
     configured_output = Path(config["checkpoint"]["output_path"])
 
-    total = max(1, args.total_steps)
+    # mflux's real (epoch-rounded) total, not the requested --total-steps — see
+    # compute_effective_total. Segment planning keys off this so the final
+    # segment stays one save-interval wide even when epochs round the count up.
+    total = max(1, compute_effective_total(config, args.total_steps))
     seg = max(0, args.segment_steps)
     cooldown = max(0, args.cooldown_sec)
     segmented = seg > 0
@@ -539,20 +571,20 @@ def main():
         log(f"STATUS:segmented training enabled — {seg}-step segments, {cooldown}s GPU cooldown between each")
     while True:
         start_step = _checkpoint_step(resume) if resume else 0
-        # `total` is the *requested* step count; mflux's real total is
-        # epoch-rounded (round(total / imageCount) * imageCount) and can be
-        # HIGHER (e.g. 600 requested with 29 images runs 609). So never
-        # short-circuit "done" by comparing a checkpoint step against `total` —
-        # that would skip the last partial epoch when resuming from a checkpoint
-        # at exactly `total`. Once we're within one segment of the requested
-        # total, run a FINAL segment (no boundary kill) and let mflux itself
-        # decide when it's done: it resumes, runs whatever epoch-rounded steps
-        # remain, and exits 0 (StopIteration) — surfaced as 'completed' below.
-        # A resume that really is past the end just reloads, immediately hits
-        # StopIteration, and returns 'completed' — correct, at the cost of one
-        # model load on the rare "resume an already-finished run" path.
+        # Plan against mflux's real epoch-rounded total. `total` is the
+        # config-derived estimate (compute_effective_total); state["total"] is
+        # the authoritative value tqdm reports once the first segment runs — take
+        # the larger so the cutoff is right BOTH before the first tqdm line (fresh
+        # run / resume-near-end use the config estimate) and after (tqdm corrects
+        # any discrepancy). Only when the NEXT boundary would reach/exceed this
+        # real total do we drop the boundary kill and run a final, run-to-
+        # completion segment; otherwise every segment — including the last —
+        # stays one save-interval wide, preserving the bounded GPU window. A
+        # resume past the end just reloads, hits StopIteration, returns
+        # 'completed' — correct, at the cost of one model load.
+        effective_total = max(total, state["total"])
         segment_target = start_step + seg if segmented else None
-        if segment_target is not None and segment_target >= total:
+        if segment_target is not None and segment_target >= effective_total:
             segment_target = None
 
         cmd = build_command(args.config, resume)
