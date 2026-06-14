@@ -4,8 +4,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const h = vi.hoisted(() => ({
   ollamaLoaded: [],
   ollamaUnload: vi.fn(),
+  ollamaUrl: 'http://localhost:11434',
   lmLoaded: [],
   lmUnload: vi.fn(),
+  lmUrl: 'http://localhost:1234',
   platform: 'darwin',
   totalBytes: 128 * 2 ** 30,
   freeBytes: 8 * 2 ** 30,
@@ -16,10 +18,12 @@ const h = vi.hoisted(() => ({
 vi.mock('../ollamaManager.js', () => ({
   getLoadedModels: vi.fn(async () => h.ollamaLoaded),
   unloadModel: (...a) => h.ollamaUnload(...a),
+  getBaseUrl: () => h.ollamaUrl,
 }));
 vi.mock('../lmStudioManager.js', () => ({
   getLoadedModels: vi.fn(async () => h.lmLoaded),
   unloadModel: (...a) => h.lmUnload(...a),
+  getBaseUrl: () => h.lmUrl,
 }));
 vi.mock('os', () => ({
   platform: () => h.platform,
@@ -33,7 +37,7 @@ vi.mock('child_process', () => ({
   },
 }));
 
-const { unloadResidentModels, getAvailableMemoryGb, prepareMemoryForTraining, TRAINING_MIN_HEADROOM_GB } =
+const { unloadResidentModels, getAvailableMemoryGb, prepareMemoryForTraining, isLocalBackendUrl, TRAINING_MIN_HEADROOM_GB } =
   await import('./memoryPrep.js');
 
 // vm_stat with 16 KiB pages: free + inactive + speculative + purgeable pages
@@ -55,6 +59,8 @@ beforeEach(() => {
   h.lmLoaded = [];
   h.ollamaUnload = vi.fn(async () => ({ unloaded: true }));
   h.lmUnload = vi.fn(async () => ({ success: true }));
+  h.ollamaUrl = 'http://localhost:11434';
+  h.lmUrl = 'http://localhost:1234';
   h.platform = 'darwin';
   h.totalBytes = 128 * 2 ** 30;
   h.freeBytes = 8 * 2 ** 30;
@@ -83,6 +89,33 @@ describe('unloadResidentModels', () => {
 
   it('returns empty when nothing is resident', async () => {
     expect(await unloadResidentModels()).toEqual([]);
+  });
+
+  it('skips a remote backend — never evicts a peer machine\'s models', async () => {
+    h.ollamaLoaded = [{ name: 'remote-llm' }];
+    h.lmLoaded = [{ id: 'local-lm' }];
+    h.ollamaUrl = 'http://10.0.0.5:11434'; // LAN peer — unloading frees no local memory
+    h.lmUrl = 'http://127.0.0.1:1234';     // loopback — still eligible
+    const freed = await unloadResidentModels();
+    expect(freed).toEqual(['lmstudio:local-lm']);
+    expect(h.ollamaUnload).not.toHaveBeenCalled();
+    expect(h.lmUnload).toHaveBeenCalledWith('local-lm');
+  });
+});
+
+describe('isLocalBackendUrl', () => {
+  it('accepts loopback hosts (incl. 127.0.0.0/8 and IPv6)', () => {
+    for (const u of [
+      'http://localhost:11434', 'http://127.0.0.1:1234', 'http://127.0.0.53:1234',
+      'http://0.0.0.0:1234', 'http://[::1]:1234',
+    ]) expect(isLocalBackendUrl(u)).toBe(true);
+  });
+
+  it('rejects LAN/remote hosts and unparseable input', () => {
+    for (const u of [
+      'http://10.0.0.5:11434', 'http://192.168.1.20:1234', 'http://peer.local:11434',
+      'http://example.com', '', null, undefined, 'not a url',
+    ]) expect(isLocalBackendUrl(u)).toBe(false);
   });
 });
 

@@ -19,8 +19,8 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { platform, freemem, totalmem } from 'os';
-import { getLoadedModels as ollamaLoadedModels, unloadModel as ollamaUnload } from '../ollamaManager.js';
-import { getLoadedModels as lmStudioLoadedModels, unloadModel as lmStudioUnload } from '../lmStudioManager.js';
+import { getLoadedModels as ollamaLoadedModels, unloadModel as ollamaUnload, getBaseUrl as ollamaBaseUrl } from '../ollamaManager.js';
+import { getLoadedModels as lmStudioLoadedModels, unloadModel as lmStudioUnload, getBaseUrl as lmStudioBaseUrl } from '../lmStudioManager.js';
 
 const execFileAsync = promisify(execFile);
 const GB = 2 ** 30;
@@ -30,28 +30,55 @@ const GB = 2 ** 30;
 // larger variants are protected by the budget-derived quantize/low_ram tiers.
 export const TRAINING_MIN_HEADROOM_GB = 24;
 
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1']);
+
+/**
+ * True only when `url` points at this machine's loopback interface. Unloading a
+ * model frees memory on the box the backend RUNS on, not the box that issued
+ * the request — and PortOS supports pointing `OLLAMA_URL` / `LM_STUDIO_URL` at a
+ * remote LAN peer (a common federated-machines setup). Evicting a *remote*
+ * backend would free no local unified memory and would destroy another box's
+ * loaded model for nothing, so we only unload when the backend is local.
+ * Unparseable or non-loopback → treated as remote (skip the unload). All of
+ * 127.0.0.0/8 is loopback, so any `127.*` host counts.
+ */
+export function isLocalBackendUrl(url) {
+  if (!url || !URL.canParse(url)) return false;
+  // URL.hostname keeps the [...] brackets on IPv6 literals; strip them so the
+  // `::1` loopback compares against LOOPBACK_HOSTS.
+  const host = new URL(url).hostname.replace(/^\[|\]$/g, '');
+  return LOOPBACK_HOSTS.has(host) || host.startsWith('127.');
+}
+
 /**
  * Best-effort: unload every model currently resident in ollama and LM Studio so
  * its unified memory returns to the pool before a training run. Each unload is
  * independent — failures (server down, model already expired) are swallowed.
- * Returns the list of freed model labels for logging. Never throws.
+ * Skips a backend whose configured URL is NOT loopback-local: a remote backend
+ * doesn't share this machine's memory, so evicting it would free nothing here
+ * and needlessly drop a peer's loaded model. Returns the freed model labels for
+ * logging. Never throws.
  */
 export async function unloadResidentModels() {
   const unloaded = [];
 
-  const ollamaLoaded = await ollamaLoadedModels().catch(() => []);
-  for (const m of ollamaLoaded) {
-    const name = m?.name || m?.id;
-    if (!name) continue;
-    const res = await ollamaUnload(name).catch(() => null);
-    if (res?.unloaded) unloaded.push(`ollama:${name}`);
+  if (isLocalBackendUrl(ollamaBaseUrl())) {
+    const ollamaLoaded = await ollamaLoadedModels().catch(() => []);
+    for (const m of ollamaLoaded) {
+      const name = m?.name || m?.id;
+      if (!name) continue;
+      const res = await ollamaUnload(name).catch(() => null);
+      if (res?.unloaded) unloaded.push(`ollama:${name}`);
+    }
   }
 
-  const lmLoaded = await lmStudioLoadedModels(true).catch(() => []);
-  for (const m of lmLoaded) {
-    if (!m?.id) continue;
-    const res = await lmStudioUnload(m.id).catch(() => null);
-    if (res?.success) unloaded.push(`lmstudio:${m.id}`);
+  if (isLocalBackendUrl(lmStudioBaseUrl())) {
+    const lmLoaded = await lmStudioLoadedModels(true).catch(() => []);
+    for (const m of lmLoaded) {
+      if (!m?.id) continue;
+      const res = await lmStudioUnload(m.id).catch(() => null);
+      if (res?.success) unloaded.push(`lmstudio:${m.id}`);
+    }
   }
 
   return unloaded;

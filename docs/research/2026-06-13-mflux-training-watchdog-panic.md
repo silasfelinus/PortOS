@@ -75,7 +75,9 @@ swap thrash if a run oversubscribes unified memory.
    - **Unloads resident models** — `prepareMemoryForTraining()` unloads every
      model resident in Ollama and LM Studio (best-effort) so their unified
      memory returns to the pool instead of stacking under the trainer. On a
-     shared box this is the largest single reclaim.
+     shared box this is the largest single reclaim. Only **loopback-local**
+     backends are evicted — a remote `OLLAMA_URL`/`LM_STUDIO_URL` (LAN peer)
+     is skipped, since unloading it frees no memory on the training machine.
    - **Spills the latent cache to disk at every tier** — `deriveMfluxMemoryConfig`
      now returns `low_ram: true` for all memory sizes (was `false` ≥64 GB). The
      in-RAM encoded-dataset cache bought nothing but swap pressure; disk-backing
