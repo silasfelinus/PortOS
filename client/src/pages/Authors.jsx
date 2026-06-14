@@ -76,13 +76,18 @@ export default function Authors() {
   const [startingGen, setStartingGen] = useState(false);
   const [genJobId, setGenJobId] = useState(null);
   const fileInputRef = useRef(null);
+  // Bumped on every author switch / new-author. A generate request captures
+  // this before its POST and bails if it changed by the time the POST resolves
+  // — closes the pre-jobId round-trip window where `clearGeneration` alone
+  // can't stop a stale response from writing the wrong persona's headshot.
+  const genRequestRef = useRef(0);
 
   const gen = useMediaJobProgress(genJobId);
   const isGenerating = startingGen || !!genJobId;
 
   const setHeadshot = (url) => setForm((f) => ({ ...f, headshotImageUrl: url }));
   // Drop any in-flight render so its completion can't write the wrong author.
-  const clearGeneration = () => { setGenJobId(null); setStartingGen(false); };
+  const clearGeneration = () => { genRequestRef.current += 1; setGenJobId(null); setStartingGen(false); };
 
   // Land the finished async render into the form, or surface a failure. Cleared
   // genJobId on author switch (see selectAuthor/startCreate) prevents a stale
@@ -105,6 +110,7 @@ export default function Authors() {
       toast.error('Add a physical description or headshot style to generate from');
       return;
     }
+    const requestId = genRequestRef.current;
     setStartingGen(true);
     // `silent: true` — this catch owns the error toast, so suppress the
     // apiCore `request()` helper's default toast to avoid firing two.
@@ -114,12 +120,15 @@ export default function Authors() {
       negativePrompt: `${DEFAULT_NEGATIVE_PROMPT}, extra limbs, nsfw, nude`,
       width: 768,
       height: 1024,
-    }, { silent: true }).catch((err) => {
-      toast.error(err.message || 'Headshot generation failed');
-      return null;
-    });
+    }, { silent: true }).catch((err) => ({ error: err }));
+    // Superseded by an author switch during the POST round-trip — clearGeneration
+    // already reset state; drop this response so it can't land on the new author.
+    if (genRequestRef.current !== requestId) return;
     setStartingGen(false);
-    if (!queued) return;
+    if (queued?.error) {
+      toast.error(queued.error.message || 'Headshot generation failed');
+      return;
+    }
     if (queued.jobId) {
       // Async backend — track progress until the job completes.
       setGenJobId(queued.jobId);

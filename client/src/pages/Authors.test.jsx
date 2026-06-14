@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import Authors from './Authors';
 
 const listAuthors = vi.fn();
@@ -137,6 +137,32 @@ describe('Authors headshot generation', () => {
 
     await waitFor(() => expect(toastSuccess).not.toHaveBeenCalledWith('Headshot generated'));
     expect(screen.queryByAltText('Author headshot')).toBeNull();
+  });
+
+  it('drops a generate response that resolves after switching authors', async () => {
+    // The POST is still in flight when the user switches authors — the stale
+    // continuation must not write into the newly selected persona.
+    let resolveGen;
+    generateImage.mockReturnValue(new Promise((r) => { resolveGen = r; }));
+    listAuthors.mockResolvedValue([
+      { id: 'a1', name: 'Alice', headshotImageUrl: '' },
+      { id: 'a2', name: 'Bob', headshotImageUrl: '' },
+    ]);
+    render(<Authors />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Alice' }));
+    fireEvent.change(screen.getByPlaceholderText(/silver-streaked dark hair/i), {
+      target: { value: 'Alice description' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Generate/i }));
+    await waitFor(() => expect(generateImage).toHaveBeenCalledTimes(1));
+
+    // Switch to Bob BEFORE the POST resolves, then let it resolve.
+    fireEvent.click(screen.getByRole('button', { name: 'Bob' }));
+    await act(async () => { resolveGen({ path: '/data/images/alice.png' }); });
+
+    expect(screen.queryByAltText('Author headshot')).toBeNull();
+    expect(toastSuccess).not.toHaveBeenCalledWith('Headshot generated');
   });
 
   it('toasts exactly once when generation fails', async () => {
