@@ -250,6 +250,27 @@ export function inferTuiCommand(id) {
   return 'claude';
 }
 
+/**
+ * True when the given TUI command renders the elapsed working counter
+ * (`(Ns ·` / `(Ns •`) that `createWorkActivityTracker` keys on. Only Claude
+ * Code and Codex are known to render it; Antigravity/Gemini/other TUIs do not.
+ *
+ * The work-activity idle gate (issue #1229) must consult this before
+ * downgrading a sentinel-less idle-out to failure: on a provider that never
+ * renders the counter, absence of the signal proves nothing, so the original
+ * permissive idle-complete=success behavior must be preserved (otherwise every
+ * sentinel-less completion on those providers would falsely fail).
+ *
+ * @param {string} commandName — the spawned binary's basename (e.g. `claude`,
+ *   `codex`, `agy`, `gemini`).
+ * @returns {boolean}
+ */
+export function rendersWorkCounter(commandName) {
+  if (typeof commandName !== 'string') return false;
+  const lower = commandName.toLowerCase();
+  return lower.includes('claude') || lower.includes('codex');
+}
+
 // Codex TUI blocks on every tool approval AND sandboxes file/network writes
 // unless we run it fully bypassed. There's no human-at-keyboard for headless
 // calls (one-shot OR agent), so inject the full-yolo flag — the same posture

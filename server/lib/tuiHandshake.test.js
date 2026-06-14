@@ -11,6 +11,7 @@ import {
   MIN_WORK_COUNTER_SPAN_MS,
   extractWorkCounterSeconds,
   createWorkActivityTracker,
+  rendersWorkCounter,
   PASTE_TO_ENTER_MIN_DELAY_MS,
   PASTE_TO_ENTER_FALLBACK_MS,
   SUBMIT_ENTER_ATTEMPTS,
@@ -168,6 +169,18 @@ describe('tuiHandshake — paste timing constants', () => {
     expect(WORK_COUNTER_PATTERN).toBeInstanceOf(RegExp);
     expect(MIN_WORK_COUNTER_SAMPLES).toBe(2);
     expect(MIN_WORK_COUNTER_SPAN_MS).toBe(750);
+  });
+
+  it('rendersWorkCounter is true only for the counter-rendering TUIs (Claude Code / Codex)', () => {
+    // The idle gate may downgrade to failure ONLY for providers that render the
+    // counter; others must keep the permissive idle-complete (codex P2 / #1229).
+    expect(rendersWorkCounter('claude')).toBe(true);
+    expect(rendersWorkCounter('codex')).toBe(true);
+    expect(rendersWorkCounter('/usr/local/bin/claude')).toBe(true);
+    expect(rendersWorkCounter('agy')).toBe(false);
+    expect(rendersWorkCounter('gemini')).toBe(false);
+    expect(rendersWorkCounter('')).toBe(false);
+    expect(rendersWorkCounter(null)).toBe(false);
   });
 
   it('pins provider-default constants', () => {

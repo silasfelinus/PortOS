@@ -348,10 +348,16 @@ describe('spawnTuiAgent runtime', () => {
     await vi.advanceTimersByTimeAsync(2000);
     await flushMicrotasks();
 
-    // Feed PTY chunks AFTER the paste that prove the model is actually WORKING —
-    // the elapsed working counter ADVANCING through two distinct values SPACED
-    // ACROSS WALL-CLOCK TIME (≥750ms apart). This sets lastOutputAt > promptSentAt
-    // AND trips the work-activity tracker, which the idle gate now requires before
+    // Advance past PASTE_TO_ENTER_FALLBACK_MS (3500ms) so the submit-Enter fires
+    // and promptSubmittedAt is set — work-activity is only observed AFTER submit
+    // (the prompt echo before that must not be scanned; issue #1229 review).
+    await vi.advanceTimersByTimeAsync(3600);
+    await flushMicrotasks();
+
+    // Feed PTY chunks AFTER submit that prove the model is actually WORKING — the
+    // elapsed working counter ADVANCING through two distinct values SPACED ACROSS
+    // WALL-CLOCK TIME (≥750ms apart). This sets lastOutputAt > promptSentAt AND
+    // trips the work-activity tracker, which the idle gate now requires before
     // finalizing as success (issue #1229 — pure chrome churn, a single counter
     // value, or two counters arriving at once must NOT count; see the no-activity
     // and echoed-transcript tests).
@@ -416,6 +422,42 @@ describe('spawnTuiAgent runtime', () => {
         agentId: 'agent-1',
         success: false,
         completionReason: 'idle-no-activity',
+      })
+    );
+  });
+
+  // ── 1a-bis. Non-counter TUI provider keeps the permissive idle-complete ──────
+  // The work-counter signal only exists on Claude Code / Codex. On a provider
+  // that never renders it (Antigravity/Gemini), absence proves nothing — so a
+  // sentinel-less idle-out must stay SUCCESS (the original behavior), not be
+  // downgraded to failure. Regression guard for #1229 review (codex P2): gating
+  // idle-complete solely on a Claude/Codex screen pattern would falsely fail
+  // every sentinel-less completion on the other supported TUI providers.
+  it('idle-complete: a non-counter provider (gemini) stays success even with no work-counter signal', async () => {
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    runSpawn({ tuiConfig: { command: 'gemini', args: [], commandLine: 'gemini', promptDelayMs: 100, idleTimeoutMs: 50 } });
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.from('Gemini booting...\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(3600); // submit fires
+    await flushMicrotasks();
+    // Real work output, but NO `(Ns ·` counter (gemini doesn't render one).
+    await capturedOnData(Buffer.from('Editing src/foo.js …\n'));
+    await vi.advanceTimersByTimeAsync(21000);
+    vi.useRealTimers();
+    await completeDone;
+
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        success: true,
+        completionReason: 'idle-complete',
       })
     );
   });
@@ -713,6 +755,8 @@ describe('spawnTuiAgent runtime', () => {
     await capturedOnData(Buffer.from('Codex booting...\n'));
     await flushMicrotasks();
     await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(3600); // submit-Enter fires → promptSubmittedAt set
     await flushMicrotasks();
     await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
     await vi.advanceTimersByTimeAsync(800); // counter must tick across ≥750ms to count as work

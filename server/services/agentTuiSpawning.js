@@ -29,6 +29,7 @@ import {
   PASTE_MARKER_POLL_MS,
   detectPasteMarker,
   createWorkActivityTracker,
+  rendersWorkCounter,
   PASTE_TO_ENTER_MIN_DELAY_MS,
   PASTE_TO_ENTER_FALLBACK_MS,
   scheduleSubmitEnters,
@@ -207,6 +208,12 @@ export async function spawnTuiAgent({
   let sentinelIngested = false;
   let hasStartedWorking = false;
   let promptSentAt = null;
+  // When the submit-Enter is first written (NOT when the paste starts). Work-
+  // activity observation keys on this so the prompt ECHO — which renders during
+  // the paste→Enter window, before this is set — is never scanned for the working
+  // counter (issue #1229 review: a pasted transcript could otherwise echo counters
+  // that fake work before the prompt is actually submitted).
+  let promptSubmittedAt = null;
   // Tracks evidence the model is actively processing the SUBMITTED prompt — the
   // TUI's elapsed working counter advancing through ≥2 distinct values (see
   // createWorkActivityTracker; echo-proof, unlike word-matching the prompt text).
@@ -538,13 +545,14 @@ export async function spawnTuiAgent({
       // path dead.
       if (postPasteBuffer !== null && stripped) postPasteBuffer += stripped;
       const now = Date.now();
-      // Once the prompt is submitted, watch for proof the model is actually
-      // working. The TUI repaints chrome continuously even with an unsent prompt,
+      // Once the prompt is SUBMITTED (Enter sent — not merely pasted), watch for
+      // proof the model is actually working. Keying on promptSubmittedAt (not
+      // promptSentAt) excludes the prompt echo rendered during the paste→Enter
+      // window. The TUI repaints chrome continuously even with an unsent prompt,
       // so we can't trust mere PTY activity — only the working counter advancing
-      // across wall-clock time confirms the prompt left the input box (a paste-
-      // echoed counter, even from a pasted transcript, arrives all at once and is
-      // rejected by the time-span requirement). Gates idle-complete (issue #1229).
-      if (promptSentAt && stripped && !workActivity.active) workActivity.observe(stripped, now);
+      // across wall-clock time confirms real work (a static echo's counters all
+      // arrive together and fail the time-span). Gates idle-complete (#1229).
+      if (promptSubmittedAt && stripped && !workActivity.active) workActivity.observe(stripped, now);
       lastOutputAt = now;
       if (firstOutputAt === null) firstOutputAt = lastOutputAt;
 
@@ -658,6 +666,9 @@ export async function spawnTuiAgent({
     // prompt unsent (the "I had to hit Enter myself" bug). Tracked in
     // submitEnterTimer so finish() can cancel pending retries if the agent ends.
     const submitEnter = () => {
+      // Mark submission so work-activity observation begins only now — after the
+      // Enter is written, past the prompt-echo window (issue #1229 review).
+      if (promptSubmittedAt === null) promptSubmittedAt = Date.now();
       submitEnterTimer = scheduleSubmitEnters(
         () => shellService.writeToSession(sessionId, '\r'),
         () => finalized
@@ -719,21 +730,27 @@ export async function spawnTuiAgent({
       // Distinguish a real (sentinel-less) completion from a never-submitted
       // prompt that just idled out. `lastOutputAt > promptSentAt` only proves
       // the TUI repainted SOMETHING — banner/status chrome churns even with the
-      // prompt sitting unsent. Only finalize as success when we actually saw the
-      // model working (workActivity.active); otherwise this is the #1229 failure
-      // mode (prompt never submitted, zero work done) and must be recorded as a
-      // FAILURE so the orchestrator doesn't treat a no-op run as done.
-      if (workActivity.active) {
-        finish({ success: true, exitCode: 0, reason: 'idle-complete' }).catch(err => {
-          emitLog('error', `Failed to finalize TUI agent ${agentId}: ${err.message}`, { agentId });
-        });
-      } else {
+      // prompt sitting unsent. The #1229 failure mode (prompt never submitted,
+      // zero work done) must be recorded as a FAILURE so the orchestrator doesn't
+      // treat a no-op run as done — but the work-counter signal exists ONLY on
+      // Claude Code / Codex. On a provider that never renders the counter
+      // (Antigravity/Gemini), its absence proves nothing, so we must preserve the
+      // original permissive idle-complete=success there (else every sentinel-less
+      // completion on those providers would falsely fail). So: downgrade to
+      // failure only when the provider DOES render the counter and we never saw
+      // it advance.
+      const noWorkButCounterExpected = !workActivity.active && rendersWorkCounter(commandName);
+      if (noWorkButCounterExpected) {
         finish({
           success: false,
           exitCode: 1,
-          error: 'TUI agent idled out with no sign of work — the prompt likely never submitted (no working indicator ever appeared after paste).',
+          error: 'TUI agent idled out with no sign of work — the prompt likely never submitted (no working indicator ever appeared after submit).',
           reason: 'idle-no-activity',
         }).catch(err => {
+          emitLog('error', `Failed to finalize TUI agent ${agentId}: ${err.message}`, { agentId });
+        });
+      } else {
+        finish({ success: true, exitCode: 0, reason: 'idle-complete' }).catch(err => {
           emitLog('error', `Failed to finalize TUI agent ${agentId}: ${err.message}`, { agentId });
         });
       }
