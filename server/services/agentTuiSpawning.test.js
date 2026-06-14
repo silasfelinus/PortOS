@@ -348,10 +348,12 @@ describe('spawnTuiAgent runtime', () => {
     await vi.advanceTimersByTimeAsync(2000);
     await flushMicrotasks();
 
-    // Feed one PTY chunk AFTER the paste so lastOutputAt > promptSentAt
-    // (the idle gate's "we saw activity post-paste" signal — replaces the
-    // old per-line count now that line capture is dropped).
-    await capturedOnData(Buffer.from('Agent post-paste activity\n'));
+    // Feed a PTY chunk AFTER the paste that proves the model is actually
+    // WORKING — an elapsed working counter (`(1s · …`). This both sets
+    // lastOutputAt > promptSentAt AND trips sawWorkActivity, which the idle
+    // gate now requires before finalizing as success (issue #1229 — pure
+    // chrome churn must NOT count as completion; see the no-activity test below).
+    await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
 
     // Advance past DEFAULT_TUI_MIN_RUNTIME_MS (15 000ms) + idleTimeoutMs (50ms).
     // The idle setInterval ticks every 5 000ms; at the >=15s tick the
@@ -370,6 +372,45 @@ describe('spawnTuiAgent runtime', () => {
         agentId: 'agent-1',
         success: true,
         completionReason: 'idle-complete',
+      })
+    );
+  });
+
+  // ── 1a. Idle-out with NO work activity → failure (issue #1229) ───────────────
+  // The bug: when the prompt never submits, the TUI keeps repainting its banner /
+  // status line, so `lastOutputAt > promptSentAt` passes on pure chrome churn and
+  // the agent — which did ZERO work — was finalized as `success: idle-complete`.
+  // The fix gates idle-complete success on having seen a real work-activity
+  // signal (working counter / interrupt hint / "thinking"). With only chrome
+  // post-paste, idle must finalize as FAILURE with reason 'idle-no-activity'.
+  it('idle-no-activity: finalizes failure when idle fires but no work signal ever appeared (unsubmitted prompt)', async () => {
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    runSpawn();
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.from('Codex booting...\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+
+    // Post-paste output, but ONLY chrome that repaints with an unsent prompt —
+    // the input footer + effort indicator from the real #1229 stuck transcript.
+    // None of this is a work-activity signal, so sawWorkActivity stays false.
+    await capturedOnData(Buffer.from('⏵⏵ bypass permissions on (shift+tab to cycle)\n'));
+    await capturedOnData(Buffer.from('● high · /effort\n'));
+
+    await vi.advanceTimersByTimeAsync(21000);
+    vi.useRealTimers();
+    await completeDone;
+
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        success: false,
+        completionReason: 'idle-no-activity',
       })
     );
   });
@@ -661,12 +702,14 @@ describe('spawnTuiAgent runtime', () => {
     runSpawn();
     await flushMicrotasks();
 
-    // Drive the idle-complete success path (mirrors test 1).
+    // Drive the idle-complete success path (mirrors test 1) — the post-paste
+    // chunk must carry a work-activity signal so the idle gate finalizes as
+    // success (issue #1229).
     await capturedOnData(Buffer.from('Codex booting...\n'));
     await flushMicrotasks();
     await vi.advanceTimersByTimeAsync(2000);
     await flushMicrotasks();
-    await capturedOnData(Buffer.from('Agent post-paste activity\n'));
+    await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
     await vi.advanceTimersByTimeAsync(21000);
     vi.useRealTimers();
     await completeDone;

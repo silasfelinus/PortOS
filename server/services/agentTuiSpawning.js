@@ -27,7 +27,8 @@ import {
   READY_POLL_INTERVAL_MS,
   READY_IDLE_THRESHOLD_MS,
   PASTE_MARKER_POLL_MS,
-  PASTE_MARKER_PATTERN,
+  detectPasteMarker,
+  detectWorkActivity,
   PASTE_TO_ENTER_MIN_DELAY_MS,
   PASTE_TO_ENTER_FALLBACK_MS,
   scheduleSubmitEnters,
@@ -206,6 +207,13 @@ export async function spawnTuiAgent({
   let sentinelIngested = false;
   let hasStartedWorking = false;
   let promptSentAt = null;
+  // True once we've seen evidence the model is actively processing the SUBMITTED
+  // prompt (working counter / interrupt hint / "thinking" — see detectWorkActivity).
+  // Distinct from `hasStartedWorking`, which flips on ANY post-spawn PTY output
+  // including pure banner/status-line chrome. This flag is what gates the
+  // fallback idle-complete path from finalizing a never-submitted prompt as
+  // success (issue #1229).
+  let sawWorkActivity = false;
   let firstOutputAt = null;
   let lastOutputAt = Date.now();
   let lastLine = '';
@@ -522,7 +530,19 @@ export async function spawnTuiAgent({
       const stripped = streamingStrip(text);
       pendingRawChunks.push(text);
       scheduleRawFlush();
-      if (postPasteBuffer !== null) postPasteBuffer += text;
+      // Accumulate the ANSI-STRIPPED chunk (not the raw text): the paste marker
+      // is rendered with absolute-column cursor moves between glyphs, so it only
+      // matches after stripping (see detectPasteMarker). Appending raw text here
+      // — as this did before #1229 — left the marker unmatchable and the fast
+      // path dead.
+      if (postPasteBuffer !== null && stripped) postPasteBuffer += stripped;
+      // Once the prompt is submitted, watch for proof the model is actually
+      // working. The TUI repaints chrome continuously even with an unsent prompt,
+      // so we can't trust mere PTY activity — only a working indicator confirms
+      // the prompt left the input box. Gates idle-complete (issue #1229).
+      if (promptSentAt && !sawWorkActivity && stripped && detectWorkActivity(stripped)) {
+        sawWorkActivity = true;
+      }
       lastOutputAt = Date.now();
       if (firstOutputAt === null) firstOutputAt = lastOutputAt;
 
@@ -651,9 +671,7 @@ export async function spawnTuiAgent({
         return;
       }
       const elapsed = Date.now() - pasteSentAt;
-      const markerSeen = postPasteBuffer
-        ? PASTE_MARKER_PATTERN.test(postPasteBuffer)
-        : false;
+      const markerSeen = detectPasteMarker(postPasteBuffer);
       // Submit when EITHER the paste-commit marker appears (preferred) or
       // the fallback window elapses (covers small prompts that don't render
       // the marker).
@@ -696,9 +714,27 @@ export async function spawnTuiAgent({
     // agents — see handleData.
     if (lastOutputAt <= promptSentAt) return;
     if (idle >= tuiConfig.idleTimeoutMs) {
-      finish({ success: true, exitCode: 0, reason: 'idle-complete' }).catch(err => {
-        emitLog('error', `Failed to finalize TUI agent ${agentId}: ${err.message}`, { agentId });
-      });
+      // Distinguish a real (sentinel-less) completion from a never-submitted
+      // prompt that just idled out. `lastOutputAt > promptSentAt` only proves
+      // the TUI repainted SOMETHING — banner/status chrome churns even with the
+      // prompt sitting unsent. Only finalize as success when we actually saw the
+      // model working (sawWorkActivity); otherwise this is the #1229 failure mode
+      // (prompt never submitted, zero work done) and must be recorded as a
+      // FAILURE so the orchestrator doesn't treat a no-op run as done.
+      if (sawWorkActivity) {
+        finish({ success: true, exitCode: 0, reason: 'idle-complete' }).catch(err => {
+          emitLog('error', `Failed to finalize TUI agent ${agentId}: ${err.message}`, { agentId });
+        });
+      } else {
+        finish({
+          success: false,
+          exitCode: 1,
+          error: 'TUI agent idled out with no sign of work — the prompt likely never submitted (no working indicator ever appeared after paste).',
+          reason: 'idle-no-activity',
+        }).catch(err => {
+          emitLog('error', `Failed to finalize TUI agent ${agentId}: ${err.message}`, { agentId });
+        });
+      }
     }
   }, 5000);
 

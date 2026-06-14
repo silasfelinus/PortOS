@@ -27,19 +27,75 @@ export const PASTE_DEADLINE_MS = 10000;
 // Claude Code emits `[Pasted text #N +M lines]` after committing a paste.
 // Watch for the marker (or fall back after PASTE_TO_ENTER_FALLBACK_MS)
 // before sending `\r` so Enter doesn't get swallowed mid-paste-commit.
+//
+// CRITICAL: the marker must be matched against ANSI-STRIPPED output, never the
+// raw PTY stream. Claude Code renders the marker by positioning each token with
+// absolute-column cursor moves instead of literal spaces — the raw bytes look
+// like `[Pasted\x1b[11Gtext\x1b[16G#1\x1b[19G+35\x1b[23Glines]`, so the literal
+// substring "Pasted text #1" never exists contiguously and a space-requiring
+// regex never matches. Once ANSI is stripped the cursor moves vanish and the
+// glyphs collapse adjacent → `[Pastedtext#1+35lines]`. So the pattern tolerates
+// arbitrary (including zero) whitespace between tokens and is case-insensitive,
+// and `detectPasteMarker()` below is the only sanctioned way to test it. This
+// was the root cause of issue #1229: across a month of real transcripts the
+// marker "never appeared" only because the matcher ran against the raw stream;
+// the fast path was effectively dead and every run fell back to the blind timer.
 export const PASTE_MARKER_POLL_MS = 150;
-export const PASTE_MARKER_PATTERN = /\[Pasted text #\d+/;
+export const PASTE_MARKER_PATTERN = /\[Pasted\s*text\s*#\d+/i;
 export const PASTE_TO_ENTER_MIN_DELAY_MS = 200;
 export const PASTE_TO_ENTER_FALLBACK_MS = 3500;
+
+/**
+ * True when `strippedText` contains Claude Code's `[Pasted text #N …]` paste-
+ * commit marker. Callers MUST pass ANSI-STRIPPED output (see PASTE_MARKER_PATTERN
+ * above for why the raw stream never matches). Shared by both TUI consumers so
+ * the strip-then-match contract can't drift between them.
+ *
+ * @param {string} strippedText — ANSI-stripped post-paste output accumulator.
+ * @returns {boolean}
+ */
+export function detectPasteMarker(strippedText) {
+  return typeof strippedText === 'string' && PASTE_MARKER_PATTERN.test(strippedText);
+}
+
+// "The model is actively processing a submitted prompt" signal. A TUI repaints
+// its banner/status line continuously even with an UNSUBMITTED prompt sitting in
+// the input box, so "any PTY output after the paste" cannot distinguish real
+// work from chrome churn — that conflation is what finalized a never-submitted
+// agent as `success: idle-complete` (issue #1229). These patterns fire only once
+// a request is in flight and never appear on the idle/stuck input screen:
+//   - an elapsed-time working counter — `(1s · …` (Claude Code) / `(57s • …`
+//     (Codex). The most model-agnostic signal; present in both, absent when stuck.
+//   - `esc to interrupt` — the live-request interrupt hint (Codex; some Claude).
+//   - `thinking` — Claude Code's working spinner caption.
+// Verified against real transcripts: working runs hit these thousands of times;
+// the two confirmed stuck runs (`agent-92ed2c56`, `agent-30a3ab56`) hit them
+// zero times. Heuristic by nature (spinner captions rotate across versions), so
+// it gates only the FALLBACK idle-complete path — the authoritative success
+// signal remains the `.agent-done` sentinel.
+export const WORK_ACTIVITY_PATTERN = /\(\s*\d+s\b|esc to interrupt|\bthinking\b/i;
+
+/**
+ * True when `strippedText` shows the model is actively working on a submitted
+ * prompt (see WORK_ACTIVITY_PATTERN). Callers MUST pass ANSI-stripped output.
+ *
+ * @param {string} strippedText — ANSI-stripped output (a chunk or accumulator).
+ * @returns {boolean}
+ */
+export function detectWorkActivity(strippedText) {
+  return typeof strippedText === 'string' && WORK_ACTIVITY_PATTERN.test(strippedText);
+}
 
 // A SINGLE Enter after a large bracketed paste is unreliable: the TUI can still
 // be processing/reflowing the multi-line paste when the `\r` arrives and
 // swallow it, leaving the whole prompt sitting unsent in the input box. The
 // agent then idles out and is falsely finalized as success — observed as the
-// "the prompt was typed but I had to hit Enter myself" bug. (Modern Claude Code
-// also no longer reliably emits the `[Pasted text #N]` marker, so the fast path
-// above rarely fires and we lean entirely on the fallback Enter.) Send a few
-// Enters spaced apart so at least one lands after the paste settles. Re-sending
+// "the prompt was typed but I had to hit Enter myself" bug. (The marker fast
+// path above now fires again once matched against stripped output — see
+// detectPasteMarker — but the marker only renders for large multi-line pastes;
+// short prompts still lean on the fallback timer, so multi-Enter remains the
+// safety net for both.) Send a few Enters spaced apart so at least one lands
+// after the paste settles. Re-sending
 // is safe: once the prompt submits the input box is empty and a bare Enter is a
 // no-op in every TUI we drive (claude/codex/gemini), so the extra Enters can't
 // fire a spurious empty message.

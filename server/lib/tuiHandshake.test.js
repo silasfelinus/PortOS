@@ -5,6 +5,9 @@ import {
   PASTE_DEADLINE_MS,
   PASTE_MARKER_POLL_MS,
   PASTE_MARKER_PATTERN,
+  detectPasteMarker,
+  WORK_ACTIVITY_PATTERN,
+  detectWorkActivity,
   PASTE_TO_ENTER_MIN_DELAY_MS,
   PASTE_TO_ENTER_FALLBACK_MS,
   SUBMIT_ENTER_ATTEMPTS,
@@ -57,11 +60,68 @@ describe('tuiHandshake — paste timing constants', () => {
     expect(PASTE_MARKER_PATTERN.test('banner stuff [Pasted text #7 +1 lines] trailer')).toBe(true);
   });
 
+  it('PASTE_MARKER_PATTERN matches the SPACE-COLLAPSED form left after ANSI strip', () => {
+    // The raw PTY stream renders the marker with absolute-column cursor moves
+    // between tokens (`[Pasted\x1b[11Gtext\x1b[16G#1…`), so once ANSI is stripped
+    // the spaces vanish and glyphs collapse adjacent. This is the exact shape
+    // observed in real transcripts and the root cause of #1229 — a space-
+    // requiring regex never matched it. (See the integration assertion below
+    // that strips the real escape sequence and matches the result.)
+    expect(PASTE_MARKER_PATTERN.test('[Pastedtext#1+35lines]')).toBe(true);
+    expect(PASTE_MARKER_PATTERN.test('[Pastedtext#42+120lines]')).toBe(true);
+  });
+
+  it('PASTE_MARKER_PATTERN matches the real cursor-positioned marker once ANSI-stripped', () => {
+    // Verbatim byte shape from data/cos/agents/.../raw.txt, stripped the same
+    // way the streaming ANSI stripper does (drop CSI sequences).
+    const rawMarker = '[Pasted\x1b[11Gtext\x1b[16G#1\x1b[19G+35\x1b[23Glines]';
+    const stripped = rawMarker.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '');
+    expect(stripped).toBe('[Pastedtext#1+35lines]');
+    // The raw form must NOT match (regression guard: this is why the fast path
+    // was dead) but the stripped form MUST.
+    expect(detectPasteMarker(rawMarker)).toBe(false);
+    expect(detectPasteMarker(stripped)).toBe(true);
+  });
+
   it('PASTE_MARKER_PATTERN does NOT match similar-looking but distinct text', () => {
     expect(PASTE_MARKER_PATTERN.test('[Pasted text]')).toBe(false);
     expect(PASTE_MARKER_PATTERN.test('[Pasted #1]')).toBe(false);
     expect(PASTE_MARKER_PATTERN.test('Pasted text #1')).toBe(false);
     expect(PASTE_MARKER_PATTERN.test('')).toBe(false);
+  });
+
+  it('detectPasteMarker guards non-string input', () => {
+    expect(detectPasteMarker(null)).toBe(false);
+    expect(detectPasteMarker(undefined)).toBe(false);
+    expect(detectPasteMarker(123)).toBe(false);
+    expect(detectPasteMarker('[Pasted text #1 +3 lines]')).toBe(true);
+  });
+
+  it('detectWorkActivity recognizes a model actively processing a submitted prompt', () => {
+    // Elapsed working counter — model-agnostic (Claude Code + Codex).
+    expect(detectWorkActivity('(1s · thinking with high effort)')).toBe(true);
+    expect(detectWorkActivity('(57s • esc to interrupt)')).toBe(true);
+    expect(detectWorkActivity('(0s · Churning…)')).toBe(true);
+    // Codex live-request interrupt hint.
+    expect(detectWorkActivity('Working  (12s · esc to interrupt)')).toBe(true);
+    // Claude Code working caption.
+    expect(detectWorkActivity('✻ thinking with high effort')).toBe(true);
+  });
+
+  it('detectWorkActivity returns false for the stuck/idle input screen (no work signal)', () => {
+    // The chrome present on a never-submitted-prompt screen (from the #1229
+    // false-success transcript): footer + echoed prompt + effort indicator.
+    expect(detectWorkActivity('⏵⏵ bypass permissions on (shift+tab to cycle)')).toBe(false);
+    expect(detectWorkActivity('● high · /effort')).toBe(false);
+    expect(detectWorkActivity('paste again to expand')).toBe(false);
+    expect(detectWorkActivity('Begin working on the task now.')).toBe(false);
+    expect(detectWorkActivity('Opus 4.8 │ agent-92ed2c56')).toBe(false);
+    expect(detectWorkActivity('')).toBe(false);
+    expect(detectWorkActivity(null)).toBe(false);
+  });
+
+  it('WORK_ACTIVITY_PATTERN is exported as a RegExp for caller reuse', () => {
+    expect(WORK_ACTIVITY_PATTERN).toBeInstanceOf(RegExp);
   });
 
   it('pins provider-default constants', () => {

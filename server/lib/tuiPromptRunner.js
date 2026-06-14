@@ -43,7 +43,7 @@ import { registerExternalSession, unregisterExternalSession, isExternalSessionAt
 import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
   PASTE_MARKER_POLL_MS,
-  PASTE_MARKER_PATTERN,
+  detectPasteMarker,
   PASTE_TO_ENTER_MIN_DELAY_MS,
   PASTE_TO_ENTER_FALLBACK_MS,
   scheduleSubmitEnters,
@@ -202,6 +202,12 @@ ${prompt}`;
   let outputBuffer = '';
   let rawBuffer = '';
   let promptSentAt = null;
+  // ANSI-stripped post-paste accumulator for paste-marker detection. The marker
+  // renders with absolute-column cursor moves between glyphs, so it only matches
+  // after stripping — testing the raw stream never matched and left the fast
+  // path dead (issue #1229). Lives only during the paste→Enter window; nulled
+  // when detection resolves or the run finalizes.
+  let postPasteStripped = null;
   let firstOutputAt = null;
   let lastOutputAt = startTime;
   let firstResponseAt = null;
@@ -240,6 +246,9 @@ ${prompt}`;
   let hardTimeoutTimer = null;
 
   const cleanupTimers = () => {
+    // Stop the post-paste accumulator from growing on any chunk that lands
+    // between finalize and the PTY kill (onData here has no finalized guard).
+    postPasteStripped = null;
     if (readyTimer) { clearInterval(readyTimer); readyTimer = null; }
     if (pasteEnterTimer) { clearInterval(pasteEnterTimer); pasteEnterTimer = null; }
     if (submitEnterTimer) { clearInterval(submitEnterTimer); submitEnterTimer = null; }
@@ -298,6 +307,7 @@ ${prompt}`;
 
       const stripped = streamingStrip(text);
       if (stripped) {
+        if (postPasteStripped !== null) postPasteStripped += stripped;
         outputBuffer += stripped;
         if (outputBuffer.length > OUTPUT_BUFFER_HEADROOM) {
           outputBuffer = outputBuffer.slice(-OUTPUT_BUFFER_CAP);
@@ -389,7 +399,9 @@ ${prompt}`;
     const sendPrompt = (reason) => {
       if (finalized || promptSentAt) return;
       promptSentAt = Date.now();
-      const rawLenBeforePaste = rawBuffer.length;
+      // Start capturing stripped post-paste output BEFORE the paste write so the
+      // marker watcher sees every response chunk.
+      postPasteStripped = '';
       try {
         ptyProcess.write(`\x1b[200~${wrappedPrompt}\x1b[201~`);
       } catch (err) {
@@ -415,14 +427,14 @@ ${prompt}`;
 
       const pasteSentAt = Date.now();
       pasteEnterTimer = setInterval(() => {
-        if (finalized) { clearInterval(pasteEnterTimer); pasteEnterTimer = null; return; }
+        if (finalized) { clearInterval(pasteEnterTimer); pasteEnterTimer = null; postPasteStripped = null; return; }
         const elapsed = Date.now() - pasteSentAt;
-        const postPaste = rawBuffer.slice(rawLenBeforePaste);
-        const markerSeen = PASTE_MARKER_PATTERN.test(postPaste);
+        const markerSeen = detectPasteMarker(postPasteStripped);
         if ((markerSeen && elapsed >= PASTE_TO_ENTER_MIN_DELAY_MS)
           || elapsed >= PASTE_TO_ENTER_FALLBACK_MS) {
           clearInterval(pasteEnterTimer);
           pasteEnterTimer = null;
+          postPasteStripped = null;
           // Submit with repeated Enters — a single `\r` can be swallowed while
           // the TUI is still reflowing a large paste, stranding the prompt
           // unsent. Tracked in submitEnterTimer so finish()'s cleanupTimers()
