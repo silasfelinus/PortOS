@@ -20,9 +20,14 @@ const pool = new Pool({
   database: process.env.PGDATABASE || 'portos',
   user: process.env.PGUSER || 'portos',
   password: process.env.PGPASSWORD || 'portos',
-  max: 10,
+  max: 20,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000
+  // 10s (was 2s) — a single-user box periodically runs heavy local workloads
+  // (Ollama model pulls, CoS agents) that can briefly delay establishing a
+  // fresh loopback connection past a 2s window, causing spurious "timeout
+  // exceeded when trying to connect" pool errors against a perfectly healthy
+  // Postgres. 10s absorbs the busy moments while still failing fast on a real outage.
+  connectionTimeoutMillis: 10000
 });
 
 pool.on('error', (err) => {
