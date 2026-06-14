@@ -26,6 +26,7 @@ const {
   listRunSamples,
   isPreviewCollapsed,
   resolveCheckpointAdapterBuffer,
+  resolveLatestCheckpointArtifact,
   selectDeployableCheckpoint,
   COLLAPSE_ENTROPY_MAX,
 } = await import('./checkpoints.js');
@@ -117,6 +118,29 @@ describe('loraTraining/checkpoints', () => {
     expect(list[0]).toMatchObject({ step: 250, loss: 0.64, hasPreview: true, deployed: true });
     expect(list[0].previewUrl).toContain('0000250_preview');
     expect(list[1].deployed).toBe(false);
+  });
+
+  it('resolves the latest on-disk checkpoint zip as the mflux resume point', () => {
+    const latest = resolveLatestCheckpointArtifact(buildRun());
+    expect(latest).toMatchObject({ step: 500 });
+    expect(latest.path).toContain(join('mflux', 'checkpoints', '0000500_checkpoint.zip'));
+  });
+
+  it('returns null when a run has no checkpoint dir to resume from', () => {
+    expect(resolveLatestCheckpointArtifact({ id: 'no-such-run', runtime: 'mflux' })).toBeNull();
+  });
+
+  it('resolves the latest flux2 checkpoint dir (the one with adapter weights)', async () => {
+    const id = 'run-flux2-fixture';
+    const ckpts = join(dataRoot, 'training-runs', id, 'checkpoints');
+    mkdirSync(join(ckpts, 'step-000100'), { recursive: true });
+    mkdirSync(join(ckpts, 'step-000200'), { recursive: true });
+    mkdirSync(join(ckpts, 'step-000300'), { recursive: true }); // no weights yet — must be skipped
+    await writeFile(join(ckpts, 'step-000100', 'pytorch_lora_weights.safetensors'), Buffer.from('w1'));
+    await writeFile(join(ckpts, 'step-000200', 'pytorch_lora_weights.safetensors'), Buffer.from('w2'));
+    const latest = resolveLatestCheckpointArtifact({ id, runtime: 'flux2' });
+    expect(latest).toMatchObject({ step: 200 });
+    expect(latest.path).toContain(join('checkpoints', 'step-000200'));
   });
 
   it('lists samples as step+url sorted by step (seeds the live gallery)', () => {

@@ -9,7 +9,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Dumbbell, Loader2, Square, CheckCircle2, XCircle, Sparkles } from 'lucide-react';
+import { Dumbbell, Loader2, Square, CheckCircle2, XCircle, Sparkles, RotateCcw } from 'lucide-react';
 import toast from '../ui/Toast';
 import { useSseProgress } from '../../hooks/useSseProgress';
 import CheckpointPicker from './CheckpointPicker';
@@ -19,6 +19,7 @@ import {
   listLoraTrainingRuns,
   startLoraTrainingRun,
   cancelLoraTrainingRun,
+  resumeLoraTrainingRun,
   listImageModels,
 } from '../../services/api';
 
@@ -33,6 +34,7 @@ export default function TrainingPanel({ dataset, readiness, triggerSaving, onRun
   const [lastRun, setLastRun] = useState(null);
   const [starting, setStarting] = useState(false);
   const [canceling, setCanceling] = useState(false);
+  const [resuming, setResuming] = useState(false);
 
   useEffect(() => {
     getLoraTrainingStatus().then((s) => {
@@ -108,7 +110,29 @@ export default function TrainingPanel({ dataset, readiness, triggerSaving, onRun
     }
   };
 
+  const resume = async () => {
+    if (!lastRun) return;
+    setResuming(true);
+    try {
+      const { fromStep } = await resumeLoraTrainingRun(lastRun.id);
+      toast.success(`Resuming from checkpoint @ step ${fromStep}`);
+      refreshRuns();
+    } finally {
+      setResuming(false);
+    }
+  };
+
   const setParam = (key, value) => setParams((prev) => ({ ...prev, [key]: value }));
+
+  // A killed run keeps its checkpoints — surface the picker (view + salvage a
+  // partial LoRA) whenever a non-completed run recorded one, and a Resume button
+  // for any failed/canceled mflux run. Gate Resume on status, NOT the recorded
+  // checkpoint count: a crash can kill the run before the debounced record
+  // persists its last checkpoint, yet the server resumes from disk — let its
+  // 409 (NO_RESUMABLE_CHECKPOINT) handle the genuinely-empty case. mflux only;
+  // the FLUX.2 torch trainer's resume restarts the optimizer (server refuses it).
+  const lastRunCheckpoints = lastRun?.artifacts?.checkpoints?.length || 0;
+  const canResume = lastRun && ['failed', 'canceled'].includes(lastRun.status) && lastRun.runtime === 'mflux';
 
   const disabledReason = !readiness?.trainable
     ? `Needs ${readiness?.required ?? 10} captioned images (have ${readiness?.captioned ?? 0})`
@@ -191,7 +215,25 @@ export default function TrainingPanel({ dataset, readiness, triggerSaving, onRun
           )}
         </div>
       )}
-      {lastRun?.status === 'completed' && (
+      {canResume && (
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-port-accent/30 bg-port-accent/5 px-3 py-2">
+          <span className="text-xs text-gray-300">
+            {lastRunCheckpoints > 0
+              ? `${lastRunCheckpoints} checkpoint${lastRunCheckpoints === 1 ? '' : 's'} saved — pick up where it stopped.`
+              : 'Pick up from the last saved checkpoint.'}
+          </span>
+          <button
+            type="button"
+            onClick={resume}
+            disabled={resuming}
+            className="px-2.5 py-1.5 text-xs rounded bg-port-accent text-white hover:bg-port-accent/80 disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+          >
+            {resuming ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+            Resume training
+          </button>
+        </div>
+      )}
+      {(lastRun?.status === 'completed' || lastRunCheckpoints > 0) && (
         <CheckpointPicker run={lastRun} onPromoted={refreshRuns} />
       )}
       <div className="grid grid-cols-2 gap-3">

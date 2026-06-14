@@ -45,6 +45,7 @@ import {
   listRunCheckpoints,
   listRunSamples,
   resolveCheckpointAdapterBuffer,
+  resolveLatestCheckpointArtifact,
   selectDeployableCheckpoint,
 } from './checkpoints.js';
 import * as runsDb from './db.js';
@@ -96,6 +97,30 @@ const mergeParams = (settings, requestParams = {}) => ({
   ...(settings?.loraTraining?.defaults || {}),
   ...requestParams,
 });
+
+// A dataset belongs to a run only while it still points at the run's character.
+// Match the full (universeId, entryId) key the dataset store uses — a different
+// universe can reuse the same entryId, so entryId alone would falsely re-own a
+// reassigned dataset. (flipDatasetAfterRun keeps its own missing-entryId
+// fallthrough for pre-reassignment runs that predate the character snapshot.)
+const sameCharacter = (a, b) =>
+  a?.entryId === b?.entryId && a?.universeId === b?.universeId;
+
+// Re-stamp a dataset as `training` with the run's new job/run ids, but only
+// while it still owns the dataset — the dataset can be reassigned to a different
+// character between validation and this stamp (patchDataset resets it to draft);
+// stamping a moved dataset would strand it in `training` forever (flipDatasetAfterRun
+// is character-guarded and would skip the un-flip). Used by both the fresh-launch
+// and resume paths.
+const stampDatasetTrainingStatus = (run, jobId) =>
+  updateDataset(run.datasetId, (current) => {
+    if (!sameCharacter(current.character, run.character)) return null;
+    return {
+      ...current,
+      status: 'training',
+      training: { ...current.training, lastJobId: jobId, lastRunId: run.id },
+    };
+  }).catch((err) => console.error(`❌ dataset training-status stamp failed: ${err?.message}`));
 
 /**
  * Route-facing run launcher. Validates dataset readiness + runtime health,
@@ -166,24 +191,111 @@ export async function startTrainingRun({ datasetId, baseModelId, name = null, pa
     },
   });
   await runsDb.updateRun(runId, { jobId: queued.jobId });
-  await updateDataset(datasetId, (current) => {
-    // Same-record re-entrancy guard: if the dataset was reassigned to a
-    // different character between validateDatasetReady above and this stamp,
-    // this run no longer owns it. Don't stamp 'training' — flipDatasetAfterRun
-    // skips character-mismatched runs, so a stamp here would strand the
-    // reassigned dataset in 'training' forever. Match the full
-    // (universeId, entryId) key the dataset store uses elsewhere.
-    if (current.character?.entryId !== run.character.entryId
-      || current.character?.universeId !== run.character.universeId) return null;
-    return {
-      ...current,
-      status: 'training',
-      training: { ...current.training, lastJobId: queued.jobId, lastRunId: runId },
-    };
-  }).catch((err) => console.error(`❌ dataset training-status stamp failed: ${err?.message}`));
+  await stampDatasetTrainingStatus(run, queued.jobId);
 
   console.log(`🏋️ Training run ${shortId(runId)} queued — ${routing.runtime}/${baseModelId} dataset=${shortId(datasetId)} job=${shortId(queued.jobId)}`);
   return { runId, jobId: queued.jobId, position: queued.position, status: 'queued' };
+}
+
+/**
+ * Resume a failed/canceled run from its latest on-disk checkpoint. mflux bakes
+ * the output path into the checkpoint zip and reads everything (config, dataset
+ * paths, optimizer + adapter state, step counter) from `--resume <zip>` — so a
+ * resume MUST re-run in the ORIGINAL run dir, not a fresh one, or the trainer
+ * would write its new artifacts where the wrapper's watcher can't see them.
+ * We therefore re-enqueue a new job against the SAME runId: new checkpoints and
+ * samples append to the existing artifact arrays (the checkpoint picker shows
+ * the full timeline across the resume), and finalize registers the LoRA as
+ * usual. Progress may briefly read low if the trainer restarts its step bar at
+ * the resume point — cosmetic; the durable record catches up on the next flush.
+ */
+export async function resumeTrainingRun(runId) {
+  const run = await runsDb.getRunRequired(runId);
+  if (!['failed', 'canceled'].includes(run.status)) {
+    throw new ServerError(`Can only resume a failed or canceled run (status: ${run.status})`, {
+      status: 409, code: 'RUN_NOT_RESUMABLE',
+    });
+  }
+  // mflux only: its `--resume <zip>` restores optimizer state AND the step
+  // counter, so training picks up mid-run and finishes at the original total.
+  // The torch FLUX.2 trainer's `--resume-from` only warm-starts the adapter
+  // weights and then runs a FRESH optimizer loop for the full `steps` again —
+  // that would over-train and re-collide checkpoint step numbers, not resume.
+  // The arg-builder wiring (buildFlux2TrainArgs `resumeFrom`) is in place for
+  // when the trainer learns true optimizer-state resume; until then, refuse it.
+  if (run.runtime === TRAINING_RUNTIMES.FLUX2) {
+    throw new ServerError(
+      'Resume is only supported for mflux (MLX) runs right now — the FLUX.2 torch trainer restarts its optimizer from step 0, which would over-train. Start a fresh run.',
+      { status: 409, code: 'RESUME_UNSUPPORTED_RUNTIME' },
+    );
+  }
+  const checkpoint = resolveLatestCheckpointArtifact(run);
+  if (!checkpoint) {
+    throw new ServerError(
+      'No checkpoint to resume from — the run was killed before its first checkpoint saved. Start a fresh run.',
+      { status: 409, code: 'NO_RESUMABLE_CHECKPOINT' },
+    );
+  }
+
+  // Re-validate dataset readiness + ownership exactly like a fresh launch — the
+  // dataset may have been edited, deleted, or reassigned since the run failed.
+  const { dataset } = await validateDatasetReady(run.datasetId);
+  if (!sameCharacter(dataset.character, run.character)) {
+    throw new ServerError('Dataset was reassigned to a different character — start a fresh run.', {
+      status: 409, code: 'DATASET_REASSIGNED',
+    });
+  }
+
+  // Engine health: mirror startTrainingRun for the run's existing runtime.
+  const settings = await getSettings();
+  const pythonPath = settings?.imageGen?.local?.pythonPath || null;
+  if (run.runtime === TRAINING_RUNTIMES.FLUX2) {
+    if (!(await isFlux2VenvHealthy())) {
+      throw new ServerError('FLUX.2 training venv is unavailable — run `bash scripts/setup-image-video.sh`', {
+        status: 412, code: 'TRAINING_ENGINE_MISSING',
+      });
+    }
+  } else if (!isMfluxTrainAvailable(pythonPath)) {
+    throw new ServerError('mflux-train not found next to the configured python — update mflux (≥0.17)', {
+      status: 412, code: 'TRAINING_ENGINE_MISSING',
+    });
+  }
+
+  const queued = enqueueJob({
+    kind: 'training',
+    owner: 'lora-training',
+    params: {
+      runId,
+      runtime: run.runtime,
+      datasetId: run.datasetId,
+      characterId: run.character?.entryId,
+      characterName: run.character?.name,
+      triggerWord: run.triggerWord,
+      baseModelId: run.baseModelId,
+      steps: run.params?.steps,
+      rank: run.params?.rank,
+      pythonPath,
+      resumeCheckpoint: checkpoint.path,
+    },
+  });
+  await runsDb.updateRun(runId, (current) => ({
+    ...current,
+    status: 'queued',
+    jobId: queued.jobId,
+    error: null,
+    errorCode: null,
+    errorRepo: null,
+    completedAt: null,
+    resume: {
+      count: (current.resume?.count || 0) + 1,
+      fromStep: checkpoint.step,
+      resumedAt: new Date().toISOString(),
+    },
+  }));
+  await stampDatasetTrainingStatus(run, queued.jobId);
+
+  console.log(`🏋️ Training run ${shortId(runId)} resumed from step ${checkpoint.step} — job=${shortId(queued.jobId)}`);
+  return { runId, jobId: queued.jobId, position: queued.position, status: 'queued', fromStep: checkpoint.step };
 }
 
 const emitFailed = (jobId, error) => trainingEvents.emit('failed', { generationId: jobId, error });
@@ -228,7 +340,7 @@ const flipDatasetAfterRun = (run, { trained, loraFilename = null }) => {
  * queue's dispatcher; this function resolves once the child is spawned
  * (the queue awaits the terminal event separately).
  */
-export async function runTraining({ jobId, runId, pythonPath = null }) {
+export async function runTraining({ jobId, runId, pythonPath = null, resumeCheckpoint = null }) {
   const fail = (message) => {
     console.error(`❌ training [${shortId(jobId)}] ${message}`);
     emitFailed(jobId, message);
@@ -264,8 +376,7 @@ export async function runTraining({ jobId, runId, pythonPath = null }) {
   // run's now-stale character. failBeforeSpawn's flipDatasetAfterRun is
   // character-guarded, so it won't disturb the reassigned dataset's state.
   // Match the full (universeId, entryId) key the dataset store uses elsewhere.
-  if (dataset.character?.entryId !== run.character.entryId
-    || dataset.character?.universeId !== run.character.universeId) {
+  if (!sameCharacter(dataset.character, run.character)) {
     return failBeforeSpawn('Dataset was reassigned to a different character after this run was queued — cancel and retrain.');
   }
 
@@ -301,6 +412,7 @@ export async function runTraining({ jobId, runId, pythonPath = null }) {
         triggerWord: run.triggerWord,
         params: run.params,
         samplePrompt: run.params?.samplePrompt || null,
+        resumeFrom: resumeCheckpoint,
       });
     } else {
       bin = pythonPath;
@@ -344,6 +456,7 @@ export async function runTraining({ jobId, runId, pythonPath = null }) {
         configPath,
         runDir: dir,
         totalSteps: run.params?.steps || TRAINING_DEFAULTS.steps,
+        resumeCheckpoint,
       });
     }
   } catch (err) {
@@ -357,7 +470,7 @@ export async function runTraining({ jobId, runId, pythonPath = null }) {
   delete childEnv.PYTHONPATH;
   childEnv.PYTHONUNBUFFERED = '1';
 
-  console.log(`🏋️ training [${shortId(jobId)}] spawn ${basename(bin)} ${run.runtime} steps=${run.params.steps} rank=${run.params.rank} images=${manifest.images.length}`);
+  console.log(`🏋️ training [${shortId(jobId)}] spawn ${basename(bin)} ${run.runtime} steps=${run.params.steps} rank=${run.params.rank} images=${manifest.images.length}${resumeCheckpoint ? ` resume=${basename(resumeCheckpoint)}` : ''}`);
   const proc = spawn(bin, args, { env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
   activeProcess = proc;
   activeJobId = jobId;
@@ -613,12 +726,14 @@ export async function listSamples(runId) {
  */
 export async function promoteCheckpoint(runId, step) {
   const run = await runsDb.getRunRequired(runId);
-  // Only completed runs (matching the UI, which exposes the picker only there).
-  // Promoting flips the dataset to `trained` + deploys a LoRA — a failed or
-  // canceled run shouldn't masquerade as trained off a partial checkpoint.
-  if (run.status !== 'completed') {
-    throw new ServerError('Can only promote a checkpoint from a completed run', {
-      status: 409, code: 'RUN_NOT_COMPLETED',
+  // Allow completed runs AND failed/canceled runs that saved at least one
+  // checkpoint — promoting a partial checkpoint is a deliberate salvage (the
+  // human clicks "Use this" on a specific preview), the same explicit intent
+  // the completed-run picker relies on. Only an in-flight run is blocked: its
+  // checkpoints are still moving, so "deploy this one" is ambiguous.
+  if (['queued', 'running'].includes(run.status)) {
+    throw new ServerError('Cancel the run before promoting a checkpoint', {
+      status: 409, code: 'RUN_ACTIVE',
     });
   }
   const listed = listRunCheckpoints(run);

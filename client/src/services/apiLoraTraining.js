@@ -88,6 +88,11 @@ export const getLoraTrainingRun = (runId) => request(`/lora-training/runs/${runI
 export const cancelLoraTrainingRun = (runId) =>
   request(`/lora-training/runs/${runId}/cancel`, { method: 'POST' });
 
+// Resume a failed/canceled run from its latest checkpoint — continues the same
+// run (new job, same run id) so the trainer picks up its saved optimizer state.
+export const resumeLoraTrainingRun = (runId, { silent = false } = {}) =>
+  request(`/lora-training/runs/${runId}/resume`, { method: 'POST', silent });
+
 // Checkpoints for a finished run — each with step, loss, preview thumbnail,
 // and which one is currently deployed. Drives the manual checkpoint picker.
 export const listLoraTrainingCheckpoints = (runId) =>
