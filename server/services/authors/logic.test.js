@@ -113,14 +113,15 @@ describe('authors logic', () => {
     });
 
     it('unparseable remote updatedAt never overrides a valid local', () => {
+      // sanitizeAuthor KEEPS any string updatedAt verbatim (updatedAt =
+      // isStr(raw.updatedAt) ? raw.updatedAt : createdAt), so 'not-a-date'
+      // survives sanitization and compareNewerWins('not-a-date', <valid>)
+      // returns false — a peer pushing a garbage timestamp can't clobber a
+      // valid local record. This is the security-relevant contract.
       const remote = { ...local, name: 'Garbage', updatedAt: 'not-a-date' };
       const r = mergeAuthorRecord(local, remote);
-      // sanitizeAuthor replaces an unparseable updatedAt with now() (a string),
-      // but Date.parse('not-a-date') is NaN BEFORE sanitize — sanitize runs
-      // inside mergeAuthorRecord, so the sanitized remote carries a fresh (now)
-      // timestamp and would actually win. Assert the sanitized record is what's
-      // compared (no crash, deterministic result), not a specific winner.
-      expect(typeof r.remoteWins).toBe('boolean');
+      expect(r.remoteWins).toBe(false);
+      expect(r.next.name).toBe('Local');
     });
 
     it('a newer remote tombstone overwrites a live local record', () => {

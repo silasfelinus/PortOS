@@ -103,6 +103,9 @@ export async function mergeAuthorsFromSync(remoteAuthors, { source = { via: 'syn
       changed += 1;
       continue;
     }
+    // local wins, OR remote won but is byte-identical to local (already agree —
+    // nothing to journal or advance). See db.js for why authors skip the
+    // every-remoteWins journaling mediaCollections does.
     if (!remoteWins || !didChange) continue;
     await maybeJournalBeforeOverwrite({ kind: 'author', id: next.id, local, remote: next, source });
     byId.set(next.id, next);

@@ -130,7 +130,13 @@ export async function mergeAuthorsFromSync(remoteAuthors, { source = { via: 'syn
         await setSyncBaseHash('author', next.id, contentHashForRecord('author', next));
         return true;
       }
-      if (!remoteWins || !didChange) return false; // local wins or no-op
+      // local wins, OR remote won but is byte-identical to local (no divergence
+      // to journal and nothing to advance). Unlike mergeMediaCollectionsFromSync
+      // — which journals on every remoteWins because its item-union can still
+      // produce a no-op net write after a scalar overwrite — an author record is
+      // LWW-overwritten whole, so `remoteWins && !didChange` genuinely means the
+      // two sides already agree.
+      if (!remoteWins || !didChange) return false;
       // Remote scalars are about to overwrite local's — journal the lost local
       // version when BOTH sides diverged from the last synced base (best-effort).
       await maybeJournalBeforeOverwrite({ kind: 'author', id: next.id, local, remote: next, source });
