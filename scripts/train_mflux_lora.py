@@ -135,14 +135,33 @@ def _terminate_child(timeout: float = 15.0) -> None:
             CHILD.kill()
 
 
-def interruptible_sleep(seconds: float) -> None:
-    """Sleep up to `seconds`, returning early if a SIGTERM cancel arrives —
-    so the inter-segment cooldown never delays a user-requested stop."""
-    end = time.monotonic() + seconds
+# Cooldown heartbeat cadence. The mediaJobQueue idle watchdog resets only on
+# emitted runner output (progress.js emits 'activity' for every non-noise line),
+# so a silent cooldown longer than the watchdog window would get a healthy run
+# killed mid-pause. segmentCooldownSec is validated up to 3600s — above the 1800s
+# default watchdog — so the cooldown MUST keep the watchdog fed itself rather than
+# rely on the setting staying small.
+HEARTBEAT_INTERVAL_SEC = 30
+
+
+def interruptible_sleep(seconds: float, heartbeat_stage: str | None = None) -> None:
+    """Sleep up to `seconds`, returning early if a SIGTERM cancel arrives — so
+    the inter-segment cooldown never delays a user-requested stop. When
+    `heartbeat_stage` is set, emit a `STAGE:<stage>:heartbeat:<elapsed>s`
+    keep-alive every HEARTBEAT_INTERVAL_SEC so the idle watchdog sees activity
+    during a long pause (the `:heartbeat:` form resets the watchdog without
+    emitting a status message or changing the displayed stage)."""
+    start = time.monotonic()
+    end = start + seconds
+    next_beat = start + HEARTBEAT_INTERVAL_SEC
     while not STOP_REQUESTED:
-        remaining = end - time.monotonic()
+        now = time.monotonic()
+        remaining = end - now
         if remaining <= 0:
             return
+        if heartbeat_stage and now >= next_beat:
+            log(f"STAGE:{heartbeat_stage}:heartbeat:{int(now - start)}s")
+            next_beat = now + HEARTBEAT_INTERVAL_SEC
         time.sleep(min(1.0, remaining))
 
 
@@ -570,7 +589,7 @@ def main():
             final_code = 1
             break
         log(f"STATUS:segment {segment_index} complete at step {new_step}/{total} — cooling down {cooldown}s")
-        interruptible_sleep(cooldown)
+        interruptible_sleep(cooldown, heartbeat_stage="cooldown")
         if STOP_REQUESTED:
             break
 

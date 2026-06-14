@@ -130,8 +130,12 @@ swap thrash if a run oversubscribes unified memory.
      trade fewer reloads for a longer sustained window, raise `checkpointEvery`
      (which raises `save_frequency` = segment size) — but keep it below the
      ~150–300-step crash window.
-   - The 30-min training idle watchdog (`WATCHDOG_TRAINING_MS`) comfortably
-     covers a cooldown + model reload, so segmentation does not trip it.
+   - The cooldown emits a `STAGE:cooldown:heartbeat:<n>s` keep-alive every 30 s,
+     which resets the mediaJobQueue idle watchdog (it only resets on emitted
+     runner output). Without it a cooldown tuned above the 30-min
+     `WATCHDOG_TRAINING_MS` window — `segmentCooldownSec` validates up to 3600 s —
+     would get a healthy run killed mid-pause; with it, any cooldown length is
+     safe.
 
 ### Enabling the telemetry sidecar (passwordless powermetrics)
 
