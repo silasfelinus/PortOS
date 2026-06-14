@@ -43,7 +43,7 @@ import { registerExternalSession, unregisterExternalSession, isExternalSessionAt
 import {
   DEFAULT_TUI_PROMPT_DELAY_MS,
   PASTE_MARKER_POLL_MS,
-  detectPasteMarker,
+  countPasteMarkers,
   PASTE_TO_ENTER_MIN_DELAY_MS,
   PASTE_TO_ENTER_FALLBACK_MS,
   scheduleSubmitEnters,
@@ -148,6 +148,12 @@ Only the contents of that file will be used as your response, so do not print th
 ${prompt}`;
 
   console.log(`📟 Executing TUI: ${command} ${args.join(' ')} (${wrappedPrompt.length} chars via paste, response→${responseFilePath})`);
+
+  // Markers already present in the (wrapped) prompt itself — a transcript-analysis
+  // task can echo `[Pasted text #N]` back into the post-paste stream. The fast
+  // path must wait for the TUI's OWN marker (the count to EXCEED this), so an
+  // echoed marker doesn't fire the submit-Enter mid-reflow (issue #1229 review).
+  const promptMarkerCount = countPasteMarkers(wrappedPrompt);
 
   // CLAUDECODE is set when PortOS itself runs inside Claude Code; passing it
   // through to a spawned Claude Code TUI would make the child think it's
@@ -438,7 +444,7 @@ ${prompt}`;
       pasteEnterTimer = setInterval(() => {
         if (finalized) { clearInterval(pasteEnterTimer); pasteEnterTimer = null; postPasteStripped = null; return; }
         const elapsed = Date.now() - pasteSentAt;
-        const markerSeen = detectPasteMarker(postPasteStripped);
+        const markerSeen = countPasteMarkers(postPasteStripped) > promptMarkerCount;
         if ((markerSeen && elapsed >= PASTE_TO_ENTER_MIN_DELAY_MS)
           || elapsed >= PASTE_TO_ENTER_FALLBACK_MS) {
           clearInterval(pasteEnterTimer);

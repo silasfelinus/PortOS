@@ -46,16 +46,43 @@ export const PASTE_TO_ENTER_MIN_DELAY_MS = 200;
 export const PASTE_TO_ENTER_FALLBACK_MS = 3500;
 
 /**
- * True when `strippedText` contains Claude Code's `[Pasted text #N …]` paste-
- * commit marker. Callers MUST pass ANSI-STRIPPED output (see PASTE_MARKER_PATTERN
- * above for why the raw stream never matches). Shared by both TUI consumers so
- * the strip-then-match contract can't drift between them.
+ * Count the `[Pasted text #N …]` paste-commit markers in `strippedText`.
+ * Callers MUST pass ANSI-STRIPPED output (see PASTE_MARKER_PATTERN above for why
+ * the raw stream never matches). Shared by both TUI consumers so the
+ * strip-then-match contract can't drift between them.
+ *
+ * Why count rather than just detect-presence: when the pasted PROMPT itself
+ * contains a paste-marker (a transcript-analysis task — plausible here, since
+ * #1229 is about TUI transcripts), the echoed prompt carries that marker into
+ * the post-paste stream BEFORE the TUI emits its own commit marker. A bare
+ * presence check would then fire the submit-Enters ~200ms in, while the paste is
+ * still reflowing, reintroducing the unsent-prompt bug (issue #1229 review). So
+ * callers gate on the count EXCEEDING the count already present in the prompt —
+ * the TUI's genuine (N+1)th marker. (A normal prompt has 0, so the common case
+ * is unchanged; a large transcript paste that Claude Code collapses to its own
+ * single marker simply falls back to the timer, which is safe.)
+ *
+ * @param {string} strippedText — ANSI-stripped text (prompt or post-paste output).
+ * @returns {number}
+ */
+export function countPasteMarkers(strippedText) {
+  if (typeof strippedText !== 'string' || !strippedText) return 0;
+  const re = new RegExp(PASTE_MARKER_PATTERN.source, 'gi');
+  const m = strippedText.match(re);
+  return m ? m.length : 0;
+}
+
+/**
+ * True when `strippedText` contains at least one paste-commit marker. Thin
+ * presence wrapper over `countPasteMarkers`. Callers that must ignore markers
+ * echoed from the prompt should compare `countPasteMarkers(output)` against
+ * `countPasteMarkers(prompt)` instead of using this.
  *
  * @param {string} strippedText — ANSI-stripped post-paste output accumulator.
  * @returns {boolean}
  */
 export function detectPasteMarker(strippedText) {
-  return typeof strippedText === 'string' && PASTE_MARKER_PATTERN.test(strippedText);
+  return countPasteMarkers(strippedText) > 0;
 }
 
 // "The model is actively processing a submitted prompt" signal. A TUI repaints

@@ -27,7 +27,7 @@ import {
   READY_POLL_INTERVAL_MS,
   READY_IDLE_THRESHOLD_MS,
   PASTE_MARKER_POLL_MS,
-  detectPasteMarker,
+  countPasteMarkers,
   createWorkActivityTracker,
   rendersWorkCounter,
   PASTE_TO_ENTER_MIN_DELAY_MS,
@@ -197,6 +197,11 @@ export async function spawnTuiAgent({
   const doneSentinelPath = workspacePath ? join(workspacePath, DONE_SENTINEL_NAME) : null;
   const promptPreview = prompt.replace(/\s+/g, ' ').slice(0, 100);
   const commandName = tuiConfig.command.split('/').pop();
+  // Markers already present in the prompt text itself (a transcript-analysis task
+  // can echo `[Pasted text #N]` back). The paste-commit fast path must wait for
+  // the TUI's OWN marker — i.e. the count to EXCEED this — so an echoed marker
+  // doesn't fire the submit-Enters mid-reflow (issue #1229 review).
+  const promptMarkerCount = countPasteMarkers(prompt);
 
   let outputBuffer = '';
   let finalized = false;
@@ -540,7 +545,7 @@ export async function spawnTuiAgent({
       scheduleRawFlush();
       // Accumulate the ANSI-STRIPPED chunk (not the raw text): the paste marker
       // is rendered with absolute-column cursor moves between glyphs, so it only
-      // matches after stripping (see detectPasteMarker). Appending raw text here
+      // matches after stripping (see countPasteMarkers). Appending raw text here
       // — as this did before #1229 — left the marker unmatchable and the fast
       // path dead.
       if (postPasteBuffer !== null && stripped) postPasteBuffer += stripped;
@@ -684,7 +689,7 @@ export async function spawnTuiAgent({
         return;
       }
       const elapsed = Date.now() - pasteSentAt;
-      const markerSeen = detectPasteMarker(postPasteBuffer);
+      const markerSeen = countPasteMarkers(postPasteBuffer) > promptMarkerCount;
       // Submit when EITHER the paste-commit marker appears (preferred) or
       // the fallback window elapses (covers small prompts that don't render
       // the marker).

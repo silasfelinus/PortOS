@@ -6,6 +6,7 @@ import {
   PASTE_MARKER_POLL_MS,
   PASTE_MARKER_PATTERN,
   detectPasteMarker,
+  countPasteMarkers,
   WORK_COUNTER_PATTERN,
   MIN_WORK_COUNTER_SAMPLES,
   MIN_WORK_COUNTER_SPAN_MS,
@@ -99,6 +100,30 @@ describe('tuiHandshake — paste timing constants', () => {
     expect(detectPasteMarker(undefined)).toBe(false);
     expect(detectPasteMarker(123)).toBe(false);
     expect(detectPasteMarker('[Pasted text #1 +3 lines]')).toBe(true);
+  });
+
+  it('countPasteMarkers counts markers (so an echoed-prompt marker can be subtracted)', () => {
+    expect(countPasteMarkers('')).toBe(0);
+    expect(countPasteMarkers(null)).toBe(0);
+    expect(countPasteMarkers('no marker here')).toBe(0);
+    expect(countPasteMarkers('[Pasted text #1 +3 lines]')).toBe(1);
+    // Collapsed (stripped) + spaced forms both count.
+    expect(countPasteMarkers('[Pastedtext#1+35lines] then [Pasted text #2 +1 lines]')).toBe(2);
+  });
+
+  it('countPasteMarkers underpins the echoed-marker gate (count must EXCEED the prompt count)', () => {
+    // A transcript-analysis prompt that itself contains a paste marker. The fast
+    // path must wait for the TUI's OWN (N+1)th marker, not fire on the echo
+    // (issue #1229 round-5 review).
+    const prompt = 'analyze this transcript: "[Pasted text #1 +35 lines]" and report';
+    const promptMarkers = countPasteMarkers(prompt); // 1
+    expect(promptMarkers).toBe(1);
+    // Echo of the prompt alone — count does NOT exceed the prompt's own count.
+    expect(countPasteMarkers(prompt) > promptMarkers).toBe(false);
+    // Once the TUI appends its real commit marker, the count exceeds it → fire.
+    expect(countPasteMarkers(`${prompt} [Pastedtext#2+40lines]`) > promptMarkers).toBe(true);
+    // A NORMAL prompt (0 markers) keeps the original presence behavior.
+    expect(countPasteMarkers('[Pastedtext#1+35lines]') > countPasteMarkers('do the thing')).toBe(true);
   });
 
   it('extractWorkCounterSeconds parses the TUI bullet-suffixed working counter', () => {
