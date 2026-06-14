@@ -225,7 +225,12 @@ class TelemetrySidecar:
         # /usr/bin/true) would fail for exactly the users who configured it
         # correctly. `sudo -n -l <cmd>` lists the permission without running
         # powermetrics and without prompting; non-zero means not allowed.
-        probe = subprocess.run(["sudo", "-n", "-l", pm], capture_output=True)
+        # Telemetry is best-effort — a missing `sudo` must never crash training.
+        try:
+            probe = subprocess.run(["sudo", "-n", "-l", pm], capture_output=True)
+        except OSError as err:
+            log(f"STATUS:GPU telemetry unavailable ({err}); continuing without it")
+            return
         if probe.returncode != 0:
             log("STATUS:GPU telemetry disabled — passwordless sudo for powermetrics not configured; "
                 "see docs/TROUBLESHOOTING.md to enable thermal/power capture. Continuing without it.")
