@@ -148,6 +148,52 @@ add a sudoers rule (use `sudo visudo -f /etc/sudoers.d/portos-powermetrics`):
 
 Without this the sidecar simply skips capture — training is unaffected.
 
+## Phosphene cross-reference (2026-06-14)
+
+Reviewed the `mrbizarro/phosphene` reference repo (it also trains LoRAs
+MLX-natively on Apple Silicon) for a watchdog fix. Full write-up:
+`docs/plans/2026-06-14-lora-watchdog-phosphene-review.md`. Key takeaways:
+
+- **Negative result — do NOT add an `mx.eval`-cadence "fix" to the trainer.**
+  Phosphene's `LTX2_DIT_EVAL_EVERY` flush bounds the Metal command buffer on the
+  *inference* denoise loop (no autodiff), and PortOS already uses it on the LTX-2
+  generation path (`scripts/generate_ltx2.py:63`). It does **not** transfer to
+  mflux training: mflux reads no such env var, its step fuses forward+backward
+  under `nn.value_and_grad` materialized by a single `mx.eval`
+  (`mflux/.../training/trainer.py:141-143`) which a per-block flush can't split,
+  and `batch_size` is 1 (`runtimes.js:204`) so there's no batch loop to chunk.
+  A per-step panic on a 768px batch-1 step is consistent with a system stall,
+  not a too-long single GPU kernel — reinforcing the driver-hang hypothesis.
+- **Out-of-process watchdog is the only kind that works.** Phosphene confirmed an
+  in-Python daemon-thread watchdog is starved by Metal's GIL-holding dealloc
+  chain; PortOS's Node orchestrator + segmentation already sit on the right side
+  of that. A phase-aware *soft*-hang stall detector would help wedged-not-rebooted
+  runs but cannot catch the hard reboots seen here (PLAN:
+  `lora-training-phase-aware-soft-hang-stall-watchdog`).
+- **Version-bisect, then pin a validated trio** (phosphene's "every pin is a paid
+  lesson"). This is the most promising untried lever for a new-silicon driver
+  hang; tracked as PLAN `lora-training-version-bisect-and-pin-validated-trio`
+  (current stack: mflux 0.17.5 · mlx 0.30.6 · mlx-metal 0.30.6 · mlx-lm 0.29.1).
+
+### Confirmed on the hardware (2026-06-14)
+
+This dev box **is** the panicking machine: Apple **M5 Max** `Mac17,7`/`T6050`,
+macOS **26.5.1** (`25F80`) — and `softwareupdate -l` shows **no OS update
+available**, so Apple hasn't shipped a driver fix; the paniclogs confirm the OS
+was already 26.5.1 at all three crashes (this doc's earlier "26.5" was imprecise).
+**Passwordless `powermetrics` is now configured**, so the next run captures the
+thermal/power forensics that were blind on all three prior panics. In-constraint
+upgrade room: mlx/mlx-metal → **0.31.2** (mflux caps `<0.32`; its `dev` extra
+pins `mlx==0.31.0`), mflux → **0.18.0**.
+
+A **ready-to-run bisect harness** (reuses run `15cfeed1…` — 25 img × 24 ep, bf16,
+the most panic-prone config; runs with `--segment-steps 0` to reproduce the
+sustained condition) is written up in
+`docs/plans/2026-06-14-lora-watchdog-phosphene-review.md` → "Ready-to-run bisect
+procedure". **Not yet run** — it can hard-reboot the box, so it waits for an
+explicit go. Upstream issue drafted at
+`docs/research/2026-06-14-upstream-issue-draft-m5-watchdog.md`.
+
 ## If it recurs — investigation checklist
 
 1. **Read the telemetry.** Open the newest `<run>/powermetrics*.log` from the
