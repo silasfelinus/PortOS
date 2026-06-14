@@ -62,7 +62,7 @@ swap thrash if a run oversubscribes unified memory.
    `--resume-checkpoint <newest .zip>` path picks up from the last checkpoint.
 2. **GPU/thermal telemetry sidecar** — `TelemetrySidecar` in
    `scripts/train_mflux_lora.py` streams `powermetrics --samplers
-   gpu_power,thermal,smc` into `<run>/powermetrics.log` for the life of each
+   cpu_power,gpu_power,thermal` into `<run>/powermetrics.log` for the life of each
    training run. Gated on a non-interactive `sudo -n` probe: if passwordless
    sudo for `powermetrics` is not configured it no-ops with a STATUS note and
    training proceeds. This gives the next crash a forensic record of GPU temp /

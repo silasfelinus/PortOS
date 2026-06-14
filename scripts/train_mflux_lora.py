@@ -232,7 +232,7 @@ class TelemetrySidecar:
             return
         cmd = [
             "sudo", "-n", pm,
-            "--samplers", "gpu_power,thermal,smc",
+            "--samplers", "cpu_power,gpu_power,thermal",
             "-i", str(self.SAMPLE_INTERVAL_MS),
             "--output-file", str(self.log_path),
         ]
@@ -242,6 +242,17 @@ class TelemetrySidecar:
             log(f"STATUS:GPU telemetry unavailable ({err}); continuing without it")
             self.proc = None
             return
+        # Confirm powermetrics actually stayed up — a bad sampler, an OS that
+        # dropped a sampler, or a perms issue makes it exit immediately, and we
+        # must not report telemetry as enabled while the log stays empty.
+        try:
+            rc = self.proc.wait(timeout=0.5)
+            log(f"STATUS:GPU telemetry failed to start (powermetrics exited {rc}); "
+                "continuing without it")
+            self.proc = None
+            return
+        except subprocess.TimeoutExpired:
+            pass  # still running after the grace window → healthy
         # Guarantee the root powermetrics child is reaped even if main() throws
         # between start() and the explicit stop() — unlike the daemon watcher
         # thread, this is a separate OS process that outlives the interpreter.
