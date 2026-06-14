@@ -80,15 +80,27 @@ export function detectPasteMarker(strippedText) {
 //      verified in real transcripts: `(1s · thinking…`.)
 //   2. We require ≥ MIN_WORK_COUNTER_SAMPLES DISTINCT second-counts — the live
 //      counter passes through many values; a static echoed literal is just one.
+// There is one residual echo vector even with the bullet requirement: a task
+// that asks the agent to ANALYZE A TUI TRANSCRIPT can paste content that itself
+// contains two distinct bulleted counters (`(1s · …` and `(2s · …`), and the
+// whole prompt is echoed at paste time — before Enter is known to have submitted
+// (flagged in review of #1229). The defining difference is TIMING: the live
+// counter is rendered ONE value at a time as wall-clock seconds pass, whereas an
+// echoed transcript's counters all arrive together in the paste render. So the
+// tracker activates only once it has seen ≥ MIN_WORK_COUNTER_SAMPLES distinct
+// values whose observations SPAN ≥ MIN_WORK_COUNTER_SPAN_MS of real time — a
+// span a single paste-render burst can't fake. `observe()` therefore takes the
+// current timestamp.
 // Verified against real transcripts: the working run cycled through many counter
-// values; the two confirmed stuck runs (`agent-92ed2c56`, `agent-30a3ab56`) had
-// none. Heuristic by nature, so it gates only the FALLBACK idle-complete path on
-// the long-running agent path — the authoritative success signal remains the
-// `.agent-done` sentinel. (The one-shot runner is deliberately NOT gated: its
-// idle-complete legitimately captures inline output that may carry no counter,
-// and its authoritative path is the response file.)
+// values across its runtime; the two confirmed stuck runs (`agent-92ed2c56`,
+// `agent-30a3ab56`) had none. Heuristic by nature, so it gates only the FALLBACK
+// idle-complete path on the long-running agent path — the authoritative success
+// signal remains the `.agent-done` sentinel. (The one-shot runner is deliberately
+// NOT gated: its idle-complete legitimately captures inline output that may carry
+// no counter, and its authoritative path is the response file.)
 export const WORK_COUNTER_PATTERN = /\(\s*(\d+)\s*s\s*[·•]/g;
 export const MIN_WORK_COUNTER_SAMPLES = 2;
+export const MIN_WORK_COUNTER_SPAN_MS = 750;
 
 /**
  * Extract every elapsed-second value from the TUI working counter in
@@ -113,23 +125,42 @@ export function extractWorkCounterSeconds(strippedText) {
 
 /**
  * Stateful tracker for the "model is actively working" signal. Feed it each
- * ANSI-stripped post-paste chunk via `observe()`; it becomes (and stays)
- * `active` once it has seen ≥ MIN_WORK_COUNTER_SAMPLES DISTINCT elapsed-second
- * counter values — i.e. the working counter actually advanced, which a static
- * echoed prompt cannot fake. Shared by both TUI consumers so the echo-proof
- * detection logic can't drift between them.
+ * ANSI-stripped post-paste chunk via `observe(strippedText, nowMs)`; it becomes
+ * (and stays) `active` once it has seen ≥ MIN_WORK_COUNTER_SAMPLES DISTINCT
+ * bulleted elapsed-second counter values whose observations span ≥
+ * MIN_WORK_COUNTER_SPAN_MS of wall-clock time — i.e. the live counter actually
+ * ticked across real seconds, which neither a static echoed prompt nor an echoed
+ * transcript's counters (all rendered in one paste burst) can fake. Used by the
+ * long-running agent path; lives here so the echo-proof logic is unit-testable.
  *
- * @returns {{ observe: (strippedText: string) => boolean, readonly active: boolean }}
+ * @returns {{ observe: (strippedText: string, nowMs: number) => boolean, readonly active: boolean }}
  */
 export function createWorkActivityTracker() {
   const seconds = new Set();
-  const isActive = () => seconds.size >= MIN_WORK_COUNTER_SAMPLES;
+  let firstSeenAt = null; // wall-clock ms when the FIRST distinct counter appeared
+  let active = false;
   return {
-    observe(strippedText) {
-      for (const s of extractWorkCounterSeconds(strippedText)) seconds.add(s);
-      return isActive();
+    observe(strippedText, nowMs) {
+      if (active) return true;
+      for (const s of extractWorkCounterSeconds(strippedText)) {
+        if (seconds.has(s)) continue;
+        seconds.add(s);
+        if (firstSeenAt === null) {
+          firstSeenAt = nowMs;
+        } else if (
+          seconds.size >= MIN_WORK_COUNTER_SAMPLES &&
+          typeof nowMs === 'number' && typeof firstSeenAt === 'number' &&
+          nowMs - firstSeenAt >= MIN_WORK_COUNTER_SPAN_MS
+        ) {
+          // A later distinct value, far enough after the first — the live counter
+          // advanced across wall-clock time. A one-shot paste-render burst can't.
+          active = true;
+          return true;
+        }
+      }
+      return active;
     },
-    get active() { return isActive(); },
+    get active() { return active; },
   };
 }
 

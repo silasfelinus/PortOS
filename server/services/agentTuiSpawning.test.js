@@ -349,12 +349,14 @@ describe('spawnTuiAgent runtime', () => {
     await flushMicrotasks();
 
     // Feed PTY chunks AFTER the paste that prove the model is actually WORKING —
-    // the elapsed working counter ADVANCING through two distinct values. This
-    // sets lastOutputAt > promptSentAt AND trips the work-activity tracker, which
-    // the idle gate now requires before finalizing as success (issue #1229 — pure
-    // chrome churn, or a single echoed counter value, must NOT count; see the
-    // no-activity test below).
+    // the elapsed working counter ADVANCING through two distinct values SPACED
+    // ACROSS WALL-CLOCK TIME (≥750ms apart). This sets lastOutputAt > promptSentAt
+    // AND trips the work-activity tracker, which the idle gate now requires before
+    // finalizing as success (issue #1229 — pure chrome churn, a single counter
+    // value, or two counters arriving at once must NOT count; see the no-activity
+    // and echoed-transcript tests).
     await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
+    await vi.advanceTimersByTimeAsync(800);
     await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
 
     // Advance past DEFAULT_TUI_MIN_RUNTIME_MS (15 000ms) + idleTimeoutMs (50ms).
@@ -713,6 +715,7 @@ describe('spawnTuiAgent runtime', () => {
     await vi.advanceTimersByTimeAsync(2000);
     await flushMicrotasks();
     await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
+    await vi.advanceTimersByTimeAsync(800); // counter must tick across ≥750ms to count as work
     await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
     await vi.advanceTimersByTimeAsync(21000);
     vi.useRealTimers();

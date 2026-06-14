@@ -8,6 +8,7 @@ import {
   detectPasteMarker,
   WORK_COUNTER_PATTERN,
   MIN_WORK_COUNTER_SAMPLES,
+  MIN_WORK_COUNTER_SPAN_MS,
   extractWorkCounterSeconds,
   createWorkActivityTracker,
   PASTE_TO_ENTER_MIN_DELAY_MS,
@@ -125,38 +126,48 @@ describe('tuiHandshake — paste timing constants', () => {
     expect(extractWorkCounterSeconds('(4s · x')).toEqual([4]);
   });
 
-  it('createWorkActivityTracker activates only after the counter ADVANCES (echo-proof)', () => {
+  it('createWorkActivityTracker activates only when the counter ticks across real time (echo-proof)', () => {
     const tracker = createWorkActivityTracker();
     expect(tracker.active).toBe(false);
-    // Bare duration literals echoed from the prompt — even two distinct ones —
-    // must NOT activate (no bullet separator → not the TUI counter).
-    expect(tracker.observe('finish within (1s) and definitely under (2s)')).toBe(false);
+    // Bare duration literals echoed from the prompt — no bullet → not the counter.
+    expect(tracker.observe('finish within (1s) and definitely under (2s)', 0)).toBe(false);
+    // A single bulleted counter value must NOT activate (one sample).
+    expect(tracker.observe('(5s · thinking)', 1000)).toBe(false);
+    expect(tracker.observe('(5s · thinking)', 1100)).toBe(false);
     expect(tracker.active).toBe(false);
-    // A single bulleted counter value also must NOT activate (one sample).
-    expect(tracker.observe('(5s · thinking)')).toBe(false);
-    expect(tracker.observe('(5s · thinking)')).toBe(false);
-    expect(tracker.active).toBe(false);
-    // A second DISTINCT bulleted value — the live counter actually advanced.
-    expect(tracker.observe('(6s · thinking)')).toBe(true);
+    // A second DISTINCT bulleted value — and ≥750ms after the first — activates.
+    expect(tracker.observe('(6s · thinking)', 2000)).toBe(true);
     expect(tracker.active).toBe(true);
     // Stays active once tripped.
-    expect(tracker.observe('● high · /effort')).toBe(true);
+    expect(tracker.observe('● high · /effort', 3000)).toBe(true);
+  });
+
+  it('createWorkActivityTracker rejects an echoed transcript with two distinct counters arriving at once', () => {
+    // The #1229 round-3 review case: a task that pastes a TUI transcript can echo
+    // two distinct bulleted counters — but they all arrive in the same paste-render
+    // burst (same instant), so the time-span requirement keeps them from faking work.
+    const tracker = createWorkActivityTracker();
+    expect(tracker.observe('analyze this log: (1s · thinking) then (2s · thinking)', 5000)).toBe(false);
+    // Even repainted later as a whole (still the SAME two values, not new ones).
+    expect(tracker.observe('analyze this log: (1s · thinking) then (2s · thinking)', 9000)).toBe(false);
+    expect(tracker.active).toBe(false);
   });
 
   it('createWorkActivityTracker stays inactive on pure stuck/idle chrome', () => {
     const tracker = createWorkActivityTracker();
     // The exact chrome from the #1229 false-success transcript (no counter).
-    tracker.observe('⏵⏵ bypass permissions on (shift+tab to cycle)');
-    tracker.observe('● high · /effort');
-    tracker.observe('paste again to expand');
-    tracker.observe('Begin working on the task now.');
-    tracker.observe('Opus 4.8 │ agent-92ed2c56');
+    tracker.observe('⏵⏵ bypass permissions on (shift+tab to cycle)', 0);
+    tracker.observe('● high · /effort', 1000);
+    tracker.observe('paste again to expand', 2000);
+    tracker.observe('Begin working on the task now.', 3000);
+    tracker.observe('Opus 4.8 │ agent-92ed2c56', 4000);
     expect(tracker.active).toBe(false);
   });
 
   it('pins work-activity detection constants', () => {
     expect(WORK_COUNTER_PATTERN).toBeInstanceOf(RegExp);
     expect(MIN_WORK_COUNTER_SAMPLES).toBe(2);
+    expect(MIN_WORK_COUNTER_SPAN_MS).toBe(750);
   });
 
   it('pins provider-default constants', () => {

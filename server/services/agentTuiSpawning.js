@@ -537,12 +537,15 @@ export async function spawnTuiAgent({
       // — as this did before #1229 — left the marker unmatchable and the fast
       // path dead.
       if (postPasteBuffer !== null && stripped) postPasteBuffer += stripped;
+      const now = Date.now();
       // Once the prompt is submitted, watch for proof the model is actually
       // working. The TUI repaints chrome continuously even with an unsent prompt,
       // so we can't trust mere PTY activity — only the working counter advancing
-      // confirms the prompt left the input box. Gates idle-complete (issue #1229).
-      if (promptSentAt && stripped && !workActivity.active) workActivity.observe(stripped);
-      lastOutputAt = Date.now();
+      // across wall-clock time confirms the prompt left the input box (a paste-
+      // echoed counter, even from a pasted transcript, arrives all at once and is
+      // rejected by the time-span requirement). Gates idle-complete (issue #1229).
+      if (promptSentAt && stripped && !workActivity.active) workActivity.observe(stripped, now);
+      lastOutputAt = now;
       if (firstOutputAt === null) firstOutputAt = lastOutputAt;
 
       if (!hasStartedWorking) {
