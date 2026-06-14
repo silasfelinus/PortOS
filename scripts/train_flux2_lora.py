@@ -77,7 +77,8 @@ def parse_args():
     p.add_argument("--sample-prompt", default=None)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default="auto")
-    p.add_argument("--resume-from", default=None, help="checkpoint dir to load adapter weights from")
+    p.add_argument("--resume-from", default=None,
+                   help="checkpoint dir to resume from (restores adapter weights + AdamW optimizer state + step offset)")
     return p.parse_args()
 
 
@@ -113,13 +114,20 @@ def lora_target_modules(transformer) -> list:
     return sorted(found)
 
 
-def save_checkpoint(pipe_cls, transformer, out_dir: Path, step: int) -> Path:
+def save_checkpoint(pipe_cls, transformer, optimizer, out_dir: Path, step: int) -> Path:
+    """Persist BOTH the adapter weights AND the AdamW optimizer state for the
+    step, so `--resume-from` can continue mid-run (correct optimizer momentum +
+    a starting-step offset) instead of warm-starting the adapter into a fresh
+    `args.steps`-long loop — that would over-train and re-collide step numbers.
+    The optimizer tensors are saved on CPU; `load_state_dict` re-casts them onto
+    the (fp32, on-device) trainable params at resume."""
     from peft.utils import get_peft_model_state_dict
 
     ckpt_dir = out_dir / "checkpoints" / f"step-{step:06d}"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     state = get_peft_model_state_dict(transformer)
     pipe_cls.save_lora_weights(str(ckpt_dir), transformer_lora_layers=state)
+    torch.save({"optimizer": optimizer.state_dict(), "step": step}, ckpt_dir / "optimizer.pt")
     (ckpt_dir / "state.json").write_text(json.dumps({"step": step}))
     return ckpt_dir
 
@@ -256,12 +264,37 @@ def main():
         p.data = p.data.to(torch.float32)
     optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=0.01)
 
+    # Resume: restore the AdamW state + a starting-step offset so the loop
+    # continues toward the ORIGINAL total (range(start_step + 1, args.steps + 1))
+    # rather than running a fresh args.steps from the warm-started adapter. Falls
+    # back to the step recorded in state.json when an older checkpoint predates
+    # optimizer.pt — that at least keeps the step counter from renumber-colliding,
+    # even though momentum starts cold. (RNG state is intentionally not restored;
+    # the per-step noise/timestep sequence restarts from the seed, which is
+    # immaterial to training quality — the load-bearing fix is optimizer + step.)
+    start_step = 0
+    if args.resume_from:
+        resume_dir = Path(args.resume_from)
+        opt_file = resume_dir / "optimizer.pt"
+        if opt_file.exists():
+            ckpt = torch.load(opt_file, map_location="cpu")
+            optimizer.load_state_dict(ckpt["optimizer"])
+            start_step = int(ckpt.get("step", 0))
+            log(f"STATUS:resumed optimizer state — continuing from step {start_step}")
+        else:
+            state_file = resume_dir / "state.json"
+            if state_file.exists():
+                start_step = int(json.loads(state_file.read_text()).get("step", 0))
+            log(f"STATUS:no optimizer state in checkpoint — adapter warm-start only, from step {start_step}")
+        if start_step >= args.steps:
+            log(f"STATUS:resume point (step {start_step}) already at/past target {args.steps} — nothing to train")
+
     order = list(range(len(examples)))
     rng = torch.Generator().manual_seed(args.seed)
     final_loss = None
     last_checkpoint = None
 
-    for step in range(1, args.steps + 1):
+    for step in range(start_step + 1, args.steps + 1):
         if (step - 1) % len(order) == 0:
             order = torch.randperm(len(examples), generator=rng).tolist()
         ex = examples[order[(step - 1) % len(order)]]
@@ -295,13 +328,13 @@ def main():
         log(f"STEP:{step}:{args.steps}:{final_loss:.4f}")
 
         if STOP_REQUESTED:
-            ckpt = save_checkpoint(Flux2KleinPipeline, transformer, out_dir, step)
+            ckpt = save_checkpoint(Flux2KleinPipeline, transformer, optimizer, out_dir, step)
             log(f"CHECKPOINT:{ckpt}:{step}")
             log("STATUS:canceled-checkpoint-saved")
             os._exit(143)
 
         if args.checkpoint_every > 0 and step % args.checkpoint_every == 0 and step < args.steps:
-            ckpt = save_checkpoint(Flux2KleinPipeline, transformer, out_dir, step)
+            ckpt = save_checkpoint(Flux2KleinPipeline, transformer, optimizer, out_dir, step)
             last_checkpoint = ckpt
             log(f"CHECKPOINT:{ckpt}:{step}")
 
