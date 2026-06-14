@@ -15,12 +15,16 @@
  *   - headshotStyle       — art/photography direction for the headshot render
  *   - headshotImageUrl    — optional pointer to a generated/chosen headshot
  *
- * Authors are `db-primary` (PostgreSQL) but LOCAL-ONLY for now — they carry no
- * sync cursor/tombstone wire path. A federated series keeps its denormalized
- * `author` byline string so peers still render the cover correctly even when
- * the author record itself hasn't synced. See PLAN.md for the federation
- * follow-up.
+ * Authors are `db-primary` (PostgreSQL) and federate across peers via the
+ * per-record peer-sync push pipeline (`server/services/sharing/peerSync.js`,
+ * record kind `author`, sync category `authors`): a create auto-subscribes to
+ * every authors-enabled peer, every edit/delete pushes the LWW-merged record,
+ * and the referenced headshot image rides along as a pulled asset. A federated
+ * series still keeps its denormalized `author` byline string so peers render
+ * the cover correctly even before the author record itself has synced.
  */
+
+import { compareNewerWins } from '../../lib/lwwTimestamp.js';
 
 export const AUTHOR_ID_RE = /^auth-[A-Za-z0-9-]{1,64}$/;
 
@@ -63,6 +67,35 @@ export function sanitizeAuthor(raw) {
   };
 }
 
+/**
+ * Resolve an author's `headshotImageUrl` to the bare gallery-image filename
+ * that lives under `data/images/` — the unit the peer-sync asset pipeline can
+ * hash + transfer. Returns null when there's nothing local to ship:
+ *   - empty / non-string,
+ *   - an external URL (`http(s)://…`, `data:…`) — the receiver fetches that
+ *     itself; we don't proxy third-party bytes,
+ *   - a non-image path (e.g. `/data/videos/…`) — headshots are always images.
+ * A leading `/data/images/` mount prefix or a bare filename both reduce to the
+ * basename. Path-traversal scrubbing happens downstream in
+ * `sanitizeAssetFilename`; here we only decide IS-this-a-local-image + basename.
+ */
+export function headshotImageFilename(headshotImageUrl) {
+  if (!isStr(headshotImageUrl)) return null;
+  const url = headshotImageUrl.trim();
+  if (!url) return null;
+  if (/^(https?:|data:|blob:)/i.test(url)) return null;
+  // Only gallery images sync as assets. Accept the canonical mount path or a
+  // bare filename; reject any other absolute path (videos, image-refs, etc.).
+  let name = url;
+  const imagesPrefix = '/data/images/';
+  if (url.startsWith(imagesPrefix)) name = url.slice(imagesPrefix.length);
+  else if (url.startsWith('/')) return null; // some other absolute path → not a gallery image
+  // Strip any querystring/hash a stored URL might carry, then take the basename.
+  name = name.split(/[?#]/)[0];
+  const base = name.split('/').pop();
+  return base || null;
+}
+
 /** Build a fresh author record from create input. */
 export function buildAuthorRecord(input, { id, now }) {
   return sanitizeAuthor({
@@ -80,9 +113,38 @@ export function buildAuthorRecord(input, { id, now }) {
   });
 }
 
+// The user-authored scalar fields a partial patch may overwrite. This is also
+// the set the conflict journal tracks + the merge can restore — mirrored in
+// RESTORABLE_FIELDS.author (conflictJournal.js). `id`, the LWW/tombstone trio,
+// and `createdAt` are server-owned / structural, never patchable/restorable.
 const PATCHABLE = [
   'name', 'writingStyle', 'bio', 'physicalDescription', 'headshotStyle', 'headshotImageUrl',
 ];
+
+/**
+ * LWW merge decision for one incoming author record against the local copy.
+ *
+ *   - remote is sanitized here (drop-on-floor on a malformed payload → returns
+ *     `{ next: null }` so the caller skips it).
+ *   - No local counterpart → insert the remote verbatim (`inserted: true`).
+ *   - Both present → newer `updatedAt` wins via the shared `compareNewerWins`
+ *     (epoch-ms compare, unparseable-loses, tie → local). Tombstones ride the
+ *     same path: a deleted record with a newer `updatedAt` overwrites a live
+ *     local one, and vice-versa.
+ *
+ * Returns `{ next, inserted, remoteWins, changed }`. `changed` is false when the
+ * winning record is byte-identical to local (sanitized both sides → canonical
+ * key order → JSON compare is sufficient).
+ */
+export function mergeAuthorRecord(local, remoteRaw) {
+  const remote = sanitizeAuthor(remoteRaw);
+  if (!remote) return { next: null, inserted: false, remoteWins: false, changed: false };
+  if (!local) return { next: remote, inserted: true, remoteWins: true, changed: true };
+  const remoteWins = compareNewerWins(remote.updatedAt, local.updatedAt);
+  const next = remoteWins ? remote : local;
+  const changed = JSON.stringify(next) !== JSON.stringify(local);
+  return { next, inserted: false, remoteWins, changed };
+}
 
 /**
  * Apply a partial patch onto an existing record. Only keys PRESENT in `patch`

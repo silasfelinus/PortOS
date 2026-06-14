@@ -226,6 +226,7 @@ const DEFAULT_SYNC_CATEGORIES = {
   mediaCollections: false,
   videoHistory: false,
   storyBuilder: false,
+  authors: false,
   catalog: false
 };
 
