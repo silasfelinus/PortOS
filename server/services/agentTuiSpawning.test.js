@@ -348,10 +348,22 @@ describe('spawnTuiAgent runtime', () => {
     await vi.advanceTimersByTimeAsync(2000);
     await flushMicrotasks();
 
-    // Feed one PTY chunk AFTER the paste so lastOutputAt > promptSentAt
-    // (the idle gate's "we saw activity post-paste" signal — replaces the
-    // old per-line count now that line capture is dropped).
-    await capturedOnData(Buffer.from('Agent post-paste activity\n'));
+    // Advance past PASTE_TO_ENTER_FALLBACK_MS (3500ms) so the submit-Enter fires
+    // and promptSubmittedAt is set — work-activity is only observed AFTER submit
+    // (the prompt echo before that must not be scanned; issue #1229 review).
+    await vi.advanceTimersByTimeAsync(3600);
+    await flushMicrotasks();
+
+    // Feed PTY chunks AFTER submit that prove the model is actually WORKING — the
+    // elapsed working counter ADVANCING through two distinct values SPACED ACROSS
+    // WALL-CLOCK TIME (≥750ms apart). This sets lastOutputAt > promptSentAt AND
+    // trips the work-activity tracker, which the idle gate now requires before
+    // finalizing as success (issue #1229 — pure chrome churn, a single counter
+    // value, or two counters arriving at once must NOT count; see the no-activity
+    // and echoed-transcript tests).
+    await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
+    await vi.advanceTimersByTimeAsync(800);
+    await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
 
     // Advance past DEFAULT_TUI_MIN_RUNTIME_MS (15 000ms) + idleTimeoutMs (50ms).
     // The idle setInterval ticks every 5 000ms; at the >=15s tick the
@@ -362,6 +374,82 @@ describe('spawnTuiAgent runtime', () => {
     // finish() is called as fire-and-forget inside the interval callback;
     // switch to real timers and await our sentinel promise so the full async
     // chain (finalizeAgent → ...) drains completely.
+    vi.useRealTimers();
+    await completeDone;
+
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        success: true,
+        completionReason: 'idle-complete',
+      })
+    );
+  });
+
+  // ── 1a. Idle-out with NO work activity → failure (issue #1229) ───────────────
+  // The bug: when the prompt never submits, the TUI keeps repainting its banner /
+  // status line, so `lastOutputAt > promptSentAt` passes on pure chrome churn and
+  // the agent — which did ZERO work — was finalized as `success: idle-complete`.
+  // The fix gates idle-complete success on having seen a real work-activity
+  // signal (working counter / interrupt hint / "thinking"). With only chrome
+  // post-paste, idle must finalize as FAILURE with reason 'idle-no-activity'.
+  it('idle-no-activity: finalizes failure when idle fires but no work signal ever appeared (unsubmitted prompt)', async () => {
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    runSpawn();
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.from('Codex booting...\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+
+    // Post-paste output, but ONLY chrome that repaints with an unsent prompt —
+    // the input footer + effort indicator from the real #1229 stuck transcript.
+    // None of this advances the working counter, so the work-activity tracker
+    // stays inactive.
+    await capturedOnData(Buffer.from('⏵⏵ bypass permissions on (shift+tab to cycle)\n'));
+    await capturedOnData(Buffer.from('● high · /effort\n'));
+
+    await vi.advanceTimersByTimeAsync(21000);
+    vi.useRealTimers();
+    await completeDone;
+
+    expect(agentLifecycle.finalizeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        success: false,
+        completionReason: 'idle-no-activity',
+      })
+    );
+  });
+
+  // ── 1a-bis. Non-counter TUI provider keeps the permissive idle-complete ──────
+  // The work-counter signal only exists on Claude Code / Codex. On a provider
+  // that never renders it (Antigravity/Gemini), absence proves nothing — so a
+  // sentinel-less idle-out must stay SUCCESS (the original behavior), not be
+  // downgraded to failure. Regression guard for #1229 review (codex P2): gating
+  // idle-complete solely on a Claude/Codex screen pattern would falsely fail
+  // every sentinel-less completion on the other supported TUI providers.
+  it('idle-complete: a non-counter provider (gemini) stays success even with no work-counter signal', async () => {
+    let resolveComplete;
+    const completeDone = new Promise((r) => { resolveComplete = r; });
+    vi.mocked(agentLifecycle.finalizeAgent).mockImplementation(async () => { resolveComplete(); });
+
+    runSpawn({ tuiConfig: { command: 'gemini', args: [], commandLine: 'gemini', promptDelayMs: 100, idleTimeoutMs: 50 } });
+    await flushMicrotasks();
+
+    await capturedOnData(Buffer.from('Gemini booting...\n'));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(3600); // submit fires
+    await flushMicrotasks();
+    // Real work output, but NO `(Ns ·` counter (gemini doesn't render one).
+    await capturedOnData(Buffer.from('Editing src/foo.js …\n'));
+    await vi.advanceTimersByTimeAsync(21000);
     vi.useRealTimers();
     await completeDone;
 
@@ -661,12 +749,18 @@ describe('spawnTuiAgent runtime', () => {
     runSpawn();
     await flushMicrotasks();
 
-    // Drive the idle-complete success path (mirrors test 1).
+    // Drive the idle-complete success path (mirrors test 1) — the post-paste
+    // chunk must carry a work-activity signal so the idle gate finalizes as
+    // success (issue #1229).
     await capturedOnData(Buffer.from('Codex booting...\n'));
     await flushMicrotasks();
     await vi.advanceTimersByTimeAsync(2000);
     await flushMicrotasks();
-    await capturedOnData(Buffer.from('Agent post-paste activity\n'));
+    await vi.advanceTimersByTimeAsync(3600); // submit-Enter fires → promptSubmittedAt set
+    await flushMicrotasks();
+    await capturedOnData(Buffer.from('(1s · thinking with high effort)\n'));
+    await vi.advanceTimersByTimeAsync(800); // counter must tick across ≥750ms to count as work
+    await capturedOnData(Buffer.from('(2s · thinking with high effort)\n'));
     await vi.advanceTimersByTimeAsync(21000);
     vi.useRealTimers();
     await completeDone;
