@@ -99,14 +99,21 @@ describe('tuiHandshake — paste timing constants', () => {
     expect(detectPasteMarker('[Pasted text #1 +3 lines]')).toBe(true);
   });
 
-  it('extractWorkCounterSeconds parses the TUI elapsed working counter', () => {
+  it('extractWorkCounterSeconds parses the TUI bullet-suffixed working counter', () => {
     // Claude Code: `(1s · …`; Codex: `(57s • …`.
     expect(extractWorkCounterSeconds('(1s · thinking with high effort)')).toEqual([1]);
     expect(extractWorkCounterSeconds('(57s • esc to interrupt)')).toEqual([57]);
     expect(extractWorkCounterSeconds('(0s · Churning…)')).toEqual([0]);
-    // Multiple counters in one buffer (e.g. an accumulated screen).
-    expect(extractWorkCounterSeconds('(1s) … (2s) … (3s)')).toEqual([1, 2, 3]);
-    // No counter → empty; non-string → empty (guard).
+    // Multiple bulleted counters in one buffer (e.g. an accumulated screen).
+    expect(extractWorkCounterSeconds('(1s · a (2s • b (3s · c')).toEqual([1, 2, 3]);
+  });
+
+  it('extractWorkCounterSeconds ignores bare (Ns) durations in prose/logs (echo-proof)', () => {
+    // The #1229 review fix: a bare `(5s)` in a pasted prompt / log line must NOT
+    // count — only the TUI's bullet-suffixed status-line counter does. Without
+    // this, an echoed prompt containing duration literals could fake "work".
+    expect(extractWorkCounterSeconds('please respond within (5s) of receiving this')).toEqual([]);
+    expect(extractWorkCounterSeconds('[12:00:01] (3s) elapsed (4s) total')).toEqual([]);
     expect(extractWorkCounterSeconds('● high · /effort')).toEqual([]);
     expect(extractWorkCounterSeconds('')).toEqual([]);
     expect(extractWorkCounterSeconds(null)).toEqual([]);
@@ -114,20 +121,22 @@ describe('tuiHandshake — paste timing constants', () => {
 
   it('extractWorkCounterSeconds is stateless across calls (no lastIndex carryover)', () => {
     // A module-level /g regex would skip matches on the 2nd call; assert it doesn't.
-    expect(extractWorkCounterSeconds('(4s)')).toEqual([4]);
-    expect(extractWorkCounterSeconds('(4s)')).toEqual([4]);
+    expect(extractWorkCounterSeconds('(4s · x')).toEqual([4]);
+    expect(extractWorkCounterSeconds('(4s · x')).toEqual([4]);
   });
 
   it('createWorkActivityTracker activates only after the counter ADVANCES (echo-proof)', () => {
     const tracker = createWorkActivityTracker();
     expect(tracker.active).toBe(false);
-    // A single counter value — e.g. a literal `(5s` echoed from the prompt text —
-    // must NOT activate. This is the #1229 review fix: word/single-value matching
-    // could be tripped by the echoed prompt before submission.
-    expect(tracker.observe('please respond within (5s) of receiving this')).toBe(false);
-    expect(tracker.observe('still (5s) (5s) repainted chrome')).toBe(false);
+    // Bare duration literals echoed from the prompt — even two distinct ones —
+    // must NOT activate (no bullet separator → not the TUI counter).
+    expect(tracker.observe('finish within (1s) and definitely under (2s)')).toBe(false);
     expect(tracker.active).toBe(false);
-    // A second DISTINCT value — the live counter actually advanced — activates.
+    // A single bulleted counter value also must NOT activate (one sample).
+    expect(tracker.observe('(5s · thinking)')).toBe(false);
+    expect(tracker.observe('(5s · thinking)')).toBe(false);
+    expect(tracker.active).toBe(false);
+    // A second DISTINCT bulleted value — the live counter actually advanced.
     expect(tracker.observe('(6s · thinking)')).toBe(true);
     expect(tracker.active).toBe(true);
     // Stays active once tripped.

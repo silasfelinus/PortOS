@@ -67,23 +67,34 @@ export function detectPasteMarker(strippedText) {
 // We key on the TUI's elapsed-time WORKING COUNTER — `(1s · …` (Claude Code) /
 // `(57s • …` (Codex) — which renders only while a request is in flight and
 // INCREMENTS as the model works. This is the most model-agnostic signal (present
-// in both providers, absent on the stuck screen) AND it is echo-proof: the prompt
-// is echoed into the input box BEFORE submission, so word-matching `thinking` or
-// `esc to interrupt` could be tripped by a task description that merely contains
-// those words (flagged in review of #1229). A literal `(5s` in a prompt is a
-// single fixed value; the live counter passes through MANY distinct values, so we
-// require ≥ MIN_WORK_COUNTER_SAMPLES distinct second-counts before trusting it.
-// Verified against real transcripts: the working run cycled through ~29 counter
+// in both providers, absent on the stuck screen) AND the only one that's
+// echo-proof. The prompt is echoed into the input box BEFORE submission (and
+// `promptSentAt` is set when the paste starts, before Enter), so word-matching
+// `thinking`/`esc to interrupt` — or even a bare `(5s)` — could be tripped by a
+// task description that merely contains those tokens (both flagged in review of
+// #1229). Two defenses make the counter immune to the echo:
+//   1. We require the counter's trailing bullet separator (`· ` / `• `, U+00B7 /
+//      U+2022) — `(\d+s` alone matches log lines and durations in prose, but
+//      `(\d+s ·` is the TUI's specific status-line format and effectively never
+//      appears in a pasted prompt. (The bullet survives ANSI stripping intact —
+//      verified in real transcripts: `(1s · thinking…`.)
+//   2. We require ≥ MIN_WORK_COUNTER_SAMPLES DISTINCT second-counts — the live
+//      counter passes through many values; a static echoed literal is just one.
+// Verified against real transcripts: the working run cycled through many counter
 // values; the two confirmed stuck runs (`agent-92ed2c56`, `agent-30a3ab56`) had
-// none. Heuristic by nature, so it gates only the FALLBACK idle-complete path —
-// the authoritative success signal remains the `.agent-done` sentinel.
-export const WORK_COUNTER_PATTERN = /\(\s*(\d+)\s*s\b/g;
+// none. Heuristic by nature, so it gates only the FALLBACK idle-complete path on
+// the long-running agent path — the authoritative success signal remains the
+// `.agent-done` sentinel. (The one-shot runner is deliberately NOT gated: its
+// idle-complete legitimately captures inline output that may carry no counter,
+// and its authoritative path is the response file.)
+export const WORK_COUNTER_PATTERN = /\(\s*(\d+)\s*s\s*[·•]/g;
 export const MIN_WORK_COUNTER_SAMPLES = 2;
 
 /**
  * Extract every elapsed-second value from the TUI working counter in
- * `strippedText` (e.g. `(1s · …` → 1, `(57s • …` → 57). Callers MUST pass
- * ANSI-stripped output. Returns an array (possibly empty); non-string input
+ * `strippedText` (e.g. `(1s · …` → 1, `(57s • …` → 57). Matches only the TUI's
+ * bullet-suffixed status-line counter, not a bare `(5s)` in prose. Callers MUST
+ * pass ANSI-stripped output. Returns an array (possibly empty); non-string input
  * yields `[]`.
  *
  * @param {string} strippedText — ANSI-stripped output (a chunk or accumulator).
