@@ -16,7 +16,10 @@ import { randomUUID } from 'crypto';
 import { query, withTransaction } from '../../lib/db.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { mirrorTimestamp } from '../../lib/pgTimestamp.js';
-import { buildAuthorRecord, applyAuthorPatch } from './logic.js';
+import { buildAuthorRecord, applyAuthorPatch, mergeAuthorRecord } from './logic.js';
+import {
+  maybeJournalBeforeOverwrite, setSyncBaseHash, contentHashForRecord, flushBaseHashes, deleteSyncBaseHash,
+} from '../../lib/conflictJournal.js';
 
 function rowToAuthor(row) {
   return row ? row.data : null;
@@ -54,10 +57,19 @@ export async function listAuthors({ includeDeleted = false } = {}) {
   return rows.map(rowToAuthor);
 }
 
-export async function getAuthor(id) {
+export async function getAuthor(id, { includeDeleted = false } = {}) {
   const { rows } = await query(`SELECT data FROM authors WHERE id = $1`, [id]);
   const author = rowToAuthor(rows[0]);
-  return author && !author.deleted ? author : null;
+  if (!author) return null;
+  return includeDeleted || !author.deleted ? author : null;
+}
+
+/** Live author ids (or all when includeDeleted) — used by tombstone GC sweeps. */
+export async function listAuthorIds({ includeDeleted = false } = {}) {
+  const { rows } = includeDeleted
+    ? await query(`SELECT id FROM authors`)
+    : await query(`SELECT id FROM authors WHERE deleted = FALSE`);
+  return rows.map((r) => r.id);
 }
 
 export async function createAuthor(input) {
@@ -90,4 +102,71 @@ export async function deleteAuthor(id) {
     await persist(client.query.bind(client), next);
     return { id };
   });
+}
+
+/**
+ * Merge an incoming batch of author records from a peer (per-record push). Each
+ * record's read-modify-write runs inside `withTransaction` + `SELECT … FOR
+ * UPDATE` so a concurrent local edit can't lose to (or clobber) the merge. LWW
+ * on `updatedAt` (tombstone-aware) via the shared `mergeAuthorRecord` decision —
+ * identical to the file backend so the two can't drift. Seeds/advances the
+ * conflict-journal base hash like `mergeMediaCollectionsFromSync`, and journals
+ * the about-to-be-overwritten local version when remote wins (best-effort, never
+ * throws into the merge). Returns `{ applied, count }`.
+ */
+export async function mergeAuthorsFromSync(remoteAuthors, { source = { via: 'sync', peerId: null } } = {}) {
+  if (!Array.isArray(remoteAuthors)) return { applied: false, count: 0 };
+  let changed = 0;
+  for (const remote of remoteAuthors) {
+    const applied = await withTransaction(async (client) => {
+      const sel = await client.query(`SELECT data FROM authors WHERE id = $1 FOR UPDATE`, [remote?.id]);
+      const local = rowToAuthor(sel.rows[0]);
+      const { next, inserted, remoteWins, changed: didChange } = mergeAuthorRecord(local, remote);
+      if (!next) return false; // malformed remote → dropped
+      if (inserted) {
+        await persist(client.query.bind(client), next);
+        // No local counterpart to lose — seed the base hash so a FUTURE
+        // divergence on this author is detected.
+        await setSyncBaseHash('author', next.id, contentHashForRecord('author', next));
+        return true;
+      }
+      // local wins, OR remote won but is byte-identical to local (no divergence
+      // to journal and nothing to advance). Unlike mergeMediaCollectionsFromSync
+      // — which journals on every remoteWins because its item-union can still
+      // produce a no-op net write after a scalar overwrite — an author record is
+      // LWW-overwritten whole, so `remoteWins && !didChange` genuinely means the
+      // two sides already agree.
+      if (!remoteWins || !didChange) return false;
+      // Remote scalars are about to overwrite local's — journal the lost local
+      // version when BOTH sides diverged from the last synced base (best-effort).
+      await maybeJournalBeforeOverwrite({ kind: 'author', id: next.id, local, remote: next, source });
+      await persist(client.query.bind(client), next);
+      await setSyncBaseHash('author', next.id, contentHashForRecord('author', next));
+      return true;
+    });
+    if (applied) changed += 1;
+  }
+  // Persist the batched base-hash updates accumulated above in one write.
+  await flushBaseHashes();
+  if (changed === 0) return { applied: false, count: 0 };
+  return { applied: true, count: changed };
+}
+
+/**
+ * Hard-remove tombstoned authors whose deletedAt is older than the cutoff.
+ * Called by tombstoneGc once every subscribed peer has acked the deletion.
+ * Evicts each pruned author's conflict-journal base hash so the side store
+ * doesn't grow dead keys (mirrors pruneTombstonedCollections).
+ */
+export async function pruneTombstonedAuthors(olderThanMs) {
+  if (!Number.isFinite(olderThanMs)) return { pruned: 0 };
+  const cutoffIso = new Date(olderThanMs).toISOString();
+  const { rows } = await query(
+    `DELETE FROM authors
+     WHERE deleted = TRUE AND deleted_at IS NOT NULL AND deleted_at < $1
+     RETURNING id`,
+    [cutoffIso],
+  );
+  for (const r of rows) await deleteSyncBaseHash('author', r.id);
+  return { pruned: rows.length };
 }
