@@ -348,11 +348,12 @@ export async function saveManuscriptSection(seriesId, { issueId, stageId, output
 
 const MANUSCRIPT_FORMAT_LABEL = { prose: 'Prose', comicScript: 'Comic script', teleplay: 'Teleplay' };
 
-// Letters + digits only, lowercased — the "skeleton" a pure reformat preserves.
-// Reformatting only moves whitespace and re-attaches quotation marks, so the
-// letter/digit sequence is (near) identical before and after; comparing
-// skeletons is how we prove the model didn't rewrite the prose.
-const wordSkeleton = (s) => (typeof s === 'string' ? s.replace(/[^\p{L}\p{N}]+/gu, '').toLowerCase() : '');
+// Letters + digits only, CASE-PRESERVING — the "skeleton" a pure reformat
+// leaves identical. No reformat operation (reflow, de-hyphenation, drop-cap
+// rejoin, quote re-attachment) changes letter case, so we compare
+// case-sensitively: a case-only rewrite ("US" → "us", a de-capitalized name) is
+// a wording change and must be rejected too.
+const wordSkeleton = (s) => (typeof s === 'string' ? s.replace(/[^\p{L}\p{N}]+/gu, '') : '');
 
 // Reject any reformat that altered the actual wording. A pure reformat only
 // moves whitespace and quotation-mark/punctuation glyphs (all non-alphanumeric)

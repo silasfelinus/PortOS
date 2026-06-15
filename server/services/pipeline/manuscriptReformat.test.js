@@ -60,6 +60,12 @@ describe('reformatManuscriptText — integrity guard', () => {
       .rejects.toThrow(/changed the wording/i);
   });
 
+  it('rejects a case-only rewrite (the skeleton is case-sensitive)', async () => {
+    runStagedLLM.mockResolvedValue({ content: 'the us economy.', runId: 'r1' });
+    await expect(reformatManuscriptText('the US\neconomy.', { stageId: 'prose' }))
+      .rejects.toThrow(/changed the wording/i);
+  });
+
   it('rejects a dropped clause', async () => {
     const input = 'The pool hums softly. The nebula churns in slow motion outside the wide viewport.';
     runStagedLLM.mockResolvedValue({ content: 'The pool hums softly.', runId: 'r1' });
