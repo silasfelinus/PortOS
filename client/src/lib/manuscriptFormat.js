@@ -80,6 +80,33 @@ const reattachQuotes = (text) => text
   //   relationships. "  →  relationships."
   .replace(/([.!?])[ \t]+"(?=[ \t]*$)/gm, '$1"');
 
+// Drop a stray opening-quote fragment the source duplicated onto its own line
+// just before the real quoted line — a PDF/LLM export artifact:
+//   "I
+//   "I need a calibration partner …   →   "I need a calibration partner …
+// Only fires when the fragment is an INCOMPLETE opening (a `"` plus a few
+// non-terminal chars, no closing quote) AND the next line is either the exact
+// same fragment or begins with it followed by WHITESPACE — the same way a true
+// duplicate continues (`"I` → `"I need …`, a space after the prefix). Requiring
+// whitespace (not any non-word char) is what keeps two genuinely distinct
+// dialogue lines apart: `"Wait` before `"Wait, no — …` continues into a comma,
+// not a space, so it is left alone; so are "Yes. / "No. (terminal punctuation —
+// not a fragment) and "I / "Information (the prefix runs into a letter).
+const dropDuplicatedQuoteFragments = (text) => {
+  const lines = text.split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const cur = lines[i];
+    const next = lines[i + 1];
+    const isFragment = /^"[^".!?]{1,20}$/.test(cur);
+    const dupOfNext = next !== undefined && next.startsWith(cur)
+      && (next.length === cur.length || /\s/.test(next.charAt(cur.length)));
+    if (isFragment && dupOfNext) continue; // drop the duplicated fragment line
+    out.push(cur);
+  }
+  return out.join('\n');
+};
+
 // Collapse 3+ consecutive newlines to a single blank line, then trim the ends.
 const tidyBlankLines = (text) => text.replace(/\n{3,}/g, '\n\n').trim();
 
@@ -121,6 +148,7 @@ export function formatManuscript(text, stageId) {
   out = rejoinDropCaps(out);
   if (REFLOW_STAGES.has(stageId)) {
     out = reattachQuotes(out);
+    out = dropDuplicatedQuoteFragments(out);
     out = reflowProse(out);
   }
   out = tidyBlankLines(out);
