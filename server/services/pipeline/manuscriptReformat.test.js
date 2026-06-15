@@ -8,7 +8,7 @@ vi.mock('../../lib/stageRunner.js', () => ({
   resolveStageContext: vi.fn(async () => ({ contextWindow: 100000 })),
 }));
 
-import { reformatManuscriptText } from './manuscriptFix.js';
+import { reformatManuscriptText, reformatManuscriptStageText } from './manuscriptFix.js';
 import { runStagedLLM } from '../../lib/stageRunner.js';
 
 describe('reformatManuscriptText — integrity guard', () => {
@@ -40,36 +40,31 @@ describe('reformatManuscriptText — integrity guard', () => {
       .rejects.toThrow(/changed the wording/i);
   });
 
-  it('allows a tiny artifact deletion (a duplicated drop-cap fragment)', async () => {
-    runStagedLLM.mockResolvedValue({ content: '"I need a partner."', runId: 'r1' });
-    const r = await reformatManuscriptText('"I\n"I need a partner."', { stageId: 'prose' });
-    expect(r.text).toBe('"I need a partner."');
+  it('removes a duplicated quotation MARK (punctuation) — skeleton unchanged', async () => {
+    runStagedLLM.mockResolvedValue({ content: 'He said "hello" to her.', runId: 'r1' });
+    const r = await reformatManuscriptText('He said ""hello" to her.', { stageId: 'prose' });
+    expect(r.text).toBe('He said "hello" to her.');
   });
 
-  it('rejects a large deletion beyond the artifact budget', async () => {
+  it('rejects deleting a duplicated WORD fragment (exact skeleton required)', async () => {
+    // The export duplicated "I"; the guard forbids dropping the letter — the
+    // deterministic Format button owns that dedup, the AI pass changes no letter.
+    runStagedLLM.mockResolvedValue({ content: '"I need a partner."', runId: 'r1' });
+    await expect(reformatManuscriptText('"I\n"I need a partner."', { stageId: 'prose' }))
+      .rejects.toThrow(/changed the wording/i);
+  });
+
+  it('rejects dropping a short word that inverts meaning (do not go → do go)', async () => {
+    runStagedLLM.mockResolvedValue({ content: 'Please do go now.', runId: 'r1' });
+    await expect(reformatManuscriptText('Please do not\ngo now.', { stageId: 'prose' }))
+      .rejects.toThrow(/changed the wording/i);
+  });
+
+  it('rejects a dropped clause', async () => {
     const input = 'The pool hums softly. The nebula churns in slow motion outside the wide viewport.';
     runStagedLLM.mockResolvedValue({ content: 'The pool hums softly.', runId: 'r1' });
     await expect(reformatManuscriptText(input, { stageId: 'prose' }))
       .rejects.toThrow(/changed the wording/i);
-  });
-
-  it('rejects a dropped clause even on a long section (budget is a small absolute)', async () => {
-    // A long doc must not buy a bigger deletion budget — dropping "the passage"
-    // (10 skeleton chars > the 8-char total budget) is rejected regardless of size.
-    const filler = `${'word '.repeat(2000)}`;
-    const input = `Start of it. ${filler}and the passage ends here.`;
-    const output = `Start of it. ${filler}and ends here.`;
-    runStagedLLM.mockResolvedValue({ content: output, runId: 'r1' });
-    await expect(reformatManuscriptText(input, { stageId: 'prose' }))
-      .rejects.toThrow(/changed the wording/i);
-  });
-
-  it('accepts a few scattered single-char artifact deletions', async () => {
-    const input = 'A line.\n"I\n"I am here.\nAnother "A\n"A line follows.';
-    const output = 'A line.\n"I am here.\nAnother "A line follows.';
-    runStagedLLM.mockResolvedValue({ content: output, runId: 'r1' });
-    const r = await reformatManuscriptText(input, { stageId: 'prose' });
-    expect(r.text).toBe(output);
   });
 
   it('strips a stray code fence the model wrapped the output in', async () => {
@@ -98,5 +93,27 @@ describe('reformatManuscriptText — integrity guard', () => {
       expect.objectContaining({ format: 'Comic script', body: 'Panel 1. A wide shot.' }),
       expect.objectContaining({ providerOverride: 'p1', modelOverride: 'm1', returnsJson: false }),
     );
+  });
+});
+
+describe('reformatManuscriptStageText — endpoint wrapper', () => {
+  beforeEach(() => runStagedLLM.mockReset());
+
+  it('rejects a non-manuscript stage', async () => {
+    await expect(reformatManuscriptStageText('hi', { stageId: 'idea' }))
+      .rejects.toThrow(/not an editable manuscript stage/i);
+    expect(runStagedLLM).not.toHaveBeenCalled();
+  });
+
+  it('rejects empty content without calling the model', async () => {
+    await expect(reformatManuscriptStageText('   ', { stageId: 'prose' }))
+      .rejects.toThrow(/no drafted text/i);
+    expect(runStagedLLM).not.toHaveBeenCalled();
+  });
+
+  it('returns the computed result for a valid stage (no persistence)', async () => {
+    runStagedLLM.mockResolvedValue({ content: 'The dawn cycle hums.', runId: 'r1' });
+    const r = await reformatManuscriptStageText('The dawn cycle\nhums.', { stageId: 'prose' });
+    expect(r).toEqual({ text: 'The dawn cycle hums.', runId: 'r1', changed: true });
   });
 });

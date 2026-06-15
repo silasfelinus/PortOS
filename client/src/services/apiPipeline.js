@@ -489,14 +489,15 @@ export const savePipelineManuscriptSection = (seriesId, issueId, { stageId, outp
     ...options,
   });
 
-// AI reformat of one manuscript section — repairs paste artifacts (wrapping,
-// drop-caps, orphaned quotes) WITHOUT changing words, snapshotting the prior
-// text so it's revertible. Returns { section, changed }; a 400 means the model
-// altered the wording and nothing was saved (integrity guard).
-export const reformatPipelineManuscriptSection = (seriesId, issueId, { stageId, providerOverride, modelOverride } = {}, options = {}) =>
-  request(`/pipeline/series/${encodeURIComponent(seriesId)}/manuscript/sections/${encodeURIComponent(issueId)}/reformat`, {
+// AI reformat of manuscript text — repairs paste artifacts (wrapping, drop-caps,
+// orphaned quotes) WITHOUT changing words. Compute-only: returns the cleaned
+// `{ text, changed, runId }` and does NOT persist — the caller sends its live
+// content and owns the save (so unsaved edits aren't clobbered). A 400 means the
+// model altered the wording (integrity guard) and the text is unchanged.
+export const reformatPipelineManuscriptText = (seriesId, { stageId, content, providerOverride, modelOverride } = {}, options = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/manuscript/reformat`, {
     method: 'POST',
-    body: JSON.stringify({ stageId, providerOverride, modelOverride }),
+    body: JSON.stringify({ stageId, content, providerOverride, modelOverride }),
     ...options,
   });
 

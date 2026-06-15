@@ -354,34 +354,17 @@ const MANUSCRIPT_FORMAT_LABEL = { prose: 'Prose', comicScript: 'Comic script', t
 // skeletons is how we prove the model didn't rewrite the prose.
 const wordSkeleton = (s) => (typeof s === 'string' ? s.replace(/[^\p{L}\p{N}]+/gu, '').toLowerCase() : '');
 
-// Is `small` a subsequence of `big` (same order, gaps allowed)?
-const isSubsequence = (small, big) => {
-  let i = 0;
-  for (let j = 0; j < big.length && i < small.length; j += 1) {
-    if (small[i] === big[j]) i += 1;
-  }
-  return i === small.length;
-};
-
-// The most letter/digit chars a pure reformat may delete IN TOTAL. Reflow and
-// quote-reattachment delete none (skeleton is identical); the only legitimate
-// deletion is a handful of artifact glyphs — a duplicated drop-cap, a stray
-// mark. Kept a small ABSOLUTE bound (not proportional): for a subsequence the
-// net length drop IS the exact total deleted, so this alone rejects a dropped
-// clause/sentence (≥ this many chars) without any unreliable run analysis.
-const MAX_TOTAL_DELETION = 8;
-
-// Reject any reformat that altered the actual wording. The output must be the
-// input skeleton with at most MAX_TOTAL_DELETION characters DELETED, those
-// deletions forming a subsequence (no substitutions, no additions). Anything
-// else — a rewritten word, an inserted sentence, a dropped clause — fails and is
-// discarded so a caller never persists silently-rewritten prose.
+// Reject any reformat that altered the actual wording. A pure reformat only
+// moves whitespace and quotation-mark/punctuation glyphs (all non-alphanumeric)
+// and de-hyphenates across a wrap (the hyphen is non-alphanumeric too) — so the
+// letter/digit skeleton is IDENTICAL before and after. We require an exact
+// skeleton match: no substitution, no insertion, and no deletion of even a
+// short word (e.g. dropping "not" from "do not go" would slip past any
+// deletion budget yet invert the meaning). A duplicated word the export left in
+// place stays in place — the deterministic Format button handles that dedup;
+// the AI pass is held to "change not one letter".
 function assertWordsPreserved(before, after) {
-  const a = wordSkeleton(before);
-  const b = wordSkeleton(after);
-  if (a === b) return;
-  const shrink = a.length - b.length;
-  if (shrink >= 0 && shrink <= MAX_TOTAL_DELETION && isSubsequence(b, a)) return;
+  if (wordSkeleton(before) === wordSkeleton(after)) return;
   throw makeErr(
     'AI reformat changed the wording, so it was discarded and the text is unchanged. Try again or use the plain Format button.',
     ERR_VALIDATION,
@@ -420,23 +403,20 @@ export async function reformatManuscriptText(text, { stageId = 'prose', provider
 }
 
 /**
- * Reformat one manuscript section in place and persist it (snapshotting the
- * prior text into history so the change is revertible). No-op-safe: when the
- * model returns the text unchanged, the section is returned without a write.
+ * Compute-only reformat of a stage's worth of text for the editor endpoint —
+ * validates the stage and runs `reformatManuscriptText`, returning the cleaned
+ * text WITHOUT persisting. The client owns the save (so it can fold in unsaved
+ * edits and skip the write if the section changed during the call); the
+ * importer calls `reformatManuscriptText` directly.
  */
-export async function reformatManuscriptSection(seriesId, { issueId, stageId, providerOverride, modelOverride } = {}) {
+export async function reformatManuscriptStageText(text, { stageId, providerOverride, modelOverride } = {}) {
   if (!MANUSCRIPT_TYPES.includes(stageId)) {
     throw makeErr(`Not an editable manuscript stage: ${stageId}`, ERR_VALIDATION);
   }
-  const current = await loadStageText(issueId, stageId);
-  if (!current.trim()) throw makeErr('There is no drafted text to reformat', ERR_VALIDATION);
-  const { text, changed } = await reformatManuscriptText(current, { stageId, providerOverride, modelOverride });
-  if (!changed) {
-    const issue = await getIssue(issueId);
-    return { section: sectionFrom(issue, stageId, issue.stages?.[stageId]), changed: false };
+  if (!(typeof text === 'string' && text.trim())) {
+    throw makeErr('There is no drafted text to reformat', ERR_VALIDATION);
   }
-  const saved = await saveManuscriptSection(seriesId, { issueId, stageId, output: text });
-  return { ...saved, changed: true };
+  return reformatManuscriptText(text, { stageId, providerOverride, modelOverride });
 }
 
 /**

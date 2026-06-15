@@ -43,7 +43,12 @@ Return the SAME text with ONLY its formatting repaired:
 
 - DO NOT change, add, or remove any words. Preserve every letter and digit, all
   spelling, names, and the author's punctuation and voice EXACTLY. You are only
-  moving whitespace around and re-attaching quotation marks.
+  moving whitespace around and re-attaching quotation marks. (The output is
+  rejected automatically if its sequence of letters and digits differs at all
+  from the input.)
+- Even if a WORD looks duplicated, leave it exactly as it is — do not delete it.
+  You may drop a redundant quotation mark or a stray space (those are
+  punctuation, not words), but never a letter or a word.
 - DO NOT rewrite, rephrase, summarize, correct, translate, or "improve" anything.
 - If a passage looks garbled or a word seems missing, leave it exactly as it is —
   do not guess or fill it in.

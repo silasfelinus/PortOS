@@ -74,6 +74,7 @@ const manuscriptSectionSaveSchema = z.object({
 
 const manuscriptReformatSchema = z.object({
   stageId: z.enum(seriesSvc.MANUSCRIPT_TYPES),
+  content: z.string().max(issuesSvc.STAGE_OUTPUT_MAX),
   ...providerOverrideShape,
 });
 
@@ -192,14 +193,16 @@ router.put('/series/:id/manuscript/sections/:issueId', asyncHandler(async (req, 
   res.json(result);
 }));
 
-// AI reformat of one manuscript section — repair PDF/paste artifacts (wrapping,
-// split drop-caps, orphaned quotes) WITHOUT changing words. Snapshots the prior
-// text so it's revertible via the stage-restore route; an integrity guard in
-// the service discards (400s) any result that altered the wording.
-router.post('/series/:id/manuscript/sections/:issueId/reformat', asyncHandler(async (req, res) => {
+// AI reformat of manuscript text — repair PDF/paste artifacts (wrapping, split
+// drop-caps, orphaned quotes) WITHOUT changing words. Compute-only: it returns
+// the cleaned `{ text, changed }` and does NOT persist — the client sends its
+// live (possibly unsaved) content and owns the save, so unsaved edits aren't
+// clobbered and a mid-call edit can skip the write. An integrity guard in the
+// service discards (400s) any result that altered the wording.
+router.post('/series/:id/manuscript/reformat', asyncHandler(async (req, res) => {
   await seriesSvc.getSeries(req.params.id).catch((err) => { throw mapServiceError(err); });
-  const body = validateRequest(manuscriptReformatSchema, req.body ?? {});
-  const result = await manuscriptFix.reformatManuscriptSection(req.params.id, { issueId: req.params.issueId, ...body })
+  const { content, ...opts } = validateRequest(manuscriptReformatSchema, req.body ?? {});
+  const result = await manuscriptFix.reformatManuscriptStageText(content, opts)
     .catch((err) => { throw mapServiceError(err); });
   res.json(result);
 }));
