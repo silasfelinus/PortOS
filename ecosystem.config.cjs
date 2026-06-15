@@ -11,15 +11,31 @@ const BASE_ENV = {
   TZ: 'UTC'  // All log timestamps and Date operations in UTC
 };
 
-// Read PGMODE from .env to determine PostgreSQL port
+// Read a couple of machine-local settings from .env (pm2 doesn't auto-load it
+// here): PGMODE → PostgreSQL port; PORTOS_SERVER_MAX_MEMORY → the restart ceiling
+// below. An explicit process.env wins over the .env file so a one-off shell
+// override still works.
 const fs = require('fs');
 const envFile = path.join(__dirname, '.env');
 let pgMode = 'docker';
+let envMaxMemory = null;
 try {
   const envContent = fs.readFileSync(envFile, 'utf8');
   const modeMatch = envContent.match(/^PGMODE=(\w+)/m);
   if (modeMatch) pgMode = modeMatch[1];
+  const memMatch = envContent.match(/^PORTOS_SERVER_MAX_MEMORY=(\S+)/m);
+  if (memMatch) envMaxMemory = memMatch[1];
 } catch { /* no .env file — default to docker */ }
+
+// pm2 restarts portos-server when its RSS crosses this — originally a memory-leak
+// safety valve. The committed default stays modest so the guard still fires on a
+// small install (a fork on an 8 GB box), but it's overridable per-machine via
+// PORTOS_SERVER_MAX_MEMORY (.env or shell env; e.g. '32G' on a 128 GB
+// workstation) since a too-low ceiling causes spurious restarts that disrupt SSE
+// streams and long jobs. (Training is no longer collateral damage from these
+// restarts — it's spawned detached into its own process group — but fewer
+// restarts is still better.)
+const SERVER_MAX_MEMORY = process.env.PORTOS_SERVER_MAX_MEMORY || envMaxMemory || '4G';
 
 const PORTS = {
   API: 5555,           // Express API server (HTTPS when Tailscale cert is active)
@@ -75,7 +91,19 @@ module.exports = {
       // and add `'**/data/**'` (plus `'**/node_modules'`, `'**/logs/**'`,
       // `'**/.cache/**'`, `'**/portos-stepwise-*/**'`) to `ignore_watch`.
       watch: false,
-      max_memory_restart: '2G'
+      max_memory_restart: SERVER_MAX_MEMORY,
+      // treekill OFF: on restart/stop pm2's TreeKill walks the `ps -o pid,ppid`
+      // PARENT tree and SIGINTs every descendant — which killed multi-hour media
+      // jobs (LoRA training, video gen) that the server had spawned, at the exact
+      // second of a restart (e.g. the max_memory_restart ceiling). detached:true
+      // on those spawns is NOT enough — TreeKill keys on ppid, not process group.
+      // With treekill:false pm2 signals only the node process; its SIGTERM/SIGINT
+      // handler (server/index.js) shuts down gracefully, and the detached media
+      // children reparent to launchd/init and keep running (they're checkpointed
+      // + reconciled by the job queue on boot). kill_timeout below gives the
+      // graceful shutdown room to finish.
+      treekill: false,
+      kill_timeout: 10000
     },
     {
       name: 'portos-cos',
