@@ -683,6 +683,10 @@ app.use('/data/audio', express.static(PATHS.audio));
 // Background-music tracks (uploaded today, generated locally tomorrow). The
 // AudioStage music picker plays them inline via <audio src="/data/music/...">.
 app.use('/data/music', express.static(PATHS.music));
+// Extracted third-party import assets (ChatGPT export images/audio/PDFs). The
+// Brain Memory conversation viewer renders these inline (`![](/data/brain-
+// imports/...)`) and as asset links. Read-only; range support for large PDFs.
+app.use('/data/brain-imports', express.static(PATHS.brainImportAssets, ASSET_STATIC_OPTS));
 
 // Serve built client UI (production mode — no Vite dev server needed)
 const CLIENT_DIST = join(__dirname, '..', 'client', 'dist');

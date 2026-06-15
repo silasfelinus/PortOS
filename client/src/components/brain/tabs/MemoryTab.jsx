@@ -7,9 +7,12 @@ import {Plus,
   Save,
   CheckCircle2,
   Search,
-  AlertTriangle} from 'lucide-react';
+  AlertTriangle,
+  MessageSquareText} from 'lucide-react';
 import toast from '../../ui/Toast';
 import Banner from '../../ui/Banner';
+import MarkdownOutput from '../../cos/MarkdownOutput';
+import ConversationViewer from '../ConversationViewer';
 
 import {
   MEMORY_TABS,
@@ -32,6 +35,8 @@ export default function MemoryTab({ onRefresh }) {
   const [statusFilter, setStatusFilter] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [backendStatus, setBackendStatus] = useState(null);
+  // The chatgpt-import conversation currently open in the full-transcript viewer.
+  const [viewerRecord, setViewerRecord] = useState(null);
 
   const fetchRecords = useCallback(async () => {
     setLoading(true);
@@ -516,7 +521,22 @@ export default function MemoryTab({ onRefresh }) {
                     </span>
                   )}
                 </div>
-                {record.content && <p className="text-sm text-gray-400 mt-1 whitespace-pre-wrap">{record.content}</p>}
+                {record.content && (
+                  // Imported ChatGPT transcripts carry markdown (inline images,
+                  // asset links) — render them rich. Hand-written memories stay
+                  // plain pre-wrap text.
+                  record.source === 'chatgpt-import'
+                    ? <div className="text-sm text-gray-400 mt-1"><MarkdownOutput content={record.content} /></div>
+                    : <p className="text-sm text-gray-400 mt-1 whitespace-pre-wrap">{record.content}</p>
+                )}
+                {record.source === 'chatgpt-import' && record.sourceRef && (
+                  <button
+                    onClick={() => setViewerRecord(record)}
+                    className="mt-2 inline-flex items-center gap-1 text-xs text-port-accent hover:underline"
+                  >
+                    <MessageSquareText size={13} aria-hidden="true" /> View full conversation
+                  </button>
+                )}
                 {record.tags?.length > 0 && (
                   <div className="flex gap-1 mt-2 flex-wrap">
                     {record.tags.map((tag, i) => (
@@ -720,6 +740,10 @@ export default function MemoryTab({ onRefresh }) {
           </div>
         );
       })()}
+
+      {viewerRecord && (
+        <ConversationViewer record={viewerRecord} onClose={() => setViewerRecord(null)} />
+      )}
     </div>
   );
 }
