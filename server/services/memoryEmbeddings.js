@@ -355,10 +355,22 @@ export async function generateBatchEmbeddings(texts) {
 }
 
 /**
- * Generate embedding for memory content + metadata
- * Combines content with type/category/tags for richer semantic representation
+ * Generate embedding for memory content + metadata.
+ *
+ * Combines content with type/category/tags for a richer semantic vector. When
+ * the combined text fits the embedding model's context, it's embedded directly
+ * (the common case — no extra cost). When it OVERFLOWS the budget, plain
+ * truncation would drop everything past the first ~budget chars (for a long
+ * ChatGPT chat, most of it), so we first try to summarize the record to a
+ * embedding-sized gist via a larger-context local model (memorySummarizer) and
+ * embed THAT — the vector then represents the whole record. If summarization is
+ * unavailable or fails, we fall back to generateEmbedding's truncate+retry so
+ * the record still gets some embedding.
  */
-export async function generateMemoryEmbedding(memory) {
+export async function generateMemoryEmbedding(memory, sourceHints = {}) {
+  await initConfig();
+  const config = getConfig();
+
   const parts = [
     `Type: ${memory.type}`,
     `Category: ${memory.category || 'general'}`,
@@ -366,8 +378,32 @@ export async function generateMemoryEmbedding(memory) {
     memory.summary || '',
     memory.content
   ].filter(Boolean);
-
   const text = parts.join('\n');
+
+  // Within budget → embed as-is (no summarization call).
+  if (text.length <= embeddingCharBudget(config)) {
+    return generateEmbedding(text);
+  }
+
+  // Over budget → summarize to fit (lazy import avoids a startup cycle:
+  // memorySummarizer imports chatgptImport, which need not load at boot).
+  // `sourceHints` ({ source, sourceRef }) lets the summarizer pull the FULL
+  // archived transcript for an import record rather than the capped preview;
+  // it's passed separately because the memory payload has no such columns.
+  const { summarizeForEmbedding } = await import('./memorySummarizer.js');
+  const summary = await summarizeForEmbedding({ ...memory, ...sourceHints }, text).catch((err) => {
+    console.warn(`⚠️ Embedding summarization errored: ${err.message}`);
+    return null;
+  });
+  if (summary) {
+    // Keep the metadata header so summary vectors share the type/category/tags
+    // signal with directly-embedded ones.
+    const header = parts.slice(0, parts.length - 1).join('\n'); // everything except raw content
+    console.log(`🧠 Summarized over-budget memory before embedding (${text.length}→${summary.length} chars)`);
+    return generateEmbedding(`${header}\n${summary}`);
+  }
+
+  // Summarizer unavailable/failed — truncate+retry fallback.
   return generateEmbedding(text);
 }
 

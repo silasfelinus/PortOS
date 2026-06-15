@@ -184,8 +184,13 @@ export async function syncBrainRecord(brainType, record) {
   const key = bridgeKey(brainType, record.id);
   const existingMemoryId = map[key];
 
-  // Generate embedding
-  const embedding = await embeddings.generateMemoryEmbedding(memoryData).catch(() => null);
+  // Generate embedding. Pass the source hints (NOT persisted on memoryData —
+  // the memory schema has no such columns) so the embedder can summarize the
+  // FULL archived transcript for an over-budget chatgpt-import record rather
+  // than the already-capped content preview.
+  const embedding = await embeddings
+    .generateMemoryEmbedding(memoryData, { source: record.source, sourceRef: record.sourceRef })
+    .catch(() => null);
 
   if (existingMemoryId) {
     // Update existing memory. Force status:'active' so a record that was

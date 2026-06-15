@@ -3,9 +3,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // Mocks for the config sources memoryEmbeddings reads in initConfig().
 const getCosConfig = vi.fn();
 const getProviderById = vi.fn();
+const summarizeForEmbedding = vi.fn();
 
 vi.mock('./cos.js', () => ({ getConfig: getCosConfig }));
 vi.mock('./providers.js', () => ({ getProviderById }));
+// generateMemoryEmbedding dynamically imports this for over-budget records.
+vi.mock('./memorySummarizer.js', () => ({ summarizeForEmbedding }));
 // memoryBackend pulls in the DB; stub it to just the default config export.
 vi.mock('./memoryBackend.js', () => ({
   DEFAULT_MEMORY_CONFIG: {
@@ -213,5 +216,60 @@ describe('memoryEmbeddings — context-budget truncation + overflow retry', () =
 
     expect(out).toEqual([[0.1, 0.2, 0.3], [0.1, 0.2, 0.3]]);
     expect(embedCalls().length).toBe(3);
+  });
+});
+
+describe('generateMemoryEmbedding — summarize over-budget records', () => {
+  beforeEach(() => {
+    getCosConfig.mockResolvedValue({ embeddingProviderId: 'ollama', embeddingModel: 'nomic-embed-text' });
+    getProviderById.mockResolvedValue({ id: 'ollama', endpoint: 'http://localhost:11434/v1' });
+  });
+
+  const embedOk = () => {
+    const body = JSON.stringify({ data: [{ index: 0, embedding: [0.1, 0.2, 0.3] }] });
+    return { ok: true, json: async () => JSON.parse(body), text: async () => body };
+  };
+  const notLmStudio = () => Promise.resolve({ ok: false, status: 404, text: async () => '', json: async () => ({}) });
+  const wireFetch = () => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      if (String(url).includes('/api/v0/models')) return notLmStudio();
+      return Promise.resolve(embedOk());
+    });
+  };
+  const embedBody = () => JSON.parse(fetchSpy.mock.calls.find(c => String(c[0]).includes('/embeddings'))[1].body);
+
+  it('does NOT summarize a within-budget memory (embeds content directly)', async () => {
+    wireFetch();
+    await embeddings.generateMemoryEmbedding({ type: 'observation', content: 'a short note' });
+    expect(summarizeForEmbedding).not.toHaveBeenCalled();
+    expect(embedBody().input).toContain('a short note');
+  });
+
+  it('summarizes an over-budget memory and embeds the summary, not the raw content', async () => {
+    wireFetch();
+    summarizeForEmbedding.mockResolvedValue('TIGHT SUMMARY of the whole thing');
+    const huge = 'y'.repeat(40000); // well over the 5222-char budget
+
+    await embeddings.generateMemoryEmbedding({ type: 'observation', category: 'personal', content: huge });
+
+    expect(summarizeForEmbedding).toHaveBeenCalledTimes(1);
+    const input = embedBody().input;
+    expect(input).toContain('TIGHT SUMMARY of the whole thing');
+    expect(input).not.toContain('yyyyyyyyyy'); // raw content was replaced
+    // Metadata header is retained alongside the summary.
+    expect(input).toContain('Type: observation');
+  });
+
+  it('falls back to truncated content when summarization is unavailable', async () => {
+    wireFetch();
+    summarizeForEmbedding.mockResolvedValue(null); // summarizer down / no provider
+    const huge = 'z'.repeat(40000);
+
+    const emb = await embeddings.generateMemoryEmbedding({ type: 'observation', content: huge });
+
+    expect(emb).toEqual([0.1, 0.2, 0.3]);
+    // Embedded the (truncated) raw content, not a summary.
+    expect(embedBody().input).toContain('zzzz');
+    expect(embedBody().input.length).toBeLessThan(40000);
   });
 });
