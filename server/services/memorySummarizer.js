@@ -47,11 +47,21 @@ const clamp = (s, n) => (s.length > n ? s.slice(0, n) : s);
 async function resolveSummarizer() {
   const meta = await loadMeta().catch(() => null);
   const providerId = meta?.defaultProvider || 'ollama';
-  const provider = await getProviderById(providerId).catch(() => null)
-    || await getProviderById('ollama').catch(() => null);
+
+  // Try the Brain default provider first. `meta.defaultModel` belongs to THIS
+  // provider, so it's only valid when this lookup succeeds.
+  let provider = await getProviderById(providerId).catch(() => null);
+  if (provider) {
+    const model = meta?.defaultModel || provider.defaultModel || PREFERRED_MODEL;
+    return { provider, model };
+  }
+
+  // Default provider is stale/removed — fall back to ollama, but use ITS own
+  // model (NOT meta.defaultModel, which named a model on the missing provider
+  // and would likely 404 against ollama).
+  provider = await getProviderById('ollama').catch(() => null);
   if (!provider) return null;
-  const model = meta?.defaultModel || provider.defaultModel || PREFERRED_MODEL;
-  return { provider, model };
+  return { provider, model: provider.defaultModel || PREFERRED_MODEL };
 }
 
 /**

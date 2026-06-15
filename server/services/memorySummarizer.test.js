@@ -51,9 +51,11 @@ describe('memorySummarizer — summarizeForEmbedding', () => {
     expect(runPromptThroughProvider.mock.calls[0][0].prompt).toContain('the combined memory text');
   });
 
-  it('falls back to the ollama provider when the Brain default does not resolve', async () => {
-    loadMeta.mockResolvedValue({ defaultProvider: 'some-removed-provider', defaultModel: 'x' });
-    // First lookup (the brain default) misses; the ollama fallback resolves.
+  it('falls back to the ollama provider AND its own model when the Brain default does not resolve', async () => {
+    // meta.defaultModel names a model on the now-missing provider — it must NOT
+    // be sent to the ollama fallback (would 404). The fallback uses ollama's
+    // own defaultModel instead.
+    loadMeta.mockResolvedValue({ defaultProvider: 'some-removed-provider', defaultModel: 'model-on-missing-provider' });
     getProviderById.mockImplementation(async (id) =>
       id === 'ollama' ? { id: 'ollama', type: 'api', endpoint: 'http://localhost:11434/v1', defaultModel: 'gpt-oss:20b' } : null
     );
@@ -63,6 +65,10 @@ describe('memorySummarizer — summarizeForEmbedding', () => {
 
     expect(getProviderById).toHaveBeenCalledWith('ollama');
     expect(out).toBe('summary');
+    // The stale default-provider model must not leak into the fallback call.
+    const usedModel = runPromptThroughProvider.mock.calls[0][0].model;
+    expect(usedModel).toBe('gpt-oss:20b');
+    expect(usedModel).not.toBe('model-on-missing-provider');
   });
 
   it('returns null when no provider is configured (caller then truncates)', async () => {
