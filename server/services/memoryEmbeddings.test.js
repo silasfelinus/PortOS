@@ -32,23 +32,33 @@ afterEach(() => {
 
 // Build a fake `GET /v1/models` response. readResponseJson() reads the body via
 // `.text()` (it tolerates non-JSON), so the payload must be the JSON string.
-const mockModelsResponse = (ids) => {
-  const body = JSON.stringify({ data: ids.map((id) => ({ id })) });
+const okJson = (obj) => {
+  const body = JSON.stringify(obj);
   return { ok: true, json: async () => JSON.parse(body), text: async () => body };
+};
+const mockModelsResponse = (ids) => okJson({ data: ids.map((id) => ({ id })) });
+
+// An Ollama-style backend: serves /v1/models but 404s LM Studio's native
+// /api/v0/models capability probe. Route by URL so the probe is recognized as
+// "not LM Studio".
+const ollamaFetch = (v1ModelIds) => (url) => {
+  if (String(url).includes('/api/v0/models')) {
+    return Promise.resolve({ ok: false, status: 404, json: async () => ({}), text: async () => '' });
+  }
+  return Promise.resolve(mockModelsResponse(v1ModelIds));
 };
 
 describe('memoryEmbeddings — provider-aware config (Ollama vs LM Studio)', () => {
-  it('uses the configured model for a non-LM-Studio provider and reports modelPresent', async () => {
+  it('uses the configured model for a non-LM-Studio backend and reports modelPresent', async () => {
     getCosConfig.mockResolvedValue({ embeddingProviderId: 'ollama', embeddingModel: 'nomic-embed-text' });
     getProviderById.mockResolvedValue({ id: 'ollama', endpoint: 'http://localhost:11434/v1' });
-    // Ollama's /v1/models lists installed models tagged with :latest.
-    fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      mockModelsResponse(['nomic-embed-text:latest', 'llama3.2:latest'])
+    // /v1/models lists installed models tagged with :latest; /api/v0/models 404s.
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      ollamaFetch(['nomic-embed-text:latest', 'llama3.2:latest'])
     );
 
     const status = await embeddings.checkAvailability();
 
-    // Probed /v1/models on the OLLAMA endpoint, not LM Studio's :1234.
     expect(fetchSpy).toHaveBeenCalledWith(
       'http://localhost:11434/v1/models',
       expect.objectContaining({ method: 'GET' })
@@ -60,12 +70,10 @@ describe('memoryEmbeddings — provider-aware config (Ollama vs LM Studio)', () 
     expect(status.modelPresent).toBe(true);
   });
 
-  it('flags modelPresent:false when the configured model is not installed on the provider', async () => {
+  it('flags modelPresent:false when the configured model is not installed on the backend', async () => {
     getCosConfig.mockResolvedValue({ embeddingProviderId: 'ollama', embeddingModel: 'mxbai-embed-large' });
     getProviderById.mockResolvedValue({ id: 'ollama', endpoint: 'http://localhost:11434/v1' });
-    fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      mockModelsResponse(['nomic-embed-text:latest'])
-    );
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(ollamaFetch(['nomic-embed-text:latest']));
 
     const status = await embeddings.checkAvailability();
 
@@ -73,18 +81,43 @@ describe('memoryEmbeddings — provider-aware config (Ollama vs LM Studio)', () 
     expect(status.modelPresent).toBe(false);
   });
 
-  it('does NOT hit LM Studio model-load endpoints for a non-LM-Studio provider', async () => {
+  it('does NOT POST the LM Studio load endpoint for a non-LM-Studio backend', async () => {
     getCosConfig.mockResolvedValue({ embeddingProviderId: 'ollama', embeddingModel: 'nomic-embed-text' });
     getProviderById.mockResolvedValue({ id: 'ollama', endpoint: 'http://localhost:11434/v1' });
-    fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockModelsResponse(['nomic-embed-text:latest']));
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(ollamaFetch(['nomic-embed-text:latest']));
 
     await embeddings.checkAvailability();
 
-    // The LM-Studio-only discover/load dance (/api/v0/models, /api/v1/models/load)
-    // must never be called for Ollama.
-    const urls = fetchSpy.mock.calls.map((c) => c[0]);
-    expect(urls.some((u) => u.includes('/api/v0/models'))).toBe(false);
-    expect(urls.some((u) => u.includes('/api/v1/models/load'))).toBe(false);
+    // The native probe (/api/v0/models) may be attempted (it's how we DETECT
+    // non-LMS — it 404s), but the model-LOAD POST must never fire for Ollama.
+    const loadCalls = fetchSpy.mock.calls.filter((c) => String(c[0]).includes('/api/v1/models/load'));
+    expect(loadCalls.length).toBe(0);
+  });
+
+  it('detects LM Studio by capability even under a renamed provider id, and only greens when a model is loaded', async () => {
+    // Provider id is NOT "lmstudio" — but the endpoint serves the native API.
+    getCosConfig.mockResolvedValue({ embeddingProviderId: 'my-local-lms', embeddingModel: '' });
+    getProviderById.mockResolvedValue({ id: 'my-local-lms', endpoint: 'http://localhost:1234/v1' });
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      if (String(url).includes('/api/v0/models')) {
+        // LM Studio native API: a downloaded-but-NOT-loaded embedding model.
+        return Promise.resolve(okJson({ data: [{ id: 'nomic-embed-v1.5', type: 'embeddings', state: 'not-loaded' }] }));
+      }
+      if (String(url).includes('/api/v1/models/load')) {
+        return Promise.resolve({ ok: true, json: async () => ({}), text: async () => '' });
+      }
+      return Promise.resolve(mockModelsResponse(['some-chat-model'])); // /v1/models
+    });
+
+    const status = await embeddings.checkAvailability();
+
+    expect(status.available).toBe(true);
+    // It recognized LM Studio (renamed id) and ran the load dance.
+    const loadCalls = fetchSpy.mock.calls.filter((c) => String(c[0]).includes('/api/v1/models/load'));
+    expect(loadCalls.length).toBe(1);
+    // After a successful load, modelPresent is true and the model id is set.
+    expect(status.modelPresent).toBe(true);
+    expect(status.embeddingModel).toContain('nomic-embed');
   });
 
   it('reports unreachable when the embedding backend GET fails', async () => {

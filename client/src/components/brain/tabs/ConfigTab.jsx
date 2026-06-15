@@ -293,9 +293,12 @@ export default function ConfigTab({ onRefresh }) {
           <h3 className="text-md font-semibold text-white">Embeddings (semantic search)</h3>
         </div>
 
-        {/* Live backend status */}
+        {/* Live backend status. Green requires a positive model-present signal
+            (the backend always returns modelPresent now) — a reachable backend
+            with no usable embedding model is a warning, not success, because
+            embedding calls would silently return null. */}
         {embeddingStatus && (
-          embeddingStatus.available && embeddingStatus.modelPresent !== false ? (
+          embeddingStatus.available && embeddingStatus.modelPresent === true ? (
             <div className="flex items-center gap-2 text-xs text-port-success">
               <CheckCircle size={14} />
               <span>Reachable — model <span className="font-mono">{embeddingStatus.embeddingModel || '—'}</span></span>
@@ -305,7 +308,7 @@ export default function ConfigTab({ onRefresh }) {
               <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
               <span>
                 {embeddingStatus.available
-                  ? `Backend reachable but model "${embeddingModel}" isn't available there — pick an installed model (e.g. nomic-embed-text on Ollama).`
+                  ? `Backend reachable but no usable embedding model ("${embeddingStatus.embeddingModel || embeddingModel}") — pick/install one (e.g. nomic-embed-text on Ollama) before reprocessing.`
                   : `Embedding backend unreachable: ${embeddingStatus.error || 'unknown error'}`}
               </span>
             </div>
