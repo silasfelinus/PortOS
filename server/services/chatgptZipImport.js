@@ -99,7 +99,7 @@ const collect = (entry, max) => new Promise((resolve, reject) => {
  *     conversationFiles: Array<parsed JSON>,   // each conversations*.json
  *     assets: Map<assetId, { url, name, mime, file }>,
  *     assetNameMap: Record<datFilename, friendlyName>,
- *     stats: { assetCount, conversationFileCount, skippedAssets }
+ *     stats: { assetCount, conversationFileCount }
  *   }
  *
  * Assets are written to `data/brain/imports/assets/<assetId><ext>` and surfaced
