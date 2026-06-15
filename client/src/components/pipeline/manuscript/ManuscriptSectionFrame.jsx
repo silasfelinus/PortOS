@@ -55,6 +55,13 @@ export default function ManuscriptSectionFrame({ section, saveState, onRevert, o
           {onFormat ? (
             <button
               type="button"
+              // Don't steal focus from an active section textarea: a plain click
+              // would blur it first, firing onBlurSave with the PRE-format text,
+              // and that save can land after the format save (HTTP order isn't
+              // guaranteed), persisting stale content. Preventing the blur means
+              // only the format save runs — and the controlled textarea has
+              // already written every keystroke to state, so no edits are lost.
+              onMouseDown={(e) => e.preventDefault()}
               onClick={format}
               disabled={formatting}
               className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] border border-port-border text-gray-300 hover:text-white hover:border-port-accent/40 disabled:opacity-40"
