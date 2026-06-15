@@ -13,6 +13,7 @@ let parseExport;
 let importConversations;
 let extractMessages;
 let formatTranscript;
+let readArchivedConversation;
 
 describe('chatgptImport service', () => {
   beforeEach(async () => {
@@ -31,6 +32,7 @@ describe('chatgptImport service', () => {
     importConversations = mod.importConversations;
     extractMessages = mod.extractMessages;
     formatTranscript = mod.formatTranscript;
+    readArchivedConversation = mod.readArchivedConversation;
     const storage = await import('./brainStorage.js');
     createMemoryEntryMock = storage.createMemoryEntry;
   });
@@ -237,6 +239,30 @@ describe('chatgptImport service', () => {
       expect(transcript).toContain('**You**');
       expect(transcript).toContain('**ChatGPT**');
       expect(transcript).toContain('What is 2+2?');
+    });
+  });
+
+  describe('readArchivedConversation', () => {
+    it('reads a legitimately-named archive file', async () => {
+      // importConversations writes the archive as `${safeFilename(id)}.json`.
+      await importConversations(parseExport([sampleConversation()]));
+      const archived = await readArchivedConversation('conv-1.json');
+      expect(archived).not.toBeNull();
+      expect(archived.transcript).toContain('What is 2+2?');
+    });
+
+    it('rejects path-traversal / non-flat names without reading outside the archive dir', async () => {
+      // The guard regex is the only thing standing between req.params.name and
+      // an arbitrary-file read — a future weakening (adding `.` or `/` to the
+      // class) must fail this test, not silently traverse.
+      for (const evil of ['../../etc/passwd', 'a/b.json', '..%2fx.json', '/etc/passwd', 'x.json.bak', 'x.txt', '']) {
+        // eslint-disable-next-line no-await-in-loop
+        expect(await readArchivedConversation(evil)).toBeNull();
+      }
+    });
+
+    it('returns null for a well-formed name with no matching file', async () => {
+      expect(await readArchivedConversation('does-not-exist.json')).toBeNull();
     });
   });
 });
