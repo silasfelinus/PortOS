@@ -137,7 +137,10 @@ def _install_lora_patches(specs: list[tuple[str, float]]):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(add_help=False)
+    # allow_abbrev=False so a future generate_av flag that prefix-matches
+    # `--user-loras` (e.g. `--user-...`) can't be greedily swallowed here — only
+    # the exact token is consumed; everything else passes through verbatim.
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--user-loras", default=None)
     ns, passthrough = parser.parse_known_args()
 

@@ -752,7 +752,11 @@ export default function VideoGen() {
   const installedVideoLoras = availableLoras.filter(
     (l) => (l.loraCompatKey || l.runnerFamily) === VIDEO_LORA_FAMILIES.LTX_VIDEO,
   );
+  // Gated on the quantized-mlx_video case specifically (runtime mlx_video +
+  // loraFamily null = a quantized LTX-2.x model) so the hint copy's "quantized
+  // runtime isn't supported yet" wording always matches what triggered it.
   const showLtxLoraUnsupportedHint = !loraFamily && installedVideoLoras.length > 0
+    && currentModel?.runtime === 'mlx_video'
     && /ltx-?2/i.test(`${currentModel?.id || ''} ${currentModel?.repo || ''} ${currentModel?.name || ''}`);
 
   // Multi-keyframe availability + validation. Keyframes are an ltx2-runtime

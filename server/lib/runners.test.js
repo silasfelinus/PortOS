@@ -77,6 +77,11 @@ describe('VIDEO_LORA_FAMILIES / videoLoraFamily', () => {
     // not capable: quantized (q4/q8 marker bounded so it doesn't match mid-token)
     expect(isMlxVideoLtxLoraCapable({ runtime: 'mlx_video', name: 'LTX-2.3 Distilled Q4 (~22 GB)' })).toBe(false);
     expect(isMlxVideoLtxLoraCapable({ runtime: 'mlx_video', repo: 'notapalindrome/ltx23-mlx-av-q8' })).toBe(false);
+    // not capable: undelimited quant suffix (community quant naming) — q4bit/q8gguf
+    expect(isMlxVideoLtxLoraCapable({ runtime: 'mlx_video', repo: 'someone/ltx2.3-q4bit' })).toBe(false);
+    expect(isMlxVideoLtxLoraCapable({ runtime: 'mlx_video', name: 'LTX-2.3 q8gguf' })).toBe(false);
+    // still capable: a digit-suffixed non-quant token must NOT trip the q-marker (e.g. q40 is not q4)
+    expect(isMlxVideoLtxLoraCapable({ runtime: 'mlx_video', name: 'LTX-2.3 build q40' })).toBe(true);
     // not capable: wrong runtime
     expect(isMlxVideoLtxLoraCapable({ runtime: 'ltx2', name: 'LTX-2.3 dgrauet Q4' })).toBe(false);
     // not capable: the Windows LTX-Video 0.9.5 model (no LTX-2.x marker)

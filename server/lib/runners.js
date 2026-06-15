@@ -46,10 +46,12 @@ export const VIDEO_LORA_FAMILIES = Object.freeze({
 const VIDEO_LORA_FAMILY_SET = new Set(Object.values(VIDEO_LORA_FAMILIES));
 export const isVideoLoraFamily = (family) => VIDEO_LORA_FAMILY_SET.has(family);
 
-// A LoRA-quantization marker (`q4` / `q8`) in a model's id/repo/name, bounded
-// so it doesn't match inside unrelated tokens. Used to scope mlx_video LoRA
-// fusion to the bf16 unified models (see isMlxVideoLtxLoraCapable).
-const QUANTIZED_LTX_RE = /(?:^|[-_/\s])q(?:4|8)(?:[-_./\s]|$)/i;
+// A LoRA-quantization marker (`q4` / `q8`) in a model's id/repo/name. Anchored
+// on a leading boundary (so it doesn't match inside `seq4uence`) and a trailing
+// non-digit lookahead, which catches both delimited (`-q4`, `q8_0`) AND suffixed
+// (`q4bit`, `q8gguf`) forms while not matching `q40`. Used to scope mlx_video
+// LoRA fusion to the bf16 unified models (see isMlxVideoLtxLoraCapable).
+const QUANTIZED_LTX_RE = /(?:^|[-_/\s])q(?:4|8)(?![0-9])/i;
 
 // True when an mlx_video-runtime model is an LTX-2.x model whose LoRAs PortOS
 // can fuse. notapalindrome's `mlx_video.generate_av` CLI has no `--lora` flag,

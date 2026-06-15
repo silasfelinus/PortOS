@@ -602,13 +602,17 @@ const buildArgs = ({ pythonPath, modelId, model, prompt, negativePrompt, width, 
   }
   const hasLoras = Array.isArray(loras) && loras.length > 0;
   // Defense-in-depth: LoRAs fuse only on ltx2 (handled above) or a non-quantized
-  // LTX-2.x mlx_video model (the wrapper below). The route already rejects other
-  // runtimes, but a non-route caller (test, queue replay) could reach here —
-  // fail clearly rather than silently dropping the LoRAs and producing a base
-  // render the user thinks is LoRA-styled.
-  if (hasLoras && !isMlxVideoLtxLoraCapable(model)) {
+  // LTX-2.x mlx_video model (the wrapper below), and the wrapper path is
+  // macOS/mlx-only. The route already rejects other runtimes, but a non-route
+  // caller (test, queue replay) — or a Windows install with a hand-edited/synced
+  // mlx_video LTX-2.x entry — could reach here. Fail clearly rather than fall
+  // through to the IS_WIN generate_win.py branch below, which would silently drop
+  // the LoRAs and produce a base render the user thinks is LoRA-styled.
+  if (hasLoras && (!isMlxVideoLtxLoraCapable(model) || IS_WIN)) {
     throw new ServerError(
-      `LoRAs aren't supported on this model. Model "${modelId}" runs on "${model.runtime || 'mlx_video'}".`,
+      IS_WIN
+        ? `LoRA fusion runs through the macOS-only mlx_video path; model "${modelId}" can't fuse LoRAs on Windows.`
+        : `LoRAs aren't supported on this model. Model "${modelId}" runs on "${model.runtime || 'mlx_video'}".`,
       { status: 400, code: 'LORAS_REQUIRE_LTX2' },
     );
   }

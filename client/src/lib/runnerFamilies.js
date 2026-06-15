@@ -26,9 +26,10 @@ export const VIDEO_LORA_FAMILIES = Object.freeze({
 const VIDEO_LORA_FAMILY_SET = new Set(Object.values(VIDEO_LORA_FAMILIES));
 export const isVideoLoraFamily = (family) => VIDEO_LORA_FAMILY_SET.has(family);
 
-// A LoRA-quantization marker (`q4` / `q8`) in a model's id/repo/name, bounded
-// so it doesn't match inside unrelated tokens. Mirror of server/lib/runners.js.
-const QUANTIZED_LTX_RE = /(?:^|[-_/\s])q(?:4|8)(?:[-_./\s]|$)/i;
+// A LoRA-quantization marker (`q4` / `q8`) in a model's id/repo/name. Leading
+// boundary + trailing non-digit lookahead catches delimited (`-q4`, `q8_0`) and
+// suffixed (`q4bit`) forms while not matching `q40`. Mirror of server/lib/runners.js.
+const QUANTIZED_LTX_RE = /(?:^|[-_/\s])q(?:4|8)(?![0-9])/i;
 
 // True when an mlx_video-runtime model is a non-quantized LTX-2.x model whose
 // LoRAs PortOS can fuse offline (scripts/generate_av_lora.py merges the deltas
