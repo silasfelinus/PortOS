@@ -100,6 +100,49 @@ describe('chatgptImport service', () => {
       const messages = extractMessages(conv);
       expect(messages[0].text).toContain('[image]');
     });
+
+    it('inlines image/audio assets as markdown when an assetResolver is supplied', () => {
+      const conv = sampleConversation();
+      conv.mapping.n1.message.content.parts = [
+        'See:',
+        { content_type: 'image_asset_pointer', asset_pointer: 'file-service://file-IMG' },
+        { content_type: 'audio_asset_pointer', asset_pointer: 'sediment://file_SND' },
+      ];
+      const assetResolver = (ptr) => {
+        const id = String(ptr).replace(/^file-service:\/\/|^sediment:\/\//, '');
+        if (id === 'file-IMG') return { url: '/data/brain-imports/file-IMG.png', name: 'pic.png', mime: 'image/png' };
+        if (id === 'file_SND') return { url: '/data/brain-imports/file_SND.wav', name: 'clip.wav', mime: 'audio/wav' };
+        return null;
+      };
+      const messages = extractMessages(conv, { assetResolver });
+      expect(messages[0].text).toContain('![pic.png](/data/brain-imports/file-IMG.png)');
+      expect(messages[0].text).toContain('[🔊 clip.wav](/data/brain-imports/file_SND.wav)');
+      expect(messages[0].text).not.toContain('[image]');
+    });
+
+    it('renders message attachments (PDFs/docs) as a link footer, deduped against inlined images', () => {
+      const conv = sampleConversation();
+      conv.mapping.n1.message.content.parts = [
+        { content_type: 'image_asset_pointer', asset_pointer: 'file-service://file-IMG' },
+      ];
+      conv.mapping.n1.message.metadata = {
+        attachments: [
+          { id: 'file-IMG', name: 'pic.png', mime_type: 'image/png' }, // already inlined → skipped
+          { id: 'file-DOC', name: 'report.pdf', mime_type: 'application/pdf' },
+        ],
+      };
+      const assetResolver = (ptr) => {
+        const id = String(ptr).replace(/^file-service:\/\//, '');
+        if (id === 'file-IMG') return { url: '/data/brain-imports/file-IMG.png', name: 'pic.png', mime: 'image/png' };
+        if (id === 'file-DOC') return { url: '/data/brain-imports/file-DOC.pdf', name: 'report.pdf', mime: 'application/pdf' };
+        return null;
+      };
+      const messages = extractMessages(conv, { assetResolver });
+      // image inlined once, pdf in the footer, no duplicate image link
+      expect(messages[0].text).toContain('![pic.png](/data/brain-imports/file-IMG.png)');
+      expect(messages[0].text).toContain('[📎 report.pdf](/data/brain-imports/file-DOC.pdf)');
+      expect((messages[0].text.match(/file-IMG\.png/g) || []).length).toBe(1);
+    });
   });
 
   describe('parseExport', () => {
@@ -121,6 +164,17 @@ describe('chatgptImport service', () => {
       expect(parseExport('not json').ok).toBe(false);
       expect(parseExport({ random: 'thing' }).ok).toBe(false);
       expect(parseExport([]).ok).toBe(false);
+    });
+
+    it('flattens a multi-file export (conversationFiles: array of shards)', () => {
+      const result = parseExport({
+        conversationFiles: [
+          [sampleConversation({ id: 'a' })],
+          { conversations: [sampleConversation({ id: 'b' }), sampleConversation({ id: 'c' })] },
+        ],
+      });
+      expect(result.ok).toBe(true);
+      expect(result.summary.totalConversations).toBe(3);
     });
   });
 

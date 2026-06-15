@@ -93,6 +93,14 @@ export const PATHS = {
   // `audio/` so the user can browse + reuse a track across issues without
   // walking through the VO-line filenames.
   music: join(__lib_dirname, '../../data/music'),
+  // Extracted assets from third-party imports (ChatGPT export images/audio/
+  // PDFs). Served read-only at `/data/brain-imports/...` so the Memory
+  // conversation viewer can render inline `![](url)` images and asset links.
+  // Flat per-source dir keyed by the asset's globally-unique id, so the same
+  // asset referenced from multiple conversations is stored once. The transcript
+  // archive JSON lives one level up (data/brain/imports/<source>/) and is NOT
+  // served — only this assets subtree is.
+  brainImportAssets: join(__lib_dirname, '../../data/brain/imports/assets'),
   slashdo: join(__lib_dirname, '../../lib/slashdo')
 };
 
