@@ -130,7 +130,7 @@ export async function getDataset(id) {
  * can't drift between the two write paths. Returns `{ subject, snapshot }`
  * (the live canon entry plus the persisted shape).
  */
-export async function resolveDatasetSubjectSnapshot(universeId, entryId, entryKind = 'characters') {
+async function resolveDatasetSubjectSnapshot(universeId, entryId, entryKind = 'characters') {
   const normalizedKind = normalizeEntryKind(entryKind);
   const universe = await getUniverse(universeId);
   const subjects = Array.isArray(universe[normalizedKind]) ? universe[normalizedKind] : [];
