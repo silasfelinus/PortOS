@@ -73,41 +73,53 @@ def _parse_user_loras(raw: str | None) -> list[tuple[str, float]]:
     return specs
 
 
-def _fuse(weights: dict, module_to_loras: dict) -> dict:
-    """Merge LoRA deltas into a transformer weights dict (bf16, no quantization).
+def _fuse(weights: dict, specs: list[tuple[str, float]]) -> dict:
+    """Merge each selected LoRA's deltas into the transformer weights (bf16, no
+    quantization), validating that EVERY LoRA matched at least one module.
 
     apply_loras_to_weights normalizes the LoRA keys to LTX model keys
     (_normalize_ltx_lora_key) and returns a NEW dict with the merged weights;
     unchanged keys keep their original array identity, which is how we count how
-    many modules actually matched. Zero matches means the LoRA is incompatible
-    with this model — fail loudly rather than render a base video mislabeled as
-    LoRA-styled.
+    many modules each LoRA actually matched.
+
+    LoRAs are applied ONE AT A TIME rather than as a single combined map. The
+    result is numerically identical (each LoRA contributes an additive delta to
+    the base weight, so `(W+Δa)+Δb == W+Δa+Δb`), but per-LoRA application lets us
+    attribute matches to the specific LoRA. A combined apply would only tell us
+    that *some* module changed across the whole set — so a multi-LoRA selection
+    where one LoRA is incompatible (zero matching keys) would silently skip it
+    while the render is still recorded as using it. Failing per-LoRA keeps the
+    history honest: if any selected LoRA matches nothing, refuse the render.
     """
+    from mlx_video.lora.types import LoRAConfig
+    from mlx_video.lora.loader import load_multiple_loras
     from mlx_video.lora.apply import apply_loras_to_weights
 
-    merged = apply_loras_to_weights(weights, module_to_loras, quantization_bits=0)
-    applied = sum(1 for k in merged if k in weights and merged[k] is not weights[k])
-    if applied == 0:
-        raise SystemExit(
-            "No LoRA modules matched the transformer weights — the LoRA is "
-            "incompatible with this model (key mismatch). Refusing to render a "
-            "base video mislabeled as LoRA-styled."
-        )
-    emit_status(f"Merged LoRA deltas into {applied} transformer module(s)")
+    merged = weights
+    for path, strength in specs:
+        name = Path(path).name
+        module_to_loras = load_multiple_loras([LoRAConfig(path=Path(path), strength=strength)])
+        before = merged
+        merged = apply_loras_to_weights(before, module_to_loras, quantization_bits=0)
+        applied = sum(1 for k in merged if k in before and merged[k] is not before[k])
+        if applied == 0:
+            raise SystemExit(
+                f"LoRA '{name}' matched no transformer modules — it's incompatible "
+                "with this model (key mismatch). Refusing to render a video "
+                "mislabeled as using it."
+            )
+        emit_status(f"Merged '{name}' into {applied} transformer module(s)")
     return merged
 
 
 def _install_lora_patches(specs: list[tuple[str, float]]):
-    """Build the module→LoRA map and monkeypatch generate_av's weight loaders.
+    """Monkeypatch generate_av's two transformer-weight load seams so each
+    selected LoRA fuses in (and is validated) as the weights are loaded.
 
     Returns the imported generate_av module so the caller can run its main().
     """
-    from mlx_video.lora.types import LoRAConfig
-    from mlx_video.lora.loader import load_multiple_loras
     import mlx_video.generate_av as gav
 
-    configs = [LoRAConfig(path=Path(p), strength=s) for p, s in specs]
-    module_to_loras = load_multiple_loras(configs)
     names = ", ".join(Path(p).name for p, _ in specs)
     emit_status(f"Fusing {len(specs)} user LoRA(s) into the transformer: {names}")
 
@@ -119,7 +131,7 @@ def _install_lora_patches(specs: list[tuple[str, float]]):
     def _patched_load_unified(model_path, prefix):
         weights = _orig_load_unified(model_path, prefix)
         if prefix == "transformer.":
-            return _fuse(weights, module_to_loras)
+            return _fuse(weights, specs)
         return weights
 
     gav.load_unified_weights = _patched_load_unified
@@ -129,7 +141,7 @@ def _install_lora_patches(specs: list[tuple[str, float]]):
     _orig_sanitize = gav.sanitize_transformer_weights
 
     def _patched_sanitize(raw_weights):
-        return _fuse(_orig_sanitize(raw_weights), module_to_loras)
+        return _fuse(_orig_sanitize(raw_weights), specs)
 
     gav.sanitize_transformer_weights = _patched_sanitize
 
