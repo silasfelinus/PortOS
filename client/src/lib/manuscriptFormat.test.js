@@ -61,11 +61,76 @@ describe('formatManuscript — prose reflow', () => {
     );
   });
 
+  it('never merges two already-single-line paragraphs (no false join)', () => {
+    // Each paragraph is already one line and ends mid-thought without terminal
+    // punctuation; a width-threshold heuristic would wrongly fuse them. The
+    // lowercase-continuation rule keeps capital-started paragraphs apart.
+    const input = [
+      'The console hums to life, same as every morning',
+      'Maggie does not look up from her diagnostic sweep',
+    ].join('\n');
+    expect(formatManuscript(input, 'prose')).toBe(input);
+  });
+
   it('is idempotent — formatting clean prose is a no-op', () => {
     const clean = 'A tidy paragraph that needs no changes at all.';
     const once = formatManuscript(clean, 'prose');
     expect(once).toBe(clean);
     expect(formatManuscript(once, 'prose')).toBe(once);
+  });
+});
+
+describe('formatManuscript — orphaned closing quotes (prose)', () => {
+  it('collapses a closing quote left alone on its own line', () => {
+    const input = '"The universe is under no obligation to make sense.\n"\n— Maggie Lam';
+    expect(formatManuscript(input, 'prose')).toBe(
+      '"The universe is under no obligation to make sense."\n— Maggie Lam',
+    );
+  });
+
+  it('re-attaches a closing quote that wrapped to the start of the next line', () => {
+    const input = '"Good morning, Panel Seven,\n" I say, because someone has to talk first.';
+    expect(formatManuscript(input, 'prose')).toBe(
+      '"Good morning, Panel Seven," I say, because someone has to talk first.',
+    );
+  });
+
+  it('removes a stray space before a closing quote at end of line', () => {
+    const input = '"That\'s more than I can say for most of my relationships. "';
+    expect(formatManuscript(input, 'prose')).toBe(
+      '"That\'s more than I can say for most of my relationships."',
+    );
+  });
+
+  it('does not strip the space before an opening quote mid-line', () => {
+    const clean = 'She said "hello" and walked on.';
+    expect(formatManuscript(clean, 'prose')).toBe(clean);
+  });
+
+  it('cleans the full pasted epigraph + dialogue block end to end', () => {
+    const input = [
+      'Chapter 1: Anomalous Readings',
+      '"The universe is under no obligation to make sense to you, but it will absolutely mess with your diagnostics.',
+      '"',
+      '— Maggie Lam, maintenance log entry #4,072',
+      "The universe is under no obligation to make sense to me, but at 0347 station time, I'm not asking it to.",
+      '"Good morning, Panel Seven,',
+      '" I say, because someone has to talk first.',
+      '"You look stable. That\'s more than I can say for most of my relationships. "',
+    ].join('\n');
+    expect(formatManuscript(input, 'prose')).toBe([
+      'Chapter 1: Anomalous Readings',
+      '"The universe is under no obligation to make sense to you, but it will absolutely mess with your diagnostics."',
+      '— Maggie Lam, maintenance log entry #4,072',
+      "The universe is under no obligation to make sense to me, but at 0347 station time, I'm not asking it to.",
+      '"Good morning, Panel Seven," I say, because someone has to talk first.',
+      '"You look stable. That\'s more than I can say for most of my relationships."',
+    ].join('\n'));
+  });
+
+  it('leaves script quotes alone — no reflow or quote surgery off the prose path', () => {
+    const input = 'CAPTION: "Good morning,\n" she says.';
+    expect(formatManuscript(input, 'comicScript')).toBe(input);
   });
 });
 
