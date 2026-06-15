@@ -83,6 +83,13 @@ describe('Error Detection', () => {
       expect(result.requiresFallback).toBe(true);
     });
 
+    it('classifies a Bedrock "model identifier is invalid" rejection as model-not-found', () => {
+      const result = analyzeError('API Error (claude-opus-4-8): 400 The provided model identifier is invalid.. Try /model to switch to us.anthropic.claude-opus-4-1-20250805-v1:0.');
+      expect(result.hasError).toBe(true);
+      expect(result.category).toBe(ERROR_CATEGORIES.MODEL_NOT_FOUND);
+      expect(result.requiresFallback).toBe(true);
+    });
+
     it('should detect network errors', () => {
       const result = analyzeError('Error: ECONNREFUSED 127.0.0.1:8080');
       expect(result.hasError).toBe(true);
@@ -148,6 +155,35 @@ describe('Error Detection', () => {
         category: ERROR_CATEGORIES.USAGE_LIMIT,
         requiresFallback: true
       });
+    });
+
+    it('detects Claude Code\'s terminal "model identifier is invalid" (Bedrock 400) error line', () => {
+      const result = detectImmediateFallbackSignal('⏺ API Error (claude-opus-4-8): 400 The provided model identifier is invalid.. Try /model to switch to us.anthropic.claude-opus-4-1-20250805-v1:0.');
+      expect(result).toMatchObject({
+        hasError: true,
+        category: ERROR_CATEGORIES.MODEL_NOT_FOUND,
+        requiresFallback: true
+      });
+    });
+
+    it('detects an Anthropic 404 not_found_error model rejection', () => {
+      const result = detectImmediateFallbackSignal('API Error: 404 {"type":"error","error":{"type":"not_found_error","message":"model: claude-9"}}');
+      expect(result).toMatchObject({
+        hasError: true,
+        category: ERROR_CATEGORIES.MODEL_NOT_FOUND,
+        requiresFallback: true
+      });
+    });
+
+    it('does NOT early-fail a recoverable 429/500 (Claude Code auto-retries those)', () => {
+      expect(detectImmediateFallbackSignal('⏺ API Error (claude-opus-4-8): 429 rate limited, retrying…')).toBeNull();
+      expect(detectImmediateFallbackSignal('⏺ API Error (claude-opus-4-8): 500 internal server error, retrying…')).toBeNull();
+    });
+
+    it('does NOT trip on an agent merely printing the phrase without the API Error prefix', () => {
+      // A CoS agent editing this very fix would print "model identifier is invalid"
+      // in its own output — that must not kill its run.
+      expect(detectImmediateFallbackSignal('The Bedrock backend says the model identifier is invalid when you pass a bare id.')).toBeNull();
     });
   });
 

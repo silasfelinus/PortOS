@@ -67,7 +67,13 @@ const ERROR_PATTERNS = [
     suggestedFix: 'Check API key configuration for this provider'
   },
   {
-    pattern: /model.*(not found|does not exist|unavailable)|invalid model/i,
+    // "model identifier is invalid" is Bedrock's wording when the runner passes
+    // a model id the backend doesn't recognize (e.g. a bare Anthropic id like
+    // `claude-opus-4-8` to a Bedrock-backed Claude Code, which wants
+    // `global.anthropic.claude-opus-4-8`). Categorize it alongside the
+    // not-found/invalid-model phrasings so the cooldown + fallback path treats
+    // it as the config problem it is.
+    pattern: /model.*(not found|does not exist|unavailable)|invalid model|model identifier is invalid/i,
     category: ERROR_CATEGORIES.MODEL_NOT_FOUND,
     requiresFallback: true,
     actionable: true,
@@ -103,6 +109,24 @@ const IMMEDIATE_FALLBACK_SIGNALS = [
     category: ERROR_CATEGORIES.USAGE_LIMIT,
     message: 'Provider switched to extra usage',
     suggestedFix: 'Provider usage limit reached. Using fallback provider or wait for limit reset.'
+  },
+  {
+    // Claude Code renders a non-recoverable *model id* rejection inline as
+    // `API Error (<model>): 400 The provided model identifier is invalid…`
+    // (Bedrock) or `API Error: 404 … not_found_error` (Anthropic) and then sits
+    // at an unanswered prompt — it does NOT auto-retry the way it does a 429/500.
+    // Without an early-fail signal the one-shot TUI runner idles out, reports
+    // success, and scrapes the error screen as a bogus "response" (which then
+    // trips downstream guards like the manuscript-reformat integrity check).
+    // Anchored on the literal `API Error` + a 400/404 status so an agent merely
+    // *printing* the phrase "model identifier is invalid" in its own work output
+    // can't trip it; terminal + model-specific, so failing the run immediately
+    // (to fall back / surface an actionable error) never aborts a run that would
+    // have recovered.
+    pattern: /API Error[^\n]{0,100}\b(?:400|404)\b[^\n]{0,160}(?:model identifier is invalid|not[_\s]?found)/i,
+    category: ERROR_CATEGORIES.MODEL_NOT_FOUND,
+    message: 'Provider rejected the configured model id',
+    suggestedFix: 'The provider does not recognize this model id — check the model name/availability for this provider; retrying with a fallback model.'
   }
 ];
 
