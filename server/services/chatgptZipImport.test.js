@@ -134,6 +134,20 @@ describe('chatgptZipImport service', () => {
       const { assets } = await extractChatgptZip(zipPath, { assetDir: join(TMP, 'assets') });
       expect(assets.get('file-DOC').file).toBe('file-DOC.csv');
     });
+
+    it('cleans up already-written assets and throws a 400 when a conversation shard is corrupt JSON', async () => {
+      const zipPath = await writeZip([
+        ['conversations-000.json', '[{ "id": "c1", "title": "A", "mapping": {} '], // truncated → JSON.parse throws
+        ['conversation_asset_file_names.json', JSON.stringify({ 'file-IMG.dat': 'photo.png' })],
+        ['file-IMG.dat', PNG],
+      ]);
+      const assetDir = join(TMP, 'assets');
+      await expect(extractChatgptZip(zipPath, { assetDir }))
+        .rejects.toMatchObject({ status: 400, code: 'INVALID_CHATGPT_EXPORT' });
+      // The asset written before the parse failure must not be orphaned.
+      const written = await readdir(assetDir).catch(() => []);
+      expect(written).toEqual([]);
+    });
   });
 
   describe('makeAssetResolver', () => {

@@ -43,7 +43,7 @@ async function selectBackend() {
   // (idempotent) — the authors table is created on first use either way.
   const health = await checkHealth();
   if (!health.connected) {
-    throw new Error('Authors require PostgreSQL — run `npm run setup:db` (dev/test only: set PGMODE=file in .env for the unsupported file backend)');
+    throw new Error('Authors require PostgreSQL — run `npm run setup:db` (dev/test only: set MEMORY_BACKEND=file in .env for the unsupported file backend)');
   }
   await ensureSchema();
   backend = await import('./db.js');

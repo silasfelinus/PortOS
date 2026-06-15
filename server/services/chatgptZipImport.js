@@ -34,6 +34,7 @@ import { Writable } from 'stream';
 import { PATHS, getMimeType } from '../lib/fileUtils.js';
 import { parseZip } from '../lib/zipStream.js';
 import { parseExport, importConversations, assetPointerId } from './chatgptImport.js';
+import { ServerError } from '../lib/errorHandler.js';
 
 // Cap an individual buffered member (JSON shard or `.dat` asset). The largest
 // conversation shard in a real export is ~6 MB and assets run KB–few MB; 100 MB
@@ -231,8 +232,21 @@ export async function extractChatgptZip(zipPath, { assetDir = PATHS.brainImportA
   }
 
   const conversationFiles = [];
-  for (const { buffer } of convoBuffers) {
-    conversationFiles.push(JSON.parse(buffer.toString('utf8')));
+  for (const { path, buffer } of convoBuffers) {
+    // A truncated/corrupt export (realistic for a partial download) makes
+    // JSON.parse throw HERE — after the asset files were already written to the
+    // served dir. Clean those orphans up before surfacing a clean 400, otherwise
+    // the throw escapes extractChatgptZip and importChatgptZip never reaches its
+    // cleanupExtractedAssets() path.
+    try {
+      conversationFiles.push(JSON.parse(buffer.toString('utf8')));
+    } catch {
+      await cleanupExtractedAssets(assets, assetDir);
+      throw new ServerError(`${path} is not valid JSON — the ChatGPT export looks truncated or corrupt.`, {
+        status: 400,
+        code: 'INVALID_CHATGPT_EXPORT',
+      });
+    }
   }
 
   return {
