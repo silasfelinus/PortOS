@@ -85,10 +85,13 @@ const reattachQuotes = (text) => text
 //   "I
 //   "I need a calibration partner …   →   "I need a calibration partner …
 // Only fires when the fragment is an INCOMPLETE opening (a `"` plus a few
-// non-terminal chars, no closing quote) AND the next line begins with that
-// exact fragment followed by a word boundary. So genuine back-to-back short
-// dialogue ("Yes. / "No.) and a merely-similar next word ("I / "Information)
-// are left alone — we only collapse a true leading duplicate.
+// non-terminal chars, no closing quote) AND the next line is either the exact
+// same fragment or begins with it followed by WHITESPACE — the same way a true
+// duplicate continues (`"I` → `"I need …`, a space after the prefix). Requiring
+// whitespace (not any non-word char) is what keeps two genuinely distinct
+// dialogue lines apart: `"Wait` before `"Wait, no — …` continues into a comma,
+// not a space, so it is left alone; so are "Yes. / "No. (terminal punctuation —
+// not a fragment) and "I / "Information (the prefix runs into a letter).
 const dropDuplicatedQuoteFragments = (text) => {
   const lines = text.split('\n');
   const out = [];
@@ -97,7 +100,7 @@ const dropDuplicatedQuoteFragments = (text) => {
     const next = lines[i + 1];
     const isFragment = /^"[^".!?]{1,20}$/.test(cur);
     const dupOfNext = next !== undefined && next.startsWith(cur)
-      && (next.length === cur.length || /\W/.test(next.charAt(cur.length)));
+      && (next.length === cur.length || /\s/.test(next.charAt(cur.length)));
     if (isFragment && dupOfNext) continue; // drop the duplicated fragment line
     out.push(cur);
   }

@@ -171,6 +171,19 @@ describe('formatManuscript — orphaned closing quotes (prose)', () => {
     expect(formatManuscript('"I\n"Information is power.', 'prose')).toBe('"I\n"Information is power.');
   });
 
+  it('does NOT drop a short utterance that is a word-prefix continuing into a new clause', () => {
+    // `"Wait` is a complete line; `"Wait, no…` continues into a comma, not the
+    // space a true duplicate would. The whitespace-boundary guard keeps them apart.
+    const input = '"Wait\n"Wait, no — I changed my mind.';
+    expect(formatManuscript(input, 'prose')).toBe(input);
+  });
+
+  it('is idempotent over the duplicated-fragment input', () => {
+    const input = 'what they said.\n"I\n"I need a calibration partner.';
+    const once = formatManuscript(input, 'prose');
+    expect(formatManuscript(once, 'prose')).toBe(once);
+  });
+
   it('leaves script quotes alone — no reflow or quote surgery off the prose path', () => {
     const input = 'CAPTION: "Good morning,\n" she says.';
     expect(formatManuscript(input, 'comicScript')).toBe(input);
