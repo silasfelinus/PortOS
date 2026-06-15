@@ -112,18 +112,28 @@ const IMMEDIATE_FALLBACK_SIGNALS = [
   },
   {
     // Claude Code renders a non-recoverable *model id* rejection inline as
-    // `API Error (<model>): 400 The provided model identifier is invalid…`
+    // `⏺ API Error (<model>): 400 The provided model identifier is invalid…`
     // (Bedrock) or `API Error: 404 … not_found_error` (Anthropic) and then sits
     // at an unanswered prompt — it does NOT auto-retry the way it does a 429/500.
     // Without an early-fail signal the one-shot TUI runner idles out, reports
     // success, and scrapes the error screen as a bogus "response" (which then
     // trips downstream guards like the manuscript-reformat integrity check).
-    // Anchored on the literal `API Error` + a 400/404 status so an agent merely
-    // *printing* the phrase "model identifier is invalid" in its own work output
-    // can't trip it; terminal + model-specific, so failing the run immediately
-    // (to fall back / surface an actionable error) never aborts a run that would
-    // have recovered.
-    pattern: /API Error[^\n]{0,100}\b(?:400|404)\b[^\n]{0,160}(?:model identifier is invalid|not[_\s]?found)/i,
+    //
+    // Two precision constraints keep this from killing a long-running CoS agent
+    // (the agent spawn paths also stop the run on this signal) that merely echoes
+    // such a line in its OWN work output:
+    //   1. Line-anchored (`^…/m`, like the `Now using extra usage` signal above)
+    //      — Claude Code prints the error on its own line, so the real signal is
+    //      at a line start (or the 512-char buffer's slice boundary, which `^`
+    //      also matches); a full error line quoted mid-sentence in agent prose
+    //      is not.
+    //   2. The 400/404 status must immediately follow the `API Error[(model)]:`
+    //      prefix — so a retryable line like `API Error: 429 … 404 not found`
+    //      (whose 404 is incidental) does not match and a run Claude Code would
+    //      auto-retry isn't aborted.
+    // Terminal + model-specific, so failing the run immediately (to fall back /
+    // surface an actionable error) never aborts a run that would have recovered.
+    pattern: /^\s*(?:⏺\s*)?API Error(?:\s*\([^)]*\))?:\s*(?:400|404)\b[^\n]{0,160}(?:model identifier is invalid|not[_\s]?found)/im,
     category: ERROR_CATEGORIES.MODEL_NOT_FOUND,
     message: 'Provider rejected the configured model id',
     suggestedFix: 'The provider does not recognize this model id — check the model name/availability for this provider; retrying with a fallback model.'

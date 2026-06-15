@@ -185,6 +185,19 @@ describe('Error Detection', () => {
       // in its own output — that must not kill its run.
       expect(detectImmediateFallbackSignal('The Bedrock backend says the model identifier is invalid when you pass a bare id.')).toBeNull();
     });
+
+    it('does NOT trip on a full error line quoted mid-sentence in agent prose (line-anchored)', () => {
+      // A CoS agent summarizing the bug echoes the complete error line inside a
+      // sentence — the agent spawn paths stop the run on this signal, so a
+      // mid-line echo must not match (only a real line-start error does).
+      expect(detectImmediateFallbackSignal('I fixed the `API Error (claude-opus-4-8): 400 The provided model identifier is invalid` bug in the runner.')).toBeNull();
+    });
+
+    it('does NOT trip on a retryable 429 line that incidentally contains 404 (status anchored to the prefix)', () => {
+      // The 400/404 must immediately follow the `API Error[(model)]:` prefix, so a
+      // 429 whose body merely mentions "404 ... not found" stays a retry, not a fail.
+      expect(detectImmediateFallbackSignal('API Error: 429 too many requests for the 404 page not found endpoint')).toBeNull();
+    });
   });
 
   describe('extractWaitTime', () => {
