@@ -47,7 +47,7 @@ import ManuscriptImpactPreview from '../components/pipeline/manuscript/Manuscrip
 import { MANUSCRIPT_TYPES, STAGE_LABEL } from '../components/pipeline/manuscript/constants';
 import {
   getPipelineSeries, updatePipelineSeries, getPipelineManuscript, getPipelineManuscriptReview,
-  savePipelineManuscriptSection, restorePipelineStageVersion,
+  savePipelineManuscriptSection, reformatPipelineManuscriptText, restorePipelineStageVersion,
   analyzePipelineManuscriptCompleteness, startPipelineManuscriptCompleteness,
   cancelPipelineManuscriptCompleteness, getPipelineManuscriptCompletenessStatus, getProviders,
   pipelineManuscriptCompletenessSseUrl,
@@ -118,6 +118,13 @@ export default function PipelineManuscriptEditor() {
 
   const patchSection = (issueId, fields) =>
     setSections((prev) => prev.map((s) => (s.issueId === issueId ? { ...s, ...fields } : s)));
+
+  // Live mirror of `sections` so async handlers (e.g. the slow AI reformat) can
+  // read the CURRENT content at resolution time and detect a mid-call edit
+  // instead of clobbering it via a stale closure.
+  const liveSectionsRef = useRef([]);
+  liveSectionsRef.current = sections;
+  const liveContentFor = (issueId) => liveSectionsRef.current.find((s) => s.issueId === issueId)?.content ?? '';
 
   useEffect(() => {
     if (typeof window !== 'undefined') window.localStorage.setItem(VIEW_MODE_KEY, viewMode);
@@ -398,6 +405,41 @@ export default function PipelineManuscriptEditor() {
     if (saved) toast.success('Formatting cleaned up');
   };
 
+  // AI reformat: send the section's CURRENT (possibly unsaved) text to the LLM
+  // (selected provider override) to repair paste artifacts the deterministic
+  // Format can't. The endpoint only computes — it returns the cleaned text and
+  // never persists, so we own the save: if the user edited the section during
+  // the (slow) call we discard the result rather than clobber the edit;
+  // otherwise we apply it and save through the normal path (snapshotted →
+  // revertible). The server guard rejects (400) any result that changed wording.
+  const reformatSection = async (section) => {
+    const sent = section.content || '';
+    if (!sent.trim()) {
+      toast('There is no drafted text to reformat');
+      return;
+    }
+    const result = await reformatPipelineManuscriptText(
+      seriesId,
+      { stageId: section.stageId, content: sent, providerOverride, modelOverride },
+      { silent: true },
+    ).catch((err) => {
+      toast.error(err.message || 'AI reformat failed');
+      return null;
+    });
+    if (!result || typeof result.text !== 'string') return;
+    if (liveContentFor(section.issueId) !== sent) {
+      toast('Section changed while reformatting — discarded the AI result');
+      return;
+    }
+    if (!result.changed) {
+      toast('Already well-formatted — nothing to clean up');
+      return;
+    }
+    setSectionContent(section.issueId, result.text);
+    const saved = await saveSectionContent(section, result.text);
+    if (saved) toast.success('Reformatted with AI');
+  };
+
   const revertSection = async (section, runId) => {
     const result = await restorePipelineStageVersion(section.issueId, section.stageId, runId, { silent: true })
       .catch((err) => { toast.error(err.message || 'Failed to revert'); return null; });
@@ -671,6 +713,7 @@ export default function PipelineManuscriptEditor() {
                   onContentChange: (content) => setSectionContent(section.issueId, content),
                   onBlurSave: () => saveSection(section),
                   onFormat: () => formatSection(section),
+                  onReformat: () => reformatSection(section),
                   onRevert: (runId) => revertSection(section, runId),
                   registerRef: registerSectionRef(section.number),
                   commentCardProps,

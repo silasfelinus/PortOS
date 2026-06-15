@@ -489,6 +489,18 @@ export const savePipelineManuscriptSection = (seriesId, issueId, { stageId, outp
     ...options,
   });
 
+// AI reformat of manuscript text — repairs paste artifacts (wrapping, drop-caps,
+// orphaned quotes) WITHOUT changing words. Compute-only: returns the cleaned
+// `{ text, changed, runId }` and does NOT persist — the caller sends its live
+// content and owns the save (so unsaved edits aren't clobbered). A 400 means the
+// model altered the wording (integrity guard) and the text is unchanged.
+export const reformatPipelineManuscriptText = (seriesId, { stageId, content, providerOverride, modelOverride } = {}, options = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/manuscript/reformat`, {
+    method: 'POST',
+    body: JSON.stringify({ stageId, content, providerOverride, modelOverride }),
+    ...options,
+  });
+
 // ---- Volume beat-sheet bulk generator ----
 // Sequential idea-stage run across every issue in a volume. `mode` is
 // 'skip-existing' (default) or 'regenerate-all'. Returns
