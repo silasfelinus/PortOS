@@ -149,6 +149,28 @@ describe('formatManuscript — orphaned closing quotes (prose)', () => {
     ].join('\n'));
   });
 
+  it('drops a stray opening-quote fragment the source duplicated before the real line', () => {
+    // Real PDF/LLM export artifact: the opening `"I` was copied onto its own
+    // line right before the actual `"I need …` paragraph.
+    const input = [
+      'what they said.',
+      '"I',
+      '"I need a calibration partner who knows',
+      "what they're doing.",
+    ].join('\n');
+    expect(formatManuscript(input, 'prose')).toBe(
+      'what they said.\n"I need a calibration partner who knows what they\'re doing.',
+    );
+  });
+
+  it('does NOT drop genuine back-to-back short dialogue', () => {
+    expect(formatManuscript('"Yes.\n"No.', 'prose')).toBe('"Yes.\n"No.');
+  });
+
+  it('does NOT drop a line that merely shares a prefix with a different next word', () => {
+    expect(formatManuscript('"I\n"Information is power.', 'prose')).toBe('"I\n"Information is power.');
+  });
+
   it('leaves script quotes alone — no reflow or quote surgery off the prose path', () => {
     const input = 'CAPTION: "Good morning,\n" she says.';
     expect(formatManuscript(input, 'comicScript')).toBe(input);

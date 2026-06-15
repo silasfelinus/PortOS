@@ -80,6 +80,30 @@ const reattachQuotes = (text) => text
   //   relationships. "  →  relationships."
   .replace(/([.!?])[ \t]+"(?=[ \t]*$)/gm, '$1"');
 
+// Drop a stray opening-quote fragment the source duplicated onto its own line
+// just before the real quoted line — a PDF/LLM export artifact:
+//   "I
+//   "I need a calibration partner …   →   "I need a calibration partner …
+// Only fires when the fragment is an INCOMPLETE opening (a `"` plus a few
+// non-terminal chars, no closing quote) AND the next line begins with that
+// exact fragment followed by a word boundary. So genuine back-to-back short
+// dialogue ("Yes. / "No.) and a merely-similar next word ("I / "Information)
+// are left alone — we only collapse a true leading duplicate.
+const dropDuplicatedQuoteFragments = (text) => {
+  const lines = text.split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const cur = lines[i];
+    const next = lines[i + 1];
+    const isFragment = /^"[^".!?]{1,20}$/.test(cur);
+    const dupOfNext = next !== undefined && next.startsWith(cur)
+      && (next.length === cur.length || /\W/.test(next.charAt(cur.length)));
+    if (isFragment && dupOfNext) continue; // drop the duplicated fragment line
+    out.push(cur);
+  }
+  return out.join('\n');
+};
+
 // Collapse 3+ consecutive newlines to a single blank line, then trim the ends.
 const tidyBlankLines = (text) => text.replace(/\n{3,}/g, '\n\n').trim();
 
@@ -121,6 +145,7 @@ export function formatManuscript(text, stageId) {
   out = rejoinDropCaps(out);
   if (REFLOW_STAGES.has(stageId)) {
     out = reattachQuotes(out);
+    out = dropDuplicatedQuoteFragments(out);
     out = reflowProse(out);
   }
   out = tidyBlankLines(out);
