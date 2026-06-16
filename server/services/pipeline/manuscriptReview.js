@@ -178,10 +178,18 @@ const findingKey = (c) => `${c.checkId ?? ''}|${c.issueNumber ?? ''}|${c.anchorQ
  *    resurrected on the next inbound sync. A flip to `dismissed` rides the same
  *    LWW path and converges. `accepted`/`dismissed` comments are untouched.
  *
+ * `checkId` SCOPES the 'fresh' reconciliation to one check's findings: only open
+ * comments whose `checkId` matches are eligible for auto-dismissal. The
+ * completeness pass seeds with no checkId (its findings carry `checkId: null`),
+ * so a fresh completeness run reconciles ONLY the null-checkId space and can't
+ * dismiss an editorial-check's open findings (e.g. `prose.info-dumping`), which
+ * carry a different checkId. Ignored in 'merge' mode (nothing is auto-dismissed).
+ *
  * New findings resolve their issueId/stageId from the current manuscript
  * sections by issueNumber.
  */
-export async function seedReviewFromFindings(seriesId, findings, { runId = null, mode = 'merge' } = {}) {
+export async function seedReviewFromFindings(seriesId, findings, { runId = null, mode = 'merge', checkId = null } = {}) {
+  const scopeCheckId = checkId ?? null;
   const sections = await collectManuscriptSections(seriesId);
   const byNumber = new Map(sections.map((s) => [s.number, s]));
   return queueReviewWrite(seriesId, async () => {
@@ -236,7 +244,7 @@ export async function seedReviewFromFindings(seriesId, findings, { runId = null,
     let dismissedCount = 0;
     let backfilledCount = 0;
     const carried = review.comments.map((c) => {
-      if (mode === 'fresh' && c.status === 'open' && !freshKeys.has(findingKey(c))) {
+      if (mode === 'fresh' && c.status === 'open' && (c.checkId ?? null) === scopeCheckId && !freshKeys.has(findingKey(c))) {
         dismissedCount += 1;
         return sanitizeComment({ ...c, status: 'dismissed', updatedAt: now });
       }

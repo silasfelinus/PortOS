@@ -90,7 +90,8 @@ import {
 import * as volumeBeatsRunner from './volumeBeatsRunner.js';
 import * as autoRunner from './autoRunner.js';
 import { seedReviewFromFindings, getReview } from './manuscriptReview.js';
-import { runEditorialChecks } from './editorial/checkRunner.js';
+import { runEditorialChecks, buildEditorialCheckPlan } from './editorial/checkRunner.js';
+import { getSettings } from '../settings.js';
 import { generateManuscriptFix, acceptManuscriptFix } from './manuscriptFix.js';
 import { verifyComicScript } from './scriptVerify.js';
 import { checkSeriesCanonReadiness } from './canonReadiness.js';
@@ -602,20 +603,27 @@ async function runEditorial(sId, record) {
 }
 
 // STEP 5.2 — run the registry-driven editorial checks once per run, seeding
-// their findings into the same manuscript-review comment set. LLM-kind checks
-// cost tokens, so gate on the daily budget first; a no-op when no checks are
-// enabled (the runner returns zero findings). Failures are surfaced (logged)
-// but never block the run — editorial checks are advisory.
+// their findings into the same manuscript-review comment set. Only LLM-kind
+// checks cost tokens, so gate the daily budget AND bill a cos action only when
+// an enabled LLM check will actually run — a deterministic-only (or all-checks-
+// disabled) run does cheap local work and must neither pause on an exhausted
+// budget nor consume quota. Failures are surfaced (logged) but never block the
+// run — editorial checks are advisory.
 async function runEditorialChecksPass(sId, record) {
   if (record.cancelRequested) return { canceled: true };
-  const beforeChecks = await budgetPause();
-  if (beforeChecks) return beforeChecks;
-  const result = await runEditorialChecks(sId, providerOverrideOpts(record)).catch((err) => {
+  const settings = await getSettings();
+  const plan = await buildEditorialCheckPlan(sId, { settings });
+  const hasLlmCheck = plan.checks.some((c) => c.kind === 'llm');
+  if (hasLlmCheck) {
+    const beforeChecks = await budgetPause();
+    if (beforeChecks) return beforeChecks;
+  }
+  const result = await runEditorialChecks(sId, { ...providerOverrideOpts(record), settings }).catch((err) => {
     console.log(`⚠️ autopilot: editorial checks failed for ${sId.slice(0, 12)}: ${err.message}`);
     return null;
   });
   if (result) {
-    await recordDomainUsage('cos', { actions: 1 });
+    if (hasLlmCheck) await recordDomainUsage('cos', { actions: 1 });
     broadcast(sId, { type: 'verify:round', scope: 'editorialChecks', round: 1, findings: result.findings.length, blocking: 0 });
   }
   record.runState.editorialChecksReviewed = true;

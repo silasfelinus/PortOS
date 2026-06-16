@@ -72,6 +72,11 @@ vi.mock('./manuscriptReview.js', () => ({
 }));
 vi.mock('./editorial/checkRunner.js', () => ({
   runEditorialChecks: vi.fn(async () => ({ runId: 'ec', findings: [], perCheck: [], canceled: false })),
+  buildEditorialCheckPlan: vi.fn(async () => ({ seriesId: 's', checks: [], enabledCount: 0 })),
+}));
+vi.mock('../settings.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  getSettings: vi.fn(async () => ({})),
 }));
 vi.mock('./manuscriptFix.js', () => ({
   generateManuscriptFix: vi.fn(async () => ({})),
