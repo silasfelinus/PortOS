@@ -113,6 +113,14 @@ router.patch('/editorial/checks/:id', asyncHandler(async (req, res) => {
 // Run all enabled checks (or a named subset) for a series — progress via SSE.
 router.post('/series/:id/editorial/checks/run', asyncHandler(async (req, res) => {
   const body = validateRequest(editorialChecksRunSchema, req.body ?? {});
+  // Reject unknown check ids up front — otherwise a typo'd subset is silently
+  // filtered to a zero-check run that reports success (PATCH 404s unknown ids too).
+  if (body.checkIds?.length) {
+    const unknown = body.checkIds.filter((id) => !getCheck(id));
+    if (unknown.length) {
+      throw new ServerError(`Unknown editorial check(s): ${unknown.join(', ')}`, { status: 400 });
+    }
+  }
   await seriesSvc.getSeries(req.params.id).catch((err) => { throw mapServiceError(err); });
   const result = checkRunner.startEditorialChecksRun(req.params.id, {
     checkIds: body.checkIds,

@@ -104,4 +104,12 @@ describe('POST /api/pipeline/series/:id/editorial/checks/run', () => {
     expect(res.status).toBe(404);
     expect(startEditorialChecksRun).not.toHaveBeenCalled();
   });
+
+  it('400s an unknown requested check id instead of running zero checks', async () => {
+    const res = await request(app)
+      .post('/api/pipeline/series/s1/editorial/checks/run')
+      .send({ checkIds: ['prose.info-dumpng'] }); // typo
+    expect(res.status).toBe(400);
+    expect(startEditorialChecksRun).not.toHaveBeenCalled();
+  });
 });
