@@ -85,7 +85,10 @@ PortOS is built for Adam Eivy — a single developer managing active git repos, 
 
 ## Current State
 
-See [PLAN.md](./PLAN.md) for detailed milestone tracking and roadmap.
+The active roadmap lives in the GitHub issue tracker — open issues labeled
+[`plan`](https://github.com/atomantic/PortOS/issues?q=is%3Aissue+is%3Aopen+label%3Aplan)
+(claimable) and [`future`](https://github.com/atomantic/PortOS/issues?q=is%3Aissue+is%3Aopen+label%3Afuture)
+(parked ideas). See [PLAN.md](./PLAN.md) for the pointer.
 
 | Goal | Status | Notes |
 |------|--------|-------|
