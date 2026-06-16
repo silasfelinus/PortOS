@@ -113,6 +113,49 @@ describe('editorial check registry — config + state resolution', () => {
   });
 });
 
+describe('prose.info-dumping — LLM check', () => {
+  it('caps the manuscript sent to the model so a long corpus cannot overflow context', async () => {
+    let sent = null;
+    const ctx = {
+      manuscript: 'x'.repeat(100_000),
+      config: { maxManuscriptChars: 10_000, maxFindings: 12 },
+      severityDefault: 'medium',
+      callStagedLLM: async (_stage, vars) => { sent = vars.manuscript; return { content: { findings: [] } }; },
+    };
+    await getCheck(INFODUMP).run(ctx);
+    expect(sent.length).toBeLessThan(11_000); // 10k cap + a short truncation note
+    expect(sent).toContain('truncated');
+  });
+
+  it('passes a short manuscript through untruncated and shapes findings', async () => {
+    const ctx = {
+      manuscript: 'As you know, Bob, the kingdom fell.',
+      config: { maxManuscriptChars: 48_000, maxFindings: 12 },
+      severityDefault: 'medium',
+      callStagedLLM: async (_stage, vars) => {
+        expect(vars.manuscript).not.toContain('truncated');
+        return { content: { findings: [{ severity: 'high', issueNumber: 1, problem: 'dump', anchorQuote: 'As you know', suggestion: 'cut' }] } };
+      },
+    };
+    const findings = await getCheck(INFODUMP).run(ctx);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].category).toBe('exposition');
+    expect(findings[0].issueNumber).toBe(1);
+  });
+
+  it('respects maxFindings', async () => {
+    const many = Array.from({ length: 30 }, (_, i) => ({ severity: 'low', problem: `p${i}`, anchorQuote: `a${i}` }));
+    const ctx = {
+      manuscript: 'short',
+      config: { maxManuscriptChars: 48_000, maxFindings: 5 },
+      severityDefault: 'medium',
+      callStagedLLM: async () => ({ content: { findings: many } }),
+    };
+    const findings = await getCheck(INFODUMP).run(ctx);
+    expect(findings).toHaveLength(5);
+  });
+});
+
 describe('naming.dissimilar-names — deterministic check', () => {
   const run = (characters, config = { minSharedSignals: 2 }) =>
     getCheck(NAMING).run({ canon: { characters }, config, severityDefault: 'low' });

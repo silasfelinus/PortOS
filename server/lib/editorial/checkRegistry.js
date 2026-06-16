@@ -116,12 +116,22 @@ export const EDITORIAL_CHECKS = [
     configSchema: z.object({
       // Cap findings per run so a long manuscript can't flood the review.
       maxFindings: z.number().int().min(1).max(50).default(12),
+      // Bound the prompt so a long series can't overflow a small/local
+      // provider's context window (which would reject/clip the call and yield
+      // zero findings). This is a single-call safeguard — full per-provider
+      // context-window chunking (à la completenessPass) is tracked separately.
+      maxManuscriptChars: z.number().int().min(2000).max(200_000).default(48_000),
     }),
     gate: (ctx) => (ctx.manuscript || '').trim().length > 0,
     run: async (ctx) => {
+      const cap = ctx.config?.maxManuscriptChars ?? 48_000;
+      const full = ctx.manuscript || '';
+      const manuscript = full.length > cap
+        ? `${full.slice(0, cap)}\n\n[manuscript truncated to the first ${cap} characters for this check]`
+        : full;
       const { content } = await ctx.callStagedLLM(
         INFO_DUMPING_STAGE,
-        { manuscript: ctx.manuscript },
+        { manuscript },
         { returnsJson: true, source: INFO_DUMPING_STAGE },
       );
       const raw = Array.isArray(content?.findings) ? content.findings : [];
