@@ -49,7 +49,8 @@ function nameSimilaritySignals(a, b) {
   const signals = [];
   if (la[0] === lb[0]) signals.push('same first letter');
   if (la.length === lb.length) signals.push('same length');
-  if (vowelSkeleton(a) && vowelSkeleton(a) === vowelSkeleton(b)) signals.push('same vowel pattern');
+  const vsa = vowelSkeleton(a);
+  if (vsa && vsa === vowelSkeleton(b)) signals.push('same vowel pattern');
   if (la.length >= 3 && lb.length >= 3 && la.slice(0, 3) === lb.slice(0, 3)) signals.push('same opening');
   if (la.endsWith(lb.slice(-2)) && la.slice(-2) === lb.slice(-2)) signals.push('same ending');
   return signals;
@@ -109,6 +110,9 @@ export const EDITORIAL_CHECKS = [
     category: 'exposition',
     severityDefault: 'medium',
     defaultEnabled: true,
+    // Reads the stitched manuscript corpus — so the runner only pays the
+    // section-collection I/O when a manuscript-consuming check is enabled.
+    needsManuscript: true,
     configSchema: z.object({
       // Cap findings per run so a long manuscript can't flood the review.
       maxFindings: z.number().int().min(1).max(50).default(12),
@@ -182,16 +186,16 @@ export const listChecks = () => EDITORIAL_CHECKS.slice();
 
 // Validate (and default-fill) a persisted per-check config blob through the
 // check's Zod schema. Falls back to the schema's defaults when the stored blob
-// is absent or invalid, so a hand-edited settings.json can't make a check throw.
+// is absent or invalid, so a hand-edited settings.json can't make a check throw
+// (re-parsing `{}` materializes the schema defaults).
 export function resolveCheckConfig(check, storedConfig) {
-  const parsed = check.configSchema.safeParse(storedConfig || {});
-  if (parsed.success) return parsed.data;
-  // Re-parse an empty object to materialize the schema defaults.
-  const defaults = check.configSchema.safeParse({});
-  return defaults.success ? defaults.data : {};
+  const parsed = check.configSchema.safeParse(storedConfig ?? {});
+  return parsed.success ? parsed.data : (check.configSchema.safeParse({}).data ?? {});
 }
 
-const readChecksSlice = (settings) => {
+// Read the persisted per-check map from settings, tolerant of a hand-edited /
+// older-peer file. Exported so the route reads the slice through the same guard.
+export const readChecksSlice = (settings) => {
   const slice = settings?.pipelineEditorialChecks?.checks;
   return slice && typeof slice === 'object' && !Array.isArray(slice) ? slice : {};
 };
@@ -224,14 +228,22 @@ export function resolveCheckState(settings) {
 }
 
 /**
+ * The resolved-state rows for the checks that should run: enabled, narrowed to
+ * `subsetIds` when provided. Shared by `getEnabledChecks` (execution) and the
+ * runner's dry-run plan (preview), so the enable/subset filter lives once.
+ */
+export function getEnabledCheckRows(settings, subsetIds = null) {
+  const subset = Array.isArray(subsetIds) && subsetIds.length ? new Set(subsetIds) : null;
+  return resolveCheckState(settings).filter((row) => row.enabled && (!subset || subset.has(row.id)));
+}
+
+/**
  * The checks that should actually run for a given settings + optional subset.
  * Returns `{ check, config }` pairs (the live registry entry + its resolved
  * config) for every enabled check, narrowed to `subsetIds` when provided.
  */
 export function getEnabledChecks(settings, subsetIds = null) {
-  const subset = Array.isArray(subsetIds) && subsetIds.length ? new Set(subsetIds) : null;
-  return resolveCheckState(settings)
-    .filter((row) => row.enabled && (!subset || subset.has(row.id)))
+  return getEnabledCheckRows(settings, subsetIds)
     .map((row) => ({ check: getCheck(row.id), config: row.config }))
     .filter((x) => x.check);
 }

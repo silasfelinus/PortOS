@@ -18,7 +18,7 @@
 import { randomUUID } from 'crypto';
 import { broadcastSse, attachSseClient, SSE_CLEANUP_DELAY_MS } from '../../../lib/sseUtils.js';
 import { runStagedLLM } from '../../../lib/stageRunner.js';
-import { getEnabledChecks, resolveCheckState } from '../../../lib/editorial/index.js';
+import { getEnabledChecks, getEnabledCheckRows } from '../../../lib/editorial/index.js';
 import { getSettings } from '../../settings.js';
 import { getSeries } from '../series.js';
 import { listIssues } from '../issues.js';
@@ -49,10 +49,13 @@ export async function runEditorialChecks(seriesId, options = {}) {
     return { runId, findings: [], perCheck: [], canceled: false };
   }
 
-  // Build the shared context once — every check reads from this.
+  // Build the shared context once — every check reads from this. Only pay the
+  // manuscript section-collection I/O when an enabled check actually consumes
+  // the stitched corpus (deterministic checks like naming use only the canon).
   const series = await getSeries(seriesId);
+  const needsManuscript = enabled.some(({ check }) => check.needsManuscript);
   const [sections, canon, issues] = await Promise.all([
-    collectManuscriptSections(seriesId),
+    needsManuscript ? collectManuscriptSections(seriesId) : Promise.resolve([]),
     getSeriesCanon(series),
     listIssues({ seriesId }).catch(() => []),
   ]);
@@ -118,9 +121,7 @@ export async function runEditorialChecks(seriesId, options = {}) {
  */
 export async function buildEditorialCheckPlan(seriesId, { checkIds = null, settings } = {}) {
   const resolved = settings || await getSettings();
-  const subset = Array.isArray(checkIds) && checkIds.length ? new Set(checkIds) : null;
-  const checks = resolveCheckState(resolved)
-    .filter((row) => row.enabled && (!subset || subset.has(row.id)))
+  const checks = getEnabledCheckRows(resolved, checkIds)
     .map((row) => ({ id: row.id, label: row.label, kind: row.kind, scope: row.scope }));
   return { seriesId, checks, enabledCount: checks.length };
 }

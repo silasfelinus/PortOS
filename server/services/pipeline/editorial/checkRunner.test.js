@@ -45,11 +45,13 @@ vi.mock('../manuscriptReview.js', () => ({ seedReviewFromFindings: (...a) => see
 
 const { runEditorialChecks, buildEditorialCheckPlan } = await import('./checkRunner.js');
 const { runStagedLLM } = await import('../../../lib/stageRunner.js');
+const { collectManuscriptSections } = await import('../arcPlanner.js');
 
 beforeEach(() => {
   seedStore.length = 0;
   seedReviewFromFindings.mockClear();
   runStagedLLM.mockClear();
+  collectManuscriptSections.mockClear();
 });
 
 describe('runEditorialChecks', () => {
@@ -86,6 +88,15 @@ describe('runEditorialChecks', () => {
     const result = await runEditorialChecks('s1', { checkIds: ['naming.dissimilar-names'] });
     expect(runStagedLLM).not.toHaveBeenCalled(); // info-dump (the only LLM check) skipped
     expect(result.findings.every((f) => f.checkId === 'naming.dissimilar-names')).toBe(true);
+  });
+
+  it('skips manuscript collection when no enabled check needs it', async () => {
+    // Only the deterministic naming check (no needsManuscript) → no section I/O.
+    await runEditorialChecks('s1', { checkIds: ['naming.dissimilar-names'] });
+    expect(collectManuscriptSections).not.toHaveBeenCalled();
+    // The info-dump check (needsManuscript) does trigger the collection.
+    await runEditorialChecks('s1', { checkIds: ['prose.info-dumping'] });
+    expect(collectManuscriptSections).toHaveBeenCalled();
   });
 
   it('skips disabled checks', async () => {

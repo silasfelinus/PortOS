@@ -7,7 +7,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler, ServerError } from '../../lib/errorHandler.js';
 import { validateRequest, editorialCheckConfigSchema, editorialChecksRunSchema } from '../../lib/validation.js';
-import { getCheck, resolveCheckState } from '../../lib/editorial/index.js';
+import { getCheck, resolveCheckState, readChecksSlice } from '../../lib/editorial/index.js';
 import * as seriesSvc from '../../services/pipeline/series.js';
 import * as issuesSvc from '../../services/pipeline/issues.js';
 import * as editorialAnalysis from '../../services/pipeline/editorialAnalysis.js';
@@ -100,7 +100,7 @@ router.patch('/editorial/checks/:id', asyncHandler(async (req, res) => {
   const updated = await updateSettingsWith((current) => {
     const slice = current.pipelineEditorialChecks && typeof current.pipelineEditorialChecks === 'object'
       ? current.pipelineEditorialChecks : {};
-    const checks = slice.checks && typeof slice.checks === 'object' ? slice.checks : {};
+    const checks = readChecksSlice(current);
     const prev = checks[check.id] && typeof checks[check.id] === 'object' ? checks[check.id] : {};
     const nextEntry = { ...prev };
     if (body.enabled !== undefined) nextEntry.enabled = body.enabled;
