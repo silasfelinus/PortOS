@@ -70,10 +70,11 @@ vi.mock('./manuscriptReview.js', () => ({
   seedReviewFromFindings: vi.fn(async () => ({ comments: [] })),
   getReview: vi.fn(async () => ({ comments: [] })),
 }));
-vi.mock('./editorial/checkRunner.js', () => ({
+const checkRunnerSpies = {
   runEditorialChecks: vi.fn(async () => ({ runId: 'ec', findings: [], perCheck: [], canceled: false })),
   buildEditorialCheckPlan: vi.fn(async () => ({ seriesId: 's', checks: [], enabledCount: 0 })),
-}));
+};
+vi.mock('./editorial/checkRunner.js', () => checkRunnerSpies);
 vi.mock('../settings.js', async (importOriginal) => ({
   ...(await importOriginal()),
   getSettings: vi.fn(async () => ({})),
@@ -474,6 +475,16 @@ describe('autopilot conductor', () => {
     expect(last?.type).toBe('paused');
     expect(last?.reason).toMatch(/budget/);
     expect(arcSpies.verifyArc).not.toHaveBeenCalled();
+  });
+
+  it('maxEditorialRounds:0 skips the editorial-checks step too (no budget spend)', async () => {
+    checkRunnerSpies.runEditorialChecks.mockClear();
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxEditorialRounds: 0 });
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+    // Skipping the editorial gate must also skip the registry checks pass.
+    expect(checkRunnerSpies.runEditorialChecks).not.toHaveBeenCalled();
   });
 
   it('a second start while active resolves to alreadyRunning', async () => {

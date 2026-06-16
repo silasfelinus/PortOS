@@ -549,9 +549,14 @@ async function runEditorial(sId, record) {
   const maxRounds = Number.isInteger(record.options.maxEditorialRounds)
     ? record.options.maxEditorialRounds
     : MAX_EDITORIAL_ROUNDS;
-  // maxRounds === 0 means "skip the editorial gate entirely".
+  // maxRounds === 0 means "skip the editorial gate entirely" — which includes
+  // the registry-driven editorial checks (the default info-dumping check is
+  // LLM-backed, so a skip run must not spend budget on it). Mark both reviewed
+  // so the resolver advances past editorialChecks too; the user can still run
+  // checks on demand via the route.
   if (maxRounds === 0) {
     record.runState.editorialReviewed = true;
+    record.runState.editorialChecksReviewed = true;
     return {};
   }
   for (let round = 1; round <= maxRounds; round += 1) {
