@@ -90,6 +90,8 @@ import {
 import * as volumeBeatsRunner from './volumeBeatsRunner.js';
 import * as autoRunner from './autoRunner.js';
 import { seedReviewFromFindings, getReview } from './manuscriptReview.js';
+import { runEditorialChecks, buildEditorialCheckPlan } from './editorial/checkRunner.js';
+import { getSettings } from '../settings.js';
 import { generateManuscriptFix, acceptManuscriptFix } from './manuscriptFix.js';
 import { verifyComicScript } from './scriptVerify.js';
 import { checkSeriesCanonReadiness } from './canonReadiness.js';
@@ -270,6 +272,13 @@ export function resolveNextStep(series, issues, runState = {}, options = {}) {
   // STEP 5 — series-level editorial review via the manuscript editor (once).
   if (!runState.editorialReviewed) {
     return { kind: 'editorialReview', reason: 'editorial review not yet run this run' };
+  }
+
+  // STEP 5.2 — registry-driven editorial checks (#1284). Runs the enabled
+  // editorial checks once per run and seeds their findings into the same
+  // manuscript-review comment set. A no-op when no checks are enabled.
+  if (!runState.editorialChecksReviewed) {
+    return { kind: 'editorialChecks', reason: 'editorial checks not yet run this run' };
   }
 
   // STEP 5.5 — canon descriptive integrity. Before ANY visual production, every
@@ -540,9 +549,14 @@ async function runEditorial(sId, record) {
   const maxRounds = Number.isInteger(record.options.maxEditorialRounds)
     ? record.options.maxEditorialRounds
     : MAX_EDITORIAL_ROUNDS;
-  // maxRounds === 0 means "skip the editorial gate entirely".
+  // maxRounds === 0 means "skip the editorial gate entirely" — which includes
+  // the registry-driven editorial checks (the default info-dumping check is
+  // LLM-backed, so a skip run must not spend budget on it). Mark both reviewed
+  // so the resolver advances past editorialChecks too; the user can still run
+  // checks on demand via the route.
   if (maxRounds === 0) {
     record.runState.editorialReviewed = true;
+    record.runState.editorialChecksReviewed = true;
     return {};
   }
   for (let round = 1; round <= maxRounds; round += 1) {
@@ -590,6 +604,42 @@ async function runEditorial(sId, record) {
       }
     }
   }
+  return {};
+}
+
+// STEP 5.2 — run the registry-driven editorial checks once per run, seeding
+// their findings into the same manuscript-review comment set. Only LLM-kind
+// checks cost tokens, so gate the daily budget AND bill a cos action only when
+// an enabled LLM check will actually run — a deterministic-only (or all-checks-
+// disabled) run does cheap local work and must neither pause on an exhausted
+// budget nor consume quota. Failures are surfaced (logged) but never block the
+// run — editorial checks are advisory.
+async function runEditorialChecksPass(sId, record) {
+  if (record.cancelRequested) return { canceled: true };
+  const settings = await getSettings();
+  const plan = await buildEditorialCheckPlan(sId, { settings });
+  const hasLlmCheck = plan.checks.some((c) => c.kind === 'llm');
+  if (hasLlmCheck) {
+    const beforeChecks = await budgetPause();
+    if (beforeChecks) return beforeChecks;
+  }
+  // Bridge autopilot cancellation into the runner's cooperative AbortSignal so a
+  // mid-pass /autopilot/cancel stops before the next check and skips seeding
+  // (the runner re-checks `signal.aborted` after each check). A live getter
+  // reflects `record.cancelRequested` without a separate controller to manage.
+  const signal = { get aborted() { return record.cancelRequested; } };
+  const result = await runEditorialChecks(sId, { ...providerOverrideOpts(record), settings, signal }).catch((err) => {
+    console.log(`⚠️ autopilot: editorial checks failed for ${sId.slice(0, 12)}: ${err.message}`);
+    return null;
+  });
+  // Canceled mid-pass — don't bill, don't mark the step reviewed; let the loop
+  // unwind via its canceled branch.
+  if (result?.canceled || record.cancelRequested) return { canceled: true };
+  if (result) {
+    if (hasLlmCheck) await recordDomainUsage('cos', { actions: 1 });
+    broadcast(sId, { type: 'verify:round', scope: 'editorialChecks', round: 1, findings: result.findings.length, blocking: 0 });
+  }
+  record.runState.editorialChecksReviewed = true;
   return {};
 }
 
@@ -820,6 +870,8 @@ async function dispatchStep(sId, step, record) {
       return runScriptVerify(sId, step.issueId, record);
     case 'editorialReview':
       return runEditorial(sId, record);
+    case 'editorialChecks':
+      return runEditorialChecksPass(sId, record);
     case 'canonVerify':
       return runCanonVerify(sId, record);
     case 'visualDraft':
@@ -855,6 +907,7 @@ function buildDryRunPlan(series, issues, options) {
   if (textNeeded) plan.push({ kind: 'textStages', count: textNeeded });
   if (isComicTarget(series)) plan.push({ kind: 'scriptVerify', count: ordered.length });
   plan.push({ kind: 'editorialReview', count: 1, note: `up to ${MAX_EDITORIAL_ROUNDS} rounds` });
+  plan.push({ kind: 'editorialChecks', count: 1, note: 'enabled editorial checks (#1284)' });
   if (VISUAL_DRAFT_ENABLED && wantsVisual(options) && isComicTarget(series)) {
     plan.push({ kind: 'canonVerify', count: 1, note: 'descriptive integrity of drawn nouns' });
     const visualNeeded = ordered.filter((i) => !visualReady(i)).length;
@@ -906,6 +959,7 @@ export async function startSeriesAutopilot(sId, options = {}) {
       arcAttempted: false,
       arcVerified: false,
       editorialReviewed: false,
+      editorialChecksReviewed: false,
       canonVerified: false,
       episodesAttempted: new Set(),
       beatsAttempted: new Set(),
@@ -958,13 +1012,20 @@ export async function startSeriesAutopilot(sId, options = {}) {
         }
 
         // Budget gate (mirrors cosJobScheduler) — pause when today's cos action
-        // budget is exhausted rather than burning past it.
-        const budget = await getDomainBudgetStatus('cos');
-        if (!budget.withinBudget) {
-          await persistMarker(sId, { status: 'paused', runId, currentStep: step.kind, lastError: `daily cos ${budget.exceeded} budget reached` });
-          broadcast(sId, { type: 'paused', runId, reason: `daily cos ${budget.exceeded} budget reached`, completedAt: new Date().toISOString() });
-          console.log(`⏸️  autopilot paused (budget) — series=${sId.slice(0, 12)} after ${ordinal} steps`);
-          return;
+        // budget is exhausted rather than burning past it. The editorialChecks
+        // step is exempt from this blanket pre-dispatch gate because it
+        // self-gates: runEditorialChecksPass only pauses/bills the budget when an
+        // enabled LLM check will actually run (returning a pause result this loop
+        // still handles), so a deterministic-only or all-disabled checks step can
+        // complete a text-ready series even with the budget exhausted.
+        if (step.kind !== 'editorialChecks') {
+          const budget = await getDomainBudgetStatus('cos');
+          if (!budget.withinBudget) {
+            await persistMarker(sId, { status: 'paused', runId, currentStep: step.kind, lastError: `daily cos ${budget.exceeded} budget reached` });
+            broadcast(sId, { type: 'paused', runId, reason: `daily cos ${budget.exceeded} budget reached`, completedAt: new Date().toISOString() });
+            console.log(`⏸️  autopilot paused (budget) — series=${sId.slice(0, 12)} after ${ordinal} steps`);
+            return;
+          }
         }
 
         ordinal += 1;

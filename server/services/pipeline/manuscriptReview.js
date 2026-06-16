@@ -109,6 +109,11 @@ function sanitizeComment(raw) {
       ? raw.replacementStrategy
       : replacementStrategyForCategory(category),
     anchorQuote: clampStr(raw.anchorQuote, 400),
+    // Which editorial check produced this finding (#1284). `null` for findings
+    // from the manuscript-completeness pass (and older peers / legacy records)
+    // — those predate the registry, so they group as a single un-checked set.
+    // Optional + additive, so the synced review doc stays backward-compatible.
+    checkId: typeof raw.checkId === 'string' && raw.checkId ? raw.checkId : null,
     status: STATUS_SET.has(raw.status) ? raw.status : 'open',
     fix: sanitizeFix(raw.fix),
     sourceRunId: typeof raw.sourceRunId === 'string' ? raw.sourceRunId : null,
@@ -143,9 +148,13 @@ export async function getReview(seriesId) {
   return readReview(seriesId);
 }
 
-// Stable identity for a finding so re-running completeness doesn't duplicate a
-// still-open comment the user hasn't acted on yet.
-const findingKey = (c) => `${c.issueNumber ?? ''}|${c.anchorQuote}|${c.problem}`;
+// Stable identity for a finding so re-running completeness (or an editorial
+// check) doesn't duplicate a still-open comment the user hasn't acted on yet.
+// `checkId` is part of the key so the same anchor flagged by two different
+// checks stays as two distinct findings, and a dismissed finding only stays
+// suppressed for the check that raised it. Completeness findings carry no
+// checkId (→ '' prefix), so their existing dedup is unchanged.
+const findingKey = (c) => `${c.checkId ?? ''}|${c.issueNumber ?? ''}|${c.anchorQuote}|${c.problem}`;
 
 /**
  * Merge a fresh set of shaped completeness findings into the review.
@@ -169,10 +178,18 @@ const findingKey = (c) => `${c.issueNumber ?? ''}|${c.anchorQuote}|${c.problem}`
  *    resurrected on the next inbound sync. A flip to `dismissed` rides the same
  *    LWW path and converges. `accepted`/`dismissed` comments are untouched.
  *
+ * `checkId` SCOPES the 'fresh' reconciliation to one check's findings: only open
+ * comments whose `checkId` matches are eligible for auto-dismissal. The
+ * completeness pass seeds with no checkId (its findings carry `checkId: null`),
+ * so a fresh completeness run reconciles ONLY the null-checkId space and can't
+ * dismiss an editorial-check's open findings (e.g. `prose.info-dumping`), which
+ * carry a different checkId. Ignored in 'merge' mode (nothing is auto-dismissed).
+ *
  * New findings resolve their issueId/stageId from the current manuscript
  * sections by issueNumber.
  */
-export async function seedReviewFromFindings(seriesId, findings, { runId = null, mode = 'merge' } = {}) {
+export async function seedReviewFromFindings(seriesId, findings, { runId = null, mode = 'merge', checkId = null } = {}) {
+  const scopeCheckId = checkId ?? null;
   const sections = await collectManuscriptSections(seriesId);
   const byNumber = new Map(sections.map((s) => [s.number, s]));
   return queueReviewWrite(seriesId, async () => {
@@ -227,7 +244,7 @@ export async function seedReviewFromFindings(seriesId, findings, { runId = null,
     let dismissedCount = 0;
     let backfilledCount = 0;
     const carried = review.comments.map((c) => {
-      if (mode === 'fresh' && c.status === 'open' && !freshKeys.has(findingKey(c))) {
+      if (mode === 'fresh' && c.status === 'open' && (c.checkId ?? null) === scopeCheckId && !freshKeys.has(findingKey(c))) {
         dismissedCount += 1;
         return sanitizeComment({ ...c, status: 'dismissed', updatedAt: now });
       }

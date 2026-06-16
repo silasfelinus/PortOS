@@ -70,6 +70,15 @@ vi.mock('./manuscriptReview.js', () => ({
   seedReviewFromFindings: vi.fn(async () => ({ comments: [] })),
   getReview: vi.fn(async () => ({ comments: [] })),
 }));
+const checkRunnerSpies = {
+  runEditorialChecks: vi.fn(async () => ({ runId: 'ec', findings: [], perCheck: [], canceled: false })),
+  buildEditorialCheckPlan: vi.fn(async () => ({ seriesId: 's', checks: [], enabledCount: 0 })),
+};
+vi.mock('./editorial/checkRunner.js', () => checkRunnerSpies);
+vi.mock('../settings.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  getSettings: vi.fn(async () => ({})),
+}));
 vi.mock('./manuscriptFix.js', () => ({
   generateManuscriptFix: vi.fn(async () => ({})),
   acceptManuscriptFix: vi.fn(async () => ({})),
@@ -218,11 +227,21 @@ describe('resolveNextStep (pure)', () => {
     expect(step.kind).toBe('editorialReview');
   });
 
-  it('is done once editorial review has run (no visuals requested)', () => {
+  it('asks for editorial checks after editorial review, before done/visuals', () => {
     const step = resolveNextStep(
       comic,
       [issue({ stages: { idea: ready(), comicScript: ready(VALID_SCRIPT) } })],
       { arcVerified: true, scriptChecked: new Set(['iss1']), editorialReviewed: true },
+      { includeVisual: false },
+    );
+    expect(step.kind).toBe('editorialChecks');
+  });
+
+  it('is done once editorial review has run (no visuals requested)', () => {
+    const step = resolveNextStep(
+      comic,
+      [issue({ stages: { idea: ready(), comicScript: ready(VALID_SCRIPT) } })],
+      { arcVerified: true, scriptChecked: new Set(['iss1']), editorialReviewed: true, editorialChecksReviewed: true },
       { includeVisual: false },
     );
     expect(step.kind).toBe('done');
@@ -232,7 +251,7 @@ describe('resolveNextStep (pure)', () => {
     const step = resolveNextStep(
       comic,
       [issue({ stages: { idea: ready(), comicScript: ready(VALID_SCRIPT) } })],
-      { arcVerified: true, scriptChecked: new Set(['iss1']), editorialReviewed: true },
+      { arcVerified: true, scriptChecked: new Set(['iss1']), editorialReviewed: true, editorialChecksReviewed: true },
       { includeVisual: true, target: 'text' },
     );
     expect(step.kind).toBe('done');
@@ -242,7 +261,7 @@ describe('resolveNextStep (pure)', () => {
     const step = resolveNextStep(
       comic,
       [issue({ stages: { idea: ready(), comicScript: ready(VALID_SCRIPT) } })],
-      { arcVerified: true, scriptChecked: new Set(['iss1']), editorialReviewed: true },
+      { arcVerified: true, scriptChecked: new Set(['iss1']), editorialReviewed: true, editorialChecksReviewed: true },
       { includeVisual: true },
     );
     expect(step.kind).toBe('canonVerify');
@@ -252,7 +271,7 @@ describe('resolveNextStep (pure)', () => {
     const step = resolveNextStep(
       comic,
       [issue({ stages: { idea: ready(), comicScript: ready(VALID_SCRIPT) } })],
-      { arcVerified: true, scriptChecked: new Set(['iss1']), editorialReviewed: true, canonVerified: true },
+      { arcVerified: true, scriptChecked: new Set(['iss1']), editorialReviewed: true, editorialChecksReviewed: true, canonVerified: true },
       { includeVisual: true },
     );
     expect(step).toMatchObject({ kind: 'visualDraft', issueId: 'iss1' });
@@ -271,7 +290,7 @@ describe('resolveNextStep (pure)', () => {
     const step = resolveNextStep(
       comic,
       [issue({ stages: renderedStages })],
-      { arcVerified: true, scriptChecked: new Set(['iss1']), editorialReviewed: true, canonVerified: true },
+      { arcVerified: true, scriptChecked: new Set(['iss1']), editorialReviewed: true, editorialChecksReviewed: true, canonVerified: true },
       { includeVisual: true },
     );
     expect(step.kind).toBe('done');
@@ -456,6 +475,16 @@ describe('autopilot conductor', () => {
     expect(last?.type).toBe('paused');
     expect(last?.reason).toMatch(/budget/);
     expect(arcSpies.verifyArc).not.toHaveBeenCalled();
+  });
+
+  it('maxEditorialRounds:0 skips the editorial-checks step too (no budget spend)', async () => {
+    checkRunnerSpies.runEditorialChecks.mockClear();
+    const { seriesId } = await seedComplete();
+    await autopilot.startSeriesAutopilot(seriesId, { maxEditorialRounds: 0 });
+    await waitFor(runFinished(seriesId));
+    expect(autopilot.__testing.runs.get(seriesId)?.lastPayload?.type).toBe('complete');
+    // Skipping the editorial gate must also skip the registry checks pass.
+    expect(checkRunnerSpies.runEditorialChecks).not.toHaveBeenCalled();
   });
 
   it('a second start while active resolves to alreadyRunning', async () => {

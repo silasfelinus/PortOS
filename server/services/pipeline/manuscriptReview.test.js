@@ -187,6 +187,26 @@ describe('manuscriptReview — re-run merge vs fresh reconcile', () => {
     expect(kept).toHaveLength(1);
     expect(kept[0].status).toBe('dismissed');
   });
+
+  it('fresh scopes auto-dismissal to its own checkId — leaves other checks open', async () => {
+    // A registry check seeds an open finding (its own checkId).
+    await seedReviewFromFindings(
+      'ser-fresh-scope',
+      [{ problem: 'info dump', anchorQuote: 'as you know', checkId: 'prose.info-dumping' }],
+      { mode: 'merge' },
+    );
+    // A completeness pass (no checkId) re-runs in fresh mode and finds something
+    // else entirely. It must NOT dismiss the registry check's open finding.
+    const next = await seedReviewFromFindings(
+      'ser-fresh-scope',
+      [{ problem: 'Act II sags', anchorQuote: 'the road' }],
+      { mode: 'fresh' },
+    );
+    const infoDump = next.comments.find((c) => c.problem === 'info dump');
+    expect(infoDump.status).toBe('open');
+    expect(infoDump.checkId).toBe('prose.info-dumping');
+    expect(next.comments.find((c) => c.problem === 'Act II sags').status).toBe('open');
+  });
 });
 
 describe('manuscriptReview — with-edits fix seeding', () => {
