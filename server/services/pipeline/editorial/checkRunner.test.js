@@ -117,6 +117,16 @@ describe('runEditorialChecks', () => {
     expect(seedReviewFromFindings).not.toHaveBeenCalled();
   });
 
+  it('skips seeding when canceled mid-run (no partial review mutation)', async () => {
+    // Abort during the LLM check; the deterministic naming check already
+    // collected findings, but a canceled run must not persist them.
+    const controller = new AbortController();
+    runStagedLLM.mockImplementationOnce(async () => { controller.abort(); return { runId: 'x', content: { findings: [] } }; });
+    const result = await runEditorialChecks('s1', { signal: controller.signal });
+    expect(result.canceled).toBe(true);
+    expect(seedReviewFromFindings).not.toHaveBeenCalled();
+  });
+
   it('one failing check does not abort the pass', async () => {
     runStagedLLM.mockRejectedValueOnce(new Error('provider down'));
     const result = await runEditorialChecks('s1');

@@ -102,13 +102,19 @@ export async function runEditorialChecks(seriesId, options = {}) {
       perCheck.push({ checkId: check.id, error: message });
       onProgress?.({ type: 'check:complete', checkId: check.id, error: message });
     }
+    // Re-check AFTER the (possibly long-running LLM) check so a cancellation
+    // during the final check is caught before the seed below — otherwise a
+    // cancel mid-run would still persist the partial findings.
+    if (signal?.aborted) { canceled = true; break; }
   }
 
   // Seed in 'merge' mode (never 'fresh'): a per-series seed of only the editorial
   // checks' findings must not auto-dismiss completeness or other-check open
   // comments. Merge dedups via findingKey (which now includes checkId) and keeps
-  // dismissed findings suppressed per-check.
-  if (findings.length) {
+  // dismissed findings suppressed per-check. Skip entirely on cancellation — a
+  // canceled run emits a `canceled` terminal event and must not mutate the
+  // review with partial findings collected before the abort.
+  if (findings.length && !canceled) {
     await seedReviewFromFindings(seriesId, findings, { runId, mode: 'merge' });
   }
   return { runId, findings, perCheck, canceled };
