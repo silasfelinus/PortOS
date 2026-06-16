@@ -999,13 +999,20 @@ export async function startSeriesAutopilot(sId, options = {}) {
         }
 
         // Budget gate (mirrors cosJobScheduler) — pause when today's cos action
-        // budget is exhausted rather than burning past it.
-        const budget = await getDomainBudgetStatus('cos');
-        if (!budget.withinBudget) {
-          await persistMarker(sId, { status: 'paused', runId, currentStep: step.kind, lastError: `daily cos ${budget.exceeded} budget reached` });
-          broadcast(sId, { type: 'paused', runId, reason: `daily cos ${budget.exceeded} budget reached`, completedAt: new Date().toISOString() });
-          console.log(`⏸️  autopilot paused (budget) — series=${sId.slice(0, 12)} after ${ordinal} steps`);
-          return;
+        // budget is exhausted rather than burning past it. The editorialChecks
+        // step is exempt from this blanket pre-dispatch gate because it
+        // self-gates: runEditorialChecksPass only pauses/bills the budget when an
+        // enabled LLM check will actually run (returning a pause result this loop
+        // still handles), so a deterministic-only or all-disabled checks step can
+        // complete a text-ready series even with the budget exhausted.
+        if (step.kind !== 'editorialChecks') {
+          const budget = await getDomainBudgetStatus('cos');
+          if (!budget.withinBudget) {
+            await persistMarker(sId, { status: 'paused', runId, currentStep: step.kind, lastError: `daily cos ${budget.exceeded} budget reached` });
+            broadcast(sId, { type: 'paused', runId, reason: `daily cos ${budget.exceeded} budget reached`, completedAt: new Date().toISOString() });
+            console.log(`⏸️  autopilot paused (budget) — series=${sId.slice(0, 12)} after ${ordinal} steps`);
+            return;
+          }
         }
 
         ordinal += 1;
