@@ -24,6 +24,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import {
   Plus, Trash2, Loader2, Sparkles, ShieldCheck, ChevronRight, ChevronDown,
@@ -128,26 +129,53 @@ function VerifyScopeHint({ scope }) {
   );
 }
 
-// Hover-revealed tooltip variant — anchors below a parent with the `group`
-// class. Use this when the scope hint should sit on the button itself
-// instead of taking up vertical space in the layout. The `id` is exposed so
-// the triggering button can wire `aria-describedby` for screen readers.
-function VerifyScopeTooltip({ scope, id }) {
+// Hover-revealed tooltip variant — wraps its trigger and renders the popover
+// through a portal to <body> with fixed positioning, anchored below-right of
+// the trigger. The portal escapes the horizontally-scrolling button row's
+// `overflow` clipping and any ancestor stacking context (a plain
+// `absolute`/`z-index` popover got clipped and painted under the nav). The
+// `id` is exposed so the trigger can wire `aria-describedby` for screen readers.
+function VerifyScopeTooltip({ scope, id, children }) {
+  const anchorRef = useRef(null);
+  const [pos, setPos] = useState(null);
+
+  const show = useCallback(() => {
+    const el = anchorRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setPos({ top: r.bottom + 8, right: Math.max(8, window.innerWidth - r.right) });
+  }, []);
+  const hide = useCallback(() => setPos(null), []);
+
   return (
     <div
-      id={id}
-      role="tooltip"
-      className="absolute top-full right-0 mt-2 w-80 max-w-[calc(100vw-2rem)] bg-port-card border border-port-border rounded-lg shadow-lg p-3 z-[60] opacity-0 invisible group-hover:opacity-100 group-hover:visible group-focus-within:opacity-100 group-focus-within:visible transition-opacity pointer-events-none text-left normal-case tracking-normal"
+      ref={anchorRef}
+      className="relative"
+      onMouseEnter={show}
+      onMouseLeave={hide}
+      onFocus={show}
+      onBlur={hide}
     >
-      <p className="text-[10px] text-gray-300 font-medium mb-1 flex items-center gap-1">
-        <Info size={10} /> What this checks
-      </p>
-      <p className="text-[10px] text-gray-400 italic mb-2">{scope.depth}</p>
-      <ul className="list-disc pl-4 space-y-0.5 text-[10px] text-gray-400">
-        {scope.checks.map((c) => (
-          <li key={c}>{c}</li>
-        ))}
-      </ul>
+      {children}
+      {pos && createPortal(
+        <div
+          id={id}
+          role="tooltip"
+          style={{ position: 'fixed', top: pos.top, right: pos.right }}
+          className="w-80 max-w-[calc(100vw-1rem)] bg-port-card border border-port-border rounded-lg shadow-lg p-3 z-[60] text-left normal-case tracking-normal pointer-events-none"
+        >
+          <p className="text-[10px] text-gray-300 font-medium mb-1 flex items-center gap-1">
+            <Info size={10} /> What this checks
+          </p>
+          <p className="text-[10px] text-gray-400 italic mb-2">{scope.depth}</p>
+          <ul className="list-disc pl-4 space-y-0.5 text-[10px] text-gray-400">
+            {scope.checks.map((c) => (
+              <li key={c}>{c}</li>
+            ))}
+          </ul>
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }
@@ -763,7 +791,7 @@ function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
             {generateBtnLabel}
           </button>
           {hasGeneratedArc ? (
-            <div className="relative group">
+            <VerifyScopeTooltip scope={VERIFY_ARC_SCOPE} id="verify-arc-scope-tooltip">
               <button
                 type="button"
                 onClick={runVerify}
@@ -774,8 +802,7 @@ function ArcHeader({ series, onSeriesUpdate, onIssuesUpdate, onFlushPending }) {
                 {running === 'verify' ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
                 Verify arc
               </button>
-              <VerifyScopeTooltip scope={VERIFY_ARC_SCOPE} id="verify-arc-scope-tooltip" />
-            </div>
+            </VerifyScopeTooltip>
           ) : null}
           <button
             type="button"
