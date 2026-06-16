@@ -618,10 +618,18 @@ async function runEditorialChecksPass(sId, record) {
     const beforeChecks = await budgetPause();
     if (beforeChecks) return beforeChecks;
   }
-  const result = await runEditorialChecks(sId, { ...providerOverrideOpts(record), settings }).catch((err) => {
+  // Bridge autopilot cancellation into the runner's cooperative AbortSignal so a
+  // mid-pass /autopilot/cancel stops before the next check and skips seeding
+  // (the runner re-checks `signal.aborted` after each check). A live getter
+  // reflects `record.cancelRequested` without a separate controller to manage.
+  const signal = { get aborted() { return record.cancelRequested; } };
+  const result = await runEditorialChecks(sId, { ...providerOverrideOpts(record), settings, signal }).catch((err) => {
     console.log(`⚠️ autopilot: editorial checks failed for ${sId.slice(0, 12)}: ${err.message}`);
     return null;
   });
+  // Canceled mid-pass — don't bill, don't mark the step reviewed; let the loop
+  // unwind via its canceled branch.
+  if (result?.canceled || record.cancelRequested) return { canceled: true };
   if (result) {
     if (hasLlmCheck) await recordDomainUsage('cos', { actions: 1 });
     broadcast(sId, { type: 'verify:round', scope: 'editorialChecks', round: 1, findings: result.findings.length, blocking: 0 });
