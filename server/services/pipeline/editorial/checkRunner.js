@@ -40,9 +40,13 @@ import { canonicalStringify } from '../../../lib/objects.js';
 // synced finding isn't falsely flagged stale after an import re-orders keys.
 //
 // NOTE: the input set is derived from `needsManuscript` + a fixed series field
-// set, NOT a per-check source declaration — a future check that reads a different
-// series/context field must extend these segments (per-check source deps: #1387).
-// NUL separates the segments so they can't run together ambiguously.
+// set, NOT a per-check source declaration — so editing the style guide or ticking
+// clock marks ALL findings in that segment stale, not only the checks that read
+// it. That over-flag is the deliberate SAFE direction (never under-flag): a check
+// added later that reads `styleGuide` still auto-stales, whereas a per-check
+// allow-list would silently false-fresh it. Precise-and-safe scoping via declared
+// per-check sources is tracked in #1387. NUL separates the segments so they can't
+// run together ambiguously.
 const HASH_SEP = '\u0000';
 const sha256 = (text) => createHash('sha256').update(text || '').digest('hex');
 function computeSourceHashes(manuscript, canon, series) {
