@@ -17,13 +17,14 @@
 
 import { randomUUID, createHash } from 'crypto';
 import { createSseRunner } from '../../../lib/sseUtils.js';
-import { runStagedLLM } from '../../../lib/stageRunner.js';
+import { runStagedLLM, resolveStageContext } from '../../../lib/stageRunner.js';
+import { planManuscriptPass } from '../../../lib/contextBudget.js';
 import { getEnabledChecks, getEnabledCheckRows, getCheck } from '../../../lib/editorial/index.js';
 import { getSettings } from '../../settings.js';
 import { getSeries } from '../series.js';
 import { listIssues } from '../issues.js';
 import { getSeriesCanon } from '../seriesCanon.js';
-import { collectManuscriptSections, sectionsCorpus } from '../arcPlanner.js';
+import { collectManuscriptSections, sectionsCorpus, manuscriptSectionHeader } from '../arcPlanner.js';
 import { seedReviewFromFindings, getReview } from '../manuscriptReview.js';
 import { canonicalStringify } from '../../../lib/objects.js';
 
@@ -63,6 +64,14 @@ function computeSourceHashes(manuscript, canon, series) {
   };
 }
 const hashForCheck = (hashes, needsManuscript) => (needsManuscript ? hashes.withManuscript : hashes.canonOnly);
+
+// Output room reserved for an editorial check's findings JSON. Sized for the
+// editorial output (a bounded findings list — far smaller than the completeness
+// pass's full-page rewrites), NOT the 8_000-token contextBudget default: that
+// default exceeds the 8_192-token fallback window, so inheriting it would drive
+// the usable input budget to 0 on an unknown/small local provider — the exact
+// case this chunking targets — and silently feed the model an empty manuscript.
+const EDITORIAL_OUTPUT_RESERVE_TOKENS = 2_000;
 
 /**
  * Run the enabled editorial checks for a series and seed their findings into the
@@ -110,10 +119,40 @@ export async function runEditorialChecks(seriesId, options = {}) {
     canon,
     providerOverride,
     modelOverride,
+    // The run's AbortSignal, so a multi-chunk LLM check can stop launching
+    // further chunk calls mid-run (the runner only checks it before/after each
+    // check.run()). Mirrors the per-chunk cancel check in the completeness pass.
+    signal,
     // Injected LLM caller — keeps server/lib/editorial pure. Forwards the
     // provider/model overrides so an LLM check honors the autopilot's choice.
     callStagedLLM: (stage, vars, opts = {}) =>
       runStagedLLM(stage, vars, { providerOverride, modelOverride, ...opts }),
+    // Injected manuscript chunker — plans the stitched manuscript into chunks
+    // sized to `stage`'s resolved provider context window (reusing the same
+    // budgeter as the completeness pass), so a long series is fully reviewed
+    // instead of truncated on a small/local provider. Returns the chunk-corpus
+    // strings (one for a whole-fits provider) for an LLM check to iterate.
+    // Lives here (not the pure registry) because it resolves the provider.
+    planManuscriptChunks: async (stage, { overheadTokens = 0 } = {}) => {
+      if (!sections.length) return [];
+      const { contextWindow } = await resolveStageContext(stage, { providerOverride, modelOverride });
+      const plan = planManuscriptPass({
+        contextWindow,
+        // Each section's full contribution = header + body, matching sectionsCorpus.
+        sections: sections.map((s) => ({ ...s, text: `${manuscriptSectionHeader(s)}\n\n${s.content || ''}` })),
+        overheadTokens,
+        outputReserveTokens: EDITORIAL_OUTPUT_RESERVE_TOKENS,
+      });
+      // One whole chunk or many — the same usable-char budget caps each. Do NOT
+      // floor this above plan.usableChars: on a genuinely small configured window
+      // that would push the prompt back over the provider's context and get it
+      // clipped/rejected. The editorial-sized output reserve above is what keeps
+      // usableChars positive on the common unknown/8K-fallback provider.
+      const corpora = plan.mode === 'whole'
+        ? [manuscript]
+        : plan.chunks.map((c) => sectionsCorpus(c.sections));
+      return corpora.map((c) => c.slice(0, plan.usableChars));
+    },
   };
 
   const findings = [];

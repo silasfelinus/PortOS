@@ -17,6 +17,7 @@ vi.mock('../arcPlanner.js', () => ({
     { number: 1, title: 'Pilot', stageId: 'prose', content: 'As you know, Bob, the kingdom fell.' },
   ]),
   sectionsCorpus: vi.fn((sections) => sections.map((s) => s.content).join('\n')),
+  manuscriptSectionHeader: vi.fn((s) => `# Issue ${s.number}`),
 }));
 vi.mock('../../../lib/stageRunner.js', () => ({
   runStagedLLM: vi.fn(async () => ({
@@ -27,6 +28,8 @@ vi.mock('../../../lib/stageRunner.js', () => ({
       ],
     },
   })),
+  // A roomy window by default → manuscript LLM checks run in one whole-corpus call.
+  resolveStageContext: vi.fn(async () => ({ provider: { type: 'cli' }, model: 'm', contextWindow: 1_000_000 })),
 }));
 
 // A real-ish seed that applies the same checkId-aware dedup key the store uses,
@@ -49,7 +52,7 @@ vi.mock('../manuscriptReview.js', () => ({
 }));
 
 const { runEditorialChecks, buildEditorialCheckPlan, getReviewWithStaleness } = await import('./checkRunner.js');
-const { runStagedLLM } = await import('../../../lib/stageRunner.js');
+const { runStagedLLM, resolveStageContext } = await import('../../../lib/stageRunner.js');
 const { collectManuscriptSections } = await import('../arcPlanner.js');
 const { getSeriesCanon } = await import('../seriesCanon.js');
 const { getSeries } = await import('../series.js');
@@ -69,6 +72,7 @@ beforeEach(() => {
   reviewState = { comments: [] };
   seedReviewFromFindings.mockClear();
   runStagedLLM.mockClear();
+  resolveStageContext.mockClear();
   collectManuscriptSections.mockClear();
   getSeriesCanon.mockClear();
 });
@@ -140,6 +144,62 @@ describe('runEditorialChecks', () => {
     const controller = new AbortController();
     runStagedLLM.mockImplementationOnce(async () => { controller.abort(); return { runId: 'x', content: { findings: [] } }; });
     const result = await runEditorialChecks('s1', { signal: controller.signal });
+    expect(result.canceled).toBe(true);
+    expect(seedReviewFromFindings).not.toHaveBeenCalled();
+  });
+
+  it('chunks the manuscript per provider window and reviews every section (issue #1340)', async () => {
+    // Three big sections + a small context window → the manuscript can't fit in
+    // one call, so the runner chunks it. Every chunk must reach the model, so a
+    // long series is fully reviewed instead of truncated.
+    const big = (marker) => `${marker} ${'A'.repeat(12_000)}`;
+    collectManuscriptSections.mockResolvedValueOnce([
+      { number: 1, title: 'One', stageId: 'prose', content: big('SEC1') },
+      { number: 2, title: 'Two', stageId: 'prose', content: big('SEC2') },
+      { number: 3, title: 'Three', stageId: 'prose', content: big('SEC3') },
+    ]);
+    resolveStageContext.mockResolvedValueOnce({ provider: { type: 'api', endpoint: 'http://localhost:11434' }, model: 'm', contextWindow: 10_000 });
+
+    await runEditorialChecks('s1', { checkIds: ['prose.info-dumping'] });
+
+    // More than one model call ⇒ the corpus was split across the small window.
+    expect(runStagedLLM.mock.calls.length).toBeGreaterThan(1);
+    // Across all chunks, every section's content was sent to the model.
+    const allSent = runStagedLLM.mock.calls.map((c) => c[1].manuscript).join('\n');
+    expect(allSent).toContain('SEC1');
+    expect(allSent).toContain('SEC2');
+    expect(allSent).toContain('SEC3');
+  });
+
+  it('still sends a non-empty manuscript on a small/fallback context window (issue #1340)', async () => {
+    // An unknown local provider falls back to the 8K window. With the contextBudget
+    // default 8K output reserve this would leave a 0-char input budget and feed the
+    // model an empty manuscript — the editorial-sized output reserve must prevent that.
+    resolveStageContext.mockResolvedValueOnce({ provider: { type: 'api', endpoint: 'http://localhost:1234' }, model: 'm', contextWindow: 8_192 });
+    let sent = null;
+    runStagedLLM.mockImplementationOnce(async (_stage, vars) => { sent = vars.manuscript; return { content: { findings: [] } }; });
+    await runEditorialChecks('s1', { checkIds: ['prose.info-dumping'] });
+    expect(sent).toBeTruthy();
+    expect(sent.trim().length).toBeGreaterThan(0);
+    expect(sent).toContain('kingdom fell'); // the actual section content, not an empty slice
+  });
+
+  it('stops launching chunk calls once cancelled mid-run (issue #1340)', async () => {
+    // Three chunks; cancel during the first chunk's LLM call. The remaining
+    // chunks must NOT be sent to the model, and the run is canceled (no seed).
+    const big = (marker) => `${marker} ${'A'.repeat(12_000)}`;
+    collectManuscriptSections.mockResolvedValueOnce([
+      { number: 1, title: 'One', stageId: 'prose', content: big('SEC1') },
+      { number: 2, title: 'Two', stageId: 'prose', content: big('SEC2') },
+      { number: 3, title: 'Three', stageId: 'prose', content: big('SEC3') },
+    ]);
+    resolveStageContext.mockResolvedValueOnce({ provider: { type: 'api', endpoint: 'http://localhost:11434' }, model: 'm', contextWindow: 10_000 });
+    const controller = new AbortController();
+    runStagedLLM.mockImplementationOnce(async () => { controller.abort(); return { content: { findings: [] } }; });
+
+    const result = await runEditorialChecks('s1', { checkIds: ['prose.info-dumping'], signal: controller.signal });
+
+    expect(runStagedLLM).toHaveBeenCalledTimes(1); // chunks 2 and 3 skipped after abort
     expect(result.canceled).toBe(true);
     expect(seedReviewFromFindings).not.toHaveBeenCalled();
   });
