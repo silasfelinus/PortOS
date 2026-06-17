@@ -226,6 +226,12 @@ export function mergeChunkFindings(lists, max = Infinity) {
 // returns the stage vars — only the manuscript var changes per chunk. These
 // checks are all manuscript-scoped, so findings keep a model-supplied issue
 // number (`withIssueNumber: true`).
+//
+// `overheadTokens` MUST account for every non-manuscript prompt var the check
+// re-sends on each chunk (the objects summary, the style-guide expectations,
+// etc.) on top of EDITORIAL_PROMPT_OVERHEAD_TOKENS — those vars ride alongside
+// the chunked manuscript, so under-counting them lets a chunk overrun the
+// provider window.
 async function runManuscriptLlmCheck(ctx, { stage, category, overheadTokens = 0, buildVars }) {
   const max = ctx.config?.maxFindings ?? 12;
   const chunks = await ctx.planManuscriptChunks(stage, { overheadTokens });

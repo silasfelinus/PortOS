@@ -89,8 +89,11 @@ export async function runEditorialChecks(seriesId, options = {}) {
         sections: sections.map((s) => ({ ...s, text: `${manuscriptSectionHeader(s)}\n\n${s.content || ''}` })),
         overheadTokens,
       });
-      if (plan.mode === 'whole') return [manuscript.slice(0, plan.usableChars)];
-      return plan.chunks.map((c) => sectionsCorpus(c.sections).slice(0, plan.usableChars));
+      // One whole chunk or many — the same usable-char cap applies to each.
+      const corpora = plan.mode === 'whole'
+        ? [manuscript]
+        : plan.chunks.map((c) => sectionsCorpus(c.sections));
+      return corpora.map((c) => c.slice(0, plan.usableChars));
     },
   };
 
