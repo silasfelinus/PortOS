@@ -464,8 +464,30 @@ function ReaderMapBeatTimeline({ readerMap }) {
   );
 }
 
-function ReaderMapView({ readerMap }) {
-  if (!readerMap) return <p className="text-gray-600 italic text-sm">No reader map yet. Generate one to plan the audience experience.</p>;
+// Compact read-only summary of the arc's ticking clock — shown above the reader
+// map so the countdown the reader anticipates sits alongside the hooks/payoffs
+// it threads through. Authored in the Arc Canvas; null/disabled clocks hide.
+function TickingClockSummary({ clock }) {
+  if (!clock || clock.enabled !== true) return null;
+  const span = clock.plantedAtArcPosition != null || clock.dueAtArcPosition != null
+    ? ` · arc ${clock.plantedAtArcPosition ?? '?'} → ${clock.dueAtArcPosition ?? '?'}` : '';
+  const reminderCount = Array.isArray(clock.reminders) ? clock.reminders.length : 0;
+  return (
+    <div className="rounded border border-port-warning/40 bg-port-bg/50 px-2 py-1.5">
+      <div className="text-xs uppercase tracking-wide text-gray-500 mb-0.5">Ticking clock</div>
+      <div className="text-sm text-gray-300">
+        ⏱ {clock.label || '(unnamed countdown)'} <span className="text-gray-500">({clock.kind || 'custom'}{span})</span>
+      </div>
+      {clock.stakes ? <div className="text-xs text-gray-400 mt-0.5">{clock.stakes}</div> : null}
+      {reminderCount ? <div className="text-[11px] text-gray-500 mt-0.5">{reminderCount} reminder beat(s)</div> : null}
+    </div>
+  );
+}
+
+function ReaderMapView({ readerMap, tickingClock }) {
+  if (!readerMap && !(tickingClock && tickingClock.enabled === true)) {
+    return <p className="text-gray-600 italic text-sm">No reader map yet. Generate one to plan the audience experience.</p>;
+  }
   const Section = ({ title, items, render }) => (
     items?.length ? (
       <div>
@@ -476,10 +498,11 @@ function ReaderMapView({ readerMap }) {
   );
   return (
     <div className="space-y-3">
-      <Section title="Hooks" items={readerMap.hooks} render={(h) => `${h.atArcPosition != null ? `@${h.atArcPosition} · ` : ''}${h.label}${h.note ? ` — ${h.note}` : ''}`} />
-      <Section title="Payoffs" items={readerMap.payoffs} render={(p) => `${p.atArcPosition != null ? `@${p.atArcPosition} · ` : ''}${p.label}`} />
-      <Section title="Beats" items={readerMap.beats} render={(b) => `[${b.kind}${b.intensity != null ? ` ${Math.round(b.intensity * 100)}%` : ''}] ${b.note || ''}`} />
-      <Section title="Cliffhangers" items={readerMap.cliffhangers} render={(c) => `after #${c.atIssueBoundary ?? '?'} — ${c.note || ''}`} />
+      <TickingClockSummary clock={tickingClock} />
+      <Section title="Hooks" items={readerMap?.hooks} render={(h) => `${h.atArcPosition != null ? `@${h.atArcPosition} · ` : ''}${h.label}${h.note ? ` — ${h.note}` : ''}`} />
+      <Section title="Payoffs" items={readerMap?.payoffs} render={(p) => `${p.atArcPosition != null ? `@${p.atArcPosition} · ` : ''}${p.label}`} />
+      <Section title="Beats" items={readerMap?.beats} render={(b) => `[${b.kind}${b.intensity != null ? ` ${Math.round(b.intensity * 100)}%` : ''}] ${b.note || ''}`} />
+      <Section title="Cliffhangers" items={readerMap?.cliffhangers} render={(c) => `after #${c.atIssueBoundary ?? '?'} — ${c.note || ''}`} />
     </div>
   );
 }
@@ -729,7 +752,7 @@ function StepPanel({ session, universe, series, issues, stepId, locked, onChange
     return (
       <div className="space-y-3">
         <ReaderMapBeatTimeline readerMap={arc.readerMap} />
-        <ReaderMapView readerMap={arc.readerMap} />
+        <ReaderMapView readerMap={arc.readerMap} tickingClock={arc.tickingClock} />
         {!locked && genButton('Generate reader map', Boolean(arc.readerMap))}
         {!locked && arc.readerMap && <RefineBox onRefine={(fb) => runRefine(fb)} busy={busy} running={isRunning('refine')} phase={phase} />}
       </div>
