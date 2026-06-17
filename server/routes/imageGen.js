@@ -24,7 +24,7 @@ import { getSettings, updateSettingsWith } from '../services/settings.js';
 import { getHfToken, getHfTokenInfo, HF_TOKEN_REGEX } from '../lib/hfToken.js';
 import { getImageModels, isFlux2, isEditOnly, repoForModel, requiredReposForModel } from '../lib/mediaModels.js';
 import { usesDiffusersRunner } from '../lib/runners.js';
-import { inspectModelCache, verifyModelCache, repairModelCache } from '../lib/hfCache.js';
+import { inspectModelCache, verifyModelCache, repairModelCache, aggregateVerifies } from '../lib/hfCache.js';
 import { startHfDownloadStream, openSseStream } from '../lib/sseDownload.js';
 import {
   REQUIRED_PACKAGES, detectPython, installPackages,
@@ -378,24 +378,11 @@ router.get('/models/status', asyncHandler(async (_req, res) => {
     // Integrity is only meaningful for repos that finished downloading — run
     // the cheap structural check across every cached required repo and report
     // the worst result, so a corrupt aux encoder still surfaces a Repair state.
-    const integrity = cached ? aggregateIntegrity(await Promise.all(required.map((r) => verifyModelCache(r)))) : null;
+    const integrity = cached ? aggregateVerifies(await Promise.all(required.map((r) => verifyModelCache(r)))) : null;
     return { id: m.id, repo: required[0], cached, sizeBytes, requiredRepos: required, pendingRepos, integrity };
   }));
   res.json(statuses);
 }));
-
-// Condense one-or-more verifyModelCache() results into the UI-facing shape
-// `{ status, badFiles }`. 'bad' wins over 'ok' wins over 'missing' so a model
-// whose main weights verify but whose aux encoder is corrupt still reports bad.
-function aggregateIntegrity(verifies) {
-  const list = verifies.filter(Boolean);
-  if (list.length === 0) return null;
-  const status = list.some((v) => v.status === 'bad') ? 'bad'
-    : list.every((v) => v.status === 'ok') ? 'ok'
-      : 'missing';
-  const badFiles = list.flatMap((v) => v.files.filter((f) => !f.ok).map((f) => ({ repo: v.repoId, name: f.name, reason: f.reason })));
-  return { status, checkedDeep: list.every((v) => v.checkedDeep), badFiles };
-}
 
 // POST /models/verify — on-demand integrity re-scan. `deep:true` adds the
 // per-file sha256 comparison on top of the structural check. With no `modelId`
@@ -415,7 +402,7 @@ router.post('/models/verify', asyncHandler(async (req, res) => {
   const results = await Promise.all(models.map(async (m) => {
     const required = requiredReposForModel(m) || [];
     const verifies = await Promise.all(required.map((r) => verifyModelCache(r, { deep })));
-    return { id: m.id, ...(aggregateIntegrity(verifies) || { status: 'missing', badFiles: [] }) };
+    return { id: m.id, ...(aggregateVerifies(verifies) || { status: 'missing', badFiles: [] }) };
   }));
   res.json({ deep, models: results });
 }));

@@ -41,7 +41,7 @@ import {
 import { enqueueJob, attachSseClient, cancelJob, listJobs } from '../services/mediaJobQueue/index.js';
 import { repoForModel, getTextEncoderRepo, isHfRepoId } from '../lib/mediaModels.js';
 import { videoLoraFamily } from '../lib/runners.js';
-import { inspectModelCache, verifyModelCache, repairModelCache } from '../lib/hfCache.js';
+import { inspectModelCache, verifyModelCache, repairModelCache, summarizeVerify } from '../lib/hfCache.js';
 import { startHfDownloadStream, openSseStream } from '../lib/sseDownload.js';
 
 const router = Router();
@@ -371,19 +371,6 @@ router.get('/models', (_req, res) => {
   res.json(listVideoModels());
 });
 
-// Condense a verifyModelCache() result down to the UI-facing integrity shape:
-// `{ status, badFiles: [{ name, reason }] }`. The full per-file list is kept
-// out of the polled payload — the banner only needs the status + which files
-// to name.
-const summarizeIntegrity = (verify) => {
-  if (!verify) return null;
-  return {
-    status: verify.status,
-    checkedDeep: verify.checkedDeep,
-    badFiles: verify.files.filter((f) => !f.ok).map((f) => ({ name: f.name, reason: f.reason })),
-  };
-};
-
 // Resolve the repo set an integrity scan should cover. A specific `modelId`
 // scopes to that model's repo; no modelId scans every model repo plus the
 // shared text encoder.
@@ -409,7 +396,7 @@ router.get('/models/status', asyncHandler(async (_req, res) => {
   // surface both the repo-cache status and the resolved local path so the UI
   // can distinguish "not downloaded" from "served from LM Studio".
   const encoderRepo = getTextEncoderRepo();
-  const [models, encoderInspection, encoderIntegrity] = await Promise.all([
+  const [models, textEncoder] = await Promise.all([
     Promise.all(listVideoModels().map(async (m) => {
       const repo = repoForModel(m);
       if (!repo) return { id: m.id, repo: null, cached: null, sizeBytes: 0, integrity: null };
@@ -417,15 +404,16 @@ router.get('/models/status', asyncHandler(async (_req, res) => {
       // Only run the (header-reading) integrity check for repos that are
       // actually downloaded — a not-yet-cached model gets the Download badge,
       // not a Repair banner.
-      const integrity = cached ? summarizeIntegrity(await verifyModelCache(repo)) : null;
+      const integrity = cached ? summarizeVerify(await verifyModelCache(repo)) : null;
       return { id: m.id, repo, cached, sizeBytes, integrity };
     })),
-    isHfRepoId(encoderRepo) ? inspectModelCache(encoderRepo) : Promise.resolve(null),
-    isHfRepoId(encoderRepo) ? verifyModelCache(encoderRepo) : Promise.resolve(null),
+    (async () => {
+      if (!isHfRepoId(encoderRepo)) return { repo: encoderRepo, cached: true, sizeBytes: 0, integrity: null };
+      const enc = await inspectModelCache(encoderRepo);
+      const integrity = enc.cached ? summarizeVerify(await verifyModelCache(encoderRepo)) : null;
+      return { repo: encoderRepo, ...enc, integrity };
+    })(),
   ]);
-  const textEncoder = encoderInspection
-    ? { repo: encoderRepo, ...encoderInspection, integrity: encoderInspection.cached ? summarizeIntegrity(encoderIntegrity) : null }
-    : { repo: encoderRepo, cached: true, sizeBytes: 0, integrity: null };
   res.json({ models, textEncoder });
 }));
 
@@ -446,7 +434,7 @@ router.post('/models/verify', asyncHandler(async (req, res) => {
     throw new ServerError(`Unknown video model: ${modelId}`, { status: 404, code: 'UNKNOWN_MODEL' });
   }
   const results = await Promise.all(repos.map(async (repo) => verifyModelCache(repo, { deep })));
-  res.json({ deep, models: results.map((r) => ({ repo: r.repoId, ...summarizeIntegrity(r) })) });
+  res.json({ deep, models: results.map((r) => ({ repo: r.repoId, ...summarizeVerify(r) })) });
 }));
 
 // POST /models/:modelId/repair — delete the flagged (corrupt/truncated) weight

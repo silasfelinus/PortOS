@@ -20,10 +20,10 @@
 // route — which inspects every registered model — doesn't block the Node
 // event loop while walking large snapshot directories.
 
-import { promises as fs, createReadStream } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname, resolve as resolvePath } from 'node:path';
-import { createHash } from 'node:crypto';
+import { sha256File } from './fileUtils.js';
 
 // HF cache root resolution mirrors huggingface_hub's own precedence:
 // HF_HUB_CACHE > HF_HOME/hub > $XDG_CACHE_HOME/huggingface/hub
@@ -214,24 +214,15 @@ async function expectedBlobSha256(path) {
   return SHA256_RE.test(base) ? base : null;
 }
 
-async function sha256OfFile(path) {
-  return new Promise((resolve, reject) => {
-    const hash = createHash('sha256');
-    const stream = createReadStream(path);
-    stream.on('error', reject);
-    stream.on('data', (chunk) => hash.update(chunk));
-    stream.on('end', () => resolve(hash.digest('hex')));
-  });
-}
-
 // Verify a single weight file. `deep` adds the sha256 comparison on top of the
-// structural check.
+// structural check. The returned entry keeps the resolved `path` so the repair
+// path can delete the file without re-walking the snapshot.
 async function verifyWeightFile(file, { deep }) {
   const stat = await fs.stat(file.path).catch(() => null); // follows symlink
-  if (!stat) return { name: file.name, ok: false, reason: 'missing-blob', sizeBytes: 0 };
-  if (stat.size === 0) return { name: file.name, ok: false, reason: 'empty', sizeBytes: 0 };
+  if (!stat) return { name: file.name, path: file.path, ok: false, reason: 'missing-blob', sizeBytes: 0 };
+  if (stat.size === 0) return { name: file.name, path: file.path, ok: false, reason: 'empty', sizeBytes: 0 };
 
-  const entry = { name: file.name, ok: true, reason: 'size-only', sizeBytes: stat.size };
+  const entry = { name: file.name, path: file.path, ok: true, reason: 'size-only', sizeBytes: stat.size };
   if (file.name.endsWith('.safetensors')) {
     const structural = await verifySafetensorsStructure(file.path, stat.size);
     if (!structural.ok) {
@@ -242,7 +233,7 @@ async function verifyWeightFile(file, { deep }) {
   if (deep) {
     const expectedSha = await expectedBlobSha256(file.path);
     if (expectedSha) {
-      const actualSha = await sha256OfFile(file.path).catch(() => null);
+      const actualSha = await sha256File(file.path).catch(() => null);
       if (actualSha && actualSha !== expectedSha) {
         return { ...entry, ok: false, reason: 'sha256-mismatch' };
       }
@@ -303,25 +294,47 @@ export async function repairModelCache(repoId, { deep = false } = {}) {
   if (verify.status !== 'bad') {
     return { repoId, status: verify.status, deleted: [] };
   }
-  const snapshotPath = verify.snapshotPath;
-  const weights = [];
-  await collectWeightFiles(snapshotPath, weights);
-  const byName = new Map(weights.map((w) => [w.name, w.path]));
-  const badNames = verify.files.filter((f) => !f.ok).map((f) => f.name);
   const deleted = [];
-  for (const name of badNames) {
-    const path = byName.get(name);
-    if (!path) continue;
-    const lst = await fs.lstat(path).catch(() => null);
+  for (const file of verify.files.filter((f) => !f.ok)) {
+    const lst = await fs.lstat(file.path).catch(() => null);
     if (lst?.isSymbolicLink()) {
-      const target = await fs.readlink(path).catch(() => null);
+      const target = await fs.readlink(file.path).catch(() => null);
       if (target) {
-        const blobPath = resolvePath(dirname(path), target);
+        const blobPath = resolvePath(dirname(file.path), target);
         await fs.unlink(blobPath).catch(() => {});
       }
     }
-    await fs.unlink(path).catch(() => {});
-    deleted.push(name);
+    await fs.unlink(file.path).catch(() => {});
+    deleted.push(file.name);
   }
   return { repoId, status: 'bad', deleted };
+}
+
+// Condense a verifyModelCache() result to the UI-facing shape `{ status,
+// checkedDeep, badFiles: [{ name, reason }] }`. Drops the internal file paths
+// and per-tensor details — the banner only needs which files are bad and why.
+// Single-repo form, used for video models + the text encoder.
+export function summarizeVerify(verify) {
+  if (!verify) return null;
+  return {
+    status: verify.status,
+    checkedDeep: verify.checkedDeep,
+    badFiles: verify.files.filter((f) => !f.ok).map((f) => ({ name: f.name, reason: f.reason })),
+  };
+}
+
+// Multi-repo condensation for models with a primary + aux repos (image gen):
+// 'bad' wins over 'ok' wins over 'missing' so a corrupt aux encoder still
+// reports bad, and each bad file carries its repo so the UI can name it.
+export function aggregateVerifies(verifies) {
+  const list = (verifies || []).filter(Boolean);
+  if (list.length === 0) return null;
+  const status = list.some((v) => v.status === 'bad') ? 'bad'
+    : list.every((v) => v.status === 'ok') ? 'ok'
+      : 'missing';
+  return {
+    status,
+    checkedDeep: list.every((v) => v.checkedDeep),
+    badFiles: list.flatMap((v) => v.files.filter((f) => !f.ok).map((f) => ({ repo: v.repoId, name: f.name, reason: f.reason }))),
+  };
 }

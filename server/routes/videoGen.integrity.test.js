@@ -14,12 +14,15 @@ vi.mock('../lib/mediaModels.js', () => ({
   isHfRepoId: vi.fn(() => true),
 }));
 
-vi.mock('../lib/hfCache.js', () => ({
+// Keep the real pure helpers (summarizeVerify/aggregateVerifies); only stub the
+// IO-bound inspect/verify/repair so we don't touch a real HF cache.
+vi.mock('../lib/hfCache.js', async (importOriginal) => ({
+  ...(await importOriginal()),
   inspectModelCache: vi.fn(async () => ({ cached: true, sizeBytes: 100, snapshotPath: '/snap' })),
   verifyModelCache: vi.fn(async (repoId, opts) => ({
     repoId, status: 'bad', cached: false, sizeBytes: 0, snapshotPath: '/snap',
     checkedDeep: !!opts?.deep,
-    files: [{ name: 'model.safetensors', ok: false, reason: 'truncated-data', sizeBytes: 10 }],
+    files: [{ name: 'model.safetensors', path: '/snap/model.safetensors', ok: false, reason: 'truncated-data', sizeBytes: 10 }],
   })),
   repairModelCache: vi.fn(async (repoId) => ({ repoId, status: 'bad', deleted: ['model.safetensors'] })),
 }));

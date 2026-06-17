@@ -880,6 +880,7 @@ export default function VideoGen() {
   // the user can delete + re-fetch the bad files instead of debugging a render.
   const modelIntegrity = modelStatus && !modelStatus.downloading ? modelStatus.integrity : null;
   const integrityBad = modelIntegrity?.status === 'bad';
+  const integrityBadCount = integrityBad ? (modelIntegrity.badFiles || []).length : 0;
   const integrityKey = integrityBad ? `${modelId}:${(modelIntegrity.badFiles || []).map((f) => f.name).join(',')}` : null;
   const [dismissedIntegrityKey, setDismissedIntegrityKey] = useState(null);
   const showIntegrityBanner = integrityBad && dismissedIntegrityKey !== integrityKey && !modelDownload.downloading;
@@ -1419,8 +1420,8 @@ export default function VideoGen() {
               <div className="flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
                 <div>
-                  <strong className="font-semibold">{currentModel?.name || modelId}</strong> has {(modelIntegrity.badFiles || []).length || 'corrupt'} damaged weight file{(modelIntegrity.badFiles || []).length === 1 ? '' : 's'} — renders may come out garbled.
-                  Repair deletes the bad file{(modelIntegrity.badFiles || []).length === 1 ? '' : 's'} and re-downloads clean copies.
+                  <strong className="font-semibold">{currentModel?.name || modelId}</strong> has {integrityBadCount || 'corrupt'} damaged weight file{integrityBadCount === 1 ? '' : 's'} — renders may come out garbled.
+                  Repair deletes the bad file{integrityBadCount === 1 ? '' : 's'} and re-downloads clean copies.
                 </div>
               </div>
               <div className="flex items-center gap-2 self-start sm:self-auto">
