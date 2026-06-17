@@ -1080,12 +1080,14 @@ describe('runtime fingerprint (/status)', () => {
     expect(fp.node).toBe(process.version);
   });
 
-  it('resolveRuntimeFingerprint returns a host block + a per-runtime map', async () => {
-    // `runtimes` only contains BYOV runtimes whose venv is installed; whether
-    // any are present depends on the machine (CI: none; a dev box may have
-    // some). Assert the shape — host always present, every runtime entry is
-    // either a resolved fingerprint or a best-effort `{ error }` — rather than
-    // a specific machine's install set.
+  it('resolveRuntimeFingerprint returns host info immediately + only resolved runtimes (non-blocking)', async () => {
+    // /status must not block on probes, so resolveRuntimeFingerprint never
+    // awaits a probe: `runtimes` contains only fingerprints already resolved in
+    // cache (uncached installed runtimes are warmed in the background). Whether
+    // any are present depends on the machine (CI: none; a dev box warms async),
+    // so assert the shape — host always present, every included runtime entry is
+    // a resolved fingerprint with a `versions` object and NO `error` (errors are
+    // never cached) — rather than a specific machine's install set.
     const { resolveRuntimeFingerprint } = await import('./local.js');
     const block = await resolveRuntimeFingerprint();
     expect(block.host).toBeDefined();
@@ -1093,7 +1095,8 @@ describe('runtime fingerprint (/status)', () => {
     expect(block.runtimes && typeof block.runtimes === 'object').toBe(true);
     for (const [id, fp] of Object.entries(block.runtimes)) {
       expect(typeof id).toBe('string');
-      expect(fp.error !== undefined || typeof fp.versions === 'object').toBe(true);
+      expect(fp.error).toBeUndefined();
+      expect(typeof fp.versions).toBe('object');
     }
   });
 

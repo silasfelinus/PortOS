@@ -127,11 +127,13 @@ def _resolve_pkg_version(pkg: str) -> "str | None":
         except PackageNotFoundError:
             continue
         except Exception:
-            return None
+            # An odd/transient metadata error on one spelling shouldn't skip the
+            # remaining variants — keep trying, give up (None) only after all do.
+            continue
     return None
 
 
-def build_runtime_fingerprint(runtime_id: str, packages, extra=None) -> dict:
+def build_runtime_fingerprint(runtime_id: str, packages, extra_versions=None) -> dict:
     """Build a runtime-fingerprint dict — which runtime + resolved package
     versions + chip/os/python — so a render (or a bug report) self-documents the
     exact numerical stack it ran on. Garbled/"mosaic" video output is often a
@@ -147,6 +149,13 @@ def build_runtime_fingerprint(runtime_id: str, packages, extra=None) -> dict:
         v = _resolve_pkg_version(pkg)
         if v is not None:
             versions[pkg] = v
+    # Caller-supplied versions that aren't pip distributions (e.g. the CUDA
+    # toolkit version from torch.version.cuda) — merge into `versions` so they
+    # render in the same list the log + /status UI already show, instead of a
+    # top-level field nothing displays.
+    for name, val in (extra_versions or {}).items():
+        if val is not None:
+            versions[name] = val
     fp = {
         "runtime": runtime_id,
         "versions": versions,
@@ -155,19 +164,17 @@ def build_runtime_fingerprint(runtime_id: str, packages, extra=None) -> dict:
         "os": platform.platform(),
         "python": platform.python_version(),
     }
-    if extra:
-        fp.update({k: v for k, v in extra.items() if v is not None})
     return fp
 
 
-def emit_runtime_fingerprint(runtime_id: str, packages, extra=None) -> dict:
+def emit_runtime_fingerprint(runtime_id: str, packages, extra_versions=None) -> dict:
     """Print a single `RUNTIME:<json>` line to stderr — the channel PortOS's
     videoGen line handler (makeVideoGenLineHandler) parses to stamp the
     fingerprint onto the render job + history record. Best-effort: never raises
     (a fingerprint failure must not abort a render). Returns the dict it emitted
     (or {} on failure) so callers can also log it locally if they want."""
     try:
-        fp = build_runtime_fingerprint(runtime_id, packages, extra)
+        fp = build_runtime_fingerprint(runtime_id, packages, extra_versions)
         print(f"RUNTIME:{json.dumps(fp)}", file=sys.stderr, flush=True)
         return fp
     except Exception as err:  # pragma: no cover - defensive

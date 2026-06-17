@@ -84,7 +84,7 @@ def main():
     # to a specific torch+CUDA/diffusers stack on this GPU.
     emit_runtime_fingerprint(
         'win', ['torch', 'diffusers', 'transformers'],
-        extra={'cuda': getattr(torch.version, 'cuda', None)},
+        extra_versions={'cuda': getattr(torch.version, 'cuda', None)},
     )
     # The current LTX-Video 0.9.5 diffusers pipelines only accept a single
     # conditioning image, so --last-image is forward-compat only. Tailor the

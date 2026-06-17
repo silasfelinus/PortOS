@@ -1354,8 +1354,9 @@ export default function VideoGen() {
         if (!host.chip && !host.os && ids.length === 0) return null;
         return (
           <div className="text-[10px] text-gray-500 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-            {host.chip && <span title="Host chip">{host.chip}</span>}
-            {host.os && <span title="Operating system">· {host.os}</span>}
+            {(host.chip || host.os) && (
+              <span title="Host chip + OS">{[host.chip, host.os].filter(Boolean).join(' · ')}</span>
+            )}
             {ids.map((id) => {
               const fp = runtimes[id] || {};
               if (fp.error) {
