@@ -9,7 +9,7 @@
  * The card only owns the in-progress *input* draft; committed values come back
  * down through `check.config`.
  */
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, Loader2, Sliders } from 'lucide-react';
 import ToggleSwitch from '../../ToggleSwitch';
 
@@ -77,7 +77,7 @@ function ConfigField({ checkId, field, value, disabled, onCommit }) {
   );
 }
 
-export default function EditorialCheckCard({ check, saving = false, onToggle, onConfigSave }) {
+function EditorialCheckCard({ check, saving = false, onToggle, onConfigSave }) {
   const [expanded, setExpanded] = useState(false);
   const hasConfig = Array.isArray(check.configFields) && check.configFields.length > 0;
 
@@ -138,3 +138,7 @@ export default function EditorialCheckCard({ check, saving = false, onToggle, on
     </div>
   );
 }
+
+// Memoized so a parent re-render (run/selection state ticks) only re-renders the
+// cards whose own row changed — onToggle/onConfigSave are stable (useCallback).
+export default memo(EditorialCheckCard);

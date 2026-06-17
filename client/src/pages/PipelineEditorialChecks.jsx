@@ -44,13 +44,13 @@ export default function PipelineEditorialChecks() {
 
   const [runActive, setRunActive] = useState(false);
   const [runStarting, setRunStarting] = useState(false);
-  const [runStage, setRunStage] = useState('');
 
   const checksById = useMemo(
     () => Object.fromEntries(checks.map((c) => [c.id, c])),
     [checks],
   );
   const enabledCount = useMemo(() => checks.filter((c) => c.enabled).length, [checks]);
+  const scopeGroups = useMemo(() => groupChecksByScope(checks), [checks]);
   // Config saves read server settings, so a run that fires before a save lands
   // would use stale config — gate the run buttons while any save is in flight.
   const anySaving = savingIds.size > 0;
@@ -96,11 +96,10 @@ export default function PipelineEditorialChecks() {
     editorialChecksRunSseUrl, [seriesId], { enabled: runActive && !!seriesId },
   );
 
-  // Per-check progress frames only drive the status label.
-  useEffect(() => {
-    if (!runActive || !runLatest) return;
-    if (runLatest.type === 'check:start' && runLatest.label) setRunStage(`Running: ${runLatest.label}`);
-  }, [runActive, runLatest]);
+  // The run's stage label, derived from the latest `check:start` frame — no
+  // state to keep in sync (the banner only renders while runActive).
+  const runStageLabel = runActive && runLatest?.type === 'check:start' && runLatest.label
+    ? `Running: ${runLatest.label}` : '';
 
   // Terminal frame: refresh findings + tear down. Gate on `runClosed` so a stale
   // terminal frame from a prior run can't kill a freshly-started one.
@@ -109,7 +108,6 @@ export default function PipelineEditorialChecks() {
     const type = runLatest.type;
     if (type !== 'complete' && type !== 'canceled' && type !== 'error') return;
     setRunActive(false);
-    setRunStage('');
     if (type === 'complete') { loadFindings(seriesId); toast.success('Editorial checks complete'); }
     else if (type === 'canceled') toast.success('Editorial checks canceled');
     else toast.error(runLatest.error || 'Editorial checks failed');
@@ -123,27 +121,30 @@ export default function PipelineEditorialChecks() {
     const t = runLatest?.type;
     if (t === 'complete' || t === 'canceled' || t === 'error') return; // handled above
     setRunActive(false);
-    setRunStage('');
     loadFindings(seriesId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runActive, runClosed, runLatest, seriesId]);
 
-  // ---- Catalog mutations (reactive local updates; the API owns the toast). ----
-  const handleToggle = (checkId, nextEnabled) => {
-    const prev = checks;
-    setChecks((rows) => rows.map((r) => (r.id === checkId ? { ...r, enabled: nextEnabled } : r)));
+  // ---- Catalog mutations (reactive local updates; the API owns the toast).
+  // Stable identities (useCallback) so React.memo'd cards only re-render when
+  // their own row changes — not on every unrelated run/selection state tick.
+  // Rollback flips only the one check (functional update) so a concurrent
+  // toggle of a different check can't be clobbered. ----
+  const handleToggle = useCallback((checkId, nextEnabled) => {
+    const apply = (val) => setChecks((rows) => rows.map((r) => (r.id === checkId ? { ...r, enabled: val } : r)));
+    apply(nextEnabled);
     patchEditorialCheck(checkId, { enabled: nextEnabled }, { silent: true })
       .then((row) => { if (row) setChecks((rows) => rows.map((r) => (r.id === checkId ? row : r))); })
-      .catch((err) => { setChecks(prev); toast.error(err.message || 'Failed to update check'); });
-  };
+      .catch((err) => { apply(!nextEnabled); toast.error(err.message || 'Failed to update check'); });
+  }, []);
 
-  const handleConfigSave = (checkId, nextConfig) => {
+  const handleConfigSave = useCallback((checkId, nextConfig) => {
     setSavingIds((s) => new Set(s).add(checkId));
     patchEditorialCheck(checkId, { config: nextConfig }, { silent: true })
       .then((row) => { if (row) setChecks((rows) => rows.map((r) => (r.id === checkId ? row : r))); })
       .catch((err) => toast.error(err.message || 'Failed to save config'))
       .finally(() => setSavingIds((s) => { const n = new Set(s); n.delete(checkId); return n; }));
-  };
+  }, []);
 
   const toggleSelected = (checkId) => setSelectedIds((s) => {
     const n = new Set(s);
@@ -175,7 +176,6 @@ export default function PipelineEditorialChecks() {
     setSearchParams(next, { replace: true });
   };
 
-  const scopeGroups = groupChecksByScope(checks);
   const runDisabled = !seriesId || runActive || runStarting || anySaving;
 
   return (
@@ -236,7 +236,7 @@ export default function PipelineEditorialChecks() {
         </div>
         {runActive ? (
           <p className="flex items-center gap-2 text-xs text-port-accent">
-            <Loader2 size={13} className="animate-spin" /> {runStage || 'Running editorial checks…'}
+            <Loader2 size={13} className="animate-spin" /> {runStageLabel || 'Running editorial checks…'}
           </p>
         ) : null}
         {!seriesId ? (

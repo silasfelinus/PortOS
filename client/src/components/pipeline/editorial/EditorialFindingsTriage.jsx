@@ -8,7 +8,7 @@
  */
 import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { groupFindingsByCheck, findingManuscriptLink, openFindingsTotal } from '../../../lib/editorialChecks';
 
 const SEVERITY_DOT = {
@@ -78,7 +78,7 @@ function CheckGroup({ seriesId, group }) {
 }
 
 export default function EditorialFindingsTriage({ seriesId, comments = [], checksById = {} }) {
-  const groups = groupFindingsByCheck(comments, checksById);
+  const groups = useMemo(() => groupFindingsByCheck(comments, checksById), [comments, checksById]);
   if (!groups.length) {
     return (
       <p className="rounded-lg border border-dashed border-port-border p-4 text-center text-xs text-gray-500">
