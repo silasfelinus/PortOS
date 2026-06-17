@@ -135,9 +135,17 @@ export default function PipelineEditorialChecks() {
   const handleToggle = useCallback((checkId, nextEnabled) => {
     const apply = (val) => setChecks((rows) => rows.map((r) => (r.id === checkId ? { ...r, enabled: val } : r)));
     apply(nextEnabled);
+    // Drop a now-disabled check from the targeted-run selection so "Run selected"
+    // can't carry an id the server will silently filter out.
+    if (!nextEnabled) setSelectedIds((s) => { if (!s.has(checkId)) return s; const n = new Set(s); n.delete(checkId); return n; });
+    // Track in savingIds like config saves — the run endpoint reads persisted
+    // settings, so the run buttons must gate on this PATCH landing (and the card
+    // shows its saving spinner for the toggle too).
+    setSavingIds((s) => new Set(s).add(checkId));
     patchEditorialCheck(checkId, { enabled: nextEnabled }, { silent: true })
       .then((row) => { if (row) setChecks((rows) => rows.map((r) => (r.id === checkId ? row : r))); })
-      .catch((err) => { apply(!nextEnabled); toast.error(err.message || 'Failed to update check'); });
+      .catch((err) => { apply(!nextEnabled); toast.error(err.message || 'Failed to update check'); })
+      .finally(() => setSavingIds((s) => { const n = new Set(s); n.delete(checkId); return n; }));
   }, []);
 
   const handleConfigSave = useCallback((checkId, nextConfig) => {
@@ -157,8 +165,18 @@ export default function PipelineEditorialChecks() {
   // ---- Run / cancel. ----
   const runChecks = (subsetIds = null) => {
     if (!seriesId) { toast.error('Pick a series to run checks against'); return; }
+    // The server runs only ENABLED checks even from a named subset, so drop any
+    // disabled ids up front — otherwise a selection of disabled checks completes
+    // as a silent no-op the user reads as "0 findings".
+    let ids = subsetIds;
+    if (ids) {
+      const enabledIds = ids.filter((id) => checksById[id]?.enabled);
+      if (!enabledIds.length) { toast.error('Those checks are disabled — enable them or pick others'); return; }
+      if (enabledIds.length < ids.length) toast('Skipped disabled checks from your selection');
+      ids = enabledIds;
+    }
     setRunStarting(true);
-    startEditorialChecksRun(seriesId, subsetIds ? { checkIds: subsetIds } : {}, { silent: true })
+    startEditorialChecksRun(seriesId, ids ? { checkIds: ids } : {}, { silent: true })
       .then((res) => {
         if (res?.alreadyRunning) toast('A run is already in progress for this series');
         setRunActive(true);
@@ -264,9 +282,11 @@ export default function PipelineEditorialChecks() {
                       type="checkbox"
                       id={`sel-${check.id}`}
                       checked={selectedIds.has(check.id)}
+                      disabled={!check.enabled}
                       onChange={() => toggleSelected(check.id)}
+                      title={check.enabled ? 'Select for a targeted run' : 'Enable this check to include it in a run'}
                       aria-label={`Select ${check.label} for a targeted run`}
-                      className="mt-3.5 shrink-0 accent-port-accent"
+                      className="mt-3.5 shrink-0 accent-port-accent disabled:opacity-40"
                     />
                     <div className="min-w-0 flex-1">
                       <EditorialCheckCard

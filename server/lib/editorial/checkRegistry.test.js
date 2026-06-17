@@ -127,7 +127,7 @@ describe('editorial check registry — config + state resolution', () => {
       for (const f of row.configFields) {
         expect(f.key, `${row.id} field key`).toBeTruthy();
         expect(f.label, `${row.id} field label`).toBeTruthy();
-        expect(['number', 'boolean', 'text', 'select'], `${row.id} field type`).toContain(f.type);
+        expect(['number', 'boolean', 'text'], `${row.id} field type`).toContain(f.type);
       }
     }
   });

@@ -31,7 +31,10 @@ const SEVERITIES = Object.freeze(['high', 'medium', 'low']);
 // `configSchema` (a Zod schema) stays the validation authority on the server;
 // `configFields` is the wire-safe *render* descriptor the Editorial Checks UI
 // reads to build the per-check config form (the Zod schema can't cross the wire).
-export const CHECK_FIELD_TYPES = Object.freeze(['number', 'boolean', 'text', 'select']);
+// Keep this in lockstep with the controls EditorialCheckCard's ConfigField
+// renders — only advertise a type the UI can actually draw (no 'select' until
+// the <select> control + an `options` contract land).
+export const CHECK_FIELD_TYPES = Object.freeze(['number', 'boolean', 'text']);
 
 // Stage name for the info-dumping LLM check. The prompt ships in
 // data.reference/prompts/stages/ and its config in stage-config.json; both
