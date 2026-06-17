@@ -96,7 +96,10 @@ router.post('/tts/synthesize', asyncHandler(async (req, res) => {
 // manuscript editor can play a karaoke-style read-along. Non-destructive — the
 // WAVs land in PATHS.audio exactly like /tts/preview + the dialogue render.
 const ttsNarrateSchema = z.object({
-  text: z.string().trim().min(1).max(12000),
+  // Do NOT trim: the segment start/end offsets are computed against this exact
+  // string and the client slices its original `content` with them, so trimming
+  // here would shift every span. narrateProse rejects all-whitespace text.
+  text: z.string().min(1).max(12000),
   voiceId: z.string().trim().max(200).optional(),
 });
 router.post('/tts/narrate', asyncHandler(async (req, res) => {

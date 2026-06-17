@@ -45,16 +45,24 @@ export default function ManuscriptReadAloud({ open, onClose, section }) {
   const audioRef = useRef(null);
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
+  // Live mirror of the prose the modal is showing, so an in-flight narration
+  // response can detect that the section's text changed (edit, reformat, accepted
+  // fix, or a section swap) while it was synthesizing and discard itself rather
+  // than apply stale audio/offsets to different prose.
+  const contentRef = useRef(content);
+  contentRef.current = content;
 
-  // Reset narration when the section being read changes or the modal closes —
-  // stale segments belong to a different issue's prose.
+  // Reset narration when the prose being read changes — a different issue/stage,
+  // or the SAME section edited under it. The cached segments + their char offsets
+  // belong to the exact text they were synthesized from; reusing them against
+  // changed prose would misalign the highlight and play the wrong sentence.
   const resetNarration = () => {
     setSegments(null);
     setCurrentIndex(-1);
     setIsPlaying(false);
     setElapsedMs(0);
   };
-  useEffect(() => { resetNarration(); }, [section?.issueId, section?.stageId]);
+  useEffect(() => { resetNarration(); }, [section?.issueId, section?.stageId, content]);
   useEffect(() => { if (!open) { setIsPlaying(false); } }, [open]);
 
   // Cumulative start offset (ms) per segment + total, for the progress bar.
@@ -87,6 +95,7 @@ export default function ManuscriptReadAloud({ open, onClose, section }) {
       return;
     }
     setLoading(true);
+    const reqContent = content; // snapshot — discard if the prose changes mid-flight
     const result = await narratePipelineProse(content, voiceId || undefined, { silent: true })
       .catch((err) => {
         toast.error(err.message || 'Failed to narrate');
@@ -94,7 +103,9 @@ export default function ManuscriptReadAloud({ open, onClose, section }) {
       });
     if (!mountedRef.current) return;
     setLoading(false);
-    if (!result) return;
+    // Drop the response if the section's text changed while it synthesized — its
+    // offsets belong to `reqContent`, not the current prose.
+    if (contentRef.current !== reqContent || !result) return;
     const segs = Array.isArray(result.segments) ? result.segments : [];
     setSegments(segs);
     setElapsedMs(0);
