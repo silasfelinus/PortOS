@@ -119,7 +119,8 @@ export default function PipelineContinuityBible() {
   }
 
   const facts = ledger?.facts || [];
-  const hasLedger = ledger?.status === 'complete' && facts.length > 0;
+  const completed = ledger?.status === 'complete';
+  const hasLedger = completed && facts.length > 0;
   const busy = active || starting;
   const categories = ledger?.categories?.length ? ledger.categories : FALLBACK_CATEGORIES;
   const groups = categories
@@ -153,13 +154,16 @@ export default function PipelineContinuityBible() {
           ) : null}
           <button
             type="button"
-            onClick={() => handleGenerate(hasLedger)}
+            // Force a rebuild whenever a run already completed — even one that
+            // extracted 0 facts — otherwise the server returns the cached empty
+            // ledger on every retry until the manuscript or canon changes.
+            onClick={() => handleGenerate(completed)}
             disabled={busy}
             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-port-accent text-white text-sm font-medium disabled:opacity-50"
-            title={hasLedger ? 'Re-extract the facts ledger from canon + the current manuscript' : 'Build the facts ledger from canon + the drafted manuscript'}
+            title={completed ? 'Re-extract the facts ledger from canon + the current manuscript' : 'Build the facts ledger from canon + the drafted manuscript'}
           >
             {busy ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-            {busy ? 'Building…' : hasLedger ? 'Rebuild ledger' : 'Build ledger'}
+            {busy ? 'Building…' : completed ? 'Rebuild ledger' : 'Build ledger'}
           </button>
         </div>
       </header>
