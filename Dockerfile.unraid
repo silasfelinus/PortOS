@@ -43,4 +43,4 @@ ENV PORTOS_UNRAID_APPS=portos-server,portos-cos
 EXPOSE 5555
 
 ENTRYPOINT ["/app/scripts/unraid-entrypoint.sh"]
-CMD ["node", "./node_modules/pm2/bin/pm2-runtime", "ecosystem.unraid.cjs"]
+CMD ["node", "./node_modules/pm2/bin/pm2-runtime", "start", "ecosystem.unraid.config.cjs"]
