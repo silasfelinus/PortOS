@@ -53,7 +53,7 @@ export const OBJECT_BACKSTORY_STAGE = 'pipeline-editorial-object-backstory';
 
 // Stage name for the style-guide conformance LLM check (#1303). Ships in
 // data.reference/prompts/stages/ + stage-config.json (fresh installs via
-// setup-data.js) and migrates to existing installs via migration 095 (boot runs
+// setup-data.js) and migrates to existing installs via migration 096 (boot runs
 // migrations but NOT setup-data, so the migration is required).
 export const STYLE_CONFORMANCE_STAGE = 'pipeline-editorial-style-conformance';
 
