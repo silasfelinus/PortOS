@@ -110,9 +110,9 @@ const factKey = (f) => `${f.category}::${(f.subject || '').toLowerCase().trim()}
  */
 export function seedFactsFromCanon(canon) {
   const out = [];
-  const push = (kind, entry, descriptionField) => {
+  const push = (kind, entry, description) => {
     const subject = clampStr(entry?.name, SUBJECT_MAX);
-    const statement = clampStr(entry?.[descriptionField], STATEMENT_MAX);
+    const statement = clampStr(description, STATEMENT_MAX);
     if (!subject || !statement) return;
     out.push({
       category: CANON_KIND_CATEGORY[kind],
@@ -126,9 +126,12 @@ export function seedFactsFromCanon(canon) {
       anchorQuote: null,
     });
   };
-  for (const c of Array.isArray(canon?.characters) ? canon.characters : []) push('character', c, 'physicalDescription');
-  for (const p of Array.isArray(canon?.places) ? canon.places : []) push('place', p, 'description');
-  for (const o of Array.isArray(canon?.objects) ? canon.objects : []) push('object', o, 'description');
+  // Characters: `physicalDescription` with the legacy `description` read-fallback
+  // (mirrors universeCanon.js / canonPrompt.js) so existing installs that stored
+  // canon under `description` still seed — and edits to it move sourceCanonHash.
+  for (const c of Array.isArray(canon?.characters) ? canon.characters : []) push('character', c, c?.physicalDescription || c?.description);
+  for (const p of Array.isArray(canon?.places) ? canon.places : []) push('place', p, p?.description);
+  for (const o of Array.isArray(canon?.objects) ? canon.objects : []) push('object', o, o?.description);
   return out;
 }
 

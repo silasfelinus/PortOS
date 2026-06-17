@@ -195,6 +195,14 @@ describe('getFactsLedger', () => {
 describe('pure helpers (__testing)', () => {
   const { seedFactsFromCanon, buildFacts, sanitizeProseFact } = svc.__testing;
 
+  it('seedFactsFromCanon falls back to the legacy character `description` field', () => {
+    const facts = seedFactsFromCanon({
+      characters: [{ id: 'c1', name: 'Legacy', description: 'Old-style canon text' }],
+    });
+    expect(facts).toHaveLength(1);
+    expect(facts[0]).toMatchObject({ category: 'physical', subject: 'Legacy', statement: 'Old-style canon text' });
+  });
+
   it('seedFactsFromCanon maps kinds to categories and respects locked', () => {
     const facts = seedFactsFromCanon({
       characters: [{ id: 'c1', name: 'A', physicalDescription: 'tall', locked: true }, { name: 'NoDesc' }],
