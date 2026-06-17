@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { spawnDetached, reapDetached, reapAndCleanDetachedDirs } from './detachedSpawn.js';
+import { spawnDetached, reapDetached, reapAndCleanDetachedDirs, reattachDetached, isReattachable } from './detachedSpawn.js';
 
 const execFileAsync = promisify(execFile);
 const dirs = [];
@@ -235,5 +235,124 @@ describe('spawnDetached', () => {
       const res = await reapAndCleanDetachedDirs(join(parent, 'does-not-exist'));
       expect(res).toEqual({ reaped: 0, scanned: 0 });
     });
+  });
+});
+
+describe('isReattachable', () => {
+  it('is true while the recorded child is still alive', async () => {
+    const controlDir = await tmpControlDir();
+    const handle = await spawnDetached('sh', ['-c', 'sleep 30'], { controlDir, pollMs: 25 });
+    expect(await isReattachable(controlDir)).toBe(true);
+    handle.kill('SIGKILL');
+    await onClose(handle);
+  });
+
+  it('is true after the child exited (RESULT line still unprocessed on disk)', async () => {
+    const controlDir = await tmpControlDir();
+    const handle = await spawnDetached('sh', ['-c', 'printf "x\\n"; exit 0'], { controlDir, pollMs: 25 });
+    await onClose(handle);
+    expect(await isReattachable(controlDir)).toBe(true);
+  });
+
+  it('is false when no pid was ever recorded', async () => {
+    const controlDir = await tmpControlDir();
+    expect(await isReattachable(controlDir)).toBe(false);
+  });
+
+  it('is false for a dead pid with no exit sentinel (killed mid-run)', async () => {
+    const controlDir = await tmpControlDir();
+    // A reparented-then-tree-killed orphan: pid recorded, never alive again,
+    // and the supervisor never got to write `exit`. PID 2^31-1 is never live.
+    await writeFile(join(controlDir, 'pid'), '2147483647');
+    expect(await isReattachable(controlDir)).toBe(false);
+  });
+});
+
+describe('reattachDetached', () => {
+  it('replays a still-running survivor from the start and closes with its exit code', async () => {
+    const controlDir = await tmpControlDir();
+    // early output, then a beat, then late output + a non-zero exit.
+    const original = await spawnDetached(
+      'sh', ['-c', 'printf "early\\n"; sleep 1; printf "late\\n"; exit 5'],
+      { controlDir, pollMs: 25 }
+    );
+    // Attach the original's close listener NOW (before it can fire) — 'close' is
+    // one-shot, so a listener added after the child exits would never resolve.
+    const originalClosed = onClose(original);
+    // Let "early" land on disk, then re-attach as if the server had restarted.
+    await new Promise((r) => setTimeout(r, 150));
+    const reattached = await reattachDetached(controlDir, { pollMs: 25 });
+    expect(reattached).not.toBeNull();
+    expect(reattached.pid).toBe(original.pid);
+    const getOut = collect(reattached.stdout);
+    const { code, signal } = await onClose(reattached);
+    // The re-attached tailer reads from offset 0, so it sees the FULL output —
+    // including bytes written before it attached — and the terminal exit code.
+    expect(getOut()).toBe('early\nlate\n');
+    expect(code).toBe(5);
+    expect(signal).toBeNull();
+    await originalClosed.catch(() => {});
+  });
+
+  it('recovers a job that FINISHED during the downtime (replays its result + close)', async () => {
+    const controlDir = await tmpControlDir();
+    const original = await spawnDetached('sh', ['-c', 'printf "RESULT:ok\\n"; exit 0'], { controlDir, pollMs: 25 });
+    await onClose(original); // job already exited before we re-attach
+    const reattached = await reattachDetached(controlDir, { pollMs: 25 });
+    expect(reattached).not.toBeNull();
+    const getOut = collect(reattached.stdout);
+    const { code } = await onClose(reattached);
+    expect(getOut()).toBe('RESULT:ok\n');
+    expect(code).toBe(0);
+  });
+
+  it('emits a one-time "replayed" signal once the initial backlog is drained', async () => {
+    const controlDir = await tmpControlDir();
+    const original = await spawnDetached(
+      'sh', ['-c', 'printf "h1\\nh2\\n"; sleep 1; printf "live\\n"; exit 0'],
+      { controlDir, pollMs: 25 }
+    );
+    const originalClosed = onClose(original);
+    await new Promise((r) => setTimeout(r, 200)); // let the backlog (h1/h2) land
+    const reattached = await reattachDetached(controlDir, { pollMs: 25 });
+    const getOut = collect(reattached.stdout);
+    let replayedCount = 0;
+    let outAtReplayed = null;
+    reattached.on('replayed', () => { replayedCount += 1; outAtReplayed = getOut(); });
+    const { code } = await onClose(reattached);
+    // 'replayed' fires exactly once, AFTER the pre-existing backlog was emitted
+    // but BEFORE the post-restart "live" line — that's the boundary the stall
+    // detector uses to avoid arming on instantly-replayed step history.
+    expect(replayedCount).toBe(1);
+    expect(outAtReplayed).toBe('h1\nh2\n');
+    expect(getOut()).toBe('h1\nh2\nlive\n');
+    expect(code).toBe(0);
+    await originalClosed.catch(() => {});
+  });
+
+  it('returns null when there is no pid to attach to', async () => {
+    const controlDir = await tmpControlDir();
+    expect(await reattachDetached(controlDir, { pollMs: 25 })).toBeNull();
+  });
+
+  it('returns null for a dead pid with no exit sentinel', async () => {
+    const controlDir = await tmpControlDir();
+    await writeFile(join(controlDir, 'pid'), '2147483647');
+    expect(await reattachDetached(controlDir, { pollMs: 25 })).toBeNull();
+  });
+
+  it('can SIGTERM the survivor through the re-attached handle', async () => {
+    const controlDir = await tmpControlDir();
+    const original = await spawnDetached('sh', ['-c', 'sleep 30'], { controlDir, pollMs: 25 });
+    // Attach before the kill — the shared child's death closes BOTH handles, and
+    // 'close' is one-shot, so the original's listener has to be wired up front.
+    const originalClosed = onClose(original);
+    await new Promise((r) => setTimeout(r, 100));
+    const reattached = await reattachDetached(controlDir, { pollMs: 25 });
+    const closed = onClose(reattached);
+    expect(reattached.kill('SIGTERM')).toBe(true);
+    const { signal } = await closed;
+    expect(signal).toBe('SIGTERM');
+    await originalClosed.catch(() => {});
   });
 });
