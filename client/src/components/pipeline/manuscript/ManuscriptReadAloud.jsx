@@ -116,6 +116,16 @@ export default function ManuscriptReadAloud({ open, onClose, section }) {
   };
 
   const jumpTo = (idx) => {
+    // Re-clicking the already-current sentence keeps both state values
+    // unchanged, so the play effect won't re-fire and the <audio> src won't
+    // reload — restart it imperatively so "play that line again" works.
+    const audio = audioRef.current;
+    if (idx === currentIndex && audio) {
+      audio.currentTime = 0;
+      audio.play().catch(() => {});
+      setIsPlaying(true);
+      return;
+    }
     setCurrentIndex(idx);
     setIsPlaying(true);
   };

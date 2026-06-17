@@ -55,6 +55,11 @@ describe('splitProseIntoSentences', () => {
     expect(segs.map((s) => s.text)).toEqual(['A fragment', 'Another fragment']);
   });
 
+  it('treats an indented blank line (whitespace between newlines) as a boundary', () => {
+    const segs = splitProseIntoSentences('A fragment\n   \nAnother fragment');
+    expect(segs.map((s) => s.text)).toEqual(['A fragment', 'Another fragment']);
+  });
+
   it('treats a lowercase continuation after a terminator as the same sentence', () => {
     // Ellipsis/interrobang followed by a lowercase word reads as one breath
     // aloud; the capitalized "No." starts a new sentence.

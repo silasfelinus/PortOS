@@ -98,8 +98,10 @@ export function splitProseIntoSentences(text) {
       continue;
     }
     // A blank line (paragraph break) also ends the current sentence so prose
-    // without terminal punctuation (poetry, fragments) still segments.
-    if (ch === '\n' && /\n[ \t]*\n/.test(text.slice(i, i + 3))) {
+    // without terminal punctuation (poetry, fragments) still segments. The
+    // window is bounded (a blank "line" is a newline + horizontal whitespace +
+    // newline) but generous enough to span indented blank lines.
+    if (ch === '\n' && /^\n[ \t]*\n/.test(text.slice(i, i + 64))) {
       push(i);
     }
     i += 1;
