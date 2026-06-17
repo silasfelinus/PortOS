@@ -1,0 +1,47 @@
+services:
+  portos:
+    build:
+      context: ..
+      dockerfile: Dockerfile.unraid
+    container_name: portos
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${PORTOS_PORT:-5555}:5555"
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 5555
+      PGMODE: native
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: portos
+      PGDATABASE: portos
+      PGPASSWORD: ${PGPASSWORD:-portos}
+      PORTOS_SERVER_MAX_MEMORY: ${PORTOS_SERVER_MAX_MEMORY:-4G}
+      PORTOS_UNRAID_APPS: ${PORTOS_UNRAID_APPS:-portos-server,portos-cos}
+      PORTOS_WORKSPACE_ROOTS: ${PORTOS_WORKSPACE_ROOTS:-/workspace}
+    volumes:
+      - ${PORTOS_DATA_DIR:-/mnt/user/appdata/portos/data}:/app/data
+      - ${PORTOS_WORKSPACE_DIR:-/mnt/user/appdata/portos/workspace}:/workspace
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: portos-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: portos
+      POSTGRES_USER: portos
+      POSTGRES_PASSWORD: ${PGPASSWORD:-portos}
+    volumes:
+      - ${PORTOS_DB_DIR:-/mnt/user/appdata/portos/postgres}:/var/lib/postgresql/data
+      - ../server/scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U portos -d portos"]
+      interval: 5s
+      timeout: 3s
+      retries: 20

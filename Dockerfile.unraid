@@ -1,0 +1,46 @@
+FROM node:22-bookworm-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    curl \
+    git \
+    jq \
+    openssl \
+    postgresql-client \
+    python3 \
+    make \
+    g++ \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY . .
+
+RUN npm install \
+  && npm install --prefix client \
+  && npm install --prefix server \
+  && if [ -d autofixer ]; then npm install --prefix autofixer; fi \
+  && npm rebuild esbuild --prefix client \
+  && (npm rebuild esbuild --prefix server || true) \
+  && npm rebuild node-pty sharp --prefix server \
+  && npm run build --prefix client \
+  && chmod +x scripts/unraid-entrypoint.sh
+
+ENV NODE_ENV=production
+ENV HOST=0.0.0.0
+ENV PORT=5555
+ENV PGMODE=native
+ENV PGHOST=db
+ENV PGPORT=5432
+ENV PGUSER=portos
+ENV PGDATABASE=portos
+ENV PGPASSWORD=portos
+ENV PORTOS_SERVER_MAX_MEMORY=4G
+ENV PORTOS_UNRAID_APPS=portos-server,portos-cos
+
+EXPOSE 5555
+
+ENTRYPOINT ["/app/scripts/unraid-entrypoint.sh"]
+CMD ["node", "./node_modules/pm2/bin/pm2-runtime", "ecosystem.unraid.cjs"]
