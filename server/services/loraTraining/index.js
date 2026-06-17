@@ -23,6 +23,7 @@ import { ServerError } from '../../lib/errorHandler.js';
 import { v4 as uuidv4 } from '../../lib/uuid.js';
 import { hfTokenEnv } from '../../lib/hfToken.js';
 import { safeChildProcessEnv } from '../../lib/processEnv.js';
+import { spawnDetached, reapDetached } from '../../lib/detachedSpawn.js';
 import { getImageModels } from '../../lib/mediaModels.js';
 import { resolveFlux2Python, isFlux2VenvHealthy } from '../../lib/pythonSetup.js';
 import { getSettings } from '../settings.js';
@@ -220,6 +221,13 @@ export async function resumeTrainingRun(runId) {
       status: 409, code: 'RUN_NOT_RESUMABLE',
     });
   }
+  // A run can be marked failed (boot reconcile / cancel) while its detached
+  // trainer is still alive — reap it before resuming so we never run two
+  // trainers against the same checkpoint dir. Idempotent: a no-op when nothing
+  // survives. Belt-and-suspenders with the boot-reconcile reap, since resume
+  // can race the reconcile's SIGTERM grace window.
+  const reaped = await reapDetached(join(runDir(runId), '.detached')).catch(() => ({ reaped: false }));
+  if (reaped.reaped) console.log(`🧹 reaped surviving trainer pid ${reaped.pid} before resuming run ${shortId(runId)}`);
   // Both runtimes restore optimizer state + the step counter on resume, so
   // training picks up mid-run and finishes at the original total: mflux via
   // `mflux-train --resume <zip>`, and the torch FLUX.2 trainer via
@@ -527,18 +535,19 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
   childEnv.PYTHONUNBUFFERED = '1';
 
   console.log(`🏋️ training [${shortId(jobId)}] spawn ${basename(bin)} ${run.runtime} steps=${run.params.steps} rank=${run.params.rank} images=${manifest.images.length}${resumeCheckpoint ? ` resume=${basename(resumeCheckpoint)}` : ''}`);
-  // `detached: true` puts the trainer in its OWN process group. Without it the
-  // child sits in the server's group, so when pm2 restarts portos-server — e.g.
-  // on the `max_memory_restart` 2 GB ceiling, which a long session crosses
-  // routinely — the SIGINT pm2 sends to the group reaches the trainer too and
-  // kills it mid-run (observed twice: SIGINT/KeyboardInterrupt at the exact
-  // second of a server restart, losing hours of GPU work to a process unrelated
-  // to training). Detaching isolates the multi-hour trainer from the server's
-  // lifecycle. We still keep `proc` and `proc.kill()` it directly on cancel
-  // (signals the child PID, not the group), and DON'T `.unref()` — the queue
-  // worker awaits the 'close' event, so the child must keep the worker's
-  // promise alive for the run lifecycle.
-  const proc = spawn(bin, args, { env: childEnv, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  // `spawnDetached` double-forks the trainer so it reparents to init (PPID=1)
+  // and leaves pm2's process tree entirely. A plain `detached: true` child only
+  // gets its OWN process group — but pm2's TreeKill keys on PPID, not the group,
+  // so the still-PPID-linked trainer was found and SIGINT'd anyway whenever
+  // portos-server restarted (e.g. on the memory ceiling, which a long session
+  // crosses routinely — observed twice: SIGINT/KeyboardInterrupt at the exact
+  // second of a server restart, losing hours of GPU work). The detached trainer
+  // streams stdout/stderr through on-disk log files under `<runDir>/.detached`
+  // that the server tails. We still `proc.kill()` it directly by PID on cancel,
+  // and the queue worker awaits the 'close' event for the run lifecycle. No
+  // `cleanup` — those logs are the only copy of raw trainer stdout/stderr, kept
+  // in the run dir for post-mortem and removed when the run dir is deleted.
+  const proc = await spawnDetached(bin, args, { env: childEnv, controlDir: join(dir, '.detached') });
   activeProcess = proc;
   activeJobId = jobId;
 
@@ -639,7 +648,14 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
 
   proc.on('error', (err) => {
     if (activeProcess === proc) { activeProcess = null; activeJobId = null; }
-    fail(`trainer spawn failed: ${err.message}`);
+    // A launch failure after the run was marked `running` — a genuine spawn
+    // error, or (with spawnDetached) the control dir failing to create/clear.
+    // Route through the same terminal cleanup as pre-spawn failures so the run
+    // row doesn't stay stuck `running` and the dataset's `training` chip is
+    // released; `fail()` alone only logs + emits. Async + guarded since this
+    // runs outside the request lifecycle.
+    Promise.resolve(failBeforeSpawn(`trainer spawn failed: ${err.message}`))
+      .catch((e) => console.error(`❌ training [${shortId(jobId)}] failure cleanup failed: ${e?.message}`));
   });
 
   proc.on('close', (code, signal) => {
@@ -935,6 +951,12 @@ export async function initLoraTraining() {
   for (const run of active) {
     const job = run.jobId ? getJob(run.jobId) : null;
     if (!job || ['failed', 'canceled', 'completed'].includes(job.status)) {
+      // The trainer is a detached child that survives a pm2 restart, so it may
+      // STILL be running even though its in-memory job is gone. Reap it (clean
+      // SIGTERM → checkpoint → SIGKILL) before marking the run failed/resumable,
+      // so a resume can't spawn a second trainer into the same checkpoint dir.
+      const reaped = await reapDetached(join(runDir(run.id), '.detached')).catch(() => ({ reaped: false }));
+      if (reaped.reaped) console.log(`🧹 reaped surviving trainer pid ${reaped.pid} for run ${shortId(run.id)}`);
       await runsDb.updateRun(run.id, {
         status: 'failed', error: 'interrupted by restart', completedAt: new Date().toISOString(),
       }).catch(() => {});
