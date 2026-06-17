@@ -53,6 +53,7 @@ export * from './scenePrompt.js';
 export * from './seasonStructure.js';
 export * from './seriesLlmOverride.js';
 export * from './storyArc.js';
+export * from './styleGuide.js';
 export * from './storyBuilderIntegrity.js';
 export * from './storyBuilderSteps.js';
 // `storyBible.js` re-exports `normalizeSlugline` from `scenePrompt.js` for
@@ -111,6 +112,7 @@ export * from './zipStream.js';
 export * from './bashResolver.js';
 export * from './bufferedSpawn.js';
 export * from './commandSecurity.js';
+export * from './detachedSpawn.js';
 export * from './execGit.js';
 export * from './ffmpeg.js';
 export * from './gitArgs.js';

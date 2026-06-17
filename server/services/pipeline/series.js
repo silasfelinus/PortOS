@@ -15,6 +15,7 @@ import { randomUUID } from 'crypto';
 import { getSeriesStore } from './seriesStore/store.js';
 import { isStr, trimTo } from '../../lib/storyBible.js';
 import { sanitizeArc, sanitizeSeasonList } from '../../lib/storyArc.js';
+import { sanitizeStyleGuide } from '../../lib/styleGuide.js';
 import { sanitizeOrigin } from '../../lib/sharingOrigin.js';
 import { sanitizeSoftDeleteFields } from '../../lib/syncWire.js';
 import {
@@ -181,6 +182,11 @@ const sanitizeSeries = (raw) => {
     seasons: sanitizeSeasonList(raw.seasons),
     locked: sanitizeSeriesLocked(raw.locked),
     styleNotes: trimTo(raw.styleNotes, STYLE_NOTES_MAX),
+    // Per-series house style (tense/POV/audience/rating/reading-level/tone/
+    // conventions). Structured companion to the free-text styleNotes above;
+    // sanitizeStyleGuide returns null when empty so existing series.json files
+    // (which predate this field) migrate forward without a writer pass.
+    styleGuide: sanitizeStyleGuide(raw.styleGuide),
     titleLogo: trimTo(raw.titleLogo, TITLE_LOGO_MAX),
     author: trimTo(raw.author, AUTHOR_MAX),
     authorId: trimTo(raw.authorId, AUTHOR_ID_MAX) || null,
@@ -256,6 +262,7 @@ export async function createSeries(input = {}) {
     seasons: input.seasons || [],
     locked: input.locked || {},
     styleNotes: input.styleNotes || '',
+    styleGuide: input.styleGuide || null,
     titleLogo: input.titleLogo || '',
     author: input.author || '',
     authorId: input.authorId || null,
@@ -414,6 +421,9 @@ export async function updateSeries(id, patch = {}) {
       // Wholesale replace — `locked: {}` clears every lock; omission preserves.
       ...('locked' in patch ? { locked: patch.locked } : {}),
       ...('styleNotes' in patch ? { styleNotes: patch.styleNotes } : {}),
+      // Wholesale replace — sanitizeStyleGuide normalizes an empty object back
+      // to null (clear); omission preserves. Mirrors the arc/readerMap pattern.
+      ...('styleGuide' in patch ? { styleGuide: patch.styleGuide } : {}),
       ...('titleLogo' in patch ? { titleLogo: patch.titleLogo } : {}),
       ...('author' in patch ? { author: patch.author } : {}),
       ...('authorId' in patch ? { authorId: patch.authorId } : {}),

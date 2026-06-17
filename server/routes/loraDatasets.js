@@ -23,9 +23,10 @@ import {
   listDatasets,
   patchDataset,
   reconcileRenderingImages,
+  stripSharedCaptionFragments,
   updateImageCaption,
 } from '../services/loraDatasets.js';
-import { generateDatasetImages, sliceReferenceSheet } from '../services/loraDatasetGenerate.js';
+import { generateDatasetImages, getDatasetVariationAxes, sliceReferenceSheet } from '../services/loraDatasetGenerate.js';
 import { attachCaptionSseClient, startCaptionRun } from '../services/loraDatasetCaption.js';
 import { LORA_DATASET_ENTRY_KINDS, computeDatasetReadiness } from '../lib/loraDataset.js';
 
@@ -63,6 +64,13 @@ router.get('/:id', asyncHandler(async (req, res) => {
   // completion hook) before returning — the grid then shows truth.
   const dataset = await reconcileRenderingImages(req.params.id);
   res.json({ ...dataset, readiness: computeDatasetReadiness(dataset) });
+}));
+
+// Live variation axes (expressions/outfits for characters; lighting/settings
+// for objects & places) so the generate-batch dialog seeds its override chips
+// from the server vocab instead of duplicating the object/place axis constants.
+router.get('/:id/variation-axes', asyncHandler(async (req, res) => {
+  res.json(await getDatasetVariationAxes(req.params.id));
 }));
 
 const patchSchema = z.object({
@@ -157,6 +165,13 @@ router.get('/:id/caption-runs/:runId/events', asyncHandler(async (req, res) => {
   if (!attachCaptionSseClient(req.params.runId, res)) {
     throw new ServerError(`Caption run not found: ${req.params.runId}`, { status: 404, code: 'NOT_FOUND' });
   }
+}));
+
+// Bulk caption lint — strip the identity fragments shared across most captions
+// so the trigger token (not the caption phrases) learns the character. The
+// server recomputes the shared set itself; no request body.
+router.post('/:id/strip-shared-fragments', asyncHandler(async (req, res) => {
+  res.json(await stripSharedCaptionFragments(req.params.id));
 }));
 
 const imagePatchSchema = z.object({ caption: z.string().max(2000) });

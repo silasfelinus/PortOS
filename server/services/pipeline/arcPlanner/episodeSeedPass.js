@@ -7,6 +7,7 @@ import { runStagedLLM } from '../../../lib/stageRunner.js';
 import { getSeries } from '../series.js';
 import { createIssue, listIssues } from '../issues.js';
 import { renderArcShapeGuidance, renderArcShapePositionSummary } from '../../../lib/storyArc.js';
+import { composeStyleNotes } from '../../../lib/styleGuide.js';
 import { extractCanonFromProse } from '../../universeCanon.js';
 import { resolveSeriesLlmOverride } from '../../../lib/seriesLlmOverride.js';
 import { getSeriesCanon } from '../seriesCanon.js';
@@ -36,7 +37,10 @@ export async function buildSeasonEpisodesContext(series, season, priorSeasons, p
       name: series.name,
       logline: series.logline,
       premise: series.premise,
-      styleNotes: series.styleNotes,
+      // Fold the structured style guide into styleNotes so episode-beat
+      // generation honors house style (see composeStyleNotes) — same as the
+      // arc-overview and per-issue text contexts.
+      styleNotes: composeStyleNotes(series),
     },
     ...world,
     arc: {
