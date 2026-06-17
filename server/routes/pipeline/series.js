@@ -54,6 +54,11 @@ const arcSchema = z.object({
   // be listed here or Zod's default key-stripping would silently drop it on any
   // arc PATCH, and updateSeries's wholesale arc replace would then wipe it.
   readerMap: z.object({}).passthrough().nullable().optional(),
+  // Ticking clock (the countdown the reader anticipates). Same defer-to-service
+  // pattern as readerMap above: accepted as an opaque object and sanitized by
+  // sanitizeTickingClock (storyArc.js). Listed here so Zod doesn't strip it on
+  // an arc PATCH and updateSeries's wholesale arc replace doesn't wipe it.
+  tickingClock: z.object({}).passthrough().nullable().optional(),
   status: z.enum(ARC_STATUSES).optional(),
 });
 

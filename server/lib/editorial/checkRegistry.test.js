@@ -321,6 +321,68 @@ describe('relationships.opposition-reversal — deterministic advisory', () => {
   });
 });
 
+describe('arc.ticking-clock-hygiene — deterministic advisory', () => {
+  const CLOCK = 'arc.ticking-clock-hygiene';
+  const run = (tickingClock, config = { minReminders: 1 }) =>
+    getCheck(CLOCK).run({ series: { arc: { tickingClock } }, config, severityDefault: 'low' });
+  const check = getCheck(CLOCK);
+  const gate = (tickingClock) => check.gate({ series: { arc: { tickingClock } } });
+
+  it('gate fires only for an enabled clock', () => {
+    expect(gate(undefined)).toBe(false);
+    expect(gate({ enabled: false, label: 'x' })).toBe(false);
+    expect(gate({ enabled: true })).toBe(true);
+  });
+
+  it('returns nothing for a fully-specified clock', () => {
+    const findings = run({
+      enabled: true,
+      label: 'The storm makes landfall',
+      kind: 'event',
+      plantedAtArcPosition: 1,
+      dueAtArcPosition: 8,
+      stakes: 'The town floods.',
+      reminders: [{ id: 'rm-1', atIssue: 4, note: 'barometer drops' }],
+    });
+    expect(findings).toEqual([]);
+  });
+
+  it('flags an enabled clock missing name, stakes, plant, due, and reminders', () => {
+    const findings = run({ enabled: true });
+    const problems = findings.map((f) => f.problem).join(' | ');
+    expect(problems).toMatch(/unnamed/i);
+    expect(problems).toMatch(/no stakes/i);
+    expect(problems).toMatch(/no plant position/i);
+    expect(problems).toMatch(/no due position/i);
+    expect(problems).toMatch(/reminder beat/i);
+    for (const f of findings) {
+      expect(f.category).toBe('arc');
+      expect(f.severity).toBe('low');
+    }
+  });
+
+  it('flags a due position at or before the plant position', () => {
+    const findings = run({
+      enabled: true, label: 'x', stakes: 's',
+      plantedAtArcPosition: 5, dueAtArcPosition: 5,
+      reminders: [{ id: 'rm-1', note: 'tick' }],
+    });
+    expect(findings.some((f) => /at or before it is planted/i.test(f.problem))).toBe(true);
+  });
+
+  it('respects minReminders: 0 (skips the reminder-count finding)', () => {
+    const findings = run(
+      { enabled: true, label: 'x', stakes: 's', plantedAtArcPosition: 1, dueAtArcPosition: 4 },
+      { minReminders: 0 },
+    );
+    expect(findings.some((f) => /reminder beat/i.test(f.problem))).toBe(false);
+  });
+
+  it('is enabled by default', () => {
+    expect(getCheck(CLOCK).defaultEnabled).toBe(true);
+  });
+});
+
 describe('objects.unattached-significant — deterministic check (#1288)', () => {
   const run = (objects, characters = []) =>
     getCheck('objects.unattached-significant').run({ canon: { objects, characters }, config: {}, severityDefault: 'low' });

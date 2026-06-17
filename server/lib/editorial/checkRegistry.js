@@ -371,6 +371,99 @@ export const EDITORIAL_CHECKS = [
     },
   },
   {
+    id: 'arc.ticking-clock-hygiene',
+    label: 'Ticking-clock hygiene',
+    description:
+      'Advisory — checks the series ticking clock/countdown is fully specified: named, with stakes, a plant→due span, and reminder beats so the reader does not forget it through the long middle.',
+    scope: 'series',
+    kind: 'deterministic',
+    category: 'arc',
+    severityDefault: 'low',
+    defaultEnabled: true,
+    configSchema: z.object({
+      // How many reminder beats an enabled clock should carry. 0 disables the
+      // reminder-count check while keeping the named/stakes/span checks.
+      minReminders: z.number().int().min(0).max(20).default(1),
+    }),
+    configFields: [
+      {
+        key: 'minReminders',
+        label: 'Minimum reminder beats',
+        type: 'number',
+        min: 0,
+        max: 20,
+        step: 1,
+        help: 'How many reminder beats an enabled ticking clock should have so the reader does not forget it through the long middle.',
+      },
+    ],
+    // Only audit a clock the author turned on — a disabled/absent clock means
+    // "this story has no countdown", which is a valid choice, not a problem.
+    gate: (ctx) => ctx.series?.arc?.tickingClock?.enabled === true,
+    run: (ctx) => {
+      const clock = ctx.series?.arc?.tickingClock;
+      if (!clock || clock.enabled !== true) return [];
+      const minReminders = ctx.config?.minReminders ?? 1;
+      const label = clock.label || 'the ticking clock';
+      const location = `Series arc: ${clock.label || 'ticking clock'}`;
+      const findings = [];
+      const flag = (problem, suggestion) => findings.push({
+        severity: ctx.severityDefault,
+        category: 'arc',
+        location,
+        problem,
+        suggestion,
+        anchorQuote: clock.label || '',
+        issueNumber: null,
+      });
+      if (!clock.label) {
+        flag(
+          'The ticking clock is enabled but unnamed — the reader needs a concrete thing to count down to.',
+          'Give the countdown a specific label (e.g. "The storm makes landfall").',
+        );
+      }
+      if (!clock.stakes) {
+        flag(
+          `The ticking clock "${label}" has no stakes — it is unclear what the reader fears if it runs out.`,
+          'State what happens when the clock hits zero so the countdown carries dread.',
+        );
+      }
+      if (clock.plantedAtArcPosition == null) {
+        flag(
+          `The ticking clock "${label}" has no plant position — the reader never learns the countdown has started.`,
+          'Set where the reader first learns of the countdown (plantedAtArcPosition).',
+        );
+      }
+      if (clock.dueAtArcPosition == null) {
+        flag(
+          `The ticking clock "${label}" has no due position — there is no moment it lands.`,
+          'Set where the countdown pays off (dueAtArcPosition).',
+        );
+      }
+      // Plant and due share the arc-position coordinate space, so they're
+      // directly comparable; a due at/before the plant leaves no span for
+      // tension to build. (Reminders use issue numbers, a different axis, so
+      // they're intentionally NOT compared against the plant/due span here.)
+      if (
+        clock.plantedAtArcPosition != null
+        && clock.dueAtArcPosition != null
+        && clock.dueAtArcPosition <= clock.plantedAtArcPosition
+      ) {
+        flag(
+          `The ticking clock "${label}" is due (arc position ${clock.dueAtArcPosition}) at or before it is planted (${clock.plantedAtArcPosition}) — there is no span for tension to build.`,
+          'Set the due position after the plant position.',
+        );
+      }
+      const reminders = Array.isArray(clock.reminders) ? clock.reminders : [];
+      if (reminders.length < minReminders) {
+        flag(
+          `The ticking clock "${label}" has ${reminders.length} reminder beat(s) (expected at least ${minReminders}) — without periodic reminders the reader forgets it through the long middle.`,
+          'Add reminder beats between the plant and due to keep the countdown alive in the reader’s mind.',
+        );
+      }
+      return findings;
+    },
+  },
+  {
     id: 'objects.unattached-significant',
     label: 'Unattached significant object',
     description:
