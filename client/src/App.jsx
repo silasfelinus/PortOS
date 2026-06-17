@@ -92,6 +92,7 @@ const StoryBuilder = lazyWithReload(() => import('./pages/StoryBuilder'));
 const PipelineSeries = lazyWithReload(() => import('./pages/PipelineSeries'));
 const PipelineSeriesRoadmap = lazyWithReload(() => import('./pages/PipelineSeriesRoadmap'));
 const PipelineEditorialChecks = lazyWithReload(() => import('./pages/PipelineEditorialChecks'));
+const PipelineReverseOutline = lazyWithReload(() => import('./pages/PipelineReverseOutline'));
 const PipelineManuscriptEditor = lazyWithReload(() => import('./pages/PipelineManuscriptEditor'));
 const PipelineIssue = lazyWithReload(() => import('./pages/PipelineIssue'));
 const Login = lazyWithReload(() => import('./pages/Login'));
@@ -313,6 +314,7 @@ export default function App() {
           <Route path="pipeline/editorial-checks" element={<PipelineEditorialChecks />} />
           <Route path="pipeline/series/:seriesId" element={<PipelineSeries />} />
           <Route path="pipeline/series/:seriesId/roadmap" element={<PipelineSeriesRoadmap />} />
+          <Route path="pipeline/series/:seriesId/reverse-outline" element={<PipelineReverseOutline />} />
           {/* Splat (not a :param route) so navigating between issues reuses the
               same component instance instead of remounting + refetching. */}
           <Route path="pipeline/series/:seriesId/manuscript/*" element={<PipelineManuscriptEditor />} />
