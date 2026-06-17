@@ -52,6 +52,7 @@ const { runEditorialChecks, buildEditorialCheckPlan, getReviewWithStaleness } = 
 const { runStagedLLM } = await import('../../../lib/stageRunner.js');
 const { collectManuscriptSections } = await import('../arcPlanner.js');
 const { getSeriesCanon } = await import('../seriesCanon.js');
+const { getSeries } = await import('../series.js');
 const { listChecks, getCheck } = await import('../../../lib/editorial/index.js');
 
 // Build a `pipelineEditorialChecks.checks` map that disables every check
@@ -212,6 +213,26 @@ describe('getReviewWithStaleness (#1345)', () => {
     const review = await getReviewWithStaleness('s1');
     const naming = review.comments.find((c) => c.checkId === 'naming.dissimilar-names');
     expect(naming.stale).toBe(true);
+  });
+
+  it('stales a manuscript-check finding (not a canon-only one) when the series style guide changes', async () => {
+    getSeries.mockResolvedValueOnce({ id: 's1', universeId: 'u1', styleGuide: { readingLevel: 8 } });
+    await seedReviewFromRun();
+    getSeries.mockResolvedValueOnce({ id: 's1', universeId: 'u1', styleGuide: { readingLevel: 12 } });
+    const review = await getReviewWithStaleness('s1');
+    expect(review.comments.find((c) => c.checkId === 'prose.info-dumping').stale).toBe(true);
+    // styleGuide is in the manuscript segment only → a canon-only finding stays fresh.
+    expect(review.comments.find((c) => c.checkId === 'naming.dissimilar-names').stale).toBe(false);
+  });
+
+  it('stales a canon-only finding (not a manuscript one) when the arc ticking clock changes', async () => {
+    getSeries.mockResolvedValueOnce({ id: 's1', universeId: 'u1', arc: { tickingClock: { name: 'storm' } } });
+    await seedReviewFromRun();
+    getSeries.mockResolvedValueOnce({ id: 's1', universeId: 'u1', arc: { tickingClock: { name: 'eclipse' } } });
+    const review = await getReviewWithStaleness('s1');
+    // tickingClock is in the canon segment only → the manuscript finding stays fresh.
+    expect(review.comments.find((c) => c.checkId === 'naming.dissimilar-names').stale).toBe(true);
+    expect(review.comments.find((c) => c.checkId === 'prose.info-dumping').stale).toBe(false);
   });
 
   it('leaves legacy findings (no hash), completeness comments (no checkId), and unknown checks unannotated', async () => {

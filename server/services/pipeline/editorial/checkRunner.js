@@ -25,21 +25,37 @@ import { listIssues } from '../issues.js';
 import { getSeriesCanon } from '../seriesCanon.js';
 import { collectManuscriptSections, sectionsCorpus } from '../arcPlanner.js';
 import { seedReviewFromFindings, getReview } from '../manuscriptReview.js';
+import { canonicalStringify } from '../../../lib/objects.js';
 
 // Source-content fingerprinting for finding staleness (#1345). Each finding is
 // stamped with a hash of the exact content its check analyzed; the manuscript
-// editor / triage view flags a finding `stale` once that content drifts. A
-// manuscript-consuming check (`needsManuscript`) hashes the stitched corpus +
-// canon; a canon-only check hashes canon alone, so a prose edit doesn't falsely
-// stale a canon-only finding (e.g. naming / object-attachment checks). NUL
-// separates the two segments so they can't run together ambiguously.
+// editor / triage view flags a finding `stale` once that content drifts.
+//
+// Two segments cover the inputs the checks actually read: a manuscript-consuming
+// check (`needsManuscript`) hashes the stitched corpus + canon + style guide; a
+// canon-only check hashes canon + the arc's ticking clock — so a canon-only
+// finding (naming, object-attachment, ticking-clock) doesn't go stale on a pure
+// prose edit, and a manuscript finding doesn't go stale on a ticking-clock edit.
+// `canonicalStringify` (key-sorted) keeps the hash stable across machines so a
+// synced finding isn't falsely flagged stale after an import re-orders keys.
+//
+// NOTE: the input set is derived from `needsManuscript` + a fixed series field
+// set, NOT a per-check source declaration — a future check that reads a different
+// series/context field must extend these segments (per-check source deps: #1387).
+// NUL separates the segments so they can't run together ambiguously.
 const HASH_SEP = '\u0000';
 const sha256 = (text) => createHash('sha256').update(text || '').digest('hex');
-function computeSourceHashes(manuscript, canon) {
-  const canonStr = JSON.stringify(canon ?? {});
+function computeSourceHashes(manuscript, canon, series) {
+  const canonStr = canonicalStringify(canon ?? null);
+  const styleGuide = canonicalStringify(series?.styleGuide ?? null);
+  const tickingClock = canonicalStringify(series?.arc?.tickingClock ?? null);
   return {
-    withManuscript: sha256(`${manuscript || ''}${HASH_SEP}${canonStr}`),
-    canonOnly: sha256(canonStr),
+    // Manuscript checks (style.reading-level / style.conformance + the prose/object
+    // LLM checks) read the corpus + canon + style guide.
+    withManuscript: sha256([manuscript || '', canonStr, styleGuide].join(HASH_SEP)),
+    // Canon-only checks read canon; arc.ticking-clock-hygiene also reads the arc's
+    // ticking clock (folded in here since it's the only non-canon input they consult).
+    canonOnly: sha256([canonStr, tickingClock].join(HASH_SEP)),
   };
 }
 const hashForCheck = (hashes, needsManuscript) => (needsManuscript ? hashes.withManuscript : hashes.canonOnly);
@@ -79,8 +95,8 @@ export async function runEditorialChecks(seriesId, options = {}) {
   ]);
   const manuscript = sectionsCorpus(sections);
   // Fingerprint the analyzed content once per run — stamped onto every finding
-  // below so the editor can flag it `stale` when the manuscript/canon drifts (#1345).
-  const sourceHashes = computeSourceHashes(manuscript, canon);
+  // below so the editor can flag it `stale` when the manuscript/canon/series-meta drifts (#1345).
+  const sourceHashes = computeSourceHashes(manuscript, canon, series);
   const baseCtx = {
     seriesId,
     series,
@@ -178,7 +194,7 @@ export async function getReviewWithStaleness(seriesId) {
     needsManuscript ? collectManuscriptSections(seriesId) : Promise.resolve([]),
     getSeriesCanon(series),
   ]);
-  const sourceHashes = computeSourceHashes(sectionsCorpus(sections), canon);
+  const sourceHashes = computeSourceHashes(sectionsCorpus(sections), canon, series);
   return {
     ...review,
     comments: review.comments.map((c) => {
