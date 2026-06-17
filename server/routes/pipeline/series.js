@@ -21,6 +21,10 @@ import {
   CUSTOM_PAGE_MIN, CUSTOM_PAGE_MAX, CUSTOM_MINUTE_MIN, CUSTOM_MINUTE_MAX,
 } from '../../lib/issueLength.js';
 import { ARC_LIMITS, ARC_STATUSES, ARC_SHAPE_IDS, SEASON_STATUSES } from '../../lib/storyArc.js';
+import {
+  STYLE_GUIDE_LIMITS, STYLE_GUIDE_TENSES, STYLE_GUIDE_POV_PERSONS, STYLE_GUIDE_AUDIENCES,
+  STYLE_GUIDE_RATINGS, STYLE_GUIDE_PROFANITY, STYLE_GUIDE_SPELLING,
+} from '../../lib/styleGuide.js';
 import { mapServiceError } from './shared.js';
 
 // Inline until better/code-quality lands and exports this from validation.js
@@ -60,6 +64,29 @@ const arcSchema = z.object({
   // an arc PATCH and updateSeries's wholesale arc replace doesn't wipe it.
   tickingClock: z.object({}).passthrough().nullable().optional(),
   status: z.enum(ARC_STATUSES).optional(),
+});
+
+// Per-series style guide (house style) — #1303. Structured Zod parity for the
+// `series.styleGuide` field; every field optional + nullable so a partial
+// update or an intentional clear (null) both round-trip, and the service-side
+// `sanitizeStyleGuide` stays the authority (collapses an all-empty guide to
+// null). `tone` and `conventions` mirror the sanitizer's shape.
+const styleGuideSchema = z.object({
+  tense: z.enum(STYLE_GUIDE_TENSES).nullable().optional(),
+  povPerson: z.enum(STYLE_GUIDE_POV_PERSONS).nullable().optional(),
+  targetAudience: z.enum(STYLE_GUIDE_AUDIENCES).nullable().optional(),
+  contentRating: z.enum(STYLE_GUIDE_RATINGS).nullable().optional(),
+  profanity: z.enum(STYLE_GUIDE_PROFANITY).nullable().optional(),
+  readingLevel: z.number()
+    .min(STYLE_GUIDE_LIMITS.READING_LEVEL_MIN).max(STYLE_GUIDE_LIMITS.READING_LEVEL_MAX)
+    .nullable().optional(),
+  tone: z.array(z.string().trim().min(1).max(STYLE_GUIDE_LIMITS.TONE_MAX))
+    .max(STYLE_GUIDE_LIMITS.TONES_MAX).optional(),
+  conventions: z.object({
+    oxfordComma: z.boolean().nullable().optional(),
+    spelling: z.enum(STYLE_GUIDE_SPELLING).nullable().optional(),
+    italicizeThoughts: z.boolean().nullable().optional(),
+  }).nullable().optional(),
 });
 
 // Volume-cover / back-cover sub-schema — accepts the script text plus the
@@ -121,6 +148,7 @@ const seriesCreateSchema = z.object({
   seasons: z.array(seasonSchema).max(ARC_LIMITS.SEASONS_PER_SERIES_MAX).optional(),
   locked: seriesLockedSchema.optional(),
   styleNotes: z.string().trim().max(seriesSvc.STYLE_NOTES_MAX).optional().default(''),
+  styleGuide: styleGuideSchema.nullable().optional(),
   titleLogo: z.string().trim().max(seriesSvc.TITLE_LOGO_MAX).optional().default(''),
   author: z.string().trim().max(seriesSvc.AUTHOR_MAX).optional().default(''),
   authorId: z.string().trim().max(seriesSvc.AUTHOR_ID_MAX).nullable().optional(),
@@ -144,6 +172,7 @@ const seriesPatchSchema = z.object({
   seasons: z.array(seasonSchema).max(ARC_LIMITS.SEASONS_PER_SERIES_MAX).optional(),
   locked: seriesLockedSchema.optional(),
   styleNotes: z.string().trim().max(seriesSvc.STYLE_NOTES_MAX).optional(),
+  styleGuide: styleGuideSchema.nullable().optional(),
   titleLogo: z.string().trim().max(seriesSvc.TITLE_LOGO_MAX).optional(),
   author: z.string().trim().max(seriesSvc.AUTHOR_MAX).optional(),
   authorId: z.string().trim().max(seriesSvc.AUTHOR_ID_MAX).nullable().optional(),

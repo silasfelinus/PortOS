@@ -10,6 +10,7 @@
 import { MANUSCRIPT_TYPES } from '../series.js';
 import { listIssues } from '../issues.js';
 import { ARC_ROLES as ARC_ROLE_LIST, ARC_SHAPE_IDS, READER_MAP_BEAT_KINDS, buildSeason, renderArcShapeGuidance, renderTickingClock, sanitizeSeasonList } from '../../../lib/storyArc.js';
+import { composeStyleNotes } from '../../../lib/styleGuide.js';
 import { describeStructure, recommendStructure } from '../../../lib/seasonStructure.js';
 import { DEFAULT_LENGTH_PROFILE, LENGTH_PROFILE_NAMES } from '../../../lib/issueLength.js';
 import { getUniverse } from '../../universeBuilder.js';
@@ -332,7 +333,10 @@ export async function buildArcOverviewContext(series, preloadedWorld) {
       name: series.name,
       logline: series.logline,
       premise: series.premise,
-      styleNotes: series.styleNotes,
+      // Structured style guide folded into the free-text notes (see
+      // composeStyleNotes) so arc generation respects house style without a
+      // new template variable / migration.
+      styleNotes: composeStyleNotes(series),
       issueCountTarget: series.issueCountTarget,
     },
     ...world,

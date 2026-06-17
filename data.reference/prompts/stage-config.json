@@ -492,6 +492,13 @@
       "returnsJson": true,
       "variables": []
     },
+    "pipeline-editorial-style-conformance": {
+      "name": "Pipeline — Editorial Check: Style-guide conformance",
+      "description": "Editorial check (#1303): flags prose that drifts from the series style guide — wrong narrative tense, point-of-view person drift, or content/profanity beyond the configured rating ceiling. Reads the stitched manuscript plus the declared style-guide expectations. Returns issue-anchored findings.",
+      "model": "default",
+      "returnsJson": true,
+      "variables": []
+    },
     "pipeline-pov-rewrite": {
       "name": "Pipeline — Perspective Rewrite (alternate POV)",
       "description": "Rewrite one issue's drafted passage (prose, comic script, or teleplay) from a different cast character's point of view — the same events re-lensed through another character's interiority, wants, and blind spots. A non-destructive revision exercise; the canonical draft is untouched. Runs at `heavy` tier — re-renders the full passage.",

@@ -83,7 +83,14 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // would silently strip the countdown and last-writer-wins the loss back onto
   // the newer peer. Bump makes the older peer reject the ahead-version series
   // transfer instead. Per-category gate → only series sync pauses with old peers.
-  pipelineSeries: 3,
+  // v4 = `series.styleGuide` added (#1303) — a top-level series house-style
+  // field (tense/POV/audience/rating/reading-level/tone/conventions). Same
+  // silent-strip-then-LWW corruption as readerMap/tickingClock, just one level
+  // up: a ≤v3 peer re-sanitizes a series through its styleGuide-unaware
+  // `sanitizeSeries`, drops the guide, and last-writer-wins the loss back onto
+  // the newer peer. Bump makes the older peer reject the ahead-version series
+  // transfer instead. Per-category gate → only series sync pauses with old peers.
+  pipelineSeries: 4,
   // NOT bumped for the manuscript-review sibling doc now bundled on series
   // pushes/exports (`data/pipeline-series/{id}/manuscript-review.json`).
   // Unlike `readerMap` (v2), the review is NOT a field inside the series
