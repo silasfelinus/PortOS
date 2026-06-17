@@ -87,7 +87,7 @@ const styleGuideSchema = z.object({
     spelling: z.enum(STYLE_GUIDE_SPELLING).nullable().optional(),
     italicizeThoughts: z.boolean().nullable().optional(),
   }).nullable().optional(),
-}).strict();
+});
 
 // Volume-cover / back-cover sub-schema — accepts the script text plus the
 // pre-split legacy fields. Render-slot details (`proofImage`, `finalImage`)
