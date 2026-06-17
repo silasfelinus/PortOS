@@ -27,6 +27,20 @@ import { getSeriesCanon } from '../seriesCanon.js';
 import { collectManuscriptSections, sectionsCorpus, manuscriptSectionHeader } from '../arcPlanner.js';
 import { seedReviewFromFindings } from '../manuscriptReview.js';
 
+// Output room reserved for an editorial check's findings JSON. Sized for the
+// editorial output (a bounded findings list — far smaller than the completeness
+// pass's full-page rewrites), NOT the 8_000-token contextBudget default: that
+// default exceeds the 8_192-token fallback window, so inheriting it would drive
+// the usable input budget to 0 on an unknown/small local provider — the exact
+// case this chunking targets — and silently feed the model an empty manuscript.
+const EDITORIAL_OUTPUT_RESERVE_TOKENS = 2_000;
+
+// Floor on the per-chunk manuscript slice. Guarantees a chunk is never empty even
+// when a pathologically small window (or a large static-var overhead) would leave
+// a zero/negative input budget — reviewing a truncated slice beats reviewing
+// nothing. On a healthy window usableChars far exceeds this, so it never bites.
+const MIN_EDITORIAL_CHUNK_CHARS = 4_000;
+
 /**
  * Run the enabled editorial checks for a series and seed their findings into the
  * manuscript review.
@@ -88,12 +102,15 @@ export async function runEditorialChecks(seriesId, options = {}) {
         // Each section's full contribution = header + body, matching sectionsCorpus.
         sections: sections.map((s) => ({ ...s, text: `${manuscriptSectionHeader(s)}\n\n${s.content || ''}` })),
         overheadTokens,
+        outputReserveTokens: EDITORIAL_OUTPUT_RESERVE_TOKENS,
       });
-      // One whole chunk or many — the same usable-char cap applies to each.
+      // One whole chunk or many — the same usable-char cap applies to each,
+      // floored so a tiny window can never slice a chunk down to the empty string.
+      const cap = Math.max(plan.usableChars, MIN_EDITORIAL_CHUNK_CHARS);
       const corpora = plan.mode === 'whole'
         ? [manuscript]
         : plan.chunks.map((c) => sectionsCorpus(c.sections));
-      return corpora.map((c) => c.slice(0, plan.usableChars));
+      return corpora.map((c) => c.slice(0, cap));
     },
   };
 

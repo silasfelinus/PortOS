@@ -149,7 +149,7 @@ describe('runEditorialChecks', () => {
       { number: 2, title: 'Two', stageId: 'prose', content: big('SEC2') },
       { number: 3, title: 'Three', stageId: 'prose', content: big('SEC3') },
     ]);
-    resolveStageContext.mockResolvedValueOnce({ provider: { type: 'api', endpoint: 'http://localhost:11434' }, model: 'm', contextWindow: 15_000 });
+    resolveStageContext.mockResolvedValueOnce({ provider: { type: 'api', endpoint: 'http://localhost:11434' }, model: 'm', contextWindow: 10_000 });
 
     await runEditorialChecks('s1', { checkIds: ['prose.info-dumping'] });
 
@@ -160,6 +160,19 @@ describe('runEditorialChecks', () => {
     expect(allSent).toContain('SEC1');
     expect(allSent).toContain('SEC2');
     expect(allSent).toContain('SEC3');
+  });
+
+  it('still sends a non-empty manuscript on a small/fallback context window (issue #1340)', async () => {
+    // An unknown local provider falls back to the 8K window. With the contextBudget
+    // default 8K output reserve this would leave a 0-char input budget and feed the
+    // model an empty manuscript — the editorial reserve + floor must prevent that.
+    resolveStageContext.mockResolvedValueOnce({ provider: { type: 'api', endpoint: 'http://localhost:1234' }, model: 'm', contextWindow: 8_192 });
+    let sent = null;
+    runStagedLLM.mockImplementationOnce(async (_stage, vars) => { sent = vars.manuscript; return { content: { findings: [] } }; });
+    await runEditorialChecks('s1', { checkIds: ['prose.info-dumping'] });
+    expect(sent).toBeTruthy();
+    expect(sent.trim().length).toBeGreaterThan(0);
+    expect(sent).toContain('kingdom fell'); // the actual section content, not an empty slice
   });
 
   it('one failing check does not abort the pass', async () => {
