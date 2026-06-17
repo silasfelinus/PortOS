@@ -175,6 +175,26 @@ describe('runEditorialChecks', () => {
     expect(sent).toContain('kingdom fell'); // the actual section content, not an empty slice
   });
 
+  it('stops launching chunk calls once cancelled mid-run (issue #1340)', async () => {
+    // Three chunks; cancel during the first chunk's LLM call. The remaining
+    // chunks must NOT be sent to the model, and the run is canceled (no seed).
+    const big = (marker) => `${marker} ${'A'.repeat(12_000)}`;
+    collectManuscriptSections.mockResolvedValueOnce([
+      { number: 1, title: 'One', stageId: 'prose', content: big('SEC1') },
+      { number: 2, title: 'Two', stageId: 'prose', content: big('SEC2') },
+      { number: 3, title: 'Three', stageId: 'prose', content: big('SEC3') },
+    ]);
+    resolveStageContext.mockResolvedValueOnce({ provider: { type: 'api', endpoint: 'http://localhost:11434' }, model: 'm', contextWindow: 10_000 });
+    const controller = new AbortController();
+    runStagedLLM.mockImplementationOnce(async () => { controller.abort(); return { content: { findings: [] } }; });
+
+    const result = await runEditorialChecks('s1', { checkIds: ['prose.info-dumping'], signal: controller.signal });
+
+    expect(runStagedLLM).toHaveBeenCalledTimes(1); // chunks 2 and 3 skipped after abort
+    expect(result.canceled).toBe(true);
+    expect(seedReviewFromFindings).not.toHaveBeenCalled();
+  });
+
   it('one failing check does not abort the pass', async () => {
     // Make info-dumping the only enabled LLM check so the single rejection lands
     // on it (the object LLM checks would otherwise consume the mockRejectedOnce).

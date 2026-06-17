@@ -237,6 +237,10 @@ async function runManuscriptLlmCheck(ctx, { stage, category, overheadTokens = 0,
   const chunks = await ctx.planManuscriptChunks(stage, { overheadTokens });
   const perChunk = [];
   for (const manuscript of chunks) {
+    // Stop launching further chunk calls once the run is cancelled — the runner
+    // only checks the signal around the whole check, so without this a multi-
+    // chunk check keeps paying for LLM calls whose results will be discarded.
+    if (ctx.signal?.aborted) break;
     const { content } = await ctx.callStagedLLM(stage, buildVars(manuscript), { returnsJson: true, source: stage });
     perChunk.push(mapLlmFindings(content?.findings, {
       severityDefault: ctx.severityDefault,

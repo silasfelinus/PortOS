@@ -84,6 +84,10 @@ export async function runEditorialChecks(seriesId, options = {}) {
     canon,
     providerOverride,
     modelOverride,
+    // The run's AbortSignal, so a multi-chunk LLM check can stop launching
+    // further chunk calls mid-run (the runner only checks it before/after each
+    // check.run()). Mirrors the per-chunk cancel check in the completeness pass.
+    signal,
     // Injected LLM caller — keeps server/lib/editorial pure. Forwards the
     // provider/model overrides so an LLM check honors the autopilot's choice.
     callStagedLLM: (stage, vars, opts = {}) =>
