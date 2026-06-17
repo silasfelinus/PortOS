@@ -17,7 +17,7 @@
  * section's current text.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Play, Pause, Square, Loader2, Volume2, AlertTriangle } from 'lucide-react';
 import Modal from '../../ui/Modal';
 import VoicePicker from '../../voice/VoicePicker';
@@ -115,7 +115,9 @@ export default function ManuscriptReadAloud({ open, onClose, section }) {
     if (audio) audio.currentTime = 0;
   };
 
-  const jumpTo = (idx) => {
+  // Memoized on currentIndex (its only non-stable closure) so `renderedProse`
+  // — which wires it onto every sentence span — stays cached between renders.
+  const jumpTo = useCallback((idx) => {
     // Re-clicking the already-current sentence keeps both state values
     // unchanged, so the play effect won't re-fire and the <audio> src won't
     // reload — restart it imperatively so "play that line again" works.
@@ -128,7 +130,7 @@ export default function ManuscriptReadAloud({ open, onClose, section }) {
     }
     setCurrentIndex(idx);
     setIsPlaying(true);
-  };
+  }, [currentIndex]);
 
   const onEnded = () => {
     if (currentIndex < (segments?.length || 0) - 1) {
@@ -189,7 +191,7 @@ export default function ManuscriptReadAloud({ open, onClose, section }) {
       nodes.push(<span key={`gap-${cursor}`}>{content.slice(cursor)}</span>);
     }
     return nodes;
-  }, [segments, content, currentIndex]);
+  }, [segments, content, currentIndex, jumpTo]);
 
   const currentSrc = (currentIndex >= 0 && segments?.[currentIndex])
     ? `/data/audio/${encodeURIComponent(segments[currentIndex].filename)}`
