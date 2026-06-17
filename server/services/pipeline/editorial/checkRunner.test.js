@@ -165,7 +165,7 @@ describe('runEditorialChecks', () => {
   it('still sends a non-empty manuscript on a small/fallback context window (issue #1340)', async () => {
     // An unknown local provider falls back to the 8K window. With the contextBudget
     // default 8K output reserve this would leave a 0-char input budget and feed the
-    // model an empty manuscript — the editorial reserve + floor must prevent that.
+    // model an empty manuscript — the editorial-sized output reserve must prevent that.
     resolveStageContext.mockResolvedValueOnce({ provider: { type: 'api', endpoint: 'http://localhost:1234' }, model: 'm', contextWindow: 8_192 });
     let sent = null;
     runStagedLLM.mockImplementationOnce(async (_stage, vars) => { sent = vars.manuscript; return { content: { findings: [] } }; });

@@ -35,12 +35,6 @@ import { seedReviewFromFindings } from '../manuscriptReview.js';
 // case this chunking targets — and silently feed the model an empty manuscript.
 const EDITORIAL_OUTPUT_RESERVE_TOKENS = 2_000;
 
-// Floor on the per-chunk manuscript slice. Guarantees a chunk is never empty even
-// when a pathologically small window (or a large static-var overhead) would leave
-// a zero/negative input budget — reviewing a truncated slice beats reviewing
-// nothing. On a healthy window usableChars far exceeds this, so it never bites.
-const MIN_EDITORIAL_CHUNK_CHARS = 4_000;
-
 /**
  * Run the enabled editorial checks for a series and seed their findings into the
  * manuscript review.
@@ -108,13 +102,15 @@ export async function runEditorialChecks(seriesId, options = {}) {
         overheadTokens,
         outputReserveTokens: EDITORIAL_OUTPUT_RESERVE_TOKENS,
       });
-      // One whole chunk or many — the same usable-char cap applies to each,
-      // floored so a tiny window can never slice a chunk down to the empty string.
-      const cap = Math.max(plan.usableChars, MIN_EDITORIAL_CHUNK_CHARS);
+      // One whole chunk or many — the same usable-char budget caps each. Do NOT
+      // floor this above plan.usableChars: on a genuinely small configured window
+      // that would push the prompt back over the provider's context and get it
+      // clipped/rejected. The editorial-sized output reserve above is what keeps
+      // usableChars positive on the common unknown/8K-fallback provider.
       const corpora = plan.mode === 'whole'
         ? [manuscript]
         : plan.chunks.map((c) => sectionsCorpus(c.sections));
-      return corpora.map((c) => c.slice(0, cap));
+      return corpora.map((c) => c.slice(0, plan.usableChars));
     },
   };
 
