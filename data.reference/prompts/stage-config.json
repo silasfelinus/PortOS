@@ -491,6 +491,13 @@
       "model": "default",
       "returnsJson": true,
       "variables": []
+    },
+    "pipeline-editorial-style-conformance": {
+      "name": "Pipeline — Editorial Check: Style-guide conformance",
+      "description": "Editorial check (#1303): flags prose that drifts from the series style guide — wrong narrative tense, point-of-view person drift, or content/profanity beyond the configured rating ceiling. Reads the stitched manuscript plus the declared style-guide expectations. Returns issue-anchored findings.",
+      "model": "default",
+      "returnsJson": true,
+      "variables": []
     }
   }
 }

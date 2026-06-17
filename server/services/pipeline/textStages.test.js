@@ -101,6 +101,25 @@ describe('pipeline text stage generator', () => {
     expect(llmCalls[0].prompt).toContain('RENDERED:pipeline-idea-expansion');
   });
 
+  it('folds the structured style guide into series.styleNotes in the prompt context', async () => {
+    const series = await seriesSvc.createSeries({
+      name: 'Salt Run',
+      logline: 'A foundry city goes silent.',
+      premise: 'Salt-mining city.',
+      styleNotes: 'moebius linework',
+      styleGuide: { tense: 'present', povPerson: 'first', contentRating: 'PG-13' },
+    });
+    const issue = await issuesSvc.createIssue({ seriesId: series.id, title: 'The Hush' });
+    await textStages.generateStage(issue.id, 'prose', { seedInput: 'beats' });
+    const ctx = ctxFromCall(llmCalls[0]);
+    // The free-text notes are preserved AND the structured guide directives are
+    // prepended, so generation honors house style with no new template variable.
+    expect(ctx.series.styleNotes).toContain('moebius linework');
+    expect(ctx.series.styleNotes).toContain('present tense');
+    expect(ctx.series.styleNotes).toContain('first person');
+    expect(ctx.series.styleNotes).toContain('PG-13');
+  });
+
   it('stage prompt context includes only PRIOR stages', async () => {
     const { issue } = await seed();
     // Fill idea + prose, then run comicScript. Context should include both

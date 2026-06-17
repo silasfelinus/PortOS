@@ -23,6 +23,7 @@ import { getUniverse } from '../universeBuilder.js';
 import { compareIssuesByPosition, NO_LINKED_UNIVERSE_PLACEHOLDER } from './arcPlanner.js';
 import { computeIssueTargets } from '../../lib/issueLength.js';
 import { renderEntitiesSummary } from '../../lib/universePromptRenderers.js';
+import { composeStyleNotes } from '../../lib/styleGuide.js';
 
 const STAGE_TO_TEMPLATE = Object.freeze({
   idea: 'pipeline-idea-expansion',
@@ -216,7 +217,11 @@ function buildStageContext({ series, canon, world, issue, stageId, seedInput, so
       name: series.name,
       logline: series.logline,
       premise: series.premise,
-      styleNotes: series.styleNotes,
+      // Fold the structured style guide (tense/POV/rating/reading-level/tone/
+      // conventions) into the free-text styleNotes the template already renders,
+      // so prose/script generation honors house style with no new template
+      // variable (and thus no stage-prompt migration). See composeStyleNotes.
+      styleNotes: composeStyleNotes(series),
       universeId: series.universeId || '',
       characters: canon?.characters || [],
     },

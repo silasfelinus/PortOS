@@ -534,3 +534,91 @@ describe('objects.backstory-consistency — LLM check (#1288)', () => {
     expect(called).toBe(false);
   });
 });
+
+describe('style.reading-level — deterministic check (#1303)', () => {
+  const check = getCheck('style.reading-level');
+  const run = (styleGuide, manuscript, config = {}) =>
+    check.run({ series: { styleGuide }, manuscript, config, severityDefault: 'low' });
+  const gate = (styleGuide, manuscript) => check.gate({ series: { styleGuide }, manuscript });
+
+  // Simple grade-3-ish prose (short words, short sentences) vs. dense academic
+  // prose (long words, long sentences) — far enough apart that the FK estimate
+  // lands on opposite sides of a mid-range target with a tight tolerance.
+  const SIMPLE = 'The cat sat. The dog ran. We had fun. It was a good day. '.repeat(8);
+  const DENSE = ('The aforementioned epistemological ramifications necessitated unprecedented '
+    + 'interdisciplinary collaboration amongst numerous distinguished academic institutions '
+    + 'throughout the consequential deliberations. ').repeat(6);
+  // Ordinary narrative prose — grade lands in a middle band, so a mid target
+  // with the max tolerance is comfortably within range regardless of the exact
+  // FK estimate.
+  const MEDIUM = ('The surveyor walked along the quiet harbor and counted the empty boats. '
+    + 'She wondered where the fishermen had gone. The morning felt strange and still. ').repeat(5);
+
+  it('gate requires both a target reading level and a non-empty manuscript', () => {
+    expect(gate({ readingLevel: 8 }, '')).toBe(false);
+    expect(gate(null, SIMPLE)).toBe(false);
+    expect(gate({ readingLevel: 8 }, SIMPLE)).toBe(true);
+  });
+
+  it('returns nothing when the measured grade is within tolerance', () => {
+    // Ordinary prose targeted at a mid grade with the max tolerance → within.
+    expect(run({ readingLevel: 6 }, MEDIUM, { tolerance: 6 })).toEqual([]);
+  });
+
+  it('flags prose that reads ABOVE the target', () => {
+    const findings = run({ readingLevel: 3 }, DENSE, { tolerance: 2 });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].category).toBe('style');
+    expect(findings[0].problem).toMatch(/above/i);
+    expect(findings[0].issueNumber).toBeNull();
+  });
+
+  it('flags prose that reads BELOW the target', () => {
+    const findings = run({ readingLevel: 12 }, SIMPLE, { tolerance: 2 });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].problem).toMatch(/below/i);
+  });
+
+  it('is enabled by default', () => {
+    expect(check.defaultEnabled).toBe(true);
+  });
+});
+
+describe('style.conformance — LLM check (#1303)', () => {
+  const check = getCheck('style.conformance');
+  const gate = (styleGuide, manuscript = 'Some prose.') => check.gate({ series: { styleGuide }, manuscript });
+
+  it('gate requires prose AND a conformance-relevant style-guide field', () => {
+    expect(gate({ tense: 'past' }, '')).toBe(false);          // no prose
+    expect(gate({ tone: ['noir'] })).toBe(false);             // tone alone isn't conformance-relevant
+    expect(gate(null)).toBe(false);
+    expect(gate({ tense: 'past' })).toBe(true);
+    expect(gate({ contentRating: 'PG-13' })).toBe(true);
+  });
+
+  it('passes the declared expectations + manuscript to the model and maps findings', async () => {
+    let sentVars = null;
+    const findings = await check.run({
+      series: { styleGuide: { tense: 'past', povPerson: 'first', contentRating: 'PG' } },
+      manuscript: '# Issue 2 — Drift (prose)\n\nI walk to the door.',
+      config: { maxFindings: 5 },
+      severityDefault: 'medium',
+      callStagedLLM: async (_stage, vars) => {
+        sentVars = vars;
+        return { content: { findings: [{ severity: 'high', issueNumber: 2, problem: 'present-tense slip', anchorQuote: 'I walk' }] } };
+      },
+    });
+    expect(sentVars.styleGuide).toMatch(/Tense: past/);
+    expect(sentVars.styleGuide).toMatch(/Point-of-view person: first/);
+    expect(sentVars.styleGuide).toMatch(/Content rating ceiling: PG/);
+    expect(sentVars.manuscript).toContain('I walk to the door');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].category).toBe('style');
+    expect(findings[0].issueNumber).toBe(2);
+    expect(findings[0].severity).toBe('high');
+  });
+
+  it('is enabled by default', () => {
+    expect(check.defaultEnabled).toBe(true);
+  });
+});

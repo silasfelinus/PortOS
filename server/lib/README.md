@@ -47,6 +47,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `editorial/` | Extensible editorial-check registry (#1284) — `EDITORIAL_CHECKS` + fail-fast guards + lookup/state helpers. See `editorial/README.md`. The runner that executes checks lives at `server/services/pipeline/editorial/checkRunner.js`. |
 | `storyBible.js` | Canonical Character / Place / Object shapes + `BIBLE_LIMITS`. |
 | `storyArc.js` | Canonical Arc + Season + Reader-Map shapes for pipeline arc planning. |
+| `styleGuide.js` | Per-series house style (tense/POV/audience/rating/reading-level/tone/conventions): `sanitizeStyleGuide` + `renderStyleGuide` generation block + enums. |
 | `storyBuilderSteps.js` | Unified Story Builder ordered step definitions + helpers (`STEPS`, `STEP_IDS`, `STEP_STATUSES`, `isValidStepId`, `stepIndex`). |
 | `storyBuilderIntegrity.js` | Pure staleness hashing for the Story Builder (`hashUpstream`, `computeStaleSteps`, `computeSyncDrift`). |
 | `canonPrompt.js` | Per-kind field-precedence rules; SHORT/RICH/PREVIEW spec tables; `flattenCanonDescriptorFragments` / `mapCanonDescriptorFragments` / `descriptorForCanonEntry`. |

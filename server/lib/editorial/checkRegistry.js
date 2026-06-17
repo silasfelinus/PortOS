@@ -51,6 +51,12 @@ export const INFO_DUMPING_STAGE = 'pipeline-editorial-info-dumping';
 export const OBJECT_MOTIVATION_STAGE = 'pipeline-editorial-object-motivation';
 export const OBJECT_BACKSTORY_STAGE = 'pipeline-editorial-object-backstory';
 
+// Stage name for the style-guide conformance LLM check (#1303). Ships in
+// data.reference/prompts/stages/ + stage-config.json (fresh installs via
+// setup-data.js) and migrates to existing installs via migration 095 (boot runs
+// migrations but NOT setup-data, so the migration is required).
+export const STYLE_CONFORMANCE_STAGE = 'pipeline-editorial-style-conformance';
+
 // ---------------------------------------------------------------------------
 // Deterministic helpers for the character-name dissimilarity check.
 // ---------------------------------------------------------------------------
@@ -205,6 +211,60 @@ function mapLlmFindings(raw, { severityDefault, category, max, withIssueNumber }
     issueNumber: withIssueNumber && Number.isInteger(f?.issueNumber) ? f.issueNumber : null,
   })).filter((f) => f.problem);
 }
+
+// ---------------------------------------------------------------------------
+// Deterministic helpers for the style-guide reading-level check (#1303). A
+// self-contained Flesch–Kincaid grade-level estimate so the registry stays pure
+// (no import out to the styleGuide lib). The heuristic is approximate — it only
+// needs to catch "the prose reads several grades off the configured target".
+// ---------------------------------------------------------------------------
+
+// Hoisted out of countSyllables so the per-word loop over a full manuscript
+// doesn't recompile them on every call.
+const NON_ALPHA_RE = /[^a-z]/g;
+const VOWEL_GROUP_RE = /[aeiouy]+/g;
+const SENTENCE_END_RE = /[.!?]+/g;
+const WORD_RE = /\b[a-zA-Z]+\b/g;
+
+function countSyllables(word) {
+  const w = String(word).toLowerCase().replace(NON_ALPHA_RE, '');
+  if (!w) return 0;
+  if (w.length <= 3) return 1;
+  // Drop a trailing silent 'e', then count vowel groups (each run of vowels is
+  // ~one syllable). Floor at 1 — every real word has at least one.
+  const groups = w.replace(/e$/, '').match(VOWEL_GROUP_RE);
+  return Math.max(1, groups ? groups.length : 1);
+}
+
+// Flesch–Kincaid grade level for a manuscript corpus. Returns null when there
+// are no words to measure (caller skips rather than flagging a phantom grade).
+function readingGradeLevel(text) {
+  const clean = String(text || '');
+  const sentences = (clean.match(SENTENCE_END_RE) || []).length || 1;
+  const words = clean.match(WORD_RE) || [];
+  if (words.length === 0) return null;
+  const syllables = words.reduce((sum, w) => sum + countSyllables(w), 0);
+  return 0.39 * (words.length / sentences) + 11.8 * (syllables / words.length) - 15.59;
+}
+
+// Compact bullet list of the conformance-relevant style-guide expectations, fed
+// to the conformance LLM so it knows exactly what to measure the prose against.
+// Inlined (not imported from styleGuide.js) to keep this registry pure. Returns
+// '' when no conformance-relevant field is set (the check's gate also tests this).
+function styleGuideExpectations(sg) {
+  if (!sg || typeof sg !== 'object') return '';
+  const lines = [];
+  if (sg.tense) lines.push(`- Tense: ${sg.tense}`);
+  if (sg.povPerson) lines.push(`- Point-of-view person: ${sg.povPerson}`);
+  if (sg.targetAudience) lines.push(`- Target audience: ${sg.targetAudience}`);
+  if (sg.contentRating && sg.contentRating !== 'custom') lines.push(`- Content rating ceiling: ${sg.contentRating}`);
+  if (sg.profanity) lines.push(`- Profanity allowed: ${sg.profanity}`);
+  return lines.join('\n');
+}
+
+// True when the style guide carries at least one field the conformance LLM can
+// measure prose against. Shared by the check's gate and run so they agree.
+const hasConformanceFields = (sg) => styleGuideExpectations(sg).length > 0;
 
 // ---------------------------------------------------------------------------
 // Registry entries.
@@ -657,6 +717,120 @@ export const EDITORIAL_CHECKS = [
       return mapLlmFindings(content?.findings, {
         severityDefault: ctx.severityDefault,
         category: 'exposition',
+        max: ctx.config?.maxFindings ?? 12,
+        withIssueNumber: true,
+      });
+    },
+  },
+  {
+    id: 'style.reading-level',
+    label: 'Reading-level conformance',
+    description:
+      "Measures the drafted manuscript's reading grade level (Flesch–Kincaid) and flags it when it drifts beyond a tolerance from the series style guide's target reading level.",
+    scope: 'series',
+    kind: 'deterministic',
+    category: 'style',
+    severityDefault: 'low',
+    defaultEnabled: true,
+    // Reads the stitched manuscript to measure the actual grade level.
+    needsManuscript: true,
+    configSchema: z.object({
+      // How many grade levels the measured reading level may drift from the
+      // target before it's flagged.
+      tolerance: z.number().int().min(0).max(6).default(2),
+    }),
+    configFields: [
+      {
+        key: 'tolerance',
+        label: 'Reading-level tolerance (grades)',
+        type: 'number',
+        min: 0,
+        max: 6,
+        step: 1,
+        help: 'How many grade levels the measured reading level may differ from the style-guide target before it is flagged.',
+      },
+    ],
+    // Only run when the style guide sets a target AND there's prose to measure.
+    gate: (ctx) => Number.isFinite(ctx.series?.styleGuide?.readingLevel)
+      && (ctx.manuscript || '').trim().length > 0,
+    run: (ctx) => {
+      const target = ctx.series?.styleGuide?.readingLevel;
+      if (!Number.isFinite(target)) return [];
+      const grade = readingGradeLevel(ctx.manuscript);
+      if (grade == null) return [];
+      const tolerance = ctx.config?.tolerance ?? 2;
+      const rounded = Math.round(grade * 10) / 10;
+      const delta = rounded - target;
+      if (Math.abs(delta) <= tolerance) return [];
+      const tooHard = delta > 0;
+      const off = Math.round(Math.abs(delta) * 10) / 10;
+      return [{
+        severity: ctx.severityDefault,
+        category: 'style',
+        location: 'Series manuscript (whole-corpus reading level)',
+        problem: `The drafted manuscript reads at about a grade-${rounded} level, ${tooHard ? 'above' : 'below'} the style-guide target of grade ${target} (off by ${off} grade${off === 1 ? '' : 's'}).`,
+        suggestion: tooHard
+          ? 'Shorten sentences and prefer plainer words to bring the reading level down toward the target.'
+          : 'Vary sentence length and vocabulary to raise the reading level toward the target.',
+        anchorQuote: '',
+        issueNumber: null,
+      }];
+    },
+  },
+  {
+    id: 'style.conformance',
+    label: 'Style-guide conformance (tense / POV / rating)',
+    description:
+      "LLM scan — flags passages where the prose drifts from the series style guide's tense, point-of-view person, or content rating (profanity/violence/sexual content beyond the configured ceiling).",
+    scope: 'issue',
+    kind: 'llm',
+    category: 'style',
+    severityDefault: 'medium',
+    defaultEnabled: true,
+    needsManuscript: true,
+    configSchema: z.object({
+      // Cap findings per run so a long manuscript can't flood the review.
+      maxFindings: z.number().int().min(1).max(50).default(12),
+      // Bound the prompt so a long series can't overflow a small/local
+      // provider's context window. Single-call safeguard — mirrors info-dumping.
+      maxManuscriptChars: z.number().int().min(2000).max(200_000).default(48_000),
+    }),
+    configFields: [
+      {
+        key: 'maxFindings',
+        label: 'Max findings per run',
+        type: 'number',
+        min: 1,
+        max: 50,
+        step: 1,
+        help: 'Cap findings so a long manuscript can not flood the review.',
+      },
+      {
+        key: 'maxManuscriptChars',
+        label: 'Max manuscript characters analyzed',
+        type: 'number',
+        min: 2000,
+        max: 200_000,
+        step: 1000,
+        help: 'Bounds the prompt so a long series can not overflow a small provider context window.',
+      },
+    ],
+    // Skip unless there's prose AND the style guide declares at least one
+    // conformance-relevant field (tense / POV / rating / profanity / audience).
+    gate: (ctx) => (ctx.manuscript || '').trim().length > 0
+      && hasConformanceFields(ctx.series?.styleGuide),
+    run: async (ctx) => {
+      const expectations = styleGuideExpectations(ctx.series?.styleGuide);
+      if (!expectations) return [];
+      const manuscript = capManuscript(ctx.manuscript, ctx.config?.maxManuscriptChars ?? 48_000);
+      const { content } = await ctx.callStagedLLM(
+        STYLE_CONFORMANCE_STAGE,
+        { manuscript, styleGuide: expectations },
+        { returnsJson: true, source: STYLE_CONFORMANCE_STAGE },
+      );
+      return mapLlmFindings(content?.findings, {
+        severityDefault: ctx.severityDefault,
+        category: 'style',
         max: ctx.config?.maxFindings ?? 12,
         withIssueNumber: true,
       });
