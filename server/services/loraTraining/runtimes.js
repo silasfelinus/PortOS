@@ -100,22 +100,41 @@ const MFLUX_SCHED = Object.freeze({ steps: 40, guidance: 1.0, timestepLow: 25, t
  * quantized, LoRA weights full precision), minimal fidelity loss for a
  * character LoRA. Unset → original memory-derived behavior (no change for other
  * installs). Accepts 8 or 4; anything else is ignored.
+ *
+ * Per-run overrides (`overrides = { quantize?, low_ram? }`, issue #1321): a
+ * single run can opt into a heavier or lighter frozen base than its memory tier
+ * without a code change (exposed as the `baseQuant`/`lowRam` request params).
+ * `quantize` present — including `null` (bf16) — replaces the derived tier;
+ * `low_ram` boolean replaces the derived spill setting; absent keys keep the
+ * memory-derived value. The `LORA_TRAIN_MAX_QUANT_BITS` cap still applies AFTER
+ * the override, so a per-run opt-in can never exceed a box's hard safety
+ * ceiling (the cap only ever makes the base lighter, never heavier).
  */
-export function deriveMfluxMemoryConfig(totalMemGb) {
+export function deriveMfluxMemoryConfig(totalMemGb, overrides = {}) {
   const gb = Number.isFinite(totalMemGb) ? totalMemGb : 0; // unknown → most conservative
-  const base = gb >= 96
+  const result = gb >= 96
     ? { quantize: null, low_ram: true }
     : gb >= 64
       ? { quantize: 8, low_ram: true }
       : { quantize: 4, low_ram: true };
+  // Request override wins over the memory-derived tier. hasOwnProperty (not a
+  // truthiness check) so an explicit `quantize: null` (bf16) is honored as a
+  // deliberate clear, not mistaken for "absent".
+  if (Object.prototype.hasOwnProperty.call(overrides, 'quantize')) {
+    result.quantize = overrides.quantize;
+  }
+  if (typeof overrides.low_ram === 'boolean') {
+    result.low_ram = overrides.low_ram;
+  }
   const capRaw = Number.parseInt(process.env.LORA_TRAIN_MAX_QUANT_BITS ?? '', 10);
   if (capRaw === 8 || capRaw === 4) {
     // null (bf16) is "16+ bits" → always capped; an existing smaller quant
-    // (more aggressive) is kept. Lower bits = smaller = stays.
-    const curBits = base.quantize == null ? 16 : base.quantize;
-    if (curBits > capRaw) return { ...base, quantize: capRaw };
+    // (more aggressive) is kept. Lower bits = smaller = stays. Applied last so
+    // it clamps the post-override value, not just the memory tier.
+    const curBits = result.quantize == null ? 16 : result.quantize;
+    if (curBits > capRaw) result.quantize = capRaw;
   }
-  return base;
+  return result;
 }
 
 /**
@@ -213,7 +232,15 @@ export function buildMfluxTrainConfig({
   const requestedSaveFrequency = p.checkpointEvery > 0 ? p.checkpointEvery : totalSteps;
   const maxSaveInterval = Math.max(1, Math.ceil(totalSteps / MFLUX_MIN_CHECKPOINTS));
   const saveFrequency = Math.min(requestedSaveFrequency, maxSaveInterval);
-  const memory = deriveMfluxMemoryConfig(totalMemGb);
+  // Per-run base-tier overrides (issue #1321): `baseQuant` lets a run pick the
+  // frozen-base quant — 16 = unquantized bf16 (mflux `quantize: null`), 8/4 =
+  // QLoRA bit-width — and `lowRam` toggles the on-disk latent-cache spill,
+  // independent of the memory-derived default. mflux-only knobs (the torch
+  // runtime always trains the bf16 base); absent → memory-derived tier.
+  const memoryOverride = {};
+  if (p.baseQuant != null) memoryOverride.quantize = p.baseQuant >= 16 ? null : p.baseQuant;
+  if (typeof p.lowRam === 'boolean') memoryOverride.low_ram = p.lowRam;
+  const memory = deriveMfluxMemoryConfig(totalMemGb, memoryOverride);
   return {
     model: mfluxModel,
     data: dataDir,
