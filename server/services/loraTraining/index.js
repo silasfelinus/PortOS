@@ -441,7 +441,7 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
     }
     console.log(`🔁 training [${shortId(jobId)}] re-attached to surviving trainer pid ${proc.pid} (run ${shortId(runId)})`);
     trainingEvents.emit('status', { generationId: jobId, message: 'Re-attached to trainer that survived a restart' });
-    wireProcLifecycle(proc);
+    wireProcLifecycle(proc, { isReattach: true });
     return;
   }
 
@@ -605,7 +605,7 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
   // hoisted nested function so the early reattach branch (above) can call it too
   // — both paths share identical handling. Closes over jobId/runId/run/dir/
   // settings/fail/failBeforeSpawn.
-  function wireProcLifecycle(proc) {
+  function wireProcLifecycle(proc, { isReattach = false } = {}) {
   activeProcess = proc;
   activeJobId = jobId;
 
@@ -691,6 +691,16 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
   let stallKilled = false; // set when the tick SIGKILLs — close handler reads it
   let stallTimer = null;
   const stopStallWatchdog = () => { if (stallTimer) { clearInterval(stallTimer); stallTimer = null; } };
+  // The stall detector derives its budget from WALL-CLOCK gaps between STEP
+  // lines. On a #1332 re-attach the survivor's whole log is replayed from
+  // offset 0 in a few ms, so feeding those historical steps would record
+  // ~0ms intervals and instantly exit the 20-min warmup into the tight floor —
+  // false-killing a healthy slow-step run on its next live step. So on a
+  // re-attach we withhold step observation until the tailer's one-time
+  // 'replayed' signal (initial backlog drained); the detector then warms up
+  // fresh on genuinely-live output, exactly as a fresh spawn would.
+  let stallObserveLive = !isReattach;
+  if (isReattach) proc.on('replayed', () => { stallObserveLive = true; });
 
   const makeSplitter = (stream) => {
     let buf = '';
@@ -699,7 +709,7 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
       // uncaught throw here would crash the server process.
       try {
         handleLine(text, stream);
-        if (stallWatchdogOn) stallDetector.observe(text);
+        if (stallWatchdogOn && stallObserveLive) stallDetector.observe(text);
       } catch (err) {
         console.error(`❌ training [${shortId(jobId)}] line handler failed: ${err?.message}`);
       }

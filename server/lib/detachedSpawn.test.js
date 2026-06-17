@@ -306,6 +306,30 @@ describe('reattachDetached', () => {
     expect(code).toBe(0);
   });
 
+  it('emits a one-time "replayed" signal once the initial backlog is drained', async () => {
+    const controlDir = await tmpControlDir();
+    const original = await spawnDetached(
+      'sh', ['-c', 'printf "h1\\nh2\\n"; sleep 1; printf "live\\n"; exit 0'],
+      { controlDir, pollMs: 25 }
+    );
+    const originalClosed = onClose(original);
+    await new Promise((r) => setTimeout(r, 200)); // let the backlog (h1/h2) land
+    const reattached = await reattachDetached(controlDir, { pollMs: 25 });
+    const getOut = collect(reattached.stdout);
+    let replayedCount = 0;
+    let outAtReplayed = null;
+    reattached.on('replayed', () => { replayedCount += 1; outAtReplayed = getOut(); });
+    const { code } = await onClose(reattached);
+    // 'replayed' fires exactly once, AFTER the pre-existing backlog was emitted
+    // but BEFORE the post-restart "live" line — that's the boundary the stall
+    // detector uses to avoid arming on instantly-replayed step history.
+    expect(replayedCount).toBe(1);
+    expect(outAtReplayed).toBe('h1\nh2\n');
+    expect(getOut()).toBe('h1\nh2\nlive\n');
+    expect(code).toBe(0);
+    await originalClosed.catch(() => {});
+  });
+
   it('returns null when there is no pid to attach to', async () => {
     const controlDir = await tmpControlDir();
     expect(await reattachDetached(controlDir, { pollMs: 25 })).toBeNull();

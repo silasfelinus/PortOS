@@ -174,9 +174,16 @@ function createLogTailer(handle, { controlDir, pollMs, cleanup }) {
   // has closed its redirected fds — so seeing `exit` guarantees the logs are
   // complete and the final drain in finish() captures everything. A `stat`
   // (size>0) tests for the sentinel without allocating/reading the whole file.
+  let replayedEmitted = false;
   const tick = async () => {
     if (closed) return;
     await drainBoth();
+    // After the first drain, the entire pre-existing backlog has been emitted —
+    // for a fresh spawn that's ~nothing, but for a reattach (#1332) it's the
+    // whole replayed-from-offset-0 history. Fire a one-time 'replayed' so a
+    // consumer can tell replayed history from live output (e.g. to keep a
+    // wall-clock stall detector from arming on instantly-replayed step lines).
+    if (!replayedEmitted) { replayedEmitted = true; handle.emit('replayed'); }
     const exited = await stat(exitFile).then((s) => s.size > 0).catch(() => false);
     if (exited) {
       await finish();
@@ -375,6 +382,14 @@ export async function isReattachable(controlDir) {
  * dead PID with no exit sentinel) — the caller should reap+fail instead. The
  * `cleanup` default is false: a re-attached run's logs are its only post-mortem
  * record, same as the original spawn.
+ *
+ * PID trust: like reapDetached/cancel, this trusts the persisted PID. In the
+ * vanishingly-unlikely case the OS recycled it onto an unrelated live process
+ * before boot, isAlive() reports true and we'd tail for an exit that never
+ * comes — but the caller (the training queue) wraps the re-attached run in its
+ * flat idle watchdog (WATCHDOG_TRAINING_MS), which fails the run and frees the
+ * GPU lane once no trainer output arrives, so a stale PID can't wedge the lane
+ * indefinitely. Matches the single-user trust model documented on reapDetached.
  *
  * @param {string} controlDir - the job's spawnDetached control dir
  * @param {object} [opts]
