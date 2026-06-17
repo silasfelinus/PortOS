@@ -322,8 +322,8 @@ describe('relationships.opposition-reversal — deterministic advisory', () => {
 });
 
 describe('objects.unattached-significant — deterministic check (#1288)', () => {
-  const run = (objects) =>
-    getCheck('objects.unattached-significant').run({ canon: { objects }, config: {}, severityDefault: 'low' });
+  const run = (objects, characters = []) =>
+    getCheck('objects.unattached-significant').run({ canon: { objects, characters }, config: {}, severityDefault: 'low' });
 
   it('flags an object with significance but no attachments', () => {
     const findings = run([
@@ -335,11 +335,23 @@ describe('objects.unattached-significant — deterministic check (#1288)', () =>
     expect(findings[0].problem).toMatch(/mean to anyone/i);
   });
 
-  it('does not flag an object that has at least one attachment', () => {
-    const findings = run([
-      { id: 'o1', name: 'Pocket Watch', significance: 'matters', attachments: [{ characterId: 'c1' }] },
-    ]);
+  it('does not flag an object whose attachment resolves to a live character', () => {
+    const findings = run(
+      [{ id: 'o1', name: 'Pocket Watch', significance: 'matters', attachments: [{ characterId: 'c1' }] }],
+      [{ id: 'c1', name: 'Mara' }],
+    );
     expect(findings).toEqual([]);
+  });
+
+  it('flags an object whose only attachment dangles at a deleted character', () => {
+    // The character was deleted, leaving a "(missing)" attachment — the object
+    // is effectively unattached, so it must still surface.
+    const findings = run(
+      [{ id: 'o1', name: 'Pocket Watch', significance: 'matters', attachments: [{ characterId: 'gone' }] }],
+      [{ id: 'c1', name: 'Mara' }],
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0].location).toContain('Pocket Watch');
   });
 
   it('does not flag an object with no significance (pure set dressing)', () => {

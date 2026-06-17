@@ -382,12 +382,17 @@ export const EDITORIAL_CHECKS = [
     defaultEnabled: true,
     configSchema: z.object({}),
     run: (ctx) => {
-      const { objects } = attachmentCanon(ctx);
+      const { objects, nameById } = attachmentCanon(ctx);
       const findings = [];
       for (const o of objects) {
-        const hasAttachment = Array.isArray(o.attachments) && o.attachments.length > 0;
+        // Only a LIVE attachment (one whose characterId still resolves to a
+        // cast member) counts as "someone cares" — an object whose sole
+        // attachment dangles at a deleted character is effectively unattached
+        // (the UI shows it as "(missing)"), so it should still be flagged.
+        const attachments = Array.isArray(o.attachments) ? o.attachments : [];
+        const hasLiveAttachment = attachments.some((a) => a?.characterId && nameById.has(a.characterId));
         const significance = (o.significance || '').trim();
-        if (hasAttachment || !significance) continue;
+        if (hasLiveAttachment || !significance) continue;
         const name = o.name || o.id;
         findings.push({
           severity: ctx.severityDefault,
