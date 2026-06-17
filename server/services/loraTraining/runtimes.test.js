@@ -192,6 +192,9 @@ describe('buildMfluxTrainConfig', () => {
     // baseQuant 8/4 map straight through as the QLoRA bit-width.
     expect(buildMfluxTrainConfig({ ...base, params: { baseQuant: 8 } }).quantize).toBe(8);
     expect(buildMfluxTrainConfig({ ...base, totalMemGb: 128, params: { baseQuant: 4 } }).quantize).toBe(4);
+    // lowRam alone flips the spill at the config-builder level, leaving the
+    // memory-derived quant (128 GB → bf16) untouched.
+    expect(buildMfluxTrainConfig({ ...base, totalMemGb: 128, params: { lowRam: false } }).low_ram).toBe(false);
     // No override → memory-derived tier is untouched (128 GB → bf16).
     expect(buildMfluxTrainConfig({ ...base, totalMemGb: 128 }).quantize).toBeNull();
   });
