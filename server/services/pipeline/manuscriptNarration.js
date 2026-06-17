@@ -93,7 +93,7 @@ export function splitProseIntoSentences(text) {
       } else {
         boundary = !continuation;
       }
-      if (boundary) { push(j); i = j; continue; }
+      if (boundary) push(j);
       i = j;
       continue;
     }
@@ -125,22 +125,22 @@ export function analyzeSentenceReadability(sentence) {
   const reasons = [];
   if (typeof sentence !== 'string' || !sentence.trim()) return { hard: false, reasons };
   const words = sentence.trim().split(/\s+/);
+  // Lowercased, letters-only form of each word — reused by every scan below.
+  const norm = words.map((w) => w.toLowerCase().replace(/[^a-z]/g, ''));
 
   if (words.length >= LONG_SENTENCE_WORDS) {
     reasons.push(`long sentence (${words.length} words)`);
   }
 
-  // Hard consonant clusters — 4+ consonants in a row, ignoring word breaks
-  // within a single token (e.g. "twelfths", "strengths").
-  const cluster = words.find((w) => HARD_CLUSTER_RE.test(w.replace(/[^a-z]/gi, '')));
-  if (cluster) reasons.push('hard consonant cluster');
+  // Hard consonant clusters — 4+ consonants in a row within a single token
+  // (e.g. "twelfths", "strengths").
+  if (norm.some((w) => HARD_CLUSTER_RE.test(w))) reasons.push('hard consonant cluster');
 
   // Alliteration spike — 3+ adjacent words sharing a first letter reads as a
   // tongue-twister aloud even when each word is fine on its own.
-  const initials = words.map((w) => (w.match(/[a-z]/i)?.[0] || '').toLowerCase());
   let run = 1;
-  for (let k = 1; k < initials.length; k += 1) {
-    if (initials[k] && initials[k] === initials[k - 1]) {
+  for (let k = 1; k < norm.length; k += 1) {
+    if (norm[k] && norm[k - 1] && norm[k][0] === norm[k - 1][0]) {
       run += 1;
       if (run >= 3) { reasons.push('alliteration run'); break; }
     } else {
@@ -150,14 +150,11 @@ export function analyzeSentenceReadability(sentence) {
 
   // A content word repeated within a 5-word window — the kind of echo the ear
   // catches instantly. Skip short/common function words.
-  const norm = words.map((w) => w.toLowerCase().replace(/[^a-z]/g, ''));
   const STOP = new Set(['the', 'and', 'that', 'with', 'for', 'was', 'were', 'had', 'have', 'his', 'her', 'she', 'him', 'they', 'their', 'you', 'are', 'but', 'not', 'this', 'from', 'into', 'out', 'all', 'one']);
   for (let k = 0; k < norm.length; k += 1) {
     const w = norm[k];
     if (w.length < 4 || STOP.has(w)) continue;
-    for (let m = k + 1; m <= k + 5 && m < norm.length; m += 1) {
-      if (norm[m] === w) { reasons.push(`repeated word "${w}"`); k = norm.length; break; }
-    }
+    if (norm.slice(k + 1, k + 6).includes(w)) { reasons.push(`repeated word "${w}"`); break; }
   }
 
   return { hard: reasons.length > 0, reasons };
