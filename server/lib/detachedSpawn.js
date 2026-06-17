@@ -37,10 +37,11 @@
 // signal))`, `on('error', err)`, `kill(signal)`, `killed`, `exitCode`,
 // `signalCode` — so existing spawn call sites adopt it with minimal change.
 //
-// NOTE: this does NOT re-attach to a job that outlived the server (the poller
-// dies with the process); a restarted server simply stops streaming while the
-// job keeps running, and checkpoint-resume recovers anything in flight.
-// Re-attach is tracked separately (#1332).
+// A restarted server can RE-ATTACH to a survivor via reattachDetached(): the
+// control dir's log/pid/exit files outlive the process, so a fresh tailer
+// streams the (already-written + still-arriving) output and emits 'close' when
+// the supervisor records the exit status — exactly as if the original handle
+// had never gone away (#1332).
 
 import { spawn } from 'child_process';
 import { EventEmitter } from 'events';
@@ -86,6 +87,106 @@ d="$1"; shift
   printf '%s' "$?" > "$d/exit"
 } &
 `;
+
+/**
+ * Build the log-tailer for a spawnDetached control dir. Holds a persistent fd
+ * per log (opened lazily once the supervisor creates the file) plus the byte
+ * offset read so far, streams new bytes as stdout/stderr 'data', and emits the
+ * handle's 'close' once the supervisor's `exit` sentinel appears. Shared by the
+ * initial spawn and by reattachDetached so both stream identically.
+ *
+ * @param {object} handle - ChildProcess-like handle with `stdout`/`stderr` EventEmitters
+ * @param {object} opts
+ * @param {string} opts.controlDir - dir holding stdout.log/stderr.log/exit
+ * @param {number} opts.pollMs - tail/poll cadence
+ * @param {boolean} opts.cleanup - rm the controlDir once the job terminates
+ * @returns {{ tick: () => Promise<void>, finish: () => Promise<void> }}
+ */
+function createLogTailer(handle, { controlDir, pollMs, cleanup }) {
+  const exitFile = join(controlDir, 'exit');
+  const stdoutLog = join(controlDir, 'stdout.log');
+  const stderrLog = join(controlDir, 'stderr.log');
+
+  // Persistent fd per log + the byte offset read so far. Holding the fd open
+  // for the job's lifetime avoids an open+close per poll tick (~4/s for hours).
+  const fds = { [stdoutLog]: null, [stderrLog]: null };
+  const offsets = { [stdoutLog]: 0, [stderrLog]: 0 };
+  const emitterFor = { [stdoutLog]: handle.stdout, [stderrLog]: handle.stderr };
+  const CHUNK = 64 * 1024;
+
+  // Read everything appended to a log since the last poll and emit it as 'data'
+  // chunks (Buffers, matching ChildProcess stream semantics). `read` returns
+  // bytesRead, so no per-tick stat is needed to find EOF.
+  const drainLog = async (logPath) => {
+    if (!fds[logPath]) {
+      fds[logPath] = await open(logPath, 'r').catch(() => null);
+      if (!fds[logPath]) return; // file not created yet (job hasn't started writing)
+    }
+    const fh = fds[logPath];
+    for (;;) {
+      const buf = Buffer.alloc(CHUNK);
+      const { bytesRead } = await fh.read(buf, 0, CHUNK, offsets[logPath]);
+      if (bytesRead <= 0) break;
+      offsets[logPath] += bytesRead;
+      emitterFor[logPath].emit('data', buf.subarray(0, bytesRead));
+      if (bytesRead < CHUNK) break;
+    }
+  };
+  // Drain both logs concurrently (independent files/offsets/emitters), never
+  // rejecting so a transient read error can't break the poll loop.
+  const drainBoth = () => Promise.all(
+    [stdoutLog, stderrLog].map((p) => drainLog(p).catch(() => {}))
+  );
+  const closeFds = () => Promise.all(
+    [stdoutLog, stderrLog].map((p) => (fds[p] ? fds[p].close().catch(() => {}) : null))
+  );
+
+  let closed = false;
+  let timer = null;
+  const finish = async () => {
+    if (closed) return;
+    closed = true;
+    if (timer) clearTimeout(timer);
+    // Final drain so the job's last bytes (e.g. the RESULT:/result-JSON line a
+    // hard os._exit can emit just before teardown) are delivered before 'end'.
+    await drainBoth();
+    await closeFds();
+    handle.stdout.emit('end');
+    handle.stderr.emit('end');
+    const raw = await readFile(exitFile, 'utf8').catch(() => '');
+    const status = Number.parseInt(raw, 10);
+    let code = null;
+    let signal = null;
+    if (Number.isFinite(status)) {
+      if (status > 128 && SIGNAL_BY_NUMBER[status - 128]) signal = SIGNAL_BY_NUMBER[status - 128];
+      else code = status;
+    } else {
+      code = 1; // exit file missing/garbled — treat as generic failure
+    }
+    handle.exitCode = code;
+    handle.signalCode = signal;
+    handle.emit('close', code, signal);
+    if (cleanup) rm(controlDir, { recursive: true, force: true }).catch(() => {});
+  };
+
+  // Single poll tick: stream new output, then check for the exit sentinel. The
+  // supervisor writes `exit` only AFTER `wait` returns, by which point the job
+  // has closed its redirected fds — so seeing `exit` guarantees the logs are
+  // complete and the final drain in finish() captures everything. A `stat`
+  // (size>0) tests for the sentinel without allocating/reading the whole file.
+  const tick = async () => {
+    if (closed) return;
+    await drainBoth();
+    const exited = await stat(exitFile).then((s) => s.size > 0).catch(() => false);
+    if (exited) {
+      await finish();
+      return;
+    }
+    timer = setTimeout(() => { tick().catch((err) => handle.emit('error', err)); }, pollMs);
+  };
+
+  return { tick, finish };
+}
 
 /**
  * Spawn a detached, pm2-restart-surviving child process.
@@ -164,84 +265,11 @@ export async function spawnDetached(bin, args = [], { env, cwd, controlDir, poll
   launcher.on('error', (err) => { launcherSpawnError = err; });
   launcher.unref();
 
-  // Tail state: a persistent fd per log (opened lazily once the supervisor
-  // creates the file) plus the byte offset read so far. Holding the fd open for
-  // the job's lifetime avoids an open+close per poll tick (~4/s for hours).
-  const fds = { [stdoutLog]: null, [stderrLog]: null };
-  const offsets = { [stdoutLog]: 0, [stderrLog]: 0 };
-  const emitterFor = { [stdoutLog]: handle.stdout, [stderrLog]: handle.stderr };
-  const CHUNK = 64 * 1024;
-
-  // Read everything appended to a log since the last poll and emit it as 'data'
-  // chunks (Buffers, matching ChildProcess stream semantics). `read` returns
-  // bytesRead, so no per-tick stat is needed to find EOF.
-  const drainLog = async (logPath) => {
-    if (!fds[logPath]) {
-      fds[logPath] = await open(logPath, 'r').catch(() => null);
-      if (!fds[logPath]) return; // file not created yet (job hasn't started writing)
-    }
-    const fh = fds[logPath];
-    for (;;) {
-      const buf = Buffer.alloc(CHUNK);
-      const { bytesRead } = await fh.read(buf, 0, CHUNK, offsets[logPath]);
-      if (bytesRead <= 0) break;
-      offsets[logPath] += bytesRead;
-      emitterFor[logPath].emit('data', buf.subarray(0, bytesRead));
-      if (bytesRead < CHUNK) break;
-    }
-  };
-  // Drain both logs concurrently (independent files/offsets/emitters), never
-  // rejecting so a transient read error can't break the poll loop.
-  const drainBoth = () => Promise.all(
-    [stdoutLog, stderrLog].map((p) => drainLog(p).catch(() => {}))
-  );
-  const closeFds = () => Promise.all(
-    [stdoutLog, stderrLog].map((p) => (fds[p] ? fds[p].close().catch(() => {}) : null))
-  );
-
-  let closed = false;
-  let timer = null;
-  const finish = async () => {
-    if (closed) return;
-    closed = true;
-    if (timer) clearTimeout(timer);
-    // Final drain so the job's last bytes (e.g. the RESULT:/result-JSON line a
-    // hard os._exit can emit just before teardown) are delivered before 'end'.
-    await drainBoth();
-    await closeFds();
-    handle.stdout.emit('end');
-    handle.stderr.emit('end');
-    const raw = await readFile(exitFile, 'utf8').catch(() => '');
-    const status = Number.parseInt(raw, 10);
-    let code = null;
-    let signal = null;
-    if (Number.isFinite(status)) {
-      if (status > 128 && SIGNAL_BY_NUMBER[status - 128]) signal = SIGNAL_BY_NUMBER[status - 128];
-      else code = status;
-    } else {
-      code = 1; // exit file missing/garbled — treat as generic failure
-    }
-    handle.exitCode = code;
-    handle.signalCode = signal;
-    handle.emit('close', code, signal);
-    if (cleanup) rm(controlDir, { recursive: true, force: true }).catch(() => {});
-  };
-
-  // Single poll tick: stream new output, then check for the exit sentinel. The
-  // supervisor writes `exit` only AFTER `wait` returns, by which point the job
-  // has closed its redirected fds — so seeing `exit` guarantees the logs are
-  // complete and the final drain in finish() captures everything. A `stat`
-  // (size>0) tests for the sentinel without allocating/reading the whole file.
-  const tick = async () => {
-    if (closed) return;
-    await drainBoth();
-    const exited = await stat(exitFile).then((s) => s.size > 0).catch(() => false);
-    if (exited) {
-      await finish();
-      return;
-    }
-    timer = setTimeout(() => { tick().catch((err) => handle.emit('error', err)); }, pollMs);
-  };
+  // Tail the on-disk log files and watch for the supervisor's exit sentinel,
+  // streaming new bytes as stdout/stderr 'data' and emitting 'close' on exit.
+  // Factored out so reattachDetached (boot re-attach to a survivor — #1332) can
+  // drive the exact same streaming machinery against an existing control dir.
+  const { tick, finish } = createLogTailer(handle, { controlDir, pollMs, cleanup });
 
   // Block until the supervisor records the job PID (the instant the job
   // spawns), so callers can rely on `handle.pid` right after `await
@@ -308,6 +336,92 @@ const isAlive = (pid) => {
 };
 
 /**
+ * Cheap boot-time probe: is there a detached child worth re-attaching to under
+ * this control dir? True when the recorded PID is still alive (job still
+ * running) OR the supervisor wrote an `exit` status the previous process never
+ * got to consume (job finished during the downtime — its RESULT line is still
+ * sitting in the logs unprocessed). False when no PID was recorded, or the PID
+ * is dead with no exit sentinel (killed mid-run — nothing clean to resume from,
+ * the caller should fall back to reap+fail). Lets a caller decide reattach-vs-
+ * fail without constructing a full handle.
+ *
+ * @param {string} controlDir - the job's spawnDetached control dir
+ * @returns {Promise<boolean>}
+ */
+export async function isReattachable(controlDir) {
+  const pidRaw = await readFile(join(controlDir, 'pid'), 'utf8').catch(() => '');
+  const pid = Number.parseInt(pidRaw, 10);
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  const exitWritten = (await readFile(join(controlDir, 'exit'), 'utf8').catch(() => '')).length > 0;
+  return exitWritten || isAlive(pid);
+}
+
+/**
+ * Re-attach to a detached job that outlived the server (#1332). Returns a fresh
+ * ChildProcess-like handle that tails the existing control-dir logs FROM THE
+ * START — replaying everything written before the restart and then streaming
+ * anything still arriving — and emits 'close' once the supervisor's exit
+ * sentinel appears. This is the streaming half of spawnDetached without the
+ * spawn: the survivor reparented to init, so we never had (and don't need) a
+ * child handle to it; the on-disk logs are the channel.
+ *
+ * Replaying from offset 0 means the consumer's line handler sees the FULL
+ * output — including the terminal `RESULT:{…}` line that registers the trained
+ * artifact — so a run that completes during the downtime still finalizes
+ * instead of being silently discarded. (Consumers that persist per-line
+ * artifacts must therefore be idempotent against a replay.)
+ *
+ * Returns null when there's nothing safe to attach to (no recorded PID, or a
+ * dead PID with no exit sentinel) — the caller should reap+fail instead. The
+ * `cleanup` default is false: a re-attached run's logs are its only post-mortem
+ * record, same as the original spawn.
+ *
+ * @param {string} controlDir - the job's spawnDetached control dir
+ * @param {object} [opts]
+ * @param {number} [opts.pollMs] - tail/poll cadence (default 250ms)
+ * @param {boolean} [opts.cleanup] - rm the controlDir once the job terminates
+ * @returns {Promise<object|null>} ChildProcess-like handle, or null if not reattachable
+ */
+export async function reattachDetached(controlDir, { pollMs = DEFAULT_POLL_MS, cleanup = false } = {}) {
+  // Detached survival is a POSIX-only guarantee (see spawnDetached's win32
+  // fallback) — there is never a reparented orphan to re-attach to on Windows.
+  if (process.platform === 'win32') return null;
+  const pidRaw = await readFile(join(controlDir, 'pid'), 'utf8').catch(() => '');
+  const pid = Number.parseInt(pidRaw, 10);
+  if (!Number.isFinite(pid) || pid <= 0) return null;
+  const exitWritten = (await readFile(join(controlDir, 'exit'), 'utf8').catch(() => '')).length > 0;
+  // Dead PID with no exit sentinel → killed mid-run; nothing clean to stream
+  // (the RESULT line was never written). Let the caller reap+fail.
+  if (!exitWritten && !isAlive(pid)) return null;
+
+  const handle = new EventEmitter();
+  handle.stdout = new EventEmitter();
+  handle.stderr = new EventEmitter();
+  handle.pid = pid;
+  handle.killed = false;
+  handle.exitCode = null;
+  handle.signalCode = null;
+  // Signal the survivor directly by PID (it reparented away from our tree, but
+  // a direct PID signal still reaches it) — mirrors spawnDetached's handle.kill
+  // so cancel/stall paths work identically on a re-attached run.
+  handle.kill = (signal = 'SIGTERM') => {
+    handle.killed = true;
+    try {
+      process.kill(pid, signal);
+      return true;
+    } catch {
+      return false; // ESRCH — already gone
+    }
+  };
+
+  const { tick } = createLogTailer(handle, { controlDir, pollMs, cleanup });
+  // Defer the first tick so the caller's synchronous .on('data'|'close'|'error')
+  // listeners are wired before any event fires (matches spawnDetached timing).
+  setImmediate(() => { tick().catch((err) => handle.emit('error', err)); });
+  return handle;
+}
+
+/**
  * Reap a detached job that outlived the server (boot recovery). Because
  * spawnDetached children reparent to init, a `pm2 restart` leaves them running
  * with no in-process handle — and the boot reconcile then marks their run/job
@@ -317,7 +431,11 @@ const isAlive = (pid) => {
  * with it). SIGTERM first so the trainer/render checkpoints, then escalate to
  * SIGKILL after the grace window — turning a restart from a mid-op SIGINT
  * crash into a clean checkpointed stop the existing resume path recovers from.
- * (Full re-attach instead of reap is tracked in #1332.)
+ * This is the fallback when reattachDetached can't (or shouldn't) re-attach —
+ * e.g. a render lane with no re-attach path, or a probe that came back
+ * non-reattachable. A caller that CAN re-attach (LoRA training, #1332) should
+ * prefer reattachDetached so a still-healthy run keeps going rather than being
+ * checkpoint-killed.
  *
  * @param {string} controlDir - the job's spawnDetached control dir
  * @returns {Promise<{reaped: boolean, pid?: number}>}

@@ -23,7 +23,7 @@ import { ServerError } from '../../lib/errorHandler.js';
 import { v4 as uuidv4 } from '../../lib/uuid.js';
 import { hfTokenEnv } from '../../lib/hfToken.js';
 import { safeChildProcessEnv } from '../../lib/processEnv.js';
-import { spawnDetached, reapDetached } from '../../lib/detachedSpawn.js';
+import { spawnDetached, reapDetached, reattachDetached, isReattachable } from '../../lib/detachedSpawn.js';
 import { getImageModels } from '../../lib/mediaModels.js';
 import { resolveFlux2Python, isFlux2VenvHealthy } from '../../lib/pythonSetup.js';
 import { getSettings } from '../settings.js';
@@ -324,6 +324,15 @@ export async function resumeTrainingRun(runId, { auto = false } = {}) {
 
 const emitFailed = (jobId, error) => trainingEvents.emit('failed', { generationId: jobId, error });
 
+// Collapse checkpoint records to one per `step`, preserving first-seen order
+// (last value wins for a given step). Keeps run.artifacts.checkpoints unique
+// when a #1332 re-attach replays already-persisted checkpoint lines.
+const dedupeCheckpointsByStep = (checkpoints) => {
+  const byStep = new Map();
+  for (const c of checkpoints) byStep.set(c?.step, c);
+  return [...byStep.values()];
+};
+
 const flipDatasetAfterRun = (run, { trained, loraFilename = null }) => {
   const datasetId = run?.datasetId;
   if (!datasetId) return Promise.resolve();
@@ -391,7 +400,7 @@ export const clearDatasetForDeletedLora = (run, deletedFilename) => {
  * queue's dispatcher; this function resolves once the child is spawned
  * (the queue awaits the terminal event separately).
  */
-export async function runTraining({ jobId, runId, pythonPath = null, resumeCheckpoint = null }) {
+export async function runTraining({ jobId, runId, pythonPath = null, resumeCheckpoint = null, reattach = false }) {
   const fail = (message) => {
     console.error(`❌ training [${shortId(jobId)}] ${message}`);
     emitFailed(jobId, message);
@@ -400,6 +409,7 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
   const run = await runsDb.getRun(runId);
   if (!run) return fail(`run record missing: ${runId}`);
   const settings = await getSettings();
+  const dir = runDir(runId);
 
   // Terminal failure BEFORE the child spawns: flip the run record to failed
   // AND release the dataset's `training` status, then emit the failed event.
@@ -413,6 +423,27 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
     await flipDatasetAfterRun(run, { trained: false });
     return fail(message);
   };
+
+  // Boot re-attach (#1332): the queue re-enqueues a run whose detached trainer
+  // SURVIVED a hard server restart with `reattach: true`. The child reparented
+  // to init and is still training (or finished during the downtime), so we tail
+  // its existing control-dir output instead of spawning a second trainer — no
+  // staging, no validation, no fresh spawn. wireProcLifecycle then drives the
+  // exact same line-handling/finalize path as a normal spawn, so a run that
+  // completed mid-restart still registers its LoRA instead of being discarded.
+  if (reattach) {
+    const proc = await reattachDetached(join(dir, '.detached'));
+    if (!proc) {
+      // The survivor died (killed mid-run) with no RESULT to recover — fail the
+      // run; its latest checkpoint stays resumable manually/auto, same as the
+      // pre-#1332 reap path would have left it.
+      return failBeforeSpawn('Trainer did not survive the restart — marking failed; resume from the latest checkpoint.');
+    }
+    console.log(`🔁 training [${shortId(jobId)}] re-attached to surviving trainer pid ${proc.pid} (run ${shortId(runId)})`);
+    trainingEvents.emit('status', { generationId: jobId, message: 'Re-attached to trainer that survived a restart' });
+    wireProcLifecycle(proc);
+    return;
+  }
 
   // Re-validate — the dataset may have been edited/deleted while queued.
   let manifest;
@@ -450,7 +481,6 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
     return failBeforeSpawn(`Not enough free memory to train safely — ${memReport.budgetGb.toFixed(1)} GB available, need ≥ ${TRAINING_MIN_HEADROOM_GB} GB. Stop other model servers or close apps and retry.`);
   }
 
-  const dir = runDir(runId);
   const checkpointsDir = join(dir, 'checkpoints');
   const samplesDir = join(dir, 'samples');
 
@@ -567,6 +597,15 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
   // `cleanup` — those logs are the only copy of raw trainer stdout/stderr, kept
   // in the run dir for post-mortem and removed when the run dir is deleted.
   const proc = await spawnDetached(bin, args, { env: childEnv, controlDir: join(dir, '.detached') });
+  wireProcLifecycle(proc);
+
+  // Wire a freshly-spawned OR re-attached (#1332) trainer handle into the full
+  // run lifecycle: live output streaming + progress mirror, the phase-aware
+  // stall watchdog, and the close→finalize path that registers the LoRA. A
+  // hoisted nested function so the early reattach branch (above) can call it too
+  // — both paths share identical handling. Closes over jobId/runId/run/dir/
+  // settings/fail/failBeforeSpawn.
+  function wireProcLifecycle(proc) {
   activeProcess = proc;
   activeJobId = jobId;
 
@@ -598,8 +637,13 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
       progress: { ...current.progress, ...flushing.progress },
       artifacts: {
         ...current.artifacts,
-        ...(flushing.checkpoints ? { checkpoints: [...current.artifacts.checkpoints, ...flushing.checkpoints] } : {}),
-        ...(flushing.samples ? { samples: [...current.artifacts.samples, ...flushing.samples] } : {}),
+        // Dedupe on merge: a #1332 re-attach replays the survivor's whole log
+        // from offset 0, re-firing onCheckpoint/onSample for artifacts already
+        // persisted before the restart. Key checkpoints by step and samples by
+        // filename (both unique) so a replay can't double-list them — last write
+        // wins, which is identical for a true replay.
+        ...(flushing.checkpoints ? { checkpoints: dedupeCheckpointsByStep([...current.artifacts.checkpoints, ...flushing.checkpoints]) } : {}),
+        ...(flushing.samples ? { samples: [...new Set([...current.artifacts.samples, ...flushing.samples])] } : {}),
       },
     })).catch((err) => console.error(`❌ training [${shortId(jobId)}] progress persist failed: ${err?.message}`));
   };
@@ -733,6 +777,7 @@ export async function runTraining({ jobId, runId, pythonPath = null, resumeCheck
         fail(`finalize failed: ${err?.message}`);
       });
   });
+  } // end wireProcLifecycle
 }
 
 /**
@@ -1028,12 +1073,33 @@ async function ensureCheckpointPreview(run, step, loraFilename) {
 }
 
 /**
+ * Boot probe used by the media-job queue's reconcile (#1332): does run `runId`
+ * have a detached trainer worth re-attaching to (still alive, or finished but
+ * its RESULT line never consumed) under its control dir? Lets the queue decide,
+ * for a training job that was `running` at restart, whether to re-enqueue it for
+ * re-attach or fail it — without the queue needing to know the run's on-disk
+ * layout. Resolves false (never throws) when there's nothing to re-attach to.
+ *
+ * @param {string} runId
+ * @returns {Promise<boolean>}
+ */
+export function hasSurvivingTrainer(runId) {
+  if (!runId) return Promise.resolve(false);
+  return isReattachable(join(runDir(runId), '.detached')).catch(() => false);
+}
+
+/**
  * Boot reconcile + terminal-state mirror. Called from server/index.js after
  * initMediaJobQueue(). Any run persisted as queued/running whose job isn't
  * live in the queue is marked failed (the queue does the same for its own
  * interrupted jobs — this keeps the two stores agreeing). Also subscribes
  * to mediaJobEvents so a queue-side cancel (user hits cancel while QUEUED,
  * which never reaches runTraining) still lands in the run record.
+ *
+ * A run whose detached trainer SURVIVED the restart is already re-enqueued for
+ * re-attach by initMediaJobQueue (#1332) — its job is back in the queue as
+ * queued/running, so the `!job || terminal` guard below skips it and the reap
+ * path only touches runs that genuinely died.
  */
 export async function initLoraTraining() {
   const active = await runsDb.listActiveRuns().catch((err) => {

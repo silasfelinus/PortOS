@@ -121,6 +121,17 @@ function getGenModuleForJob(job) {
   return Promise.resolve(null);
 }
 
+// #1332: probe (via loraTraining, which owns the run's on-disk layout) whether
+// a training run's detached trainer survived the restart and is worth
+// re-attaching to. Lazy import avoids a static cycle (loraTraining statically
+// imports this module). Never throws — a missing module / probe error reads as
+// "not reattachable" so the reconcile falls back to the fail path.
+async function jobHasSurvivingTrainer(runId) {
+  const mod = await import('../loraTraining/index.js').catch(() => null);
+  if (!mod?.hasSurvivingTrainer) return false;
+  return mod.hasSurvivingTrainer(runId).catch(() => false);
+}
+
 // Drop the params snapshot of pythonPath; live settings always win for
 // local-Python jobs so a stale persisted snapshot can't poison the spawn.
 // Future live-resolved fields (e.g. model.runtime-aware overrides) belong
@@ -258,19 +269,39 @@ export async function initMediaJobQueue() {
     const data = await readJSONFile(JOBS_FILE, { jobs: [] });
     const persistedJobs = Array.isArray(data?.jobs) ? data.jobs : [];
     const restartedFailedIds = [];
+    // #1332: training jobs whose detached trainer survived the restart, to be
+    // re-enqueued (flagged for re-attach) at the FRONT of the queue so they
+    // resume before any new GPU work — collected during the reconcile, unshifted
+    // after it (so the position recompute below sees them).
+    const reattachJobs = [];
     // Video renders spawn a detached child that survives a pm2 restart, so an
     // interrupted render may still be alive and holding the GPU. Reap every
     // orphan under data/videos/.detached (and clean the scratch dirs) BEFORE
     // freeing lanes below — a job-id keyed reap would miss chained renders,
     // whose live child lives under a random inner chunk id, not the outer queue
-    // job id. (Training children are reaped in initLoraTraining, which knows
-    // each run's dir.) This runs before the worker starts, so every dir present
-    // is an orphan from the prior process.
+    // job id. (Training children are handled per-job below: a survivor is
+    // re-attached (#1332), and only a genuinely-dead one is reaped+failed in
+    // initLoraTraining.) This runs before the worker starts, so every dir
+    // present is an orphan from the prior process.
     const videoReap = await reapAndCleanDetachedDirs(join(PATHS.videos, '.detached')).catch(() => ({ reaped: 0 }));
     if (videoReap.reaped) console.log(`🧹 reaped ${videoReap.reaped} surviving render(s) on boot`);
 
     for (const j of persistedJobs) {
       if (j.status === 'running') {
+        // #1332: a LoRA trainer is a detached child (spawnDetached) that can
+        // SURVIVE this restart. If its run still has a live (or just-finished-
+        // but-unprocessed) trainer, re-enqueue the SAME job flagged for
+        // re-attach instead of failing it — runTraining({reattach:true}) tails
+        // the survivor's output and finalizes it, so a run that completed during
+        // the downtime still registers its LoRA. The probe lives in loraTraining
+        // (it owns the run's on-disk layout); lazy-imported to avoid a static
+        // cycle. Falls through to the fail path when nothing survived.
+        // eslint-disable-next-line no-await-in-loop
+        if (j.kind === 'training' && j.params?.runId && await jobHasSurvivingTrainer(j.params.runId)) {
+          reattachJobs.push({ ...j, status: 'queued', params: { ...j.params, reattach: true } });
+          console.log(`🔁 media-job [${j.id.slice(0, 8)}] training survived restart — re-enqueued for re-attach`);
+          continue;
+        }
         const failed = {
           ...j,
           status: 'failed',
@@ -296,6 +327,10 @@ export async function initMediaJobQueue() {
         archive.push(j);
       }
     }
+    // Re-attach jobs resume ahead of everything else (they were mid-flight), so
+    // unshift them to the front. At most one (single GPU lane), but spread keeps
+    // their relative order if that ever changes.
+    if (reattachJobs.length) queue.unshift(...reattachJobs);
     // The persisted `position` reflects the previous process' queue layout
     // (which may have included a now-failed running job). Recompute against
     // the current queue so /api/media-jobs and the initial SSE `queued`
