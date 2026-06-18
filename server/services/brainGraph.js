@@ -95,8 +95,7 @@ async function loadNodes() {
       label: date,
       summary: entry.content ? entry.content.slice(0, 120) : '',
       tags: [],
-      importance: 0.4,
-      status: undefined
+      importance: 0.4
     });
   }
 
