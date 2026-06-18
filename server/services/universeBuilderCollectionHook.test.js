@@ -44,7 +44,10 @@ const readSidecar = (filename) => JSON.parse(readFileSync(sidecarPath(filename),
 async function waitFor(predicate, { timeoutMs = 2000, intervalMs = 5 } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (predicate()) return;
+    // `await` so async predicates (e.g. getUniverse reads) resolve to a real
+    // boolean — a bare Promise is always truthy and would short-circuit. Sync
+    // boolean predicates pass through `await` unchanged.
+    if (await predicate()) return;
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new Error('waitFor: predicate never became true');
@@ -389,5 +392,92 @@ describe('universeBuilderCollectionHook', () => {
     expect(sc.entryCategory).toBe('style');
     expect(sc.prompt).toBe('a moody noir skyline');
     expect(sc.seed).toBe(7);
+  });
+
+  // #1395 — section-local canon renders carry an entryRef + universeId but NO
+  // collectionId. The hook must still durably append the render to the entry's
+  // imageRefs[] (and enrich the sidecar) without filing into any collection.
+  it('appends a section-local render (entryRef, no collectionId) to the canon entry imageRefs[]', async () => {
+    const characterId = 'char-solo';
+    const seeded = await seedUniverse({
+      name: 'SoloVerse',
+      characters: [{ id: characterId, name: 'Solo', physicalDescription: 'lone wanderer' }],
+    });
+    const filename = 'section-local.png';
+    writeSidecar(filename, { id: 'section-local', prompt: 'a lone wanderer', seed: 11 });
+
+    // Route shape for a section-local render: universeId + entryRef, but the
+    // route resolves no collection (or provisioning failed), so collectionId is
+    // absent. No registerUniverseBuilderRun — these are one-off renders.
+    mediaJobEvents.emit('completed', {
+      kind: 'image',
+      result: { filename },
+      params: {
+        universeRun: {
+          universeId: seeded.id,
+          category: 'characters',
+          label: 'Solo',
+          entryRef: { kind: 'canon', kindKey: 'characters', id: characterId },
+        },
+      },
+    });
+
+    await waitFor(async () => {
+      const u = await universeBuilder.getUniverse(seeded.id);
+      return u?.characters?.[0]?.imageRefs?.includes(filename);
+    });
+    const u = await universeBuilder.getUniverse(seeded.id);
+    expect(u.characters[0].imageRefs).toEqual([filename]);
+    // No collection was created or filed (the hook skipped addItem).
+    expect(hook.__testing.getActiveRuns().size).toBe(0);
+    // Sidecar still gets universe/entity context.
+    const sc = readSidecar(filename);
+    expect(sc.entryId).toBe(characterId);
+    expect(sc.entryName).toBe('Solo');
+    expect(sc.prompt).toBe('a lone wanderer'); // original metadata preserved
+  });
+
+  it('is idempotent — the same section-local filename is appended only once', async () => {
+    const characterId = 'char-dupe';
+    const seeded = await seedUniverse({
+      name: 'DupeVerse',
+      characters: [{ id: characterId, name: 'Dupe' }],
+    });
+    const filename = 'dupe.png';
+    writeSidecar(filename, { id: 'dupe', prompt: 'p' });
+
+    const emit = () => mediaJobEvents.emit('completed', {
+      kind: 'image',
+      result: { filename },
+      params: {
+        universeRun: {
+          universeId: seeded.id,
+          entryRef: { kind: 'canon', kindKey: 'characters', id: characterId },
+        },
+      },
+    });
+    emit();
+    await waitFor(async () => {
+      const u = await universeBuilder.getUniverse(seeded.id);
+      return u?.characters?.[0]?.imageRefs?.includes(filename);
+    });
+    emit(); // duplicate completion (e.g. a re-emit) must not double-stamp
+    await new Promise((r) => setTimeout(r, 50));
+    const u = await universeBuilder.getUniverse(seeded.id);
+    expect(u.characters[0].imageRefs).toEqual([filename]);
+  });
+
+  it('ignores a universeRun tag with neither collectionId nor an entryRef append', async () => {
+    const filename = 'noop.png';
+    writeSidecar(filename, { id: 'noop', prompt: 'just pixels' });
+    mediaJobEvents.emit('completed', {
+      kind: 'image',
+      result: { filename },
+      // universeId present but no collectionId AND no entryRef → nothing to do.
+      params: { universeRun: { universeId: 'uni-noop', category: 'style' } },
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    // Sidecar untouched — the hook bailed before enrich.
+    expect(readSidecar(filename)).toEqual({ id: 'noop', prompt: 'just pixels' });
   });
 });

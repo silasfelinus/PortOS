@@ -366,6 +366,80 @@ describe('Image Gen Routes', () => {
         const [call] = mediaJobQueue.enqueueJob.mock.calls;
         expect(call[0].params.universeRun).toBeUndefined();
       });
+
+      // #1395 — section-local canon renders carry an `entryRef` so the
+      // completion hook durably appends the render to the entry's imageRefs[].
+      it('carries the section-local entryRef into the queued job tag', async () => {
+        getSettings.mockResolvedValueOnce({ imageGen: { mode: 'local', local: { pythonPath: '/usr/bin/python3' } } });
+        mediaJobQueue.enqueueJob.mockReturnValueOnce({ jobId: 'queued-section', position: 1, status: 'queued' });
+
+        const response = await request(app)
+          .post('/api/image-gen/generate')
+          .send({
+            prompt: 'a confident pyromancer',
+            universeRun: {
+              universeId: 'uni-3',
+              universeName: 'CanonVerse',
+              label: 'Ash',
+              category: 'characters',
+              entryRef: { kind: 'canon', kindKey: 'characters', id: 'char-ash' },
+            },
+          });
+
+        expect(response.status).toBe(200);
+        const [call] = mediaJobQueue.enqueueJob.mock.calls;
+        expect(call[0].params.universeRun).toEqual(expect.objectContaining({
+          universeId: 'uni-3',
+          collectionId: 'col-uni-3',
+          entryRef: { kind: 'canon', kindKey: 'characters', id: 'char-ash' },
+        }));
+      });
+
+      it('rejects a canon entryRef missing its kindKey (would no-op the append)', async () => {
+        // Zod validation rejects before prepareGenerateParams reads settings, so
+        // no getSettings/enqueueJob mock is primed here — priming an unconsumed
+        // mockResolvedValueOnce would leak into the next test (clearAllMocks does
+        // not drain the once-queue).
+        const response = await request(app)
+          .post('/api/image-gen/generate')
+          .send({
+            prompt: 'a confident pyromancer',
+            universeRun: {
+              universeId: 'uni-5',
+              universeName: 'CanonVerse',
+              entryRef: { kind: 'canon', id: 'char-ash' }, // no kindKey
+            },
+          });
+
+        expect(response.status).toBe(400);
+        expect(mediaJobQueue.enqueueJob).not.toHaveBeenCalled();
+      });
+
+      it('preserves the entryRef even when collection provisioning fails', async () => {
+        getSettings.mockResolvedValueOnce({ imageGen: { mode: 'local', local: { pythonPath: '/usr/bin/python3' } } });
+        mediaJobQueue.enqueueJob.mockReturnValueOnce({ jobId: 'queued-section-2', position: 1, status: 'queued' });
+        findOrCreateUniverseCollection.mockRejectedValueOnce(new Error('db down'));
+
+        const response = await request(app)
+          .post('/api/image-gen/generate')
+          .send({
+            prompt: 'a confident pyromancer',
+            universeRun: {
+              universeId: 'uni-4',
+              universeName: 'CanonVerse',
+              entryRef: { kind: 'canon', kindKey: 'characters', id: 'char-ash' },
+            },
+          });
+
+        expect(response.status).toBe(200);
+        const [call] = mediaJobQueue.enqueueJob.mock.calls;
+        // The durable imageRefs[] append must not depend on the gallery
+        // collection existing — entryRef survives, collectionId/runId don't.
+        expect(call[0].params.universeRun).toEqual({
+          universeId: 'uni-4',
+          entryRef: { kind: 'canon', kindKey: 'characters', id: 'char-ash' },
+        });
+      });
     });
 
     // Durable catalog attach (#1359): the Catalog ingredient editor's Generate

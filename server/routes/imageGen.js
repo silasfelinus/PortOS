@@ -107,13 +107,30 @@ const generateSchema = z.object({
   // collection — the same auto-filing path batch renders and character
   // reference sheets use. The client passes only the universe identity (never
   // a collectionId — that's server-resolved), so the front-end does no
-  // collection bookkeeping. The base-style probe (StyleProbeImage) is the sole
-  // caller today; JSON-only (the multipart ImageGen page never sends it).
+  // collection bookkeeping. The base-style probe (StyleProbeImage) and the
+  // Universe canon section-local renders (#1395) are the callers; JSON-only
+  // (the multipart ImageGen page never sends it).
   universeRun: z.object({
     universeId: z.string().min(1).max(200),
     universeName: z.string().min(1).max(200),
     label: z.string().max(200).optional(),
     category: z.string().max(64).optional(),
+    // Section-local canon renders (#1395) tag the target entry so the
+    // completion hook durably appends the render to its `imageRefs[]` even
+    // after the originating page unmounts — converging these renders onto the
+    // same durable path batch renders use. Shape mirrors the batch path's
+    // entryRef (server/services/universeBuilder.js `ENTRY_REF_KIND`).
+    entryRef: z.object({
+      kind: z.enum(['canon', 'variation', 'sheet']),
+      kindKey: z.string().min(1).max(64).optional(),
+      categoryKey: z.string().min(1).max(64).optional(),
+      id: z.string().min(1).max(200),
+    }).refine(
+      // Each kind needs its locating key, else appendEntryImageRef silently
+      // no-ops: canon→kindKey, variation→categoryKey (sheet needs neither).
+      (r) => (r.kind === 'canon' ? !!r.kindKey : r.kind === 'variation' ? !!r.categoryKey : true),
+      { message: 'entryRef requires its locating key (canon→kindKey, variation→categoryKey)' },
+    ).optional(),
   }).optional(),
   // Durable catalog attach (#1359). When present, the mediaJobQueue completion
   // hook (catalogImageAttachHook) files the finished render onto this catalog
@@ -280,7 +297,7 @@ router.post('/generate', imageGenUploads, asyncHandler(async (req, res) => {
   // failure drops the tag and the render still proceeds (it just won't
   // auto-file) rather than failing the user's generation over a side-effect.
   if (params.universeRun?.universeId) {
-    const { universeId, universeName, label, category } = params.universeRun;
+    const { universeId, universeName, label, category, entryRef } = params.universeRun;
     const collection = await findOrCreateUniverseCollection({
       universeId,
       universeName,
@@ -289,8 +306,18 @@ router.post('/generate', imageGenUploads, asyncHandler(async (req, res) => {
       console.error(`❌ image-gen → universe collection provision failed: ${err?.message || err}`);
       return null;
     });
-    params.universeRun = collection
-      ? { runId: randomUUID(), universeId, collectionId: collection.id, label, category }
+    // Preserve `entryRef` even when collection provisioning fails — the durable
+    // `imageRefs[]` append (#1395) must not depend on the gallery collection
+    // existing. Drop the tag entirely only when there's nothing left to do
+    // (no collection to file into AND no entry to append to).
+    params.universeRun = (collection || entryRef)
+      ? {
+          universeId,
+          ...(collection ? { runId: randomUUID(), collectionId: collection.id } : {}),
+          ...(label ? { label } : {}),
+          ...(category ? { category } : {}),
+          ...(entryRef ? { entryRef } : {}),
+        }
       : undefined;
   }
 

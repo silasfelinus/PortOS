@@ -53,6 +53,26 @@ const capImageRefs = (refs) => (
 // record; normalize to [] so callers can spread/map without a guard each time.
 const getKindList = (u, kindKey) => (Array.isArray(u?.[kindKey]) ? u[kindKey] : []);
 
+// Durable section-local render tag (#1395). Carries the canon `entryRef` so the
+// server-side completion hook (universeBuilderCollectionHook) appends the
+// finished render to the entry's `imageRefs[]` even after this page unmounts —
+// converging these renders onto the same durable path batch renders use, so the
+// client no longer needs to PATCH the universe on completion. `universeName`
+// lets the route resolve the universe gallery collection (renders also land
+// there, matching the base-style probe + batch paths). Returns null when the
+// universe/entry identity isn't resolvable yet (render still proceeds untagged).
+const buildSectionRenderTag = (universe, kindKey, entry) => (
+  universe?.id && universe?.name && entry?.id
+    ? {
+        universeId: universe.id,
+        universeName: universe.name,
+        entryRef: { kind: 'canon', kindKey, id: entry.id },
+        label: entry.name || kindKey,
+        category: kindKey,
+      }
+    : null
+);
+
 // Build an embedded canon entry from a picked catalog ingredient. The
 // ingredient's `payload` already carries the same field names the universe
 // canon sanitizer whitelists (name / physicalDescription / description / …),
@@ -406,10 +426,12 @@ export default function UniverseCanonSection({
       universe,
       baseNegative: baseOpts.negativePrompt,
     });
+    const universeRun = buildSectionRenderTag(universe, kind.key, entry);
     const queued = await generateImage({
       ...baseOpts,
       prompt: styled.prompt,
       negativePrompt: styled.negativePrompt || undefined,
+      ...(universeRun ? { universeRun } : {}),
     }).catch((err) => { toast.error(err.message || 'Render failed'); return null; });
     if (!queued?.jobId || !mountedRef.current) return;
     setRenderingJobs((prev) => ({ ...prev, [entry.id]: queued.jobId }));
@@ -446,7 +468,7 @@ export default function UniverseCanonSection({
     }
   };
 
-  const handleRenderCleanPlate = async (entry) => {
+  const handleRenderCleanPlate = async (kind, entry) => {
     // Match CanonCard's button-enable predicate (descFor includes palette +
     // recurringDetails for places) — composeCleanPlatePrompt builds a valid
     // prompt from any of {description, palette, recurringDetails}, so gating
@@ -466,52 +488,34 @@ export default function UniverseCanonSection({
       plate.negativePrompt,
       universe ? universeStylePreset(universe) : null,
     );
+    const universeRun = buildSectionRenderTag(universe, kind.key, entry);
     const queued = await generateImage({
       ...baseOpts,
       prompt: styled.prompt,
       negativePrompt: styled.negativePrompt || undefined,
+      ...(universeRun ? { universeRun } : {}),
     }).catch((err) => { toast.error(err.message || 'Clean plate render failed'); return null; });
     if (!queued?.jobId || !mountedRef.current) return;
     setRenderingJobs((prev) => ({ ...prev, [entry.id]: queued.jobId }));
     toast.success(`Rendering clean plate for ${entry.name}`);
   };
 
-  // Section-local renders go through `generateImage` directly with no
-  // `universeRun` tag, so the server-side `appendEntryImageRef` collection
-  // hook never fires — the client MUST round-trip a PATCH to persist the
-  // new filename onto the canon entry. The list shape passed in is built
-  // from `universe`, but section-local renders are user-driven one-at-a-
-  // time so the read-modify-write window is small and tolerable.
-  const handleRefCompleted = useCallback(async (kindKey, entryId, filename) => {
-    if (!filename || !universe) return;
-    setRenderingJobs((prev) => {
-      if (!prev[entryId]) return prev;
-      const next = { ...prev };
-      delete next[entryId];
-      return next;
-    });
-    const capturedId = universeId;
-    const list = (universe[kindKey] || []).map((e) =>
-      e.id === entryId ? { ...e, imageRefs: [...(e.imageRefs || []), filename] } : e
-    );
-    const updated = await updateUniverse(universeId, { [kindKey]: list })
-      .catch((err) => { toast.error(`Save failed: ${err.message}`); return null; });
-    if (updated && mountedRef.current && currentUniverseIdRef.current === capturedId) onUniverseChange(updated);
-  }, [universe, universeId, onUniverseChange, mountedRef]);
-
-  // External (batch-render) canon completions follow a different path:
-  // (a) the server's `appendEntryImageRef` collection hook has ALREADY
-  //     stamped the filename onto the persisted record, so a client-side
-  //     `updateUniverse` here is redundant and would clobber concurrent
-  //     sibling appends with a stale full-array patch built from the
-  //     `universe` snapshot the parent re-rendered with.
-  // (b) the parent's draft is the source of truth for UI display, so we
-  //     update it through `onUniverseChange` only — dedupe on `includes`
-  //     so duplicate completion events don't double-stamp the same ref.
-  // (c) `latestUniverseRef` (not the closed-over `universe` prop) is used
-  //     so back-to-back sibling completions all see the freshest state
-  //     and chain their appends instead of clobbering each other.
-  const handleExternalCanonRefCompleted = useCallback((kindKey, entryId, filename) => {
+  // Optimistically stamp a completed render's filename onto a canon entry's
+  // `imageRefs[]` in the parent draft. Used by BOTH section-local and external
+  // batch completions, because as of #1395 BOTH are persisted server-side by
+  // the `appendEntryImageRef` completion hook — so the client never PATCHes
+  // here; it only mirrors the durable write into the visible draft for an
+  // immediate refresh. Notes:
+  // (a) the server hook is the source of truth, so a client `updateUniverse`
+  //     would be redundant and could clobber concurrent sibling appends with a
+  //     stale full-array patch.
+  // (b) `latestUniverseRef` (not the closed-over `universe` prop) is read so
+  //     back-to-back sibling completions all see the freshest state and chain
+  //     their appends instead of clobbering each other.
+  // (c) dedupe on `includes` so a duplicate completion event (or the optimistic
+  //     path racing the hook) doesn't double-stamp the same ref; `capImageRefs`
+  //     mirrors the server-side last-N cap.
+  const applyOptimisticCanonRef = useCallback((kindKey, entryId, filename) => {
     if (!filename) return;
     const latest = latestUniverseRef.current;
     if (!latest) return;
@@ -520,14 +524,30 @@ export default function UniverseCanonSection({
       if (e?.id !== entryId) return e;
       const refs = Array.isArray(e.imageRefs) ? e.imageRefs : [];
       if (refs.includes(filename)) return e;
-      // Mirror the server-side appendEntryImageRef cap (last N wins) so
-      // an external batch completion arriving at a full row doesn't leave
-      // the optimistic state holding an overlong array that a subsequent
-      // save would have to trim.
       return { ...e, imageRefs: capImageRefs([...refs, filename]) };
     });
     onUniverseChange({ ...latest, [kindKey]: nextList });
   }, [onUniverseChange]);
+
+  // Section-local renders now carry a durable `universeRun.entryRef` tag
+  // (buildSectionRenderTag), so the server-side `appendEntryImageRef` hook
+  // persists the new filename even if this page unmounts mid-render — the
+  // client just clears the spinner and mirrors the ref into the draft (no
+  // PATCH). The durable hook is idempotent against this optimistic stamp.
+  const handleRefCompleted = useCallback((kindKey, entryId, filename) => {
+    setRenderingJobs((prev) => {
+      if (!prev[entryId]) return prev;
+      const next = { ...prev };
+      delete next[entryId];
+      return next;
+    });
+    applyOptimisticCanonRef(kindKey, entryId, filename);
+  }, [applyOptimisticCanonRef]);
+
+  // External (batch-render) canon completions share the same optimistic-only
+  // path: the server collection hook already stamped the persisted record, so
+  // the client only updates the parent draft.
+  const handleExternalCanonRefCompleted = applyOptimisticCanonRef;
 
   const handleRefFailed = useCallback((entryId, errMsg) => {
     setRenderingJobs((prev) => {
@@ -769,15 +789,17 @@ export default function UniverseCanonSection({
           renderingJobs={renderingJobs}
           onRender={(entry) => handleRenderRef(kind, entry)}
           onJobCompleted={(entryId, filename, completedJobId) => {
-            // Discriminate by which pending map owns the completed jobId:
+            // Discriminate by which pending map owns the completed jobId.
+            // As of #1395 BOTH paths are persisted server-side by the
+            // `appendEntryImageRef` completion hook (section-local renders now
+            // carry a durable `universeRun.entryRef` tag too), so neither
+            // client path PATCHes — they only mirror the ref into the draft:
             //   - section-local renders (`generateImage`) populate
-            //     `renderingJobs[entryId]`; their server side has no
-            //     `appendEntryImageRef` hook so the client must persist
-            //     via `handleRefCompleted`.
+            //     `renderingJobs[entryId]`; `handleRefCompleted` clears the
+            //     spinner + stamps the draft optimistically.
             //   - external batch renders flow through the page-level
-            //     `externalPendingByEntryId`; the server collection hook
-            //     already stamped imageRefs, so the client only needs to
-            //     update local state + clear the pending queue.
+            //     `externalPendingByEntryId`; `handleExternalCanonRefCompleted`
+            //     stamps the draft + clears the pending queue.
             const isExternal = completedJobId
               && externalPendingByEntryId?.[entryId] === completedJobId;
             if (isExternal) {
@@ -807,7 +829,7 @@ export default function UniverseCanonSection({
           onToggleLock={(entryId, nextLocked) => handleToggleLock(kind, entryId, nextLocked)}
           togglingLockId={togglingLockId}
           onPatchEntry={(entryId, patch) => handlePatchEntry(kind, entryId, patch)}
-          onRenderCleanPlate={handleRenderCleanPlate}
+          onRenderCleanPlate={(entry) => handleRenderCleanPlate(kind, entry)}
           onDescribeImages={(entry) => setDescribeTarget({ kind, entry })}
           seriesNameMap={usage?.seriesNameMap || null}
           onBulkLock={(nextLocked) => handleBulkLockKind(kind, nextLocked)}
