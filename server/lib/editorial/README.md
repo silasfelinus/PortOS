@@ -81,4 +81,5 @@ runner-injected `ctx.callInlineLLM` (an inline-prompt sibling of
 | Module | Purpose |
 |---|---|
 | `checkRegistry.js` | `EDITORIAL_CHECKS` array + `EDITORIAL_SOURCES` (the per-check `sources` vocabulary the staleness runner fingerprints, #1387) + fail-fast guards + lookup/state helpers (`getCheck`, `getCheckById`, `getAllChecks`, `listChecks`, `resolveCheckState`, `getEnabledChecks`, `resolveCheckConfig`). User-defined-check helpers (`buildCustomCheck`, `buildCustomCheckPrompt`, `readCustomCheckDefs`, `isCustomCheckId`, `isValidCustomCheckDef`). Ships two reference checks: `naming.dissimilar-names` (deterministic) and `prose.info-dumping` (LLM). |
+| `nameSimilarity.js` | Pure, dependency-free name-confusability primitives for `naming.dissimilar-names` (#1291): `normalizeName`, `vowelSkeleton`, `soundex` (phonetic key), `levenshtein` (edit distance), `nameSimilaritySignals` (the per-pair signal list, with option toggles), and `firstLetterHistogram` / `findFirstLetterClusters` (cast first-letter crowding). |
 | `index.js` | Barrel re-export of the above. |
