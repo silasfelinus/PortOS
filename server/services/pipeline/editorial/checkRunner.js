@@ -19,7 +19,7 @@ import { randomUUID, createHash } from 'crypto';
 import { createSseRunner } from '../../../lib/sseUtils.js';
 import { runStagedLLM, runInlineLLM, resolveStageContext } from '../../../lib/stageRunner.js';
 import { planManuscriptPass } from '../../../lib/contextBudget.js';
-import { getEnabledChecks, getEnabledCheckRows, getCheckById } from '../../../lib/editorial/index.js';
+import { getEnabledChecks, getEnabledCheckRows, getAllChecks } from '../../../lib/editorial/index.js';
 import { getSettings } from '../../settings.js';
 import { getSeries } from '../series.js';
 import { listIssues } from '../issues.js';
@@ -233,9 +233,11 @@ export async function buildEditorialCheckPlan(seriesId, { checkIds = null, setti
 export async function getReviewWithStaleness(seriesId) {
   const review = await getReview(seriesId);
   // Resolve checks against built-ins + the user's custom checks (#1346) so a
-  // custom-check finding still gets staleness annotation. Read settings once.
+  // custom-check finding still gets staleness annotation. Build the id→check map
+  // once (custom-check synthesis is not free) and look up per comment.
   const settings = await getSettings();
-  const checkFor = (id) => getCheckById(settings, id);
+  const byId = new Map(getAllChecks(settings).map((c) => [c.id, c]));
+  const checkFor = (id) => byId.get(id) || null;
   // Only recompute hashes when there's at least one hash-stamped finding from a
   // still-registered check — a pure completeness review pays no extra I/O.
   const evaluable = review.comments.filter((c) => c.checkId && c.sourceContentHash && checkFor(c.checkId));

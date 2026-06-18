@@ -171,6 +171,22 @@ describe('custom checks CRUD (#1346)', () => {
     expect(def.prompt).toBe('old prompt'); // untouched fields preserved
   });
 
+  it('a field-specific edit leaves omitted fields unchanged (no default reset)', async () => {
+    const { body } = await create({ label: 'Original', prompt: 'p', scope: 'series', category: 'continuity', description: 'keep me' });
+    const res = await request(app)
+      .patch(`/api/pipeline/editorial/custom-checks/${encodeURIComponent(body.id)}`)
+      .send({ label: 'Renamed' }); // only label
+    expect(res.status).toBe(200);
+    expect(res.body.label).toBe('Renamed');
+    // Omitted fields must NOT revert to schema defaults (issue/custom/'').
+    expect(res.body.scope).toBe('series');
+    expect(res.body.category).toBe('continuity');
+    const def = settingsStore.pipelineEditorialChecks.customChecks[0];
+    expect(def.scope).toBe('series');
+    expect(def.category).toBe('continuity');
+    expect(def.description).toBe('keep me');
+  });
+
   it('404s editing an unknown custom id and 400s a non-custom id', async () => {
     expect((await request(app).patch('/api/pipeline/editorial/custom-checks/custom.nope').send({ label: 'x' })).status).toBe(404);
     expect((await request(app).patch('/api/pipeline/editorial/custom-checks/prose.info-dumping').send({ label: 'x' })).status).toBe(400);

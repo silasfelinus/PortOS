@@ -165,6 +165,8 @@ router.patch('/editorial/custom-checks/:id', asyncHandler(async (req, res) => {
     const slice = editorialChecksSlice(current);
     const defs = Array.isArray(slice.customChecks) ? slice.customChecks : [];
     // Preserve id + createdAt; apply only the supplied fields; stamp updatedAt.
+    // `body` carries only the fields the caller actually supplied (the update
+    // schema has no defaults), so an omitted field is left unchanged.
     const next = defs.map((d) => (d?.id === id
       ? { ...d, ...body, id: d.id, createdAt: d.createdAt, updatedAt: new Date().toISOString() }
       : d));

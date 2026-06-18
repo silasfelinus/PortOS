@@ -1018,35 +1018,44 @@ export const editorialChecksRunSchema = z.object({
   model: z.string().trim().max(200).optional(),
 }).strict();
 
-// User-defined editorial check (#1346) — the authored input shape for
-// POST .../editorial/custom-checks. The user only describes WHAT to look for;
-// the JSON output contract is enforced server-side (buildCustomCheckPrompt), so
-// no schema field captures it. `scope`/`severityDefault` reuse the registry's
-// own enums so the wire gate can't drift from what `buildCustomCheck` accepts.
-export const editorialCustomCheckCreateSchema = z.object({
+// User-defined editorial check (#1346). The base authored-field shapes carry NO
+// `.default()` so the UPDATE schema (a `.partial()` of them) leaves an omitted
+// field unchanged — a defaulted optional would silently RESET the stored value
+// on a field-specific PATCH (Zod's `.partial()` keeps the inner `.default()`,
+// which still fires when the key is absent). `scope`/`severityDefault` reuse the
+// registry's own enums so the wire gate can't drift from `buildCustomCheck`.
+const editorialCustomCheckShape = {
   label: z.string().trim().min(1).max(120),
-  description: z.string().trim().max(500).optional().default(''),
+  description: z.string().trim().max(500),
   prompt: z.string().trim().min(1).max(8_000),
-  scope: z.enum([...CHECK_SCOPES]).optional().default('issue'),
-  category: z.string().trim().max(60).optional().default('custom'),
-  severityDefault: z.enum([...CHECK_SEVERITIES]).optional().default('medium'),
+  scope: z.enum([...CHECK_SCOPES]),
+  category: z.string().trim().max(60),
+  severityDefault: z.enum([...CHECK_SEVERITIES]),
+};
+
+// Create: label + prompt required; the rest optional with sensible defaults (so
+// a new check is fully-formed). The JSON output contract is enforced server-side
+// (buildCustomCheckPrompt), so no schema field captures it.
+export const editorialCustomCheckCreateSchema = z.object({
+  ...editorialCustomCheckShape,
+  description: editorialCustomCheckShape.description.optional().default(''),
+  scope: editorialCustomCheckShape.scope.optional().default('issue'),
+  category: editorialCustomCheckShape.category.optional().default('custom'),
+  severityDefault: editorialCustomCheckShape.severityDefault.optional().default('medium'),
 }).strict();
 
-// Edit is the same shape, all-optional (the id is in the URL). `.partial()`
-// drops the `.default()`s so an unspecified field is simply left unchanged.
-export const editorialCustomCheckUpdateSchema = editorialCustomCheckCreateSchema.partial();
+// Edit (the id is in the URL): every field optional, NO defaults, so an omitted
+// field is left unchanged rather than reset.
+export const editorialCustomCheckUpdateSchema = z.object(editorialCustomCheckShape).partial().strict();
 
 // The STORED definition shape (settings.pipelineEditorialChecks.customChecks[]):
 // the authored fields + the generated id and timestamps. Validated as part of
 // the settings slice below so a hand-edited / synced file is bounded.
 export const editorialCustomCheckDefSchema = z.object({
   id: z.string().trim().min(1).max(120),
-  label: z.string().trim().min(1).max(120),
-  description: z.string().trim().max(500).optional().default(''),
-  prompt: z.string().trim().min(1).max(8_000),
-  scope: z.enum([...CHECK_SCOPES]),
-  category: z.string().trim().max(60).optional().default('custom'),
-  severityDefault: z.enum([...CHECK_SEVERITIES]),
+  ...editorialCustomCheckShape,
+  description: editorialCustomCheckShape.description.optional().default(''),
+  category: editorialCustomCheckShape.category.optional().default('custom'),
   createdAt: z.string().optional(),
   updatedAt: z.string().optional(),
 }).strict();
