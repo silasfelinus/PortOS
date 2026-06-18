@@ -141,6 +141,28 @@ describe('contextBudget', () => {
       expect(plan.mode).toBe('whole');
     });
 
+    it('budgets for the inter-section join separator when packing whole sections', () => {
+      // 8 sections of exactly 1024 tokens (4096 chars) each sum to exactly the
+      // 8192-token budget. Without accounting for the `\n\n---\n\n` join, all 8
+      // would pack into one chunk whose rendered corpus (32831 chars) overflows
+      // usableChars (32768) and the consumer's slice trims the last section's tail.
+      const paddedSection = (n) => {
+        const title = 'T';
+        const h = header(n, title);
+        return { number: n, title, stageId: 'script', content: 'x'.repeat(4_096 - (h.length + 2)), text: `${h}\n\n${'x'.repeat(4_096 - (h.length + 2))}` };
+      };
+      const sections = Array.from({ length: 8 }, (_, i) => paddedSection(i + 1));
+      const plan = planManuscriptPass({ contextWindow: 8_192, sections, outputReserveTokens: 0, safetyMargin: 0 });
+      expect(plan.mode).toBe('chunked');
+      // Every chunk fits usableChars once rendered the way the consumers render it.
+      for (const chunk of plan.chunks) {
+        const corpus = chunk.sections.map((s) => `${header(s.number, s.title)}\n\n${s.content}`).join('\n\n---\n\n');
+        expect(corpus.length).toBeLessThanOrEqual(plan.usableChars);
+      }
+      // ...and at least one chunk genuinely packs multiple whole sections.
+      expect(plan.chunks.some((c) => c.sections.length > 1)).toBe(true);
+    });
+
     it('splits an over-budget section while packing its small neighbors normally', () => {
       // One huge section between two small ones: the huge one splits, the small
       // ones still pack/standalone, and overall order is preserved.

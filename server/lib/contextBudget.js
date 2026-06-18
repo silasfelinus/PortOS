@@ -23,6 +23,12 @@ export const FALLBACK_CONTEXT_WINDOW = 8_192;
 /** chars/4 token estimate. Conservative (real tokenizers pack denser). */
 export const estimateTokens = (text) => Math.ceil(String(text ?? '').length / CHARS_PER_TOKEN);
 
+// Token cost of the separator `sectionsCorpus` inserts between packed sections
+// (mirrors its `\n\n---\n\n` join). The packer budgets for it so a chunk packed
+// to the token limit doesn't overflow `usableChars` by the separators and get
+// its last section's tail trimmed by the consumer's slice.
+const SECTION_SEPARATOR_TOKENS = estimateTokens('\n\n---\n\n');
+
 const clampMargin = (m) => (Number.isFinite(m) && m >= 0 && m < 1 ? m : DEFAULT_SAFETY_MARGIN);
 
 const resolveWindow = (contextWindow) =>
@@ -109,8 +115,12 @@ export function planManuscriptPass({
   const withTokens = list.map((s) => ({ section: s, tokens: estimateTokens(s?.text) }));
   const totalTokens = withTokens.reduce((n, x) => n + x.tokens, 0);
 
-  // Everything fits → one call.
-  if (totalTokens <= usableTokens) {
+  // Everything fits → one call. The whole-corpus render joins the sections with
+  // a separator, so the fit decision counts those too — otherwise a corpus that
+  // only fits *without* separators is mislabeled `whole` and the consumer's
+  // slice trims its tail.
+  const renderedTokens = totalTokens + Math.max(0, list.length - 1) * SECTION_SEPARATOR_TOKENS;
+  if (renderedTokens <= usableTokens) {
     return { mode: 'whole', usableTokens, usableChars, totalTokens };
   }
 
@@ -129,17 +139,21 @@ export function planManuscriptPass({
 
   // Greedy first-fit packing, order-preserving. Each chunk stays under the
   // usable budget unless a single (unsplittable) section already exceeds it.
+  // The join separator between packed sections is counted so a chunk's rendered
+  // corpus never overflows usableChars (and gets sliced) once the consumer
+  // re-joins the sections.
   const chunks = [];
   let cur = [];
   let curTokens = 0;
   for (const { section, tokens } of units) {
-    if (cur.length && curTokens + tokens > usableTokens) {
+    const sep = cur.length ? SECTION_SEPARATOR_TOKENS : 0;
+    if (cur.length && curTokens + sep + tokens > usableTokens) {
       chunks.push({ sections: cur, tokens: curTokens });
       cur = [];
       curTokens = 0;
     }
+    curTokens += (cur.length ? SECTION_SEPARATOR_TOKENS : 0) + tokens;
     cur.push(section);
-    curTokens += tokens;
   }
   if (cur.length) chunks.push({ sections: cur, tokens: curTokens });
   return { mode: 'chunked', usableTokens, usableChars, totalTokens, chunks };
