@@ -1119,15 +1119,20 @@ export const EDITORIAL_CHECKS = [
         if (present.length === 0 || present.length >= minComponents) continue;
         const label = sceneLabel(s);
         const issueNumber = Number.isInteger(s.issueNumber) ? s.issueNumber : null;
+        // How many more modes reach the configured target, and whether ALL the
+        // missing ones are required to get there — so the guidance honors
+        // minComponents=3 (a single-mode scene must add BOTH missing modes, not one).
+        const needed = minComponents - present.length;
+        const addJoiner = needed >= missing.length ? ' and ' : ' or ';
         const problem = present.length === 1
-          ? `Scene "${label}" is all ${present[0]} — no ${missing.join(' or ')}. A single-mode scene reads flat; balance at least two of narrative, action, and dialogue.`
+          ? `Scene "${label}" is all ${present[0]} — no ${missing.join(' or ')}. A single-mode scene reads flat; aim for at least ${minComponents} of narrative, action, and dialogue.`
           : `Scene "${label}" has ${present.join(' and ')} but no ${missing.join(' or ')} — only ${present.length} of the ${minComponents} components you expect.`;
         findings.push({
           severity: ctx.severityDefault,
           category: 'pacing',
           location: issueNumber != null ? `Issue ${issueNumber}: ${label}` : `Scene: ${label}`,
           problem,
-          suggestion: `Add ${missing.join(' or ')} so the scene isn't a ${present.join('/')}-only beat (e.g. ground talking heads in the room, give a narration wall a beat of action, or let an action scene breathe with a line of dialogue or interiority).`,
+          suggestion: `Add ${missing.join(addJoiner)} so the scene isn't a ${present.join('/')}-only beat (e.g. ground talking heads in the room, give a narration wall a beat of action, or let an action scene breathe with a line of dialogue or interiority).`,
           anchorQuote: typeof s.anchorQuote === 'string' ? s.anchorQuote : '',
           issueNumber,
         });

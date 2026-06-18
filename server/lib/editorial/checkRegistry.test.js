@@ -605,6 +605,23 @@ describe('scene.component-balance — deterministic check', () => {
     expect(findings[0].problem).toMatch(/narrative and action but no dialogue/);
   });
 
+  it('tells a single-mode scene to add BOTH missing modes under minComponents=3', () => {
+    // A single-mode scene under an all-three target must add both gaps, not "either".
+    const findings = runScene(
+      [scene({ heading: 'Monologue', components: { narrative: false, action: false, dialogue: true } })],
+      { minComponents: 3 },
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0].problem).toMatch(/at least 3 of/);
+    expect(findings[0].suggestion).toMatch(/Add narrative and action/); // "and", not "or"
+  });
+
+  it('tells a single-mode scene it may add EITHER missing mode under the default (2)', () => {
+    const findings = runScene([scene({ components: { narrative: false, action: false, dialogue: true } })]);
+    expect(findings[0].problem).toMatch(/at least 2 of/);
+    expect(findings[0].suggestion).toMatch(/Add narrative or action/); // "or" — one suffices
+  });
+
   it('minComponents=1 disables the check', () => {
     const findings = runScene(
       [scene({ components: { narrative: false, action: false, dialogue: true } })],
