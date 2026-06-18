@@ -576,6 +576,20 @@ describe('cross-chunk continuity digest (#1383)', () => {
       expect(digest.length).toBeLessThanOrEqual(EDITORIAL_PRIOR_DIGEST_CHARS);
       expect(EDITORIAL_PRIOR_DIGEST_TOKENS * 4).toBeGreaterThanOrEqual(EDITORIAL_PRIOR_DIGEST_CHARS);
     });
+
+    it('keeps the trailing --- separator intact even when the body overflows the cap', () => {
+      // The next manuscript chunk is concatenated right after the digest, so the
+      // delimiter must survive truncation or the manuscript bleeds into the
+      // "already recorded" list (codex P2).
+      const huge = Array.from({ length: EDITORIAL_PRIOR_DIGEST_MAX }, (_, i) => ({
+        issueNumber: i + 1, category: 'continuity', problem: 'x'.repeat(500),
+      }));
+      const digest = editorialPriorFindingsDigest(huge);
+      expect(digest.endsWith('\n\n---\n\n')).toBe(true);
+      expect(digest.startsWith('# Editorial findings already recorded')).toBe(true);
+      // A following chunk stays clearly separated from the digest body.
+      expect(`${digest}NEXT_CHUNK`).toContain('---\n\nNEXT_CHUNK');
+    });
   });
 
   // A check that opts into the digest prefixes every chunk AFTER the first with a

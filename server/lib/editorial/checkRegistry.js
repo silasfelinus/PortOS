@@ -219,10 +219,22 @@ export const editorialFindingKey = (f) => [
 // These constants bound the rolling digest of prior-chunk findings fed to later
 // chunks so it stays small enough to ride in the chunk's spare budget.
 export const EDITORIAL_PRIOR_DIGEST_MAX = 40;
-export const EDITORIAL_PRIOR_DIGEST_CHARS = 2_400;
+// Only the findings BODY is capped — the fixed header and the trailing `---`
+// delimiter are always added AFTER the cap (the next manuscript chunk is
+// concatenated right after the digest, so the delimiter MUST survive or the
+// manuscript bleeds into the "already recorded" list).
+export const EDITORIAL_PRIOR_DIGEST_BODY_CHARS = 2_000;
+const EDITORIAL_PRIOR_DIGEST_HEADER = '# Editorial findings already recorded for EARLIER parts of this manuscript\n'
+  + 'Do not repeat these. Flag only NEW problems in the text below, plus any cross-chapter '
+  + 'continuity these earlier findings reveal (e.g. an object set up earlier, or a tense/POV '
+  + 'choice established in an earlier chapter).\n\n';
+const EDITORIAL_PRIOR_DIGEST_SEPARATOR = '\n\n---\n\n';
+// Whole-digest char ceiling = fixed wrapper + capped body, so the token reserve
+// below is an exact upper bound on what gets prepended to a chunk.
+export const EDITORIAL_PRIOR_DIGEST_CHARS =
+  EDITORIAL_PRIOR_DIGEST_HEADER.length + EDITORIAL_PRIOR_DIGEST_BODY_CHARS + EDITORIAL_PRIOR_DIGEST_SEPARATOR.length;
 // Token budget the chunk planner reserves for the digest so prepending it can't
-// push a chunk over the provider window (the digest string is capped to
-// EDITORIAL_PRIOR_DIGEST_CHARS, so this reserve is an exact upper bound).
+// push a chunk over the provider window.
 export const EDITORIAL_PRIOR_DIGEST_TOKENS = Math.ceil(EDITORIAL_PRIOR_DIGEST_CHARS / CHARS_PER_TOKEN);
 
 // One-block digest of findings already recorded for earlier chunks, prepended
@@ -237,11 +249,10 @@ export function editorialPriorFindingsDigest(findings) {
   });
   const more = findings.length > EDITORIAL_PRIOR_DIGEST_MAX
     ? `\n(+${findings.length - EDITORIAL_PRIOR_DIGEST_MAX} more earlier findings)` : '';
-  const header = '# Editorial findings already recorded for EARLIER parts of this manuscript\n'
-    + 'Do not repeat these. Flag only NEW problems in the text below, plus any cross-chapter '
-    + 'continuity these earlier findings reveal (e.g. an object set up earlier, or a tense/POV '
-    + 'choice established in an earlier chapter).\n\n';
-  return `${header}${lines.join('\n')}${more}\n\n---\n\n`.slice(0, EDITORIAL_PRIOR_DIGEST_CHARS);
+  // Cap the body only — the header and the trailing `---` separator are appended
+  // afterwards so they always survive (see EDITORIAL_PRIOR_DIGEST_BODY_CHARS).
+  const body = `${lines.join('\n')}${more}`.slice(0, EDITORIAL_PRIOR_DIGEST_BODY_CHARS);
+  return `${EDITORIAL_PRIOR_DIGEST_HEADER}${body}${EDITORIAL_PRIOR_DIGEST_SEPARATOR}`;
 }
 
 // Shared chunk loop for the manuscript-consuming LLM checks: run `callChunk` on
