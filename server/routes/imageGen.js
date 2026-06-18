@@ -132,6 +132,21 @@ const generateSchema = z.object({
       { message: 'entryRef requires its locating key (canon→kindKey, variation→categoryKey)' },
     ).optional(),
   }).optional(),
+  // Writers-Room storyboard scene render (#1363). When present, the mediaJobQueue
+  // completion hook (`writersRoomSceneImageHook`) files the finished render onto
+  // the analysis snapshot's `sceneImages[sceneId]` AND mirrors it into the work's
+  // auto-collection — durably, even if the editor unmounted mid-render (the
+  // "navigated away → image never attached" failure mode the synchronous attach
+  // suffered). Only the async local/Codex lanes ride the queue this hook listens
+  // to; the synchronous external SD-API lane still attaches via the scene-image
+  // route. The scene prompt is read from the job's own `prompt` param, so the tag
+  // carries only the destination identity. JSON-only (the multipart ImageGen page
+  // never sends it).
+  writersRoom: z.object({
+    workId: z.string().min(1).max(200),
+    analysisId: z.string().min(1).max(200),
+    sceneId: z.string().min(1).max(200),
+  }).optional(),
   // Durable catalog attach (#1359). When present, the mediaJobQueue completion
   // hook (catalogImageAttachHook) files the finished render onto this catalog
   // ingredient even if the page that started the render has since unmounted —

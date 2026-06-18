@@ -109,6 +109,7 @@ import authorsRoutes from './routes/authors.js';
 import conflictJournalRoutes from './routes/conflictJournal.js';
 import { initUniverseBuilderCollectionHook } from './services/universeBuilderCollectionHook.js';
 import { initCatalogImageAttachHook } from './services/catalogImageAttachHook.js';
+import { initWritersRoomSceneImageHook } from './services/writersRoomSceneImageHook.js';
 import { initComicPagesFilenameHook } from './services/pipeline/comicPagesFilenameHook.js';
 import { initStoryboardsFilenameHook } from './services/pipeline/storyboardsFilenameHook.js';
 import { initSeasonCoverFilenameHook } from './services/pipeline/seasonCoverFilenameHook.js';
@@ -762,6 +763,10 @@ ensureSelf()
     // ingredient on completion, even if the editor page unmounted mid-render
     // (#1359). Also depends on the media job queue being loaded.
     initCatalogImageAttachHook();
+    // Writers-Room scene-image hook — durably files a queued storyboard render
+    // onto its analysis snapshot + work collection on completion, even if the
+    // editor unmounted mid-render (#1363). Also depends on the queue being loaded.
+    initWritersRoomSceneImageHook();
     // Pipeline filename hooks — stamp `filename` onto stage records on
     // media-job completion so the UI can still render them after the
     // 24h media-job archive TTL elapses.
