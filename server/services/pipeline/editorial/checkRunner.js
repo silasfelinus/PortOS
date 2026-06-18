@@ -88,6 +88,14 @@ function fingerprintForCheck(check, resolved) {
   const segments = [...new Set(checkSources(check))]
     .sort()
     .map((token) => `${token}=${resolved[token]}`);
+  // A custom check's run logic IS its authored prompt (user data, not code), so a
+  // prompt edit must stale its prior findings even when the manuscript is unchanged
+  // — fold it into the fingerprint. Built-in checks' logic lives in code (a code
+  // change isn't user content and isn't fingerprinted), so only their declared
+  // content sources matter. (#1346, #1387)
+  if (check?.isCustom && typeof check.prompt === 'string') {
+    segments.push(`definition=${check.prompt}`);
+  }
   return sha256(segments.join(HASH_SEP));
 }
 

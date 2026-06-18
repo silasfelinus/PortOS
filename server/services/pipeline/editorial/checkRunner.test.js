@@ -28,6 +28,15 @@ vi.mock('../../../lib/stageRunner.js', () => ({
       ],
     },
   })),
+  // Inline sibling for user-defined (custom) checks (#1346) — same finding shape.
+  runInlineLLM: vi.fn(async () => ({
+    runId: 'inline-run',
+    content: {
+      findings: [
+        { severity: 'medium', issueNumber: 1, location: 'p1', problem: 'Anachronism in opening', suggestion: 'Cut it', anchorQuote: 'As you know, Bob' },
+      ],
+    },
+  })),
   // A roomy window by default → manuscript LLM checks run in one whole-corpus call.
   resolveStageContext: vi.fn(async () => ({ provider: { type: 'cli' }, model: 'm', contextWindow: 1_000_000 })),
 }));
@@ -56,6 +65,7 @@ const { runStagedLLM, resolveStageContext } = await import('../../../lib/stageRu
 const { collectManuscriptSections } = await import('../arcPlanner.js');
 const { getSeriesCanon } = await import('../seriesCanon.js');
 const { getSeries } = await import('../series.js');
+const { getSettings } = await import('../../settings.js');
 const { listChecks, getCheck } = await import('../../../lib/editorial/index.js');
 
 // Build a `pipelineEditorialChecks.checks` map that disables every check
@@ -301,6 +311,31 @@ describe('getReviewWithStaleness (#1345)', () => {
     expect(review.comments.find((c) => c.checkId === 'arc.ticking-clock-hygiene').stale).toBe(true);
     expect(review.comments.find((c) => c.checkId === 'naming.dissimilar-names').stale).toBe(false);
     expect(review.comments.find((c) => c.checkId === 'prose.info-dumping').stale).toBe(false);
+  });
+
+  it('stales a custom-check finding when its authored prompt changes, even if the manuscript is unchanged (#1387)', async () => {
+    // A custom check's run logic is its prompt (user data), so a prompt edit must
+    // stale its prior findings — the manuscript source alone can't catch that.
+    const settingsWithPrompt = (prompt) => ({
+      pipelineEditorialChecks: {
+        customChecks: [{ id: 'custom.anachronism', label: 'Anachronisms', prompt, scope: 'issue', severityDefault: 'medium' }],
+      },
+    });
+    getSettings.mockResolvedValueOnce(settingsWithPrompt('Flag modern tech in a period setting.'));
+    const { findings } = await runEditorialChecks('s1');
+    reviewState = { comments: findings.map((f) => ({ ...f, status: 'open' })) };
+    const custom = findings.find((f) => f.checkId === 'custom.anachronism');
+    expect(custom, 'custom check produced a finding').toBeTruthy();
+
+    // Same prompt → fresh (the manuscript-only segment is unchanged).
+    getSettings.mockResolvedValueOnce(settingsWithPrompt('Flag modern tech in a period setting.'));
+    const fresh = await getReviewWithStaleness('s1');
+    expect(fresh.comments.find((c) => c.checkId === 'custom.anachronism').stale).toBe(false);
+
+    // Edited prompt → stale, despite the unchanged manuscript.
+    getSettings.mockResolvedValueOnce(settingsWithPrompt('Flag anachronistic slang in dialogue.'));
+    const stale = await getReviewWithStaleness('s1');
+    expect(stale.comments.find((c) => c.checkId === 'custom.anachronism').stale).toBe(true);
   });
 
   it('leaves legacy findings (no hash), completeness comments (no checkId), and unknown checks unannotated', async () => {
