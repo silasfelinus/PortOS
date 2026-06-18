@@ -22,12 +22,19 @@
  */
 
 import { mediaJobEvents } from './mediaJobQueue/index.js';
-import { attachMedia, setPortraitMedia, listMediaForIngredient } from './catalogDB.js';
+import { attachMedia, setPortraitMedia, listMediaForIngredient, getIngredient } from './catalogDB.js';
 
 // Resolve the render onto the ingredient. Returns the kind attached
-// ('portrait' | 'reference'), 'duplicate' when the client already filed it, or
-// throws on a real DB error (caught by the caller).
+// ('portrait' | 'reference'), 'duplicate' when the client already filed it,
+// 'gone' when the target ingredient no longer exists, or throws on a real DB
+// error (caught by the caller).
 async function attachGeneratedImage({ ingredientId, kind, filename }) {
+  // The ingredient can be deleted between enqueue and completion (a render
+  // outlives its editor by minutes). `getIngredient` filters `deleted = false`,
+  // so this skips a hard-deleted ingredient (FK would throw) AND a soft-deleted
+  // one (FK is satisfied — attaching would silently file media onto a tombstone
+  // and fan those rows to peers via sync_sequence).
+  if (!(await getIngredient(ingredientId))) return 'gone';
   const existing = await listMediaForIngredient(ingredientId);
   // Idempotent against the optimistic client path: it already attached this
   // exact render (under any kind) — don't double-file it as a second kind.

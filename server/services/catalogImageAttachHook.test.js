@@ -6,7 +6,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 const attachMedia = vi.fn(async () => ({}));
 const setPortraitMedia = vi.fn(async () => ({}));
 const listMediaForIngredient = vi.fn(async () => []);
-vi.mock('./catalogDB.js', () => ({ attachMedia, setPortraitMedia, listMediaForIngredient }));
+// Defaults to "ingredient exists" — the 'gone'-path test overrides per-call.
+const getIngredient = vi.fn(async () => ({ id: 'ing', deleted: false }));
+vi.mock('./catalogDB.js', () => ({ attachMedia, setPortraitMedia, listMediaForIngredient, getIngredient }));
 
 const { mediaJobEvents } = await import('./mediaJobQueue/index.js');
 const hook = await import('./catalogImageAttachHook.js');
@@ -34,6 +36,8 @@ describe('catalogImageAttachHook', () => {
     setPortraitMedia.mockClear();
     listMediaForIngredient.mockReset();
     listMediaForIngredient.mockResolvedValue([]);
+    getIngredient.mockReset();
+    getIngredient.mockResolvedValue({ id: 'ing', deleted: false });
   });
 
   afterEach(() => {
@@ -75,6 +79,29 @@ describe('catalogImageAttachHook', () => {
     mediaJobEvents.emit('completed', completedImageJob({ catalogAttach: { ingredientId: 'ing-5' } }, 'dup.png'));
     // Give the async handler a chance to run, then assert no second write.
     await new Promise((r) => setTimeout(r, 30));
+    expect(setPortraitMedia).not.toHaveBeenCalled();
+    expect(attachMedia).not.toHaveBeenCalled();
+  });
+
+  it('never files a render as a second kind — filename already a reference, plus an unrelated portrait', async () => {
+    // The headline guarantee: with this filename already attached (as reference)
+    // AND a different portrait present, the auto-decision must NOT also file it
+    // as a portrait — the dedup guard wins over the hasPortrait branch.
+    listMediaForIngredient.mockResolvedValue([
+      { mediaKey: 'portrait.png', kind: 'portrait' },
+      { mediaKey: 'dup.png', kind: 'reference' },
+    ]);
+    mediaJobEvents.emit('completed', completedImageJob({ catalogAttach: { ingredientId: 'ing-8' } }, 'dup.png'));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(setPortraitMedia).not.toHaveBeenCalled();
+    expect(attachMedia).not.toHaveBeenCalled();
+  });
+
+  it('skips attaching when the target ingredient was deleted before the render completed', async () => {
+    getIngredient.mockResolvedValue(null); // soft- or hard-deleted: getIngredient filters deleted=false
+    mediaJobEvents.emit('completed', completedImageJob({ catalogAttach: { ingredientId: 'ing-gone' } }, 'orphan.png'));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(listMediaForIngredient).not.toHaveBeenCalled();
     expect(setPortraitMedia).not.toHaveBeenCalled();
     expect(attachMedia).not.toHaveBeenCalled();
   });
