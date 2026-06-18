@@ -619,6 +619,46 @@ async function cascadeDeleteSideEffects(id) {
   emitRecordDeleted('series', id);
 }
 
+// Top-level additive content fields whose ABSENCE in a remote payload must not
+// erase a locally-authored value. `sanitizeSeries` collapses an absent key to
+// the same null/[]/'' as an explicit clear, so on the sync-merge path we
+// consult the RAW remote payload to tell the two apart: key absent → preserve
+// local; key present (even null/empty) → honor the intentional clear. Mirrors
+// the `universeId` hierarchy guard. See issue #1361.
+const ADDITIVE_SERIES_FIELDS = ['arc', 'seasons', 'styleGuide', 'styleNotes'];
+// Additive sub-fields nested inside `arc`. A peer that predates these (readerMap
+// shipped at schema v2, tickingClock at #1289/v3) still sends an `arc` object —
+// just without these keys — so the erasure for them happens one level down.
+const ADDITIVE_ARC_FIELDS = ['readerMap', 'tickingClock'];
+
+const keyAbsent = (obj, key) => !obj || typeof obj !== 'object' || !(key in obj) || obj[key] === undefined;
+
+/**
+ * Re-inject locally-authored additive fields into a freshly-sanitized remote
+ * record when the RAW remote payload omitted the key entirely. Mutates and
+ * returns `sanitized`. Skips tombstones (a deleted record carries no content to
+ * protect). Operates both at the top level and on the additive sub-fields nested
+ * inside `arc`. An explicitly-present null/empty from an up-to-date peer is left
+ * untouched so an intentional clear still applies. See issue #1361.
+ */
+export const preserveAbsentAdditiveFields = (sanitized, rawRemote, local) => {
+  if (!sanitized || sanitized.deleted || !local || typeof local !== 'object') return sanitized;
+  for (const field of ADDITIVE_SERIES_FIELDS) {
+    if (keyAbsent(rawRemote, field)) sanitized[field] = local[field];
+  }
+  // Nested arc sub-fields: only when the remote DID send an `arc` object (so the
+  // top-level preserve above didn't already restore the whole arc) and both the
+  // sanitized result and the local record carry an arc object to merge into.
+  if (!keyAbsent(rawRemote, 'arc')
+    && sanitized.arc && typeof sanitized.arc === 'object'
+    && local.arc && typeof local.arc === 'object') {
+    for (const sub of ADDITIVE_ARC_FIELDS) {
+      if (keyAbsent(rawRemote.arc, sub)) sanitized.arc[sub] = local.arc[sub];
+    }
+  }
+  return sanitized;
+};
+
 /**
  * Sync-orchestrator entry point. Merges a remote peer's series array into
  * local state through per-record collection-store queues. Each incoming record
@@ -673,6 +713,14 @@ export async function mergeSeriesFromSync(remoteSeries, { source = { via: 'sync'
           if (!sanitized.deleted && !sanitized.universeId && local.universeId) {
             sanitized.universeId = local.universeId;
           }
+          // Additive content fields: a behind/legacy peer (or one that never
+          // authored the field) pushes a newer payload that simply OMITS the
+          // key. `sanitizeSeries` already flattened that absence to null/[]/'',
+          // so re-inject the local value from the raw remote payload — otherwise
+          // LWW silently erases styleGuide/readerMap/tickingClock/styleNotes/
+          // seasons. An explicit null/empty from an up-to-date peer still
+          // applies. See issue #1361.
+          preserveAbsentAdditiveFields(sanitized, remote, local);
           // Non-blocking conflict journal — archive the losing local version on
           // a true 3-way divergence; always advances the base hash. Never throws.
           await maybeJournalBeforeOverwrite({ kind: 'series', id: sanitized.id, local, remote: sanitized, source });
