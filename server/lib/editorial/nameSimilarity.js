@@ -79,18 +79,20 @@ export const DEFAULT_SIGNAL_OPTS = Object.freeze({
   usePhonetic: true,
 });
 
-// The confusability signals two names share. Each present signal is one reason a
-// reader could blur the two on the page; the registry check counts them (plus the
-// strong standalone signals — near-identical spelling and phonetic match — which
-// also drive severity). Returns [] when either name has no letters.
-export function nameSimilaritySignals(a, b, opts = {}) {
+// Analyze a name pair in a single pass: the confusability `signals` (each one a
+// reason a reader could blur the two on the page) plus the two metrics that also
+// drive the check's severity — the Levenshtein `distance` and whether the names
+// share a `phoneticMatch`. Computing them here once lets the caller score severity
+// without re-running soundex/levenshtein. Returns empty/Infinity/false when either
+// name has no letters or the two normalize equal.
+export function analyzeNamePair(a, b, opts = {}) {
   const { minEditDistance, flagSameLength, vowelSkeletonCollision, usePhonetic } = {
     ...DEFAULT_SIGNAL_OPTS,
     ...opts,
   };
   const la = normalizeName(a);
   const lb = normalizeName(b);
-  if (!la || !lb || la === lb) return [];
+  if (!la || !lb || la === lb) return { signals: [], distance: Infinity, phoneticMatch: false };
   const signals = [];
   if (la[0] === lb[0]) signals.push('same first letter');
   if (flagSameLength && la.length === lb.length) signals.push('same length');
@@ -100,16 +102,19 @@ export function nameSimilaritySignals(a, b, opts = {}) {
   }
   if (la.length >= 3 && lb.length >= 3 && la.slice(0, 3) === lb.slice(0, 3)) signals.push('same opening');
   if (la.length >= 2 && la.slice(-2) === lb.slice(-2)) signals.push('same ending');
-  if (minEditDistance > 0) {
-    const dist = levenshtein(la, lb);
-    if (dist <= minEditDistance) signals.push(`near-identical spelling (edit distance ${dist})`);
+  const distance = levenshtein(la, lb);
+  if (minEditDistance > 0 && distance <= minEditDistance) {
+    signals.push(`near-identical spelling (edit distance ${distance})`);
   }
-  if (usePhonetic) {
-    const ka = soundex(a);
-    if (ka && ka === soundex(b)) signals.push('same phonetic key');
-  }
-  return signals;
+  const ka = usePhonetic ? soundex(a) : '';
+  const phoneticMatch = ka !== '' && ka === soundex(b);
+  if (phoneticMatch) signals.push('same phonetic key');
+  return { signals, distance, phoneticMatch };
 }
+
+// The confusability signal list for a name pair — the `signals` view of
+// analyzeNamePair, for callers (and tests) that only need the reasons.
+export const nameSimilaritySignals = (a, b, opts = {}) => analyzeNamePair(a, b, opts).signals;
 
 // A first-letter histogram over a list of names: Map<letter, name[]> keyed by the
 // lowercased first letter (entries with no letters are skipped). The check uses

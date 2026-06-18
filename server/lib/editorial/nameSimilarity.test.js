@@ -4,6 +4,7 @@ import {
   vowelSkeleton,
   soundex,
   levenshtein,
+  analyzeNamePair,
   nameSimilaritySignals,
   firstLetterHistogram,
   findFirstLetterClusters,
@@ -99,6 +100,27 @@ describe('nameSimilaritySignals', () => {
     // minEditDistance 0 disables the edit-distance signal
     expect(nameSimilaritySignals('Alina', 'Alana', { minEditDistance: 0 }))
       .not.toContain('near-identical spelling (edit distance 1)');
+  });
+});
+
+describe('analyzeNamePair', () => {
+  it('returns signals plus the severity metrics in one pass', () => {
+    const r = analyzeNamePair('Alina', 'Alana');
+    expect(r.distance).toBe(1);
+    expect(r.phoneticMatch).toBe(true); // both Soundex A450
+    expect(r.signals).toContain('near-identical spelling (edit distance 1)');
+    expect(nameSimilaritySignals('Alina', 'Alana')).toEqual(r.signals); // wrapper agrees
+  });
+
+  it('reports no phonetic match when usePhonetic is off, and Infinity distance is harmless', () => {
+    const r = analyzeNamePair('Smith', 'Smyth', { usePhonetic: false });
+    expect(r.phoneticMatch).toBe(false);
+    expect(r.signals).not.toContain('same phonetic key');
+  });
+
+  it('is inert for letterless / equal names', () => {
+    expect(analyzeNamePair('', 'Sam')).toEqual({ signals: [], distance: Infinity, phoneticMatch: false });
+    expect(analyzeNamePair('Sam', 'sam')).toEqual({ signals: [], distance: Infinity, phoneticMatch: false });
   });
 });
 

@@ -26,12 +26,7 @@
 
 import { z } from 'zod';
 import { estimateTokens } from '../contextBudget.js';
-import {
-  nameSimilaritySignals,
-  levenshtein,
-  soundex,
-  findFirstLetterClusters,
-} from './nameSimilarity.js';
+import { analyzeNamePair, findFirstLetterClusters } from './nameSimilarity.js';
 
 export const CHECK_SCOPES = Object.freeze(['series', 'issue', 'scene', 'noun']);
 export const CHECK_KINDS = Object.freeze(['deterministic', 'llm']);
@@ -129,16 +124,18 @@ function castNameTokens(ctx) {
   return tokens;
 }
 
+// A name token's display label — an alias is annotated with its owning character
+// so the finding text and the rename suggestion always name the source.
+const tokenLabel = (t) => (t.isAlias ? `${t.token} (alias of ${t.ownerName})` : t.token);
+
 // How to phrase the rename suggestion given which of the two characters are
 // locked — always steer the author toward renaming an UNLOCKED one (#1291).
 function renameSuggestion(a, b) {
-  const aLabel = a.isAlias ? `${a.token} (alias of ${a.ownerName})` : a.token;
-  const bLabel = b.isAlias ? `${b.token} (alias of ${b.ownerName})` : b.token;
   if (a.locked && b.locked) {
     return `Both ${a.ownerName} and ${b.ownerName} are locked — unlock one to rename it so readers can tell them apart.`;
   }
-  if (a.locked) return `Rename ${b.ownerName} (${a.ownerName} is locked) so it reads less like "${aLabel}".`;
-  if (b.locked) return `Rename ${a.ownerName} (${b.ownerName} is locked) so it reads less like "${bLabel}".`;
+  if (a.locked) return `Rename ${b.ownerName} (${a.ownerName} is locked) so it reads less like "${tokenLabel(a)}".`;
+  if (b.locked) return `Rename ${a.ownerName} (${b.ownerName} is locked) so it reads less like "${tokenLabel(b)}".`;
   return `Rename one of ${a.ownerName} / ${b.ownerName} so readers can tell them apart at a glance.`;
 }
 
@@ -741,21 +738,21 @@ export const EDITORIAL_CHECKS = [
           const a = tokens[i];
           const b = tokens[j];
           if (a.owner === b.owner) continue;
-          const signals = nameSimilaritySignals(a.token, b.token, signalOpts);
+          // Single pass yields the signals AND the severity metrics (edit distance,
+          // phonetic match) so neither is recomputed below.
+          const { signals, distance, phoneticMatch } = analyzeNamePair(a.token, b.token, signalOpts);
           // The user-controlled shared-signal count is the single gate (edit
           // distance and phonetic match are already among the counted signals).
           if (signals.length < min) continue;
-          const dist = signalOpts.minEditDistance > 0 ? levenshtein(a.token, b.token) : Infinity;
-          const phonetic = signalOpts.usePhonetic && soundex(a.token) !== '' && soundex(a.token) === soundex(b.token);
           // Severity scales with how confusable the pair really is, above the
           // check's low floor: edit distance ≤1 is a near-typo (escalate 2), a
           // phonetic match or 4+ signals is strong (escalate 1).
-          const steps = dist <= 1 ? 2 : (phonetic || signals.length >= 4 ? 1 : 0);
+          const steps = distance <= 1 ? 2 : (phoneticMatch || signals.length >= 4 ? 1 : 0);
           findings.push({
             severity: escalateSeverity(ctx.severityDefault, steps),
             category: 'naming',
             location: `Characters: ${a.ownerName} / ${b.ownerName}`,
-            problem: `Character names "${a.token}"${a.isAlias ? ` (alias of ${a.ownerName})` : ''} and "${b.token}"${b.isAlias ? ` (alias of ${b.ownerName})` : ''} are easy to confuse (${signals.join(', ')}).`,
+            problem: `Character names "${tokenLabel(a)}" and "${tokenLabel(b)}" are easy to confuse (${signals.join(', ')}).`,
             suggestion: renameSuggestion(a, b),
             anchorQuote: a.token,
             issueNumber: null,
