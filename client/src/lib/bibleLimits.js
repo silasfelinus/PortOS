@@ -80,10 +80,11 @@ export const BIBLE_LIMITS = Object.freeze({
   INGREDIENT_ID_MAX: 64,
 });
 
-// Client-side helper (no server mirror): trim an imageRefs list to the
-// server-enforced last-N cap (IMAGE_REFS_PER_ENTRY_MAX). Shared by the
-// optimistic imageRefs-append paths in the universe/canon render surfaces so a
-// local stamp never grows past what the durable server append keeps.
+// Client-only helper (the cap *value* IMAGE_REFS_PER_ENTRY_MAX is mirrored from
+// the server; this convenience function is not). Trims an imageRefs list to that
+// last-N cap, mirroring the server's `appendEntryImageRef` rotation. Shared by
+// the optimistic imageRefs-append paths in the universe/canon render surfaces so
+// a local stamp never grows past what the durable server append keeps.
 export const capImageRefs = (refs) => (
   refs.length > BIBLE_LIMITS.IMAGE_REFS_PER_ENTRY_MAX
     ? refs.slice(-BIBLE_LIMITS.IMAGE_REFS_PER_ENTRY_MAX)
