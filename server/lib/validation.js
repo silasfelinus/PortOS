@@ -5,6 +5,7 @@ import { WORK_KINDS, WORK_STATUSES, ANALYSIS_KINDS } from './writersRoomPresets.
 import { ALL_STYLE_IDS, STYLE_ID } from './writersRoomStylePresets.js';
 import { BIBLE_LIMITS, RELATIONSHIP_LINK_TYPES, RELATIONSHIP_OPPOSITION_AXES, ATTACHMENT_ROLES } from './storyBible.js';
 import { MIN_TIMEOUT as STAGE_TIMEOUT_MIN_MS, MAX_TIMEOUT as STAGE_TIMEOUT_MAX_MS } from './aiToolkit/constants.js';
+import { CHECK_SCOPES, CHECK_SEVERITIES } from './editorial/checkRegistry.js';
 
 // gpt-image-2 (codex backend) caps at 3840px per edge and 8,294,400 total
 // pixels. Mirror the ceiling for every image-gen route. Local mflux can
@@ -1017,10 +1018,49 @@ export const editorialChecksRunSchema = z.object({
   model: z.string().trim().max(200).optional(),
 }).strict();
 
+// User-defined editorial check (#1346). The base authored-field shapes carry NO
+// `.default()` so the UPDATE schema (a `.partial()` of them) leaves an omitted
+// field unchanged — a defaulted optional would silently RESET the stored value
+// on a field-specific PATCH (Zod's `.partial()` keeps the inner `.default()`,
+// which still fires when the key is absent). `scope`/`severityDefault` reuse the
+// registry's own enums so the wire gate can't drift from `buildCustomCheck`.
+const editorialCustomCheckShape = {
+  label: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500),
+  prompt: z.string().trim().min(1).max(8_000),
+  scope: z.enum([...CHECK_SCOPES]),
+  category: z.string().trim().max(60),
+  severityDefault: z.enum([...CHECK_SEVERITIES]),
+};
+
+// Create: label + prompt required; the rest optional with sensible defaults (so
+// a new check is fully-formed). The JSON output contract is enforced server-side
+// (buildCustomCheckPrompt), so no schema field captures it.
+export const editorialCustomCheckCreateSchema = z.object({
+  ...editorialCustomCheckShape,
+  description: editorialCustomCheckShape.description.optional().default(''),
+  scope: editorialCustomCheckShape.scope.optional().default('issue'),
+  category: editorialCustomCheckShape.category.optional().default('custom'),
+  severityDefault: editorialCustomCheckShape.severityDefault.optional().default('medium'),
+}).strict();
+
+// Edit (the id is in the URL): every field optional, NO defaults, so an omitted
+// field is left unchanged rather than reset.
+export const editorialCustomCheckUpdateSchema = z.object(editorialCustomCheckShape).partial().strict();
+
 // settings.pipelineEditorialChecks slice (validated on PUT /api/settings when
-// present). `checks` maps a checkId → its persisted enable/config.
+// present). `checks` maps a checkId → its persisted enable/config; `customChecks`
+// holds the user-defined check definitions (#1346).
+//
+// `customChecks` items are gated LENIENTLY (any object, unknown keys preserved):
+// the authoring CRUD routes (editorialCustomCheck{Create,Update}Schema) are the
+// strict input gate, while this wholesale-settings path must stay forward/older-
+// peer compatible — a def carrying a future field (or a newer scope value) must
+// not 400 an unrelated settings save. `buildCustomCheck`/`isValidCustomCheckDef`
+// decide at read time which stored defs are actually runnable.
 export const pipelineEditorialChecksSettingsSchema = z.object({
   checks: z.record(editorialCheckConfigSchema).optional(),
+  customChecks: z.array(z.object({}).passthrough()).optional(),
 }).strict();
 
 // Cursor-context payload for the CD-bridge suggest route — identical shape to
