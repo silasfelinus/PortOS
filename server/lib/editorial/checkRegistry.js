@@ -239,6 +239,13 @@ export const EDITORIAL_PRIOR_DIGEST_CHARS =
 // INSIDE the next chunk's manuscript var so no prompt template changes (mirrors
 // completenessPass.priorFindingsDigest). Pure + capped for unit-testing. Returns
 // '' when there are no prior findings so the first chunk is untouched.
+//
+// Scope note: this carries prior FINDINGS, not clean prior setup (same as the
+// completeness pass). It removes the duplicate/contradiction blind spot — a
+// later chunk won't re-flag something an earlier chunk already flagged — but it
+// can't tell a later chunk that an earlier chunk *cleanly* established an object's
+// motivation or a tense. Carrying clean cross-chunk context would need a
+// per-chunk content summary (extra LLM calls); tracked as a follow-up in #1403.
 export function editorialPriorFindingsDigest(findings) {
   if (!Array.isArray(findings) || !findings.length) return '';
   const lines = findings.slice(0, EDITORIAL_PRIOR_DIGEST_MAX).map((f) => {
