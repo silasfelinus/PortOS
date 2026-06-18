@@ -359,6 +359,36 @@ describe('naming.dissimilar-names — deterministic check', () => {
     expect(sparse.find((f) => f.location.startsWith('Characters starting with'))).toBeFalsy();
   });
 
+  it('flags exact normalized collisions between different characters at top severity', () => {
+    const findings = run([
+      { id: 'a', name: 'Anne-Marie' },
+      { id: 'b', name: 'Anne Marie' },
+    ]);
+    expect(findings.length).toBeGreaterThan(0);
+    expect(findings[0].problem).toMatch(/identical once case and punctuation/);
+    expect(findings[0].severity).toBe('high');
+  });
+
+  it('flags an alias that collides with another character\'s name', () => {
+    const findings = run([
+      { id: 'a', name: 'Robert', aliases: ['Bob'] },
+      { id: 'b', name: 'Bob' },
+    ]);
+    const collision = findings.find((f) => f.problem.includes('identical once case and punctuation'));
+    expect(collision).toBeTruthy();
+    expect(collision.problem).toMatch(/alias of Robert/);
+  });
+
+  it('always flags a near-typo within minEditDistance even when minSharedSignals is high', () => {
+    // Alina/Alana share ~5 signals; with minSharedSignals 7 the shared-signal gate
+    // would drop them, but minEditDistance=1 is documented as "always flag".
+    const findings = run([{ name: 'Alina' }, { name: 'Alana' }], { minSharedSignals: 7, minEditDistance: 1 });
+    expect(findings.length).toBe(1);
+    expect(findings[0].severity).toBe('high');
+    // Turning the edit-distance signal off (0) restores the pure shared-signal gate.
+    expect(run([{ name: 'Alina' }, { name: 'Alana' }], { minSharedSignals: 7, minEditDistance: 0 })).toEqual([]);
+  });
+
   it('disables first-letter crowding when the ratio is set to 0', () => {
     const findings = run(
       [{ name: 'Sam' }, { name: 'Sid' }, { name: 'Sky' }],

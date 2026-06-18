@@ -738,18 +738,41 @@ export const EDITORIAL_CHECKS = [
           const a = tokens[i];
           const b = tokens[j];
           if (a.owner === b.owner) continue;
+          // Exact normalized collision — two DIFFERENT characters whose names
+          // (or an alias) reduce to the same letters once case/punctuation are
+          // stripped ("Anne-Marie" / "Anne Marie", or an alias matching another's
+          // name). This is the strongest confusion case, so flag it at top severity
+          // regardless of the shared-signal threshold (analyzeNamePair treats equal
+          // forms as inert, so it's handled here where owner identity is known).
+          const na = normalizeName(a.token);
+          if (na && na === normalizeName(b.token)) {
+            findings.push({
+              severity: escalateSeverity(ctx.severityDefault, 2),
+              category: 'naming',
+              location: `Characters: ${a.ownerName} / ${b.ownerName}`,
+              problem: `Character names "${tokenLabel(a)}" and "${tokenLabel(b)}" are identical once case and punctuation are ignored — readers cannot tell them apart.`,
+              suggestion: renameSuggestion(a, b),
+              anchorQuote: a.token,
+              issueNumber: null,
+            });
+            continue;
+          }
           // Single pass yields the signals AND the severity metrics (edit distance,
           // phonetic match) so neither is recomputed below.
           const { signals, distance, phoneticMatch } = analyzeNamePair(a.token, b.token, signalOpts);
-          // The user-controlled shared-signal count is the single gate (edit
-          // distance and phonetic match are already among the counted signals).
-          if (signals.length < min) continue;
+          // A near-typo (within the enabled edit-distance threshold) ALWAYS flags —
+          // the minEditDistance knob is documented as "Always flag", so it bypasses
+          // the shared-signal gate. Otherwise the user-controlled shared-signal
+          // count is the gate (phonetic match is a counted signal, not a bypass —
+          // Soundex is coarse, so always-flagging it would be noisy).
+          const withinEdit = signalOpts.minEditDistance > 0 && distance <= signalOpts.minEditDistance;
+          if (!withinEdit && signals.length < min) continue;
           // Severity scales with how confusable the pair really is, above the
-          // check's low floor: a near-typo (edit distance ≤1, only when the
-          // edit-distance signal is enabled) escalates 2, a phonetic match or 4+
-          // signals is strong (escalate 1).
-          const nearTypo = signalOpts.minEditDistance > 0 && distance <= 1;
-          const steps = nearTypo ? 2 : (phoneticMatch || signals.length >= 4 ? 1 : 0);
+          // check's low floor: a near-identical pair (edit distance ≤1, edit-distance
+          // enabled) escalates 2; a wider near-typo, a phonetic match, or 4+ signals
+          // is strong (escalate 1).
+          const nearIdentical = signalOpts.minEditDistance > 0 && distance <= 1;
+          const steps = nearIdentical ? 2 : (withinEdit || phoneticMatch || signals.length >= 4 ? 1 : 0);
           findings.push({
             severity: escalateSeverity(ctx.severityDefault, steps),
             category: 'naming',
