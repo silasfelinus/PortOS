@@ -106,6 +106,28 @@ export const acceptPhasesInputSchema = z.object({
   })).min(1).max(20)
 });
 
+// --- Goal Decomposition Schemas (milestones pre-populated with tasks) ---
+
+export const decomposeGoalInputSchema = aiProviderInputSchema;
+
+// Mirrors addTodoInputSchema; estimateMinutes optional (LLM may omit).
+export const decomposedTaskSchema = z.object({
+  title: z.string().min(1).max(200),
+  priority: z.enum(['low', 'medium', 'high']).optional().default('medium'),
+  estimateMinutes: z.number().int().min(1).max(14400).optional()
+});
+
+export const acceptDecompositionInputSchema = z.object({
+  milestones: z.array(z.object({
+    title: z.string().min(1).max(200),
+    description: z.string().max(2000).optional().default(''),
+    // targetDate optional — decomposition works without a goal target date.
+    targetDate: validCalendarDate.optional(),
+    order: z.number().int().min(0),
+    tasks: z.array(decomposedTaskSchema).max(20).optional().default([])
+  })).min(1).max(20)
+});
+
 // --- Goal Progress Log Schemas ---
 
 export const addProgressEntrySchema = z.object({

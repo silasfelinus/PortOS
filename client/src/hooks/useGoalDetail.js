@@ -24,6 +24,8 @@ export function useGoalDetail({ goal, allGoals, onClose, onRefresh }) {
   const [planOpen, setPlanOpen] = useState(false);
   const [generatingPhases, setGeneratingPhases] = useState(false);
   const [proposedPhases, setProposedPhases] = useState(null);
+  const [decomposing, setDecomposing] = useState(false);
+  const [proposedDecomposition, setProposedDecomposition] = useState(null);
   const [schedulingBusy, setSchedulingBusy] = useState(false);
   const [checkInsOpen, setCheckInsOpen] = useState(false);
   const [checkingIn, setCheckingIn] = useState(false);
@@ -83,6 +85,25 @@ export function useGoalDetail({ goal, allGoals, onClose, onRefresh }) {
     if (!proposedPhases?.length) return;
     await api.acceptGoalPhases(goal.id, proposedPhases);
     setProposedPhases(null);
+    onRefresh();
+  };
+
+  const handleDecompose = async () => {
+    setDecomposing(true);
+    const milestones = await api.decomposeGoal(goal.id).catch(() => null);
+    setDecomposing(false);
+    if (milestones) setProposedDecomposition(milestones);
+  };
+
+  const handleAcceptDecomposition = async () => {
+    if (!proposedDecomposition?.length) return;
+    await api.acceptGoalDecomposition(goal.id, proposedDecomposition);
+    setProposedDecomposition(null);
+    onRefresh();
+  };
+
+  const handleCompleteMilestoneTask = async (milestoneId, taskId) => {
+    await api.completeMilestoneTask(goal.id, milestoneId, taskId);
     onRefresh();
   };
 
@@ -269,11 +290,14 @@ export function useGoalDetail({ goal, allGoals, onClose, onRefresh }) {
     planOpen, setPlanOpen,
     generatingPhases,
     proposedPhases, setProposedPhases,
+    decomposing,
+    proposedDecomposition, setProposedDecomposition,
     schedulingBusy,
     checkInsOpen, setCheckInsOpen,
     checkingIn,
     startEdit, saveEdit,
     handleGeneratePhases, handleAcceptPhases,
+    handleDecompose, handleAcceptDecomposition, handleCompleteMilestoneTask,
     handleCheckIn, handleSchedule, handleRemoveSchedule, handleReschedule,
     handleDelete, handleComplete,
     handleAddMilestone, handleCompleteMilestone,
