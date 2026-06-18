@@ -59,6 +59,13 @@ vi.mock('../services/mediaCollections.js', () => ({
   findOrCreateUniverseCollection: vi.fn(async ({ universeId }) => ({ id: `col-${universeId}` })),
 }));
 
+// POST /avatar folds character-avatar persistence in when persistToCharacter is
+// set. Mock the service so the test asserts the wiring without touching the
+// real singleton character store.
+vi.mock('../services/character.js', () => ({
+  setAvatar: vi.fn(async (avatarPath) => ({ name: 'Gandalf', avatarPath })),
+}));
+
 // HOST_ARCH is read at request time inside `buildSetupCheck`, so backing it
 // with a hoisted mutable holder + getter lets tests flip between arm64 and
 // x86_64 hosts without re-mocking. Default arm64 keeps every existing test
@@ -93,6 +100,7 @@ vi.mock('fs/promises', async (importOriginal) => {
 });
 
 import * as imageGen from '../services/imageGen/index.js';
+import * as characterService from '../services/character.js';
 import * as mediaJobQueue from '../services/mediaJobQueue/index.js';
 import { getSettings } from '../services/settings.js';
 import { findOrCreateUniverseCollection } from '../services/mediaCollections.js';
@@ -740,6 +748,37 @@ describe('Image Gen Routes', () => {
       expect(response.body.generationId).toBe('gen-004');
       expect(response.body.filename).toBe('default.png');
       expect(response.body.path).toBe('/data/images/default.png');
+    });
+
+    it('persists the rendered path onto the character when persistToCharacter is set', async () => {
+      imageGen.generateAvatar.mockResolvedValue({
+        generationId: 'gen-005',
+        filename: 'avatar.png',
+        path: '/data/images/avatar.png',
+      });
+
+      const response = await request(app)
+        .post('/api/image-gen/avatar')
+        .send({ name: 'Gandalf', characterClass: 'Wizard', persistToCharacter: true });
+
+      expect(response.status).toBe(200);
+      expect(response.body.path).toBe('/data/images/avatar.png');
+      expect(characterService.setAvatar).toHaveBeenCalledWith('/data/images/avatar.png');
+    });
+
+    it('does NOT persist to the character when persistToCharacter is omitted', async () => {
+      imageGen.generateAvatar.mockResolvedValue({
+        generationId: 'gen-006',
+        filename: 'avatar.png',
+        path: '/data/images/avatar.png',
+      });
+
+      const response = await request(app)
+        .post('/api/image-gen/avatar')
+        .send({ name: 'Gandalf', characterClass: 'Wizard' });
+
+      expect(response.status).toBe(200);
+      expect(characterService.setAvatar).not.toHaveBeenCalled();
     });
   });
 
