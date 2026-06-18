@@ -63,6 +63,11 @@ vi.mock('../manuscriptReview.js', () => ({
 // the scene.component-balance check is gated off unless a test populates scenes.
 let outlineState = { scenes: [] };
 vi.mock('../reverseOutline.js', () => ({ getReverseOutline: vi.fn(async () => outlineState) }));
+// Editorial-arcs source (#1295) — backed by a mutable fixture; default empty so
+// the pov.justified arc cross-reference degrades gracefully unless a test
+// populates detected character arcs.
+let editorialState = { characters: [] };
+vi.mock('../editorialAnalysis.js', () => ({ getSeriesEditorial: vi.fn(async () => editorialState) }));
 
 const { runEditorialChecks, buildEditorialCheckPlan, getReviewWithStaleness } = await import('./checkRunner.js');
 const { runStagedLLM, resolveStageContext } = await import('../../../lib/stageRunner.js');
@@ -85,6 +90,7 @@ beforeEach(() => {
   seedStore.length = 0;
   reviewState = { comments: [] };
   outlineState = { scenes: [] };
+  editorialState = { characters: [] };
   seedReviewFromFindings.mockClear();
   runStagedLLM.mockClear();
   resolveStageContext.mockClear();

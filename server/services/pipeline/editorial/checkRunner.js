@@ -26,6 +26,7 @@ import { listIssues } from '../issues.js';
 import { getSeriesCanon } from '../seriesCanon.js';
 import { collectManuscriptSections, sectionsCorpus, manuscriptSectionHeader } from '../arcPlanner.js';
 import { getReverseOutline } from '../reverseOutline.js';
+import { getSeriesEditorial } from '../editorialAnalysis.js';
 import { seedReviewFromFindings, getReview } from '../manuscriptReview.js';
 import { canonicalStringify } from '../../../lib/objects.js';
 
@@ -58,7 +59,25 @@ const SOURCE_RESOLVERS = {
   // scenes array is intentionally over-eager (any scene edit stales a finding)
   // rather than under: safe vs. false-fresh, and the check reads several scene fields.
   reverseOutline: ({ reverseOutline }) => canonicalStringify(reverseOutline ?? null),
+  // The detected per-character arc directions a POV check reads (#1295). The
+  // injected `editorialArcs` is the stable projection (name/arcDirection/issueCount/
+  // isProtagonist) — NOT the raw getSeriesEditorial output, which carries a
+  // per-call `generatedAt` timestamp that would re-stale every finding each run.
+  editorialArcs: ({ editorialArcs }) => canonicalStringify(editorialArcs ?? null),
 };
+
+// Stable projection of the series editorial aggregate down to the arc fields a
+// POV/arc check reads — drops the volatile `generatedAt` (and the rest) so the
+// staleness fingerprint only moves when a character's detected arc actually does.
+function projectEditorialArcs(editorial) {
+  const chars = Array.isArray(editorial?.characters) ? editorial.characters : [];
+  return chars.map((c) => ({
+    name: c?.name || '',
+    arcDirection: c?.arcDirection || 'flat',
+    issueCount: Number.isFinite(c?.issueCount) ? c.issueCount : 0,
+    isProtagonist: c?.isProtagonist === true,
+  }));
+}
 for (const token of EDITORIAL_SOURCES) {
   if (typeof SOURCE_RESOLVERS[token] !== 'function') {
     throw new Error(`checkRunner: editorial source "${token}" has no fingerprint resolver — keep SOURCE_RESOLVERS in sync with EDITORIAL_SOURCES`);
@@ -143,18 +162,26 @@ export async function runEditorialChecks(seriesId, options = {}) {
   // Reverse-outline fetch is gated on the declared source (#1296) so a run with no
   // scene-segmentation check pays no extra I/O — mirrors the needsManuscript gate.
   const needsReverseOutline = enabled.some(({ check }) => checkSources(check).includes('reverseOutline'));
-  const [sections, canon, issues, outline] = await Promise.all([
+  // Editorial-arc fetch is gated on the declared source (#1295) so a run with no
+  // POV/arc check pays no extra snapshot I/O — mirrors the needsReverseOutline gate.
+  const needsEditorialArcs = enabled.some(({ check }) => checkSources(check).includes('editorialArcs'));
+  const [sections, canon, issues, outline, editorial] = await Promise.all([
     needsManuscript ? collectManuscriptSections(seriesId) : Promise.resolve([]),
     getSeriesCanon(series),
     listIssues({ seriesId }).catch(() => []),
     needsReverseOutline ? getReverseOutline(seriesId).catch(() => null) : Promise.resolve(null),
+    // Reuse the already-loaded series so the aggregate skips a redundant getSeries.
+    // (issues is fetched in this same Promise.all, so it can't be passed here —
+    // it's still in the temporal dead zone — and stays an internal fetch.)
+    needsEditorialArcs ? getSeriesEditorial(seriesId, { series }).catch(() => null) : Promise.resolve(null),
   ]);
   const manuscript = sectionsCorpus(sections);
   const reverseOutline = Array.isArray(outline?.scenes) ? outline.scenes : [];
+  const editorialArcs = projectEditorialArcs(editorial);
   // Resolve every source token once — each finding's fingerprint reads from this
   // so the editor flags it `stale` when the content that check actually read (its
   // declared `sources`) drifts (#1345, #1387).
-  const resolvedSources = resolveSources({ manuscript, canon, series, reverseOutline });
+  const resolvedSources = resolveSources({ manuscript, canon, series, reverseOutline, editorialArcs });
   const baseCtx = {
     seriesId,
     series,
@@ -162,6 +189,7 @@ export async function runEditorialChecks(seriesId, options = {}) {
     sections,
     manuscript,
     reverseOutline,
+    editorialArcs,
     canon,
     providerOverride,
     modelOverride,
@@ -305,14 +333,18 @@ export async function getReviewWithStaleness(seriesId) {
   // needsManuscript flag so it stays correct as the source vocabulary grows).
   const needsManuscript = evaluable.some((c) => checkSources(checkFor(c.checkId)).includes('manuscript'));
   const needsReverseOutline = evaluable.some((c) => checkSources(checkFor(c.checkId)).includes('reverseOutline'));
+  const needsEditorialArcs = evaluable.some((c) => checkSources(checkFor(c.checkId)).includes('editorialArcs'));
   const series = await getSeries(seriesId);
-  const [sections, canon, outline] = await Promise.all([
+  const [sections, canon, outline, editorial] = await Promise.all([
     needsManuscript ? collectManuscriptSections(seriesId) : Promise.resolve([]),
     getSeriesCanon(series),
     needsReverseOutline ? getReverseOutline(seriesId).catch(() => null) : Promise.resolve(null),
+    // Reuse the already-loaded series (issues isn't fetched on this path).
+    needsEditorialArcs ? getSeriesEditorial(seriesId, { series }).catch(() => null) : Promise.resolve(null),
   ]);
   const reverseOutline = Array.isArray(outline?.scenes) ? outline.scenes : [];
-  const resolvedSources = resolveSources({ manuscript: sectionsCorpus(sections), canon, series, reverseOutline });
+  const editorialArcs = projectEditorialArcs(editorial);
+  const resolvedSources = resolveSources({ manuscript: sectionsCorpus(sections), canon, series, reverseOutline, editorialArcs });
   return {
     ...review,
     comments: review.comments.map((c) => {
