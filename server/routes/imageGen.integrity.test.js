@@ -44,6 +44,7 @@ vi.mock('../services/imageGen/index.js', () => ({
 vi.mock('../services/settings.js', () => ({
   getSettings: vi.fn(async () => ({ imageGen: { mode: 'external' } })),
   updateSettingsWith: vi.fn(async () => {}),
+  settingsEvents: { on: () => {}, emit: () => {} },
 }));
 
 vi.mock('../services/mediaJobQueue/index.js', () => ({
