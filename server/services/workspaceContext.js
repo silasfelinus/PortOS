@@ -115,11 +115,16 @@ export async function captureLiveContext(appId) {
   const repoPath = app.repoPath || null;
   // Git reads are best-effort — a missing/non-repo path yields nulls, not a throw.
   const repo = repoPath ? await isRepo(repoPath).catch(() => false) : false;
-  const [branch, status, allTasks] = await Promise.all([
+  const [rawBranch, status, allTasks] = await Promise.all([
     repo ? getBranch(repoPath).catch(() => null) : Promise.resolve(null),
     repo ? getStatus(repoPath).catch(() => null) : Promise.resolve(null),
     getAllTasks().catch(() => ({ user: { tasks: [] }, cos: { tasks: [] } }))
   ]);
+  // `git rev-parse --abbrev-ref HEAD` returns the literal "HEAD" on a detached
+  // checkout — that's not a branch name. Normalize to null so a later detached
+  // checkout can't false-match a saved "HEAD" as branchMatches, and the UI
+  // renders it as "(detached)" rather than a phantom branch named HEAD.
+  const branch = rawBranch === 'HEAD' ? null : rawBranch;
 
   const sessions = shellSessionsForRepo(listAllSessions(), repoPath);
   const tasks = tasksForApp(allTasks, appId);
@@ -168,18 +173,23 @@ export async function getContext(appId) {
  * reconcile them against what's still live.
  */
 export async function saveContext(appId) {
-  const live = await captureLiveContext(appId);
-  if (!live) return null;
-
-  const record = {
-    appId,
-    branch: live.branch,
-    shellSessionIds: live.shellSessions.map(s => s.sessionId),
-    taskIds: live.tasks.map(t => t.id),
-    savedAt: new Date().toISOString()
-  };
-
+  // The whole capture→write runs inside the queue so a concurrent delete can't
+  // complete between this save's capture and its write and then be silently
+  // resurrected (CLAUDE.md: serialize the full read→modify→write on the shared
+  // file). Returns null (unknown app id) from inside the queue — fine, the
+  // caller still gets the resolved value.
   return queueWrite(async () => {
+    const live = await captureLiveContext(appId);
+    if (!live) return null;
+
+    const record = {
+      appId,
+      branch: live.branch,
+      shellSessionIds: live.shellSessions.map(s => s.sessionId),
+      taskIds: live.tasks.map(t => t.id),
+      savedAt: new Date().toISOString()
+    };
+
     const data = await loadContexts();
     data.contexts[appId] = record;
     await ensureDir(PATHS.data);

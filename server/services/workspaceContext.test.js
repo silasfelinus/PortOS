@@ -142,6 +142,12 @@ describe('captureLiveContext', () => {
     expect(live.branch).toBeNull();
     expect(live.dirty).toBeNull();
   });
+
+  it('normalizes a detached HEAD to null (not the literal "HEAD")', async () => {
+    mockGit = { isRepo: true, branch: 'HEAD', clean: true, files: [] };
+    const live = await wc.captureLiveContext('app-1');
+    expect(live.branch).toBeNull();
+  });
 });
 
 describe('save / get / restore / delete round-trip', () => {
