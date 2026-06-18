@@ -63,7 +63,12 @@ const SOURCE_RESOLVERS = {
   // injected `editorialArcs` is the stable projection (name/arcDirection/issueCount/
   // isProtagonist) — NOT the raw getSeriesEditorial output, which carries a
   // per-call `generatedAt` timestamp that would re-stale every finding each run.
-  editorialArcs: ({ editorialArcs }) => canonicalStringify(editorialArcs ?? null),
+  // The `complete` flag is folded in too: a prose edit that stales the analysis
+  // (without re-running it) leaves the projection byte-identical but flips
+  // completeness, and pov.justified's "absent from arcs" finding depends on that
+  // flag — so a finding must go stale when it changes, not only when the arcs do.
+  editorialArcs: ({ editorialArcs, editorialArcsComplete }) =>
+    canonicalStringify({ arcs: editorialArcs ?? null, complete: editorialArcsComplete === true }),
 };
 
 // Stable projection of the series editorial aggregate down to the arc fields a
@@ -77,6 +82,16 @@ function projectEditorialArcs(editorial) {
     issueCount: Number.isFinite(c?.issueCount) ? c.issueCount : 0,
     isProtagonist: c?.isProtagonist === true,
   }));
+}
+
+// True only when every analyzable issue has a fresh, complete analysis — the
+// signal pov.justified uses to tell "absent because arc-less" from "absent
+// because not-yet-analyzed" (#1295). Injected into ctx for the check AND folded
+// into the editorialArcs fingerprint above so a prose edit that stales coverage
+// (without changing the arc projection) still stales the POV findings.
+function editorialCoverageComplete(editorial) {
+  const cov = editorial?.coverage;
+  return !!cov && cov.withContent > 0 && cov.analyzed >= cov.withContent && (cov.stale || 0) === 0;
 }
 for (const token of EDITORIAL_SOURCES) {
   if (typeof SOURCE_RESOLVERS[token] !== 'function') {
@@ -181,17 +196,12 @@ export async function runEditorialChecks(seriesId, options = {}) {
   // Whether every analyzable issue has been analyzed and is fresh — gates the
   // pov.justified "absent from detected arcs" finding so a partially-analyzed
   // series (canceled/early-stopped batch) doesn't flag a not-yet-analyzed POV
-  // holder as arc-less (#1295). Derived, not fingerprinted: it moves in lockstep
-  // with the editorialArcs projection that already drives staleness.
-  const cov = editorial?.coverage;
-  const editorialArcsComplete = !!cov
-    && cov.withContent > 0
-    && cov.analyzed >= cov.withContent
-    && (cov.stale || 0) === 0;
+  // holder as arc-less (#1295). Folded into the editorialArcs fingerprint below.
+  const editorialArcsComplete = editorialCoverageComplete(editorial);
   // Resolve every source token once — each finding's fingerprint reads from this
   // so the editor flags it `stale` when the content that check actually read (its
   // declared `sources`) drifts (#1345, #1387).
-  const resolvedSources = resolveSources({ manuscript, canon, series, reverseOutline, editorialArcs });
+  const resolvedSources = resolveSources({ manuscript, canon, series, reverseOutline, editorialArcs, editorialArcsComplete });
   const baseCtx = {
     seriesId,
     series,
@@ -355,7 +365,8 @@ export async function getReviewWithStaleness(seriesId) {
   ]);
   const reverseOutline = Array.isArray(outline?.scenes) ? outline.scenes : [];
   const editorialArcs = projectEditorialArcs(editorial);
-  const resolvedSources = resolveSources({ manuscript: sectionsCorpus(sections), canon, series, reverseOutline, editorialArcs });
+  const editorialArcsComplete = editorialCoverageComplete(editorial);
+  const resolvedSources = resolveSources({ manuscript: sectionsCorpus(sections), canon, series, reverseOutline, editorialArcs, editorialArcsComplete });
   return {
     ...review,
     comments: review.comments.map((c) => {

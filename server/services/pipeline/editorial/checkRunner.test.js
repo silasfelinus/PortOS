@@ -375,6 +375,33 @@ describe('getReviewWithStaleness (#1345)', () => {
     expect(review.comments.find((c) => c.checkId === 'scene.component-balance').stale).toBe(false);
   });
 
+  it('stales a pov.justified finding when arc coverage flips incomplete even if the arc projection is byte-identical (#1295)', async () => {
+    // A prose edit that stales the editorial analysis (without re-running it)
+    // leaves the arc projection unchanged but flips coverage-complete. The
+    // "no detected arc" verdict depends on that flag, so the finding must go
+    // stale — folding `complete` into the editorialArcs fingerprint is what
+    // catches it (the projection alone wouldn't).
+    outlineState = { scenes: [
+      { id: 'scene-001', issueNumber: 1, heading: 'Solo A', anchorQuote: 'q1', povCharacter: 'Solo', components: { narrative: true } },
+      { id: 'scene-002', issueNumber: 1, heading: 'Solo B', anchorQuote: 'q2', povCharacter: 'Solo', components: { narrative: true } },
+    ] };
+    editorialState = {
+      characters: [{ name: 'Solo', arcDirection: 'flat', issueCount: 1, isProtagonist: false }],
+      coverage: { analyzed: 1, total: 1, withContent: 1, stale: 0, noContent: 0 },
+    };
+    await seedReviewFromRun();
+    expect(reviewState.comments.find((c) => c.checkId === 'pov.justified')).toBeTruthy();
+    // Identical arc projection, but the analysis is now stale (coverage incomplete).
+    editorialState = {
+      characters: [{ name: 'Solo', arcDirection: 'flat', issueCount: 1, isProtagonist: false }],
+      coverage: { analyzed: 1, total: 1, withContent: 1, stale: 1, noContent: 0 },
+    };
+    const review = await getReviewWithStaleness('s1');
+    expect(review.comments.find((c) => c.checkId === 'pov.justified').stale).toBe(true);
+    // A canon-only finding is unaffected by the coverage flip.
+    expect(review.comments.find((c) => c.checkId === 'naming.dissimilar-names').stale).toBe(false);
+  });
+
   it('stales a custom-check finding when its authored prompt changes, even if the manuscript is unchanged (#1387)', async () => {
     // A custom check's run logic is its prompt (user data), so a prompt edit must
     // stale its prior findings — the manuscript source alone can't catch that.
