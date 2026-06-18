@@ -25,12 +25,21 @@ carry the reader on — is **medium**.
 
 Do NOT flag:
 
-- The **final** chapter / issue of the whole story — a terminal ending is allowed
-  (and expected) to resolve. If the manuscript below clearly ends the series, leave
-  its last chapter alone.
 - A chapter that already ends on an open beat, a turn, or an unanswered question —
   that is exactly what the rule wants.
 - A deliberate quiet "breather" beat that still leaves a larger thread open.
+
+{{#finalPart}}
+- The **final** chapter / issue of the whole story — a terminal ending is allowed
+  (and expected) to resolve. This is the LAST part of the manuscript, so if the text
+  below clearly ends the series, leave its last chapter alone.
+{{/finalPart}}
+{{^finalPart}}
+**You are reading the manuscript in PARTS and have not yet seen the later parts.**
+The last chapter shown below is NOT the end of the story — do not treat it as a
+terminal ending. Judge every chapter ending here, including the last one visible,
+by the soft-landing rule.
+{{/finalPart}}
 
 {{#authoredCliffhangers}}
 ## Cliffhangers the writer has already planned

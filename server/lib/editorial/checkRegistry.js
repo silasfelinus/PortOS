@@ -2219,7 +2219,12 @@ export const EDITORIAL_CHECKS = [
         stage: ENDINGS_CLIFFHANGER_STAGE,
         category: 'pacing',
         overheadTokens: EDITORIAL_PROMPT_OVERHEAD_TOKENS + estimateTokens(authoredCliffhangers),
-        buildVars: (manuscript) => ({ manuscript, authoredCliffhangers }),
+        // `finalPart` gates the "leave the terminal chapter alone" exemption (#1298):
+        // on a chunked manuscript, only the LAST part can contain the series finale,
+        // so an earlier part must NOT treat its last visible chapter as terminal
+        // (that would false-negative a soft landing at a chunk boundary). A
+        // single-chunk run is its own final part. Mirrors the Chekhov check.
+        buildVars: (manuscript, meta) => ({ manuscript, authoredCliffhangers, finalPart: meta?.isFinal ? 'true' : '' }),
       });
     },
   },
@@ -2273,6 +2278,12 @@ export const EDITORIAL_CHECKS = [
         // to cut to — and the final chapter is allowed to resolve).
         if (idx === -1 || idx === orderedIssues.length - 1) continue;
         const nextIssue = orderedIssues[idx + 1];
+        // Only judge the cut when the IMMEDIATELY-following chapter is the next one
+        // in the outline. If issue endIssue+1 is undrafted / not yet segmented (the
+        // outline jumps to a later issue), there's no adjacent chapter to cut away
+        // to — comparing across the gap would mis-attribute the cliffhanger to a
+        // non-adjacent chapter, so skip (favor under-flagging).
+        if (nextIssue !== endIssue + 1) continue;
         const ending = lastPovScene(byIssue.get(endIssue));
         const opening = firstPovScene(byIssue.get(nextIssue));
         if (!ending || !opening) continue;
