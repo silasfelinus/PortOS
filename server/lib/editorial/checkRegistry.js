@@ -25,7 +25,7 @@
  */
 
 import { z } from 'zod';
-import { estimateTokens } from '../contextBudget.js';
+import { estimateTokens, CHARS_PER_TOKEN } from '../contextBudget.js';
 
 export const CHECK_SCOPES = Object.freeze(['series', 'issue', 'scene', 'noun']);
 export const CHECK_KINDS = Object.freeze(['deterministic', 'llm']);
@@ -229,11 +229,14 @@ const EDITORIAL_PRIOR_DIGEST_HEADER = '# Editorial findings already recorded for
   + 'continuity these earlier findings reveal (e.g. an object set up earlier, or a tense/POV '
   + 'choice established in an earlier chapter).\n\n';
 const EDITORIAL_PRIOR_DIGEST_SEPARATOR = '\n\n---\n\n';
-// Whole-digest char ceiling = fixed wrapper + capped body. Kept small enough to
-// ride inside the budgeter's safety margin rather than reserving a slice of the
-// usable budget (see runManuscriptLlmCheck).
+// Whole-digest char ceiling = fixed wrapper + capped body, so the token reserve
+// below is an exact upper bound on what gets prepended to a later chunk.
 export const EDITORIAL_PRIOR_DIGEST_CHARS =
   EDITORIAL_PRIOR_DIGEST_HEADER.length + EDITORIAL_PRIOR_DIGEST_BODY_CHARS + EDITORIAL_PRIOR_DIGEST_SEPARATOR.length;
+// Budget the planner carves out of chunks AFTER the first to make room for the
+// prepended digest, so `digest + manuscript` can't overflow the provider window
+// even on a small/local provider (the first/only chunk keeps its full budget).
+export const EDITORIAL_PRIOR_DIGEST_TOKENS = Math.ceil(EDITORIAL_PRIOR_DIGEST_CHARS / CHARS_PER_TOKEN);
 
 // One-block digest of findings already recorded for earlier chunks, prepended
 // INSIDE the next chunk's manuscript var so no prompt template changes (mirrors
@@ -298,12 +301,14 @@ async function runChunkedManuscriptCheck(ctx, { chunks, category, max, callChunk
 // provider window.
 async function runManuscriptLlmCheck(ctx, { stage, category, overheadTokens = 0, buildVars, crossChunkDigest = false }) {
   const max = ctx.config?.maxFindings ?? 12;
-  // No extra digest reserve here: the digest is only prepended to chunks AFTER
-  // the first, but the planner's usableChars budget is uniform across chunks —
-  // reserving would needlessly truncate the first/only chunk (which carries no
-  // digest). The digest body is capped (EDITORIAL_PRIOR_DIGEST_CHARS) to ride in
-  // the budgeter's safety margin instead, mirroring completenessPass.
-  const chunks = await ctx.planManuscriptChunks(stage, { overheadTokens });
+  // When this check prepends a cross-chunk digest, tell the planner to carve the
+  // digest's room out of the chunks AFTER the first (the first/only chunk carries
+  // no digest, so it keeps its full budget) — so `digest + manuscript` can't
+  // overrun the provider window even on a small/local provider.
+  const chunks = await ctx.planManuscriptChunks(stage, {
+    overheadTokens,
+    digestReserveTokens: crossChunkDigest ? EDITORIAL_PRIOR_DIGEST_TOKENS : 0,
+  });
   return runChunkedManuscriptCheck(ctx, {
     chunks,
     category,

@@ -21,6 +21,7 @@ import {
   editorialPriorFindingsDigest,
   EDITORIAL_PRIOR_DIGEST_MAX,
   EDITORIAL_PRIOR_DIGEST_CHARS,
+  EDITORIAL_PRIOR_DIGEST_TOKENS,
 } from './checkRegistry.js';
 
 const NAMING = 'naming.dissimilar-names';
@@ -595,10 +596,15 @@ describe('cross-chunk continuity digest (#1383)', () => {
   const runTwoChunks = async (checkId, ctxExtras) => {
     const seen = [];
     let overhead = null;
+    let digestReserve = null;
     await getCheck(checkId).run({
       config: { maxFindings: 12 },
       severityDefault: 'medium',
-      planManuscriptChunks: async (_stage, opts) => { overhead = opts.overheadTokens; return ['CHUNK_ONE', 'CHUNK_TWO']; },
+      planManuscriptChunks: async (_stage, opts) => {
+        overhead = opts.overheadTokens;
+        digestReserve = opts.digestReserveTokens;
+        return ['CHUNK_ONE', 'CHUNK_TWO'];
+      },
       callStagedLLM: async (_stage, vars) => {
         seen.push(vars.manuscript);
         // Only the first chunk surfaces a finding, so the digest fed to chunk two
@@ -610,11 +616,11 @@ describe('cross-chunk continuity digest (#1383)', () => {
       },
       ...ctxExtras,
     });
-    return { seen, overhead };
+    return { seen, overhead, digestReserve };
   };
 
   it('style.conformance feeds the prior-chunk digest to later chunks and reserves budget for it', async () => {
-    const { seen, overhead } = await runTwoChunks('style.conformance', {
+    const { seen, overhead, digestReserve } = await runTwoChunks('style.conformance', {
       series: { styleGuide: { tense: 'past', povPerson: 'first' } },
     });
     // First chunk is untouched (no prior findings yet).
@@ -623,10 +629,10 @@ describe('cross-chunk continuity digest (#1383)', () => {
     expect(seen[1]).toContain('EARLIER parts of this manuscript');
     expect(seen[1]).toContain('tense slip in chapter one');
     expect(seen[1].endsWith('CHUNK_TWO')).toBe(true);
-    // The style-guide expectations are budgeted as prompt overhead; the digest is
-    // NOT reserved (it rides the safety margin, so the first/only chunk keeps its
-    // full budget).
+    // The style-guide expectations are budgeted as prompt overhead, and the digest
+    // reserve is passed to the planner so it can carve room out of later chunks.
     expect(overhead).toBeGreaterThan(0);
+    expect(digestReserve).toBe(EDITORIAL_PRIOR_DIGEST_TOKENS);
   });
 
   it('objects.unmotivated-interaction feeds the prior-chunk digest to later chunks', async () => {
@@ -642,7 +648,7 @@ describe('cross-chunk continuity digest (#1383)', () => {
   });
 
   it('prose.info-dumping stays per-chunk — no digest is prepended (its problems are localized)', async () => {
-    const { seen } = await runTwoChunks(INFODUMP, {
+    const { seen, digestReserve } = await runTwoChunks(INFODUMP, {
       manuscript: 'CHUNK_ONE',
     });
     expect(seen[0]).toBe('CHUNK_ONE');
@@ -650,6 +656,8 @@ describe('cross-chunk continuity digest (#1383)', () => {
     // produced a finding.
     expect(seen[1]).toBe('CHUNK_TWO');
     expect(seen[1]).not.toContain('EARLIER parts of this manuscript');
+    // And it reserves no digest budget (so chunks keep their full size).
+    expect(digestReserve).toBe(0);
   });
 });
 
