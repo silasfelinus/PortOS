@@ -996,18 +996,26 @@ ensureSelf()
       // mirror that only spawns when HTTPS is active. See docs/PORTS.md.
       console.log(`🚀 PortOS listening on :${PORT} (${scheme})`);
       if (httpsEnabled) {
-        const selfHost = getSelfHost();
-        if (selfHost) console.log(`   ✅ https://${selfHost}:${PORT} (trusted via Tailscale)`);
-        console.log(`   🔐 https://<tailscale-ip>:${PORT} (cert warning unless using the hostname above)`);
-        initCertRenewer(httpServer);
         const localHttpPort = Number(process.env.PORTOS_HTTP_PORT) || PORTS.API_LOCAL;
+        // Lead with the URL that works from THIS machine with no cert warnings:
+        // the loopback HTTP mirror. http://localhost:${PORT} does NOT work in
+        // HTTPS mode (the :${PORT} socket speaks TLS only), so local users who
+        // type it land on a dead port — point them here instead.
+        console.log(`   👉 http://localhost:${localHttpPort} (open locally — no cert warnings)`);
+        // Only advertise the Tailscale hostname when it's actually usable. A cert
+        // provisioned while MagicDNS was down can carry a bogus host like
+        // "undefined.<tailnet>.ts.net"; printing it as "trusted" just misleads.
+        const selfHost = getSelfHost();
+        if (selfHost && !/^(undefined|null)\b/i.test(selfHost)) {
+          console.log(`   ✅ https://${selfHost}:${PORT} (remote via Tailscale, trusted)`);
+        }
+        console.log(`   🔐 https://<tailscale-ip>:${PORT} (remote via Tailscale; cert warning unless using the hostname above)`);
+        initCertRenewer(httpServer);
         if (localHttpServer) {
           io.attach(localHttpServer);
-          localHttpServer.listen(localHttpPort, '127.0.0.1', () => {
-            console.log(`   🔓 http://localhost:${localHttpPort} (loopback HTTP mirror, no cert warnings)`);
-          });
+          localHttpServer.listen(localHttpPort, '127.0.0.1');
           localHttpServer.on('error', (err) => {
-            console.warn(`⚠️  Loopback HTTP mirror on :${localHttpPort} failed: ${err.message} — HTTPS still active`);
+            console.warn(`⚠️  Loopback HTTP mirror on :${localHttpPort} failed: ${err.message} — http://localhost:${localHttpPort} won't work; use https://...:${PORT}`);
           });
         }
       } else {
