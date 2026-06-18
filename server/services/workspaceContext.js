@@ -95,7 +95,7 @@ function shellSessionsForRepo(sessions, repoPath) {
   const prefix = `${root}/`;
   return sessions.filter(s => {
     const cwd = (s.cwd || '').replace(/\/+$/, '');
-    return cwd === root || `${s.cwd || ''}`.startsWith(prefix);
+    return cwd === root || cwd.startsWith(prefix);
   });
 }
 
