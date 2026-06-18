@@ -623,6 +623,12 @@ describe('scene.component-balance — deterministic check', () => {
     expect(runScene([])).toEqual([]);
     expect(runScene([null, 'x', {}])).toEqual([]);
   });
+
+  it('does not throw on a non-string heading (peer-synced / malformed scene)', () => {
+    const findings = runScene([{ heading: 123, sequence: 0, components: { dialogue: true } }]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].location).toBe('Scene: scene 1'); // falls back past the non-string heading
+  });
 });
 
 describe('relationships.reciprocity — deterministic check', () => {

@@ -753,9 +753,15 @@ function sceneComponentMix(components) {
 }
 
 // A scene's display label for finding text/location — its heading, falling back
-// to the summary, then a sequence-based label.
-const sceneLabel = (s) =>
-  (s.heading || s.summary || `scene ${typeof s.sequence === 'number' ? s.sequence + 1 : '?'}`).trim();
+// to the summary, then a sequence-based label. Type-guarded because the reverse
+// outline rides peer sync (#1348): a hand-edited / older-peer scene could carry a
+// non-string heading, and a bare `.trim()` on it would throw and abort the check.
+const sceneLabel = (s) => {
+  const heading = typeof s?.heading === 'string' ? s.heading.trim() : '';
+  const summary = typeof s?.summary === 'string' ? s.summary.trim() : '';
+  const seq = typeof s?.sequence === 'number' ? s.sequence + 1 : '?';
+  return heading || summary || `scene ${seq}`;
+};
 
 // ---------------------------------------------------------------------------
 // Registry entries.
