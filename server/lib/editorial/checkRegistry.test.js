@@ -553,6 +553,78 @@ describe('roster.economy — deterministic check', () => {
   });
 });
 
+describe('scene.component-balance — deterministic check', () => {
+  const SCENE = 'scene.component-balance';
+  const scene = (over = {}) => ({
+    heading: 'A scene', issueNumber: 1, anchorQuote: 'q',
+    components: { narrative: false, action: false, dialogue: false }, ...over,
+  });
+  const runScene = (scenes, config = {}) =>
+    getCheck(SCENE).run({ reverseOutline: scenes, config, severityDefault: 'low' });
+
+  it('declares the reverseOutline source and scene scope', () => {
+    const c = getCheck(SCENE);
+    expect(c.scope).toBe('scene');
+    expect(c.kind).toBe('deterministic');
+    expect(c.sources).toEqual(['reverseOutline']);
+  });
+
+  it('flags a single-mode scene and names the missing components', () => {
+    const findings = runScene([
+      scene({ heading: 'Talking heads', components: { narrative: false, action: false, dialogue: true } }),
+    ]);
+    expect(findings).toHaveLength(1);
+    const f = findings[0];
+    expect(f.category).toBe('pacing');
+    expect(f.problem).toMatch(/all dialogue/);
+    expect(f.problem).toMatch(/no narrative or action/);
+    expect(f.anchorQuote).toBe('q');
+    expect(f.issueNumber).toBe(1);
+    expect(f.location).toBe('Issue 1: Talking heads');
+  });
+
+  it('passes a scene that mixes two components', () => {
+    expect(runScene([scene({ components: { narrative: true, action: false, dialogue: true } })])).toEqual([]);
+  });
+
+  it('skips unclassified scenes (no component signal) rather than false-flagging', () => {
+    const findings = runScene([
+      scene({ components: { narrative: false, action: false, dialogue: false } }),
+      scene({ components: {} }),
+      scene({ components: undefined }),
+    ]);
+    expect(findings).toEqual([]);
+  });
+
+  it('minComponents=3 flags a two-component scene and names the one gap', () => {
+    const findings = runScene(
+      [scene({ heading: 'No voice', components: { narrative: true, action: true, dialogue: false } })],
+      { minComponents: 3 },
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0].problem).toMatch(/narrative and action but no dialogue/);
+  });
+
+  it('minComponents=1 disables the check', () => {
+    const findings = runScene(
+      [scene({ components: { narrative: false, action: false, dialogue: true } })],
+      { minComponents: 1 },
+    );
+    expect(findings).toEqual([]);
+  });
+
+  it('falls back to a Scene: label when issueNumber is absent', () => {
+    const findings = runScene([scene({ heading: 'Loose scene', issueNumber: null, components: { narrative: true } })]);
+    expect(findings[0].location).toBe('Scene: Loose scene');
+    expect(findings[0].issueNumber).toBeNull();
+  });
+
+  it('tolerates an empty / malformed outline', () => {
+    expect(runScene([])).toEqual([]);
+    expect(runScene([null, 'x', {}])).toEqual([]);
+  });
+});
+
 describe('relationships.reciprocity — deterministic check', () => {
   const run = (characters) =>
     getCheck('relationships.reciprocity').run({ canon: { characters }, config: {}, severityDefault: 'low' });
