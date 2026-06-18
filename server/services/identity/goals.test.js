@@ -204,6 +204,26 @@ describe('proposal validation (raw LLM output)', () => {
     ]);
     await expect(decomposeGoal('goal-1', {})).rejects.toMatchObject({ status: 502, code: 'AI_PARSE_ERROR' });
   });
+
+  it('stamps a missing order from the array index so the proposal stays accept-ready', async () => {
+    // No `order` keys → the array-level transform fills them from position.
+    h.aiText = JSON.stringify([
+      { title: 'First', tasks: [] },
+      { title: 'Second', tasks: [] }
+    ]);
+    const proposal = await decomposeGoal('goal-1', {});
+    expect(proposal.map(m => m.order)).toEqual([0, 1]);
+  });
+
+  it('keeps the intentional looseness — a free-form targetDate survives generation', async () => {
+    // The proposal schema is deliberately looser than the strict accept schema:
+    // a non-calendar date the user fixes in review must NOT be rejected here.
+    h.aiText = JSON.stringify([
+      { title: 'Outline', targetDate: 'next quarter', order: 0, tasks: [] }
+    ]);
+    const proposal = await decomposeGoal('goal-1', {});
+    expect(proposal[0].targetDate).toBe('next quarter');
+  });
 });
 
 describe('re-plan guard — orphaned scheduledEvents', () => {

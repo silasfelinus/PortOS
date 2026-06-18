@@ -140,9 +140,11 @@ export const acceptDecompositionInputSchema = z.object({
 //
 // Intentionally looser than the accept schemas: `targetDate` is a free string
 // here (the LLM commonly emits a near-miss date the user fixes in review; the
-// strict validCalendarDate check still runs at accept), `order` is optional (the
-// service fills it from the array index), and unknown keys are stripped. The
-// strictness is on structural shape — title present, tasks well-formed.
+// strict validCalendarDate check still runs at accept) and unknown keys are
+// stripped. The strictness is on structural shape — title present, tasks
+// well-formed. `order` is optional on each element but the array-level transform
+// below stamps it from the index when absent, so the proposal the review UI
+// hands back always satisfies the accept route's required `order` field.
 export const goalPhaseProposalSchema = z.object({
   title: z.string().min(1).max(500),
   description: z.string().max(5000).optional().default(''),
@@ -150,13 +152,17 @@ export const goalPhaseProposalSchema = z.object({
   order: z.number().int().min(0).optional()
 });
 
-export const goalPhasesProposalSchema = z.array(goalPhaseProposalSchema).min(1).max(50);
+// Fill a missing `order` from the array index so generation output is always
+// accept-ready (the accept route requires `order`); an LLM-supplied order wins.
+const stampOrder = (arr) => arr.map((el, i) => ({ ...el, order: el.order ?? i }));
+
+export const goalPhasesProposalSchema = z.array(goalPhaseProposalSchema).min(1).max(50).transform(stampOrder);
 
 export const goalDecompositionMilestoneProposalSchema = goalPhaseProposalSchema.extend({
   tasks: z.array(decomposedTaskSchema).max(50).optional().default([])
 });
 
-export const goalDecompositionProposalSchema = z.array(goalDecompositionMilestoneProposalSchema).min(1).max(50);
+export const goalDecompositionProposalSchema = z.array(goalDecompositionMilestoneProposalSchema).min(1).max(50).transform(stampOrder);
 
 // --- Goal Progress Log Schemas ---
 
