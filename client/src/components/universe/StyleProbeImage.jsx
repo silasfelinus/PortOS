@@ -83,8 +83,12 @@ export default function StyleProbeImage({ universe, onUniverseChange, canRender 
     // The probe job is async; only persist when the draft still equals the saved
     // record AND the live style matches what the probe was queued against — else
     // the image would pin to a record built from different influences (the very
-    // mismatch the render-time gate exists to prevent).
-    if (!shouldPersistProbe({ styleDirty, capturedKey: probeStyleKeysRef.current.get(probeScope) ?? null, currentKey: probeStyleKey(universe) })) {
+    // mismatch the render-time gate exists to prevent). The captured key has
+    // served its drift-check purpose now the job completed — drop it so the Map
+    // doesn't retain one entry per visited universe for the mounted lifetime.
+    const capturedKey = probeStyleKeysRef.current.get(probeScope) ?? null;
+    probeStyleKeysRef.current.delete(probeScope);
+    if (!shouldPersistProbe({ styleDirty, capturedKey, currentKey: probeStyleKey(universe) })) {
       toast.error('Style changed while the base style rendered — re-run the probe');
       return;
     }
@@ -111,6 +115,10 @@ export default function StyleProbeImage({ universe, onUniverseChange, canRender 
     // Scope the single-target render per universe so this component can stay
     // mounted across a universe switch (no `key` remount) and still read the
     // in-flight job / resume completion relative to the displayed universe.
+    // Invariant this relies on: completion is delivered only for the DISPLAYED
+    // job — `EntryThumbSlot` watches `inFlightJobId={jobId}`, so `onComplete`
+    // always runs against the displayed universe's closure. Keep that scoping if
+    // EntryThumbSlot's subscription ever changes.
     scopeId: universe?.id,
   });
 
