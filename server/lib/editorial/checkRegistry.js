@@ -479,7 +479,13 @@ async function runChunkedManuscriptCheck(ctx, { chunks, category, max, callChunk
       // coverage and the findings digest both win over the setup digest if budget is tight.
       if (setup && setup.length <= usableChars - text.length) text = `${setup}${text}`;
     }
-    const content = await callChunk(text);
+    // `isFinal` lets a check distinguish the last part of a chunked manuscript
+    // from earlier ones (#1299): a whole-corpus judgment like "this setup is
+    // never paid off" can only be made once the final part is in view, so the
+    // Chekhov check defers its "planted, never fired" findings to it. A
+    // single-chunk run is its own final part, so the common (provider-fits-the-
+    // book) case judges against the whole text. Existing checks ignore the arg.
+    const content = await callChunk(text, { isFinal: i === chunks.length - 1 });
     for (const f of mapLlmFindings(content?.findings, {
       severityDefault: ctx.severityDefault,
       category,
@@ -510,8 +516,10 @@ async function runChunkedManuscriptCheck(ctx, { chunks, category, max, callChunk
 // Shared body for a manuscript-consuming LLM check. Plans the manuscript into
 // provider-sized chunks for `stage` (via the runner-injected
 // `ctx.planManuscriptChunks`), runs the model on each chunk, and merges the
-// findings first-wins (capped at the check's `maxFindings`). `buildVars(chunk)`
-// returns the stage vars — only the manuscript var changes per chunk. These
+// findings first-wins (capped at the check's `maxFindings`). `buildVars(chunk, meta)`
+// returns the stage vars — only the manuscript var changes per chunk; `meta.isFinal`
+// is true on the last (or only) chunk so a check can gate whole-corpus judgments to
+// it (the Chekhov "planted, never fired" pass). Existing checks ignore `meta`. These
 // checks are all manuscript-scoped, so findings keep a model-supplied issue
 // number (`withIssueNumber: true`).
 //
@@ -546,8 +554,8 @@ async function runManuscriptLlmCheck(ctx, { stage, category, overheadTokens = 0,
     max,
     crossChunkDigest,
     summarizeChunk,
-    callChunk: async (manuscript) => {
-      const { content } = await ctx.callStagedLLM(stage, buildVars(manuscript), { returnsJson: true, source: stage });
+    callChunk: async (manuscript, meta) => {
+      const { content } = await ctx.callStagedLLM(stage, buildVars(manuscript, meta), { returnsJson: true, source: stage });
       return content;
     },
   });
@@ -1752,7 +1760,12 @@ export const EDITORIAL_CHECKS = [
         stage: CHEKHOV_STAGE,
         category: 'continuity',
         overheadTokens: EDITORIAL_PROMPT_OVERHEAD_TOKENS + estimateTokens(authoredSetups),
-        buildVars: (manuscript) => ({ manuscript, authoredSetups }),
+        // `finalPart` gates the whole-corpus "planted, never fired" judgment to the
+        // last part of a chunked manuscript (#1299) — an earlier part can't know a
+        // setup pays off later, so it would false-flag. A single-chunk run is its own
+        // final part. "fired, never planted" stays enabled on every part (the carried
+        // setup digest tells a later part what was already planted).
+        buildVars: (manuscript, meta) => ({ manuscript, authoredSetups, finalPart: meta?.isFinal ? 'true' : '' }),
         // A setup planted in chapter 2 and paid off (or NOT) in chapter 9 spans
         // chunks — the cross-chunk digest keeps prior findings in view so a later
         // chunk doesn't re-flag, and the clean-setup digest rolls forward which

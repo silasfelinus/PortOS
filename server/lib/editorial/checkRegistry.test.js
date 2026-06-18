@@ -390,6 +390,26 @@ describe('chekhov.setups-payoffs — LLM check (#1299)', () => {
     await getCheck(CHEKHOV).run(ctx);
     expect(seenVars.authoredSetups).toBe('');
   });
+
+  it('marks a single-chunk run as the final part so whole-corpus "never fired" judgments are enabled', async () => {
+    let seenVars = null;
+    const ctx = wholeCtx({
+      callStagedLLM: async (_stage, vars) => { seenVars = vars; return { content: { findings: [] } }; },
+    });
+    await getCheck(CHEKHOV).run(ctx);
+    expect(seenVars.finalPart).toBe('true');
+  });
+
+  it('flags only the LAST part as final across a chunked manuscript (#1299)', async () => {
+    const finals = [];
+    const ctx = wholeCtx({
+      planManuscriptChunks: async () => ['# Issue 1\n\npart one', '# Issue 2\n\npart two', '# Issue 3\n\npart three'],
+      callStagedLLM: async (_stage, vars) => { finals.push(vars.finalPart); return { content: { findings: [] } }; },
+    });
+    await getCheck(CHEKHOV).run(ctx);
+    // Earlier parts can't know a setup pays off later → not final; only the last is.
+    expect(finals).toEqual(['', '', 'true']);
+  });
 });
 
 describe('authoredSetupPayoffSummary (#1299)', () => {

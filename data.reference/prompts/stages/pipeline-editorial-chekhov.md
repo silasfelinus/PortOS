@@ -22,15 +22,33 @@ the threat lands, the skill is used at a decisive moment.
 
 ## What to flag
 
+Two failure modes:
+
+- **Fired, never planted** — "the antidote appears in Issue 7 with no prior
+  setup"; "she suddenly picks a lock she was never shown able to pick." A payoff
+  that lands unearned because nothing set it up. Judge this in **every** part:
+  the digest of setups established in earlier parts (above, when present) tells
+  you what was already planted, so a payoff whose setup appears nowhere — not in
+  this part and not in that digest — is unearned.
 - **Planted, never fired** — "the locked drawer introduced in Issue 2 is never
   opened"; "Issue 1 makes a point of Mara's fear of water, but she never faces
   it." A setup the reader is primed to expect a payoff for, that the manuscript
-  drops.
-- **Fired, never planted** — "the antidote appears in Issue 7 with no prior
-  setup"; "she suddenly picks a lock she was never shown able to pick." A payoff
-  that lands unearned because nothing set it up.
-- **Secret never spilled / fear never confronted / promise never resolved** —
-  specific sub-cases of *planted, never fired* worth naming as such.
+  drops. Sub-cases worth naming as such: **secret never spilled**, **fear never
+  confronted**, **promise never resolved**.
+
+{{#finalPart}}
+This is the **final part** of the manuscript, so you can now judge *planted,
+never fired*: read the setups established in earlier parts (the digest above,
+when present) together with this part, and report any planted element you can
+confirm is **never paid off anywhere**.
+{{/finalPart}}
+{{^finalPart}}
+**You are reading the manuscript in PARTS and have not yet seen the later
+parts.** A setup introduced here may be paid off in a part you have not seen
+yet — so do **NOT** report *planted, never fired* in this part. Report only
+*fired, never planted* here. The setups you see in this part are carried forward
+and judged for payoff once the final part is in view.
+{{/finalPart}}
 
 Do NOT flag: a deliberately unresolved thread the story clearly intends to carry
 into a later installment; incidental scenery that is plainly not presented as
