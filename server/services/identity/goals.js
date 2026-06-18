@@ -2,7 +2,11 @@ import { v4 as uuidv4 } from '../../lib/uuid.js';
 import { ServerError } from '../../lib/errorHandler.js';
 import { getActivities } from '../meatspaceCalendar.js';
 import { callProviderAISimple, parseLLMJSON } from '../../lib/aiProvider.js';
-import { goalTypeEnum } from '../../lib/identityValidation.js';
+import {
+  goalTypeEnum,
+  goalPhasesProposalSchema,
+  goalDecompositionProposalSchema
+} from '../../lib/identityValidation.js';
 import {
   GOALS_FILE,
   LONGEVITY_FILE,
@@ -569,6 +573,24 @@ export async function getGoalCalendarEvents(goalId, startDate, endDate) {
 // AI Phase Planning
 // =============================================================================
 
+// Re-planning (acceptGoalPhases / acceptGoalDecomposition) replaces
+// goal.milestones wholesale, which would orphan any goal.scheduledEvents — each
+// references an old milestone id AND a live Google Calendar block. Refuse to
+// overwrite milestones while scheduled events exist so calendar blocks aren't
+// silently stranded; the user unschedules first (removeScheduledEvents /
+// rescheduleTimeBlocks). A 409 reject is chosen over auto-deleting here because
+// deletion requires live Google OAuth — coupling accept to calendar auth would
+// either fail the accept (no token) or silently orphan events if swallowed.
+// Applied identically by both accept paths to keep them consistent.
+function assertNoScheduledEvents(goal) {
+  if (goal.scheduledEvents?.length) {
+    throw new ServerError(
+      'Goal has scheduled calendar events tied to the current milestones. Unschedule them before re-planning so the calendar blocks are not orphaned.',
+      { status: 409, code: 'GOAL_HAS_SCHEDULED_EVENTS' }
+    );
+  }
+}
+
 export async function generateGoalPhases(goalId, { providerId, model } = {}) {
   const { getActiveProvider, getProviderById } = await import('../providers.js');
   const goals = await loadJSON(GOALS_FILE, DEFAULT_GOALS);
@@ -609,16 +631,21 @@ Respond with a JSON array only (no markdown fences, no explanation). Each elemen
   } catch (e) {
     throw new ServerError(`AI returned invalid phase data: ${e.message}`, { status: 502, code: 'AI_PARSE_ERROR' });
   }
-  if (!Array.isArray(parsed)) throw new ServerError('AI returned invalid phase data', { status: 502, code: 'AI_PARSE_ERROR' });
+  const validated = goalPhasesProposalSchema.safeParse(parsed);
+  if (!validated.success) {
+    const detail = validated.error.issues[0]?.message || 'shape mismatch';
+    throw new ServerError(`AI returned invalid phase data: ${detail}`, { status: 502, code: 'AI_PARSE_ERROR' });
+  }
 
-  console.log(`🎯 Generated ${parsed.length} phases for goal "${goal.title}"`);
-  return parsed;
+  console.log(`🎯 Generated ${validated.data.length} phases for goal "${goal.title}"`);
+  return validated.data;
 }
 
 export async function acceptGoalPhases(goalId, phases) {
   const goals = await loadJSON(GOALS_FILE, DEFAULT_GOALS);
   const goal = goals.goals.find(g => g.id === goalId);
   if (!goal) throw new ServerError('Goal not found', { status: 404, code: 'NOT_FOUND' });
+  assertNoScheduledEvents(goal);
 
   goal.milestones = phases.map((phase, idx) => ({
     id: `ms-${uuidv4()}`,
@@ -687,11 +714,16 @@ ${goal.targetDate ? '- "targetDate": string (YYYY-MM-DD format)\n' : ''}- "order
   } catch (e) {
     throw new ServerError(`AI returned invalid decomposition data: ${e.message}`, { status: 502, code: 'AI_PARSE_ERROR' });
   }
-  if (!Array.isArray(parsed)) throw new ServerError('AI returned invalid decomposition data', { status: 502, code: 'AI_PARSE_ERROR' });
+  const validated = goalDecompositionProposalSchema.safeParse(parsed);
+  if (!validated.success) {
+    const detail = validated.error.issues[0]?.message || 'shape mismatch';
+    throw new ServerError(`AI returned invalid decomposition data: ${detail}`, { status: 502, code: 'AI_PARSE_ERROR' });
+  }
 
-  const taskCount = parsed.reduce((sum, ms) => sum + (Array.isArray(ms?.tasks) ? ms.tasks.length : 0), 0);
-  console.log(`🧩 Decomposed goal "${goal.title}" into ${parsed.length} milestones / ${taskCount} tasks`);
-  return parsed;
+  const milestones = validated.data;
+  const taskCount = milestones.reduce((sum, ms) => sum + ms.tasks.length, 0);
+  console.log(`🧩 Decomposed goal "${goal.title}" into ${milestones.length} milestones / ${taskCount} tasks`);
+  return milestones;
 }
 
 // Persists a reviewed decomposition proposal, normalizing each milestone's
@@ -701,6 +733,7 @@ export async function acceptGoalDecomposition(goalId, milestones) {
   const goals = await loadJSON(GOALS_FILE, DEFAULT_GOALS);
   const goal = goals.goals.find(g => g.id === goalId);
   if (!goal) throw new ServerError('Goal not found', { status: 404, code: 'NOT_FOUND' });
+  assertNoScheduledEvents(goal);
 
   const now = new Date().toISOString();
   goal.milestones = milestones.map((ms, idx) => ({

@@ -24,8 +24,8 @@ vi.mock('../../lib/aiProvider.js', async (importOriginal) => {
 });
 
 const {
-  computeGoalVelocity, getGoals, decomposeGoal,
-  acceptGoalDecomposition, completeMilestoneTask
+  computeGoalVelocity, getGoals, decomposeGoal, generateGoalPhases,
+  acceptGoalPhases, acceptGoalDecomposition, completeMilestoneTask
 } = await import('./goals.js');
 
 describe('computeGoalVelocity', () => {
@@ -154,5 +154,114 @@ describe('goal decomposition', () => {
     h.goalsData.goals[0].milestones = [{ id: 'ms-legacy', title: 'Old', completedAt: null }];
     const data = await getGoals();
     expect(data.goals[0].milestones[0].tasks).toEqual([]);
+  });
+});
+
+describe('proposal validation (raw LLM output)', () => {
+  beforeEach(() => {
+    h.goalsData = {
+      goals: [{
+        id: 'goal-1', title: 'Write a novel', description: 'A fantasy epic',
+        targetDate: '2027-01-01', milestones: []
+      }],
+      birthDate: null
+    };
+    h.aiText = '';
+  });
+
+  it('generateGoalPhases coerces/strips and returns a clean proposal', async () => {
+    h.aiText = JSON.stringify([
+      { title: 'Phase 1', description: 'Start', targetDate: '2026-09-01', order: 0, junk: 'x' }
+    ]);
+    const phases = await generateGoalPhases('goal-1', {});
+    expect(phases).toHaveLength(1);
+    expect(phases[0].title).toBe('Phase 1');
+    expect(phases[0].junk).toBeUndefined(); // unknown keys stripped
+  });
+
+  it('generateGoalPhases throws AI_PARSE_ERROR when an element is missing its title', async () => {
+    h.aiText = JSON.stringify([{ description: 'no title', targetDate: '2026-09-01', order: 0 }]);
+    await expect(generateGoalPhases('goal-1', {})).rejects.toMatchObject({ status: 502, code: 'AI_PARSE_ERROR' });
+  });
+
+  it('generateGoalPhases throws AI_PARSE_ERROR on an empty array', async () => {
+    h.aiText = JSON.stringify([]);
+    await expect(generateGoalPhases('goal-1', {})).rejects.toMatchObject({ code: 'AI_PARSE_ERROR' });
+  });
+
+  it('decomposeGoal coerces task priority default and strips unknown milestone keys', async () => {
+    h.aiText = JSON.stringify([
+      { title: 'Outline', order: 0, extra: 'drop me', tasks: [{ title: 'Beat sheet' }] }
+    ]);
+    const proposal = await decomposeGoal('goal-1', {});
+    expect(proposal[0].extra).toBeUndefined();
+    expect(proposal[0].tasks[0].priority).toBe('medium'); // coerced default
+  });
+
+  it('decomposeGoal throws AI_PARSE_ERROR when a task has a non-string title', async () => {
+    h.aiText = JSON.stringify([
+      { title: 'Outline', order: 0, tasks: [{ title: 42 }] }
+    ]);
+    await expect(decomposeGoal('goal-1', {})).rejects.toMatchObject({ status: 502, code: 'AI_PARSE_ERROR' });
+  });
+
+  it('stamps a missing order from the array index so the proposal stays accept-ready', async () => {
+    // No `order` keys → the array-level transform fills them from position.
+    h.aiText = JSON.stringify([
+      { title: 'First', tasks: [] },
+      { title: 'Second', tasks: [] }
+    ]);
+    const proposal = await decomposeGoal('goal-1', {});
+    expect(proposal.map(m => m.order)).toEqual([0, 1]);
+  });
+
+  it('keeps the intentional looseness — a free-form targetDate survives generation', async () => {
+    // The proposal schema is deliberately looser than the strict accept schema:
+    // a non-calendar date the user fixes in review must NOT be rejected here.
+    h.aiText = JSON.stringify([
+      { title: 'Outline', targetDate: 'next quarter', order: 0, tasks: [] }
+    ]);
+    const proposal = await decomposeGoal('goal-1', {});
+    expect(proposal[0].targetDate).toBe('next quarter');
+  });
+});
+
+describe('re-plan guard — orphaned scheduledEvents', () => {
+  beforeEach(() => {
+    h.goalsData = {
+      goals: [{
+        id: 'goal-1', title: 'Write a novel', description: 'A fantasy epic',
+        targetDate: '2027-01-01', milestones: [{ id: 'ms-old', title: 'Old', order: 0, tasks: [] }]
+      }],
+      birthDate: null
+    };
+    h.aiText = '';
+  });
+
+  it('acceptGoalPhases rejects with 409 GOAL_HAS_SCHEDULED_EVENTS when calendar blocks exist', async () => {
+    h.goalsData.goals[0].scheduledEvents = [{ id: 'sched-1', googleEventId: 'g1', milestoneId: 'ms-old' }];
+    await expect(acceptGoalPhases('goal-1', [{ title: 'New', targetDate: '2026-09-01', order: 0 }]))
+      .rejects.toMatchObject({ status: 409, code: 'GOAL_HAS_SCHEDULED_EVENTS' });
+    // Milestones untouched — the wholesale replace never ran.
+    expect(h.goalsData.goals[0].milestones[0].id).toBe('ms-old');
+  });
+
+  it('acceptGoalDecomposition rejects with 409 GOAL_HAS_SCHEDULED_EVENTS when calendar blocks exist', async () => {
+    h.goalsData.goals[0].scheduledEvents = [{ id: 'sched-1', googleEventId: 'g1', milestoneId: 'ms-old' }];
+    await expect(acceptGoalDecomposition('goal-1', [{ title: 'New', order: 0, tasks: [] }]))
+      .rejects.toMatchObject({ status: 409, code: 'GOAL_HAS_SCHEDULED_EVENTS' });
+    expect(h.goalsData.goals[0].milestones[0].id).toBe('ms-old');
+  });
+
+  it('accept paths proceed when scheduledEvents is empty or absent', async () => {
+    // empty array
+    h.goalsData.goals[0].scheduledEvents = [];
+    const g1 = await acceptGoalPhases('goal-1', [{ title: 'Fresh', targetDate: '2026-09-01', order: 0 }]);
+    expect(g1.milestones[0].title).toBe('Fresh');
+
+    // absent entirely
+    delete h.goalsData.goals[0].scheduledEvents;
+    const g2 = await acceptGoalDecomposition('goal-1', [{ title: 'Fresh decomp', order: 0, tasks: [] }]);
+    expect(g2.milestones[0].title).toBe('Fresh decomp');
   });
 });
