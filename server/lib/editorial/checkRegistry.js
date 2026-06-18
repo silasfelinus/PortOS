@@ -1223,6 +1223,14 @@ export const EDITORIAL_CHECKS = [
         arcs.map((a) => [normalizeName(a?.name), a]).filter(([k]) => k)
       );
       const haveArcModel = arcByName.size > 0;
+      // Whether every analyzable issue has been analyzed and is fresh (set by the
+      // runner from the editorial-analysis coverage). It gates only the
+      // *absent-from-arcs* finding: under partial coverage a POV holder can be
+      // missing from `arcByName` simply because their issue was never analyzed
+      // (a canceled/early-stopped batch), NOT because they lack an arc — flagging
+      // that absence would be a false positive. A character who IS present but
+      // reads flat was definitively analyzed, so that finding stands regardless.
+      const arcsComplete = ctx.editorialArcsComplete === true;
 
       const findings = [];
       const flag = ({ severity, location, problem, suggestion, anchorQuote = '', issueNumber = null }) =>
@@ -1236,11 +1244,15 @@ export const EDITORIAL_CHECKS = [
         const anchorQuote = typeof first?.anchorQuote === 'string' ? first.anchorQuote : '';
 
         // 1) Unjustified POV — narrates a viewpoint but has no detected arc. Only
-        //    when an arc model exists to judge against (else we can't tell).
+        //    when an arc model exists to judge against (else we can't tell). The
+        //    absent-from-arcs sub-case additionally requires complete coverage so
+        //    a not-yet-analyzed POV holder isn't mistaken for an arc-less one.
         if (flagUnjustified && haveArcModel) {
           const arc = arcByName.get(holder.key) || null;
-          const hasArc = !!arc && typeof arc.arcDirection === 'string' && arc.arcDirection !== 'flat';
-          if (!hasArc) {
+          const arcIsFlat = !arc || typeof arc.arcDirection !== 'string' || arc.arcDirection === 'flat';
+          // A present-but-flat character was definitively analyzed → real "no arc".
+          // An absent character is only "no arc" once coverage is complete.
+          if (arcIsFlat && (arc || arcsComplete)) {
             flag({
               severity: ctx.severityDefault,
               location: where,

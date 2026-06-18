@@ -712,8 +712,14 @@ describe('pov.justified — deterministic check', () => {
   const scene = (pov, over = {}) => ({
     heading: `${pov || 'no'}-pov scene`, issueNumber: 1, anchorQuote: 'q', povCharacter: pov, ...over,
   });
-  const runPov = (scenes, { config = {}, arcs = [] } = {}) =>
-    getCheck(POV).run({ reverseOutline: scenes, editorialArcs: arcs, config, severityDefault: 'low' });
+  const runPov = (scenes, { config = {}, arcs = [], arcsComplete = true } = {}) =>
+    getCheck(POV).run({
+      reverseOutline: scenes,
+      editorialArcs: arcs,
+      editorialArcsComplete: arcsComplete,
+      config,
+      severityDefault: 'low',
+    });
 
   it('declares both reverseOutline and editorialArcs sources', () => {
     const c = getCheck(POV);
@@ -748,6 +754,29 @@ describe('pov.justified — deterministic check', () => {
     const findings = runPov(
       [scene('Ghost'), scene('Ghost')],
       { config: { driveByMaxScenes: 0 }, arcs: [{ name: 'Aria', arcDirection: 'rising', issueCount: 2 }] },
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0].problem).toMatch(/not present in the detected arcs/);
+  });
+
+  it('under partial coverage, suppresses the absent-from-arcs finding but keeps present-but-flat', () => {
+    // Arc analysis only partially complete: Flat was analyzed (reads flat), Ghost's
+    // issue was never analyzed (absent). Absent ≠ no-arc here, so Ghost must NOT be
+    // flagged unjustified; Flat (definitively analyzed) still is.
+    const findings = runPov(
+      [scene('Flat'), scene('Flat'), scene('Ghost'), scene('Ghost')],
+      { config: { driveByMaxScenes: 0 }, arcs: [{ name: 'Flat', arcDirection: 'flat', issueCount: 2 }], arcsComplete: false },
+    );
+    const unjustified = findings.filter((f) => /no detected character arc/.test(f.problem));
+    expect(unjustified).toHaveLength(1);
+    expect(unjustified[0].problem).toMatch(/"Flat"/);
+    expect(findings.some((f) => /"Ghost"/.test(f.problem))).toBe(false);
+  });
+
+  it('once coverage is complete, the same absent POV holder IS flagged', () => {
+    const findings = runPov(
+      [scene('Ghost'), scene('Ghost')],
+      { config: { driveByMaxScenes: 0 }, arcs: [{ name: 'Flat', arcDirection: 'flat', issueCount: 2 }], arcsComplete: true },
     );
     expect(findings).toHaveLength(1);
     expect(findings[0].problem).toMatch(/not present in the detected arcs/);

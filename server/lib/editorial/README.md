@@ -66,7 +66,10 @@ inject `ctx.reverseOutline` (the scenes array). `editorialArcs` (#1295) makes th
 runner fetch the series editorial aggregate and inject `ctx.editorialArcs` (the
 detected per-character `{ name, arcDirection, issueCount, isProtagonist }`
 projection — the graceful-degradation fallback for the dedicated arc model until
-`#arc-transitions` lands). When a new check reads a
+`#arc-transitions` lands) plus a derived `ctx.editorialArcsComplete` boolean (true
+only when every analyzable issue is analyzed and fresh), so a check can tell
+"absent because arc-less" from "absent because not-yet-analyzed" under a partial
+coverage batch. When a new check reads a
 `ctx.series` field (or another artifact) that isn't yet a token, add the token to
 `EDITORIAL_SOURCES` and a matching resolver in the runner's `SOURCE_RESOLVERS`.
 

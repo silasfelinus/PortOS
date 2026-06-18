@@ -178,6 +178,16 @@ export async function runEditorialChecks(seriesId, options = {}) {
   const manuscript = sectionsCorpus(sections);
   const reverseOutline = Array.isArray(outline?.scenes) ? outline.scenes : [];
   const editorialArcs = projectEditorialArcs(editorial);
+  // Whether every analyzable issue has been analyzed and is fresh — gates the
+  // pov.justified "absent from detected arcs" finding so a partially-analyzed
+  // series (canceled/early-stopped batch) doesn't flag a not-yet-analyzed POV
+  // holder as arc-less (#1295). Derived, not fingerprinted: it moves in lockstep
+  // with the editorialArcs projection that already drives staleness.
+  const cov = editorial?.coverage;
+  const editorialArcsComplete = !!cov
+    && cov.withContent > 0
+    && cov.analyzed >= cov.withContent
+    && (cov.stale || 0) === 0;
   // Resolve every source token once — each finding's fingerprint reads from this
   // so the editor flags it `stale` when the content that check actually read (its
   // declared `sources`) drifts (#1345, #1387).
@@ -190,6 +200,7 @@ export async function runEditorialChecks(seriesId, options = {}) {
     manuscript,
     reverseOutline,
     editorialArcs,
+    editorialArcsComplete,
     canon,
     providerOverride,
     modelOverride,
