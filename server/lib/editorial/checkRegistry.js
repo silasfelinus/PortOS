@@ -1213,29 +1213,22 @@ export const EDITORIAL_CHECKS = [
       }
       if (holders.size === 0) return [];
 
-      // Detected arc directions (the #arc-transitions fallback). Empty when neither
-      // the dedicated arc model nor the editorial analysis has run — in that case we
-      // can't tell a justified POV from an unjustified one, so the no-arc check stays
-      // silent (degrade gracefully, no false positives). The structural drive-by
-      // check below reads only the outline, so it still runs.
+      // Detected per-character arc directions (the #arc-transitions fallback),
+      // keyed by normalized name for the holder lookup below. Trustworthiness is
+      // governed by coverage completeness (canJudgeArcs), not by emptiness.
       const arcs = Array.isArray(ctx.editorialArcs) ? ctx.editorialArcs : [];
       const arcByName = new Map(
         arcs.map((a) => [normalizeName(a?.name), a]).filter(([k]) => k)
       );
-      const haveArcModel = arcByName.size > 0;
-      // Whether every analyzable issue has been analyzed and is fresh (set by the
-      // runner from the editorial-analysis coverage). It gates only the
-      // *absent-from-arcs* finding: under partial coverage a POV holder can be
-      // missing from `arcByName` simply because their issue was never analyzed
-      // (a canceled/early-stopped batch), NOT because they lack an arc — flagging
-      // that absence would be a false positive. A character who IS present but
-      // reads flat was definitively analyzed, so that finding stands regardless.
-      const arcsComplete = ctx.editorialArcsComplete === true;
-      // We can judge POV justification when there are detected arcs to compare
-      // against OR when analysis is verified complete — a complete pass that
-      // detected zero arcs still means every POV holder genuinely lacks one, so
-      // an empty-but-complete model must not silently suppress the no-arc finding.
-      const canJudgeArcs = haveArcModel || arcsComplete;
+      // Only cross-reference arcs when the editorial analysis is COMPLETE and
+      // FRESH (every analyzable issue analyzed, none drifted — set by the runner
+      // from the coverage stats). A partial batch (some issues never analyzed) or
+      // a prose-staled snapshot yields unreliable arc directions: an absent holder
+      // may simply be unanalyzed, and a "flat" reading may be outdated. In either
+      // case we can't trust the cross-reference, so we fall back to the structural
+      // drive-by check alone (graceful degradation). When coverage IS complete, an
+      // empty arc set is meaningful — every POV holder genuinely lacks an arc.
+      const canJudgeArcs = ctx.editorialArcsComplete === true;
 
       const findings = [];
       const flag = ({ severity, location, problem, suggestion, anchorQuote = '', issueNumber = null }) =>
@@ -1249,15 +1242,13 @@ export const EDITORIAL_CHECKS = [
         const anchorQuote = typeof first?.anchorQuote === 'string' ? first.anchorQuote : '';
 
         // 1) Unjustified POV — narrates a viewpoint but has no detected arc. Only
-        //    when we can judge arcs at all (else we can't tell). The absent-from-
-        //    arcs sub-case additionally requires complete coverage so a not-yet-
-        //    analyzed POV holder isn't mistaken for an arc-less one.
+        //    when arcs are trustworthy (complete + fresh coverage, gated above);
+        //    a holder reads "no arc" when their detected direction is flat or they
+        //    don't appear in the (complete) arc set at all.
         if (flagUnjustified && canJudgeArcs) {
           const arc = arcByName.get(holder.key) || null;
           const arcIsFlat = !arc || typeof arc.arcDirection !== 'string' || arc.arcDirection === 'flat';
-          // A present-but-flat character was definitively analyzed → real "no arc".
-          // An absent character is only "no arc" once coverage is complete.
-          if (arcIsFlat && (arc || arcsComplete)) {
+          if (arcIsFlat) {
             flag({
               severity: ctx.severityDefault,
               location: where,
