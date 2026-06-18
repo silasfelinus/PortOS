@@ -26,7 +26,7 @@
 
 import { z } from 'zod';
 import { estimateTokens } from '../contextBudget.js';
-import { analyzeNamePair, findFirstLetterClusters } from './nameSimilarity.js';
+import { analyzeNamePair, findFirstLetterClusters, normalizeName } from './nameSimilarity.js';
 
 export const CHECK_SCOPES = Object.freeze(['series', 'issue', 'scene', 'noun']);
 export const CHECK_KINDS = Object.freeze(['deterministic', 'llm']);
@@ -745,9 +745,11 @@ export const EDITORIAL_CHECKS = [
           // distance and phonetic match are already among the counted signals).
           if (signals.length < min) continue;
           // Severity scales with how confusable the pair really is, above the
-          // check's low floor: edit distance ≤1 is a near-typo (escalate 2), a
-          // phonetic match or 4+ signals is strong (escalate 1).
-          const steps = distance <= 1 ? 2 : (phoneticMatch || signals.length >= 4 ? 1 : 0);
+          // check's low floor: a near-typo (edit distance ≤1, only when the
+          // edit-distance signal is enabled) escalates 2, a phonetic match or 4+
+          // signals is strong (escalate 1).
+          const nearTypo = signalOpts.minEditDistance > 0 && distance <= 1;
+          const steps = nearTypo ? 2 : (phoneticMatch || signals.length >= 4 ? 1 : 0);
           findings.push({
             severity: escalateSeverity(ctx.severityDefault, steps),
             category: 'naming',
@@ -765,10 +767,13 @@ export const EDITORIAL_CHECKS = [
       const ratio = cfg.maxShareFirstLetterRatio ?? 0.4;
       if (ratio > 0) {
         const primaries = tokens.filter((t) => !t.isAlias);
-        const byOwner = new Map(primaries.map((t) => [t.token, t]));
         const clusters = findFirstLetterClusters(primaries.map((t) => t.token), { minCount: 3, maxRatio: ratio });
         for (const cluster of clusters) {
-          const unlocked = cluster.names.filter((n) => !byOwner.get(n)?.locked);
+          // Derive the unlocked members from the tokens (not a name-keyed map) so
+          // two distinct characters sharing an identical name both count.
+          const unlocked = primaries
+            .filter((t) => !t.locked && normalizeName(t.token)[0] === cluster.letter)
+            .map((t) => t.token);
           const renameHint = unlocked.length
             ? `Consider renaming some of the unlocked ones (${unlocked.join(', ')}) so the cast doesn't blur together.`
             : 'All of these are locked — unlock one to rename it so the cast doesn\'t blur together.';

@@ -41,8 +41,9 @@ describe('soundex', () => {
     expect(soundex('Rupert')).toBe('R163');
     expect(soundex('Smith')).toBe('S530');
     expect(soundex('Smyth')).toBe('S530');
-    expect(soundex('Tymczak')).toBe('T522');
+    expect(soundex('Tymczak')).toBe('T522'); // vowel 'a' separates Z and K, so K is coded
     expect(soundex('Pfister')).toBe('P236'); // adjacent same-code (p/f) collapses
+    expect(soundex('Ashcraft')).toBe('A261'); // h is transparent: s/c (both 2) stay one digit
   });
   it('pads short names to four chars', () => {
     expect(soundex('Sam')).toBe('S500');

@@ -28,21 +28,25 @@ export function soundex(s) {
   const letters = normalizeName(s);
   if (!letters) return '';
   const first = letters[0];
-  // Code every letter; vowels and h/w/y are separators (undefined → no digit).
-  const codes = [...letters].map((ch) => SOUNDEX_CODES[ch]);
   let out = '';
-  // Walk from the second letter, collapsing runs of the same digit. A separator
-  // (vowel / h / w / y) breaks a run so two same-coded consonants split by a vowel
-  // are kept (per the standard algorithm). The first letter's own code is dropped
-  // but still seeds the "previous code" so an immediately-following same-coded
-  // consonant collapses into it.
-  let prev = codes[0];
+  // Walk from the second letter, collapsing runs of the same digit. Per the
+  // standard (NARA) algorithm: a vowel (or y) separates a run so two same-coded
+  // consonants split by it both emit, while h and w are TRANSPARENT — they
+  // neither emit nor break a run, so consonants separated only by h/w collapse to
+  // one digit (e.g. "Ashcraft" → A261, the s/c pair split by h stays a single 2).
+  // The first letter's own code is dropped but seeds `prev` so an immediately
+  // following same-coded consonant collapses into it.
+  let prev = SOUNDEX_CODES[first];
   for (let i = 1; i < letters.length && out.length < 3; i += 1) {
-    const code = codes[i];
-    if (code && code !== prev) out += code;
-    // Vowels/h/w/y (undefined code) reset the run so a later same digit can re-emit;
-    // a same-coded consonant run collapses (prev stays set).
-    prev = code === undefined ? undefined : code;
+    const ch = letters[i];
+    const code = SOUNDEX_CODES[ch];
+    if (code !== undefined) {
+      if (code !== prev) out += code;
+      prev = code;
+    } else if (ch !== 'h' && ch !== 'w') {
+      prev = undefined; // vowel or y — separator
+    }
+    // h / w: transparent — leave `prev` unchanged
   }
   return (first + out).padEnd(4, '0').toUpperCase();
 }
