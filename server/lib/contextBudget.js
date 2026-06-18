@@ -11,6 +11,8 @@
  * Pure / side-effect-free — unit-tested in contextBudget.test.js.
  */
 
+import { chunkRawText } from './catalogChunking.js';
+
 export const CHARS_PER_TOKEN = 4;
 export const DEFAULT_OUTPUT_RESERVE_TOKENS = 8_000;
 export const DEFAULT_SAFETY_MARGIN = 0.1;
@@ -42,18 +44,57 @@ export function usableInputTokens({
 }
 
 /**
+ * Expand one section into `{ section, tokens }` units that each fit the usable
+ * budget. A section within budget passes through unchanged. An over-budget
+ * section that follows the `${header}\n\n${body}` convention every consumer
+ * uses (its `text` is the header-prefixed `content`) is split on `body` — via
+ * the shared, lossless `chunkRawText` boundary splitter (paragraph → newline →
+ * sentence → whitespace → hard cut), with the header preserved on each piece
+ * via the retained meta fields. So downstream `sectionsCorpus(chunk.sections)`
+ * re-attaches identical issue attribution and the consumers' first-wins
+ * finding-merge still dedups across the sub-chunks. `maxChunks: Infinity`
+ * disables `chunkRawText`'s chunk-count ceiling so an arbitrarily long section
+ * is never trimmed — the whole point of this split. A section that can't be
+ * split that way (no string body, or a header that alone exceeds the budget)
+ * passes through as one over-budget unit the caller truncates, exactly as
+ * before.
+ */
+function expandSection(section, text, tokens, usableTokens, usableChars) {
+  if (tokens <= usableTokens) return [{ section, tokens }];
+  const body = section?.content;
+  if (typeof body !== 'string' || body.length === 0 || typeof text !== 'string' || !text.endsWith(body)) {
+    return [{ section, tokens }];
+  }
+  const prefix = text.slice(0, text.length - body.length); // `${header}\n\n`
+  const bodyBudgetChars = usableChars - prefix.length;
+  if (bodyBudgetChars <= 0) return [{ section, tokens }]; // header alone over budget
+  const pieces = chunkRawText(body, { maxChars: bodyBudgetChars, maxChunks: Number.POSITIVE_INFINITY });
+  if (pieces.length <= 1) return [{ section, tokens }];
+  return pieces.map((piece) => {
+    const sub = { ...section, content: piece, text: `${prefix}${piece}` };
+    return { section: sub, tokens: estimateTokens(sub.text) };
+  });
+}
+
+/**
  * Plan how to feed a multi-section manuscript to a model with a given window.
  *
  * @param sections - [{ ...meta, text }] where `text` is the section's full
- *   contribution to the corpus (header + body). Order is preserved.
+ *   contribution to the corpus (header + body). Order is preserved. A section
+ *   that also carries a string `content` (so `text === \`${header}\n\n${content}\``)
+ *   can be split when it alone overflows the window.
  * @returns
  *   { mode: 'whole',   usableTokens, usableChars, totalTokens }
  *   { mode: 'chunked', usableTokens, usableChars, totalTokens,
  *     chunks: [{ sections, tokens }] }
  *
- * A single section larger than the usable budget becomes its own (over-budget)
- * chunk — the caller truncates that chunk's text but it is never silently
- * dropped. With ≤1 section the result is always `whole` (nothing to split).
+ * When a single section is larger than the usable budget it is split into
+ * multiple header-preserving sub-chunks (on paragraph/sentence boundaries) so
+ * its tail is reviewed instead of truncated — unless it can't be split that way
+ * (no string body / a header that alone exceeds the budget), in which case it
+ * stays one over-budget unit the caller truncates, as before. A corpus that
+ * fits the window (including the empty / single-fitting-section case) is
+ * `whole`.
  */
 export function planManuscriptPass({
   contextWindow,
@@ -68,16 +109,30 @@ export function planManuscriptPass({
   const withTokens = list.map((s) => ({ section: s, tokens: estimateTokens(s?.text) }));
   const totalTokens = withTokens.reduce((n, x) => n + x.tokens, 0);
 
-  if (list.length <= 1 || totalTokens <= usableTokens) {
+  // Everything fits → one call.
+  if (totalTokens <= usableTokens) {
+    return { mode: 'whole', usableTokens, usableChars, totalTokens };
+  }
+
+  // Over budget → expand any over-budget section into header-preserving
+  // sub-sections (so an oversized single section's tail is reviewed, not
+  // truncated — #1386), then greedily first-fit order-preserving chunks.
+  const units = withTokens.flatMap(({ section, tokens }) =>
+    expandSection(section, section?.text, tokens, usableTokens, usableChars));
+
+  // A lone section that couldn't be split stays one over-budget `whole` pass —
+  // identical to the prior behavior (the caller truncates it). Only emit
+  // `chunked` when there's genuinely more than one unit to feed.
+  if (units.length <= 1) {
     return { mode: 'whole', usableTokens, usableChars, totalTokens };
   }
 
   // Greedy first-fit packing, order-preserving. Each chunk stays under the
-  // usable budget unless a single section already exceeds it (own chunk).
+  // usable budget unless a single (unsplittable) section already exceeds it.
   const chunks = [];
   let cur = [];
   let curTokens = 0;
-  for (const { section, tokens } of withTokens) {
+  for (const { section, tokens } of units) {
     if (cur.length && curTokens + tokens > usableTokens) {
       chunks.push({ sections: cur, tokens: curTokens });
       cur = [];
