@@ -818,6 +818,152 @@ describe('scene.component-balance — deterministic check', () => {
   });
 });
 
+describe('pov.justified — deterministic check', () => {
+  const POV = 'pov.justified';
+  const scene = (pov, over = {}) => ({
+    heading: `${pov || 'no'}-pov scene`, issueNumber: 1, anchorQuote: 'q', povCharacter: pov, ...over,
+  });
+  const runPov = (scenes, { config = {}, arcs = [], arcsComplete = true } = {}) =>
+    getCheck(POV).run({
+      reverseOutline: scenes,
+      editorialArcs: arcs,
+      editorialArcsComplete: arcsComplete,
+      config,
+      severityDefault: 'low',
+    });
+
+  it('declares both reverseOutline and editorialArcs sources', () => {
+    const c = getCheck(POV);
+    expect(c.scope).toBe('series');
+    expect(c.kind).toBe('deterministic');
+    expect(c.sources).toEqual(['reverseOutline', 'editorialArcs']);
+    expect(c.defaultEnabled).toBe(true);
+  });
+
+  it('gate requires at least one POV-tagged scene', () => {
+    const c = getCheck(POV);
+    expect(c.gate({ reverseOutline: [] })).toBe(false);
+    expect(c.gate({ reverseOutline: [scene('')] })).toBe(false);
+    expect(c.gate({ reverseOutline: [scene('Aria')] })).toBe(true);
+  });
+
+  it('flags a POV holder with no detected arc as unjustified (arc model present)', () => {
+    const findings = runPov(
+      [scene('Aria'), scene('Aria'), scene('Bram'), scene('Bram')],
+      { arcs: [{ name: 'Aria', arcDirection: 'rising', issueCount: 2 }, { name: 'Bram', arcDirection: 'flat', issueCount: 2 }] },
+    );
+    // Bram holds POV but his arc is flat → "POV without arc". Aria is justified (rising).
+    const unjustified = findings.filter((f) => /no detected character arc/.test(f.problem));
+    expect(unjustified).toHaveLength(1);
+    expect(unjustified[0].problem).toMatch(/"Bram"/);
+    expect(unjustified[0].category).toBe('arc');
+    expect(unjustified[0].location).toBe('Issue 1: Bram-pov scene');
+    expect(unjustified[0].anchorQuote).toBe('q');
+  });
+
+  it('flags a POV holder absent from the detected arcs entirely', () => {
+    const findings = runPov(
+      [scene('Ghost'), scene('Ghost')],
+      { config: { driveByMaxScenes: 0 }, arcs: [{ name: 'Aria', arcDirection: 'rising', issueCount: 2 }] },
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0].problem).toMatch(/not present in the detected arcs/);
+  });
+
+  it('under incomplete/stale coverage, suppresses ALL no-arc findings (arc data is unreliable)', () => {
+    // Partial or prose-staled analysis → a present "flat" reading may be outdated
+    // and an absent holder may simply be unanalyzed. Neither is trustworthy, so the
+    // no-arc check stays silent; only the structural drive-by check would run.
+    const findings = runPov(
+      [scene('Flat'), scene('Flat'), scene('Ghost'), scene('Ghost')],
+      { config: { driveByMaxScenes: 0 }, arcs: [{ name: 'Flat', arcDirection: 'flat', issueCount: 2 }], arcsComplete: false },
+    );
+    expect(findings).toEqual([]);
+  });
+
+  it('once coverage is complete, both the present-flat and absent POV holders are flagged', () => {
+    const findings = runPov(
+      [scene('Flat'), scene('Flat'), scene('Ghost'), scene('Ghost')],
+      { config: { driveByMaxScenes: 0 }, arcs: [{ name: 'Flat', arcDirection: 'flat', issueCount: 2 }], arcsComplete: true },
+    );
+    expect(findings).toHaveLength(2);
+    expect(findings.find((f) => /"Flat"/.test(f.problem)).problem).toMatch(/arc direction is flat/);
+    expect(findings.find((f) => /"Ghost"/.test(f.problem)).problem).toMatch(/not present in the detected arcs/);
+  });
+
+  it('flags a drive-by (single-scene) POV via the inverse-imbalance check', () => {
+    const findings = runPov(
+      [scene('Aria'), scene('Aria'), scene('Cameo')],
+      { arcs: [{ name: 'Aria', arcDirection: 'rising', issueCount: 2 }, { name: 'Cameo', arcDirection: 'rising', issueCount: 1 }] },
+    );
+    // Cameo has an arc (so not unjustified) but holds POV in only 1 scene → drive-by.
+    const driveBy = findings.filter((f) => /drive-by viewpoint/.test(f.problem));
+    expect(driveBy).toHaveLength(1);
+    expect(driveBy[0].problem).toMatch(/"Cameo"/);
+    expect(driveBy[0].problem).toMatch(/only 1 scene/);
+  });
+
+  it('degrades gracefully when analysis has not run: only the structural drive-by check runs', () => {
+    // No arcs AND not complete (no analysis yet) → can't tell justified from not.
+    const findings = runPov([scene('Aria'), scene('Aria'), scene('Solo')], { arcs: [], arcsComplete: false });
+    expect(findings.every((f) => !/no detected character arc/.test(f.problem))).toBe(true);
+    const driveBy = findings.filter((f) => /drive-by viewpoint/.test(f.problem));
+    expect(driveBy).toHaveLength(1);
+    expect(driveBy[0].problem).toMatch(/"Solo"/);
+  });
+
+  it('treats a complete-but-empty analysis as a usable model: every POV holder is flagged arc-less', () => {
+    // Analysis completed and detected zero characters → every POV holder genuinely
+    // has no arc, so the no-arc finding must still fire (not silently suppressed).
+    const findings = runPov(
+      [scene('Aria'), scene('Aria'), scene('Bram'), scene('Bram')],
+      { config: { driveByMaxScenes: 0 }, arcs: [], arcsComplete: true },
+    );
+    const unjustified = findings.filter((f) => /not present in the detected arcs/.test(f.problem));
+    expect(unjustified).toHaveLength(2);
+    expect(unjustified.map((f) => f.problem).join(' ')).toMatch(/"Aria".*"Bram"|"Bram".*"Aria"/s);
+  });
+
+  it('stays silent on an empty analysis that is NOT complete (can\'t tell)', () => {
+    // Zero arcs and incomplete → indistinguishable from "not analyzed yet".
+    const findings = runPov(
+      [scene('Aria'), scene('Aria')],
+      { config: { driveByMaxScenes: 0 }, arcs: [], arcsComplete: false },
+    );
+    expect(findings).toEqual([]);
+  });
+
+  it('collapses casing/spacing variants of a POV name into one holder', () => {
+    const findings = runPov(
+      [scene('Aria'), scene('  aria '), scene('ARIA')],
+      { config: { driveByMaxScenes: 0 }, arcs: [{ name: 'aria', arcDirection: 'flat', issueCount: 3 }] },
+    );
+    // One holder (3 scenes), flat arc → exactly one unjustified finding, not three.
+    expect(findings).toHaveLength(1);
+    expect(findings[0].problem).toMatch(/holds POV in 3 scenes/);
+  });
+
+  it('driveByMaxScenes=0 disables the drive-by check; flagUnjustifiedPov=false disables the arc check', () => {
+    const scenes = [scene('Solo')];
+    const arcs = [{ name: 'Solo', arcDirection: 'flat', issueCount: 1 }];
+    expect(runPov(scenes, { config: { driveByMaxScenes: 0, flagUnjustifiedPov: false }, arcs })).toEqual([]);
+  });
+
+  it('tolerates an empty / malformed outline', () => {
+    expect(runPov([])).toEqual([]);
+    expect(runPov([null, 'x', {}, scene('')])).toEqual([]);
+  });
+
+  it('falls back to a POV: label when issueNumber is absent', () => {
+    const findings = runPov(
+      [scene('Aria', { issueNumber: null })],
+      { config: { driveByMaxScenes: 1, flagUnjustifiedPov: false } },
+    );
+    expect(findings[0].location).toBe('POV: Aria');
+    expect(findings[0].issueNumber).toBeNull();
+  });
+});
+
 describe('relationships.reciprocity — deterministic check', () => {
   const run = (characters) =>
     getCheck('relationships.reciprocity').run({ canon: { characters }, config: {}, severityDefault: 'low' });

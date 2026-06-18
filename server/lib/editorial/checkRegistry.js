@@ -52,6 +52,12 @@ const SEVERITIES = CHECK_SEVERITIES;
 //                                 writer-logged hooks (questions planted) and payoffs
 //                                 (their resolutions). The Chekhov check reconciles its
 //                                 detected setups/payoffs against these authored ones.
+//   - 'editorialArcs'           — the detected per-character arc directions from the series
+//                                 editorial analysis aggregate (#1295). The runner fetches it
+//                                 (gated on this source) and injects `ctx.editorialArcs`
+//                                 (`[{ name, arcDirection, issueCount, isProtagonist }]`). This
+//                                 is the graceful-degradation fallback for the dedicated arc
+//                                 model (#arc-transitions) until that lands.
 export const EDITORIAL_SOURCES = Object.freeze([
   'manuscript',
   'canon',
@@ -59,6 +65,7 @@ export const EDITORIAL_SOURCES = Object.freeze([
   'series.arc.tickingClock',
   'series.arc.readerMap',
   'reverseOutline',
+  'editorialArcs',
 ]);
 
 // Default per-run finding cap for user-defined checks (#1346) — mirrors the
@@ -1190,6 +1197,129 @@ export const EDITORIAL_CHECKS = [
           anchorQuote: typeof s.anchorQuote === 'string' ? s.anchorQuote : '',
           issueNumber,
         });
+      }
+      return findings;
+    },
+  },
+  {
+    id: 'pov.justified',
+    sources: ['reverseOutline', 'editorialArcs'],
+    label: 'POV justification (every viewpoint earns its arc)',
+    description:
+      'Cross-references the reverse-outline POV-per-scene map against detected character arcs. Flags a POV character who narrates a viewpoint but has no arc ("POV without arc — justify or cut"), and the inverse imbalance — a drive-by POV who holds the viewpoint in only a scene or two. Falls back to the editorial analysis\'s detected arc direction until a dedicated arc model is populated, and stays silent on the no-arc check when neither is available (the structural drive-by check still runs).',
+    scope: 'series',
+    kind: 'deterministic',
+    category: 'arc',
+    severityDefault: 'low',
+    defaultEnabled: true,
+    configSchema: z.object({
+      // A POV character holding the viewpoint in this many scenes or fewer is a
+      // drive-by POV. 1 flags single-scene POVs; 0 disables the drive-by check.
+      driveByMaxScenes: z.number().int().min(0).max(20).default(1),
+      // When an arc model (detected or dedicated) is available, flag a POV
+      // character whose arc is flat (no arc). Off keeps only the drive-by check.
+      flagUnjustifiedPov: z.boolean().default(true),
+    }),
+    configFields: [
+      {
+        key: 'driveByMaxScenes',
+        label: 'Drive-by POV threshold (max scenes)',
+        type: 'number',
+        min: 0,
+        max: 20,
+        step: 1,
+        help: 'Flag a POV character who holds the viewpoint in this many scenes or fewer as a drive-by POV. 1 flags single-scene POVs; 0 disables the drive-by check.',
+      },
+      {
+        key: 'flagUnjustifiedPov',
+        label: 'Flag POV characters with no arc',
+        type: 'boolean',
+        help: 'When a character arc model is available, flag a POV character whose detected arc is flat (no arc) — "POV without arc — justify or cut". Disable to keep only the drive-by check.',
+      },
+    ],
+    // Needs a generated reverse outline with at least one POV-tagged scene to read.
+    gate: (ctx) => Array.isArray(ctx.reverseOutline)
+      && ctx.reverseOutline.some((s) => s && typeof s.povCharacter === 'string' && s.povCharacter.trim()),
+    run: (ctx) => {
+      const scenes = Array.isArray(ctx.reverseOutline) ? ctx.reverseOutline : [];
+      const driveByMax = ctx.config?.driveByMaxScenes ?? 1;
+      const flagUnjustified = ctx.config?.flagUnjustifiedPov !== false;
+
+      // POV holder → the scenes they narrate, keyed by normalized name so casing /
+      // spacing variants of the same name collapse into one holder. Preserves
+      // first-appearance order (scenes arrive sequence-ordered) for stable output.
+      const holders = new Map();
+      for (const s of scenes) {
+        if (!s || typeof s !== 'object') continue;
+        const pov = typeof s.povCharacter === 'string' ? s.povCharacter.trim() : '';
+        if (!pov) continue;
+        const key = normalizeName(pov);
+        if (!key) continue;
+        let entry = holders.get(key);
+        if (!entry) { entry = { name: pov, key, scenes: [] }; holders.set(key, entry); }
+        entry.scenes.push(s);
+      }
+      if (holders.size === 0) return [];
+
+      // Detected per-character arc directions (the #arc-transitions fallback),
+      // keyed by normalized name for the holder lookup below. Trustworthiness is
+      // governed by coverage completeness (canJudgeArcs), not by emptiness.
+      const arcs = Array.isArray(ctx.editorialArcs) ? ctx.editorialArcs : [];
+      const arcByName = new Map(
+        arcs.map((a) => [normalizeName(a?.name), a]).filter(([k]) => k)
+      );
+      // Only cross-reference arcs when the editorial analysis is COMPLETE and
+      // FRESH (every analyzable issue analyzed, none drifted — set by the runner
+      // from the coverage stats). A partial batch (some issues never analyzed) or
+      // a prose-staled snapshot yields unreliable arc directions: an absent holder
+      // may simply be unanalyzed, and a "flat" reading may be outdated. In either
+      // case we can't trust the cross-reference, so we fall back to the structural
+      // drive-by check alone (graceful degradation). When coverage IS complete, an
+      // empty arc set is meaningful — every POV holder genuinely lacks an arc.
+      const canJudgeArcs = ctx.editorialArcsComplete === true;
+
+      const findings = [];
+      const flag = ({ severity, location, problem, suggestion, anchorQuote = '', issueNumber = null }) =>
+        findings.push({ severity, category: 'arc', location, problem, suggestion, anchorQuote, issueNumber });
+
+      for (const holder of holders.values()) {
+        const sceneCount = holder.scenes.length;
+        const first = holder.scenes[0];
+        const issueNumber = Number.isInteger(first?.issueNumber) ? first.issueNumber : null;
+        const where = issueNumber != null ? `Issue ${issueNumber}: ${sceneLabel(first)}` : `POV: ${holder.name}`;
+        const anchorQuote = typeof first?.anchorQuote === 'string' ? first.anchorQuote : '';
+
+        // 1) Unjustified POV — narrates a viewpoint but has no detected arc. Only
+        //    when arcs are trustworthy (complete + fresh coverage, gated above);
+        //    a holder reads "no arc" when their detected direction is flat or they
+        //    don't appear in the (complete) arc set at all.
+        if (flagUnjustified && canJudgeArcs) {
+          const arc = arcByName.get(holder.key) || null;
+          const arcIsFlat = !arc || typeof arc.arcDirection !== 'string' || arc.arcDirection === 'flat';
+          if (arcIsFlat) {
+            flag({
+              severity: ctx.severityDefault,
+              location: where,
+              problem: `"${holder.name}" holds POV in ${sceneCount} scene${sceneCount === 1 ? '' : 's'} but has no detected character arc (${arc ? `arc direction is ${arc.arcDirection}` : 'not present in the detected arcs'}). A POV that exists only to deliver information — no arc, no stakes — should be cut or folded into another POV.`,
+              suggestion: `Give "${holder.name}" their own arc — a want, stakes, and a change across the story — or fold their viewpoint scenes into a POV character who already has one.`,
+              anchorQuote,
+              issueNumber,
+            });
+          }
+        }
+
+        // 2) Drive-by POV (inverse imbalance) — viewpoint used in only a scene or
+        //    two. Purely structural over the outline, so it runs without an arc model.
+        if (driveByMax > 0 && sceneCount <= driveByMax) {
+          flag({
+            severity: ctx.severityDefault,
+            location: where,
+            problem: `"${holder.name}" holds POV in only ${sceneCount} scene${sceneCount === 1 ? '' : 's'} — a drive-by viewpoint. A POV used once reads as a structural seam (a head-hop for a single scene), diluting the viewpoints that carry the story.`,
+            suggestion: `Route ${holder.name}'s scene${sceneCount === 1 ? '' : 's'} through an established POV character, or give them enough presence across the story that the viewpoint earns its place.`,
+            anchorQuote,
+            issueNumber,
+          });
+        }
       }
       return findings;
     },
