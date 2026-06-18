@@ -18,6 +18,7 @@
 import * as brainStorage from './brainStorage.js';
 import * as memoryBackend from './memoryBackend.js';
 import { loadBridgeMap, bridgeKey } from './brainMemoryBridge.js';
+import { getGoals } from './identity.js';
 
 const ENTITY_TYPES = ['people', 'projects', 'ideas', 'admin', 'memories'];
 
@@ -65,6 +66,40 @@ async function loadNodes() {
       });
     }
   }
+
+  // Goals (identity system): active + paused goals as graph nodes
+  const goalsData = await getGoals().catch(() => null);
+  for (const goal of goalsData?.goals ?? []) {
+    if (goal.status === 'archived' || goal.status === 'deleted') continue;
+    nodes.push({
+      id: goal.id,
+      brainType: 'goals',
+      label: goal.title || '(untitled goal)',
+      summary: goal.description || '',
+      tags: goal.tags || [],
+      importance: goal.status === 'active' ? 0.75 : 0.5,
+      status: goal.status,
+      progress: goal.progress
+    });
+  }
+
+  // Journals (Daily Log): non-empty dated entries as graph nodes
+  const journals = await brainStorage.getAll('journals').catch(() => []);
+  for (const entry of journals) {
+    if (!entry.content && !entry.segments?.length) continue;
+    const date = entry.id || entry.date;
+    if (!date) continue;
+    nodes.push({
+      id: date,
+      brainType: 'journals',
+      label: date,
+      summary: entry.content ? entry.content.slice(0, 120) : '',
+      tags: [],
+      importance: 0.4,
+      status: undefined
+    });
+  }
+
   return nodes;
 }
 
