@@ -174,7 +174,7 @@ describe('editorial check registry — config + state resolution', () => {
     const naming = rows.find((r) => r.id === NAMING);
     expect(Array.isArray(naming.configFields)).toBe(true);
     const field = naming.configFields.find((f) => f.key === 'minSharedSignals');
-    expect(field).toMatchObject({ type: 'number', min: 1, max: 5 });
+    expect(field).toMatchObject({ type: 'number', min: 1, max: 7 });
     expect(field.label).toBeTruthy();
     // Every declared config field is renderable (key + label + known type).
     for (const row of rows) {
@@ -300,6 +300,71 @@ describe('naming.dissimilar-names — deterministic check', () => {
   it('tolerates empty / nameless canon', () => {
     expect(run([])).toEqual([]);
     expect(run([{}, { name: '' }])).toEqual([]);
+  });
+
+  it('compares aliases against other characters\' names', () => {
+    const findings = run([
+      { id: 'a', name: 'Alina', aliases: ['Lina'] },
+      { id: 'b', name: 'Tina' },
+    ]);
+    // "Lina" (alias of Alina) vs "Tina" — same length, vowel pattern, ending, edit distance 1.
+    const aliasFinding = findings.find((f) => f.problem.includes('Lina') && f.problem.includes('Tina'));
+    expect(aliasFinding).toBeTruthy();
+    expect(aliasFinding.problem).toMatch(/alias of Alina/);
+  });
+
+  it('does not pair a character\'s own name with its own alias', () => {
+    const findings = run([{ id: 'a', name: 'Robert', aliases: ['Rupert'] }]);
+    // Robert/Rupert share a phonetic key + signals, but they are the SAME character.
+    expect(findings).toEqual([]);
+  });
+
+  it('steers the rename suggestion toward the unlocked character', () => {
+    const findings = run([
+      { id: 'a', name: 'Alina', locked: true },
+      { id: 'b', name: 'Alana', locked: false },
+    ]);
+    expect(findings.length).toBeGreaterThan(0);
+    expect(findings[0].suggestion).toMatch(/Rename Alana/);
+    expect(findings[0].suggestion).toMatch(/Alina is locked/);
+  });
+
+  it('notes when both confusable characters are locked', () => {
+    const findings = run([
+      { id: 'a', name: 'Alina', locked: true },
+      { id: 'b', name: 'Alana', locked: true },
+    ]);
+    expect(findings[0].suggestion).toMatch(/both .*locked/i);
+  });
+
+  it('escalates severity for near-identical (edit-distance-1) names above the low floor', () => {
+    const findings = run([{ name: 'Alina' }, { name: 'Alana' }]);
+    expect(findings[0].severity).toBe('high'); // edit distance 1 → escalate 2 ranks from low
+  });
+
+  it('flags first-letter crowding scaled by cast size (4 of 6), not a sparse 2 of 30', () => {
+    const crowded = run([
+      { name: 'Sam' }, { name: 'Sid' }, { name: 'Sky' }, { name: 'Sue' },
+      { name: 'Bree' }, { name: 'Tom' },
+    ]);
+    const cluster = crowded.find((f) => f.location.startsWith('Characters starting with'));
+    expect(cluster).toBeTruthy();
+    expect(cluster.problem).toMatch(/start with "S"/);
+    expect(cluster.severity).toBe('high'); // 4/6 ≥ 0.5
+
+    const sparse = run([
+      { name: 'Mike' }, { name: 'Mark' },
+      ...Array.from({ length: 28 }, (_, i) => ({ name: `${'abcdefghijklnopqrstuvwxyz'[i % 25]}ame${i}` })),
+    ]);
+    expect(sparse.find((f) => f.location.startsWith('Characters starting with'))).toBeFalsy();
+  });
+
+  it('disables first-letter crowding when the ratio is set to 0', () => {
+    const findings = run(
+      [{ name: 'Sam' }, { name: 'Sid' }, { name: 'Sky' }],
+      { minSharedSignals: 2, maxShareFirstLetterRatio: 0 },
+    );
+    expect(findings.find((f) => f.location.startsWith('Characters starting with'))).toBeFalsy();
   });
 });
 

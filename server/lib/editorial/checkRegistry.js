@@ -26,6 +26,12 @@
 
 import { z } from 'zod';
 import { estimateTokens } from '../contextBudget.js';
+import {
+  nameSimilaritySignals,
+  levenshtein,
+  soundex,
+  findFirstLetterClusters,
+} from './nameSimilarity.js';
 
 export const CHECK_SCOPES = Object.freeze(['series', 'issue', 'scene', 'noun']);
 export const CHECK_KINDS = Object.freeze(['deterministic', 'llm']);
@@ -87,26 +93,53 @@ export const OBJECT_BACKSTORY_STAGE = 'pipeline-editorial-object-backstory';
 export const STYLE_CONFORMANCE_STAGE = 'pipeline-editorial-style-conformance';
 
 // ---------------------------------------------------------------------------
-// Deterministic helpers for the character-name dissimilarity check.
+// Character-name dissimilarity (#1291) reads cast names + aliases and respects
+// locked entries. The pure similarity primitives live in ./nameSimilarity.js;
+// the helpers below turn the canon into the flat name list the check walks.
 // ---------------------------------------------------------------------------
 
-const letters = (s) => String(s || '').toLowerCase().replace(/[^a-z]/g, '');
-const vowelSkeleton = (s) => letters(s).replace(/[^aeiou]/g, '');
+// SEVERITIES is ordered high→…→low (index 0 = most severe). Escalate `base` up
+// by `steps` ranks, clamped at the top — a strong collision (near-identical
+// spelling, dense first-letter cluster) outranks the check's low floor.
+function escalateSeverity(base, steps) {
+  const i = SEVERITIES.indexOf(base);
+  const idx = i === -1 ? SEVERITIES.length - 1 : i;
+  return SEVERITIES[Math.max(0, idx - Math.max(0, steps))];
+}
 
-// The similarity signals two character names can share. Two names that trip
-// enough of these are easy for a reader to confuse on the page.
-function nameSimilaritySignals(a, b) {
-  const la = letters(a);
-  const lb = letters(b);
-  if (!la || !lb) return [];
-  const signals = [];
-  if (la[0] === lb[0]) signals.push('same first letter');
-  if (la.length === lb.length) signals.push('same length');
-  const vsa = vowelSkeleton(a);
-  if (vsa && vsa === vowelSkeleton(b)) signals.push('same vowel pattern');
-  if (la.length >= 3 && lb.length >= 3 && la.slice(0, 3) === lb.slice(0, 3)) signals.push('same opening');
-  if (la.endsWith(lb.slice(-2)) && la.slice(-2) === lb.slice(-2)) signals.push('same ending');
-  return signals;
+// The flat list of confusable name tokens for a cast: each character's `name`
+// plus every alias, tagged with the owning character (id-or-index), whether that
+// character is locked, and whether the token is an alias. Two tokens owned by the
+// same character never pair (a name vs. its own alias isn't a reader collision).
+function castNameTokens(ctx) {
+  const chars = Array.isArray(ctx.canon?.characters) ? ctx.canon.characters : [];
+  const tokens = [];
+  chars.forEach((c, idx) => {
+    if (!c || typeof c !== 'object') return;
+    const owner = c.id || `idx-${idx}`;
+    const locked = c.locked === true;
+    const primary = typeof c.name === 'string' ? c.name.trim() : '';
+    if (primary) tokens.push({ token: primary, owner, ownerName: primary, locked, isAlias: false });
+    const aliases = Array.isArray(c.aliases) ? c.aliases : [];
+    for (const a of aliases) {
+      const alias = typeof a === 'string' ? a.trim() : '';
+      if (alias) tokens.push({ token: alias, owner, ownerName: primary || alias, locked, isAlias: true });
+    }
+  });
+  return tokens;
+}
+
+// How to phrase the rename suggestion given which of the two characters are
+// locked — always steer the author toward renaming an UNLOCKED one (#1291).
+function renameSuggestion(a, b) {
+  const aLabel = a.isAlias ? `${a.token} (alias of ${a.ownerName})` : a.token;
+  const bLabel = b.isAlias ? `${b.token} (alias of ${b.ownerName})` : b.token;
+  if (a.locked && b.locked) {
+    return `Both ${a.ownerName} and ${b.ownerName} are locked — unlock one to rename it so readers can tell them apart.`;
+  }
+  if (a.locked) return `Rename ${b.ownerName} (${a.ownerName} is locked) so it reads less like "${aLabel}".`;
+  if (b.locked) return `Rename ${a.ownerName} (${b.ownerName} is locked) so it reads less like "${bLabel}".`;
+  return `Rename one of ${a.ownerName} / ${b.ownerName} so readers can tell them apart at a glance.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -622,15 +655,26 @@ export const EDITORIAL_CHECKS = [
     sources: ['canon'],
     label: 'Character name dissimilarity',
     description:
-      'Flags pairs of character names a reader could confuse — sharing a first letter, length, vowel pattern, opening, or ending.',
+      'Flags character names a reader could confuse — sharing a first letter, length, vowel pattern, opening, ending, near-identical spelling (edit distance) or phonetic key — plus first-letter crowding across the cast. Reads aliases and respects locked characters.',
     scope: 'series',
     kind: 'deterministic',
     category: 'naming',
     severityDefault: 'low',
     defaultEnabled: true,
     configSchema: z.object({
-      // How many similarity signals two names must share before they're flagged.
-      minSharedSignals: z.number().int().min(1).max(5).default(2),
+      // How many similarity signals two names must share before they're flagged
+      // (near-identical spelling and a phonetic match also flag on their own).
+      minSharedSignals: z.number().int().min(1).max(7).default(2),
+      // Flag name pairs within this Levenshtein edit distance regardless of the
+      // shared-signal count. 0 disables the edit-distance signal entirely.
+      minEditDistance: z.number().int().min(0).max(3).default(1),
+      // Toggle the individual signals that tend to be noisy on large casts.
+      flagSameLength: z.boolean().default(true),
+      vowelSkeletonCollision: z.boolean().default(true),
+      usePhonetic: z.boolean().default(true),
+      // Flag first-letter crowding when a single starting letter is shared by at
+      // least 3 names AND at least this fraction of the cast (0 disables).
+      maxShareFirstLetterRatio: z.number().min(0).max(1).default(0.4),
     }),
     configFields: [
       {
@@ -638,33 +682,111 @@ export const EDITORIAL_CHECKS = [
         label: 'Minimum shared signals to flag',
         type: 'number',
         min: 1,
-        max: 5,
+        max: 7,
         step: 1,
-        help: 'How many similarity signals (first letter, length, vowel pattern, opening, ending) two names must share before they are flagged.',
+        help: 'How many similarity signals (first letter, length, vowel pattern, opening, ending, near-identical spelling, phonetic key) two names must share before they are flagged.',
+      },
+      {
+        key: 'minEditDistance',
+        label: 'Flag within edit distance',
+        type: 'number',
+        min: 0,
+        max: 3,
+        step: 1,
+        help: 'Always flag name pairs within this many single-character edits (e.g. Alina / Alana = 1). 0 turns the edit-distance signal off.',
+      },
+      {
+        key: 'flagSameLength',
+        label: 'Treat equal length as a signal',
+        type: 'boolean',
+        help: 'Count two names of the same length as one similarity signal (noisy on large casts — turn off to ignore).',
+      },
+      {
+        key: 'vowelSkeletonCollision',
+        label: 'Treat shared vowel pattern as a signal',
+        type: 'boolean',
+        help: 'Count names with the same ordered vowels (Blake / Jane → a-e) as one similarity signal.',
+      },
+      {
+        key: 'usePhonetic',
+        label: 'Treat phonetic match as a signal',
+        type: 'boolean',
+        help: 'Count names that sound alike (same Soundex key, e.g. Smith / Smyth) as a similarity signal.',
+      },
+      {
+        key: 'maxShareFirstLetterRatio',
+        label: 'First-letter crowding ratio',
+        type: 'number',
+        min: 0,
+        max: 1,
+        step: 0.05,
+        help: 'Flag a starting letter shared by ≥3 names when they make up at least this fraction of the cast. 0 disables the crowding check.',
       },
     ],
     run: (ctx) => {
-      const min = ctx.config?.minSharedSignals ?? 2;
-      const names = (ctx.canon?.characters || [])
-        .map((c) => (typeof c?.name === 'string' ? c.name.trim() : ''))
-        .filter(Boolean);
+      const cfg = ctx.config || {};
+      const min = cfg.minSharedSignals ?? 2;
+      const signalOpts = {
+        minEditDistance: cfg.minEditDistance ?? 1,
+        flagSameLength: cfg.flagSameLength !== false,
+        vowelSkeletonCollision: cfg.vowelSkeletonCollision !== false,
+        usePhonetic: cfg.usePhonetic !== false,
+      };
+      const tokens = castNameTokens(ctx);
       const findings = [];
-      for (let i = 0; i < names.length; i += 1) {
-        for (let j = i + 1; j < names.length; j += 1) {
-          if (names[i].toLowerCase() === names[j].toLowerCase()) continue;
-          const signals = nameSimilaritySignals(names[i], names[j]);
+
+      // Pairwise confusability over name + alias tokens (skip same-owner pairs).
+      for (let i = 0; i < tokens.length; i += 1) {
+        for (let j = i + 1; j < tokens.length; j += 1) {
+          const a = tokens[i];
+          const b = tokens[j];
+          if (a.owner === b.owner) continue;
+          const signals = nameSimilaritySignals(a.token, b.token, signalOpts);
+          // The user-controlled shared-signal count is the single gate (edit
+          // distance and phonetic match are already among the counted signals).
           if (signals.length < min) continue;
+          const dist = signalOpts.minEditDistance > 0 ? levenshtein(a.token, b.token) : Infinity;
+          const phonetic = signalOpts.usePhonetic && soundex(a.token) !== '' && soundex(a.token) === soundex(b.token);
+          // Severity scales with how confusable the pair really is, above the
+          // check's low floor: edit distance ≤1 is a near-typo (escalate 2), a
+          // phonetic match or 4+ signals is strong (escalate 1).
+          const steps = dist <= 1 ? 2 : (phonetic || signals.length >= 4 ? 1 : 0);
           findings.push({
-            severity: ctx.severityDefault,
+            severity: escalateSeverity(ctx.severityDefault, steps),
             category: 'naming',
-            location: `Characters: ${names[i]} / ${names[j]}`,
-            problem: `Character names "${names[i]}" and "${names[j]}" are easy to confuse (${signals.join(', ')}).`,
-            suggestion: 'Rename one of these characters so readers can tell them apart at a glance.',
-            anchorQuote: names[i],
+            location: `Characters: ${a.ownerName} / ${b.ownerName}`,
+            problem: `Character names "${a.token}"${a.isAlias ? ` (alias of ${a.ownerName})` : ''} and "${b.token}"${b.isAlias ? ` (alias of ${b.ownerName})` : ''} are easy to confuse (${signals.join(', ')}).`,
+            suggestion: renameSuggestion(a, b),
+            anchorQuote: a.token,
             issueNumber: null,
           });
         }
       }
+
+      // First-letter crowding across the cast — severity scaled by how much of the
+      // cast clusters on one starting letter (#1291's "2 of 30 is fine, 4 of 6 is not").
+      const ratio = cfg.maxShareFirstLetterRatio ?? 0.4;
+      if (ratio > 0) {
+        const primaries = tokens.filter((t) => !t.isAlias);
+        const byOwner = new Map(primaries.map((t) => [t.token, t]));
+        const clusters = findFirstLetterClusters(primaries.map((t) => t.token), { minCount: 3, maxRatio: ratio });
+        for (const cluster of clusters) {
+          const unlocked = cluster.names.filter((n) => !byOwner.get(n)?.locked);
+          const renameHint = unlocked.length
+            ? `Consider renaming some of the unlocked ones (${unlocked.join(', ')}) so the cast doesn't blur together.`
+            : 'All of these are locked — unlock one to rename it so the cast doesn\'t blur together.';
+          findings.push({
+            severity: escalateSeverity(ctx.severityDefault, cluster.ratio >= 0.5 ? 2 : 1),
+            category: 'naming',
+            location: `Characters starting with "${cluster.letter.toUpperCase()}"`,
+            problem: `${cluster.names.length} of ${primaries.length} character names start with "${cluster.letter.toUpperCase()}" (${cluster.names.join(', ')}) — readers can confuse names that all open the same way.`,
+            suggestion: renameHint,
+            anchorQuote: cluster.names[0],
+            issueNumber: null,
+          });
+        }
+      }
+
       return findings;
     },
   },
