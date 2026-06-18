@@ -43,6 +43,9 @@ import {
   resolveRegenStrengthDefault,
 } from '../services/imageGen/regen.js';
 import { purgeImageRefFromAllUniverses } from '../services/universeCanon.js';
+import { findOrCreateUniverseCollection } from '../services/mediaCollections.js';
+import * as characterService from '../services/character.js';
+import { randomUUID } from 'crypto';
 import { buildUniverseRunTag } from '../services/universeRunTag.js';
 
 const router = Router();
@@ -222,6 +225,10 @@ const avatarSchema = z.object({
   name: z.string().max(100).optional(),
   characterClass: z.string().max(100).optional(),
   prompt: z.string().max(2000).optional(),
+  // When set, the route persists the rendered path onto the singleton
+  // character record itself (the character store has no id), so the client
+  // skips the follow-up PUT /api/character round-trip.
+  persistToCharacter: z.boolean().optional(),
 });
 
 // Upload a user-supplied image straight into the gallery (`data/images/`) so it
@@ -432,7 +439,14 @@ router.post('/generate', imageGenUploads, asyncHandler(async (req, res) => {
 
 router.post('/avatar', asyncHandler(async (req, res) => {
   const data = validateRequest(avatarSchema, req.body);
-  res.json(await imageGen.generateAvatar(data));
+  const result = await imageGen.generateAvatar(data);
+  // `result.path` is server-generated as `/data/images/<file>` (the same value
+  // the client previously round-tripped through PUT /api/character), so it's
+  // safe to persist directly without re-validating against the path regex.
+  if (data.persistToCharacter && result?.path) {
+    await characterService.setAvatar(result.path);
+  }
+  res.json(result);
 }));
 
 // Save an uploaded image into the gallery dir so callers (e.g. author
