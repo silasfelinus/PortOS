@@ -104,8 +104,15 @@ export default function StoryboardsStage({ issue, series, onStageUpdate, actions
     setSceneCandidates({});
     persist(scenes.filter((_, j) => j !== i));
   };
+  // Ref mirrors the latest scenes so an async flush (e.g. the image-prompt
+  // generate) reads the most recent keystroke rather than the render-scope
+  // snapshot captured when the handler started. Mirrors ComicPagesStage's
+  // pagesRef pattern.
+  const scenesRef = useRef(scenes);
+  scenesRef.current = scenes;
   const updateScene = (i, patch) => {
     const next = scenes.map((s, j) => j === i ? { ...s, ...patch } : s);
+    scenesRef.current = next;
     setScenes(next);
   };
 
@@ -282,7 +289,7 @@ export default function StoryboardsStage({ issue, series, onStageUpdate, actions
     // (the server builds the prompt from the persisted text). Same guard the
     // shot-render path uses against the blur-save race.
     const gen = candidateGenRef.current;
-    await persist(scenes);
+    await persist(scenesRef.current);
     const result = await generatePipelineSceneImagePrompts(
       issue.id, i, { count: promptCount, ...genConfigToRefineOptions(genConfig) },
     ).catch((err) => {

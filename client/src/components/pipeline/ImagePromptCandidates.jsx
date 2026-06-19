@@ -14,8 +14,15 @@ import { IMAGE_PROMPT_COUNT_MAX } from './stages/VisualGenSettings';
 // Toolbar control for "how many image-prompt candidates to generate" (issue
 // #904). Owns the clamp so both stage toolbars stay in range without
 // re-implementing the same min/max/trunc each. `id` must be unique per stage
-// (htmlFor pairing).
+// (htmlFor pairing). The clamp runs on blur (not per-keystroke) so a transient
+// empty/0 while typing isn't snapped back mid-edit.
 export function PromptCountInput({ id, value, onChange }) {
+  const commit = (raw) => {
+    const n = Number(raw);
+    onChange(Number.isFinite(n) && n >= 1
+      ? Math.min(Math.trunc(n), IMAGE_PROMPT_COUNT_MAX)
+      : 1);
+  };
   return (
     <label className="inline-flex items-center gap-1.5 text-xs text-gray-400" htmlFor={id}>
       <Layers size={12} />
@@ -27,9 +34,12 @@ export function PromptCountInput({ id, value, onChange }) {
         max={IMAGE_PROMPT_COUNT_MAX}
         value={value}
         onChange={(e) => {
+          // Let a clamped value through live, but never force the field — an
+          // empty/0/over-max transient stays editable until blur commits it.
           const n = Number(e.target.value);
-          if (Number.isFinite(n)) onChange(Math.min(Math.max(Math.trunc(n), 1), IMAGE_PROMPT_COUNT_MAX));
+          if (Number.isFinite(n) && n >= 1 && n <= IMAGE_PROMPT_COUNT_MAX) onChange(Math.trunc(n));
         }}
+        onBlur={(e) => commit(e.target.value)}
         title={`How many alternative image-gen prompts the "AI: prompts" button generates (1–${IMAGE_PROMPT_COUNT_MAX})`}
         className="w-12 px-1 py-1 bg-port-bg border border-port-border rounded text-white text-xs text-center"
       />
