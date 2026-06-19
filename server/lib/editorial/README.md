@@ -58,7 +58,7 @@ Declare every input the check's `run(ctx)` reads in its `sources` array (a
 non-empty subset of `EDITORIAL_SOURCES`: `manuscript`, `canon`,
 `series.styleGuide`, `series.arc.tickingClock`, `series.arc.readerMap`,
 `reverseOutline`, `reverseOutline.plotlines`, `editorialArcs`,
-`series.characterArcs`, `comicScript`). The staleness
+`series.characterArcs`, `storyboard.shots`, `comicScript`). The staleness
 runner fingerprints exactly those sources, so a finding goes stale only when
 content the check actually analyzed drifts — declare too few and a finding stays
 falsely fresh; a `manuscript` source must pair with `needsManuscript: true`, and
@@ -76,7 +76,11 @@ because not-yet-analyzed" under a partial coverage batch. `series.characterArcs`
 (#1293) reads the AUTHORED per-character arcs off the already-loaded series
 record (`series.characterArcs[]` — want/need, start → end state, transition
 beats), which the `arc.transitions` check reconciles detected change moments
-against. `comicScript` (#1313) fingerprints every issue's AUTHORITATIVE comic content,
+against. `storyboard.shots` (#1315) is built off the already-loaded issues (no
+extra I/O) and injects `ctx.storyboardScenes` (a flat `{ issueNumber, scene }`
+list for every issue with storyboard scenes), which the deterministic
+`visual.shot-continuity` check reads for 180°-rule axis reversals + shot-type
+monotony. `comicScript` (#1313) fingerprints every issue's AUTHORITATIVE comic content,
 keyed by issue number — the edited comic-pages split (`stages.comicPages.pages[]`)
 when present, else the generated `stages.comicScript.output` (derived from the
 already-loaded `ctx.issues`, no extra fetch). The `comic.lettering-density` check
@@ -109,6 +113,7 @@ runner-injected `ctx.callInlineLLM` (an inline-prompt sibling of
 | `italicThoughts.js` | Pure, dependency-free italic-thought primitive for `prose.italic-thoughts` (#1300): `findItalicThoughts` (multi-word markdown `*…*` / `_…_` italic runs, dedup + word-count threshold so single-word emphasis, bold, and `snake_case` are skipped). The LLM siblings (`opening.wrong-start`, `prose.mirror-description`, `dialogue.pleasantries`, `prose.kill-your-darlings`) handle the judgment cases in the #1300 anti-pattern bundle. |
 | `proseTics.js` | Pure, dependency-free copy-edit prose-tic primitives for the #1306 line-edit group: `tokenizeWords` / `splitSentences` (shared tokenization), `findFilterWords` (`prose.filter-words`), `findCrutchWords` (`prose.crutch-words`), `findAdverbs` (`prose.adverbs` — `-ly` adverbs + dialogue-tag adverbs), `findPassiveVoice` (`prose.passive-voice` — be-verb + past-participle heuristic), `findGestures` (`prose.repeated-gestures` — gesture tally + body-part autonomy), plus the seed `FILTER_WORDS` / `CRUTCH_WORDS` / `GESTURE_WORDS` lists. The LLM sibling `prose.telling-emotion` handles the named-emotion judgment case. |
 | `repetition.js` | Pure, dependency-free word-echo & rhythm primitives for #1306: `findWordEchoes` (`prose.word-echoes` — distinctive word repeated within a window), `findRepeatedOpeners` (runs of sentences sharing an opener, "He… He… He…"), and `measureSentenceRhythm` (`prose.sentence-rhythm` — sentence-length variation). Reuses `tokenizeWords` / `splitSentences` from `proseTics.js`. |
+| `shotContinuity.js` | Pure, dependency-free storyboard shot-continuity primitives for the deterministic `visual.shot-continuity` check (#1315): `findAxisReversals` (180°-rule axis flips across a continuity-linked shot pair using `screenDirection`) and `findShotTypeMonotony` (a scene whose classified shots all share one `shotType`). Reads the shot-grammar fields from `server/lib/shotGrammar.js`. The judgment cases (eyeline match, appearance/prop continuity) are LLM-sibling follow-ups. |
 | `dialogue.js` | Pure, dependency-free dialogue-tag primitives for the #1307 dialogue-craft group: `findSaidBookisms` (`dialogue.said-bookisms` — ornate speech tags like *expostulated*/*opined* and non-speech tags like "she smiled", matched only when adjacent to a double-quote span) and `findUnattributedDialogueRuns` (`dialogue.attribution-clarity` — runs of consecutive untagged/unbeated dialogue lines where the speaker can't be tracked), plus the seed `SAID_BOOKISMS` / `NON_SPEECH_TAGS` lists. The LLM siblings `dialogue.on-the-nose` (subtext-free / "as you know, Bob" dialogue) and `dialogue.voice-distinctiveness` (per-character voice against canon `speechPattern`/`speechAccent`) handle the judgment cases. |
 | `letteringDensity.js` | Pure, dependency-free comic lettering-density primitives for `comic.lettering-density` (#1313): `countWords`, `panelLetteringMetrics` (per-panel balloon/caption/SFX word + balloon tally over the `comicScriptParser` output), `analyzeComicLettering` (flags balloons/panels/pages over the configurable thresholds in `DEFAULT_LETTERING_THRESHOLDS`), `overflowSeverity` (severity scaled by how far over the limit), and `sanitizeLetteringThresholds`. Mirrored to `client/src/lib/letteringDensity.js` for the comic-script stage's inline warnings — keep the two in sync. |
 | `index.js` | Barrel re-export of the above. |

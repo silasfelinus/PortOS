@@ -141,7 +141,13 @@ export default function StoryboardsStage({ issue, series, onStageUpdate, actions
     shots.filter((_, j) => j !== shotIdx)));
   const updateShot = (sceneIdx, shotIdx, patch) => {
     // Local edit only — caller flushes via onBlur → persist(scenes).
-    updateShots(sceneIdx, (shots) => shots.map((sh, j) => j === shotIdx ? { ...sh, ...patch } : sh));
+    // When the description is hand-edited, the extractor-derived shotType /
+    // screenDirection (#1315) were inferred from the OLD text and are now stale —
+    // clear them to null ("not captured") so the deterministic visual.shot-continuity
+    // check skips this shot rather than reporting an axis reversal that contradicts
+    // the new description. (A dedicated editor for these fields is tracked separately.)
+    const grammarReset = 'description' in patch ? { shotType: null, screenDirection: null } : {};
+    updateShots(sceneIdx, (shots) => shots.map((sh, j) => j === shotIdx ? { ...sh, ...patch, ...grammarReset } : sh));
   };
 
   const handleRenderShot = async (sceneIdx, shotIdx) => {

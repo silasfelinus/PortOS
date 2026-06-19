@@ -4,7 +4,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // exercises the actual reference checks (deterministic naming + LLM info-dump).
 vi.mock('../../settings.js', () => ({ getSettings: vi.fn(async () => ({})) }));
 vi.mock('../series.js', () => ({ getSeries: vi.fn(async () => ({ id: 's1', universeId: 'u1' })) }));
-vi.mock('../issues.js', () => ({ listIssues: vi.fn(async () => []) }));
+// Issues source — backed by a mutable fixture so the storyboard.shots continuity
+// check (#1315) can be exercised; default empty so the check is gated off unless a
+// test populates issues carrying storyboard scenes.
+let issuesState = [];
+vi.mock('../issues.js', () => ({ listIssues: vi.fn(async () => issuesState) }));
 vi.mock('../seriesCanon.js', () => ({
   getSeriesCanon: vi.fn(async () => ({
     characters: [{ name: 'Alina' }, { name: 'Alana' }, { name: 'Zog' }],
@@ -91,6 +95,7 @@ beforeEach(() => {
   reviewState = { comments: [] };
   outlineState = { scenes: [] };
   editorialState = { characters: [] };
+  issuesState = [];
   seedReviewFromFindings.mockClear();
   runStagedLLM.mockClear();
   resolveStageContext.mockClear();
@@ -264,6 +269,46 @@ describe('runEditorialChecks', () => {
   });
 });
 
+describe('visual.shot-continuity (#1315)', () => {
+  // Enable ONLY the shot-continuity check so the assertions don't pick up
+  // naming/info-dump findings (and the LLM mock isn't exercised).
+  const onlyShotContinuity = {
+    pipelineEditorialChecks: {
+      checks: Object.fromEntries(
+        listChecks().filter((c) => c.id !== 'visual.shot-continuity').map((c) => [c.id, { enabled: false }]),
+      ),
+    },
+  };
+
+  it('flags a 180° axis reversal across continuity-linked shots in a storyboard scene', async () => {
+    issuesState = [{
+      id: 'i1', seriesId: 's1', number: 1,
+      stages: { storyboards: { scenes: [{
+        heading: 'INT. THRONE ROOM',
+        shots: [
+          { id: 'shot-01', description: 'queen faces left', screenDirection: 'left' },
+          { id: 'shot-02', description: 'reverse', screenDirection: 'right', continuityFromShotId: 'shot-01' },
+        ],
+      }] } },
+    }];
+    const result = await runEditorialChecks('s1', { settings: onlyShotContinuity });
+    const findings = result.findings.filter((f) => f.checkId === 'visual.shot-continuity');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].category).toBe('continuity');
+    expect(findings[0].issueNumber).toBe(1);
+    expect(findings[0].problem).toMatch(/axis reversal/i);
+    expect(runStagedLLM).not.toHaveBeenCalled(); // deterministic — no LLM
+  });
+
+  it('skips entirely (gated off) when no issue has storyboard scenes', async () => {
+    issuesState = [{ id: 'i1', seriesId: 's1', number: 1, stages: {} }];
+    const result = await runEditorialChecks('s1', { settings: onlyShotContinuity });
+    const row = result.perCheck.find((p) => p.checkId === 'visual.shot-continuity');
+    expect(row.skipped).toBe(true);
+    expect(result.findings).toHaveLength(0);
+  });
+});
+
 describe('source-content hash stamping (#1345)', () => {
   it('stamps every finding with a non-empty sourceContentHash', async () => {
     const result = await runEditorialChecks('s1');
@@ -363,6 +408,69 @@ describe('getReviewWithStaleness (#1345)', () => {
     expect(review.comments.find((c) => c.checkId === 'scene.component-balance').stale).toBe(true);
     expect(review.comments.find((c) => c.checkId === 'naming.dissimilar-names').stale).toBe(false);
     expect(review.comments.find((c) => c.checkId === 'prose.info-dumping').stale).toBe(false);
+  });
+
+  it('stales the storyboard-continuity finding when a shot edit changes the scene (#1315)', async () => {
+    // visual.shot-continuity declares 'storyboard.shots'; editing a shot's
+    // direction must stale ONLY the continuity finding, not the canon-only naming one.
+    issuesState = [{
+      id: 'i1', seriesId: 's1', number: 1,
+      stages: { storyboards: { scenes: [{
+        heading: 'INT. THRONE ROOM',
+        shots: [
+          { id: 'shot-01', description: 'left', screenDirection: 'left' },
+          { id: 'shot-02', description: 'right', screenDirection: 'right', continuityFromShotId: 'shot-01' },
+        ],
+      }] } },
+    }];
+    await seedReviewFromRun();
+    expect(reviewState.comments.find((c) => c.checkId === 'visual.shot-continuity')).toBeTruthy();
+    // Fix the axis (both face left) — the shot list drifts.
+    issuesState = [{
+      id: 'i1', seriesId: 's1', number: 1,
+      stages: { storyboards: { scenes: [{
+        heading: 'INT. THRONE ROOM',
+        shots: [
+          { id: 'shot-01', description: 'left', screenDirection: 'left' },
+          { id: 'shot-02', description: 'left now', screenDirection: 'left', continuityFromShotId: 'shot-01' },
+        ],
+      }] } },
+    }];
+    const review = await getReviewWithStaleness('s1');
+    expect(review.comments.find((c) => c.checkId === 'visual.shot-continuity').stale).toBe(true);
+    expect(review.comments.find((c) => c.checkId === 'naming.dissimilar-names').stale).toBe(false);
+  });
+
+  it('keeps a storyboard-continuity finding fresh after an unrelated render edit (#1315 projection)', async () => {
+    // The fingerprint must project to only the fields the check reads (shot
+    // grammar + heading/slugline) — a render/status edit (sceneVideoJobId,
+    // imageJobId) on the same scene must NOT stale the continuity finding.
+    issuesState = [{
+      id: 'i1', seriesId: 's1', number: 1,
+      stages: { storyboards: { scenes: [{
+        heading: 'INT. THRONE ROOM',
+        shots: [
+          { id: 'shot-01', description: 'left', screenDirection: 'left' },
+          { id: 'shot-02', description: 'right', screenDirection: 'right', continuityFromShotId: 'shot-01' },
+        ],
+      }] } },
+    }];
+    await seedReviewFromRun();
+    expect(reviewState.comments.find((c) => c.checkId === 'visual.shot-continuity')).toBeTruthy();
+    // Same shot grammar; only a render artifact + per-shot job id changed.
+    issuesState = [{
+      id: 'i1', seriesId: 's1', number: 1,
+      stages: { storyboards: { scenes: [{
+        heading: 'INT. THRONE ROOM',
+        sceneVideoJobId: 'job-rendered-42',
+        shots: [
+          { id: 'shot-01', description: 'left', screenDirection: 'left', startFrameJobId: 'frame-9' },
+          { id: 'shot-02', description: 'right', screenDirection: 'right', continuityFromShotId: 'shot-01', startFrameJobId: 'frame-10' },
+        ],
+      }] } },
+    }];
+    const review = await getReviewWithStaleness('s1');
+    expect(review.comments.find((c) => c.checkId === 'visual.shot-continuity').stale).toBe(false);
   });
 
   it('keeps a scene finding fresh when the manuscript changes (reverseOutline-only source)', async () => {
