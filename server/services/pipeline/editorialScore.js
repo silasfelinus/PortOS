@@ -66,7 +66,11 @@ const ledgerPath = (seriesId) => join(healthDir(), `${seriesId}.json`);
 // Pure scoring.
 // ---------------------------------------------------------------------------
 
-const normalizeSeverity = (s) => (SEVERITIES.includes(s) ? s : 'low');
+// Default an unknown/absent severity to 'medium' to match manuscriptReview's
+// sanitizeComment (so the two never disagree on how an odd value scores). Stored
+// comments are always already high/medium/low, so this only guards a hand-edited
+// or older-peer record.
+const normalizeSeverity = (s) => (SEVERITIES.includes(s) ? s : 'medium');
 const emptySeverityCounts = () => ({ high: 0, medium: 0, low: 0 });
 
 // Resolve the readiness gate to one of READINESS_GATES, falling back to the
@@ -238,9 +242,15 @@ export async function getTrendLedger(seriesId) {
  * Record a revision-trend snapshot for a series from its CURRENT review state.
  * Called after each editorial-checks / completeness run (the run is the
  * revision boundary). Reads the freshest review, derives the open-finding
- * counts, and appends a snapshot — de-duped by `runId` so a re-entrant seed for
- * the same run replaces rather than doubles the point. The ledger is capped at
- * MAX_TREND_SNAPSHOTS (oldest roll off).
+ * counts, and appends a snapshot.
+ *
+ * De-duped by `runId`: a second record for the SAME run id replaces its point
+ * rather than doubling it (defensive — guards a route + its SSE runner both
+ * firing for one invocation). NOTE this does NOT collapse a completeness pass and
+ * an editorial-checks pass into one point — those mint independent run ids, so a
+ * user who runs both in an editing cycle gets two trend points (completeness then
+ * checks), which is intended: each is a distinct revision boundary. A null runId
+ * always appends. The ledger is capped at MAX_TREND_SNAPSHOTS (oldest roll off).
  *
  * @param {string} seriesId
  * @param {object} [opts]
@@ -276,6 +286,8 @@ export async function recordTrendSnapshot(seriesId, { runId = null, gate = DEFAU
       snapshots: [...kept, snapshot].slice(-MAX_TREND_SNAPSHOTS),
     };
     await atomicWrite(ledgerPath(seriesId), next);
+    // Returned for callers/tests that want the appended point; the fire-and-forget
+    // triggers ignore it.
     return snapshot;
   });
 }
