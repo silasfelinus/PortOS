@@ -99,6 +99,16 @@ export function updateItem(board, itemId, patch) {
   for (const key of editableKeys) {
     if (patch[key] !== undefined) updated[key] = patch[key];
   }
+  // Reject a patch that would strip the item's required content (the schema
+  // permits nulls so a partial edit can clear one of two image sources, but the
+  // MERGED result must stay valid): an image keeps at least one of
+  // mediaKey/imageUrl; a text item keeps non-empty text.
+  if (updated.type === 'image' && !updated.mediaKey && !updated.imageUrl) {
+    throw new ServerError('An image item must keep a mediaKey or imageUrl', { status: 400, code: 'INVALID_ITEM' });
+  }
+  if (updated.type === 'text' && (typeof updated.text !== 'string' || !updated.text.trim())) {
+    throw new ServerError('A text item must keep non-empty text', { status: 400, code: 'INVALID_ITEM' });
+  }
   const nextItems = [...items];
   nextItems[idx] = updated;
   const next = { ...board, items: nextItems, updatedAt: nowIso() };

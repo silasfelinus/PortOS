@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isValidKey } from './mediaItemKey.js';
 
 // =============================================================================
 // MOOD BOARD SCHEMAS (issue #911)
@@ -9,13 +10,11 @@ import { z } from 'zod';
 
 export const MOOD_BOARD_ITEM_TYPES = Object.freeze(['image', 'text']);
 
-// A media-key references an indexed asset as `<kind>:<ref>` (see mediaItemKey.js)
-// — e.g. `image:my-render.png` or `video:job-123`. Kept permissive (the index is
-// the source of truth); just bound the length and require the `<kind>:<ref>` shape.
-const mediaKeySchema = z.string().trim().min(3).max(512).regex(
-  /^[a-z]+:.+$/,
-  'mediaKey must be in `<kind>:<ref>` form',
-);
+// A media-key references an indexed asset as `<kind>:<ref>` (e.g.
+// `image:my-render.png`, `video:job-123`). Reuse the shared key validator from
+// mediaItemKey.js (the same vocabulary mediaCollections / mediaAnnotations use)
+// so a board can't pin a key the rest of PortOS would reject.
+const mediaKeySchema = z.string().trim().refine(isValidKey, 'mediaKey must be a valid `<kind>:<ref>` media key');
 
 // External/pinned image URL. http(s) or a same-origin app path (e.g. a served
 // `/data/images/...` URL). Bounded; the UI renders it in an <img>, so no exotic

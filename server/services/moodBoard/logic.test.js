@@ -103,6 +103,14 @@ describe('updateItem', () => {
     expect(item.text).toBeNull();
     expect(item.caption).toBe('ok');
   });
+  it('rejects clearing an image item’s only source', () => {
+    const { board } = addItem(buildBoardRecord({ name: 'A' }, { id: 'mb-3', now: 't0' }), { type: 'image', imageUrl: 'https://x/y.png' });
+    const imgId = board.items[0].id;
+    expect(() => updateItem(board, imgId, { imageUrl: null })).toThrow(/mediaKey or imageUrl/i);
+  });
+  it('rejects blanking a text item', () => {
+    expect(() => updateItem(withItem, itemId, { text: '   ' })).toThrow(/non-empty text/i);
+  });
 });
 
 describe('removeItem', () => {
