@@ -15,9 +15,9 @@ router.get('/preview', asyncHandler(async (req, res) => {
 // POST /api/legacy-export — build and stream the identity bundle as a zip
 // attachment. `sections` (optional) narrows the bundle; omitted means "all".
 router.post('/', asyncHandler(async (req, res) => {
-  const { sections } = validateRequest(legacyExportSchema, req.body || {});
+  const { sections, includePdf } = validateRequest(legacyExportSchema, req.body || {});
   const io = req.app.get('io');
-  const { buffer } = await buildLegacyZip({ sections: sections || null, io });
+  const { buffer } = await buildLegacyZip({ sections: sections || null, includePdf: !!includePdf, io });
 
   // Date-stamped filename, mirroring the catalog download pattern.
   const date = new Date().toISOString().slice(0, 10);
