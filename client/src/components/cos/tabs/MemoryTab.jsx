@@ -14,6 +14,7 @@ import ProviderModelSelector from '../../ProviderModelSelector';
 import useProviderModels from '../../../hooks/useProviderModels';
 import BrailleSpinner from '../../BrailleSpinner';
 import InlineConfirmRow from '../../ui/InlineConfirmRow';
+import CopyableId from '../../ui/CopyableId';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
 
 export default function MemoryTab({ apps = [] }) {
@@ -423,7 +424,7 @@ export default function MemoryTab({ apps = [] }) {
                         ))}
                       </div>
                     )}
-                    <div className="text-xs text-gray-500 mt-2 flex flex-wrap gap-2">
+                    <div className="text-xs text-gray-500 mt-2 flex flex-wrap items-center gap-2">
                       <span>{new Date(memory.createdAt).toLocaleDateString()}</span>
                       <span>*</span>
                       <span>importance: {((memory.importance || 0.5) * 100).toFixed(0)}%</span>
@@ -433,6 +434,8 @@ export default function MemoryTab({ apps = [] }) {
                           <span className="text-port-accent">{getAppName(memory.sourceAppId, apps)}</span>
                         </>
                       )}
+                      {memory.id && <span>*</span>}
+                      <CopyableId id={memory.id} />
                     </div>
                   </div>
                   <div className="flex gap-2 sm:gap-1">
