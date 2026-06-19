@@ -79,8 +79,12 @@ export function addItem(board, itemInput) {
   return { board: next, item };
 }
 
-// PATCH a single item's editable fields (caption/source/text/imageUrl/mediaKey).
-// Absent keys preserve; throws NOT_FOUND when the item id isn't on the board.
+// PATCH a single item's editable fields. caption/source apply to any item;
+// the body fields are gated to the item's FIXED type (an item's kind can't
+// change after creation) so a patch can't make a text item carry an imageUrl
+// or an image item carry text — the schema permits every key, the invariant is
+// enforced here where the item's type is known. Absent keys preserve; throws
+// NOT_FOUND when the item id isn't on the board.
 export function updateItem(board, itemId, patch) {
   const items = Array.isArray(board.items) ? board.items : [];
   const idx = items.findIndex((it) => it && it.id === itemId);
@@ -89,7 +93,10 @@ export function updateItem(board, itemId, patch) {
   }
   const current = items[idx];
   const updated = { ...current };
-  for (const key of ['caption', 'source', 'text', 'imageUrl', 'mediaKey']) {
+  const editableKeys = current.type === 'image'
+    ? ['caption', 'source', 'imageUrl', 'mediaKey']
+    : ['caption', 'source', 'text'];
+  for (const key of editableKeys) {
     if (patch[key] !== undefined) updated[key] = patch[key];
   }
   const nextItems = [...items];

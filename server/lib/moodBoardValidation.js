@@ -19,9 +19,11 @@ const mediaKeySchema = z.string().trim().min(3).max(512).regex(
 
 // External/pinned image URL. http(s) or a same-origin app path (e.g. a served
 // `/data/images/...` URL). Bounded; the UI renders it in an <img>, so no exotic
-// schemes.
+// schemes. A protocol-relative `//host/...` is rejected: it starts with `/` but
+// resolves to an arbitrary external origin, which the leading-slash branch is
+// not meant to allow.
 const imageUrlSchema = z.string().trim().min(1).max(2048).refine(
-  (v) => /^https?:\/\//.test(v) || v.startsWith('/'),
+  (v) => /^https?:\/\//.test(v) || (v.startsWith('/') && !v.startsWith('//')),
   'imageUrl must be an http(s) URL or an absolute app path',
 );
 

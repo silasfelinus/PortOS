@@ -47,6 +47,9 @@ describe('moodBoardItemCreateSchema', () => {
   it('rejects a bad imageUrl scheme', () => {
     expect(moodBoardItemCreateSchema.safeParse({ type: 'image', imageUrl: 'javascript:alert(1)' }).success).toBe(false);
   });
+  it('rejects a protocol-relative imageUrl', () => {
+    expect(moodBoardItemCreateSchema.safeParse({ type: 'image', imageUrl: '//evil.com/x.png' }).success).toBe(false);
+  });
   it('rejects a malformed mediaKey', () => {
     expect(moodBoardItemCreateSchema.safeParse({ type: 'image', mediaKey: 'no-colon' }).success).toBe(false);
   });

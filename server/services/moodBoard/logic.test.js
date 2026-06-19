@@ -90,6 +90,19 @@ describe('updateItem', () => {
   it('throws NOT_FOUND for an unknown item id', () => {
     expect(() => updateItem(withItem, 'nope', { caption: 'x' })).toThrow(/not found/i);
   });
+  it('ignores type-inappropriate body fields (text item cannot gain an imageUrl)', () => {
+    const { item } = updateItem(withItem, itemId, { imageUrl: 'https://x/y.png', mediaKey: 'image:a.png', text: 'changed' });
+    expect(item.imageUrl).toBeNull();
+    expect(item.mediaKey).toBeNull();
+    expect(item.text).toBe('changed');
+  });
+  it('ignores text on an image item', () => {
+    const { board } = addItem(buildBoardRecord({ name: 'A' }, { id: 'mb-2', now: 't0' }), { type: 'image', imageUrl: 'https://x/y.png' });
+    const imgId = board.items[0].id;
+    const { item } = updateItem(board, imgId, { text: 'nope', caption: 'ok' });
+    expect(item.text).toBeNull();
+    expect(item.caption).toBe('ok');
+  });
 });
 
 describe('removeItem', () => {
