@@ -87,6 +87,7 @@ export default function StoryboardsStage({ issue, series, onStageUpdate, actions
       return null;
     });
     if (updated) onStageUpdate?.('storyboards', updated.stages.storyboards, updated);
+    return !!updated;
   };
 
   const addScene = () => persist([...scenes, { slugline: '', description: '', imageJobId: null }]);
@@ -277,8 +278,11 @@ export default function StoryboardsStage({ issue, series, onStageUpdate, actions
   // path — copy stays clipboard-only). Persists via the shared write queue.
   const handleApplyCandidate = async (i, prompt, candidateIndex) => {
     setApplyingCandidate(`${i}:${candidateIndex}`);
-    await persist(scenes.map((s, j) => j === i ? { ...s, description: prompt } : s));
+    const ok = await persist(scenes.map((s, j) => j === i ? { ...s, description: prompt } : s));
     setApplyingCandidate(null);
+    // Leave the candidates list up on a save failure so the user can retry —
+    // persist already toasted the error.
+    if (!ok) return;
     setSceneCandidates((prev) => {
       const next = { ...prev };
       delete next[i];

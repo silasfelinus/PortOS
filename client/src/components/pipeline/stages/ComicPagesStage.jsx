@@ -55,6 +55,7 @@ export default function ComicPagesStage({ issue, onStageUpdate, actionsGated = f
       return null;
     });
     if (updated) onStageUpdate?.('comicPages', updated.stages.comicPages, updated);
+    return !!updated;
   };
 
   const addPage = () => persist([...pages, { panels: [{ description: '', imageJobId: null }] }]);
@@ -188,8 +189,11 @@ export default function ComicPagesStage({ issue, onStageUpdate, actionsGated = f
     const next = pages.map((p, i) => i === pi
       ? { ...p, panels: (p.panels || []).map((q, j) => j === ni ? { ...q, description: prompt } : q) }
       : p);
-    await persist(next);
+    const ok = await persist(next);
     setApplyingCandidate(null);
+    // Keep the candidates list up on a save failure so the user can retry —
+    // persist already toasted the error.
+    if (!ok) return;
     setPanelCandidates((prev) => {
       const rest = { ...prev };
       delete rest[key];
