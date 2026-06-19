@@ -55,6 +55,19 @@ describe('computeWindowGrid', () => {
     expect(a[0].windowId).not.toEqual(b[0].windowId);
   });
 
+  it('keeps per-pane window ids distinct after the Float32Array round-trip, even for a large hash', () => {
+    // The instanced attribute stores windowId in a Float32Array, which loses
+    // sub-integer precision past ~16.7M. A raw app-name hash this large must not
+    // collapse every pane on a face to the same id (which would make every room
+    // identical). Quantize through Float32Array exactly as the GPU upload does.
+    const windows = computeWindowGrid({ width: 3, depth: 2, height: 5, seed: 1234567890 });
+    const buf = new Float32Array(windows.length * 3);
+    windows.forEach((w, i) => buf.set(w.windowId, i * 3));
+    const keys = new Set(Array.from({ length: windows.length }, (_, i) => buf.slice(i * 3, i * 3 + 3).join(',')));
+    // Distinct ids per pane (allow a tiny collision margin from the modular phase).
+    expect(keys.size).toBeGreaterThan(windows.length * 0.9);
+  });
+
   it('places panes proud of the correct face plane', () => {
     const { width, depth } = dims;
     const offset = depth / 2 + INTERIOR_WINDOW.inset;

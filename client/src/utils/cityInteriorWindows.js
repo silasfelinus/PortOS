@@ -91,10 +91,16 @@ export function computeWindowGrid({ width, depth, height, seed = 0 }) {
           ? [h, y, face.sign * offset]
           : [face.sign * offset, y, h];
         // Deterministic, well-spread seed per pane so the shader hash varies
-        // per window, per face, and per building.
+        // per window, per face, and per building. Keep every component SMALL: the
+        // IDs round-trip through a Float32Array for the instanced attribute, and
+        // float32 loses sub-integer precision past ~16.7M — a raw app-name hash
+        // (hundreds of millions) would swamp the c/r offsets and collapse every
+        // pane on a face to one room. A bounded per-building phase shifts the
+        // hash input without dominating the per-pane column/row offsets.
+        const phase = seed % 360;
         const windowId = [
-          c + face.index * 3.1 + seed * 0.37,
-          r + face.index * 1.7 + seed * 0.21,
+          c + face.index * 2.3 + phase * 0.11,
+          r + face.index * 1.7 + phase * 0.07,
           face.index + (seed % 17) * 0.13,
         ];
         windows.push({ position, rotationY: face.rotationY, windowId });
