@@ -14,7 +14,7 @@
  * convergence gate too). Refetches when `refreshKey` changes (e.g. after a run
  * completes), so the score reflects the freshest review.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, Loader2, TrendingUp, TrendingDown } from 'lucide-react';
 import toast from '../../ui/Toast';
 import { getEditorialHealth, setEditorialReadinessGate } from '../../../services/api';
@@ -62,16 +62,24 @@ export default function EditorialHealthPanel({ seriesId, refreshKey = 0 }) {
   const [health, setHealth] = useState(null);
   const [loading, setLoading] = useState(false);
   const [savingGate, setSavingGate] = useState(false);
+  const [showIssues, setShowIssues] = useState(false);
+
+  // Guard against a stale response: switching series (or a fast refresh) can let
+  // an older fetch resolve last and render the wrong series' health. Only the
+  // latest requested series is allowed to write state.
+  const activeSeriesRef = useRef(seriesId);
+  useEffect(() => { activeSeriesRef.current = seriesId; }, [seriesId]);
 
   const load = useCallback((id) => {
     if (!id) { setHealth(null); return; }
     setLoading(true);
     // getEditorialHealth has no silent option here — request() toasts on failure;
-    // just clear + swallow so the panel degrades to its empty state.
+    // just clear + swallow so the panel degrades to its empty state. Every state
+    // write is gated on the series still being current (stale-response race).
     getEditorialHealth(id)
-      .then((h) => setHealth(h && typeof h === 'object' ? h : null))
-      .catch(() => setHealth(null))
-      .finally(() => setLoading(false));
+      .then((h) => { if (activeSeriesRef.current === id) setHealth(h && typeof h === 'object' ? h : null); })
+      .catch(() => { if (activeSeriesRef.current === id) setHealth(null); })
+      .finally(() => { if (activeSeriesRef.current === id) setLoading(false); });
   }, []);
 
   useEffect(() => { load(seriesId); }, [seriesId, refreshKey, load]);
@@ -100,7 +108,16 @@ export default function EditorialHealthPanel({ seriesId, refreshKey = 0 }) {
   const delta = deltaDisplay(health.trend?.delta);
   const regressions = Array.isArray(health.trend?.regressions) ? health.trend.regressions : [];
   const categories = orderedCategories(health.openByCategory);
-  const hasTrend = (health.trend?.points || []).length > 0;
+  const points = health.trend?.points || [];
+  const hasTrend = points.length > 0;
+  // The delta compares the two most recent revisions — only meaningful with ≥2
+  // points (a single revision has nothing to compare against).
+  const hasDelta = points.length >= 2;
+  // Per-issue drill-down (#1316): issues carrying at least one open finding,
+  // worst-scoring first. The series-scoped (null issueNumber) bucket renders last.
+  const issueRows = (Array.isArray(health.perIssue) ? health.perIssue : [])
+    .filter((p) => p.open > 0)
+    .sort((a, b) => a.score - b.score);
 
   return (
     <section className="space-y-3 rounded-lg border border-port-border bg-port-card p-3">
@@ -121,7 +138,7 @@ export default function EditorialHealthPanel({ seriesId, refreshKey = 0 }) {
           <div className="flex items-baseline gap-2">
             <span className={`text-3xl font-bold ${band.tone}`}>{health.score}</span>
             <span className="text-xs text-gray-500">/ 100 · {band.label}</span>
-            {hasTrend ? (
+            {hasDelta ? (
               <span className={`flex items-center gap-0.5 text-xs ${delta.tone}`} title="Change since the previous revision">
                 {delta.text}
               </span>
@@ -180,10 +197,42 @@ export default function EditorialHealthPanel({ seriesId, refreshKey = 0 }) {
       ) : null}
 
       {/* A clean run that improved on the prior revision gets a positive note. */}
-      {!regressions.length && hasTrend && (health.trend?.delta || 0) > 0 ? (
+      {!regressions.length && hasDelta && (health.trend?.delta || 0) > 0 ? (
         <p className="flex items-center gap-1 text-[11px] text-port-success">
           <TrendingDown size={11} className="rotate-180" /> No category regressed since the previous revision.
         </p>
+      ) : null}
+
+      {/* Per-issue drill-down — which issues carry the open findings. */}
+      {issueRows.length ? (
+        <div className="border-t border-port-border/60 pt-2.5">
+          <button
+            type="button"
+            onClick={() => setShowIssues((v) => !v)}
+            className="text-[10px] uppercase tracking-wide text-gray-500 hover:text-gray-300"
+            aria-expanded={showIssues}
+          >
+            By issue ({issueRows.length}) {showIssues ? '▾' : '▸'}
+          </button>
+          {showIssues ? (
+            <ul className="mt-1.5 space-y-1">
+              {issueRows.map((p) => {
+                const b = scoreBand(p.score);
+                return (
+                  <li key={p.issueNumber ?? 'series'} className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="text-gray-300">
+                      {p.issueNumber != null ? `Issue ${p.issueNumber}` : 'Series-wide'}
+                    </span>
+                    <span className="flex items-center gap-2 text-gray-500">
+                      <SeverityBreakdown openBySeverity={p.openBySeverity} />
+                      <span className={`font-medium ${b.tone}`}>{p.score}</span>
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
+        </div>
       ) : null}
     </section>
   );

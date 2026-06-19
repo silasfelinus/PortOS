@@ -5,6 +5,8 @@ import {
   scoreFromOpen,
   isReadyUnderGate,
   resolveReadinessGate,
+  isOpenFinding,
+  openBlockers,
   computeHealth,
   computeTrend,
   __testing,
@@ -52,6 +54,38 @@ describe('readiness gate', () => {
 
   it('none: always ready', () => {
     expect(isReadyUnderGate({ high: 9, medium: 9, low: 9 }, 'none')).toBe(true);
+  });
+});
+
+describe('isOpenFinding / openBlockers', () => {
+  it('treats anything but accepted/dismissed as open', () => {
+    expect(isOpenFinding({ status: 'open' })).toBe(true);
+    expect(isOpenFinding({})).toBe(true); // absent status
+    expect(isOpenFinding({ status: 'accepted' })).toBe(false);
+    expect(isOpenFinding({ status: 'dismissed' })).toBe(false);
+  });
+
+  it('openBlockers matches computeHealth open-detection + severity normalization', () => {
+    const comments = [
+      { severity: 'high', issueNumber: 1 }, // no status → open
+      open('medium', { issueNumber: 1 }),
+      open('low', { issueNumber: 2 }),
+      { status: 'accepted', severity: 'high' },
+      { status: 'open', severity: 'weird' }, // unknown → normalizes to medium
+    ];
+    // noOpenHigh: only the high (and nothing else) blocks.
+    expect(openBlockers(comments, 'noOpenHigh').map((c) => c.severity)).toEqual(['high']);
+    // noOpenHighOrMedium: high + both mediums (incl. the normalized 'weird').
+    expect(openBlockers(comments, 'noOpenHighOrMedium')).toHaveLength(3);
+    // none: nothing blocks.
+    expect(openBlockers(comments, 'none')).toEqual([]);
+  });
+
+  it('the blocker list can never disagree with computeHealth.ready', () => {
+    const comments = [open('high', { issueNumber: 1 })];
+    const health = computeHealth(comments, 'noOpenHigh');
+    const blockers = openBlockers(comments, 'noOpenHigh');
+    expect(health.ready).toBe(blockers.length === 0);
   });
 });
 

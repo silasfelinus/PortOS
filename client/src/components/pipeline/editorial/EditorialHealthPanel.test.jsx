@@ -82,4 +82,32 @@ describe('EditorialHealthPanel', () => {
     rerender(<EditorialHealthPanel seriesId="ser-1" refreshKey={1} />);
     await waitFor(() => expect(getEditorialHealth).toHaveBeenCalledTimes(2));
   });
+
+  it('hides the delta when there is only one trend point (nothing to compare)', async () => {
+    getEditorialHealth.mockResolvedValue(health({
+      trend: { points: [{ score: 83 }], regressions: [], delta: 0 },
+    }));
+    render(<EditorialHealthPanel seriesId="ser-1" />);
+    await screen.findByText('83');
+    // The "+0/0" delta chip should not render for a single revision.
+    expect(screen.queryByTitle('Change since the previous revision')).toBeNull();
+  });
+
+  it('renders the per-issue drill-down (issues with open findings, worst first)', async () => {
+    getEditorialHealth.mockResolvedValue(health({
+      perIssue: [
+        { issueNumber: 1, score: 95, open: 1, openBySeverity: { high: 0, medium: 0, low: 1 } },
+        { issueNumber: 2, score: 60, open: 2, openBySeverity: { high: 1, medium: 0, low: 0 } },
+        { issueNumber: 3, score: 100, open: 0, openBySeverity: { high: 0, medium: 0, low: 0 } },
+      ],
+    }));
+    render(<EditorialHealthPanel seriesId="ser-1" />);
+    await screen.findByText('83');
+    // Two issues carry open findings (issue 3 is clean → excluded); expand.
+    const toggle = screen.getByText(/By issue \(2\)/);
+    fireEvent.click(toggle);
+    expect(await screen.findByText('Issue 2')).toBeTruthy();
+    expect(screen.getByText('Issue 1')).toBeTruthy();
+    expect(screen.queryByText('Issue 3')).toBeNull();
+  });
 });

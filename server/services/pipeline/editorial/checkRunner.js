@@ -417,14 +417,19 @@ export async function runEditorialChecks(seriesId, options = {}) {
   // dismissed findings suppressed per-check. Skip entirely on cancellation — a
   // canceled run emits a `canceled` terminal event and must not mutate the
   // review with partial findings collected before the abort.
-  if (findings.length && !canceled) {
-    const review = await seedReviewFromFindings(seriesId, findings, { runId, mode: 'merge' });
-    // Record a revision-trend snapshot (#1316): this run is a revision boundary,
-    // so snapshot the post-seed open-finding counts for the health-trend ledger.
-    // Pass the just-merged comments so the ledger doesn't re-read the review file.
-    // Best-effort — a ledger write must never fail the check run (it's telemetry).
+  if (!canceled) {
+    // Seed only when there are findings (merge dedups); but record a revision-trend
+    // snapshot for EVERY non-canceled run (#1316) — a run is a revision boundary,
+    // and a CLEAN run (0 new findings, or fixes that closed prior ones) is exactly
+    // the improving point the trend should capture. When findings were seeded we
+    // pass the just-merged comments (no re-read); otherwise recordTrendSnapshot
+    // reads the current review itself. Best-effort — a ledger write must never
+    // fail the check run (it's telemetry).
+    const review = findings.length
+      ? await seedReviewFromFindings(seriesId, findings, { runId, mode: 'merge' })
+      : null;
     const gate = readReadinessGate(settings) || undefined;
-    await recordTrendSnapshot(seriesId, { runId, gate, comments: review.comments }).catch((err) => {
+    await recordTrendSnapshot(seriesId, { runId, gate, comments: review?.comments }).catch((err) => {
       console.error(`⚠️ editorial trend snapshot failed — series=${String(seriesId).slice(0, 12)} ${err.message}`);
     });
   }

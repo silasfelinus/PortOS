@@ -97,6 +97,29 @@ export function scoreFromOpen(openBySeverity) {
   return Math.max(0, Math.min(100, 100 - penalty));
 }
 
+// A finding is OPEN unless explicitly accepted (fixed) or dismissed (waived) —
+// the store defaults an unknown/absent status to 'open', so anything else counts
+// as a live blocker (can't under-count). Shared so the scorer and the autopilot
+// gate's residual filter agree on what "open" means.
+export const isOpenFinding = (comment) =>
+  comment?.status !== 'accepted' && comment?.status !== 'dismissed';
+
+/**
+ * The OPEN findings that block a given readiness gate — the residual a caller
+ * (e.g. the autopilot gate) surfaces when a series isn't "ready". Mirrors
+ * `computeHealth`'s open-detection + severity normalization exactly so the
+ * blocker list can never disagree with the `ready` verdict. Returns [] for the
+ * 'none' gate (nothing blocks).
+ */
+export function openBlockers(comments, gate = DEFAULT_READINESS_GATE) {
+  const g = resolveReadinessGate(gate);
+  if (g === 'none') return [];
+  const blocking = g === 'noOpenHighOrMedium' ? new Set(['high', 'medium']) : new Set(['high']);
+  return (Array.isArray(comments) ? comments : []).filter(
+    (c) => c && typeof c === 'object' && isOpenFinding(c) && blocking.has(normalizeSeverity(c.severity)),
+  );
+}
+
 // Tally one finding into an accumulator. OPEN findings drive the score +
 // breakdowns; accepted/dismissed are counted only for context (resolved totals).
 function tally(acc, comment) {
@@ -104,8 +127,8 @@ function tally(acc, comment) {
   const status = comment?.status;
   if (status === 'accepted') { acc.accepted += 1; return; }
   if (status === 'dismissed') { acc.dismissed += 1; return; }
-  // Treat any non-accepted/dismissed status (incl. legacy/absent) as open — the
-  // store defaults unknown statuses to 'open', so this can't under-count blockers.
+  // Any non-accepted/dismissed status (incl. legacy/absent) is open — see
+  // isOpenFinding; this can't under-count blockers.
   const sev = normalizeSeverity(comment?.severity);
   acc.open += 1;
   acc.openBySeverity[sev] += 1;

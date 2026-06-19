@@ -91,7 +91,7 @@ import * as volumeBeatsRunner from './volumeBeatsRunner.js';
 import * as autoRunner from './autoRunner.js';
 import { seedReviewFromFindings, getReview } from './manuscriptReview.js';
 import { runEditorialChecks, buildEditorialCheckPlan } from './editorial/checkRunner.js';
-import { computeHealth } from './editorialScore.js';
+import { computeHealth, openBlockers } from './editorialScore.js';
 import { getSettings } from '../settings.js';
 import { readReadinessGate } from '../../lib/editorial/index.js';
 import { generateManuscriptFix, acceptManuscriptFix } from './manuscriptFix.js';
@@ -670,8 +670,13 @@ async function runEditorialHealthGate(sId, record) {
   if (record.cancelRequested) return { canceled: true };
   const settings = await getSettings().catch(() => null);
   const gate = readReadinessGate(settings) || undefined;
-  const review = await getReview(sId).catch(() => ({ comments: [] }));
-  const health = computeHealth(review.comments || [], gate);
+  // Do NOT swallow a getReview error into an empty review — that would fail OPEN
+  // (the gate would pass on a corrupt/unreadable store and let the run proceed to
+  // visuals without verifying health). Let it bubble to the coordinator's
+  // top-level catch, which records a clean `error` terminal state.
+  const review = await getReview(sId);
+  const comments = review.comments || [];
+  const health = computeHealth(comments, gate);
   broadcast(sId, {
     type: 'verify:round', scope: 'editorialHealth', round: 1,
     findings: health.open, blocking: health.ready ? 0 : health.open, score: health.score,
@@ -680,11 +685,9 @@ async function runEditorialHealthGate(sId, record) {
     record.runState.editorialHealthReady = true;
     return {};
   }
-  // Not clean — surface the open blockers (the gate-relevant severities) as the
-  // residual the pause records, so the human sees exactly what's left.
-  const blockers = (review.comments || []).filter(
-    (c) => c.status === 'open' && (gate === 'noOpenHighOrMedium' ? ARC_BLOCKING.has(c.severity) : EDITORIAL_BLOCKING.has(c.severity)),
-  );
+  // Not clean — surface the open blockers (via the shared helper, so the residual
+  // can't disagree with computeHealth's `ready` verdict) for the human triage.
+  const blockers = openBlockers(comments, gate);
   return { pause: true, reason: `editorial health not clean (score ${health.score}, ${health.open} open finding(s))`, residual: blockers };
 }
 
