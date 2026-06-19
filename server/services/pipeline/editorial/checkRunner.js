@@ -82,10 +82,13 @@ const SOURCE_RESOLVERS = {
   // — fingerprint the whole array so any arc/transition edit stales the findings.
   'series.characterArcs': ({ series }) => canonicalStringify(series?.characterArcs ?? null),
   // The per-issue storyboard shot lists the visual.shot-continuity check reads
-  // (#1315). Built off the already-loaded issues (no extra I/O); fingerprint the
-  // flattened `{ issueNumber, scene }` list so any shot edit (framing, direction,
-  // continuity link) stales the finding. Over-eager-but-safe, like reverseOutline.
-  'storyboard.shots': ({ storyboardScenes }) => canonicalStringify(storyboardScenes ?? null),
+  // (#1315). Fingerprint ONLY the fields the check actually reads (scene
+  // heading/slugline + each shot's grammar fields) via `projectStoryboardContinuity`
+  // — NOT the whole scene object, so an unrelated render/status edit
+  // (`imageJobId`, `sceneVideoJobId`, wardrobe metadata) doesn't falsely stale a
+  // continuity finding. Mirrors `projectComicLetteringContent` for the comic check.
+  'storyboard.shots': ({ storyboardScenes }) =>
+    canonicalStringify(projectStoryboardContinuity(storyboardScenes) ?? null),
   // Every issue's AUTHORITATIVE comic lettering content, keyed by issue number
   // (#1313). The lettering-density check reads the edited comic-pages split (or the
   // generated script when unsplit) — NOT the prose manuscript — so it gets its own
@@ -113,6 +116,29 @@ function collectStoryboardScenes(issues) {
     }
   }
   return out;
+}
+
+// Project the collected storyboard scenes down to ONLY the fields the
+// visual.shot-continuity check reads (#1315), for the staleness fingerprint —
+// the scene's heading/slugline (its finding location) and each shot's grammar
+// fields (`id`, `continuityFromShotId`, `screenDirection`, `shotType`,
+// `description` — the anchorQuote source). Excludes render/status fields
+// (`imageJobId`, `sceneVideoJobId`, wardrobe, …) so a finding stales only when
+// the shot grammar it analyzed changes, not on an unrelated render. Mirrors
+// `projectComicLetteringContent`. Type-guarded throughout (scenes ride peer sync).
+function projectStoryboardContinuity(storyboardScenes) {
+  return (Array.isArray(storyboardScenes) ? storyboardScenes : []).map(({ issueNumber, scene }) => ({
+    issueNumber: Number.isInteger(issueNumber) ? issueNumber : null,
+    heading: typeof scene?.heading === 'string' ? scene.heading : '',
+    slugline: typeof scene?.slugline === 'string' ? scene.slugline : '',
+    shots: (Array.isArray(scene?.shots) ? scene.shots : []).map((s) => ({
+      id: typeof s?.id === 'string' ? s.id : '',
+      continuityFromShotId: typeof s?.continuityFromShotId === 'string' ? s.continuityFromShotId : null,
+      screenDirection: typeof s?.screenDirection === 'string' ? s.screenDirection : null,
+      shotType: typeof s?.shotType === 'string' ? s.shotType : null,
+      description: typeof s?.description === 'string' ? s.description : '',
+    })),
+  }));
 }
 
 // Project the loaded issues down to the lettering-relevant comic content the check

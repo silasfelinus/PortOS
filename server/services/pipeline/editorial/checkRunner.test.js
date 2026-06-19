@@ -441,6 +441,38 @@ describe('getReviewWithStaleness (#1345)', () => {
     expect(review.comments.find((c) => c.checkId === 'naming.dissimilar-names').stale).toBe(false);
   });
 
+  it('keeps a storyboard-continuity finding fresh after an unrelated render edit (#1315 projection)', async () => {
+    // The fingerprint must project to only the fields the check reads (shot
+    // grammar + heading/slugline) — a render/status edit (sceneVideoJobId,
+    // imageJobId) on the same scene must NOT stale the continuity finding.
+    issuesState = [{
+      id: 'i1', seriesId: 's1', number: 1,
+      stages: { storyboards: { scenes: [{
+        heading: 'INT. THRONE ROOM',
+        shots: [
+          { id: 'shot-01', description: 'left', screenDirection: 'left' },
+          { id: 'shot-02', description: 'right', screenDirection: 'right', continuityFromShotId: 'shot-01' },
+        ],
+      }] } },
+    }];
+    await seedReviewFromRun();
+    expect(reviewState.comments.find((c) => c.checkId === 'visual.shot-continuity')).toBeTruthy();
+    // Same shot grammar; only a render artifact + per-shot job id changed.
+    issuesState = [{
+      id: 'i1', seriesId: 's1', number: 1,
+      stages: { storyboards: { scenes: [{
+        heading: 'INT. THRONE ROOM',
+        sceneVideoJobId: 'job-rendered-42',
+        shots: [
+          { id: 'shot-01', description: 'left', screenDirection: 'left', startFrameJobId: 'frame-9' },
+          { id: 'shot-02', description: 'right', screenDirection: 'right', continuityFromShotId: 'shot-01', startFrameJobId: 'frame-10' },
+        ],
+      }] } },
+    }];
+    const review = await getReviewWithStaleness('s1');
+    expect(review.comments.find((c) => c.checkId === 'visual.shot-continuity').stale).toBe(false);
+  });
+
   it('keeps a scene finding fresh when the manuscript changes (reverseOutline-only source)', async () => {
     outlineState = { scenes: [{ id: 'scene-001', issueNumber: 1, heading: 'Talking heads', anchorQuote: 'q', components: { narrative: false, action: false, dialogue: true } }] };
     await seedReviewFromRun();
