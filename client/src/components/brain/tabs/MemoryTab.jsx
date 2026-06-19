@@ -24,6 +24,7 @@ import {
 import { timeAgo } from '../../../utils/formatters';
 import BrailleSpinner from '../../BrailleSpinner';
 import InlineConfirmRow from '../../ui/InlineConfirmRow';
+import CopyableId from '../../ui/CopyableId';
 import { useConfirmDelete } from '../../../hooks/useConfirmDelete';
 
 export default function MemoryTab({ onRefresh }) {
@@ -558,15 +559,18 @@ export default function MemoryTab({ onRefresh }) {
               </>
             )}
 
-            <p className="text-xs text-gray-500 mt-2">
-              {activeType === 'memories' && record.source === 'chatgpt-import' && (record.sourceUpdatedAt || record.sourceCreatedAt)
-                // Imported entries all share the bulk-import updatedAt, so show the
-                // original conversation recency instead (matches the list sort order) —
-                // but only when a source clock exists; a clockless import falls back to
-                // the honest "Updated {import time}" rather than mislabeling it.
-                ? `Conversation ${timeAgo(record.sourceUpdatedAt || record.sourceCreatedAt)}`
-                : `Updated ${timeAgo(record.updatedAt)}`}
-            </p>
+            <div className="flex items-center gap-2 mt-2 flex-wrap">
+              <p className="text-xs text-gray-500">
+                {activeType === 'memories' && record.source === 'chatgpt-import' && (record.sourceUpdatedAt || record.sourceCreatedAt)
+                  // Imported entries all share the bulk-import updatedAt, so show the
+                  // original conversation recency instead (matches the list sort order) —
+                  // but only when a source clock exists; a clockless import falls back to
+                  // the honest "Updated {import time}" rather than mislabeling it.
+                  ? `Conversation ${timeAgo(record.sourceUpdatedAt || record.sourceCreatedAt)}`
+                  : `Updated ${timeAgo(record.updatedAt)}`}
+              </p>
+              <CopyableId id={record.id} />
+            </div>
           </div>
 
           <div className="flex items-center gap-1">

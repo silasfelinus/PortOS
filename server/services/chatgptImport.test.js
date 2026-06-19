@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, readdir, readFile } from 'fs/promises';
+import { mkdtemp, rm, readdir, readFile, mkdir, writeFile } from 'fs/promises';
+import { existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -14,15 +15,19 @@ let importConversations;
 let extractMessages;
 let formatTranscript;
 let readArchivedConversation;
+let deleteMemoryAssets;
+let extractAssetFileNames;
+let ASSETS_DIR;
 
 describe('chatgptImport service', () => {
   beforeEach(async () => {
     TMP = await mkdtemp(join(tmpdir(), 'portos-chatgpt-'));
     // Re-require the module so it picks up the new TMP
     vi.resetModules();
+    ASSETS_DIR = join(TMP, 'imports', 'assets');
     vi.doMock('../lib/fileUtils.js', async () => {
       const actual = await vi.importActual('../lib/fileUtils.js');
-      return { ...actual, PATHS: { ...actual.PATHS, brain: TMP } };
+      return { ...actual, PATHS: { ...actual.PATHS, brain: TMP, brainImportAssets: ASSETS_DIR } };
     });
     vi.doMock('./brainStorage.js', () => ({
       createMemoryEntry: vi.fn(async (data) => ({ id: `mem-${Math.random().toString(36).slice(2, 8)}`, ...data }))
@@ -33,6 +38,8 @@ describe('chatgptImport service', () => {
     extractMessages = mod.extractMessages;
     formatTranscript = mod.formatTranscript;
     readArchivedConversation = mod.readArchivedConversation;
+    deleteMemoryAssets = mod.deleteMemoryAssets;
+    extractAssetFileNames = mod.__test.extractAssetFileNames;
     const storage = await import('./brainStorage.js');
     createMemoryEntryMock = storage.createMemoryEntry;
   });
@@ -267,6 +274,92 @@ describe('chatgptImport service', () => {
 
     it('returns null for a well-formed name with no matching file', async () => {
       expect(await readArchivedConversation('does-not-exist.json')).toBeNull();
+    });
+  });
+
+  describe('extractAssetFileNames', () => {
+    it('pulls flat asset filenames out of markdown content', () => {
+      const content = [
+        '![cat](/data/brain-imports/file-abc.png)',
+        '[🔊 voice](/data/brain-imports/file-def.mp3)',
+        'Some text with a [📎 doc](/data/brain-imports/file-ghi.pdf).',
+      ].join('\n');
+      const names = extractAssetFileNames(content);
+      expect([...names].sort()).toEqual(['file-abc.png', 'file-def.mp3', 'file-ghi.pdf']);
+    });
+
+    it('ignores unrelated urls and rejects path-traversal segments', () => {
+      const content = [
+        '![ext](https://example.com/x.png)',
+        '![evil](/data/brain-imports/../../../etc/passwd)',
+        '![ok](/data/brain-imports/file-ok.png)',
+      ].join('\n');
+      expect([...extractAssetFileNames(content)]).toEqual(['file-ok.png']);
+    });
+
+    it('returns an empty set for non-string / asset-free content', () => {
+      expect(extractAssetFileNames(null).size).toBe(0);
+      expect(extractAssetFileNames('plain memory text').size).toBe(0);
+    });
+  });
+
+  describe('deleteMemoryAssets', () => {
+    const writeAsset = async (name) => {
+      await mkdir(ASSETS_DIR, { recursive: true });
+      await writeFile(join(ASSETS_DIR, name), 'x');
+    };
+
+    it('removes the archived transcript and orphaned assets of a deleted import', async () => {
+      await importConversations(parseExport([sampleConversation()])); // writes conv-1.json archive
+      await writeAsset('file-a.png');
+      await writeAsset('file-b.mp3');
+      expect(existsSync(join(TMP, 'imports', 'chatgpt', 'conv-1.json'))).toBe(true);
+
+      await deleteMemoryAssets({
+        id: 'mem-1',
+        source: 'chatgpt-import',
+        sourceRef: 'conv-1.json',
+        content: '![a](/data/brain-imports/file-a.png)\n[🔊](/data/brain-imports/file-b.mp3)',
+      }, []);
+
+      expect(existsSync(join(TMP, 'imports', 'chatgpt', 'conv-1.json'))).toBe(false);
+      expect(existsSync(join(ASSETS_DIR, 'file-a.png'))).toBe(false);
+      expect(existsSync(join(ASSETS_DIR, 'file-b.mp3'))).toBe(false);
+    });
+
+    it('keeps an asset that a surviving import memory still references', async () => {
+      await writeAsset('file-shared.png');
+      await writeAsset('file-solo.png');
+
+      await deleteMemoryAssets({
+        id: 'mem-1',
+        source: 'chatgpt-import',
+        sourceRef: 'gone.json',
+        content: '![s](/data/brain-imports/file-shared.png)\n![x](/data/brain-imports/file-solo.png)',
+      }, ['![still](/data/brain-imports/file-shared.png)']);
+
+      // Shared asset survives (another memory uses it); solo asset is removed.
+      expect(existsSync(join(ASSETS_DIR, 'file-shared.png'))).toBe(true);
+      expect(existsSync(join(ASSETS_DIR, 'file-solo.png'))).toBe(false);
+    });
+
+    it('is a no-op for non-import memories', async () => {
+      await writeAsset('file-keep.png');
+      await deleteMemoryAssets({
+        id: 'mem-1',
+        source: undefined,
+        content: '![x](/data/brain-imports/file-keep.png)',
+      }, []);
+      expect(existsSync(join(ASSETS_DIR, 'file-keep.png'))).toBe(true);
+    });
+
+    it('tolerates already-missing files without throwing', async () => {
+      await expect(deleteMemoryAssets({
+        id: 'mem-1',
+        source: 'chatgpt-import',
+        sourceRef: 'never-written.json',
+        content: '![x](/data/brain-imports/never-written.png)',
+      }, [])).resolves.toBeUndefined();
     });
   });
 });
