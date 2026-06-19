@@ -61,10 +61,9 @@ For each named character who carries meaningful presence in the manuscript:
 
 1. **Detect transition beats.** Find the genuine change moments and propose them
    as findings. Quote a short verbatim anchor (≤ 200 chars) at the moment of
-   change, name the `transitionKind` (one of: `decision`, `realization`,
-   `point-of-no-return`, `relapse`, `sacrifice`), and put the character's name in
-   the `character` field. Set the `location` to the character + kind (e.g.
-   `Mara — point-of-no-return`).
+   change. Set the `location` to the character name + the change kind — one of
+   `decision`, `realization`, `point-of-no-return`, `relapse`, `sacrifice` — e.g.
+   `Mara — point-of-no-return`.
 2. **Reconcile against the authored arcs** (only when authored arcs are present
    above): flag a clear change moment in the prose that the author's arc never
    recorded (`problem` says "undocumented transition"), and an authored
@@ -72,9 +71,9 @@ For each named character who carries meaningful presence in the manuscript:
    paid off").
 3. **Flag flat arcs.** A character who plainly carries the story (a POV holder, a
    protagonist, a recurring named figure) but has NO transition beat anywhere —
-   they end as they began — is a flat arc. Emit one finding with
-   `transitionKind` set to `flat`, naming the character and why their flatness
-   weakens the story.
+   they end as they began — is a flat arc. Emit one finding with `location` set to
+   the character name + `flat arc` (e.g. `Joss — flat arc`), naming the character
+   and why their flatness weakens the story (omit the `anchorQuote`).
 
 Severity: a flat arc for a central character or a missing point-of-no-return is
 high; an undocumented minor transition is low. If every carrying character has a
@@ -92,9 +91,7 @@ commentary:
     {
       "severity": "high|medium|low",
       "issueNumber": 3,
-      "character": "the character whose arc this concerns",
-      "transitionKind": "decision|realization|point-of-no-return|relapse|sacrifice|flat",
-      "location": "string — character + kind (e.g. 'Mara — point-of-no-return')",
+      "location": "string — character + change kind (e.g. 'Mara — point-of-no-return' or 'Joss — flat arc')",
       "problem": "1–3 sentences naming the transition (or its absence) and why it matters",
       "suggestion": "1–3 sentences proposing how to land, document, or create the change",
       "anchorQuote": "short verbatim quote at the moment of change (≤ 200 chars); omit for a flat-arc finding"
