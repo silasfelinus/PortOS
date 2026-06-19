@@ -370,6 +370,14 @@ export async function deleteMemoryAssets(record, survivingContents = []) {
   }
 
   // 2. Served assets — only those no surviving import memory still references.
+  // Both sides are compared via the SAME truncated `content` (not the full
+  // archived transcript), which keeps the comparison symmetric: an asset
+  // referenced only in the truncated tail of an over-long conversation is
+  // invisible on both the deleted record AND its survivors, so it's
+  // conservatively KEPT (a harmless orphan) rather than wrongly deleted out
+  // from under a survivor that still uses it. Expanding to the full transcript
+  // would require reading every surviving import's archive on each delete to
+  // stay symmetric — not worth it for the tail-asset edge case.
   const referenced = extractAssetFileNames(record.content);
   if (referenced.size === 0) return;
   const stillUsed = new Set();

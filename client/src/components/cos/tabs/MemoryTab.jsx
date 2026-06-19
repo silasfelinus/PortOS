@@ -434,7 +434,7 @@ export default function MemoryTab({ apps = [] }) {
                           <span className="text-port-accent">{getAppName(memory.sourceAppId, apps)}</span>
                         </>
                       )}
-                      <span>*</span>
+                      {memory.id && <span>*</span>}
                       <CopyableId id={memory.id} />
                     </div>
                   </div>
