@@ -345,6 +345,24 @@ export const extractAssetFileNames = (content) => {
 };
 
 /**
+ * Every asset filename an import memory references — across BOTH its (possibly
+ * truncated) `content` AND its full archived transcript. The memory `content`
+ * is capped at MAX_MEMORY_CONTENT, so an asset linked only past the truncation
+ * point is invisible in `content` but present in the archive; unioning the two
+ * catches it. Reads the archive only when the memory carries a `sourceRef`.
+ */
+const assetNamesForMemory = async (record) => {
+  const names = extractAssetFileNames(record?.content);
+  if (record?.sourceRef) {
+    const archive = await readArchivedConversation(record.sourceRef);
+    if (typeof archive?.transcript === 'string') {
+      for (const name of extractAssetFileNames(archive.transcript)) names.add(name);
+    }
+  }
+  return names;
+};
+
+/**
  * Delete the on-disk assets + archived transcript that belonged to a deleted
  * `chatgpt-import` memory, leaving no orphans under `data/brain/imports/`.
  *
@@ -357,7 +375,9 @@ export const extractAssetFileNames = (content) => {
  *     shares its `sourceRef`.
  *   - An asset id can likewise recur across conversations (ChatGPT reuses a
  *     `file-service://` id), so an asset is only unlinked when NO survivor
- *     still references it.
+ *     still references it — compared via the FULL archived transcript, not the
+ *     truncated `content`, so an asset linked only in a survivor's truncated
+ *     tail isn't wrongly pulled out from under it.
  *
  * Best-effort: a missing file is a no-op (already gone), and any unlink failure
  * is logged but never thrown — cleanup must not turn a successful delete into a
@@ -365,6 +385,10 @@ export const extractAssetFileNames = (content) => {
  */
 export async function deleteMemoryAssets(record, survivors = []) {
   if (!record || record.source !== 'chatgpt-import') return;
+
+  // Resolve the deleted record's full asset set BEFORE unlinking its transcript
+  // below (the transcript is one of the sources we read asset links from).
+  const referenced = await assetNamesForMemory(record);
 
   // 1. Archived transcript — remove only when no surviving import shares it (a
   // re-import of the same conversation reuses the same `<id>.json` archive).
@@ -376,20 +400,13 @@ export async function deleteMemoryAssets(record, survivors = []) {
     });
   }
 
-  // 2. Served assets — only those no surviving import memory still references.
-  // Both sides are compared via the SAME truncated `content` (not the full
-  // archived transcript), which keeps the comparison symmetric: an asset
-  // referenced only in the truncated tail of an over-long conversation is
-  // invisible on both the deleted record AND its survivors, so it's
-  // conservatively KEPT (a harmless orphan) rather than wrongly deleted out
-  // from under a survivor that still uses it. Expanding to the full transcript
-  // would require reading every surviving import's archive on each delete to
-  // stay symmetric — not worth it for the tail-asset edge case.
-  const referenced = extractAssetFileNames(record.content);
+  // 2. Served assets — only those no surviving import memory still references
+  // (in its content OR its full archive). Short-circuit when this memory had no
+  // assets so an asset-free conversation never reads a single survivor archive.
   if (referenced.size === 0) return;
   const stillUsed = new Set();
   for (const m of survivors) {
-    for (const name of extractAssetFileNames(m?.content)) stillUsed.add(name);
+    for (const name of await assetNamesForMemory(m)) stillUsed.add(name);
   }
   const orphaned = [...referenced].filter((name) => !stillUsed.has(name));
   await Promise.all(orphaned.map((name) =>

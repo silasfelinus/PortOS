@@ -343,6 +343,30 @@ describe('chatgptImport service', () => {
       expect(existsSync(join(ASSETS_DIR, 'file-solo.png'))).toBe(false);
     });
 
+    it('keeps an asset a survivor references only in its full archive transcript (beyond truncated content)', async () => {
+      await writeAsset('file-tail.png');
+      // Write a survivor's archive whose TRANSCRIPT references the asset, while
+      // the survivor's stored `content` (passed below) does NOT — simulating a
+      // link that fell past the memory's truncation point.
+      await importConversations(parseExport([sampleConversation({
+        id: 'survivor-conv',
+        mapping: {
+          n1: { id: 'n1', parent: null, message: { id: 'm-a', author: { role: 'user' }, content: { parts: ['![tail](/data/brain-imports/file-tail.png)'] }, create_time: 1700000000 } },
+        },
+        current_node: 'n1',
+      })]));
+
+      await deleteMemoryAssets({
+        id: 'mem-del',
+        source: 'chatgpt-import',
+        sourceRef: 'gone.json',
+        content: '![t](/data/brain-imports/file-tail.png)',
+      }, [{ id: 'mem-survivor', source: 'chatgpt-import', sourceRef: 'survivor-conv.json', content: 'no asset link here' }]);
+
+      // The survivor's archive still links the asset, so it must NOT be unlinked.
+      expect(existsSync(join(ASSETS_DIR, 'file-tail.png'))).toBe(true);
+    });
+
     it('keeps the archived transcript when a surviving memory shares its sourceRef (same export imported twice)', async () => {
       await importConversations(parseExport([sampleConversation()])); // writes conv-1.json archive
       expect(existsSync(join(TMP, 'imports', 'chatgpt', 'conv-1.json'))).toBe(true);
