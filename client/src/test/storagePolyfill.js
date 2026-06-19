@@ -57,7 +57,11 @@ export const ensureStorage = (name, root = globalThis) => {
   if (storageWorks(root[name])) return false;
   const shim = createMemoryStorage();
   Object.defineProperty(root, name, { value: shim, configurable: true, writable: true });
-  if (typeof window !== 'undefined' && window !== root) {
+  // jsdom may expose `window` and `globalThis` as distinct objects; alias the shim
+  // onto `window` too so bare `localStorage` and `window.localStorage` resolve to the
+  // same instance. Only when installing onto the real global root — a caller passing
+  // an explicit `root` (e.g. tests) must not mutate the global `window`.
+  if (root === globalThis && typeof window !== 'undefined' && window !== globalThis) {
     Object.defineProperty(window, name, { value: shim, configurable: true, writable: true });
   }
   return true;
