@@ -54,6 +54,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `canonPrompt.js` | Per-kind field-precedence rules; SHORT/RICH/PREVIEW spec tables; `flattenCanonDescriptorFragments` / `mapCanonDescriptorFragments` / `descriptorForCanonEntry`. |
 | `scenePrompt.js` | Scene-prompt composer + bible matchers (chars/places/objects in text). |
 | `sceneExtractor.js` | Split prose or teleplay into scene list via LLM. |
+| `shotGrammar.js` | Pure shot-grammar vocabularies (`SHOT_TYPES`, `SCREEN_DIRECTIONS`) + normalizers (`normalizeShotType`, `normalizeScreenDirection`) for a storyboard shot's camera framing + on-screen direction. Shared by the scene extractor's sanitizer, the storyboards Zod schema, and the `visual.shot-continuity` editorial check (#1315). |
 | `seasonStructure.js` | Season/episode structure recommendation. |
 | `seriesCharacterArc.js` | Per-character story-arc shapes (`series.characterArcs[]`): want/need, start → end state, transition beats. Sanitizers + `renderCharacterArcsForPrompt` for the `arc.transitions` editorial check. |
 | `seriesLlmOverride.js` | Pure `resolveSeriesLlmOverride(series, { overrideProvider, overrideModel })` → `{ provider, model, providerMatchesSeries }` — shared fallback so Pipeline LLM actions honor the series' configured provider/model, only inheriting the series model when the effective provider still matches. |

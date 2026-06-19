@@ -6,6 +6,7 @@ import { ALL_STYLE_IDS, STYLE_ID } from './writersRoomStylePresets.js';
 import { BIBLE_LIMITS, RELATIONSHIP_LINK_TYPES, RELATIONSHIP_OPPOSITION_AXES, ATTACHMENT_ROLES } from './storyBible.js';
 import { MIN_TIMEOUT as STAGE_TIMEOUT_MIN_MS, MAX_TIMEOUT as STAGE_TIMEOUT_MAX_MS } from './aiToolkit/constants.js';
 import { CHECK_SCOPES, CHECK_SEVERITIES } from './editorial/checkRegistry.js';
+import { SHOT_TYPES, SCREEN_DIRECTIONS } from './shotGrammar.js';
 import { WORK_TRACKERS } from './workTracker.js';
 
 // gpt-image-2 (codex backend) caps at 3840px per edge and 8,294,400 total
@@ -1120,6 +1121,43 @@ export const writersRoomDraftSaveSchema = z.object({
 export const writersRoomSnapshotSchema = z.object({
   label: z.string().trim().min(1).max(100).optional()
 }).strict();
+
+// A single storyboard shot within `stages.storyboards.scenes[].shots[]` (#1315).
+// Validates the known shot fields and the new film-grammar enums (`shotType`,
+// `screenDirection`) — each nullable + tolerant of the UI's "not captured"
+// sentinel (null) and an empty-string clear (preprocessed to undefined). It is
+// `.passthrough()` (NOT strip) because render-time hooks stamp extra fields onto
+// a shot (`startFrameJobId`) that must survive a re-PATCH of the scenes array;
+// the load-bearing normalization still happens in `sanitizeShot`
+// (sceneExtractor.js) on the auto-extract path, but the route validates the
+// enums up front so an invalid framing/direction is rejected, not silently kept.
+export const storyboardShotSchema = z.object({
+  // id / description are optional here (not at the sanitizer) so the route stays
+  // as tolerant as `sanitizeShot`, which synthesizes a missing id and drops a
+  // description-less shot — the route's job is only to reject a bad enum, not to
+  // tighten the existing client contract.
+  id: z.string().trim().max(80).optional(),
+  description: z.string().max(2000).optional(),
+  durationSeconds: z.number().int().min(1).max(30).optional(),
+  continuityFromShotId: z.string().trim().max(80).nullable().optional(),
+  shotType: z.preprocess(
+    (v) => (v === '' ? null : v),
+    z.enum(SHOT_TYPES).nullable().optional(),
+  ),
+  screenDirection: z.preprocess(
+    (v) => (v === '' ? null : v),
+    z.enum(SCREEN_DIRECTIONS).nullable().optional(),
+  ),
+}).passthrough();
+
+// A storyboard scene as submitted through the visual-stage PATCH. Kept
+// `.passthrough()` so the rich, evolving scene shape (heading, slugline,
+// dialogue, sceneVideoJobId, …) flows through untouched — only `shots[]` is
+// validated (through storyboardShotSchema) so a bad shotType/screenDirection
+// is caught at the route instead of persisting unnormalized.
+export const storyboardSceneSchema = z.object({
+  shots: z.array(storyboardShotSchema).max(64).optional(),
+}).passthrough();
 
 export const writersRoomExerciseCreateSchema = z.object({
   workId: wrIdNullable.optional(),

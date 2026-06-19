@@ -7,3 +7,4 @@ export * from './italicThoughts.js';
 export * from './nameSimilarity.js';
 export * from './proseTics.js';
 export * from './repetition.js';
+export * from './shotContinuity.js';

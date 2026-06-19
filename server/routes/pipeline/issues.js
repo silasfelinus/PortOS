@@ -13,6 +13,7 @@ import {
   imageEdgeSchema,
   refineImagePixelCap,
   PIXEL_CAP_MESSAGE,
+  storyboardSceneSchema,
 } from '../../lib/validation.js';
 import * as seriesSvc from '../../services/pipeline/series.js';
 import * as issuesSvc from '../../services/pipeline/issues.js';
@@ -89,7 +90,11 @@ const audioCueInputSchema = z.object({
 // migration; the service-level sanitizer caps array length.
 const visualStageInputSchema = stageInputSchema.extend({
   pages: z.array(z.any()).max(200).optional(),
-  scenes: z.array(z.any()).max(200).optional(),
+  // Scenes stay passthrough (the rich scene shape evolves freely), but each
+  // scene's shots[] is validated through storyboardSceneSchema so a bad
+  // shotType/screenDirection enum is rejected at the route (#1315) instead of
+  // persisting unnormalized. Non-storyboard visual stages simply carry no shots.
+  scenes: z.array(storyboardSceneSchema).max(200).optional(),
   cdProjectId: z.string().trim().max(64).nullable().optional(),
   videoPath: z.string().trim().max(1000).nullable().optional(),
   aspectRatio: z.enum(ASPECT_RATIOS).nullable().optional(),

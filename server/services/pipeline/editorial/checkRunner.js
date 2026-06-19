@@ -81,7 +81,29 @@ const SOURCE_RESOLVERS = {
   // against (#1293). Lives on the already-loaded series record, so no extra I/O
   // — fingerprint the whole array so any arc/transition edit stales the findings.
   'series.characterArcs': ({ series }) => canonicalStringify(series?.characterArcs ?? null),
+  // The per-issue storyboard shot lists the visual.shot-continuity check reads
+  // (#1315). Built off the already-loaded issues (no extra I/O); fingerprint the
+  // flattened `{ issueNumber, scene }` list so any shot edit (framing, direction,
+  // continuity link) stales the finding. Over-eager-but-safe, like reverseOutline.
+  'storyboard.shots': ({ storyboardScenes }) => canonicalStringify(storyboardScenes ?? null),
 };
+
+// Flatten the storyboard scenes across every issue into the `{ issueNumber, scene }`
+// list the visual.shot-continuity check reads (#1315). Built off the already-loaded
+// issues — no extra I/O. Only issues that actually have storyboard scenes contribute,
+// so a series with no visual stage yields an empty list (the check's gate then skips).
+function collectStoryboardScenes(issues) {
+  const out = [];
+  for (const issue of (Array.isArray(issues) ? issues : [])) {
+    const scenes = issue?.stages?.storyboards?.scenes;
+    if (!Array.isArray(scenes) || !scenes.length) continue;
+    const issueNumber = Number.isInteger(issue.number) ? issue.number : null;
+    for (const scene of scenes) {
+      if (scene && typeof scene === 'object') out.push({ issueNumber, scene });
+    }
+  }
+  return out;
+}
 
 // Stable projection of the series editorial aggregate down to the arc fields a
 // POV/arc check reads — drops the volatile `generatedAt` (and the rest) so the
@@ -208,6 +230,9 @@ export async function runEditorialChecks(seriesId, options = {}) {
     needsEditorialArcs ? getSeriesEditorial(seriesId, { series }).catch(() => null) : Promise.resolve(null),
   ]);
   const manuscript = sectionsCorpus(sections);
+  // Storyboard shots for the visual.shot-continuity check (#1315) — built off the
+  // already-loaded issues, so no extra I/O regardless of whether the check is on.
+  const storyboardScenes = collectStoryboardScenes(issues);
   const reverseOutline = Array.isArray(outline?.scenes) ? outline.scenes : [];
   // The outline's plotline list (#1310) — injected separately from the scenes so a
   // plotline-reading check (plot.structure-momentum) can reconcile dropped subplots
@@ -222,7 +247,7 @@ export async function runEditorialChecks(seriesId, options = {}) {
   // Resolve every source token once — each finding's fingerprint reads from this
   // so the editor flags it `stale` when the content that check actually read (its
   // declared `sources`) drifts (#1345, #1387).
-  const resolvedSources = resolveSources({ manuscript, canon, series, reverseOutline, reverseOutlinePlotlines, editorialArcs, editorialArcsComplete });
+  const resolvedSources = resolveSources({ manuscript, canon, series, reverseOutline, reverseOutlinePlotlines, editorialArcs, editorialArcsComplete, storyboardScenes });
   const baseCtx = {
     seriesId,
     series,
@@ -233,6 +258,7 @@ export async function runEditorialChecks(seriesId, options = {}) {
     reverseOutlinePlotlines,
     editorialArcs,
     editorialArcsComplete,
+    storyboardScenes,
     canon,
     providerOverride,
     modelOverride,
@@ -380,19 +406,23 @@ export async function getReviewWithStaleness(seriesId) {
     return sources.includes('reverseOutline') || sources.includes('reverseOutline.plotlines');
   });
   const needsEditorialArcs = evaluable.some((c) => checkSources(checkFor(c.checkId)).includes('editorialArcs'));
+  // Storyboard shots staleness (#1315) — fetch issues only when an evaluable check
+  // declares the source, mirroring the other gated fetches.
+  const needsStoryboards = evaluable.some((c) => checkSources(checkFor(c.checkId)).includes('storyboard.shots'));
   const series = await getSeries(seriesId);
-  const [sections, canon, outline, editorial] = await Promise.all([
+  const [sections, canon, outline, editorial, issues] = await Promise.all([
     needsManuscript ? collectManuscriptSections(seriesId) : Promise.resolve([]),
     getSeriesCanon(series),
     needsReverseOutline ? getReverseOutline(seriesId).catch(() => null) : Promise.resolve(null),
-    // Reuse the already-loaded series (issues isn't fetched on this path).
     needsEditorialArcs ? getSeriesEditorial(seriesId, { series }).catch(() => null) : Promise.resolve(null),
+    needsStoryboards ? listIssues({ seriesId }).catch(() => []) : Promise.resolve([]),
   ]);
   const reverseOutline = Array.isArray(outline?.scenes) ? outline.scenes : [];
   const reverseOutlinePlotlines = Array.isArray(outline?.plotlines) ? outline.plotlines : [];
   const editorialArcs = projectEditorialArcs(editorial);
   const editorialArcsComplete = editorialCoverageComplete(editorial);
-  const resolvedSources = resolveSources({ manuscript: sectionsCorpus(sections), canon, series, reverseOutline, reverseOutlinePlotlines, editorialArcs, editorialArcsComplete });
+  const storyboardScenes = collectStoryboardScenes(issues);
+  const resolvedSources = resolveSources({ manuscript: sectionsCorpus(sections), canon, series, reverseOutline, reverseOutlinePlotlines, editorialArcs, editorialArcsComplete, storyboardScenes });
   return {
     ...review,
     comments: review.comments.map((c) => {

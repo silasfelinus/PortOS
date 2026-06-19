@@ -19,7 +19,9 @@ import {
   writersRoomCharacterUpdateSchema,
   writersRoomObjectUpdateSchema,
   editorialCustomCheckUpdateSchema,
-  pipelineEditorialChecksSettingsSchema
+  pipelineEditorialChecksSettingsSchema,
+  storyboardShotSchema,
+  storyboardSceneSchema
 } from './validation.js';
 
 describe('validation.js', () => {
@@ -888,6 +890,45 @@ describe('validation.js', () => {
       });
       expect(result.success).toBe(true);
       expect(result.data.customChecks[0].futureField).toEqual({ nested: true }); // unknown keys preserved
+    });
+  });
+
+  describe('storyboardShotSchema / storyboardSceneSchema (#1315)', () => {
+    it('accepts valid shot-grammar enums', () => {
+      const r = storyboardShotSchema.safeParse({ id: 'shot-01', description: 'x', shotType: 'wide', screenDirection: 'left' });
+      expect(r.success).toBe(true);
+      expect(r.data).toMatchObject({ shotType: 'wide', screenDirection: 'left' });
+    });
+
+    it('rejects an unknown shotType / screenDirection', () => {
+      expect(storyboardShotSchema.safeParse({ id: 's', shotType: 'banana' }).success).toBe(false);
+      expect(storyboardShotSchema.safeParse({ id: 's', screenDirection: 'sideways' }).success).toBe(false);
+    });
+
+    it('tolerates the UI sentinels: null and empty-string clear', () => {
+      expect(storyboardShotSchema.safeParse({ id: 's', shotType: null, screenDirection: null }).success).toBe(true);
+      const r = storyboardShotSchema.safeParse({ id: 's', shotType: '', screenDirection: '' });
+      expect(r.success).toBe(true);
+      expect(r.data.shotType).toBeNull();      // '' → null (treated as "not captured")
+      expect(r.data.screenDirection).toBeNull();
+    });
+
+    it('passes through render-time fields stamped onto a shot (startFrameJobId)', () => {
+      const r = storyboardShotSchema.safeParse({ id: 's', description: 'x', startFrameJobId: 'job-9' });
+      expect(r.success).toBe(true);
+      expect(r.data.startFrameJobId).toBe('job-9');
+    });
+
+    it('scene schema validates shots[] but passes the rest of the scene through', () => {
+      const r = storyboardSceneSchema.safeParse({
+        heading: 'INT. ROOM', slugline: 'INT. ROOM — DAY', sceneVideoJobId: 'v1',
+        shots: [{ id: 'shot-01', description: 'x', shotType: 'medium', screenDirection: 'right' }],
+      });
+      expect(r.success).toBe(true);
+      expect(r.data.heading).toBe('INT. ROOM');
+      expect(r.data.sceneVideoJobId).toBe('v1');
+      // A bad enum inside shots[] fails the whole scene.
+      expect(storyboardSceneSchema.safeParse({ shots: [{ id: 's', shotType: 'nope' }] }).success).toBe(false);
     });
   });
 });

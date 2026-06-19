@@ -43,6 +43,7 @@ import {
   findRepeatedOpeners,
   measureSentenceRhythm,
 } from './repetition.js';
+import { findAxisReversals, findShotTypeMonotony } from './shotContinuity.js';
 
 export const CHECK_SCOPES = Object.freeze(['series', 'issue', 'scene', 'noun']);
 export const CHECK_KINDS = Object.freeze(['deterministic', 'llm']);
@@ -86,6 +87,15 @@ const SEVERITIES = CHECK_SEVERITIES;
 //                                 want, need, startState, endState, transitions[] }`). The
 //                                 arc.transitions check reconciles detected change moments
 //                                 against these authored transitions + flat-arc warnings.
+//   - 'storyboard.shots'        — the per-issue storyboard shot lists
+//                                 (`stages.storyboards.scenes[].shots[]`) the
+//                                 visual-continuity check (#1315) reasons over:
+//                                 each shot carries `shotType` / `screenDirection`
+//                                 / `continuityFromShotId` (server/lib/shotGrammar.js).
+//                                 Served off the already-loaded `ctx.issues` (no
+//                                 extra I/O); the runner injects `ctx.storyboardScenes`
+//                                 (a flat list of `{ issueNumber, scene }` for every
+//                                 issue that has storyboard scenes).
 export const EDITORIAL_SOURCES = Object.freeze([
   'manuscript',
   'canon',
@@ -96,6 +106,7 @@ export const EDITORIAL_SOURCES = Object.freeze([
   'reverseOutline.plotlines',
   'editorialArcs',
   'series.characterArcs',
+  'storyboard.shots',
 ]);
 
 // Default per-run finding cap for user-defined checks (#1346) — mirrors the
@@ -1583,6 +1594,94 @@ export const EDITORIAL_CHECKS = [
           anchorQuote: typeof s.anchorQuote === 'string' ? s.anchorQuote : '',
           issueNumber,
         });
+      }
+      return findings;
+    },
+  },
+  {
+    id: 'visual.shot-continuity',
+    sources: ['storyboard.shots'],
+    label: 'Storyboard shot continuity (180° rule, shot-type variety)',
+    description:
+      'Flags film-grammar errors in a storyboard scene\'s shot list BEFORE render — a 180-degree-rule axis reversal across a continuity-linked shot pair (the subject appears to flip sides across a cut declared continuous), and shot-type monotony (a scene whose shots all share one framing reads as flat, slideshow coverage). Reads the per-issue storyboard shots; deterministic, so it needs no LLM.',
+    scope: 'scene',
+    kind: 'deterministic',
+    category: 'continuity',
+    severityDefault: 'medium',
+    defaultEnabled: true,
+    configSchema: z.object({
+      // Flag a 180° axis reversal across a continuity-linked shot pair.
+      flagAxisReversal: z.boolean().default(true),
+      // Flag a scene where every classified shot shares one framing. 0 disables
+      // the monotony check; otherwise it's the minimum classified-shot count
+      // before a single-framing scene is flagged (a sparse 2-shot tag is noise).
+      minShotsForMonotony: z.number().int().min(0).max(16).default(3),
+    }),
+    configFields: [
+      {
+        key: 'flagAxisReversal',
+        label: 'Flag 180° axis reversals',
+        type: 'boolean',
+        help: 'Flag a continuity-linked shot pair whose screen directions are opposite (left↔right) — the subject appears to jump sides across a cut the author declared continuous.',
+      },
+      {
+        key: 'minShotsForMonotony',
+        label: 'Min classified shots for monotony',
+        type: 'number',
+        min: 0,
+        max: 16,
+        step: 1,
+        help: 'Flag a scene where every classified shot shares one framing (all medium, say) once at least this many shots are classified. 0 disables the monotony check.',
+      },
+    ],
+    // Needs at least one storyboard scene with shots to read.
+    gate: (ctx) => Array.isArray(ctx.storyboardScenes) && ctx.storyboardScenes.length > 0,
+    run: (ctx) => {
+      const cfg = ctx.config || {};
+      const flagAxis = cfg.flagAxisReversal !== false;
+      const minMonotony = cfg.minShotsForMonotony ?? 3;
+      const entries = Array.isArray(ctx.storyboardScenes) ? ctx.storyboardScenes : [];
+      const findings = [];
+      const DIRECTION_LABEL = { left: 'screen-left', right: 'screen-right', neutral: 'head-on' };
+      for (const entry of entries) {
+        const scene = entry?.scene;
+        if (!scene || typeof scene !== 'object') continue;
+        const issueNumber = Number.isInteger(entry.issueNumber) ? entry.issueNumber : null;
+        const sceneName = typeof scene.heading === 'string' && scene.heading.trim()
+          ? scene.heading.trim()
+          : (typeof scene.slugline === 'string' && scene.slugline.trim() ? scene.slugline.trim() : 'scene');
+        const location = issueNumber != null ? `Issue ${issueNumber}: ${sceneName}` : `Scene: ${sceneName}`;
+
+        if (flagAxis) {
+          for (const r of findAxisReversals(scene)) {
+            const fromLabel = DIRECTION_LABEL[r.fromDirection] || r.fromDirection;
+            const toLabel = DIRECTION_LABEL[r.toDirection] || r.toDirection;
+            findings.push({
+              severity: ctx.severityDefault,
+              category: 'continuity',
+              location,
+              problem: `Shot "${r.toId}" continues from "${r.fromId}" but faces ${toLabel} where "${r.fromId}" faced ${fromLabel} — a 180°-rule axis reversal makes the subject appear to jump sides across the cut.`,
+              suggestion: `Keep both shots on the same side of the action axis (both ${fromLabel} or both ${toLabel}), insert a neutral/head-on cutaway between them, or break the continuity link if the angle change is intentional.`,
+              anchorQuote: (r.toDescription || r.fromDescription || '').slice(0, 200),
+              issueNumber,
+            });
+          }
+        }
+
+        if (minMonotony > 0) {
+          const mono = findShotTypeMonotony(scene, { minClassified: minMonotony });
+          if (mono) {
+            findings.push({
+              severity: ctx.severityDefault,
+              category: 'continuity',
+              location,
+              problem: `All ${mono.classifiedCount} classified shots in "${sceneName}" are ${mono.shotType} — a scene shot in a single framing reads as flat, slideshow coverage with no establishing wide or punch-in for emphasis.`,
+              suggestion: `Vary the coverage: open on a wider establishing framing, punch in to a close for an emotional or key beat, or add an over-the-shoulder for a two-character exchange.`,
+              anchorQuote: '',
+              issueNumber,
+            });
+          }
+        }
       }
       return findings;
     },
