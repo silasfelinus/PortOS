@@ -516,6 +516,42 @@ describe('pipeline series service', () => {
     });
   });
 
+  describe('characterArcs (#1293)', () => {
+    it('defaults to [] on a fresh series', async () => {
+      const s = await svc.createSeries({ name: 'X' });
+      expect(s.characterArcs).toEqual([]);
+    });
+
+    it('persists per-character arcs + transitions through an update and re-read', async () => {
+      const s = await svc.createSeries({ name: 'X' });
+      const updated = await svc.updateSeries(s.id, {
+        characterArcs: [
+          {
+            characterName: 'Mara',
+            want: 'revenge',
+            need: 'to forgive',
+            transitions: [{ kind: 'point-of-no-return', label: 'burns the bridge', atIssue: 4 }],
+          },
+        ],
+      });
+      expect(updated.characterArcs).toHaveLength(1);
+      expect(updated.characterArcs[0]).toMatchObject({ characterName: 'Mara', want: 'revenge' });
+      expect(updated.characterArcs[0].transitions[0]).toMatchObject({ kind: 'point-of-no-return', atIssue: 4 });
+      const fresh = await svc.getSeries(s.id);
+      expect(fresh.characterArcs[0].transitions[0].label).toBe('burns the bridge');
+    });
+
+    it('drops empty arcs and clears with an empty array', async () => {
+      const s = await svc.createSeries({
+        name: 'X',
+        characterArcs: [{ characterName: 'A', want: 'w' }, { characterName: 'Ghost' }],
+      });
+      expect(s.characterArcs).toHaveLength(1);
+      const cleared = await svc.updateSeries(s.id, { characterArcs: [] });
+      expect(cleared.characterArcs).toEqual([]);
+    });
+  });
+
   // Issue #1361 — a behind/legacy peer pushes a newer series payload that simply
   // OMITS an additive content field. sanitizeSeries flattens that absence to the
   // same null/[]/'' as a deliberate clear, so without the absent-vs-clear guard

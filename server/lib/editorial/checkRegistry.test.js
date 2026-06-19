@@ -1279,6 +1279,88 @@ describe('pov.justified — deterministic check', () => {
   });
 });
 
+describe('arc.transitions — LLM check (#1293)', () => {
+  const ARC = 'arc.transitions';
+  const baseCtx = (overrides = {}) => ({
+    manuscript: 'Mara stared at the bridge, then struck the match.',
+    series: { characterArcs: [] },
+    reverseOutline: [],
+    config: { maxFindings: 12 },
+    severityDefault: 'medium',
+    planManuscriptChunks: async () => [overrides.manuscript ?? 'Mara stared at the bridge, then struck the match.'],
+    callStagedLLM: async () => ({ content: { findings: [] } }),
+    ...overrides,
+  });
+
+  it('emits arc-category transition findings from the model', async () => {
+    const ctx = baseCtx({
+      callStagedLLM: async (_stage, vars) => {
+        // The check ships the manuscript plus its two context blocks.
+        expect(vars).toHaveProperty('manuscript');
+        expect(vars).toHaveProperty('sceneMap');
+        expect(vars).toHaveProperty('characterArcs');
+        return { content: { findings: [{ severity: 'high', issueNumber: 4, problem: 'Mara crosses the point of no return', anchorQuote: 'struck the match' }] } };
+      },
+    });
+    const findings = await getCheck(ARC).run(ctx);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].category).toBe('arc');
+    expect(findings[0].issueNumber).toBe(4);
+  });
+
+  it('renders the authored character arcs into the prompt vars', async () => {
+    let capturedArcs = null;
+    const ctx = baseCtx({
+      series: {
+        characterArcs: [
+          { characterName: 'Mara', want: 'revenge', transitions: [{ kind: 'sacrifice', label: 'spares the killer', atIssue: 6 }] },
+        ],
+      },
+      callStagedLLM: async (_stage, vars) => {
+        capturedArcs = vars.characterArcs;
+        return { content: { findings: [] } };
+      },
+    });
+    await getCheck(ARC).run(ctx);
+    expect(capturedArcs).toContain('- Mara');
+    expect(capturedArcs).toContain('wants: revenge');
+    expect(capturedArcs).toContain('sacrifice (issue 6): spares the killer');
+  });
+
+  it('passes a scene map built from the reverse outline as context', async () => {
+    let capturedSceneMap = null;
+    const ctx = baseCtx({
+      reverseOutline: [{ sequence: 0, issueNumber: 1, heading: 'The bridge', setting: 'a rope bridge', charactersPresent: ['Mara'] }],
+      callStagedLLM: async (_stage, vars) => {
+        capturedSceneMap = vars.sceneMap;
+        return { content: { findings: [] } };
+      },
+    });
+    await getCheck(ARC).run(ctx);
+    expect(capturedSceneMap).toContain('The bridge');
+    expect(capturedSceneMap).toContain('present: Mara');
+  });
+
+  it('is gated off when the manuscript is empty', () => {
+    expect(getCheck(ARC).gate({ manuscript: '   ' })).toBe(false);
+    expect(getCheck(ARC).gate({ manuscript: 'real prose' })).toBe(true);
+  });
+
+  it('degrades gracefully when no authored arcs or outline exist', async () => {
+    const ctx = baseCtx({
+      series: {},
+      reverseOutline: undefined,
+      callStagedLLM: async (_stage, vars) => {
+        expect(vars.characterArcs).toBe('');
+        expect(vars.sceneMap).toBe('');
+        return { content: { findings: [] } };
+      },
+    });
+    const findings = await getCheck(ARC).run(ctx);
+    expect(findings).toEqual([]);
+  });
+});
+
 describe('relationships.reciprocity — deterministic check', () => {
   const run = (characters) =>
     getCheck('relationships.reciprocity').run({ canon: { characters }, config: {}, severityDefault: 'low' });
