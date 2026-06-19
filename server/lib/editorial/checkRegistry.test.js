@@ -331,8 +331,12 @@ describe('scenePovSummary (#1311)', () => {
     expect(summary).not.toContain('Issue 2: Alone — POV: Joss — others present');
   });
 
-  it('drops scenes with no POV character (nothing to police) and returns "" when none are tagged', () => {
-    expect(scenePovSummary([{ sequence: 0, issueNumber: 1, heading: 'Untagged', charactersPresent: ['Mara'] }])).toBe('');
+  it('renders an untagged scene as "infer from the prose" instead of dropping it (partial-outline coverage)', () => {
+    const summary = scenePovSummary([{ sequence: 0, issueNumber: 1, heading: 'Untagged', charactersPresent: ['Mara', 'Joss'] }]);
+    expect(summary).toContain('Issue 1: Untagged — POV: (not recorded — infer from the prose) — others present: Mara, Joss');
+  });
+
+  it('returns "" only when there are no scenes at all', () => {
     expect(scenePovSummary([])).toBe('');
     expect(scenePovSummary(null)).toBe('');
     expect(scenePovSummary(undefined)).toBe('');

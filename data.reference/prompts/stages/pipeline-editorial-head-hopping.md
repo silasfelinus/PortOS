@@ -7,7 +7,7 @@ only what that character can see, hear, and know. A discipline break is when the
 prose slips out of that anchor without a scene break.
 
 The point of view in force for this story is **{{povPerson}}**. Judge every scene
-against that limited anchor.
+against its established point-of-view anchor.
 
 For each limited-POV scene, flag:
 
@@ -40,8 +40,10 @@ a perception is a reasonable inference, do not flag — favor under-flagging.
 The reverse outline below records each scene's anchored POV character and the
 other characters on-stage (the candidate heads a head-hop would slip into). A
 scene whose narration reports the interior of an "others present" character is a
-strong head-hop candidate — confirm it against the prose. Judge the POV anchor
-from the prose itself, not from this list alone.
+strong head-hop candidate — confirm it against the prose. Some scenes may show
+`POV: (not recorded — infer from the prose)`; for those, determine the anchor
+from the text itself. Judge the POV anchor from the prose itself, not from this
+list alone.
 
 ```
 {{povMap}}

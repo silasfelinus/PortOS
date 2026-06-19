@@ -1070,31 +1070,37 @@ const POV_PERSON_LABELS = Object.freeze({
 // Render the reverse-outline scenes into a compact POV-focused block the
 // head-hopping check (#1311) passes alongside the manuscript so the model knows
 // WHOSE head each limited-POV scene is anchored to — and which other characters
-// are on-stage (candidate heads a head-hop would slip into). Pure + deterministic
-// so it's unit-testable and its token cost can be counted into the per-chunk
-// overhead. Returns '' when no scene carries a POV character (the prompt's
-// `{{#povMap}}` section then renders nothing and the check degrades to a plain
-// whole-issue scan). Type-guarded throughout — the reverse outline rides peer
-// sync (#1348), so a hand-edited / older-peer scene could carry a non-string
-// field that a bare `.trim()` would throw on.
+// are on-stage (candidate heads a head-hop would slip into). EVERY scene is
+// rendered: a scene with no recorded POV character is marked "POV: (not recorded
+// — infer from the prose)" rather than dropped, so a PARTIALLY-tagged outline
+// doesn't silently omit scenes and let the model assume the list is exhaustive of
+// POV-bearing scenes (the model still confirms each anchor against the prose).
+// Pure + deterministic so it's unit-testable and its token cost can be counted
+// into the per-chunk overhead. Returns '' only when there are NO scenes at all
+// (the prompt's `{{#povMap}}` section then renders nothing and the check degrades
+// to a plain whole-issue scan). Type-guarded throughout — the reverse outline
+// rides peer sync (#1348), so a hand-edited / older-peer scene could carry a
+// non-string field that a bare `.trim()` would throw on.
 export function scenePovSummary(scenes) {
   const list = Array.isArray(scenes) ? scenes : [];
   const lines = list.map((s) => {
     if (!s || typeof s !== 'object') return '';
-    const pov = scenePov(s);
-    if (!pov) return '';
     const label = sceneLabel(s);
     const issueNumber = Number.isInteger(s.issueNumber) ? s.issueNumber : null;
     const where = issueNumber != null ? `Issue ${issueNumber}` : 'Scene';
+    const pov = scenePov(s);
     // Other on-stage characters are the candidate heads a head-hop slips into —
-    // exclude the POV holder themselves so the list names only "other" heads.
-    const povKey = normalizeName(pov);
+    // exclude the POV holder themselves (by normalized name) so the list names
+    // only "other" heads. When the scene has no recorded POV holder there's no
+    // one to exclude, so every present character is a candidate.
+    const povKey = pov ? normalizeName(pov) : '';
     const others = Array.isArray(s.charactersPresent)
       ? s.charactersPresent
         .filter((n) => typeof n === 'string' && n.trim() && normalizeName(n) !== povKey)
         .map((n) => n.trim())
       : [];
-    const parts = [`- ${where}: ${label} — POV: ${pov}`];
+    const povText = pov ? `POV: ${pov}` : 'POV: (not recorded — infer from the prose)';
+    const parts = [`- ${where}: ${label} — ${povText}`];
     if (others.length) parts.push(`others present: ${others.join(', ')}`);
     return parts.join(' — ');
   }).filter(Boolean);
