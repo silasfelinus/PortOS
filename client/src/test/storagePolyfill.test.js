@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { createMemoryStorage, storageWorks, ensureStorage } from './storagePolyfill.js';
+import { createMemoryStorage, storageWorks, ensureStorage, installTestStorage } from './storagePolyfill.js';
 
 describe('storagePolyfill', () => {
   afterEach(() => {
@@ -68,6 +68,25 @@ describe('storagePolyfill', () => {
       expect(root.localStorage.getItem('k')).toBe('v');
     });
 
+    it('is name-agnostic — installs sessionStorage too', () => {
+      const root = {};
+      const installed = ensureStorage('sessionStorage', root);
+      expect(installed).toBe(true);
+      expect(storageWorks(root.sessionStorage)).toBe(true);
+      // Only the requested name is touched.
+      expect(root.localStorage).toBeUndefined();
+    });
+
+    it('does NOT mutate the global window when a caller passes an explicit root', () => {
+      // The window-aliasing branch is gated on `root === globalThis` precisely so a
+      // test passing its own root can't clobber the suite-wide window.localStorage.
+      const before = window.localStorage;
+      const root = {};
+      ensureStorage('localStorage', root);
+      expect(window.localStorage).toBe(before);
+      expect(root.localStorage).not.toBe(before);
+    });
+
     it('leaves a working Storage untouched (idempotent, no clobber)', () => {
       const existing = createMemoryStorage();
       existing.setItem('keep', 'me');
@@ -83,6 +102,18 @@ describe('storagePolyfill', () => {
       const installed = ensureStorage('localStorage', root);
       expect(installed).toBe(true);
       expect(storageWorks(root.localStorage)).toBe(true);
+    });
+  });
+
+  describe('installTestStorage (the setup.js entry point)', () => {
+    it('guarantees both local AND session storage are working (idempotent)', () => {
+      // The actual entry point setup.js calls. Asserting it directly catches a
+      // refactor that dropped the sessionStorage line — the ensureStorage cases above
+      // would still pass. It targets the live globals (already installed by setup.js),
+      // so this re-invocation must be a no-op that leaves both keys working.
+      expect(() => installTestStorage()).not.toThrow();
+      expect(storageWorks(globalThis.localStorage)).toBe(true);
+      expect(storageWorks(globalThis.sessionStorage)).toBe(true);
     });
   });
 
