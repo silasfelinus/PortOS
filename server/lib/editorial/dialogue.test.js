@@ -35,6 +35,13 @@ describe('findSaidBookisms', () => {
     expect(findSaidBookisms('The engine growled as it turned over.')).toEqual([]);
   });
 
+  it('does NOT flag a capitalized new-sentence subject after a quote (narration, not a tag)', () => {
+    // "Thunder" is a bookism-list word, but here it's the subject of a new
+    // narrated sentence after "Run!" — a real tag verb is lowercase.
+    expect(findSaidBookisms('"Run!" Thunder rolled overhead.')).toEqual([]);
+    expect(findSaidBookisms('"Stop!" Hiss of steam filled the room.')).toEqual([]);
+  });
+
   it('does NOT flag plain "said" / "asked" tags', () => {
     expect(findSaidBookisms('"Hello," she said. "How are you?" he asked.')).toEqual([]);
   });
@@ -117,6 +124,23 @@ describe('findUnattributedDialogueRuns', () => {
   it('does NOT flag a short exchange below the threshold', () => {
     const short = '"Hi."\n"Hello."\n"Bye."';
     expect(findUnattributedDialogueRuns(short)).toEqual([]);
+  });
+
+  it('does NOT treat a tag word INSIDE the quote as attribution', () => {
+    // "I said no." contains "said", but it's spoken text, not a tag — the run
+    // must still be detected (attribution is measured on the narration, not the
+    // quoted dialogue).
+    const withTagWordInQuote = [
+      '"You came back."',
+      '"I said no."',
+      '"After everything?"',
+      '"Especially after everything."',
+      '"And now?"',
+      '"Now we finish it."',
+    ].join('\n');
+    const runs = findUnattributedDialogueRuns(withTagWordInQuote);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].count).toBe(6);
   });
 
   it('a speech tag re-anchors and breaks the run', () => {

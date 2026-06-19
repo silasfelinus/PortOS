@@ -186,13 +186,21 @@ export function findSaidBookisms(text, opts = {}) {
     re.lastIndex = 0;
     let m;
     while ((m = re.exec(text)) !== null) {
-      const form = m[verbGroup].toLowerCase();
+      const matched = m[verbGroup];
+      const form = matched.toLowerCase();
       const info = kindByForm.get(form);
       if (!info) continue;
       // For the after-quote pass, gate on the in-quote terminal punctuation so an
       // action beat following a complete sentence ("…." She smiled.) isn't flagged
       // as a misused tag. The before-quote pass has no punctuation to weigh.
-      if (punctGroup !== null && !punctAllowsTag(info.kind, m[punctGroup] || '')) continue;
+      if (punctGroup !== null) {
+        if (!punctAllowsTag(info.kind, m[punctGroup] || '')) continue;
+        // A real after-quote tag verb is lowercase — a clause continuation
+        // ("…," she opined / "…," opined Marlon). A CAPITALIZED word after the
+        // quote is the subject of a NEW sentence (narration), e.g.
+        // `"Run!" Thunder rolled overhead.` — not a tag. Skip it.
+        if (matched[0] !== matched[0].toLowerCase()) continue;
+      }
       const key = `${info.base}@${m.index}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -222,10 +230,13 @@ const hasQuotedSpan = (para) => {
 
 // A dialogue paragraph is "attributed" when it carries a speech tag (plain or
 // ornate) OR an action beat — substantial non-quoted prose that grounds who is
-// speaking. The beat threshold is on the non-quoted character count.
+// speaking. Both signals are measured on the NON-QUOTED remainder: a tag word
+// that appears INSIDE the dialogue ("I said no.") is spoken text, not
+// attribution, so the tag regexes must run on the narration around the quote,
+// not the whole paragraph.
 function isAttributed(para, beatChars) {
-  if (PLAIN_TAG_RE.test(para) || (ORNATE_TAG_RE && ORNATE_TAG_RE.test(para))) return true;
   const beat = para.replace(QUOTED_SPAN_RE, ' ').replace(/\s+/g, ' ').trim();
+  if (PLAIN_TAG_RE.test(beat) || (ORNATE_TAG_RE && ORNATE_TAG_RE.test(beat))) return true;
   return beat.length >= beatChars;
 }
 
