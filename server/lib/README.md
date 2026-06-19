@@ -33,6 +33,7 @@ The barrel `server/lib/index.js` is a machine-checkable enumeration of every pub
 | `identityValidation.js` | Identity section + chronotype + scheduling schemas. |
 | `meatspaceValidation.js` | Meatspace (location/health log) schemas. |
 | `memoryValidation.js` | Memory record + retrieval schemas. |
+| `moodBoardValidation.js` | Mood board + board-item create/update schemas. |
 | `notesValidation.js` | Notes route schemas + safe-relative-path guard. |
 | `peerSyncValidation.js` | Federated peer-sync wire/request schemas (push payload, subscribe, sync-now, pull-metadata). |
 | `postValidation.js` | Social post schemas. |

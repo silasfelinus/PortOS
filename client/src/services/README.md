@@ -72,6 +72,7 @@ toasts on throw). **Custom catch ⇒ `silent: true`** — otherwise toasts fire 
 | `apiHealth.js` | Apple Health. |
 | `apiMeatspace.js` | MeatSpace (genome + location). |
 | `apiMortalLoom.js` | Mortality tracking. |
+| `apiMoodBoard.js` | Mood boards (inspiration canvas + items). |
 | `apiCalendar.js` | Calendar events. |
 | `apiMessages.js` | Messages / notifications. |
 | `apiPersonalities.js` | Agent personality profiles. |

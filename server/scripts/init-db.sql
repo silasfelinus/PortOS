@@ -648,6 +648,26 @@ CREATE TABLE IF NOT EXISTS creative_director_projects (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Mood boards (issue #911). A dedicated inspiration/mood-board canvas, distinct
+-- from raw Media History, for collecting visual + textual references that feed
+-- the Create suite. One row per board, the full record (name/description/items[])
+-- in `data` JSONB. Each item carries an image (media-key or external URL) or a
+-- text note, optional caption, and an optional source backref — kept inline in
+-- the board's JSONB rather than a child table because a board is read/written
+-- whole (a small bounded item list, no cross-board item queries). `name` mirrors
+-- a column for the live-list sort. Mood boards are db-primary and LOCAL-ONLY
+-- (no sync_sequence/tombstone) — like creative_director_projects, they don't
+-- federate to peers in v1. Mirrors the mood_boards block in db.js ensureSchema().
+CREATE TABLE IF NOT EXISTS mood_boards (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+-- updated_at DESC is the board-list "recently touched" sort.
+CREATE INDEX IF NOT EXISTS idx_mood_boards_updated ON mood_boards (updated_at DESC);
+
 -- Media asset index (Phase 3.2, issue #1000). One row per generated image or
 -- video. The bytes stay on disk (data/images, data/videos) and the image
 -- sidecars + data/video-history.json remain authoritative — this table is a
@@ -1011,6 +1031,8 @@ DROP TRIGGER IF EXISTS trg_catalog_user_types_audit ON catalog_user_types;
 CREATE TRIGGER trg_catalog_user_types_audit AFTER UPDATE OR DELETE ON catalog_user_types FOR EACH ROW EXECUTE FUNCTION record_audit_log();
 DROP TRIGGER IF EXISTS trg_creative_director_projects_audit ON creative_director_projects;
 CREATE TRIGGER trg_creative_director_projects_audit AFTER UPDATE OR DELETE ON creative_director_projects FOR EACH ROW EXECUTE FUNCTION record_audit_log();
+DROP TRIGGER IF EXISTS trg_mood_boards_audit ON mood_boards;
+CREATE TRIGGER trg_mood_boards_audit AFTER UPDATE OR DELETE ON mood_boards FOR EACH ROW EXECUTE FUNCTION record_audit_log();
 DROP TRIGGER IF EXISTS trg_lora_training_runs_audit ON lora_training_runs;
 CREATE TRIGGER trg_lora_training_runs_audit AFTER UPDATE OR DELETE ON lora_training_runs FOR EACH ROW EXECUTE FUNCTION record_audit_log();
 DROP TRIGGER IF EXISTS trg_authors_audit ON authors;
