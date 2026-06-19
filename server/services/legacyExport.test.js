@@ -5,6 +5,7 @@ import {
   buildBundleFiles,
   buildManifest,
   buildLegacyZip,
+  buildLegacyPdf,
   previewLegacyExport,
   getSectionKeys,
 } from './legacyExport.js';
@@ -196,6 +197,73 @@ describe('buildLegacyZip', () => {
     expect(events.map(e => e[0])).toEqual(
       expect.arrayContaining(['legacy-export:started', 'legacy-export:progress', 'legacy-export:completed']),
     );
+  });
+});
+
+describe('buildManifest pdf flag', () => {
+  it('defaults pdf.included false with no pdf file entry', () => {
+    const { files, sections } = buildBundleFiles(sampleData());
+    const manifest = buildManifest(files, { sections, portosVersion: '1.0.0', generatedAt: '2026-06-18T00:00:00Z' });
+    expect(manifest.pdf.included).toBe(false);
+    expect(manifest.pdf.file).toBeUndefined();
+  });
+
+  it('records pdf.included + file name when pdfIncluded is true', () => {
+    const { files, sections } = buildBundleFiles(sampleData());
+    const manifest = buildManifest(files, { sections, portosVersion: '1.0.0', generatedAt: '2026-06-18T00:00:00Z', pdfIncluded: true });
+    expect(manifest.pdf.included).toBe(true);
+    expect(manifest.pdf.file).toBe('legacy-portrait.pdf');
+  });
+});
+
+describe('buildLegacyPdf', () => {
+  it('renders a non-empty multi-page PDF from the section Markdown', async () => {
+    const { files } = buildBundleFiles(sampleData());
+    const contentFiles = [{ name: 'README.md', data: Buffer.from('# PortOS Legacy Export\n\nPrivacy notice.') }, ...files];
+    const { bytes, pageCount } = await buildLegacyPdf(contentFiles, { portosVersion: '1.2.3', generatedAt: '2026-06-18T12:00:00Z' });
+    expect(bytes.length).toBeGreaterThan(0);
+    // Title page + one page per Markdown file (each starts on a fresh page).
+    const mdCount = contentFiles.filter(f => f.name.endsWith('.md')).length;
+    expect(pageCount).toBeGreaterThanOrEqual(1 + mdCount);
+    // PDF magic header.
+    expect(Buffer.from(bytes.slice(0, 5)).toString('latin1')).toBe('%PDF-');
+  });
+
+  it('does not throw on non-ASCII glyphs (VO₂, em-dash, smart quotes, ⚠️)', async () => {
+    const contentFiles = [{ name: 'identity/profile.md', data: Buffer.from('# Health\n\n- **VO₂ max**: 52 — “great” … ⚠️') }];
+    const { bytes } = await buildLegacyPdf(contentFiles, {});
+    expect(bytes.length).toBeGreaterThan(0);
+  });
+
+  it('does not throw on control bytes WinAnsi cannot encode (NUL, VT, ESC, DEL, C1)', async () => {
+    // Stray control chars pasted into free-text identity content (a note, a
+    // journal) must not crash the whole PDF render. pdf-lib's WinAnsi encoder
+    // throws on 0x00–0x1F / 0x7F / 0x80–0x9F even though they're ≤ 0xFF.
+    const dirty = 'before\x00\x0B\x1B\x7F\x9Dafter and a\ttab';
+    const contentFiles = [{ name: 'brain/journals.md', data: Buffer.from(`# Journal\n\n${dirty}\n`) }];
+    const { bytes, pageCount } = await buildLegacyPdf(contentFiles, {});
+    expect(bytes.length).toBeGreaterThan(0);
+    expect(pageCount).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('buildLegacyZip includePdf', () => {
+  it('adds a non-empty legacy-portrait.pdf and reflects it in the manifest', async () => {
+    const { buffer, manifest } = await buildLegacyZip({ includePdf: true });
+    expect(manifest.pdf.included).toBe(true);
+    expect(manifest.pdf.file).toBe('legacy-portrait.pdf');
+    expect(manifest.files['legacy-portrait.pdf']).toMatch(/^[0-9a-f]{64}$/);
+    const entries = await unzip(buffer);
+    expect(entries['legacy-portrait.pdf']).toBeDefined();
+    expect(entries['legacy-portrait.pdf'].length).toBeGreaterThan(0);
+    expect(entries['legacy-portrait.pdf'].slice(0, 5).toString('latin1')).toBe('%PDF-');
+  });
+
+  it('omits the PDF by default and leaves manifest pdf.included false', async () => {
+    const { buffer, manifest } = await buildLegacyZip({});
+    expect(manifest.pdf.included).toBe(false);
+    const entries = await unzip(buffer);
+    expect(entries['legacy-portrait.pdf']).toBeUndefined();
   });
 });
 

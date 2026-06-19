@@ -57,6 +57,26 @@ describe('POST /api/legacy-export', () => {
     expect(buildLegacyZip).toHaveBeenCalledWith(expect.objectContaining({ sections: ['goals', 'health'] }));
   });
 
+  it('threads includePdf through to the service', async () => {
+    const app = await makeApp();
+    const res = await request(app).post('/api/legacy-export').send({ includePdf: true });
+    expect(res.status).toBe(200);
+    expect(buildLegacyZip).toHaveBeenCalledWith(expect.objectContaining({ includePdf: true }));
+  });
+
+  it('defaults includePdf to false when omitted', async () => {
+    const app = await makeApp();
+    await request(app).post('/api/legacy-export').send({});
+    expect(buildLegacyZip).toHaveBeenCalledWith(expect.objectContaining({ includePdf: false }));
+  });
+
+  it('rejects a non-boolean includePdf with 400', async () => {
+    const app = await makeApp();
+    const res = await request(app).post('/api/legacy-export').send({ includePdf: 'yes' });
+    expect(res.status).toBe(400);
+    expect(buildLegacyZip).not.toHaveBeenCalled();
+  });
+
   it('rejects an unknown section with 400', async () => {
     const app = await makeApp();
     const res = await request(app).post('/api/legacy-export').send({ sections: ['not-a-section'] });

@@ -18,6 +18,7 @@
 
 import { createHash } from 'crypto';
 import { hostname } from 'os';
+import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { createZip } from '../lib/zipWriter.js';
 import { getCurrentVersion } from './updateChecker.js';
 import { exportDigitalTwin } from './digital-twin-export.js';
@@ -446,7 +447,7 @@ export function buildBundleFiles(data, { sections: selected = null } = {}) {
  * Build the manifest object (SHA-256 per file). `kind`/`schemaVersion` let a
  * future reader (or `parseZip` round-trip verifier) validate the bundle.
  */
-export function buildManifest(files, { sections, portosVersion, generatedAt }) {
+export function buildManifest(files, { sections, portosVersion, generatedAt, pdfIncluded = false }) {
   const fileHashes = {};
   for (const f of files) fileHashes[f.name] = sha256(f.data);
   return {
@@ -458,15 +459,180 @@ export function buildManifest(files, { sections, portosVersion, generatedAt }) {
     sections,
     files: fileHashes,
     fileCount: files.length,
-    pdf: { included: false }, // PDF is a follow-up (Phase 2)
+    pdf: { included: !!pdfIncluded, ...(pdfIncluded ? { file: 'legacy-portrait.pdf' } : {}) },
   };
+}
+
+// === PDF rendering (Phase 2) ===
+// A rendered, human-readable portrait of the same per-section Markdown the
+// bundle already produces. Uses pdf-lib (already a dependency, shared with
+// `pipeline/comicPdf.js`) — Helvetica family, basic word-wrap, heading sizing.
+// No images, no external fonts: the Markdown bundle stays the primary artifact;
+// the PDF is a convenience for reading/printing offline.
+
+const PDF_PAGE = { width: 612, height: 792 };       // US Letter, in points
+const PDF_MARGIN = 56;                              // ~0.78in
+const PDF_LINE_GAP = 4;                             // extra leading between lines
+const PDF_TEXT_WIDTH = PDF_PAGE.width - PDF_MARGIN * 2;
+
+// Heading sizes by Markdown level (`#`=1 … `###`=3); anything deeper uses level 3.
+const PDF_HEADING_SIZE = { 1: 22, 2: 16, 3: 13 };
+const PDF_BODY_SIZE = 11;
+
+// Strip the inline Markdown emphasis/link syntax pdf-lib can't render so it
+// doesn't print literal `**`/`*`/`[text](url)` markers. Pure.
+function stripInlineMarkdown(text) {
+  return String(text)
+    .replace(/!?\[([^\]]*)\]\(([^)]*)\)/g, '$1')  // [label](url) / ![alt](src) → label
+    .replace(/\*\*([^*]+)\*\*/g, '$1')            // **bold**
+    .replace(/(^|[^*])\*([^*]+)\*/g, '$1$2')      // *italic* (leave bare * alone)
+    .replace(/`([^`]+)`/g, '$1');                 // `code`
+}
+
+// WinAnsi (pdf-lib's StandardFont encoding) can't encode arbitrary Unicode —
+// an unencodable glyph throws at draw time. Map the few non-ASCII characters
+// our Markdown builders actually emit (VO₂, ⚠️, smart quotes) to safe ASCII,
+// then drop anything still outside the encodable range. Pure.
+//
+// pdf-lib's WinAnsi encoder also throws on control bytes that ARE ≤ 0xFF —
+// the C0 controls (0x00–0x1F), DEL (0x7F), and the undefined C1 range
+// (0x80–0x9F) — so a stray control char pasted into free-text identity content
+// (brain notes, journals, autobiography) must be stripped BEFORE it reaches
+// `widthOfTextAtSize`/`drawText`, or the whole PDF render throws. Tabs become a
+// space (lines are already newline-split before they reach here).
+function toWinAnsi(text) {
+  return String(text)
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[–—]/g, '-')
+    .replace(/…/g, '...')
+    .replace(/₂/g, '2')   // subscript 2 (VO₂)
+    .replace(/[•·]/g, '-') // bullet / middot → ASCII dash (U+2022 is > 0xFF, would otherwise be stripped)
+    .replace(/[✅⚠️⚡]/g, '')  // ✅ ⚠ emoji-variation ⚡
+    .replace(/\t/g, ' ')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1F\x7F-\x9F]/g, '')  // control bytes WinAnsi can't encode
+    // eslint-disable-next-line no-control-regex
+    .replace(/[^\x00-\xFF]/g, '');         // anything still above the WinAnsi range
+}
+
+// Word-wrap a single logical line to fit `maxWidth` at `size`. A single token
+// longer than the line (e.g. a long URL) is hard-broken so it never overflows.
+// Pure given the font's metrics.
+function wrapLine(text, font, size, maxWidth) {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [''];
+  const lines = [];
+  let current = '';
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (font.widthOfTextAtSize(candidate, size) <= maxWidth) {
+      current = candidate;
+      continue;
+    }
+    if (current) lines.push(current);
+    // The word itself overflows — hard-break it character by character.
+    if (font.widthOfTextAtSize(word, size) > maxWidth) {
+      let chunk = '';
+      for (const ch of word) {
+        if (font.widthOfTextAtSize(chunk + ch, size) > maxWidth && chunk) {
+          lines.push(chunk);
+          chunk = ch;
+        } else {
+          chunk += ch;
+        }
+      }
+      current = chunk;
+    } else {
+      current = word;
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
+/**
+ * Render the per-section Markdown into a single PDF. Pure-ish (async only for
+ * pdf-lib's font embedding) — takes the same `{ name, data }` content files
+ * `buildBundleFiles` produces and walks the `.md` ones in bundle order.
+ * Returns the PDF bytes (Uint8Array). `meta` stamps the title page.
+ *
+ * @returns {Promise<{ bytes: Uint8Array, pageCount: number }>}
+ */
+export async function buildLegacyPdf(contentFiles, { portosVersion = '0.0.0', generatedAt = '' } = {}) {
+  const pdf = await PDFDocument.create();
+  pdf.setTitle('PortOS Legacy Export');
+  pdf.setProducer('PortOS');
+  pdf.setCreator('PortOS legacy export');
+
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
+
+  let page = pdf.addPage([PDF_PAGE.width, PDF_PAGE.height]);
+  let cursor = PDF_PAGE.height - PDF_MARGIN;
+
+  // Draw one wrapped block; paginates when the cursor runs past the bottom margin.
+  const draw = (raw, { size = PDF_BODY_SIZE, bold = false, color = rgb(0.12, 0.12, 0.12), gapAfter = PDF_LINE_GAP } = {}) => {
+    const f = bold ? fontBold : font;
+    const text = toWinAnsi(stripInlineMarkdown(raw));
+    for (const line of wrapLine(text, f, size, PDF_TEXT_WIDTH)) {
+      if (cursor - size < PDF_MARGIN) {
+        page = pdf.addPage([PDF_PAGE.width, PDF_PAGE.height]);
+        cursor = PDF_PAGE.height - PDF_MARGIN;
+      }
+      page.drawText(line, { x: PDF_MARGIN, y: cursor - size, size, font: f, color });
+      cursor -= size + gapAfter;
+    }
+  };
+  const space = (h = PDF_BODY_SIZE) => { cursor -= h; };
+
+  // Title page.
+  draw('PortOS Legacy Export', { size: 28, bold: true, color: rgb(0, 0, 0) });
+  space(6);
+  draw('A self-contained portrait of identity, knowledge, and life story.', { size: 12, color: rgb(0.35, 0.35, 0.35) });
+  if (generatedAt) draw(`Generated: ${generatedAt.slice(0, 19).replace('T', ' ')} UTC`, { size: 10, color: rgb(0.45, 0.45, 0.45) });
+  draw(`PortOS ${portosVersion}`, { size: 10, color: rgb(0.45, 0.45, 0.45) });
+
+  const markdownFiles = contentFiles.filter(f => f.name.endsWith('.md'));
+  for (const file of markdownFiles) {
+    page = pdf.addPage([PDF_PAGE.width, PDF_PAGE.height]);
+    cursor = PDF_PAGE.height - PDF_MARGIN;
+    const lines = file.data.toString('utf-8').split('\n');
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/\s+$/, '');
+      const heading = line.match(/^(#{1,6})\s+(.*)$/);
+      if (heading) {
+        const level = Math.min(heading[1].length, 3);
+        space(6);
+        draw(heading[2], { size: PDF_HEADING_SIZE[level], bold: true, color: rgb(0, 0, 0), gapAfter: 6 });
+        continue;
+      }
+      if (line.trim() === '') { space(6); continue; }
+      const quote = line.match(/^>\s?(.*)$/);
+      if (quote) {
+        draw(quote[1], { color: rgb(0.4, 0.4, 0.4) });
+        continue;
+      }
+      const bullet = line.match(/^[-*]\s+\[[ xX]\]\s+(.*)$/) || line.match(/^[-*]\s+(.*)$/);
+      if (bullet) {
+        draw(`• ${bullet[1]}`);
+        continue;
+      }
+      draw(line);
+    }
+  }
+
+  const bytes = await pdf.save();
+  return { bytes, pageCount: pdf.getPageCount() };
 }
 
 /**
  * Build the full legacy-export zip. Returns `{ buffer, manifest }`.
  * `io` (optional) receives `legacy-export:*` progress events.
+ * `includePdf` adds a rendered `legacy-portrait.pdf` (Phase 2); default false —
+ * the Markdown bundle is the primary artifact.
  */
-export async function buildLegacyZip({ sections = null, io = null } = {}) {
+export async function buildLegacyZip({ sections = null, io = null, includePdf = false } = {}) {
   emit(io, 'legacy-export:started', { sections });
   const data = await gatherLegacyData();
   emit(io, 'legacy-export:progress', { phase: 'gathered' });
@@ -475,16 +641,24 @@ export async function buildLegacyZip({ sections = null, io = null } = {}) {
   const portosVersion = await getCurrentVersion().catch(() => '0.0.0');
   const generatedAt = new Date().toISOString();
 
-  // README first, then content files, then the manifest (which hashes the
-  // content files — build it before adding manifest.json so it doesn't hash
-  // itself).
+  // README first, then content files. The optional rendered PDF is derived from
+  // those same Markdown files (so it carries no data the bundle doesn't already
+  // expose) and joins the hashed file set. The manifest hashes every content
+  // file — build it before adding manifest.json so it doesn't hash itself.
   const readme = { name: 'README.md', data: Buffer.from(README_PRIVACY_BANNER, 'utf-8') };
   const contentFiles = [readme, ...files];
-  const manifest = buildManifest(contentFiles, { sections: sectionMeta, portosVersion, generatedAt });
+
+  if (includePdf) {
+    const { bytes, pageCount } = await buildLegacyPdf(contentFiles, { portosVersion, generatedAt });
+    contentFiles.push({ name: 'legacy-portrait.pdf', data: Buffer.from(bytes) });
+    emit(io, 'legacy-export:progress', { phase: 'pdf', pageCount });
+  }
+
+  const manifest = buildManifest(contentFiles, { sections: sectionMeta, portosVersion, generatedAt, pdfIncluded: includePdf });
   const manifestFile = { name: 'manifest.json', data: Buffer.from(jsonFile(manifest), 'utf-8') };
 
   const buffer = createZip([...contentFiles, manifestFile]);
-  console.log(`📦 Legacy export: ${manifest.fileCount} files, ${(buffer.length / 1024).toFixed(1)} KB`);
+  console.log(`📦 Legacy export: ${manifest.fileCount} files${includePdf ? ' (+PDF)' : ''}, ${(buffer.length / 1024).toFixed(1)} KB`);
   emit(io, 'legacy-export:completed', { fileCount: manifest.fileCount, bytes: buffer.length });
   return { buffer, manifest };
 }

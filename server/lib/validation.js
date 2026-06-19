@@ -1763,7 +1763,10 @@ export const documentUpdateSchema = z.object({
 // services (cycle), so the keys are inlined here.
 export const LEGACY_EXPORT_SECTIONS = ['identity', 'autobiography', 'brain', 'goals', 'decisions', 'health'];
 export const legacyExportSchema = z.object({
-  sections: z.array(z.enum(LEGACY_EXPORT_SECTIONS)).optional()
+  sections: z.array(z.enum(LEGACY_EXPORT_SECTIONS)).optional(),
+  // Phase 2: render a `legacy-portrait.pdf` from the section Markdown. Default
+  // false — the Markdown/JSON bundle is the primary artifact.
+  includePdf: z.boolean().optional()
 });
 
 // =============================================================================
