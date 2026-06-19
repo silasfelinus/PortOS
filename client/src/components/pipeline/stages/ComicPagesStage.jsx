@@ -33,6 +33,11 @@ export default function ComicPagesStage({ issue, onStageUpdate, actionsGated = f
   const [panelCandidates, setPanelCandidates] = useState({});
   const [promptCount, setPromptCount] = useState(IMAGE_PROMPT_COUNT_DEFAULT);
   const [applyingCandidate, setApplyingCandidate] = useState(null);
+  // Bumped whenever the page/panel tree reindexes (remove / extract). A
+  // generate request captures it before its await and drops a late response
+  // whose generation is stale, so an in-flight result can't repopulate
+  // candidates under a `${pi}:${ni}` key now owned by a different panel.
+  const candidateGenRef = useRef(0);
   // Per-page in-flight state. Codex can render multiple pages in parallel, so
   // tracking a single index would flip the spinner off the wrong button when
   // the first request finished while a second was still pending.
@@ -64,12 +69,15 @@ export default function ComicPagesStage({ issue, onStageUpdate, actionsGated = f
     persist(next);
   };
   // Removing a page or panel reindexes the `${pi}:${ni}`-keyed candidates after
-  // it, so any open candidate list would point at the wrong panel — drop them.
+  // it, so any open candidate list would point at the wrong panel — drop them
+  // and invalidate any in-flight generate so its late response can't reappear.
   const removePage = (pi) => {
+    candidateGenRef.current += 1;
     setPanelCandidates({});
     persist(pages.filter((_, i) => i !== pi));
   };
   const removePanel = (pi, ni) => {
+    candidateGenRef.current += 1;
     setPanelCandidates({});
     const next = pages.map((p, i) => i === pi
       ? { ...p, panels: (p.panels || []).filter((_, j) => j !== ni) }
@@ -100,7 +108,8 @@ export default function ComicPagesStage({ issue, onStageUpdate, actionsGated = f
     if (!result) return;
     setPages(result.stage?.pages || []);
     // Extraction replaces the whole page/panel tree — stale candidates would
-    // now belong to different panels.
+    // now belong to different panels; invalidate in-flight generates too.
+    candidateGenRef.current += 1;
     setPanelCandidates({});
     onStageUpdate?.('comicPages', result.stage, result.issue);
     toast.success(`Extracted ${result.pageCount} page${result.pageCount === 1 ? '' : 's'} / ${result.panelCount} panel${result.panelCount === 1 ? '' : 's'}`);
@@ -183,6 +192,7 @@ export default function ComicPagesStage({ issue, onStageUpdate, actionsGated = f
     // Flush any pending textarea edit before the server reads the panel
     // description (it builds the prompt from the persisted text). pagesRef
     // holds the latest keystroke that onBlur may not have committed yet.
+    const gen = candidateGenRef.current;
     await persist(pagesRef.current);
     const result = await generatePipelineComicPanelImagePrompts(
       issue.id, pi, ni, { count: promptCount, ...genConfigToRefineOptions(genConfig) },
@@ -192,6 +202,9 @@ export default function ComicPagesStage({ issue, onStageUpdate, actionsGated = f
     });
     setPromptingKey(null);
     if (!result) return;
+    // Page/panel tree reindexed (remove / extract) while we were generating —
+    // `${pi}:${ni}` no longer means the same panel, so discard the result.
+    if (gen !== candidateGenRef.current) return;
     setPanelCandidates((prev) => ({ ...prev, [key]: result.candidates }));
     toast.success(`Generated ${result.candidates.length} prompt${result.candidates.length === 1 ? '' : 's'} for panel ${pi + 1}.${ni + 1}`);
   };

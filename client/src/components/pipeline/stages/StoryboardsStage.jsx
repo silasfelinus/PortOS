@@ -49,6 +49,11 @@ export default function StoryboardsStage({ issue, series, onStageUpdate, actions
   const [sceneCandidates, setSceneCandidates] = useState({});
   const [promptCount, setPromptCount] = useState(IMAGE_PROMPT_COUNT_DEFAULT);
   const [applyingCandidate, setApplyingCandidate] = useState(null);
+  // Bumped whenever the scene list reindexes (remove / extract). A generate
+  // request captures it before its await and drops a late response whose
+  // generation is stale — otherwise an in-flight result could repopulate
+  // candidates under an index now owned by a different scene.
+  const candidateGenRef = useRef(0);
   // Active per-shot renders keyed by `${sceneIdx}:${shotIdx}` so multiple
   // shots can render concurrently with independent spinners. A single ref
   // would race when the user starts a second render before the first settles.
@@ -93,7 +98,9 @@ export default function StoryboardsStage({ issue, series, onStageUpdate, actions
   const addScene = () => persist([...scenes, { slugline: '', description: '', imageJobId: null }]);
   const removeScene = (i) => {
     // Removing a scene reindexes everything after it, so any index-keyed
-    // candidate state would now point at the wrong scene — drop it all.
+    // candidate state would now point at the wrong scene — drop it all and
+    // invalidate any in-flight generate so its late response can't reappear.
+    candidateGenRef.current += 1;
     setSceneCandidates({});
     persist(scenes.filter((_, j) => j !== i));
   };
@@ -203,7 +210,8 @@ export default function StoryboardsStage({ issue, series, onStageUpdate, actions
     const next = result.stage?.scenes || [];
     setScenes(next);
     // Extraction replaces the whole scene list — stale index-keyed candidates
-    // would now belong to different scenes.
+    // would now belong to different scenes; invalidate in-flight generates too.
+    candidateGenRef.current += 1;
     setSceneCandidates({});
     onStageUpdate?.('storyboards', result.stage, result.issue);
     toast.success(`Extracted ${result.sceneCount} scene${result.sceneCount === 1 ? '' : 's'}`);
@@ -273,6 +281,7 @@ export default function StoryboardsStage({ issue, series, onStageUpdate, actions
     // Flush any pending textarea edit before the server reads scene.description
     // (the server builds the prompt from the persisted text). Same guard the
     // shot-render path uses against the blur-save race.
+    const gen = candidateGenRef.current;
     await persist(scenes);
     const result = await generatePipelineSceneImagePrompts(
       issue.id, i, { count: promptCount, ...genConfigToRefineOptions(genConfig) },
@@ -282,6 +291,9 @@ export default function StoryboardsStage({ issue, series, onStageUpdate, actions
     });
     setPromptingIdx(null);
     if (!result) return;
+    // Scene list reindexed (remove / extract) while we were generating — index
+    // `i` no longer means the same scene, so discard the now-orphaned result.
+    if (gen !== candidateGenRef.current) return;
     setSceneCandidates((prev) => ({ ...prev, [i]: result.candidates }));
     toast.success(`Generated ${result.candidates.length} prompt${result.candidates.length === 1 ? '' : 's'} for scene ${i + 1}`);
   };
