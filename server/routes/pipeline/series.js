@@ -22,6 +22,9 @@ import {
 } from '../../lib/issueLength.js';
 import { ARC_LIMITS, ARC_STATUSES, ARC_SHAPE_IDS, SEASON_STATUSES } from '../../lib/storyArc.js';
 import {
+  CHARACTER_ARC_LIMITS, CHARACTER_ARC_STATUSES, TRANSITION_KINDS,
+} from '../../lib/seriesCharacterArc.js';
+import {
   STYLE_GUIDE_LIMITS, STYLE_GUIDE_TENSES, STYLE_GUIDE_POV_PERSONS, STYLE_GUIDE_AUDIENCES,
   STYLE_GUIDE_RATINGS, STYLE_GUIDE_PROFANITY, STYLE_GUIDE_SPELLING,
 } from '../../lib/styleGuide.js';
@@ -65,6 +68,35 @@ const arcSchema = z.object({
   tickingClock: z.object({}).passthrough().nullable().optional(),
   status: z.enum(ARC_STATUSES).optional(),
 });
+
+// Per-character story arc (#1293). The arc lives on the series record as
+// `series.characterArcs[]`; every field optional so a partial save or an
+// intentional clear both round-trip, and the service-side
+// `sanitizeCharacterArcList` stays the authority (drops empty arcs/beats,
+// dedupes by character identity). Mirrors the arcSchema defer-to-sanitizer
+// pattern — Zod validates shape + caps, the sanitizer normalizes.
+const characterArcTransitionSchema = z.object({
+  id: z.string().trim().max(64).optional(),
+  kind: z.enum(TRANSITION_KINDS),
+  label: z.string().trim().max(CHARACTER_ARC_LIMITS.TRANSITION_LABEL_MAX).optional(),
+  atIssue: z.number().int().min(0).max(CHARACTER_ARC_LIMITS.ISSUE_MAX).nullable().optional(),
+  atSceneAnchor: z.string().trim().max(CHARACTER_ARC_LIMITS.TRANSITION_ANCHOR_MAX).optional(),
+  note: z.string().trim().max(CHARACTER_ARC_LIMITS.TRANSITION_NOTE_MAX).optional(),
+});
+
+const characterArcSchema = z.object({
+  characterId: z.string().trim().max(64).optional(),
+  characterName: z.string().trim().max(CHARACTER_ARC_LIMITS.CHARACTER_NAME_MAX).optional(),
+  want: z.string().trim().max(CHARACTER_ARC_LIMITS.WANT_MAX).optional(),
+  need: z.string().trim().max(CHARACTER_ARC_LIMITS.NEED_MAX).optional(),
+  startState: z.string().trim().max(CHARACTER_ARC_LIMITS.START_STATE_MAX).optional(),
+  endState: z.string().trim().max(CHARACTER_ARC_LIMITS.END_STATE_MAX).optional(),
+  transitions: z.array(characterArcTransitionSchema)
+    .max(CHARACTER_ARC_LIMITS.TRANSITIONS_PER_ARC_MAX).optional(),
+  status: z.enum(CHARACTER_ARC_STATUSES).optional(),
+});
+
+const characterArcsSchema = z.array(characterArcSchema).max(CHARACTER_ARC_LIMITS.ARCS_PER_SERIES_MAX);
 
 // Per-series style guide (house style) — #1303. Structured Zod parity for the
 // `series.styleGuide` field; every field optional + nullable so a partial
@@ -146,6 +178,7 @@ const seriesCreateSchema = z.object({
   writersRoomWorkId: z.string().trim().max(seriesSvc.WRITERS_ROOM_WORK_ID_MAX).nullable().optional(),
   arc: arcSchema.nullable().optional(),
   seasons: z.array(seasonSchema).max(ARC_LIMITS.SEASONS_PER_SERIES_MAX).optional(),
+  characterArcs: characterArcsSchema.optional(),
   locked: seriesLockedSchema.optional(),
   styleNotes: z.string().trim().max(seriesSvc.STYLE_NOTES_MAX).optional().default(''),
   styleGuide: styleGuideSchema.nullable().optional(),
@@ -170,6 +203,7 @@ const seriesPatchSchema = z.object({
   writersRoomWorkId: z.string().trim().max(seriesSvc.WRITERS_ROOM_WORK_ID_MAX).nullable().optional(),
   arc: arcSchema.nullable().optional(),
   seasons: z.array(seasonSchema).max(ARC_LIMITS.SEASONS_PER_SERIES_MAX).optional(),
+  characterArcs: characterArcsSchema.optional(),
   locked: seriesLockedSchema.optional(),
   styleNotes: z.string().trim().max(seriesSvc.STYLE_NOTES_MAX).optional(),
   styleGuide: styleGuideSchema.nullable().optional(),

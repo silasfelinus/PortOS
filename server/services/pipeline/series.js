@@ -15,6 +15,7 @@ import { randomUUID } from 'crypto';
 import { getSeriesStore } from './seriesStore/store.js';
 import { isStr, trimTo } from '../../lib/storyBible.js';
 import { sanitizeArc, sanitizeSeasonList } from '../../lib/storyArc.js';
+import { sanitizeCharacterArcList } from '../../lib/seriesCharacterArc.js';
 import { sanitizeStyleGuide } from '../../lib/styleGuide.js';
 import { sanitizeOrigin } from '../../lib/sharingOrigin.js';
 import { sanitizeSoftDeleteFields } from '../../lib/syncWire.js';
@@ -186,6 +187,12 @@ const sanitizeSeries = (raw) => {
     // files migrate forward without a writer pass — first save backfills.
     arc: sanitizeArc(raw.arc),
     seasons: sanitizeSeasonList(raw.seasons),
+    // Per-character story arcs (#1293) — each cast member's want/need, start →
+    // end transformation, and explicit transition beats. Defaults to [] so
+    // existing series.json files (which predate this field) migrate forward
+    // without a writer pass — first save backfills. Wire-gated (pipelineSeries
+    // schema v6) so a characterArcs-unaware peer can't strip-then-LWW the loss.
+    characterArcs: sanitizeCharacterArcList(raw.characterArcs),
     locked: sanitizeSeriesLocked(raw.locked),
     styleNotes: trimTo(raw.styleNotes, STYLE_NOTES_MAX),
     // Per-series house style (tense/POV/audience/rating/reading-level/tone/
@@ -273,6 +280,7 @@ export async function createSeries(input = {}) {
     writersRoomWorkId: input.writersRoomWorkId || null,
     arc: input.arc || null,
     seasons: input.seasons || [],
+    characterArcs: input.characterArcs || [],
     locked: input.locked || {},
     styleNotes: input.styleNotes || '',
     styleGuide: input.styleGuide || null,
@@ -431,6 +439,9 @@ export async function updateSeries(id, patch = {}) {
       ...('writersRoomWorkId' in patch ? { writersRoomWorkId: patch.writersRoomWorkId } : {}),
       ...('arc' in patch ? { arc: patch.arc } : {}),
       ...('seasons' in patch ? { seasons: patch.seasons } : {}),
+      // Wholesale replace — `characterArcs: []` clears all arcs; omission
+      // preserves. sanitizeCharacterArcList drops empties + dedupes by identity.
+      ...('characterArcs' in patch ? { characterArcs: patch.characterArcs } : {}),
       // Wholesale replace — `locked: {}` clears every lock; omission preserves.
       ...('locked' in patch ? { locked: patch.locked } : {}),
       ...('styleNotes' in patch ? { styleNotes: patch.styleNotes } : {}),
@@ -664,7 +675,7 @@ async function cascadeDeleteSideEffects(id) {
 // consult the RAW remote payload to tell the two apart: key absent → preserve
 // local; key present (even null/empty) → honor the intentional clear. Mirrors
 // the `universeId` hierarchy guard. See issue #1361.
-const ADDITIVE_SERIES_FIELDS = ['arc', 'seasons', 'styleGuide', 'styleNotes'];
+const ADDITIVE_SERIES_FIELDS = ['arc', 'seasons', 'styleGuide', 'styleNotes', 'characterArcs'];
 // Additive sub-fields nested inside `arc`. A peer that predates these (readerMap
 // shipped at schema v2, tickingClock at #1289/v3) still sends an `arc` object —
 // just without these keys — so the erasure for them happens one level down.

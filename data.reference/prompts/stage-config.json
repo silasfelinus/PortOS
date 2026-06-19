@@ -555,6 +555,13 @@
       "returnsJson": true,
       "variables": []
     },
+    "pipeline-editorial-arc-transitions": {
+      "name": "Pipeline — Editorial Check: Character-arc transitions",
+      "description": "Editorial check (#1293): scans each character's scenes for genuine change moments (decision, realization, point-of-no-return, relapse, sacrifice) and proposes transition beats with anchor quotes. Reconciles detected change moments against the authored per-character arcs (series.characterArcs) and flags flat arcs — a carrying character with no transition scenes. Reads the stitched manuscript plus the reverse-outline scene map (degrading to a whole-issue scan when absent). Returns issue-anchored findings.",
+      "model": "default",
+      "returnsJson": true,
+      "variables": []
+    },
     "pipeline-editorial-object-motivation": {
       "name": "Pipeline — Editorial Check: Unmotivated object interaction",
       "description": "Editorial check (#1288): flags moments where a character treats an object as significant without earned motivation — no recorded attachment and no on-page setup. Reads the stitched manuscript plus the canon object↔character attachments. Returns issue-anchored findings.",

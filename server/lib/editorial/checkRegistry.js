@@ -26,6 +26,7 @@
 
 import { z } from 'zod';
 import { estimateTokens } from '../contextBudget.js';
+import { renderCharacterArcsForPrompt } from '../seriesCharacterArc.js';
 import { analyzeNamePair, findFirstLetterClusters, normalizeName } from './nameSimilarity.js';
 import { findCliches, findModifierStacking } from './cliches.js';
 import { findItalicThoughts } from './italicThoughts.js';
@@ -58,8 +59,13 @@ const SEVERITIES = CHECK_SEVERITIES;
 //                                 editorial analysis aggregate (#1295). The runner fetches it
 //                                 (gated on this source) and injects `ctx.editorialArcs`
 //                                 (`[{ name, arcDirection, issueCount, isProtagonist }]`). This
-//                                 is the graceful-degradation fallback for the dedicated arc
-//                                 model (#arc-transitions) until that lands.
+//                                 is the coarse, DETECTED arc signal — distinct from the
+//                                 AUTHORED `series.characterArcs` model below.
+//   - 'series.characterArcs'    — the AUTHORED per-character story arcs (#1293):
+//                                 `series.characterArcs[]` (`{ characterId, characterName,
+//                                 want, need, startState, endState, transitions[] }`). The
+//                                 arc.transitions check reconciles detected change moments
+//                                 against these authored transitions + flat-arc warnings.
 export const EDITORIAL_SOURCES = Object.freeze([
   'manuscript',
   'canon',
@@ -68,6 +74,7 @@ export const EDITORIAL_SOURCES = Object.freeze([
   'series.arc.readerMap',
   'reverseOutline',
   'editorialArcs',
+  'series.characterArcs',
 ]);
 
 // Default per-run finding cap for user-defined checks (#1346) — mirrors the
@@ -180,6 +187,14 @@ export const KILL_YOUR_DARLINGS_STAGE = 'pipeline-editorial-kill-your-darlings';
 // degrade to a whole-issue manuscript scan when no outline exists.
 export const SENSORY_BALANCE_STAGE = 'pipeline-editorial-sensory-balance';
 export const WHITE_ROOM_STAGE = 'pipeline-editorial-white-room';
+
+// Stage name for the character-arc transition-detection LLM check (#1293). Ships
+// in data.reference/prompts/stages/ + stage-config.json (fresh installs via
+// setup-data.js) and migrates to existing installs via migration 109 (boot runs
+// migrations but NOT setup-data, so the migration is required). Reads the
+// stitched manuscript plus the reverse-outline scene map and the AUTHORED
+// per-character arcs to surface genuine change moments + flat-arc warnings.
+export const ARC_TRANSITIONS_STAGE = 'pipeline-editorial-arc-transitions';
 
 // Render the authored reader-map cliffhangers (#1298) into a compact text block
 // the chapter-ending check passes alongside the manuscript so the model
@@ -1547,6 +1562,63 @@ export const EDITORIAL_CHECKS = [
         }
       }
       return findings;
+    },
+  },
+  {
+    id: 'arc.transitions',
+    sources: ['manuscript', 'reverseOutline', 'series.characterArcs'],
+    label: 'Character-arc transitions (change moments + flat arcs)',
+    description:
+      'Scans each character\'s scenes for genuine change moments — a decision, a realization, a point of no return, a relapse, a sacrifice — and proposes transition beats with anchor quotes. Reconciles detected change moments against the AUTHORED per-character arcs (series.characterArcs): flags a transition the prose delivers but the arc never recorded, an authored transition the prose never pays off, and a character who carries the story but has no transition scenes at all (a flat arc).',
+    scope: 'series',
+    kind: 'llm',
+    category: 'arc',
+    severityDefault: 'medium',
+    defaultEnabled: true,
+    // Reads the stitched manuscript corpus — so the runner only pays the
+    // section-collection I/O when a manuscript-consuming check is enabled.
+    needsManuscript: true,
+    configSchema: z.object({
+      // Cap findings per run so a long manuscript can't flood the review.
+      maxFindings: z.number().int().min(1).max(50).default(12),
+    }),
+    configFields: [
+      {
+        key: 'maxFindings',
+        label: 'Max findings per run',
+        type: 'number',
+        min: 1,
+        max: 50,
+        step: 1,
+        help: 'Cap findings so a long manuscript can not flood the review.',
+      },
+    ],
+    gate: (ctx) => (ctx.manuscript || '').trim().length > 0,
+    run: (ctx) => {
+      // Both blocks are fixed per-call overhead (re-sent on each chunk) and pure
+      // context: the scene map lets the model attribute transitions to scenes,
+      // the authored arcs let it reconcile detected vs authored change moments.
+      // The check degrades gracefully — no outline ⇒ {{#sceneMap}} renders
+      // nothing; no authored arcs ⇒ {{#characterArcs}} renders nothing and the
+      // check proposes transitions from scratch (and can't fire the
+      // "missing/unjustified authored transition" reconciliation arm).
+      const sceneMap = sceneGroundingSummary(ctx.reverseOutline);
+      const characterArcs = renderCharacterArcsForPrompt(ctx.series?.characterArcs) || '';
+      return runManuscriptLlmCheck(ctx, {
+        stage: ARC_TRANSITIONS_STAGE,
+        category: 'arc',
+        overheadTokens:
+          EDITORIAL_PROMPT_OVERHEAD_TOKENS + estimateTokens(sceneMap) + estimateTokens(characterArcs),
+        buildVars: (manuscript) => ({ manuscript, sceneMap, characterArcs }),
+        // Arc change moments accrue across the whole manuscript — a flat-arc
+        // verdict needs to see whether a character ever changed in a LATER
+        // chunk. Roll a "transitions seen so far" digest forward so a
+        // multi-chunk manuscript doesn't false-flag an early-chapters-flat
+        // character whose turn lands in the finale.
+        crossChunkSetup: true,
+        setupFocus:
+          'For each named character, note any genuine change moment so far (a decision, realization, point of no return, relapse, or sacrifice) and where it landed. Carry forward who has changed and who is still flat, so a later chunk can tell a truly flat arc from one whose turn simply has not arrived yet.',
+      });
     },
   },
   {

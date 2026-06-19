@@ -71,6 +71,10 @@ const SOURCE_RESOLVERS = {
   // flag — so a finding must go stale when it changes, not only when the arcs do.
   editorialArcs: ({ editorialArcs, editorialArcsComplete }) =>
     canonicalStringify({ arcs: editorialArcs ?? null, complete: editorialArcsComplete === true }),
+  // The AUTHORED per-character story arcs the arc.transitions check reconciles
+  // against (#1293). Lives on the already-loaded series record, so no extra I/O
+  // — fingerprint the whole array so any arc/transition edit stales the findings.
+  'series.characterArcs': ({ series }) => canonicalStringify(series?.characterArcs ?? null),
 };
 
 // Stable projection of the series editorial aggregate down to the arc fields a

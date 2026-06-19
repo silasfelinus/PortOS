@@ -15,6 +15,7 @@ import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Save, Loader2, Workflow as WorkflowIcon, Globe, NotebookPen,
   PanelLeftClose, PanelLeftOpen, Sparkles, BookOpen, FileInput, Compass, BookMarked,
+  Plus, Trash2,
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import ArcCanvas from '../components/pipeline/ArcCanvas';
@@ -50,7 +51,7 @@ const STYLE_OVERRIDE_MODE_TABS = [
 // constants so the `useArcCanvasSync` callbacks keep a stable identity.
 const ARC_FLUSH_FIELDS = [
   'name', 'logline', 'premise', 'styleNotes', 'styleGuide', 'titleLogo', 'author', 'authorId',
-  'stylePromptOverride', 'stylePromptOverrideMode', 'issueCountTarget', 'universeId',
+  'stylePromptOverride', 'stylePromptOverrideMode', 'issueCountTarget', 'universeId', 'characterArcs',
 ];
 const ARC_PAYLOAD_DEFAULTS = {
   titleLogo: '',
@@ -61,6 +62,9 @@ const ARC_PAYLOAD_DEFAULTS = {
   // Structured house style — null means "no style guide", which the server
   // sanitizer also produces from an all-empty guide.
   styleGuide: null,
+  // Per-character story arcs (#1293) — [] means "no authored arcs"; the server
+  // sanitizer drops empty arcs/beats and dedupes by character identity.
+  characterArcs: [],
 };
 
 // Style-guide option lists — mirror the enums in server/lib/styleGuide.js. Each
@@ -383,6 +387,8 @@ function BibleSidebar({ series, universes, patchSeries, onSeriesUpdate, onFlushP
 
       <StyleGuideSection series={series} patchSeries={patchSeries} />
 
+      <CharacterArcsSection series={series} patchSeries={patchSeries} />
+
       <div className="block">
         <div className="flex items-center justify-between mb-1">
           <label
@@ -567,6 +573,158 @@ function StyleGuideSection({ series, patchSeries }) {
             onChange={(e) => setConv({ [key]: triParse(e.target.value) })}
           />
         ))}
+      </div>
+    </div>
+  );
+}
+
+// The change-beat kinds the arc.transitions editorial check recognizes — mirror
+// TRANSITION_KINDS in server/lib/seriesCharacterArc.js.
+const TRANSITION_KIND_OPTIONS = [
+  ['decision', 'Decision'],
+  ['realization', 'Realization'],
+  ['point-of-no-return', 'Point of no return'],
+  ['relapse', 'Relapse'],
+  ['sacrifice', 'Sacrifice'],
+];
+
+// Per-character story arcs (#1293). Authored want/need, start → end state, and
+// explicit transition beats, edited into local series state via patchSeries and
+// persisted on Save (characterArcs is in ARC_FLUSH_FIELDS). The server sanitizer
+// drops empty arcs/beats and dedupes by character identity, so the editor stays
+// permissive — a freshly-added blank arc simply doesn't persist until named. The
+// arc.transitions editorial check reconciles its detected change moments against
+// what's authored here and flags characters with no transition scenes (flat arcs).
+function CharacterArcsSection({ series, patchSeries }) {
+  const arcs = Array.isArray(series.characterArcs) ? series.characterArcs : [];
+  const setArcs = (next) => patchSeries({ characterArcs: next });
+  const setArc = (i, patch) => setArcs(arcs.map((a, idx) => (idx === i ? { ...a, ...patch } : a)));
+  const addArc = () => setArcs([...arcs, { characterName: '', want: '', need: '', startState: '', endState: '', transitions: [] }]);
+  const removeArc = (i) => setArcs(arcs.filter((_, idx) => idx !== i));
+
+  const setTransitions = (i, next) => setArc(i, { transitions: next });
+  const addTransition = (i) => {
+    const cur = Array.isArray(arcs[i]?.transitions) ? arcs[i].transitions : [];
+    setTransitions(i, [...cur, { kind: 'decision', label: '', atIssue: null }]);
+  };
+  const setTransition = (i, j, patch) => {
+    const cur = Array.isArray(arcs[i]?.transitions) ? arcs[i].transitions : [];
+    setTransitions(i, cur.map((t, idx) => (idx === j ? { ...t, ...patch } : t)));
+  };
+  const removeTransition = (i, j) => {
+    const cur = Array.isArray(arcs[i]?.transitions) ? arcs[i].transitions : [];
+    setTransitions(i, cur.filter((_, idx) => idx !== j));
+  };
+
+  const inputCls = 'w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm';
+
+  return (
+    <div className="block">
+      <div className="flex items-center justify-between mb-1">
+        <h3 className="text-xs uppercase tracking-wider text-gray-500">Character arcs</h3>
+        <button
+          type="button"
+          onClick={addArc}
+          className="flex items-center gap-1 text-[11px] text-port-accent hover:text-blue-400"
+        >
+          <Plus size={12} /> Add arc
+        </button>
+      </div>
+      <p className="text-[11px] text-gray-500 mb-3 -mt-1">
+        Each cast member&apos;s want / need, start → end transformation, and the transition beats
+        where they actually change. The editorial &ldquo;Character-arc transitions&rdquo; check reconciles
+        these against the manuscript and flags characters with no change scenes.
+      </p>
+
+      {arcs.length === 0 && (
+        <p className="text-[11px] text-gray-600 italic mb-2">No character arcs yet.</p>
+      )}
+
+      <div className="space-y-3">
+        {arcs.map((arc, i) => {
+          const transitions = Array.isArray(arc.transitions) ? arc.transitions : [];
+          return (
+            <div key={i} className="border border-port-border rounded p-2 bg-port-bg/40">
+              <div className="flex items-center gap-2 mb-2">
+                <input
+                  aria-label="Character name"
+                  value={arc.characterName || ''}
+                  onChange={(e) => setArc(i, { characterName: e.target.value })}
+                  placeholder="Character name"
+                  className={`${inputCls} font-medium`}
+                />
+                <button
+                  type="button"
+                  onClick={() => removeArc(i)}
+                  className="text-gray-500 hover:text-port-error shrink-0"
+                  title="Remove this character arc"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <input aria-label="Want" value={arc.want || ''} onChange={(e) => setArc(i, { want: e.target.value })} placeholder="Wants (external goal)" className={inputCls} />
+                <input aria-label="Need" value={arc.need || ''} onChange={(e) => setArc(i, { need: e.target.value })} placeholder="Needs (internal lesson)" className={inputCls} />
+                <input aria-label="Start state" value={arc.startState || ''} onChange={(e) => setArc(i, { startState: e.target.value })} placeholder="Starts as…" className={inputCls} />
+                <input aria-label="End state" value={arc.endState || ''} onChange={(e) => setArc(i, { endState: e.target.value })} placeholder="Ends as…" className={inputCls} />
+              </div>
+
+              <div className="mt-2">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[10px] uppercase tracking-wider text-gray-600">Transitions</span>
+                  <button
+                    type="button"
+                    onClick={() => addTransition(i)}
+                    className="flex items-center gap-1 text-[11px] text-port-accent hover:text-blue-400"
+                  >
+                    <Plus size={11} /> Add beat
+                  </button>
+                </div>
+                <div className="space-y-1.5">
+                  {transitions.map((t, j) => (
+                    <div key={j} className="flex items-center gap-1.5">
+                      <select
+                        aria-label="Transition kind"
+                        value={t.kind || 'decision'}
+                        onChange={(e) => setTransition(i, j, { kind: e.target.value })}
+                        className="px-1.5 py-1 bg-port-bg border border-port-border rounded text-white text-xs shrink-0"
+                      >
+                        {TRANSITION_KIND_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                      </select>
+                      <input
+                        aria-label="Transition label"
+                        value={t.label || ''}
+                        onChange={(e) => setTransition(i, j, { label: e.target.value })}
+                        placeholder="What changes"
+                        className="flex-1 px-2 py-1 bg-port-bg border border-port-border rounded text-white text-xs"
+                      />
+                      <input
+                        aria-label="At issue"
+                        type="number"
+                        min={0}
+                        value={Number.isFinite(t.atIssue) ? t.atIssue : ''}
+                        onChange={(e) => {
+                          const n = parseInt(e.target.value, 10);
+                          setTransition(i, j, { atIssue: Number.isFinite(n) ? n : null });
+                        }}
+                        placeholder="#"
+                        className="w-14 px-1.5 py-1 bg-port-bg border border-port-border rounded text-white text-xs"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeTransition(i, j)}
+                        className="text-gray-500 hover:text-port-error shrink-0"
+                        title="Remove this transition"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

@@ -52,6 +52,7 @@ export * as editorial from './editorial/index.js';
 export * from './sceneExtractor.js';
 export * from './scenePrompt.js';
 export * from './seasonStructure.js';
+export * from './seriesCharacterArc.js';
 export * from './seriesLlmOverride.js';
 export * from './storyArc.js';
 export * from './styleGuide.js';

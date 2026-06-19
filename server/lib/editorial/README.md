@@ -57,7 +57,7 @@ it. To add a new built-in check, append an entry to `EDITORIAL_CHECKS` in
 Declare every input the check's `run(ctx)` reads in its `sources` array (a
 non-empty subset of `EDITORIAL_SOURCES`: `manuscript`, `canon`,
 `series.styleGuide`, `series.arc.tickingClock`, `series.arc.readerMap`,
-`reverseOutline`, `editorialArcs`). The staleness
+`reverseOutline`, `editorialArcs`, `series.characterArcs`). The staleness
 runner fingerprints exactly those sources, so a finding goes stale only when
 content the check actually analyzed drifts — declare too few and a finding stays
 falsely fresh; a `manuscript` source must pair with `needsManuscript: true`, and
@@ -65,11 +65,14 @@ falsely fresh; a `manuscript` source must pair with `needsManuscript: true`, and
 inject `ctx.reverseOutline` (the scenes array). `editorialArcs` (#1295) makes the
 runner fetch the series editorial aggregate and inject `ctx.editorialArcs` (the
 detected per-character `{ name, arcDirection, issueCount, isProtagonist }`
-projection — the graceful-degradation fallback for the dedicated arc model until
-`#arc-transitions` lands) plus a derived `ctx.editorialArcsComplete` boolean (true
-only when every analyzable issue is analyzed and fresh), so a check can tell
-"absent because arc-less" from "absent because not-yet-analyzed" under a partial
-coverage batch. When a new check reads a
+projection — the coarse DETECTED arc signal) plus a derived
+`ctx.editorialArcsComplete` boolean (true only when every analyzable issue is
+analyzed and fresh), so a check can tell "absent because arc-less" from "absent
+because not-yet-analyzed" under a partial coverage batch. `series.characterArcs`
+(#1293) reads the AUTHORED per-character arcs off the already-loaded series
+record (`series.characterArcs[]` — want/need, start → end state, transition
+beats), which the `arc.transitions` check reconciles detected change moments
+against. When a new check reads a
 `ctx.series` field (or another artifact) that isn't yet a token, add the token to
 `EDITORIAL_SOURCES` and a matching resolver in the runner's `SOURCE_RESOLVERS`.
 

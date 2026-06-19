@@ -31,9 +31,14 @@ export const SEVERITY_UNDERLINE = {
 export const CATEGORY_LABEL = {
   'missing-content': 'Missing content',
   'arc-gap': 'Arc gap',
+  // Character-arc findings (#1293/#1295): POV justification + transition beats /
+  // flat-arc warnings from the arc.transitions editorial check.
+  arc: 'Character arc',
   'character-gap': 'Character gap',
   pacing: 'Pacing',
   continuity: 'Continuity',
+  style: 'Style',
+  exposition: 'Exposition',
   other: 'Note',
 };
 
