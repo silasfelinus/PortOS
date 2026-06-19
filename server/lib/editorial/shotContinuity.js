@@ -57,6 +57,10 @@ function sceneShots(scene) {
 export function findAxisReversals(scene) {
   const shots = sceneShots(scene);
   if (shots.length < 2) return [];
+  // Shot ids are unique on the extract path (sanitizeShot synthesizes them) but
+  // the route doesn't enforce cross-shot uniqueness, so a hand-edited scene could
+  // carry a duplicate id — last-wins here, matching how a continuity ref would
+  // resolve anyway. Acceptable under the check's high-precision / under-flag design.
   const byId = new Map();
   for (const s of shots) {
     if (s && typeof s === 'object' && typeof s.id === 'string' && s.id) byId.set(s.id, s);
@@ -94,8 +98,9 @@ export function findAxisReversals(scene) {
  * (so a 2-of-5 partial tag never trips it).
  *
  * @param {object} scene
- * @param {{ minClassified?: number }} [opts] minClassified default 3
- * @returns {{ shotType: string, classifiedCount: number, totalShots: number } | null}
+ * @param {{ minClassified?: number }} [opts] minClassified — floored at 2 (a
+ *   single classified shot is never "monotony"); default 3.
+ * @returns {{ shotType: string, classifiedCount: number } | null}
  */
 export function findShotTypeMonotony(scene, opts = {}) {
   const minClassified = Math.max(2, Number.isInteger(opts.minClassified) ? opts.minClassified : 3);
@@ -107,5 +112,5 @@ export function findShotTypeMonotony(scene, opts = {}) {
   if (types.length < minClassified) return null;
   const first = types[0];
   if (!types.every((t) => t === first)) return null;
-  return { shotType: first, classifiedCount: types.length, totalShots: shots.length };
+  return { shotType: first, classifiedCount: types.length };
 }

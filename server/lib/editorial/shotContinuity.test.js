@@ -79,7 +79,7 @@ describe('findShotTypeMonotony', () => {
         { id: 'c', shotType: 'medium' },
       ],
     };
-    expect(findShotTypeMonotony(scene)).toMatchObject({ shotType: 'medium', classifiedCount: 3, totalShots: 3 });
+    expect(findShotTypeMonotony(scene)).toMatchObject({ shotType: 'medium', classifiedCount: 3 });
   });
 
   it('does NOT flag a varied scene', () => {
@@ -105,7 +105,7 @@ describe('findShotTypeMonotony', () => {
     // Only 2 classified, default minClassified is 3 → not enough confidence.
     expect(findShotTypeMonotony(scene)).toBe(null);
     // Lowering the threshold flags the all-medium classified pair.
-    expect(findShotTypeMonotony(scene, { minClassified: 2 })).toMatchObject({ shotType: 'medium', classifiedCount: 2, totalShots: 4 });
+    expect(findShotTypeMonotony(scene, { minClassified: 2 })).toMatchObject({ shotType: 'medium', classifiedCount: 2 });
   });
 
   it('ignores unclassified shots when judging monotony', () => {

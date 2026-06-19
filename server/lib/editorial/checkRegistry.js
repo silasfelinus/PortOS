@@ -1819,6 +1819,8 @@ export const EDITORIAL_CHECKS = [
       // Flag a scene where every classified shot shares one framing. 0 disables
       // the monotony check; otherwise it's the minimum classified-shot count
       // before a single-framing scene is flagged (a sparse 2-shot tag is noise).
+      // The primitive floors this at 2 — a single classified shot is never
+      // "monotony" — so 1 behaves identically to 2.
       minShotsForMonotony: z.number().int().min(0).max(16).default(3),
     }),
     configFields: [
@@ -1835,7 +1837,7 @@ export const EDITORIAL_CHECKS = [
         min: 0,
         max: 16,
         step: 1,
-        help: 'Flag a scene where every classified shot shares one framing (all medium, say) once at least this many shots are classified. 0 disables the monotony check.',
+        help: 'Flag a scene where every classified shot shares one framing (all medium, say) once at least this many shots are classified. 0 disables the monotony check; the minimum effective value is 2 (1 is treated as 2).',
       },
     ],
     // Needs at least one storyboard scene with shots to read.
