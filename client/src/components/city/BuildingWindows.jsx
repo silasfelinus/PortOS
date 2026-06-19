@@ -195,7 +195,10 @@ export default function BuildingWindows({
   }, [mesh, dimMul]);
 
   // R3F only auto-disposes objects it created via JSX; these are built
-  // imperatively, so free their GPU buffers on replace/unmount ourselves.
+  // imperatively, so free their GPU buffers on replace/unmount ourselves. The
+  // mesh is recreated whenever the material is rebuilt (theme/brightness change),
+  // so its instanceMatrix buffer must be freed too — <primitive> won't.
+  useEffect(() => (mesh ? () => mesh.dispose() : undefined), [mesh]);
   useEffect(() => (built ? () => built.geo.dispose() : undefined), [built]);
   useEffect(() => (material ? () => material.dispose() : undefined), [material]);
 
