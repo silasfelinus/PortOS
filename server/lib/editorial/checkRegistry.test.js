@@ -30,6 +30,7 @@ import {
   authoredSetupPayoffSummary,
   authoredCliffhangerSummary,
   sceneGroundingSummary,
+  characterVoiceProfiles,
 } from './checkRegistry.js';
 
 const NAMING = 'naming.dissimilar-names';
@@ -2538,6 +2539,191 @@ describe('prose anti-pattern bundle (#1300)', () => {
       const sections = [{ number: 1, content: 'He paused. *What now?* he wondered.' }];
       expect(run(sections)).toEqual([]); // 2 words < default 4
       expect(run(sections, { minWords: 2 })).toHaveLength(1);
+    });
+  });
+});
+
+describe('dialogue-craft bundle (#1307)', () => {
+  const SAID_BOOKISMS = 'dialogue.said-bookisms';
+  const ATTRIBUTION = 'dialogue.attribution-clarity';
+  const ON_THE_NOSE = 'dialogue.on-the-nose';
+  const VOICE = 'dialogue.voice-distinctiveness';
+
+  describe('dialogue.said-bookisms — deterministic check', () => {
+    const run = (sections, config = {}) =>
+      getCheck(SAID_BOOKISMS).run({ sections, config, severityDefault: 'low' });
+
+    it('declares the expected scope / kind / sources', () => {
+      const c = getCheck(SAID_BOOKISMS);
+      expect(c.kind).toBe('deterministic');
+      expect(c.scope).toBe('issue');
+      expect(c.category).toBe('dialogue');
+      expect(c.sources).toEqual(['manuscript']);
+      expect(c.needsManuscript).toBe(true);
+    });
+
+    it('flags an ornate tag and anchors it to its issue', () => {
+      const findings = run([{ number: 2, content: '"I object," expostulated the duke.' }]);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].issueNumber).toBe(2);
+      expect(findings[0].category).toBe('dialogue');
+      expect(findings[0].problem).toMatch(/said-bookism/);
+      expect(findings[0].anchorQuote).toContain('expostulated');
+    });
+
+    it('flags a non-speech action used as a tag with distinct wording', () => {
+      const findings = run([{ number: 1, content: '"Of course," she smiled.' }]);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].problem).toMatch(/non-speech action/);
+      expect(findings[0].suggestion).toMatch(/action/);
+    });
+
+    it('does not flag plain tags or narrated verbs', () => {
+      expect(run([{ number: 1, content: '"Hello," she said. The engine growled outside.' }])).toEqual([]);
+    });
+
+    it('honors allowWords and maxFindings', () => {
+      const sections = [{ number: 1, content: '"A," he opined. "B," she retorted. "C," they interjected.' }];
+      expect(run(sections, { allowWords: 'opine, retort, interject' })).toEqual([]);
+      expect(run(sections, { maxFindings: 1 })).toHaveLength(1);
+    });
+  });
+
+  describe('dialogue.attribution-clarity — deterministic check', () => {
+    const run = (sections, config = {}) =>
+      getCheck(ATTRIBUTION).run({ sections, config, severityDefault: 'low' });
+    const bareRun = [
+      '"You came back."',
+      '"I had to."',
+      '"After everything?"',
+      '"Especially after everything."',
+      '"And now?"',
+      '"Now we finish it."',
+    ].join('\n');
+
+    it('declares the expected scope / kind / sources', () => {
+      const c = getCheck(ATTRIBUTION);
+      expect(c.kind).toBe('deterministic');
+      expect(c.scope).toBe('issue');
+      expect(c.category).toBe('dialogue');
+      expect(c.sources).toEqual(['manuscript']);
+      expect(c.needsManuscript).toBe(true);
+    });
+
+    it('flags a long untagged run and anchors it to the run start', () => {
+      const findings = run([{ number: 4, content: bareRun }]);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].issueNumber).toBe(4);
+      expect(findings[0].category).toBe('dialogue');
+      expect(findings[0].problem).toMatch(/no speech tag or action beat/);
+      expect(findings[0].anchorQuote).toBe('"You came back."');
+    });
+
+    it('does not flag a short exchange below the default threshold', () => {
+      expect(run([{ number: 1, content: '"Hi."\n"Hello."\n"Bye."' }])).toEqual([]);
+    });
+
+    it('honors a custom minRun', () => {
+      const findings = run([{ number: 1, content: '"A."\n"B."\n"C."' }], { minRun: 3 });
+      expect(findings).toHaveLength(1);
+    });
+  });
+
+  describe('dialogue.on-the-nose — LLM check', () => {
+    const wholeCtx = (overrides = {}) => ({
+      manuscript: '# Issue 1\n\n"I am angry at you for leaving me," she said.',
+      config: { maxFindings: 12 },
+      severityDefault: 'low',
+      planManuscriptChunks: async () => ['# Issue 1\n\n"I am angry at you for leaving me," she said.'],
+      callStagedLLM: async () => ({ content: { findings: [] } }),
+      ...overrides,
+    });
+
+    it('is registered as a manuscript LLM check with category dialogue', () => {
+      const c = getCheck(ON_THE_NOSE);
+      expect(c.kind).toBe('llm');
+      expect(c.scope).toBe('issue');
+      expect(c.category).toBe('dialogue');
+      expect(c.needsManuscript).toBe(true);
+      expect(c.sources).toEqual(['manuscript']);
+    });
+
+    it('passes the corpus to the model and normalizes findings to the dialogue category', async () => {
+      const ctx = wholeCtx({
+        callStagedLLM: async (_stage, vars) => {
+          expect(vars.manuscript).toContain('angry');
+          return { content: { findings: [{ severity: 'medium', issueNumber: 1, problem: 'on the nose', anchorQuote: 'I am angry' }] } };
+        },
+      });
+      const findings = await getCheck(ON_THE_NOSE).run(ctx);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].category).toBe('dialogue');
+      expect(findings[0].issueNumber).toBe(1);
+    });
+  });
+
+  describe('dialogue.voice-distinctiveness — LLM check', () => {
+    const canon = { characters: [{ name: 'Mara', speechPattern: 'clipped, profane' }, { name: 'Joss', speechAccent: 'formal Edwardian' }] };
+    const wholeCtx = (overrides = {}) => ({
+      manuscript: '# Issue 1\n\n"We go now," said Mara. "Indeed we shall," said Joss.',
+      canon,
+      config: { maxFindings: 12 },
+      severityDefault: 'medium',
+      planManuscriptChunks: async () => ['# Issue 1\n\nlines'],
+      callStagedLLM: async () => ({ content: { findings: [] } }),
+      ...overrides,
+    });
+
+    it('is registered as a manuscript+canon LLM check with category dialogue', () => {
+      const c = getCheck(VOICE);
+      expect(c.kind).toBe('llm');
+      expect(c.scope).toBe('series');
+      expect(c.category).toBe('dialogue');
+      expect(c.needsManuscript).toBe(true);
+      expect(c.sources).toEqual(expect.arrayContaining(['manuscript', 'canon']));
+      expect(c.severityDefault).toBe('medium');
+    });
+
+    it('feeds the authored voice profiles alongside the manuscript', async () => {
+      let seenVars = null;
+      const ctx = wholeCtx({
+        callStagedLLM: async (_stage, vars) => {
+          seenVars = vars;
+          return { content: { findings: [{ severity: 'high', issueNumber: 1, problem: 'interchangeable', anchorQuote: 'We go now' }] } };
+        },
+      });
+      const findings = await getCheck(VOICE).run(ctx);
+      expect(seenVars.voiceProfiles).toContain('Mara');
+      expect(seenVars.voiceProfiles).toContain('clipped, profane');
+      expect(findings).toHaveLength(1);
+      expect(findings[0].category).toBe('dialogue');
+    });
+  });
+
+  describe('characterVoiceProfiles helper', () => {
+    it('renders only characters carrying a voice field', () => {
+      const out = characterVoiceProfiles({
+        characters: [
+          { name: 'Mara', speechPattern: 'clipped, profane' },
+          { name: 'Joss', speechAccent: 'formal Edwardian' },
+          { name: 'Extra' }, // no voice fields → omitted
+        ],
+      });
+      expect(out).toContain('Authored character voices');
+      expect(out).toContain('Mara — speech pattern: clipped, profane');
+      expect(out).toContain('Joss — accent/dialect: formal Edwardian');
+      expect(out).not.toContain('Extra');
+    });
+
+    it('returns "" when no character carries a voice field', () => {
+      expect(characterVoiceProfiles({ characters: [{ name: 'A' }, { name: 'B' }] })).toBe('');
+      expect(characterVoiceProfiles({})).toBe('');
+      expect(characterVoiceProfiles(null)).toBe('');
+    });
+
+    it('tolerates malformed characters without throwing', () => {
+      expect(() => characterVoiceProfiles({ characters: [null, { speechPattern: 42 }, 'x'] })).not.toThrow();
+      expect(characterVoiceProfiles({ characters: [null, { speechPattern: 42 }] })).toBe('');
     });
   });
 });

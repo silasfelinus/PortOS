@@ -603,6 +603,20 @@
       "model": "default",
       "returnsJson": true,
       "variables": []
+    },
+    "pipeline-editorial-on-the-nose": {
+      "name": "Pipeline — Editorial Check: On-the-nose / subtext-free dialogue",
+      "description": "Editorial check (#1307): the judgment layer for dialogue that states feeling/meaning outright with no subtext and \"maid-and-butler\" exchanges where characters tell each other what they both already know. Reads the stitched manuscript; severity is advisory; skips earned directness, functional exchanges, and dialogue whose subtext already works. Returns issue-anchored findings.",
+      "model": "default",
+      "returnsJson": true,
+      "variables": []
+    },
+    "pipeline-editorial-voice-distinctiveness": {
+      "name": "Pipeline — Editorial Check: Character voice distinctiveness",
+      "description": "Editorial check (#1307): samples each character dialogue and flags interchangeable voices (everyone sounds like one narrator) plus drafted lines that contradict the canon speechPattern/speechAccent. Reads the stitched manuscript + authored voice profiles; rolls a per-character voice-sample digest across chunks. Returns issue-anchored findings naming differentiating tics.",
+      "model": "default",
+      "returnsJson": true,
+      "variables": []
     }
   }
 }
