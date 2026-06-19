@@ -77,7 +77,7 @@ const IRREGULAR_PARTICIPLES = new Set([
   'led', 'meant', 'read', 'struck', 'swept', 'swung', 'understood', 'wound',
   'bound', 'ground', 'cut', 'hit', 'hurt', 'shut', 'split', 'spread', 'cast',
   'forbidden', 'forgiven', 'mistaken', 'shaken', 'woken', 'risen', 'ridden',
-  'bitten', 'beaten', 'hidden', 'laid', 'lain',
+  'bitten', 'laid', 'lain',
 ]);
 
 // Common -ly words that are NOT adverbs (nouns/adjectives) — the suffix rule
@@ -89,7 +89,7 @@ const NON_ADVERB_LY = new Set([
   'sly', 'rely', 'comply', 'imply', 'multiply', 'assembly', 'anomaly',
   'monopoly', 'panoply', 'melancholy', 'early', 'lonely', 'lovely', 'silly',
   'chilly', 'jolly', 'folly', 'dolly', 'gully', 'sully', 'tally', 'wally',
-  'belly', 'telly', 'wholly', 'duly', 'truly', 'unduly', 'curly', 'burly',
+  'telly', 'wholly', 'duly', 'truly', 'unduly', 'curly', 'burly',
   'surly', 'gnarly', 'pearly', 'hourly', 'daily', 'doily', 'gaily',
 ]);
 
