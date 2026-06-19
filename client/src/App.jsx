@@ -58,6 +58,8 @@ const VideoTimeline = lazyWithReload(() => import('./pages/VideoTimeline'));
 const VideoTimelineEditor = lazyWithReload(() => import('./pages/VideoTimelineEditor'));
 const CreativeDirector = lazyWithReload(() => import('./pages/CreativeDirector'));
 const CreativeDirectorDetail = lazyWithReload(() => import('./pages/CreativeDirectorDetail'));
+const MoodBoards = lazyWithReload(() => import('./pages/MoodBoards'));
+const MoodBoardDetail = lazyWithReload(() => import('./pages/MoodBoardDetail'));
 const CreateApp = lazyWithReload(() => import('./pages/CreateApp'));
 const Templates = lazyWithReload(() => import('./pages/Templates'));
 const PromptManager = lazyWithReload(() => import('./pages/PromptManager'));
@@ -296,6 +298,8 @@ export default function App() {
           <Route path="catalog" element={<Catalog />} />
           <Route path="catalog/ingest" element={<CatalogIngest />} />
           <Route path="catalog/:type/:id" element={<CatalogIngredient />} />
+          <Route path="mood-boards" element={<MoodBoards />} />
+          <Route path="mood-boards/:id" element={<MoodBoardDetail />} />
           <Route path="universes" element={<Universes />} />
           <Route path="universes/new" element={<UniverseBuilder />} />
           <Route path="universes/:universeId" element={<UniverseBuilder />} />

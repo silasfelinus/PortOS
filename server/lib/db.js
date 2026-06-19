@@ -823,6 +823,27 @@ async function ensureSchemaImpl() {
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )`,
 
+    // Mood boards (issue #911). A dedicated inspiration/mood-board canvas,
+    // distinct from raw Media History, for collecting visual + textual
+    // references that feed the Create suite. One row per board, the full record
+    // (name/description/items[]) in `data` JSONB. Items (image-by-media-key or
+    // external URL, or a text note + optional caption/source backref) live
+    // inline in the board's JSONB rather than a child table — a board is read/
+    // written whole, has a small bounded item list, and there are no cross-board
+    // item queries. `name` mirrors a column for the live-list sort. Mood boards
+    // are db-primary and LOCAL-ONLY (no sync_sequence/tombstone) — like
+    // creative_director_projects, they don't federate to peers in v1. Mirrors
+    // the mood_boards block in init-db.sql.
+    `CREATE TABLE IF NOT EXISTS mood_boards (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    // updated_at DESC is the board-list "recently touched" sort.
+    `CREATE INDEX IF NOT EXISTS idx_mood_boards_updated ON mood_boards (updated_at DESC)`,
+
     // Media asset index (Phase 3.2, issue #1000). One row per generated image
     // or video; the bytes stay on disk (data/images, data/videos) and the
     // sidecar/.json history files remain authoritative — this table is a
@@ -1199,8 +1220,8 @@ async function ensureSchemaImpl() {
     'universes', 'universe_runs', 'pipeline_series', 'pipeline_issues',
     'story_builder_sessions', 'writers_room_works', 'writers_room_folders',
     'writers_room_draft_versions', 'catalog_ingredients', 'catalog_scraps',
-    'catalog_user_types', 'creative_director_projects', 'lora_training_runs',
-    'authors', 'tribe_people', 'tribe_touchpoints',
+    'catalog_user_types', 'creative_director_projects', 'mood_boards',
+    'lora_training_runs', 'authors', 'tribe_people', 'tribe_touchpoints',
   ];
   for (const t of auditedTables) {
     catalogDDL.push(`DROP TRIGGER IF EXISTS trg_${t}_audit ON ${t}`);

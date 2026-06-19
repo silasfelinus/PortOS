@@ -1784,3 +1784,4 @@ export const legacyExportSchema = z.object({
 export * from './peerSyncValidation.js';
 export * from './creativeDirectorValidation.js';
 export * from './storyBuilderValidation.js';
+export * from './moodBoardValidation.js';

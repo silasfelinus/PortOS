@@ -204,6 +204,7 @@ const navItems = [
       { to: '/pipeline/editorial-checks', label: 'Editorial Checks', icon: ListChecks },
       { to: '/importer', label: 'Importer', icon: FileInput },
       { to: '/media', label: 'Media Gen', icon: Layers },
+      { to: '/mood-boards', label: 'Mood Boards', icon: Palette },
       { to: '/pipeline', label: 'Series Pipeline', icon: WorkflowIcon, dynamic: 'pipelineSeries' },
       { to: '/sharing', label: 'Sharing', icon: Share2 },
       { to: '/songs', label: 'Songs', icon: Music },
