@@ -309,6 +309,42 @@ export default function TrainingPanel({ dataset, readiness, triggerSaving, onRun
             />
           </div>
         )}
+        {/* Frozen-base overrides (issue #1407 / #1321), mflux runtime only.
+            "Auto" leaves the param absent so the server keeps its memory-derived
+            tier; an explicit pick overrides it (still clamped by the install's
+            LORA_TRAIN_MAX_QUANT_BITS cap). Numeric/boolean → undefined so the
+            key drops out of the JSON payload entirely (true "absent"). */}
+        {params && (
+          <div>
+            <label htmlFor="lt-param-baseQuant" className="block text-xs text-gray-400 mb-1">Base quant</label>
+            <select
+              id="lt-param-baseQuant"
+              value={params.baseQuant ?? ''}
+              onChange={(e) => setParam('baseQuant', e.target.value === '' ? undefined : Number(e.target.value))}
+              className="w-full bg-port-bg border border-port-border rounded px-2 py-1.5 text-sm text-white"
+            >
+              <option value="">Auto</option>
+              <option value={16}>bf16 (heaviest)</option>
+              <option value={8}>8-bit</option>
+              <option value={4}>4-bit (lightest)</option>
+            </select>
+          </div>
+        )}
+        {params && (
+          <div>
+            <label htmlFor="lt-param-lowRam" className="block text-xs text-gray-400 mb-1">Low RAM spill</label>
+            <select
+              id="lt-param-lowRam"
+              value={params.lowRam === true ? 'on' : params.lowRam === false ? 'off' : ''}
+              onChange={(e) => setParam('lowRam', e.target.value === '' ? undefined : e.target.value === 'on')}
+              className="w-full bg-port-bg border border-port-border rounded px-2 py-1.5 text-sm text-white"
+            >
+              <option value="">Auto</option>
+              <option value="on">On</option>
+              <option value="off">Off</option>
+            </select>
+          </div>
+        )}
       </div>
       <div className="flex items-center justify-between gap-2">
         <span className={`text-xs ${!disabledReason && readiness?.quality === 'minimum' ? 'text-port-warning' : 'text-gray-500'}`}>
