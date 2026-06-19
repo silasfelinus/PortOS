@@ -1137,7 +1137,12 @@ export const storyboardShotSchema = z.object({
   // description-less shot — the route's job is only to reject a bad enum, not to
   // tighten the existing client contract.
   id: z.string().trim().max(80).optional(),
-  description: z.string().max(2000).optional(),
+  // Bound loosely to the UI's textarea limit (maxLength=4000), NOT the
+  // sanitizer's SHOT_DESCRIPTION_MAX (2000). The sanitizer truncates a long
+  // description to 2000 downstream; the route must not REJECT one the UI lets a
+  // user type (2001–4000) — that would turn the previously-passthrough scenes
+  // contract into a 400. The route's job here is only to reject a bad enum.
+  description: z.string().max(4000).optional(),
   durationSeconds: z.number().int().min(1).max(30).optional(),
   continuityFromShotId: z.string().trim().max(80).nullable().optional(),
   shotType: z.preprocess(

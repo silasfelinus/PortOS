@@ -913,6 +913,15 @@ describe('validation.js', () => {
       expect(r.data.screenDirection).toBeNull();
     });
 
+    it('accepts a long description (2001–4000) the UI permits — the sanitizer truncates, the route must not 400', () => {
+      // Regression: the route cap must match the UI textarea (maxLength=4000),
+      // NOT the sanitizer's 2000 — rejecting a UI-allowed edit would turn the
+      // previously-passthrough scenes PATCH into a 400.
+      const r = storyboardShotSchema.safeParse({ id: 's', description: 'x'.repeat(3500) });
+      expect(r.success).toBe(true);
+      expect(storyboardShotSchema.safeParse({ id: 's', description: 'x'.repeat(4001) }).success).toBe(false);
+    });
+
     it('passes through render-time fields stamped onto a shot (startFrameJobId)', () => {
       const r = storyboardShotSchema.safeParse({ id: 's', description: 'x', startFrameJobId: 'job-9' });
       expect(r.success).toBe(true);
