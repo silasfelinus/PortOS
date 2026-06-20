@@ -85,6 +85,7 @@ grep -i "what you want to do" client/src/lib/README.md
 | `manuscriptFormat.js` | `formatManuscript(text, stageId)` / `REFLOW_STAGES` — normalize a manuscript section's text for the editor's "Format" button: undo PDF-paste artifacts (stylized drop-cap split onto its own line, hyphen-split words, trailing whitespace, runaway blank lines) for every stage, and additionally reflow soft-wrapped lines back into paragraphs for `prose` only (scripts keep their structural line breaks). Pure/DOM-free. |
 | `mediaNavigation.js` | `getAdjacentMedia(items, item)` — prev/next computation for lightboxes. |
 | `mediaSearch.js` | `buildMediaHaystack`, `tokenizeQuery`, `matchHaystack`, `filterByQuery` — client-side AND-token search over normalized media items (prompt/model/seed/LoRA/universe tags). Shared by MediaHistory + the Image Gen gallery picker. |
+| `moodBoardItemSrc.js` | `moodBoardItemSrc(item)` resolves a mood-board item to a display image src (`imageUrl` → served `image:<file>` bytes → null). Shared by MoodBoardDetail + MoodBoardReferenceStrip. |
 | `sameJsonShape.js` | `sameJsonShape(prev, next)` — JSON.stringify-based equality for `useAutoRefetch`'s `compare` option on small, deterministically-shaped poll payloads. |
 | `unsorted.js` | Synthetic "Unsorted" collection from media not filed in any real collection. |
 | `upsertByIdPrepend.js` | Newest-first upsert into an id-keyed list. |

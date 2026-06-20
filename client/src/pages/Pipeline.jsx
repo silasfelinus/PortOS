@@ -30,6 +30,7 @@ import {
 } from '../services/api';
 import { ArcShapePicker, ArcShapeSparkline, getStoryShape } from '../components/pipeline/StoryShapes';
 import AuthorPicker from '../components/pipeline/AuthorPicker';
+import MoodBoardReferenceStrip from '../components/moodBoard/MoodBoardReferenceStrip';
 import { buildImporterLink } from '../lib/importerDeepLink';
 
 const emptyForm = () => ({
@@ -403,6 +404,7 @@ export default function Pipeline() {
               />
             </div>
           </div>
+          <MoodBoardReferenceStrip storageKey="pipeline-series" />
           <div className="flex gap-2">
             <button
               type="submit"
