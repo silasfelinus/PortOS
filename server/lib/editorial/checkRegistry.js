@@ -111,13 +111,19 @@ const SEVERITIES = CHECK_SEVERITIES;
 //                                 (`stages.comicPages.pages[]`) when present, else the
 //                                 generated `stages.comicScript.output`. The
 //                                 lettering-density check (#1313) counts per-panel/per-page
-//                                 word + balloon load over it; the comic-pacing checks
-//                                 (#1314) read the same parsed page/panel structure for
-//                                 splash usage, panel rhythm, and page-turn beat placement.
-//                                 Both read it via the shared `comicLetteringIssues(ctx.issues)`
-//                                 projection (`[{ number, pages }]`). The runner fingerprints
-//                                 the lettering-relevant fields so a finding goes stale when
-//                                 the comic text (not the prose manuscript) is edited.
+//                                 word + balloon load over it (caption/dialogue/SFX only).
+//                                 Both comic-source checks read the same parsed pages via
+//                                 `comicLetteringIssues(ctx.issues)` (`[{ number, pages }]`);
+//                                 the runner fingerprints ONLY the lettering fields for this
+//                                 token, so a visual-description edit doesn't stale a
+//                                 lettering finding.
+//   - 'comicScript.pacing'      — the same parsed comic pages, but for the comic-PACING
+//                                 checks (#1314: panel rhythm + page-turn beats). Distinct
+//                                 token from 'comicScript' because the page-turn check ALSO
+//                                 reads each panel's visual `description` — so its fingerprint
+//                                 must move on a description edit while the lettering token's
+//                                 stays put (and vice-versa). Same `ctx.issues` source, no
+//                                 extra I/O.
 export const EDITORIAL_SOURCES = Object.freeze([
   'manuscript',
   'canon',
@@ -131,6 +137,7 @@ export const EDITORIAL_SOURCES = Object.freeze([
   'series.characterArcs',
   'storyboard.shots',
   'comicScript',
+  'comicScript.pacing',
 ]);
 
 // Default per-run finding cap for user-defined checks (#1346) — mirrors the
@@ -4502,7 +4509,7 @@ export const EDITORIAL_CHECKS = [
   },
   {
     id: 'comic.panel-rhythm',
-    sources: ['comicScript'],
+    sources: ['comicScript.pacing'],
     label: 'Comic panel rhythm & splash usage',
     description:
       'Deterministic scan of each issue\'s parsed comic-page layout for reading-rhythm problems: splash-page overuse (too high a share of full-page splashes), back-to-back splashes that blow the page budget, overcrowded pages that cram too many beats, and monotonous grids (the same multi-panel count repeated page after page). Reads the parsed comic script (page → panel breakdown), not the prose manuscript.',
@@ -4581,7 +4588,7 @@ export const EDITORIAL_CHECKS = [
   },
   {
     id: 'comic.page-turn-beats',
-    sources: ['comicScript', 'series.arc.readerMap'],
+    sources: ['comicScript.pacing', 'series.arc.readerMap'],
     label: 'Comic page-turn beat placement (LLM)',
     description:
       'LLM scan of each issue\'s comic-page layout for reveals and cliffhangers placed where the reader can see them early. On a two-page spread both pages are visible at once, so a surprise on a page the reader has already been looking at is spoiled before they reach it — a big reveal should land on the first page after a page turn (the start of the next spread). Reconciles the placement against the authored reader-map reveals/cliffhangers and suggests which panel to move.',

@@ -42,21 +42,36 @@ export function comicSpreadLayout(pageCount) {
   return layout;
 }
 
+// Collapse whitespace and truncate a text field to `max` chars for the digest.
+const clip = (s, max) => {
+  const t = typeof s === 'string' ? s.trim().replace(/\s+/g, ' ') : '';
+  return t.length > max ? `${t.slice(0, max)}…` : t;
+};
+
 // A compact, type-guarded one-line digest of a panel's content for the page-turn
-// LLM context — its description (truncated), plus a hint of caption/dialogue/SFX
-// load so the model can reason about where a beat actually lands on the page.
+// LLM context — its description (truncated) PLUS truncated snippets of the
+// caption / dialogue / SFX text. The text matters because a reveal or cliffhanger
+// is often delivered in a caption or a line of dialogue rather than the visual
+// description; a presence-only marker ("caption", "1 dialogue") would hide the
+// actual beat from the model, so the snippets are included (not just counts).
 function panelDigest(panel) {
   if (!panel || typeof panel !== 'object') return '';
-  const desc = typeof panel.description === 'string' ? panel.description.trim().replace(/\s+/g, ' ') : '';
-  const head = desc ? desc.slice(0, 160) : '(no description)';
+  const desc = clip(panel.description, 160);
+  const head = desc || '(no description)';
   const extras = [];
-  const caption = typeof panel.caption === 'string' ? panel.caption.trim() : '';
-  if (caption) extras.push('caption');
+  const caption = clip(panel.caption, 80);
+  if (caption) extras.push(`caption: "${caption}"`);
   const dialogue = Array.isArray(panel.dialogue) ? panel.dialogue : [];
-  if (dialogue.length) extras.push(`${dialogue.length} dialogue`);
-  const sfx = typeof panel.sfx === 'string' ? panel.sfx.trim() : '';
-  if (sfx) extras.push('sfx');
-  return extras.length ? `${head} [${extras.join(', ')}]` : head;
+  for (const d of dialogue) {
+    // Parsed dialogue is `{ character, line }`; tolerate a bare string too.
+    const speaker = typeof d?.character === 'string' ? d.character.trim() : '';
+    const line = clip(typeof d === 'string' ? d : d?.line, 80);
+    if (!line) continue;
+    extras.push(speaker ? `${speaker}: "${line}"` : `dialogue: "${line}"`);
+  }
+  const sfx = clip(panel.sfx, 40);
+  if (sfx) extras.push(`sfx: ${sfx}`);
+  return extras.length ? `${head} [${extras.join('; ')}]` : head;
 }
 
 // Per-page summary used by both the deterministic rhythm analysis and the

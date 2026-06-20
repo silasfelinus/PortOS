@@ -3278,12 +3278,12 @@ describe('comic-pacing bundle (#1314)', () => {
   const issue = (number, counts) => ({ number, stages: { comicPages: { pages: counts.map(page) } } });
 
   describe('comic.panel-rhythm — deterministic', () => {
-    it('is registered as an issue-scoped deterministic pacing check over comicScript', () => {
+    it('is registered as an issue-scoped deterministic pacing check over comicScript.pacing', () => {
       const check = getCheck(PANEL_RHYTHM);
       expect(check.kind).toBe('deterministic');
       expect(check.scope).toBe('issue');
       expect(check.category).toBe('pacing');
-      expect(check.sources).toEqual(['comicScript']);
+      expect(check.sources).toEqual(['comicScript.pacing']);
     });
 
     it('only runs when at least one issue has comic content', () => {
@@ -3321,12 +3321,12 @@ describe('comic-pacing bundle (#1314)', () => {
   });
 
   describe('comic.page-turn-beats — LLM', () => {
-    it('is registered as an issue-scoped LLM pacing check reading comicScript + reader-map', () => {
+    it('is registered as an issue-scoped LLM pacing check reading comicScript.pacing + reader-map', () => {
       const check = getCheck(PAGE_TURN);
       expect(check.kind).toBe('llm');
       expect(check.scope).toBe('issue');
       expect(check.category).toBe('pacing');
-      expect(check.sources).toEqual(['comicScript', 'series.arc.readerMap']);
+      expect(check.sources).toEqual(['comicScript.pacing', 'series.arc.readerMap']);
     });
 
     it('passes each issue page layout + authored reveals to the model and attributes findings to the issue', async () => {

@@ -49,13 +49,23 @@ describe('summarizeComicPages', () => {
     expect(summary[1].panels).toHaveLength(3);
   });
 
-  it('folds caption/dialogue/sfx hints into the panel digest', () => {
-    const pages = [{ panels: [{ description: 'A long beat', caption: 'cap', dialogue: [{ character: 'X', line: 'hi' }], sfx: 'BOOM' }] }];
+  it('folds caption/dialogue/sfx TEXT (not just presence) into the panel digest', () => {
+    const pages = [{ panels: [{ description: 'A long beat', caption: 'Later that night', dialogue: [{ character: 'JANE', line: 'It was you' }], sfx: 'BOOM' }] }];
     const [pg] = summarizeComicPages(pages);
     expect(pg.panels[0]).toContain('A long beat');
-    expect(pg.panels[0]).toContain('caption');
-    expect(pg.panels[0]).toContain('1 dialogue');
-    expect(pg.panels[0]).toContain('sfx');
+    // The actual text is surfaced — a reveal delivered in a caption/line must be
+    // visible to the page-turn LLM, not hidden behind a count marker.
+    expect(pg.panels[0]).toContain('caption: "Later that night"');
+    expect(pg.panels[0]).toContain('JANE: "It was you"');
+    expect(pg.panels[0]).toContain('sfx: BOOM');
+  });
+
+  it('truncates long text fields and tolerates a bare-string dialogue entry', () => {
+    const longLine = 'word '.repeat(40).trim(); // 199 chars
+    const pages = [{ panels: [{ description: 'd', caption: '', dialogue: ['a bare line'], sfx: '' }, { description: 'e', caption: longLine, dialogue: [], sfx: '' }] }];
+    const [pg] = summarizeComicPages(pages);
+    expect(pg.panels[0]).toContain('dialogue: "a bare line"'); // no speaker → generic label
+    expect(pg.panels[1]).toContain('…'); // caption clipped at 80 chars
   });
 
   it('tolerates a non-array input', () => {

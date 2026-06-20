@@ -105,6 +105,11 @@ const SOURCE_RESOLVERS = {
   // text it read changes (and an unrelated image render — `panel.imageJobId` — does
   // NOT stale it, since only the lettering fields are projected).
   comicScript: ({ comicScripts }) => canonicalStringify(comicScripts ?? null),
+  // The comic-pacing checks' content (#1314) — its own token so a visual
+  // `description` edit stales a page-turn finding without staling a lettering
+  // finding (which doesn't read `description`), and vice-versa. Same page-grouped
+  // shape as the lettering projection plus `description`.
+  'comicScript.pacing': ({ comicPacingContent }) => canonicalStringify(comicPacingContent ?? null),
 };
 
 // Flatten the storyboard scenes across every issue into the `{ issueNumber, scene }`
@@ -147,18 +152,36 @@ function projectStoryboardContinuity(storyboardScenes) {
   }));
 }
 
-// Project the loaded issues down to the comic content the `comicScript`-source
-// checks analyze, via the registry's shared `comicLetteringIssues` (so the
-// fingerprint can't drift from what the checks read). The `comicScript` token is
-// shared: the lettering check (#1313) reads caption/dialogue/SFX, and the
-// page-turn check (#1314) additionally reads each panel's `description`. The
-// fingerprint must cover the UNION of fields any comic check reads off the token,
-// so it includes `description` too — otherwise a description-only edit would leave
-// a page-turn finding falsely fresh. (It also stays stable across image renders —
-// `panel.imageJobId` etc. are never projected.) PAGE GROUPING is preserved (not
-// flattened): the checks report per-page totals/locations and panel-count rhythm,
-// so moving panels between pages must change the hash even when text is identical.
+// Project the loaded issues down to the lettering-relevant comic content the check
+// analyzes, via the registry's shared `comicLetteringIssues` (so the fingerprint
+// can't drift from what `run` reads). Keeps ONLY caption/dialogue/SFX — the fields
+// `panelLetteringMetrics` consumes — so the hash is stable across image renders and
+// description edits that don't change lettering. PAGE GROUPING is preserved (not
+// flattened): the check reports per-page totals and page/panel locations, so moving
+// panels between pages must change the hash even when the lettering text is identical.
 function projectComicLetteringContent(issues) {
+  return comicLetteringIssues(issues).map(({ number, pages }) => ({
+    number,
+    pages: pages.map((p) => ({
+      panels: (Array.isArray(p?.panels) ? p.panels : []).map((panel) => ({
+        caption: typeof panel?.caption === 'string' ? panel.caption : '',
+        dialogue: Array.isArray(panel?.dialogue) ? panel.dialogue : [],
+        sfx: typeof panel?.sfx === 'string' ? panel.sfx : '',
+      })),
+    })),
+  }));
+}
+
+// Project the loaded issues down to the content the comic-PACING checks (#1314)
+// analyze — its own source token (`comicScript.pacing`) distinct from the
+// lettering token (`comicScript`) so the two checks' fingerprints don't bleed:
+// editing a panel's visual `description` must stale a page-turn finding (the
+// page-turn LLM digest reads the description) WITHOUT staling a lettering finding
+// (which never reads it), and vice-versa. This projection therefore additionally
+// includes `description` on top of caption/dialogue/SFX. PAGE GROUPING is preserved
+// so the panel-rhythm check's per-page counts/splash signals stale when panels move
+// between pages. Render/status fields (`panel.imageJobId`) are never projected.
+function projectComicPacingContent(issues) {
   return comicLetteringIssues(issues).map(({ number, pages }) => ({
     number,
     pages: pages.map((p) => ({
@@ -311,14 +334,16 @@ export async function runEditorialChecks(seriesId, options = {}) {
   // series (canceled/early-stopped batch) doesn't flag a not-yet-analyzed POV
   // holder as arc-less (#1295). Folded into the editorialArcs fingerprint below.
   const editorialArcsComplete = editorialCoverageComplete(editorial);
-  // The comic lettering content the check (#1313) reads — derived from the
-  // already-loaded issues (no extra I/O), so a finding stales when an issue's comic
-  // pages / script are edited.
+  // The comic content the comic checks read — derived from the already-loaded
+  // issues (no extra I/O). Two projections, one per source token: lettering (#1313,
+  // caption/dialogue/SFX) and pacing (#1314, + visual `description`), so a
+  // description edit stales a pacing finding without staling a lettering one.
   const comicScripts = projectComicLetteringContent(issues);
+  const comicPacingContent = projectComicPacingContent(issues);
   // Resolve every source token once — each finding's fingerprint reads from this
   // so the editor flags it `stale` when the content that check actually read (its
   // declared `sources`) drifts (#1345, #1387).
-  const resolvedSources = resolveSources({ manuscript, canon, series, reverseOutline, reverseOutlinePlotlines, editorialArcs, editorialArcsComplete, storyboardScenes, comicScripts });
+  const resolvedSources = resolveSources({ manuscript, canon, series, reverseOutline, reverseOutlinePlotlines, editorialArcs, editorialArcsComplete, storyboardScenes, comicScripts, comicPacingContent });
   const baseCtx = {
     seriesId,
     series,
@@ -491,10 +516,14 @@ export async function getReviewWithStaleness(seriesId) {
   });
   const needsEditorialArcs = evaluable.some((c) => checkSources(checkFor(c.checkId)).includes('editorialArcs'));
   // Issues are fetched here only when a storyboard-shots (#1315) OR comic-script
-  // (#1313/#1314) finding needs re-fingerprinting — both derive from the issue
-  // records, so a single gated fetch serves both. Mirrors the other per-source I/O gates.
+  // (#1313 lettering / #1314 pacing) finding needs re-fingerprinting — all derive
+  // from the issue records, so a single gated fetch serves them. Mirrors the other
+  // per-source I/O gates.
   const needsStoryboards = evaluable.some((c) => checkSources(checkFor(c.checkId)).includes('storyboard.shots'));
-  const needsComicScript = evaluable.some((c) => checkSources(checkFor(c.checkId)).includes('comicScript'));
+  const needsComicScript = evaluable.some((c) => {
+    const s = checkSources(checkFor(c.checkId));
+    return s.includes('comicScript') || s.includes('comicScript.pacing');
+  });
   const needsIssues = needsStoryboards || needsComicScript;
   const series = await getSeries(seriesId);
   const [sections, canon, outline, editorial, issues] = await Promise.all([
@@ -511,7 +540,8 @@ export async function getReviewWithStaleness(seriesId) {
   const editorialArcsComplete = editorialCoverageComplete(editorial);
   const storyboardScenes = collectStoryboardScenes(issues);
   const comicScripts = projectComicLetteringContent(issues);
-  const resolvedSources = resolveSources({ manuscript: sectionsCorpus(sections), canon, series, reverseOutline, reverseOutlinePlotlines, editorialArcs, editorialArcsComplete, storyboardScenes, comicScripts });
+  const comicPacingContent = projectComicPacingContent(issues);
+  const resolvedSources = resolveSources({ manuscript: sectionsCorpus(sections), canon, series, reverseOutline, reverseOutlinePlotlines, editorialArcs, editorialArcsComplete, storyboardScenes, comicScripts, comicPacingContent });
   return {
     ...review,
     comments: review.comments.map((c) => {
