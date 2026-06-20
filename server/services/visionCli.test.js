@@ -72,14 +72,15 @@ function makeFakeChild() {
   return child;
 }
 
-// A spawnImpl double that runs `emit(child)` on the next microtask after it's
-// invoked. describeImageViaCli attaches its stdout/close/error listeners
-// SYNCHRONOUSLY right after spawnImpl() returns (no await between), so a
-// microtask scheduled here always fires after the listeners exist — regardless
-// of how long the preceding async mkdtemp/writeFile took. This replaces a
-// fixed `setTimeout(10ms)` race that hung to the 10s test timeout on slow CI.
-function spawnEmitting(child, emit) {
-  return vi.fn(() => { queueMicrotask(() => emit(child)); return child; });
+// A spawnImpl that drives `child` through `script(child)` *after* the caller's
+// synchronous spawn-and-listen block has run. describeImageViaCli awaits
+// mkdtemp+writeFile, then synchronously spawns and attaches its data/close/error
+// listeners; deferring the script to a microtask guarantees those listeners are
+// attached before any event fires. A fixed `setTimeout` instead raced those
+// async file ops and dropped events on the floor (no listener yet) under CI
+// load, hanging the promise until the 10s test timeout.
+function spawnEmitting(child, script) {
+  return vi.fn(() => { queueMicrotask(() => script(child)); return child; });
 }
 
 describe('describeImageViaCli', () => {
