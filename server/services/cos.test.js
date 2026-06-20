@@ -684,6 +684,32 @@ describe('cos.js source — priority + capacity invariants', () => {
     expect(idleIdx, 'spawnPriority4IdleReview must run after feature agents').toBeGreaterThan(featureIdx);
   });
 
+  it('on-demand (Priority 0) bypasses the global pause in BOTH engines', () => {
+    // A global pause stops scheduled/autonomous/user spawning, but an explicit
+    // user "Run" queues an on-demand request that must still fire. So in each
+    // engine the pause gate must sit AFTER Priority 0, not at the top — moving it
+    // back to the top is the regression this pins.
+    const dequeueFn = extractFnBody(COS_SRC, COS_SRC.indexOf('async function dequeueNextTask'));
+    const evalFn    = extractFnBody(GEN_SRC, GEN_SRC.indexOf('export async function evaluateTasks'));
+
+    // dequeueNextTask: the `if (paused) return` gate appears AFTER the on-demand
+    // loop (`onDemandRequests`), and `paused` is NOT returned-on before it.
+    const dqOnDemandIdx = dequeueFn.indexOf('onDemandRequests');
+    const dqPauseGateIdx = dequeueFn.search(/if\s*\(\s*paused\s*\)\s*return/);
+    expect(dqOnDemandIdx, 'dequeueNextTask must process onDemandRequests').toBeGreaterThan(-1);
+    expect(dqPauseGateIdx, 'dequeueNextTask must keep an `if (paused) return` gate').toBeGreaterThan(-1);
+    expect(dqPauseGateIdx, 'pause gate must come AFTER the on-demand loop').toBeGreaterThan(dqOnDemandIdx);
+
+    // evaluateTasks: Priority 0 runs unconditionally; Priorities 1+ are wrapped in
+    // an `if (!paused)` block that begins after spawnPriority0OnDemand.
+    const evOnDemandIdx = evalFn.indexOf('spawnPriority0OnDemand(ctx)');
+    const evPauseGateIdx = evalFn.search(/if\s*\(\s*!\s*paused\s*\)/);
+    const evUserIdx = evalFn.indexOf('spawnPriority1UserTasks(ctx)');
+    expect(evOnDemandIdx, 'evaluateTasks must invoke spawnPriority0OnDemand').toBeGreaterThan(-1);
+    expect(evPauseGateIdx, 'evaluateTasks must gate the lower tiers on !paused').toBeGreaterThan(evOnDemandIdx);
+    expect(evUserIdx, 'user/autonomous tiers must sit inside the !paused gate').toBeGreaterThan(evPauseGateIdx);
+  });
+
   it('per-project cap defaults to global cap when unset', () => {
     // The fallback `state.config.maxConcurrentAgentsPerProject || state.config.maxConcurrentAgents`
     // is the safety net for older state.json files that pre-date the
