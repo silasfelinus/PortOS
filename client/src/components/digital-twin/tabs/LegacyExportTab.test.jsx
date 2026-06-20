@@ -92,6 +92,24 @@ describe('LegacyExportTab', () => {
     expect(downloadBlob).not.toHaveBeenCalled();
   });
 
+  it('surfaces a large-bundle warning when the server flags one', async () => {
+    getLegacyExportPreview.mockResolvedValue({
+      ...PREVIEW,
+      estimatedBytes: 30 * 1024 * 1024,
+      sizeWarning: { thresholdBytes: 25 * 1024 * 1024, estimatedBytes: 30 * 1024 * 1024, largestSection: 'brain' },
+    });
+    render(<LegacyExportTab />);
+    await screen.findByText('Identity & Values');
+    expect(screen.getByText(/large bundle/i)).toBeInTheDocument();
+    expect(screen.getByText(/brain/)).toBeInTheDocument();
+  });
+
+  it('shows no warning when sizeWarning is null', async () => {
+    render(<LegacyExportTab />);
+    await screen.findByText('Identity & Values');
+    expect(screen.queryByText(/large bundle/i)).not.toBeInTheDocument();
+  });
+
   it('shows an empty state and disables generate when no data is present', async () => {
     getLegacyExportPreview.mockResolvedValue({
       fileCount: 2,

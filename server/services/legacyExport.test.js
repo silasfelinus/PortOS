@@ -172,6 +172,82 @@ describe('buildBundleFiles', () => {
   });
 });
 
+describe('key decisions section (enriched derivation)', () => {
+  // Helper: read the rendered decisions Markdown for a gathered-data object.
+  function decisionsMd(d) {
+    return buildBundleFiles(d).files.find(f => f.name === 'decisions/key-decisions.md')?.data.toString() || '';
+  }
+
+  it('derives decisions from completed goals, milestones, AND decision-tagged brain entries', () => {
+    const d = sampleData();
+    d.goals = [
+      { id: 'g1', title: 'Move to the coast', status: 'completed', description: 'Relocated in 2023.', completedAt: '2023-08-01T00:00:00Z' },
+      { id: 'g2', title: 'Write a book', status: 'active',
+        milestones: [{ id: 'ms1', title: 'Finish the outline', completedAt: '2024-05-01T00:00:00Z' }] },
+    ];
+    d.brain.ideas = [{ id: 'i1', title: 'Decision: leave the startup', content: 'Chose independence over equity.', tags: ['decision'] }];
+    d.brain.journals = [{ id: 'j1', title: 'A normal day', content: 'Nothing notable.' }];
+    const md = decisionsMd(d);
+    expect(md).toContain('Move to the coast');        // completed goal
+    expect(md).toContain('Finish the outline');       // completed milestone
+    expect(md).toContain('Decision: leave the startup'); // tagged brain entry
+    expect(md).not.toContain('A normal day');         // untagged brain entry excluded
+  });
+
+  it('matches a decision token in tags OR the title (case-insensitive)', () => {
+    const d = sampleData();
+    d.goals = [];
+    d.brain.projects = [{ id: 'p1', title: 'The big PIVOT', content: 'Switched markets.' }];
+    d.brain.ideas = [{ id: 'i2', title: 'untitled', content: 'x', tags: ['CHOICE'] }];
+    const md = decisionsMd(d);
+    expect(md).toContain('The big PIVOT');
+    expect(md).toContain('untitled');
+  });
+
+  it('counts derived decisions and reports the section absent when there are none', () => {
+    const d = sampleData();
+    d.goals = [];
+    d.brain = { people: [], projects: [], ideas: [], journals: [], links: [] };
+    const { sections } = buildBundleFiles(d);
+    expect(sections.decisions.present).toBe(false);
+    const withOne = sampleData(); // has one completed milestone
+    withOne.brain = { people: [], projects: [], ideas: [], journals: [], links: [] };
+    withOne.goals = [{ id: 'g', title: 'G', status: 'active', milestones: [{ id: 'm', title: 'Did it', completedAt: '2024-01-01' }] }];
+    expect(buildBundleFiles(withOne).sections.decisions.decisions).toBe(1);
+  });
+
+  it('truncates a long brain-entry body to a one-line digest', () => {
+    const d = sampleData();
+    d.goals = [];
+    d.brain.journals = [{ id: 'j', title: 'Decision', content: 'word '.repeat(200) }];
+    const md = decisionsMd(d);
+    expect(md).toContain('…');
+    // No raw newline run from the body — it's collapsed to one line.
+    const decisionLine = md.split('\n').find(l => l.startsWith('- **Decision**'));
+    expect(decisionLine.length).toBeLessThan(360);
+  });
+
+  it('redacts secrets pasted into a decision-tagged brain entry', () => {
+    const d = sampleData();
+    d.goals = [];
+    d.brain.ideas = [{ id: 'i', title: 'Decision', content: 'key ghp_0123456789abcdefghijklmnopqrstuvwx', tags: ['decision'] }];
+    const md = decisionsMd(d);
+    expect(md).toContain('[REDACTED]');
+    expect(md).not.toContain('ghp_0123');
+  });
+
+  it('redacts BEFORE truncating so a secret near the 280-char clip boundary cannot leak partially', () => {
+    // Pad so the token straddles the truncation point — redact-after-truncate
+    // would clip the token below the regex min-length and leak a `ghp_…` prefix.
+    const d = sampleData();
+    d.goals = [];
+    const padding = 'context '.repeat(34); // ~272 chars before the token
+    d.brain.journals = [{ id: 'j', title: 'Decision', content: `${padding}ghp_0123456789abcdefghijklmnopqrstuvwx tail`, tags: ['decision'] }];
+    const md = decisionsMd(d);
+    expect(md).not.toContain('ghp_0123');
+  });
+});
+
 describe('buildManifest', () => {
   it('hashes every file with a SHA-256 and stamps kind/schemaVersion', () => {
     const { files, sections } = buildBundleFiles(sampleData());
@@ -285,6 +361,12 @@ describe('previewLegacyExport', () => {
     expect(preview).toHaveProperty('sections');
     expect(typeof preview.estimatedBytes).toBe('number');
     expect(preview.fileCount).toBeGreaterThanOrEqual(2); // README + manifest at minimum
+  });
+
+  it('reports sizeWarning null for a normal-sized bundle', async () => {
+    // The test backends hold little data, so the estimate is well under the cap.
+    const preview = await previewLegacyExport();
+    expect(preview.sizeWarning).toBeNull();
   });
 });
 

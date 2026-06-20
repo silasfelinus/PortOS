@@ -1,24 +1,31 @@
 /**
  * Minimal ZIP writer — the counterpart to the parser in `zipStream.js`.
  *
- * Writes **stored (method 0, uncompressed)** entries only: local file headers,
- * a central directory, and the EOCD record. No new dependency — CRC-32 is a
- * small in-file table (Node's `zlib.crc32` only landed in v22, so we don't rely
- * on it). Output is deterministic (fixed DOS timestamp) so round-trip tests and
- * manifest hashes are stable.
+ * Writes **stored (method 0)** entries by default, with an opt-in **deflate
+ * (method 8)** path (`createZip(entries, { compress: true })`). Local file
+ * headers, a central directory, and the EOCD record. The only compression
+ * dependency is Node's built-in `zlib` — CRC-32 stays a small in-file table
+ * (Node's `zlib.crc32` only landed in v22, so we don't rely on it). Output is
+ * deterministic (fixed DOS timestamp + `zlib`'s deterministic raw-deflate) so
+ * round-trip tests and manifest hashes are stable.
  *
  * Usage:
  *   const buf = createZip([
  *     { name: 'README.md', data: '# Hello' },
  *     { name: 'data/manifest.json', data: Buffer.from('{}') },
- *   ]);
- *   // buf round-trips through parseZip() in zipStream.js
+ *   ]);                                   // stored entries
+ *   const small = createZip(entries, { compress: true });  // deflate where it helps
+ *   // both round-trip through parseZip() in zipStream.js (it reads methods 0 and 8)
  *
- * Stored entries are the simplest correct format: every standard tool (`unzip`,
- * macOS Archive Utility, `parseZip`) reads them, and there is no compression
- * state to get wrong. Add a deflate path here only if bundle size becomes a
- * concern (see issue #901 open question 5).
+ * Compression is **per-entry and only kept when it actually shrinks the entry**:
+ * deflate is computed, and the stored form is used instead whenever the deflated
+ * payload isn't smaller (tiny or already-compressed files like PDFs/PNGs). So a
+ * compressed archive is never larger than the stored one, entry for entry.
+ * Stored remains the default because it is the simplest correct format every
+ * tool reads; deflate is for when bundle size matters (issue #901 open Q5).
  */
+
+import { deflateRawSync } from 'zlib';
 
 // CRC-32 lookup table (IEEE 802.3 polynomial 0xEDB88320), built once at load.
 const CRC_TABLE = (() => {
@@ -61,8 +68,13 @@ function toBuffer(data) {
  * entries. `name` is the in-archive path (forward slashes); `data` is a Buffer
  * or string. Duplicate or empty names throw — a malformed bundle is worse than
  * a loud failure.
+ *
+ * `opts.compress` (default false) deflates each entry, keeping the deflated form
+ * only when it is strictly smaller than the stored bytes; otherwise the entry is
+ * stored. The CRC-32 and the uncompressed size are always of the ORIGINAL data,
+ * per the ZIP spec, so a deflated entry round-trips identically through a reader.
  */
-export function createZip(entries) {
+export function createZip(entries, { compress = false } = {}) {
   if (!Array.isArray(entries)) throw new Error('createZip: entries must be an array');
 
   const seen = new Set();
@@ -80,23 +92,36 @@ export function createZip(entries) {
     const nameBuf = Buffer.from(normalized, 'utf-8');
     const dataBuf = toBuffer(entry.data ?? '');
     const crc = crc32(dataBuf);
-    const size = dataBuf.length;
+    const size = dataBuf.length; // uncompressed size (always the original)
+
+    // Per-entry deflate, kept only when it actually shrinks the payload. Empty
+    // entries are always stored (deflate of 0 bytes is non-empty overhead).
+    let method = 0;
+    let payload = dataBuf;
+    if (compress && size > 0) {
+      const deflated = deflateRawSync(dataBuf, { level: 9 });
+      if (deflated.length < size) {
+        method = 8;
+        payload = deflated;
+      }
+    }
+    const compSize = payload.length; // compressed size (== size when stored)
 
     // Local file header (30 bytes fixed + name).
     const local = Buffer.alloc(30);
     local.writeUInt32LE(LOCAL_SIG, 0);
     local.writeUInt16LE(VERSION, 4);
     local.writeUInt16LE(UTF8_FLAG, 6);
-    local.writeUInt16LE(0, 8); // method 0 (stored)
+    local.writeUInt16LE(method, 8); // 0 stored / 8 deflate
     local.writeUInt16LE(DOS_TIME, 10);
     local.writeUInt16LE(DOS_DATE, 12);
     local.writeUInt32LE(crc, 14);
-    local.writeUInt32LE(size, 18); // compressed size == size (stored)
+    local.writeUInt32LE(compSize, 18); // compressed size
     local.writeUInt32LE(size, 22); // uncompressed size
     local.writeUInt16LE(nameBuf.length, 26);
     local.writeUInt16LE(0, 28); // extra length
 
-    chunks.push(local, nameBuf, dataBuf);
+    chunks.push(local, nameBuf, payload);
 
     // Central directory header (46 bytes fixed + name).
     const cd = Buffer.alloc(46);
@@ -104,11 +129,11 @@ export function createZip(entries) {
     cd.writeUInt16LE(VERSION, 4); // version made by
     cd.writeUInt16LE(VERSION, 6); // version needed
     cd.writeUInt16LE(UTF8_FLAG, 8);
-    cd.writeUInt16LE(0, 10); // method
+    cd.writeUInt16LE(method, 10); // method
     cd.writeUInt16LE(DOS_TIME, 12);
     cd.writeUInt16LE(DOS_DATE, 14);
     cd.writeUInt32LE(crc, 16);
-    cd.writeUInt32LE(size, 20);
+    cd.writeUInt32LE(compSize, 20);
     cd.writeUInt32LE(size, 24);
     cd.writeUInt16LE(nameBuf.length, 28);
     cd.writeUInt16LE(0, 30); // extra length
@@ -119,7 +144,7 @@ export function createZip(entries) {
     cd.writeUInt32LE(offset, 42); // local header offset
     central.push(Buffer.concat([cd, nameBuf]));
 
-    offset += local.length + nameBuf.length + dataBuf.length;
+    offset += local.length + nameBuf.length + payload.length;
   }
 
   const centralBuf = Buffer.concat(central);
