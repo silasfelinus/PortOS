@@ -159,15 +159,19 @@ function projectStoryboardContinuity(storyboardScenes) {
   }));
 }
 
-// Project the loaded issues down to the lettering-relevant comic content the check
-// analyzes, via the registry's shared `comicLetteringIssues` (so the fingerprint
-// can't drift from what `run` reads). Keeps ONLY caption/dialogue/SFX — the fields
-// `panelLetteringMetrics` consumes — so the hash is stable across image renders and
-// description edits that don't change lettering. PAGE GROUPING is preserved (not
-// flattened): the check reports per-page totals and page/panel locations, so moving
-// panels between pages must change the hash even when the lettering text is identical.
-function projectComicLetteringContent(issues) {
-  return comicLetteringIssues(issues).map(({ number, pages }) => ({
+// The three comic projections below all derive from the SAME parsed page list
+// (`comicLetteringIssues(issues)` → `[{ number, pages }]`), so the caller parses
+// the comic scripts ONCE (`comicIssuesFor(issues)`) and passes the rows in —
+// rather than each projection re-parsing every issue's script. They take the
+// already-parsed `comicIssues` rows, not raw `issues`.
+
+// Lettering token (`comicScript`, #1313): keeps ONLY caption/dialogue/SFX — the
+// fields `panelLetteringMetrics` consumes — so the hash is stable across image
+// renders and description edits that don't change lettering. PAGE GROUPING is
+// preserved: the check reports per-page totals/locations, so moving panels between
+// pages must change the hash even when the lettering text is identical.
+function projectComicLetteringContent(comicIssues) {
+  return comicIssues.map(({ number, pages }) => ({
     number,
     pages: pages.map((p) => ({
       panels: (Array.isArray(p?.panels) ? p.panels : []).map((panel) => ({
@@ -179,17 +183,14 @@ function projectComicLetteringContent(issues) {
   }));
 }
 
-// Project the loaded issues down to the content the comic-PACING checks (#1314)
-// analyze — its own source token (`comicScript.pacing`) distinct from the
-// lettering token (`comicScript`) so the two checks' fingerprints don't bleed:
-// editing a panel's visual `description` must stale a page-turn finding (the
-// page-turn LLM digest reads the description) WITHOUT staling a lettering finding
-// (which never reads it), and vice-versa. This projection therefore additionally
-// includes `description` on top of caption/dialogue/SFX. PAGE GROUPING is preserved
-// so the panel-rhythm check's per-page counts/splash signals stale when panels move
-// between pages. Render/status fields (`panel.imageJobId`) are never projected.
-function projectComicPacingContent(issues) {
-  return comicLetteringIssues(issues).map(({ number, pages }) => ({
+// Page-turn token (`comicScript.pacing`, #1314): distinct from the lettering token
+// so the two checks' fingerprints don't bleed — editing a panel's visual
+// `description` must stale a page-turn finding (the LLM digest reads it) WITHOUT
+// staling a lettering finding (which never reads it), and vice-versa. So this adds
+// `description` on top of caption/dialogue/SFX. PAGE GROUPING preserved; render/
+// status fields (`panel.imageJobId`) are never projected.
+function projectComicPacingContent(comicIssues) {
+  return comicIssues.map(({ number, pages }) => ({
     number,
     pages: pages.map((p) => ({
       panels: (Array.isArray(p?.panels) ? p.panels : []).map((panel) => ({
@@ -202,14 +203,15 @@ function projectComicPacingContent(issues) {
   }));
 }
 
-// Project the loaded issues down to LAYOUT ONLY — the per-page panel COUNT — for
-// the panel-rhythm check (#1314), which reads nothing but counts (`analyzePanelRhythm`).
-// Fingerprinting only the count means a text-only edit (reword a caption/description
-// without changing how many panels a page has) does NOT stale a rhythm finding,
-// while adding/removing/moving a panel does. Per-page array order is preserved so a
-// reordering that changes the run structure (splash runs, monotony) re-hashes.
-function projectComicLayoutContent(issues) {
-  return comicLetteringIssues(issues).map(({ number, pages }) => ({
+// Layout token (`comicScript.layout`, #1314): LAYOUT ONLY — the per-page panel
+// COUNT — for the panel-rhythm check, which reads nothing but counts
+// (`analyzePanelRhythm`). Fingerprinting only the count means a text-only edit
+// (reword a caption/description without changing how many panels a page has) does
+// NOT stale a rhythm finding, while adding/removing/moving a panel does. Per-page
+// array order is preserved so a reordering that changes the run structure (splash
+// runs, monotony) re-hashes.
+function projectComicLayoutContent(comicIssues) {
+  return comicIssues.map(({ number, pages }) => ({
     number,
     panelCounts: pages.map((p) => (Array.isArray(p?.panels) ? p.panels.length : 0)),
   }));
@@ -355,12 +357,15 @@ export async function runEditorialChecks(seriesId, options = {}) {
   // holder as arc-less (#1295). Folded into the editorialArcs fingerprint below.
   const editorialArcsComplete = editorialCoverageComplete(editorial);
   // The comic content the comic checks read — derived from the already-loaded
-  // issues (no extra I/O). Two projections, one per source token: lettering (#1313,
-  // caption/dialogue/SFX) and pacing (#1314, + visual `description`), so a
-  // description edit stales a pacing finding without staling a lettering one.
-  const comicScripts = projectComicLetteringContent(issues);
-  const comicPacingContent = projectComicPacingContent(issues);
-  const comicLayoutContent = projectComicLayoutContent(issues);
+  // issues (no extra I/O). Parse each issue's comic script ONCE, then build all
+  // three per-token projections from the shared rows: lettering (#1313,
+  // caption/dialogue/SFX), pacing (#1314, + visual `description`), and layout
+  // (#1314, panel counts only) — so a description edit stales a pacing finding
+  // without staling a lettering one, and a text-only edit never stales a rhythm one.
+  const comicIssues = comicLetteringIssues(issues);
+  const comicScripts = projectComicLetteringContent(comicIssues);
+  const comicPacingContent = projectComicPacingContent(comicIssues);
+  const comicLayoutContent = projectComicLayoutContent(comicIssues);
   // Resolve every source token once — each finding's fingerprint reads from this
   // so the editor flags it `stale` when the content that check actually read (its
   // declared `sources`) drifts (#1345, #1387).
@@ -560,9 +565,10 @@ export async function getReviewWithStaleness(seriesId) {
   const editorialArcs = projectEditorialArcs(editorial);
   const editorialArcsComplete = editorialCoverageComplete(editorial);
   const storyboardScenes = collectStoryboardScenes(issues);
-  const comicScripts = projectComicLetteringContent(issues);
-  const comicPacingContent = projectComicPacingContent(issues);
-  const comicLayoutContent = projectComicLayoutContent(issues);
+  const comicIssues = comicLetteringIssues(issues);
+  const comicScripts = projectComicLetteringContent(comicIssues);
+  const comicPacingContent = projectComicPacingContent(comicIssues);
+  const comicLayoutContent = projectComicLayoutContent(comicIssues);
   const resolvedSources = resolveSources({ manuscript: sectionsCorpus(sections), canon, series, reverseOutline, reverseOutlinePlotlines, editorialArcs, editorialArcsComplete, storyboardScenes, comicScripts, comicPacingContent, comicLayoutContent });
   return {
     ...review,

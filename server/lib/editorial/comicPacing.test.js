@@ -164,6 +164,22 @@ describe('authoredRevealSummary', () => {
     expect(authoredRevealSummary({ beats: [{ kind: 'hook', note: 'q' }] })).toBe('');
   });
 
+  it('includes cliffhanger BEATS (kind=cliffhanger), not just reveal beats and the cliffhangers list', () => {
+    // READER_MAP_BEAT_KINDS allows a cliffhanger to be stored as a timeline beat;
+    // the page-turn check handles reveals AND cliffhangers, so it must not drop it.
+    const out = authoredRevealSummary({
+      beats: [
+        { kind: 'reveal', note: 'the mole is exposed', atArcPosition: 4 },
+        { kind: 'cliffhanger', note: 'the bridge collapses', atArcPosition: 8 },
+        { kind: 'emotional', note: 'a quiet goodbye' },
+      ],
+      cliffhangers: [],
+    });
+    expect(out).toContain('the mole is exposed (arc position 4)');
+    expect(out).toContain('the bridge collapses [cliffhanger] (arc position 8)');
+    expect(out).not.toContain('a quiet goodbye'); // emotional beats aren't page-turn-relevant
+  });
+
   it('neutralizes markdown fence delimiters in reveal/cliffhanger notes (prompt-fence safety)', () => {
     // The summary is embedded in a ``` fenced block in the page-turn prompt, so a
     // note containing backticks must not be able to close the fence early.

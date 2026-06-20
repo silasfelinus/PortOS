@@ -202,23 +202,29 @@ export function comicPageTurnSummary(pages, issueNumber = null) {
   return `${header}\n${lines.join('\n')}`;
 }
 
-// Render the authored reader-map REVEALS (beats with kind 'reveal') and
-// CLIFFHANGERS into a compact text block the page-turn-beats check passes
-// alongside the script, so the model reconciles WHICH beats are big reveals that
-// need a protected page-turn against what the writer logged. Pure + deterministic
-// (mirrors authoredCliffhangerSummary / authoredSetupPayoffSummary in the
-// registry). Returns '' when nothing reveal-like is authored.
+// Render the authored reader-map REVEALS and CLIFFHANGERS into a compact text
+// block the page-turn-beats check passes alongside the script, so the model
+// reconciles WHICH beats are big reveals/cliffhangers that need a protected
+// page-turn against what the writer logged. Both the timeline beats with kind
+// 'reveal' OR 'cliffhanger' (`readerMap.beats`) AND the separate issue-boundary
+// cliffhanger list (`readerMap.cliffhangers`) are surfaced — a cliffhanger stored
+// as a beat must not be dropped. Pure + deterministic (mirrors
+// authoredCliffhangerSummary / authoredSetupPayoffSummary in the registry).
+// Returns '' when nothing reveal-like is authored.
+const REVEAL_BEAT_KINDS = new Set(['reveal', 'cliffhanger']);
 export function authoredRevealSummary(readerMap) {
   const beats = Array.isArray(readerMap?.beats) ? readerMap.beats : [];
   const cliffs = Array.isArray(readerMap?.cliffhangers) ? readerMap.cliffhangers : [];
   const revealLines = beats
-    .filter((b) => b?.kind === 'reveal')
+    .filter((b) => REVEAL_BEAT_KINDS.has(b?.kind))
     .map((b) => {
       // fenceSafe (not bare trim): the note is embedded in a ``` block in the prompt.
       const note = fenceSafe(b?.note);
       if (!note) return '';
+      // Tag a cliffhanger beat so the model can tell it from a mid-issue reveal.
+      const tag = b?.kind === 'cliffhanger' ? ' [cliffhanger]' : '';
       const pos = Number.isFinite(b?.atArcPosition) ? ` (arc position ${b.atArcPosition})` : '';
-      return `- ${note}${pos}`;
+      return `- ${note}${tag}${pos}`;
     })
     .filter(Boolean);
   const cliffLines = cliffs
