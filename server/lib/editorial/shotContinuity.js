@@ -111,11 +111,17 @@ const DIRECTION_PROMPT_LABEL = {
 //   - EYELINE_MAX_SCENES   — most scenes rendered in one pass.
 //   - EYELINE_MAX_CHARS    — total rendered-block character budget (the real
 //                            overflow guard: bounds 60 dense scenes, not just 60).
+//                            Enforced as a HARD ceiling — a single block is
+//                            truncated to the remaining budget if it would exceed it,
+//                            so even one scene with thousands of shots can't blow past.
 //   - EYELINE_MAX_DESC_CHARS — per-shot description truncation, so one giant shot
 //                            description can't blow the budget on its own.
+//   - EYELINE_MAX_SHOTS_PER_SCENE — most shot lines rendered per scene (the common
+//                            "deep scene" guard, applied before the char ceiling).
 export const EYELINE_MAX_SCENES = 60;
 export const EYELINE_MAX_CHARS = 24_000;
 export const EYELINE_MAX_DESC_CHARS = 600;
+export const EYELINE_MAX_SHOTS_PER_SCENE = 40;
 
 /**
  * Render the collected storyboard scenes into a compact, ordered text block for
@@ -132,17 +138,20 @@ export const EYELINE_MAX_DESC_CHARS = 600;
  * `continuityFromShotId` reference still resolves to a visible line; an
  * undescribed shot renders its description as `(no description)`.
  *
- * The rendered payload is bounded three ways (scene count, total chars, per-shot
- * description length — see the EYELINE_MAX_* constants) so one unchunked LLM call
- * can't overflow the provider context whether the storyboard is wide (many scenes)
- * or deep (a few enormous descriptions). When anything is dropped or truncated a
- * trailing marker says so — the truncation is never silent.
+ * The rendered payload is bounded four ways (scene count, shots-per-scene, total
+ * chars, per-shot description length — see the EYELINE_MAX_* constants) so one
+ * unchunked LLM call can't overflow the provider context whether the storyboard
+ * is wide (many scenes), deep (a few enormous descriptions), or has one pathological
+ * scene with thousands of shots. The total-char budget is a HARD ceiling: a block
+ * that would exceed the remaining budget is truncated to it, so the returned string
+ * never exceeds `maxChars` (plus the two short trailing markers). When anything is
+ * dropped or truncated a trailing marker says so — the truncation is never silent.
  *
  * Returns '' when no scene qualifies, so the caller can gate the LLM call on a
  * non-empty block (mirrors the object-backstory check's row gate).
  *
  * @param {Array<{ issueNumber: number|null, scene: object }>} storyboardScenes
- * @param {{ maxScenes?: number, maxChars?: number, maxDescChars?: number }} [opts]
+ * @param {{ maxScenes?: number, maxChars?: number, maxDescChars?: number, maxShotsPerScene?: number }} [opts]
  * @returns {string}
  */
 export function summarizeStoryboardShots(storyboardScenes, opts = {}) {
@@ -155,11 +164,16 @@ export function summarizeStoryboardShots(storyboardScenes, opts = {}) {
   const maxDescChars = Number.isInteger(opts.maxDescChars) && opts.maxDescChars > 0
     ? opts.maxDescChars
     : EYELINE_MAX_DESC_CHARS;
+  const maxShotsPerScene = Number.isInteger(opts.maxShotsPerScene) && opts.maxShotsPerScene > 0
+    ? opts.maxShotsPerScene
+    : EYELINE_MAX_SHOTS_PER_SCENE;
   const entries = Array.isArray(storyboardScenes) ? storyboardScenes : [];
   const blocks = [];
   let qualifying = 0;
   let usedChars = 0;
   let truncatedDesc = false;
+  let truncatedShots = false;
+  let truncatedBlock = false;
   for (const entry of entries) {
     const scene = entry?.scene;
     if (!scene || typeof scene !== 'object') continue;
@@ -181,8 +195,12 @@ export function summarizeStoryboardShots(storyboardScenes, opts = {}) {
       ? `Scene ${blocks.length + 1} (Issue ${issueNumber}): ${sceneName}`
       : `Scene ${blocks.length + 1}: ${sceneName}`;
     const lines = [];
+    let renderedShots = 0;
     for (const s of shots) {
       if (!s || typeof s !== 'object') continue;
+      // Bound shots-per-scene so one pathological scene with thousands of shots
+      // can't dominate the pass; the dropped tail is reported in the line below.
+      if (renderedShots >= maxShotsPerScene) { truncatedShots = true; break; }
       const id = typeof s.id === 'string' && s.id ? s.id : 'shot';
       const type = typeof s.shotType === 'string' && s.shotType ? s.shotType : 'unspecified framing';
       const dir = DIRECTION_PROMPT_LABEL[s.screenDirection] || 'screen direction unspecified';
@@ -197,8 +215,20 @@ export function summarizeStoryboardShots(storyboardScenes, opts = {}) {
         truncatedDesc = true;
       }
       lines.push(`  - ${id} [${type}, ${dir}]${from}: ${desc}`);
+      renderedShots += 1;
     }
-    const block = `${header}\n${lines.join('\n')}`;
+    if (truncatedShots && renderedShots === maxShotsPerScene) {
+      lines.push('  - …[further shots in this scene omitted to fit the model context]');
+    }
+    let block = `${header}\n${lines.join('\n')}`;
+    // HARD char ceiling: even after the per-shot and per-scene caps, truncate the
+    // assembled block to whatever budget remains so the total can't be exceeded by
+    // a single scene. Reserve the join's 2 chars.
+    const remaining = maxChars - usedChars - 2;
+    if (block.length > remaining) {
+      block = `${block.slice(0, Math.max(0, remaining))}…[scene truncated]`;
+      truncatedBlock = true;
+    }
     blocks.push(block);
     usedChars += block.length + 2; // +2 for the '\n\n' join that will follow
   }
@@ -207,8 +237,8 @@ export function summarizeStoryboardShots(storyboardScenes, opts = {}) {
   if (omitted > 0) {
     blocks.push(`(${omitted} additional scene${omitted === 1 ? '' : 's'} omitted from this eyeline pass to fit the model context — review them in a later pass.)`);
   }
-  if (truncatedDesc) {
-    blocks.push('(Some shot descriptions were truncated to fit the model context — open the storyboard for the full text.)');
+  if (truncatedDesc || truncatedShots || truncatedBlock) {
+    blocks.push('(Some shots or descriptions were truncated to fit the model context — open the storyboard for the full text.)');
   }
   return blocks.join('\n\n');
 }

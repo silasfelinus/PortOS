@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findAxisReversals, findShotTypeMonotony, summarizeStoryboardShots, EYELINE_MAX_SCENES, EYELINE_MAX_CHARS, EYELINE_MAX_DESC_CHARS } from './shotContinuity.js';
+import { findAxisReversals, findShotTypeMonotony, summarizeStoryboardShots, EYELINE_MAX_SCENES, EYELINE_MAX_CHARS, EYELINE_MAX_DESC_CHARS, EYELINE_MAX_SHOTS_PER_SCENE } from './shotContinuity.js';
 
 describe('findAxisReversals', () => {
   it('flags an axis reversal across a continuity-linked left↔right pair', () => {
@@ -207,8 +207,11 @@ describe('summarizeStoryboardShots (#1466)', () => {
   it('stops rendering at the total character budget and reports the omission', () => {
     const comparable = (n) => sceneEntry(n, { heading: `S${n}`, shots: [{ id: `${n}a`, description: 'one' }, { id: `${n}b`, description: 'two' }] });
     const scenes = Array.from({ length: 10 }, (_, i) => comparable(i + 1));
-    // A tiny budget renders only the first scene, then reports the rest omitted.
-    const block = summarizeStoryboardShots(scenes, { maxChars: 1 });
+    // Budget = exactly one rendered scene block + its join, so scene 1 renders
+    // whole and scene 2 is omitted (usedChars then meets the budget). Derived from
+    // a single-scene render so the test isn't brittle to formatting tweaks.
+    const oneScene = summarizeStoryboardShots([comparable(1)], { maxChars: 1_000_000 });
+    const block = summarizeStoryboardShots(scenes, { maxChars: oneScene.length + 2 });
     expect(block).toContain('Scene 1 (Issue 1): S1');
     expect(block).not.toContain('S2');
     expect(block).toContain('9 additional scenes omitted');
@@ -221,12 +224,37 @@ describe('summarizeStoryboardShots (#1466)', () => {
     ], { maxDescChars: 50 });
     expect(block).toContain('…[truncated]');
     expect(block).not.toContain(huge);
-    expect(block).toContain('shot descriptions were truncated');
+    expect(block).toContain('truncated to fit the model context');
+  });
+
+  it('bounds shots-per-scene so one deep scene cannot dominate the pass', () => {
+    const manyShots = Array.from({ length: 500 }, (_, i) => ({ id: `s${i}`, description: `shot ${i}` }));
+    const block = summarizeStoryboardShots([
+      sceneEntry(1, { heading: 'DEEP', shots: manyShots }),
+    ], { maxShotsPerScene: 5 });
+    // Only the first 5 shot lines render.
+    expect(block).toContain('s0 ');
+    expect(block).toContain('s4 ');
+    expect(block).not.toContain('s5 ');
+    expect(block).toContain('further shots in this scene omitted');
+    expect(block).toContain('truncated to fit the model context');
+  });
+
+  it('enforces the total-char budget as a HARD ceiling even for a single huge scene', () => {
+    const manyShots = Array.from({ length: 500 }, (_, i) => ({ id: `s${i}`, description: 'x'.repeat(40) }));
+    const cap = 1200;
+    const block = summarizeStoryboardShots([
+      sceneEntry(1, { heading: 'HUGE', shots: manyShots }),
+    ], { maxChars: cap, maxShotsPerScene: 1000, maxDescChars: 1000 });
+    // The returned string never exceeds the budget (plus the short trailing marker).
+    expect(block.length).toBeLessThanOrEqual(cap + 200);
+    expect(block).toContain('[scene truncated]');
   });
 
   it('exposes sane default caps', () => {
     expect(EYELINE_MAX_SCENES).toBeGreaterThan(0);
     expect(EYELINE_MAX_CHARS).toBeGreaterThan(0);
     expect(EYELINE_MAX_DESC_CHARS).toBeGreaterThan(0);
+    expect(EYELINE_MAX_SHOTS_PER_SCENE).toBeGreaterThan(0);
   });
 });
