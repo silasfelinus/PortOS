@@ -167,7 +167,7 @@ export function fitContextToManuscriptFloor(context, {
   const fixed = Math.max(0, fixedOverheadTokens);
 
   const contextTokens = entries.reduce((n, [k]) => n + estimateTokens(blocks[k]), 0);
-  const { allowedContextChars, trimmed } = capContextOverhead({
+  const { allowedContextTokens, trimmed } = capContextOverhead({
     contextWindow,
     contextTokens,
     fixedOverheadTokens: fixed,
@@ -180,22 +180,24 @@ export function fitContextToManuscriptFloor(context, {
     return { context: blocks, overheadTokens: fixed + contextTokens, trimmed: false };
   }
 
-  // Trim the largest blocks first until the combined context fits the allowed
-  // budget. `need` is the chars we must remove; each pass shrinks the current
-  // largest block toward (its size − need), so a single dominant block (sceneMap)
-  // absorbs the whole cut and the bounded blocks survive intact.
-  const totalChars = entries.reduce((n, [k]) => n + blocks[k].length, 0);
-  let need = totalChars - allowedContextChars;
+  // Trim the largest block first (by char length) so the unbounded scene map
+  // absorbs the cut while bounded blocks survive. Drive the loop on the TOKEN
+  // budget, not aggregate chars: `estimateTokens` ceilings per block, so several
+  // small blocks could fit the char budget yet still sum to more than
+  // `allowedContextTokens` — and the manuscript would undershoot its floor. Re-sum
+  // the per-block token estimate after each trim and keep shrinking the current
+  // largest until the total token cost is within budget.
   const largestFirst = entries.map(([k]) => k).sort((a, b) => blocks[b].length - blocks[a].length);
+  const tokenSum = () => entries.reduce((n, [k]) => n + estimateTokens(blocks[k]), 0);
   for (const k of largestFirst) {
-    if (need <= 0) break;
-    const before = blocks[k].length;
-    blocks[k] = trimContextToBudget(blocks[k], Math.max(0, before - need));
-    need -= before - blocks[k].length;
+    if (tokenSum() <= allowedContextTokens) break;
+    // Chars this block must give back so the TOTAL token cost fits: the current
+    // overshoot (tokens) converted to chars, removed from this (largest) block.
+    const overshootTokens = tokenSum() - allowedContextTokens;
+    blocks[k] = trimContextToBudget(blocks[k], Math.max(0, blocks[k].length - overshootTokens * CHARS_PER_TOKEN));
   }
 
-  const trimmedContextTokens = entries.reduce((n, [k]) => n + estimateTokens(blocks[k]), 0);
-  return { context: blocks, overheadTokens: fixed + trimmedContextTokens, trimmed: true };
+  return { context: blocks, overheadTokens: fixed + tokenSum(), trimmed: true };
 }
 
 /**

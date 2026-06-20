@@ -18,7 +18,7 @@
 import { randomUUID, createHash } from 'crypto';
 import { createSseRunner } from '../../../lib/sseUtils.js';
 import { runStagedLLM, runInlineLLM, runStageScopedInlineLLM, resolveStageContext } from '../../../lib/stageRunner.js';
-import { planManuscriptPass, fitContextToManuscriptFloor } from '../../../lib/contextBudget.js';
+import { planManuscriptPass, fitContextToManuscriptFloor, estimateTokens, MANUSCRIPT_FLOOR_TOKENS } from '../../../lib/contextBudget.js';
 import { getEnabledChecks, getEnabledCheckRows, getAllChecks, EDITORIAL_SOURCES, comicLetteringIssues } from '../../../lib/editorial/index.js';
 import { getSettings } from '../../settings.js';
 import { getSeries } from '../series.js';
@@ -373,10 +373,17 @@ export async function runEditorialChecks(seriesId, options = {}) {
       let effectiveOverhead = overheadTokens;
       let fittedContext = null;
       if (context && typeof context === 'object') {
+        // Reserve no more than the manuscript actually needs: a short manuscript
+        // that fits alongside the full context shouldn't get its context trimmed
+        // just to hold open the full floor. Cap the reserved floor at the
+        // manuscript's own token cost (the floor only bites a manuscript large
+        // enough to want it).
+        const floorTokens = Math.min(MANUSCRIPT_FLOOR_TOKENS, estimateTokens(manuscript));
         const fit = fitContextToManuscriptFloor(context, {
           contextWindow,
           fixedOverheadTokens,
           outputReserveTokens: EDITORIAL_OUTPUT_RESERVE_TOKENS,
+          floorTokens,
         });
         effectiveOverhead = fit.overheadTokens;
         fittedContext = fit.context;

@@ -312,6 +312,42 @@ describe('contextBudget', () => {
       expect(estimateTokens(r.context.sceneMap)).toBeLessThan(estimateTokens(ctx.sceneMap));
     });
 
+    it('keeps the TOTAL token cost within the allowed budget across many small blocks (per-block ceiling)', () => {
+      // estimateTokens ceilings per block, so several small blocks could each fit a
+      // char budget yet sum to more tokens than allowed. The trim must drive on the
+      // token sum, not aggregate chars, or the manuscript undershoots its floor.
+      // Odd-length blocks (1001 chars → ceil(1001/4)=251 tokens each) so per-block
+      // ceiling rounding accumulates; 30 of them (≈7530 tokens) overflows a 4K window.
+      const ctx = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`b${i}`, 'x'.repeat(1_001)]));
+      const window = 4_000;
+      const fixed = 500;
+      const r = fitContextToManuscriptFloor(ctx, {
+        contextWindow: window,
+        fixedOverheadTokens: fixed,
+        outputReserveTokens: 0,
+        safetyMargin: 0,
+      });
+      expect(r.trimmed).toBe(true);
+      const usable = usableInputTokens({ contextWindow: window, overheadTokens: r.overheadTokens, outputReserveTokens: 0, safetyMargin: 0 });
+      // The floor holds EXACTLY now — the manuscript keeps at least the full floor,
+      // even though per-block ceiling rounding would have undershot a char-only trim.
+      expect(usable).toBeGreaterThanOrEqual(MANUSCRIPT_FLOOR_TOKENS);
+    });
+
+    it('respects a caller-supplied smaller floor (so a short manuscript is not trimmed needlessly)', () => {
+      // A modest context + a low floor that the window comfortably fits → no trim.
+      const ctx = { sceneMap: 'S'.repeat(4_000) };
+      const r = fitContextToManuscriptFloor(ctx, {
+        contextWindow: 8_000,
+        fixedOverheadTokens: 500,
+        outputReserveTokens: 0,
+        safetyMargin: 0,
+        floorTokens: 100, // a tiny manuscript only needs a little room
+      });
+      expect(r.trimmed).toBe(false);
+      expect(r.context.sceneMap).toBe(ctx.sceneMap);
+    });
+
     it('handles an empty / non-object context as a no-op', () => {
       expect(fitContextToManuscriptFloor(null, { contextWindow: 8_000 })).toEqual({ context: {}, overheadTokens: 0, trimmed: false });
       expect(fitContextToManuscriptFloor({}, { contextWindow: 8_000, fixedOverheadTokens: 500 })).toEqual({ context: {}, overheadTokens: 500, trimmed: false });
