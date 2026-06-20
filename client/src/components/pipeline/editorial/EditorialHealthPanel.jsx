@@ -114,7 +114,6 @@ export default function EditorialHealthPanel({ seriesId, refreshKey = 0 }) {
   const regressions = Array.isArray(health.trend?.regressions) ? health.trend.regressions : [];
   const categories = orderedCategories(health.openByCategory);
   const points = health.trend?.points || [];
-  const hasTrend = points.length > 0;
   // The delta compares the two most recent revisions — only meaningful with ≥2
   // points (a single revision has nothing to compare against).
   const hasDelta = points.length >= 2;
