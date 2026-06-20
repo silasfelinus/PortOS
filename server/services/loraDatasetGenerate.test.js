@@ -7,17 +7,35 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('./loraDatasets.js', async (importOriginal) => ({
   ...(await importOriginal()),
   getDataset: vi.fn(),
+  updateDataset: vi.fn(async () => ({})),
+  datasetImagesDir: vi.fn(() => '/tmp/ds-images'),
+  datasetImagePath: vi.fn((id, file) => `/tmp/ds-images/${file}`),
 }));
 vi.mock('./universeBuilder.js', async (importOriginal) => ({
   ...(await importOriginal()),
   getUniverse: vi.fn(),
 }));
 
+// sharp is only exercised by the slice path — stub the metadata() probe and the
+// extract().png().toFile() crop chain so the grid-fallback test never touches a
+// real image. The chainable mock records each extract rect for assertions, and
+// `sheetMeta` lets a test set the reported sheet dimensions.
+const extractCalls = [];
+const sheetMeta = { width: 900, height: 600 };
+vi.mock('sharp', () => ({
+  default: vi.fn(() => ({
+    metadata: vi.fn(async () => ({ ...sheetMeta })),
+    extract: vi.fn(function extract(rect) { extractCalls.push(rect); return this; }),
+    png: vi.fn(function png() { return this; }),
+    toFile: vi.fn(async () => ({})),
+  })),
+}));
+
 import {
   buildDatasetImagePrompt, deriveVariationAxes, getDatasetVariationAxes,
-  normalizeCropProposals, proposeCropRegions,
+  normalizeCropProposals, proposeCropRegions, sliceReferenceSheet,
 } from './loraDatasetGenerate.js';
-import { getDataset } from './loraDatasets.js';
+import { getDataset, updateDataset } from './loraDatasets.js';
 import { getUniverse } from './universeBuilder.js';
 
 // Pure-function coverage for the kind-aware prompt builder + variation axes.
@@ -253,5 +271,60 @@ describe('proposeCropRegions', () => {
     const resolveModel = vi.fn().mockResolvedValue({ providerId: 'lmstudio', model: 'qwen2.5-vl' });
     const rects = await proposeCropRegions('/sheet.png', dims, { describeImage, resolveModel, readImage });
     expect(rects).toEqual([]);
+  });
+});
+
+describe('sliceReferenceSheet — grid fallback path', () => {
+  beforeEach(() => {
+    extractCalls.length = 0;
+    sheetMeta.width = 900;
+    sheetMeta.height = 600;
+    getDataset.mockReset();
+    getUniverse.mockReset();
+    updateDataset.mockClear();
+  });
+
+  // The load-bearing path: most installs have no vision model, so `useVision:
+  // false` (or an empty vision result) falls through to the fixed cols×rows
+  // grid. Stubbed sharp reports 900×600; a 3×2 grid yields six 300×300 crops.
+  const wireSubject = () => {
+    getDataset.mockResolvedValue({
+      id: 'ds1',
+      character: { entryKind: 'characters', universeId: 'u1', entryId: 'c1' },
+      images: [],
+    });
+    getUniverse.mockResolvedValue({
+      characters: [{ id: 'c1', name: 'Kessa', referenceSheetImageRef: 'kessa-sheet.png' }],
+    });
+  };
+
+  it('emits cols×rows grid crops when useVision is false', async () => {
+    wireSubject();
+    const result = await sliceReferenceSheet('ds1', { cols: 3, rows: 2, useVision: false });
+    expect(result.method).toBe('grid');
+    expect(result.images).toHaveLength(6);
+    // Every crop is a 300×300 grid cell.
+    expect(extractCalls).toHaveLength(6);
+    expect(extractCalls.every((r) => r.width === 300 && r.height === 300)).toBe(true);
+    expect(result.images.every((img) => img.source === 'refsheet-slice' && img.status === 'ready')).toBe(true);
+    expect(updateDataset).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a 400 when the grid cells would be smaller than 64px', async () => {
+    wireSubject();
+    // A small sheet: 300/6 = 50px cells, below the 64px MIN_CROP floor.
+    sheetMeta.width = 300;
+    sheetMeta.height = 300;
+    await expect(sliceReferenceSheet('ds1', { cols: 6, rows: 6, useVision: false }))
+      .rejects.toMatchObject({ status: 400 });
+  });
+
+  it('throws 409 when the subject has no reference sheet', async () => {
+    getDataset.mockResolvedValue({
+      id: 'ds1', character: { entryKind: 'characters', universeId: 'u1', entryId: 'c1' }, images: [],
+    });
+    getUniverse.mockResolvedValue({ characters: [{ id: 'c1', name: 'Kessa' }] }); // no referenceSheetImageRef
+    await expect(sliceReferenceSheet('ds1', { useVision: false }))
+      .rejects.toMatchObject({ status: 409, code: 'LORA_DATASET_NO_SHEET' });
   });
 });

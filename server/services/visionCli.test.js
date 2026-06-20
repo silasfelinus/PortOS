@@ -115,6 +115,22 @@ describe('describeImageViaCli', () => {
     await expect(promise).rejects.toThrow(/Failed to spawn codex.*ENOENT/s);
   });
 
+  it('rejects (and does not hang) when the child exceeds the timeout', async () => {
+    const child = makeFakeChild();
+    const spawnImpl = vi.fn(() => child);
+    const promise = describeImageViaCli({
+      provider: { id: 'codex', command: 'codex', args: [] },
+      dataUrl: PNG_DATA_URL,
+      prompt: 'p',
+      timeout: 20,
+      spawnImpl,
+    });
+    // The child never emits `close` (simulates a wedged process); the timeout
+    // must SIGTERM it and reject on its own rather than awaiting `close`.
+    await expect(promise).rejects.toThrow(/timed out after 20ms/);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+  });
+
   it('throws on a malformed data URL before spawning', async () => {
     const spawnImpl = vi.fn();
     await expect(describeImageViaCli({

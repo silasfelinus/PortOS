@@ -25,7 +25,7 @@ import { buildVariationMatrix } from '../lib/loraDataset.js';
 import { extractJson } from '../lib/jsonExtract.js';
 import { readSheetPointer, LEGACY_SHEET_VARIANT_ID } from '../lib/storyBible.js';
 import { describeImageDataUrlDetailed } from './visionTest.js';
-import { resolveCaptionModel } from './loraDatasetCaption.js';
+import { resolveCaptionModel, withCaptionVisionLock } from './loraDatasetCaption.js';
 import { getSettings } from './settings.js';
 import { getUniverse } from './universeBuilder.js';
 import { buildStyleClause } from './universeCanon.js';
@@ -501,7 +501,11 @@ export async function proposeCropRegions(sheetPath, dims, {
   if (!bytes) return [];
   const dataUrl = `data:image/png;base64,${bytes.toString('base64')}`;
 
-  const result = await describeImage({
+  // Funnel the vision call through the SAME mutex the caption loop uses, so a
+  // slice-while-captioning can't fire two concurrent requests at a single-GPU
+  // local backend (doubled KV-cache VRAM, no throughput win — see the lock's
+  // header in loraDatasetCaption.js).
+  const result = await withCaptionVisionLock(() => describeImage({
     dataUrl,
     prompt: CROP_PROPOSAL_PROMPT,
     providerId: resolved.providerId,
@@ -509,7 +513,7 @@ export async function proposeCropRegions(sheetPath, dims, {
     // Boxes are short, but a thinking model needs headroom — match the
     // captioner's reasoning budget rather than the 500-token short default.
     maxTokens: 600,
-  }).catch((err) => {
+  })).catch((err) => {
     console.log(`⚠️ Vision crop slicing failed (${resolved.model}): ${err?.message || err}`);
     return null;
   });

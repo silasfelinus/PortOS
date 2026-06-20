@@ -116,16 +116,25 @@ export async function describeImageViaCli({
       });
       let out = '';
       let err = '';
+      let killTimer = null;
+      // On timeout, SIGTERM the child AND reject now — don't wait on `close`. A
+      // wedged CLI that ignores SIGTERM would otherwise never emit `close`, so
+      // the promise would hang forever and the temp dir (cleaned in `finally`)
+      // would leak. Escalate to SIGKILL on a short grace timer.
       const timer = timeout > 0 ? setTimeout(() => {
         if (!child.killed) child.kill('SIGTERM');
+        killTimer = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }, 5000);
+        killTimer?.unref?.();
+        reject(new Error(`${command} vision call timed out after ${timeout}ms`));
       }, timeout) : null;
       timer?.unref?.();
+      const clearTimers = () => { if (timer) clearTimeout(timer); if (killTimer) clearTimeout(killTimer); };
 
-      child.on('error', (e) => { if (timer) clearTimeout(timer); reject(new Error(`Failed to spawn ${command}: ${e.message}`)); });
+      child.on('error', (e) => { clearTimers(); reject(new Error(`Failed to spawn ${command}: ${e.message}`)); });
       child.stdout?.on('data', (d) => { out += d.toString(); });
       child.stderr?.on('data', (d) => { err += d.toString(); });
       child.on('close', (code) => {
-        if (timer) clearTimeout(timer);
+        clearTimers();
         if (code === 0) return resolve(out.trim());
         const tail = err.trim().split('\n').slice(-4).join('\n');
         reject(new Error(`${command} vision call exited ${code}${tail ? `: ${tail}` : ''}`));
