@@ -93,6 +93,63 @@ describe('createZip', () => {
     expect(() => createZip('nope')).toThrow(/array/i);
   });
 
+  it('round-trips deflated entries through parseZip (method 8)', async () => {
+    // A highly compressible payload so deflate is strictly smaller and kept.
+    const text = 'PortOS legacy export '.repeat(500);
+    const zip = createZip([
+      { name: 'big.md', data: text },
+      { name: 'data/manifest.json', data: '{"kind":"portos-legacy-export"}' },
+    ], { compress: true });
+    const entries = await collectEntries(zip);
+    const byPath = Object.fromEntries(entries.map(e => [e.path, e.data]));
+    expect(byPath['big.md'].toString()).toBe(text);
+    expect(JSON.parse(byPath['data/manifest.json'].toString())).toEqual({ kind: 'portos-legacy-export' });
+  });
+
+  it('a compressed archive is smaller than the stored one for compressible data', () => {
+    const text = 'PortOS legacy export '.repeat(500);
+    const stored = createZip([{ name: 'big.md', data: text }]);
+    const deflated = createZip([{ name: 'big.md', data: text }], { compress: true });
+    expect(deflated.length).toBeLessThan(stored.length);
+  });
+
+  it('falls back to stored for an entry deflate would not shrink', async () => {
+    // Random-ish bytes don't compress; the entry must still round-trip.
+    const incompressible = Buffer.from(Array.from({ length: 256 }, (_, i) => (i * 37 + 11) % 256));
+    const zip = createZip([{ name: 'blob.bin', data: incompressible }], { compress: true });
+    const entries = await collectEntries(zip);
+    expect(Buffer.compare(entries[0].data, incompressible)).toBe(0);
+  });
+
+  it('compressed output is still deterministic', () => {
+    const text = 'repeat '.repeat(200);
+    const a = createZip([{ name: 'a.txt', data: text }], { compress: true });
+    const b = createZip([{ name: 'a.txt', data: text }], { compress: true });
+    expect(Buffer.compare(a, b)).toBe(0);
+  });
+
+  it('produces a compressed archive the system unzip tool can extract', () => {
+    let unzipPath;
+    try {
+      unzipPath = execFileSync('which', ['unzip']).toString().trim();
+    } catch {
+      return; // no unzip on this host — skip
+    }
+    if (!unzipPath) return;
+    const dir = mkdtempSync(join(tmpdir(), 'zipwriter-deflate-'));
+    try {
+      const zipPath = join(dir, 'bundle.zip');
+      writeFileSync(zipPath, createZip([
+        { name: 'README.md', data: '# Legacy '.repeat(100) },
+        { name: 'data/manifest.json', data: '{"kind":"portos-legacy-export"}' },
+      ], { compress: true }));
+      const out = execFileSync(unzipPath, ['-t', zipPath]).toString();
+      expect(out).toMatch(/No errors detected/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('produces an archive the system unzip tool can extract', () => {
     // Guards against subtle header-field mistakes that parseZip (which ignores
     // the central directory) would tolerate but a real tool would reject.

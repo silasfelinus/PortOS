@@ -27,9 +27,14 @@
 import { z } from 'zod';
 import { estimateTokens } from '../contextBudget.js';
 import { renderCharacterArcsForPrompt } from '../seriesCharacterArc.js';
+import { parseComicScript } from '../comicScriptParser.js';
+import {
+  analyzeComicLettering,
+  DEFAULT_LETTERING_THRESHOLDS,
+} from './letteringDensity.js';
 import { analyzeNamePair, findFirstLetterClusters, normalizeName } from './nameSimilarity.js';
 import { findCliches, findModifierStacking } from './cliches.js';
-import { findSaidBookisms, findUnattributedDialogueRuns } from './dialogue.js';
+import { findSaidBookisms, findUnattributedDialogueRuns, attributeDialogueByOwner } from './dialogue.js';
 import { findItalicThoughts } from './italicThoughts.js';
 import {
   findFilterWords,
@@ -48,6 +53,7 @@ import {
   comicPageTurnSummary,
   authoredRevealSummary,
 } from './comicPacing.js';
+import { findAxisReversals, findShotTypeMonotony } from './shotContinuity.js';
 
 export const CHECK_SCOPES = Object.freeze(['series', 'issue', 'scene', 'noun']);
 export const CHECK_KINDS = Object.freeze(['deterministic', 'llm']);
@@ -91,22 +97,39 @@ const SEVERITIES = CHECK_SEVERITIES;
 //                                 want, need, startState, endState, transitions[] }`). The
 //                                 arc.transitions check reconciles detected change moments
 //                                 against these authored transitions + flat-arc warnings.
-//   - 'comicScript'             — the per-issue PARSED comic script (#1314): the runner parses
-//                                 each issue's `stages.comicScript.output` with the (impure)
-//                                 comicScriptParser and injects `ctx.comicScripts`
-//                                 (`[{ issueNumber, pages }]`, only issues that parsed to ≥1
-//                                 page). The comic-pacing checks read page/panel structure —
-//                                 splash usage, panel rhythm, page-turn beat placement.
+//   - 'storyboard.shots'        — the per-issue storyboard shot lists
+//                                 (`stages.storyboards.scenes[].shots[]`) the
+//                                 visual-continuity check (#1315) reasons over:
+//                                 each shot carries `shotType` / `screenDirection`
+//                                 / `continuityFromShotId` (server/lib/shotGrammar.js).
+//                                 Served off the already-loaded `ctx.issues` (no
+//                                 extra I/O); the runner injects `ctx.storyboardScenes`
+//                                 (a flat list of `{ issueNumber, scene }` for every
+//                                 issue that has storyboard scenes).
+//   - 'comicScript'             — every issue's AUTHORITATIVE comic content, keyed by
+//                                 issue number: the edited comic-pages split
+//                                 (`stages.comicPages.pages[]`) when present, else the
+//                                 generated `stages.comicScript.output`. The
+//                                 lettering-density check (#1313) counts per-panel/per-page
+//                                 word + balloon load over it; the comic-pacing checks
+//                                 (#1314) read the same parsed page/panel structure for
+//                                 splash usage, panel rhythm, and page-turn beat placement.
+//                                 Both read it via the shared `comicLetteringIssues(ctx.issues)`
+//                                 projection (`[{ number, pages }]`). The runner fingerprints
+//                                 the lettering-relevant fields so a finding goes stale when
+//                                 the comic text (not the prose manuscript) is edited.
 export const EDITORIAL_SOURCES = Object.freeze([
   'manuscript',
   'canon',
   'series.styleGuide',
   'series.arc.tickingClock',
   'series.arc.readerMap',
+  'series.arc.themes',
   'reverseOutline',
   'reverseOutline.plotlines',
   'editorialArcs',
   'series.characterArcs',
+  'storyboard.shots',
   'comicScript',
 ]);
 
@@ -297,7 +320,7 @@ export const HEAD_HOPPING_STAGE = 'pipeline-editorial-head-hopping';
 
 // Stage name for the comic page-turn-beats LLM check (#1314). Ships in
 // data.reference/prompts/stages/ + stage-config.json (fresh installs via
-// setup-data.js) and migrates to existing installs via migration 114 (boot runs
+// setup-data.js) and migrates to existing installs via migration 117 (boot runs
 // migrations but NOT setup-data, so the migration is required). Reads each issue's
 // parsed comic-page layout (`comicPageTurnSummary`) plus the authored reveals /
 // cliffhangers (`authoredRevealSummary`) and flags big reveals placed where the
@@ -305,6 +328,69 @@ export const HEAD_HOPPING_STAGE = 'pipeline-editorial-head-hopping';
 // spread, rather than the first page after a turn). The deterministic sibling
 // (comic.panel-rhythm) needs no stage.
 export const COMIC_PAGE_TURN_STAGE = 'pipeline-editorial-comic-page-turn';
+
+// Stage name for the theme-coherence / thematic-throughline LLM check (#1317).
+// Ships in data.reference/prompts/stages/ + stage-config.json (fresh installs via
+// setup-data.js) and migrates to existing installs via migration 115 (boot runs
+// migrations but NOT setup-data, so the migration is required). Reads the stitched
+// manuscript plus the AUTHORED arc themes (series.arc.themes) and the reverse-outline
+// scene map, and reconciles whether each declared theme is set up / complicated /
+// paid off — surfacing stated-but-undramatized themes, dropped themes, a strong
+// emergent theme not in the arc, and a climax that resolves plot but not theme.
+export const THEME_COHERENCE_STAGE = 'pipeline-editorial-theme-coherence';
+
+// Render the authored arc themes (#1317) into a compact text block the
+// theme-coherence check passes alongside the manuscript, so the model reconciles
+// whether the prose actually sets up / complicates / pays off each DECLARED theme
+// (vs. stating it but never dramatizing it, or dropping it after the opening).
+// Pure + deterministic so it's unit-testable and its token cost can be counted
+// into the per-chunk overhead. Returns '' when no themes are authored (the
+// prompt's `{{#declaredThemes}}` section then renders nothing and the check still
+// runs to detect a strong emergent theme).
+export function declaredThemesSummary(themes) {
+  const lines = (Array.isArray(themes) ? themes : [])
+    .map((t) => (typeof t === 'string' ? t.trim() : ''))
+    .filter(Boolean)
+    .map((t) => `- ${t}`);
+  if (!lines.length) return '';
+  return `Declared themes (authored on the story arc):\n${lines.join('\n')}`;
+}
+
+// Stage name for the unmodeled-proper-nouns LLM check (#1412). Ships in
+// data.reference/prompts/stages/ + stage-config.json (fresh installs via
+// setup-data.js) and migrates to existing installs via migration 116 (boot runs
+// migrations but NOT setup-data, so the migration is required). Reads the stitched
+// manuscript plus the canon roster (names + aliases) and asks the model to surface
+// capitalized proper nouns used as apparent CHARACTER names that are absent from
+// canon — the LLM-assisted half of roster economy (#1292) the deterministic
+// `roster.economy` scan deliberately leaves alone (it can't tell a person from a
+// place/org/brand/honorific).
+export const UNMODELED_NAMES_STAGE = 'pipeline-editorial-unmodeled-names';
+
+// Render the canon roster's names + aliases (#1412) into a compact text block the
+// unmodeled-names check passes alongside the manuscript, so the model knows which
+// proper nouns are ALREADY modeled (and therefore must NOT be flagged) and only
+// surfaces apparent character names absent from this list. Pure + deterministic so
+// it's unit-testable and its token cost can be counted into the per-chunk overhead.
+// Returns '' when no canon character has a usable name (the prompt's
+// `{{#knownCharacters}}` section then renders nothing and EVERY named proper noun in
+// the prose is a candidate — exactly right when the bible is empty). Reuses
+// `characterNameTokens` so name + aliases render with the same trim/de-dup the
+// deterministic matcher uses.
+export function canonRosterNamesSummary(canon) {
+  const chars = Array.isArray(canon?.characters) ? canon.characters : [];
+  const lines = [];
+  for (const c of chars) {
+    // Require a real name — an alias-only row isn't a named character (mirrors
+    // buildRosterAppearances, which skips nameless rows). characterNameTokens then
+    // returns the trimmed name first, followed by de-duped aliases.
+    if (!c || typeof c.name !== 'string' || !c.name.trim()) continue;
+    const [name, ...aliases] = characterNameTokens(c);
+    lines.push(aliases.length ? `- ${name} (also: ${aliases.join(', ')})` : `- ${name}`);
+  }
+  if (!lines.length) return '';
+  return `Known characters (already in the story bible — do NOT flag these or their aliases):\n${lines.join('\n')}`;
+}
 
 // Render the authored reader-map cliffhangers (#1298) into a compact text block
 // the chapter-ending check passes alongside the manuscript so the model
@@ -1019,6 +1105,82 @@ function buildRosterAppearances(ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// Cast representation & balance (#1312) — three coarse, computable casting
+// signals over the canon + reverse-outline + stitched manuscript:
+//   1) Bechdel co-presence — does ANY scene put two+ non-male characters
+//      together (the structural precondition for two women talking)? Computed
+//      from the reverse-outline's per-scene charactersPresent against
+//      pronoun-inferred gender. A coarse signal, not the full Bechdel test
+//      (we can't read whether the conversation is about a man deterministically).
+//   2) Dialogue share — does one character dominate the spoken lines? Counts
+//      attributed dialogue paragraphs per character (attributeDialogueByOwner)
+//      and flags a lopsided distribution (top speaker over a configurable share).
+//   3) Screen-time balance — when gender is inferable, flag a strongly skewed
+//      appearing cast (e.g. a near-all-male roster) as a representation nudge.
+//
+// All three are advisory (low/medium): representation is an authorial choice and
+// these are signals, not correctness errors. Gender is inferred ONLY from the
+// canon `pronouns` field — absent/ambiguous pronouns yield 'unknown', and the
+// gender-dependent signals stay silent rather than guess (absent ≠ a category).
+// ---------------------------------------------------------------------------
+
+// Infer a coarse gender bucket from a character's canon `pronouns` string. Only
+// the unambiguous subject/object pronoun sets map; anything else (neopronouns,
+// "any", blank, a sentence) is 'unknown' so a gender-dependent signal can opt
+// out rather than miscategorize. Returns 'female' | 'male' | 'nonbinary' | 'unknown'.
+function inferGender(pronouns) {
+  const p = typeof pronouns === 'string' ? pronouns.toLowerCase() : '';
+  if (!p) return 'unknown';
+  const has = (re) => re.test(p);
+  const she = has(/\bshe\b/) || has(/\bher\b/) || has(/\bhers\b/);
+  const he = has(/\bhe\b/) || has(/\bhim\b/) || has(/\bhis\b/);
+  const they = has(/\bthey\b/) || has(/\bthem\b/) || has(/\btheir\b/);
+  // A clean single set wins; a mixed string ("she/they") is ambiguous → unknown,
+  // except she+they / he+they which still read as a definite female/male identity
+  // with a secondary set. Both she AND he present is genuinely ambiguous.
+  if (she && he) return 'unknown';
+  if (she) return 'female';
+  if (he) return 'male';
+  if (they) return 'nonbinary';
+  return 'unknown';
+}
+
+// Normalized name → { char, gender, key } for every named canon character, plus
+// the per-owner whole-token matcher reused for dialogue attribution. Built once
+// per run so the dialogue scan and the co-presence scan share one identity map.
+function buildCastIdentities(ctx) {
+  const chars = Array.isArray(ctx.canon?.characters) ? ctx.canon.characters : [];
+  const identities = [];
+  for (const c of chars) {
+    if (!c || typeof c !== 'object') continue;
+    const name = typeof c.name === 'string' ? c.name.trim() : '';
+    if (!name) continue;
+    const key = normalizeName(name);
+    if (!key) continue;
+    const matcher = characterMatcher(characterNameTokens(c));
+    identities.push({ key, name, gender: inferGender(c.pronouns), matcher });
+  }
+  return identities;
+}
+
+// Resolve a scene's charactersPresent names to canon identity keys (so a scene
+// that lists "Bob" maps to canonical "Robert"). A present name that matches no
+// canon character is dropped — the co-presence signal is canon-relative.
+function sceneCastKeys(scene, identityByKey, identities) {
+  const present = Array.isArray(scene?.charactersPresent) ? scene.charactersPresent : [];
+  const keys = new Set();
+  for (const raw of present) {
+    if (typeof raw !== 'string' || !raw.trim()) continue;
+    const direct = identityByKey.get(normalizeName(raw));
+    if (direct) { keys.add(direct.key); continue; }
+    // Fall back to a token match (the present-name might be an alias surface form).
+    const hit = identities.find((id) => id.matcher && id.matcher.test(raw));
+    if (hit) keys.add(hit.key);
+  }
+  return keys;
+}
+
+// ---------------------------------------------------------------------------
 // Scene component balance (#1296) — reads the cached reverse-outline (#1286)
 // scene segmentation, where each scene carries a `components` boolean signal
 // { narrative, action, dialogue }. The editorial rule: a scene should mix at
@@ -1235,6 +1397,122 @@ function runDensityCheck(ctx, opts) {
     });
   }
   return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Comic lettering density / balloon load (#1313) — deterministic over each
+// issue's parsed comic script. The pure word/balloon accounting + threshold
+// evaluation lives in ./letteringDensity.js (shared with the client comic-script
+// stage's inline warnings); the helpers below turn its violations into
+// manuscriptReview findings and pre-flight whether any issue even has a script
+// (the check's gate). Scope is 'issue' — findings carry the issue number so the
+// editor groups them per issue / per page.
+// ---------------------------------------------------------------------------
+
+// The AUTHORITATIVE comic pages for an issue (parser-shaped `[{ panels: [...] }]`).
+// A POPULATED per-page split (`stages.comicPages.pages[]`) WINS over the generated
+// markdown (`stages.comicScript.output`): once a script is split into pages, edits
+// in the Comic tab persist to `comicPages.pages[].rawText/panels` and never flow
+// back to `comicScript.output`, so reading the raw script would analyze stale text
+// (flag balloons the user already cut, miss ones they added). The client
+// comic-script stage reads the same `comicPages.pages[].panels`, so both surfaces
+// judge the same edited content.
+//
+// We key on `pages.length`, not `Array.isArray(pages)`, on purpose: the issue
+// sanitizer (`sanitizeVisualStage`) ALWAYS materializes `comicPages.pages` as `[]`,
+// so an EMPTY array can't distinguish "never split" from "split then all pages
+// deleted" — they are byte-identical on disk. Falling back to the still-present
+// generated script when the split is empty means an UNSPLIT or IMPORTED script
+// (the common pre-render case, where lettering feedback matters most) is still
+// checked; the script remains the issue's authored comic text even if a prior
+// split was emptied.
+export function comicIssuePages(issue) {
+  const pages = issue?.stages?.comicPages?.pages;
+  if (Array.isArray(pages) && pages.length) {
+    return pages.filter((p) => p && typeof p === 'object');
+  }
+  const output = typeof issue?.stages?.comicScript?.output === 'string' ? issue.stages.comicScript.output : '';
+  return output.trim() ? parseComicScript(output).pages : [];
+}
+
+// Issues with analyzable comic content, as { number, pages }, sorted by issue
+// number for a stable scan order. Shared by the lettering check's `run` AND the
+// staleness runner's fingerprint (which projects the lettering-relevant fields off
+// this), so the fingerprinted content is exactly what the check analyzes.
+export function comicLetteringIssues(issues) {
+  return (Array.isArray(issues) ? issues : [])
+    .map((i) => ({
+      number: Number.isInteger(i?.number) ? i.number : null,
+      pages: comicIssuePages(i),
+    }))
+    .filter((i) => i.pages.length)
+    .sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
+}
+
+// Cheap presence test for the check's gate — true when any issue has an edited
+// comic-pages split OR a non-empty generated script — without paying the parse
+// that `comicLetteringIssues` does.
+function hasComicContent(issues) {
+  return (Array.isArray(issues) ? issues : []).some((i) => {
+    const pages = i?.stages?.comicPages?.pages;
+    if (Array.isArray(pages) && pages.length) return true;
+    return (typeof i?.stages?.comicScript?.output === 'string' ? i.stages.comicScript.output : '').trim();
+  });
+}
+
+// One human-readable { problem, suggestion } per violation kind. Kept here (not
+// in the pure helper) because the wording is PortOS-facing copy, while the helper
+// stays a reusable counting primitive.
+function comicLetteringText(v) {
+  const who = v.speaker ? ` (${v.speaker})` : '';
+  switch (v.kind) {
+    case 'balloon-words':
+      return {
+        problem: `A balloon${who} runs ${v.count} words — over the ~${v.threshold}-word balloon limit. A wall of text crammed into one balloon is the #1 reader gripe in comics.`,
+        suggestion: 'Split the balloon in two, move some of it to a caption, or trim the line.',
+      };
+    case 'caption-words':
+      return {
+        problem: `A caption box runs ${v.count} words — over the ~${v.threshold}-word limit. A dense narration box buries the art the same way an over-stuffed balloon does.`,
+        suggestion: 'Tighten the caption, split it across panels, or cut it down.',
+      };
+    case 'panel-words':
+      return {
+        problem: `This panel carries ${v.count} words of lettering — over the ~${v.threshold}-word panel limit, crowding the art.`,
+        suggestion: 'Spread the lettering across more panels, or cut copy so the art can breathe.',
+      };
+    case 'panel-balloons':
+      return {
+        problem: `This panel has ${v.count} balloons — more than the ~${v.threshold} a single panel reads cleanly with.`,
+        suggestion: 'Break the exchange across more panels, or merge balloons from the same speaker.',
+      };
+    case 'page-words':
+    default:
+      return {
+        problem: `This page carries ${v.count} words of lettering — over the ~${v.threshold}-word page ceiling; the text load would overwhelm the art.`,
+        suggestion: 'Move some beats to adjacent pages, or trim copy so the page is not text-heavy.',
+      };
+  }
+}
+
+// Map a lettering violation to a manuscriptReview finding for issue `number`.
+// `panelNumber` is absent for page-level findings, so the location degrades to
+// "Issue N · Page P" cleanly. Severity rides the violation's overflow-scaled
+// value (#1313).
+function comicLetteringFinding(v, number) {
+  const { problem, suggestion } = comicLetteringText(v);
+  const where = v.panelNumber != null
+    ? `Page ${v.pageNumber} · Panel ${v.panelNumber}`
+    : `Page ${v.pageNumber}`;
+  return {
+    severity: v.severity,
+    category: 'lettering',
+    location: number != null ? `Issue ${number} · ${where}` : where,
+    problem,
+    suggestion,
+    anchorQuote: typeof v.anchorQuote === 'string' ? v.anchorQuote : '',
+    issueNumber: number,
+  };
 }
 
 export const EDITORIAL_CHECKS = [
@@ -1547,6 +1825,376 @@ export const EDITORIAL_CHECKS = [
     },
   },
   {
+    // LLM-assisted companion to roster.economy (#1412, part of #1283). The
+    // deterministic roster.economy scan only sees canon names/aliases; it can't
+    // detect proper nouns used as apparent CHARACTER names that were never bibled
+    // (the LLM-assist half #1292 called out). This check surfaces those — and
+    // classifies them (is this token actually a named character, vs a place/org/
+    // brand/honorific the deterministic scan can't tell apart).
+    id: 'roster.unmodeled-names',
+    sources: ['manuscript', 'canon'],
+    label: 'Unmodeled proper nouns used as character names',
+    description:
+      'LLM scan — surfaces capitalized proper nouns used as apparent CHARACTER names that are ABSENT from the story bible (canon.characters names + aliases), and classifies each (is this actually a named person, vs a place, organization, brand, or honorific the deterministic roster.economy scan can\'t distinguish). Flags throwaway one-appearance unmodeled names readers are asked to remember, suggesting either adding them to canon or leaving them unnamed. The LLM-assisted half of roster economy (#1292) that the deterministic check deliberately leaves alone.',
+    scope: 'series',
+    kind: 'llm',
+    category: 'casting',
+    severityDefault: 'low',
+    defaultEnabled: true,
+    // Reads the stitched manuscript corpus — so the runner only pays the
+    // section-collection I/O when a manuscript-consuming check is enabled.
+    needsManuscript: true,
+    configSchema: z.object({
+      // Cap findings per run so a large unmodeled cast can't flood the review.
+      maxFindings: z.number().int().min(1).max(50).default(12),
+    }),
+    configFields: [
+      {
+        key: 'maxFindings',
+        label: 'Max findings per run',
+        type: 'number',
+        min: 1,
+        max: 50,
+        step: 1,
+        help: 'Cap findings so a large unmodeled cast can not flood the review.',
+      },
+    ],
+    // Needs prose to scan. Unlike roster.economy this does NOT require a populated
+    // canon — an EMPTY bible is the strongest case (every named proper noun is
+    // unmodeled), and the prompt's {{^knownCharacters}} branch handles it.
+    gate: (ctx) => (ctx.manuscript || '').trim().length > 0,
+    run: async (ctx) => {
+      // The known-character roster is fixed per-call overhead (re-sent on each
+      // chunk) — it's the exclusion list the model classifies against. Counted into
+      // the per-chunk budget so the manuscript isn't squeezed past the window.
+      const knownCharacters = canonRosterNamesSummary(ctx.canon);
+      // The LLM does ONLY what it alone can: surface a proper noun used as a
+      // character name and classify it (person vs place/org/brand/honorific). It
+      // does NOT judge recurrence — that's a whole-corpus count the model can't make
+      // when the manuscript is chunked (a name in issues 1 and 12 would look like a
+      // one-appearance throwaway to whichever chunk sees it). `crossChunkDigest`
+      // keeps a later chunk from re-describing a name an earlier chunk surfaced.
+      const findings = await runManuscriptLlmCheck(ctx, {
+        stage: UNMODELED_NAMES_STAGE,
+        category: 'casting',
+        overheadTokens: EDITORIAL_PROMPT_OVERHEAD_TOKENS + estimateTokens(knownCharacters),
+        crossChunkDigest: true,
+        buildVars: (manuscript) => ({ manuscript, knownCharacters }),
+      });
+      // Deterministic whole-corpus recurrence pass. The model's job is the judgment
+      // it alone can make — is this surfaced proper noun a PERSON (vs a place/org/
+      // brand/honorific)? — expressed by whether it emits the finding at all and by
+      // the name it quotes in `location`. It is NOT trusted for frequency: that's a
+      // whole-corpus count it can't make per-chunk (a name in issues 1 and 12 looks
+      // like a one-off to whichever chunk sees it). So we OWN `problem`/`suggestion`
+      // here — composing them from the deterministic count rather than appending to
+      // (and risking contradiction with) the model's free text — and keep only the
+      // model's `anchorQuote` + `issueNumber` (facts it's authoritative on). We count
+      // the name's distinct-issue appearances across ALL sections, set the location
+      // label + severity, and collapse the same name surfaced from different chunks.
+      // Malformed findings are DROPPED, not passed through (passing the model's
+      // un-vetted text would reopen the contradiction risk this pass closes): one
+      // with no quoted name to verify, or one whose quoted name the matcher can't
+      // find in any section (a stray/garbled LLM token / 0-appearance phantom).
+      const sections = Array.isArray(ctx.sections) ? ctx.sections : [];
+      const seenNames = new Set();
+      const out = [];
+      for (const f of findings) {
+        const name = (String(f.location || '').match(/"([^"]+)"/) || [])[1];
+        // The contract requires the model to quote the surfaced name in `location`.
+        // A finding without one is malformed — drop it rather than pass the model's
+        // un-vetted free text through unrewritten (which would reopen the contradiction
+        // risk this deterministic pass exists to close: keep ONLY anchorQuote +
+        // issueNumber, never the model's problem/suggestion).
+        if (!name) continue;
+        const key = normalizeName(name);
+        if (key && seenNames.has(key)) continue; // same unmodeled name from another chunk
+        if (key) seenNames.add(key);
+        const matcher = characterMatcher([name]);
+        const issues = matcher
+          ? new Set(sections.filter((s) => matcher.test(s.content || '')).map((s) => s.number))
+          : new Set();
+        const count = issues.size;
+        // The model surfaced a name the matcher can't locate in any section (a garbled
+        // token, or a form the whole-token matcher won't match) — drop it rather than
+        // emit a finding the editor can't anchor.
+        if (count === 0) continue;
+        const base = { category: 'casting', anchorQuote: f.anchorQuote || '', issueNumber: f.issueNumber ?? null };
+        out.push(count === 1
+          ? {
+              ...base,
+              severity: 'low',
+              location: `Throwaway name — "${name}" (1 appearance)`,
+              problem: `"${name}" is used as a character name but is not in the story bible, and appears in only one issue — a named body the reader is told to remember but who never recurs and was never bibled.`,
+              suggestion: `Add "${name}" to canon only if they are meant to recur; otherwise recast them as an unnamed description (e.g. "the bartender") so the reader isn't asked to track a name that goes nowhere.`,
+            }
+          : {
+              ...base,
+              severity: 'medium',
+              location: `Unmodeled character — "${name}" (${count} issues)`,
+              problem: `"${name}" is used as a character name across ${count} issues but is not in the story bible.`,
+              suggestion: `A recurring character should be modeled — add "${name}" to canon.`,
+            });
+      }
+      return out;
+    },
+  },
+  {
+    id: 'comic.lettering-density',
+    sources: ['comicScript'],
+    label: 'Comic lettering density / balloon load',
+    description:
+      'Flags over-stuffed comic panels — the #1 reader gripe in comics: a wall of text crammed into one balloon, too many balloons fighting for room, or a page whose total lettering load overwhelms the art. Parses each issue\'s comic script and counts words + balloons per panel and per page against configurable industry rules-of-thumb.',
+    scope: 'issue',
+    kind: 'deterministic',
+    category: 'lettering',
+    severityDefault: 'low',
+    defaultEnabled: true,
+    configSchema: z.object({
+      // Per-balloon word ceiling (~20–25 reads cleanly; much past it is a wall of text).
+      maxWordsPerBalloon: z.number().int().min(1).max(200).default(DEFAULT_LETTERING_THRESHOLDS.maxWordsPerBalloon),
+      // Per-panel total lettering word ceiling (dialogue + caption + SFX).
+      maxWordsPerPanel: z.number().int().min(1).max(500).default(DEFAULT_LETTERING_THRESHOLDS.maxWordsPerPanel),
+      // Distinct balloons (dialogue + caption boxes) a single panel reads cleanly with.
+      maxBalloonsPerPanel: z.number().int().min(1).max(20).default(DEFAULT_LETTERING_THRESHOLDS.maxBalloonsPerPanel),
+      // Whole-page lettering word ceiling — past it the text load buries the art.
+      maxWordsPerPage: z.number().int().min(1).max(2000).default(DEFAULT_LETTERING_THRESHOLDS.maxWordsPerPage),
+    }),
+    configFields: [
+      {
+        key: 'maxWordsPerBalloon',
+        label: 'Max words per balloon',
+        type: 'number',
+        min: 1,
+        max: 200,
+        step: 1,
+        help: 'Flag a single speech balloon / caption box over this many words (~25 is the industry rule-of-thumb).',
+      },
+      {
+        key: 'maxWordsPerPanel',
+        label: 'Max words per panel',
+        type: 'number',
+        min: 1,
+        max: 500,
+        step: 1,
+        help: 'Flag a panel whose total lettering (dialogue + caption + SFX) exceeds this many words (~50).',
+      },
+      {
+        key: 'maxBalloonsPerPanel',
+        label: 'Max balloons per panel',
+        type: 'number',
+        min: 1,
+        max: 20,
+        step: 1,
+        help: 'Flag a panel with more than this many distinct balloons + caption boxes (~3).',
+      },
+      {
+        key: 'maxWordsPerPage',
+        label: 'Max words per page',
+        type: 'number',
+        min: 1,
+        max: 2000,
+        step: 10,
+        help: 'Flag a page whose total lettering load would overwhelm the art (~150).',
+      },
+    ],
+    // Needs at least one issue with comic content (an edited page split or a
+    // generated script). A cheap presence test — run() builds the full parsed
+    // projection only when the gate passes.
+    gate: (ctx) => hasComicContent(ctx.issues),
+    run: (ctx) => {
+      const config = ctx.config || {};
+      const findings = [];
+      for (const { number, pages } of comicLetteringIssues(ctx.issues)) {
+        for (const v of analyzeComicLettering(pages, config)) {
+          findings.push(comicLetteringFinding(v, number));
+        }
+      }
+      return findings;
+    },
+  },
+  {
+    id: 'cast.representation-balance',
+    sources: ['manuscript', 'canon', 'reverseOutline'],
+    label: 'Cast representation & balance (Bechdel signal, dialogue share, screen time)',
+    description:
+      'Three coarse, computable casting signals: a Bechdel co-presence signal (does any scene put two or more non-male characters on the page together?), dialogue share (does one character dominate the spoken lines?), and screen-time balance (is the appearing named cast strongly skewed by inferred gender?). Gender is inferred only from the canon pronouns field — characters with absent or ambiguous pronouns are left out of the gender-dependent signals rather than guessed. Advisory: representation is an authorial choice, so these are nudges, not errors.',
+    scope: 'series',
+    kind: 'deterministic',
+    category: 'casting',
+    severityDefault: 'low',
+    defaultEnabled: true,
+    // Reads the stitched manuscript (per-issue sections) for the dialogue-share
+    // scan — so the runner only pays the section-collection I/O when enabled.
+    needsManuscript: true,
+    configSchema: z.object({
+      // Flag dialogue share when the top speaker holds more than this fraction of
+      // all attributed dialogue lines (and there are 2+ speakers). 1 disables it.
+      maxDialogueShare: z.number().min(0.1).max(1).default(0.6),
+      // Minimum attributed dialogue lines before the share check runs — a handful
+      // of lines isn't a meaningful distribution. 0 keeps the floor at 1.
+      minDialogueLines: z.number().int().min(0).max(500).default(12),
+      // Flag screen-time skew when one gender holds more than this fraction of the
+      // gender-known appearing cast (and 2+ are gender-known). 1 disables it.
+      maxGenderShare: z.number().min(0.1).max(1).default(0.8),
+      // Run the Bechdel co-presence signal (any scene with 2+ non-male characters).
+      bechdelSignal: z.boolean().default(true),
+    }),
+    configFields: [
+      {
+        key: 'maxDialogueShare',
+        label: 'Max dialogue share for one speaker',
+        type: 'number',
+        min: 0.1,
+        max: 1,
+        step: 0.05,
+        help: 'Flag when the top speaker holds more than this fraction of all attributed dialogue lines (with 2+ speakers). 1 disables the dialogue-share check.',
+      },
+      {
+        key: 'minDialogueLines',
+        label: 'Minimum attributed dialogue lines',
+        type: 'number',
+        min: 0,
+        max: 500,
+        step: 1,
+        help: 'Skip the dialogue-share check until at least this many dialogue lines can be attributed — a few lines is not a meaningful distribution.',
+      },
+      {
+        key: 'maxGenderShare',
+        label: 'Max screen-time share for one gender',
+        type: 'number',
+        min: 0.1,
+        max: 1,
+        step: 0.05,
+        help: 'Flag when one inferred gender holds more than this fraction of the gender-known appearing cast (with 2+ gender-known characters). 1 disables the screen-time check.',
+      },
+      {
+        key: 'bechdelSignal',
+        label: 'Bechdel co-presence signal',
+        type: 'boolean',
+        help: 'Flag when no scene puts two or more non-male characters on the page together — the structural precondition for the Bechdel test. Needs a reverse outline with charactersPresent.',
+      },
+    ],
+    // Need at least one named canon character to scan for; the per-signal gates
+    // (manuscript for dialogue, outline for Bechdel) are decided inside run().
+    gate: (ctx) => Array.isArray(ctx.canon?.characters)
+      && ctx.canon.characters.some((c) => typeof c?.name === 'string' && c.name.trim()),
+    run: (ctx) => {
+      const cfg = ctx.config || {};
+      const maxDialogueShare = cfg.maxDialogueShare ?? 0.6;
+      const minDialogueLines = Math.max(1, cfg.minDialogueLines ?? 12);
+      const maxGenderShare = cfg.maxGenderShare ?? 0.8;
+      const bechdelSignal = cfg.bechdelSignal !== false;
+
+      const identities = buildCastIdentities(ctx);
+      if (!identities.length) return [];
+      const identityByKey = new Map(identities.map((id) => [id.key, id]));
+      const nameByKey = new Map(identities.map((id) => [id.key, id.name]));
+      const genderByKey = new Map(identities.map((id) => [id.key, id.gender]));
+      const findings = [];
+      const flag = ({ severity, location, problem, suggestion, anchorQuote = '', issueNumber = null }) =>
+        findings.push({ severity, category: 'casting', location, problem, suggestion, anchorQuote, issueNumber });
+
+      // --- 1) Dialogue share ------------------------------------------------
+      // The runner injects the canonical stitched corpus as ctx.manuscript
+      // (needsManuscript) — reuse it rather than re-stitching ctx.sections.
+      const manuscript = typeof ctx.manuscript === 'string' ? ctx.manuscript : '';
+      if (maxDialogueShare < 1 && manuscript.trim()) {
+        const owners = identities
+          .filter((id) => id.matcher)
+          .map((id) => ({ key: id.key, matcher: id.matcher }));
+        const { byOwner, attributed } = attributeDialogueByOwner(manuscript, owners);
+        if (attributed >= minDialogueLines && byOwner.size >= 2) {
+          let topKey = null;
+          let topCount = 0;
+          for (const [key, count] of byOwner) {
+            if (count > topCount) { topCount = count; topKey = key; }
+          }
+          const share = topCount / attributed;
+          if (topKey && share > maxDialogueShare) {
+            const pct = Math.round(share * 100);
+            // Escalate above the low floor when one voice utterly dominates (≥80%).
+            flag({
+              severity: escalateSeverity(ctx.severityDefault, share >= 0.8 ? 1 : 0),
+              location: 'Series dialogue',
+              problem: `"${nameByKey.get(topKey)}" speaks about ${pct}% of the attributed dialogue (${topCount} of ${attributed} lines across ${byOwner.size} speaking characters) — one voice dominating the page can flatten the rest of the cast.`,
+              suggestion: `Give other characters more of the conversation, or let scenes play out from a viewpoint where ${nameByKey.get(topKey)} isn't the one talking.`,
+            });
+          }
+        }
+      }
+
+      // --- 2) Bechdel co-presence signal -----------------------------------
+      // The structural precondition: at least one scene with two or more
+      // non-male (female / nonbinary) characters present. Coarse — we can't
+      // deterministically read whether they talk about something other than a
+      // man — so this is a "no scene even has the cast for it" nudge, and it
+      // only fires when gender is actually inferable for the cast.
+      if (bechdelSignal) {
+        const scenes = Array.isArray(ctx.reverseOutline) ? ctx.reverseOutline : [];
+        const scenesWithPresence = scenes.filter(
+          (s) => Array.isArray(s?.charactersPresent) && s.charactersPresent.length > 0
+        );
+        const haveNonMaleKnown = identities.some((id) => id.gender === 'female' || id.gender === 'nonbinary');
+        // Only meaningful when the outline records presence AND the cast has at
+        // least one known non-male character (otherwise "absent" is just unknown
+        // gender, not a representation gap).
+        if (scenesWithPresence.length > 0 && haveNonMaleKnown) {
+          const anyCopresent = scenesWithPresence.some((scene) => {
+            const keys = sceneCastKeys(scene, identityByKey, identities);
+            let nonMale = 0;
+            for (const k of keys) {
+              const g = genderByKey.get(k);
+              if (g === 'female' || g === 'nonbinary') nonMale += 1;
+              if (nonMale >= 2) return true;
+            }
+            return false;
+          });
+          if (!anyCopresent) {
+            flag({
+              severity: ctx.severityDefault,
+              location: 'Series cast',
+              problem: 'No scene puts two or more non-male characters on the page together (per the reverse-outline scene presence) — the structural precondition for the Bechdel test is never met. Two women (or non-male characters) are never in a scene to talk to each other.',
+              suggestion: 'Add at least one scene where two non-male characters share the page and a conversation that isn\'t about a man — or, if the story\'s premise genuinely calls for it, treat this as expected and disable the signal.',
+            });
+          }
+        }
+      }
+
+      // --- 3) Screen-time balance (gender skew) -----------------------------
+      // Over the APPEARING named cast (tied to prose appearances so canon-only
+      // bloat doesn't trip it), is one inferable gender strongly over-represented?
+      if (maxGenderShare < 1) {
+        const rows = buildRosterAppearances(ctx);
+        const appearingKeys = new Set(
+          rows.filter((r) => r.appearedInIssues.length > 0).map((r) => normalizeName(r.name))
+        );
+        const counts = { female: 0, male: 0, nonbinary: 0 };
+        for (const key of appearingKeys) {
+          const g = genderByKey.get(key);
+          if (g === 'female' || g === 'male' || g === 'nonbinary') counts[g] += 1;
+        }
+        const known = counts.female + counts.male + counts.nonbinary;
+        if (known >= 2) {
+          const entries = Object.entries(counts).filter(([, n]) => n > 0);
+          const [topGender, topN] = entries.reduce((a, b) => (b[1] > a[1] ? b : a));
+          const share = topN / known;
+          if (share > maxGenderShare) {
+            const pct = Math.round(share * 100);
+            flag({
+              severity: ctx.severityDefault,
+              location: 'Series cast',
+              problem: `Of the ${known} appearing named characters whose gender is inferable, ${pct}% are ${topGender} (${topN} of ${known}) — a strongly skewed cast. Representation is an authorial choice, but a near-monochrome roster is worth a deliberate look.`,
+              suggestion: 'Consider whether some named roles could be cast more diversely, or confirm the skew is intentional for the story and disable the screen-time signal.',
+            });
+          }
+        }
+      }
+
+      return findings;
+    },
+  },
+  {
     id: 'scene.component-balance',
     sources: ['reverseOutline'],
     label: 'Scene component balance (narrative / action / dialogue)',
@@ -1606,6 +2254,96 @@ export const EDITORIAL_CHECKS = [
           anchorQuote: typeof s.anchorQuote === 'string' ? s.anchorQuote : '',
           issueNumber,
         });
+      }
+      return findings;
+    },
+  },
+  {
+    id: 'visual.shot-continuity',
+    sources: ['storyboard.shots'],
+    label: 'Storyboard shot continuity (180° rule, shot-type variety)',
+    description:
+      'Flags film-grammar errors in a storyboard scene\'s shot list BEFORE render — a 180-degree-rule axis reversal across a continuity-linked shot pair (the subject appears to flip sides across a cut declared continuous), and shot-type monotony (a scene whose shots all share one framing reads as flat, slideshow coverage). Reads the per-issue storyboard shots; deterministic, so it needs no LLM.',
+    scope: 'scene',
+    kind: 'deterministic',
+    category: 'continuity',
+    severityDefault: 'medium',
+    defaultEnabled: true,
+    configSchema: z.object({
+      // Flag a 180° axis reversal across a continuity-linked shot pair.
+      flagAxisReversal: z.boolean().default(true),
+      // Flag a scene where every classified shot shares one framing. 0 disables
+      // the monotony check; otherwise it's the minimum classified-shot count
+      // before a single-framing scene is flagged (a sparse 2-shot tag is noise).
+      // The primitive floors this at 2 — a single classified shot is never
+      // "monotony" — so 1 behaves identically to 2.
+      minShotsForMonotony: z.number().int().min(0).max(16).default(3),
+    }),
+    configFields: [
+      {
+        key: 'flagAxisReversal',
+        label: 'Flag 180° axis reversals',
+        type: 'boolean',
+        help: 'Flag a continuity-linked shot pair whose screen directions are opposite (left↔right) — the subject appears to jump sides across a cut the author declared continuous.',
+      },
+      {
+        key: 'minShotsForMonotony',
+        label: 'Min classified shots for monotony',
+        type: 'number',
+        min: 0,
+        max: 16,
+        step: 1,
+        help: 'Flag a scene where every classified shot shares one framing (all medium, say) once at least this many shots are classified. 0 disables the monotony check; the minimum effective value is 2 (1 is treated as 2).',
+      },
+    ],
+    // Needs at least one storyboard scene with shots to read.
+    gate: (ctx) => Array.isArray(ctx.storyboardScenes) && ctx.storyboardScenes.length > 0,
+    run: (ctx) => {
+      const cfg = ctx.config || {};
+      const flagAxis = cfg.flagAxisReversal !== false;
+      const minMonotony = cfg.minShotsForMonotony ?? 3;
+      const entries = Array.isArray(ctx.storyboardScenes) ? ctx.storyboardScenes : [];
+      const findings = [];
+      const DIRECTION_LABEL = { left: 'screen-left', right: 'screen-right', neutral: 'head-on' };
+      for (const entry of entries) {
+        const scene = entry?.scene;
+        if (!scene || typeof scene !== 'object') continue;
+        const issueNumber = Number.isInteger(entry.issueNumber) ? entry.issueNumber : null;
+        const sceneName = typeof scene.heading === 'string' && scene.heading.trim()
+          ? scene.heading.trim()
+          : (typeof scene.slugline === 'string' && scene.slugline.trim() ? scene.slugline.trim() : 'scene');
+        const location = issueNumber != null ? `Issue ${issueNumber}: ${sceneName}` : `Scene: ${sceneName}`;
+
+        if (flagAxis) {
+          for (const r of findAxisReversals(scene)) {
+            const fromLabel = DIRECTION_LABEL[r.fromDirection] || r.fromDirection;
+            const toLabel = DIRECTION_LABEL[r.toDirection] || r.toDirection;
+            findings.push({
+              severity: ctx.severityDefault,
+              category: 'continuity',
+              location,
+              problem: `Shot "${r.toId}" continues from "${r.fromId}" but faces ${toLabel} where "${r.fromId}" faced ${fromLabel} — a 180°-rule axis reversal makes the subject appear to jump sides across the cut.`,
+              suggestion: `Keep both shots on the same side of the action axis (both ${fromLabel} or both ${toLabel}), insert a neutral/head-on cutaway between them, or break the continuity link if the angle change is intentional.`,
+              anchorQuote: (r.toDescription || r.fromDescription || '').slice(0, 200),
+              issueNumber,
+            });
+          }
+        }
+
+        if (minMonotony > 0) {
+          const mono = findShotTypeMonotony(scene, { minClassified: minMonotony });
+          if (mono) {
+            findings.push({
+              severity: ctx.severityDefault,
+              category: 'continuity',
+              location,
+              problem: `All ${mono.classifiedCount} classified shots in "${sceneName}" are ${mono.shotType} — a scene shot in a single framing reads as flat, slideshow coverage with no establishing wide or punch-in for emphasis.`,
+              suggestion: `Vary the coverage: open on a wider establishing framing, punch in to a close for an emotional or key beat, or add an over-the-shoulder for a two-character exchange.`,
+              anchorQuote: '',
+              issueNumber,
+            });
+          }
+        }
       }
       return findings;
     },
@@ -2001,6 +2739,77 @@ export const EDITORIAL_CHECKS = [
           + 'the stakes established so far and whether they have escalated; and any setup '
           + '(a planted problem, a coincidence, a try-fail attempt) a later part should pay off, '
           + 'so a later chunk can tell a genuinely dropped subplot or flat-stakes arc from one whose payoff simply has not arrived yet.',
+      });
+    },
+  },
+  {
+    id: 'theme.coherence',
+    sources: ['manuscript', 'series.arc.themes', 'reverseOutline'],
+    label: 'Theme coherence / thematic throughline',
+    description:
+      'Checks whether the manuscript actually DELIVERS its declared themes (series.arc.themes), not just states them. For each authored theme it maps where the story sets it up, complicates it, and pays it off — flagging a theme that is stated but never dramatized, or dropped after the opening. Detects a strong EMERGENT theme the story is really telling that is not in the arc (offers to add it), and checks that the climax/resolution lands the thematic argument (vs. resolving plot but not theme). Reads the reverse-outline scene map to attribute setup/payoff to scenes; degrades to a whole-manuscript scan when no outline or no themes exist.',
+    scope: 'series',
+    kind: 'llm',
+    category: 'theme',
+    severityDefault: 'medium',
+    defaultEnabled: true,
+    // Reads the stitched manuscript corpus — so the runner only pays the
+    // section-collection I/O when a manuscript-consuming check is enabled.
+    needsManuscript: true,
+    configSchema: z.object({
+      // Cap findings per run so a long manuscript can't flood the review.
+      maxFindings: z.number().int().min(1).max(50).default(12),
+    }),
+    configFields: [
+      {
+        key: 'maxFindings',
+        label: 'Max findings per run',
+        type: 'number',
+        min: 1,
+        max: 50,
+        step: 1,
+        help: 'Cap findings so a long manuscript can not flood the review.',
+      },
+    ],
+    gate: (ctx) => (ctx.manuscript || '').trim().length > 0,
+    run: (ctx) => {
+      // Both blocks are fixed per-call overhead (re-sent on each chunk) and pure
+      // context: the declared themes let the model build a per-theme setup/
+      // complication/payoff coverage map and reconcile detected vs. authored
+      // themes; the scene map lets it attribute setup/payoff to a scene + issue.
+      // The check degrades gracefully — no authored themes ⇒ {{#declaredThemes}}
+      // renders nothing and the check works from the prose alone to surface a
+      // strong emergent theme; no outline ⇒ {{#sceneMap}} renders nothing.
+      const declaredThemes = declaredThemesSummary(ctx.series?.arc?.themes);
+      const sceneMap = sceneGroundingSummary(ctx.reverseOutline);
+      return runManuscriptLlmCheck(ctx, {
+        stage: THEME_COHERENCE_STAGE,
+        category: 'theme',
+        overheadTokens:
+          EDITORIAL_PROMPT_OVERHEAD_TOKENS
+          + estimateTokens(declaredThemes)
+          + estimateTokens(sceneMap),
+        // `isFinal` gates the whole-corpus judgments — a theme that is set up but
+        // never paid off, a theme dropped after the opening, and whether the
+        // climax lands the thematic argument can only be judged once the whole
+        // manuscript is in view; an earlier chunk can't know a theme is paid off
+        // later, so it would false-flag.
+        buildVars: (manuscript, meta) => ({
+          manuscript,
+          declaredThemes,
+          sceneMap,
+          finalPart: meta?.isFinal ? 'true' : '',
+        }),
+        // Theme coverage accrues across the whole manuscript — the findings digest
+        // keeps prior findings in view so a later chunk doesn't re-flag, and the
+        // clean-setup digest rolls forward which themes have been set up /
+        // complicated so a later payoff isn't mis-read as a dropped theme.
+        crossChunkDigest: true,
+        crossChunkSetup: true,
+        setupFocus: 'For each declared theme, note where it has been set up or complicated so far '
+          + 'and whether it has been paid off yet; and note any strong EMERGENT theme the story '
+          + 'is dramatizing that is not in the declared list, so a later chunk can tell a genuinely '
+          + 'dropped/undramatized theme from one whose payoff simply has not arrived yet.',
       });
     },
   },
@@ -3718,19 +4527,22 @@ export const EDITORIAL_CHECKS = [
       { key: 'monotonyRunLength', label: 'Grid monotony run length', type: 'number', min: 2, max: 12, step: 1, help: 'The same multi-panel page count repeated for this many pages in a row reads as a monotonous grid.' },
       { key: 'maxFindings', label: 'Max findings per run', type: 'number', min: 1, max: 50, step: 1, help: 'Cap findings so a long run of comic issues can not flood the review.' },
     ],
-    // Needs at least one issue that parsed to comic pages — the runner only
-    // populates ctx.comicScripts when a comic-pacing check is enabled.
-    gate: (ctx) => Array.isArray(ctx.comicScripts) && ctx.comicScripts.length > 0,
+    // Needs at least one issue with analyzable comic content — shares the
+    // cheap presence test with the lettering-density check (#1313).
+    gate: (ctx) => hasComicContent(ctx.issues),
     run: (ctx) => {
       const cfg = ctx.config || {};
       const max = cfg.maxFindings ?? 20;
-      const rows = Array.isArray(ctx.comicScripts) ? ctx.comicScripts : [];
+      // Reuse the shared parsed-pages projection (#1313) the lettering check reads
+      // off ctx.issues — prefers the edited comic-pages split over the generated
+      // script — so both comic checks analyze identical page/panel structure.
+      const rows = comicLetteringIssues(ctx.issues);
       const findings = [];
-      for (const { issueNumber, pages } of rows) {
+      for (const { number, pages } of rows) {
         if (findings.length >= max) break;
         const r = analyzePanelRhythm(pages, cfg);
-        const location = Number.isInteger(issueNumber) ? `Issue ${issueNumber}` : 'Comic script';
-        const issueNum = Number.isInteger(issueNumber) ? issueNumber : null;
+        const location = Number.isInteger(number) ? `Issue ${number}` : 'Comic script';
+        const issueNum = Number.isInteger(number) ? number : null;
         const push = (severity, problem, suggestion) => {
           if (findings.length >= max) return;
           findings.push({ severity, category: 'pacing', location, problem, suggestion, anchorQuote: '', issueNumber: issueNum });
@@ -3785,25 +4597,28 @@ export const EDITORIAL_CHECKS = [
     configFields: [
       { key: 'maxFindings', label: 'Max findings per run', type: 'number', min: 1, max: 50, step: 1, help: 'Cap findings so a long run of comic issues can not flood the review.' },
     ],
-    // Needs at least one issue that parsed to comic pages.
-    gate: (ctx) => Array.isArray(ctx.comicScripts) && ctx.comicScripts.length > 0,
+    // Needs at least one issue with analyzable comic content — shares the
+    // cheap presence test with the lettering-density check (#1313).
+    gate: (ctx) => hasComicContent(ctx.issues),
     run: async (ctx) => {
       const max = ctx.config?.maxFindings ?? 12;
       // Authored reveals/cliffhangers are pure series-level context the model
       // reconciles each issue's placement against; '' when nothing is authored.
       const authoredReveals = authoredRevealSummary(ctx.series?.arc?.readerMap);
-      const rows = Array.isArray(ctx.comicScripts) ? ctx.comicScripts : [];
+      // Same shared parsed-pages projection (#1313) the panel-rhythm + lettering
+      // checks read off ctx.issues.
+      const rows = comicLetteringIssues(ctx.issues);
       const findings = [];
-      for (const { issueNumber, pages } of rows) {
+      for (const { number, pages } of rows) {
         if (ctx.signal?.aborted || findings.length >= max) break;
-        const pageLayout = comicPageTurnSummary(pages, issueNumber);
+        const pageLayout = comicPageTurnSummary(pages, number);
         if (!pageLayout) continue;
         const { content } = await ctx.callStagedLLM(
           COMIC_PAGE_TURN_STAGE,
           { pageLayout, authoredReveals },
           { returnsJson: true, source: COMIC_PAGE_TURN_STAGE },
         );
-        const issueNum = Number.isInteger(issueNumber) ? issueNumber : null;
+        const issueNum = Number.isInteger(number) ? number : null;
         const mapped = mapLlmFindings(content?.findings, {
           severityDefault: ctx.severityDefault,
           category: 'pacing',
@@ -3909,6 +4724,15 @@ export function resolveCheckConfig(check, storedConfig) {
 export const readChecksSlice = (settings) => {
   const slice = settings?.pipelineEditorialChecks?.checks;
   return slice && typeof slice === 'object' && !Array.isArray(slice) ? slice : {};
+};
+
+// The editorial-health readiness gate (#1316) the autopilot loop + UI read as
+// "manuscript clean". Returns the raw stored value (or null) — the caller
+// resolves an unknown/absent value to the default via `resolveReadinessGate` in
+// editorialScore.js (kept there so the gate vocabulary lives with the scorer).
+export const readReadinessGate = (settings) => {
+  const gate = settings?.pipelineEditorialChecks?.readinessGate;
+  return typeof gate === 'string' && gate ? gate : null;
 };
 
 /**

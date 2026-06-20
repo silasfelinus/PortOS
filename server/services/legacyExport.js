@@ -54,6 +54,15 @@ const HEALTH_METRICS = [
   ['vo2_max', 'VO₂ max', ''],
 ];
 
+// Soft size guardrail (issue #901 open Q3). The bundle is intentionally a FULL
+// plaintext dump — silently truncating identity data would defeat its purpose —
+// so instead of capping, the preview surfaces a warning above this threshold so
+// the user knows a large export is coming (and which section drives it). The
+// estimate is of the uncompressed content; the delivered zip is deflated and
+// smaller. 25 MB is generous for text identity data; a bundle past it is almost
+// always a very large brain/memory corpus the user should be aware of.
+const SIZE_WARNING_BYTES = 25 * 1024 * 1024;
+
 const HEALTH_CAVEAT =
   '> ⚠️ **Source caveat:** the figures below are device-reported (Apple Health / manual lab entry) ' +
   'and unvalidated. They are a personal-tracking snapshot, **not a verified medical record**, and ' +
@@ -212,15 +221,17 @@ const SECTIONS = [
     key: 'decisions',
     dir: 'decisions',
     label: 'Key Decisions',
-    // v1 source: completed goal milestones. PortOS has no first-class life
-    // "decisions" store (decisionLog.js is CoS task scheduling), so the manifest
-    // documents this provenance. Tracked for a richer source in a follow-up.
-    present: (d) => collectMilestones(d.goals).length > 0,
-    counts: (d) => ({ milestones: collectMilestones(d.goals).length }),
+    // Derived (never a first-class entity) from three existing signals:
+    // completed goals, completed goal milestones, and decision-tagged brain
+    // entries. PortOS has no dedicated life-decisions store (decisionLog.js is
+    // CoS task scheduling), and an ADR records why we keep deriving rather than
+    // add one (docs/decisions/2026-06-19-legacy-export-decisions-source.md).
+    present: (d) => collectDecisions(d).length > 0,
+    counts: (d) => ({ decisions: collectDecisions(d).length }),
     files: (d) => [
-      { name: 'decisions/key-decisions.md', data: buildDecisionsMd(d.goals) },
+      { name: 'decisions/key-decisions.md', data: buildDecisionsMd(d) },
     ],
-    source: 'Derived from completed goal milestones (PortOS has no dedicated life-decisions store in v1).',
+    source: 'Derived from completed goals, completed goal milestones, and decision-tagged brain entries (PortOS has no dedicated life-decisions store; see ADR 2026-06-19-legacy-export-decisions-source).',
   },
   {
     key: 'health',
@@ -342,23 +353,68 @@ function buildGoalsMd(goals) {
   return out.join('\n\n');
 }
 
-function collectMilestones(goals) {
-  const out = [];
-  for (const g of goals) {
-    for (const m of (Array.isArray(g.milestones) ? g.milestones : [])) {
-      if (m.completedAt) out.push({ goal: g.title, ...m });
-    }
-  }
-  return out;
+// Tokens that mark a brain entry (idea / journal / project) as a deliberate
+// life decision — matched case-insensitively against tags and the title.
+const DECISION_TOKENS = ['decision', 'decided', 'choice', 'chose', 'pivot'];
+
+function isDecisionEntry(record) {
+  const tags = Array.isArray(record?.tags) ? record.tags : [];
+  if (tags.some(t => DECISION_TOKENS.includes(String(t).toLowerCase()))) return true;
+  const title = String(record?.title || record?.name || record?.label || '').toLowerCase();
+  return DECISION_TOKENS.some(tok => title.includes(tok));
 }
 
-function buildDecisionsMd(goals) {
-  const milestones = collectMilestones(goals);
-  const out = [mdHeader('Key Decisions', 'Derived from completed goal milestones')];
-  out.push('> *Source note:* PortOS has no dedicated life-decisions store in v1, so this section is derived from completed milestones across goals.');
-  for (const m of milestones) {
-    const when = m.completedAt ? ` _(completed ${String(m.completedAt).slice(0, 10)})_` : '';
-    out.push(`- **${redactSecrets(String(m.goal || 'Goal'))}** — ${redactSecrets(String(m.title || m.description || ''))}${when}`);
+// Gather the decision signals into a single, dated, deduped list. Each item is
+// `{ label, detail, date }`. Derivation, not a stored entity — see the ADR.
+function collectDecisions(d) {
+  const out = [];
+  const goals = Array.isArray(d?.goals) ? d.goals : [];
+  for (const g of goals) {
+    if (g.status === 'completed') {
+      out.push({ label: g.title || 'Goal', detail: g.description || '', date: g.completedAt || g.updatedAt || '' });
+    }
+    for (const m of (Array.isArray(g.milestones) ? g.milestones : [])) {
+      if (m.completedAt) {
+        out.push({ label: g.title || 'Goal', detail: m.title || m.description || '', date: m.completedAt });
+      }
+    }
+  }
+  const brain = d?.brain || {};
+  for (const type of ['ideas', 'journals', 'projects']) {
+    for (const r of (Array.isArray(brain[type]) ? brain[type] : [])) {
+      if (!isDecisionEntry(r)) continue;
+      out.push({
+        label: r.title || r.name || r.label || 'Note',
+        detail: r.content || r.body || r.text || r.notes || r.description || '',
+        date: r.updatedAt || r.createdAt || '',
+      });
+    }
+  }
+  // Dedup on label+detail (the same milestone could be reachable twice), then
+  // sort newest-first with undated items last.
+  const seen = new Set();
+  const deduped = out.filter(item => {
+    const key = `${item.label} ${item.detail}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  deduped.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+  return deduped;
+}
+
+function buildDecisionsMd(d) {
+  const decisions = collectDecisions(d);
+  const out = [mdHeader('Key Decisions', 'Derived from completed goals, milestones, and decision-tagged notes')];
+  out.push('> *Source note:* PortOS has no dedicated life-decisions store, so this section is **derived** — from goals carried to completion, completed milestones across goals, and Brain entries you tagged or titled as a decision. Tag a note `decision` to surface it here.');
+  for (const item of decisions) {
+    const when = item.date ? ` _(${String(item.date).slice(0, 10)})_` : '';
+    // The decisions section is a digest — truncate a long brain-entry body to a
+    // single-line summary (the full text already lives in the Brain section).
+    // Redact BEFORE truncating: clipping first could cut a token-shaped secret
+    // below redactSecrets' min-length and leak a partial key (e.g. `ghp_0123…`).
+    const detail = item.detail ? ` — ${truncateOneLine(redactSecrets(String(item.detail)), 280)}` : '';
+    out.push(`- **${redactSecrets(String(item.label || 'Decision'))}**${detail}${when}`);
   }
   return out.join('\n\n');
 }
@@ -375,6 +431,13 @@ function buildHealthMd(health) {
   }
   out.push(lines.length ? lines.join('\n') : '_No health metrics available._');
   return out.join('\n\n');
+}
+
+// Collapse whitespace/newlines and clip to `max` chars with an ellipsis — used
+// to keep the derived decisions digest to one line per item. Pure.
+function truncateOneLine(text, max) {
+  const flat = String(text || '').replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
 }
 
 function titleize(s) {
@@ -658,7 +721,11 @@ export async function buildLegacyZip({ sections = null, io = null, includePdf = 
   const manifest = buildManifest(contentFiles, { sections: sectionMeta, portosVersion, generatedAt, pdfIncluded: includePdf });
   const manifestFile = { name: 'manifest.json', data: Buffer.from(jsonFile(manifest), 'utf-8') };
 
-  const buffer = createZip([...contentFiles, manifestFile]);
+  // Deflate the bundle (per-entry, kept only where it shrinks the file) — the
+  // identity bundle is overwhelmingly text, so this is a large win for free and
+  // directly answers issue #901 open Q5. Manifest hashes are of the original
+  // (uncompressed) bytes, so they're unchanged by compression.
+  const buffer = createZip([...contentFiles, manifestFile], { compress: true });
   console.log(`📦 Legacy export: ${manifest.fileCount} files${includePdf ? ' (+PDF)' : ''}, ${(buffer.length / 1024).toFixed(1)} KB`);
   emit(io, 'legacy-export:completed', { fileCount: manifest.fileCount, bytes: buffer.length });
   return { buffer, manifest };
@@ -672,7 +739,41 @@ export async function previewLegacyExport() {
   const data = await gatherLegacyData();
   const { files, sections } = buildBundleFiles(data, { sections: null });
   const estimatedBytes = files.reduce((sum, f) => sum + f.data.length, 0);
-  return { sections, fileCount: files.length + 2 /* README + manifest */, estimatedBytes };
+
+  // Soft size guardrail: warn (don't truncate) when the uncompressed estimate is
+  // large, and point at the biggest section so the user knows what's driving it.
+  let sizeWarning = null;
+  if (estimatedBytes > SIZE_WARNING_BYTES) {
+    const bySection = sectionByteEstimates(files);
+    const largest = Object.entries(bySection).sort((a, b) => b[1] - a[1])[0];
+    sizeWarning = {
+      thresholdBytes: SIZE_WARNING_BYTES,
+      estimatedBytes,
+      largestSection: largest ? largest[0] : null,
+    };
+  }
+
+  return {
+    sections,
+    fileCount: files.length + 2 /* README + manifest */,
+    estimatedBytes,
+    sizeWarning,
+  };
+}
+
+// Sum content bytes per section so the preview can name what's driving a large
+// bundle. A `data/<section>.json` mirror is attributed to its section (not a
+// generic "data" bucket); everything else uses its first path segment. Pure.
+function sectionByteEstimates(files) {
+  const out = {};
+  for (const f of files) {
+    let section;
+    const dataMirror = f.name.match(/^data\/([^/]+)\.json$/);
+    if (dataMirror) section = dataMirror[1];
+    else section = f.name.includes('/') ? f.name.slice(0, f.name.indexOf('/')) : f.name;
+    out[section] = (out[section] || 0) + f.data.length;
+  }
+  return out;
 }
 
 function emit(io, event, payload) {

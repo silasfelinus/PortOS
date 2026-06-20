@@ -33,6 +33,8 @@ import {
   characterVoiceProfiles,
   plotlineCoverageSummary,
   scenePovSummary,
+  declaredThemesSummary,
+  canonRosterNamesSummary,
 } from './checkRegistry.js';
 
 const NAMING = 'naming.dissimilar-names';
@@ -45,6 +47,8 @@ const SENSORY_BALANCE = 'sensory.balance';
 const WHITE_ROOM = 'scene.white-room';
 const PLOT_STRUCTURE = 'plot.structure-momentum';
 const HEAD_HOPPING = 'pov.head-hopping';
+const THEME_COHERENCE = 'theme.coherence';
+const UNMODELED_NAMES = 'roster.unmodeled-names';
 
 // A minimal valid stored custom-check definition.
 const customDef = (over = {}) => ({
@@ -805,6 +809,291 @@ describe('plotlineCoverageSummary (#1310)', () => {
     expect(out).toContain('- x (other): 1 scene, issue 3');
     // The null and id-less rows are dropped.
     expect(out.split('\n').filter((l) => l.startsWith('- '))).toHaveLength(1);
+  });
+});
+
+describe('theme.coherence — LLM check (#1317)', () => {
+  const wholeCtx = (overrides = {}) => ({
+    manuscript: '# Issue 1\n\nShe chose loyalty, and it cost her everything.',
+    config: { maxFindings: 12 },
+    severityDefault: 'medium',
+    series: { arc: { themes: ['the cost of loyalty', 'forgiveness'] } },
+    reverseOutline: [{ sequence: 0, issueNumber: 1, heading: 'Opening', setting: 'a war room' }],
+    planManuscriptChunks: async () => ['# Issue 1\n\nShe chose loyalty.'],
+    callStagedLLM: async () => ({ content: { findings: [] } }),
+    ...overrides,
+  });
+
+  it('is registered as a series-scoped LLM check reading manuscript + arc themes + outline', () => {
+    const check = getCheck(THEME_COHERENCE);
+    expect(check.kind).toBe('llm');
+    expect(check.scope).toBe('series');
+    expect(check.category).toBe('theme');
+    expect(check.sources).toEqual(['manuscript', 'series.arc.themes', 'reverseOutline']);
+    expect(check.needsManuscript).toBe(true);
+  });
+
+  it('only runs when there is drafted prose to scan', () => {
+    const check = getCheck(THEME_COHERENCE);
+    expect(check.gate({ manuscript: '' })).toBe(false);
+    expect(check.gate({ manuscript: '# Issue 1\n\nprose' })).toBeTruthy();
+  });
+
+  it('passes the manuscript, declared themes, and scene map to the model and forces the theme category', async () => {
+    let seenVars = null;
+    const ctx = wholeCtx({
+      planManuscriptChunks: async (_stage, opts) => {
+        // Declared themes + scene map both ride as fixed overhead.
+        expect(opts.overheadTokens).toBeGreaterThan(0);
+        return ['# Issue 1\n\nForgiveness is never mentioned again.'];
+      },
+      callStagedLLM: async (_stage, vars) => {
+        seenVars = vars;
+        return { content: { findings: [{ severity: 'high', issueNumber: 1, location: 'Dropped theme — "forgiveness"', problem: 'Set up then abandoned' }] } };
+      },
+    });
+    const findings = await getCheck(THEME_COHERENCE).run(ctx);
+    expect(seenVars.manuscript).toBe('# Issue 1\n\nForgiveness is never mentioned again.');
+    expect(seenVars.declaredThemes).toContain('the cost of loyalty');
+    expect(seenVars.declaredThemes).toContain('forgiveness');
+    expect(seenVars.sceneMap).toContain('Issue 1: Opening');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].category).toBe('theme');
+    expect(findings[0].location).toBe('Dropped theme — "forgiveness"');
+  });
+
+  it('passes empty context vars when the series has no themes or outline', async () => {
+    let seenVars = null;
+    const ctx = wholeCtx({
+      series: {},
+      reverseOutline: undefined,
+      callStagedLLM: async (_stage, vars) => { seenVars = vars; return { content: { findings: [] } }; },
+    });
+    await getCheck(THEME_COHERENCE).run(ctx);
+    expect(seenVars.declaredThemes).toBe('');
+    expect(seenVars.sceneMap).toBe('');
+  });
+
+  it('marks a single-chunk run as the final part so whole-arc judgments are enabled', async () => {
+    let seenVars = null;
+    const ctx = wholeCtx({
+      callStagedLLM: async (_stage, vars) => { seenVars = vars; return { content: { findings: [] } }; },
+    });
+    await getCheck(THEME_COHERENCE).run(ctx);
+    expect(seenVars.finalPart).toBe('true');
+  });
+
+  it('flags only the LAST part as final across a chunked manuscript', async () => {
+    const finals = [];
+    const ctx = wholeCtx({
+      planManuscriptChunks: async () => ['# Issue 1\n\np1', '# Issue 2\n\np2', '# Issue 3\n\np3'],
+      callStagedLLM: async (_stage, vars) => { finals.push(vars.finalPart); return { content: { findings: [] } }; },
+    });
+    await getCheck(THEME_COHERENCE).run(ctx);
+    expect(finals).toEqual(['', '', 'true']);
+  });
+});
+
+describe('declaredThemesSummary (#1317)', () => {
+  it('returns an empty string when there are no themes', () => {
+    expect(declaredThemesSummary(null)).toBe('');
+    expect(declaredThemesSummary(undefined)).toBe('');
+    expect(declaredThemesSummary([])).toBe('');
+    expect(declaredThemesSummary(['', '   '])).toBe('');
+  });
+
+  it('renders one bullet per theme under a header', () => {
+    const out = declaredThemesSummary(['the cost of loyalty', 'forgiveness']);
+    expect(out).toContain('Declared themes (authored on the story arc):');
+    expect(out).toContain('- the cost of loyalty');
+    expect(out).toContain('- forgiveness');
+  });
+
+  it('is type-guarded against hand-edited / older-peer rows and trims whitespace', () => {
+    const out = declaredThemesSummary([42, null, '  identity  ', { x: 1 }]);
+    expect(out.split('\n').filter((l) => l.startsWith('- '))).toEqual(['- identity']);
+  });
+});
+
+describe('roster.unmodeled-names — LLM check (#1412)', () => {
+  // The deterministic recurrence pass reads ctx.sections (one per issue), so a
+  // surfaced name's appearances are counted across the WHOLE manuscript — not just
+  // the chunk the model saw. `llmFinds` stubs the LLM to surface the given names.
+  const wholeCtx = (overrides = {}) => ({
+    manuscript: '# Issue 1\n\nMarguerite drew her sword as the bells of Veridia rang.',
+    config: { maxFindings: 12 },
+    severityDefault: 'low',
+    canon: { characters: [{ name: 'Robert', aliases: ['Bob'] }] },
+    sections: [{ number: 1, content: 'Marguerite drew her sword as the bells of Veridia rang.' }],
+    planManuscriptChunks: async () => ['# Issue 1\n\nMarguerite drew her sword.'],
+    callStagedLLM: async () => ({ content: { findings: [] } }),
+    ...overrides,
+  });
+  const llmFinds = (...names) => async () => ({
+    content: { findings: names.map((n) => ({ severity: 'low', issueNumber: 1, location: `Unmodeled character — "${n}"`, problem: `${n} is not in canon` })) },
+  });
+
+  it('is registered as a series-scoped LLM casting check reading manuscript + canon', () => {
+    const check = getCheck(UNMODELED_NAMES);
+    expect(check.kind).toBe('llm');
+    expect(check.scope).toBe('series');
+    expect(check.category).toBe('casting');
+    expect(check.sources).toEqual(['manuscript', 'canon']);
+    expect(check.needsManuscript).toBe(true);
+  });
+
+  it('runs whenever there is prose — even with an EMPTY canon (every name is unmodeled)', () => {
+    const check = getCheck(UNMODELED_NAMES);
+    expect(check.gate({ manuscript: '' })).toBe(false);
+    // Unlike roster.economy, it does NOT require a populated canon.
+    expect(check.gate({ manuscript: '# Issue 1\n\nprose', canon: { characters: [] } })).toBeTruthy();
+    expect(check.gate({ manuscript: '# Issue 1\n\nprose' })).toBeTruthy();
+  });
+
+  it('passes the manuscript + known-character roster to the model and forces the casting category', async () => {
+    let seenVars = null;
+    const ctx = wholeCtx({
+      planManuscriptChunks: async (_stage, opts) => {
+        // The known-character roster rides as fixed overhead.
+        expect(opts.overheadTokens).toBeGreaterThan(0);
+        return ['# Issue 1\n\nMarguerite drew her sword.'];
+      },
+      callStagedLLM: async (_stage, vars) => {
+        seenVars = vars;
+        return { content: { findings: [{ severity: 'medium', issueNumber: 1, location: 'Unmodeled character — "Marguerite"', problem: 'Named but not in canon' }] } };
+      },
+    });
+    const findings = await getCheck(UNMODELED_NAMES).run(ctx);
+    expect(seenVars.manuscript).toBe('# Issue 1\n\nMarguerite drew her sword.');
+    expect(seenVars.knownCharacters).toContain('Robert');
+    expect(seenVars.knownCharacters).toContain('Bob');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].category).toBe('casting');
+  });
+
+  it('passes an empty roster var when the canon has no characters', async () => {
+    let seenVars = null;
+    const ctx = wholeCtx({
+      canon: { characters: [] },
+      callStagedLLM: async (_stage, vars) => { seenVars = vars; return { content: { findings: [] } }; },
+    });
+    await getCheck(UNMODELED_NAMES).run(ctx);
+    expect(seenVars.knownCharacters).toBe('');
+  });
+
+  it('relabels a one-appearance surfaced name as a low-severity throwaway', async () => {
+    const ctx = wholeCtx({
+      sections: [{ number: 1, content: 'Old Henrik nodded once and was never seen again.' }],
+      callStagedLLM: llmFinds('Old Henrik'),
+    });
+    const findings = await getCheck(UNMODELED_NAMES).run(ctx);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].location).toBe('Throwaway name — "Old Henrik" (1 appearance)');
+    expect(findings[0].severity).toBe('low');
+    // problem/suggestion are authored deterministically (not the LLM's free text),
+    // so the frequency narrative can never contradict the label.
+    expect(findings[0].problem).toContain('only one issue');
+    expect(findings[0].suggestion).toContain('recast them as an unnamed description');
+  });
+
+  it('counts appearances across ALL sections (not just the seen chunk) and labels a recurring name medium', async () => {
+    // Marguerite appears in issues 1 and 3 — the deterministic pass must see both,
+    // so a chunk that only showed issue 3 can't mislabel her a one-appearance throwaway.
+    const ctx = wholeCtx({
+      sections: [
+        { number: 1, content: 'Marguerite drew her sword.' },
+        { number: 2, content: 'A quiet interlude with no new names.' },
+        { number: 3, content: 'Marguerite returned to the war room.' },
+      ],
+      callStagedLLM: llmFinds('Marguerite'),
+    });
+    const findings = await getCheck(UNMODELED_NAMES).run(ctx);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].location).toBe('Unmodeled character — "Marguerite" (2 issues)');
+    expect(findings[0].severity).toBe('medium');
+    expect(findings[0].problem).toContain('across 2 issues');
+    expect(findings[0].suggestion).toContain('add "Marguerite" to canon');
+  });
+
+  it('authors problem/suggestion deterministically — a contradicting LLM frequency claim cannot survive', async () => {
+    // The model (wrongly) calls a recurring name a one-off in its free text. Because
+    // the post-pass OWNS problem/suggestion (it doesn't append to the model's text),
+    // the recurring verdict + count win and the false "appears only once" never shows.
+    const ctx = wholeCtx({
+      sections: [
+        { number: 1, content: 'Marguerite drew her sword.' },
+        { number: 2, content: 'Marguerite returned to the war room.' },
+      ],
+      callStagedLLM: async () => ({ content: { findings: [{
+        severity: 'low', issueNumber: 1, location: 'Unmodeled character — "Marguerite"',
+        problem: 'Marguerite appears only once and should be cut.',
+        suggestion: 'Recast Marguerite as an unnamed description.',
+      }] } }),
+    });
+    const findings = await getCheck(UNMODELED_NAMES).run(ctx);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].location).toBe('Unmodeled character — "Marguerite" (2 issues)');
+    expect(findings[0].problem).not.toContain('only once');
+    expect(findings[0].problem).toContain('across 2 issues');
+    expect(findings[0].suggestion).not.toContain('unnamed description');
+  });
+
+  it('collapses the same surfaced name reported from two different chunks into one finding', async () => {
+    const ctx = wholeCtx({
+      sections: [
+        { number: 1, content: 'Marguerite drew her sword.' },
+        { number: 2, content: 'Marguerite sheathed it again.' },
+      ],
+      // Two chunks each surface Marguerite — the dedupe keeps one.
+      callStagedLLM: llmFinds('Marguerite', 'Marguerite'),
+    });
+    const findings = await getCheck(UNMODELED_NAMES).run(ctx);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].location).toBe('Unmodeled character — "Marguerite" (2 issues)');
+  });
+
+  it('drops malformed findings — no quoted name, or a quoted name absent from the prose', async () => {
+    const ctx = wholeCtx({
+      sections: [{ number: 1, content: 'Nothing matching here.' }],
+      callStagedLLM: async () => ({ content: { findings: [
+        // Quote-less ⇒ can't verify the name against the prose, and we won't pass the
+        // model's un-vetted text through ⇒ dropped.
+        { severity: 'low', issueNumber: 1, location: 'General note (no quoted name)', problem: 'malformed, appears only once' },
+        // Quoted but matches 0 sections (garbled token) ⇒ dropped.
+        { severity: 'low', issueNumber: 1, location: 'Unmodeled character — "Ghostname"', problem: 'not actually in prose' },
+      ] } }),
+    });
+    const findings = await getCheck(UNMODELED_NAMES).run(ctx);
+    expect(findings).toEqual([]);
+  });
+});
+
+describe('canonRosterNamesSummary (#1412)', () => {
+  it('returns an empty string when there are no usable canon names', () => {
+    expect(canonRosterNamesSummary(null)).toBe('');
+    expect(canonRosterNamesSummary(undefined)).toBe('');
+    expect(canonRosterNamesSummary({ characters: [] })).toBe('');
+    expect(canonRosterNamesSummary({ characters: [{ name: '   ' }, { aliases: ['x'] }] })).toBe('');
+  });
+
+  it('renders one bullet per character with aliases appended', () => {
+    const out = canonRosterNamesSummary({ characters: [
+      { name: 'Robert', aliases: ['Bob', 'Bobby'] },
+      { name: 'Alice' },
+    ] });
+    expect(out).toContain('do NOT flag these');
+    expect(out).toContain('- Robert (also: Bob, Bobby)');
+    expect(out).toContain('- Alice');
+  });
+
+  it('is type-guarded against hand-edited / older-peer rows and de-dups name vs alias', () => {
+    const out = canonRosterNamesSummary({ characters: [
+      42,
+      null,
+      { name: '  Henrik  ', aliases: ['Henrik', '  ', 7] },
+    ] });
+    // Name trimmed; the alias equal to the name is de-duped, blanks/non-strings dropped.
+    expect(out.split('\n').filter((l) => l.startsWith('- '))).toEqual(['- Henrik']);
   });
 });
 
@@ -2982,9 +3271,11 @@ describe('dialogue-craft bundle (#1307)', () => {
 describe('comic-pacing bundle (#1314)', () => {
   const PANEL_RHYTHM = 'comic.panel-rhythm';
   const PAGE_TURN = 'comic.page-turn-beats';
-  // A parsed comic page is `{ panels: [...] }`; build pages by panel count.
+  // The comic-pacing checks read each issue's pages off ctx.issues via the shared
+  // `comicLetteringIssues` projection — which prefers an edited `comicPages.pages`
+  // split (already panelized) over the generated script. Build pages by panel count.
   const page = (n) => ({ panels: Array.from({ length: n }, (_, i) => ({ description: `p${i}`, caption: '', dialogue: [], sfx: '' })) });
-  const issue = (number, counts) => ({ issueNumber: number, pages: counts.map(page) });
+  const issue = (number, counts) => ({ number, stages: { comicPages: { pages: counts.map(page) } } });
 
   describe('comic.panel-rhythm — deterministic', () => {
     it('is registered as an issue-scoped deterministic pacing check over comicScript', () => {
@@ -2995,18 +3286,18 @@ describe('comic-pacing bundle (#1314)', () => {
       expect(check.sources).toEqual(['comicScript']);
     });
 
-    it('only runs when at least one issue parsed to comic pages', () => {
+    it('only runs when at least one issue has comic content', () => {
       const check = getCheck(PANEL_RHYTHM);
-      expect(check.gate({ comicScripts: [] })).toBe(false);
-      expect(check.gate({ comicScripts: undefined })).toBe(false);
-      expect(check.gate({ comicScripts: [issue(1, [3])] })).toBe(true);
+      expect(check.gate({ issues: [] })).toBeFalsy();
+      expect(check.gate({ issues: undefined })).toBeFalsy();
+      expect(check.gate({ issues: [issue(1, [3])] })).toBe(true);
     });
 
     it('flags splash overuse, overcrowding, and grid monotony, attributing each to its issue', () => {
       const ctx = {
         config: {},
         severityDefault: 'low',
-        comicScripts: [issue(3, [1, 1, 3, 12, 4, 4, 4, 4])],
+        issues: [issue(3, [1, 1, 3, 12, 4, 4, 4, 4])],
       };
       const findings = getCheck(PANEL_RHYTHM).run(ctx);
       expect(findings.length).toBeGreaterThan(0);
@@ -3022,7 +3313,7 @@ describe('comic-pacing bundle (#1314)', () => {
       const ctx = {
         config: { maxFindings: 1 },
         severityDefault: 'low',
-        comicScripts: [issue(1, [1, 1, 1]), issue(2, [12, 12])],
+        issues: [issue(1, [1, 1, 1]), issue(2, [12, 12])],
       };
       const findings = getCheck(PANEL_RHYTHM).run(ctx);
       expect(findings).toHaveLength(1);
@@ -3044,7 +3335,7 @@ describe('comic-pacing bundle (#1314)', () => {
         config: {},
         severityDefault: 'low',
         series: { arc: { readerMap: { beats: [{ kind: 'reveal', note: 'The mentor is the villain' }], cliffhangers: [] } } },
-        comicScripts: [issue(7, [1, 3, 2])],
+        issues: [issue(7, [1, 3, 2])],
         callStagedLLM: async (_stage, vars) => {
           seenVars.push(vars);
           return { content: { findings: [{ severity: 'medium', location: 'Page 2', problem: 'Reveal exposed early' }] } };
@@ -3064,7 +3355,7 @@ describe('comic-pacing bundle (#1314)', () => {
         config: {},
         severityDefault: 'low',
         series: {},
-        comicScripts: [issue(1, [2, 2])],
+        issues: [issue(1, [2, 2])],
         callStagedLLM: async (_stage, vars) => { seen = vars; return { content: { findings: [] } }; },
       };
       await getCheck(PAGE_TURN).run(ctx);
@@ -3077,12 +3368,266 @@ describe('comic-pacing bundle (#1314)', () => {
         config: { maxFindings: 1 },
         severityDefault: 'low',
         series: {},
-        comicScripts: [issue(1, [2, 2]), issue(2, [3, 3])],
+        issues: [issue(1, [2, 2]), issue(2, [3, 3])],
         callStagedLLM: async () => { calls += 1; return { content: { findings: [{ problem: 'x' }] } }; },
       };
       const findings = await getCheck(PAGE_TURN).run(ctx);
       expect(findings).toHaveLength(1);
       expect(calls).toBe(1);
     });
+  });
+});
+
+describe('comic.lettering-density — deterministic check (#1313)', () => {
+  const COMIC = 'comic.lettering-density';
+  // A canonical comic-script page with one over-stuffed balloon (60 words).
+  const stuffedScript = `## Page 1
+
+Panel 1
+**Description:** A crowded throne room.
+**Dialogue:**
+- KING: "${Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ')}"
+`;
+  const cleanScript = `## Page 1
+
+Panel 1
+**Description:** A quiet field.
+**Dialogue:**
+- ANYA: "We should go."
+`;
+  const issue = (number, script) => ({ number, stages: { comicScript: { output: script } } });
+  const ctxFor = (issues, config = {}) => ({ issues, config, severityDefault: 'low' });
+
+  it('is a deterministic, issue-scoped check reading the comicScript source', () => {
+    const check = getCheck(COMIC);
+    expect(check.kind).toBe('deterministic');
+    expect(check.scope).toBe('issue');
+    expect(check.category).toBe('lettering');
+    expect(check.sources).toEqual(['comicScript']);
+  });
+
+  it('gate is false with no comic scripts, true when one has content', () => {
+    const check = getCheck(COMIC);
+    expect(check.gate(ctxFor([]))).toBe(false);
+    expect(check.gate(ctxFor([issue(1, '')]))).toBe(false);
+    expect(check.gate(ctxFor([issue(1, stuffedScript)]))).toBe(true);
+  });
+
+  it('flags an over-stuffed balloon and stamps the issue number + location', () => {
+    const findings = getCheck(COMIC).run(ctxFor([issue(7, stuffedScript)]));
+    expect(findings.length).toBeGreaterThan(0);
+    const balloon = findings.find((f) => f.problem.includes('balloon'));
+    expect(balloon).toBeTruthy();
+    expect(balloon.category).toBe('lettering');
+    expect(balloon.issueNumber).toBe(7);
+    expect(balloon.location).toContain('Issue 7');
+    expect(balloon.location).toContain('Page 1');
+    expect(balloon.severity).toBe('high'); // 60/25 = 2.4×
+    expect(balloon.anchorQuote).toContain('word0');
+  });
+
+  it('returns no findings for a well-lettered script', () => {
+    expect(getCheck(COMIC).run(ctxFor([issue(1, cleanScript)]))).toEqual([]);
+  });
+
+  it('honors configured thresholds', () => {
+    // cleanScript's single 3-word balloon trips only when the limit drops below 3.
+    expect(getCheck(COMIC).run(ctxFor([issue(1, cleanScript)], { maxWordsPerBalloon: 2 })))
+      .not.toEqual([]);
+  });
+
+  it('skips issues without a comic script and scans in issue-number order', () => {
+    const findings = getCheck(COMIC).run(ctxFor([issue(2, stuffedScript), issue(1, ''), issue(3, stuffedScript)]));
+    const issueNums = [...new Set(findings.map((f) => f.issueNumber))];
+    expect(issueNums).toEqual([2, 3]);
+  });
+
+  // The edited comicPages split is the source of truth once a script is split —
+  // edits there never flow back to comicScript.output, so the check must read it.
+  const overflowBalloon = { dialogue: [{ character: 'KING', line: Array.from({ length: 60 }, (_, i) => `w${i}`).join(' ') }] };
+  const cleanBalloon = { dialogue: [{ character: 'ANYA', line: 'Short line.' }] };
+  const withPages = (number, script, panels) => ({
+    number,
+    stages: { comicScript: { output: script }, comicPages: { pages: [{ panels }] } },
+  });
+
+  it('reads the edited comicPages split when present (it wins over comicScript.output)', () => {
+    // The raw script is clean, but the EDITED page added an over-stuffed balloon —
+    // the check must flag it (reading comicPages), not pass on the stale script.
+    const findings = getCheck(COMIC).run(ctxFor([withPages(5, cleanScript, [overflowBalloon])]));
+    expect(findings.some((f) => f.problem.includes('balloon'))).toBe(true);
+    expect(findings[0].issueNumber).toBe(5);
+  });
+
+  it('does NOT flag when the edited pages are clean even if the stale script was stuffed', () => {
+    // The user edited the over-stuffed script down to a clean page — no finding.
+    expect(getCheck(COMIC).run(ctxFor([withPages(5, stuffedScript, [cleanBalloon])]))).toEqual([]);
+  });
+
+  it('gate is true when only an edited comicPages split exists (no script output)', () => {
+    const ctx = ctxFor([{ number: 5, stages: { comicPages: { pages: [{ panels: [overflowBalloon] }] } } }]);
+    expect(getCheck(COMIC).gate(ctx)).toBe(true);
+    expect(getCheck(COMIC).run(ctx).length).toBeGreaterThan(0);
+  });
+});
+
+describe('cast.representation-balance — deterministic check (#1312)', () => {
+  const REP = 'cast.representation-balance';
+  const sec = (number, content) => ({ number, content });
+  const runRep = (canon, { sections = [], reverseOutline = [], config = {} } = {}) =>
+    getCheck(REP).run({
+      canon,
+      sections,
+      // The runner injects the stitched corpus as ctx.manuscript; mirror it here.
+      manuscript: sections.map((s) => s.content || '').join('\n\n'),
+      reverseOutline,
+      config,
+      severityDefault: 'low',
+    });
+  const dialogue = (findings) => findings.find((f) => f.location === 'Series dialogue');
+  const bechdel = (findings) => findings.find((f) => /Bechdel/.test(f.problem));
+  const screenTime = (findings) => findings.find((f) => /strongly skewed cast/.test(f.problem));
+  // Config that silences the two OTHER signals so a test can isolate one.
+  const only = (over) => ({ maxDialogueShare: 1, maxGenderShare: 1, bechdelSignal: false, ...over });
+
+  it('declares the expected scope / kind / sources', () => {
+    const c = getCheck(REP);
+    expect(c.kind).toBe('deterministic');
+    expect(c.scope).toBe('series');
+    expect(c.category).toBe('casting');
+    expect(c.needsManuscript).toBe(true);
+    expect(c.sources).toEqual(expect.arrayContaining(['manuscript', 'canon', 'reverseOutline']));
+  });
+
+  it('flags a dominating speaker by dialogue share', () => {
+    const canon = { characters: [{ name: 'Aria', pronouns: 'she/her' }, { name: 'Bram', pronouns: 'he/him' }] };
+    // 4 Aria lines, 1 Bram line → Aria = 80% of 5 attributed lines.
+    const content = [
+      '"One," said Aria.',
+      '"Two," said Aria.',
+      '"Three," said Aria.',
+      '"Four," said Aria.',
+      '"Five," said Bram.',
+    ].join('\n');
+    const findings = runRep(canon, {
+      sections: [sec(1, content)],
+      config: only({ maxDialogueShare: 0.6, minDialogueLines: 5 }),
+    });
+    const f = dialogue(findings);
+    expect(f).toBeTruthy();
+    expect(f.category).toBe('casting');
+    expect(f.severity).toBe('medium'); // 80% → escalated above the low floor
+    expect(f.problem).toMatch(/"Aria" speaks about 80%/);
+  });
+
+  it('skips the dialogue-share check below the minimum line floor', () => {
+    const canon = { characters: [{ name: 'Aria' }, { name: 'Bram' }] };
+    const content = '"Hi," said Aria.\n"Hey," said Bram.';
+    const findings = runRep(canon, {
+      sections: [sec(1, content)],
+      config: only({ maxDialogueShare: 0.4, minDialogueLines: 12 }),
+    });
+    expect(dialogue(findings)).toBeUndefined();
+  });
+
+  it('flags a missing Bechdel co-presence signal when no scene pairs non-male characters', () => {
+    const canon = {
+      characters: [
+        { name: 'Aria', pronouns: 'she/her' },
+        { name: 'Mara', pronouns: 'she/her' },
+        { name: 'Bram', pronouns: 'he/him' },
+      ],
+    };
+    // Aria only ever shares the page with Bram; Aria + Mara never co-present.
+    const reverseOutline = [
+      { heading: 'S1', charactersPresent: ['Aria', 'Bram'] },
+      { heading: 'S2', charactersPresent: ['Mara', 'Bram'] },
+    ];
+    const findings = runRep(canon, { reverseOutline, config: only({ bechdelSignal: true }) });
+    expect(bechdel(findings)).toBeTruthy();
+  });
+
+  it('passes the Bechdel signal when two non-male characters share a scene', () => {
+    const canon = {
+      characters: [
+        { name: 'Aria', pronouns: 'she/her' },
+        { name: 'Mara', pronouns: 'they/them' },
+      ],
+    };
+    const reverseOutline = [{ heading: 'S1', charactersPresent: ['Aria', 'Mara'] }];
+    const findings = runRep(canon, { reverseOutline, config: only({ bechdelSignal: true }) });
+    expect(bechdel(findings)).toBeUndefined();
+  });
+
+  it('stays silent on Bechdel when no scene presence is recorded', () => {
+    const canon = { characters: [{ name: 'Aria', pronouns: 'she/her' }, { name: 'Mara', pronouns: 'she/her' }] };
+    const findings = runRep(canon, { reverseOutline: [], config: only({ bechdelSignal: true }) });
+    expect(bechdel(findings)).toBeUndefined();
+  });
+
+  it('flags a strongly gender-skewed appearing cast', () => {
+    const canon = {
+      characters: [
+        { name: 'Al', pronouns: 'he/him' },
+        { name: 'Bo', pronouns: 'he/him' },
+        { name: 'Cy', pronouns: 'he/him' },
+        { name: 'Di', pronouns: 'he/him' },
+        { name: 'Eve', pronouns: 'she/her' },
+      ],
+    };
+    // All five appear; 4/5 = 80% male → over an 80%? No, must EXCEED. Use 0.7.
+    const content = 'Al, Bo, Cy, Di, and Eve all gathered at dawn.';
+    const findings = runRep(canon, {
+      sections: [sec(1, content)],
+      config: only({ maxGenderShare: 0.7 }),
+    });
+    const f = screenTime(findings);
+    expect(f).toBeTruthy();
+    expect(f.problem).toMatch(/80% are male/);
+  });
+
+  it('leaves unknown/ambiguous-pronoun characters out of the gender signals', () => {
+    const canon = {
+      characters: [
+        { name: 'Al', pronouns: 'he/him' },
+        { name: 'Bo' }, // no pronouns → unknown
+        { name: 'Cy', pronouns: 'she/he' }, // ambiguous → unknown
+      ],
+    };
+    const content = 'Al, Bo, and Cy gathered.';
+    // Only Al is gender-known → known < 2 → no screen-time finding.
+    const findings = runRep(canon, { sections: [sec(1, content)], config: only({ maxGenderShare: 0.5 }) });
+    expect(screenTime(findings)).toBeUndefined();
+  });
+
+  it('treats a primary+secondary set (she/they) as the primary gender, not ambiguous', () => {
+    // inferGender resolves "she/they" to female (a definite identity with a
+    // secondary set), unlike "she/he" which is genuinely ambiguous → unknown.
+    // Pin that contract via the screen-time signal: two she/they characters
+    // count as 2 known-female, so an all-female roster trips the skew.
+    const canon = {
+      characters: [
+        { name: 'Aria', pronouns: 'she/they' },
+        { name: 'Mara', pronouns: 'she/her' },
+      ],
+    };
+    const findings = runRep(canon, {
+      sections: [sec(1, 'Aria and Mara spoke at dawn.')],
+      config: only({ maxGenderShare: 0.7 }),
+    });
+    const f = screenTime(findings);
+    expect(f).toBeTruthy();
+    expect(f.problem).toMatch(/100% are female/);
+  });
+
+  it('gate requires at least one named canon character', () => {
+    const c = getCheck(REP);
+    expect(c.gate({ canon: { characters: [] } })).toBeFalsy();
+    expect(c.gate({ canon: { characters: [{ name: 'Aria' }] } })).toBe(true);
+  });
+
+  it('tolerates empty canon / sections / outline without throwing', () => {
+    expect(() => runRep({ characters: [] })).not.toThrow();
+    expect(runRep({ characters: [{}, { name: '' }] }, { sections: [sec(1, 'x')] })).toEqual([]);
   });
 });
