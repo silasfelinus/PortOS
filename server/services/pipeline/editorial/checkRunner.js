@@ -28,6 +28,8 @@ import { collectManuscriptSections, sectionsCorpus, manuscriptSectionHeader } fr
 import { getReverseOutline } from '../reverseOutline.js';
 import { getSeriesEditorial } from '../editorialAnalysis.js';
 import { seedReviewFromFindings, getReview } from '../manuscriptReview.js';
+import { recordTrendSnapshot } from '../editorialScore.js';
+import { readReadinessGate } from '../../../lib/editorial/index.js';
 import { canonicalStringify } from '../../../lib/objects.js';
 
 // Source-content fingerprinting for finding staleness (#1345, #1387). Each finding
@@ -415,8 +417,21 @@ export async function runEditorialChecks(seriesId, options = {}) {
   // dismissed findings suppressed per-check. Skip entirely on cancellation — a
   // canceled run emits a `canceled` terminal event and must not mutate the
   // review with partial findings collected before the abort.
-  if (findings.length && !canceled) {
-    await seedReviewFromFindings(seriesId, findings, { runId, mode: 'merge' });
+  if (!canceled) {
+    // Seed only when there are findings (merge dedups); but record a revision-trend
+    // snapshot for EVERY non-canceled run (#1316) — a run is a revision boundary,
+    // and a CLEAN run (0 new findings, or fixes that closed prior ones) is exactly
+    // the improving point the trend should capture. When findings were seeded we
+    // pass the just-merged comments (no re-read); otherwise recordTrendSnapshot
+    // reads the current review itself. Best-effort — a ledger write must never
+    // fail the check run (it's telemetry).
+    const review = findings.length
+      ? await seedReviewFromFindings(seriesId, findings, { runId, mode: 'merge' })
+      : null;
+    const gate = readReadinessGate(settings) || undefined;
+    await recordTrendSnapshot(seriesId, { runId, gate, comments: review?.comments }).catch((err) => {
+      console.error(`⚠️ editorial trend snapshot failed — series=${String(seriesId).slice(0, 12)} ${err.message}`);
+    });
   }
   return { runId, findings, perCheck, canceled };
 }
