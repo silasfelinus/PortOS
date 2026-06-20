@@ -35,11 +35,15 @@ problems are localized).
 `roster.unmodeled-names` also shows the LLM/deterministic split that keeps a
 chunked judgment correct: the model does ONLY what it alone can — surface a proper
 noun used as a character name and confirm it's a person (not a place/org/brand/
-honorific) — and a deterministic post-pass in `run()` counts each surfaced name's
-distinct-issue appearances across the WHOLE `ctx.sections` corpus to apply the
-one-appearance-throwaway vs recurring label + final severity. Recurrence is a
-whole-corpus count the model can't make per-chunk (a name in issues 1 and 12 looks
-like a one-off to whichever chunk sees it), so it never asks the model for it.
+honorific). A deterministic post-pass in `run()` then counts each surfaced name's
+distinct-issue appearances across the WHOLE `ctx.sections` corpus and **authors the
+final `location` / `problem` / `suggestion` / severity itself** from that count
+(keeping only the model's `anchorQuote` + `issueNumber`). It does NOT append to the
+model's free text — owning the frequency narrative outright means a stray model
+claim ("appears only once") can't contradict the deterministic verdict. Recurrence
+is a whole-corpus count the model can't make per-chunk (a name in issues 1 and 12
+looks like a one-off to whichever chunk sees it), so it never trusts the model for
+it; a surfaced name the matcher can't find in any section is dropped, not reported.
 
 The findings digest carries prior *problems* forward but not clean prior *setup*
 — a payoff in a later chunk can be mis-flagged "missing setup" when the earlier

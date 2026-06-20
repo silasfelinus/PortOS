@@ -86,9 +86,9 @@ commentary:
     {
       "severity": "high|medium|low",
       "issueNumber": 3,
-      "location": "string — always 'Unmodeled character — \"Name\"' (e.g. 'Unmodeled character — \"Marguerite\"'); the deterministic post-pass relabels throwaway vs recurring",
-      "problem": "1–2 sentences naming the proper noun and why you classified it as a character (not a place/org/brand/honorific). Do NOT state how often it appears — a deterministic pass counts that across the whole manuscript and appends the recurrence sentence.",
-      "suggestion": "1 sentence: it is unmodeled, so the author should either add it to the story bible or leave it unnamed. Do NOT decide which based on frequency — the post-pass appends a frequency-specific recommendation.",
+      "location": "string — always 'Unmodeled character — \"Name\"' (e.g. 'Unmodeled character — \"Marguerite\"'); a deterministic post-pass rewrites the throwaway-vs-recurring label",
+      "problem": "1–2 sentences naming the proper noun and why you classified it as a character (not a place/org/brand/honorific). REQUIRED. A deterministic post-pass authors the final user-visible problem/suggestion (it owns the frequency narrative), so just justify the person classification here — don't worry about wording or how often the name appears.",
+      "suggestion": "1 short sentence (the post-pass replaces it) — e.g. 'add to the bible or leave unnamed'.",
       "anchorQuote": "short verbatim quote at the name's first use (≤ 200 chars)"
     }
   ]

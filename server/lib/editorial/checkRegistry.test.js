@@ -990,7 +990,8 @@ describe('roster.unmodeled-names — LLM check (#1412)', () => {
     expect(findings).toHaveLength(1);
     expect(findings[0].location).toBe('Throwaway name — "Old Henrik" (1 appearance)');
     expect(findings[0].severity).toBe('low');
-    // The frequency sentence is appended so the visible text matches the label.
+    // problem/suggestion are authored deterministically (not the LLM's free text),
+    // so the frequency narrative can never contradict the label.
     expect(findings[0].problem).toContain('only one issue');
     expect(findings[0].suggestion).toContain('recast them as an unnamed description');
   });
@@ -1010,8 +1011,31 @@ describe('roster.unmodeled-names — LLM check (#1412)', () => {
     expect(findings).toHaveLength(1);
     expect(findings[0].location).toBe('Unmodeled character — "Marguerite" (2 issues)');
     expect(findings[0].severity).toBe('medium');
-    expect(findings[0].problem).toContain('recur across 2 issues');
+    expect(findings[0].problem).toContain('across 2 issues');
     expect(findings[0].suggestion).toContain('add "Marguerite" to canon');
+  });
+
+  it('authors problem/suggestion deterministically — a contradicting LLM frequency claim cannot survive', async () => {
+    // The model (wrongly) calls a recurring name a one-off in its free text. Because
+    // the post-pass OWNS problem/suggestion (it doesn't append to the model's text),
+    // the recurring verdict + count win and the false "appears only once" never shows.
+    const ctx = wholeCtx({
+      sections: [
+        { number: 1, content: 'Marguerite drew her sword.' },
+        { number: 2, content: 'Marguerite returned to the war room.' },
+      ],
+      callStagedLLM: async () => ({ content: { findings: [{
+        severity: 'low', issueNumber: 1, location: 'Unmodeled character — "Marguerite"',
+        problem: 'Marguerite appears only once and should be cut.',
+        suggestion: 'Recast Marguerite as an unnamed description.',
+      }] } }),
+    });
+    const findings = await getCheck(UNMODELED_NAMES).run(ctx);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].location).toBe('Unmodeled character — "Marguerite" (2 issues)');
+    expect(findings[0].problem).not.toContain('only once');
+    expect(findings[0].problem).toContain('across 2 issues');
+    expect(findings[0].suggestion).not.toContain('unnamed description');
   });
 
   it('collapses the same surfaced name reported from two different chunks into one finding', async () => {
@@ -1028,7 +1052,7 @@ describe('roster.unmodeled-names — LLM check (#1412)', () => {
     expect(findings[0].location).toBe('Unmodeled character — "Marguerite" (2 issues)');
   });
 
-  it('leaves a finding untouched when its name cannot be parsed or is absent from the prose', async () => {
+  it('keeps a quote-less finding as-is but drops a quoted name absent from the prose', async () => {
     const ctx = wholeCtx({
       sections: [{ number: 1, content: 'Nothing matching here.' }],
       callStagedLLM: async () => ({ content: { findings: [
@@ -1037,11 +1061,9 @@ describe('roster.unmodeled-names — LLM check (#1412)', () => {
       ] } }),
     });
     const findings = await getCheck(UNMODELED_NAMES).run(ctx);
-    // Neither is rewritten: the first has no quoted name; the second matches 0 sections.
-    expect(findings.map((f) => f.location)).toEqual([
-      'General note (no quoted name)',
-      'Unmodeled character — "Ghostname"',
-    ]);
+    // The quote-less note is kept untouched (can't verify a name); the quoted
+    // "Ghostname" matches 0 sections, so it's dropped rather than reported.
+    expect(findings.map((f) => f.location)).toEqual(['General note (no quoted name)']);
   });
 });
 

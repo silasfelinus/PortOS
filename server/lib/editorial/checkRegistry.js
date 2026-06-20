@@ -1861,23 +1861,26 @@ export const EDITORIAL_CHECKS = [
         crossChunkDigest: true,
         buildVars: (manuscript) => ({ manuscript, knownCharacters }),
       });
-      // Deterministic whole-corpus recurrence pass. The model is told NOT to judge
-      // frequency (it can't, per-chunk); it just surfaces the name in `location`
-      // ("Unmodeled character — \"Marguerite\"") and explains the person-vs-non-person
-      // call in `problem`. Here we count the name's distinct-issue appearances across
-      // ALL sections (not just the chunk the LLM saw) so the throwaway/recurring
-      // verdict is correct regardless of chunking, rewrite the location label + final
-      // severity, AND append the frequency sentence to problem/suggestion so the
-      // user-visible text can't disagree with the label. Findings surfacing the same
-      // name from different chunks collapse to one. A name the matcher can't find in
-      // the prose (a stray/garbled LLM token) is left as the model classified it
-      // rather than fabricating a "0 appearances" throwaway.
+      // Deterministic whole-corpus recurrence pass. The model's job is the judgment
+      // it alone can make — is this surfaced proper noun a PERSON (vs a place/org/
+      // brand/honorific)? — expressed by whether it emits the finding at all and by
+      // the name it quotes in `location`. It is NOT trusted for frequency: that's a
+      // whole-corpus count it can't make per-chunk (a name in issues 1 and 12 looks
+      // like a one-off to whichever chunk sees it). So we OWN `problem`/`suggestion`
+      // here — composing them from the deterministic count rather than appending to
+      // (and risking contradiction with) the model's free text — and keep only the
+      // model's `anchorQuote` + `issueNumber` (facts it's authoritative on). We count
+      // the name's distinct-issue appearances across ALL sections, set the location
+      // label + severity, and collapse the same name surfaced from different chunks.
+      // A name the matcher can't find in the prose (a stray/garbled LLM token) is
+      // dropped rather than reported as a "0 appearances" phantom.
       const sections = Array.isArray(ctx.sections) ? ctx.sections : [];
       const seenNames = new Set();
       const out = [];
-      const append = (text, extra) => (text ? `${text} ${extra}` : extra);
       for (const f of findings) {
         const name = (String(f.location || '').match(/"([^"]+)"/) || [])[1];
+        // No quoted name to verify against the prose — keep the model's finding as-is
+        // rather than guessing (it may be a general roster note, not a single name).
         if (!name) { out.push(f); continue; }
         const key = normalizeName(name);
         if (key && seenNames.has(key)) continue; // same unmodeled name from another chunk
@@ -1887,21 +1890,25 @@ export const EDITORIAL_CHECKS = [
           ? new Set(sections.filter((s) => matcher.test(s.content || '')).map((s) => s.number))
           : new Set();
         const count = issues.size;
-        if (count === 0) { out.push(f); continue; }
+        // The model surfaced a name the matcher can't locate in any section (a garbled
+        // token, or a form the whole-token matcher won't match) — drop it rather than
+        // emit a finding the editor can't anchor.
+        if (count === 0) continue;
+        const base = { category: 'casting', anchorQuote: f.anchorQuote || '', issueNumber: f.issueNumber ?? null };
         out.push(count === 1
           ? {
-              ...f,
+              ...base,
               severity: 'low',
               location: `Throwaway name — "${name}" (1 appearance)`,
-              problem: append(f.problem, `It appears in only one issue — a named body the reader is told to remember but who never recurs and was never bibled.`),
-              suggestion: append(f.suggestion, `Add "${name}" to canon only if they are meant to recur; otherwise recast them as an unnamed description so the reader isn't asked to track a name that goes nowhere.`),
+              problem: `"${name}" is used as a character name but is not in the story bible, and appears in only one issue — a named body the reader is told to remember but who never recurs and was never bibled.`,
+              suggestion: `Add "${name}" to canon only if they are meant to recur; otherwise recast them as an unnamed description (e.g. "the bartender") so the reader isn't asked to track a name that goes nowhere.`,
             }
           : {
-              ...f,
+              ...base,
               severity: 'medium',
               location: `Unmodeled character — "${name}" (${count} issues)`,
-              problem: append(f.problem, `They recur across ${count} issues but are not in the story bible.`),
-              suggestion: append(f.suggestion, `A recurring character should be modeled — add "${name}" to canon.`),
+              problem: `"${name}" is used as a character name across ${count} issues but is not in the story bible.`,
+              suggestion: `A recurring character should be modeled — add "${name}" to canon.`,
             });
       }
       return out;
