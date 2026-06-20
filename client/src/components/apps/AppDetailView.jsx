@@ -48,6 +48,14 @@ export default function AppDetailView() {
     fetchApp();
   }, [fetchApp]);
 
+  // Close the edit drawer when navigating to a different app so its stale
+  // form state (initialized from the previous app) can't be saved against the
+  // newly loaded app id. Keyed on appId only — a same-app socket refresh must
+  // not interrupt an in-progress edit.
+  useEffect(() => {
+    setEditing(false);
+  }, [appId]);
+
   // Real-time updates
   useEffect(() => {
     const handleAppsChanged = () => fetchApp();
