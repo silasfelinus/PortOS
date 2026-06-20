@@ -323,6 +323,13 @@ describe('Vision Test Service', () => {
       await expect(describeImageDataUrlDetailed({ dataUrl: DATA_URL, prompt: 'x', providerId: 'codex-tui' }))
         .rejects.toThrow(/not an API provider/);
     });
+
+    it('forwards the CLI provider timeout to the CLI vision path', async () => {
+      getProviderById.mockResolvedValue({ id: 'codex', type: 'cli', command: 'codex', timeout: 300000 });
+      describeImageViaCli.mockResolvedValue({ text: 'ok', finishReason: null, usage: null, reasoning: '' });
+      await describeImageDataUrlDetailed({ dataUrl: DATA_URL, prompt: 'caption', providerId: 'codex' });
+      expect(describeImageViaCli).toHaveBeenCalledWith(expect.objectContaining({ timeout: 300000 }));
+    });
   });
 
   describe('checkVisionHealth', () => {

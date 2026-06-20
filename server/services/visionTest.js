@@ -264,6 +264,10 @@ export async function describeImageDataUrlDetailed({ dataUrl, prompt, providerId
   if (provider.type === 'cli') {
     return describeImageViaCli({
       provider, dataUrl, prompt: prompt || 'Describe what you see in this image.', model,
+      // Honor the provider's configured timeout (seeded codex/claude CLI
+      // providers allow 300s/900s) — a vision caption/crop run can outlast the
+      // CLI path's 120s default. Falls back to that default when unset.
+      ...(provider.timeout ? { timeout: provider.timeout } : {}),
     });
   }
   if (provider.type !== 'api') throw new Error(`Provider '${providerId}' is not an API provider (type: ${provider.type})`);

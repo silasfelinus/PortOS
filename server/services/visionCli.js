@@ -29,6 +29,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildCliArgs } from '../lib/cliProviderArgs.js';
 import { resolveCliModel } from '../lib/providerModels.js';
+import { extractCodexAssistant } from '../lib/codexAssistantExtract.js';
 
 const CLI_VISION_TIMEOUT_MS = 120000;
 const IMAGE_BASENAME = 'vision-input.png';
@@ -141,7 +142,12 @@ export async function describeImageViaCli({
       child.stderr?.on('data', (d) => { err += d.toString(); });
       child.on('close', (code) => {
         clearTimers();
-        if (code === 0) return resolve(out.trim());
+        // `codex exec` prints the whole session transcript (banner, echoed
+        // prompt, tool sections, `tokens used` footer) to stdout — carve out
+        // the assistant reply so captioning doesn't persist the transcript as
+        // the caption. A no-op for non-codex output (extractCodexAssistant
+        // returns its input unless it starts with the Codex banner).
+        if (code === 0) return resolve(extractCodexAssistant(out).trim());
         const tail = err.trim().split('\n').slice(-4).join('\n');
         reject(new Error(`${command} vision call exited ${code}${tail ? `: ${tail}` : ''}`));
       });

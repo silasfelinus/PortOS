@@ -251,6 +251,15 @@ describe('proposeCropRegions', () => {
     expect(rects).toEqual([{ left: 450, top: 0, width: 450, height: 600 }]);
   });
 
+  it('parses the bare top-level array form (not just {boxes:[…]})', async () => {
+    const describeImage = vi.fn().mockResolvedValue({
+      text: '[{"x":0,"y":0,"w":0.5,"h":1.0}]',
+    });
+    const resolveModel = vi.fn().mockResolvedValue({ providerId: 'lmstudio', model: 'qwen2.5-vl' });
+    const rects = await proposeCropRegions('/sheet.png', dims, { describeImage, resolveModel, readImage });
+    expect(rects).toEqual([{ left: 0, top: 0, width: 450, height: 600 }]);
+  });
+
   it('returns [] (→ grid fallback) when no vision model resolves', async () => {
     const describeImage = vi.fn();
     const resolveModel = vi.fn().mockRejectedValue(new Error('no vision model'));

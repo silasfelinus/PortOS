@@ -94,6 +94,33 @@ describe('describeImageViaCli', () => {
     expect(spawnImpl).toHaveBeenCalledOnce();
   });
 
+  it('strips the codex session transcript down to the assistant reply', async () => {
+    const child = makeFakeChild();
+    const spawnImpl = vi.fn(() => child);
+    const promise = describeImageViaCli({
+      provider: { id: 'codex', command: 'codex', args: [] },
+      dataUrl: PNG_DATA_URL,
+      prompt: 'caption',
+      model: 'gpt-5',
+      spawnImpl,
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    // A realistic codex exec transcript: banner … \ncodex\n<reply>\ntokens used …
+    const transcript = [
+      'OpenAI Codex v0.141.0',
+      '--------',
+      'user',
+      'caption',
+      'codex',
+      'a woman in a red cloak, bust shot',
+      'tokens used: 1234',
+    ].join('\n');
+    child.stdout.emit('data', Buffer.from(transcript));
+    child.emit('close', 0);
+    const result = await promise;
+    expect(result.text).toBe('a woman in a red cloak, bust shot');
+  });
+
   it('rejects with a tail of stderr on a non-zero exit', async () => {
     const child = makeFakeChild();
     const spawnImpl = vi.fn(() => child);

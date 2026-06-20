@@ -519,9 +519,19 @@ export async function proposeCropRegions(sheetPath, dims, {
   });
   if (!result?.text) return [];
 
-  const { value } = extractJson(result.text, {
-    shapePredicate: (v) => Array.isArray(v?.boxes) || Array.isArray(v),
-  });
+  // The model may answer with the documented `{"boxes":[…]}` OR a bare top-level
+  // array `[{…}]`. extractJson defaults to walking `{…}` blocks — for a bare
+  // array it would return the first inner box OBJECT (its no-predicate-match
+  // fallback), which normalizeCropProposals can't use. So accept the object
+  // form only when it actually carries a `boxes` array; otherwise walk for a
+  // top-level array block. This keeps a valid bare-array reply from silently
+  // falling back to the grid.
+  const objValue = extractJson(result.text, {
+    shapePredicate: (v) => Array.isArray(v?.boxes),
+  }).value;
+  const value = Array.isArray(objValue?.boxes)
+    ? objValue
+    : extractJson(result.text, { blockType: 'array' }).value;
   const rects = normalizeCropProposals(value, dims);
   if (rects.length) {
     console.log(`🔎 Vision proposed ${rects.length} crop region(s) via ${resolved.model}`);
