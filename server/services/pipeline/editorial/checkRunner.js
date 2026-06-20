@@ -18,7 +18,7 @@
 import { randomUUID, createHash } from 'crypto';
 import { createSseRunner } from '../../../lib/sseUtils.js';
 import { runStagedLLM, runInlineLLM, runStageScopedInlineLLM, resolveStageContext } from '../../../lib/stageRunner.js';
-import { planManuscriptPass } from '../../../lib/contextBudget.js';
+import { planManuscriptPass, fitContextToManuscriptFloor } from '../../../lib/contextBudget.js';
 import { getEnabledChecks, getEnabledCheckRows, getAllChecks, EDITORIAL_SOURCES, comicLetteringIssues } from '../../../lib/editorial/index.js';
 import { getSettings } from '../../settings.js';
 import { getSeries } from '../series.js';
@@ -354,21 +354,49 @@ export async function runEditorialChecks(seriesId, options = {}) {
     // instead of truncated on a small/local provider. Returns the chunk-corpus
     // strings (one for a whole-fits provider) for an LLM check to iterate.
     // Lives here (not the pure registry) because it resolves the provider.
-    planManuscriptChunks: async (stage, { overheadTokens = 0 } = {}) => {
+    //
+    // Two ways to declare per-chunk overhead:
+    //   { overheadTokens }                — legacy: a fixed, non-trimmable overhead
+    //                                       (the custom-check prompt wrapper).
+    //   { context, fixedOverheadTokens }  — the trimmable re-sent context blocks
+    //                                       (scene map, character arcs, …) plus the
+    //                                       fixed template/contract overhead. The
+    //                                       context is trimmed to GUARANTEE the
+    //                                       manuscript a budget floor (#1459) so a
+    //                                       large reverse outline on a small window
+    //                                       can't starve the manuscript chunk to ''.
+    // When `context` is given, the (possibly trimmed) blocks are attached to the
+    // returned array as `.context` so the check feeds the trimmed values to the LLM.
+    planManuscriptChunks: async (stage, { overheadTokens = 0, context = null, fixedOverheadTokens = 0 } = {}) => {
       if (!sections.length) return [];
       const { contextWindow } = await resolveStageContext(stage, { providerOverride, modelOverride });
+      let effectiveOverhead = overheadTokens;
+      let fittedContext = null;
+      if (context && typeof context === 'object') {
+        const fit = fitContextToManuscriptFloor(context, {
+          contextWindow,
+          fixedOverheadTokens,
+          outputReserveTokens: EDITORIAL_OUTPUT_RESERVE_TOKENS,
+        });
+        effectiveOverhead = fit.overheadTokens;
+        fittedContext = fit.context;
+        if (fit.trimmed) {
+          console.warn(`✂️ editorial context trimmed to keep manuscript budget — stage=${stage || 'inline'} window=${contextWindow}`);
+        }
+      }
       const plan = planManuscriptPass({
         contextWindow,
         // Each section's full contribution = header + body, matching sectionsCorpus.
         sections: sections.map((s) => ({ ...s, text: `${manuscriptSectionHeader(s)}\n\n${s.content || ''}` })),
-        overheadTokens,
+        overheadTokens: effectiveOverhead,
         outputReserveTokens: EDITORIAL_OUTPUT_RESERVE_TOKENS,
       });
       // One whole chunk or many — the same usable-char budget caps each. Do NOT
       // floor this above plan.usableChars: on a genuinely small configured window
       // that would push the prompt back over the provider's context and get it
-      // clipped/rejected. The editorial-sized output reserve above is what keeps
-      // usableChars positive on the common unknown/8K-fallback provider.
+      // clipped/rejected. The editorial-sized output reserve above plus the
+      // context floor (when context is given) is what keeps usableChars positive
+      // on the common unknown/8K-fallback provider.
       const corpora = plan.mode === 'whole'
         ? [manuscript]
         : plan.chunks.map((c) => sectionsCorpus(c.sections));
@@ -377,6 +405,10 @@ export async function runEditorialChecks(seriesId, options = {}) {
       // digest into each chunk's spare room without overflowing the window or
       // displacing manuscript text (see runChunkedManuscriptCheck).
       chunks.usableChars = plan.usableChars;
+      // Expose the trimmed context so the check sends the SAME (possibly shrunk)
+      // blocks it was budgeted for — sending the untrimmed originals would overflow
+      // the window the trim was computed to fit.
+      if (fittedContext) chunks.context = fittedContext;
       return chunks;
     },
   };

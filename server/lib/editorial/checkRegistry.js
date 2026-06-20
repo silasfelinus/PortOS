@@ -824,17 +824,43 @@ async function runChunkedManuscriptCheck(ctx, { chunks, category, max, callChunk
 // checks are all manuscript-scoped, so findings keep a model-supplied issue
 // number (`withIssueNumber: true`).
 //
-// `overheadTokens` MUST account for every non-manuscript prompt var the check
-// re-sends on each chunk (the objects summary, the style-guide expectations,
-// etc.) on top of EDITORIAL_PROMPT_OVERHEAD_TOKENS — those vars ride alongside
-// the chunked manuscript, so under-counting them lets a chunk overrun the
-// provider window.
-async function runManuscriptLlmCheck(ctx, { stage, category, overheadTokens = 0, buildVars, crossChunkDigest = false, crossChunkSetup = false, setupFocus = '' }) {
+// A check declares its per-chunk non-manuscript overhead in ONE of two ways:
+//
+//   `context` (preferred) — a `{ varName: string }` map of the TRIMMABLE context
+//     blocks the check re-sends on each chunk (the scene map, character arcs, the
+//     style-guide expectations, …). The runner counts them as overhead AND, on a
+//     small/fallback window where they'd starve the manuscript chunk to '', trims
+//     them to guarantee the manuscript a budget floor (#1459). `buildVars` then
+//     receives the (possibly trimmed) blocks as its third arg — so the check feeds
+//     the SAME context it was budgeted for (sending the untrimmed originals would
+//     overflow the window the trim was sized to fit). `EDITORIAL_PROMPT_OVERHEAD_TOKENS`
+//     is added automatically as the fixed (non-trimmable) template/contract reserve.
+//
+//   `overheadTokens` (legacy) — a single fixed token count for a check with no
+//     trimmable context (a plain whole-manuscript scan). MUST account for every
+//     non-manuscript prompt var, on top of EDITORIAL_PROMPT_OVERHEAD_TOKENS.
+//
+// `buildVars(chunk, meta, context)` returns the stage vars — only the manuscript
+// var changes per chunk; `meta.isFinal` is true on the last (or only) chunk so a
+// check can gate whole-corpus judgments to it (the Chekhov "planted, never fired"
+// pass), and `context` is the trimmed block map (or `{}` for an `overheadTokens`
+// check). Existing checks ignore the extra args. These checks are all
+// manuscript-scoped, so findings keep a model-supplied issue number
+// (`withIssueNumber: true`).
+async function runManuscriptLlmCheck(ctx, { stage, category, overheadTokens = 0, context = null, buildVars, crossChunkDigest = false, crossChunkSetup = false, setupFocus = '' }) {
   const max = ctx.config?.maxFindings ?? 12;
   // Chunks are planned at the full usable budget; the digest is fitted into each
   // later chunk's spare room inside runChunkedManuscriptCheck (it yields to the
-  // manuscript), so no budget is reserved or carved out here.
-  const chunks = await ctx.planManuscriptChunks(stage, { overheadTokens });
+  // manuscript), so no budget is reserved or carved out here. A `context` map is
+  // trimmed to keep the manuscript a budget floor; the trimmed blocks come back on
+  // `chunks.context` so they're what we feed the model.
+  const chunks = context
+    ? await ctx.planManuscriptChunks(stage, { context, fixedOverheadTokens: EDITORIAL_PROMPT_OVERHEAD_TOKENS })
+    : await ctx.planManuscriptChunks(stage, { overheadTokens });
+  // The runner returns the (possibly trimmed) context on `chunks.context`; fall back
+  // to the originals if it didn't echo them (a chunker that doesn't implement the
+  // context path), and to `{}` for an `overheadTokens` check with no context.
+  const fittedContext = chunks?.context || context || {};
   // Clean-setup digest (#1403): roll a short "setup so far" summary forward via an
   // inline summarization call. Only wired when the check opts in AND the runner
   // injected the stage-scoped inline caller — absent it (unit tests of the
@@ -856,7 +882,7 @@ async function runManuscriptLlmCheck(ctx, { stage, category, overheadTokens = 0,
     crossChunkDigest,
     summarizeChunk,
     callChunk: async (manuscript, meta) => {
-      const { content } = await ctx.callStagedLLM(stage, buildVars(manuscript, meta), { returnsJson: true, source: stage });
+      const { content } = await ctx.callStagedLLM(stage, buildVars(manuscript, meta, fittedContext), { returnsJson: true, source: stage });
       return content;
     },
   });
@@ -1857,9 +1883,9 @@ export const EDITORIAL_CHECKS = [
       const findings = await runManuscriptLlmCheck(ctx, {
         stage: UNMODELED_NAMES_STAGE,
         category: 'casting',
-        overheadTokens: EDITORIAL_PROMPT_OVERHEAD_TOKENS + estimateTokens(knownCharacters),
+        context: { knownCharacters },
         crossChunkDigest: true,
-        buildVars: (manuscript) => ({ manuscript, knownCharacters }),
+        buildVars: (manuscript, _meta, c) => ({ manuscript, knownCharacters: c.knownCharacters }),
       });
       // Deterministic whole-corpus recurrence pass. The model's job is the judgment
       // it alone can make — is this surfaced proper noun a PERSON (vs a place/org/
@@ -2366,8 +2392,8 @@ export const EDITORIAL_CHECKS = [
       return runManuscriptLlmCheck(ctx, {
         stage: SENSORY_BALANCE_STAGE,
         category: 'style',
-        overheadTokens: EDITORIAL_PROMPT_OVERHEAD_TOKENS + estimateTokens(sceneMap),
-        buildVars: (manuscript) => ({ manuscript, sceneMap }),
+        context: { sceneMap },
+        buildVars: (manuscript, _meta, c) => ({ manuscript, sceneMap: c.sceneMap }),
       });
     },
   },
@@ -2409,8 +2435,8 @@ export const EDITORIAL_CHECKS = [
       return runManuscriptLlmCheck(ctx, {
         stage: WHITE_ROOM_STAGE,
         category: 'style',
-        overheadTokens: EDITORIAL_PROMPT_OVERHEAD_TOKENS + estimateTokens(sceneMap),
-        buildVars: (manuscript) => ({ manuscript, sceneMap }),
+        context: { sceneMap },
+        buildVars: (manuscript, _meta, c) => ({ manuscript, sceneMap: c.sceneMap }),
       });
     },
   },
@@ -2585,9 +2611,10 @@ export const EDITORIAL_CHECKS = [
       return runManuscriptLlmCheck(ctx, {
         stage: HEAD_HOPPING_STAGE,
         category: 'style',
-        overheadTokens: EDITORIAL_PROMPT_OVERHEAD_TOKENS
-          + estimateTokens(povMap) + estimateTokens(povPerson),
-        buildVars: (manuscript) => ({ manuscript, povMap, povPerson }),
+        // povPerson is a short fixed label and povMap grows with scene count, so
+        // largest-first trimming absorbs the cut into povMap and keeps povPerson.
+        context: { povMap, povPerson },
+        buildVars: (manuscript, _meta, c) => ({ manuscript, povMap: c.povMap, povPerson: c.povPerson }),
       });
     },
   },
@@ -2634,9 +2661,8 @@ export const EDITORIAL_CHECKS = [
       return runManuscriptLlmCheck(ctx, {
         stage: ARC_TRANSITIONS_STAGE,
         category: 'arc',
-        overheadTokens:
-          EDITORIAL_PROMPT_OVERHEAD_TOKENS + estimateTokens(sceneMap) + estimateTokens(characterArcs),
-        buildVars: (manuscript) => ({ manuscript, sceneMap, characterArcs }),
+        context: { sceneMap, characterArcs },
+        buildVars: (manuscript, _meta, c) => ({ manuscript, sceneMap: c.sceneMap, characterArcs: c.characterArcs }),
         // Arc change moments accrue across the whole manuscript — a flat-arc
         // verdict needs to see whether a character ever changed in a LATER
         // chunk. Roll a "transitions seen so far" digest forward so a
@@ -2692,21 +2718,19 @@ export const EDITORIAL_CHECKS = [
       return runManuscriptLlmCheck(ctx, {
         stage: PLOT_STRUCTURE_STAGE,
         category: 'plot',
-        overheadTokens:
-          EDITORIAL_PROMPT_OVERHEAD_TOKENS
-          + estimateTokens(sceneMap)
-          + estimateTokens(plotlineMap)
-          + estimateTokens(authoredSetups),
+        // sceneMap grows unbounded with scene count; plotlineMap and authoredSetups
+        // are bounded — so largest-first trimming absorbs the cut into sceneMap.
+        context: { sceneMap, plotlineMap, authoredSetups },
         // `isFinal` gates the whole-corpus judgments — a sagging middle, a never-
         // escalating arc, and a dropped subplot can only be judged once the whole
         // manuscript is in view; an earlier chunk can't know a thread is picked back
         // up (or stakes rise) later, so it would false-flag. A single-chunk run is
         // its own final part and judges the whole text.
-        buildVars: (manuscript, meta) => ({
+        buildVars: (manuscript, meta, c) => ({
           manuscript,
-          sceneMap,
-          plotlineMap,
-          authoredSetups,
+          sceneMap: c.sceneMap,
+          plotlineMap: c.plotlineMap,
+          authoredSetups: c.authoredSetups,
           finalPart: meta?.isFinal ? 'true' : '',
         }),
         // Plot pathologies span the whole arc — the cross-chunk findings digest keeps
@@ -2765,19 +2789,18 @@ export const EDITORIAL_CHECKS = [
       return runManuscriptLlmCheck(ctx, {
         stage: THEME_COHERENCE_STAGE,
         category: 'theme',
-        overheadTokens:
-          EDITORIAL_PROMPT_OVERHEAD_TOKENS
-          + estimateTokens(declaredThemes)
-          + estimateTokens(sceneMap),
+        // declaredThemes is bounded by the authored theme count; sceneMap grows with
+        // scene count — so largest-first trimming absorbs the cut into sceneMap.
+        context: { declaredThemes, sceneMap },
         // `isFinal` gates the whole-corpus judgments — a theme that is set up but
         // never paid off, a theme dropped after the opening, and whether the
         // climax lands the thematic argument can only be judged once the whole
         // manuscript is in view; an earlier chunk can't know a theme is paid off
         // later, so it would false-flag.
-        buildVars: (manuscript, meta) => ({
+        buildVars: (manuscript, meta, c) => ({
           manuscript,
-          declaredThemes,
-          sceneMap,
+          declaredThemes: c.declaredThemes,
+          sceneMap: c.sceneMap,
           finalPart: meta?.isFinal ? 'true' : '',
         }),
         // Theme coverage accrues across the whole manuscript — the findings digest
@@ -3070,9 +3093,10 @@ export const EDITORIAL_CHECKS = [
       return runManuscriptLlmCheck(ctx, {
         stage: OBJECT_MOTIVATION_STAGE,
         category: 'continuity',
-        // The objects-attachment summary is fixed per-call overhead.
-        overheadTokens: EDITORIAL_PROMPT_OVERHEAD_TOKENS + estimateTokens(objects),
-        buildVars: (manuscript) => ({ manuscript, objects }),
+        // The objects-attachment summary is re-sent per chunk — trimmed to keep the
+        // manuscript a budget floor on a small window.
+        context: { objects },
+        buildVars: (manuscript, _meta, c) => ({ manuscript, objects: c.objects }),
         // An object's motivation can be set up in an earlier chapter and paid off
         // later; without the digest a later chunk may flag a "missing setup" an
         // earlier chunk already accounted for (#1383).
@@ -3307,9 +3331,10 @@ export const EDITORIAL_CHECKS = [
       return runManuscriptLlmCheck(ctx, {
         stage: STYLE_CONFORMANCE_STAGE,
         category: 'style',
-        // The style-guide expectations are fixed per-call overhead.
-        overheadTokens: EDITORIAL_PROMPT_OVERHEAD_TOKENS + estimateTokens(expectations),
-        buildVars: (manuscript) => ({ manuscript, styleGuide: expectations }),
+        // The style-guide expectations are re-sent per chunk — trimmed to keep the
+        // manuscript a budget floor on a small window.
+        context: { styleGuide: expectations },
+        buildVars: (manuscript, _meta, c) => ({ manuscript, styleGuide: c.styleGuide }),
         // Tense/POV drift is inherently cross-chapter — a per-chunk view can't see
         // that chapter 1 established past-tense when judging chapter 3 (#1383).
         crossChunkDigest: true,
@@ -3358,13 +3383,13 @@ export const EDITORIAL_CHECKS = [
       return runManuscriptLlmCheck(ctx, {
         stage: CHEKHOV_STAGE,
         category: 'continuity',
-        overheadTokens: EDITORIAL_PROMPT_OVERHEAD_TOKENS + estimateTokens(authoredSetups),
+        context: { authoredSetups },
         // `finalPart` gates the whole-corpus "planted, never fired" judgment to the
         // last part of a chunked manuscript (#1299) — an earlier part can't know a
         // setup pays off later, so it would false-flag. A single-chunk run is its own
         // final part. "fired, never planted" stays enabled on every part (the carried
         // setup digest tells a later part what was already planted).
-        buildVars: (manuscript, meta) => ({ manuscript, authoredSetups, finalPart: meta?.isFinal ? 'true' : '' }),
+        buildVars: (manuscript, meta, c) => ({ manuscript, authoredSetups: c.authoredSetups, finalPart: meta?.isFinal ? 'true' : '' }),
         // A setup planted in chapter 2 and paid off (or NOT) in chapter 9 spans
         // chunks — the cross-chunk digest keeps prior findings in view so a later
         // chunk doesn't re-flag, and the clean-setup digest rolls forward which
@@ -4235,8 +4260,10 @@ export const EDITORIAL_CHECKS = [
       return runManuscriptLlmCheck(ctx, {
         stage: VOICE_DISTINCTIVENESS_STAGE,
         category: 'dialogue',
-        overheadTokens: EDITORIAL_PROMPT_OVERHEAD_TOKENS + estimateTokens(voiceProfiles),
-        buildVars: (manuscript) => ({ manuscript, voiceProfiles }),
+        // The authored voice profiles are re-sent per chunk — trimmed to keep the
+        // manuscript a budget floor on a small window.
+        context: { voiceProfiles },
+        buildVars: (manuscript, _meta, c) => ({ manuscript, voiceProfiles: c.voiceProfiles }),
         // Voice distinctiveness is a whole-cast judgment: a character's lines are
         // spread across chapters, so a per-chunk view can't tell "interchangeable"
         // from "we only saw one speaker this chunk". Roll a per-character voice-
@@ -4394,13 +4421,13 @@ export const EDITORIAL_CHECKS = [
       return runManuscriptLlmCheck(ctx, {
         stage: ENDINGS_CLIFFHANGER_STAGE,
         category: 'pacing',
-        overheadTokens: EDITORIAL_PROMPT_OVERHEAD_TOKENS + estimateTokens(authoredCliffhangers),
+        context: { authoredCliffhangers },
         // `finalPart` gates the "leave the terminal chapter alone" exemption (#1298):
         // on a chunked manuscript, only the LAST part can contain the series finale,
         // so an earlier part must NOT treat its last visible chapter as terminal
         // (that would false-negative a soft landing at a chunk boundary). A
         // single-chunk run is its own final part. Mirrors the Chekhov check.
-        buildVars: (manuscript, meta) => ({ manuscript, authoredCliffhangers, finalPart: meta?.isFinal ? 'true' : '' }),
+        buildVars: (manuscript, meta, c) => ({ manuscript, authoredCliffhangers: c.authoredCliffhangers, finalPart: meta?.isFinal ? 'true' : '' }),
       });
     },
   },

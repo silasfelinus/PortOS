@@ -400,7 +400,10 @@ describe('pov.head-hopping — LLM check (#1311)', () => {
     let seenOverhead = 0;
     const ctx = wholeCtx({
       planManuscriptChunks: async (_stage, opts) => {
-        seenOverhead = opts.overheadTokens;
+        // The trimmable context blocks ride alongside the manuscript as overhead;
+        // the fixed template reserve is passed separately (#1459).
+        seenOverhead = opts.fixedOverheadTokens;
+        expect(opts.context).toHaveProperty('povMap');
         return ['# Issue 1\n\nchunk'];
       },
       callStagedLLM: async (_stage, vars) => {
@@ -478,7 +481,10 @@ describe.each([
     let seenOverhead = 0;
     const ctx = wholeCtx({
       planManuscriptChunks: async (_stage, opts) => {
-        seenOverhead = opts.overheadTokens;
+        // The scene map rides as trimmable context (#1459); the fixed template
+        // reserve is passed separately.
+        seenOverhead = opts.fixedOverheadTokens;
+        expect(opts.context).toHaveProperty('sceneMap');
         return ['# Issue 1\n\nchunk'];
       },
       callStagedLLM: async (_stage, vars) => {
@@ -487,7 +493,7 @@ describe.each([
       },
     });
     const findings = await getCheck(id).run(ctx);
-    // The scene map rode along as a prompt var and inflated the overhead budget.
+    // The scene map rode along as a prompt var (and was budgeted as context overhead).
     expect(seenVars.sceneMap).toContain('Issue 1: The void');
     expect(seenOverhead).toBeGreaterThan(0);
     expect(findings).toHaveLength(1);
@@ -608,8 +614,9 @@ describe('chekhov.setups-payoffs — LLM check (#1299)', () => {
     const ctx = wholeCtx({
       series: { arc: { readerMap: { hooks: [{ label: 'The locked drawer', note: 'planted in Issue 1' }], payoffs: [] } } },
       planManuscriptChunks: async (_stage, opts) => {
-        // Authored hooks/payoffs ride alongside the manuscript as fixed overhead.
-        expect(opts.overheadTokens).toBeGreaterThan(0);
+        // Authored hooks/payoffs ride alongside the manuscript as trimmable context (#1459).
+        expect(opts.context).toHaveProperty('authoredSetups');
+        expect(opts.fixedOverheadTokens).toBeGreaterThan(0);
         return ['# Issue 1\n\nThe drawer stayed locked forever.'];
       },
       callStagedLLM: async (_stage, vars) => {
@@ -719,8 +726,11 @@ describe('plot.structure-momentum — LLM check (#1310)', () => {
     const ctx = wholeCtx({
       series: { arc: { readerMap: { hooks: [{ label: 'Where is the brother?', note: 'planted Issue 1' }], payoffs: [] } } },
       planManuscriptChunks: async (_stage, opts) => {
-        // Scene map + plotline coverage + authored setups all ride as fixed overhead.
-        expect(opts.overheadTokens).toBeGreaterThan(0);
+        // Scene map + plotline coverage + authored setups all ride as trimmable context (#1459).
+        expect(opts.context).toHaveProperty('sceneMap');
+        expect(opts.context).toHaveProperty('plotlineMap');
+        expect(opts.context).toHaveProperty('authoredSetups');
+        expect(opts.fixedOverheadTokens).toBeGreaterThan(0);
         return ['# Issue 1\n\nThe brother thread is never mentioned again.'];
       },
       callStagedLLM: async (_stage, vars) => {
@@ -843,8 +853,10 @@ describe('theme.coherence — LLM check (#1317)', () => {
     let seenVars = null;
     const ctx = wholeCtx({
       planManuscriptChunks: async (_stage, opts) => {
-        // Declared themes + scene map both ride as fixed overhead.
-        expect(opts.overheadTokens).toBeGreaterThan(0);
+        // Declared themes + scene map both ride as trimmable context (#1459).
+        expect(opts.context).toHaveProperty('declaredThemes');
+        expect(opts.context).toHaveProperty('sceneMap');
+        expect(opts.fixedOverheadTokens).toBeGreaterThan(0);
         return ['# Issue 1\n\nForgiveness is never mentioned again.'];
       },
       callStagedLLM: async (_stage, vars) => {
@@ -954,8 +966,9 @@ describe('roster.unmodeled-names — LLM check (#1412)', () => {
     let seenVars = null;
     const ctx = wholeCtx({
       planManuscriptChunks: async (_stage, opts) => {
-        // The known-character roster rides as fixed overhead.
-        expect(opts.overheadTokens).toBeGreaterThan(0);
+        // The known-character roster rides as trimmable context (#1459).
+        expect(opts.context).toHaveProperty('knownCharacters');
+        expect(opts.fixedOverheadTokens).toBeGreaterThan(0);
         return ['# Issue 1\n\nMarguerite drew her sword.'];
       },
       callStagedLLM: async (_stage, vars) => {
@@ -1128,8 +1141,9 @@ describe('endings.cliffhanger — LLM check (#1298)', () => {
     const ctx = wholeCtx({
       series: { arc: { readerMap: { cliffhangers: [{ note: 'the door opens', atIssueBoundary: 1 }] } } },
       planManuscriptChunks: async (_stage, opts) => {
-        // Authored cliffhangers ride alongside the manuscript as fixed overhead.
-        expect(opts.overheadTokens).toBeGreaterThan(0);
+        // Authored cliffhangers ride alongside the manuscript as trimmable context (#1459).
+        expect(opts.context).toHaveProperty('authoredCliffhangers');
+        expect(opts.fixedOverheadTokens).toBeGreaterThan(0);
         return ['# Issue 1\n\nThe war ended and everyone went home.'];
       },
       callStagedLLM: async (_stage, vars) => {
@@ -2142,14 +2156,14 @@ describe('objects.unmotivated-interaction — LLM check (#1288)', () => {
   });
 
   it('budgets the objects summary as prompt overhead and re-sends it on every chunk', async () => {
-    let overhead = null;
+    let sawObjectsContext = false;
     const objectsSeen = [];
     await getCheck('objects.unmotivated-interaction').run(baseCtx({
-      planManuscriptChunks: async (_stage, opts) => { overhead = opts.overheadTokens; return ['chunk a', 'chunk b']; },
+      planManuscriptChunks: async (_stage, opts) => { sawObjectsContext = Object.prototype.hasOwnProperty.call(opts.context || {}, 'objects'); return ['chunk a', 'chunk b']; },
       callStagedLLM: async (_stage, v) => { objectsSeen.push(v.objects); return { content: { findings: [] } }; },
     }));
-    // Overhead exceeds the fixed template reserve because the objects summary is counted in.
-    expect(overhead).toBeGreaterThan(0);
+    // The objects summary is passed as trimmable context (#1459), re-sent per chunk.
+    expect(sawObjectsContext).toBe(true);
     // The objects summary rides every chunk (it's not part of the chunked manuscript).
     expect(objectsSeen).toHaveLength(2);
     expect(objectsSeen.every((o) => o.includes('Watch'))).toBe(true);
@@ -2231,7 +2245,9 @@ describe('cross-chunk continuity digest (#1383)', () => {
       // No usableChars on the returned array → unbounded headroom, so the digest
       // always fits (the fits-in-budget gate is exercised separately below).
       planManuscriptChunks: async (_stage, opts) => {
-        overhead = opts.overheadTokens;
+        // A context-based check (#1459) passes { context, fixedOverheadTokens }; a
+        // legacy plain-scan check passes { overheadTokens }. Capture whichever is set.
+        overhead = opts.context ? opts.fixedOverheadTokens : opts.overheadTokens;
         return ['CHUNK_ONE', 'CHUNK_TWO'];
       },
       callStagedLLM: async (_stage, vars) => {
