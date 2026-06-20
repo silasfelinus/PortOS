@@ -1861,16 +1861,21 @@ export const EDITORIAL_CHECKS = [
         crossChunkDigest: true,
         buildVars: (manuscript) => ({ manuscript, knownCharacters }),
       });
-      // Deterministic whole-corpus recurrence pass. Each finding's `location` carries
-      // the surfaced name in quotes (`Unmodeled character — "Marguerite"`); count its
-      // distinct-issue appearances across ALL sections (not just the chunk the LLM
-      // saw) so the throwaway/recurring label is correct regardless of chunking, and
-      // collapse findings that surfaced the same name in different chunks. A name the
-      // matcher can't find in the prose (a stray/garbled LLM token) is left as the
-      // model classified it rather than fabricating a "0 appearances" throwaway.
+      // Deterministic whole-corpus recurrence pass. The model is told NOT to judge
+      // frequency (it can't, per-chunk); it just surfaces the name in `location`
+      // ("Unmodeled character — \"Marguerite\"") and explains the person-vs-non-person
+      // call in `problem`. Here we count the name's distinct-issue appearances across
+      // ALL sections (not just the chunk the LLM saw) so the throwaway/recurring
+      // verdict is correct regardless of chunking, rewrite the location label + final
+      // severity, AND append the frequency sentence to problem/suggestion so the
+      // user-visible text can't disagree with the label. Findings surfacing the same
+      // name from different chunks collapse to one. A name the matcher can't find in
+      // the prose (a stray/garbled LLM token) is left as the model classified it
+      // rather than fabricating a "0 appearances" throwaway.
       const sections = Array.isArray(ctx.sections) ? ctx.sections : [];
       const seenNames = new Set();
       const out = [];
+      const append = (text, extra) => (text ? `${text} ${extra}` : extra);
       for (const f of findings) {
         const name = (String(f.location || '').match(/"([^"]+)"/) || [])[1];
         if (!name) { out.push(f); continue; }
@@ -1884,8 +1889,20 @@ export const EDITORIAL_CHECKS = [
         const count = issues.size;
         if (count === 0) { out.push(f); continue; }
         out.push(count === 1
-          ? { ...f, severity: 'low', location: `Throwaway name — "${name}" (1 appearance)` }
-          : { ...f, severity: 'medium', location: `Unmodeled character — "${name}" (${count} issues)` });
+          ? {
+              ...f,
+              severity: 'low',
+              location: `Throwaway name — "${name}" (1 appearance)`,
+              problem: append(f.problem, `It appears in only one issue — a named body the reader is told to remember but who never recurs and was never bibled.`),
+              suggestion: append(f.suggestion, `Add "${name}" to canon only if they are meant to recur; otherwise recast them as an unnamed description so the reader isn't asked to track a name that goes nowhere.`),
+            }
+          : {
+              ...f,
+              severity: 'medium',
+              location: `Unmodeled character — "${name}" (${count} issues)`,
+              problem: append(f.problem, `They recur across ${count} issues but are not in the story bible.`),
+              suggestion: append(f.suggestion, `A recurring character should be modeled — add "${name}" to canon.`),
+            });
       }
       return out;
     },

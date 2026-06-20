@@ -87,8 +87,8 @@ commentary:
       "severity": "high|medium|low",
       "issueNumber": 3,
       "location": "string — always 'Unmodeled character — \"Name\"' (e.g. 'Unmodeled character — \"Marguerite\"'); the deterministic post-pass relabels throwaway vs recurring",
-      "problem": "1–3 sentences naming the proper noun, why you classified it as a character (not a place/org/brand/honorific), and whether it recurs or appears only once",
-      "suggestion": "1–3 sentences proposing how to resolve it (add to canon if it should matter, or recast as an unnamed description if it's a throwaway)",
+      "problem": "1–2 sentences naming the proper noun and why you classified it as a character (not a place/org/brand/honorific). Do NOT state how often it appears — a deterministic pass counts that across the whole manuscript and appends the recurrence sentence.",
+      "suggestion": "1 sentence: it is unmodeled, so the author should either add it to the story bible or leave it unnamed. Do NOT decide which based on frequency — the post-pass appends a frequency-specific recommendation.",
       "anchorQuote": "short verbatim quote at the name's first use (≤ 200 chars)"
     }
   ]

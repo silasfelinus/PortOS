@@ -990,6 +990,9 @@ describe('roster.unmodeled-names — LLM check (#1412)', () => {
     expect(findings).toHaveLength(1);
     expect(findings[0].location).toBe('Throwaway name — "Old Henrik" (1 appearance)');
     expect(findings[0].severity).toBe('low');
+    // The frequency sentence is appended so the visible text matches the label.
+    expect(findings[0].problem).toContain('only one issue');
+    expect(findings[0].suggestion).toContain('recast them as an unnamed description');
   });
 
   it('counts appearances across ALL sections (not just the seen chunk) and labels a recurring name medium', async () => {
@@ -1007,6 +1010,8 @@ describe('roster.unmodeled-names — LLM check (#1412)', () => {
     expect(findings).toHaveLength(1);
     expect(findings[0].location).toBe('Unmodeled character — "Marguerite" (2 issues)');
     expect(findings[0].severity).toBe('medium');
+    expect(findings[0].problem).toContain('recur across 2 issues');
+    expect(findings[0].suggestion).toContain('add "Marguerite" to canon');
   });
 
   it('collapses the same surfaced name reported from two different chunks into one finding', async () => {
