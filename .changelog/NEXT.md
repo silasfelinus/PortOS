@@ -1,5 +1,9 @@
 # Unreleased
 
+## Changed
+
+- The **Social Agents** page now lives under the **Chief of Staff** sidebar section instead of **Brain**, in both the sidebar and the ⌘K / voice nav manifest.
+
 ## Fixed
 
 - Scheduled improvement tasks (documentation, security, code-quality, performance, test-coverage, accessibility, dependency-updates, ui-bugs, mobile-responsive, release-check) no longer keep an app-name-hardcoded "PortOS" prompt on existing installs. These prompts went generic (`{appName}`) a while ago, but were never versioned — so deployed instances kept the old PortOS-targeted text (and some had it mis-flagged as a user customization). They are now versioned with their prior defaults preserved, and `loadSchedule` self-heals the mis-flag, so every install auto-upgrades to the generic body on the next boot/update without clobbering genuine custom prompts.
