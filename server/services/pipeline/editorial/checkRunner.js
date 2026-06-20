@@ -22,7 +22,7 @@ import { planManuscriptPass, fitContextToManuscriptFloor, estimateTokens, MANUSC
 import { getEnabledChecks, getEnabledCheckRows, getAllChecks, EDITORIAL_SOURCES, comicLetteringIssues } from '../../../lib/editorial/index.js';
 import { getSettings } from '../../settings.js';
 import { getSeries } from '../series.js';
-import { listIssues } from '../issues.js';
+import { listIssuesForSeries } from '../issues.js';
 import { getSeriesCanon } from '../seriesCanon.js';
 import { collectManuscriptSections, sectionsCorpus, manuscriptSectionHeader } from '../arcPlanner.js';
 import { getReverseOutline } from '../reverseOutline.js';
@@ -281,10 +281,20 @@ export async function runEditorialChecks(seriesId, options = {}) {
   // Editorial-arc fetch is gated on the declared source (#1295) so a run with no
   // POV/arc check pays no extra snapshot I/O — mirrors the needsReverseOutline gate.
   const needsEditorialArcs = enabled.some(({ check }) => checkSources(check).includes('editorialArcs'));
+  // Issues are fetched only when an enabled check declares an issue-derived source
+  // — storyboard.shots (#1315) or comicScript (#1313, served via the comic.lettering
+  // check's ctx.issues). Both projections feed off the same UNCAPPED per-series scan
+  // (#1469): listIssues caps at ISSUES_PER_RESPONSE_MAX (1000), silently skipping
+  // every storyboard scene / comic page past the 1000th issue. Mirrors the gate +
+  // fetch on the getReviewWithStaleness path below.
+  const needsIssues = enabled.some(({ check }) => {
+    const sources = checkSources(check);
+    return sources.includes('storyboard.shots') || sources.includes('comicScript');
+  });
   const [sections, canon, issues, outline, editorial] = await Promise.all([
     needsManuscript ? collectManuscriptSections(seriesId) : Promise.resolve([]),
     getSeriesCanon(series),
-    listIssues({ seriesId }).catch(() => []),
+    needsIssues ? listIssuesForSeries(seriesId).catch(() => []) : Promise.resolve([]),
     needsReverseOutline ? getReverseOutline(seriesId).catch(() => null) : Promise.resolve(null),
     // Reuse the already-loaded series so the aggregate skips a redundant getSeries.
     // (issues is fetched in this same Promise.all, so it can't be passed here —
@@ -292,8 +302,8 @@ export async function runEditorialChecks(seriesId, options = {}) {
     needsEditorialArcs ? getSeriesEditorial(seriesId, { series }).catch(() => null) : Promise.resolve(null),
   ]);
   const manuscript = sectionsCorpus(sections);
-  // Storyboard shots for the visual.shot-continuity check (#1315) — built off the
-  // already-loaded issues, so no extra I/O regardless of whether the check is on.
+  // Storyboard shots for the visual.shot-continuity check (#1315) — projected off
+  // the gated `issues` fetch (empty unless a storyboard.shots/comicScript check is on).
   const storyboardScenes = collectStoryboardScenes(issues);
   const reverseOutline = Array.isArray(outline?.scenes) ? outline.scenes : [];
   // The outline's plotline list (#1310) — injected separately from the scenes so a
@@ -306,9 +316,8 @@ export async function runEditorialChecks(seriesId, options = {}) {
   // series (canceled/early-stopped batch) doesn't flag a not-yet-analyzed POV
   // holder as arc-less (#1295). Folded into the editorialArcs fingerprint below.
   const editorialArcsComplete = editorialCoverageComplete(editorial);
-  // The comic lettering content the check (#1313) reads — derived from the
-  // already-loaded issues (no extra I/O), so a finding stales when an issue's comic
-  // pages / script are edited.
+  // The comic lettering content the check (#1313) reads — derived from the gated
+  // `issues` fetch, so a finding stales when an issue's comic pages / script are edited.
   const comicScripts = projectComicLetteringContent(issues);
   // Resolve every source token once — each finding's fingerprint reads from this
   // so the editor flags it `stale` when the content that check actually read (its
@@ -537,7 +546,7 @@ export async function getReviewWithStaleness(seriesId) {
     needsReverseOutline ? getReverseOutline(seriesId).catch(() => null) : Promise.resolve(null),
     // Reuse the already-loaded series.
     needsEditorialArcs ? getSeriesEditorial(seriesId, { series }).catch(() => null) : Promise.resolve(null),
-    needsIssues ? listIssues({ seriesId }).catch(() => []) : Promise.resolve([]),
+    needsIssues ? listIssuesForSeries(seriesId).catch(() => []) : Promise.resolve([]),
   ]);
   const reverseOutline = Array.isArray(outline?.scenes) ? outline.scenes : [];
   const reverseOutlinePlotlines = Array.isArray(outline?.plotlines) ? outline.plotlines : [];
