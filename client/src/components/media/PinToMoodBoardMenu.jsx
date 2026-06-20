@@ -53,9 +53,10 @@ export default function PinToMoodBoardMenu({ item, size = 'sm' }) {
   // A real media-key only when it matches the server vocabulary; synthetic keys
   // (canon-sheet:/comic-page:/noun:) fall through to an imageUrl-only pin.
   const mediaKey = isValidMediaKey(item.key) ? item.key : null;
-  // Only http(s) / absolute app paths are valid imageUrls (matches the board
-  // item schema); a missing/blob preview is dropped.
-  const thumbUrl = typeof item.previewUrl === 'string' && /^(https?:\/\/|\/)/.test(item.previewUrl)
+  // Only http(s) / absolute app paths are valid imageUrls (mirror the board
+  // item schema, which rejects a protocol-relative `//host` path even though it
+  // starts with `/`); a missing/blob/protocol-relative preview is dropped.
+  const thumbUrl = typeof item.previewUrl === 'string' && /^(https?:\/\/|\/(?!\/))/.test(item.previewUrl)
     ? item.previewUrl
     : null;
   // The board item payload: a real media-key for source linkage + dedup when we

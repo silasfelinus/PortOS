@@ -128,4 +128,21 @@ describe('PinToMoodBoardMenu', () => {
     expect(container).toBeEmptyDOMElement();
     expect(screen.queryByTitle('Pin to mood board')).toBeNull();
   });
+
+  it('drops a protocol-relative preview as a thumbnail (server rejects //host imageUrls)', async () => {
+    api.listMoodBoards.mockResolvedValue([{ id: 'b1', name: 'Refs', items: [] }]);
+    api.addMoodBoardItem.mockResolvedValue({ id: 'mbi-4', type: 'image', mediaKey: 'image:hero.png' });
+
+    // Valid media-key + a protocol-relative preview: pin the key, NOT the bad URL.
+    render(<PinToMoodBoardMenu item={{ kind: 'image', key: 'image:hero.png', previewUrl: '//evil/x.png' }} />);
+    fireEvent.click(screen.getByTitle('Pin to mood board'));
+    const row = await screen.findByRole('menuitemcheckbox', { name: /Refs/ });
+    await act(async () => { fireEvent.click(row); });
+
+    expect(api.addMoodBoardItem).toHaveBeenCalledWith(
+      'b1',
+      { type: 'image', mediaKey: 'image:hero.png' },
+      { silent: true },
+    );
+  });
 });
