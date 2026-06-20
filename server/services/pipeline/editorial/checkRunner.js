@@ -147,18 +147,23 @@ function projectStoryboardContinuity(storyboardScenes) {
   }));
 }
 
-// Project the loaded issues down to the lettering-relevant comic content the check
-// analyzes, via the registry's shared `comicLetteringIssues` (so the fingerprint
-// can't drift from what `run` reads). Keeps ONLY caption/dialogue/SFX — the fields
-// `panelLetteringMetrics` consumes — so the hash is stable across image renders and
-// description edits that don't change lettering. PAGE GROUPING is preserved (not
-// flattened): the check reports per-page totals and page/panel locations, so moving
-// panels between pages must change the hash even when the lettering text is identical.
+// Project the loaded issues down to the comic content the `comicScript`-source
+// checks analyze, via the registry's shared `comicLetteringIssues` (so the
+// fingerprint can't drift from what the checks read). The `comicScript` token is
+// shared: the lettering check (#1313) reads caption/dialogue/SFX, and the
+// page-turn check (#1314) additionally reads each panel's `description`. The
+// fingerprint must cover the UNION of fields any comic check reads off the token,
+// so it includes `description` too — otherwise a description-only edit would leave
+// a page-turn finding falsely fresh. (It also stays stable across image renders —
+// `panel.imageJobId` etc. are never projected.) PAGE GROUPING is preserved (not
+// flattened): the checks report per-page totals/locations and panel-count rhythm,
+// so moving panels between pages must change the hash even when text is identical.
 function projectComicLetteringContent(issues) {
   return comicLetteringIssues(issues).map(({ number, pages }) => ({
     number,
     pages: pages.map((p) => ({
       panels: (Array.isArray(p?.panels) ? p.panels : []).map((panel) => ({
+        description: typeof panel?.description === 'string' ? panel.description : '',
         caption: typeof panel?.caption === 'string' ? panel.caption : '',
         dialogue: Array.isArray(panel?.dialogue) ? panel.dialogue : [],
         sfx: typeof panel?.sfx === 'string' ? panel.sfx : '',

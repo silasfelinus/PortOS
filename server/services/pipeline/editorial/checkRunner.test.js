@@ -500,6 +500,37 @@ describe('getReviewWithStaleness (#1345)', () => {
     expect(review.comments.find((c) => c.checkId === 'visual.shot-continuity').stale).toBe(false);
   });
 
+  it('stales a comic.page-turn-beats finding when a panel description changes (#1314 projection)', async () => {
+    // The comicScript fingerprint is shared by the lettering (#1313) and page-turn
+    // (#1314) checks. page-turn reads each panel's `description` (lettering does
+    // not), so the projection must include `description` — else a description-only
+    // edit leaves a page-turn finding falsely fresh.
+    const comicIssue = (desc) => [{
+      id: 'i1', seriesId: 's1', number: 1,
+      stages: { comicPages: { pages: [
+        { panels: [{ description: desc, caption: '', dialogue: [], sfx: '' }] },
+        { panels: [{ description: 'b1', caption: '', dialogue: [], sfx: '' }, { description: 'b2', caption: '', dialogue: [], sfx: '' }] },
+      ] } },
+    }];
+    issuesState = comicIssue('a reveal on the wrong page');
+    // The page-turn check is the only LLM check we want firing here; the shared
+    // runStagedLLM mock returns a finding for whatever stage it's called with.
+    const onlyPageTurn = {
+      pipelineEditorialChecks: {
+        checks: Object.fromEntries(
+          listChecks().filter((c) => c.id !== 'comic.page-turn-beats').map((c) => [c.id, { enabled: false }]),
+        ),
+      },
+    };
+    const { findings } = await runEditorialChecks('s1', { settings: onlyPageTurn });
+    reviewState = { comments: findings.map((f) => ({ ...f, status: 'open' })) };
+    expect(reviewState.comments.find((c) => c.checkId === 'comic.page-turn-beats')).toBeTruthy();
+    // Only a panel description changed — panel counts/lettering identical.
+    issuesState = comicIssue('a reveal moved to a reveal-safe page');
+    const review = await getReviewWithStaleness('s1');
+    expect(review.comments.find((c) => c.checkId === 'comic.page-turn-beats').stale).toBe(true);
+  });
+
   it('keeps a scene finding fresh when the manuscript changes (reverseOutline-only source)', async () => {
     outlineState = { scenes: [{ id: 'scene-001', issueNumber: 1, heading: 'Talking heads', anchorQuote: 'q', components: { narrative: false, action: false, dialogue: true } }] };
     await seedReviewFromRun();

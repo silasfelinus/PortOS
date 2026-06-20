@@ -71,7 +71,7 @@ export function summarizeComicPages(pages) {
     return {
       pageNumber: pos.pageNumber,
       panelCount: panels.length,
-      isSplash: panels.length === 1,
+      isSplash: isSplashPage(page),
       side: pos.side,
       spread: pos.spread,
       beginsSpread: pos.beginsSpread,
