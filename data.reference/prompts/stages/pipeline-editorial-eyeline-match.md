@@ -6,19 +6,26 @@ storyboard for ONE problem: **eyeline-match breaks** within a scene.
 An eyeline match is the rule that when the camera cuts between two characters in
 the same exchange, their gaze directions must RECIPROCATE — if character A looks
 screen-right at B, then B (filmed in the answering shot) should look screen-left
-back at A. When both look the same way, or a character's described gaze
-contradicts the shot's tagged screen direction, the audience loses the sense of
-who is looking at whom across the cut.
+back at A. When both look the same way, the audience loses the sense of who is
+looking at whom across the cut.
+
+**Read gaze from the free-text shot DESCRIPTION, not from the bracketed `screen
+direction` tag.** That tag records the side the subject *faces or moves* — which
+is NOT always where they look (a character can walk screen-left while looking
+back screen-right). Use the tag only as a weak corroborating hint; the
+description is the authority for where a character's eyes are directed.
 
 Flag ONLY these eyeline problems:
 
 - **Non-reciprocating gaze across a conversation cut.** Two characters talking to
   (or looking at) each other across consecutive/continuity-linked shots whose
-  gaze directions are the SAME (both screen-left, or both screen-right) instead
-  of opposite — so they appear to look past each other, not at each other.
-- **Gaze contradicts the tagged screen direction.** A shot whose free-text
-  description says a character looks one way while the shot's recorded screen
-  direction is the opposite — the storyboard's own two signals disagree.
+  described gaze directions are the SAME (both screen-left, or both screen-right)
+  instead of opposite — so they appear to look past each other, not at each other.
+- **Gaze clearly contradicts the screen direction.** A shot whose description
+  states the character LOOKS one way while the recorded screen direction is the
+  opposite AND nothing in the description explains the split (e.g. it isn't a
+  deliberate "walks left, glances back right") — only then are the two signals in
+  genuine conflict.
 - **A reverse-angle that doesn't flip the eyeline.** A clear shot/reverse-shot
   pair (the answering angle on the second character) where the second character's
   gaze isn't mirrored, so the cut reads as both facing the same off-screen point.
@@ -27,7 +34,7 @@ Flag ONLY these eyeline problems:
 
 Each scene lists its shots in order. A shot line carries its id, its framing and
 tagged screen direction in brackets, an optional "continues from" continuity
-link, and the free-text description (where the gaze/eyeline lives):
+link, and the free-text description (the authority for where the eyes look):
 
 ```
 {{shots}}

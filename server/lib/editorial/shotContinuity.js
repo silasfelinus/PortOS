@@ -89,13 +89,27 @@ export function findAxisReversals(scene) {
 }
 
 // Human-readable label for a shot's screen direction, used when rendering shots
-// for the LLM eyeline/appearance continuity passes (#1466). `neutral` is head-on;
-// an unset direction is named so the model knows the signal is absent, not "left".
+// for the LLM eyeline/appearance continuity passes (#1466). The field records the
+// side the subject "faces / moves" (shotGrammar.js) — NOT specifically gaze — so
+// the label stays neutral ("screen direction: left") rather than asserting the
+// subject is LOOKING that way; conflating motion with gaze would induce false
+// eyeline contradictions for a shot like "walks left while looking back right".
+// `neutral` is head-on; an unset direction is named so the model knows the signal
+// is absent, not "left".
 const DIRECTION_PROMPT_LABEL = {
-  left: 'faces screen-left',
-  right: 'faces screen-right',
-  neutral: 'faces head-on',
+  left: 'screen direction: left',
+  right: 'screen direction: right',
+  neutral: 'screen direction: neutral (head-on)',
 };
+
+// Cap on how many qualifying scenes a single eyeline pass renders, so a series
+// with a very large storyboard can't overflow the provider context in one
+// unchunked LLM call. An eyeline match is a WITHIN-scene judgment (no cross-scene
+// context is lost by splitting the corpus), so the cap simply bounds one pass;
+// the omission is surfaced in the block (NOT silent — see the trailing marker) so
+// the model and any reader know coverage stopped. Generous enough that a normal
+// series renders whole. (A future iteration could page across the overflow.)
+export const EYELINE_MAX_SCENES = 60;
 
 /**
  * Render the collected storyboard scenes into a compact, ordered text block for
@@ -112,16 +126,25 @@ const DIRECTION_PROMPT_LABEL = {
  * `continuityFromShotId` reference still resolves to a visible line; an
  * undescribed shot renders its description as `(no description)`.
  *
+ * At most `maxScenes` qualifying scenes are rendered (bounds one unchunked LLM
+ * call); when more qualify, a trailing marker names how many were omitted so the
+ * truncation is never silent (eyeline is a within-scene judgment, so omitting a
+ * scene loses no cross-scene context).
+ *
  * Returns '' when no scene qualifies, so the caller can gate the LLM call on a
  * non-empty block (mirrors the object-backstory check's row gate).
  *
  * @param {Array<{ issueNumber: number|null, scene: object }>} storyboardScenes
+ * @param {{ maxScenes?: number }} [opts]
  * @returns {string}
  */
-export function summarizeStoryboardShots(storyboardScenes) {
+export function summarizeStoryboardShots(storyboardScenes, opts = {}) {
+  const maxScenes = Number.isInteger(opts.maxScenes) && opts.maxScenes > 0
+    ? opts.maxScenes
+    : EYELINE_MAX_SCENES;
   const entries = Array.isArray(storyboardScenes) ? storyboardScenes : [];
   const blocks = [];
-  let sceneIndex = 0;
+  let qualifying = 0;
   for (const entry of entries) {
     const scene = entry?.scene;
     if (!scene || typeof scene !== 'object') continue;
@@ -131,14 +154,15 @@ export function summarizeStoryboardShots(storyboardScenes) {
     ).length;
     // Need at least two described shots to compare an eyeline / appearance across.
     if (describedCount < 2) continue;
-    sceneIndex += 1;
+    qualifying += 1;
+    if (blocks.length >= maxScenes) continue; // keep counting (for the marker) but stop rendering
     const issueNumber = Number.isInteger(entry.issueNumber) ? entry.issueNumber : null;
     const sceneName = typeof scene.heading === 'string' && scene.heading.trim()
       ? scene.heading.trim()
       : (typeof scene.slugline === 'string' && scene.slugline.trim() ? scene.slugline.trim() : 'scene');
     const header = issueNumber != null
-      ? `Scene ${sceneIndex} (Issue ${issueNumber}): ${sceneName}`
-      : `Scene ${sceneIndex}: ${sceneName}`;
+      ? `Scene ${blocks.length + 1} (Issue ${issueNumber}): ${sceneName}`
+      : `Scene ${blocks.length + 1}: ${sceneName}`;
     const lines = [];
     for (const s of shots) {
       if (!s || typeof s !== 'object') continue;
@@ -154,6 +178,11 @@ export function summarizeStoryboardShots(storyboardScenes) {
       lines.push(`  - ${id} [${type}, ${dir}]${from}: ${desc}`);
     }
     blocks.push(`${header}\n${lines.join('\n')}`);
+  }
+  if (!blocks.length) return '';
+  const omitted = qualifying - blocks.length;
+  if (omitted > 0) {
+    blocks.push(`(${omitted} additional scene${omitted === 1 ? '' : 's'} omitted from this eyeline pass to fit the model context — review them in a later pass.)`);
   }
   return blocks.join('\n\n');
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findAxisReversals, findShotTypeMonotony, summarizeStoryboardShots } from './shotContinuity.js';
+import { findAxisReversals, findShotTypeMonotony, summarizeStoryboardShots, EYELINE_MAX_SCENES } from './shotContinuity.js';
 
 describe('findAxisReversals', () => {
   it('flags an axis reversal across a continuity-linked left↔right pair', () => {
@@ -141,8 +141,8 @@ describe('summarizeStoryboardShots (#1466)', () => {
       }),
     ]);
     expect(block).toContain('Scene 1 (Issue 4): INT. KITCHEN');
-    expect(block).toContain('shot-01 [medium, faces screen-right]: Anna looks toward the doorway');
-    expect(block).toContain('shot-02 [medium, faces screen-right] (continues from shot-01): Ben answers, also looking right');
+    expect(block).toContain('shot-01 [medium, screen direction: right]: Anna looks toward the doorway');
+    expect(block).toContain('shot-02 [medium, screen direction: right] (continues from shot-01): Ben answers, also looking right');
   });
 
   it('skips a scene with fewer than two described shots (nothing to compare)', () => {
@@ -169,6 +169,7 @@ describe('summarizeStoryboardShots (#1466)', () => {
     ]);
     expect(block).toContain('Scene 1: EXT. ROAD'); // no issue number → no "(Issue n)"
     expect(block).toContain('s3 [unspecified framing, screen direction unspecified]: (no description)');
+    expect(block).toContain('screen direction unspecified'); // motion/facing tag, not asserted gaze
   });
 
   it('numbers only qualifying scenes sequentially and joins multiple with a blank line', () => {
@@ -189,5 +190,21 @@ describe('summarizeStoryboardShots (#1466)', () => {
     expect(summarizeStoryboardShots(undefined)).toBe('');
     expect(() => summarizeStoryboardShots([{ scene: null }, { scene: { shots: 'x' } }, {}])).not.toThrow();
     expect(summarizeStoryboardShots([{ scene: { shots: [1, 2] } }])).toBe(''); // non-object shots → no descriptions
+  });
+
+  it('caps rendered scenes and surfaces a non-silent omission marker when more qualify', () => {
+    const comparable = (n) => sceneEntry(n, { heading: `S${n}`, shots: [{ id: `${n}a`, description: 'one' }, { id: `${n}b`, description: 'two' }] });
+    const scenes = Array.from({ length: 5 }, (_, i) => comparable(i + 1));
+    const block = summarizeStoryboardShots(scenes, { maxScenes: 2 });
+    // Only the first two render; their headers renumber 1..2 sequentially.
+    expect(block).toContain('Scene 1 (Issue 1): S1');
+    expect(block).toContain('Scene 2 (Issue 2): S2');
+    expect(block).not.toContain('S3');
+    // The remaining 3 are reported, not silently dropped.
+    expect(block).toContain('3 additional scenes omitted');
+  });
+
+  it('exposes a sane default cap', () => {
+    expect(EYELINE_MAX_SCENES).toBeGreaterThan(0);
   });
 });
