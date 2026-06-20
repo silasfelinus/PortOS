@@ -87,6 +87,11 @@ export default function StoryboardsStage({ issue, series, onStageUpdate, actions
 
   const persist = async (nextScenes) => {
     setScenes(nextScenes);
+    // Keep the ref coherent for every write path (not just the ones that set it
+    // explicitly), so a discrete pick fired between a persist and the next
+    // render — e.g. a wardrobe/shot select right after a removeScene reindex —
+    // reads the freshly-persisted array instead of a stale render-scope snapshot.
+    scenesRef.current = nextScenes;
     const updated = await updatePipelineIssue(issue.id, {
       stages: { storyboards: { status: nextScenes.length ? 'edited' : 'empty', scenes: nextScenes } },
     }).catch((err) => {
@@ -119,20 +124,40 @@ export default function StoryboardsStage({ issue, series, onStageUpdate, actions
   };
 
   // Wardrobe picks are discrete selections (no blur), so persist immediately.
-  const setSceneAppearances = (i, nextAppearances) =>
-    persist(scenes.map((s, j) => j === i ? { ...s, characterAppearances: nextAppearances } : s));
+  // Takes a transform over the scene's CURRENT appearances applied against
+  // scenesRef.current — not a pre-built array — so two back-to-back picks on
+  // different characters in the same scene accumulate instead of clobbering.
+  // (A pre-built payload would have been derived from the stale render-scope
+  // scene, dropping the prior pick under last-write-wins server persistence.)
+  // Mirrors updateShots' ref discipline.
+  const setSceneAppearances = (i, transform) => {
+    const next = scenesRef.current.map((s, j) => {
+      if (j !== i) return s;
+      const prev = Array.isArray(s.characterAppearances) ? s.characterAppearances : [];
+      return { ...s, characterAppearances: transform(prev) };
+    });
+    scenesRef.current = next;
+    return persist(next);
+  };
 
   // Shot id stable enough for React keys + filename-hook correlation. Local
   // generation (vs server-assigned) is fine — every later persist round-trips
   // through the server which keeps whatever id the client wrote.
   const mintShotId = () => `shot-${Math.random().toString(36).slice(2, 10)}`;
 
+  // Reads + writes scenesRef (not the render-scope `scenes`) so two discrete
+  // picks fired back-to-back — e.g. setting shotType then screenDirection on the
+  // same shot before a re-render — each build on the prior pick's result. Without
+  // this, the second persist would ship a snapshot missing the first field and,
+  // since the server serializes scenes writes (last-write-wins on the whole
+  // array), silently clobber it. Mirrors updateScene's ref discipline.
   const updateShots = (sceneIdx, transform) => {
-    const next = scenes.map((s, j) => {
+    const next = scenesRef.current.map((s, j) => {
       if (j !== sceneIdx) return s;
       const shots = Array.isArray(s.shots) ? s.shots : [];
       return { ...s, shots: transform(shots) };
     });
+    scenesRef.current = next;
     setScenes(next);
     return next;
   };
@@ -520,7 +545,7 @@ export default function StoryboardsStage({ issue, series, onStageUpdate, actions
                 <WardrobePicker
                   characters={wardrobeChars}
                   scene={scene}
-                  onChange={(next) => setSceneAppearances(i, next)}
+                  onChange={(transform) => setSceneAppearances(i, transform)}
                 />
               ) : null}
               <ShotList
@@ -686,9 +711,14 @@ function WardrobePicker({ characters, scene, onChange }) {
     appearances.find((a) => a && a.characterId === charId)?.wardrobeId || '';
   const pickCount = matched.filter((c) => wardrobeFor(c.id)).length;
 
+  // Pass a transform (not a pre-built array) so the parent applies it against
+  // the freshest persisted appearances — `appearances` here is the render-scope
+  // prop and may lag a back-to-back pick on another character in this scene.
   const setWardrobe = (charId, wardrobeId) => {
-    const rest = appearances.filter((a) => a && a.characterId !== charId);
-    onChange(wardrobeId ? [...rest, { characterId: charId, wardrobeId }] : rest);
+    onChange((prev) => {
+      const rest = (Array.isArray(prev) ? prev : []).filter((a) => a && a.characterId !== charId);
+      return wardrobeId ? [...rest, { characterId: charId, wardrobeId }] : rest;
+    });
   };
 
   if (matched.length === 0) return null;
