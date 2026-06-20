@@ -35,7 +35,7 @@ function SeverityBreakdown({ openBySeverity }) {
   const any = SEVERITY_ORDER.some((s) => (openBySeverity?.[s] || 0) > 0);
   if (!any) return <span className="text-[11px] text-port-success">No open findings</span>;
   return (
-    <span className="flex items-center gap-3">
+    <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
       {SEVERITY_ORDER.map((sev) => (
         <span key={sev} className="flex items-center gap-1 text-[11px] text-gray-400">
           <span className={`h-2 w-2 rounded-full ${SEVERITY_DOT[sev]}`} />
@@ -51,7 +51,7 @@ function Sparkline({ points }) {
   if (!poly) return <span className="text-[11px] text-gray-600">Run editorial checks to start the trend</span>;
   const last = coords[coords.length - 1];
   return (
-    <svg width={140} height={32} className="overflow-visible" role="img" aria-label="Editorial health score trend">
+    <svg viewBox="0 0 140 32" width={140} height={32} className="h-8 w-[140px] max-w-full overflow-visible" role="img" aria-label="Editorial health score trend">
       <polyline points={poly} fill="none" stroke="currentColor" strokeWidth="1.5" className="text-port-accent" />
       <circle cx={last.x} cy={last.y} r="2.5" className="fill-port-accent" />
     </svg>
@@ -137,8 +137,8 @@ export default function EditorialHealthPanel({ seriesId, refreshKey = 0 }) {
       </div>
 
       {/* Score + breakdown */}
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
+        <div className="min-w-0">
           <div className="flex items-baseline gap-2">
             <span className={`text-3xl font-bold ${band.tone}`}>{health.score}</span>
             <span className="text-xs text-gray-500">/ 100 · {band.label}</span>
@@ -153,7 +153,7 @@ export default function EditorialHealthPanel({ seriesId, refreshKey = 0 }) {
           </div>
           <div className="mt-1.5"><SeverityBreakdown openBySeverity={health.openBySeverity} /></div>
         </div>
-        <div className="text-right">
+        <div className="sm:text-right">
           <span className="block text-[10px] uppercase tracking-wide text-gray-600">Score trend</span>
           <span className="text-port-accent"><Sparkline points={health.trend?.points} /></span>
         </div>

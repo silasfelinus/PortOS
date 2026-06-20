@@ -279,13 +279,13 @@ export default function PipelineEditorialChecks() {
           <h1 className="flex items-center gap-2 text-xl font-semibold text-gray-100">
             <ListChecks size={20} className="text-port-accent" /> Editorial Checks
           </h1>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
             <label htmlFor="ec-series" className="sr-only">Series</label>
             <select
               id="ec-series"
               value={seriesId}
               onChange={(e) => onSeriesChange(e.target.value)}
-              className="rounded border border-port-border bg-port-card px-2 py-1.5 text-sm text-gray-100 focus:border-port-accent focus:outline-none"
+              className="w-full rounded border border-port-border bg-port-card px-2 py-1.5 text-sm text-gray-100 focus:border-port-accent focus:outline-none sm:w-auto"
             >
               <option value="">Select a series…</option>
               {series.map((s) => (
@@ -296,7 +296,7 @@ export default function PipelineEditorialChecks() {
               <button
                 type="button"
                 onClick={cancelRun}
-                className="inline-flex items-center gap-1.5 rounded bg-port-error/20 px-3 py-1.5 text-sm text-rose-300 hover:bg-port-error/30"
+                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded bg-port-error/20 px-3 py-1.5 text-sm text-rose-300 hover:bg-port-error/30 sm:flex-none"
               >
                 <Square size={14} /> Cancel
               </button>
@@ -306,7 +306,7 @@ export default function PipelineEditorialChecks() {
                 onClick={() => runChecks(null)}
                 disabled={runDisabled || enabledCount === 0}
                 title={enabledCount === 0 ? 'No checks enabled' : undefined}
-                className="inline-flex items-center gap-1.5 rounded bg-port-accent px-3 py-1.5 text-sm text-white hover:bg-port-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded bg-port-accent px-3 py-1.5 text-sm text-white hover:bg-port-accent/90 disabled:cursor-not-allowed disabled:opacity-50 sm:flex-none"
               >
                 {runStarting ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
                 Run all enabled ({enabledCount})
@@ -317,7 +317,7 @@ export default function PipelineEditorialChecks() {
                 type="button"
                 onClick={() => runChecks([...selectedIds])}
                 disabled={runDisabled}
-                className="inline-flex items-center gap-1.5 rounded border border-port-accent px-3 py-1.5 text-sm text-port-accent hover:bg-port-accent/10 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded border border-port-accent px-3 py-1.5 text-sm text-port-accent hover:bg-port-accent/10 disabled:cursor-not-allowed disabled:opacity-50 sm:flex-none"
               >
                 <Play size={14} /> Run selected ({selectedIds.size})
               </button>
