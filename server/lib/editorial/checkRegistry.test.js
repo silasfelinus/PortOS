@@ -1052,18 +1052,19 @@ describe('roster.unmodeled-names — LLM check (#1412)', () => {
     expect(findings[0].location).toBe('Unmodeled character — "Marguerite" (2 issues)');
   });
 
-  it('keeps a quote-less finding as-is but drops a quoted name absent from the prose', async () => {
+  it('drops malformed findings — no quoted name, or a quoted name absent from the prose', async () => {
     const ctx = wholeCtx({
       sections: [{ number: 1, content: 'Nothing matching here.' }],
       callStagedLLM: async () => ({ content: { findings: [
-        { severity: 'low', issueNumber: 1, location: 'General note (no quoted name)', problem: 'malformed' },
+        // Quote-less ⇒ can't verify the name against the prose, and we won't pass the
+        // model's un-vetted text through ⇒ dropped.
+        { severity: 'low', issueNumber: 1, location: 'General note (no quoted name)', problem: 'malformed, appears only once' },
+        // Quoted but matches 0 sections (garbled token) ⇒ dropped.
         { severity: 'low', issueNumber: 1, location: 'Unmodeled character — "Ghostname"', problem: 'not actually in prose' },
       ] } }),
     });
     const findings = await getCheck(UNMODELED_NAMES).run(ctx);
-    // The quote-less note is kept untouched (can't verify a name); the quoted
-    // "Ghostname" matches 0 sections, so it's dropped rather than reported.
-    expect(findings.map((f) => f.location)).toEqual(['General note (no quoted name)']);
+    expect(findings).toEqual([]);
   });
 });
 

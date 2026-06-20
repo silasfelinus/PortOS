@@ -1872,16 +1872,21 @@ export const EDITORIAL_CHECKS = [
       // model's `anchorQuote` + `issueNumber` (facts it's authoritative on). We count
       // the name's distinct-issue appearances across ALL sections, set the location
       // label + severity, and collapse the same name surfaced from different chunks.
-      // A name the matcher can't find in the prose (a stray/garbled LLM token) is
-      // dropped rather than reported as a "0 appearances" phantom.
+      // Malformed findings are DROPPED, not passed through (passing the model's
+      // un-vetted text would reopen the contradiction risk this pass closes): one
+      // with no quoted name to verify, or one whose quoted name the matcher can't
+      // find in any section (a stray/garbled LLM token / 0-appearance phantom).
       const sections = Array.isArray(ctx.sections) ? ctx.sections : [];
       const seenNames = new Set();
       const out = [];
       for (const f of findings) {
         const name = (String(f.location || '').match(/"([^"]+)"/) || [])[1];
-        // No quoted name to verify against the prose — keep the model's finding as-is
-        // rather than guessing (it may be a general roster note, not a single name).
-        if (!name) { out.push(f); continue; }
+        // The contract requires the model to quote the surfaced name in `location`.
+        // A finding without one is malformed — drop it rather than pass the model's
+        // un-vetted free text through unrewritten (which would reopen the contradiction
+        // risk this deterministic pass exists to close: keep ONLY anchorQuote +
+        // issueNumber, never the model's problem/suggestion).
+        if (!name) continue;
         const key = normalizeName(name);
         if (key && seenNames.has(key)) continue; // same unmodeled name from another chunk
         if (key) seenNames.add(key);
