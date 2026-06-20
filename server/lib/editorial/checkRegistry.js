@@ -1897,10 +1897,9 @@ export const EDITORIAL_CHECKS = [
         findings.push({ severity, category: 'casting', location, problem, suggestion, anchorQuote, issueNumber });
 
       // --- 1) Dialogue share ------------------------------------------------
-      // Longest-token-first owners so a beat naming two characters credits the
-      // more specific match first (mirrors characterMatcher's intent).
-      const sections = Array.isArray(ctx.sections) ? ctx.sections : [];
-      const manuscript = sections.map((s) => (typeof s?.content === 'string' ? s.content : '')).join('\n\n');
+      // The runner injects the canonical stitched corpus as ctx.manuscript
+      // (needsManuscript) — reuse it rather than re-stitching ctx.sections.
+      const manuscript = typeof ctx.manuscript === 'string' ? ctx.manuscript : '';
       if (maxDialogueShare < 1 && manuscript.trim()) {
         const owners = identities
           .filter((id) => id.matcher)

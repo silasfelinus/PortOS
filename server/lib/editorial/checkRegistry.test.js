@@ -3076,7 +3076,15 @@ describe('cast.representation-balance — deterministic check (#1312)', () => {
   const REP = 'cast.representation-balance';
   const sec = (number, content) => ({ number, content });
   const runRep = (canon, { sections = [], reverseOutline = [], config = {} } = {}) =>
-    getCheck(REP).run({ canon, sections, reverseOutline, config, severityDefault: 'low' });
+    getCheck(REP).run({
+      canon,
+      sections,
+      // The runner injects the stitched corpus as ctx.manuscript; mirror it here.
+      manuscript: sections.map((s) => s.content || '').join('\n\n'),
+      reverseOutline,
+      config,
+      severityDefault: 'low',
+    });
   const dialogue = (findings) => findings.find((f) => f.location === 'Series dialogue');
   const bechdel = (findings) => findings.find((f) => /Bechdel/.test(f.problem));
   const screenTime = (findings) => findings.find((f) => /strongly skewed cast/.test(f.problem));
