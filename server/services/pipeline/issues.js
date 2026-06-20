@@ -682,6 +682,30 @@ export async function listAllIssues({ includeDeleted = false, withHistory = true
 }
 
 /**
+ * Every live issue record for one series — UNCAPPED, sorted by issue number.
+ *
+ * Same cap rationale as `listAllIssues`/`listIssueIds`: `listIssues({ seriesId })`
+ * slices at `ISSUES_PER_RESPONSE_MAX` (1000), so a series holding >1000 issues
+ * loses its tail. Per-series scans that MUST see every issue (the editorial
+ * runner's storyboard-continuity and comic-lettering projections, #1469) use
+ * this — with `listIssues` those checks would silently skip every storyboard
+ * scene / comic page past the 1000th issue. Sorted by `number` to match the
+ * ordering `listIssues` produces within a single series.
+ *
+ * @param {string} seriesId
+ * @param {object} [options]
+ * @param {boolean} [options.includeDeleted=false]
+ * @param {boolean} [options.withHistory=true] - false strips per-stage run history
+ */
+export async function listIssuesForSeries(seriesId, { includeDeleted = false, withHistory = true } = {}) {
+  const { issues } = await readState();
+  const live = includeDeleted ? issues : issues.filter((i) => !i.deleted);
+  const filtered = live.filter((i) => i.seriesId === seriesId);
+  const sorted = [...filtered].sort((a, b) => (a.number || 0) - (b.number || 0));
+  return withHistory ? sorted : sorted.map(stripRunHistoryFromIssue);
+}
+
+/**
  * Recently-updated issues across all series. Sorts the FULL issue set by
  * `updatedAt` desc before applying `limit` — unlike `listIssues`, which
  * sorts by `seriesId/number` then caps at `ISSUES_PER_RESPONSE_MAX`. That

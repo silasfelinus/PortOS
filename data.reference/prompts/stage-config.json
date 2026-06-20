@@ -652,6 +652,20 @@
       "model": "default",
       "returnsJson": true,
       "variables": []
+    },
+    "pipeline-editorial-eyeline-match": {
+      "name": "Pipeline — Editorial Check: Storyboard eyeline match",
+      "description": "Editorial check (#1466): LLM scan of a scene's storyboard shot list for eyeline-match breaks — two characters in conversation whose gaze directions don't reciprocate across the cut, or a described eyeline that contradicts the shot's tagged screen direction. The judgment sibling of the deterministic visual.shot-continuity check; reads the per-issue storyboard shots (storyboard.shots). Returns issue-anchored findings.",
+      "model": "default",
+      "returnsJson": true,
+      "variables": []
+    },
+    "pipeline-editorial-appearance-continuity": {
+      "name": "Pipeline — Editorial Check: Storyboard appearance / prop continuity",
+      "description": "Editorial check (#1467): LLM diff of a scene's storyboard shot descriptions for appearance/prop continuity breaks — the same character described with conflicting wardrobe/hair/state, a prop that appears/vanishes/transforms, or a setting whose weather/time/layout contradicts across shots, with no action justifying the change. The semantic sibling of the deterministic visual.shot-continuity check (the shot parser matches characters by name but never diffs their descriptions); reads the per-issue storyboard shots (storyboard.shots). Returns issue-anchored findings.",
+      "model": "default",
+      "returnsJson": true,
+      "variables": []
     }
   }
 }

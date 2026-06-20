@@ -4,19 +4,19 @@ import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
-import migration from './117-editorial-comic-page-turn-stage.js';
+import migration from './119-editorial-comic-page-turn-stage.js';
 
 // scripts/migrations/<this> → ../.. is the repo root (matches _testHelpers.js).
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-// First-shipment seed migration (mirrors 110–116) — no MD5 bookkeeping, so the
+// First-shipment seed migration (mirrors 110–118) — no MD5 bookkeeping, so the
 // seed / no-clobber behavior is asserted directly.
 
 const FILENAME = 'pipeline-editorial-comic-page-turn.md';
 const STAGE_KEY = 'pipeline-editorial-comic-page-turn';
 const BODY = '# Comic page-turn beats\n\nshipped body\n';
 
-describe('migration 117 — seed editorial-comic-page-turn stage', () => {
+describe('migration 119 — seed editorial-comic-page-turn stage', () => {
   let rootDir;
   let stagesDir;
   let refStagesDir;
@@ -34,7 +34,7 @@ describe('migration 117 — seed editorial-comic-page-turn stage', () => {
   };
 
   beforeEach(() => {
-    rootDir = mkdtempSync(join(tmpdir(), 'migration-117-'));
+    rootDir = mkdtempSync(join(tmpdir(), 'migration-119-'));
     stagesDir = join(rootDir, 'data', 'prompts', 'stages');
     refStagesDir = join(rootDir, 'data.reference', 'prompts', 'stages');
     installedConfigPath = join(rootDir, 'data', 'prompts', 'stage-config.json');

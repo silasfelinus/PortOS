@@ -400,7 +400,10 @@ describe('pov.head-hopping — LLM check (#1311)', () => {
     let seenOverhead = 0;
     const ctx = wholeCtx({
       planManuscriptChunks: async (_stage, opts) => {
-        seenOverhead = opts.overheadTokens;
+        // The trimmable context blocks ride alongside the manuscript as overhead;
+        // the fixed template reserve is passed separately (#1459).
+        seenOverhead = opts.fixedOverheadTokens;
+        expect(opts.context).toHaveProperty('povMap');
         return ['# Issue 1\n\nchunk'];
       },
       callStagedLLM: async (_stage, vars) => {
@@ -478,7 +481,10 @@ describe.each([
     let seenOverhead = 0;
     const ctx = wholeCtx({
       planManuscriptChunks: async (_stage, opts) => {
-        seenOverhead = opts.overheadTokens;
+        // The scene map rides as trimmable context (#1459); the fixed template
+        // reserve is passed separately.
+        seenOverhead = opts.fixedOverheadTokens;
+        expect(opts.context).toHaveProperty('sceneMap');
         return ['# Issue 1\n\nchunk'];
       },
       callStagedLLM: async (_stage, vars) => {
@@ -487,7 +493,7 @@ describe.each([
       },
     });
     const findings = await getCheck(id).run(ctx);
-    // The scene map rode along as a prompt var and inflated the overhead budget.
+    // The scene map rode along as a prompt var (and was budgeted as context overhead).
     expect(seenVars.sceneMap).toContain('Issue 1: The void');
     expect(seenOverhead).toBeGreaterThan(0);
     expect(findings).toHaveLength(1);
@@ -608,8 +614,9 @@ describe('chekhov.setups-payoffs — LLM check (#1299)', () => {
     const ctx = wholeCtx({
       series: { arc: { readerMap: { hooks: [{ label: 'The locked drawer', note: 'planted in Issue 1' }], payoffs: [] } } },
       planManuscriptChunks: async (_stage, opts) => {
-        // Authored hooks/payoffs ride alongside the manuscript as fixed overhead.
-        expect(opts.overheadTokens).toBeGreaterThan(0);
+        // Authored hooks/payoffs ride alongside the manuscript as trimmable context (#1459).
+        expect(opts.context).toHaveProperty('authoredSetups');
+        expect(opts.fixedOverheadTokens).toBeGreaterThan(0);
         return ['# Issue 1\n\nThe drawer stayed locked forever.'];
       },
       callStagedLLM: async (_stage, vars) => {
@@ -719,8 +726,11 @@ describe('plot.structure-momentum — LLM check (#1310)', () => {
     const ctx = wholeCtx({
       series: { arc: { readerMap: { hooks: [{ label: 'Where is the brother?', note: 'planted Issue 1' }], payoffs: [] } } },
       planManuscriptChunks: async (_stage, opts) => {
-        // Scene map + plotline coverage + authored setups all ride as fixed overhead.
-        expect(opts.overheadTokens).toBeGreaterThan(0);
+        // Scene map + plotline coverage + authored setups all ride as trimmable context (#1459).
+        expect(opts.context).toHaveProperty('sceneMap');
+        expect(opts.context).toHaveProperty('plotlineMap');
+        expect(opts.context).toHaveProperty('authoredSetups');
+        expect(opts.fixedOverheadTokens).toBeGreaterThan(0);
         return ['# Issue 1\n\nThe brother thread is never mentioned again.'];
       },
       callStagedLLM: async (_stage, vars) => {
@@ -843,8 +853,10 @@ describe('theme.coherence — LLM check (#1317)', () => {
     let seenVars = null;
     const ctx = wholeCtx({
       planManuscriptChunks: async (_stage, opts) => {
-        // Declared themes + scene map both ride as fixed overhead.
-        expect(opts.overheadTokens).toBeGreaterThan(0);
+        // Declared themes + scene map both ride as trimmable context (#1459).
+        expect(opts.context).toHaveProperty('declaredThemes');
+        expect(opts.context).toHaveProperty('sceneMap');
+        expect(opts.fixedOverheadTokens).toBeGreaterThan(0);
         return ['# Issue 1\n\nForgiveness is never mentioned again.'];
       },
       callStagedLLM: async (_stage, vars) => {
@@ -954,8 +966,9 @@ describe('roster.unmodeled-names — LLM check (#1412)', () => {
     let seenVars = null;
     const ctx = wholeCtx({
       planManuscriptChunks: async (_stage, opts) => {
-        // The known-character roster rides as fixed overhead.
-        expect(opts.overheadTokens).toBeGreaterThan(0);
+        // The known-character roster rides as trimmable context (#1459).
+        expect(opts.context).toHaveProperty('knownCharacters');
+        expect(opts.fixedOverheadTokens).toBeGreaterThan(0);
         return ['# Issue 1\n\nMarguerite drew her sword.'];
       },
       callStagedLLM: async (_stage, vars) => {
@@ -1128,8 +1141,9 @@ describe('endings.cliffhanger — LLM check (#1298)', () => {
     const ctx = wholeCtx({
       series: { arc: { readerMap: { cliffhangers: [{ note: 'the door opens', atIssueBoundary: 1 }] } } },
       planManuscriptChunks: async (_stage, opts) => {
-        // Authored cliffhangers ride alongside the manuscript as fixed overhead.
-        expect(opts.overheadTokens).toBeGreaterThan(0);
+        // Authored cliffhangers ride alongside the manuscript as trimmable context (#1459).
+        expect(opts.context).toHaveProperty('authoredCliffhangers');
+        expect(opts.fixedOverheadTokens).toBeGreaterThan(0);
         return ['# Issue 1\n\nThe war ended and everyone went home.'];
       },
       callStagedLLM: async (_stage, vars) => {
@@ -2142,14 +2156,14 @@ describe('objects.unmotivated-interaction — LLM check (#1288)', () => {
   });
 
   it('budgets the objects summary as prompt overhead and re-sends it on every chunk', async () => {
-    let overhead = null;
+    let sawObjectsContext = false;
     const objectsSeen = [];
     await getCheck('objects.unmotivated-interaction').run(baseCtx({
-      planManuscriptChunks: async (_stage, opts) => { overhead = opts.overheadTokens; return ['chunk a', 'chunk b']; },
+      planManuscriptChunks: async (_stage, opts) => { sawObjectsContext = Object.prototype.hasOwnProperty.call(opts.context || {}, 'objects'); return ['chunk a', 'chunk b']; },
       callStagedLLM: async (_stage, v) => { objectsSeen.push(v.objects); return { content: { findings: [] } }; },
     }));
-    // Overhead exceeds the fixed template reserve because the objects summary is counted in.
-    expect(overhead).toBeGreaterThan(0);
+    // The objects summary is passed as trimmable context (#1459), re-sent per chunk.
+    expect(sawObjectsContext).toBe(true);
     // The objects summary rides every chunk (it's not part of the chunked manuscript).
     expect(objectsSeen).toHaveLength(2);
     expect(objectsSeen.every((o) => o.includes('Watch'))).toBe(true);
@@ -2231,7 +2245,9 @@ describe('cross-chunk continuity digest (#1383)', () => {
       // No usableChars on the returned array → unbounded headroom, so the digest
       // always fits (the fits-in-budget gate is exercised separately below).
       planManuscriptChunks: async (_stage, opts) => {
-        overhead = opts.overheadTokens;
+        // A context-based check (#1459) passes { context, fixedOverheadTokens }; a
+        // legacy plain-scan check passes { overheadTokens }. Capture whichever is set.
+        overhead = opts.context ? opts.fixedOverheadTokens : opts.overheadTokens;
         return ['CHUNK_ONE', 'CHUNK_TWO'];
       },
       callStagedLLM: async (_stage, vars) => {
@@ -2565,6 +2581,129 @@ describe('objects.backstory-consistency — LLM check (#1288)', () => {
     let called = false;
     const findings = await getCheck('objects.backstory-consistency').run({
       canon: { objects: [{ id: 'o1', name: 'Watch' }], characters: [] },
+      config: {},
+      severityDefault: 'medium',
+      callStagedLLM: async () => { called = true; return { content: { findings: [] } }; },
+    });
+    expect(findings).toEqual([]);
+    expect(called).toBe(false);
+  });
+});
+
+describe('visual.eyeline-match — LLM check (#1466)', () => {
+  const sceneEntry = (issueNumber, scene) => ({ issueNumber, scene });
+  // A comparable scene: two characters whose gaze does not reciprocate.
+  const comparableScenes = () => [
+    sceneEntry(4, {
+      heading: 'INT. KITCHEN',
+      shots: [
+        { id: 'shot-01', shotType: 'medium', screenDirection: 'right', description: 'Anna faces Ben, looking screen-right' },
+        { id: 'shot-02', shotType: 'medium', screenDirection: 'right', continuityFromShotId: 'shot-01', description: 'Ben answers Anna but also looks screen-right' },
+      ],
+    }),
+  ];
+
+  it('gates on whether any scene has two-or-more described shots to compare', () => {
+    const check = getCheck('visual.eyeline-match');
+    expect(check.gate({ storyboardScenes: comparableScenes() })).toBe(true);
+    // A single described shot → nothing to match an eyeline across.
+    expect(check.gate({ storyboardScenes: [sceneEntry(1, { heading: 'A', shots: [{ id: 's1', description: 'alone' }] })] })).toBe(false);
+    expect(check.gate({ storyboardScenes: [] })).toBe(false);
+    expect(check.gate({ storyboardScenes: null })).toBe(false);
+  });
+
+  it('feeds the rendered shot block to the model and shapes findings (issue-anchored)', async () => {
+    let vars = null;
+    const findings = await getCheck('visual.eyeline-match').run({
+      storyboardScenes: comparableScenes(),
+      config: { maxFindings: 12 },
+      severityDefault: 'medium',
+      callStagedLLM: async (_stage, v) => {
+        vars = v;
+        return { content: { findings: [{
+          severity: 'high',
+          issueNumber: 4,
+          location: 'Issue 4 — INT. KITCHEN: shots shot-01 ↔ shot-02',
+          problem: 'Both characters look screen-right, so their eyelines do not reciprocate across the cut.',
+          suggestion: 'Flip shot-02 to screen-left so Ben looks back toward Anna.',
+          anchorQuote: 'also looks screen-right',
+        }] } };
+      },
+    });
+    expect(vars.shots).toContain('Scene 1 (Issue 4): INT. KITCHEN');
+    expect(vars.shots).toContain('shot-01');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].category).toBe('continuity');
+    expect(findings[0].issueNumber).toBe(4);
+    expect(findings[0].severity).toBe('high');
+  });
+
+  it('returns no findings (and never calls the model) when no scene qualifies', async () => {
+    let called = false;
+    const findings = await getCheck('visual.eyeline-match').run({
+      storyboardScenes: [sceneEntry(1, { heading: 'A', shots: [{ id: 's1', description: 'alone' }] })],
+      config: {},
+      severityDefault: 'medium',
+      callStagedLLM: async () => { called = true; return { content: { findings: [] } }; },
+    });
+    expect(findings).toEqual([]);
+    expect(called).toBe(false);
+  });
+});
+
+describe('visual.appearance-continuity — LLM check (#1467)', () => {
+  const sceneEntry = (issueNumber, scene) => ({ issueNumber, scene });
+  // A comparable scene: the same character described with conflicting wardrobe
+  // across two shots, so there is an appearance to diff.
+  const comparableScenes = () => [
+    sceneEntry(4, {
+      heading: 'INT. KITCHEN',
+      shots: [
+        { id: 'shot-01', shotType: 'medium', screenDirection: 'right', description: 'Anna in a bright red jacket pours coffee' },
+        { id: 'shot-03', shotType: 'medium', screenDirection: 'right', continuityFromShotId: 'shot-01', description: 'Anna, now in a grey coat, sets the mug down' },
+      ],
+    }),
+  ];
+
+  it('gates on whether any scene has two-or-more described shots to diff', () => {
+    const check = getCheck('visual.appearance-continuity');
+    expect(check.gate({ storyboardScenes: comparableScenes() })).toBe(true);
+    // A single described shot → nothing to diff an appearance across.
+    expect(check.gate({ storyboardScenes: [sceneEntry(1, { heading: 'A', shots: [{ id: 's1', description: 'alone' }] })] })).toBe(false);
+    expect(check.gate({ storyboardScenes: [] })).toBe(false);
+    expect(check.gate({ storyboardScenes: null })).toBe(false);
+  });
+
+  it('feeds the rendered shot block to the model and shapes findings (issue-anchored)', async () => {
+    let vars = null;
+    const findings = await getCheck('visual.appearance-continuity').run({
+      storyboardScenes: comparableScenes(),
+      config: { maxFindings: 12 },
+      severityDefault: 'medium',
+      callStagedLLM: async (_stage, v) => {
+        vars = v;
+        return { content: { findings: [{
+          severity: 'high',
+          issueNumber: 4,
+          location: 'Issue 4 — INT. KITCHEN: shots shot-01 ↔ shot-03',
+          problem: 'Anna wears a red jacket in shot-01 but a grey coat in shot-03 with no costume change described.',
+          suggestion: 'Align shot-03 to the red jacket, or describe the wardrobe change between shots.',
+          anchorQuote: 'now in a grey coat',
+        }] } };
+      },
+    });
+    expect(vars.shots).toContain('Scene 1 (Issue 4): INT. KITCHEN');
+    expect(vars.shots).toContain('shot-01');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].category).toBe('continuity');
+    expect(findings[0].issueNumber).toBe(4);
+    expect(findings[0].severity).toBe('high');
+  });
+
+  it('returns no findings (and never calls the model) when no scene qualifies', async () => {
+    let called = false;
+    const findings = await getCheck('visual.appearance-continuity').run({
+      storyboardScenes: [sceneEntry(1, { heading: 'A', shots: [{ id: 's1', description: 'alone' }] })],
       config: {},
       severityDefault: 'medium',
       callStagedLLM: async () => { called = true; return { content: { findings: [] } }; },

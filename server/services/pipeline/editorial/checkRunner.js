@@ -18,11 +18,11 @@
 import { randomUUID, createHash } from 'crypto';
 import { createSseRunner } from '../../../lib/sseUtils.js';
 import { runStagedLLM, runInlineLLM, runStageScopedInlineLLM, resolveStageContext } from '../../../lib/stageRunner.js';
-import { planManuscriptPass } from '../../../lib/contextBudget.js';
+import { planManuscriptPass, fitContextToManuscriptFloor, estimateTokens, MANUSCRIPT_FLOOR_TOKENS } from '../../../lib/contextBudget.js';
 import { getEnabledChecks, getEnabledCheckRows, getAllChecks, EDITORIAL_SOURCES, comicLetteringIssues } from '../../../lib/editorial/index.js';
 import { getSettings } from '../../settings.js';
 import { getSeries } from '../series.js';
-import { listIssues } from '../issues.js';
+import { listIssuesForSeries } from '../issues.js';
 import { getSeriesCanon } from '../seriesCanon.js';
 import { collectManuscriptSections, sectionsCorpus, manuscriptSectionHeader } from '../arcPlanner.js';
 import { getReverseOutline } from '../reverseOutline.js';
@@ -331,10 +331,25 @@ export async function runEditorialChecks(seriesId, options = {}) {
   // Editorial-arc fetch is gated on the declared source (#1295) so a run with no
   // POV/arc check pays no extra snapshot I/O — mirrors the needsReverseOutline gate.
   const needsEditorialArcs = enabled.some(({ check }) => checkSources(check).includes('editorialArcs'));
+  // Issues are fetched only when an enabled check declares an issue-derived source
+  // — storyboard.shots (#1315), comicScript (#1313, served via the comic.lettering
+  // check's ctx.issues), or the comic-pacing tokens comicScript.pacing /
+  // comicScript.layout (#1314, served via the same ctx.issues projection). All
+  // projections feed off the same UNCAPPED per-series scan (#1469): listIssues caps
+  // at ISSUES_PER_RESPONSE_MAX (1000), silently skipping every storyboard scene /
+  // comic page past the 1000th issue. Mirrors the gate + fetch on the
+  // getReviewWithStaleness path below.
+  const needsIssues = enabled.some(({ check }) => {
+    const sources = checkSources(check);
+    return sources.includes('storyboard.shots')
+      || sources.includes('comicScript')
+      || sources.includes('comicScript.pacing')
+      || sources.includes('comicScript.layout');
+  });
   const [sections, canon, issues, outline, editorial] = await Promise.all([
     needsManuscript ? collectManuscriptSections(seriesId) : Promise.resolve([]),
     getSeriesCanon(series),
-    listIssues({ seriesId }).catch(() => []),
+    needsIssues ? listIssuesForSeries(seriesId).catch(() => []) : Promise.resolve([]),
     needsReverseOutline ? getReverseOutline(seriesId).catch(() => null) : Promise.resolve(null),
     // Reuse the already-loaded series so the aggregate skips a redundant getSeries.
     // (issues is fetched in this same Promise.all, so it can't be passed here —
@@ -342,8 +357,8 @@ export async function runEditorialChecks(seriesId, options = {}) {
     needsEditorialArcs ? getSeriesEditorial(seriesId, { series }).catch(() => null) : Promise.resolve(null),
   ]);
   const manuscript = sectionsCorpus(sections);
-  // Storyboard shots for the visual.shot-continuity check (#1315) — built off the
-  // already-loaded issues, so no extra I/O regardless of whether the check is on.
+  // Storyboard shots for the visual.shot-continuity check (#1315) — projected off
+  // the gated `issues` fetch (empty unless a storyboard.shots/comicScript check is on).
   const storyboardScenes = collectStoryboardScenes(issues);
   const reverseOutline = Array.isArray(outline?.scenes) ? outline.scenes : [];
   // The outline's plotline list (#1310) — injected separately from the scenes so a
@@ -410,21 +425,56 @@ export async function runEditorialChecks(seriesId, options = {}) {
     // instead of truncated on a small/local provider. Returns the chunk-corpus
     // strings (one for a whole-fits provider) for an LLM check to iterate.
     // Lives here (not the pure registry) because it resolves the provider.
-    planManuscriptChunks: async (stage, { overheadTokens = 0 } = {}) => {
+    //
+    // Two ways to declare per-chunk overhead:
+    //   { overheadTokens }                — legacy: a fixed, non-trimmable overhead
+    //                                       (the custom-check prompt wrapper).
+    //   { context, fixedOverheadTokens }  — the trimmable re-sent context blocks
+    //                                       (scene map, character arcs, …) plus the
+    //                                       fixed template/contract overhead. The
+    //                                       context is trimmed to GUARANTEE the
+    //                                       manuscript a budget floor (#1459) so a
+    //                                       large reverse outline on a small window
+    //                                       can't starve the manuscript chunk to ''.
+    // When `context` is given, the (possibly trimmed) blocks are attached to the
+    // returned array as `.context` so the check feeds the trimmed values to the LLM.
+    planManuscriptChunks: async (stage, { overheadTokens = 0, context = null, fixedOverheadTokens = 0 } = {}) => {
       if (!sections.length) return [];
       const { contextWindow } = await resolveStageContext(stage, { providerOverride, modelOverride });
+      let effectiveOverhead = overheadTokens;
+      let fittedContext = null;
+      if (context && typeof context === 'object') {
+        // Reserve no more than the manuscript actually needs: a short manuscript
+        // that fits alongside the full context shouldn't get its context trimmed
+        // just to hold open the full floor. Cap the reserved floor at the
+        // manuscript's own token cost (the floor only bites a manuscript large
+        // enough to want it).
+        const floorTokens = Math.min(MANUSCRIPT_FLOOR_TOKENS, estimateTokens(manuscript));
+        const fit = fitContextToManuscriptFloor(context, {
+          contextWindow,
+          fixedOverheadTokens,
+          outputReserveTokens: EDITORIAL_OUTPUT_RESERVE_TOKENS,
+          floorTokens,
+        });
+        effectiveOverhead = fit.overheadTokens;
+        fittedContext = fit.context;
+        if (fit.trimmed) {
+          console.warn(`✂️ editorial context trimmed to keep manuscript budget — stage=${stage || 'inline'} window=${contextWindow}`);
+        }
+      }
       const plan = planManuscriptPass({
         contextWindow,
         // Each section's full contribution = header + body, matching sectionsCorpus.
         sections: sections.map((s) => ({ ...s, text: `${manuscriptSectionHeader(s)}\n\n${s.content || ''}` })),
-        overheadTokens,
+        overheadTokens: effectiveOverhead,
         outputReserveTokens: EDITORIAL_OUTPUT_RESERVE_TOKENS,
       });
       // One whole chunk or many — the same usable-char budget caps each. Do NOT
       // floor this above plan.usableChars: on a genuinely small configured window
       // that would push the prompt back over the provider's context and get it
-      // clipped/rejected. The editorial-sized output reserve above is what keeps
-      // usableChars positive on the common unknown/8K-fallback provider.
+      // clipped/rejected. The editorial-sized output reserve above plus the
+      // context floor (when context is given) is what keeps usableChars positive
+      // on the common unknown/8K-fallback provider.
       const corpora = plan.mode === 'whole'
         ? [manuscript]
         : plan.chunks.map((c) => sectionsCorpus(c.sections));
@@ -433,6 +483,10 @@ export async function runEditorialChecks(seriesId, options = {}) {
       // digest into each chunk's spare room without overflowing the window or
       // displacing manuscript text (see runChunkedManuscriptCheck).
       chunks.usableChars = plan.usableChars;
+      // Expose the trimmed context so the check sends the SAME (possibly shrunk)
+      // blocks it was budgeted for — sending the untrimmed originals would overflow
+      // the window the trim was computed to fit.
+      if (fittedContext) chunks.context = fittedContext;
       return chunks;
     },
   };
@@ -558,7 +612,7 @@ export async function getReviewWithStaleness(seriesId) {
     needsReverseOutline ? getReverseOutline(seriesId).catch(() => null) : Promise.resolve(null),
     // Reuse the already-loaded series.
     needsEditorialArcs ? getSeriesEditorial(seriesId, { series }).catch(() => null) : Promise.resolve(null),
-    needsIssues ? listIssues({ seriesId }).catch(() => []) : Promise.resolve([]),
+    needsIssues ? listIssuesForSeries(seriesId).catch(() => []) : Promise.resolve([]),
   ]);
   const reverseOutline = Array.isArray(outline?.scenes) ? outline.scenes : [];
   const reverseOutlinePlotlines = Array.isArray(outline?.plotlines) ? outline.plotlines : [];

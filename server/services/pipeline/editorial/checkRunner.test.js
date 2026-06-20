@@ -6,9 +6,12 @@ vi.mock('../../settings.js', () => ({ getSettings: vi.fn(async () => ({})) }));
 vi.mock('../series.js', () => ({ getSeries: vi.fn(async () => ({ id: 's1', universeId: 'u1' })) }));
 // Issues source — backed by a mutable fixture so the storyboard.shots continuity
 // check (#1315) can be exercised; default empty so the check is gated off unless a
-// test populates issues carrying storyboard scenes.
+// test populates issues carrying storyboard scenes. The runner reads the UNCAPPED
+// per-series scan (#1469), so the mock filters the fixture by seriesId.
 let issuesState = [];
-vi.mock('../issues.js', () => ({ listIssues: vi.fn(async () => issuesState) }));
+vi.mock('../issues.js', () => ({
+  listIssuesForSeries: vi.fn(async (seriesId) => issuesState.filter((i) => i.seriesId === seriesId)),
+}));
 vi.mock('../seriesCanon.js', () => ({
   getSeriesCanon: vi.fn(async () => ({
     characters: [{ name: 'Alina' }, { name: 'Alana' }, { name: 'Zog' }],
@@ -80,7 +83,7 @@ const { getSeriesCanon } = await import('../seriesCanon.js');
 const { getSeries } = await import('../series.js');
 const { getSettings } = await import('../../settings.js');
 const { listChecks, getCheck } = await import('../../../lib/editorial/index.js');
-const { listIssues } = await import('../issues.js');
+const { listIssuesForSeries } = await import('../issues.js');
 
 // Build a `pipelineEditorialChecks.checks` map that disables every check
 // matching `predicate` — keeps these fixtures robust as the registry grows
@@ -102,7 +105,7 @@ beforeEach(() => {
   resolveStageContext.mockClear();
   collectManuscriptSections.mockClear();
   getSeriesCanon.mockClear();
-  listIssues.mockClear();
+  listIssuesForSeries.mockClear();
 });
 
 describe('runEditorialChecks', () => {
@@ -155,8 +158,8 @@ describe('runEditorialChecks', () => {
     // check flags the back-to-back splash run. Both comic checks read the same
     // parsed pages off ctx.issues via the shared comicLetteringIssues projection.
     issuesState = [
-      { number: 1, stages: { comicScript: { output: 'PAGE 1\nPANEL 1\nSplash.\nPAGE 2\nPANEL 1\nSplash again.' } } },
-      { number: 2, stages: { comicScript: { output: 'PAGE 1\nPANEL 1\nA.\nPANEL 2\nB.\nPANEL 3\nC.' } } },
+      { id: 'i1', seriesId: 's1', number: 1, stages: { comicScript: { output: 'PAGE 1\nPANEL 1\nSplash.\nPAGE 2\nPANEL 1\nSplash again.' } } },
+      { id: 'i2', seriesId: 's1', number: 2, stages: { comicScript: { output: 'PAGE 1\nPANEL 1\nA.\nPANEL 2\nB.\nPANEL 3\nC.' } } },
     ];
     const result = await runEditorialChecks('s1', { checkIds: ['comic.panel-rhythm'] });
     const comic = result.findings.filter((f) => f.checkId === 'comic.panel-rhythm');
@@ -263,6 +266,34 @@ describe('runEditorialChecks', () => {
     expect(sent).toContain('kingdom fell'); // the actual section content, not an empty slice
   });
 
+  it('guarantees a non-empty manuscript when a huge reverse outline + a tiny window would starve the chunk (issue #1459)', async () => {
+    // A context-bearing check (arc.transitions re-sends the scene map per chunk).
+    // A reverse outline with many scenes makes the sceneMap overhead alone meet/
+    // exceed a small window's usable budget — which used to slice the manuscript
+    // chunk to ''. The context floor must trim the scene map so the manuscript
+    // (the actual prose under review) still reaches the model non-empty.
+    const manyScenes = Array.from({ length: 400 }, (_, i) => ({
+      issueNumber: 1,
+      sceneLabel: `Scene ${i + 1}`,
+      setting: `An elaborately described location number ${i + 1} that goes on at length to inflate the scene map`,
+      charactersPresent: ['Alina', 'Alana', 'Zog'],
+    }));
+    outlineState = { scenes: manyScenes };
+    collectManuscriptSections.mockResolvedValueOnce([
+      { number: 1, title: 'Pilot', stageId: 'prose', content: 'Alina chose to betray Zog, and in that moment she became someone new.' },
+    ]);
+    resolveStageContext.mockResolvedValueOnce({ provider: { type: 'api', endpoint: 'http://localhost:1234' }, model: 'm', contextWindow: 8_192 });
+    let sent = null;
+    runStagedLLM.mockImplementationOnce(async (_stage, vars) => { sent = vars.manuscript; return { content: { findings: [] } }; });
+
+    await runEditorialChecks('s1', { checkIds: ['arc.transitions'] });
+
+    expect(sent).toBeTruthy();
+    // The manuscript chunk is non-empty — the scene map was trimmed, not the prose.
+    expect(sent.trim().length).toBeGreaterThan(0);
+    expect(sent).toContain('chose to betray');
+  });
+
   it('stops launching chunk calls once cancelled mid-run (issue #1340)', async () => {
     // Three chunks; cancel during the first chunk's LLM call. The remaining
     // chunks must NOT be sent to the model, and the run is canceled (no seed).
@@ -333,6 +364,30 @@ describe('visual.shot-continuity (#1315)', () => {
     const row = result.perCheck.find((p) => p.checkId === 'visual.shot-continuity');
     expect(row.skipped).toBe(true);
     expect(result.findings).toHaveLength(0);
+  });
+
+  it('reaches a storyboard scene past the 1000-issue listIssues cap (#1469)', async () => {
+    // 1000 empty issues + a 1001st carrying the offending scene. listIssues caps at
+    // ISSUES_PER_RESPONSE_MAX (1000), so before the uncapped per-series scan this
+    // scene was silently skipped and the continuity break went unflagged.
+    const filler = Array.from({ length: 1000 }, (_, n) => ({
+      id: `i${n + 1}`, seriesId: 's1', number: n + 1, stages: {},
+    }));
+    issuesState = [...filler, {
+      id: 'i1001', seriesId: 's1', number: 1001,
+      stages: { storyboards: { scenes: [{
+        heading: 'INT. THRONE ROOM',
+        shots: [
+          { id: 'shot-01', description: 'queen faces left', screenDirection: 'left' },
+          { id: 'shot-02', description: 'reverse', screenDirection: 'right', continuityFromShotId: 'shot-01' },
+        ],
+      }] } },
+    }];
+    const result = await runEditorialChecks('s1', { settings: onlyShotContinuity });
+    const findings = result.findings.filter((f) => f.checkId === 'visual.shot-continuity');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].issueNumber).toBe(1001);
+    expect(findings[0].problem).toMatch(/axis reversal/i);
   });
 });
 

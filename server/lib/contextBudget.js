@@ -16,6 +16,20 @@ import { chunkRawText } from './catalogChunking.js';
 export const CHARS_PER_TOKEN = 4;
 export const DEFAULT_OUTPUT_RESERVE_TOKENS = 8_000;
 export const DEFAULT_SAFETY_MARGIN = 0.1;
+// Minimum manuscript token budget a chunked editorial pass guarantees, even when a
+// large re-sent context block (the reverse-outline scene map, character arcs,
+// plotline coverage, …) would otherwise consume the whole usable window. A
+// manuscript-consuming LLM check re-sends its fixed context as `overheadTokens` on
+// every chunk; on a small/fallback window + a large reverse outline that overhead
+// can meet or exceed the usable input budget, slicing the manuscript chunk to ''
+// so a default-enabled check runs on NO prose (#1459). The floor reserves at least
+// this many tokens for the manuscript by trimming the (bounded) context
+// contribution — manuscript text keeps budget priority over re-sent context.
+// ~6K chars: a few paragraphs, enough for the model to find something per chunk.
+export const MANUSCRIPT_FLOOR_TOKENS = 1_500;
+// Marker appended to a context block that had to be clipped, so the model can tell
+// the context was truncated rather than genuinely ending there.
+const CONTEXT_TRIM_MARKER = '\n…[context trimmed to fit the model window]…';
 // Conservative floor when a provider declares no usable window at all — matches
 // Ollama's historical default so we never plan for more than we can be sure of.
 export const FALLBACK_CONTEXT_WINDOW = 8_192;
@@ -47,6 +61,143 @@ export function usableInputTokens({
 } = {}) {
   const afterMargin = Math.floor(resolveWindow(contextWindow) * (1 - clampMargin(safetyMargin)));
   return Math.max(0, afterMargin - Math.max(0, outputReserveTokens) - Math.max(0, overheadTokens));
+}
+
+/**
+ * Decide how much of a re-sent context block (the reverse-outline scene map,
+ * character arcs, plotline coverage, …) a chunked manuscript pass can afford,
+ * guaranteeing the manuscript itself at least `floorTokens` of input budget.
+ *
+ * A manuscript-consuming LLM check re-sends a fixed context block as overhead on
+ * every chunk. On a small/fallback window + a large reverse outline that overhead
+ * can meet or exceed the usable input budget, slicing the manuscript chunk to ''
+ * so a default-enabled check runs on no prose (#1459). This caps the context
+ * contribution so the manuscript keeps `floorTokens` of priority. `fixedOverhead`
+ * (the prompt template scaffolding + the finding JSON contract — NOT trimmable) is
+ * always reserved; only `contextTokens` (the trimmable block) is squeezed.
+ *
+ * Returns the allowed context budget as both tokens and chars (chars/4). Never
+ * returns more than the context already needs, and never less than 0. When the
+ * window comfortably fits everything the input is unchanged (`allowedContextTokens
+ * === contextTokens`, `trimmed === false`).
+ */
+export function capContextOverhead({
+  contextWindow,
+  contextTokens = 0,
+  fixedOverheadTokens = 0,
+  outputReserveTokens = DEFAULT_OUTPUT_RESERVE_TOKENS,
+  safetyMargin = DEFAULT_SAFETY_MARGIN,
+  floorTokens = MANUSCRIPT_FLOOR_TOKENS,
+} = {}) {
+  const wantContext = Math.max(0, contextTokens);
+  const floor = Math.max(0, floorTokens);
+  // Budget left for INPUT (manuscript + trimmable context) after the fixed,
+  // non-trimmable overhead — but NOT subtracting the trimmable context (that's
+  // what we're sizing). usableInputTokens already floors at 0.
+  const inputBudget = usableInputTokens({
+    contextWindow,
+    overheadTokens: fixedOverheadTokens,
+    outputReserveTokens,
+    safetyMargin,
+  });
+  // Reserve the manuscript floor first (but never go negative), then let context
+  // have whatever's left — capped at what it actually wants.
+  const allowedContextTokens = Math.min(wantContext, Math.max(0, inputBudget - floor));
+  return {
+    allowedContextTokens,
+    allowedContextChars: allowedContextTokens * CHARS_PER_TOKEN,
+    trimmed: allowedContextTokens < wantContext,
+  };
+}
+
+/**
+ * Trim a context string to fit `maxChars`, preferring a newline boundary so a
+ * line-oriented block (the scene map, plotline coverage) is cut between lines, and
+ * appending a marker so the model knows the context was truncated. A string within
+ * budget passes through unchanged; a 0/negative budget yields ''. Pure — no I/O.
+ */
+export function trimContextToBudget(text, maxChars) {
+  const s = String(text ?? '');
+  const cap = Math.max(0, Math.floor(maxChars));
+  if (s.length <= cap) return s;
+  if (cap <= CONTEXT_TRIM_MARKER.length) return '';
+  const bodyBudget = cap - CONTEXT_TRIM_MARKER.length;
+  const slice = s.slice(0, bodyBudget);
+  // Prefer cutting at the last newline so a line-structured block stays coherent,
+  // but only if that doesn't throw away most of the budget.
+  const lastNl = slice.lastIndexOf('\n');
+  const body = lastNl > bodyBudget * 0.5 ? slice.slice(0, lastNl) : slice;
+  return `${body}${CONTEXT_TRIM_MARKER}`;
+}
+
+/**
+ * Trim a map of re-sent context blocks so they fit a manuscript-floor budget for
+ * `contextWindow`, and report the overhead the (trimmed) context now costs. This is
+ * the single place that decides the floor (#1459): a manuscript-consuming editorial
+ * check re-sends these blocks (scene map, character arcs, plotline coverage, …) on
+ * every chunk, so on a small/fallback window + a large reverse outline they can
+ * consume the whole usable budget and slice the manuscript chunk to ''. Here we cap
+ * the context's token contribution (`capContextOverhead`) and actually shrink the
+ * strings (`trimContextToBudget`) so the manuscript keeps `floorTokens` of priority
+ * AND the rendered prompt still fits the window (capping the token math without
+ * shrinking the strings would overflow the real prompt).
+ *
+ * The LARGEST blocks are trimmed first — the issue's analysis is that `sceneMap`
+ * grows unbounded with scene count while the others (plotlineMap, character arcs)
+ * are bounded — so the bounded context survives and the unbounded one absorbs the
+ * cut. Each block degrades gracefully when trimmed (the checks already handle an
+ * absent block), and trimming is strictly better than feeding the model no prose.
+ *
+ * @param context - { [varName]: string } of trimmable context blocks (non-strings
+ *   are coerced; an empty / non-object input yields `{}` and no trimming).
+ * @returns { context: { [varName]: string } (trimmed copy),
+ *            overheadTokens: number (fixedOverheadTokens + trimmed context tokens),
+ *            trimmed: boolean }
+ */
+export function fitContextToManuscriptFloor(context, {
+  contextWindow,
+  fixedOverheadTokens = 0,
+  outputReserveTokens = DEFAULT_OUTPUT_RESERVE_TOKENS,
+  safetyMargin = DEFAULT_SAFETY_MARGIN,
+  floorTokens = MANUSCRIPT_FLOOR_TOKENS,
+} = {}) {
+  const entries = context && typeof context === 'object' ? Object.entries(context) : [];
+  const blocks = {};
+  for (const [k, v] of entries) blocks[k] = String(v ?? '');
+  const fixed = Math.max(0, fixedOverheadTokens);
+
+  const contextTokens = entries.reduce((n, [k]) => n + estimateTokens(blocks[k]), 0);
+  const { allowedContextTokens, trimmed } = capContextOverhead({
+    contextWindow,
+    contextTokens,
+    fixedOverheadTokens: fixed,
+    outputReserveTokens,
+    safetyMargin,
+    floorTokens,
+  });
+
+  if (!trimmed) {
+    return { context: blocks, overheadTokens: fixed + contextTokens, trimmed: false };
+  }
+
+  // Trim the largest block first (by char length) so the unbounded scene map
+  // absorbs the cut while bounded blocks survive. Drive the loop on the TOKEN
+  // budget, not aggregate chars: `estimateTokens` ceilings per block, so several
+  // small blocks could fit the char budget yet still sum to more than
+  // `allowedContextTokens` — and the manuscript would undershoot its floor. Re-sum
+  // the per-block token estimate after each trim and keep shrinking the current
+  // largest until the total token cost is within budget.
+  const largestFirst = entries.map(([k]) => k).sort((a, b) => blocks[b].length - blocks[a].length);
+  const tokenSum = () => entries.reduce((n, [k]) => n + estimateTokens(blocks[k]), 0);
+  for (const k of largestFirst) {
+    if (tokenSum() <= allowedContextTokens) break;
+    // Chars this block must give back so the TOTAL token cost fits: the current
+    // overshoot (tokens) converted to chars, removed from this (largest) block.
+    const overshootTokens = tokenSum() - allowedContextTokens;
+    blocks[k] = trimContextToBudget(blocks[k], Math.max(0, blocks[k].length - overshootTokens * CHARS_PER_TOKEN));
+  }
+
+  return { context: blocks, overheadTokens: fixed + tokenSum(), trimmed: true };
 }
 
 /**

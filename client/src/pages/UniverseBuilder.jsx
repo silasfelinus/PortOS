@@ -39,6 +39,7 @@ import { RUNNER_FAMILIES, loraCompatKey } from '../lib/runnerFamilies';
 import ShareToButton from '../components/sharing/ShareToButton';
 import SyncToPeerButton from '../components/sharing/SyncToPeerButton';
 import OriginBadge from '../components/sharing/OriginBadge';
+import MoodBoardReferenceStrip from '../components/moodBoard/MoodBoardReferenceStrip';
 import UniverseCanonSection from '../components/universe/UniverseCanonSection';
 import StyleProbeImage from '../components/universe/StyleProbeImage';
 import EntryCard from '../components/universe/EntryCard';
@@ -2900,6 +2901,8 @@ function BibleTab({
             />
           </div>
         </div>
+
+        <MoodBoardReferenceStrip storageKey="universe-builder" />
 
         <div className="flex items-center gap-2 flex-wrap">
           <button
