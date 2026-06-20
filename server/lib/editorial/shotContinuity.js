@@ -27,8 +27,9 @@
  * High-precision by design (favors under-flagging, like the other deterministic
  * scanners). Unclassified shots (null `shotType` / `screenDirection`) are treated
  * as ABSENT — skipped, never guessed — per the absent-vs-empty rule. The judgment
- * cases this can't compute (eyeline match, appearance/prop continuity) are LLM
- * siblings tracked as follow-ups.
+ * cases this can't compute need an LLM: eyeline match ships as the `visual.eyeline-match`
+ * check (#1466), fed by `summarizeStoryboardShots` below; appearance/prop continuity
+ * is a tracked follow-up.
  */
 
 // Two directions are an axis reversal only when both are decided AND opposite.
@@ -85,6 +86,76 @@ export function findAxisReversals(scene) {
     });
   }
   return out;
+}
+
+// Human-readable label for a shot's screen direction, used when rendering shots
+// for the LLM eyeline/appearance continuity passes (#1466). `neutral` is head-on;
+// an unset direction is named so the model knows the signal is absent, not "left".
+const DIRECTION_PROMPT_LABEL = {
+  left: 'faces screen-left',
+  right: 'faces screen-right',
+  neutral: 'faces head-on',
+};
+
+/**
+ * Render the collected storyboard scenes into a compact, ordered text block for
+ * an LLM continuity pass (eyeline match — #1466 — and, later, appearance/prop
+ * continuity). Pure + deterministic so it's unit-testable and so its token cost
+ * is countable. Each qualifying scene becomes a labeled block; each shot is one
+ * line carrying the fields the model reasons over: id, shot type, screen
+ * direction, continuity link, and the free-text description (the eyeline signal).
+ *
+ * A scene qualifies only when it has at least two shots with a non-empty
+ * description — an eyeline/appearance match is a judgment ACROSS shots, so a
+ * single-shot (or description-less) scene has nothing to compare. ALL shots of a
+ * qualifying scene are rendered (not just the described ones) so a
+ * `continuityFromShotId` reference still resolves to a visible line; an
+ * undescribed shot renders its description as `(no description)`.
+ *
+ * Returns '' when no scene qualifies, so the caller can gate the LLM call on a
+ * non-empty block (mirrors the object-backstory check's row gate).
+ *
+ * @param {Array<{ issueNumber: number|null, scene: object }>} storyboardScenes
+ * @returns {string}
+ */
+export function summarizeStoryboardShots(storyboardScenes) {
+  const entries = Array.isArray(storyboardScenes) ? storyboardScenes : [];
+  const blocks = [];
+  let sceneIndex = 0;
+  for (const entry of entries) {
+    const scene = entry?.scene;
+    if (!scene || typeof scene !== 'object') continue;
+    const shots = sceneShots(scene);
+    const describedCount = shots.filter(
+      (s) => s && typeof s === 'object' && typeof s.description === 'string' && s.description.trim(),
+    ).length;
+    // Need at least two described shots to compare an eyeline / appearance across.
+    if (describedCount < 2) continue;
+    sceneIndex += 1;
+    const issueNumber = Number.isInteger(entry.issueNumber) ? entry.issueNumber : null;
+    const sceneName = typeof scene.heading === 'string' && scene.heading.trim()
+      ? scene.heading.trim()
+      : (typeof scene.slugline === 'string' && scene.slugline.trim() ? scene.slugline.trim() : 'scene');
+    const header = issueNumber != null
+      ? `Scene ${sceneIndex} (Issue ${issueNumber}): ${sceneName}`
+      : `Scene ${sceneIndex}: ${sceneName}`;
+    const lines = [];
+    for (const s of shots) {
+      if (!s || typeof s !== 'object') continue;
+      const id = typeof s.id === 'string' && s.id ? s.id : 'shot';
+      const type = typeof s.shotType === 'string' && s.shotType ? s.shotType : 'unspecified framing';
+      const dir = DIRECTION_PROMPT_LABEL[s.screenDirection] || 'screen direction unspecified';
+      const from = typeof s.continuityFromShotId === 'string' && s.continuityFromShotId
+        ? ` (continues from ${s.continuityFromShotId})`
+        : '';
+      const desc = typeof s.description === 'string' && s.description.trim()
+        ? s.description.trim()
+        : '(no description)';
+      lines.push(`  - ${id} [${type}, ${dir}]${from}: ${desc}`);
+    }
+    blocks.push(`${header}\n${lines.join('\n')}`);
+  }
+  return blocks.join('\n\n');
 }
 
 /**
