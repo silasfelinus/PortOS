@@ -28,6 +28,7 @@ import { writeFile, rm, mkdtemp } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildCliArgs } from '../lib/cliProviderArgs.js';
+import { resolveCliModel } from '../lib/providerModels.js';
 
 const CLI_VISION_TIMEOUT_MS = 120000;
 const IMAGE_BASENAME = 'vision-input.png';
@@ -63,11 +64,16 @@ export function buildCliVisionInvocation(provider, model, imageDir, prompt) {
   if (isCodexProvider(provider)) {
     const baseArgs = Array.isArray(provider.args) ? provider.args : [];
     const hasExec = baseArgs.includes('exec');
+    // Resolve the codex sentinel (`codex-configured-default`) to null so we omit
+    // `-m` and let codex fall back to ~/.codex/config.toml — passing the
+    // sentinel verbatim makes `codex exec` try a non-existent model. Same
+    // resolution buildCliArgs applies on the normal CLI run path.
+    const codexModel = resolveCliModel(model);
     const args = [
       ...(hasExec ? baseArgs : [...baseArgs, 'exec']),
       '--skip-git-repo-check',
       '-i', imagePath,
-      ...(model ? ['-m', String(model)] : []),
+      ...(codexModel ? ['-m', String(codexModel)] : []),
       prompt,
     ];
     return { command: provider.command || 'codex', args, stdin: null, cwd: imageDir };

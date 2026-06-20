@@ -34,6 +34,14 @@ describe('buildCliVisionInvocation', () => {
     expect(inv.cwd).toBe('/tmp/x');
   });
 
+  it('omits -m for the codex-configured-default sentinel (falls back to config.toml)', () => {
+    const inv = buildCliVisionInvocation(
+      { id: 'codex', command: 'codex', args: [] }, 'codex-configured-default', '/tmp/x', 'p',
+    );
+    expect(inv.args).not.toContain('-m');
+    expect(inv.args).not.toContain('codex-configured-default');
+  });
+
   it('does not double-add exec when the provider args already pin it', () => {
     const inv = buildCliVisionInvocation(
       { id: 'codex', command: 'codex', args: ['exec'] }, null, '/tmp/x', 'p',
