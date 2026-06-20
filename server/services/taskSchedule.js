@@ -411,6 +411,19 @@ function migrateScheduleV1toV2(schedule) {
   return migrated;
 }
 
+// True when a stored prompt byte-matches a shipped default for this task — the
+// current default or any prior one in PREVIOUS_DEFAULT_PROMPTS. Used by
+// loadSchedule both to recognize legacy (unversioned) prompts and to self-heal a
+// prompt mis-flagged as customized. A genuine user edit never byte-matches a
+// shipped default, so callers can treat a match as "not really customized".
+function promptMatchesShippedDefault(prompt, taskType) {
+  if (!prompt || !DEFAULT_TASK_PROMPTS[taskType]) return false;
+  return (
+    prompt === DEFAULT_TASK_PROMPTS[taskType] ||
+    (PREVIOUS_DEFAULT_PROMPTS[taskType] || []).includes(prompt)
+  );
+}
+
 /**
  * Load schedule data (auto-migrates from v1 if needed)
  */
@@ -489,6 +502,17 @@ export async function loadSchedule() {
           config.promptVersion = PROMPT_VERSIONS[taskType] || 1;
           needsSave = true;
         }
+      }
+
+      // Self-heal a mis-flagged customization: a prompt marked promptCustomized
+      // that nonetheless byte-matches a shipped default was never user-edited —
+      // it was flagged by an earlier legacy migration that ran before this task
+      // carried a PREVIOUS_DEFAULT_PROMPTS entry (e.g. the basic self-improvement
+      // prompts that hardcoded the app name as "PortOS"). Clear the flag so the
+      // auto-upgrade below can replace the stale default.
+      if (config.promptCustomized && promptMatchesShippedDefault(config.prompt, taskType)) {
+        config.promptCustomized = false;
+        needsSave = true;
       }
 
       if (PROMPT_VERSIONS[taskType] && !config.promptCustomized) {
