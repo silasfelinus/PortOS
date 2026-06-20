@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Download, Archive, RefreshCw, Package } from 'lucide-react';
+import { Download, Archive, RefreshCw, Package, AlertTriangle } from 'lucide-react';
 import BrailleSpinner from '../../BrailleSpinner';
 import socket from '../../../services/socket';
 import * as api from '../../../services/api';
@@ -162,6 +162,19 @@ export default function LegacyExportTab() {
             <span>
               ~{preview.fileCount} files
               {preview.estimatedBytes != null && ` · ${formatBytes(preview.estimatedBytes)} (full bundle)`}
+            </span>
+          </div>
+        )}
+
+        {/* Large-bundle warning — the server flags an estimate over its soft cap
+            (it never truncates; the zip itself is compressed and smaller). */}
+        {preview?.sizeWarning && (
+          <div className="mt-3 flex items-start gap-2 rounded border border-port-warning/40 bg-port-warning/10 p-2.5 text-xs text-port-warning">
+            <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+            <span>
+              Large bundle — about {formatBytes(preview.sizeWarning.estimatedBytes)} of identity data
+              {preview.sizeWarning.largestSection && `, mostly from “${preview.sizeWarning.largestSection}”`}.
+              The download is compressed and smaller; deselect sections you don't need to trim it.
             </span>
           </div>
         )}
