@@ -347,9 +347,17 @@ export function attributeDialogueByOwner(text, owners) {
     const beat = para.replace(QUOTED_SPAN_RE, ' ').replace(/\s+/g, ' ').trim();
     let owner = null;
     if (beat) {
+      // Credit the owner whose name appears EARLIEST in the beat — the speaker.
+      // In "…," Aria told Bram. the leftmost name (Aria) is the speaker; picking
+      // by list (canon) order instead would make attribution depend on canon
+      // ordering and credit a beat that merely mentions a second character to
+      // the wrong owner. Ties (same index — impossible for distinct names, but
+      // guarded) keep first-listed.
+      let bestIndex = Infinity;
       for (const o of list) {
         o.matcher.lastIndex = 0; // non-global, but reset defensively
-        if (o.matcher.test(beat)) { owner = o.key; break; }
+        const m2 = o.matcher.exec(beat);
+        if (m2 && m2.index < bestIndex) { bestIndex = m2.index; owner = o.key; }
       }
     }
     if (owner) {

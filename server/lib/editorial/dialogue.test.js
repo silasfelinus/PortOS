@@ -233,11 +233,15 @@ describe('attributeDialogueByOwner', () => {
     expect(byOwner.get('aria')).toBe(1);
   });
 
-  it('first-owner-wins when a beat names two characters', () => {
+  it('credits the earliest-named character in the beat, independent of owner (canon) order', () => {
+    // "Aria told Bram" — Aria is the speaker (leftmost name). The owner list is
+    // ordered [bram, aria] (canon order) to prove attribution follows beat
+    // POSITION, not list order: a position-blind first-in-list scan would
+    // wrongly credit Bram.
     const text = '"Stop," Aria told Bram.';
     const { byOwner } = attributeDialogueByOwner(text, [
-      owner('aria', 'Aria'),
       owner('bram', 'Bram'),
+      owner('aria', 'Aria'),
     ]);
     expect(byOwner.get('aria')).toBe(1);
     expect(byOwner.has('bram')).toBe(false);
