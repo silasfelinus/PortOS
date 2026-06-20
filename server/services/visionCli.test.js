@@ -121,6 +121,31 @@ describe('describeImageViaCli', () => {
     expect(result.text).toBe('a woman in a red cloak, bust shot');
   });
 
+  it('extracts the assistant reply when codex emits it AFTER the tokens-used footer', async () => {
+    const child = makeFakeChild();
+    const spawnImpl = vi.fn(() => child);
+    const promise = describeImageViaCli({
+      provider: { id: 'codex', command: 'codex', args: [] },
+      dataUrl: PNG_DATA_URL,
+      prompt: 'caption',
+      spawnImpl,
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    // Newer codex format: the final reply follows the `tokens used\n<count>` footer.
+    const transcript = [
+      'OpenAI Codex v0.141.0',
+      'codex',
+      '(intermediate working notes)',
+      'tokens used',
+      '1234',
+      '{"boxes":[{"x":0,"y":0,"w":0.5,"h":1}]}',
+    ].join('\n');
+    child.stdout.emit('data', Buffer.from(transcript));
+    child.emit('close', 0);
+    const result = await promise;
+    expect(result.text).toBe('{"boxes":[{"x":0,"y":0,"w":0.5,"h":1}]}');
+  });
+
   it('rejects with a tail of stderr on a non-zero exit', async () => {
     const child = makeFakeChild();
     const spawnImpl = vi.fn(() => child);

@@ -29,7 +29,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildCliArgs } from '../lib/cliProviderArgs.js';
 import { resolveCliModel } from '../lib/providerModels.js';
-import { extractCodexAssistant } from '../lib/codexAssistantExtract.js';
+import { extractCodexAssistant, extractCodexAssistantTail } from '../lib/codexAssistantExtract.js';
 
 const CLI_VISION_TIMEOUT_MS = 120000;
 const IMAGE_BASENAME = 'vision-input.png';
@@ -145,9 +145,11 @@ export async function describeImageViaCli({
         // `codex exec` prints the whole session transcript (banner, echoed
         // prompt, tool sections, `tokens used` footer) to stdout — carve out
         // the assistant reply so captioning doesn't persist the transcript as
-        // the caption. A no-op for non-codex output (extractCodexAssistant
-        // returns its input unless it starts with the Codex banner).
-        if (code === 0) return resolve(extractCodexAssistant(out).trim());
+        // the caption. Newer Codex emits the final reply AFTER the `tokens used`
+        // footer (extractCodexAssistantTail), older versions before it
+        // (extractCodexAssistant); try tail first, then the legacy extractor,
+        // both no-ops for non-codex output (tail → null, legacy → input).
+        if (code === 0) return resolve((extractCodexAssistantTail(out) ?? extractCodexAssistant(out)).trim());
         const tail = err.trim().split('\n').slice(-4).join('\n');
         reject(new Error(`${command} vision call exited ${code}${tail ? `: ${tail}` : ''}`));
       });
