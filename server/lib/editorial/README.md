@@ -32,6 +32,19 @@ window (a chunk packed to the budget just runs without a digest).
 earlier part already surfaced) opt in; `prose.info-dumping` stays per-chunk (its
 problems are localized).
 
+A check that re-sends a context block per chunk (the reverse-outline scene map,
+character arcs, plotline coverage, style-guide expectations, …) declares it as a
+`context: { varName: string }` map on `runManuscriptLlmCheck` rather than baking it
+into `overheadTokens`. The runner counts the block as overhead AND, on a small or
+fallback context window where a large reverse outline would consume the whole
+usable budget and slice the manuscript chunk to `''` (#1459), trims the block to
+guarantee the manuscript a budget floor (`MANUSCRIPT_FLOOR_TOKENS`) — the LARGEST
+block trimmed first, so the unbounded scene map absorbs the cut while bounded
+blocks survive. `buildVars(manuscript, meta, context)` receives the trimmed blocks
+as its third arg, so the check feeds the SAME context it was budgeted for. A
+plain whole-manuscript scan with no re-sent context keeps the simpler
+`overheadTokens` form.
+
 `roster.unmodeled-names` also shows the LLM/deterministic split that keeps a
 chunked judgment correct: the model does ONLY what it alone can — surface a proper
 noun used as a character name and confirm it's a person (not a place/org/brand/

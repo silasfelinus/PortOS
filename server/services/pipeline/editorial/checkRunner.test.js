@@ -236,6 +236,34 @@ describe('runEditorialChecks', () => {
     expect(sent).toContain('kingdom fell'); // the actual section content, not an empty slice
   });
 
+  it('guarantees a non-empty manuscript when a huge reverse outline + a tiny window would starve the chunk (issue #1459)', async () => {
+    // A context-bearing check (arc.transitions re-sends the scene map per chunk).
+    // A reverse outline with many scenes makes the sceneMap overhead alone meet/
+    // exceed a small window's usable budget — which used to slice the manuscript
+    // chunk to ''. The context floor must trim the scene map so the manuscript
+    // (the actual prose under review) still reaches the model non-empty.
+    const manyScenes = Array.from({ length: 400 }, (_, i) => ({
+      issueNumber: 1,
+      sceneLabel: `Scene ${i + 1}`,
+      setting: `An elaborately described location number ${i + 1} that goes on at length to inflate the scene map`,
+      charactersPresent: ['Alina', 'Alana', 'Zog'],
+    }));
+    outlineState = { scenes: manyScenes };
+    collectManuscriptSections.mockResolvedValueOnce([
+      { number: 1, title: 'Pilot', stageId: 'prose', content: 'Alina chose to betray Zog, and in that moment she became someone new.' },
+    ]);
+    resolveStageContext.mockResolvedValueOnce({ provider: { type: 'api', endpoint: 'http://localhost:1234' }, model: 'm', contextWindow: 8_192 });
+    let sent = null;
+    runStagedLLM.mockImplementationOnce(async (_stage, vars) => { sent = vars.manuscript; return { content: { findings: [] } }; });
+
+    await runEditorialChecks('s1', { checkIds: ['arc.transitions'] });
+
+    expect(sent).toBeTruthy();
+    // The manuscript chunk is non-empty — the scene map was trimmed, not the prose.
+    expect(sent.trim().length).toBeGreaterThan(0);
+    expect(sent).toContain('chose to betray');
+  });
+
   it('stops launching chunk calls once cancelled mid-run (issue #1340)', async () => {
     // Three chunks; cancel during the first chunk's LLM call. The remaining
     // chunks must NOT be sent to the model, and the run is canceled (no seed).

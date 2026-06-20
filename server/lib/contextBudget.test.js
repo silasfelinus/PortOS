@@ -3,8 +3,12 @@ import {
   estimateTokens,
   usableInputTokens,
   planManuscriptPass,
+  capContextOverhead,
+  trimContextToBudget,
+  fitContextToManuscriptFloor,
   CHARS_PER_TOKEN,
   FALLBACK_CONTEXT_WINDOW,
+  MANUSCRIPT_FLOOR_TOKENS,
 } from './contextBudget.js';
 
 const section = (n, chars) => ({ number: n, text: 'x'.repeat(chars) });
@@ -200,6 +204,153 @@ describe('contextBudget', () => {
       expect(plan.chunks[1].sections.length).toBe(2);
       const total = plan.chunks.reduce((n, c) => n + c.sections.length, 0);
       expect(total).toBe(10);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Manuscript budget floor (#1459): a large re-sent context block must not
+  // starve the manuscript chunk to empty on a small/fallback context window.
+  // ---------------------------------------------------------------------------
+
+  describe('capContextOverhead', () => {
+    it('passes context through unchanged when the window comfortably fits everything', () => {
+      const r = capContextOverhead({ contextWindow: 100_000, contextTokens: 2_000, fixedOverheadTokens: 1_500 });
+      expect(r.allowedContextTokens).toBe(2_000);
+      expect(r.trimmed).toBe(false);
+    });
+    it('caps the context to preserve the manuscript floor on a small window', () => {
+      // 8k window, 0 margin, 0 reserve -> 8000 input budget; 1000 fixed -> 7000 left.
+      // A 10k-token context wants more than (7000 - floor), so it's capped at
+      // 7000 - MANUSCRIPT_FLOOR_TOKENS, leaving the floor for the manuscript.
+      const r = capContextOverhead({
+        contextWindow: 8_000,
+        contextTokens: 10_000,
+        fixedOverheadTokens: 1_000,
+        outputReserveTokens: 0,
+        safetyMargin: 0,
+      });
+      expect(r.allowedContextTokens).toBe(7_000 - MANUSCRIPT_FLOOR_TOKENS);
+      expect(r.trimmed).toBe(true);
+    });
+    it('never returns negative context budget even when the fixed overhead alone exceeds the window', () => {
+      const r = capContextOverhead({
+        contextWindow: 2_000,
+        contextTokens: 5_000,
+        fixedOverheadTokens: 4_000,
+        outputReserveTokens: 0,
+        safetyMargin: 0,
+      });
+      expect(r.allowedContextTokens).toBe(0);
+      expect(r.trimmed).toBe(true);
+    });
+  });
+
+  describe('trimContextToBudget', () => {
+    it('passes a string within budget through unchanged', () => {
+      expect(trimContextToBudget('short', 100)).toBe('short');
+    });
+    it('trims to a newline boundary and appends a marker', () => {
+      const text = `${'a'.repeat(60)}\n${'b'.repeat(60)}`;
+      const out = trimContextToBudget(text, 90);
+      expect(out.length).toBeLessThanOrEqual(90);
+      expect(out).toContain('context trimmed');
+      // Cut at the newline, so the second line is dropped entirely.
+      expect(out).not.toContain('b'.repeat(60));
+    });
+    it('yields empty string when the budget is at or below the marker length', () => {
+      expect(trimContextToBudget('anything long enough', 5)).toBe('');
+      expect(trimContextToBudget('x', 0)).toBe('');
+    });
+  });
+
+  describe('fitContextToManuscriptFloor', () => {
+    it('leaves context untouched and reports full overhead when it fits', () => {
+      const ctx = { sceneMap: 'a'.repeat(400), arcs: 'b'.repeat(200) };
+      const r = fitContextToManuscriptFloor(ctx, { contextWindow: 100_000, fixedOverheadTokens: 1_500 });
+      expect(r.trimmed).toBe(false);
+      expect(r.context).toEqual(ctx);
+      // overhead = fixed + estimateTokens(both blocks)
+      expect(r.overheadTokens).toBe(1_500 + estimateTokens(ctx.sceneMap) + estimateTokens(ctx.arcs));
+    });
+
+    it('trims the LARGEST block first, preserving the bounded ones', () => {
+      // Tiny window, huge sceneMap, small arcs. The cut must land on sceneMap.
+      const ctx = { sceneMap: 'S'.repeat(40_000), arcs: 'tiny arcs block' };
+      const r = fitContextToManuscriptFloor(ctx, {
+        contextWindow: 8_000,
+        fixedOverheadTokens: 500,
+        outputReserveTokens: 0,
+        safetyMargin: 0,
+      });
+      expect(r.trimmed).toBe(true);
+      // The bounded block survives intact; the unbounded one absorbs the cut.
+      expect(r.context.arcs).toBe('tiny arcs block');
+      expect(r.context.sceneMap.length).toBeLessThan(ctx.sceneMap.length);
+    });
+
+    it('GUARANTEES a non-empty manuscript budget — a huge outline on a small window still leaves the floor', () => {
+      // This is the #1459 regression: overhead alone used to meet/exceed the usable
+      // budget, slicing the manuscript chunk to ''. After the fit, usableInputTokens
+      // with the (trimmed) overhead must leave at least the manuscript floor.
+      const ctx = { sceneMap: 'S'.repeat(200_000) };
+      const window = 8_000;
+      const r = fitContextToManuscriptFloor(ctx, {
+        contextWindow: window,
+        fixedOverheadTokens: 1_000,
+        outputReserveTokens: 0,
+        safetyMargin: 0,
+      });
+      const usable = usableInputTokens({
+        contextWindow: window,
+        overheadTokens: r.overheadTokens,
+        outputReserveTokens: 0,
+        safetyMargin: 0,
+      });
+      // The manuscript keeps at least the floor — never sliced to empty.
+      expect(usable).toBeGreaterThanOrEqual(MANUSCRIPT_FLOOR_TOKENS);
+      // And the rendered context now fits the budget it was trimmed for.
+      expect(estimateTokens(r.context.sceneMap)).toBeLessThan(estimateTokens(ctx.sceneMap));
+    });
+
+    it('keeps the TOTAL token cost within the allowed budget across many small blocks (per-block ceiling)', () => {
+      // estimateTokens ceilings per block, so several small blocks could each fit a
+      // char budget yet sum to more tokens than allowed. The trim must drive on the
+      // token sum, not aggregate chars, or the manuscript undershoots its floor.
+      // Odd-length blocks (1001 chars → ceil(1001/4)=251 tokens each) so per-block
+      // ceiling rounding accumulates; 30 of them (≈7530 tokens) overflows a 4K window.
+      const ctx = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`b${i}`, 'x'.repeat(1_001)]));
+      const window = 4_000;
+      const fixed = 500;
+      const r = fitContextToManuscriptFloor(ctx, {
+        contextWindow: window,
+        fixedOverheadTokens: fixed,
+        outputReserveTokens: 0,
+        safetyMargin: 0,
+      });
+      expect(r.trimmed).toBe(true);
+      const usable = usableInputTokens({ contextWindow: window, overheadTokens: r.overheadTokens, outputReserveTokens: 0, safetyMargin: 0 });
+      // The floor holds EXACTLY now — the manuscript keeps at least the full floor,
+      // even though per-block ceiling rounding would have undershot a char-only trim.
+      expect(usable).toBeGreaterThanOrEqual(MANUSCRIPT_FLOOR_TOKENS);
+    });
+
+    it('respects a caller-supplied smaller floor (so a short manuscript is not trimmed needlessly)', () => {
+      // A modest context + a low floor that the window comfortably fits → no trim.
+      const ctx = { sceneMap: 'S'.repeat(4_000) };
+      const r = fitContextToManuscriptFloor(ctx, {
+        contextWindow: 8_000,
+        fixedOverheadTokens: 500,
+        outputReserveTokens: 0,
+        safetyMargin: 0,
+        floorTokens: 100, // a tiny manuscript only needs a little room
+      });
+      expect(r.trimmed).toBe(false);
+      expect(r.context.sceneMap).toBe(ctx.sceneMap);
+    });
+
+    it('handles an empty / non-object context as a no-op', () => {
+      expect(fitContextToManuscriptFloor(null, { contextWindow: 8_000 })).toEqual({ context: {}, overheadTokens: 0, trimmed: false });
+      expect(fitContextToManuscriptFloor({}, { contextWindow: 8_000, fixedOverheadTokens: 500 })).toEqual({ context: {}, overheadTokens: 500, trimmed: false });
     });
   });
 });
