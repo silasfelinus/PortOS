@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findAxisReversals, findShotTypeMonotony, summarizeStoryboardShots, EYELINE_MAX_SCENES } from './shotContinuity.js';
+import { findAxisReversals, findShotTypeMonotony, summarizeStoryboardShots, EYELINE_MAX_SCENES, EYELINE_MAX_CHARS, EYELINE_MAX_DESC_CHARS } from './shotContinuity.js';
 
 describe('findAxisReversals', () => {
   it('flags an axis reversal across a continuity-linked left↔right pair', () => {
@@ -204,7 +204,29 @@ describe('summarizeStoryboardShots (#1466)', () => {
     expect(block).toContain('3 additional scenes omitted');
   });
 
-  it('exposes a sane default cap', () => {
+  it('stops rendering at the total character budget and reports the omission', () => {
+    const comparable = (n) => sceneEntry(n, { heading: `S${n}`, shots: [{ id: `${n}a`, description: 'one' }, { id: `${n}b`, description: 'two' }] });
+    const scenes = Array.from({ length: 10 }, (_, i) => comparable(i + 1));
+    // A tiny budget renders only the first scene, then reports the rest omitted.
+    const block = summarizeStoryboardShots(scenes, { maxChars: 1 });
+    expect(block).toContain('Scene 1 (Issue 1): S1');
+    expect(block).not.toContain('S2');
+    expect(block).toContain('9 additional scenes omitted');
+  });
+
+  it('truncates an oversized shot description and reports the truncation', () => {
+    const huge = 'x'.repeat(2000);
+    const block = summarizeStoryboardShots([
+      sceneEntry(1, { heading: 'BIG', shots: [{ id: 'a', description: huge }, { id: 'b', description: 'short' }] }),
+    ], { maxDescChars: 50 });
+    expect(block).toContain('…[truncated]');
+    expect(block).not.toContain(huge);
+    expect(block).toContain('shot descriptions were truncated');
+  });
+
+  it('exposes sane default caps', () => {
     expect(EYELINE_MAX_SCENES).toBeGreaterThan(0);
+    expect(EYELINE_MAX_CHARS).toBeGreaterThan(0);
+    expect(EYELINE_MAX_DESC_CHARS).toBeGreaterThan(0);
   });
 });

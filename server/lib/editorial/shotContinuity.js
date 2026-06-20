@@ -102,14 +102,20 @@ const DIRECTION_PROMPT_LABEL = {
   neutral: 'screen direction: neutral (head-on)',
 };
 
-// Cap on how many qualifying scenes a single eyeline pass renders, so a series
-// with a very large storyboard can't overflow the provider context in one
-// unchunked LLM call. An eyeline match is a WITHIN-scene judgment (no cross-scene
-// context is lost by splitting the corpus), so the cap simply bounds one pass;
-// the omission is surfaced in the block (NOT silent — see the trailing marker) so
-// the model and any reader know coverage stopped. Generous enough that a normal
-// series renders whole. (A future iteration could page across the overflow.)
+// Bounds on a single eyeline pass so a very large storyboard can't overflow the
+// provider context in one unchunked LLM call. Three independent limits — the pass
+// stops at whichever it hits first, and every omission is surfaced in the block
+// (NOT silent) so the model and any reader know coverage stopped. An eyeline match
+// is a WITHIN-scene judgment, so omitting a scene loses no cross-scene context;
+// a future iteration could page across the overflow.
+//   - EYELINE_MAX_SCENES   — most scenes rendered in one pass.
+//   - EYELINE_MAX_CHARS    — total rendered-block character budget (the real
+//                            overflow guard: bounds 60 dense scenes, not just 60).
+//   - EYELINE_MAX_DESC_CHARS — per-shot description truncation, so one giant shot
+//                            description can't blow the budget on its own.
 export const EYELINE_MAX_SCENES = 60;
+export const EYELINE_MAX_CHARS = 24_000;
+export const EYELINE_MAX_DESC_CHARS = 600;
 
 /**
  * Render the collected storyboard scenes into a compact, ordered text block for
@@ -126,25 +132,34 @@ export const EYELINE_MAX_SCENES = 60;
  * `continuityFromShotId` reference still resolves to a visible line; an
  * undescribed shot renders its description as `(no description)`.
  *
- * At most `maxScenes` qualifying scenes are rendered (bounds one unchunked LLM
- * call); when more qualify, a trailing marker names how many were omitted so the
- * truncation is never silent (eyeline is a within-scene judgment, so omitting a
- * scene loses no cross-scene context).
+ * The rendered payload is bounded three ways (scene count, total chars, per-shot
+ * description length — see the EYELINE_MAX_* constants) so one unchunked LLM call
+ * can't overflow the provider context whether the storyboard is wide (many scenes)
+ * or deep (a few enormous descriptions). When anything is dropped or truncated a
+ * trailing marker says so — the truncation is never silent.
  *
  * Returns '' when no scene qualifies, so the caller can gate the LLM call on a
  * non-empty block (mirrors the object-backstory check's row gate).
  *
  * @param {Array<{ issueNumber: number|null, scene: object }>} storyboardScenes
- * @param {{ maxScenes?: number }} [opts]
+ * @param {{ maxScenes?: number, maxChars?: number, maxDescChars?: number }} [opts]
  * @returns {string}
  */
 export function summarizeStoryboardShots(storyboardScenes, opts = {}) {
   const maxScenes = Number.isInteger(opts.maxScenes) && opts.maxScenes > 0
     ? opts.maxScenes
     : EYELINE_MAX_SCENES;
+  const maxChars = Number.isInteger(opts.maxChars) && opts.maxChars > 0
+    ? opts.maxChars
+    : EYELINE_MAX_CHARS;
+  const maxDescChars = Number.isInteger(opts.maxDescChars) && opts.maxDescChars > 0
+    ? opts.maxDescChars
+    : EYELINE_MAX_DESC_CHARS;
   const entries = Array.isArray(storyboardScenes) ? storyboardScenes : [];
   const blocks = [];
   let qualifying = 0;
+  let usedChars = 0;
+  let truncatedDesc = false;
   for (const entry of entries) {
     const scene = entry?.scene;
     if (!scene || typeof scene !== 'object') continue;
@@ -155,7 +170,9 @@ export function summarizeStoryboardShots(storyboardScenes, opts = {}) {
     // Need at least two described shots to compare an eyeline / appearance across.
     if (describedCount < 2) continue;
     qualifying += 1;
-    if (blocks.length >= maxScenes) continue; // keep counting (for the marker) but stop rendering
+    // Keep counting (for the omission marker) but stop rendering once EITHER the
+    // scene cap or the character budget is reached.
+    if (blocks.length >= maxScenes || usedChars >= maxChars) continue;
     const issueNumber = Number.isInteger(entry.issueNumber) ? entry.issueNumber : null;
     const sceneName = typeof scene.heading === 'string' && scene.heading.trim()
       ? scene.heading.trim()
@@ -172,17 +189,26 @@ export function summarizeStoryboardShots(storyboardScenes, opts = {}) {
       const from = typeof s.continuityFromShotId === 'string' && s.continuityFromShotId
         ? ` (continues from ${s.continuityFromShotId})`
         : '';
-      const desc = typeof s.description === 'string' && s.description.trim()
+      let desc = typeof s.description === 'string' && s.description.trim()
         ? s.description.trim()
         : '(no description)';
+      if (desc.length > maxDescChars) {
+        desc = `${desc.slice(0, maxDescChars)}…[truncated]`;
+        truncatedDesc = true;
+      }
       lines.push(`  - ${id} [${type}, ${dir}]${from}: ${desc}`);
     }
-    blocks.push(`${header}\n${lines.join('\n')}`);
+    const block = `${header}\n${lines.join('\n')}`;
+    blocks.push(block);
+    usedChars += block.length + 2; // +2 for the '\n\n' join that will follow
   }
   if (!blocks.length) return '';
   const omitted = qualifying - blocks.length;
   if (omitted > 0) {
     blocks.push(`(${omitted} additional scene${omitted === 1 ? '' : 's'} omitted from this eyeline pass to fit the model context — review them in a later pass.)`);
+  }
+  if (truncatedDesc) {
+    blocks.push('(Some shot descriptions were truncated to fit the model context — open the storyboard for the full text.)');
   }
   return blocks.join('\n\n');
 }
