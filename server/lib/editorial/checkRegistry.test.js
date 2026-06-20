@@ -34,6 +34,7 @@ import {
   plotlineCoverageSummary,
   scenePovSummary,
   declaredThemesSummary,
+  canonRosterNamesSummary,
 } from './checkRegistry.js';
 
 const NAMING = 'naming.dissimilar-names';
@@ -47,6 +48,7 @@ const WHITE_ROOM = 'scene.white-room';
 const PLOT_STRUCTURE = 'plot.structure-momentum';
 const HEAD_HOPPING = 'pov.head-hopping';
 const THEME_COHERENCE = 'theme.coherence';
+const UNMODELED_NAMES = 'roster.unmodeled-names';
 
 // A minimal valid stored custom-check definition.
 const customDef = (over = {}) => ({
@@ -910,6 +912,96 @@ describe('declaredThemesSummary (#1317)', () => {
   it('is type-guarded against hand-edited / older-peer rows and trims whitespace', () => {
     const out = declaredThemesSummary([42, null, '  identity  ', { x: 1 }]);
     expect(out.split('\n').filter((l) => l.startsWith('- '))).toEqual(['- identity']);
+  });
+});
+
+describe('roster.unmodeled-names — LLM check (#1412)', () => {
+  const wholeCtx = (overrides = {}) => ({
+    manuscript: '# Issue 1\n\nMarguerite drew her sword as the bells of Veridia rang.',
+    config: { maxFindings: 12 },
+    severityDefault: 'low',
+    canon: { characters: [{ name: 'Robert', aliases: ['Bob'] }] },
+    planManuscriptChunks: async () => ['# Issue 1\n\nMarguerite drew her sword.'],
+    callStagedLLM: async () => ({ content: { findings: [] } }),
+    ...overrides,
+  });
+
+  it('is registered as a series-scoped LLM casting check reading manuscript + canon', () => {
+    const check = getCheck(UNMODELED_NAMES);
+    expect(check.kind).toBe('llm');
+    expect(check.scope).toBe('series');
+    expect(check.category).toBe('casting');
+    expect(check.sources).toEqual(['manuscript', 'canon']);
+    expect(check.needsManuscript).toBe(true);
+  });
+
+  it('runs whenever there is prose — even with an EMPTY canon (every name is unmodeled)', () => {
+    const check = getCheck(UNMODELED_NAMES);
+    expect(check.gate({ manuscript: '' })).toBe(false);
+    // Unlike roster.economy, it does NOT require a populated canon.
+    expect(check.gate({ manuscript: '# Issue 1\n\nprose', canon: { characters: [] } })).toBeTruthy();
+    expect(check.gate({ manuscript: '# Issue 1\n\nprose' })).toBeTruthy();
+  });
+
+  it('passes the manuscript + known-character roster to the model and forces the casting category', async () => {
+    let seenVars = null;
+    const ctx = wholeCtx({
+      planManuscriptChunks: async (_stage, opts) => {
+        // The known-character roster rides as fixed overhead.
+        expect(opts.overheadTokens).toBeGreaterThan(0);
+        return ['# Issue 1\n\nMarguerite drew her sword.'];
+      },
+      callStagedLLM: async (_stage, vars) => {
+        seenVars = vars;
+        return { content: { findings: [{ severity: 'medium', issueNumber: 1, location: 'Unmodeled character — "Marguerite"', problem: 'Named but not in canon' }] } };
+      },
+    });
+    const findings = await getCheck(UNMODELED_NAMES).run(ctx);
+    expect(seenVars.manuscript).toBe('# Issue 1\n\nMarguerite drew her sword.');
+    expect(seenVars.knownCharacters).toContain('Robert');
+    expect(seenVars.knownCharacters).toContain('Bob');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].category).toBe('casting');
+    expect(findings[0].location).toBe('Unmodeled character — "Marguerite"');
+  });
+
+  it('passes an empty roster var when the canon has no characters', async () => {
+    let seenVars = null;
+    const ctx = wholeCtx({
+      canon: { characters: [] },
+      callStagedLLM: async (_stage, vars) => { seenVars = vars; return { content: { findings: [] } }; },
+    });
+    await getCheck(UNMODELED_NAMES).run(ctx);
+    expect(seenVars.knownCharacters).toBe('');
+  });
+});
+
+describe('canonRosterNamesSummary (#1412)', () => {
+  it('returns an empty string when there are no usable canon names', () => {
+    expect(canonRosterNamesSummary(null)).toBe('');
+    expect(canonRosterNamesSummary(undefined)).toBe('');
+    expect(canonRosterNamesSummary({ characters: [] })).toBe('');
+    expect(canonRosterNamesSummary({ characters: [{ name: '   ' }, { aliases: ['x'] }] })).toBe('');
+  });
+
+  it('renders one bullet per character with aliases appended', () => {
+    const out = canonRosterNamesSummary({ characters: [
+      { name: 'Robert', aliases: ['Bob', 'Bobby'] },
+      { name: 'Alice' },
+    ] });
+    expect(out).toContain('do NOT flag these');
+    expect(out).toContain('- Robert (also: Bob, Bobby)');
+    expect(out).toContain('- Alice');
+  });
+
+  it('is type-guarded against hand-edited / older-peer rows and de-dups name vs alias', () => {
+    const out = canonRosterNamesSummary({ characters: [
+      42,
+      null,
+      { name: '  Henrik  ', aliases: ['Henrik', '  ', 7] },
+    ] });
+    // Name trimmed; the alias equal to the name is de-duped, blanks/non-strings dropped.
+    expect(out.split('\n').filter((l) => l.startsWith('- '))).toEqual(['- Henrik']);
   });
 });
 

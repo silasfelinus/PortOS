@@ -336,6 +336,42 @@ export function declaredThemesSummary(themes) {
   return `Declared themes (authored on the story arc):\n${lines.join('\n')}`;
 }
 
+// Stage name for the unmodeled-proper-nouns LLM check (#1412). Ships in
+// data.reference/prompts/stages/ + stage-config.json (fresh installs via
+// setup-data.js) and migrates to existing installs via migration 116 (boot runs
+// migrations but NOT setup-data, so the migration is required). Reads the stitched
+// manuscript plus the canon roster (names + aliases) and asks the model to surface
+// capitalized proper nouns used as apparent CHARACTER names that are absent from
+// canon — the LLM-assisted half of roster economy (#1292) the deterministic
+// `roster.economy` scan deliberately leaves alone (it can't tell a person from a
+// place/org/brand/honorific).
+export const UNMODELED_NAMES_STAGE = 'pipeline-editorial-unmodeled-names';
+
+// Render the canon roster's names + aliases (#1412) into a compact text block the
+// unmodeled-names check passes alongside the manuscript, so the model knows which
+// proper nouns are ALREADY modeled (and therefore must NOT be flagged) and only
+// surfaces apparent character names absent from this list. Pure + deterministic so
+// it's unit-testable and its token cost can be counted into the per-chunk overhead.
+// Returns '' when no canon character has a usable name (the prompt's
+// `{{#knownCharacters}}` section then renders nothing and EVERY named proper noun in
+// the prose is a candidate — exactly right when the bible is empty). Reuses
+// `characterNameTokens` so name + aliases render with the same trim/de-dup the
+// deterministic matcher uses.
+export function canonRosterNamesSummary(canon) {
+  const chars = Array.isArray(canon?.characters) ? canon.characters : [];
+  const lines = [];
+  for (const c of chars) {
+    // Require a real name — an alias-only row isn't a named character (mirrors
+    // buildRosterAppearances, which skips nameless rows). characterNameTokens then
+    // returns the trimmed name first, followed by de-duped aliases.
+    if (!c || typeof c.name !== 'string' || !c.name.trim()) continue;
+    const [name, ...aliases] = characterNameTokens(c);
+    lines.push(aliases.length ? `- ${name} (also: ${aliases.join(', ')})` : `- ${name}`);
+  }
+  if (!lines.length) return '';
+  return `Known characters (already in the story bible — do NOT flag these or their aliases):\n${lines.join('\n')}`;
+}
+
 // Render the authored reader-map cliffhangers (#1298) into a compact text block
 // the chapter-ending check passes alongside the manuscript so the model
 // reconciles its DETECTED endings against the issue-boundary tugs the writer
@@ -1766,6 +1802,58 @@ export const EDITORIAL_CHECKS = [
       }
 
       return findings;
+    },
+  },
+  {
+    // LLM-assisted companion to roster.economy (#1412, part of #1283). The
+    // deterministic roster.economy scan only sees canon names/aliases; it can't
+    // detect proper nouns used as apparent CHARACTER names that were never bibled
+    // (the LLM-assist half #1292 called out). This check surfaces those — and
+    // classifies them (is this token actually a named character, vs a place/org/
+    // brand/honorific the deterministic scan can't tell apart).
+    id: 'roster.unmodeled-names',
+    sources: ['manuscript', 'canon'],
+    label: 'Unmodeled proper nouns used as character names',
+    description:
+      'LLM scan — surfaces capitalized proper nouns used as apparent CHARACTER names that are ABSENT from the story bible (canon.characters names + aliases), and classifies each (is this actually a named person, vs a place, organization, brand, or honorific the deterministic roster.economy scan can\'t distinguish). Flags throwaway one-appearance unmodeled names readers are asked to remember, suggesting either adding them to canon or leaving them unnamed. The LLM-assisted half of roster economy (#1292) that the deterministic check deliberately leaves alone.',
+    scope: 'series',
+    kind: 'llm',
+    category: 'casting',
+    severityDefault: 'low',
+    defaultEnabled: true,
+    // Reads the stitched manuscript corpus — so the runner only pays the
+    // section-collection I/O when a manuscript-consuming check is enabled.
+    needsManuscript: true,
+    configSchema: z.object({
+      // Cap findings per run so a large unmodeled cast can't flood the review.
+      maxFindings: z.number().int().min(1).max(50).default(12),
+    }),
+    configFields: [
+      {
+        key: 'maxFindings',
+        label: 'Max findings per run',
+        type: 'number',
+        min: 1,
+        max: 50,
+        step: 1,
+        help: 'Cap findings so a large unmodeled cast can not flood the review.',
+      },
+    ],
+    // Needs prose to scan. Unlike roster.economy this does NOT require a populated
+    // canon — an EMPTY bible is the strongest case (every named proper noun is
+    // unmodeled), and the prompt's {{^knownCharacters}} branch handles it.
+    gate: (ctx) => (ctx.manuscript || '').trim().length > 0,
+    run: (ctx) => {
+      // The known-character roster is fixed per-call overhead (re-sent on each
+      // chunk) — it's the exclusion list the model classifies against. Counted into
+      // the per-chunk budget so the manuscript isn't squeezed past the window.
+      const knownCharacters = canonRosterNamesSummary(ctx.canon);
+      return runManuscriptLlmCheck(ctx, {
+        stage: UNMODELED_NAMES_STAGE,
+        category: 'casting',
+        overheadTokens: EDITORIAL_PROMPT_OVERHEAD_TOKENS + estimateTokens(knownCharacters),
+        buildVars: (manuscript) => ({ manuscript, knownCharacters }),
+      });
     },
   },
   {
