@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   findSaidBookisms,
   findUnattributedDialogueRuns,
+  attributeDialogueByOwner,
   SAID_BOOKISMS,
   NON_SPEECH_TAGS,
 } from './dialogue.js';
@@ -193,5 +194,77 @@ describe('findUnattributedDialogueRuns', () => {
       '“Now we finish it.”',
     ].join('\n');
     expect(findUnattributedDialogueRuns(curly)).toHaveLength(1);
+  });
+});
+
+describe('attributeDialogueByOwner', () => {
+  // A whole-token matcher like the one checkRegistry builds (non-global).
+  const owner = (key, ...tokens) => ({
+    key,
+    matcher: new RegExp(`(?<!\\w)(?:${tokens.join('|')})(?!\\w)`, 'i'),
+  });
+
+  it('credits a dialogue line to the owner named in the beat, not inside the quote', () => {
+    // Discriminating: the quote names "Aria" but the BEAT names "Bram", and the
+    // owner list is ordered [aria, bram] so first-match-wins favors the in-quote
+    // name. Correct (beat-only) attribution credits Bram; a regression that
+    // matched the whole paragraph (quote not stripped) would credit Aria — so
+    // this assertion actually fails if the quote-strip is removed.
+    const text = '"I saw Aria at the gate," said Bram.';
+    const { byOwner, total, attributed, unattributed } = attributeDialogueByOwner(text, [
+      owner('aria', 'Aria'),
+      owner('bram', 'Bram'),
+    ]);
+    expect(total).toBe(1);
+    expect(attributed).toBe(1);
+    expect(unattributed).toBe(0);
+    expect(byOwner.get('bram')).toBe(1);
+    expect(byOwner.has('aria')).toBe(false);
+  });
+
+  it('counts a dialogue line with no resolvable speaker as unattributed', () => {
+    const text = '"Who goes there?"\n"A friend," said Aria.';
+    const { byOwner, total, attributed, unattributed } = attributeDialogueByOwner(text, [
+      owner('aria', 'Aria'),
+    ]);
+    expect(total).toBe(2);
+    expect(attributed).toBe(1);
+    expect(unattributed).toBe(1);
+    expect(byOwner.get('aria')).toBe(1);
+  });
+
+  it('credits the earliest-named character in the beat, independent of owner (canon) order', () => {
+    // "Aria told Bram" — Aria is the speaker (leftmost name). The owner list is
+    // ordered [bram, aria] (canon order) to prove attribution follows beat
+    // POSITION, not list order: a position-blind first-in-list scan would
+    // wrongly credit Bram.
+    const text = '"Stop," Aria told Bram.';
+    const { byOwner } = attributeDialogueByOwner(text, [
+      owner('bram', 'Bram'),
+      owner('aria', 'Aria'),
+    ]);
+    expect(byOwner.get('aria')).toBe(1);
+    expect(byOwner.has('bram')).toBe(false);
+  });
+
+  it('ignores paragraphs with no quoted span (pure narration)', () => {
+    const text = 'Aria walked the long road home.\n"Finally," she said.';
+    const { total } = attributeDialogueByOwner(text, [owner('aria', 'Aria')]);
+    expect(total).toBe(1);
+  });
+
+  it('returns an empty result for non-strings and empty input', () => {
+    expect(attributeDialogueByOwner('', [owner('a', 'A')]).total).toBe(0);
+    expect(attributeDialogueByOwner(null, [owner('a', 'A')]).total).toBe(0);
+    const r = attributeDialogueByOwner('"Hi," said A.', []);
+    expect(r.total).toBe(1);
+    expect(r.unattributed).toBe(1);
+  });
+
+  it('tolerates malformed owner entries without throwing', () => {
+    const text = '"Hi," said Aria.';
+    expect(() => attributeDialogueByOwner(text, [null, { key: 'x' }, 'nope'])).not.toThrow();
+    const { unattributed } = attributeDialogueByOwner(text, [null, { key: 'x' }]);
+    expect(unattributed).toBe(1);
   });
 });
