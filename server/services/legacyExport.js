@@ -365,18 +365,17 @@ function isDecisionEntry(record) {
 }
 
 // Gather the decision signals into a single, dated, deduped list. Each item is
-// `{ kind, label, detail, date }`; `kind` orders within the same date so the
-// section reads consistently. Derivation, not a stored entity — see the ADR.
+// `{ label, detail, date }`. Derivation, not a stored entity — see the ADR.
 function collectDecisions(d) {
   const out = [];
   const goals = Array.isArray(d?.goals) ? d.goals : [];
   for (const g of goals) {
     if (g.status === 'completed') {
-      out.push({ kind: 'goal', label: g.title || 'Goal', detail: g.description || '', date: g.completedAt || g.updatedAt || '' });
+      out.push({ label: g.title || 'Goal', detail: g.description || '', date: g.completedAt || g.updatedAt || '' });
     }
     for (const m of (Array.isArray(g.milestones) ? g.milestones : [])) {
       if (m.completedAt) {
-        out.push({ kind: 'milestone', label: g.title || 'Goal', detail: m.title || m.description || '', date: m.completedAt });
+        out.push({ label: g.title || 'Goal', detail: m.title || m.description || '', date: m.completedAt });
       }
     }
   }
@@ -385,7 +384,6 @@ function collectDecisions(d) {
     for (const r of (Array.isArray(brain[type]) ? brain[type] : [])) {
       if (!isDecisionEntry(r)) continue;
       out.push({
-        kind: 'brain',
         label: r.title || r.name || r.label || 'Note',
         detail: r.content || r.body || r.text || r.notes || r.description || '',
         date: r.updatedAt || r.createdAt || '',
