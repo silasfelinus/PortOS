@@ -2651,6 +2651,68 @@ describe('visual.eyeline-match — LLM check (#1466)', () => {
   });
 });
 
+describe('visual.appearance-continuity — LLM check (#1467)', () => {
+  const sceneEntry = (issueNumber, scene) => ({ issueNumber, scene });
+  // A comparable scene: the same character described with conflicting wardrobe
+  // across two shots, so there is an appearance to diff.
+  const comparableScenes = () => [
+    sceneEntry(4, {
+      heading: 'INT. KITCHEN',
+      shots: [
+        { id: 'shot-01', shotType: 'medium', screenDirection: 'right', description: 'Anna in a bright red jacket pours coffee' },
+        { id: 'shot-03', shotType: 'medium', screenDirection: 'right', continuityFromShotId: 'shot-01', description: 'Anna, now in a grey coat, sets the mug down' },
+      ],
+    }),
+  ];
+
+  it('gates on whether any scene has two-or-more described shots to diff', () => {
+    const check = getCheck('visual.appearance-continuity');
+    expect(check.gate({ storyboardScenes: comparableScenes() })).toBe(true);
+    // A single described shot → nothing to diff an appearance across.
+    expect(check.gate({ storyboardScenes: [sceneEntry(1, { heading: 'A', shots: [{ id: 's1', description: 'alone' }] })] })).toBe(false);
+    expect(check.gate({ storyboardScenes: [] })).toBe(false);
+    expect(check.gate({ storyboardScenes: null })).toBe(false);
+  });
+
+  it('feeds the rendered shot block to the model and shapes findings (issue-anchored)', async () => {
+    let vars = null;
+    const findings = await getCheck('visual.appearance-continuity').run({
+      storyboardScenes: comparableScenes(),
+      config: { maxFindings: 12 },
+      severityDefault: 'medium',
+      callStagedLLM: async (_stage, v) => {
+        vars = v;
+        return { content: { findings: [{
+          severity: 'high',
+          issueNumber: 4,
+          location: 'Issue 4 — INT. KITCHEN: shots shot-01 ↔ shot-03',
+          problem: 'Anna wears a red jacket in shot-01 but a grey coat in shot-03 with no costume change described.',
+          suggestion: 'Align shot-03 to the red jacket, or describe the wardrobe change between shots.',
+          anchorQuote: 'now in a grey coat',
+        }] } };
+      },
+    });
+    expect(vars.shots).toContain('Scene 1 (Issue 4): INT. KITCHEN');
+    expect(vars.shots).toContain('shot-01');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].category).toBe('continuity');
+    expect(findings[0].issueNumber).toBe(4);
+    expect(findings[0].severity).toBe('high');
+  });
+
+  it('returns no findings (and never calls the model) when no scene qualifies', async () => {
+    let called = false;
+    const findings = await getCheck('visual.appearance-continuity').run({
+      storyboardScenes: [sceneEntry(1, { heading: 'A', shots: [{ id: 's1', description: 'alone' }] })],
+      config: {},
+      severityDefault: 'medium',
+      callStagedLLM: async () => { called = true; return { content: { findings: [] } }; },
+    });
+    expect(findings).toEqual([]);
+    expect(called).toBe(false);
+  });
+});
+
 describe('style.reading-level — deterministic check (#1303)', () => {
   const check = getCheck('style.reading-level');
   const run = (styleGuide, manuscript, config = {}) =>

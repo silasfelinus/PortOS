@@ -359,6 +359,19 @@ export const UNMODELED_NAMES_STAGE = 'pipeline-editorial-unmodeled-names';
 // 180°/shot-type scan deliberately leaves to an LLM (see shotContinuity.js).
 export const EYELINE_MATCH_STAGE = 'pipeline-editorial-eyeline-match';
 
+// Stage name for the appearance/prop-continuity LLM check (#1467). Ships in
+// data.reference/prompts/stages/ + stage-config.json (fresh installs via
+// setup-data.js) and migrates to existing installs via migration 118 (boot runs
+// migrations but NOT setup-data, so the migration is required). Reads the same
+// per-issue storyboard shots (`ctx.storyboardScenes`, wired by #1315) the eyeline
+// sibling reads and asks the model to DIFF descriptions of the same entity across
+// shots WITHIN a scene: a character's wardrobe/appearance that contradicts an
+// earlier shot, a prop that appears/vanishes/transforms with nothing removing it,
+// or a setting whose weather/time/layout flips with no transition. The semantic
+// sibling the deterministic 180°/shot-type scan can't catch (the shot parser
+// matches characters by name but never diffs their free-text descriptions).
+export const APPEARANCE_CONTINUITY_STAGE = 'pipeline-editorial-appearance-continuity';
+
 // Render the canon roster's names + aliases (#1412) into a compact text block the
 // unmodeled-names check passes alongside the manuscript, so the model knows which
 // proper nouns are ALREADY modeled (and therefore must NOT be flagged) and only
@@ -2404,6 +2417,54 @@ export const EDITORIAL_CHECKS = [
         EYELINE_MATCH_STAGE,
         { shots },
         { returnsJson: true, source: EYELINE_MATCH_STAGE },
+      );
+      return mapLlmFindings(content?.findings, {
+        severityDefault: ctx.severityDefault,
+        category: 'continuity',
+        max: ctx.config?.maxFindings ?? 12,
+        // Storyboard scenes carry their source issue number (rendered into the
+        // block header), so a finding keeps the model-supplied issue anchor.
+        withIssueNumber: true,
+      });
+    },
+  },
+  {
+    id: 'visual.appearance-continuity',
+    sources: ['storyboard.shots'],
+    label: 'Storyboard appearance / prop continuity',
+    description:
+      'LLM diff of a scene\'s storyboard shot descriptions for appearance/prop continuity breaks — the same named character described with conflicting wardrobe/hair/state across shots, a prop that appears, vanishes, or transforms with no action removing it, or a setting whose weather/time/layout contradicts across shots. The semantic sibling of the deterministic visual.shot-continuity check: the shot parser matches characters by name but never diffs their free-text descriptions, so detecting an inconsistency needs an LLM, not a vocabulary scan. Reads the per-issue storyboard shots and anchors each finding to the offending shot pair.',
+    scope: 'scene',
+    kind: 'llm',
+    category: 'continuity',
+    severityDefault: 'medium',
+    defaultEnabled: true,
+    configSchema: z.object({
+      // Cap findings per run so a long storyboard can't flood the review.
+      maxFindings: z.number().int().min(1).max(50).default(12),
+    }),
+    configFields: [
+      {
+        key: 'maxFindings',
+        label: 'Max findings per run',
+        type: 'number',
+        min: 1,
+        max: 50,
+        step: 1,
+        help: 'Cap findings so a long storyboard can not flood the review.',
+      },
+    ],
+    // Same gate as the eyeline sibling: skip the LLM call entirely unless at least
+    // one scene has two-or-more described shots to diff an appearance across
+    // (summarizeStoryboardShots returns '' when nothing qualifies).
+    gate: (ctx) => !!summarizeStoryboardShots(ctx.storyboardScenes),
+    run: async (ctx) => {
+      const shots = summarizeStoryboardShots(ctx.storyboardScenes);
+      if (!shots) return [];
+      const { content } = await ctx.callStagedLLM(
+        APPEARANCE_CONTINUITY_STAGE,
+        { shots },
+        { returnsJson: true, source: APPEARANCE_CONTINUITY_STAGE },
       );
       return mapLlmFindings(content?.findings, {
         severityDefault: ctx.severityDefault,
