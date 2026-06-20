@@ -6,9 +6,12 @@ vi.mock('../../settings.js', () => ({ getSettings: vi.fn(async () => ({})) }));
 vi.mock('../series.js', () => ({ getSeries: vi.fn(async () => ({ id: 's1', universeId: 'u1' })) }));
 // Issues source — backed by a mutable fixture so the storyboard.shots continuity
 // check (#1315) can be exercised; default empty so the check is gated off unless a
-// test populates issues carrying storyboard scenes.
+// test populates issues carrying storyboard scenes. The runner reads the UNCAPPED
+// per-series scan (#1469), so the mock filters the fixture by seriesId.
 let issuesState = [];
-vi.mock('../issues.js', () => ({ listIssues: vi.fn(async () => issuesState) }));
+vi.mock('../issues.js', () => ({
+  listIssuesForSeries: vi.fn(async (seriesId) => issuesState.filter((i) => i.seriesId === seriesId)),
+}));
 vi.mock('../seriesCanon.js', () => ({
   getSeriesCanon: vi.fn(async () => ({
     characters: [{ name: 'Alina' }, { name: 'Alana' }, { name: 'Zog' }],
@@ -334,6 +337,30 @@ describe('visual.shot-continuity (#1315)', () => {
     const row = result.perCheck.find((p) => p.checkId === 'visual.shot-continuity');
     expect(row.skipped).toBe(true);
     expect(result.findings).toHaveLength(0);
+  });
+
+  it('reaches a storyboard scene past the 1000-issue listIssues cap (#1469)', async () => {
+    // 1000 empty issues + a 1001st carrying the offending scene. listIssues caps at
+    // ISSUES_PER_RESPONSE_MAX (1000), so before the uncapped per-series scan this
+    // scene was silently skipped and the continuity break went unflagged.
+    const filler = Array.from({ length: 1000 }, (_, n) => ({
+      id: `i${n + 1}`, seriesId: 's1', number: n + 1, stages: {},
+    }));
+    issuesState = [...filler, {
+      id: 'i1001', seriesId: 's1', number: 1001,
+      stages: { storyboards: { scenes: [{
+        heading: 'INT. THRONE ROOM',
+        shots: [
+          { id: 'shot-01', description: 'queen faces left', screenDirection: 'left' },
+          { id: 'shot-02', description: 'reverse', screenDirection: 'right', continuityFromShotId: 'shot-01' },
+        ],
+      }] } },
+    }];
+    const result = await runEditorialChecks('s1', { settings: onlyShotContinuity });
+    const findings = result.findings.filter((f) => f.checkId === 'visual.shot-continuity');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].issueNumber).toBe(1001);
+    expect(findings[0].problem).toMatch(/axis reversal/i);
   });
 });
 
