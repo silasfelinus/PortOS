@@ -106,6 +106,8 @@ import {
   getTaskPrompt
 } from './taskPromptService.js'
 
+import { DEFAULT_TASK_PROMPTS, PREVIOUS_DEFAULT_PROMPTS } from './taskPromptDefaults.js'
+
 import { loadState } from './cosState.js'
 
 import { readJSONFile } from '../lib/fileUtils.js'
@@ -244,6 +246,70 @@ describe('taskSchedule', () => {
       // Should have all default task types even though only security was saved
       expect(schedule.tasks['code-quality']).toBeDefined()
       expect(schedule.tasks['test-coverage']).toBeDefined()
+    })
+  })
+
+  describe('basic-task prompt genericization (PortOS → {appName})', () => {
+    // Installs created before the Jan→Feb 2026 genericization stored a default that
+    // hardcoded "PortOS" as the target app. These tasks were never versioned, so
+    // they never auto-upgraded — and worse, an install that upgraded past the
+    // promptVersion introduction got the old PortOS default mis-flagged
+    // promptCustomized:true. The fix: version the basic tasks, list the old
+    // defaults in PREVIOUS_DEFAULT_PROMPTS, and self-heal the mis-flag in
+    // loadSchedule so every install converges on the generic {appName} body.
+    const portosDocPrompt = PREVIOUS_DEFAULT_PROMPTS['documentation'].find((p) => p.includes('PortOS'))
+
+    it('versions the basic self-improvement tasks so deployed installs can auto-upgrade', () => {
+      for (const t of ['security', 'code-quality', 'test-coverage', 'performance', 'accessibility',
+        'dependency-updates', 'documentation', 'ui-bugs', 'mobile-responsive', 'release-check']) {
+        expect(PROMPT_VERSIONS[t], `PROMPT_VERSIONS['${t}']`).toBeGreaterThanOrEqual(2)
+      }
+    })
+
+    it('the current documentation default no longer hardcodes PortOS', () => {
+      expect(DEFAULT_TASK_PROMPTS['documentation']).not.toContain('PortOS')
+      expect(DEFAULT_TASK_PROMPTS['documentation']).toContain('{appName}')
+    })
+
+    it('upgrades a stale, non-customized PortOS default (promptVersion: 1) to the generic body', async () => {
+      mockSchedule({
+        tasks: { 'documentation': { type: 'once', enabled: false, providerId: null, model: null, prompt: portosDocPrompt, promptVersion: 1 } }
+      })
+      const schedule = await loadSchedule()
+      const doc = schedule.tasks['documentation']
+      expect(doc.prompt).toBe(DEFAULT_TASK_PROMPTS['documentation'])
+      expect(doc.prompt).not.toContain('PortOS')
+      expect(doc.promptVersion).toBe(PROMPT_VERSIONS['documentation'])
+    })
+
+    it('upgrades a pre-versioning PortOS default (promptVersion undefined) via the legacy-migration path', async () => {
+      mockSchedule({
+        tasks: { 'documentation': { type: 'once', enabled: false, providerId: null, model: null, prompt: portosDocPrompt } }
+      })
+      const schedule = await loadSchedule()
+      expect(schedule.tasks['documentation'].prompt).toBe(DEFAULT_TASK_PROMPTS['documentation'])
+      expect(schedule.tasks['documentation'].prompt).not.toContain('PortOS')
+    })
+
+    it('self-heals a mis-flagged promptCustomized that actually matches a known previous default, then upgrades', async () => {
+      mockSchedule({
+        tasks: { 'documentation': { type: 'once', enabled: false, providerId: null, model: null, prompt: portosDocPrompt, promptVersion: 1, promptCustomized: true } }
+      })
+      const schedule = await loadSchedule()
+      const doc = schedule.tasks['documentation']
+      expect(doc.promptCustomized).toBe(false)
+      expect(doc.prompt).toBe(DEFAULT_TASK_PROMPTS['documentation'])
+      expect(doc.promptVersion).toBe(PROMPT_VERSIONS['documentation'])
+    })
+
+    it('preserves a genuine user customization even when it mentions PortOS', async () => {
+      const custom = 'My own documentation prompt that happens to mention PortOS but matches no shipped default.'
+      mockSchedule({
+        tasks: { 'documentation': { type: 'once', enabled: false, providerId: null, model: null, prompt: custom, promptCustomized: true } }
+      })
+      const schedule = await loadSchedule()
+      expect(schedule.tasks['documentation'].prompt).toBe(custom)
+      expect(schedule.tasks['documentation'].promptCustomized).toBe(true)
     })
   })
 

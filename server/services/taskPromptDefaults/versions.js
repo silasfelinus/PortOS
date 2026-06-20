@@ -16,7 +16,23 @@ export const PROMPT_VERSIONS = {
   'code-reviewer-b': 1, // v1: 2-stage pipeline (codebase review → triage & implement)
   'reference-watch': 2, // v2: append slug-tagged checklist items to PLAN.md (Adopt + Maybe) instead of writing REFERENCE_REVIEW.md; security-flagged commits get no PLAN entry (mentioned only in final summary)
   'pr-watcher': 1,      // v1: review-and-comment default for newly-opened PRs on the app's default branch
-  'refresh-local-llm-catalog': 1 // v1: research current local models, refresh LOCAL_LLM_CATALOG + EDITORIAL_FAMILY_RANK, PR (PortOS repo only)
+  'refresh-local-llm-catalog': 1, // v1: research current local models, refresh LOCAL_LLM_CATALOG + EDITORIAL_FAMILY_RANK, PR (PortOS repo only)
+
+  // Basic self-improvement tasks — versioned so installs created before the
+  // Jan→Feb 2026 genericization (which still have the app-name-hardcoded "PortOS"
+  // default persisted, sometimes mis-flagged promptCustomized) auto-upgrade to the
+  // current {appName} body. See PREVIOUS_DEFAULT_PROMPTS + the self-heal in
+  // taskSchedule.js loadSchedule().
+  'security': 2, // v2: generic {appName} body (older default hardcoded "PortOS"/"server/routes" paths)
+  'code-quality': 2, // v2: generic {appName} body (older default hardcoded "PortOS")
+  'test-coverage': 2, // v2: generic {appName} body (older default hardcoded "PortOS")
+  'performance': 2, // v2: generic {appName} body (older default hardcoded "PortOS")
+  'accessibility': 2, // v2: generic {appName} + the app UI (older default hardcoded "PortOS" + http://localhost:5555)
+  'dependency-updates': 2, // v2: generic {appName} body (older default hardcoded "PortOS")
+  'documentation': 4, // v4: generic {appName} body (v1 hardcoded "PortOS"; v2/v3 retired DONE.md wording)
+  'ui-bugs': 2, // v2: generic {appName} + the app UI (older default hardcoded "PortOS" + http://localhost:5555)
+  'mobile-responsive': 2, // v2: generic {appName} app-UI body (older default hardcoded "PortOS" + http://localhost:5555)
+  'release-check': 6, // v6: generic {appName} body (older defaults hardcoded "PortOS")
 };
 
 // Audit anchor for reference-watch's read/write coupling.

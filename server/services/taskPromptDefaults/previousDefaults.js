@@ -1372,4 +1372,784 @@ git branch -d "claim/issue-\${NUM}"
 
 If \`git branch -d\` refuses (the PR squash-merged on GitHub but local doesn't know yet), use \`-D\` — the PR is confirmed merged, so the local branch is redundant. Verify the issue closed (the \`Closes #\${NUM}\` trailer auto-closes it on merge); if it's still open, close it manually (\`gh issue close "\${NUM}"\`) and remove the \`in-progress\` label (\`gh issue edit "\${NUM}" --remove-label in-progress\`). **Do NOT \`git pull\`** from inside this phase — the work is already integrated on GitHub via \`gh pr merge\`; leave the user's working tree alone.`,
   ],
+  // Basic self-improvement tasks: prior defaults that hardcoded the target app as
+  // "PortOS" (and, for some, http://localhost:5555) plus a couple of intermediate
+  // generic revisions. Listing them here lets loadSchedule recognize a stored
+  // pre-genericization prompt as a known default — so it auto-upgrades to the
+  // current {appName} body instead of being treated as a user customization. The
+  // brief Feb-2026 `${PORTOS_UI_URL}`-interpolated variants are intentionally
+  // omitted: they were never released (≈51 min on main) and resolve per-install.
+  'security': [
+    // prior default — app name hardcoded as "PortOS"
+    `[Self-Improvement] Security Audit
+
+Analyze PortOS codebase for security vulnerabilities:
+
+1. Review server/routes/*.js for:
+   - Command injection in exec/spawn calls
+   - Path traversal in file operations
+   - Missing input validation
+   - XSS in rendered content
+
+2. Review server/services/*.js for:
+   - Unsafe eval() or Function()
+   - Hardcoded credentials
+   - SQL/NoSQL injection
+
+3. Review client/src/ for:
+   - XSS vulnerabilities in React
+   - Sensitive data in localStorage
+   - CSRF protection
+
+4. Check server/lib/commandAllowlist.js is comprehensive
+
+Fix any vulnerabilities and commit with security advisory notes.`,
+  ],
+  'code-quality': [
+    // prior default (pre-genericization / intermediate)
+    `[Self-Improvement] Code Quality Review
+
+Analyze PortOS codebase for maintainability:
+
+1. Find DRY violations - similar code in multiple places
+2. Identify functions >50 lines that should be split
+3. Look for missing error handling
+4. Find dead code and unused imports
+5. Check for console.log that should be removed
+6. Look for TODO/FIXME that need addressing
+
+Focus on:
+- server/services/*.js
+- client/src/pages/*.jsx
+- client/src/components/*.jsx
+
+Refactor issues found and commit improvements.`,
+  ],
+  'test-coverage': [
+    // prior default (pre-genericization / intermediate)
+    `[Self-Improvement] Improve Test Coverage
+
+Analyze and improve test coverage for PortOS:
+
+1. Check existing tests in server/tests/ and client/tests/
+2. Identify untested critical paths:
+   - API routes without tests
+   - Services with complex logic
+   - Error handling paths
+
+3. Add tests for:
+   - CoS task evaluation logic
+   - Agent spawning and lifecycle
+   - Socket.IO event handlers
+   - API endpoints
+
+4. Ensure tests:
+   - Follow existing patterns
+   - Use appropriate mocks
+   - Test edge cases
+
+5. Run npm test to verify all tests pass
+6. Commit test additions with clear message describing what's covered`,
+  ],
+  'performance': [
+    // prior default (pre-genericization / intermediate)
+    `[Self-Improvement] Performance Analysis
+
+Analyze PortOS for performance issues:
+
+1. Review React components for:
+   - Unnecessary re-renders
+   - Missing useMemo/useCallback
+   - Large component files that should be split
+
+2. Review server code for:
+   - N+1 query patterns
+   - Missing caching opportunities
+   - Inefficient file operations
+
+3. Review client bundle for:
+   - Missing code splitting
+   - Large dependencies that could be tree-shaken
+
+4. Check Socket.IO for:
+   - Event handler memory leaks
+   - Unnecessary broadcasts
+
+Optimize and commit improvements.`,
+  ],
+  'accessibility': [
+    // prior default (pre-genericization / intermediate)
+    `[Self-Improvement] Accessibility Audit
+
+Use Playwright MCP to audit PortOS accessibility:
+
+1. Navigate to http://localhost:5555/
+2. Use browser_snapshot to get accessibility tree
+3. Check each main route for:
+   - Missing ARIA labels
+   - Missing alt text on images
+   - Insufficient color contrast
+   - Keyboard navigation issues
+   - Focus indicators
+
+4. Fix accessibility issues in React components
+5. Add appropriate aria-* attributes
+6. Test and commit changes`,
+  ],
+  'dependency-updates': [
+    // prior default (pre-genericization / intermediate)
+    `[Self-Improvement] Dependency Updates and Security Audit
+
+Check PortOS dependencies for updates and security vulnerabilities:
+
+1. Run npm audit in both server/ and client/ directories
+2. Check for outdated packages with npm outdated
+3. Review CRITICAL and HIGH severity vulnerabilities
+4. For each vulnerability:
+   - Assess the actual risk (is the vulnerable code path used?)
+   - Check if an update is available
+   - Test that updates don't break functionality
+
+5. Update dependencies carefully:
+   - Update patch versions first (safest)
+   - Then minor versions
+   - Major versions need more careful review
+
+6. After updating:
+   - Run npm test in server/
+   - Run npm run build in client/
+   - Verify the app starts correctly
+
+7. Commit with clear changelog of what was updated and why`,
+  ],
+  'documentation': [
+    // prior default (pre-genericization / intermediate)
+    `[Improvement: {appName}] Update Documentation
+
+Review and improve {appName} documentation:
+
+Repository: {repoPath}
+
+1. Check README.md:
+   - Installation instructions current?
+   - Quick start guide clear?
+   - Feature overview complete?
+
+2. Review inline documentation:
+   - Add JSDoc to exported functions
+   - Document complex algorithms
+   - Explain non-obvious code
+
+3. Check for docs/ folder:
+   - Are all features documented?
+   - Is information current?
+   - Add missing guides if needed
+
+4. Update PLAN.md and DONE.md if present:
+   - Move completed milestones from PLAN.md to DONE.md
+   - Keep PLAN.md focused on next actions and future work
+
+Commit documentation improvements.`,
+    // prior default (pre-genericization / intermediate)
+    `[Improvement: {appName}] Update Documentation
+
+Review and improve {appName} documentation:
+
+Repository: {repoPath}
+
+1. Check README.md:
+   - Installation instructions current?
+   - Quick start guide clear?
+   - Feature overview complete?
+
+2. Review inline documentation:
+   - Add JSDoc to exported functions
+   - Document complex algorithms
+   - Explain non-obvious code
+
+3. Check for docs/ folder:
+   - Are all features documented?
+   - Is information current?
+   - Add missing guides if needed
+
+4. Update PLAN.md or similar if present:
+   - Mark completed milestones
+   - Document architectural decisions
+
+Commit documentation improvements.`,
+    // prior default (pre-genericization / intermediate)
+    `[Self-Improvement] Update Documentation
+
+Review and improve PortOS documentation:
+
+1. Update PLAN.md:
+   - Mark completed milestones
+   - Add any new features implemented
+   - Document architectural decisions
+
+2. Check docs/ folder:
+   - Are all features documented?
+   - Is the information current?
+   - Add any missing guides
+
+3. Review code comments:
+   - Add JSDoc to exported functions
+   - Document complex algorithms
+   - Explain non-obvious code
+
+4. Update README.md if needed:
+   - Installation instructions
+   - Quick start guide
+   - Feature overview
+
+5. Consider adding:
+   - Architecture diagrams
+   - API documentation
+   - Troubleshooting guide
+
+Commit documentation improvements.`,
+  ],
+  'ui-bugs': [
+    // prior default (pre-genericization / intermediate)
+    `[Self-Improvement] UI Bug Analysis
+
+Use Playwright MCP (browser_navigate, browser_snapshot, browser_console_messages) to analyze PortOS UI:
+
+1. Navigate to http://localhost:5555/
+2. Check each main route: /, /apps, /cos, /cos/tasks, /cos/agents, /devtools, /devtools/history, /providers, /usage
+3. For each route:
+   - Take a browser_snapshot to see the page structure
+   - Check browser_console_messages for JavaScript errors
+   - Look for broken UI elements, missing data, failed requests
+4. Fix any bugs found in the React components or API routes
+5. Run tests and commit changes`,
+  ],
+  'mobile-responsive': [
+    // prior default (pre-genericization / intermediate)
+    `[Self-Improvement] Mobile Responsiveness Analysis
+
+Use Playwright MCP to test PortOS at different viewport sizes:
+
+1. browser_resize to mobile (375x812), then navigate to http://localhost:5555/
+2. Take browser_snapshot and analyze for:
+   - Text overflow or truncation
+   - Buttons too small to tap (< 44px)
+   - Horizontal scrolling issues
+   - Elements overlapping
+   - Navigation usability
+3. Repeat at tablet (768x1024) and desktop (1440x900)
+4. Fix Tailwind CSS responsive classes (sm:, md:, lg:) as needed
+5. Test fixes and commit changes
+
+Focus on these routes: /cos, /cos/tasks, /devtools, /providers`,
+  ],
+  'release-check': [
+    // prior default (pre-genericization / intermediate)
+    `[Improvement: {appName}] Release Check
+
+Repository: {repoPath}
+
+Check if {appName} has accumulated enough work for a release, following the project's own documented release process.
+
+## Step 0: Discover the Release Process
+
+You need to determine these values (use angle-bracket names as placeholders in subsequent steps):
+- \`<SOURCE_BRANCH>\` — where development happens
+- \`<TARGET_BRANCH>\` — where releases go
+- Changelog format and location
+- Pre-release checks (tests, builds)
+- Push/rebase conventions
+
+First, extract \`<OWNER>\` and \`<REPO>\`:
+\`\`\`bash
+cd {repoPath} && gh repo view --json owner,name --jq '"OWNER=" + .owner.login + " REPO=" + .name'
+\`\`\`
+
+Then search for release documentation. Check your CLAUDE.md context (already provided above) for "Git Workflow", "Release", or "Changelog" sections. If the release process is not clear from CLAUDE.md, check these files in order (use whichever exist):
+1. \`cat {repoPath}/README.md\` — look for release/deployment/workflow sections
+2. \`cat {repoPath}/.changelog/README.md\` — changelog format and release conventions
+3. \`cat {repoPath}/CONTRIBUTING.md\` — contributing/release guidelines
+4. \`ls {repoPath}/docs/\` — look for release process docs (e.g., RELEASE.md, DEPLOY.md)
+5. \`ls {repoPath}/.github/workflows/\` — infer branch flow from CI workflow triggers
+6. \`gh api repos/<OWNER>/<REPO>/branches --jq '.[].name'\` — list branches to identify the flow
+
+If no documentation specifies a release flow, fall back to: source=dev, target=main.
+
+## Step 1: Evaluate Readiness
+
+Using the changelog location discovered in Step 0:
+- Read the current changelog (e.g., \`.changelog/NEXT.md\` or \`.changelog/v*.x.md\`)
+- Read the current version: \`node -p "require('{repoPath}/package.json').version"\` or equivalent
+
+Count substantive entries (lines starting with "###" or "- **" under Features, Fixes, Improvements sections). If fewer than 2 substantive entries exist, stop and report: "Not enough work accumulated for a release." Do NOT create a PR.
+
+## Step 2: Verify Clean State
+
+Run these checks on \`<SOURCE_BRANCH>\` (stop if any fail):
+1. \`git -C {repoPath} fetch origin\` and ensure \`<SOURCE_BRANCH>\` is up to date
+2. Run the project's test suite (use the command from release docs)
+3. Run the project's build (use the command from release docs)
+
+## Step 3: Create or Find PR
+
+Check for existing PR: \`gh pr list --repo <OWNER>/<REPO> --base <TARGET_BRANCH> --head <SOURCE_BRANCH> --state open --json number,url\`
+
+If a PR exists, use it. If not, create one following the project's documented release PR conventions.
+
+Capture the PR number as \`<PR_NUM>\` and URL.
+
+## Step 4: Wait for Copilot Review
+
+Copilot review is triggered automatically on push. Poll every 15 seconds until the review appears:
+\`\`\`bash
+gh api repos/<OWNER>/<REPO>/pulls/<PR_NUM>/reviews --jq '.[] | select(.user.login == "copilot-pull-request-reviewer") | .state'
+\`\`\`
+
+Wait until you see APPROVED or CHANGES_REQUESTED. Timeout after 5 minutes of polling.
+
+## Step 5: Address Feedback Loop (max 5 iterations)
+
+### 5a. Fetch unresolved review threads
+
+Use gh api graphql (JSON input to avoid shell escaping issues with GraphQL variables):
+
+\`\`\`bash
+echo '{"query":"query{repository(owner:\\"<OWNER>\\",name:\\"<REPO>\\"){pullRequest(number:<PR_NUM>){reviewThreads(first:100){nodes{id,isResolved,comments(first:10){nodes{body,path,line,author{login}}}}}}}}"}' | gh api graphql --input -
+\`\`\`
+
+### 5b. If no unresolved threads: skip to Step 6 (Merge).
+
+### 5c. If unresolved threads exist, evaluate each one:
+
+For each comment, read the referenced file and critically evaluate the suggestion:
+- **If the suggestion is valid and improves the code**: apply the fix
+- **If the suggestion is a false positive, overly pedantic, or would make the code worse**: do NOT change the code
+
+Either way, resolve every thread — the goal is zero unresolved threads before merge.
+
+After evaluating all threads:
+- If any code changes were made: run the project's test suite to verify, then commit and push following the project's push conventions (e.g., \`git pull --rebase --autostash && git push\`)
+
+### 5d. Resolve ALL threads via GraphQL mutation (both fixed and dismissed):
+
+For each thread, use the thread node id from 5a:
+\`\`\`bash
+echo '{"query":"mutation{resolveReviewThread(input:{threadId:\\"THREAD_NODE_ID\\"}){thread{isResolved}}}"}' | gh api graphql --input -
+\`\`\`
+
+### 5e. Wait for new Copilot review if code was pushed (repeat Step 4)
+
+If you pushed changes in 5c, the push automatically triggers a new Copilot review. Poll for it, then loop back to 5a. If no code changes were made (all threads were false positives), skip straight to Step 6.
+
+If after 5 iterations there are still unresolved threads, stop and report what remains.
+
+## Step 6: Merge
+
+Only merge when Copilot's most recent review has NO unresolved threads:
+\`\`\`bash
+gh pr merge <PR_NUM> --merge
+\`\`\`
+
+If merge fails (e.g., branch protections), try: \`gh pr merge <PR_NUM> --merge --admin\`
+
+## Step 7: Report
+
+Summarize:
+- Version released
+- Key changes (from changelog)
+- Number of review iterations needed
+- Any unresolved issues`,
+    // prior default (pre-genericization / intermediate)
+    `[Improvement: {appName}] Release Check — dev → main
+
+Check if the dev branch has accumulated enough work for a release, and if so, create a PR to main, wait for Copilot code review, iterate on feedback until clean, and merge.
+
+NOTE: The repo has a GitHub ruleset that automatically requests a Copilot code review on every push to a PR targeting main. You do NOT need to manually request reviews — just create/push the PR and wait.
+
+## Step 1: Evaluate Readiness
+
+Read the current changelog and version:
+- \`cat .changelog/v*.x.md\` (the one with literal "x", not a resolved version)
+- \`node -p "require('./package.json').version"\`
+
+Count substantive entries (lines starting with "###" or "- **" under Features, Fixes, Improvements sections). If fewer than 2 substantive entries exist, stop and report: "Not enough work accumulated for a release." Do NOT create a PR.
+
+## Step 2: Verify Clean State
+
+Run these checks (stop if any fail):
+1. \`git fetch origin\` and ensure dev is up to date: \`git status -uno\` should show "Your branch is up to date"
+2. \`cd server && npm test\` — all tests must pass
+3. \`cd client && npm run build\` — build must succeed
+
+## Step 3: Create or Find PR
+
+Check for existing PR: \`gh pr list --base main --head dev --state open --json number,url\`
+
+If a PR exists, use it. If not, create one:
+\`\`\`bash
+gh pr create --base main --head dev --title "Release $(node -p \\"require('./package.json').version\\")" --body "$(cat .changelog/v*.x.md | head -60)"
+\`\`\`
+
+Capture the PR number and URL.
+
+## Step 4: Wait for Copilot Review
+
+Copilot review is triggered automatically on push. Poll every 15 seconds until the review appears:
+\`\`\`bash
+gh api repos/atomantic/PortOS/pulls/PR_NUM/reviews --jq '.[] | select(.user.login == "copilot-pull-request-reviewer") | .state'
+\`\`\`
+
+Wait until you see APPROVED or CHANGES_REQUESTED. Timeout after 5 minutes of polling.
+
+## Step 5: Address Feedback Loop (max 5 iterations)
+
+### 5a. Fetch unresolved review threads
+
+Use gh api graphql (JSON input to avoid shell escaping issues with GraphQL variables):
+
+\`\`\`bash
+echo '{"query":"query{repository(owner:\\"atomantic\\",name:\\"PortOS\\"){pullRequest(number:PR_NUM){reviewThreads(first:100){nodes{id,isResolved,comments(first:10){nodes{body,path,line,author{login}}}}}}}}"}' | gh api graphql --input -
+\`\`\`
+
+### 5b. If no unresolved threads: skip to Step 6 (Merge).
+
+### 5c. If unresolved threads exist, evaluate each one:
+
+For each comment, read the referenced file and critically evaluate the suggestion:
+- **If the suggestion is valid and improves the code**: apply the fix
+- **If the suggestion is a false positive, overly pedantic, or would make the code worse**: do NOT change the code
+
+Either way, resolve every thread — the goal is zero unresolved threads before merge.
+
+After evaluating all threads:
+- If any code changes were made: run \`cd server && npm test\` to verify, then commit and push:
+  \`git add <files> && git commit -m "fix: address Copilot review feedback"\`
+  \`git pull --rebase --autostash && git push\`
+
+### 5d. Resolve ALL threads via GraphQL mutation (both fixed and dismissed):
+
+For each thread, use the thread node id from 5a:
+\`\`\`bash
+echo '{"query":"mutation{resolveReviewThread(input:{threadId:\\"THREAD_NODE_ID\\"}){thread{isResolved}}}"}' | gh api graphql --input -
+\`\`\`
+
+### 5e. Wait for new Copilot review if code was pushed (repeat Step 4)
+
+If you pushed changes in 5c, the push automatically triggers a new Copilot review. Poll for it, then loop back to 5a. If no code changes were made (all threads were false positives), skip straight to Step 6.
+
+If after 5 iterations there are still unresolved threads, stop and report what remains.
+
+## Step 6: Merge
+
+Only merge when Copilot's most recent review has NO unresolved threads:
+\`\`\`bash
+gh pr merge PR_NUM --merge
+\`\`\`
+
+If merge fails (e.g., branch protections), try: \`gh pr merge PR_NUM --merge --admin\`
+
+## Step 7: Report
+
+Summarize:
+- Version released
+- Key changes (from changelog)
+- Number of review iterations needed
+- Any unresolved issues
+
+IMPORTANT: Always use \`git pull --rebase --autostash\` before pushing (dev branch gets auto-bumped by CI). Never use \`git push\` alone.`,
+    // prior default (pre-genericization / intermediate)
+    `[Self-Improvement] Release Check — dev → main
+
+Check if the dev branch has accumulated enough work for a release, and if so, create a PR to main, wait for Copilot code review, iterate on feedback until clean, and merge.
+
+NOTE: The repo has a GitHub ruleset that automatically requests a Copilot code review on every push to a PR targeting main. You do NOT need to manually request reviews — just create/push the PR and wait.
+
+## Step 1: Evaluate Readiness
+
+Read the current changelog and version:
+- \`cat .changelog/v*.x.md\` (the one with literal "x", not a resolved version)
+- \`node -p "require('./package.json').version"\`
+
+Count substantive entries (lines starting with "###" or "- **" under Features, Fixes, Improvements sections). If fewer than 2 substantive entries exist, stop and report: "Not enough work accumulated for a release." Do NOT create a PR.
+
+## Step 2: Verify Clean State
+
+Run these checks (stop if any fail):
+1. \`git fetch origin\` and ensure dev is up to date: \`git status -uno\` should show "Your branch is up to date"
+2. \`cd server && npm test\` — all tests must pass
+3. \`cd client && npm run build\` — build must succeed
+
+## Step 3: Create or Find PR
+
+Check for existing PR: \`gh pr list --base main --head dev --state open --json number,url\`
+
+If a PR exists, use it. If not, create one:
+\`\`\`bash
+gh pr create --base main --head dev --title "Release $(node -p \\"require('./package.json').version\\")" --body "$(cat .changelog/v*.x.md | head -60)"
+\`\`\`
+
+Capture the PR number and URL.
+
+## Step 4: Wait for Copilot Review
+
+Copilot review is triggered automatically on push. Poll every 15 seconds until the review appears:
+\`\`\`bash
+gh api repos/atomantic/PortOS/pulls/PR_NUM/reviews --jq '.[] | select(.user.login == "copilot-pull-request-reviewer") | .state'
+\`\`\`
+
+Wait until you see APPROVED or CHANGES_REQUESTED. Timeout after 5 minutes of polling.
+
+## Step 5: Address Feedback Loop (max 5 iterations)
+
+### 5a. Fetch unresolved review threads
+
+Use gh api graphql (JSON input to avoid shell escaping issues with GraphQL variables):
+
+\`\`\`bash
+echo '{"query":"query{repository(owner:\\"atomantic\\",name:\\"PortOS\\"){pullRequest(number:PR_NUM){reviewThreads(first:100){nodes{id,isResolved,comments(first:10){nodes{body,path,line,author{login}}}}}}}}"}' | gh api graphql --input -
+\`\`\`
+
+### 5b. If no unresolved threads: skip to Step 6 (Merge).
+
+### 5c. If unresolved threads exist, evaluate each one:
+
+For each comment, read the referenced file and critically evaluate the suggestion:
+- **If the suggestion is valid and improves the code**: apply the fix
+- **If the suggestion is a false positive, overly pedantic, or would make the code worse**: do NOT change the code
+
+Either way, resolve every thread — the goal is zero unresolved threads before merge.
+
+After evaluating all threads:
+- If any code changes were made: run \`cd server && npm test\` to verify, then commit and push:
+  \`git add <files> && git commit -m "fix: address Copilot review feedback"\`
+  \`git pull --rebase --autostash && git push\`
+
+### 5d. Resolve ALL threads via GraphQL mutation (both fixed and dismissed):
+
+For each thread, use the thread node id from 5a:
+\`\`\`bash
+echo '{"query":"mutation{resolveReviewThread(input:{threadId:\\"THREAD_NODE_ID\\"}){thread{isResolved}}}"}' | gh api graphql --input -
+\`\`\`
+
+### 5e. Wait for new Copilot review if code was pushed (repeat Step 4)
+
+If you pushed changes in 5c, the push automatically triggers a new Copilot review. Poll for it, then loop back to 5a. If no code changes were made (all threads were false positives), skip straight to Step 6.
+
+If after 5 iterations there are still unresolved threads, stop and report what remains.
+
+## Step 6: Merge
+
+Only merge when Copilot's most recent review has NO unresolved threads:
+\`\`\`bash
+gh pr merge PR_NUM --merge
+\`\`\`
+
+If merge fails (e.g., branch protections), try: \`gh pr merge PR_NUM --merge --admin\`
+
+## Step 7: Report
+
+Summarize:
+- Version released
+- Key changes (from changelog)
+- Number of review iterations needed
+- Any unresolved issues
+
+IMPORTANT: Always use \`git pull --rebase --autostash\` before pushing (dev branch gets auto-bumped by CI). Never use \`git push\` alone.`,
+    // prior default (pre-genericization / intermediate)
+    `[Self-Improvement] Release Check — dev → main
+
+Check if the dev branch has accumulated enough work for a release, and if so, create a PR to main, wait for Copilot code review, iterate on feedback until clean, and merge.
+
+NOTE: The repo has a GitHub ruleset that automatically requests a Copilot code review on every push to a PR targeting main. You do NOT need to manually request reviews — just create/push the PR and wait.
+
+## Step 1: Evaluate Readiness
+
+Read the current changelog and version:
+- \`cat .changelog/v*.x.md\` (the one with literal "x", not a resolved version)
+- \`node -p "require('./package.json').version"\`
+
+Count substantive entries (lines starting with "###" or "- **" under Features, Fixes, Improvements sections). If fewer than 2 substantive entries exist, stop and report: "Not enough work accumulated for a release." Do NOT create a PR.
+
+## Step 2: Verify Clean State
+
+Run these checks (stop if any fail):
+1. \`git fetch origin\` and ensure dev is up to date: \`git status -uno\` should show "Your branch is up to date"
+2. \`cd server && npm test\` — all tests must pass
+3. \`cd client && npm run build\` — build must succeed
+
+## Step 3: Create or Find PR
+
+Check for existing PR: \`gh pr list --base main --head dev --state open --json number,url\`
+
+If a PR exists, use it. If not, create one:
+\`\`\`bash
+gh pr create --base main --head dev --title "Release $(node -p \\"require('./package.json').version\\")" --body "$(cat .changelog/v*.x.md | head -60)"
+\`\`\`
+
+Capture the PR number and URL.
+
+## Step 4: Wait for Copilot Review
+
+Copilot review is triggered automatically on push. Poll every 15 seconds until the review appears:
+\`\`\`bash
+gh api repos/atomantic/PortOS/pulls/PR_NUM/reviews --jq '.[] | select(.user.login == "copilot-pull-request-reviewer") | .state'
+\`\`\`
+
+Wait until you see APPROVED or CHANGES_REQUESTED. Timeout after 5 minutes of polling.
+
+## Step 5: Address Feedback Loop (max 5 iterations)
+
+### 5a. Fetch unresolved review threads
+
+Use gh api graphql (JSON input to avoid shell escaping issues with GraphQL variables):
+
+\`\`\`bash
+echo '{"query":"query{repository(owner:\\"atomantic\\",name:\\"PortOS\\"){pullRequest(number:PR_NUM){reviewThreads(first:100){nodes{id,isResolved,comments(first:10){nodes{body,path,line,author{login}}}}}}}}"}' | gh api graphql --input -
+\`\`\`
+
+### 5b. If no unresolved threads: skip to Step 6 (Merge).
+
+### 5c. If unresolved threads exist:
+- Read each referenced file path
+- Apply the suggested fixes
+- Run \`cd server && npm test\` to verify
+- Commit changes: \`git add <files> && git commit -m "fix: address Copilot review feedback"\`
+- Push: \`git pull --rebase --autostash && git push\`
+
+### 5d. Resolve threads via GraphQL mutation:
+
+For each thread, use the thread node id from 5a:
+\`\`\`bash
+echo '{"query":"mutation{resolveReviewThread(input:{threadId:\\"THREAD_NODE_ID\\"}){thread{isResolved}}}"}' | gh api graphql --input -
+\`\`\`
+
+### 5e. Wait for new Copilot review (repeat Step 4)
+
+The push in 5c automatically triggers a new Copilot review. Poll for it, then loop back to 5a.
+
+If after 5 iterations there are still unresolved threads, stop and report what remains.
+
+## Step 6: Merge
+
+Only merge when Copilot's most recent review has NO unresolved threads:
+\`\`\`bash
+gh pr merge PR_NUM --merge
+\`\`\`
+
+If merge fails (e.g., branch protections), try: \`gh pr merge PR_NUM --merge --admin\`
+
+## Step 7: Report
+
+Summarize:
+- Version released
+- Key changes (from changelog)
+- Number of review iterations needed
+- Any unresolved issues
+
+IMPORTANT: Always use \`git pull --rebase --autostash\` before pushing (dev branch gets auto-bumped by CI). Never use \`git push\` alone.`,
+    // prior default (pre-genericization / intermediate)
+    `[Self-Improvement] Release Check — dev → main
+
+Check if the dev branch has accumulated enough work for a release, and if so, create a PR to main, get Copilot review, iterate on feedback, and merge.
+
+## Step 1: Evaluate Readiness
+
+Read the current changelog and version:
+- \`cat .changelog/v*.x.md\` (the one with literal "x", not a resolved version)
+- \`node -p "require('./package.json').version"\`
+
+Count substantive entries (lines starting with "###" or "- **" under Features, Fixes, Improvements sections). If fewer than 2 substantive entries exist, stop and report: "Not enough work accumulated for a release." Do NOT create a PR.
+
+## Step 2: Verify Clean State
+
+Run these checks (stop if any fail):
+1. \`git fetch origin\` and ensure dev is up to date: \`git status -uno\` should show "Your branch is up to date"
+2. \`cd server && npm test\` — all tests must pass
+3. \`cd client && npm run build\` — build must succeed
+
+## Step 3: Create or Find PR
+
+Check for existing PR: \`gh pr list --base main --head dev --state open --json number,url\`
+
+If a PR exists, use it. If not, create one:
+\`\`\`bash
+gh pr create --base main --head dev --title "Release $(node -p \\"require('./package.json').version\\")" --body "$(cat .changelog/v*.x.md | head -60)"
+\`\`\`
+
+Capture the PR number and URL.
+
+## Step 4: Request Copilot Review
+
+Try the API method first:
+\`\`\`bash
+gh api repos/atomantic/PortOS/pulls/PR_NUM/requested_reviewers \\
+  --method POST \\
+  --input - <<< '{"reviewers":["copilot-pull-request-reviewer"]}'
+\`\`\`
+
+If you get a 422 error, fall back to Playwright browser automation:
+1. Navigate to the PR URL
+2. Take a browser_snapshot
+3. Click the Reviewers gear icon
+4. Look for and click the Copilot review request button/option
+
+## Step 5: Poll for Review Completion
+
+Poll every 15 seconds until a Copilot review appears:
+\`\`\`bash
+gh api repos/atomantic/PortOS/pulls/PR_NUM/reviews --jq '.[].state'
+\`\`\`
+
+Wait until you see a review from "copilot-pull-request-reviewer" or "github-actions[bot]" with state APPROVED or CHANGES_REQUESTED. Timeout after 5 minutes of polling.
+
+## Step 6: Address Feedback Loop (max 5 iterations)
+
+For each iteration:
+
+### 6a. Fetch unresolved review threads
+
+Use gh api graphql with a POST body file (to avoid shell escaping issues with GraphQL variables):
+
+\`\`\`bash
+echo '{"query":"query{repository(owner:\\"atomantic\\",name:\\"PortOS\\"){pullRequest(number:PR_NUM){reviewThreads(first:100){nodes{isResolved,comments(first:10){nodes{body,path,line,author{login}}}}}}}}"}' | gh api graphql --input -
+\`\`\`
+
+### 6b. If unresolved threads exist:
+- Read each referenced file path
+- Apply the suggested fixes
+- Run \`cd server && npm test\` to verify
+- Commit changes: \`git add <files> && git commit -m "fix: address Copilot review feedback"\`
+- Push: \`git pull --rebase --autostash && git push\`
+
+### 6c. Resolve threads via GraphQL mutation:
+
+For each thread, get the threadId from the GraphQL response above and resolve it:
+\`\`\`bash
+echo '{"query":"mutation{resolveReviewThread(input:{threadId:\\"THREAD_ID\\"}){thread{isResolved}}}"}' | gh api graphql --input -
+\`\`\`
+
+### 6d. Request another Copilot review (repeat Step 4)
+### 6e. Poll again (repeat Step 5)
+
+If after 5 iterations there are still unresolved threads, stop and report what remains.
+
+## Step 7: Merge
+
+Once review is clean (APPROVED or no unresolved threads):
+\`\`\`bash
+gh pr merge PR_NUM --merge
+\`\`\`
+
+If merge fails (e.g., branch protections), try: \`gh pr merge PR_NUM --merge --admin\`
+
+## Step 8: Report
+
+Summarize:
+- Version released
+- Key changes (from changelog)
+- Number of review iterations needed
+- Any unresolved issues
+
+IMPORTANT: Always use \`git pull --rebase --autostash\` before pushing (dev branch gets auto-bumped by CI). Never use \`git push\` alone.`,
+  ],
 };
