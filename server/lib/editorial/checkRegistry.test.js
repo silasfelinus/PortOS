@@ -3201,6 +3201,26 @@ describe('cast.representation-balance — deterministic check (#1312)', () => {
     expect(screenTime(findings)).toBeUndefined();
   });
 
+  it('treats a primary+secondary set (she/they) as the primary gender, not ambiguous', () => {
+    // inferGender resolves "she/they" to female (a definite identity with a
+    // secondary set), unlike "she/he" which is genuinely ambiguous → unknown.
+    // Pin that contract via the screen-time signal: two she/they characters
+    // count as 2 known-female, so an all-female roster trips the skew.
+    const canon = {
+      characters: [
+        { name: 'Aria', pronouns: 'she/they' },
+        { name: 'Mara', pronouns: 'she/her' },
+      ],
+    };
+    const findings = runRep(canon, {
+      sections: [sec(1, 'Aria and Mara spoke at dawn.')],
+      config: only({ maxGenderShare: 0.7 }),
+    });
+    const f = screenTime(findings);
+    expect(f).toBeTruthy();
+    expect(f.problem).toMatch(/100% are female/);
+  });
+
   it('gate requires at least one named canon character', () => {
     const c = getCheck(REP);
     expect(c.gate({ canon: { characters: [] } })).toBeFalsy();

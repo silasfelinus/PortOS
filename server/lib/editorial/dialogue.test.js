@@ -205,20 +205,21 @@ describe('attributeDialogueByOwner', () => {
   });
 
   it('credits a dialogue line to the owner named in the beat, not inside the quote', () => {
-    const text = [
-      '"I saw Bram at the gate," said Aria.',
-      '"Then we move tonight," Bram replied.',
-    ].join('\n');
+    // Discriminating: the quote names "Aria" but the BEAT names "Bram", and the
+    // owner list is ordered [aria, bram] so first-match-wins favors the in-quote
+    // name. Correct (beat-only) attribution credits Bram; a regression that
+    // matched the whole paragraph (quote not stripped) would credit Aria — so
+    // this assertion actually fails if the quote-strip is removed.
+    const text = '"I saw Aria at the gate," said Bram.';
     const { byOwner, total, attributed, unattributed } = attributeDialogueByOwner(text, [
       owner('aria', 'Aria'),
       owner('bram', 'Bram'),
     ]);
-    expect(total).toBe(2);
-    expect(attributed).toBe(2);
+    expect(total).toBe(1);
+    expect(attributed).toBe(1);
     expect(unattributed).toBe(0);
-    // Line 1 names "Bram" inside the quote but "Aria" in the beat → credited to Aria.
-    expect(byOwner.get('aria')).toBe(1);
     expect(byOwner.get('bram')).toBe(1);
+    expect(byOwner.has('aria')).toBe(false);
   });
 
   it('counts a dialogue line with no resolvable speaker as unattributed', () => {
