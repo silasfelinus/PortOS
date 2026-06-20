@@ -916,14 +916,21 @@ describe('declaredThemesSummary (#1317)', () => {
 });
 
 describe('roster.unmodeled-names — LLM check (#1412)', () => {
+  // The deterministic recurrence pass reads ctx.sections (one per issue), so a
+  // surfaced name's appearances are counted across the WHOLE manuscript — not just
+  // the chunk the model saw. `llmFinds` stubs the LLM to surface the given names.
   const wholeCtx = (overrides = {}) => ({
     manuscript: '# Issue 1\n\nMarguerite drew her sword as the bells of Veridia rang.',
     config: { maxFindings: 12 },
     severityDefault: 'low',
     canon: { characters: [{ name: 'Robert', aliases: ['Bob'] }] },
+    sections: [{ number: 1, content: 'Marguerite drew her sword as the bells of Veridia rang.' }],
     planManuscriptChunks: async () => ['# Issue 1\n\nMarguerite drew her sword.'],
     callStagedLLM: async () => ({ content: { findings: [] } }),
     ...overrides,
+  });
+  const llmFinds = (...names) => async () => ({
+    content: { findings: names.map((n) => ({ severity: 'low', issueNumber: 1, location: `Unmodeled character — "${n}"`, problem: `${n} is not in canon` })) },
   });
 
   it('is registered as a series-scoped LLM casting check reading manuscript + canon', () => {
@@ -962,7 +969,6 @@ describe('roster.unmodeled-names — LLM check (#1412)', () => {
     expect(seenVars.knownCharacters).toContain('Bob');
     expect(findings).toHaveLength(1);
     expect(findings[0].category).toBe('casting');
-    expect(findings[0].location).toBe('Unmodeled character — "Marguerite"');
   });
 
   it('passes an empty roster var when the canon has no characters', async () => {
@@ -975,23 +981,62 @@ describe('roster.unmodeled-names — LLM check (#1412)', () => {
     expect(seenVars.knownCharacters).toBe('');
   });
 
-  it('marks a single-chunk run as the final part so the recurrence judgment is enabled', async () => {
-    let seenVars = null;
+  it('relabels a one-appearance surfaced name as a low-severity throwaway', async () => {
     const ctx = wholeCtx({
-      callStagedLLM: async (_stage, vars) => { seenVars = vars; return { content: { findings: [] } }; },
+      sections: [{ number: 1, content: 'Old Henrik nodded once and was never seen again.' }],
+      callStagedLLM: llmFinds('Old Henrik'),
     });
-    await getCheck(UNMODELED_NAMES).run(ctx);
-    expect(seenVars.finalPart).toBe('true');
+    const findings = await getCheck(UNMODELED_NAMES).run(ctx);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].location).toBe('Throwaway name — "Old Henrik" (1 appearance)');
+    expect(findings[0].severity).toBe('low');
   });
 
-  it('flags only the LAST part as final across a chunked manuscript (recurrence is whole-corpus)', async () => {
-    const finals = [];
+  it('counts appearances across ALL sections (not just the seen chunk) and labels a recurring name medium', async () => {
+    // Marguerite appears in issues 1 and 3 — the deterministic pass must see both,
+    // so a chunk that only showed issue 3 can't mislabel her a one-appearance throwaway.
     const ctx = wholeCtx({
-      planManuscriptChunks: async () => ['# Issue 1\n\np1', '# Issue 2\n\np2', '# Issue 3\n\np3'],
-      callStagedLLM: async (_stage, vars) => { finals.push(vars.finalPart); return { content: { findings: [] } }; },
+      sections: [
+        { number: 1, content: 'Marguerite drew her sword.' },
+        { number: 2, content: 'A quiet interlude with no new names.' },
+        { number: 3, content: 'Marguerite returned to the war room.' },
+      ],
+      callStagedLLM: llmFinds('Marguerite'),
     });
-    await getCheck(UNMODELED_NAMES).run(ctx);
-    expect(finals).toEqual(['', '', 'true']);
+    const findings = await getCheck(UNMODELED_NAMES).run(ctx);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].location).toBe('Unmodeled character — "Marguerite" (2 issues)');
+    expect(findings[0].severity).toBe('medium');
+  });
+
+  it('collapses the same surfaced name reported from two different chunks into one finding', async () => {
+    const ctx = wholeCtx({
+      sections: [
+        { number: 1, content: 'Marguerite drew her sword.' },
+        { number: 2, content: 'Marguerite sheathed it again.' },
+      ],
+      // Two chunks each surface Marguerite — the dedupe keeps one.
+      callStagedLLM: llmFinds('Marguerite', 'Marguerite'),
+    });
+    const findings = await getCheck(UNMODELED_NAMES).run(ctx);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].location).toBe('Unmodeled character — "Marguerite" (2 issues)');
+  });
+
+  it('leaves a finding untouched when its name cannot be parsed or is absent from the prose', async () => {
+    const ctx = wholeCtx({
+      sections: [{ number: 1, content: 'Nothing matching here.' }],
+      callStagedLLM: async () => ({ content: { findings: [
+        { severity: 'low', issueNumber: 1, location: 'General note (no quoted name)', problem: 'malformed' },
+        { severity: 'low', issueNumber: 1, location: 'Unmodeled character — "Ghostname"', problem: 'not actually in prose' },
+      ] } }),
+    });
+    const findings = await getCheck(UNMODELED_NAMES).run(ctx);
+    // Neither is rewritten: the first has no quoted name; the second matches 0 sections.
+    expect(findings.map((f) => f.location)).toEqual([
+      'General note (no quoted name)',
+      'Unmodeled character — "Ghostname"',
+    ]);
   });
 });
 

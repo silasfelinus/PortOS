@@ -28,10 +28,18 @@ spare room — so it never displaces manuscript text or overflows the provider
 window (a chunk packed to the budget just runs without a digest).
 `style.conformance` (tense/POV established earlier),
 `objects.unmotivated-interaction` (setup/payoff across chapters), and
-`roster.unmodeled-names` (an unmodeled name's recurrence is whole-corpus, so a
-later part doesn't re-flag a name an earlier part surfaced and the throwaway/
-recurring judgment is gated to the final part) opt in; `prose.info-dumping` stays
-per-chunk (its problems are localized).
+`roster.unmodeled-names` (so a later part doesn't re-describe an unmodeled name an
+earlier part already surfaced) opt in; `prose.info-dumping` stays per-chunk (its
+problems are localized).
+
+`roster.unmodeled-names` also shows the LLM/deterministic split that keeps a
+chunked judgment correct: the model does ONLY what it alone can — surface a proper
+noun used as a character name and confirm it's a person (not a place/org/brand/
+honorific) — and a deterministic post-pass in `run()` counts each surfaced name's
+distinct-issue appearances across the WHOLE `ctx.sections` corpus to apply the
+one-appearance-throwaway vs recurring label + final severity. Recurrence is a
+whole-corpus count the model can't make per-chunk (a name in issues 1 and 12 looks
+like a one-off to whichever chunk sees it), so it never asks the model for it.
 
 The findings digest carries prior *problems* forward but not clean prior *setup*
 — a payoff in a later chunk can be mis-flagged "missing setup" when the earlier

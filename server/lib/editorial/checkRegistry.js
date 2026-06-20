@@ -1843,26 +1843,51 @@ export const EDITORIAL_CHECKS = [
     // canon — an EMPTY bible is the strongest case (every named proper noun is
     // unmodeled), and the prompt's {{^knownCharacters}} branch handles it.
     gate: (ctx) => (ctx.manuscript || '').trim().length > 0,
-    run: (ctx) => {
+    run: async (ctx) => {
       // The known-character roster is fixed per-call overhead (re-sent on each
       // chunk) — it's the exclusion list the model classifies against. Counted into
       // the per-chunk budget so the manuscript isn't squeezed past the window.
       const knownCharacters = canonRosterNamesSummary(ctx.canon);
-      return runManuscriptLlmCheck(ctx, {
+      // The LLM does ONLY what it alone can: surface a proper noun used as a
+      // character name and classify it (person vs place/org/brand/honorific). It
+      // does NOT judge recurrence — that's a whole-corpus count the model can't make
+      // when the manuscript is chunked (a name in issues 1 and 12 would look like a
+      // one-appearance throwaway to whichever chunk sees it). `crossChunkDigest`
+      // keeps a later chunk from re-describing a name an earlier chunk surfaced.
+      const findings = await runManuscriptLlmCheck(ctx, {
         stage: UNMODELED_NAMES_STAGE,
         category: 'casting',
         overheadTokens: EDITORIAL_PROMPT_OVERHEAD_TOKENS + estimateTokens(knownCharacters),
-        // The recurrence judgment (one-appearance throwaway vs recurring) is a
-        // WHOLE-corpus call, so on a chunked manuscript an earlier part must NOT
-        // declare a name a throwaway — it may recur in a later part it hasn't seen.
-        // `finalPart` gates that judgment to the last chunk (mirrors chekhov /
-        // endings), and `crossChunkDigest` carries each part's surfaced names
-        // forward so the final part can confirm recurrence and the same unmodeled
-        // name isn't re-flagged across parts. A single-chunk run is its own final
-        // part, so the common (provider-fits-the-book) case judges the whole text.
         crossChunkDigest: true,
-        buildVars: (manuscript, meta) => ({ manuscript, knownCharacters, finalPart: meta?.isFinal ? 'true' : '' }),
+        buildVars: (manuscript) => ({ manuscript, knownCharacters }),
       });
+      // Deterministic whole-corpus recurrence pass. Each finding's `location` carries
+      // the surfaced name in quotes (`Unmodeled character — "Marguerite"`); count its
+      // distinct-issue appearances across ALL sections (not just the chunk the LLM
+      // saw) so the throwaway/recurring label is correct regardless of chunking, and
+      // collapse findings that surfaced the same name in different chunks. A name the
+      // matcher can't find in the prose (a stray/garbled LLM token) is left as the
+      // model classified it rather than fabricating a "0 appearances" throwaway.
+      const sections = Array.isArray(ctx.sections) ? ctx.sections : [];
+      const seenNames = new Set();
+      const out = [];
+      for (const f of findings) {
+        const name = (String(f.location || '').match(/"([^"]+)"/) || [])[1];
+        if (!name) { out.push(f); continue; }
+        const key = normalizeName(name);
+        if (key && seenNames.has(key)) continue; // same unmodeled name from another chunk
+        if (key) seenNames.add(key);
+        const matcher = characterMatcher([name]);
+        const issues = matcher
+          ? new Set(sections.filter((s) => matcher.test(s.content || '')).map((s) => s.number))
+          : new Set();
+        const count = issues.size;
+        if (count === 0) { out.push(f); continue; }
+        out.push(count === 1
+          ? { ...f, severity: 'low', location: `Throwaway name — "${name}" (1 appearance)` }
+          : { ...f, severity: 'medium', location: `Unmodeled character — "${name}" (${count} issues)` });
+      }
+      return out;
     },
   },
   {
