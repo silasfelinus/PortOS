@@ -98,7 +98,7 @@ function makeCapacityTracker(state, agentsByProject = {}) {
  * `evaluateTasks` mirrors this at cos.js:862 with `tasksToSpawn.length === 0`.
  * The replica enforces the same `spawned === 0` precondition.
  */
-function priorityDequeue(buckets, capacity) {
+function priorityDequeue(buckets, capacity, { paused = false } = {}) {
   const order = ['onDemand', 'user', 'autoSystem', 'mission', 'idle'];
 
   // Mission / idle only run when no pending user tasks exist, mirroring the
@@ -106,6 +106,10 @@ function priorityDequeue(buckets, capacity) {
   const hasPendingUserTasks = (buckets.user || []).length > 0;
 
   for (const bucketName of order) {
+    // Global pause: on-demand (explicit user "Run") still drains, but every
+    // autonomous/scheduled/user tier below is skipped — mirrors the
+    // `if (paused) return;` gate in dequeueNextTask after Priority 0.
+    if (paused && bucketName !== 'onDemand') break;
     if ((bucketName === 'mission' || bucketName === 'idle') && hasPendingUserTasks) continue;
     // Idle is stricter: only fires when no other bucket has spawned yet.
     if (bucketName === 'idle' && capacity.spawned.length > 0) continue;
@@ -165,6 +169,28 @@ describe('evaluateTasks — priority ordering', () => {
       'sys-auto-1',
     ]);
     expect(spawned.map(t => t._bucket)).toEqual(['onDemand', 'user', 'autoSystem']);
+  });
+
+  it('when globally paused, only the on-demand bucket drains (manual Run bypasses pause)', () => {
+    // A global pause stops scheduled/autonomous/user spawning, but an explicit
+    // user "Run" pushes an on-demand request that must still fire. Mirrors the
+    // production gate: Priority 0 (on-demand) is processed, then `if (paused) return;`.
+    const state = makeState({ maxConcurrentAgents: 5 });
+    const capacity = makeCapacityTracker(state);
+
+    const buckets = {
+      onDemand: [task('task-onDemand-1')],
+      user: [task('task-user-1')],
+      autoSystem: [task('sys-auto-1')],
+      mission: [task('sys-mission-1')],
+      idle: [task('sys-idle-1')],
+    };
+
+    const spawned = priorityDequeue(buckets, capacity, { paused: true });
+
+    // Only the on-demand request spawns; everything else stays paused.
+    expect(spawned.map(t => t.id)).toEqual(['task-onDemand-1']);
+    expect(spawned.map(t => t._bucket)).toEqual(['onDemand']);
   });
 
   it('mission + idle fire only when there are NO pending user tasks', () => {
@@ -656,6 +682,32 @@ describe('cos.js source — priority + capacity invariants', () => {
     expect(missionIdx, 'spawnPriority3Missions must run after improvement queueing').toBeGreaterThan(queueIdx);
     expect(featureIdx, 'spawnPriority36FeatureAgents must run after missions').toBeGreaterThan(missionIdx);
     expect(idleIdx, 'spawnPriority4IdleReview must run after feature agents').toBeGreaterThan(featureIdx);
+  });
+
+  it('on-demand (Priority 0) bypasses the global pause in BOTH engines', () => {
+    // A global pause stops scheduled/autonomous/user spawning, but an explicit
+    // user "Run" queues an on-demand request that must still fire. So in each
+    // engine the pause gate must sit AFTER Priority 0, not at the top — moving it
+    // back to the top is the regression this pins.
+    const dequeueFn = extractFnBody(COS_SRC, COS_SRC.indexOf('async function dequeueNextTask'));
+    const evalFn    = extractFnBody(GEN_SRC, GEN_SRC.indexOf('export async function evaluateTasks'));
+
+    // dequeueNextTask: the `if (paused) return` gate appears AFTER the on-demand
+    // loop (`onDemandRequests`), and `paused` is NOT returned-on before it.
+    const dqOnDemandIdx = dequeueFn.indexOf('onDemandRequests');
+    const dqPauseGateIdx = dequeueFn.search(/if\s*\(\s*paused\s*\)\s*return/);
+    expect(dqOnDemandIdx, 'dequeueNextTask must process onDemandRequests').toBeGreaterThan(-1);
+    expect(dqPauseGateIdx, 'dequeueNextTask must keep an `if (paused) return` gate').toBeGreaterThan(-1);
+    expect(dqPauseGateIdx, 'pause gate must come AFTER the on-demand loop').toBeGreaterThan(dqOnDemandIdx);
+
+    // evaluateTasks: Priority 0 runs unconditionally; Priorities 1+ are wrapped in
+    // an `if (!paused)` block that begins after spawnPriority0OnDemand.
+    const evOnDemandIdx = evalFn.indexOf('spawnPriority0OnDemand(ctx)');
+    const evPauseGateIdx = evalFn.search(/if\s*\(\s*!\s*paused\s*\)/);
+    const evUserIdx = evalFn.indexOf('spawnPriority1UserTasks(ctx)');
+    expect(evOnDemandIdx, 'evaluateTasks must invoke spawnPriority0OnDemand').toBeGreaterThan(-1);
+    expect(evPauseGateIdx, 'evaluateTasks must gate the lower tiers on !paused').toBeGreaterThan(evOnDemandIdx);
+    expect(evUserIdx, 'user/autonomous tiers must sit inside the !paused gate').toBeGreaterThan(evPauseGateIdx);
   });
 
   it('per-project cap defaults to global cap when unset', () => {

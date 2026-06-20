@@ -621,12 +621,11 @@ export async function evaluateTasks(options) {
   const { initialStartup = false } = options || {};
   if (!isDaemonRunning()) return;
 
-  // Check if paused - skip evaluation if so
+  // A global pause stops scheduled/autonomous/user spawning, but NOT explicit
+  // user triggers: on-demand requests (Priority 0) are still drained while
+  // paused so a manual "Run" (or a force-evaluate) fires. The user/autonomous
+  // tiers below are gated on `!paused` — parity with dequeueNextTask in cos.js.
   const paused = (await loadState()).paused || false;
-  if (paused) {
-    emitLog('debug', 'CoS is paused - skipping evaluation');
-    return;
-  }
 
   // Update evaluation timestamp with lock to prevent race conditions
   const state = await withStateLock(async () => {
@@ -708,23 +707,31 @@ export async function evaluateTasks(options) {
     autonomousSlotCeiling: availableSlots
   };
 
-  // Priorities 0–1 spend against the global slot cap.
+  // Priority 0 (on-demand) spends against the global slot cap and runs even when
+  // paused — an explicit user "Run" bypasses the global pause.
   await spawnPriority0OnDemand(ctx);
-  await spawnPriority1UserTasks(ctx);
 
-  // Ceiling for AUTONOMOUS admissions this cycle (#711). On-demand + user tasks
-  // are already in `tasksToSpawn` and never count against the CoS action budget,
-  // so the autonomous sections below may add at most `autonomousActionsRemaining`
-  // more. With no action cap this equals `availableSlots`, so the default path is
-  // unchanged. The autonomous tiers use this in place of `availableSlots`.
-  ctx.autonomousSlotCeiling = Math.min(availableSlots, tasksToSpawn.length + autonomousActionsRemaining);
+  // Every tier below is scheduled/autonomous/user work that the global pause
+  // stops. When paused we skip them and let the shared spawn loop below emit just
+  // the on-demand tasks Priority 0 collected.
+  if (!paused) {
+    // Priority 1 spends against the global slot cap.
+    await spawnPriority1UserTasks(ctx);
 
-  // Priorities 2, 3, 3.6, 4 spend against the lower autonomous ceiling.
-  await spawnPriority2AutoApproved(ctx);
-  await maybeQueueImprovementTasks(ctx);
-  await spawnPriority3Missions(ctx);
-  await spawnPriority36FeatureAgents(ctx);
-  await spawnPriority4IdleReview(ctx);
+    // Ceiling for AUTONOMOUS admissions this cycle (#711). On-demand + user tasks
+    // are already in `tasksToSpawn` and never count against the CoS action budget,
+    // so the autonomous sections below may add at most `autonomousActionsRemaining`
+    // more. With no action cap this equals `availableSlots`, so the default path is
+    // unchanged. The autonomous tiers use this in place of `availableSlots`.
+    ctx.autonomousSlotCeiling = Math.min(availableSlots, tasksToSpawn.length + autonomousActionsRemaining);
+
+    // Priorities 2, 3, 3.6, 4 spend against the lower autonomous ceiling.
+    await spawnPriority2AutoApproved(ctx);
+    await maybeQueueImprovementTasks(ctx);
+    await spawnPriority3Missions(ctx);
+    await spawnPriority36FeatureAgents(ctx);
+    await spawnPriority4IdleReview(ctx);
+  }
 
   // Emit evaluation status
   const pendingUserCount = userTaskData.grouped?.pending?.length || 0;
