@@ -21,17 +21,7 @@ import {
   updateMoodBoardItem,
   removeMoodBoardItem,
 } from '../services/api';
-
-// Resolve an item to a display image src: a pinned mediaKey `image:<file>` maps
-// to the served bytes; otherwise the stored external/app URL. Returns null when
-// there's nothing renderable (e.g. a video media-key we don't thumbnail in v1).
-function imageSrc(item) {
-  if (item?.imageUrl) return item.imageUrl;
-  if (typeof item?.mediaKey === 'string' && item.mediaKey.startsWith('image:')) {
-    return `/data/images/${encodeURIComponent(item.mediaKey.slice('image:'.length))}`;
-  }
-  return null;
-}
+import { moodBoardItemSrc } from '../lib/moodBoardItemSrc';
 
 export default function MoodBoardDetail() {
   const { id } = useParams();
@@ -272,7 +262,7 @@ export default function MoodBoardDetail() {
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
           {items.map((item) => {
-            const src = imageSrc(item);
+            const src = moodBoardItemSrc(item);
             return (
               <div key={item.id} className="bg-port-card border border-port-border rounded-md overflow-hidden flex flex-col">
                 {item.type === 'image' ? (

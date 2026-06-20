@@ -56,6 +56,7 @@ export * from './manuscriptAnchors.js';
 export * from './manuscriptFormat.js';
 export * from './mediaNavigation.js';
 export * from './mediaSearch.js';
+export * from './moodBoardItemSrc.js';
 export * from './sameJsonShape.js';
 export * from './unsorted.js';
 export * from './upsertByIdPrepend.js';
