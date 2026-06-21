@@ -197,13 +197,15 @@ function resolveSourceStageIds({ issue, stageId, sourceStageIds }) {
 // series principals than the whole 68-character cast.
 const PRINCIPAL_ROLE_RE = /\b(main|lead|protagonist|principal|recurring|primary|hero|central)\b/i;
 
-// Word-boundary, case-insensitive containment test (same escaping the bible
-// matcher in scenePrompt.js uses). Local copy so the first-name supplement below
-// doesn't have to widen the shared matcher (which `canonReadiness` also calls).
+// Word-boundary, case-insensitive containment test (same Unicode-aware boundary
+// the bible matcher in scenePrompt.js uses — lookarounds over `[\p{L}\p{N}_]` so
+// accented first names like "José" still match). Local copy so the first-name
+// supplement below doesn't have to widen the shared matcher (`canonReadiness`
+// also calls it).
 const wordInText = (needle, haystack) => {
   if (!needle) return false;
   const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`\\b${escaped}\\b`, 'i').test(haystack);
+  return new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, 'iu').test(haystack);
 };
 
 // First-name token of a multi-word canon name ("Mira Reyes" → "Mira"). Drafts

@@ -584,6 +584,19 @@ describe('pipeline text stage generator', () => {
       .toEqual(['Mira Reyes']);
   });
 
+  it('scopeCharactersForIssue: matches non-ASCII names (accented) the ASCII \\b matcher would miss', () => {
+    const cast = [
+      { name: 'José Marín', role: 'pilot' },
+      { name: 'Élodie', role: 'lead' }, // principal — match must come from text, not fallback
+      { name: 'Mira', role: 'extra' },
+    ];
+    // Source names José (by first name) and Élodie (accented single name).
+    const got = textStages.__testing.scopeCharactersForIssue(cast, 'José and Élodie shared a look').map((c) => c.name);
+    expect(got).toContain('José Marín');
+    expect(got).toContain('Élodie');
+    expect(got).not.toContain('Mira');
+  });
+
   it('scopeCharactersForIssue: falls back to principals when no name is matched', () => {
     const cast = [
       { name: 'Mira', role: 'main protagonist' },
