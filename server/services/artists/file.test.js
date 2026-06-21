@@ -5,12 +5,9 @@
  * exercises) and the `mergeArtistsFromSync` LWW outcomes (insert / newer-wins /
  * older-loses / tombstone), asserted via getArtist/listArtists.
  *
- * NOTE: the conflict-journal base-hash + journaling SIDE EFFECTS that authors'
- * file.test.js asserts are intentionally NOT covered here — they depend on the
- * artist record kind being registered in syncWire/peerSync (cross-peer sync),
- * which is deferred (artists are local-only for now — see issue #1502). When that
- * registration lands, this suite should grow the base-hash/journaling assertions
- * to mirror authors. Runs against a tmpdir so it never touches real `data/`.
+ * Also pins the sync side effects that make the cross-peer registration real:
+ * base-hash seeding on insert and conflict journaling before a remote overwrite.
+ * Runs against a tmpdir so it never touches real `data/`.
  */
 
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
@@ -26,12 +23,16 @@ vi.mock('../../lib/fileUtils.js', async (importOriginal) => {
 });
 
 const file = await import('./file.js');
+const cj = await import('../../lib/conflictJournal.js');
 
 function reset() {
   rmSync(join(TEST_DATA_ROOT, 'artists.json'), { force: true });
   rmSync(join(TEST_DATA_ROOT, 'sharing'), { recursive: true, force: true });
   rmSync(join(TEST_DATA_ROOT, 'conflict-journal'), { recursive: true, force: true });
+  cj.__resetBaseHashCacheForTests();
 }
+
+const journalEntries = () => cj.conflictJournalStore().loadAll();
 
 const artist = (id, extra = {}) => ({
   id, name: id, genre: '', bio: '', musicalStyle: '', physicalDescription: '',
@@ -101,5 +102,41 @@ describe('artists file backend — mergeArtistsFromSync (LWW outcomes)', () => {
     const res = await file.pruneTombstonedArtists(Date.parse('2030-01-01T00:00:00.000Z'));
     expect(res).toEqual({ pruned: 1 });
     expect(await file.getArtist('artist-dead', { includeDeleted: true })).toBeNull();
+  });
+
+  it('seeds the base hash on first insert of a remote artist', async () => {
+    const remote = artist('artist-2', { bio: 'inserted' });
+    expect(await cj.getSyncBaseHash('artist', 'artist-2')).toBeNull();
+    await file.mergeArtistsFromSync([remote]);
+    expect(await cj.getSyncBaseHash('artist', 'artist-2'))
+      .toBe(cj.contentHashForRecord('artist', remote));
+  });
+
+  it('journals the losing local artist on true 3-way divergence', async () => {
+    const local = artist('artist-3', { bio: 'local edit', updatedAt: '2026-02-01T00:00:00.000Z' });
+    await file.mergeArtistsFromSync([local]);
+    const base = artist('artist-3', { bio: 'common ancestor', updatedAt: '2026-01-01T00:00:00.000Z' });
+    await cj.setSyncBaseHash('artist', 'artist-3', cj.contentHashForRecord('artist', base));
+
+    const remoteWinner = artist('artist-3', { bio: 'remote edit', updatedAt: '2026-03-01T00:00:00.000Z' });
+    await file.mergeArtistsFromSync([remoteWinner], { source: { via: 'peer-push', peerId: 'peer-A' } });
+
+    const entry = (await journalEntries()).find((e) => e.recordKind === 'artist' && e.recordId === 'artist-3');
+    expect(entry).toBeTruthy();
+    expect(entry.source.peerId).toBe('peer-A');
+    expect(entry.localSnapshot.bio).toBe('local edit');
+    expect(entry.remoteSnapshot.bio).toBe('remote edit');
+    expect((await file.getArtist('artist-3')).bio).toBe('remote edit');
+    expect(await cj.getSyncBaseHash('artist', 'artist-3'))
+      .toBe(cj.contentHashForRecord('artist', remoteWinner));
+  });
+
+  it('pruneTombstonedArtists evicts the base hash for a hard-pruned tombstone', async () => {
+    await file.mergeArtistsFromSync([
+      artist('artist-dead-base', { deleted: true, deletedAt: '2020-01-01T00:00:00.000Z', updatedAt: '2020-01-01T00:00:00.000Z' }),
+    ]);
+    expect(await cj.getSyncBaseHash('artist', 'artist-dead-base')).not.toBeNull();
+    await file.pruneTombstonedArtists(Date.parse('2030-01-01T00:00:00.000Z'));
+    expect(await cj.getSyncBaseHash('artist', 'artist-dead-base')).toBeNull();
   });
 });

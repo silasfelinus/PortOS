@@ -153,6 +153,13 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // MUST bump this to 2 then (where a v1 peer would round-trip the new shape
   // through an unaware sanitizer).
   authors: 1,
+  // v1 = music artists/albums/tracks (PostgreSQL `artists`, `albums`, and
+  // `tracks` tables) federated via the per-record peer-sync push pipeline.
+  // Each kind gets its own category gate so an older peer can reject only the
+  // music record type it cannot parse while unrelated categories keep flowing.
+  artists: 1,
+  albums: 1,
+  tracks: 1,
   // v1 = creative ingredients catalog (Postgres tables: catalog_scraps,
   // catalog_ingredients, catalog_ingredient_sources, catalog_ingredient_refs).
   // v2 = `catalog_ingredients.search_tsv` expanded to also index the
@@ -282,6 +289,9 @@ export const RECORD_KIND_SCHEMA_CATEGORIES = Object.freeze({
   issue: Object.freeze(['pipelineIssues']),
   mediaCollection: Object.freeze(['mediaCollections']),
   author: Object.freeze(['authors']),
+  artist: Object.freeze(['artists']),
+  album: Object.freeze(['albums']),
+  track: Object.freeze(['tracks']),
   'cat-ingredient': Object.freeze(['catalog']),
   'cat-scrap': Object.freeze(['catalog']),
   storyBuilder: Object.freeze(['storyBuilder']),

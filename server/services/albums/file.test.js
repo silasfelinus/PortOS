@@ -2,9 +2,8 @@
  * Album file-backend store — CRUD + LWW merge outcomes.
  *
  * Covers the CRUD round-trip the normal (non-DB) suite exercises plus the
- * `mergeAlbumsFromSync` LWW outcomes. The conflict-journal base-hash side
- * effects are NOT asserted here — they depend on the album record kind being
- * registered in syncWire/peerSync (deferred; local-only — see issue #1502).
+ * `mergeAlbumsFromSync` LWW outcomes plus the sync side effects that make
+ * federation safe: base-hash seeding and conflict journaling before overwrite.
  * Runs against a tmpdir so it never touches real `data/`.
  */
 
@@ -21,12 +20,16 @@ vi.mock('../../lib/fileUtils.js', async (importOriginal) => {
 });
 
 const file = await import('./file.js');
+const cj = await import('../../lib/conflictJournal.js');
 
 function reset() {
   rmSync(join(TEST_DATA_ROOT, 'albums.json'), { force: true });
   rmSync(join(TEST_DATA_ROOT, 'sharing'), { recursive: true, force: true });
   rmSync(join(TEST_DATA_ROOT, 'conflict-journal'), { recursive: true, force: true });
+  cj.__resetBaseHashCacheForTests();
 }
+
+const journalEntries = () => cj.conflictJournalStore().loadAll();
 
 const album = (id, extra = {}) => ({
   id, title: id, artistId: '', artist: '', description: '', genre: '',
@@ -74,5 +77,41 @@ describe('albums file backend — mergeAlbumsFromSync (LWW outcomes)', () => {
     await file.mergeAlbumsFromSync([album('album-dead', { deleted: true, deletedAt: '2020-01-01T00:00:00.000Z', updatedAt: '2020-01-01T00:00:00.000Z' })]);
     expect(await file.pruneTombstonedAlbums(Date.parse('2030-01-01T00:00:00.000Z'))).toEqual({ pruned: 1 });
     expect(await file.getAlbum('album-dead', { includeDeleted: true })).toBeNull();
+  });
+
+  it('seeds the base hash on first insert of a remote album', async () => {
+    const remote = album('album-2', { description: 'inserted' });
+    expect(await cj.getSyncBaseHash('album', 'album-2')).toBeNull();
+    await file.mergeAlbumsFromSync([remote]);
+    expect(await cj.getSyncBaseHash('album', 'album-2'))
+      .toBe(cj.contentHashForRecord('album', remote));
+  });
+
+  it('journals the losing local album on true 3-way divergence', async () => {
+    const local = album('album-3', { genre: 'local jazz', updatedAt: '2026-02-01T00:00:00.000Z' });
+    await file.mergeAlbumsFromSync([local]);
+    const base = album('album-3', { genre: 'common folk', updatedAt: '2026-01-01T00:00:00.000Z' });
+    await cj.setSyncBaseHash('album', 'album-3', cj.contentHashForRecord('album', base));
+
+    const remoteWinner = album('album-3', { genre: 'remote pop', updatedAt: '2026-03-01T00:00:00.000Z' });
+    await file.mergeAlbumsFromSync([remoteWinner], { source: { via: 'peer-push', peerId: 'peer-A' } });
+
+    const entry = (await journalEntries()).find((e) => e.recordKind === 'album' && e.recordId === 'album-3');
+    expect(entry).toBeTruthy();
+    expect(entry.source.peerId).toBe('peer-A');
+    expect(entry.localSnapshot.genre).toBe('local jazz');
+    expect(entry.remoteSnapshot.genre).toBe('remote pop');
+    expect((await file.getAlbum('album-3')).genre).toBe('remote pop');
+    expect(await cj.getSyncBaseHash('album', 'album-3'))
+      .toBe(cj.contentHashForRecord('album', remoteWinner));
+  });
+
+  it('pruneTombstonedAlbums evicts the base hash for a hard-pruned tombstone', async () => {
+    await file.mergeAlbumsFromSync([
+      album('album-dead-base', { deleted: true, deletedAt: '2020-01-01T00:00:00.000Z', updatedAt: '2020-01-01T00:00:00.000Z' }),
+    ]);
+    expect(await cj.getSyncBaseHash('album', 'album-dead-base')).not.toBeNull();
+    await file.pruneTombstonedAlbums(Date.parse('2030-01-01T00:00:00.000Z'));
+    expect(await cj.getSyncBaseHash('album', 'album-dead-base')).toBeNull();
   });
 });

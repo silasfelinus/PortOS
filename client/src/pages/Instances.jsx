@@ -7,7 +7,7 @@ import {
   Database, Brain, CheckCircle2, AlertCircle, Clock,
   RefreshCcw, Timer,
   Target, Sword, Fingerprint, HeartPulse, ChevronDown, ChevronRight,
-  Lock, Globe, Info, Sparkles, Film, Images, Library, BookOpen, FilePen
+  Lock, Globe, Info, Sparkles, Film, Images, Library, BookOpen, FilePen, Music, Music2, Disc3
 } from 'lucide-react';
 import toast from '../components/ui/Toast';
 import Pill from '../components/ui/Pill';
@@ -493,13 +493,16 @@ const SYNC_CATEGORY_META = [
   { key: 'videoHistory', label: 'Video History', icon: Film, description: 'Generated-video metadata rows (so synced collection videos render)' },
   { key: 'storyBuilder', label: 'Story Builder', icon: BookOpen, description: 'Resumable Story Builder sessions you marked for cross-machine sync' },
   { key: 'authors', label: 'Authors', icon: FilePen, description: 'Author personas + headshots used as series bylines (PostgreSQL)' },
+  { key: 'artists', label: 'Artists', icon: Music, description: 'Music artist personas + portraits (PostgreSQL)' },
+  { key: 'albums', label: 'Albums', icon: Disc3, description: 'Music albums + cover art and ordered track lists (PostgreSQL)' },
+  { key: 'tracks', label: 'Tracks', icon: Music2, description: 'Music tracks + attached audio files (PostgreSQL)' },
   { key: 'catalog', label: 'Catalog', icon: Library, description: 'Creative ingredients catalog: orphan ingredients + ref links (PostgreSQL)' }
 ];
 
 // Snapshot categories — exclude the per-record / delta-based categories that
-// have no 60s snapshot checksum: brain + memory (delta), catalog + authors
+// have no 60s snapshot checksum: brain + memory (delta), catalog + authors/music
 // (PostgreSQL, per-record peer-push only — no snapshot loop).
-const NON_SNAPSHOT_KEYS = new Set(['brain', 'memory', 'catalog', 'authors']);
+const NON_SNAPSHOT_KEYS = new Set(['brain', 'memory', 'catalog', 'authors', 'artists', 'albums', 'tracks']);
 const SNAPSHOT_CATEGORIES = SYNC_CATEGORY_META.filter(m => !NON_SNAPSHOT_KEYS.has(m.key));
 
 function SyncCategoriesPanel({ peer, onRefresh }) {

@@ -105,7 +105,7 @@ export async function deleteArtist(id) {
  * Merge an incoming batch of artist records from a peer (per-record push). LWW
  * on `updatedAt` (tombstone-aware) via the shared `mergeArtistRecord` decision.
  * Federation-ready: this is wired identically to authors, but the artist kind is
- * not yet registered in peerSync — see issue #1502. Returns `{ applied, count }`.
+ * registered in peerSync. Returns `{ applied, count }`.
  */
 export async function mergeArtistsFromSync(remoteArtists, { source = { via: 'sync', peerId: null } } = {}) {
   if (!Array.isArray(remoteArtists)) return { applied: false, count: 0 };

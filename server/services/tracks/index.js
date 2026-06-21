@@ -6,9 +6,8 @@
  *   - PostgreSQL (db.js) for normal installs.
  *   - File (file.js) only via MEMORY_BACKEND=file or NODE_ENV=test.
  *
- * The recordEvents emits are kept so the store is federation-ready, but the
- * track record kind is NOT yet registered in peerSync, so they are no-ops —
- * tracks are local-only until cross-peer sync is wired (see issue #1502).
+ * The recordEvents emits feed the per-record peer-sync pipeline, so tracks
+ * federate when peers enable the Tracks sync category.
  */
 
 import { checkHealth, ensureSchema } from '../../lib/db.js';

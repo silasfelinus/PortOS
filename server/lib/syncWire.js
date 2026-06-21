@@ -158,8 +158,11 @@ export function sanitizeRecordForWire(kind, record) {
       const { deleted: _d, deletedAt: _da, ...rest } = record;
       return { ...rest, ...sanitizeSoftDeleteFields(record) };
     }
-    case 'author': {
-      // Author personas: like mediaCollection, no `ephemeral` flag — always
+    case 'author':
+    case 'artist':
+    case 'album':
+    case 'track': {
+      // Persona/music records: like mediaCollection, no `ephemeral` flag — always
       // wire-syncable when present. Strip-then-tail-re-add the soft-delete pair
       // for byte-stable checksums. The full record is small (a handful of text
       // fields + the LWW/tombstone trio), so unlike mediaCollection there's no
