@@ -8,6 +8,23 @@ import { formatContextLength } from './formatters.js';
 export const CODEX_CONFIGURED_DEFAULT = 'codex-configured-default';
 export const ANTIGRAVITY_CONFIGURED_DEFAULT = 'antigravity-configured-default';
 
+export const DEFAULT_LARGE_CONTEXT_WINDOW = 128_000;
+
+// Keep in sync with server/lib/stageRunner.js. Only Opus 4.8 is special-cased
+// at 1M; unknown Opus 4 variants intentionally keep the conservative provider
+// fallback until their windows are explicitly known.
+const KNOWN_MODEL_CONTEXT_WINDOWS = Object.freeze([
+  [/claude[-_.:/]?opus[-_.:/]?4[-_.:/]?8/i, 1_000_000],
+  [/claude[-_.:/]?sonnet[-_.:/]?4(?:[-_.:/]|\b)/i, 200_000],
+  [/claude[-_.:/]?haiku[-_.:/]?4(?:[-_.:/]|\b)/i, 200_000],
+]);
+
+export const knownModelContextWindow = (model) => {
+  if (typeof model !== 'string' || !model.trim()) return null;
+  const found = KNOWN_MODEL_CONTEXT_WINDOWS.find(([pattern]) => pattern.test(model));
+  return found ? found[1] : null;
+};
+
 /**
  * Provider-type enum mirrored from server/lib/aiToolkit/constants.js#PROVIDER_TYPES.
  * The aiToolkit directory is kept self-contained (no imports out to other PortOS
@@ -97,6 +114,25 @@ export const localBackendForProvider = (provider) => {
   return null;
 };
 
+const LOCAL_ENDPOINT_RE = /^(https?:\/\/)?(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)(:|\/|$)/i;
+const isLocalEndpoint = (endpoint) =>
+  typeof endpoint === 'string' && LOCAL_ENDPOINT_RE.test(endpoint.trim());
+
+export const isLikelyLargeContextProvider = (provider) => {
+  if (isProcessProvider(provider)) return true;
+  return isApiProvider(provider) && !isLocalEndpoint(provider.endpoint);
+};
+
+export const effectiveModelContextWindow = (provider, model) => {
+  const explicit = Number(provider?.contextWindow);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const known = knownModelContextWindow(model);
+  if (known) return known;
+  const numCtx = Number(provider?.numCtx);
+  if (Number.isFinite(numCtx) && numCtx > 0) return numCtx;
+  return isLikelyLargeContextProvider(provider) ? DEFAULT_LARGE_CONTEXT_WINDOW : null;
+};
+
 /**
  * Union of one or more model-id lists, de-duplicated, order-preserving, falsy
  * values dropped. Used to merge a provider's stored `models` with the live
@@ -125,7 +161,7 @@ export const mergeModelLists = (...lists) => {
  * @returns {string}
  */
 export const modelOptionLabel = (id, ctxById) => {
-  const ctx = ctxById?.[id];
+  const ctx = ctxById?.[id] || knownModelContextWindow(id);
   const label = formatContextLength(ctx);
   return label ? `${id} (${label})` : id;
 };
