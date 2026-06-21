@@ -305,7 +305,8 @@ describe('Provider Service', () => {
             defaultModel: CODEX_SENTINEL,
             lightModel: CODEX_SENTINEL,
             mediumModel: CODEX_SENTINEL,
-            heavyModel: CODEX_SENTINEL
+            heavyModel: CODEX_SENTINEL,
+            contextWindow: 1000000
           }
         }
       });
