@@ -145,6 +145,24 @@ describe('huggingFaceCatalog', () => {
       expect(byRepo['stabilityai/stable-audio-3-medium'].note).toMatch(/data-sharing agreement/i)
     })
 
+    it('drops non-audio results from a non-audio query (no GGUF, but audio-only)', async () => {
+      // category=audio relaxes the GGUF filter — but a query like "llama" must
+      // not surface unrelated chat models mislabeled as audio. Only the curated
+      // suggestions (which match the query? none here) should remain.
+      fetch.mockResolvedValue(response([
+        {
+          modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+          downloads: 999999,
+          tags: ['text-generation', 'safetensors'],
+          pipeline_tag: 'text-generation',
+          siblings: [{ rfilename: 'model.safetensors', size: 8_000_000_000 }]
+        }
+      ]))
+
+      const results = await searchHuggingFaceModels({ backend: 'ollama', query: 'llama', category: 'audio' })
+      expect(results.find((r) => r.repository === 'meta-llama/Llama-3.1-8B-Instruct')).toBeUndefined()
+    })
+
     it('marks an audio model installed when it is in the shared registry', async () => {
       fetch.mockResolvedValue(response([
         {

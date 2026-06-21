@@ -179,6 +179,16 @@ function extractParams(repoId) {
 // the auto-classify ('all') path.
 const AUDIO_RE = /(text-to-audio|text-to-music|text-to-speech|audio-to-audio|automatic-speech-recognition|musicgen|audioldm|stable-audio|ace-?step|magenta|\bbark\b|\bxtts\b)/
 
+// Does this model actually look like an audio/music model? The audio category
+// relaxes the GGUF filter, so without this predicate a non-audio query (e.g.
+// "llama") would return unrelated models that `toResult` then mislabels as audio
+// (requestedCategory short-circuits classifyModel). This keeps the Audio & Music
+// results constrained to genuine audio models while still not requiring GGUF.
+function hasAudioSignal(model) {
+  const haystack = `${repoIdOf(model)} ${tagsOf(model).join(' ')} ${model?.pipeline_tag || ''}`.toLowerCase()
+  return AUDIO_RE.test(haystack)
+}
+
 function classifyModel(model, requestedCategory) {
   if (CATEGORY_IDS.has(requestedCategory) && requestedCategory !== 'all') return requestedCategory
   const haystack = `${repoIdOf(model)} ${(tagsOf(model) || []).join(' ')} ${model?.pipeline_tag || ''}`.toLowerCase()
@@ -436,7 +446,10 @@ export async function searchHuggingFaceModels({ backend, query = '', category = 
     : []
 
   const live = models
-    .filter((model) => (ggufOnly ? hasGgufSignal(model) : true))
+    // GGUF categories keep the GGUF signal filter; the audio category swaps it
+    // for an audio-signal filter (relaxed off GGUF, but still audio-only) so a
+    // non-audio query can't surface unrelated models mislabeled as audio.
+    .filter((model) => (ggufOnly ? hasGgufSignal(model) : hasAudioSignal(model)))
     .map((model) => toResult(model, backend, requestedCategory, installedIds, installedAudio))
     .filter(Boolean)
     .filter((model) => {
