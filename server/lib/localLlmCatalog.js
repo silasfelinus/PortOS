@@ -23,6 +23,14 @@ export const LOCAL_LLM_CATEGORIES = [
   { id: 'reasoning', label: 'Reasoning' },
   { id: 'coding', label: 'Coding' },
   { id: 'vision', label: 'Image Analysis' },
+  // Audio/music GENERATION models (ACE-Step, MusicGen, AudioLDM2, Stable Audio,
+  // Magenta…). These are NOT GGUF chat models and don't run on Ollama/LM Studio
+  // — the Hugging Face search relaxes its GGUF filter for this category and the
+  // installer routes audio installs into the shared audio-model registry
+  // (server/services/audioModels.js) so the Music studio picks them up. The
+  // curated `LOCAL_LLM_CATALOG` below never tags entries 'audio'; this category
+  // is populated live from the Hub.
+  { id: 'audio', label: 'Audio & Music' },
   { id: 'embedding', label: 'Text Embeddings' },
   { id: 'lightweight', label: 'Small & Fast' },
   { id: 'multilingual', label: 'Multilingual' }
