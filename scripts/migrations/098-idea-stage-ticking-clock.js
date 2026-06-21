@@ -39,7 +39,7 @@ export const ACCEPTED_OLD_MD5 = {
 
 // Post-change shipped hash. Bumped to the current shipped body whenever a later
 // migration edits this file, so the drift-catch test (NEW == live sample) stays
-// green. Latest: post-122 (scope-discipline + {{#paddingRisk}}).
+// green. Latest: post-124 (scope-discipline + {{#paddingRisk}}).
 export const NEW_SHIPPED_MD5 = {
   'pipeline-idea-expansion.md': 'c5b2e719e232a281b3829a5348cb29c1',
 };
