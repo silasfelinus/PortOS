@@ -15,7 +15,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { selectDryRunAutoApproved, exceedsMaxSpawns } from './cosTaskGenerator.js';
+import { selectDryRunAutoApproved, exceedsMaxSpawns, resolveIssueAuthorFilterBlock } from './cosTaskGenerator.js';
 import { MAX_TOTAL_SPAWNS } from '../lib/validation.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -118,6 +118,34 @@ describe('claim-work single-source routing', () => {
     expect(GEN_SRC).toContain('taskSchedule.DEFAULT_TASK_INTERVALS[promptTaskType]?.taskMetadata');
     expect(GEN_SRC).toContain("'useWorktree' in delegatedMeta");
     expect(GEN_SRC).toContain("'openPR' in delegatedMeta");
+  });
+
+  it('exposes buildClaimWorkTask so the manual /do:next button reuses the same router', () => {
+    expect(GEN_SRC).toContain('export async function buildClaimWorkTask(');
+    // Same tracker resolution + delegated isolation posture as the scheduler.
+    expect(GEN_SRC).toMatch(/buildClaimWorkTask[\s\S]*resolveAppWorkTracker, trackerToClaimTaskType/);
+    expect(GEN_SRC).toMatch(/buildClaimWorkTask[\s\S]*resolveIssueAuthorFilterBlock\(promptTaskType/);
+  });
+});
+
+// The {issueAuthorFilter} directive is shared by the scheduled claim-work router
+// AND the manual /do:next button (buildClaimWorkTask), so it is a standalone
+// pure helper. These exercise it directly rather than via source string.
+describe('resolveIssueAuthorFilterBlock', () => {
+  it('returns the gh forge directive for the github claim body', () => {
+    expect(resolveIssueAuthorFilterBlock('claim-issue', 'owner')).toContain('gh issue list');
+    expect(resolveIssueAuthorFilterBlock('claim-issue', 'any')).toContain('regardless of who filed it');
+  });
+
+  it('returns the glab forge directive for the gitlab claim body', () => {
+    expect(resolveIssueAuthorFilterBlock('claim-issue-gitlab', 'owner')).toContain('glab issue list');
+    expect(resolveIssueAuthorFilterBlock('claim-issue-gitlab', 'any')).toContain('regardless of who opened it');
+  });
+
+  it('defaults to the gh block (harmless no-op) for plan/jira bodies and to owner mode', () => {
+    expect(resolveIssueAuthorFilterBlock('plan-task')).toContain('gh issue list');
+    // Unknown mode collapses to owner, not any.
+    expect(resolveIssueAuthorFilterBlock('claim-issue', 'bogus')).toContain('repository owner only');
   });
 });
 
