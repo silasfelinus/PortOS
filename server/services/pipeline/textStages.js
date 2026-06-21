@@ -222,13 +222,16 @@ export function scopeCharactersForIssue(allCharacters, scopeText) {
 }
 
 /**
- * Concatenate the text that defines an issue's scope — its title, synopsis
+ * Concatenate the text that defines an issue's scope — its title, the unsaved
+ * `seedInput` driving this run (the idea stage generates beats straight from it,
+ * so a character named only in the seed must still be matched), synopsis
  * (`idea.input`), beat sheet (`idea.output`), and whatever source stages this
  * generation adapts from — into one haystack for the character matcher.
  */
-function buildIssueScopeText(issue, sourceMaterials) {
+function buildIssueScopeText(issue, sourceMaterials, seedInput) {
   return [
     issue.title,
+    seedInput,
     issue.stages?.idea?.input,
     issue.stages?.idea?.output,
     ...sourceMaterials.map((s) => s.content),
@@ -280,7 +283,7 @@ function buildStageContext({ series, canon, world, issue, stageId, seedInput, so
   // roster above keeps the whole cast known for naming/continuity.
   const scopedCharacters = scopeCharactersForIssue(
     canon?.characters || [],
-    buildIssueScopeText(issue, sourceMaterials),
+    buildIssueScopeText(issue, sourceMaterials, seedInput),
   );
   return {
     series: {

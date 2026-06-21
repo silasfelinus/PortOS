@@ -590,15 +590,35 @@ describe('pipeline text stage generator', () => {
     expect(textStages.__testing.scopeCharactersForIssue([], 'x')).toEqual([]);
   });
 
-  it('buildIssueScopeText concatenates title, synopsis, beats, and source materials', () => {
+  it('buildIssueScopeText concatenates title, seed, synopsis, beats, and source materials', () => {
     const issue = { title: 'The Hush', stages: { idea: { input: 'SYN', output: 'BEATS' } } };
     const sourceMaterials = [{ content: 'SRC-A' }, { content: 'SRC-B' }];
-    const text = textStages.__testing.buildIssueScopeText(issue, sourceMaterials);
+    const text = textStages.__testing.buildIssueScopeText(issue, sourceMaterials, 'SEED-TEXT');
     expect(text).toContain('The Hush');
+    expect(text).toContain('SEED-TEXT');
     expect(text).toContain('SYN');
     expect(text).toContain('BEATS');
     expect(text).toContain('SRC-A');
     expect(text).toContain('SRC-B');
+  });
+
+  it('scopes idea-stage characters from the UNSAVED seed text, not just saved fields', async () => {
+    const { series } = await seed();
+    const world = await universeSvc.createUniverse({ name: 'Seed Verse' });
+    // Lead exists so the principal fallback is non-empty — proving the match comes
+    // from the seed text, not the fallback. The issue carries no saved idea text.
+    await universeSvc.updateUniverse(world.id, {
+      characters: [
+        { name: 'Lead', role: 'protagonist' },
+        { name: 'Mira', role: 'surveyor' },
+      ],
+    });
+    await seriesSvc.updateSeries(series.id, { universeId: world.id });
+    const issue = await issuesSvc.createIssue({ seriesId: series.id, title: 'Fresh' });
+    // Generate the idea straight from an unsaved seed that names only Mira.
+    await textStages.generateStage(issue.id, 'idea', { seedInput: 'A quiet hour with Mira at the foundry.' });
+    const ctx = ctxFromCall(llmCalls[0]);
+    expect(ctx.series.characters.map((c) => c.name)).toEqual(['Mira']);
   });
 });
 
