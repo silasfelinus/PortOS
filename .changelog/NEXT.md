@@ -16,6 +16,8 @@
 
 ## Added
 
+- **Context-window size on available-model cards (Settings → Local LLM).** The model cards in the install catalog and the Hugging Face search results now show each model's native context window (e.g. "128K ctx") alongside its size and parameter count — previously this only appeared on already-installed models, so you couldn't compare context windows before deciding what to install. Live Hugging Face results read the true value from the repo's GGUF metadata (`gguf.context_length`, backfilled from the same per-repo fetch that already supplies file sizes); curated catalog entries carry it when it's a documented spec for that build.
+
 - **Music studio (Create → Music).** A new home for generating and organizing music with local OSS tools, with three tabs:
   - **Artists** — reusable musical personas (the audio analogue of Authors): name, genre, bio, musical style, plus a physical description + portrait style used to **generate an artist portrait** with your existing image-gen options, **upload** one, or pick from the gallery.
   - **Albums** — ordered track collections under an artist, with **cover art** you generate (1024×1024 via your image-gen options), upload, or pick from the gallery; add tracks and reorder them.

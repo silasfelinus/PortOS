@@ -93,6 +93,41 @@ describe('huggingFaceCatalog', () => {
     expect(results[0].size).toMatch(/\d+(\.\d+)?\s(MB|GB)/)
   })
 
+  it('backfills the native context window from the per-model gguf metadata', async () => {
+    fetch
+      .mockResolvedValueOnce(response([
+        {
+          modelId: 'lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF',
+          downloads: 50,
+          tags: ['gguf'],
+          // search listing omits both the size and the gguf metadata block
+          siblings: [{ rfilename: 'Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf' }]
+        }
+      ]))
+      .mockResolvedValueOnce(response({
+        id: 'lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF',
+        gguf: { context_length: 131072 },
+        siblings: [{ rfilename: 'Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf', size: 4_700_000_000 }]
+      }))
+
+    const results = await searchHuggingFaceModels({ backend: 'ollama', query: 'llama' })
+
+    expect(results[0].contextLength).toBe(131072)
+    expect(results[0].sizeBytes).toBe(4_700_000_000)
+  })
+
+  it('leaves contextLength null when the repo record carries no gguf window', async () => {
+    fetch
+      .mockResolvedValueOnce(response([
+        { modelId: 'org/Useful-GGUF', downloads: 1, tags: ['gguf'], siblings: [{ rfilename: 'Useful-Q4_K_M.gguf', size: 100 }] }
+      ]))
+      .mockResolvedValueOnce(response({ id: 'org/Useful-GGUF', siblings: [{ rfilename: 'Useful-Q4_K_M.gguf', size: 100 }] }))
+
+    const results = await searchHuggingFaceModels({ backend: 'ollama', query: 'useful' })
+
+    expect(results[0].contextLength).toBeNull()
+  })
+
   it('filters out non-GGUF results even if Hugging Face returns them', async () => {
     fetch.mockResolvedValue(response([
       { modelId: 'org/Plain-Safetensors', tags: ['safetensors'], siblings: [] },

@@ -301,6 +301,10 @@ function toResult(model, backend, requestedCategory, installedIds, installedAudi
     downloads: Number(model?.downloads || 0),
     likes: Number(model?.likes || 0),
     sizeBytes: Number.isFinite(file?.size) ? file.size : null,
+    // Native context window (tokens). The search endpoint omits the GGUF
+    // metadata block, so this is backfilled from the per-repo `?blobs=true`
+    // record in enrichWithSizes; stays null for audio repos (no `gguf` field).
+    contextLength: null,
     createdAt: model?.createdAt || model?.created_at || null,
     updatedAt: model?.lastModified || model?.last_modified || model?.updatedAt || null,
     license: licenseOf(model),
@@ -381,18 +385,37 @@ function sumWeightBytes(model) {
   return total > 0 ? total : null
 }
 
-// Backfill real file sizes for results the search endpoint left sizeless.
+// Native context window (tokens) for a GGUF repo. HF surfaces it under
+// `gguf.context_length` on the per-repo record (the search listing omits the
+// whole `gguf` block). Returns null for non-GGUF/audio repos or when absent.
+function contextLengthOf(model) {
+  const n = Number(model?.gguf?.context_length)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+// Backfill real file sizes AND native context windows from the per-model
+// `?blobs=true` record (the search listing carries neither). Both are fetched
+// from the same cached repo record, so a result missing either triggers one
+// (deduped) per-repo fetch.
 async function enrichWithSizes(results) {
   await Promise.allSettled(results.map(async (result) => {
-    if (Number.isFinite(result.sizeBytes)) return
+    const needsSize = !Number.isFinite(result.sizeBytes)
+    const needsContext = result.category !== 'audio' && result.contextLength == null
+    if (!needsSize && !needsContext) return
     const model = await fetchRepoModel(result.repository)
     if (!model) return
-    const bytes = result.category === 'audio'
-      ? sumWeightBytes(model)
-      : (() => { const picked = pickGgufFile(model); return Number.isFinite(picked?.size) ? picked.size : null })()
-    if (Number.isFinite(bytes)) {
-      result.sizeBytes = bytes
-      result.size = formatBytes(bytes) || result.size
+    if (needsSize) {
+      const bytes = result.category === 'audio'
+        ? sumWeightBytes(model)
+        : (() => { const picked = pickGgufFile(model); return Number.isFinite(picked?.size) ? picked.size : null })()
+      if (Number.isFinite(bytes)) {
+        result.sizeBytes = bytes
+        result.size = formatBytes(bytes) || result.size
+      }
+    }
+    if (needsContext) {
+      const ctx = contextLengthOf(model)
+      if (ctx != null) result.contextLength = ctx
     }
   }))
   return results

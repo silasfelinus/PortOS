@@ -706,6 +706,7 @@ export function LocalLlmTab() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 {group.models.map((m) => {
                   const ram = recommendedRamGb(m?.sizeBytes, m?.size);
+                  const ctxLabel = formatContextLength(m.contextLength);
                   const isHf = m.source === 'huggingface';
                   const isAudio = m.category === 'audio';
                   const createdMs = new Date(m.createdAt).getTime();
@@ -720,6 +721,9 @@ export function LocalLlmTab() {
                       <div className="flex items-center gap-1.5 flex-wrap text-[11px] text-gray-600 mt-1">
                         <span className="text-gray-500">{categoryLabel(m.category)}</span>
                         <span>{m.size}</span>
+                        {ctxLabel && (
+                          <span title="Native context window (max tokens)">{ctxLabel}</span>
+                        )}
                         {ram && (
                           <span title="Approx RAM/VRAM to run this model — weights + ~20% overhead">
                             ~{ram} GB RAM
