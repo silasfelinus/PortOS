@@ -29,6 +29,8 @@ import {
   getStatus, listModels, listVisionModels, installModel, deleteModel, switchBackend, migrateBackend, installBackend, upgradeBackend, controlOllamaServer
 } from '../services/localLlm.js'
 import { runLocalLlmTest, compareLocalLlmModels } from '../services/localLlmPlayground.js'
+import { listUserModels } from '../services/audioModels.js'
+import { ENGINES } from '../services/pipeline/musicGen.js'
 import { abortSignalFromResponse } from '../lib/requestAbort.js'
 import { awaitWritableDrain } from '../lib/streamBackpressure.js'
 import { getLoadedModels as getLoadedOllamaModels, unloadModel as unloadOllamaModel } from '../services/ollamaManager.js'
@@ -62,11 +64,21 @@ router.get('/catalog', asyncHandler(async (req, res) => {
 }))
 
 // GET /api/local-llm/huggingface-search?backend=ollama&q=qwen&category=coding
-// Live Hub discovery for GGUF-compatible community models.
+// Live Hub discovery — GGUF-compatible community models, plus (for the `audio`
+// category) audio/music generators that install into the shared audio-model
+// registry and surface in the Music studio.
 router.get('/huggingface-search', asyncHandler(async (req, res) => {
   const { backend, q, category, limit } = validateRequest(localLlmHuggingFaceSearchSchema, req.query)
   const installed = (await listModels(backend)).map((m) => m.id)
-  const models = await searchHuggingFaceModels({ backend, query: q, category, limit, installedIds: installed })
+  // Cross-reference the shared audio-model registry so a model already installed
+  // via the Music studio (or this tab) shows "Installed". Only the user-added
+  // repos count — shipped engine defaults download lazily on first generation.
+  let installedAudioRepos = []
+  if (category === 'audio') {
+    const perEngine = await Promise.all(Object.keys(ENGINES).map((id) => listUserModels(id)))
+    installedAudioRepos = perEngine.flat().map((m) => m.repo)
+  }
+  const models = await searchHuggingFaceModels({ backend, query: q, category, limit, installedIds: installed, installedAudioRepos })
   res.json({ backend, source: 'huggingface', models })
 }))
 

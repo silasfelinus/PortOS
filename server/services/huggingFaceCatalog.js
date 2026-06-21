@@ -1,6 +1,7 @@
 import { fetchWithTimeout } from '../lib/fetchWithTimeout.js'
 import { readResponseJson } from '../lib/readResponseJson.js'
 import { LOCAL_LLM_CATEGORIES, isBackend } from '../lib/localLlmCatalog.js'
+import { ENGINES } from './pipeline/musicGen.js'
 
 const HF_API_BASE = 'https://huggingface.co/api/models'
 const HF_TIMEOUT_MS = 12_000
@@ -11,10 +12,60 @@ const CATEGORY_SEARCH = {
   reasoning: 'reasoning thinking gguf',
   coding: 'coding coder agentic code gguf',
   vision: 'vision image text gguf',
+  // Audio is NOT a GGUF category — the search relaxes the GGUF filter for it
+  // (see `searchHuggingFaceModels`) and these terms surface generation models.
+  audio: 'music audio text-to-music text-to-audio song generation',
   embedding: 'embedding sentence-transformers gguf',
   lightweight: 'small 4b 3b 2b gguf',
   multilingual: 'multilingual qwen llama gguf'
 }
+
+// Map a Hugging Face audio repo onto the PortOS music engine that can actually
+// run it (server/services/pipeline/musicGen.js). Returns null when no shipped
+// engine matches — the model is still DISCOVERABLE (search + "Visit") but not
+// installable, because no sidecar can render it. Kept as a local heuristic
+// rather than importing engine internals: the engine *runtime* knowledge lives
+// in musicGen.js; this is just a repo-name → engine-id classifier.
+function inferAudioEngine(haystack) {
+  if (/ace-?step/.test(haystack)) return 'acestep'
+  if (/musicgen/.test(haystack)) return 'musicgen'
+  if (/audioldm/.test(haystack)) return 'audioldm2'
+  return null
+}
+
+// An engine can host an arbitrary user-installed HF checkpoint only when its
+// sidecar threads `--model <repo>` into from_pretrained (musicgen/audioldm2).
+// ACE-Step resolves a fixed foundation checkpoint and ignores --model, so it is
+// `customModels: false` and its repos are Visit-only here. The single source of
+// truth for that flag is the ENGINES registry.
+const engineHostsCustomRepo = (engineId) => ENGINES[engineId]?.customModels === true
+
+// Curated audio/music suggestions surfaced at the top of the Audio & Music
+// category so the headline generators are always one click from discovery even
+// when the live Hub ranking buries them. `engine: null` means "no PortOS
+// runtime yet" (Visit-only, experimental); `gated` flags repos that require
+// accepting a license / data-sharing agreement on Hugging Face before download.
+const CURATED_AUDIO_MODELS = [
+  {
+    repo: 'ACE-Step/acestep-v15-xl-base',
+    name: 'ACE-Step v1.5 XL Base',
+    description: 'Full-song generation with vocals — the ACE-Step v1.5 foundation checkpoint.',
+    note: 'ACE-Step uses a fixed foundation checkpoint — install/select it from the Music studio.',
+  },
+  {
+    repo: 'google/magenta-realtime-2',
+    name: 'Magenta RealTime 2',
+    description: "Google's real-time music generation model.",
+    note: 'Experimental — no on-device PortOS runtime yet; open on Hugging Face to explore.',
+  },
+  {
+    repo: 'stabilityai/stable-audio-3-medium',
+    name: 'Stable Audio 3 Medium',
+    description: "Stability AI's text-to-audio generation model.",
+    note: 'Gated — requires accepting a data-sharing agreement on Hugging Face before download.',
+    gated: true,
+  },
+]
 
 const TRUSTED_PUBLISHERS = new Set([
   'unsloth',
@@ -28,7 +79,12 @@ const TRUSTED_PUBLISHERS = new Set([
   'google',
   'microsoft',
   'nomic-ai',
-  'ibm-granite'
+  'ibm-granite',
+  // audio/music generator publishers
+  'facebook',
+  'cvssp',
+  'stabilityai',
+  'ace-step'
 ])
 
 const QUANT_PRIORITY = [
@@ -117,9 +173,16 @@ function extractParams(repoId) {
   return match[2] ? `${match[1]}B / ${match[2]}B active` : `${match[1]}B`
 }
 
+// Detect an audio/music GENERATION model from its pipeline tag / tags / repo.
+// Anchored on Hugging Face pipeline-tag tokens (hyphenated) and known generator
+// families so a chat model that merely mentions "audio" isn't miscategorised in
+// the auto-classify ('all') path.
+const AUDIO_RE = /(text-to-audio|text-to-music|text-to-speech|audio-to-audio|automatic-speech-recognition|musicgen|audioldm|stable-audio|ace-?step|magenta|\bbark\b|\bxtts\b)/
+
 function classifyModel(model, requestedCategory) {
   if (CATEGORY_IDS.has(requestedCategory) && requestedCategory !== 'all') return requestedCategory
   const haystack = `${repoIdOf(model)} ${(tagsOf(model) || []).join(' ')} ${model?.pipeline_tag || ''}`.toLowerCase()
+  if (AUDIO_RE.test(haystack)) return 'audio'
   if (/(embed|sentence-transformers|feature-extraction)/.test(haystack)) return 'embedding'
   if (/(vision|vl|llava|image-text|multimodal|mmproj)/.test(haystack)) return 'vision'
   if (/(code|coder|coding|devstral|starcoder|deepseek-coder|repo)/.test(haystack)) return 'coding'
@@ -132,6 +195,9 @@ function classifyModel(model, requestedCategory) {
 function capabilitiesFor(model, category) {
   const tags = tagsOf(model)
   const caps = new Set()
+  // Audio generators don't "chat" — they render audio, so they get only the
+  // `audio` capability badge (no chat/tools).
+  if (category === 'audio') return ['audio']
   if (category !== 'embedding') caps.add('chat')
   if (category === 'coding') caps.add('code')
   if (category === 'reasoning') caps.add('reasoning')
@@ -190,22 +256,33 @@ function isInstalled(backend, result, installedIds) {
   return false
 }
 
-function toResult(model, backend, requestedCategory, installedIds) {
+function toResult(model, backend, requestedCategory, installedIds, installedAudioRepos = new Set()) {
   const repoId = repoIdOf(model)
   if (!repoId || !repoId.includes('/')) return null
-  const file = pickGgufFile(model)
   const category = classifyModel(model, requestedCategory)
-  const id = installIdForBackend(backend, repoId, file)
+  const isAudio = category === 'audio'
+  // Audio generators are not GGUF — skip the GGUF file picker entirely so a
+  // non-GGUF repo doesn't surface a bogus "GGUF" size or an `hf.co/...:quant`
+  // Ollama install id it can never honour.
+  const file = isAudio ? null : pickGgufFile(model)
   const score = scoreModel(model, category, file)
+  // For audio the `id` is just the repo id (the React key + the value the audio
+  // installer routes to the music registry); for GGUF chat models it's the
+  // backend-specific pull/download id.
+  const id = isAudio ? repoId : installIdForBackend(backend, repoId, file)
+  const audioEngine = isAudio
+    ? inferAudioEngine(`${repoId} ${tagsOf(model).join(' ')} ${model?.pipeline_tag || ''}`.toLowerCase())
+    : null
   const result = {
     id,
     key: repoId,
     name: displayName(repoId),
     category,
-    params: extractParams(repoId) || 'HF',
-    size: formatBytes(file?.size) || (file?.quant || 'GGUF'),
+    params: extractParams(repoId) || (isAudio ? 'Audio' : 'HF'),
+    size: formatBytes(file?.size) || (isAudio ? 'HF model' : (file?.quant || 'GGUF')),
     family: repoId.split('/').pop().split(/[-_]/)[0]?.toLowerCase() || 'huggingface',
-    description: model?.cardData?.summary || model?.cardData?.description || 'Community Hugging Face GGUF model.',
+    description: model?.cardData?.summary || model?.cardData?.description
+      || (isAudio ? 'Community Hugging Face audio model.' : 'Community Hugging Face GGUF model.'),
     capabilities: capabilitiesFor(model, category),
     installed: false,
     source: 'huggingface',
@@ -220,7 +297,16 @@ function toResult(model, backend, requestedCategory, installedIds) {
     quant: file?.quant || null,
     score
   }
-  result.installed = isInstalled(backend, result, installedIds)
+  if (isAudio) {
+    // Engine the model maps to (or null) + whether the installer can host it.
+    // A null engine or a fixed-checkpoint engine (ACE-Step) is Visit-only.
+    result.engine = audioEngine
+    result.installable = Boolean(audioEngine) && engineHostsCustomRepo(audioEngine)
+    result.installed = installedAudioRepos.has(repoId.toLowerCase())
+  } else {
+    result.installable = true
+    result.installed = isInstalled(backend, result, installedIds)
+  }
   return result
 }
 
@@ -250,38 +336,50 @@ async function fetchModels(search, limit, useGgufFilter) {
   return Array.isArray(data) ? data : []
 }
 
-// The search endpoint returns siblings WITHOUT per-file sizes; only the
-// per-model endpoint (?blobs=true) carries them. Cache by repo so repeated
-// searches (the box is debounced per keystroke) don't re-fetch. `undefined` =
-// not fetched, `null` = fetched-but-no-size (sentinel, per the absent-vs-empty
-// rule) so a sizeless repo isn't probed on every search.
-const repoSizeCache = new Map()
-const REPO_SIZE_CACHE_MAX = 500
+const repoModelCache = new Map()
+const REPO_MODEL_CACHE_MAX = 500
 
-async function fetchRepoSizeBytes(repoId) {
-  if (repoSizeCache.has(repoId)) return repoSizeCache.get(repoId)
+// Fetch (and cache) the per-model record WITH per-file sizes. The search
+// endpoint returns siblings without sizes; only `?blobs=true` carries them, and
+// the box is debounced per keystroke, so cache by repo to avoid re-fetching.
+// `null` = fetched-but-unavailable (gated / private / 404), cached (per the
+// absent-vs-empty sentinel rule) so a sizeless repo isn't re-probed every search.
+async function fetchRepoModel(repoId) {
+  if (repoModelCache.has(repoId)) return repoModelCache.get(repoId)
   // repoId comes from the HF search response (untrusted upstream) — encode each
   // path segment so a `?`/`#`/`..` in the id can't reshape the request path/query.
   const safeRepoPath = String(repoId).split('/').map(encodeURIComponent).join('/')
   const model = await fetchWithTimeout(`${HF_API_BASE}/${safeRepoPath}?blobs=true`, { headers: hfHeaders() }, HF_TIMEOUT_MS)
     .then((res) => (res.ok ? res.json() : null))
     .catch(() => null)
-  // Re-run the same quant picker against the now-sized siblings.
-  const picked = pickGgufFile(model)
-  const bytes = Number.isFinite(picked?.size) ? picked.size : null
   // Evict oldest entry when the cap is reached (insertion-order iteration).
-  if (repoSizeCache.size >= REPO_SIZE_CACHE_MAX) {
-    repoSizeCache.delete(repoSizeCache.keys().next().value)
+  if (repoModelCache.size >= REPO_MODEL_CACHE_MAX) {
+    repoModelCache.delete(repoModelCache.keys().next().value)
   }
-  repoSizeCache.set(repoId, bytes)
-  return bytes
+  repoModelCache.set(repoId, model)
+  return model
+}
+
+// Total resident size of an audio repo's weight files — audio generators ship
+// `.safetensors`/`.ckpt`/`.bin` weights rather than a single GGUF, so the quant
+// picker doesn't apply; sum the weight siblings instead.
+const WEIGHT_FILE_RE = /\.(safetensors|ckpt|bin|pt|pth|onnx|gguf)$/i
+function sumWeightBytes(model) {
+  const total = siblingsOf(model)
+    .filter((s) => WEIGHT_FILE_RE.test(normalizeText(s.rfilename || s.name)))
+    .reduce((sum, s) => sum + (Number.isFinite(s.size) ? s.size : 0), 0)
+  return total > 0 ? total : null
 }
 
 // Backfill real file sizes for results the search endpoint left sizeless.
 async function enrichWithSizes(results) {
   await Promise.allSettled(results.map(async (result) => {
     if (Number.isFinite(result.sizeBytes)) return
-    const bytes = await fetchRepoSizeBytes(result.repository)
+    const model = await fetchRepoModel(result.repository)
+    if (!model) return
+    const bytes = result.category === 'audio'
+      ? sumWeightBytes(model)
+      : (() => { const picked = pickGgufFile(model); return Number.isFinite(picked?.size) ? picked.size : null })()
     if (Number.isFinite(bytes)) {
       result.sizeBytes = bytes
       result.size = formatBytes(bytes) || result.size
@@ -290,24 +388,64 @@ async function enrichWithSizes(results) {
   return results
 }
 
-export async function searchHuggingFaceModels({ backend, query = '', category = 'all', limit = 12, installedIds = [] }) {
+// Build a result object for a curated audio suggestion. These don't come from
+// the live Hub search, so synthesize a minimal model record and run it through
+// the same `toResult` path (engine inference, install id, capabilities, etc.) so
+// the result shape stays defined in exactly one place. `enrichWithSizes` fills
+// the size from `?blobs=true`; the curated-only fields drive the UI badges and
+// the score pins these above live results in the merge below.
+function curatedAudioResult(entry, installedAudioRepos) {
+  const synthetic = { modelId: entry.repo, downloads: 0, likes: 0, tags: [], cardData: { summary: entry.description } }
+  return {
+    ...toResult(synthetic, 'lmstudio', 'audio', [], installedAudioRepos),
+    name: entry.name,
+    suggested: true,
+    note: entry.note || null,
+    gated: entry.gated === true,
+    score: Number.MAX_SAFE_INTEGER,
+  }
+}
+
+export async function searchHuggingFaceModels({ backend, query = '', category = 'all', limit = 12, installedIds = [], installedAudioRepos = [] }) {
   if (!isBackend(backend)) return []
   const requestedCategory = CATEGORY_IDS.has(category) ? category : 'all'
+  const installedAudio = new Set(installedAudioRepos.map((r) => String(r).toLowerCase()))
+  // Audio models aren't GGUF — don't constrain the Hub query (or post-filter)
+  // to GGUF repos for the audio category, or ACE-Step / Stable Audio / MusicGen
+  // would all be filtered out.
+  const ggufOnly = requestedCategory !== 'audio'
   const search = normalizeText(query) || CATEGORY_SEARCH[requestedCategory] || 'gguf'
   const fetchLimit = Math.max(limit * 3, 30)
-  let models = await fetchModels(search, fetchLimit, true)
-  if (models.length === 0) models = await fetchModels(search, fetchLimit, false)
+  let models = await fetchModels(search, fetchLimit, ggufOnly)
+  if (models.length === 0 && ggufOnly) models = await fetchModels(search, fetchLimit, false)
 
   const seen = new Set()
-  const results = models
-    .filter(hasGgufSignal)
-    .map((model) => toResult(model, backend, requestedCategory, installedIds))
+  // Curated audio suggestions lead the Audio & Music list (filtered by query
+  // when the user is typing) so the headline generators are always visible.
+  const curated = requestedCategory === 'audio'
+    ? CURATED_AUDIO_MODELS
+        .filter((entry) => {
+          const q = normalizeText(query).toLowerCase()
+          if (!q) return true
+          return entry.repo.toLowerCase().includes(q) || entry.name.toLowerCase().includes(q)
+        })
+        .map((entry) => {
+          seen.add(entry.repo)
+          return curatedAudioResult(entry, installedAudio)
+        })
+    : []
+
+  const live = models
+    .filter((model) => (ggufOnly ? hasGgufSignal(model) : true))
+    .map((model) => toResult(model, backend, requestedCategory, installedIds, installedAudio))
     .filter(Boolean)
     .filter((model) => {
       if (seen.has(model.repository)) return false
       seen.add(model.repository)
       return true
     })
+
+  const results = [...curated, ...live]
     .sort((a, b) => b.score - a.score || b.downloads - a.downloads)
     .slice(0, limit)
 

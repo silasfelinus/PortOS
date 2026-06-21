@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Square, Power, PowerOff, Eye, Wrench, Brain, Code2, MessageSquare, Boxes, AlertTriangle, FlaskConical } from 'lucide-react';
+import { Cpu, Box, ArrowRightLeft, Download, Trash2, RefreshCw, Search, Plus, ExternalLink, Star, Link2, Copy, Play, Square, Power, PowerOff, Eye, Wrench, Brain, Code2, MessageSquare, Boxes, AlertTriangle, FlaskConical, Music } from 'lucide-react';
 import toast from '../ui/Toast';
 import ConfirmButtonPair from '../ui/ConfirmButtonPair';
 import BrailleSpinner from '../BrailleSpinner';
@@ -8,7 +8,8 @@ import { formatBytes, formatContextLength, timeAgo, recommendedRamGb } from '../
 import { localLlmTargetKey } from '../../lib/localLlmTargetKey';
 import {
   getLocalLlmStatus, getLocalLlmCatalog, getLocalLlmHuggingFaceSearch, installLocalLlmModel,
-  deleteLocalLlmModel, switchLocalLlmBackend, migrateLocalLlmBackend, installLocalLlmBackend, upgradeLocalLlmBackend, controlOllamaService
+  deleteLocalLlmModel, switchLocalLlmBackend, migrateLocalLlmBackend, installLocalLlmBackend, upgradeLocalLlmBackend, controlOllamaService,
+  installAudioModel
 } from '../../services/api';
 import socket from '../../services/socket';
 import MemoryManagement from './MemoryManagement.jsx';
@@ -26,11 +27,12 @@ const CATEGORY_LABELS = {
   reasoning: 'Reasoning',
   coding: 'Coding',
   vision: 'Image Analysis',
+  audio: 'Audio & Music',
   embedding: 'Text Embeddings',
   lightweight: 'Small & Fast',
   multilingual: 'Multilingual'
 };
-const CATEGORY_ORDER = ['reasoning', 'coding', 'vision', 'embedding', 'chat', 'lightweight', 'multilingual'];
+const CATEGORY_ORDER = ['reasoning', 'coding', 'vision', 'audio', 'embedding', 'chat', 'lightweight', 'multilingual'];
 const categoryLabel = (id) => CATEGORY_LABELS[id] || id;
 
 // Render model capabilities as colored icons (LM Studio style) instead of text.
@@ -42,6 +44,7 @@ const CAPABILITY_META = {
   vision: { Icon: Eye, label: 'Vision', cls: 'text-amber-400 border-amber-400/50' },
   embeddings: { Icon: Boxes, label: 'Embeddings', cls: 'text-violet-400 border-violet-400/50' },
   tools: { Icon: Wrench, label: 'Tool use', cls: 'text-blue-400 border-blue-400/50' },
+  audio: { Icon: Music, label: 'Audio generation', cls: 'text-pink-400 border-pink-400/50' },
 };
 
 
@@ -334,10 +337,16 @@ export function LocalLlmTab() {
   const catalogCategories = useMemo(() => {
     const counts = new Map();
     for (const model of catalog) counts.set(model.category || 'chat', (counts.get(model.category || 'chat') || 0) + 1);
-    return CATEGORY_ORDER
-      .filter((id) => counts.has(id))
-      .map((id) => ({ id, label: categoryLabel(id), count: counts.get(id) }));
-  }, [catalog]);
+    // Hugging Face is searched per-category server-side, so a default GGUF query
+    // never surfaces audio results — expose the full category set as filter
+    // buttons (count shown only when known) so the user can navigate to
+    // categories like Audio & Music. The curated local catalog stays
+    // counts-driven (its categories are fixed and fully present).
+    const ids = catalogSource === 'huggingface'
+      ? CATEGORY_ORDER
+      : CATEGORY_ORDER.filter((id) => counts.has(id));
+    return ids.map((id) => ({ id, label: categoryLabel(id), count: counts.has(id) ? counts.get(id) : null }));
+  }, [catalog, catalogSource]);
   const visibleCatalogGroups = useMemo(() => {
     const filterCategory = catalogSource === 'huggingface' ? 'all' : activeCategory;
     const categoryIds = filterCategory === 'all'
@@ -380,6 +389,32 @@ export function LocalLlmTab() {
       clearConfirm: false
     }
   );
+  // Audio/music models don't run on Ollama/LM Studio — they install into the
+  // shared audio-model registry (server/services/audioModels.js) via the Music
+  // studio's streaming HF-download endpoint, so the Music studio picks them up.
+  // The download streams SSE frames; surface progress in the same banner as the
+  // socket-driven install progress, and treat an `error` frame as failure.
+  const installAudio = (model) => {
+    let failed = false;
+    return runAction(
+      `install-${model.id}`,
+      async () => {
+        await installAudioModel(
+          { engine: model.engine, repo: model.repository, name: model.name },
+          (ev) => {
+            if (ev?.type === 'stage') setProgressMsg(ev.stage || '');
+            else if (ev?.type === 'progress') setProgressMsg(`${ev.file || 'downloading'} — ${Math.round((ev.progress || 0) * 100)}%`);
+            else if (ev?.type === 'error') { failed = true; toast.error(ev.message || 'Download failed'); }
+          },
+        );
+        // installAudioModel resolves even after an error frame (it only throws on
+        // a non-OK response) — re-throw so runAction skips the success toast.
+        if (failed) throw Object.assign(new Error('audio install failed'), { handled: true });
+      },
+      `${model.name} installed — available in the Music studio`,
+      { onError: (err) => { if (!err?.handled) toast.error(err?.message || 'Install failed'); }, clearConfirm: false },
+    ).finally(() => setProgressMsg(''));
+  };
   const remove = (modelId) => runAction(`delete-${modelId}`, () => deleteLocalLlmModel(selected, modelId), `${modelId} deleted`)
     .then((result) => {
       // Drop the just-deleted model from any pending comparison (runAction
@@ -608,7 +643,7 @@ export function LocalLlmTab() {
               id="llm-catalog-search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder={catalogSource === 'huggingface' ? 'Search Hugging Face GGUF models…' : `Search the ${labelFor(selected)} catalog…`}
+              placeholder={catalogSource === 'huggingface' ? (activeCategory === 'audio' ? 'Search Hugging Face audio models…' : 'Search Hugging Face GGUF models…') : `Search the ${labelFor(selected)} catalog…`}
               className="flex-1 bg-transparent py-2 text-sm text-white placeholder-gray-600 focus:outline-none"
             />
           </div>
@@ -645,7 +680,7 @@ export function LocalLlmTab() {
                 onClick={() => setActiveCategory(category.id)}
                 className={`px-2.5 py-1 text-xs rounded transition-colors ${activeCategory === category.id ? 'bg-port-accent/20 text-port-accent' : 'bg-port-bg text-gray-400 hover:text-white'}`}
               >
-                {category.label} ({category.count})
+                {category.label}{category.count != null ? ` (${category.count})` : ''}
               </button>
             ))}
           </div>
@@ -672,6 +707,7 @@ export function LocalLlmTab() {
                 {group.models.map((m) => {
                   const ram = recommendedRamGb(m?.sizeBytes, m?.size);
                   const isHf = m.source === 'huggingface';
+                  const isAudio = m.category === 'audio';
                   const createdMs = new Date(m.createdAt).getTime();
                   const updatedMs = new Date(m.updatedAt).getTime();
                   return (
@@ -680,6 +716,7 @@ export function LocalLlmTab() {
                       <div className="text-sm text-white truncate">{m.name} <span className="text-xs text-gray-500">· {m.params}</span></div>
                       <div className="text-xs text-gray-500 truncate">{m.id}</div>
                       <div className="text-xs text-gray-500 mt-0.5">{m.description}</div>
+                      {m.note && <div className="text-[11px] text-port-warning/90 mt-0.5">{m.note}</div>}
                       <div className="flex items-center gap-1.5 flex-wrap text-[11px] text-gray-600 mt-1">
                         <span className="text-gray-500">{categoryLabel(m.category)}</span>
                         <span>{m.size}</span>
@@ -719,9 +756,13 @@ export function LocalLlmTab() {
                     <div className="flex flex-col items-end gap-1 shrink-0">
                       {m.installed ? (
                         <span className="text-xs px-2 py-1 text-port-success">Installed</span>
+                      ) : m.installable === false ? (
+                        // Audio models with no PortOS runtime (or a fixed-checkpoint
+                        // engine like ACE-Step) are discovery-only — "Visit" below.
+                        null
                       ) : (
                         <button
-                          onClick={() => install(m.id)}
+                          onClick={() => (isAudio ? installAudio(m) : install(m.id))}
                           disabled={busy}
                           className="px-2.5 py-1 text-xs bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded disabled:opacity-50 flex items-center gap-1"
                         >
