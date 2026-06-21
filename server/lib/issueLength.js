@@ -146,10 +146,10 @@ export function computeIssueTargets(issue = {}) {
 // 44-page finale produced scope overrun into the next issue's climax.
 export const THIN_SYNOPSIS_BASE_WORDS = 25;
 
-const countWords = (text) =>
-  (typeof text === 'string' ? text.trim() : '')
-    ? text.trim().split(/\s+/).length
-    : 0;
+const countWords = (text) => {
+  const trimmed = typeof text === 'string' ? text.trim() : '';
+  return trimmed ? trimmed.split(/\s+/).length : 0;
+};
 
 /**
  * Assess whether an issue's synopsis (the idea-stage seed) is too thin for its
