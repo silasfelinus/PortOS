@@ -349,6 +349,22 @@ describe('pipeline text stage generator', () => {
     expect(ctxFromCall(llmCalls[0]).paddingRisk).toBe(false);
   });
 
+  it('idea context: paddingRisk tracks the seedInput override, not the stored synopsis', async () => {
+    const { series } = await seed();
+    // Stored synopsis is rich enough to clear the finale floor → not padding-prone.
+    const richStored = Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ');
+    const issue = await issuesSvc.createIssue({
+      seriesId: series.id,
+      title: 'The Invitation',
+      lengthProfile: 'finale',
+      stages: { idea: { input: richStored, status: 'draft' } },
+    });
+    // Regenerating with a terse override seed must flag padding risk, because the
+    // override — not the stored synopsis — is what gets expanded.
+    await textStages.generateStage(issue.id, 'idea', { seedInput: 'the invitation arrives' });
+    expect(ctxFromCall(llmCalls[0]).paddingRisk).toBe(true);
+  });
+
   it('idea context: neighbor exposes beats when expanded, synopsis when not', async () => {
     const { series } = await seed();
     await seriesSvc.updateSeries(series.id, { arc: { logline: 'L' } });
@@ -575,6 +591,10 @@ describe('pipeline-idea-expansion template render', () => {
     const withRisk = applyTemplate(ideaTemplate, renderCtx({ paddingRisk: true }));
     expect(withRisk).toContain('Scope warning');
     expect(withRisk).toContain('Do NOT do that');
+    // Pin the dotted interpolation INSIDE the section — a regression to {{.}} or a
+    // broken lengthTargets ref would still render the static text above.
+    expect(withRisk).toContain('22-page target');   // {{lengthTargets.pageTarget}}
+    expect(withRisk).toContain('8–12 range');        // {{lengthTargets.beatsMin}}–{{lengthTargets.beatsMax}}
 
     const withoutRisk = applyTemplate(ideaTemplate, renderCtx({ paddingRisk: false }));
     expect(withoutRisk).not.toContain('Scope warning');
