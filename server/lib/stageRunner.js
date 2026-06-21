@@ -90,20 +90,35 @@ export function resolveModel(provider, modelHint) {
 // whole manuscript fits in one call" without over-promising. Users with very
 // large manuscripts can set an explicit `contextWindow` to lift it further.
 export const DEFAULT_LARGE_CONTEXT_WINDOW = 128_000;
+export const CODEX_CONTEXT_WINDOW = 1_000_000;
+export const GEMINI_CONTEXT_WINDOW = 1_048_576;
 
-// Keep in sync with client/src/utils/providers.js. Only Opus 4.8 is
-// special-cased at 1M; unknown Opus 4 variants intentionally keep the
-// conservative provider fallback until their windows are explicitly known.
+// Keep in sync with client/src/utils/providers.js.
 const KNOWN_MODEL_CONTEXT_WINDOWS = Object.freeze([
+  [/gpt[-_.:/]?5\.5(?:[-_.:/]|\b)/i, CODEX_CONTEXT_WINDOW],
+  [/gpt[-_.:/]?5\.4[-_.:/]?mini(?:[-_.:/]|\b)/i, 400_000],
+  [/gpt[-_.:/]?5\.4(?![-_.:/]?(?:mini|nano))(?:[-_.:/]|\b)/i, CODEX_CONTEXT_WINDOW],
+  [/claude[-_.:/]?fable[-_.:/]?5(?:[-_.:/]|\b)/i, 1_000_000],
+  [/claude[-_.:/]?mythos[-_.:/]?5(?:[-_.:/]|\b)/i, 1_000_000],
   [/claude[-_.:/]?opus[-_.:/]?4[-_.:/]?8/i, 1_000_000],
-  [/claude[-_.:/]?sonnet[-_.:/]?4(?:[-_.:/]|\b)/i, 200_000],
+  [/claude[-_.:/]?sonnet[-_.:/]?4[-_.:/]?6(?:[-_.:/]|\b)/i, 1_000_000],
   [/claude[-_.:/]?haiku[-_.:/]?4(?:[-_.:/]|\b)/i, 200_000],
+  [/gemini[-_.:/]?2\.5[-_.:/]?pro(?:[-_.:/]|\b)/i, GEMINI_CONTEXT_WINDOW],
 ]);
 
 export function knownModelContextWindow(model) {
   if (typeof model !== 'string' || !model.trim()) return null;
   const found = KNOWN_MODEL_CONTEXT_WINDOWS.find(([pattern]) => pattern.test(model));
   return found ? found[1] : null;
+}
+
+export function knownProviderContextWindow(provider) {
+  if (provider?.type !== 'cli' && provider?.type !== 'tui') return null;
+  const id = String(provider?.id || '').toLowerCase();
+  const command = String(provider?.command || '').toLowerCase();
+  if (id === 'codex' || id === 'codex-tui' || command === 'codex') return CODEX_CONTEXT_WINDOW;
+  if (id === 'antigravity-cli' || id === 'antigravity-tui' || command === 'agy') return GEMINI_CONTEXT_WINDOW;
+  return null;
 }
 
 const LOCAL_ENDPOINT_RE = /^(https?:\/\/)?(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)(:|\/|$)/i;
@@ -121,6 +136,7 @@ const isLikelyLargeContextProvider = (provider) => {
 
 // Planning-time context window for a provider/model: an explicit
 // `contextWindow` wins, else a known model window for the resolved model, else
+// a known provider-level window for configured-default process providers, else
 // the Ollama per-request `numCtx`, else a large default for frontier providers,
 // else null (the budgeter applies a conservative floor for unknown local
 // backends).
@@ -128,6 +144,8 @@ export function effectiveContextWindow(provider, model) {
   if (Number(provider?.contextWindow) > 0) return Number(provider.contextWindow);
   const modelWindow = knownModelContextWindow(model);
   if (modelWindow) return modelWindow;
+  const providerWindow = knownProviderContextWindow(provider);
+  if (providerWindow) return providerWindow;
   if (Number(provider?.numCtx) > 0) return Number(provider.numCtx);
   if (isLikelyLargeContextProvider(provider)) return DEFAULT_LARGE_CONTEXT_WINDOW;
   return null;

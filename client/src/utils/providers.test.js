@@ -239,8 +239,19 @@ describe('localBackendForProvider', () => {
 
 describe('effectiveModelContextWindow', () => {
   it('matches known model windows before provider defaults', () => {
+    expect(effectiveModelContextWindow({ type: 'tui' }, 'gpt-5.5')).toBe(1_000_000);
+    expect(effectiveModelContextWindow({ type: 'tui' }, 'gpt-5.4')).toBe(1_000_000);
+    expect(effectiveModelContextWindow({ type: 'tui' }, 'gpt-5.4-mini')).toBe(400_000);
+    expect(effectiveModelContextWindow({ type: 'tui' }, 'gpt-5.4-nano')).toBe(128_000);
     expect(effectiveModelContextWindow({ type: 'tui' }, 'claude-opus-4-8')).toBe(1_000_000);
-    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'https://api.example.test/v1' }, 'claude-sonnet-4-6')).toBe(200_000);
+    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'https://api.example.test/v1' }, 'claude-sonnet-4-6')).toBe(1_000_000);
+    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'https://api.example.test/v1' }, 'claude-haiku-4-5')).toBe(200_000);
+    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'https://generativelanguage.googleapis.com/v1beta' }, 'gemini-2.5-pro')).toBe(1_048_576);
+  });
+
+  it('uses canonical provider windows for configured-default process providers', () => {
+    expect(effectiveModelContextWindow({ id: 'codex-tui', type: 'tui', command: 'codex' }, CODEX_CONFIGURED_DEFAULT)).toBe(1_000_000);
+    expect(effectiveModelContextWindow({ id: 'antigravity-cli', type: 'cli', command: 'agy' }, ANTIGRAVITY_CONFIGURED_DEFAULT)).toBe(1_048_576);
   });
 
   it('matches the server planner for local and cloud api defaults', () => {
