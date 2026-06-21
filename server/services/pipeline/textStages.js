@@ -34,6 +34,15 @@ const STAGE_TO_TEMPLATE = Object.freeze({
   teleplay: 'pipeline-teleplay',
 });
 
+// Stages whose template renders the compact `worldEntitiesSummary` roster and can
+// therefore safely receive a SCOPED `series.characters` block (#1511) — the roster
+// is the continuity safety net for the un-scoped cast. The idea stage is excluded:
+// it generates the beat sheet straight from the seed (it needs the whole cast as a
+// creative palette) and its template renders NO roster, so a scoped block there
+// would drop characters with no fallback. New stages default to the full cast
+// until explicitly added here.
+const ROSTER_BACKED_STAGES = new Set(['prose', 'comicScript', 'teleplay']);
+
 // Human labels for the {{#sourceMaterials}} block so the LLM sees "Comic Script"
 // rather than "comicScript". Mirrors the client's PIPELINE_STAGE_LABELS.
 const STAGE_LABELS = Object.freeze({
@@ -315,13 +324,13 @@ function buildStageContext({ series, canon, world, issue, stageId, seedInput, so
     ? (renderEntitiesSummary(world, { maxPerKind: { characters: Infinity } }) || '(none)')
     : NO_LINKED_UNIVERSE_PLACEHOLDER;
   // Scope the heavyweight full-record character block to the cast this issue
-  // actually involves (#1511) — full records only for characters named in the
-  // issue's source text, principals as fallback, never empty. The compact
-  // roster above keeps the whole cast known for naming/continuity.
-  const scopedCharacters = scopeCharactersForIssue(
-    canon?.characters || [],
-    buildIssueScopeText(issue, sourceMaterials, seedInput),
-  );
+  // actually involves (#1511) — full records for the principals plus characters
+  // named in the issue's source text; the compact roster above keeps the rest of
+  // the cast known for naming/continuity. Only the roster-backed stages are scoped
+  // (see ROSTER_BACKED_STAGES); the idea stage keeps the full cast.
+  const scopedCharacters = ROSTER_BACKED_STAGES.has(stageId)
+    ? scopeCharactersForIssue(canon?.characters || [], buildIssueScopeText(issue, sourceMaterials, seedInput))
+    : (canon?.characters || []);
   return {
     series: {
       name: series.name,

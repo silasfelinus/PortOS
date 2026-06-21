@@ -638,12 +638,9 @@ describe('pipeline text stage generator', () => {
     expect(text).toContain('SRC-B');
   });
 
-  it('scopes idea-stage characters from the UNSAVED seed text, not just saved fields', async () => {
+  it('does NOT scope the idea stage — it gets the full cast (no roster in that template)', async () => {
     const { series } = await seed();
     const world = await universeSvc.createUniverse({ name: 'Seed Verse' });
-    // Both are non-principal (no lead/recurring role) so the principals floor is
-    // empty — the only character in scope must come from the seed text match. The
-    // issue carries no saved idea text.
     await universeSvc.updateUniverse(world.id, {
       characters: [
         { name: 'Bram', role: 'clerk' },
@@ -652,10 +649,31 @@ describe('pipeline text stage generator', () => {
     });
     await seriesSvc.updateSeries(series.id, { universeId: world.id });
     const issue = await issuesSvc.createIssue({ seriesId: series.id, title: 'Fresh' });
-    // Generate the idea straight from an unsaved seed that names only Mira.
+    // Even though the seed names only Mira, the idea stage must keep the WHOLE cast
+    // available (it generates from the seed and its template renders no roster).
     await textStages.generateStage(issue.id, 'idea', { seedInput: 'A quiet hour with Mira at the foundry.' });
     const ctx = ctxFromCall(llmCalls[0]);
+    expect(ctx.series.characters.map((c) => c.name).sort()).toEqual(['Bram', 'Mira']);
+  });
+
+  it('scopes a roster-backed stage (prose) from the UNSAVED seed text', async () => {
+    const { series } = await seed();
+    const world = await universeSvc.createUniverse({ name: 'Seed Verse' });
+    // Both non-principal (no floor) so the only in-scope character must come from
+    // the seed text match.
+    await universeSvc.updateUniverse(world.id, {
+      characters: [
+        { name: 'Bram', role: 'clerk' },
+        { name: 'Mira', role: 'surveyor' },
+      ],
+    });
+    await seriesSvc.updateSeries(series.id, { universeId: world.id });
+    const issue = await issuesSvc.createIssue({ seriesId: series.id, title: 'Fresh' });
+    await textStages.generateStage(issue.id, 'prose', { seedInput: 'A quiet hour with Mira at the foundry.' });
+    const ctx = ctxFromCall(llmCalls[0]);
     expect(ctx.series.characters.map((c) => c.name)).toEqual(['Mira']);
+    // The un-scoped Bram still appears in the prose template's roster.
+    expect(ctx.worldEntitiesSummary).toContain('Bram');
   });
 });
 
