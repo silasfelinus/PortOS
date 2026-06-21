@@ -80,12 +80,30 @@ import {
   headshotImageFilename,
 } from '../authors/index.js';
 import {
+  getArtist,
+  listArtists,
+  mergeArtistsFromSync,
+  portraitImageFilename,
+} from '../artists/index.js';
+import {
+  getAlbum,
+  listAlbums,
+  mergeAlbumsFromSync,
+  coverImageFilename,
+} from '../albums/index.js';
+import {
+  getTrack,
+  listTracks,
+  mergeTracksFromSync,
+  trackAudioFilename,
+} from '../tracks/index.js';
+import {
   initCursor,
   ackDeletesUpTo,
   removeCursor as removeTombstoneCursor,
 } from './peerTombstoneCursors.js';
 
-export const PEER_SUBSCRIBABLE_KINDS = Object.freeze(['universe', 'series', 'mediaCollection', 'author']);
+export const PEER_SUBSCRIBABLE_KINDS = Object.freeze(['universe', 'series', 'mediaCollection', 'author', 'artist', 'album', 'track']);
 
 /**
  * Cross-cutting event bus for the peer-sync receiver. The asset-pull worker
@@ -359,6 +377,9 @@ const KIND_TO_CATEGORY = Object.freeze({
   series: 'pipeline',
   mediaCollection: 'mediaCollections',
   author: 'authors',
+  artist: 'artists',
+  album: 'albums',
+  track: 'tracks',
 });
 
 function peerAllowsOutbound(peer) {
@@ -447,6 +468,12 @@ export async function autoSubscribePeerToAllRecords(peerId, recordKind) {
     records = await listCollections({ includeDeleted: false }).catch(() => []);
   } else if (recordKind === 'author') {
     records = await listAuthors({ includeDeleted: false }).catch(() => []);
+  } else if (recordKind === 'artist') {
+    records = await listArtists({ includeDeleted: false }).catch(() => []);
+  } else if (recordKind === 'album') {
+    records = await listAlbums({ includeDeleted: false }).catch(() => []);
+  } else if (recordKind === 'track') {
+    records = await listTracks({ includeDeleted: false }).catch(() => []);
   }
   // Drop ephemeral records before the set-difference / sub creation. The wire
   // sanitizer would short-circuit any push anyway, but creating a sub that
@@ -685,6 +712,9 @@ function summarizeAssetManifest(manifest) {
 async function buildIntegrityAssetManifest(kind, record) {
   if (kind === 'mediaCollection') return buildCollectionAssetManifest(record);
   if (kind === 'author') return buildAuthorAssetManifest(record);
+  if (kind === 'artist') return buildArtistAssetManifest(record);
+  if (kind === 'album') return buildAlbumAssetManifest(record);
+  if (kind === 'track') return buildTrackAssetManifest(record);
   if (kind === 'series') {
     const childIssues = await listIssues({ seriesId: record?.id, includeDeleted: true }).catch(() => []);
     const manifestIssues = childIssues.filter(
@@ -846,6 +876,7 @@ function directoryForAssetKind(kind) {
   if (kind === 'image') return PATHS.images;
   if (kind === 'image-ref') return PATHS.imageRefs;
   if (kind === 'video') return PATHS.videos;
+  if (kind === 'music') return PATHS.music;
   return null;
 }
 
@@ -888,6 +919,18 @@ async function isSubscriptionRecordTombstone(sub) {
   }
   if (sub.recordKind === 'author') {
     const record = await getAuthor(sub.recordId, { includeDeleted: true }).catch(() => null);
+    return record?.deleted === true;
+  }
+  if (sub.recordKind === 'artist') {
+    const record = await getArtist(sub.recordId, { includeDeleted: true }).catch(() => null);
+    return record?.deleted === true;
+  }
+  if (sub.recordKind === 'album') {
+    const record = await getAlbum(sub.recordId, { includeDeleted: true }).catch(() => null);
+    return record?.deleted === true;
+  }
+  if (sub.recordKind === 'track') {
+    const record = await getTrack(sub.recordId, { includeDeleted: true }).catch(() => null);
     return record?.deleted === true;
   }
   return false;
@@ -1416,6 +1459,30 @@ async function buildPushPayload(sub, sourceInstanceId) {
     const assetManifest = record.deleted === true ? [] : await buildAuthorAssetManifest(record);
     return { kind: 'author', record: sanitized, assetManifest, sourceInstanceId, portosMeta };
   }
+  if (sub.recordKind === 'artist') {
+    const record = await getArtist(sub.recordId, { includeDeleted: true }).catch(() => null);
+    if (!record) return null;
+    const sanitized = sanitizeRecordForWire('artist', record);
+    if (!sanitized) return null;
+    const assetManifest = record.deleted === true ? [] : await buildArtistAssetManifest(record);
+    return { kind: 'artist', record: sanitized, assetManifest, sourceInstanceId, portosMeta };
+  }
+  if (sub.recordKind === 'album') {
+    const record = await getAlbum(sub.recordId, { includeDeleted: true }).catch(() => null);
+    if (!record) return null;
+    const sanitized = sanitizeRecordForWire('album', record);
+    if (!sanitized) return null;
+    const assetManifest = record.deleted === true ? [] : await buildAlbumAssetManifest(record);
+    return { kind: 'album', record: sanitized, assetManifest, sourceInstanceId, portosMeta };
+  }
+  if (sub.recordKind === 'track') {
+    const record = await getTrack(sub.recordId, { includeDeleted: true }).catch(() => null);
+    if (!record) return null;
+    const sanitized = sanitizeRecordForWire('track', record);
+    if (!sanitized) return null;
+    const assetManifest = record.deleted === true ? [] : await buildTrackAssetManifest(record);
+    return { kind: 'track', record: sanitized, assetManifest, sourceInstanceId, portosMeta };
+  }
   return null;
 }
 
@@ -1430,6 +1497,27 @@ async function buildAuthorAssetManifest(author) {
   const filename = headshotImageFilename(author?.headshotImageUrl);
   if (!filename) return [];
   const entry = await hashImageForManifest(filename);
+  return entry ? [entry] : [];
+}
+
+async function buildArtistAssetManifest(artist) {
+  const filename = portraitImageFilename(artist?.portraitImageUrl);
+  if (!filename) return [];
+  const entry = await hashImageForManifest(filename);
+  return entry ? [entry] : [];
+}
+
+async function buildAlbumAssetManifest(album) {
+  const filename = coverImageFilename(album?.coverImageUrl);
+  if (!filename) return [];
+  const entry = await hashImageForManifest(filename);
+  return entry ? [entry] : [];
+}
+
+async function buildTrackAssetManifest(track) {
+  const filename = trackAudioFilename(track?.audioFilename);
+  if (!filename) return [];
+  const entry = await hashSimpleAsset(filename, 'music', PATHS.music);
   return entry ? [entry] : [];
 }
 
@@ -1774,6 +1862,12 @@ export async function applyIncomingPush(payload) {
     await mergeMediaCollectionsFromSync([record], { source });
   } else if (kind === 'author') {
     await mergeAuthorsFromSync([record], { source });
+  } else if (kind === 'artist') {
+    await mergeArtistsFromSync([record], { source });
+  } else if (kind === 'album') {
+    await mergeAlbumsFromSync([record], { source });
+  } else if (kind === 'track') {
+    await mergeTracksFromSync([record], { source });
   }
 
   // Apply the bundled collection (if any) — same LWW + union-of-items
@@ -1997,6 +2091,18 @@ async function classifyLocalRecord(recordKind, recordId) {
     const a = await getAuthor(recordId, { includeDeleted: true }).catch(() => null);
     return a ? 'syncable' : 'missing';
   }
+  if (recordKind === 'artist') {
+    const a = await getArtist(recordId, { includeDeleted: true }).catch(() => null);
+    return a ? 'syncable' : 'missing';
+  }
+  if (recordKind === 'album') {
+    const a = await getAlbum(recordId, { includeDeleted: true }).catch(() => null);
+    return a ? 'syncable' : 'missing';
+  }
+  if (recordKind === 'track') {
+    const t = await getTrack(recordId, { includeDeleted: true }).catch(() => null);
+    return t ? 'syncable' : 'missing';
+  }
   return 'missing';
 }
 
@@ -2006,6 +2112,7 @@ const ASSET_KIND_TO_URL_PREFIX = Object.freeze({
   image: '/data/images',
   'image-ref': '/data/image-refs',
   video: '/data/videos',
+  music: '/data/music',
 });
 
 const ASSET_PULL_TIMEOUT_MS = 60000;
@@ -2262,7 +2369,7 @@ export async function collectSubscriptionsForUpdate(recordKind, recordId) {
   // mediaCollections.js's emitRecordUpdated('mediaCollection', …) inert, so
   // collection edits would only reach peers via initial subscribe / manual
   // force-push, never on subsequent edits.
-  if (recordKind === 'universe' || recordKind === 'series' || recordKind === 'mediaCollection' || recordKind === 'author') {
+  if (PEER_SUBSCRIBABLE_KINDS.includes(recordKind)) {
     return listPeerSubscriptions({ recordKind, recordId });
   }
   if (recordKind === 'issue') {

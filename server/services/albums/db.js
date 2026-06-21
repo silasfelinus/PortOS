@@ -102,8 +102,7 @@ export async function deleteAlbum(id) {
 /**
  * Merge an incoming batch of album records from a peer (per-record push). LWW on
  * `updatedAt` (tombstone-aware) via the shared `mergeAlbumRecord` decision.
- * Federation-ready, but the album kind is not yet registered in peerSync — see
- * issue #1502. Returns `{ applied, count }`.
+ * Peer-sync merge entry point. Returns `{ applied, count }`.
  */
 export async function mergeAlbumsFromSync(remoteAlbums, { source = { via: 'sync', peerId: null } } = {}) {
   if (!Array.isArray(remoteAlbums)) return { applied: false, count: 0 };

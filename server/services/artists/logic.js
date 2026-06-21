@@ -18,11 +18,10 @@
  *   - portraitStyle       — art/photography direction for the portrait render
  *   - portraitImageUrl    — optional pointer to a generated/chosen portrait
  *
- * Artists are `db-primary` (PostgreSQL `artists` table). The storage layer is
- * federation-ready (LWW merge + tombstone prune mirror authors), but the cross-
- * peer peer-sync REGISTRATION (schemaVersions / peerSync / syncWire / tombstone
- * GC) is not wired yet — see issue #1502. Until then artists are local-only, like
- * the Rounds workbench.
+ * Artists are `db-primary` (PostgreSQL `artists` table) and federate across
+ * peers via the per-record peer-sync pipeline (`record kind: artist`, sync
+ * category: artists). A federated album/track still keeps denormalized artist
+ * text so peers render before the artist persona itself arrives.
  */
 
 import { compareNewerWins } from '../../lib/lwwTimestamp.js';
@@ -72,8 +71,8 @@ export function sanitizeArtist(raw) {
 
 /**
  * Resolve an artist's `portraitImageUrl` to the bare gallery-image filename that
- * lives under `data/images/` — the unit a future peer-sync asset pipeline can
- * hash + transfer. Returns null when there's nothing local to ship (empty,
+ * lives under `data/images/` — the unit the peer-sync asset pipeline hashes +
+ * transfers. Returns null when there's nothing local to ship (empty,
  * external URL, or a non-image path). Mirrors authors' headshotImageFilename.
  */
 export function portraitImageFilename(portraitImageUrl) {

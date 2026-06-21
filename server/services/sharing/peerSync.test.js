@@ -249,12 +249,12 @@ afterEach(async () => {
 
 describe('peerSync', () => {
   describe('PEER_SUBSCRIBABLE_KINDS', () => {
-    it('is exactly [universe, series, mediaCollection, author]', () => {
+    it('is exactly [universe, series, mediaCollection, author, artist, album, track]', () => {
       // Exact equality (not toContain) so an accidental add/remove/reorder is
       // caught — this list is canonical and its order can affect iteration
       // elsewhere (e.g. syncNow's per-kind backfill). Issues piggyback on series
       // subscriptions; direct issue subs are intentionally rejected (Stage 2).
-      expect(PEER_SUBSCRIBABLE_KINDS).toEqual(['universe', 'series', 'mediaCollection', 'author']);
+      expect(PEER_SUBSCRIBABLE_KINDS).toEqual(['universe', 'series', 'mediaCollection', 'author', 'artist', 'album', 'track']);
     });
   });
 

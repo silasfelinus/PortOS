@@ -304,6 +304,9 @@ export const RESTORABLE_FIELDS = Object.freeze({
   // LWW-overwritten whole (no field-union like mediaCollection's items), so it
   // is hashed in full by contentHashForRecord — no scalar-narrowing branch.
   author: ['name', 'writingStyle', 'bio', 'physicalDescription', 'headshotStyle', 'headshotImageUrl'],
+  artist: ['name', 'genre', 'bio', 'musicalStyle', 'physicalDescription', 'portraitStyle', 'portraitImageUrl'],
+  album: ['title', 'artistId', 'artist', 'description', 'genre', 'releaseYear', 'coverImageUrl', 'trackIds'],
+  track: ['title', 'albumId', 'artistId', 'artist', 'lyrics', 'prompt', 'engine', 'modelId', 'durationSec', 'audioFilename'],
   // Issue: the user-authored content the merge can restore. `stages` carries
   // the bulk of the work (prose, comic pages, render metadata). Server-owned /
   // structural fields are excluded deliberately — `number` is renumber-managed,

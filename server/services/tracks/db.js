@@ -102,8 +102,7 @@ export async function deleteTrack(id) {
 /**
  * Merge an incoming batch of track records from a peer (per-record push). LWW on
  * `updatedAt` (tombstone-aware) via the shared `mergeTrackRecord` decision.
- * Federation-ready, but the track kind is not yet registered in peerSync — see
- * issue #1502. Returns `{ applied, count }`.
+ * Peer-sync merge entry point. Returns `{ applied, count }`.
  */
 export async function mergeTracksFromSync(remoteTracks, { source = { via: 'sync', peerId: null } } = {}) {
   if (!Array.isArray(remoteTracks)) return { applied: false, count: 0 };

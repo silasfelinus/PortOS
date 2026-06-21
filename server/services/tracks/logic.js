@@ -24,7 +24,9 @@
  * Tracks are `db-primary` (PostgreSQL `tracks` table). The audio bytes live in
  * the shared music library (services/pipeline/musicLibrary.js, `data/music/`);
  * a track stores only the filename pointer. The storage layer is federation-
- * ready, but cross-peer sync is not wired yet — see issue #1502 (local-only).
+ * ready and federates across peers via the per-record peer-sync pipeline
+ * (`record kind: track`, sync category: tracks). Audio bytes ride the asset
+ * manifest as `music` assets.
  */
 
 import { compareNewerWins } from '../../lib/lwwTimestamp.js';
@@ -90,7 +92,7 @@ export function sanitizeTrack(raw) {
 /**
  * The bare music-library filename for a track's audio (already a basename), or
  * null when no audio is attached. Tracks store the filename directly (not a
- * URL), so this is mostly an existence/trim guard for the future asset pipeline.
+ * URL), so this is mostly an existence/trim guard for the asset pipeline.
  */
 export function trackAudioFilename(audioFilename) {
   const name = trimTo(audioFilename, AUDIO_FILENAME_MAX);

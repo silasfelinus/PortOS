@@ -15,7 +15,7 @@ import { catalogSyncIngredientSchema, catalogSyncRefSchema } from './catalogVali
 // subscriptions target another PortOS instance over Tailnet.
 export const peerSubscribeSchema = z.object({
   peerId: z.string().trim().min(1).max(120),
-  recordKind: z.enum(['universe', 'series', 'mediaCollection', 'author']),
+  recordKind: z.enum(['universe', 'series', 'mediaCollection', 'author', 'artist', 'album', 'track']),
   recordId: z.string().trim().min(1).max(120),
 }).strict();
 
@@ -38,7 +38,7 @@ const peerAssetManifestEntrySchema = z.discriminatedUnion('kind', [
   }).strict(),
   z.object({
     filename: z.string().trim().min(1).max(255),
-    kind: z.enum(['image-ref', 'video']),
+    kind: z.enum(['image-ref', 'video', 'music']),
     sha256: hex64.optional(),
   }).strict(),
 ]);
@@ -169,18 +169,33 @@ const authorPushSchema = z.object({
   kind: z.literal('author'),
   ...peerSyncPushBase,
 }).strict();
+const artistPushSchema = z.object({
+  kind: z.literal('artist'),
+  ...peerSyncPushBase,
+}).strict();
+const albumPushSchema = z.object({
+  kind: z.literal('album'),
+  ...peerSyncPushBase,
+}).strict();
+const trackPushSchema = z.object({
+  kind: z.literal('track'),
+  ...peerSyncPushBase,
+}).strict();
 export const peerSyncPushSchema = z.discriminatedUnion('kind', [
   universePushSchema,
   seriesPushSchema,
   mediaCollectionPushSchema,
   authorPushSchema,
+  artistPushSchema,
+  albumPushSchema,
+  trackPushSchema,
 ]);
 
 // Manual sync action schemas — used by POST /sync-record, /sync-now, /pull-metadata.
 
 export const peerSyncRecordSchema = z.object({
   peerId: z.string().trim().min(1).max(120),
-  recordKind: z.enum(['universe', 'series', 'mediaCollection', 'author']),
+  recordKind: z.enum(['universe', 'series', 'mediaCollection', 'author', 'artist', 'album', 'track']),
   recordId: z.string().trim().min(1).max(200),
 }).strict();
 
@@ -196,4 +211,3 @@ export const peerPullMetadataSchema = z.object({
   // manifest-entry filename handling.
   filenames: z.array(z.string().trim().min(1).max(300)).max(5000),
 }).strict();
-

@@ -227,6 +227,9 @@ const DEFAULT_SYNC_CATEGORIES = {
   videoHistory: false,
   storyBuilder: false,
   authors: false,
+  artists: false,
+  albums: false,
+  tracks: false,
   catalog: false
 };
 
@@ -237,16 +240,18 @@ export { DEFAULT_SYNC_CATEGORIES };
 // backfills. A false→true toggle on any of these triggers an inline backfill of
 // existing local records so the user doesn't have to wait for the next
 // `peer:online` / manual sync-now. Mirror of peerSync's KIND_TO_CATEGORY
-// (inverted). `pipeline → series` bundles child issues at push time; authors +
-// mediaCollections are standalone per-record kinds with NO snapshot category, so
-// the toggle-time backfill is the ONLY place existing records get subscribed
-// short of a reconnect — omitting them here strands a user's existing authors /
-// collections until the peer next comes online.
+// (inverted). `pipeline → series` bundles child issues at push time; authors,
+// music records, and mediaCollections are standalone per-record kinds with no
+// snapshot category, so toggle-time backfill is the main path that subscribes
+// existing records short of a reconnect.
 const PER_RECORD_CATEGORY_KINDS = Object.freeze([
   ['universe', 'universe'],
   ['pipeline', 'series'],
   ['mediaCollections', 'mediaCollection'],
   ['authors', 'author'],
+  ['artists', 'artist'],
+  ['albums', 'album'],
+  ['tracks', 'track'],
 ]);
 
 export async function addPeer({ address, port = DEFAULT_PEER_PORT, name, host, auth }) {

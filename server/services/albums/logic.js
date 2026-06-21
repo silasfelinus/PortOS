@@ -17,10 +17,10 @@
  *   - coverImageUrl  — optional pointer to a generated/uploaded cover image
  *   - trackIds       — ordered list of track ids (`track-…`) on the album
  *
- * Albums are `db-primary` (PostgreSQL `albums` table). The storage layer is
- * federation-ready (LWW merge + tombstone prune mirror authors/artists), but the
- * cross-peer peer-sync REGISTRATION is not wired yet — see issue #1502. Until
- * then albums are local-only.
+ * Albums are `db-primary` (PostgreSQL `albums` table) and federate across peers
+ * via the per-record peer-sync pipeline (`record kind: album`, sync category:
+ * albums). Tracks still carry denormalized artist/album context so they render
+ * before related records arrive.
  */
 
 import { compareNewerWins } from '../../lib/lwwTimestamp.js';
@@ -94,7 +94,7 @@ export function sanitizeAlbum(raw) {
 
 /**
  * Resolve an album's `coverImageUrl` to the bare gallery-image filename under
- * `data/images/` for a future peer-sync asset transfer. Returns null when
+ * `data/images/` for peer-sync asset transfer. Returns null when
  * there's nothing local to ship. Mirrors artists' portraitImageFilename.
  */
 export function coverImageFilename(coverImageUrl) {
