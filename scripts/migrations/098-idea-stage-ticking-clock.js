@@ -37,11 +37,11 @@ export const ACCEPTED_OLD_MD5 = {
   'pipeline-idea-expansion.md': ['49a208628290543ba2607a5ed48fdc8c'],
 };
 
-// Post-change shipped hash (ticking-clock section + `{{.}}` → named-ref fixes).
-// Mirror this into every earlier migration that tracks the same file
-// (003/004/025/054) so their drift-catch tests stay green.
+// Post-change shipped hash. Bumped to the current shipped body whenever a later
+// migration edits this file, so the drift-catch test (NEW == live sample) stays
+// green. Latest: post-122 (scope-discipline + {{#paddingRisk}}).
 export const NEW_SHIPPED_MD5 = {
-  'pipeline-idea-expansion.md': 'c50f016639d41cd8244f5ff13429f997',
+  'pipeline-idea-expansion.md': 'c5b2e719e232a281b3829a5348cb29c1',
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({

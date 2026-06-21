@@ -33,7 +33,7 @@ export const ACCEPTED_OLD_MD5 = {
 // Post-change shipped hashes (the source-agnostic + tilde-fence templates this
 // migration installs). Mirror these into setup-data.js's drift table.
 export const NEW_SHIPPED_MD5 = {
-  'pipeline-idea-expansion.md': 'c50f016639d41cd8244f5ff13429f997', // post-098 (ticking clock + {{.}} fixes)
+  'pipeline-idea-expansion.md': 'c5b2e719e232a281b3829a5348cb29c1', // post-122 (scope-discipline + {{#paddingRisk}})
   'pipeline-prose.md':          '84523d531eeafa60959c65c553b2563f',
   'pipeline-comic-script.md':   'e9ee70bf18888492edada6633cd9928a',
   'pipeline-teleplay.md':       'afa4215330bf856429d70d7e2f856605',

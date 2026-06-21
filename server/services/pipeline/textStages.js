@@ -21,7 +21,7 @@ import { getIssue, listIssues, updateStage, assertStageUnlocked, TEXT_STAGE_IDS 
 import { getSeriesCanon } from './seriesCanon.js';
 import { getUniverse } from '../universeBuilder.js';
 import { compareIssuesByPosition, NO_LINKED_UNIVERSE_PLACEHOLDER } from './arcPlanner.js';
-import { computeIssueTargets } from '../../lib/issueLength.js';
+import { computeIssueTargets, assessSynopsisScope } from '../../lib/issueLength.js';
 import { renderEntitiesSummary } from '../../lib/universePromptRenderers.js';
 import { composeStyleNotes } from '../../lib/styleGuide.js';
 import { renderTickingClock } from '../../lib/storyArc.js';
@@ -102,10 +102,19 @@ async function buildIdeaContextAugment(series, issue) {
   // `tickingClock.enabled === true`.
   const tickingClock = renderTickingClock(arc?.tickingClock);
 
+  // Scope-discipline signal: a terse synopsis on a long length profile tempts
+  // the beat sheet to pad by absorbing the next issue's events (#1513). The
+  // template gates a "do not pad past scope" warning on this flag.
+  const { paddingRisk } = assessSynopsisScope(
+    issue.stages?.idea?.input || '',
+    computeIssueTargets(issue),
+  );
+
   if (!season) {
     return {
       arc: arcBlock,
       tickingClock,
+      paddingRisk,
       volume: null,
       arcRole: issue.arcRole || null,
       positionInVolume: null,
@@ -150,6 +159,7 @@ async function buildIdeaContextAugment(series, issue) {
   return {
     arc: arcBlock,
     tickingClock,
+    paddingRisk,
     volume: {
       number: season.number,
       title: season.title || '',
@@ -295,6 +305,9 @@ export async function generateStage(issueId, stageId, options = {}) {
   });
   if (stageId === 'idea') {
     Object.assign(ctx, await buildIdeaContextAugment(series, issue));
+    if (ctx.paddingRisk) {
+      console.log(`⚠️ Pipeline idea — issue=${issueId.slice(0, 8)} terse synopsis vs ${ctx.lengthTargets?.profile} profile: scope-discipline guard engaged`);
+    }
   }
 
   // Catch only at this boundary so the stage record persists the failure

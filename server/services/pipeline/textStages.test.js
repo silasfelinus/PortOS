@@ -322,6 +322,30 @@ describe('pipeline text stage generator', () => {
     expect(ctx.nextIssue).toMatchObject({ title: 'Midpoint', arcRole: 'midpoint', arcPosition: 3 });
   });
 
+  it('idea context: paddingRisk flagged for a terse synopsis on a long (finale) profile', async () => {
+    const { series } = await seed();
+    const issue = await issuesSvc.createIssue({
+      seriesId: series.id,
+      title: 'The Invitation',
+      lengthProfile: 'finale',
+      stages: { idea: { input: 'the Helioheart invitation arrives', status: 'draft' } },
+    });
+    await textStages.generateStage(issue.id, 'idea');
+    expect(ctxFromCall(llmCalls[0]).paddingRisk).toBe(true);
+  });
+
+  it('idea context: paddingRisk NOT flagged for a terse synopsis on a standard profile', async () => {
+    const { series } = await seed();
+    const issue = await issuesSvc.createIssue({
+      seriesId: series.id,
+      title: 'The Gala',
+      lengthProfile: 'standard',
+      stages: { idea: { input: 'the gala', status: 'draft' } },
+    });
+    await textStages.generateStage(issue.id, 'idea');
+    expect(ctxFromCall(llmCalls[0]).paddingRisk).toBe(false);
+  });
+
   it('idea context: neighbor exposes beats when expanded, synopsis when not', async () => {
     const { series } = await seed();
     await seriesSvc.updateSeries(series.id, { arc: { logline: 'L' } });
@@ -542,6 +566,23 @@ describe('pipeline-idea-expansion template render', () => {
     expect(out).toContain('**all-is-lost**');      // next neighbor's arc role
     expect(out).toContain('PRIOR-BEAT-ONE');       // prior neighbor's beat sheet
     expect(out).toContain('NEXT-SYNOPSIS-LINE');   // next neighbor's synopsis
+  });
+
+  it('renders the {{#paddingRisk}} scope warning only when the flag is set (#1513)', () => {
+    const withRisk = applyTemplate(ideaTemplate, renderCtx({ paddingRisk: true }));
+    expect(withRisk).toContain('Scope warning');
+    expect(withRisk).toContain('Do NOT do that');
+
+    const withoutRisk = applyTemplate(ideaTemplate, renderCtx({ paddingRisk: false }));
+    expect(withoutRisk).not.toContain('Scope warning');
+  });
+
+  it('frames neighboring issues as hard scope boundaries (#1513)', () => {
+    const out = applyTemplate(ideaTemplate, renderCtx());
+    // Next-issue block: its events are out of scope, not material to continue into.
+    expect(out).toContain('OUT OF SCOPE');
+    // The always-on seed scope note.
+    expect(out).toContain("This seed defines THIS issue's scope.");
   });
 
   it('renders the ticking-clock section when enabled and omits it otherwise', () => {
