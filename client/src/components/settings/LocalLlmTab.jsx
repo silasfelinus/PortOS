@@ -716,18 +716,32 @@ export function LocalLlmTab() {
                         })}
                       </div>
                     </div>
-                    {m.installed ? (
-                      <span className="text-xs px-2 py-1 text-port-success shrink-0">Installed</span>
-                    ) : (
-                      <button
-                        onClick={() => install(m.id)}
-                        disabled={busy}
-                        className="px-2.5 py-1 text-xs bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded disabled:opacity-50 flex items-center gap-1 shrink-0"
-                      >
-                        {actionInProgress === `install-${m.id}` ? <BrailleSpinner /> : <Download size={12} />}
-                        Install
-                      </button>
-                    )}
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      {m.installed ? (
+                        <span className="text-xs px-2 py-1 text-port-success">Installed</span>
+                      ) : (
+                        <button
+                          onClick={() => install(m.id)}
+                          disabled={busy}
+                          className="px-2.5 py-1 text-xs bg-port-accent/20 hover:bg-port-accent/30 text-port-accent rounded disabled:opacity-50 flex items-center gap-1"
+                        >
+                          {actionInProgress === `install-${m.id}` ? <BrailleSpinner /> : <Download size={12} />}
+                          Install
+                        </button>
+                      )}
+                      {isHf && m.repository && (
+                        <a
+                          href={`https://huggingface.co/${m.repository}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="Open the model page on Hugging Face"
+                          className="px-2.5 py-1 text-xs bg-port-border/60 hover:bg-port-border text-gray-300 rounded flex items-center gap-1"
+                        >
+                          <ExternalLink size={12} />
+                          Visit
+                        </a>
+                      )}
+                    </div>
                   </div>
                   );
                 })}
