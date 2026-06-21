@@ -184,9 +184,16 @@ export function resolveIssueAuthorFilterBlock(promptTaskType, mode = 'owner') {
  * delegated flow's worktree/PR posture (jira-sprint-manager needs CoS-managed
  * isolation; the plan/github/gitlab prompts self-manage their worktree + PR).
  *
+ * `issueAuthorFilter` and `reviewers` default to the app's *configured*
+ * `claim-work` behavior (global schedule metadata → per-app override → Code
+ * Review Defaults), exactly as the scheduled `claim-work` router resolves them —
+ * so clicking the button honors `issueAuthorFilter: 'any'` and non-Copilot
+ * reviewers instead of silently forcing owner-only + Copilot. Explicit options
+ * still win when a caller passes them.
+ *
  * @returns {Promise<{ tracker, source, promptTaskType, prompt, taskMetadata }>}
  */
-export async function buildClaimWorkTask(app, { issueAuthorFilter = 'owner', reviewers = ['copilot'] } = {}) {
+export async function buildClaimWorkTask(app, { issueAuthorFilter, reviewers } = {}) {
   const { resolveAppWorkTracker, trackerToClaimTaskType } = await import('../lib/workTracker.js');
   const { getTaskPrompt } = await import('./taskPromptService.js');
   const taskSchedule = await import('./taskSchedule.js');
@@ -195,9 +202,39 @@ export async function buildClaimWorkTask(app, { issueAuthorFilter = 'owner', rev
   const promptTaskType = trackerToClaimTaskType(wt.resolved) || 'plan-task';
   const template = await getTaskPrompt(promptTaskType);
 
-  const reviewersList = Array.isArray(reviewers) ? reviewers : [reviewers];
-  const reviewersCsv = reviewersList.filter(Boolean).join(', ') || 'copilot';
-  const issueAuthorFilterBlock = resolveIssueAuthorFilterBlock(promptTaskType, issueAuthorFilter);
+  // Resolve the app's configured claim-work metadata the same way the scheduled
+  // router does: global schedule metadata, then per-app overrides on top (managed
+  // agent fields stripped, both passes sanitized/value-constrained). This is what
+  // carries the user's `issueAuthorFilter` and reviewer choices into the prompt.
+  const interval = await taskSchedule.getTaskInterval('claim-work');
+  const metadata = {};
+  const sanitizedGlobalMeta = sanitizeTaskMetadata(interval.taskMetadata);
+  if (sanitizedGlobalMeta) Object.assign(metadata, sanitizedGlobalMeta);
+  const appOverrides = await getAppTaskTypeOverrides(app.id);
+  const strippedAppOverride = taskSchedule.stripManagedAgentOptionsFromOverride(
+    'claim-work', appOverrides['claim-work']?.taskMetadata
+  );
+  const sanitizedAppMeta = sanitizeTaskMetadata(strippedAppOverride);
+  if (sanitizedAppMeta) Object.assign(metadata, sanitizedAppMeta);
+
+  // Explicit option > configured metadata > 'owner' default.
+  const resolvedAuthorFilter = issueAuthorFilter ?? metadata.issueAuthorFilter ?? 'owner';
+
+  // Reviewers: explicit option wins; otherwise mirror the scheduler — merge
+  // configured metadata reviewers with the user's Code Review Defaults, dropping
+  // local-LLM reviewers the claim prompts can't drive, falling back to the
+  // hardcoded default when filtering empties the list. A settings read error
+  // degrades to the default inside normalizeReviewers, so it never blocks.
+  let reviewersList;
+  if (reviewers !== undefined) {
+    reviewersList = (Array.isArray(reviewers) ? reviewers : [reviewers]).filter(Boolean);
+  } else {
+    const codeReviewDefaults = await getCodeReviewDefaults().catch(() => null);
+    reviewersList = normalizeReviewers(metadata, codeReviewDefaults?.reviewers)
+      .filter((r) => !LOCAL_LLM_REVIEWERS.includes(r));
+  }
+  const reviewersCsv = (reviewersList.length ? reviewersList : [...DEFAULT_REVIEWERS]).join(',');
+  const issueAuthorFilterBlock = resolveIssueAuthorFilterBlock(promptTaskType, resolvedAuthorFilter);
 
   const prompt = template
     .replace(/\{appName\}/g, app.name)

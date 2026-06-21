@@ -126,6 +126,21 @@ describe('claim-work single-source routing', () => {
     expect(GEN_SRC).toMatch(/buildClaimWorkTask[\s\S]*resolveAppWorkTracker, trackerToClaimTaskType/);
     expect(GEN_SRC).toMatch(/buildClaimWorkTask[\s\S]*resolveIssueAuthorFilterBlock\(promptTaskType/);
   });
+
+  it('buildClaimWorkTask resolves issueAuthorFilter + reviewers from configured claim-work metadata (parity with scheduler)', () => {
+    // The manual button must honor the app's configured Work Tracker behavior
+    // (issueAuthorFilter:'any', non-Copilot reviewers), not force owner+copilot.
+    const fn = GEN_SRC.slice(GEN_SRC.indexOf('export async function buildClaimWorkTask('));
+    // Merges global schedule metadata then per-app overrides, same as the scheduler.
+    expect(fn).toMatch(/getTaskInterval\('claim-work'\)/);
+    expect(fn).toMatch(/getAppTaskTypeOverrides\(app\.id\)/);
+    expect(fn).toMatch(/stripManagedAgentOptionsFromOverride\(\s*'claim-work'/);
+    // issueAuthorFilter: explicit option > configured metadata > 'owner'.
+    expect(fn).toMatch(/issueAuthorFilter \?\? metadata\.issueAuthorFilter \?\? 'owner'/);
+    // reviewers fall back to Code Review Defaults via normalizeReviewers, dropping local-LLM reviewers.
+    expect(fn).toMatch(/normalizeReviewers\(metadata, codeReviewDefaults\?\.reviewers\)/);
+    expect(fn).toMatch(/LOCAL_LLM_REVIEWERS\.includes/);
+  });
 });
 
 // The {issueAuthorFilter} directive is shared by the scheduled claim-work router
