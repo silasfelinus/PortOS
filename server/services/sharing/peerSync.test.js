@@ -65,6 +65,51 @@ vi.mock('../mediaCollections.js', async () => ({
   mergeMediaCollectionsFromSync: vi.fn(),
 }));
 
+vi.mock('../artists/index.js', async () => {
+  const imageBasename = (url) => {
+    if (typeof url !== 'string' || !url.trim()) return null;
+    if (/^(https?:|data:|blob:)/i.test(url)) return null;
+    const prefix = '/data/images/';
+    const value = url.startsWith(prefix) ? url.slice(prefix.length) : url;
+    if (value.startsWith('/')) return null;
+    return value.split(/[?#]/)[0].split('/').pop() || null;
+  };
+  return {
+    getArtist: vi.fn(),
+    listArtists: vi.fn(),
+    mergeArtistsFromSync: vi.fn(),
+    portraitImageFilename: vi.fn(imageBasename),
+  };
+});
+
+vi.mock('../albums/index.js', async () => {
+  const imageBasename = (url) => {
+    if (typeof url !== 'string' || !url.trim()) return null;
+    if (/^(https?:|data:|blob:)/i.test(url)) return null;
+    const prefix = '/data/images/';
+    const value = url.startsWith(prefix) ? url.slice(prefix.length) : url;
+    if (value.startsWith('/')) return null;
+    return value.split(/[?#]/)[0].split('/').pop() || null;
+  };
+  return {
+    getAlbum: vi.fn(),
+    listAlbums: vi.fn(),
+    mergeAlbumsFromSync: vi.fn(),
+    coverImageFilename: vi.fn(imageBasename),
+  };
+});
+
+vi.mock('../tracks/index.js', async () => ({
+  getTrack: vi.fn(),
+  listTracks: vi.fn(),
+  mergeTracksFromSync: vi.fn(),
+  trackAudioFilename: vi.fn((name) => {
+    if (typeof name !== 'string' || !name.trim()) return null;
+    const value = name.trim();
+    return value.includes('/') || value.includes('\\') || value.includes('..') ? null : value;
+  }),
+}));
+
 vi.mock('../../lib/peerHttpClient.js', async () => ({
   peerFetch: vi.fn(),
   peerSocketOptions: {},
@@ -126,6 +171,9 @@ import {
   findCollectionBySeriesId,
   mergeMediaCollectionsFromSync,
 } from '../mediaCollections.js';
+import { getArtist, listArtists, mergeArtistsFromSync } from '../artists/index.js';
+import { getAlbum, listAlbums, mergeAlbumsFromSync } from '../albums/index.js';
+import { getTrack, listTracks, mergeTracksFromSync } from '../tracks/index.js';
 import { peerFetch } from '../../lib/peerHttpClient.js';
 import { getBackendName } from '../memoryBackend.js';
 import { getCatalogBundleForRef } from '../catalogDB.js';
@@ -137,6 +185,7 @@ let originalDataPath;
 let originalImagesPath;
 let originalImageRefsPath;
 let originalVideosPath;
+let originalMusicPath;
 let tmp;
 
 beforeEach(async () => {
@@ -149,11 +198,14 @@ beforeEach(async () => {
   originalImagesPath = PATHS.images;
   originalImageRefsPath = PATHS.imageRefs;
   originalVideosPath = PATHS.videos;
+  originalMusicPath = PATHS.music;
   tmp = join(tmpdir(), `portos-peer-sync-${Date.now()}-${Math.random()}`);
   await mkdir(join(tmp, 'sharing'), { recursive: true });
   await mkdir(join(tmp, 'images'), { recursive: true });
+  await mkdir(join(tmp, 'music'), { recursive: true });
   PATHS.data = tmp;
   PATHS.images = join(tmp, 'images');
+  PATHS.music = join(tmp, 'music');
 
   // Reset mocks. The default peer fixture INTENTIONALLY INVERTS production
   // defaults: `addPeer` in instances.js creates peers with `syncEnabled:
@@ -209,6 +261,15 @@ beforeEach(async () => {
   vi.mocked(findCollectionByUniverseId).mockReset().mockResolvedValue(null);
   vi.mocked(findCollectionBySeriesId).mockReset().mockResolvedValue(null);
   vi.mocked(mergeMediaCollectionsFromSync).mockReset().mockResolvedValue({ applied: false, count: 0 });
+  vi.mocked(getArtist).mockReset().mockResolvedValue(null);
+  vi.mocked(listArtists).mockReset().mockResolvedValue([]);
+  vi.mocked(mergeArtistsFromSync).mockReset().mockResolvedValue({ applied: true, count: 1 });
+  vi.mocked(getAlbum).mockReset().mockResolvedValue(null);
+  vi.mocked(listAlbums).mockReset().mockResolvedValue([]);
+  vi.mocked(mergeAlbumsFromSync).mockReset().mockResolvedValue({ applied: true, count: 1 });
+  vi.mocked(getTrack).mockReset().mockResolvedValue(null);
+  vi.mocked(listTracks).mockReset().mockResolvedValue([]);
+  vi.mocked(mergeTracksFromSync).mockReset().mockResolvedValue({ applied: true, count: 1 });
   // Catalog bundle defaults: non-postgres backend (no bundle), empty DB read,
   // no-op apply. The catalog-bundle suite overrides these per-test.
   vi.mocked(getBackendName).mockReset().mockReturnValue('file');
@@ -245,6 +306,7 @@ afterEach(async () => {
   PATHS.images = originalImagesPath;
   PATHS.imageRefs = originalImageRefsPath;
   PATHS.videos = originalVideosPath;
+  PATHS.music = originalMusicPath;
 });
 
 describe('peerSync', () => {
@@ -747,6 +809,33 @@ describe('peerSync', () => {
       expect(first.map(c => c.recordId)).toEqual(['u1']);
       const second = await autoSubscribePeerToAllRecords('peer-a', 'universe');
       expect(second).toEqual([]);
+    });
+
+    it('backfills existing music records for their category toggles', async () => {
+      vi.mocked(getPeers).mockResolvedValue([
+        {
+          instanceId: 'peer-a', name: 'A', enabled: true, syncEnabled: true, directions: ['outbound'],
+          syncCategories: { artists: true, albums: true, tracks: true },
+        },
+      ]);
+      vi.mocked(listArtists).mockResolvedValue([{ id: 'artist-1', name: 'Nova' }]);
+      vi.mocked(listAlbums).mockResolvedValue([{ id: 'album-1', title: 'Debut' }]);
+      vi.mocked(listTracks).mockResolvedValue([{ id: 'track-1', title: 'Intro' }]);
+      vi.mocked(getArtist).mockImplementation(async (id) => ({ id, name: 'Nova' }));
+      vi.mocked(getAlbum).mockImplementation(async (id) => ({ id, title: 'Debut' }));
+      vi.mocked(getTrack).mockImplementation(async (id) => ({ id, title: 'Intro' }));
+      vi.mocked(peerFetch).mockResolvedValue({ ok: true, json: async () => ({ missingAssets: [] }) });
+
+      const artists = await autoSubscribePeerToAllRecords('peer-a', 'artist');
+      const albums = await autoSubscribePeerToAllRecords('peer-a', 'album');
+      const tracks = await autoSubscribePeerToAllRecords('peer-a', 'track');
+
+      expect(artists.map(c => c.recordId)).toEqual(['artist-1']);
+      expect(albums.map(c => c.recordId)).toEqual(['album-1']);
+      expect(tracks.map(c => c.recordId)).toEqual(['track-1']);
+      expect(await findPeerSubscription('peer-a', 'artist', 'artist-1')).not.toBeNull();
+      expect(await findPeerSubscription('peer-a', 'album', 'album-1')).not.toBeNull();
+      expect(await findPeerSubscription('peer-a', 'track', 'track-1')).not.toBeNull();
     });
 
     it('returns [] for invalid arguments', async () => {
@@ -1997,6 +2086,45 @@ describe('peerSync', () => {
       expect(captured.record.deleted).toBe(true);
       expect(captured.assetManifest).toEqual([]);
     });
+
+    it('emits image and music asset manifests for music record pushes', async () => {
+      vi.mocked(getPeers).mockResolvedValue([
+        {
+          instanceId: 'peer-a', name: 'Peer A', host: null, address: '10.0.0.2', port: 5555,
+          enabled: true, syncEnabled: true, directions: ['outbound', 'inbound'],
+          syncCategories: { artists: true, albums: true, tracks: true },
+        },
+      ]);
+      await writeFile(join(PATHS.images, 'artist.png'), Buffer.from('artist portrait'));
+      await writeFile(join(PATHS.images, 'album.png'), Buffer.from('album cover'));
+      await writeFile(join(PATHS.music, 'song.mp3'), Buffer.from('track audio'));
+      vi.mocked(getArtist).mockResolvedValue({
+        id: 'artist-1', name: 'Nova', portraitImageUrl: '/data/images/artist.png',
+        updatedAt: '2026-06-01T00:00:00Z', deleted: false, deletedAt: null,
+      });
+      vi.mocked(getAlbum).mockResolvedValue({
+        id: 'album-1', title: 'Debut', coverImageUrl: '/data/images/album.png',
+        updatedAt: '2026-06-01T00:00:00Z', deleted: false, deletedAt: null,
+      });
+      vi.mocked(getTrack).mockResolvedValue({
+        id: 'track-1', title: 'Intro', audioFilename: 'song.mp3',
+        updatedAt: '2026-06-01T00:00:00Z', deleted: false, deletedAt: null,
+      });
+      const captured = [];
+      vi.mocked(peerFetch).mockImplementation(async (_url, opts) => {
+        captured.push(JSON.parse(opts.body));
+        return { ok: true, json: async () => ({ missingAssets: [] }) };
+      });
+
+      await pushRecordToPeer({ id: 'sub-artist', peerId: 'peer-a', recordKind: 'artist', recordId: 'artist-1' });
+      await pushRecordToPeer({ id: 'sub-album', peerId: 'peer-a', recordKind: 'album', recordId: 'album-1' });
+      await pushRecordToPeer({ id: 'sub-track', peerId: 'peer-a', recordKind: 'track', recordId: 'track-1' });
+
+      expect(captured.map(p => p.kind)).toEqual(['artist', 'album', 'track']);
+      expect(captured[0].assetManifest).toEqual([expect.objectContaining({ kind: 'image', filename: 'artist.png' })]);
+      expect(captured[1].assetManifest).toEqual([expect.objectContaining({ kind: 'image', filename: 'album.png' })]);
+      expect(captured[2].assetManifest).toEqual([expect.objectContaining({ kind: 'music', filename: 'song.mp3' })]);
+    });
   });
 
   describe('collectSubscriptionsForUpdate', () => {
@@ -2064,6 +2192,40 @@ describe('peerSync', () => {
       });
       expect(mergeUniversesFromSync).toHaveBeenCalledWith(
         [expect.objectContaining({ id: 'u1' })],
+        { source: { via: 'peer-push', peerId: 'peer-a' } },
+      );
+    });
+
+    it('dispatches music pushes through their merge entry points', async () => {
+      await applyIncomingPush({
+        kind: 'artist',
+        record: { id: 'artist-1', name: 'Nova', deleted: false, deletedAt: null },
+        assetManifest: [],
+        sourceInstanceId: 'peer-a',
+      });
+      await applyIncomingPush({
+        kind: 'album',
+        record: { id: 'album-1', title: 'Debut', deleted: false, deletedAt: null },
+        assetManifest: [],
+        sourceInstanceId: 'peer-a',
+      });
+      await applyIncomingPush({
+        kind: 'track',
+        record: { id: 'track-1', title: 'Intro', deleted: false, deletedAt: null },
+        assetManifest: [],
+        sourceInstanceId: 'peer-a',
+      });
+
+      expect(mergeArtistsFromSync).toHaveBeenCalledWith(
+        [expect.objectContaining({ id: 'artist-1' })],
+        { source: { via: 'peer-push', peerId: 'peer-a' } },
+      );
+      expect(mergeAlbumsFromSync).toHaveBeenCalledWith(
+        [expect.objectContaining({ id: 'album-1' })],
+        { source: { via: 'peer-push', peerId: 'peer-a' } },
+      );
+      expect(mergeTracksFromSync).toHaveBeenCalledWith(
+        [expect.objectContaining({ id: 'track-1' })],
         { source: { via: 'peer-push', peerId: 'peer-a' } },
       );
     });
@@ -3375,6 +3537,18 @@ describe('peerSync', () => {
         record: { id: 'col-x' },
         assetManifest: [],
       })).toThrow();
+    });
+
+    it('accepts music push payloads and music asset manifests', async () => {
+      const { peerSyncPushSchema } = await import('../../lib/validation.js');
+      for (const kind of ['artist', 'album', 'track']) {
+        expect(() => peerSyncPushSchema.parse({
+          kind,
+          record: { id: `${kind}-1` },
+          assetManifest: [{ filename: 'song.mp3', kind: 'music', sha256: 'a'.repeat(64) }],
+          sourceInstanceId: 'peer-abc',
+        })).not.toThrow();
+      }
     });
   });
 });
