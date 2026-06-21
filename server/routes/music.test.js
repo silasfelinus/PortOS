@@ -6,7 +6,11 @@ import { ServerError } from '../lib/errorHandler.js';
 // Mock the music-gen service: a small engine registry + a generateMusic that the
 // tests drive per-case. The route only consumes ENGINES/getEngine/isEngineReady/
 // generateMusic + DEFAULT_ENGINE_ID.
-const gen = vi.hoisted(() => ({ generateMusic: vi.fn(), ready: true }));
+const gen = vi.hoisted(() => ({
+  generateMusic: vi.fn(),
+  ready: true,
+  readyByEngine: null,
+}));
 vi.mock('../services/pipeline/musicGen.js', () => {
   const ENGINES = {
     musicgen: { id: 'musicgen', name: 'MusicGen', models: [{ id: 'm', name: 'M' }], defaultModelId: 'm', minDurationSec: 1, maxDurationSec: 30, defaultDurationSec: 12, installEnv: 'INSTALL_MUSICGEN', venvDefault: '/v/mg', resolvePython: () => (gen.ready ? '/v/mg/bin/python3' : null), customModels: true },
@@ -16,7 +20,7 @@ vi.mock('../services/pipeline/musicGen.js', () => {
     ENGINES,
     DEFAULT_ENGINE_ID: 'musicgen',
     getEngine: (id) => ENGINES[id] || ENGINES.musicgen,
-    isEngineReady: () => gen.ready,
+    isEngineReady: (engineId) => (gen.readyByEngine ? gen.readyByEngine[engineId] === true : gen.ready),
     generateMusic: gen.generateMusic,
   };
 });
@@ -94,6 +98,7 @@ describe('music routes', () => {
     albums.updateAlbum.mockReset().mockImplementation(async (id, patch) => ({ id, ...patch }));
     sse.run.mockReset().mockImplementation(async ({ res }) => { res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.end('data: {"type":"complete"}\n\n'); });
     gen.ready = true;
+    gen.readyByEngine = null;
     cache.cached = true;
     models.list.mockResolvedValue([{ id: 'm', name: 'M', userAdded: false }]);
   });
@@ -110,6 +115,14 @@ describe('music routes', () => {
     const mg = r.body.engines.find((e) => e.id === 'musicgen');
     expect(mg.lyrics).toBe(false);
     expect(mg.customModels).toBe(true);
+  });
+
+  it('GET /engines reports readiness per engine', async () => {
+    gen.readyByEngine = { musicgen: true, acestep: false };
+    const r = await request(app).get('/api/music/engines');
+    expect(r.status).toBe(200);
+    expect(r.body.engines.find((e) => e.id === 'musicgen').ready).toBe(true);
+    expect(r.body.engines.find((e) => e.id === 'acestep').ready).toBe(false);
   });
 
   it('POST /models rejects an engine that does not support custom models (acestep)', async () => {

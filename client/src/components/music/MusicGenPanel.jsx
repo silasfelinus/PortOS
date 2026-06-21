@@ -32,6 +32,7 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated }) {
   const [installing, setInstalling] = useState(false);
   const [installProgress, setInstallProgress] = useState(null);
   const [runtimeInstallEngine, setRuntimeInstallEngine] = useState(null);
+  const [userSelectedEngine, setUserSelectedEngine] = useState(false);
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
@@ -127,6 +128,7 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated }) {
   if (engines.length === 0) return <div className="text-xs text-gray-500">No music generators available.</div>;
 
   const selectedUserModel = engine?.models?.find((m) => m.id === modelId && m.userAdded);
+  const showRuntimeInstallHint = !!engine && !engine.ready && (!!prompt?.trim() || userSelectedEngine);
 
   return (
     <div className="space-y-2 border border-port-border rounded-lg p-3 bg-port-bg/40">
@@ -139,7 +141,10 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated }) {
           <span className="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">Engine</span>
           <select
             value={engineId}
-            onChange={(e) => setEngineId(e.target.value)}
+            onChange={(e) => {
+              setUserSelectedEngine(true);
+              setEngineId(e.target.value);
+            }}
             className="w-full px-2 py-1.5 bg-port-bg border border-port-border rounded text-white text-sm"
           >
             {engines.map((e) => (
@@ -175,7 +180,7 @@ export default function MusicGenPanel({ track, prompt, lyrics, onGenerated }) {
         />
       </label>
 
-      {engine && !engine.ready ? (
+      {showRuntimeInstallHint ? (
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-lg border border-port-warning/30 bg-port-warning/10 px-3 py-2">
           <p className="text-[11px] text-port-warning">
             {engine.name} is not installed yet. Install the runtime to enable generation.
