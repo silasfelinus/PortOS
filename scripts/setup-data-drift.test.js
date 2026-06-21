@@ -45,7 +45,7 @@ const EXPECTED_STAGE_OLD = {
   'pipeline-tv-script.md': ['3f6fecc25573ed054b47db392250034a'],
 };
 const EXPECTED_STAGE_NEW = {
-  'pipeline-idea-expansion.md': 'c5b2e719e232a281b3829a5348cb29c1',
+  'pipeline-idea-expansion.md': '93e9552c6662811e597a97296f3776a4',
   'pipeline-prose.md': '84523d531eeafa60959c65c553b2563f',
   'pipeline-comic-script.md': 'a4303016c34b65e4b0e641fe71252de3',
   'pipeline-teleplay.md': 'afa4215330bf856429d70d7e2f856605',

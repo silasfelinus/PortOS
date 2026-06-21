@@ -41,7 +41,7 @@ export const ACCEPTED_OLD_MD5 = {
 // migration edits this file, so the drift-catch test (NEW == live sample) stays
 // green. Latest: post-124 (scope-discipline + {{#paddingRisk}}).
 export const NEW_SHIPPED_MD5 = {
-  'pipeline-idea-expansion.md': 'c5b2e719e232a281b3829a5348cb29c1',
+  'pipeline-idea-expansion.md': '93e9552c6662811e597a97296f3776a4',
 };
 
 const { applyMigration, up } = makePromptReplaceMigration({

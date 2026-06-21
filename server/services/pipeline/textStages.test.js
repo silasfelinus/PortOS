@@ -604,8 +604,23 @@ describe('pipeline-idea-expansion template render', () => {
     const out = applyTemplate(ideaTemplate, renderCtx());
     // Next-issue block: its events are out of scope, not material to continue into.
     expect(out).toContain('OUT OF SCOPE');
-    // The always-on seed scope note.
+    // The seed scope note (non-backfill runs).
     expect(out).toContain("This seed defines THIS issue's scope.");
+  });
+
+  it('suppresses the seed-scope note + padding warning on a backfill run (#1513)', () => {
+    // Backfill mode: beats are reverse-engineered from existing source material,
+    // so the seed is not the scope — the source is. The seed-scope language must
+    // NOT fire (it would tell the model to drop events present only in the source).
+    const out = applyTemplate(ideaTemplate, renderCtx({
+      paddingRisk: true,
+      hasSourceMaterials: true,
+      sourceMaterials: [{ label: 'Prose Draft', content: 'PROSE-SOURCE-BODY' }],
+    }));
+    expect(out).not.toContain("This seed defines THIS issue's scope.");
+    expect(out).not.toContain('Scope warning');       // paddingRisk gated under {{^hasSourceMaterials}}
+    expect(out).toContain('reverse-engineering this beat sheet');  // backfill block still renders
+    expect(out).toContain('PROSE-SOURCE-BODY');
   });
 
   it('renders the ticking-clock section when enabled and omits it otherwise', () => {
