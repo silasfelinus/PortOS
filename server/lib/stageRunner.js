@@ -91,6 +91,21 @@ export function resolveModel(provider, modelHint) {
 // large manuscripts can set an explicit `contextWindow` to lift it further.
 export const DEFAULT_LARGE_CONTEXT_WINDOW = 128_000;
 
+// Keep in sync with client/src/utils/providers.js. Only Opus 4.8 is
+// special-cased at 1M; unknown Opus 4 variants intentionally keep the
+// conservative provider fallback until their windows are explicitly known.
+const KNOWN_MODEL_CONTEXT_WINDOWS = Object.freeze([
+  [/claude[-_.:/]?opus[-_.:/]?4[-_.:/]?8/i, 1_000_000],
+  [/claude[-_.:/]?sonnet[-_.:/]?4(?:[-_.:/]|\b)/i, 200_000],
+  [/claude[-_.:/]?haiku[-_.:/]?4(?:[-_.:/]|\b)/i, 200_000],
+]);
+
+export function knownModelContextWindow(model) {
+  if (typeof model !== 'string' || !model.trim()) return null;
+  const found = KNOWN_MODEL_CONTEXT_WINDOWS.find(([pattern]) => pattern.test(model));
+  return found ? found[1] : null;
+}
+
 const LOCAL_ENDPOINT_RE = /^(https?:\/\/)?(localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)(:|\/|$)/i;
 const isLocalEndpoint = (endpoint) =>
   typeof endpoint === 'string' && LOCAL_ENDPOINT_RE.test(endpoint.trim());
@@ -104,12 +119,15 @@ const isLikelyLargeContextProvider = (provider) => {
   return false;
 };
 
-// Planning-time context window for a provider: an explicit `contextWindow`
-// wins, else the Ollama per-request `numCtx`, else a large default for frontier
-// providers, else null (the budgeter applies a conservative floor for unknown
-// local backends). Model-level windows can be layered in later.
-export function effectiveContextWindow(provider) {
+// Planning-time context window for a provider/model: an explicit
+// `contextWindow` wins, else a known model window for the resolved model, else
+// the Ollama per-request `numCtx`, else a large default for frontier providers,
+// else null (the budgeter applies a conservative floor for unknown local
+// backends).
+export function effectiveContextWindow(provider, model) {
   if (Number(provider?.contextWindow) > 0) return Number(provider.contextWindow);
+  const modelWindow = knownModelContextWindow(model);
+  if (modelWindow) return modelWindow;
   if (Number(provider?.numCtx) > 0) return Number(provider.numCtx);
   if (isLikelyLargeContextProvider(provider)) return DEFAULT_LARGE_CONTEXT_WINDOW;
   return null;
@@ -126,8 +144,9 @@ export function effectiveContextWindow(provider) {
 export async function resolveStageContext(stageName, options = {}) {
   const stage = getStage(stageName);
   const provider = await resolveProviderForStage(stage, options);
-  const model = resolveModel(provider, options.modelOverride || stage?.model);
-  return { provider, model, contextWindow: effectiveContextWindow(provider) };
+  const requestedModel = resolveModel(provider, options.modelOverride || stage?.model);
+  const model = resolveEffectiveModel(provider, requestedModel);
+  return { provider, model, contextWindow: effectiveContextWindow(provider, model) };
 }
 
 // Stage config can pin a specific provider via `stage.provider`. If set we

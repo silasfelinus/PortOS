@@ -9,6 +9,7 @@ import {
   isVisionModel,
   visionLocalModelFilter,
   localBackendForProvider,
+  effectiveModelContextWindow,
   mergeModelLists,
   modelOptionLabel,
   isTuiProvider,
@@ -233,6 +234,24 @@ describe('localBackendForProvider', () => {
     expect(localBackendForProvider({ endpoint: 'https://api.openai.com/v1', name: 'OpenAI' })).toBeNull();
     expect(localBackendForProvider({})).toBeNull();
     expect(localBackendForProvider(null)).toBeNull();
+  });
+});
+
+describe('effectiveModelContextWindow', () => {
+  it('matches known model windows before provider defaults', () => {
+    expect(effectiveModelContextWindow({ type: 'tui' }, 'claude-opus-4-8')).toBe(1_000_000);
+    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'https://api.example.test/v1' }, 'claude-sonnet-4-6')).toBe(200_000);
+  });
+
+  it('matches the server planner for local and cloud api defaults', () => {
+    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'http://localhost:8000/v1' }, 'unknown')).toBeNull();
+    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'http://127.0.0.1:8000/v1' }, 'unknown')).toBeNull();
+    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'https://api.example.test/v1' }, 'unknown')).toBe(128_000);
+  });
+
+  it('uses explicit contextWindow and numCtx with server precedence', () => {
+    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'http://localhost:11434/v1', contextWindow: 64_000, numCtx: 32_768 }, 'unknown')).toBe(64_000);
+    expect(effectiveModelContextWindow({ type: 'api', endpoint: 'http://localhost:11434/v1', numCtx: 32_768 }, 'unknown')).toBe(32_768);
   });
 });
 

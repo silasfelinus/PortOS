@@ -14,6 +14,7 @@ vi.mock('../services/runner.js', () => ({
   createRun: vi.fn(async () => ({ runId: 'run-abc12345' })),
   executeApiRun: vi.fn(),
   executeCliRun: vi.fn(),
+  extractBakedModel: vi.fn(() => null),
   hasModelFlag: vi.fn(() => false),
   patchRunMetadata: vi.fn(async () => undefined),
 }));
@@ -21,7 +22,16 @@ vi.mock('../services/runner.js', () => ({
 const providers = await import('../services/providers.js');
 const prompts = await import('../services/promptService.js');
 const runner = await import('../services/runner.js');
-const { runStagedLLM, runInlineLLM, resolveModel, extractJson } = await import('./stageRunner.js');
+const {
+  runStagedLLM,
+  runInlineLLM,
+  resolveModel,
+  extractJson,
+  DEFAULT_LARGE_CONTEXT_WINDOW,
+  effectiveContextWindow,
+  knownModelContextWindow,
+  resolveStageContext,
+} = await import('./stageRunner.js');
 
 const apiProvider = (extra = {}) => ({
   id: 'mock-api', name: 'Mock', type: 'api', enabled: true, defaultModel: 'm-default', ...extra,
@@ -32,6 +42,8 @@ const cliProvider = (extra = {}) => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  runner.extractBakedModel.mockReturnValue(null);
+  runner.hasModelFlag.mockReturnValue(false);
 });
 
 describe('stageRunner — resolveModel', () => {
@@ -66,6 +78,58 @@ describe('stageRunner — resolveModel', () => {
     expect(resolveModel({}, null)).toBeNull();
     expect(resolveModel({ models: [] }, null)).toBeNull();
     expect(resolveModel({}, 'heavy')).toBeNull();
+  });
+});
+
+describe('stageRunner — context windows', () => {
+  it('resolves known model windows from the selected model id', () => {
+    expect(knownModelContextWindow('claude-opus-4-8')).toBe(1_000_000);
+    expect(knownModelContextWindow('claude-sonnet-4-6')).toBe(200_000);
+    expect(knownModelContextWindow('us.anthropic.claude-sonnet-4-5-20250929-v1:0')).toBe(200_000);
+    expect(knownModelContextWindow('unknown-model')).toBeNull();
+  });
+
+  it('keeps an explicit provider contextWindow above model defaults', () => {
+    expect(effectiveContextWindow(
+      { type: 'tui', contextWindow: 64_000 },
+      'claude-opus-4-8'
+    )).toBe(64_000);
+  });
+
+  it('uses model windows before provider numCtx', () => {
+    expect(effectiveContextWindow(
+      { type: 'api', endpoint: 'http://localhost:11434/v1', numCtx: 32_768 },
+      'claude-sonnet-4-6'
+    )).toBe(200_000);
+  });
+
+  it('falls back to numCtx, large-provider default, or null', () => {
+    expect(effectiveContextWindow(
+      { type: 'api', endpoint: 'http://localhost:11434/v1', numCtx: 32_768 },
+      'unknown-local-model'
+    )).toBe(32_768);
+    expect(effectiveContextWindow(
+      { type: 'cli' },
+      'unknown-cli-model'
+    )).toBe(DEFAULT_LARGE_CONTEXT_WINDOW);
+    expect(effectiveContextWindow(
+      { type: 'api', endpoint: 'http://localhost:1234/v1' },
+      'unknown-local-model'
+    )).toBeNull();
+  });
+
+  it('budgets with the effective model when a CLI provider has a baked model flag', async () => {
+    prompts.getStage.mockReturnValue(null);
+    providers.getActiveProvider.mockResolvedValue(cliProvider({
+      args: ['--model', 'claude-opus-4-8'],
+      defaultModel: 'claude-sonnet-4-6',
+    }));
+    runner.hasModelFlag.mockReturnValue(true);
+    runner.extractBakedModel.mockReturnValue('claude-opus-4-8');
+
+    const context = await resolveStageContext('any-stage');
+    expect(context.model).toBe('claude-opus-4-8');
+    expect(context.contextWindow).toBe(1_000_000);
   });
 });
 
