@@ -539,6 +539,31 @@ describe('pipeline text stage generator', () => {
     expect(ctx.worldEntitiesSummary).toContain('Chandelier');
   });
 
+  it('keeps the WHOLE cast in the roster even on a large bible, so a non-featured character never vanishes', async () => {
+    const { series } = await seed();
+    const world = await universeSvc.createUniverse({ name: 'Big Verse' });
+    // 12 characters (> the default roster cap of 8). Only "Mira" is named in the
+    // issue; "Tail" sits at bible-index 12 and is neither named nor a principal —
+    // it must still appear in the compact roster (its only representation now that
+    // the full-record block is scoped).
+    const cast = Array.from({ length: 11 }, (_, i) => ({ name: `Filler${i + 1}`, role: 'walk-on' }));
+    cast.unshift({ name: 'Mira', role: 'surveyor' });
+    cast.push({ name: 'Tail', role: 'background' });
+    await universeSvc.updateUniverse(world.id, { characters: cast });
+    await seriesSvc.updateSeries(series.id, { universeId: world.id });
+    const issue = await issuesSvc.createIssue({
+      seriesId: series.id, title: 'The Hush',
+      stages: { idea: { input: 'a quiet survey', output: 'Mira walks alone.', status: 'ready' } },
+    });
+    await textStages.generateStage(issue.id, 'prose');
+    const ctx = ctxFromCall(llmCalls[0]);
+    // Full records scoped to the named character only…
+    expect(ctx.series.characters.map((c) => c.name)).toEqual(['Mira']);
+    // …but the roster still lists the deep-bible character and shows no truncation.
+    expect(ctx.worldEntitiesSummary).toContain('Tail');
+    expect(ctx.worldEntitiesSummary).not.toMatch(/Characters:.*\(\+\d+ more\)/);
+  });
+
   it('scopeCharactersForIssue: matched names win over principals', () => {
     const cast = [
       { name: 'Mira', role: 'lead' },

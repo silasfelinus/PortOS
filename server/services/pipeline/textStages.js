@@ -264,9 +264,15 @@ function buildStageContext({ series, canon, world, issue, stageId, seedInput, so
   // per-issue text prompts reference named entities without paying the full
   // canon-block token cost — `series.characters` carries full records only for
   // the issue-relevant cast (scoped below), and this compact roster covers the
-  // rest of the cast plus places/objects for continuity anchors.
+  // rest of the cast plus places/objects for continuity anchors. Characters are
+  // rendered UNCAPPED here (`maxPerKind: { characters: Infinity }`): because the
+  // full-record block is now scoped, the roster is the only place a non-featured
+  // character is represented, so it must list the whole cast or a mid-bible
+  // character would vanish from the prompt entirely. Places/objects stay at the
+  // default cap — they were never full-record-injected, so their behavior is
+  // unchanged.
   const worldEntitiesSummary = world
-    ? (renderEntitiesSummary(world) || '(none)')
+    ? (renderEntitiesSummary(world, { maxPerKind: { characters: Infinity } }) || '(none)')
     : NO_LINKED_UNIVERSE_PLACEHOLDER;
   // Scope the heavyweight full-record character block to the cast this issue
   // actually involves (#1511) — full records only for characters named in the

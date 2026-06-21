@@ -178,13 +178,25 @@ const SUMMARY_SECTIONS = [
  *     (prose/teleplay/comic-script) where the budget can't afford the full
  *     dump but the LLM still needs continuity anchors.
  */
+// `maxPerKind` accepts either a single number (applied to every kind) or a
+// per-kind map (`{ characters, places, objects }`) so a caller can lift the cap
+// on one kind while leaving the others at the default — e.g. the per-issue text
+// stages now scope the full-record character block, so they render the roster
+// with the WHOLE character cast (continuity safety net) while keeping
+// places/objects terse. A missing per-kind key falls back to the default cap.
+const capForKind = (maxPerKind, field) => (
+  typeof maxPerKind === 'object' && maxPerKind !== null
+    ? (maxPerKind[field] ?? ENTITIES_SUMMARY_MAX_PER_KIND)
+    : maxPerKind
+);
+
 export function renderEntitiesSummary(world, { maxPerKind = ENTITIES_SUMMARY_MAX_PER_KIND } = {}) {
   if (!world || typeof world !== 'object') return '';
   const lines = [];
   for (const { field, header, formatEntry } of SUMMARY_SECTIONS) {
     const entries = Array.isArray(world[field]) ? world[field] : [];
     if (!entries.length) continue;
-    const shown = entries.slice(0, maxPerKind);
+    const shown = entries.slice(0, capForKind(maxPerKind, field));
     const hidden = entries.length - shown.length;
     const tags = shown.map(formatEntry).filter(Boolean);
     if (!tags.length) continue;
