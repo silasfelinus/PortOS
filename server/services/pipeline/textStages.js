@@ -264,6 +264,15 @@ const firstNameToken = (c) => {
  * if a first-name token happened to match: better to ship the full bible than to
  * let "will" scope the prompt down to "Will Stone" and drop everyone else. The
  * block is therefore never empty.
+ *
+ * Known precision limit: a character whose own name IS a common word (a cast
+ * member literally named "Will"/"May"/"Grace") still matches incidentally via the
+ * full-name matcher, which counts as reliable — so on such a cast an issue can be
+ * scoped to that one character. This is bounded, not lossy: the uncapped roster
+ * (`worldEntitiesSummary`) still carries every un-scoped character, so they keep a
+ * continuity line — they just lose the full record, which is exactly #1511's
+ * intended tradeoff for a non-featured character. A stopword/casing-aware matcher
+ * could tighten this; tracked as a follow-up rather than guessed at here.
  */
 export function scopeCharactersForIssue(allCharacters, scopeText) {
   if (!Array.isArray(allCharacters) || allCharacters.length === 0) return [];
