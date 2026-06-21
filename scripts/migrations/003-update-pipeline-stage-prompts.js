@@ -51,7 +51,7 @@ export const ACCEPTED_OLD_MD5 = {
 };
 
 export const NEW_SHIPPED_MD5 = {
-  'pipeline-idea-expansion.md':  'c50f016639d41cd8244f5ff13429f997', // post-098 (ticking clock + {{.}} fixes)
+  'pipeline-idea-expansion.md': '93e9552c6662811e597a97296f3776a4', // post-124 (scope-discipline + {{#paddingRisk}})
   'pipeline-prose.md':           '84523d531eeafa60959c65c553b2563f', // post-054-fence
   'pipeline-comic-script.md':    'a4303016c34b65e4b0e641fe71252de3', // post-121 (visible text exactness)
   'pipeline-tv-script.md':       '376f779f4687b598f1c92ca4e770fd5a', // retired upstream (no data.reference)
