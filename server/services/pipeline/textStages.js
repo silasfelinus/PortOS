@@ -224,25 +224,30 @@ const firstNameToken = (c) => {
  * Injecting every canon character's full record into every issue's prose and
  * comic-script prompt is the token-bloat this addresses: a 68-character bible is
  * ~52K tokens re-sent on every issue × every stage, when most issues feature a
- * handful of the cast. We keep full records only for characters the issue's own
- * source text names (via the bible matcher PLUS a first-name supplement), and let
- * the always-present compact `worldEntitiesSummary` roster carry the rest of the
- * cast for continuity refs.
+ * handful of the cast. We keep full records for: (a) the series PRINCIPALS (always
+ * — the lead/recurring core is in play every issue), plus (b) any character the
+ * issue's own source text names. The always-present compact `worldEntitiesSummary`
+ * roster carries the rest of the cast for continuity refs.
  *
- * Matching errs toward INCLUSION: the first-name supplement can over-match a
- * shared/common-word first name, but the ceiling is the whole cast (the old
- * behavior), so it never drops a featured character — only ever costs a little
- * extra budget. Under-matching, by contrast, would silently strip an in-issue
- * character's bible from a draft that features them.
+ * Principals are an unconditional FLOOR, not a fallback. That matters because the
+ * first-name supplement errs toward inclusion (a common-word token like "Will" in
+ * "the team will regroup" can spuriously match "Will Stone"): if principals were a
+ * fallback, one such false-positive would make the issue look "fully named" and
+ * SUPPRESS the leads. As a floor, a spurious match only ever ADDS an extra record
+ * (bounded by the whole cast — the old behavior) and can never drop the core cast.
  *
- * Fallback order — never returns an empty block:
- *   1. characters named in the issue's source text (full name/alias OR first name);
- *   2. else the series principals (lead/recurring `role`);
- *   3. else the whole cast (no signal at all — preserve prior behavior).
+ * Returns the whole cast only when there is no signal at all (no principals tagged
+ * AND nothing matched — a thinly-seeded early issue with an untagged cast), so the
+ * block is never empty.
  */
 export function scopeCharactersForIssue(allCharacters, scopeText) {
   if (!Array.isArray(allCharacters) || allCharacters.length === 0) return [];
   const byKey = new Map();
+  // (a) Principals floor — always in play, never suppressible by an incidental match.
+  for (const c of allCharacters) {
+    if (PRINCIPAL_ROLE_RE.test(c?.role || '')) byKey.set(c.id || c.name, c);
+  }
+  // (b) Characters named in the issue's source text — full name/alias, then first name.
   for (const c of matchCharactersInText(scopeText, allCharacters)) byKey.set(c.id || c.name, c);
   if (scopeText) {
     for (const c of allCharacters) {
@@ -250,10 +255,7 @@ export function scopeCharactersForIssue(allCharacters, scopeText) {
       if (!byKey.has(key) && wordInText(firstNameToken(c), scopeText)) byKey.set(key, c);
     }
   }
-  if (byKey.size) return [...byKey.values()];
-  const principals = allCharacters.filter((c) => PRINCIPAL_ROLE_RE.test(c?.role || ''));
-  if (principals.length) return principals;
-  return allCharacters;
+  return byKey.size ? [...byKey.values()] : allCharacters;
 }
 
 /**

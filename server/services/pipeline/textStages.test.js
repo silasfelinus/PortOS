@@ -564,19 +564,31 @@ describe('pipeline text stage generator', () => {
     expect(ctx.worldEntitiesSummary).not.toMatch(/Characters:.*\(\+\d+ more\)/);
   });
 
-  it('scopeCharactersForIssue: matched names win over principals', () => {
+  it('scopeCharactersForIssue: principals are a floor — always present, plus the named cast', () => {
     const cast = [
-      { name: 'Mira', role: 'lead' },
-      { name: 'Jonas', role: 'foreman' },
+      { name: 'Mira', role: 'lead' },   // principal — always in the floor
+      { name: 'Jonas', role: 'extra' }, // non-principal — only in because named
     ];
     expect(textStages.__testing.scopeCharactersForIssue(cast, 'Jonas barks an order').map((c) => c.name))
-      .toEqual(['Jonas']);
+      .toEqual(['Mira', 'Jonas']);
+  });
+
+  it('scopeCharactersForIssue: an incidental name match never SUPPRESSES the principals', () => {
+    // "will" in ordinary text spuriously matches the "Will Stone" first-name token.
+    // The principal (Lena) must still survive — a false-positive can only ADD a
+    // record, never drop the leads.
+    const cast = [
+      { name: 'Will Stone', role: 'side' },
+      { name: 'Lena', role: 'lead protagonist' },
+    ];
+    const got = textStages.__testing.scopeCharactersForIssue(cast, 'the team will regroup').map((c) => c.name);
+    expect(got).toContain('Lena');
   });
 
   it('scopeCharactersForIssue: matches a character referenced by first name only', () => {
     const cast = [
-      { name: 'Mira Reyes', role: 'surveyor' },
-      { name: 'Jonas Vale', role: 'lead' }, // principal — proves the match isn't the fallback
+      { name: 'Mira Reyes', role: 'surveyor' }, // non-principal — only in via first-name match
+      { name: 'Jonas Vale', role: 'deckhand' }, // non-principal, not named — excluded
     ];
     // Draft says "Mira", not the full "Mira Reyes" — the full-name matcher misses,
     // the first-name supplement catches it.
@@ -586,9 +598,9 @@ describe('pipeline text stage generator', () => {
 
   it('scopeCharactersForIssue: matches non-ASCII names (accented) the ASCII \\b matcher would miss', () => {
     const cast = [
-      { name: 'José Marín', role: 'pilot' },
-      { name: 'Élodie', role: 'lead' }, // principal — match must come from text, not fallback
-      { name: 'Mira', role: 'extra' },
+      { name: 'José Marín', role: 'pilot' }, // non-principal — only in via accented first-name match
+      { name: 'Élodie', role: 'navigator' },
+      { name: 'Mira', role: 'extra' },       // not named, not principal — excluded
     ];
     // Source names José (by first name) and Élodie (accented single name).
     const got = textStages.__testing.scopeCharactersForIssue(cast, 'José and Élodie shared a look').map((c) => c.name);
@@ -597,7 +609,7 @@ describe('pipeline text stage generator', () => {
     expect(got).not.toContain('Mira');
   });
 
-  it('scopeCharactersForIssue: falls back to principals when no name is matched', () => {
+  it('scopeCharactersForIssue: with nothing named, the scope is exactly the principals', () => {
     const cast = [
       { name: 'Mira', role: 'main protagonist' },
       { name: 'Jonas', role: 'recurring foreman' },
@@ -629,11 +641,12 @@ describe('pipeline text stage generator', () => {
   it('scopes idea-stage characters from the UNSAVED seed text, not just saved fields', async () => {
     const { series } = await seed();
     const world = await universeSvc.createUniverse({ name: 'Seed Verse' });
-    // Lead exists so the principal fallback is non-empty — proving the match comes
-    // from the seed text, not the fallback. The issue carries no saved idea text.
+    // Both are non-principal (no lead/recurring role) so the principals floor is
+    // empty — the only character in scope must come from the seed text match. The
+    // issue carries no saved idea text.
     await universeSvc.updateUniverse(world.id, {
       characters: [
-        { name: 'Lead', role: 'protagonist' },
+        { name: 'Bram', role: 'clerk' },
         { name: 'Mira', role: 'surveyor' },
       ],
     });
