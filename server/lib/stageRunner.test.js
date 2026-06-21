@@ -28,8 +28,11 @@ const {
   resolveModel,
   extractJson,
   DEFAULT_LARGE_CONTEXT_WINDOW,
+  CODEX_CONTEXT_WINDOW,
+  GEMINI_CONTEXT_WINDOW,
   effectiveContextWindow,
   knownModelContextWindow,
+  knownProviderContextWindow,
   resolveStageContext,
 } = await import('./stageRunner.js');
 
@@ -83,10 +86,20 @@ describe('stageRunner — resolveModel', () => {
 
 describe('stageRunner — context windows', () => {
   it('resolves known model windows from the selected model id', () => {
+    expect(knownModelContextWindow('gpt-5.5')).toBe(CODEX_CONTEXT_WINDOW);
+    expect(knownModelContextWindow('gpt-5.4')).toBe(CODEX_CONTEXT_WINDOW);
+    expect(knownModelContextWindow('gpt-5.4-mini')).toBe(400_000);
+    expect(knownModelContextWindow('gpt-5.4-nano')).toBeNull();
     expect(knownModelContextWindow('claude-opus-4-8')).toBe(1_000_000);
-    expect(knownModelContextWindow('claude-sonnet-4-6')).toBe(200_000);
+    expect(knownModelContextWindow('claude-sonnet-4-6')).toBe(1_000_000);
     expect(knownModelContextWindow('us.anthropic.claude-sonnet-4-5-20250929-v1:0')).toBe(200_000);
+    expect(knownModelContextWindow('gemini-2.5-pro')).toBe(GEMINI_CONTEXT_WINDOW);
     expect(knownModelContextWindow('unknown-model')).toBeNull();
+  });
+
+  it('resolves configured-default provider windows by provider identity', () => {
+    expect(knownProviderContextWindow({ id: 'codex-tui', type: 'tui', command: 'codex' })).toBe(CODEX_CONTEXT_WINDOW);
+    expect(knownProviderContextWindow({ id: 'antigravity-cli', type: 'cli', command: 'agy' })).toBe(GEMINI_CONTEXT_WINDOW);
   });
 
   it('keeps an explicit provider contextWindow above model defaults', () => {
@@ -96,11 +109,15 @@ describe('stageRunner — context windows', () => {
     )).toBe(64_000);
   });
 
-  it('uses model windows before provider numCtx', () => {
+  it('uses model and provider windows before provider numCtx', () => {
     expect(effectiveContextWindow(
       { type: 'api', endpoint: 'http://localhost:11434/v1', numCtx: 32_768 },
       'claude-sonnet-4-6'
-    )).toBe(200_000);
+    )).toBe(1_000_000);
+    expect(effectiveContextWindow(
+      { id: 'codex', type: 'cli', command: 'codex', numCtx: 32_768 },
+      'codex-configured-default'
+    )).toBe(CODEX_CONTEXT_WINDOW);
   });
 
   it('falls back to numCtx, large-provider default, or null', () => {
