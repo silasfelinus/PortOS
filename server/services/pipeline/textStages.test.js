@@ -654,6 +654,53 @@ describe('pipeline text stage generator', () => {
       .toEqual(['Will Stone', 'Bram']);
   });
 
+  it('scopeCharactersForIssue: a single-word common-word name does NOT scope on an incidental lowercase hit (#1529)', () => {
+    // A cast member literally named "Will" + an untagged cast. The old case-insensitive
+    // full-name matcher treated lowercase "will" in "the team will regroup" as a reliable
+    // match and scoped the prompt down to just "Will". The proper-noun guard rejects the
+    // lowercase hit → no reliable signal → whole cast survives.
+    const cast = [
+      { name: 'Will', role: 'side' },
+      { name: 'Bram', role: 'clerk' },
+    ];
+    expect(textStages.__testing.scopeCharactersForIssue(cast, 'the team will regroup').map((c) => c.name))
+      .toEqual(['Will', 'Bram']);
+  });
+
+  it('scopeCharactersForIssue: an incidental lowercase common word never pulls in the literally-named character (#1529)', () => {
+    // Principal floor gives a reliable signal; the incidental "will" must NOT add the
+    // non-principal character named "Will" (lowercase ≠ proper-noun).
+    const cast = [
+      { name: 'Lena', role: 'lead protagonist' },
+      { name: 'Will', role: 'extra' },
+    ];
+    expect(textStages.__testing.scopeCharactersForIssue(cast, 'the team will regroup').map((c) => c.name))
+      .toEqual(['Lena']);
+  });
+
+  it('scopeCharactersForIssue: a capitalized single-word name IS a reliable proper-noun match (#1529)', () => {
+    const cast = [
+      { name: 'Will', role: 'side' },
+      { name: 'Bram', role: 'clerk' },
+    ];
+    // "Will entered" — proper-noun usage scopes to Will; ALL-CAPS beat-sheet form too.
+    expect(textStages.__testing.scopeCharactersForIssue(cast, 'Will entered the room').map((c) => c.name))
+      .toEqual(['Will']);
+    expect(textStages.__testing.scopeCharactersForIssue(cast, 'WILL slams the door').map((c) => c.name))
+      .toEqual(['Will']);
+  });
+
+  it('scopeCharactersForIssue: aliases stay case-insensitive — only single-word NAMES get the proper-noun guard (#1529)', () => {
+    const cast = [
+      { name: 'Lena', role: 'lead' },
+      { name: 'Grace', role: 'side', aliases: ['Gigi'] },
+    ];
+    // Lowercase alias "gigi" still matches (aliases keep the old behavior); Grace is in.
+    const got = textStages.__testing.scopeCharactersForIssue(cast, 'gigi waved from the dock').map((c) => c.name);
+    expect(got).toContain('Grace');
+    expect(got).toContain('Lena');
+  });
+
   it('scopeCharactersForIssue: matches non-ASCII names (accented) the ASCII \\b matcher would miss', () => {
     const cast = [
       { name: 'José Marín', role: 'pilot' }, // non-principal — only in via accented first-name match

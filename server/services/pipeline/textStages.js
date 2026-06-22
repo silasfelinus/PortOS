@@ -25,7 +25,6 @@ import { computeIssueTargets, assessSynopsisScope } from '../../lib/issueLength.
 import { renderEntitiesSummary } from '../../lib/universePromptRenderers.js';
 import { composeStyleNotes } from '../../lib/styleGuide.js';
 import { renderTickingClock } from '../../lib/storyArc.js';
-import { matchCharactersInText } from '../../lib/scenePrompt.js';
 
 const STAGE_TO_TEMPLATE = Object.freeze({
   idea: 'pipeline-idea-expansion',
@@ -240,6 +239,48 @@ const firstNameToken = (c) => {
   return parts.length > 1 ? parts[0] : '';
 };
 
+// Proper-noun variant of `wordInText` (#1529): the match counts only when an
+// occurrence appears with an UPPERCASE first letter — so "Will entered" / "WILL"
+// match, but mid-sentence "the team will regroup" does not. We scan all
+// word-boundary occurrences case-insensitively (the `i` flag), then accept only if
+// at least one has a capitalized initial. A sentence-initial capital ("Will the
+// team…") still matches — that's the safe over-inclusion direction.
+const properNounInText = (needle, haystack) => {
+  if (!needle) return false;
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, 'giu');
+  for (const m of String(haystack || '').matchAll(re)) {
+    const ch = m[0][0];
+    // An uppercase cased letter: `ch === toUpperCase` AND `ch !== toLowerCase`
+    // (rules out digits/symbols, whose upper- and lower-case forms are equal).
+    if (ch && ch === ch.toUpperCase() && ch !== ch.toLowerCase()) return true;
+  }
+  return false;
+};
+
+// Reliable "this issue names them" signal with a proper-noun guard for single-word
+// names (#1529). `matchCharactersInText` is case-insensitive — correct for visual
+// stages and shared with `canonReadiness`, so we refine LOCALLY rather than widen it.
+// A character whose FULL NAME is a single common English word ("Will"/"May"/"Grace")
+// otherwise matches incidentally on ordinary prose ("the team will regroup"), and one
+// incidental hit can scope a prompt down to that lone character. So here a single-word
+// NAME must appear in its CAPITALIZED form to count; multi-word names and ALL aliases
+// keep the case-insensitive word-boundary match (a multi-word phrase or a nickname is
+// essentially never an incidental common-word collision).
+const matchReliableNames = (scopeText, allCharacters) => {
+  if (!scopeText || !Array.isArray(allCharacters)) return [];
+  const matched = [];
+  for (const c of allCharacters) {
+    const name = String(c?.name || '').trim();
+    const nameHit = name && !/\s/.test(name)
+      ? properNounInText(name, scopeText)   // single-word name → proper-noun guard
+      : wordInText(name, scopeText);        // multi-word name → as-is
+    const aliasHit = (c?.aliases || []).some((a) => wordInText(a, scopeText));
+    if (nameHit || aliasHit) matched.push(c);
+  }
+  return matched;
+};
+
 /**
  * Scope the full-record character bible to the cast relevant to THIS issue (#1511).
  *
@@ -265,14 +306,17 @@ const firstNameToken = (c) => {
  * let "will" scope the prompt down to "Will Stone" and drop everyone else. The
  * block is therefore never empty.
  *
- * Known precision limit: a character whose own name IS a common word (a cast
- * member literally named "Will"/"May"/"Grace") still matches incidentally via the
- * full-name matcher, which counts as reliable — so on such a cast an issue can be
- * scoped to that one character. This is bounded, not lossy: the uncapped roster
- * (`worldEntitiesSummary`) still carries every un-scoped character, so they keep a
- * continuity line — they just lose the full record, which is exactly #1511's
- * intended tradeoff for a non-featured character. A stopword/casing-aware matcher
- * could tighten this; tracked as a follow-up rather than guessed at here.
+ * Precision guard (#1529): a character whose own name IS a common word (a cast
+ * member literally named "Will"/"May"/"Grace") would otherwise match incidentally
+ * via the case-insensitive full-name matcher and count as reliable — scoping the
+ * issue down to that one character. The reliable-signal matcher (`matchReliableNames`)
+ * therefore requires a SINGLE-WORD name to appear in its capitalized form, so "the
+ * team will regroup" no longer counts as naming a character called "Will", while
+ * "Will entered" still does. Multi-word names and aliases keep the case-insensitive
+ * match. Residual: a sentence-initial capital ("Will the team…") still matches, but
+ * that's the safe over-inclusion direction (the character keeps its full record) —
+ * and even a true miss is non-lossy, since the uncapped `worldEntitiesSummary` roster
+ * still carries every un-scoped character's one-line continuity entry.
  */
 export function scopeCharactersForIssue(allCharacters, scopeText) {
   if (!Array.isArray(allCharacters) || allCharacters.length === 0) return [];
@@ -281,8 +325,10 @@ export function scopeCharactersForIssue(allCharacters, scopeText) {
   for (const c of allCharacters) {
     if (PRINCIPAL_ROLE_RE.test(c?.role || '')) byKey.set(c.id || c.name, c);
   }
-  // (b) Full-name / alias matches — a reliable "this issue names them" signal.
-  for (const c of matchCharactersInText(scopeText, allCharacters)) byKey.set(c.id || c.name, c);
+  // (b) Full-name / alias matches — a reliable "this issue names them" signal,
+  // with a proper-noun guard so a single-word common-name ("Will"/"Grace") doesn't
+  // scope on an incidental lowercase hit (#1529).
+  for (const c of matchReliableNames(scopeText, allCharacters)) byKey.set(c.id || c.name, c);
   // Principals + full-name matches are the trustworthy signal. A first-name-only
   // match is NOT, on its own, enough to suppress the whole-cast fallback below.
   const hasReliableSignal = byKey.size > 0;
