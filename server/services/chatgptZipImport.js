@@ -183,6 +183,12 @@ export async function extractChatgptZip(zipPath, { assetDir = PATHS.brainImportA
   // file written so a mid-stream failure can clean partial writes off disk.
   const pendingAssets = new Map();
   const tempPaths = new Set();
+  // Every per-member task (asset writes, JSON collects). Hoisted out of the
+  // Promise executor so the rejection handler below can wait for in-flight asset
+  // writes to fully settle (their write streams close) before unlinking temp
+  // files — otherwise a write that finishes AFTER the unlink re-creates the
+  // `.part` file and orphans it (a filesystem-timing race under heavy I/O).
+  const inFlight = [];
 
   await new Promise((resolve, reject) => {
     let settled = false;
@@ -200,7 +206,6 @@ export async function extractChatgptZip(zipPath, { assetDir = PATHS.brainImportA
       fn(arg);
     };
     const onErr = settle(reject);
-    const inFlight = [];
 
     src
       .on('error', onErr)
@@ -238,6 +243,18 @@ export async function extractChatgptZip(zipPath, { assetDir = PATHS.brainImportA
     // Streaming failed (size cap, parser error, …) — assets already streamed to
     // temp files would otherwise be orphaned on disk. Remove them before
     // re-throwing so a bad upload can't accumulate `.part` files.
+    //
+    // Wait for every in-flight member task to settle FIRST. `settle(reject)`
+    // rejects this Promise immediately and destroys the source/parser, but a
+    // `streamAssetToFile` whose write stream hasn't finished is still mid-flight:
+    // `createWriteStream` opens its `.part` file asynchronously, so unlinking now
+    // can race the open — the unlink no-ops (file not created yet), then the open
+    // lands and orphans the `.part` (the intermittent full-suite failure). The
+    // parser's teardown ends the in-flight entry stream (see zipStream.js
+    // `destroy`), so each task settles deterministically — once `allSettled`
+    // resolves, every write handle is closed and the file's on-disk existence is
+    // settled, making the unlink below final rather than racing a pending open.
+    await Promise.allSettled(inFlight);
     await cleanupTempFiles(tempPaths);
     throw err;
   });
