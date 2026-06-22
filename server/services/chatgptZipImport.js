@@ -244,13 +244,16 @@ export async function extractChatgptZip(zipPath, { assetDir = PATHS.brainImportA
     // temp files would otherwise be orphaned on disk. Remove them before
     // re-throwing so a bad upload can't accumulate `.part` files.
     //
-    // Wait for every in-flight asset write to settle FIRST. `settle(reject)`
-    // rejects this Promise immediately and tears down the source/parser, but a
-    // `streamAssetToFile` write already in progress keeps flushing to its
-    // `.part` file as its stream is destroyed. Unlinking before those streams
-    // close races them: the write can re-create the `.part` file after the
-    // unlink and leave it orphaned (the intermittent full-suite failure). Once
-    // settled, every write handle is closed, so the unlink is final.
+    // Wait for every in-flight member task to settle FIRST. `settle(reject)`
+    // rejects this Promise immediately and destroys the source/parser, but a
+    // `streamAssetToFile` whose write stream hasn't finished is still mid-flight:
+    // `createWriteStream` opens its `.part` file asynchronously, so unlinking now
+    // can race the open — the unlink no-ops (file not created yet), then the open
+    // lands and orphans the `.part` (the intermittent full-suite failure). The
+    // parser's teardown ends the in-flight entry stream (see zipStream.js
+    // `destroy`), so each task settles deterministically — once `allSettled`
+    // resolves, every write handle is closed and the file's on-disk existence is
+    // settled, making the unlink below final rather than racing a pending open.
     await Promise.allSettled(inFlight);
     await cleanupTempFiles(tempPaths);
     throw err;

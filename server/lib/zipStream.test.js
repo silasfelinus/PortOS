@@ -141,6 +141,39 @@ describe('parseZip', () => {
     const entries = await collectEntries(Buffer.concat(pieces));
     expect(entries[0].data.toString()).toBe(data.toString());
   });
+
+  it('ends the in-flight entry stream when the parser is destroyed mid-entry (no hang)', async () => {
+    // A consumer that aborts ingestion (parser.destroy()) while an entry is
+    // still streaming must not strand that entry's stream: anything piping it
+    // and awaiting completion would otherwise hang forever. Feed a stored entry
+    // whose declared size (1000) exceeds the bytes we actually supply (100), so
+    // the entry is emitted and piped but left mid-stream when we abort.
+    const payload = Buffer.alloc(1000, 0x41);
+    const fullEntry = buildEntry('big.dat', payload);
+    const headerLen = fullEntry.length - payload.length;
+    const partial = fullEntry.subarray(0, headerLen + 100);
+
+    const parser = parseZip();
+    const sinkFinished = new Promise((resolve) => {
+      parser.on('entry', (entry) => {
+        const chunks = [];
+        const sink = new Writable({ write(c, _e, cb) { chunks.push(c); cb(); } });
+        // Resolves only if the entry stream is allowed to finish — i.e. the
+        // parser's teardown ended it rather than abandoning it mid-flight.
+        sink.on('finish', () => resolve(Buffer.concat(chunks)));
+        entry.pipe(sink);
+      });
+    });
+
+    // Await the write callback so processBuffer has emitted+piped the entry and
+    // buffered its 100 bytes before we abort.
+    await new Promise((res) => parser.write(partial, res));
+    parser.destroy();
+
+    // Without the destroy→end teardown this never resolves and the test times out.
+    const data = await sinkFinished;
+    expect(data.length).toBe(100);
+  });
 });
 
 describe('extractZipEntryToBuffer', () => {

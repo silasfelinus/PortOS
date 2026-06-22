@@ -41,6 +41,19 @@ export function parseZip() {
     final(cb) {
       if (!closed) { closed = true; emitter.emit('close'); }
       cb();
+    },
+    destroy(err, cb) {
+      // On abort (a consumer calls `parser.destroy()` to stop ingestion mid-ZIP),
+      // the entry currently streaming would otherwise be stranded: its
+      // `passThrough` is never fed again and never `.end()`-ed, so anything
+      // piping it (e.g. a write-to-disk or collect consumer awaiting the entry's
+      // completion) hangs forever. End it so EOF flows downstream and those
+      // consumers settle. `end()` (not `destroy(err)`) avoids an unhandled error
+      // on the passThrough, since `.pipe()` doesn't forward errors.
+      if (currentEntry?.passThrough && !currentEntry.passThrough.writableEnded) {
+        currentEntry.passThrough.end();
+      }
+      cb(err);
     }
   });
 
