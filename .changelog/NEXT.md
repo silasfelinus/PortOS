@@ -7,6 +7,7 @@
 ## Per-issue story generation
 
 - **[issue-1511] Per-issue prose and comic-script generation now sees only the characters that issue involves.** Generating an issue used to load the entire series character bible into every prose and comic-script prompt — on a large-cast series that's tens of thousands of tokens of character detail (including one-off bit players from unrelated issues) re-sent on every issue and every stage. Generation now sends full character records only for the cast named in that issue's beats, synopsis, and source material, with a compact one-line roster of everyone else kept for continuity. This sharply cuts token cost on big-cast series and, on context-bounded providers, leaves more room for the actual draft. The series' lead/recurring characters stay in context for every issue, so the core cast is never dropped — generation just stops carrying the full record of every bit player from unrelated issues.
+- **[issue-1529] A character whose name is a common word (Will, May, Grace) is no longer pulled into a prompt by an incidental word.** When scoping an issue's character bible, an ordinary phrase like "the team **will** regroup" could be mistaken for naming a cast member called "Will" — incidentally scoping the prompt down to that one character. A single-word character name now only counts as named when it appears capitalized as a proper noun ("Will entered"), so common-word names match the same way every other name does. Multi-word names and nicknames are unaffected.
 
 ## Fixed
 
