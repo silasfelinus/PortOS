@@ -134,8 +134,10 @@ export async function resolveBeatContinuity(seriesId, options = {}) {
  * Apply the resolver's per-issue beat rewrites to the canonical issue records.
  * Each correction targets one issue by its series-global episode number (with
  * `seasonNumber` as a disambiguating cross-check, mirroring
- * `applyEpisodeResolutions`). Writes the new beats to `idea.output` while
- * preserving the existing `idea.input` synopsis.
+ * `applyEpisodeResolutions`). Writes the new beats to BOTH `idea.input` and
+ * `idea.output` — see the inline note: downstream generation reads
+ * `stageContentOf(idea)` (input-preferred), so writing only `idea.output` would
+ * leave the manuscript adapting the stale synopsis.
  *
  * After rewriting an issue's beats, the now-stale downstream text stages
  * (prose/comicScript/teleplay) are cleared so the conductor regenerates them from
@@ -176,7 +178,18 @@ export async function applyBeatResolutions(seriesId, series, episodes) {
       applied.push({ issueId: issue.id, number: issue.number, seasonNumber: edit.seasonNumber, skipped: 'no-beats' });
       continue;
     }
+    // Write the corrected beats to BOTH idea.input AND idea.output. This is
+    // load-bearing, not redundant: downstream text generation adapts an issue
+    // from `stageContentOf(idea)`, which prefers `idea.input` (the synopsis seed
+    // episodeSeedPass writes) over `idea.output` (the beats) — so a correction
+    // written ONLY to idea.output is invisible to prose/script generation, which
+    // would keep adapting the stale synopsis and the fix would never reach the
+    // manuscript. Writing it to idea.input makes the corrected beats the source
+    // the downstream stages actually read; writing it to idea.output keeps the
+    // beat corpus (re-verify, the human beat view, renderVolumeIssue) consistent
+    // with the fix so the convergence loop converges.
     await updateStageWithLatest(issue.id, 'idea', () => ({
+      input: edit.beats,
       output: edit.beats,
       status: 'ready',
       errorMessage: '',

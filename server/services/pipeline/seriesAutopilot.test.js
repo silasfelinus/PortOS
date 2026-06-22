@@ -121,6 +121,7 @@ const seasonsSvc = await import('./seasons.js');
 const issuesSvc = await import('./issues.js');
 const autopilot = await import('./seriesAutopilot.js');
 const arcPlanner = await import('./arcPlanner.js');
+const { stageContentOf } = await import('./textStages.js');
 const { resolveNextStep, requiredScriptStages, scriptStructurallyReady, visualReady, wantsComic } = autopilot;
 
 // A comic script string that parseComicScript turns into >=1 page/panel.
@@ -902,14 +903,19 @@ describe('beat-continuity resolve (#1510)', () => {
     return { series: fresh, issueId: issue.id };
   }
 
-  it('rewrites beats in place and preserves the synopsis input', async () => {
+  it('writes the corrected beats to BOTH idea.input and idea.output so prose adapts from the fix', async () => {
     const { series, issueId } = await seedIssueWithBeats();
     const applied = await applyBeatResolutions(series.id, series, [{ seasonNumber: 1, episodeNumber: 1, beats: 'corrected beats' }]);
     expect(applied).toEqual([expect.objectContaining({ issueId, number: 1, corrected: true })]);
     const issue = await issuesSvc.getIssue(issueId);
     expect(issue.stages.idea.output).toBe('corrected beats');
-    expect(issue.stages.idea.input).toBe('synopsis');  // synopsis preserved
+    // idea.input must carry the fix too — downstream text generation reads
+    // stageContentOf(idea), which prefers idea.input, so a fix only in
+    // idea.output would never reach the regenerated prose/scripts.
+    expect(issue.stages.idea.input).toBe('corrected beats');
     expect(issue.stages.idea.status).toBe('ready');
+    // The real prose source-of-truth resolver must now surface the correction.
+    expect(stageContentOf(issue.stages.idea)).toBe('corrected beats');
   });
 
   it('clears stale downstream prose/scripts AND comicPages art so they regenerate from the corrected beats', async () => {
