@@ -27,7 +27,7 @@
 import { runStagedLLM } from '../../../lib/stageRunner.js';
 import { ServerError } from '../../../lib/errorHandler.js';
 import { getSeries } from '../series.js';
-import { listIssues, updateStageWithLatest } from '../issues.js';
+import { listIssues, updateStageWithLatest, TEXT_STAGE_IDS } from '../issues.js';
 import {
   buildBeatContinuityContext,
   buildBeatContinuityResolveContext,
@@ -35,6 +35,11 @@ import {
   shapeFindings,
   shapeBeatResolutions,
 } from './context.js';
+
+// Text stages generated FROM the beats — stale once the beats are rewritten, so
+// a beat correction must clear them for regeneration. `idea` (which holds the
+// beats) is excluded; the rest of the text chain (prose → scripts) is downstream.
+const DOWNSTREAM_TEXT_STAGES = TEXT_STAGE_IDS.filter((s) => s !== 'idea');
 
 // Cross-issue BEAT continuity pass over the whole series. Read-only — returns
 // `{ issues }` shaped like verifyArc. Issues without beats are reviewed at
@@ -119,12 +124,16 @@ export async function resolveBeatContinuity(seriesId, options = {}) {
  * `applyEpisodeResolutions`). Writes the new beats to `idea.output` while
  * preserving the existing `idea.input` synopsis.
  *
+ * After rewriting an issue's beats, the now-stale downstream text stages
+ * (prose/comicScript/teleplay) are cleared so the conductor regenerates them from
+ * the corrected beats — see the inline note below.
+ *
  * Three guards: a locked `idea` stage is left untouched (the user froze it); an
  * issue that has NO beats yet is skipped (the corpus is beat-level — fabricating
  * beats for a still-synopsis-only issue would be out of band, and a later
  * beat-sheet run would overwrite them anyway); an unmatched correction is
  * dropped with a log so a number-scheme mismatch is diagnosable. Never throws.
- * Returns `[{ issueId, number, seasonNumber, corrected, skipped }]`.
+ * Returns `[{ issueId, number, seasonNumber, corrected, clearedStages, skipped }]`.
  */
 export async function applyBeatResolutions(seriesId, series, episodes) {
   if (!Array.isArray(episodes) || episodes.length === 0) return [];
@@ -161,7 +170,26 @@ export async function applyBeatResolutions(seriesId, series, episodes) {
     })).catch((err) => {
       console.log(`⚠️ beat-continuity: episode ${edit.episodeNumber} beat edit failed: ${err.message}`);
     });
-    applied.push({ issueId: issue.id, number: issue.number, seasonNumber: edit.seasonNumber, corrected: true });
+    // The beats just changed, so any already-generated prose/scripts derived from
+    // them are stale. Clear the unlocked downstream text stages so the conductor's
+    // textStages step regenerates them from the corrected beats — otherwise
+    // `textReady` sees the old scripts as ready and the run finishes with scripts
+    // that contradict the fixed beats. In the normal forward flow these stages are
+    // still empty (beat continuity runs before textStages), so this only bites on a
+    // re-run / resume over already-drafted issues. Mirrors how applyEpisodeResolutions
+    // clears beats when it rewrites a synopsis. A locked downstream stage is the
+    // user's frozen work — leave it untouched.
+    const clearedStages = [];
+    for (const stageId of DOWNSTREAM_TEXT_STAGES) {
+      const st = issue.stages?.[stageId];
+      if (!st || st.locked === true) continue;
+      if (!(st.output && st.output.trim())) continue; // nothing generated → nothing to clear
+      await updateStageWithLatest(issue.id, stageId, () => ({ status: 'empty', output: '', errorMessage: '' })).catch((err) => {
+        console.log(`⚠️ beat-continuity: clear ${stageId} for episode ${edit.episodeNumber} failed: ${err.message}`);
+      });
+      clearedStages.push(stageId);
+    }
+    applied.push({ issueId: issue.id, number: issue.number, seasonNumber: edit.seasonNumber, corrected: true, clearedStages });
   }
   if (applied.length) {
     const fixed = applied.filter((a) => a.corrected).length;

@@ -912,6 +912,29 @@ describe('beat-continuity resolve (#1510)', () => {
     expect(issue.stages.idea.status).toBe('ready');
   });
 
+  it('clears stale downstream prose/scripts so they regenerate from the corrected beats', async () => {
+    const { series, issueId } = await seedIssueWithBeats();
+    // Pre-existing downstream drafts (the re-run / resume case): prose + comicScript
+    // were generated from the OLD beats.
+    await issuesSvc.updateStage(issueId, 'prose', { status: 'ready', output: 'old prose' });
+    await issuesSvc.updateStage(issueId, 'comicScript', { status: 'ready', output: 'old script' });
+    const applied = await applyBeatResolutions(series.id, series, [{ seasonNumber: 1, episodeNumber: 1, beats: 'corrected beats' }]);
+    expect(applied[0].clearedStages).toEqual(expect.arrayContaining(['prose', 'comicScript']));
+    const issue = await issuesSvc.getIssue(issueId);
+    expect(issue.stages.idea.output).toBe('corrected beats');     // new beats applied
+    expect(issuesSvc.isStageReady(issue.stages.prose)).toBe(false);       // stale → cleared
+    expect(issuesSvc.isStageReady(issue.stages.comicScript)).toBe(false); // stale → cleared
+  });
+
+  it('does NOT clear a locked downstream stage when rewriting beats', async () => {
+    const { series, issueId } = await seedIssueWithBeats();
+    await issuesSvc.updateStage(issueId, 'comicScript', { status: 'ready', output: 'frozen script', locked: true });
+    const applied = await applyBeatResolutions(series.id, series, [{ seasonNumber: 1, episodeNumber: 1, beats: 'corrected beats' }]);
+    expect(applied[0].clearedStages).not.toContain('comicScript');
+    const issue = await issuesSvc.getIssue(issueId);
+    expect(issue.stages.comicScript.output).toBe('frozen script');  // untouched
+  });
+
   it('skips a locked idea stage', async () => {
     const { series, issueId } = await seedIssueWithBeats({ locked: true });
     const applied = await applyBeatResolutions(series.id, series, [{ seasonNumber: 1, episodeNumber: 1, beats: 'corrected' }]);
