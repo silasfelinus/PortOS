@@ -3,68 +3,7 @@ import { DndContext, DragOverlay, useDraggable, useDroppable, PointerSensor, use
 import { GripVertical, Play } from 'lucide-react';
 import toast from './ui/Toast';
 import * as api from '../services/api';
-
-// Built-in fallback board: the three Jira status categories. Used when no
-// board columns could be resolved (no boardId / project, or the fetch failed).
-// Empty `statuses` means "match by statusCategory" — see bucketTickets().
-const FALLBACK_COLUMNS = [
-  { name: 'To Do', category: 'To Do', statuses: [] },
-  { name: 'In Progress', category: 'In Progress', statuses: [] },
-  { name: 'Done', category: 'Done', statuses: [] }
-];
-
-const CATEGORY_CONFIG = {
-  'To Do': { bg: 'bg-gray-500/10', border: 'border-gray-500/30', dot: 'bg-gray-500', dropBorder: 'border-gray-400' },
-  'In Progress': { bg: 'bg-port-accent/10', border: 'border-port-accent/30', dot: 'bg-port-accent', dropBorder: 'border-port-accent' },
-  'Done': { bg: 'bg-port-success/10', border: 'border-port-success/30', dot: 'bg-port-success', dropBorder: 'border-port-success' }
-};
-
-// Name-based accents so common lifecycle stages read at a glance regardless of
-// which statusCategory Jira buckets them under (Blocked/In Review are both
-// "In Progress" to Jira). First match wins; otherwise fall back to category.
-const NAME_CONFIG = [
-  { test: /block|impede/i, config: { bg: 'bg-port-error/10', border: 'border-port-error/30', dot: 'bg-port-error', dropBorder: 'border-port-error' } },
-  { test: /review|qa|verify|test/i, config: { bg: 'bg-purple-500/10', border: 'border-purple-500/30', dot: 'bg-purple-500', dropBorder: 'border-purple-400' } }
-];
-
-function columnConfig(column) {
-  const named = NAME_CONFIG.find(n => n.test.test(column.name));
-  if (named) return named.config;
-  return CATEGORY_CONFIG[column.category] || CATEGORY_CONFIG['In Progress'];
-}
-
-// Match a ticket to a column: by explicit status name when the column lists
-// statuses, otherwise by statusCategory (the fallback three-category board).
-function ticketInColumn(ticket, column) {
-  return column.statuses.length
-    ? column.statuses.includes(ticket.status)
-    : ticket.statusCategory === column.category;
-}
-
-// Bucket tickets into the resolved columns. Any ticket whose status maps to no
-// column (workflow drift, board misconfiguration) gets its own appended column
-// so nothing silently disappears from the board. Each column carries its
-// precomputed color `config` so render doesn't re-test the NAME_CONFIG regexes.
-function bucketTickets(columns, tickets) {
-  const result = columns.map(c => ({ ...c, config: columnConfig(c), tickets: [] }));
-  const extra = new Map();
-  for (const ticket of tickets) {
-    const col = result.find(c => ticketInColumn(ticket, c));
-    if (col) {
-      col.tickets.push(ticket);
-      continue;
-    }
-    const name = ticket.status || 'Unknown';
-    let orphan = extra.get(name);
-    if (!orphan) {
-      orphan = { name, category: ticket.statusCategory || 'In Progress', statuses: [ticket.status].filter(Boolean), tickets: [] };
-      orphan.config = columnConfig(orphan);
-      extra.set(name, orphan);
-    }
-    orphan.tickets.push(ticket);
-  }
-  return [...result, ...extra.values()];
-}
+import { FALLBACK_COLUMNS, ticketInColumn, bucketTickets } from '../lib/kanbanColumns.js';
 
 function TicketCard({ ticket, isDragOverlay }) {
   return (
@@ -157,7 +96,7 @@ function DraggableTicket({ ticket, disabled, appId, canQueue }) {
 }
 
 function DroppableColumn({ column, isOver, disabled, appId }) {
-  const { setNodeRef } = useDroppable({ id: column.name, disabled });
+  const { setNodeRef } = useDroppable({ id: column.id, disabled });
   const config = column.config;
   const totalPoints = column.tickets.reduce((sum, t) => sum + (Number(t.storyPoints) || 0), 0);
   // The play button (queue a CoS agent for a ticket) only makes sense for
@@ -229,7 +168,7 @@ export default function KanbanBoard({ tickets: initialTickets = [], instanceId, 
 
   const handleDragOver = useCallback((event) => {
     const { over } = event;
-    setOverColumn(over?.id && columns.some(c => c.name === over.id) ? over.id : null);
+    setOverColumn(over?.id && columns.some(c => c.id === over.id) ? over.id : null);
   }, [columns]);
 
   const handleDragEnd = useCallback(async (event) => {
@@ -239,7 +178,7 @@ export default function KanbanBoard({ tickets: initialTickets = [], instanceId, 
 
     if (!over) return;
 
-    const targetColumn = columns.find(c => c.name === over.id);
+    const targetColumn = columns.find(c => c.id === over.id);
     if (!targetColumn) return;
 
     const ticket = active.data.current?.ticket;
@@ -316,9 +255,9 @@ export default function KanbanBoard({ tickets: initialTickets = [], instanceId, 
       <div className="flex gap-3 overflow-x-auto pb-2">
         {columns.map(column => (
           <DroppableColumn
-            key={column.name}
+            key={column.id}
             column={column}
-            isOver={overColumn === column.name}
+            isOver={overColumn === column.id}
             disabled={!!transitioning}
             appId={appId}
           />
