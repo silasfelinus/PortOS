@@ -125,7 +125,7 @@ function shellQuote(value) {
  * to create the session, `sessionId` is null and the caller is expected
  * to bail out via its `finish` path.
  */
-export function createAgentTuiSession({ agentId, provider, tuiConfig, cwd, onData, onExit }) {
+export function createAgentTuiSession({ agentId, provider, tuiConfig, cwd, onData, onExit, onInitialCommandSent }) {
   const sessionId = shellService.createShellSession(null, {
     cwd,
     kind: 'agent-tui',
@@ -133,10 +133,15 @@ export function createAgentTuiSession({ agentId, provider, tuiConfig, cwd, onDat
     label: `${provider.name} ${agentId}`,
     command: tuiConfig.commandLine,
     initialCommand: tuiConfig.commandLine,
-    // Wait for the shell prompt to render before injecting the CLI command —
-    // a fixed delay races a heavy interactive shell and the launched TUI can
-    // fall straight back to the prompt (see shell.js waitForPromptReady).
+    // Wait until the shell can actually RUN commands before injecting the CLI
+    // command — a fixed delay races a heavy interactive shell and the launched
+    // TUI can fall straight back to a half-loaded prompt (see shell.js
+    // waitForPromptReady, which proves readiness with a round-trip probe).
     waitForPromptReady: true,
+    // Fires when the CLI command is actually injected. We start observing
+    // claude's input-readiness only after this so the readiness probe's own
+    // shell activity can't prematurely open the paste gate.
+    onInitialCommandSent,
     // agentGuardEnv() prepends the pm2 shim to the agent session's PATH (and
     // points it at the real pm2). Spread LAST so it wins over any provider PATH.
     // Only AI agent sessions get this — the user's own Shell page does not.
@@ -266,6 +271,13 @@ export async function spawnTuiAgent({
   // paste into a startup banner, a trust menu, or a returned shell prompt.
   const inputReady = createInputReadyTracker();
   let trustAccepted = false;
+  // True once shell.js actually injects the `claude` command (after its
+  // round-trip readiness probe). The probe runs its OWN shell command first,
+  // which toggles bracketed-paste mode and would otherwise advance the
+  // input-ready tracker (sawCommandRun + pasteModeOn) while still at the bare
+  // shell prompt — pasting the prompt into claude's startup banner. Gating
+  // observation on this discards every pre-command toggle.
+  let commandInjected = false;
   let firstOutputAt = null;
   let lastOutputAt = Date.now();
   let lastLine = '';
@@ -590,8 +602,10 @@ export async function spawnTuiAgent({
       if (postPasteBuffer !== null && stripped) postPasteBuffer += stripped;
       // Observe claude's input-readiness / folder-trust chrome (before the
       // paste). Raw `text` carries the bracketed-paste-mode toggles; `stripped`
-      // carries the visible footer/trust text.
-      if (!promptSentAt) inputReady.observe(text, stripped);
+      // carries the visible footer/trust text. Only AFTER the CLI command is
+      // injected — earlier toggles belong to shell startup and the readiness
+      // probe, not to claude.
+      if (!promptSentAt && commandInjected) inputReady.observe(text, stripped);
       const now = Date.now();
       // Once the prompt is SUBMITTED (Enter sent — not merely pasted), watch for
       // proof the model is actually working. Keying on promptSubmittedAt (not
@@ -667,6 +681,7 @@ export async function spawnTuiAgent({
     cwd,
     onData: handleData,
     onExit: handleExit,
+    onInitialCommandSent: () => { commandInjected = true; },
   });
   sessionId = session.sessionId;
 
