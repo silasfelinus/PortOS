@@ -304,10 +304,15 @@ describe('spawnTuiAgent runtime', () => {
     // this same spy to assert the warn fired.
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    // Default createShellSession captures callbacks and returns a valid session id
+    // Default createShellSession captures callbacks and returns a valid session id.
+    // Real shell.js fires onInitialCommandSent when it injects the CLI command
+    // (after its round-trip readiness probe); the claude input-ready gate only
+    // observes paste-mode toggles AFTER that fires, so invoke it here to mirror
+    // the real flow (otherwise commandInjected stays false and no paste ever gates).
     vi.mocked(shellService.createShellSession).mockImplementation((_socket, opts) => {
       capturedOnData = opts.onData;
       capturedOnExit = opts.onExit;
+      opts.onInitialCommandSent?.();
       return SESSION_ID;
     });
 

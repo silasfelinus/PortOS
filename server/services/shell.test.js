@@ -177,30 +177,54 @@ describe('createShellSession', () => {
     vi.useRealTimers();
   });
 
-  it('waitForPromptReady: holds initialCommand until the shell startup output goes quiet', () => {
+  it('waitForPromptReady: holds initialCommand until the readiness probe round-trips, and fires onInitialCommandSent', () => {
     vi.useFakeTimers();
-    shell.createShellSession(makeSocket(), { initialCommand: 'claude', waitForPromptReady: true, promptReadySettleMs: 750, initialCommandDelayMs: 8000 });
+    const onInitialCommandSent = vi.fn();
+    shell.createShellSession(makeSocket(), { initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000, onInitialCommandSent });
     const pty = ptyInstances[0];
-    // Startup output is still streaming (e.g. p10k instant prompt, then .zshrc).
-    pty.emitData('instant prompt');
-    vi.advanceTimersByTime(500);
-    pty.emitData('...plugins loading...');   // resets the settle window
-    vi.advanceTimersByTime(500);
-    expect(pty.write).not.toHaveBeenCalledWith('claude\n'); // not quiet long enough yet
-    // Output stops → after the settle window the command is sent.
-    vi.advanceTimersByTime(750);
+    // The probe is written after a short PTY-spawn settle, not immediately.
+    expect(pty.write).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(50);
+    const probeCall = pty.write.mock.calls.find(([d]) => /printf/.test(d));
+    expect(probeCall).toBeTruthy();
+    const nonce = probeCall[0].match(/PORTOSRDY''([0-9a-f]+)'/)[1];
+    const marker = `PORTOSRDY${nonce}`;
+    // Startup noise and the ECHO of the probe command (split marker, so the
+    // assembled string never appears contiguously) must NOT trip readiness.
+    pty.emitData('instant prompt rendering…');
+    pty.emitData(`% printf '%s\\n' 'PORTOSRDY''${nonce}'`);
+    expect(pty.write).not.toHaveBeenCalledWith('claude\n');
+    expect(onInitialCommandSent).not.toHaveBeenCalled();
+    // The assembled marker appears in the OUTPUT → shell proven, command injected.
+    pty.emitData(`${marker}\n`);
+    expect(pty.write).toHaveBeenCalledWith('claude\n');
+    expect(onInitialCommandSent).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('waitForPromptReady: injects the command on the fallback timeout if the probe never round-trips', () => {
+    vi.useFakeTimers();
+    shell.createShellSession(makeSocket(), { initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000 });
+    const pty = ptyInstances[0];
+    vi.advanceTimersByTime(50); // probe written
+    // Output streams but the assembled marker never appears.
+    for (let i = 0; i < 10; i++) { pty.emitData('tick'); vi.advanceTimersByTime(500); }
+    expect(pty.write).not.toHaveBeenCalledWith('claude\n');
+    // …but the hard fallback (8000ms from creation) injects the command regardless.
+    vi.advanceTimersByTime(8000);
     expect(pty.write).toHaveBeenCalledWith('claude\n');
     vi.useRealTimers();
   });
 
-  it('waitForPromptReady: falls back to sending after the timeout if the shell never quiets', () => {
+  it('waitForPromptReady: if the shell exits before the probe round-trips, the fallback never injects the command', () => {
     vi.useFakeTimers();
-    shell.createShellSession(makeSocket(), { initialCommand: 'claude', waitForPromptReady: true, promptReadySettleMs: 750, initialCommandDelayMs: 8000 });
+    shell.createShellSession(makeSocket(), { initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000 });
     const pty = ptyInstances[0];
-    // Continuous output every 500ms keeps resetting the settle window…
-    for (let i = 0; i < 16; i++) { pty.emitData('tick'); vi.advanceTimersByTime(500); }
-    // …but the hard fallback (8000ms) fires regardless.
-    expect(pty.write).toHaveBeenCalledWith('claude\n');
+    vi.advanceTimersByTime(50); // probe written
+    // The shell dies before the marker round-trips → cancels pending timers.
+    pty.emitExit({ exitCode: 1 });
+    vi.advanceTimersByTime(8000); // past the (now-cleared) fallback window
+    expect(pty.write).not.toHaveBeenCalledWith('claude\n');
     vi.useRealTimers();
   });
 });
