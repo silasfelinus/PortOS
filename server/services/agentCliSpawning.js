@@ -26,6 +26,7 @@ import { createCodexStderrFormatter } from '../lib/codexCliOutput.js';
 import { PROVIDER_TYPES } from '../lib/aiToolkit/constants.js';
 import { createImmediateFallbackSignalDetector } from '../lib/aiToolkit/errorDetection.js';
 import { ensureAntigravityPrintArgs, isAntigravityCliProvider } from '../lib/antigravity.js';
+import { resolveBedrockCliModel } from '../lib/providerModels.js';
 import { agentGuardEnv } from '../lib/agentGuard/index.js';
 
 const AGENTS_DIR = PATHS.cosAgents;
@@ -281,7 +282,13 @@ export function buildCliSpawnConfig(provider, model) {
     ...(provider?.args || []),          // User-configured provider args
   ];
   if (effectiveModel) {
-    args.push('--model', effectiveModel);
+    // Bedrock box: map a bare Claude id to its region-prefixed Bedrock form
+    // just-in-time (no-op off Bedrock / for already-prefixed or non-Claude ids).
+    const injectedModel = resolveBedrockCliModel(effectiveModel, {
+      env: { ...process.env, ...provider?.envVars },
+      providerId,
+    });
+    args.push('--model', injectedModel);
   }
 
   return {
