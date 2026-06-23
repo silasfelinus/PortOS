@@ -215,6 +215,18 @@ describe('createShellSession', () => {
     expect(pty.write).toHaveBeenCalledWith('claude\n');
     vi.useRealTimers();
   });
+
+  it('waitForPromptReady: if the shell exits before the probe round-trips, the fallback never injects the command', () => {
+    vi.useFakeTimers();
+    shell.createShellSession(makeSocket(), { initialCommand: 'claude', waitForPromptReady: true, initialCommandDelayMs: 8000 });
+    const pty = ptyInstances[0];
+    vi.advanceTimersByTime(50); // probe written
+    // The shell dies before the marker round-trips → cancels pending timers.
+    pty.emitExit({ exitCode: 1 });
+    vi.advanceTimersByTime(8000); // past the (now-cleared) fallback window
+    expect(pty.write).not.toHaveBeenCalledWith('claude\n');
+    vi.useRealTimers();
+  });
 });
 
 describe('attachSession', () => {

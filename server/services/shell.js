@@ -187,15 +187,24 @@ export function createShellSession(socket, options = {}) {
       // platform-aware probe.
       let sent = false;
       let sub = null;
+      let exitSub = null;
       const nonce = uuidv4().replace(/-/g, '').slice(0, 12);
       const marker = `PORTOSRDY${nonce}`;
       const probe = `printf '%s\\n' 'PORTOSRDY''${nonce}'\n`;
       let seen = '';
+      // Tear down every pending timer + listener. Called both on success
+      // (fire) and when the PTY exits before the probe round-trips, so no
+      // timer survives to fire into a dead session.
+      const stop = () => {
+        clearTimeout(probeTimer);
+        clearTimeout(fallback);
+        sub?.dispose?.();
+        exitSub?.dispose?.();
+      };
       const fire = () => {
         if (sent) return;
         sent = true;
-        clearTimeout(fallback);
-        sub?.dispose?.();
+        stop();
         sendInitial();
       };
       sub = ptyProcess.onData((chunk) => {
@@ -203,11 +212,15 @@ export function createShellSession(socket, options = {}) {
         if (seen.length > 8192) seen = seen.slice(-8192);
         if (seen.includes(marker)) fire();
       });
+      // If the shell dies before the probe round-trips, cancel the pending
+      // writes/timers — sent stays true so the fallback can't resurrect a
+      // send into the gone session.
+      exitSub = ptyProcess.onExit(() => { sent = true; stop(); });
       // Give the freshly-spawned PTY a tick to come up, then send the probe.
       // Writing earlier is harmless (zsh's line editor / p10k instant-prompt
       // buffer holds it until the prompt is live and replays it), but a small
       // delay avoids racing node-pty's own spawn handshake.
-      setTimeout(() => { if (!sent) writeToSession(sessionId, probe); }, 50);
+      const probeTimer = setTimeout(() => { if (!sent) writeToSession(sessionId, probe); }, 50);
       const fallback = setTimeout(fire, options.initialCommandDelayMs ?? 8000);
     } else {
       setTimeout(sendInitial, options.initialCommandDelayMs ?? 200);
