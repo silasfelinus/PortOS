@@ -70,9 +70,10 @@ const detectClaudeFamily = (id) => {
  *
  *  - No-op when Bedrock mode is off, the id is empty/non-string, or it already
  *    carries a region/`anthropic.` prefix.
- *  - No-op for non-Claude ids (codex `gpt-5`, gemini, etc.) — only ids with a
- *    recognized Claude family or a `claude…` prefix are rewritten, so applying
- *    this at a shared argv chokepoint can't corrupt another vendor's model.
+ *  - No-op for any id that doesn't contain `claude` (codex `gpt-5`, gemini, a
+ *    custom local alias like `my-sonnet-lora`, etc.) — only Claude ids are
+ *    Bedrock-mappable, so applying this at a shared argv chokepoint can't
+ *    corrupt another vendor's model.
  *  - Prefers the matching `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` env value when it
  *    is itself a region-prefixed Bedrock id (the wrapper's exact choice); else
  *    falls back to a `global.anthropic.<id>` prefix-rewrite.
@@ -85,8 +86,8 @@ export function toBedrockModelId(id, env = process.env) {
   if (!isBedrockEnabled(env)) return id;
   if (typeof id !== 'string' || !id) return id;
   if (hasBedrockRegionPrefix(id)) return id;
+  if (!/claude/i.test(id)) return id; // not a Claude id — leave alone
   const family = detectClaudeFamily(id);
-  if (!family && !/^claude[-.]/i.test(id)) return id; // not a Claude id — leave alone
   if (family) {
     const override = env?.[BEDROCK_FAMILY_ENV[family]];
     if (hasBedrockRegionPrefix(override)) return override;

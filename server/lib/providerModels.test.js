@@ -253,8 +253,13 @@ describe('providerModels', () => {
       }
     });
 
-    it('leaves non-Claude vendor ids untouched even with Bedrock on', () => {
-      for (const id of ['gpt-5', 'gemini-2.5-pro', 'o1-preview']) {
+    it('leaves non-Claude ids untouched even with Bedrock on (must contain "claude")', () => {
+      for (const id of [
+        'gpt-5', 'gemini-2.5-pro', 'o1-preview',
+        // A custom alias that merely contains a family word but isn't a Claude
+        // id must NOT be rewritten (would otherwise become global.anthropic.*).
+        'sonnet', 'my-sonnet-lora', 'opus-tune-v2',
+      ]) {
         expect(toBedrockModelId(id, ON), id).toBe(id);
       }
     });
