@@ -471,9 +471,15 @@ describe('resolveNextStep (pure)', () => {
 describe('dry-run plan ↔ resolveNextStep drift guard (#1577)', () => {
   // buildDryRunPlan is kept in sync with resolveNextStep BY HAND (see the comment
   // above buildDryRunPlan). This guard runs BOTH against the same fixtures and
-  // asserts they enumerate the SAME step kinds in the SAME order — so a future
-  // edit that adds/removes/reorders a step in one and forgets the other fails
+  // asserts they enumerate the SAME step kinds in the SAME order AND the SAME
+  // per-step counts — so a future edit that adds/removes/reorders a step, or that
+  // diverges a plan `count` formula (textNeeded / visualNeeded / beatsNeeded /
+  // ordered.length) from the resolver's actual per-issue/per-season looping, fails
   // here instead of silently advertising a plan execute won't follow.
+  //
+  // Scope: this verifies plan ↔ RESOLVER parity. `completeStep` re-implements the
+  // dispatch's runState effects (it does not drive the real dispatchStep), so a
+  // change to dispatch that preserves step kinds/order/counts is out of scope.
   //
   // Fidelity note: the fixtures all have their issues already present (no empty
   // seasons), so no generation step CREATES new downstream work mid-walk. That's
@@ -567,44 +573,67 @@ describe('dry-run plan ↔ resolveNextStep drift guard (#1577)', () => {
     }
   };
 
+  // Collapse a flat list of emitted step kinds into the plan's shape: one
+  // `{ kind, count }` entry per consecutive run. The resolver emits per-issue /
+  // per-season steps one at a time (a run of N identical consecutive kinds); the
+  // plan represents that same work as a single entry with `count: N`.
+  const compress = (kinds) => kinds.reduce((out, kind) => {
+    const last = out[out.length - 1];
+    if (last && last.kind === kind) last.count += 1;
+    else out.push({ kind, count: 1 });
+    return out;
+  }, []);
+
   // Walk resolveNextStep the way execute does — apply each step's effect, re-resolve
-  // — collecting the ordered, de-duplicated sequence of step kinds. Per-issue /
-  // per-season steps repeat in the resolver but collapse to a single plan entry, so
-  // consecutive duplicates are merged to match the plan's shape.
-  const simulateExecuteKinds = (series, issues, options) => {
+  // — collecting the ordered sequence of emitted step kinds (with repeats), then
+  // compress to the plan's `{ kind, count }` shape.
+  const simulateExecuteEntries = (series, issues, options) => {
     const working = issues.map((i) => ({ ...i, stages: { ...i.stages } }));
     const runState = freshRunState();
     const edRounds = Number.isInteger(options?.maxEditorialRounds) ? options.maxEditorialRounds : undefined;
-    const kinds = [];
+    const emitted = [];
     for (let guard = 0; guard < 200; guard += 1) {
       const step = resolveNextStep(series, working, runState, options);
-      if (step.kind === 'done') return kinds;
-      if (kinds[kinds.length - 1] !== step.kind) kinds.push(step.kind);
+      if (step.kind === 'done') return compress(emitted);
+      emitted.push(step.kind);
       completeStep(step, working, runState, edRounds);
     }
     throw new Error('drift guard: simulation did not converge to done within 200 steps');
   };
 
-  const planKinds = (series, issues, options) =>
-    autopilot.__testing.buildDryRunPlan(series, issues, options).map((p) => p.kind);
+  // The plan carries extra annotation fields (note, etc.); compare only kind + count.
+  const planEntries = (series, issues, options) =>
+    autopilot.__testing.buildDryRunPlan(series, issues, options).map((p) => ({ kind: p.kind, count: p.count }));
 
   const baseComic = () => ({ targetFormat: 'comic', arc: { logline: 'L', summary: 'S' }, seasons: [{ id: 'se1', number: 1 }] });
   const baseTv = () => ({ targetFormat: 'tv', arc: { logline: 'L', summary: 'S' }, seasons: [{ id: 'se1', number: 1 }] });
   const bareIssue = () => [{ id: 'iss1', seasonId: 'se1', number: 1, arcPosition: 1, stages: {} }];
+  // Two seasons, one bare issue each — exercises per-SEASON multiplicity (beatSheet
+  // count 2) AND per-ISSUE multiplicity (textStages / scriptVerify / visualDraft
+  // count 2), so the count formulas and the consecutive-run compression are tested.
+  const twoSeasonComic = () => ({
+    targetFormat: 'comic', arc: { logline: 'L', summary: 'S' },
+    seasons: [{ id: 'se1', number: 1 }, { id: 'se2', number: 2 }],
+  });
+  const twoIssues = () => [
+    { id: 'iss1', seasonId: 'se1', number: 1, arcPosition: 1, stages: {} },
+    { id: 'iss2', seasonId: 'se2', number: 1, arcPosition: 2, stages: {} },
+  ];
 
   const cases = [
     { name: 'comic + visual (full pipeline)', series: baseComic(), issues: bareIssue(), options: {} },
     { name: 'comic, text-only target (no canon/visual)', series: baseComic(), issues: bareIssue(), options: { target: 'text' } },
     { name: 'comic, editorial rounds 0 (skips editorial gate)', series: baseComic(), issues: bareIssue(), options: { maxEditorialRounds: 0 } },
     { name: 'tv (no comic script / canon / visual)', series: baseTv(), issues: bareIssue(), options: {} },
+    { name: 'comic + visual, 2 seasons × 1 issue (per-step multiplicity)', series: twoSeasonComic(), issues: twoIssues(), options: {} },
   ];
 
   for (const c of cases) {
-    it(`enumerates identical step kinds in identical order — ${c.name}`, () => {
+    it(`enumerates identical step kinds + counts in identical order — ${c.name}`, () => {
       // buildDryRunPlan reads the records as-is; the simulation walks fresh copies,
       // so the two never share mutable state.
-      const plan = planKinds(c.series, c.issues, c.options);
-      const executed = simulateExecuteKinds(c.series, c.issues, c.options);
+      const plan = planEntries(c.series, c.issues, c.options);
+      const executed = simulateExecuteEntries(c.series, c.issues, c.options);
       expect(executed.length).toBeGreaterThan(0);
       expect(executed).toEqual(plan);
     });
