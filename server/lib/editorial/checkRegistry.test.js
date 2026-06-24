@@ -35,6 +35,8 @@ import {
   scenePovSummary,
   declaredThemesSummary,
   canonRosterNamesSummary,
+  canonCharacterStatesSummary,
+  continuityLedgerSummary,
 } from './checkRegistry.js';
 
 const NAMING = 'naming.dissimilar-names';
@@ -49,6 +51,7 @@ const PLOT_STRUCTURE = 'plot.structure-momentum';
 const HEAD_HOPPING = 'pov.head-hopping';
 const THEME_COHERENCE = 'theme.coherence';
 const UNMODELED_NAMES = 'roster.unmodeled-names';
+const TIMELINE_CONTRADICTION = 'continuity.timeline-contradiction';
 
 // A minimal valid stored custom-check definition.
 const customDef = (over = {}) => ({
@@ -819,6 +822,146 @@ describe('plotlineCoverageSummary (#1310)', () => {
     expect(out).toContain('- x (other): 1 scene, issue 3');
     // The null and id-less rows are dropped.
     expect(out.split('\n').filter((l) => l.startsWith('- '))).toHaveLength(1);
+  });
+});
+
+describe('continuity.timeline-contradiction — LLM check (#1581)', () => {
+  const wholeCtx = (overrides = {}) => ({
+    manuscript: '# Issue 1\n\nMara died on the bridge.',
+    config: { maxFindings: 12 },
+    severityDefault: 'medium',
+    series: {},
+    canon: { characters: [{ name: 'Mara', age: 16, status: 'deceased after Issue 3' }] },
+    continuityBible: [{ category: 'age', subject: 'Mara', statement: 'is 16', issueNumber: 1 }],
+    reverseOutline: [{ sequence: 0, issueNumber: 1, heading: 'The bridge', setting: 'a bridge', charactersPresent: ['Mara'] }],
+    planManuscriptChunks: async () => ['# Issue 1\n\nMara died on the bridge.'],
+    callStagedLLM: async () => ({ content: { findings: [] } }),
+    ...overrides,
+  });
+
+  it('is registered as a series-scoped LLM check reading manuscript + canon + outline + arcs', () => {
+    const check = getCheck(TIMELINE_CONTRADICTION);
+    expect(check.kind).toBe('llm');
+    expect(check.scope).toBe('series');
+    expect(check.category).toBe('continuity');
+    expect(check.severityDefault).toBe('medium');
+    expect(check.sources).toEqual(['manuscript', 'canon', 'continuityBible', 'reverseOutline', 'series.characterArcs']);
+    expect(check.needsManuscript).toBe(true);
+  });
+
+  it('only runs when there is drafted prose to scan', () => {
+    const check = getCheck(TIMELINE_CONTRADICTION);
+    expect(check.gate({ manuscript: '' })).toBe(false);
+    expect(check.gate({ manuscript: '# Issue 1\n\nprose' })).toBeTruthy();
+  });
+
+  it('passes the manuscript, continuity ledger, canon facts, and scene map to the model and forces the continuity category', async () => {
+    let seenVars = null;
+    const ctx = wholeCtx({
+      planManuscriptChunks: async (_stage, opts) => {
+        // Continuity ledger + canon states + scene map + character arcs all ride as trimmable context.
+        expect(opts.context).toHaveProperty('continuityLedger');
+        expect(opts.context).toHaveProperty('canonStates');
+        expect(opts.context).toHaveProperty('sceneMap');
+        expect(opts.context).toHaveProperty('characterArcs');
+        expect(opts.fixedOverheadTokens).toBeGreaterThan(0);
+        return ['# Issue 6\n\nMara walked back into the room, very much alive.'];
+      },
+      callStagedLLM: async (_stage, vars) => {
+        seenVars = vars;
+        return { content: { findings: [{ severity: 'high', issueNumber: 6, location: 'Mara — resurrection', problem: 'Mara died in Issue 3 but is alive here' }] } };
+      },
+    });
+    const findings = await getCheck(TIMELINE_CONTRADICTION).run(ctx);
+    expect(seenVars.manuscript).toBe('# Issue 6\n\nMara walked back into the room, very much alive.');
+    expect(seenVars.continuityLedger).toContain('Mara: is 16');
+    expect(seenVars.canonStates).toContain('Mara');
+    expect(seenVars.canonStates).toContain('age 16');
+    expect(seenVars.sceneMap).toContain('Issue 1: The bridge');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].category).toBe('continuity');
+    expect(findings[0].location).toBe('Mara — resurrection');
+  });
+
+  it('passes empty context vars when the series has no ledger, canon, or outline', async () => {
+    let seenVars = null;
+    const ctx = wholeCtx({
+      canon: undefined,
+      continuityBible: undefined,
+      reverseOutline: undefined,
+      callStagedLLM: async (_stage, vars) => { seenVars = vars; return { content: { findings: [] } }; },
+    });
+    await getCheck(TIMELINE_CONTRADICTION).run(ctx);
+    expect(seenVars.continuityLedger).toBe('');
+    expect(seenVars.canonStates).toBe('');
+    expect(seenVars.sceneMap).toBe('');
+    expect(seenVars.characterArcs).toBe('');
+  });
+});
+
+describe('continuityLedgerSummary (#1581)', () => {
+  it('returns an empty string when there are no usable facts', () => {
+    expect(continuityLedgerSummary(null)).toBe('');
+    expect(continuityLedgerSummary(undefined)).toBe('');
+    expect(continuityLedgerSummary([])).toBe('');
+    // A fact missing a category or statement is dropped.
+    expect(continuityLedgerSummary([{ subject: 'Mara' }, { category: 'age' }])).toBe('');
+  });
+
+  it('groups facts by category in canonical order, with prettied labels and issue tags', () => {
+    const out = continuityLedgerSummary([
+      { category: 'timeline', subject: 'The crossing', statement: 'takes eight days', issueNumber: 2 },
+      { category: 'age', subject: 'Mara', statement: 'is 16' },
+    ]);
+    expect(out).toContain('Continuity bible facts');
+    // Age (canonical order) renders before Dates & elapsed time.
+    expect(out.indexOf('Ages & birthdays')).toBeLessThan(out.indexOf('Dates & elapsed time'));
+    expect(out).toContain('- Mara: is 16');
+    expect(out).toContain('- The crossing: takes eight days (Issue 2)');
+  });
+
+  it('falls back to the raw category id for an unknown (newer-peer) category and is type-guarded', () => {
+    expect(() => continuityLedgerSummary([null, 'nope', { category: 5, statement: 'x' }])).not.toThrow();
+    const out = continuityLedgerSummary([{ category: 'mood', statement: 'the tone is grim' }]);
+    expect(out).toContain('mood:\n- the tone is grim');
+  });
+});
+
+describe('canonCharacterStatesSummary (#1581)', () => {
+  it('returns an empty string when there are no characters or no renderable facts', () => {
+    expect(canonCharacterStatesSummary(null)).toBe('');
+    expect(canonCharacterStatesSummary(undefined)).toBe('');
+    expect(canonCharacterStatesSummary({ characters: [] })).toBe('');
+    // A named character with no contradiction-relevant fact renders nothing.
+    expect(canonCharacterStatesSummary({ characters: [{ name: 'Joss' }] })).toBe('');
+    // An alias-only row (no name) is skipped.
+    expect(canonCharacterStatesSummary({ characters: [{ aliases: ['x'], age: 40 }] })).toBe('');
+  });
+
+  it('renders each character with name + aliases and the present facts', () => {
+    const out = canonCharacterStatesSummary({ characters: [
+      { name: 'Mara', aliases: ['The Captain'], age: 16, status: 'deceased after Issue 3', role: 'protagonist' },
+      { name: 'Joss', description: 'a tall man with a scar' },
+    ] });
+    expect(out).toContain('Canon character facts');
+    expect(out).toContain('- Mara (also: The Captain) — age 16; role: protagonist; status: deceased after Issue 3');
+    expect(out).toContain('- Joss — described as: a tall man with a scar');
+  });
+
+  it('accepts a numeric or string age and prefers physicalDescription over description', () => {
+    const out = canonCharacterStatesSummary({ characters: [
+      { name: 'A', age: '30s' },
+      { name: 'B', physicalDescription: 'rich', description: 'poor' },
+    ] });
+    expect(out).toContain('- A — age 30s');
+    expect(out).toContain('- B — described as: rich');
+    expect(out).not.toContain('poor');
+  });
+
+  it('is type-guarded against hand-edited / older-peer rows', () => {
+    expect(() => canonCharacterStatesSummary({ characters: [null, 'nope', { name: 'C', role: 5, age: {} }] })).not.toThrow();
+    // role is a non-string and age is a non-finite object → no facts → C drops out.
+    expect(canonCharacterStatesSummary({ characters: [{ name: 'C', role: 5, age: {} }] })).toBe('');
   });
 });
 
