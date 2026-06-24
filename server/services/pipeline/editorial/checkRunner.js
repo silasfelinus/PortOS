@@ -26,6 +26,7 @@ import { listIssuesForSeries } from '../issues.js';
 import { getSeriesCanon } from '../seriesCanon.js';
 import { collectManuscriptSections, sectionsCorpus, manuscriptSectionHeader } from '../arcPlanner.js';
 import { getReverseOutline } from '../reverseOutline.js';
+import { getFactsLedger } from '../continuityBible.js';
 import { getSeriesEditorial } from '../editorialAnalysis.js';
 import { seedReviewFromFindings, getReview } from '../manuscriptReview.js';
 import { recordTrendSnapshot } from '../editorialScore.js';
@@ -70,6 +71,10 @@ const sha256 = (text) => createHash('sha256').update(text || '').digest('hex');
 const SOURCE_RESOLVERS = {
   manuscript: ({ manuscript }) => manuscript || '',
   canon: ({ canon }) => canonicalStringify(canon ?? null),
+  // The continuity-bible facts ledger the timeline / canon-contradiction check
+  // reconciles the prose against (#1581). Fingerprint the whole facts array so a
+  // re-extraction or a hand-edit to any established fact stales its findings.
+  continuityBible: ({ continuityBible }) => canonicalStringify(continuityBible ?? null),
   'series.styleGuide': ({ series }) => canonicalStringify(series?.styleGuide ?? null),
   'series.arc.tickingClock': ({ series }) => canonicalStringify(series?.arc?.tickingClock ?? null),
   // The authored reader-map hooks/payoffs the Chekhov check reconciles against (#1299).
@@ -348,6 +353,9 @@ export async function runEditorialChecks(seriesId, options = {}) {
   // Editorial-arc fetch is gated on the declared source (#1295) so a run with no
   // POV/arc check pays no extra snapshot I/O — mirrors the needsReverseOutline gate.
   const needsEditorialArcs = enabled.some(({ check }) => checkSources(check).includes('editorialArcs'));
+  // Continuity-bible ledger fetch is gated on the declared source (#1581) so a run
+  // with no contradiction check pays no extra ledger I/O — mirrors the other gates.
+  const needsContinuityBible = enabled.some(({ check }) => checkSources(check).includes('continuityBible'));
   // Issues are fetched only when an enabled check declares an issue-derived source
   // — storyboard.shots (#1315), comicScript (#1313, served via the comic.lettering
   // check's ctx.issues), or the comic-pacing tokens comicScript.pacing /
@@ -363,7 +371,7 @@ export async function runEditorialChecks(seriesId, options = {}) {
       || sources.includes('comicScript.pacing')
       || sources.includes('comicScript.layout');
   });
-  const [sections, canon, issues, outline, editorial] = await Promise.all([
+  const [sections, canon, issues, outline, editorial, bible] = await Promise.all([
     needsManuscript ? collectManuscriptSections(seriesId) : Promise.resolve([]),
     getSeriesCanon(series),
     needsIssues ? listIssuesForSeries(seriesId).catch(() => []) : Promise.resolve([]),
@@ -372,8 +380,12 @@ export async function runEditorialChecks(seriesId, options = {}) {
     // (issues is fetched in this same Promise.all, so it can't be passed here —
     // it's still in the temporal dead zone — and stays an internal fetch.)
     needsEditorialArcs ? getSeriesEditorial(seriesId, { series }).catch(() => null) : Promise.resolve(null),
+    needsContinuityBible ? getFactsLedger(seriesId).catch(() => null) : Promise.resolve(null),
   ]);
   const manuscript = sectionsCorpus(sections);
+  // The continuity-bible facts ledger (#1581) — the facts array, injected for the
+  // timeline / canon-contradiction check and fingerprinted for its staleness.
+  const continuityBible = Array.isArray(bible?.facts) ? bible.facts : [];
   // Storyboard shots for the visual.shot-continuity check (#1315) — projected off
   // the gated `issues` fetch (empty unless a storyboard.shots/comicScript check is on).
   const storyboardScenes = collectStoryboardScenes(issues);
@@ -401,7 +413,7 @@ export async function runEditorialChecks(seriesId, options = {}) {
   // Resolve every source token once — each finding's fingerprint reads from this
   // so the editor flags it `stale` when the content that check actually read (its
   // declared `sources`) drifts (#1345, #1387).
-  const resolvedSources = resolveSources({ manuscript, canon, series, reverseOutline, reverseOutlinePlotlines, editorialArcs, editorialArcsComplete, storyboardScenes, comicScripts, comicPacingContent, comicLayoutContent });
+  const resolvedSources = resolveSources({ manuscript, canon, continuityBible, series, reverseOutline, reverseOutlinePlotlines, editorialArcs, editorialArcsComplete, storyboardScenes, comicScripts, comicPacingContent, comicLayoutContent });
   const baseCtx = {
     seriesId,
     series,
@@ -414,6 +426,7 @@ export async function runEditorialChecks(seriesId, options = {}) {
     editorialArcsComplete,
     storyboardScenes,
     canon,
+    continuityBible,
     providerOverride,
     providerDefault,
     modelOverride,
@@ -664,6 +677,10 @@ export async function getReviewWithStaleness(seriesId) {
     return sources.includes('reverseOutline') || sources.includes('reverseOutline.plotlines');
   });
   const needsEditorialArcs = evaluable.some((c) => checkSources(checkFor(c.checkId)).includes('editorialArcs'));
+  // Continuity-bible ledger re-fingerprint, gated like the others (#1581) — must
+  // mirror the run path's fetch so a timeline/canon finding's hash is computed
+  // against the SAME ledger content on read as on seed (else it always reads stale).
+  const needsContinuityBible = evaluable.some((c) => checkSources(checkFor(c.checkId)).includes('continuityBible'));
   // Issues are fetched here only when a storyboard-shots (#1315) OR comic-script
   // (#1313 lettering / #1314 pacing) finding needs re-fingerprinting — all derive
   // from the issue records, so a single gated fetch serves them. Mirrors the other
@@ -675,14 +692,16 @@ export async function getReviewWithStaleness(seriesId) {
   });
   const needsIssues = needsStoryboards || needsComicScript;
   const series = await getSeries(seriesId);
-  const [sections, canon, outline, editorial, issues] = await Promise.all([
+  const [sections, canon, outline, editorial, issues, bible] = await Promise.all([
     needsManuscript ? collectManuscriptSections(seriesId) : Promise.resolve([]),
     getSeriesCanon(series),
     needsReverseOutline ? getReverseOutline(seriesId).catch(() => null) : Promise.resolve(null),
     // Reuse the already-loaded series.
     needsEditorialArcs ? getSeriesEditorial(seriesId, { series }).catch(() => null) : Promise.resolve(null),
     needsIssues ? listIssuesForSeries(seriesId).catch(() => []) : Promise.resolve([]),
+    needsContinuityBible ? getFactsLedger(seriesId).catch(() => null) : Promise.resolve(null),
   ]);
+  const continuityBible = Array.isArray(bible?.facts) ? bible.facts : [];
   const reverseOutline = Array.isArray(outline?.scenes) ? outline.scenes : [];
   const reverseOutlinePlotlines = Array.isArray(outline?.plotlines) ? outline.plotlines : [];
   const editorialArcs = projectEditorialArcs(editorial);
@@ -692,7 +711,7 @@ export async function getReviewWithStaleness(seriesId) {
   const comicScripts = projectComicLetteringContent(comicIssues);
   const comicPacingContent = projectComicPacingContent(comicIssues);
   const comicLayoutContent = projectComicLayoutContent(comicIssues);
-  const resolvedSources = resolveSources({ manuscript: sectionsCorpus(sections), canon, series, reverseOutline, reverseOutlinePlotlines, editorialArcs, editorialArcsComplete, storyboardScenes, comicScripts, comicPacingContent, comicLayoutContent });
+  const resolvedSources = resolveSources({ manuscript: sectionsCorpus(sections), canon, continuityBible, series, reverseOutline, reverseOutlinePlotlines, editorialArcs, editorialArcsComplete, storyboardScenes, comicScripts, comicPacingContent, comicLayoutContent });
   return {
     ...review,
     comments: review.comments.map((c) => {

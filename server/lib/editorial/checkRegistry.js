@@ -70,6 +70,14 @@ const SEVERITIES = CHECK_SEVERITIES;
 // runner's `SOURCE_RESOLVERS` (a load-time guard there fails fast if they drift).
 //   - 'manuscript'              — the stitched manuscript corpus (implies needsManuscript)
 //   - 'canon'                   — the universe/series canon (characters, relationships, objects)
+//   - 'continuityBible'         — the series CONTINUITY-BIBLE facts ledger (#1305): the
+//                                 extracted ground-truth facts the timeline/canon-contradiction
+//                                 check (#1581) reconciles the prose against — `[{ category,
+//                                 subject, statement, issueNumber }]` across the bible's
+//                                 categories (physical, age, dates/elapsed time, location,
+//                                 possession, world rules, who-knows-what). The runner fetches
+//                                 it via `getFactsLedger` (gated on this source) and injects
+//                                 `ctx.continuityBible` (the facts array).
 //   - 'series.styleGuide'       — the series style guide (tense/POV/rating/reading level)
 //   - 'series.arc.tickingClock' — the series arc's ticking clock
 //   - 'reverseOutline'          — the cached reverse-outline scene segmentation (#1286);
@@ -133,6 +141,7 @@ const SEVERITIES = CHECK_SEVERITIES;
 export const EDITORIAL_SOURCES = Object.freeze([
   'manuscript',
   'canon',
+  'continuityBible',
   'series.styleGuide',
   'series.arc.tickingClock',
   'series.arc.readerMap',
@@ -355,6 +364,63 @@ export function canonCharacterStatesSummary(canon) {
   }
   if (!rows.length) return '';
   return `Canon character facts (the established bible — reconcile the prose against these):\n${rows.join('\n')}`;
+}
+
+// Human-readable labels for the continuity-bible fact categories (#1305). Inlined
+// (not imported from server/services/pipeline/continuityBible.js) to keep this
+// registry PURE — that module pulls in I/O + an SSE runner. Mirrors its
+// `FACT_CATEGORIES`; a category absent from this map falls back to its raw id, so
+// a new bible category still renders (just without a prettied label) until it's
+// added here.
+const CONTINUITY_CATEGORY_LABELS = Object.freeze({
+  physical: 'Physical traits',
+  age: 'Ages & birthdays',
+  timeline: 'Dates & elapsed time',
+  location: 'Locations & geography',
+  possession: 'Possessions & wardrobe',
+  'world-rule': 'World rules',
+  knowledge: 'Who knows what, when',
+});
+
+// Render the continuity-bible facts ledger (#1305) into a compact text block the
+// timeline / canon-contradiction check (#1581) passes alongside the manuscript, so
+// the model reconciles the prose against the established ground-truth facts the
+// bible already extracted — ages/birthdays, dates & elapsed time, locations, world
+// rules, who-knows-what — which the shallow per-character canon fields don't carry.
+// Facts are grouped by category (in the stable category order) and tagged with the
+// issue they were established in, when known, so the model can reason about WHEN a
+// fact held. Pure + deterministic so it's unit-testable and its token cost can be
+// counted into the per-chunk overhead. Type-guarded throughout (the ledger rides
+// peer sync, so a hand-edited / older-peer fact could carry a non-string field).
+// Returns '' when there are no usable facts (the prompt's `{{#continuityLedger}}`
+// section then renders nothing and the check falls back to the canon fields + prose).
+export function continuityLedgerSummary(facts) {
+  const list = Array.isArray(facts) ? facts : [];
+  const byCategory = new Map();
+  for (const f of list) {
+    if (!f || typeof f !== 'object') continue;
+    const category = typeof f.category === 'string' ? f.category.trim() : '';
+    const subject = typeof f.subject === 'string' ? f.subject.trim() : '';
+    const statement = typeof f.statement === 'string' ? f.statement.trim() : '';
+    if (!category || !statement) continue;
+    const where = Number.isInteger(f.issueNumber) ? ` (Issue ${f.issueNumber})` : '';
+    const line = subject ? `- ${subject}: ${statement}${where}` : `- ${statement}${where}`;
+    if (!byCategory.has(category)) byCategory.set(category, []);
+    byCategory.get(category).push(line);
+  }
+  if (!byCategory.size) return '';
+  // Render known categories in their canonical order first, then any unknown
+  // category (a newer-peer addition) after, so the block is stable + complete.
+  const order = [...Object.keys(CONTINUITY_CATEGORY_LABELS), ...byCategory.keys()];
+  const seen = new Set();
+  const blocks = [];
+  for (const category of order) {
+    if (seen.has(category) || !byCategory.has(category)) continue;
+    seen.add(category);
+    const label = CONTINUITY_CATEGORY_LABELS[category] || category;
+    blocks.push(`${label}:\n${byCategory.get(category).join('\n')}`);
+  }
+  return `Continuity bible facts (established ground truth — reconcile the prose against these):\n\n${blocks.join('\n\n')}`;
 }
 
 // Stage name for the plot-structure & momentum LLM check (#1310). Ships in
@@ -2885,10 +2951,10 @@ export const EDITORIAL_CHECKS = [
   },
   {
     id: 'continuity.timeline-contradiction',
-    sources: ['manuscript', 'canon', 'reverseOutline', 'series.characterArcs'],
+    sources: ['manuscript', 'canon', 'continuityBible', 'reverseOutline', 'series.characterArcs'],
     label: 'Timeline / canon contradiction',
     description:
-      'LLM scan for internal contradictions against canon and chronology: a character who dies and later reappears alive without explanation, an age contradiction (the bible says 16, the prose says "in her 30s"), or an impossible timeline (an event dated day 2 that characters needed 8 days to reach). Reconciles the prose against the established canon character facts, the reverse-outline scene ordering, and the authored per-character arc start/end states; degrades to a prose-only scan when no canon or outline exists.',
+      'LLM scan for internal contradictions against canon and chronology: a character who dies and later reappears alive without explanation, an age contradiction (the bible says 16, the prose says "in her 30s"), or an impossible timeline (an event dated day 2 that characters needed 8 days to reach). Reconciles the prose against the continuity-bible facts ledger (ages, dates & elapsed time, locations, world rules), the canon character facts, the reverse-outline scene ordering, and the authored per-character arc start/end states; degrades to a prose-only scan when none of those exist.',
     scope: 'series',
     kind: 'llm',
     category: 'continuity',
@@ -2918,25 +2984,29 @@ export const EDITORIAL_CHECKS = [
     ],
     gate: (ctx) => (ctx.manuscript || '').trim().length > 0,
     run: (ctx) => {
-      // All three blocks are fixed per-call overhead (re-sent on each chunk) and
-      // pure context: the canon facts let the model catch age/status/identity
-      // contradictions, the scene map gives the chronology to catch impossible
-      // timelines and resurrection-without-explanation, and the authored arcs give
-      // each character's intended start → end state. The check degrades
-      // gracefully — no canon ⇒ {{#canonStates}} renders nothing; no outline ⇒
-      // {{#sceneMap}} renders nothing; no authored arcs ⇒ {{#characterArcs}}
-      // renders nothing and the model reasons from the prose alone.
+      // All four blocks are fixed per-call overhead (re-sent on each chunk) and
+      // pure context: the continuity-bible ledger is the authoritative fact set
+      // (ages, dates/elapsed time, locations, world rules) the contradiction is
+      // judged against, the canon facts add per-character age/status/identity, the
+      // scene map gives the chronology to catch impossible timelines and
+      // resurrection-without-explanation, and the authored arcs give each
+      // character's intended start → end state. The check degrades gracefully — an
+      // absent input renders nothing (`{{#continuityLedger}}`/`{{#canonStates}}`/
+      // `{{#sceneMap}}`/`{{#characterArcs}}`) and the model reasons from the prose.
+      const continuityLedger = continuityLedgerSummary(ctx.continuityBible);
       const canonStates = canonCharacterStatesSummary(ctx.canon);
       const sceneMap = sceneGroundingSummary(ctx.reverseOutline);
       const characterArcs = renderCharacterArcsForPrompt(ctx.series?.characterArcs) || '';
       return runManuscriptLlmCheck(ctx, {
         stage: TIMELINE_CONTRADICTION_STAGE,
         category: 'continuity',
-        // canonStates + sceneMap grow with cast/scene count; characterArcs is
-        // bounded — so largest-first trimming absorbs the cut into those.
-        context: { canonStates, sceneMap, characterArcs },
+        // continuityLedger + canonStates + sceneMap grow with fact/cast/scene
+        // count; characterArcs is bounded — so largest-first trimming absorbs the
+        // cut into those.
+        context: { continuityLedger, canonStates, sceneMap, characterArcs },
         buildVars: (manuscript, _meta, c) => ({
           manuscript,
+          continuityLedger: c.continuityLedger,
           canonStates: c.canonStates,
           sceneMap: c.sceneMap,
           characterArcs: c.characterArcs,

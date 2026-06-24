@@ -36,6 +36,7 @@ import {
   declaredThemesSummary,
   canonRosterNamesSummary,
   canonCharacterStatesSummary,
+  continuityLedgerSummary,
 } from './checkRegistry.js';
 
 const NAMING = 'naming.dissimilar-names';
@@ -831,6 +832,7 @@ describe('continuity.timeline-contradiction — LLM check (#1581)', () => {
     severityDefault: 'medium',
     series: {},
     canon: { characters: [{ name: 'Mara', age: 16, status: 'deceased after Issue 3' }] },
+    continuityBible: [{ category: 'age', subject: 'Mara', statement: 'is 16', issueNumber: 1 }],
     reverseOutline: [{ sequence: 0, issueNumber: 1, heading: 'The bridge', setting: 'a bridge', charactersPresent: ['Mara'] }],
     planManuscriptChunks: async () => ['# Issue 1\n\nMara died on the bridge.'],
     callStagedLLM: async () => ({ content: { findings: [] } }),
@@ -843,7 +845,7 @@ describe('continuity.timeline-contradiction — LLM check (#1581)', () => {
     expect(check.scope).toBe('series');
     expect(check.category).toBe('continuity');
     expect(check.severityDefault).toBe('medium');
-    expect(check.sources).toEqual(['manuscript', 'canon', 'reverseOutline', 'series.characterArcs']);
+    expect(check.sources).toEqual(['manuscript', 'canon', 'continuityBible', 'reverseOutline', 'series.characterArcs']);
     expect(check.needsManuscript).toBe(true);
   });
 
@@ -853,11 +855,12 @@ describe('continuity.timeline-contradiction — LLM check (#1581)', () => {
     expect(check.gate({ manuscript: '# Issue 1\n\nprose' })).toBeTruthy();
   });
 
-  it('passes the manuscript, canon facts, and scene map to the model and forces the continuity category', async () => {
+  it('passes the manuscript, continuity ledger, canon facts, and scene map to the model and forces the continuity category', async () => {
     let seenVars = null;
     const ctx = wholeCtx({
       planManuscriptChunks: async (_stage, opts) => {
-        // Canon states + scene map + character arcs all ride as trimmable context.
+        // Continuity ledger + canon states + scene map + character arcs all ride as trimmable context.
+        expect(opts.context).toHaveProperty('continuityLedger');
         expect(opts.context).toHaveProperty('canonStates');
         expect(opts.context).toHaveProperty('sceneMap');
         expect(opts.context).toHaveProperty('characterArcs');
@@ -871,6 +874,7 @@ describe('continuity.timeline-contradiction — LLM check (#1581)', () => {
     });
     const findings = await getCheck(TIMELINE_CONTRADICTION).run(ctx);
     expect(seenVars.manuscript).toBe('# Issue 6\n\nMara walked back into the room, very much alive.');
+    expect(seenVars.continuityLedger).toContain('Mara: is 16');
     expect(seenVars.canonStates).toContain('Mara');
     expect(seenVars.canonStates).toContain('age 16');
     expect(seenVars.sceneMap).toContain('Issue 1: The bridge');
@@ -879,17 +883,47 @@ describe('continuity.timeline-contradiction — LLM check (#1581)', () => {
     expect(findings[0].location).toBe('Mara — resurrection');
   });
 
-  it('passes empty context vars when the series has no canon or outline', async () => {
+  it('passes empty context vars when the series has no ledger, canon, or outline', async () => {
     let seenVars = null;
     const ctx = wholeCtx({
       canon: undefined,
+      continuityBible: undefined,
       reverseOutline: undefined,
       callStagedLLM: async (_stage, vars) => { seenVars = vars; return { content: { findings: [] } }; },
     });
     await getCheck(TIMELINE_CONTRADICTION).run(ctx);
+    expect(seenVars.continuityLedger).toBe('');
     expect(seenVars.canonStates).toBe('');
     expect(seenVars.sceneMap).toBe('');
     expect(seenVars.characterArcs).toBe('');
+  });
+});
+
+describe('continuityLedgerSummary (#1581)', () => {
+  it('returns an empty string when there are no usable facts', () => {
+    expect(continuityLedgerSummary(null)).toBe('');
+    expect(continuityLedgerSummary(undefined)).toBe('');
+    expect(continuityLedgerSummary([])).toBe('');
+    // A fact missing a category or statement is dropped.
+    expect(continuityLedgerSummary([{ subject: 'Mara' }, { category: 'age' }])).toBe('');
+  });
+
+  it('groups facts by category in canonical order, with prettied labels and issue tags', () => {
+    const out = continuityLedgerSummary([
+      { category: 'timeline', subject: 'The crossing', statement: 'takes eight days', issueNumber: 2 },
+      { category: 'age', subject: 'Mara', statement: 'is 16' },
+    ]);
+    expect(out).toContain('Continuity bible facts');
+    // Age (canonical order) renders before Dates & elapsed time.
+    expect(out.indexOf('Ages & birthdays')).toBeLessThan(out.indexOf('Dates & elapsed time'));
+    expect(out).toContain('- Mara: is 16');
+    expect(out).toContain('- The crossing: takes eight days (Issue 2)');
+  });
+
+  it('falls back to the raw category id for an unknown (newer-peer) category and is type-guarded', () => {
+    expect(() => continuityLedgerSummary([null, 'nope', { category: 5, statement: 'x' }])).not.toThrow();
+    const out = continuityLedgerSummary([{ category: 'mood', statement: 'the tone is grim' }]);
+    expect(out).toContain('mood:\n- the tone is grim');
   });
 });
 

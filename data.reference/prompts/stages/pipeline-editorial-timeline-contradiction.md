@@ -24,6 +24,20 @@ accounts for, a flashback clearly marked as such, an unreliable narrator the
 story signals); ordinary changes a character is allowed to undergo; a fact the
 prose never actually contradicts.
 
+{{#continuityLedger}}
+## Continuity bible — established facts
+
+The continuity bible has extracted these ground-truth facts from the canon and
+prior issues (ages & birthdays, dates & elapsed time, locations, world rules,
+who-knows-what). These are the authoritative record — flag a passage that
+contradicts one, and use the dated/elapsed-time facts to judge whether the
+chronology holds.
+
+```
+{{continuityLedger}}
+```
+{{/continuityLedger}}
+
 {{#canonStates}}
 ## Established canon facts
 
