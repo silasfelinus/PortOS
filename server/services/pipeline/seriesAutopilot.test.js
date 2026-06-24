@@ -181,31 +181,35 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 // Pure resolver — the highest-value unit (no I/O, table-driven).
 // ---------------------------------------------------------------------------
-describe('provider threading helpers (#1514 — run provider is a SOFT default)', () => {
+describe('provider/model threading helpers (#1514 provider + #1558 model — both SOFT defaults)', () => {
   const record = { options: { providerOverride: 'codex', modelOverride: 'gpt-x' } };
 
-  it('providerOverrideOpts emits providerDefault (NOT a hard providerOverride) so a stage pin still wins', () => {
+  it('providerOverrideOpts emits providerDefault + modelDefault (NOT hard overrides) so a stage pin still wins', () => {
     const opts = autopilot.__testing.providerOverrideOpts(record);
     expect(opts.providerDefault).toBe('codex');
-    expect(opts.modelOverride).toBe('gpt-x');
-    // The whole point of the change: the run provider must NOT arrive as a hard
-    // tier-1 override, or it would beat a deliberate per-stage pin.
+    expect(opts.modelDefault).toBe('gpt-x');
+    // The whole point of the change: neither the run provider NOR the run model
+    // may arrive as a hard override, or it would beat a deliberate per-stage pin.
     expect(opts).not.toHaveProperty('providerOverride');
     expect(opts).not.toHaveProperty('providerId');
+    expect(opts).not.toHaveProperty('modelOverride');
   });
 
-  it('providerIdOpts emits providerIdDefault for the { providerId }-style services', () => {
+  it('providerIdOpts emits providerIdDefault + modelIdDefault for the { providerId }-style services', () => {
     const opts = autopilot.__testing.providerIdOpts(record);
     expect(opts.providerIdDefault).toBe('codex');
-    expect(opts.model).toBe('gpt-x');
+    expect(opts.modelIdDefault).toBe('gpt-x');
     expect(opts).not.toHaveProperty('providerId');
     expect(opts).not.toHaveProperty('providerOverride');
+    expect(opts).not.toHaveProperty('model');
   });
 
-  it('passes an undefined default through untouched when the run pins no provider', () => {
+  it('passes an undefined default through untouched when the run pins no provider/model', () => {
     const none = { options: {} };
     expect(autopilot.__testing.providerOverrideOpts(none).providerDefault).toBeUndefined();
+    expect(autopilot.__testing.providerOverrideOpts(none).modelDefault).toBeUndefined();
     expect(autopilot.__testing.providerIdOpts(none).providerIdDefault).toBeUndefined();
+    expect(autopilot.__testing.providerIdOpts(none).modelIdDefault).toBeUndefined();
   });
 });
 

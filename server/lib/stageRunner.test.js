@@ -315,6 +315,47 @@ describe('stageRunner — runStagedLLM provider resolution', () => {
   });
 });
 
+// Soft model-default tier (#1558): mirrors the providerDefault provider tests
+// above, one dimension over. Precedence is modelOverride (hard) > stage.model
+// (pin) > modelDefault (soft, Series Autopilot's run model) > provider default.
+// Each case asserts the model carried into the run record (out.model), which is
+// resolveEffectiveModel(provider, resolveModel(...)) for the api provider here.
+describe('stageRunner — runStagedLLM model resolution (#1558)', () => {
+  const onComplete = (text) => async ({ onData, onComplete: done }) => { onData(text); done({ success: true }); };
+
+  it('lets stage.model beat a blanket modelDefault (pin wins over the autopilot run model)', async () => {
+    prompts.getStage.mockReturnValue({ model: 'stage-model' });
+    providers.getActiveProvider.mockResolvedValue(apiProvider());
+    runner.executeApiRun.mockImplementation(onComplete('ok'));
+    const out = await runStagedLLM('s', {}, { modelDefault: 'run-model' });
+    expect(out.model).toBe('stage-model');
+  });
+
+  it('uses modelDefault when the stage has no model pin', async () => {
+    prompts.getStage.mockReturnValue(null);
+    providers.getActiveProvider.mockResolvedValue(apiProvider());
+    runner.executeApiRun.mockImplementation(onComplete('ok'));
+    const out = await runStagedLLM('s', {}, { modelDefault: 'run-model' });
+    expect(out.model).toBe('run-model');
+  });
+
+  it('lets modelOverride (hard) beat both stage.model and modelDefault', async () => {
+    prompts.getStage.mockReturnValue({ model: 'stage-model' });
+    providers.getActiveProvider.mockResolvedValue(apiProvider());
+    runner.executeApiRun.mockImplementation(onComplete('ok'));
+    const out = await runStagedLLM('s', {}, { modelOverride: 'hard-model', modelDefault: 'run-model' });
+    expect(out.model).toBe('hard-model');
+  });
+
+  it('falls through to the provider default when no override, pin, or modelDefault is set', async () => {
+    prompts.getStage.mockReturnValue(null);
+    providers.getActiveProvider.mockResolvedValue(apiProvider());
+    runner.executeApiRun.mockImplementation(onComplete('ok'));
+    const out = await runStagedLLM('s', {});
+    expect(out.model).toBe('m-default');
+  });
+});
+
 describe('stageRunner — runInlineLLM (#1346)', () => {
   it('runs a caller-supplied prompt with no stage (active provider, no buildPrompt)', async () => {
     providers.getActiveProvider.mockResolvedValue(apiProvider());

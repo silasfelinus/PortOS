@@ -499,27 +499,31 @@ async function fileGap(record, sId, { gapKind, issueId = null, summary, context 
   }
 }
 
-// Series Autopilot threads its run provider as a SOFT default, NOT a hard
-// override — so a deliberate per-stage pin (Prompts page / stage-config.json)
-// still wins for that stage, matching what verifyComicScript already does
-// (#1514). The run provider lands on stageRunner's `providerDefault` channel
-// (tier 3): it applies only to UNPINNED stages and soft-falls-through to the
-// active provider when unavailable, rather than throwing
-// PROVIDER_OVERRIDE_UNAVAILABLE the way a tier-1 override would.
+// Series Autopilot threads BOTH its run provider AND its run model as SOFT
+// defaults, NOT hard overrides — so a deliberate per-stage pin (Prompts page /
+// stage-config.json) still wins for that stage, matching what verifyComicScript
+// already does (#1514 for provider; #1558 for model). Each run-level value lands
+// on stageRunner's soft channel (`providerDefault` tier 3 / `modelDefault`): it
+// applies only to UNPINNED stages and soft-falls-through (to the active provider
+// / the provider's default model) when unavailable, rather than throwing
+// PROVIDER_OVERRIDE_UNAVAILABLE or beating a stage's deliberate `model` pin the
+// way a hard override would. Before #1558 the model was still threaded as a hard
+// `modelOverride`, which let the run model beat a pinned stage's own model.
 //
 // Two shapes because the delegated services disagree on field names: the
-// arc/episode/verify passes take `providerDefault`/`modelOverride`; the child
+// arc/episode/verify passes take `providerDefault`/`modelDefault`; the child
 // runners (volumeBeatsRunner, autoRunner) and the `providerId`-style services
-// take `providerIdDefault`/`model`. Each maps its incoming default to
-// stageRunner's `providerDefault` at the leaf call while keeping its existing
-// hard `providerOverride`/`providerId` param untouched for manual route callers.
+// take `providerIdDefault`/`modelIdDefault`. Each maps its incoming defaults to
+// stageRunner's `providerDefault`/`modelDefault` at the leaf call while keeping
+// its existing hard `providerOverride`/`providerId` + `modelOverride`/`model`
+// params untouched for manual route callers.
 const providerOverrideOpts = (record) => ({
   providerDefault: record.options.providerOverride,
-  modelOverride: record.options.modelOverride,
+  modelDefault: record.options.modelOverride,
 });
 const providerIdOpts = (record) => ({
   providerIdDefault: record.options.providerOverride,
-  model: record.options.modelOverride,
+  modelIdDefault: record.options.modelOverride,
 });
 
 // Pause result when the cos action budget is exhausted, else null. Used to gate

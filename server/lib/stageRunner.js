@@ -170,7 +170,7 @@ export function effectiveContextWindow(provider, model) {
 export async function resolveStageContext(stageName, options = {}) {
   const stage = getStage(stageName);
   const provider = await resolveProviderForStage(stage, options);
-  const requestedModel = resolveModel(provider, options.modelOverride || stage?.model);
+  const requestedModel = resolveModel(provider, options.modelOverride || stage?.model || options.modelDefault);
   const model = resolveEffectiveModel(provider, requestedModel);
   return { provider, model, contextWindow: effectiveContextWindow(provider, model) };
 }
@@ -316,7 +316,11 @@ export function extractJson(text, { promptToStrip } = {}) {
  *   - providerDefault: blanket run-level provider id used ONLY when the stage has
  *     no pin of its own; loses to stage.provider and falls through to the active
  *     provider if unavailable (see resolveProviderForStage)
- *   - modelOverride: explicit model id, beats stage.model
+ *   - modelOverride: explicit model id (hard), beats stage.model
+ *   - modelDefault: blanket run-level model id used ONLY when the stage has no
+ *     `model` pin of its own and no `modelOverride` was given; the model-dimension
+ *     analog of `providerDefault` (Series Autopilot, #1558). Precedence in
+ *     resolveModel: modelOverride > stage.model > modelDefault > provider default.
  *   - timeoutOverride: explicit ms timeout, beats stage.timeout and the provider default
  *   - returnsJson: parse `content` via `extractJson` before returning
  *   - source: free-form tag persisted on the run record (e.g. 'pipeline-text-stage',
@@ -377,7 +381,7 @@ export async function runStageScopedInlineLLM(stageName, prompt, options = {}) {
  */
 async function executeStagePrompt({ stage, label, prompt, options }) {
   const provider = await resolveProviderForStage(stage, options);
-  const resolvedModel = resolveModel(provider, options.modelOverride || stage?.model);
+  const resolvedModel = resolveModel(provider, options.modelOverride || stage?.model || options.modelDefault);
   // resolveEffectiveModel gates the override per provider type and, for
   // CLI providers with a baked --model/-m flag in args, extracts the
   // args-pinned model id so the run record + log line reflect what

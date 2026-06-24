@@ -230,10 +230,13 @@ async function buildManuscriptCorpus(seriesId) {
  *   - providerIdDefault — Series Autopilot's run provider as a SOFT default
  *     (#1349/#1514): loses to a per-stage pin and soft-falls-through to active
  *     when unavailable, unlike the hard providerId
+ *   - modelIdDefault — Series Autopilot's run model as a SOFT default (#1558):
+ *     loses to a per-stage `model` pin, the model-dimension analog of
+ *     providerIdDefault, unlike the hard model
  *   - force — re-segment even when the manuscript hash is unchanged
  *   - signal — AbortSignal checked before the persist
  */
-export async function generateReverseOutline(seriesId, { providerId, providerIdDefault, model, force = false, signal } = {}) {
+export async function generateReverseOutline(seriesId, { providerId, providerIdDefault, model, modelIdDefault, force = false, signal } = {}) {
   assertValidSeriesId(seriesId);
   const { corpus, byNumber } = await buildManuscriptCorpus(seriesId);
   if (!corpus.trim()) return { seriesId, status: 'no-content' };
@@ -251,7 +254,7 @@ export async function generateReverseOutline(seriesId, { providerId, providerIdD
   // Scale the content cap to the model's context window, reserving a manuscript
   // floor so a small/local provider window trims the corpus to fit rather than
   // overflowing on a fixed 60K floor (#1488); a big window scales up.
-  const { contextWindow } = await resolveStageContext(STAGE, { providerOverride: providerId, providerDefault: providerIdDefault, modelOverride: model });
+  const { contextWindow } = await resolveStageContext(STAGE, { providerOverride: providerId, providerDefault: providerIdDefault, modelOverride: model, modelDefault: modelIdDefault });
   const overheadTokens = 1_500 + estimateTokens([series?.name || '', series?.styleNotes || '', characterNames.join(', ')].join(' '));
   const contentMax = manuscriptContentBudgetChars({
     contextWindow,
@@ -273,6 +276,7 @@ export async function generateReverseOutline(seriesId, { providerId, providerIdD
     providerOverride: providerId,
     providerDefault: providerIdDefault,
     modelOverride: model,
+    modelDefault: modelIdDefault,
     source: 'pipeline-reverse-outline',
   });
 
