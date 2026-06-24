@@ -211,21 +211,26 @@ const roundsNote = (rounds) => (rounds === 0 ? 'skipped (0 rounds)' : `up to ${r
 // `estActions`: the number of cos actions it bills via recordDomainUsage('cos',
 // { actions }), i.e. the unit the daily budget cap gates on. Surfacing it lets a
 // user see, before starting, whether a large series will exhaust the cap on
-// text/verify and never reach editorial. Estimates are UPPER BOUNDS — convergence
-// loops counted at their max rounds (they usually converge sooner), per-item
-// steps at one action per item (retries excluded). A few steps cost nothing
-// against the cap (editorialHealthGate, canonVerify) and carry estActions: 0.
+// text/verify and never reach editorial. Estimates are approximate and lean
+// toward the high end — convergence loops counted at their max rounds (they
+// usually converge sooner), per-item steps at one action per item (retries
+// excluded). A few steps cost nothing against the cap (editorialHealthGate,
+// canonVerify) and carry estActions: 0. One known UNDER-count: the editorial
+// review's per-comment auto-fixes each bill an extra action and scale with the
+// number of blocking findings, which isn't knowable at plan time — so a heavy
+// editorial pass can exceed its estimate.
 //
 // A bounded verify→resolve convergence loop (arc, beat-continuity, editorial)
-// bills one action per verify plus one per resolve; the final round never
-// resolves (it converges or pauses). Upper bound: rounds verifies + (rounds-1)
-// resolves.
+// bills one action per verify plus (roughly) one per resolve; the final round
+// never resolves (it converges or pauses). Estimate: rounds verifies +
+// (rounds-1) resolves.
 const convergenceLoopActions = (rounds) => (rounds <= 0 ? 0 : 2 * rounds - 1);
 
 // Sum a dry-run plan's per-step estimates into run totals. `estActions` is the
 // budget-relevant total (cos daily-cap units); `estLlmCalls` aggregates the
-// check-pass fan-out (editorialChecks bills a single cos action but issues one
-// LLM call per issue×check). Pure — safe to call at broadcast time and in tests.
+// check-pass fan-out (editorialChecks bills a single cos action but issues many
+// LLM calls — see the rough proxy at its plan.push). Pure — safe to call at
+// broadcast time and in tests.
 function summarizePlanCost(plan) {
   return (Array.isArray(plan) ? plan : []).reduce(
     (acc, step) => ({
@@ -1442,9 +1447,12 @@ function buildDryRunPlan(series, issues, options, costContext = {}) {
     // the full enabled set runs.
     const editorialSubset = editorialSubsetIds(options);
     // The checks pass bills a single cos action (only when an LLM check runs) but
-    // fans out to one LLM call per issue × enabled LLM check — surface that fan-out
-    // as estLlmCalls so a large series's check cost is visible. When the caller
-    // didn't resolve the enabled-check count, assume one LLM check runs.
+    // fans out to many LLM calls. The real call count depends on how each check
+    // chunks the stitched manuscript by provider context window, so it isn't
+    // knowable at plan time — `issues × enabled LLM checks` is a rough proxy that
+    // scales with both series size and check count, surfaced so a large series's
+    // check cost is visible. When the caller didn't resolve the enabled-check
+    // count, assume one LLM check runs.
     const llmCheckCount = Number.isInteger(costContext?.editorialLlmCheckCount)
       ? costContext.editorialLlmCheckCount
       : 1;
