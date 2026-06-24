@@ -504,12 +504,13 @@ describe('dry-run plan ↔ resolveNextStep drift guard (#1577)', () => {
   const completeStep = (step, issues, runState, edRounds) => {
     switch (step.kind) {
       case 'generateArc':
-        runState.arcAttempted = true;
-        break;
       case 'generateEpisodes':
-        issues.push({ id: `auto-${step.seasonId}`, seasonId: step.seasonId, number: 99, arcPosition: 99, stages: {} });
-        runState.episodesAttempted.add(step.seasonId);
-        break;
+        // These steps CREATE downstream work (seasons / issues) that buildDryRunPlan
+        // intentionally does NOT predict from a snapshot — so a fixture that reaches
+        // them is outside this guard's plan↔resolver-parity scope and would produce a
+        // misleading false failure. Generation parity is covered by the dedicated
+        // generateArc / generateEpisodes cases above; keep these fixtures populated.
+        throw new Error(`drift guard: fixture reached "${step.kind}" — parity guard requires fully-populated fixtures (arc present + every season seeded with issues)`);
       case 'verifyArc':
         runState.arcVerified = true;
         break;
