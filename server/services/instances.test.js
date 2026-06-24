@@ -894,6 +894,44 @@ describe('instances.js', () => {
       expect(peer.directions.filter(d => d === 'outbound')).toHaveLength(1);
     });
 
+    it('heals a pre-existing inbound-only record that already adopted fullSync — a re-sent request with no flip still adopts outbound (#1636)', async () => {
+      // The population this issue exists to fix: a record that adopted fullSync (or
+      // categories) BEFORE the fix landed but stayed inbound-only, so it never
+      // back-filled. Nothing flips on a re-sent reciprocal request, so outbound
+      // adoption must drive change detection itself or the echo guard returns first.
+      const peers = [{ id: 'p1', instanceId: 'inst-A', name: 'A', directions: ['inbound'], fullSync: true, syncEnabled: true, syncCategories: {} }];
+      readJSONFile.mockResolvedValue({ self: { instanceId: 'me' }, peers });
+      const { changed, peer } = await applyReciprocalSync('inst-A', {}, { fullSync: true });
+      expect(changed).toBe(true);           // NOT echo-guarded — the missing direction is a real change
+      expect(peer.fullSync).toBe(true);     // unchanged
+      expect(peer.directions).toContain('outbound');
+    });
+
+    it('heals a pre-existing inbound-only record with an already-enabled per-record category (#1636)', async () => {
+      const peers = [{ id: 'p1', instanceId: 'inst-A', name: 'A', directions: ['inbound'], syncCategories: { universe: true }, syncEnabled: true }];
+      readJSONFile.mockResolvedValue({ self: { instanceId: 'me' }, peers });
+      const { changed, peer } = await applyReciprocalSync('inst-A', { universe: true });
+      expect(changed).toBe(true);
+      expect(peer.directions).toContain('outbound');
+    });
+
+    it('stays a no-op when a fullSync re-send arrives on a record that already pushes (echo guard intact) (#1636)', async () => {
+      const peers = [{ id: 'p1', instanceId: 'inst-A', name: 'A', directions: ['inbound', 'outbound'], fullSync: true, syncEnabled: true, syncCategories: {} }];
+      readJSONFile.mockResolvedValue({ self: { instanceId: 'me' }, peers });
+      const { changed } = await applyReciprocalSync('inst-A', {}, { fullSync: true });
+      expect(changed).toBe(false); // already outbound + already fullSync → nothing to do
+    });
+
+    it('does not adopt outbound (or report changed) for a snapshot-only category that already matches on an inbound-only peer (#1636)', async () => {
+      // brain is a snapshot category, not a per-record push kind — it doesn't gate
+      // on directions, so there's no backfill to unblock and no consent to widen.
+      const peers = [{ id: 'p1', instanceId: 'inst-A', name: 'A', directions: ['inbound'], syncCategories: { brain: true }, syncEnabled: true }];
+      readJSONFile.mockResolvedValue({ self: { instanceId: 'me' }, peers });
+      const { changed, peer } = await applyReciprocalSync('inst-A', { brain: true });
+      expect(changed).toBe(false);
+      expect(peer.directions).toEqual(['inbound']);
+    });
+
     it('disabling fullSync reciprocates fullSync:false even with an empty category map', async () => {
       // The empty-map case is the one the no-categories send guard used to drop:
       // a just-disabled mirror peer whose underlying syncCategories is empty must

@@ -872,8 +872,27 @@ export async function applyReciprocalSync(instanceId, categories, { fullSync } =
     const next = sanitized ? { ...prev, ...sanitized } : prev;
     const fullSyncFlips = wantsFullSync && entry.fullSync !== true;
     const fullSyncOffFlips = wantsFullSyncOff && entry.fullSync === true;
-    // No-op when nothing actually flips — the echo guard.
-    if (!fullSyncFlips && !fullSyncOffFlips && Object.keys(next).every(k => next[k] === prev[k])) return entry;
+    const categoriesFlip = !Object.keys(next).every(k => next[k] === prev[k]);
+    // The full-sync state once this request is applied.
+    const resultingFullSync = wantsFullSync ? true : (wantsFullSyncOff ? false : entry.fullSync === true);
+    // Does the resulting state mean we will push per-record data to this peer —
+    // full mirror, or at least one per-record category on? That is the signal that
+    // the peer's reciprocal request is consent for us to push back to it.
+    const enablesPushable = resultingFullSync || PER_RECORD_CATEGORY_KINDS.some(([cat]) => next[cat] === true);
+    const directions = Array.isArray(entry.directions) ? entry.directions : [];
+    // An `/announce`-created peer record is inbound-only (it announced to us; the
+    // user here never added it back), and `peerAllowsOutbound` then refuses our
+    // pushes — so the backfill below, every future per-record push, and reverse-
+    // subscription creation on incoming pushes would all silently no-op, leaving
+    // the mirror one-directional. An explicit reciprocal-sync request IS the peer
+    // asking us to mirror our data back — its consent to receive our pushes — so
+    // adopt `outbound`. Crucially this must hold even when nothing flips: a record
+    // that adopted fullSync/categories BEFORE this fix (#1636) but stayed inbound-
+    // only never back-fills, and the echo guard below would return first — so the
+    // missing direction has to participate in change detection to heal it.
+    const needsOutboundAdopt = enablesPushable && directions.length > 0 && !directions.includes('outbound');
+    // No-op only when nothing flips AND there's no outbound to adopt — the echo guard.
+    if (!fullSyncFlips && !fullSyncOffFlips && !categoriesFlip && !needsOutboundAdopt) return entry;
     if (fullSyncFlips || fullSyncOffFlips) {
       // A full-sync state change. fullSync alone drives gating, so the stored
       // per-category map is PRESERVED untouched — we do NOT apply the sender's
@@ -882,34 +901,31 @@ export async function applyReciprocalSync(instanceId, categories, { fullSync } =
       // receivers that don't understand fullSync fall into the category branch
       // below and mirror via the all-on overlay instead — that's its purpose.)
       entry.fullSync = fullSyncFlips; // true on adopt, false on drop
-      if (fullSyncFlips) {
-        for (const [, kind] of PER_RECORD_CATEGORY_KINDS) turnedOnKinds.push(kind);
-      }
-    } else {
-      for (const [cat, kind] of PER_RECORD_CATEGORY_KINDS) {
-        if (prev[cat] !== true && next[cat] === true) turnedOnKinds.push(kind);
-      }
+    } else if (categoriesFlip) {
       entry.syncCategories = next;
     }
+    // Adopt outbound consent from the reciprocal request (see needsOutboundAdopt).
+    // Inline rather than via markDirection — that helper opens its own withData and
+    // would deadlock on this same lock; idempotent (a peer already pushing has
+    // outbound and never reaches here, so directions.push is never a duplicate).
+    if (needsOutboundAdopt) entry.directions = [...directions, 'outbound'];
     // Recompute from the (possibly preserved) stored map — a full-sync peer is
     // always sync-enabled; otherwise it follows the per-category selection.
     entry.syncEnabled = entry.fullSync === true || Object.values(entry.syncCategories || {}).some(Boolean);
-    if (turnedOnKinds.length > 0) {
-      backfillInstanceId = entry.instanceId || null;
-      // Adopt `outbound` toward this peer (#1636). An explicit reciprocal-sync
-      // request is the peer asking us to mirror our data back to it — i.e. its
-      // consent to receive our pushes. But our record for an `/announce`-created
-      // peer is often inbound-only (it announced to us; the user here never added
-      // it), and `peerAllowsOutbound` refuses to push to an inbound-only peer — so
-      // the backfill below, every future per-record push, and reverse-subscription
-      // creation on incoming pushes would all silently no-op, leaving the mirror
-      // one-directional. Honor the peer's reciprocation request by marking outbound
-      // here, atomically with the category/fullSync adoption (a second withData via
-      // markDirection would deadlock on the same lock). Set inline rather than
-      // calling markDirection; idempotent — a peer that already pushes is untouched.
-      entry.directions = Array.isArray(entry.directions) ? entry.directions : [];
-      if (!entry.directions.includes('outbound')) entry.directions.push('outbound');
+    // Backfill every per-record kind whose push toward this peer just became
+    // viable: a kind that flipped false→true, all kinds when full mirror was just
+    // adopted, and — when we just adopted outbound on a previously inbound-only
+    // record — every kind already enabled (it was on but never pushed while we
+    // couldn't push outbound). autoSubscribePeerToAllRecords is idempotent, so a
+    // kind already subscribed is a harmless no-op.
+    for (const [cat, kind] of PER_RECORD_CATEGORY_KINDS) {
+      const enabledNow = entry.fullSync === true || !!(entry.syncCategories && entry.syncCategories[cat] === true);
+      const flippedOn = prev[cat] !== true && next[cat] === true;
+      if ((fullSyncFlips && enabledNow) || flippedOn || (needsOutboundAdopt && enabledNow)) {
+        turnedOnKinds.push(kind);
+      }
     }
+    if (turnedOnKinds.length > 0) backfillInstanceId = entry.instanceId || null;
     changed = true;
     instanceEvents.emit('peers:updated', data.peers);
     return entry;
