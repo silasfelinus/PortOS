@@ -315,6 +315,68 @@ describe('stageRunner — runStagedLLM provider resolution', () => {
   });
 });
 
+// Soft model-default tier (#1558): mirrors the providerDefault provider tests
+// above, one dimension over — but deliberately NOT symmetric. Precedence is
+// modelOverride (hard) > explicit stage.model pin > modelDefault (soft, Series
+// Autopilot's run model) > stage.model tier > provider default. The key
+// asymmetry (and the bug codex caught in review): nearly every stage carries a
+// *tier* value, which the run model MUST override — only an explicit model id is
+// a deliberate pin that beats the run model. Each case asserts the model carried
+// into the run record (out.model) = resolveEffectiveModel(provider, resolveModel(...)).
+describe('stageRunner — runStagedLLM model resolution (#1558)', () => {
+  const onComplete = (text) => async ({ onData, onComplete: done }) => { onData(text); done({ success: true }); };
+
+  it('lets an explicit stage.model pin beat a blanket modelDefault (deliberate pin wins)', async () => {
+    prompts.getStage.mockReturnValue({ model: 'pinned-model-id' });
+    providers.getActiveProvider.mockResolvedValue(apiProvider());
+    runner.executeApiRun.mockImplementation(onComplete('ok'));
+    const out = await runStagedLLM('s', {}, { modelDefault: 'run-model' });
+    expect(out.model).toBe('pinned-model-id');
+  });
+
+  it('lets modelDefault OVERRIDE a stage TIER value (the run model applies to unpinned/tier stages)', async () => {
+    // A tier (default/quick/coding/heavy) is NOT a deliberate pin — the run model
+    // must win, else launching autopilot with a model is a no-op on ~every stage.
+    prompts.getStage.mockReturnValue({ model: 'heavy' });
+    providers.getActiveProvider.mockResolvedValue(apiProvider({ heavyModel: 'h' }));
+    runner.executeApiRun.mockImplementation(onComplete('ok'));
+    const out = await runStagedLLM('s', {}, { modelDefault: 'run-model' });
+    expect(out.model).toBe('run-model');
+  });
+
+  it('resolves a stage TIER normally when no modelDefault is set (unchanged behavior)', async () => {
+    prompts.getStage.mockReturnValue({ model: 'heavy' });
+    providers.getActiveProvider.mockResolvedValue(apiProvider({ heavyModel: 'h' }));
+    runner.executeApiRun.mockImplementation(onComplete('ok'));
+    const out = await runStagedLLM('s', {});
+    expect(out.model).toBe('h');
+  });
+
+  it('uses modelDefault when the stage has no model field at all', async () => {
+    prompts.getStage.mockReturnValue(null);
+    providers.getActiveProvider.mockResolvedValue(apiProvider());
+    runner.executeApiRun.mockImplementation(onComplete('ok'));
+    const out = await runStagedLLM('s', {}, { modelDefault: 'run-model' });
+    expect(out.model).toBe('run-model');
+  });
+
+  it('lets modelOverride (hard) beat an explicit pin, a tier, and modelDefault', async () => {
+    prompts.getStage.mockReturnValue({ model: 'pinned-model-id' });
+    providers.getActiveProvider.mockResolvedValue(apiProvider());
+    runner.executeApiRun.mockImplementation(onComplete('ok'));
+    const out = await runStagedLLM('s', {}, { modelOverride: 'hard-model', modelDefault: 'run-model' });
+    expect(out.model).toBe('hard-model');
+  });
+
+  it('falls through to the provider default when no override, pin, tier, or modelDefault is set', async () => {
+    prompts.getStage.mockReturnValue(null);
+    providers.getActiveProvider.mockResolvedValue(apiProvider());
+    runner.executeApiRun.mockImplementation(onComplete('ok'));
+    const out = await runStagedLLM('s', {});
+    expect(out.model).toBe('m-default');
+  });
+});
+
 describe('stageRunner — runInlineLLM (#1346)', () => {
   it('runs a caller-supplied prompt with no stage (active provider, no buildPrompt)', async () => {
     providers.getActiveProvider.mockResolvedValue(apiProvider());

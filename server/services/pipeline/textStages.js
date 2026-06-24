@@ -501,6 +501,10 @@ export async function generateStage(issueId, stageId, options = {}) {
       // providerIdDefault (soft).
       providerDefault: options.providerIdDefault,
       modelOverride: options.model,
+      // Soft run-level model default (Series Autopilot, #1558): loses to a
+      // per-stage `model` pin, mirroring providerIdDefault. Route callers pass
+      // model (hard); autopilot passes modelIdDefault (soft).
+      modelDefault: options.modelIdDefault,
       source: 'pipeline-text-stage',
     });
   } catch (err) {
@@ -551,12 +555,18 @@ export async function generateStage(issueId, stageId, options = {}) {
     // forwarded (not a series.llm fallback) so the banner can't misreport which
     // provider failed. Empty string = "used the default/active provider".
     const extractProvider = options.providerId ?? options.providerIdDefault;
+    // Mirror the provider fallback for the model dimension (#1558): the hard
+    // route model wins, else the autopilot's soft run model — so the just-
+    // generated prose extracts canon on the run's model, not the active
+    // provider's default. extractCanonFromProse takes a hard modelOverride (it
+    // has no stage pins of its own).
+    const extractModel = options.model ?? options.modelIdDefault;
     const provider = extractProvider || '';
-    const model = options.model || '';
+    const model = extractModel || '';
     const marker = await extractCanonFromProse(series.universeId, {
       corpus: output,
       providerOverride: extractProvider,
-      modelOverride: options.model,
+      modelOverride: extractModel,
       parallel: true,
       autoLock: true,
       sourceSeriesId: series.id,

@@ -192,15 +192,16 @@ function mergeVerifyIssues(first, second) {
  * `{ issues:[{severity,location,problem,suggestion}], raw, runId, providerId,
  * model }`, or `{ issues: [], skipped }` when there's no comic script to check.
  */
-// `providerIdDefault` here is Series Autopilot's blanket run provider, NOT a
-// per-call demand for this specific stage — so it's threaded as a
-// `providerDefault`. That lets a deliberate `pipeline-script-verify` provider
-// pin (Prompts page) win, e.g. running the craft pass on Codex while the rest
-// of the run uses another provider, while an unpinned stage still follows the
-// run's chosen provider. (Autopilot is the only caller; #1514 renamed the field
-// from `providerId` to match the soft-default channel used by every other
-// autopilot-driven stage.)
-export async function verifyComicScript(issueId, { providerIdDefault, model } = {}) {
+// `providerIdDefault` / `modelIdDefault` here are Series Autopilot's blanket run
+// provider/model, NOT a per-call demand for this specific stage — so they're
+// threaded as a soft `providerDefault` / `modelDefault`. That lets a deliberate
+// `pipeline-script-verify` provider/model pin (Prompts page) win, e.g. running
+// the craft pass on Codex while the rest of the run uses another provider, while
+// an unpinned stage still follows the run's chosen provider/model. (Autopilot is
+// the only caller; #1514 renamed the provider field from `providerId` to match
+// the soft-default channel, and #1558 did the same for the model — `modelIdDefault`
+// replaces the old hard `model` so a pinned stage's own model is no longer beaten.)
+export async function verifyComicScript(issueId, { providerIdDefault, modelIdDefault } = {}) {
   const issue = await getIssue(issueId);
   const script = (issue.stages?.comicScript?.output || '').trim();
   if (!script) return { issues: [], skipped: 'no-comic-script' };
@@ -212,7 +213,7 @@ export async function verifyComicScript(issueId, { providerIdDefault, model } = 
   // manuscript floor so a small/local provider window trims the script to fit
   // rather than overflowing on a fixed 48K floor (#1488); a big-context model gets
   // the whole script.
-  const { contextWindow } = await resolveStageContext(STAGE, { providerDefault: providerIdDefault, modelOverride: model });
+  const { contextWindow } = await resolveStageContext(STAGE, { providerDefault: providerIdDefault, modelDefault: modelIdDefault });
   const overheadTokens = 1_200 + estimateTokens([series?.name, series?.logline, issue.title].filter(Boolean).join(' '));
   const contentMax = manuscriptContentBudgetChars({
     contextWindow,
@@ -232,7 +233,7 @@ export async function verifyComicScript(issueId, { providerIdDefault, model } = 
   const { content: parsed, runId, providerId: pid, model: m } = await runStagedLLM(STAGE, ctx, {
     returnsJson: true,
     providerDefault: providerIdDefault,
-    modelOverride: model,
+    modelDefault: modelIdDefault,
     source: 'pipeline-script-verify',
   });
 

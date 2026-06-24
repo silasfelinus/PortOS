@@ -224,6 +224,7 @@ export async function analyzeManuscriptCompleteness(seriesId, options = {}) {
     providerOverride: options.providerOverride,
     providerDefault: options.providerDefault,
     modelOverride: options.modelOverride,
+    modelDefault: options.modelDefault,
   });
   const outputReserveTokens = withEdits
     ? COMPLETENESS_WITH_EDITS_OUTPUT_RESERVE_TOKENS
@@ -265,6 +266,7 @@ export async function analyzeManuscriptCompleteness(seriesId, options = {}) {
     providerOverride: options.providerOverride,
     providerDefault: options.providerDefault,
     modelOverride: options.modelOverride,
+    modelDefault: options.modelDefault,
     returnsJson: true,
     source: 'pipeline-manuscript-completeness',
   });
