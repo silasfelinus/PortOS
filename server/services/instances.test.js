@@ -932,6 +932,19 @@ describe('instances.js', () => {
       expect(peer.directions).toEqual(['inbound']);
     });
 
+    it('a snapshot-only reciprocal request does NOT widen outbound just because a per-record category is already enabled locally (#1636)', async () => {
+      // Consent is scoped to THIS request: reciprocating `goals` (a snapshot
+      // category) must not opportunistically start pushing the locally-enabled
+      // `universe` records back — the peer never asked us to mirror universe here.
+      const peers = [{ id: 'p1', instanceId: 'inst-A', name: 'A', directions: ['inbound'], syncCategories: { universe: true }, syncEnabled: true }];
+      readJSONFile.mockResolvedValue({ self: { instanceId: 'me' }, peers });
+      const { changed, peer } = await applyReciprocalSync('inst-A', { goals: true });
+      expect(changed).toBe(true);                 // goals (snapshot) was enabled
+      expect(peer.syncCategories.goals).toBe(true);
+      expect(peer.syncCategories.universe).toBe(true); // preserved
+      expect(peer.directions).toEqual(['inbound']);    // NOT widened to outbound
+    });
+
     it('disabling fullSync reciprocates fullSync:false even with an empty category map', async () => {
       // The empty-map case is the one the no-categories send guard used to drop:
       // a just-disabled mirror peer whose underlying syncCategories is empty must

@@ -873,12 +873,15 @@ export async function applyReciprocalSync(instanceId, categories, { fullSync } =
     const fullSyncFlips = wantsFullSync && entry.fullSync !== true;
     const fullSyncOffFlips = wantsFullSyncOff && entry.fullSync === true;
     const categoriesFlip = !Object.keys(next).every(k => next[k] === prev[k]);
-    // The full-sync state once this request is applied.
-    const resultingFullSync = wantsFullSync ? true : (wantsFullSyncOff ? false : entry.fullSync === true);
-    // Does the resulting state mean we will push per-record data to this peer —
-    // full mirror, or at least one per-record category on? That is the signal that
-    // the peer's reciprocal request is consent for us to push back to it.
-    const enablesPushable = resultingFullSync || PER_RECORD_CATEGORY_KINDS.some(([cat]) => next[cat] === true);
+    // Does THIS reciprocal request itself ask us to push per-record data back —
+    // full mirror, or at least one per-record category carried IN the request?
+    // Scope the consent decision to what the peer asked for this time (wantsFullSync
+    // / sanitized), NOT the preserved `next` map: a request that only reciprocates a
+    // snapshot category (or a per-record kind we merely happen to already have on
+    // locally) must not silently widen us to push every locally-enabled kind back.
+    // The request is the consent signal, so it also scopes what that consent covers.
+    const requestEnablesPushable = wantsFullSync
+      || (sanitized ? PER_RECORD_CATEGORY_KINDS.some(([cat]) => sanitized[cat] === true) : false);
     const directions = Array.isArray(entry.directions) ? entry.directions : [];
     // An `/announce`-created peer record is inbound-only (it announced to us; the
     // user here never added it back), and `peerAllowsOutbound` then refuses our
@@ -890,7 +893,7 @@ export async function applyReciprocalSync(instanceId, categories, { fullSync } =
     // that adopted fullSync/categories BEFORE this fix (#1636) but stayed inbound-
     // only never back-fills, and the echo guard below would return first — so the
     // missing direction has to participate in change detection to heal it.
-    const needsOutboundAdopt = enablesPushable && directions.length > 0 && !directions.includes('outbound');
+    const needsOutboundAdopt = requestEnablesPushable && directions.length > 0 && !directions.includes('outbound');
     // No-op only when nothing flips AND there's no outbound to adopt — the echo guard.
     if (!fullSyncFlips && !fullSyncOffFlips && !categoriesFlip && !needsOutboundAdopt) return entry;
     if (fullSyncFlips || fullSyncOffFlips) {
@@ -921,7 +924,11 @@ export async function applyReciprocalSync(instanceId, categories, { fullSync } =
     for (const [cat, kind] of PER_RECORD_CATEGORY_KINDS) {
       const enabledNow = entry.fullSync === true || !!(entry.syncCategories && entry.syncCategories[cat] === true);
       const flippedOn = prev[cat] !== true && next[cat] === true;
-      if ((fullSyncFlips && enabledNow) || flippedOn || (needsOutboundAdopt && enabledNow)) {
+      // On a heal (outbound just adopted, no flip) only back-fill kinds THIS request
+      // enabled — full mirror, or the specific per-record category it carried — so a
+      // heal never pushes a kind the current request didn't authorize.
+      const requestEnablesKind = wantsFullSync || !!(sanitized && sanitized[cat] === true);
+      if ((fullSyncFlips && enabledNow) || flippedOn || (needsOutboundAdopt && enabledNow && requestEnablesKind)) {
         turnedOnKinds.push(kind);
       }
     }
