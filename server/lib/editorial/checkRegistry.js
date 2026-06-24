@@ -313,6 +313,50 @@ export function characterVoiceProfiles(canon) {
   return `Authored character voices (canon speechPattern / speechAccent):\n${lines.join('\n')}`;
 }
 
+// Render each canon character's contradiction-relevant FACTS into a compact text
+// block the timeline / canon-contradiction check (#1581) passes alongside the
+// manuscript, so the model can reconcile the prose against the established bible:
+// a character the bible records at age 16 who reads "in her 30s" on the page, a
+// role/status the prose contradicts, or a description the prose breaks. Pure +
+// deterministic so it's unit-testable and its token cost can be counted into the
+// per-chunk overhead. Type-guarded throughout (canon rides peer sync, so a
+// hand-edited / older-peer character could carry a non-string field a bare
+// `.trim()` would throw on — and `age` is commonly stored as a number). Reuses
+// `characterNameTokens` so name + aliases render with the same trim/de-dup the
+// matcher uses. Returns '' when no character carries both a usable name AND a
+// renderable fact (the prompt's `{{#canonStates}}` section then renders nothing
+// and the check reasons from the prose + scene map alone).
+const CANON_STATE_FACT_CHARS = 240;
+export function canonCharacterStatesSummary(canon) {
+  const chars = Array.isArray(canon?.characters) ? canon.characters : [];
+  const cleanStr = (v) => (typeof v === 'string' ? v.trim() : '');
+  const rows = [];
+  for (const c of chars) {
+    if (!c || typeof c !== 'object') continue;
+    // Require a real name — an alias-only row isn't a named character (mirrors
+    // canonRosterNamesSummary, which skips nameless rows). characterNameTokens then
+    // returns the trimmed name first, followed by de-duped aliases.
+    if (typeof c.name !== 'string' || !c.name.trim()) continue;
+    const [name, ...aliases] = characterNameTokens(c);
+    const facts = [];
+    // `age` is often a number in the bible — accept a finite number or a non-empty string.
+    const age = typeof c.age === 'number' && Number.isFinite(c.age) ? String(c.age) : cleanStr(c.age);
+    if (age) facts.push(`age ${age}`);
+    const role = cleanStr(c.role);
+    if (role) facts.push(`role: ${role}`);
+    const status = cleanStr(c.status);
+    if (status) facts.push(`status: ${status}`);
+    // physicalDescription is the richer bible field; fall back to a generic description.
+    const description = (cleanStr(c.physicalDescription) || cleanStr(c.description)).slice(0, CANON_STATE_FACT_CHARS);
+    if (description) facts.push(`described as: ${description}`);
+    if (!facts.length) continue;
+    const who = aliases.length ? `${name} (also: ${aliases.join(', ')})` : name;
+    rows.push(`- ${who} — ${facts.join('; ')}`);
+  }
+  if (!rows.length) return '';
+  return `Canon character facts (the established bible — reconcile the prose against these):\n${rows.join('\n')}`;
+}
+
 // Stage name for the plot-structure & momentum LLM check (#1310). Ships in
 // data.reference/prompts/stages/ + stage-config.json (fresh installs via
 // setup-data.js) and migrates to existing installs via migration 111 (boot runs
@@ -322,6 +366,16 @@ export function characterVoiceProfiles(canon) {
 // deus ex machina, idiot plot, flat/unclear stakes, sagging middle, and dropped
 // subplots reconciled against the tagged plotlines.
 export const PLOT_STRUCTURE_STAGE = 'pipeline-editorial-plot-structure';
+
+// Stage name for the timeline / canon-contradiction LLM check (#1581). Ships in
+// data.reference/prompts/stages/ + stage-config.json (fresh installs via
+// setup-data.js) and migrates to existing installs via migration 129 (boot runs
+// migrations but NOT setup-data, so the migration is required). Reads the stitched
+// manuscript plus the established canon character facts, the reverse-outline scene
+// ordering, and the authored per-character arcs to surface internal contradictions
+// — a dead character who reappears alive, an age that contradicts the bible, or an
+// impossible chronology.
+export const TIMELINE_CONTRADICTION_STAGE = 'pipeline-editorial-timeline-contradiction';
 
 // Stage name for the head-hopping / POV-discipline LLM check (#1311). Ships in
 // data.reference/prompts/stages/ + stage-config.json (fresh installs via
@@ -2826,6 +2880,76 @@ export const EDITORIAL_CHECKS = [
         // largest-first trimming absorbs the cut into povMap and keeps povPerson.
         context: { povMap, povPerson },
         buildVars: (manuscript, _meta, c) => ({ manuscript, povMap: c.povMap, povPerson: c.povPerson }),
+      });
+    },
+  },
+  {
+    id: 'continuity.timeline-contradiction',
+    sources: ['manuscript', 'canon', 'reverseOutline', 'series.characterArcs'],
+    label: 'Timeline / canon contradiction',
+    description:
+      'LLM scan for internal contradictions against canon and chronology: a character who dies and later reappears alive without explanation, an age contradiction (the bible says 16, the prose says "in her 30s"), or an impossible timeline (an event dated day 2 that characters needed 8 days to reach). Reconciles the prose against the established canon character facts, the reverse-outline scene ordering, and the authored per-character arc start/end states; degrades to a prose-only scan when no canon or outline exists.',
+    scope: 'series',
+    kind: 'llm',
+    category: 'continuity',
+    // Fallback severity when the model omits one — kept 'medium' to match the
+    // sibling continuity/narrative LLM checks. The prompt directs the model to
+    // mark a plot-breaking resurrection or impossible timeline 'high' per finding,
+    // so genuinely-fatal contradictions still surface as high.
+    severityDefault: 'medium',
+    defaultEnabled: true,
+    // Reads the stitched manuscript corpus — so the runner only pays the
+    // section-collection I/O when a manuscript-consuming check is enabled.
+    needsManuscript: true,
+    configSchema: z.object({
+      // Cap findings per run so a long manuscript can't flood the review.
+      maxFindings: z.number().int().min(1).max(50).default(12),
+    }),
+    configFields: [
+      {
+        key: 'maxFindings',
+        label: 'Max findings per run',
+        type: 'number',
+        min: 1,
+        max: 50,
+        step: 1,
+        help: 'Cap findings so a long manuscript can not flood the review.',
+      },
+    ],
+    gate: (ctx) => (ctx.manuscript || '').trim().length > 0,
+    run: (ctx) => {
+      // All three blocks are fixed per-call overhead (re-sent on each chunk) and
+      // pure context: the canon facts let the model catch age/status/identity
+      // contradictions, the scene map gives the chronology to catch impossible
+      // timelines and resurrection-without-explanation, and the authored arcs give
+      // each character's intended start → end state. The check degrades
+      // gracefully — no canon ⇒ {{#canonStates}} renders nothing; no outline ⇒
+      // {{#sceneMap}} renders nothing; no authored arcs ⇒ {{#characterArcs}}
+      // renders nothing and the model reasons from the prose alone.
+      const canonStates = canonCharacterStatesSummary(ctx.canon);
+      const sceneMap = sceneGroundingSummary(ctx.reverseOutline);
+      const characterArcs = renderCharacterArcsForPrompt(ctx.series?.characterArcs) || '';
+      return runManuscriptLlmCheck(ctx, {
+        stage: TIMELINE_CONTRADICTION_STAGE,
+        category: 'continuity',
+        // canonStates + sceneMap grow with cast/scene count; characterArcs is
+        // bounded — so largest-first trimming absorbs the cut into those.
+        context: { canonStates, sceneMap, characterArcs },
+        buildVars: (manuscript, _meta, c) => ({
+          manuscript,
+          canonStates: c.canonStates,
+          sceneMap: c.sceneMap,
+          characterArcs: c.characterArcs,
+        }),
+        // A contradiction spans the manuscript — a death in an early chunk and a
+        // resurrection in a later one are only visible together. The findings
+        // digest keeps prior findings in view so a later chunk doesn't re-flag,
+        // and the clean-setup digest rolls each character's last-known state
+        // forward so a later chunk can catch a state that silently flips.
+        crossChunkDigest: true,
+        crossChunkSetup: true,
+        setupFocus:
+          'For each named character, note their last-established state a later part must stay consistent with: alive or dead (and how/when), stated or implied age, and current location — plus any dated events and the elapsed time between them. Carry these forward so a later chunk can catch a character who reappears alive after dying, an age that contradicts an earlier one, or an impossible chronology.',
       });
     },
   },
