@@ -33,7 +33,6 @@ export const DEFAULT_CONFIG = {
   userTasksFile: 'data/TASKS.md',
   cosTasksFile: 'data/COS-TASKS.md',
   goalsFile: 'GOALS.md',
-  evaluationIntervalMs: 60000,
   healthCheckIntervalMs: 900000,
   maxConcurrentAgents: 3,
   maxConcurrentAgentsPerProject: 2,
@@ -186,6 +185,14 @@ export async function loadState() {
     persistedConfig.improvementEnabled =
       persistedConfig.selfImprovementEnabled || persistedConfig.appImprovementEnabled;
   }
+
+  // Drop the retired `evaluationIntervalMs` key on read. CoS evaluation became
+  // event-driven (the periodic evaluateTasks() timer was removed), so the field
+  // no longer exists in DEFAULT_CONFIG or the (strict) update schema. Upgraded
+  // installs still carry it in state.json; stripping it here keeps GET /config
+  // from re-emitting a key the strict PUT schema would now reject on a full
+  // round-trip, and purges it from disk on the next saveState.
+  delete persistedConfig.evaluationIntervalMs;
 
   stateCache = {
     ...DEFAULT_STATE,
