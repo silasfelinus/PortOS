@@ -42,6 +42,7 @@ import {
   findCrutchWords,
   findAdverbs,
   findPassiveVoice,
+  filterPassiveVoice,
   findGestures,
 } from './proseTics.js';
 import {
@@ -4956,7 +4957,7 @@ export const EDITORIAL_CHECKS = [
     sources: ['manuscript'],
     label: 'Passive voice (overuse)',
     description:
-      'Advisory flag for passive-voice overuse — a be-verb + past participle heuristic ("the door was opened", "mistakes were made"). Density-scaled per-1000-word frequency; passive voice is a legitimate choice, so this only flags when the rate is high.',
+      'Advisory flag for passive-voice overuse — a be-verb + past participle heuristic ("the door was opened", "mistakes were made"). Density-scaled per-1000-word frequency; passive voice is a legitimate choice, so this only flags when the rate is high. A context-tuning pass (#1593) reduces false positives by default: predicate-adjective states ("she was exhausted") and setting/weather mood images ("the sky was streaked") are not counted as weak passive, while an explicit "by <agent>" always counts.',
     scope: 'issue',
     kind: 'deterministic',
     category: 'style',
@@ -4966,14 +4967,16 @@ export const EDITORIAL_CHECKS = [
     configSchema: z.object({
       densityPer1000: z.number().min(0).max(50).default(10),
       maxFindings: z.number().int().min(1).max(50).default(20),
+      suppressIntentional: z.boolean().default(true),
     }),
     configFields: [
       { key: 'densityPer1000', label: 'Passive-voice rate to flag (per 1000 words)', type: 'number', min: 0, max: 50, step: 1, help: 'Flag a section whose passive-construction frequency per 1000 words is at or above this. Advisory — passive voice is sometimes the right choice.' },
       { key: 'maxFindings', label: 'Max findings per run', type: 'number', min: 1, max: 50, step: 1, help: 'Cap findings so a heavy draft can not flood the review.' },
+      { key: 'suppressIntentional', label: 'Suppress intentional passive', type: 'boolean', help: 'On by default — skip predicate-adjective states ("she was exhausted") and setting/weather mood images ("the sky was streaked"), which are rarely weak passive. Turn off to count every be-verb + participle (the raw heuristic).' },
     ],
     gate: (ctx) => (ctx.manuscript || '').trim().length > 0,
     run: (ctx) => runDensityCheck(ctx, {
-      scan: (text) => findPassiveVoice(text),
+      scan: (text, cfg) => filterPassiveVoice(findPassiveVoice(text), { suppressIntentional: cfg?.suppressIntentional !== false }),
       noun: 'passive constructions',
       problem: (count, rate, anchor) => `${count} passive construction${count === 1 ? '' : 's'} (e.g. "${anchor}") — about ${rate}/1000 words. Heavy passive voice distances the reader from who is acting.`,
       suggestion: 'Rephrase to active voice where it sharpens the prose ("the door was opened by Sam" → "Sam opened the door"). Keep passive where the actor is unknown or beside the point.',

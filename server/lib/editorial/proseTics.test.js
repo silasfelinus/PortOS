@@ -6,6 +6,7 @@ import {
   findCrutchWords,
   findAdverbs,
   findPassiveVoice,
+  filterPassiveVoice,
   findGestures,
   FILTER_WORDS,
   CRUTCH_WORDS,
@@ -149,6 +150,47 @@ describe('findPassiveVoice', () => {
 
   it('does not flag a be-verb with no participle', () => {
     expect(findPassiveVoice('She was happy.')).toEqual([]);
+  });
+
+  it('classifies an agentive passive as weak', () => {
+    const [hit] = findPassiveVoice('The door was opened by Sam.');
+    expect(hit.classification).toBe('weak');
+    expect(hit.byAgent).toBe(true);
+  });
+
+  it('classifies a predicate-adjective state as stative', () => {
+    const [hit] = findPassiveVoice('She was exhausted.');
+    expect(hit.classification).toBe('stative');
+    expect(hit.byAgent).toBe(false);
+  });
+
+  it('classifies a setting/weather subject as mood', () => {
+    const [hit] = findPassiveVoice('The sky was streaked with red.');
+    expect(hit.classification).toBe('mood');
+  });
+
+  it('an explicit "by <agent>" overrides a stative participle to weak', () => {
+    const [hit] = findPassiveVoice('She was exhausted by the climb.');
+    expect(hit.byAgent).toBe(true);
+    expect(hit.classification).toBe('weak');
+  });
+});
+
+describe('filterPassiveVoice', () => {
+  const text = 'The door was opened by Sam. She was exhausted. The sky was streaked with red.';
+
+  it('keeps only weak passive by default (drops stative + mood)', () => {
+    const kept = filterPassiveVoice(findPassiveVoice(text));
+    expect(kept.map((h) => h.classification)).toEqual(['weak']);
+  });
+
+  it('keeps every candidate when suppressIntentional is off (raw heuristic)', () => {
+    const kept = filterPassiveVoice(findPassiveVoice(text), { suppressIntentional: false });
+    expect(kept.length).toBe(3);
+  });
+
+  it('tolerates a non-array input', () => {
+    expect(filterPassiveVoice(null)).toEqual([]);
   });
 });
 

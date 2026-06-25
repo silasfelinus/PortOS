@@ -82,6 +82,43 @@ const BE_VERBS = Object.freeze([
   'is', 'are', 'was', 'were', 'be', 'been', 'being', 'am',
 ]);
 
+// Setting / weather / atmosphere subjects (#1593). When the grammatical subject
+// of a be-verb + participle is one of these, the construction is almost always an
+// intentional mood/atmosphere image ("the sky was streaked with red", "the room
+// was bathed in light", "the street was lined with trees") rather than a weak
+// agentive passive. Classified `mood` so the check can suppress/downgrade it.
+const SETTING_SUBJECTS = new Set([
+  'sky', 'skies', 'sun', 'moon', 'stars', 'star', 'light', 'lights', 'sunlight',
+  'moonlight', 'starlight', 'dawn', 'dusk', 'twilight', 'horizon', 'rain', 'snow',
+  'wind', 'winds', 'air', 'fog', 'mist', 'haze', 'cloud', 'clouds', 'storm',
+  'world', 'ground', 'earth', 'floor', 'ceiling', 'wall', 'walls', 'room',
+  'hall', 'street', 'streets', 'road', 'path', 'valley', 'mountain', 'mountains',
+  'hills', 'hill', 'forest', 'woods', 'sea', 'ocean', 'water', 'waters', 'river',
+  'lake', 'field', 'fields', 'garden', 'meadow', 'landscape', 'silence', 'quiet',
+  'darkness', 'shadow', 'shadows', 'night', 'morning', 'evening', 'afternoon',
+  'day', 'sunset', 'sunrise', 'surface', 'distance', 'town', 'city', 'village',
+]);
+
+// Stative / predicate-adjective participles (#1593). A be-verb + one of these
+// reads as a state-of-being adjective ("she was exhausted", "he was determined",
+// "the bread was gone"), not an agentive passive — the dominant false-positive
+// class for the be-verb + past-participle heuristic. Curated to entries that are
+// overwhelmingly adjectival as a predicate; classified `stative` so the check can
+// suppress them by default. (A trailing "by <agent>" overrides this to `weak`.)
+const STATIVE_PARTICIPLES = new Set([
+  // Emotional / mental states
+  'tired', 'exhausted', 'worried', 'scared', 'frightened', 'terrified',
+  'excited', 'interested', 'bored', 'confused', 'surprised', 'amazed',
+  'astonished', 'pleased', 'satisfied', 'delighted', 'annoyed', 'frustrated',
+  'embarrassed', 'ashamed', 'relieved', 'concerned', 'determined', 'depressed',
+  'devastated', 'overwhelmed', 'thrilled', 'disappointed', 'shocked', 'stunned',
+  'intrigued', 'fascinated', 'alarmed', 'troubled', 'convinced', 'resigned',
+  'accustomed', 'amused', 'comforted', 'distracted', 'flustered',
+  // Physical / positional states
+  'gone', 'dressed', 'seated', 'married', 'finished', 'done', 'located',
+  'situated', 'positioned', 'prepared', 'gathered',
+]);
+
 // Irregular past participles the -ed suffix rule misses. Not exhaustive — the
 // passive check is advisory, so a missed participle just under-flags (safe).
 const IRREGULAR_PARTICIPLES = new Set([
@@ -267,13 +304,31 @@ function isPastParticiple(lower) {
   return lower.length >= 4 && lower.endsWith('ed');
 }
 
+// Whether the subject governing a be-verb at token index `i` is a setting noun.
+// The subject is the token right before the be-verb ("the sky was", "her eyes
+// were" → "sky"/"eyes"), so a known setting/atmosphere noun there marks the
+// construction as an intentional mood image.
+function hasSettingSubject(tokens, i) {
+  return i > 0 && SETTING_SUBJECTS.has(tokens[i - 1].lower);
+}
+
 /**
  * Passive-voice candidates: a be-verb followed (allowing up to two intervening
  * adverbs) by a past participle — "was broken", "is quietly forgotten". A
  * heuristic, advisory only; returns the be-verb…participle span anchored.
  *
+ * Each candidate is classified (#1593) so the check can suppress likely-intentional
+ * passives and keep the cheap heuristic as the base tier:
+ *   - `'weak'`    — a genuine agentive passive ("the door was opened"); always
+ *                   `'weak'` when a "by <agent>" phrase follows the participle.
+ *   - `'stative'` — a predicate-adjective state of being ("she was exhausted"),
+ *                   not an action done to the subject — the dominant FP class.
+ *   - `'mood'`    — a setting/weather/atmosphere image ("the sky was streaked"),
+ *                   intentional passive for mood rather than weak prose.
+ * `byAgent` is true when an explicit "by <agent>" follows the participle.
+ *
  * @param {string} text
- * @returns {Array<{ index: number, anchor: string, be: string, participle: string }>}
+ * @returns {Array<{ index: number, anchor: string, be: string, participle: string, classification: ('weak'|'stative'|'mood'), byAgent: boolean }>}
  */
 export function findPassiveVoice(text) {
   const tokens = tokenizeWords(text);
@@ -289,11 +344,31 @@ export function findPassiveVoice(text) {
     if (j < tokens.length && isPastParticiple(tokens[j].lower) && !beSet.has(tokens[j].lower)) {
       const start = tokens[i].index;
       const end = tokens[j].index + tokens[j].word.length;
-      out.push({ index: start, anchor: text.slice(start, end), be: tokens[i].lower, participle: tokens[j].lower });
+      const participle = tokens[j].lower;
+      // An explicit "by <agent>" right after the participle is the unambiguous
+      // agentive passive — it wins over stative/mood classification.
+      const byAgent = j + 2 < tokens.length && tokens[j + 1].lower === 'by';
+      let classification = 'weak';
+      if (!byAgent) {
+        if (hasSettingSubject(tokens, i)) classification = 'mood';
+        else if (STATIVE_PARTICIPLES.has(participle)) classification = 'stative';
+      }
+      out.push({ index: start, anchor: text.slice(start, end), be: tokens[i].lower, participle, classification, byAgent });
       i = j; // don't re-anchor the same participle
     }
   }
   return out;
+}
+
+// Filter passive-voice candidates for the density check (#1593). With
+// `suppressIntentional` (the default), only genuine `'weak'` agentive passives
+// are counted — `'stative'` predicate-adjectives and `'mood'` setting images are
+// dropped as intentional. Set it false to fall back to the raw heuristic (count
+// every be-verb + participle). Pure so the check and tests share one filter.
+export function filterPassiveVoice(hits, { suppressIntentional = true } = {}) {
+  if (!Array.isArray(hits)) return [];
+  if (!suppressIntentional) return hits;
+  return hits.filter((h) => h.classification === 'weak');
 }
 
 // Generate the regular inflections of a base verb: the base, +s, +ed/+d,
