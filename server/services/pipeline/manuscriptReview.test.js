@@ -376,14 +376,16 @@ describe('manuscriptReview — authoritative severity override re-grade (#1596)'
     expect(second.comments[0].severity).toBe('high');
   });
 
-  it('leaves severity untouched (no churn) when the check has no override', async () => {
-    const first = await seedReviewFromFindings('ser-sev-nopin', [finding('low')]);
-    const stamp = first.comments[0].updatedAt;
-    // A re-surface carrying a different native severity but NO override must not
-    // flip the persisted level (avoids run-to-run LLM-variance churn).
-    const second = await seedReviewFromFindings('ser-sev-nopin', [finding('high')]);
-    expect(second.comments[0].severity).toBe('low'); // unchanged
-    expect(second.comments[0].updatedAt).toBe(stamp); // no rewrite
+  it('re-grades a re-surfaced open comment back to native when a pin is CLEARED', async () => {
+    // Pinned to high.
+    await seedReviewFromFindings('ser-sev-clear', [finding('high')], {
+      severityOverrides: { 'prose.adverb-density': 'high' },
+    });
+    // Pin cleared (no override map) and the finding re-surfaces at its native
+    // 'low' level — the comment must drop back to 'low', not stay stuck at 'high'.
+    const second = await seedReviewFromFindings('ser-sev-clear', [finding('low')]);
+    expect(second.comments).toHaveLength(1);
+    expect(second.comments[0].severity).toBe('low');
   });
 
   it('does NOT churn updatedAt when the pinned level already matches', async () => {

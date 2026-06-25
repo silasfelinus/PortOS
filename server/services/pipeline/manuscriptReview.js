@@ -265,20 +265,26 @@ export async function seedReviewFromFindings(seriesId, findings, { runId = null,
       }
       if (c.status !== 'open') return c;
       const patch = {};
-      // Authoritative per-check severity override (#1596): re-grade this open
-      // comment to its check's pinned level even if it did NOT re-surface this
-      // pass. LLM checks seed in 'merge' mode (a non-resurfaced open is preserved,
-      // not dismissed), and a pinned check can produce zero findings in a run, so
-      // the override would otherwise never reach those lingering opens — leaving
-      // the health score + severity gating on the stale level. Skipped when the
-      // check has no override (severity left exactly as persisted — no churn from
-      // run-to-run LLM severity variance on un-pinned checks).
-      const pinned = pins && c.checkId ? pins[c.checkId] : null;
-      if (pinned && ['high', 'medium', 'low'].includes(pinned) && pinned !== c.severity) {
-        patch.severity = pinned;
+      const match = candidateByKey.get(findingKey(c));
+      // Effective-severity re-grade (#1596), in priority order:
+      //  1. A RE-SURFACED finding carries the run's EFFECTIVE severity in
+      //     `match.severity` — the pin when one is set (the runner force-stamps
+      //     it), else the check's native/default level. Adopting it keeps BOTH
+      //     setting AND clearing a pin authoritative: clearing a pin re-grades the
+      //     re-surfaced open back down to the native level (the findingKey ignores
+      //     severity, so the comment is carried, not re-appended).
+      //  2. NOT re-surfaced but the check is still pinned → force the pinned level
+      //     so a pin reaches lingering opens too (LLM 'merge' mode preserves a
+      //     non-resurfaced open; a pinned check can also produce zero findings in a
+      //     run). A cleared pin has no map entry, so a non-resurfaced open keeps
+      //     its level until it next re-surfaces (then case 1 re-grades it) — the
+      //     inherent merge-mode lag, not specific to severity.
+      const pin = pins && c.checkId && ['high', 'medium', 'low'].includes(pins[c.checkId]) ? pins[c.checkId] : null;
+      const nextSeverity = (match && match.severity) ? match.severity : pin;
+      if (nextSeverity && nextSeverity !== c.severity) {
+        patch.severity = nextSeverity;
         refreshedCount += 1;
       }
-      const match = candidateByKey.get(findingKey(c));
       if (match) {
         if (!c.fix) {
           const section = c.issueNumber != null ? byNumber.get(c.issueNumber) : null;
