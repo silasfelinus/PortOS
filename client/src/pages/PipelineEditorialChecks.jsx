@@ -25,6 +25,7 @@ import { usePipelineProgress } from '../hooks/usePipelineProgress';
 import useProviderModels from '../hooks/useProviderModels';
 import {
   listPipelineSeries,
+  updatePipelineSeries,
   getEditorialChecks,
   patchEditorialCheck,
   createEditorialCustomCheck,
@@ -45,6 +46,13 @@ export default function PipelineEditorialChecks() {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
 
   const [series, setSeries] = useState([]);
+  // Per-series editorial-check config overrides (#1591) are saved through the
+  // series PATCH; track in-flight saves per checkId so the run buttons gate on the
+  // override landing (the runner reads the persisted series record).
+  const [savingSeriesIds, setSavingSeriesIds] = useState(() => new Set());
+  // Per-check nonce bumped on a FAILED series-override save so the check card can
+  // revert its draft inputs to the persisted value (#1591).
+  const [seriesResetNonces, setSeriesResetNonces] = useState(() => ({}));
   const seriesId = searchParams.get('series') || '';
   const [comments, setComments] = useState([]);
   const [loadingFindings, setLoadingFindings] = useState(false);
@@ -198,6 +206,64 @@ export default function PipelineEditorialChecks() {
       .finally(() => setSavingIds((s) => { const n = new Set(s); n.delete(checkId); return n; }));
   }, []);
 
+  // ---- Per-series config override (#1591). The override map lives on the SERIES
+  // record (`editorialCheckConfig`); a save PATCHes the series and the runner
+  // overlays it on the global config. Saves are NON-optimistic (mirrors
+  // handleConfigSave) and SERIALIZED on a tail promise so two quick edits can't
+  // reorder responses and clobber each other — each PATCH applies its edit onto
+  // the freshest server-confirmed map at execution time. `overrideMapsRef` holds
+  // that authoritative map KEYED BY seriesId, so a save queued for series A reads
+  // and writes A's map even after the user has switched to series B (the keying is
+  // what stops a B-reseed from poisoning A's queued PATCH). `patch === null`
+  // clears the whole check. ----
+  const selectedSeries = useMemo(() => series.find((s) => s.id === seriesId) || null, [series, seriesId]);
+  const seriesOverrides = selectedSeries?.editorialCheckConfig && typeof selectedSeries.editorialCheckConfig === 'object'
+    ? selectedSeries.editorialCheckConfig
+    : null;
+
+  const overrideMapsRef = useRef({});
+  const seriesSaveTailRef = useRef(Promise.resolve());
+  // Seed/refresh ONLY the selected series' entry from its loaded record (covers
+  // the async series-list load AND a server-confirmed save echo). Keying by id
+  // means it never overwrites another series' in-flight map.
+  useEffect(() => {
+    if (seriesId) overrideMapsRef.current[seriesId] = seriesOverrides ? { ...seriesOverrides } : {};
+  }, [seriesId, seriesOverrides]);
+
+  // `patch` is a PARTIAL per-check override ({ [key]: value }) to merge, or `null`
+  // to clear the whole check. Merging (rather than replacing the per-check entry)
+  // means a second field edit for the same check — built in the card before the
+  // first save lands — composes onto the first instead of dropping it.
+  const handleSeriesConfigSave = useCallback((checkId, patch) => {
+    const sid = activeSeriesRef.current;
+    if (!sid) return;
+    setSavingSeriesIds((s) => new Set(s).add(checkId));
+    seriesSaveTailRef.current = seriesSaveTailRef.current
+      .then(async () => {
+        // Build at execution time from THIS series' freshest server-confirmed map.
+        const map = { ...(overrideMapsRef.current[sid] || {}) };
+        if (patch === null) delete map[checkId];
+        else map[checkId] = { ...(map[checkId] || {}), ...patch };
+        const saved = await updatePipelineSeries(sid, { editorialCheckConfig: map }, { silent: true })
+          .catch((err) => {
+            toast.error(err.message || 'Failed to save series override');
+            // Revert the card's draft inputs to the persisted value (the override
+            // wasn't saved, so the field must not keep showing the typed threshold).
+            setSeriesResetNonces((m) => ({ ...m, [checkId]: (m[checkId] || 0) + 1 }));
+            return null;
+          });
+        // On failure the keyed map is untouched, so the UI keeps showing the last
+        // persisted overrides (no phantom). On success, sync THIS series' map
+        // synchronously by id — keyed, so it never clobbers another series.
+        if (saved) {
+          overrideMapsRef.current[saved.id] = (saved.editorialCheckConfig && typeof saved.editorialCheckConfig === 'object')
+            ? { ...saved.editorialCheckConfig } : {};
+          setSeries((rows) => rows.map((r) => (r.id === saved.id ? saved : r)));
+        }
+      })
+      .finally(() => setSavingSeriesIds((s) => { const n = new Set(s); n.delete(checkId); return n; }));
+  }, []);
+
   // ---- Custom-check authoring (#1346). The form is URL-driven (?custom=new |
   // ?custom=<checkId>) so it's deep-linkable, not a stateful modal. ----
   const customParam = searchParams.get('custom') || '';
@@ -294,7 +360,7 @@ export default function PipelineEditorialChecks() {
   // Gate runs on formSaving too: a run reads server-side settings, so starting
   // one while a custom-check create/edit PATCH is in flight would run the stale
   // (pre-save) definition. Mirrors the savingIds gate for per-check config saves.
-  const runDisabled = !seriesId || runActive || runStarting || anySaving || formSaving;
+  const runDisabled = !seriesId || runActive || runStarting || anySaving || formSaving || savingSeriesIds.size > 0;
 
   return (
     <div className="mx-auto max-w-6xl space-y-4">
@@ -436,6 +502,11 @@ export default function PipelineEditorialChecks() {
                         saving={savingIds.has(check.id)}
                         onToggle={handleToggle}
                         onConfigSave={handleConfigSave}
+                        seriesId={seriesId}
+                        seriesConfig={seriesOverrides?.[check.id] || null}
+                        seriesSaving={savingSeriesIds.has(check.id)}
+                        seriesResetNonce={seriesResetNonces[check.id] || 0}
+                        onSeriesConfigSave={handleSeriesConfigSave}
                         onEdit={check.isCustom ? openCustomForm : undefined}
                         onDelete={check.isCustom ? handleDeleteCustom : undefined}
                       />
