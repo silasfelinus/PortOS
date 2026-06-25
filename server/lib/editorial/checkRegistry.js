@@ -4717,7 +4717,7 @@ export const EDITORIAL_CHECKS = [
     sources: ['manuscript', 'series.arc.readerMap'],
     label: "Chekhov's guns (setups & payoffs)",
     description:
-      'Flags planted elements that never pay off (a weapon, clue, secret, stated fear, promise, or threat introduced and then dropped) and payoffs that arrive with no setup (a skill, antidote, or revelation that appears unearned). Reconciles its detected setups/payoffs against the authored reader-map hooks/payoffs.',
+      'Classifies each setup/payoff thread as paired, false-setup (planted, never fired — cut it), orphaned-payoff (fired, never planted — unearned), or distant (paid off so many issues after the setup the reader may have forgotten). Reconciles its detected setups/payoffs against the authored reader-map hooks/payoffs.',
     scope: 'series',
     kind: 'llm',
     category: 'continuity',
@@ -4729,6 +4729,11 @@ export const EDITORIAL_CHECKS = [
     configSchema: z.object({
       // Cap findings per run so a long manuscript can't flood the review.
       maxFindings: z.number().int().min(1).max(50).default(12),
+      // Issue gap at/above which a paid-off setup is flagged as a DISTANT payoff
+      // (#1595) — setup in issue 1, payoff in issue 1+distantGap or later, far
+      // enough that the reader may not still recall the plant. 0 disables the
+      // distant sub-check (only false-setup / orphaned-payoff are reported).
+      distantGap: z.number().int().min(0).max(20).default(4),
     }),
     configFields: [
       {
@@ -4740,11 +4745,23 @@ export const EDITORIAL_CHECKS = [
         step: 1,
         help: 'Cap findings so a long manuscript can not flood the review.',
       },
+      {
+        key: 'distantGap',
+        label: 'Distant-payoff issue gap',
+        type: 'number',
+        min: 0,
+        max: 20,
+        step: 1,
+        help: 'Flag a payoff this many issues (or more) after its setup as "distant" — the reader may have forgotten the plant. Set to 0 to disable the distant check.',
+      },
     ],
     gate: (ctx) => (ctx.manuscript || '').trim().length > 0,
     run: (ctx) => {
       // Authored hooks/payoffs are fixed per-call overhead (re-sent on each chunk).
       const authoredSetups = authoredSetupPayoffSummary(ctx.series?.arc?.readerMap);
+      // 0 disables the distant sub-check; >=1 is the issue-gap threshold. Pass a
+      // string so the prompt's `{{#distantGap}}` section renders only when enabled.
+      const distantGap = ctx.config?.distantGap ?? 4;
       return runManuscriptLlmCheck(ctx, {
         stage: CHEKHOV_STAGE,
         category: 'continuity',
@@ -4752,9 +4769,15 @@ export const EDITORIAL_CHECKS = [
         // `finalPart` gates the whole-corpus "planted, never fired" judgment to the
         // last part of a chunked manuscript (#1299) — an earlier part can't know a
         // setup pays off later, so it would false-flag. A single-chunk run is its own
-        // final part. "fired, never planted" stays enabled on every part (the carried
-        // setup digest tells a later part what was already planted).
-        buildVars: (manuscript, meta, c) => ({ manuscript, authoredSetups: c.authoredSetups, finalPart: meta?.isFinal ? 'true' : '' }),
+        // final part. "fired, never planted" and "distant payoff" stay enabled on
+        // every part (the carried setup digest tells a later part what was already
+        // planted, and in which issue, so the issue gap can be measured at payoff).
+        buildVars: (manuscript, meta, c) => ({
+          manuscript,
+          authoredSetups: c.authoredSetups,
+          finalPart: meta?.isFinal ? 'true' : '',
+          distantGap: distantGap >= 1 ? String(distantGap) : '',
+        }),
         // A setup planted in chapter 2 and paid off (or NOT) in chapter 9 spans
         // chunks — the cross-chunk digest keeps prior findings in view so a later
         // chunk doesn't re-flag, and the clean-setup digest rolls forward which
@@ -4762,8 +4785,11 @@ export const EDITORIAL_CHECKS = [
         // "no setup" and a never-fired plant is caught at the end.
         crossChunkDigest: true,
         crossChunkSetup: true,
+        // Track the issue each element is planted in so a later part can measure the
+        // setup→payoff issue gap for the distant-payoff judgment (#1595).
         setupFocus: 'Planted elements that a later scene should pay off — weapons/objects/clues, '
           + 'secrets, stated fears, promises/vows, threats, and notable skills — and, for each, '
+          + 'the issue number it was first planted in, and '
           + 'whether it has already been paid off (fired, spilled, confronted, kept) or is still open.',
       });
     },
