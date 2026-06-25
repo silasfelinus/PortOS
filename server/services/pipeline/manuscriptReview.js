@@ -270,6 +270,16 @@ export async function seedReviewFromFindings(seriesId, findings, { runId = null,
         patch.sourceContentHash = match.sourceContentHash;
         refreshedCount += 1;
       }
+      // Refresh the persisted severity to the current run's level (#1596): the
+      // findingKey ignores severity, so a re-surfaced finding whose check now
+      // carries a different per-check severity override would otherwise keep its
+      // stale level — leaving the health score + severity gating reading the old
+      // value. Mirrors the sourceContentHash refresh: the latest run's view of an
+      // open finding wins.
+      if (match.severity && match.severity !== c.severity) {
+        patch.severity = match.severity;
+        refreshedCount += 1;
+      }
       if (Object.keys(patch).length === 0) return c;
       return sanitizeComment({ ...c, ...patch, updatedAt: now });
     });

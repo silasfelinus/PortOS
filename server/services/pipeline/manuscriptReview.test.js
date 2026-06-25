@@ -348,3 +348,31 @@ describe('manuscriptReview — sourceContentHash staleness fingerprint (#1345)',
     expect(second.comments[0].updatedAt).toBe(stamp); // unchanged — no rewrite
   });
 });
+
+describe('manuscriptReview — severity refresh on re-surface (#1596)', () => {
+  beforeEach(() => { fileStore.clear(); });
+
+  it('re-grades an existing open comment when a re-surfaced finding carries a new severity', async () => {
+    await seedReviewFromFindings('ser-sev', [
+      { problem: 'adverb density', anchorQuote: 'quickly', checkId: 'prose.adverb-density', severity: 'low' },
+    ]);
+    // Same finding key (severity is NOT part of the key) re-surfaces from a run
+    // whose check now carries a `high` per-check severity override.
+    const second = await seedReviewFromFindings('ser-sev', [
+      { problem: 'adverb density', anchorQuote: 'quickly', checkId: 'prose.adverb-density', severity: 'high' },
+    ]);
+    expect(second.comments).toHaveLength(1); // deduped, not appended
+    expect(second.comments[0].severity).toBe('high'); // re-graded to the override level
+  });
+
+  it('does NOT churn updatedAt when the re-surfaced finding has the same severity', async () => {
+    const first = await seedReviewFromFindings('ser-sev-nochurn', [
+      { problem: 'adverb density', anchorQuote: 'quickly', checkId: 'prose.adverb-density', severity: 'high' },
+    ]);
+    const stamp = first.comments[0].updatedAt;
+    const second = await seedReviewFromFindings('ser-sev-nochurn', [
+      { problem: 'adverb density', anchorQuote: 'quickly', checkId: 'prose.adverb-density', severity: 'high' },
+    ]);
+    expect(second.comments[0].updatedAt).toBe(stamp); // unchanged — no rewrite
+  });
+});
