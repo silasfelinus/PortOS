@@ -361,12 +361,21 @@ export function findPassiveVoice(text) {
       const end = tokens[j].index + tokens[j].word.length;
       const participle = tokens[j].lower;
       // Small window just past the participle, where a "by <agent>" or an
-      // atmospheric "with/in <…>" complement would sit.
-      const after = tokens.slice(j + 1, j + 1 + PASSIVE_LOOKAHEAD);
+      // atmospheric "with/in <…>" complement would sit. Stop at a sentence/line
+      // boundary so the next sentence ("…exhausted. By morning…") can't leak a
+      // false agent in — tokenizeWords drops punctuation, so the boundary is
+      // detected from the raw text gap between adjacent tokens.
+      const after = [];
+      for (let k = j + 1; k < tokens.length && after.length < PASSIVE_LOOKAHEAD; k += 1) {
+        const prev = tokens[k - 1];
+        if (/[.!?\n]/.test(text.slice(prev.index + prev.word.length, tokens[k].index))) break;
+        after.push(tokens[k]);
+      }
       // An explicit "by <agent>" (with an optional intervening adverb) is the
       // unambiguous agentive passive — it wins over stative/mood classification.
+      // The agent token must be inside the same-sentence window.
       const byPos = after.findIndex((t) => t.lower === 'by');
-      const byAgent = byPos !== -1 && j + 1 + byPos + 1 < tokens.length;
+      const byAgent = byPos !== -1 && after.length > byPos + 1;
       let classification = 'weak';
       if (!byAgent) {
         // A mood image needs BOTH a setting subject and an atmospheric complement

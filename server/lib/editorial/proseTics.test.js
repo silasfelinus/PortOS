@@ -185,6 +185,14 @@ describe('findPassiveVoice', () => {
     const [hit] = findPassiveVoice('The room was searched.');
     expect(hit.classification).toBe('weak');
   });
+
+  it('does not read a "by" from the next sentence as the agent', () => {
+    // "By morning" starts a new sentence — it must not flip the stative
+    // "was exhausted" into a weak by-agent passive.
+    const [hit] = findPassiveVoice('She was exhausted. By morning the fog had lifted.');
+    expect(hit.byAgent).toBe(false);
+    expect(hit.classification).toBe('stative');
+  });
 });
 
 describe('filterPassiveVoice', () => {
