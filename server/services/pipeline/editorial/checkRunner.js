@@ -551,6 +551,11 @@ export async function runEditorialChecks(seriesId, options = {}) {
   // reconcile each of them — including those that produced zero findings, which
   // must dismiss their now-stale prior open comments.
   const deterministicRanIds = new Set();
+  // Every check (any kind) that ran to completion this pass (#1596). The review
+  // seed scopes its severity re-grade to this set, so a targeted subset run — or
+  // the completeness pass — never rewrites the severity of comments for checks it
+  // didn't run (which would silently clear an unrelated check's active pin).
+  const ranCheckIds = new Set();
   let canceled = false;
   for (const { check, config, severityOverride } of enabledResolved) {
     if (signal?.aborted) { canceled = true; break; }
@@ -593,6 +598,7 @@ export async function runEditorialChecks(seriesId, options = {}) {
       // no longer produces is genuinely resolved (not provider variance) — mark it
       // for fresh-mode reconciliation. LLM checks stay merge-only (an absent
       // finding could just be sampling noise).
+      ranCheckIds.add(check.id);
       if (check.kind === 'deterministic') deterministicRanIds.add(check.id);
       const bySeverity = severityBreakdown(stamped);
       perCheck.push({ checkId: check.id, count: stamped.length, bySeverity });
@@ -637,19 +643,24 @@ export async function runEditorialChecks(seriesId, options = {}) {
     }
     // Fresh-reconcile each deterministic check that ran, scoped to its checkId —
     // passing only that check's findings so the scoped 'fresh' pass dismisses the
-    // stale opens it no longer produces.
+    // stale opens it no longer produces. `regradeCheckIds` scopes the severity
+    // re-grade to this check alone.
     for (const checkId of deterministicRanIds) {
       const own = findings.filter((f) => f.checkId === checkId);
-      lastReview = await seedReviewFromFindings(seriesId, own, { runId, mode: 'fresh', checkId, severityOverrides });
+      lastReview = await seedReviewFromFindings(seriesId, own, { runId, mode: 'fresh', checkId, severityOverrides, regradeCheckIds: [checkId] });
     }
     // Seed the remaining (non-deterministic) findings in merge mode. Also run
     // when there are active overrides but no merged findings, so a pinned check
     // that produced ZERO findings this pass still re-grades its lingering open
     // comments (#1596) — merge mode never dismisses, so an empty seed is a safe
-    // no-op aside from the authoritative severity re-grade.
+    // no-op aside from the authoritative severity re-grade. `regradeCheckIds` is
+    // the set of non-deterministic checks that actually RAN this pass, so the
+    // re-grade never touches comments for a pinned check excluded from a targeted
+    // subset run.
     const merged = findings.filter((f) => !deterministicRanIds.has(f.checkId));
+    const mergedRanCheckIds = [...ranCheckIds].filter((id) => !deterministicRanIds.has(id));
     if (merged.length || Object.keys(severityOverrides).length) {
-      lastReview = await seedReviewFromFindings(seriesId, merged, { runId, mode: 'merge', severityOverrides });
+      lastReview = await seedReviewFromFindings(seriesId, merged, { runId, mode: 'merge', severityOverrides, regradeCheckIds: mergedRanCheckIds });
     }
     // Record a revision-trend snapshot for EVERY non-canceled run (#1316) — a run
     // is a revision boundary, and a CLEAN run (0 new findings, or a reconciliation

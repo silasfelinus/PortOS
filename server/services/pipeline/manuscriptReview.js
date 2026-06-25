@@ -202,7 +202,7 @@ const findingKey = (c) => `${c.checkId ?? ''}|${c.issueNumber ?? ''}|${c.anchorQ
  * New findings resolve their issueId/stageId from the current manuscript
  * sections by issueNumber.
  */
-export async function seedReviewFromFindings(seriesId, findings, { runId = null, mode = 'merge', checkId = null, severityOverrides = null } = {}) {
+export async function seedReviewFromFindings(seriesId, findings, { runId = null, mode = 'merge', checkId = null, severityOverrides = null, regradeCheckIds = null } = {}) {
   const scopeCheckId = checkId ?? null;
   // Per-check severity overrides (#1596): a pinned check's level is authoritative
   // for EVERY open comment of that check, so we re-grade carried open comments
@@ -210,6 +210,13 @@ export async function seedReviewFromFindings(seriesId, findings, { runId = null,
   // value — only a valid level forces a re-grade.
   const pins = severityOverrides && typeof severityOverrides === 'object' && !Array.isArray(severityOverrides)
     ? severityOverrides : null;
+  // The pin/native severity re-grade of a NON-resurfaced carried comment is
+  // scoped to the checks that actually RAN this pass (#1596). Without this scope
+  // a targeted subset run — or the completeness seed, which carries every
+  // comment — would re-grade comments for checks it didn't run and silently
+  // clear their active pins. `null` (no scope passed) disables the non-match
+  // re-grade entirely, so legacy/external seed callers never mutate severities.
+  const regradeScope = Array.isArray(regradeCheckIds) ? new Set(regradeCheckIds) : null;
   const sections = await collectManuscriptSections(seriesId);
   const byNumber = new Map(sections.map((s) => [s.number, s]));
   return queueReviewWrite(seriesId, async () => {
@@ -284,8 +291,11 @@ export async function seedReviewFromFindings(seriesId, findings, { runId = null,
       //     `nativeSeverity`, so CLEARING a pin re-grades even a non-resurfaced
       //     open back to its true native level (not a guessed default). For a
       //     never-pinned comment native == severity, so this is a no-op (no churn).
-      const pin = pins && c.checkId && ['high', 'medium', 'low'].includes(pins[c.checkId]) ? pins[c.checkId] : null;
-      const carriedNative = ['high', 'medium', 'low'].includes(c.nativeSeverity) ? c.nativeSeverity : null;
+      // Cases 2 & 3 (non-match re-grade) only apply to checks that ran this pass
+      // (`regradeScope`), so an unrelated check's pin is never silently cleared.
+      const inRegradeScope = !!(regradeScope && c.checkId && regradeScope.has(c.checkId));
+      const pin = inRegradeScope && pins && ['high', 'medium', 'low'].includes(pins[c.checkId]) ? pins[c.checkId] : null;
+      const carriedNative = inRegradeScope && ['high', 'medium', 'low'].includes(c.nativeSeverity) ? c.nativeSeverity : null;
       const nextSeverity = (match && match.severity) ? match.severity : (pin || carriedNative);
       if (nextSeverity && nextSeverity !== c.severity) {
         patch.severity = nextSeverity;
