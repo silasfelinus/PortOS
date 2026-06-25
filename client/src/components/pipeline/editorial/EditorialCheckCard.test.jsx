@@ -100,6 +100,35 @@ describe('EditorialCheckCard', () => {
       expect(screen.getByLabelText('Minimum shared signals to flag').value).toBe('2');
     });
 
+    it('sends ONLY the changed field as a partial (so the page can compose multi-field edits)', () => {
+      const twoFieldCheck = {
+        ...check,
+        config: { minSharedSignals: 2, maxFindings: 10 },
+        configFields: [
+          { key: 'minSharedSignals', label: 'Minimum shared signals to flag', type: 'number', min: 1, max: 5, step: 1 },
+          { key: 'maxFindings', label: 'Max findings', type: 'number', min: 1, max: 50, step: 1 },
+        ],
+      };
+      const onSeriesConfigSave = vi.fn();
+      render(
+        <EditorialCheckCard
+          check={twoFieldCheck}
+          seriesId="ser-1"
+          seriesConfig={{ maxFindings: 20 }} // an existing override on the OTHER field
+          onToggle={vi.fn()}
+          onConfigSave={vi.fn()}
+          onSeriesConfigSave={onSeriesConfigSave}
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: /override for this series/i }));
+      const input = screen.getByLabelText('Minimum shared signals to flag');
+      fireEvent.change(input, { target: { value: '4' } });
+      fireEvent.blur(input);
+      // The card sends ONLY the edited key — NOT a full snapshot that would carry a
+      // stale maxFindings and clobber the other field's pending/persisted value.
+      expect(onSeriesConfigSave).toHaveBeenCalledWith('naming.dissimilar-names', { minSharedSignals: 4 });
+    });
+
     it('shows an active badge and clears the override via Reset to global', () => {
       const onSeriesConfigSave = vi.fn();
       render(

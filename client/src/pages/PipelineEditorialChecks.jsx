@@ -228,7 +228,11 @@ export default function PipelineEditorialChecks() {
     overrideMapRef.current = seriesOverrides ? { ...seriesOverrides } : {};
   }, [seriesId, seriesOverrides]);
 
-  const handleSeriesConfigSave = useCallback((checkId, nextOverride) => {
+  // `patch` is a PARTIAL per-check override ({ [key]: value }) to merge, or `null`
+  // to clear the whole check. Merging (rather than replacing the per-check entry)
+  // means a second field edit for the same check — built in the card before the
+  // first save lands — composes onto the first instead of dropping it.
+  const handleSeriesConfigSave = useCallback((checkId, patch) => {
     const sid = activeSeriesRef.current;
     if (!sid) return;
     setSavingSeriesIds((s) => new Set(s).add(checkId));
@@ -236,8 +240,8 @@ export default function PipelineEditorialChecks() {
       .then(async () => {
         // Build at execution time from the freshest server-confirmed map.
         const map = { ...overrideMapRef.current };
-        if (!nextOverride || Object.keys(nextOverride).length === 0) delete map[checkId];
-        else map[checkId] = nextOverride;
+        if (patch === null) delete map[checkId];
+        else map[checkId] = { ...(map[checkId] || {}), ...patch };
         const saved = await updatePipelineSeries(sid, { editorialCheckConfig: map }, { silent: true })
           .catch((err) => {
             toast.error(err.message || 'Failed to save series override');

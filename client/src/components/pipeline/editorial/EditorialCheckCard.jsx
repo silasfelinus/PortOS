@@ -6,8 +6,12 @@
  * Presentational — all persistence is lifted to PipelineEditorialChecks:
  *   onToggle(checkId, nextEnabled)            → optimistic enable/disable PATCH
  *   onConfigSave(checkId, nextConfig)         → PATCH the global config blob (Promise)
- *   onSeriesConfigSave(checkId, nextOverride) → PATCH this series' override (#1591);
- *                                               pass `null` to clear the override
+ *   onSeriesConfigSave(checkId, patch)        → merge a PARTIAL per-series override
+ *                                               ({ [key]: value }) for this check (#1591);
+ *                                               pass `null` to clear the whole override.
+ *                                               Sending only the changed key (not the
+ *                                               whole config) lets the page compose rapid
+ *                                               multi-field edits without dropping one.
  * The card only owns the in-progress *input* draft; committed values come back
  * down through `check.config` (global) and `seriesConfig` (the selected series'
  * override for this check, when a series is selected).
@@ -187,7 +191,10 @@ function EditorialCheckCard({
                   value={seriesConfig?.[field.key] ?? check.config?.[field.key]}
                   disabled={seriesSaving}
                   resetNonce={seriesResetNonce}
-                  onCommit={(key, val) => onSeriesConfigSave(check.id, { ...(seriesConfig || {}), [key]: val })}
+                  // Send ONLY the changed key — the page merges it onto the freshest
+                  // server-confirmed map, so a rapid second field edit (built before the
+                  // first save lands) can't drop the first via a stale full-config snapshot.
+                  onCommit={(key, val) => onSeriesConfigSave(check.id, { [key]: val })}
                 />
               ))}
               {hasSeriesOverride ? (
