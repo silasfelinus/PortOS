@@ -921,14 +921,23 @@ export async function applyReciprocalSync(instanceId, categories, { fullSync } =
     const needsOutboundAdopt = requestEnablesPushable && directions.length > 0 && !directions.includes('outbound');
     // No-op only when nothing flips AND there's no outbound to adopt — the echo guard.
     if (!fullSyncFlips && !fullSyncOffFlips && !categoriesFlip && !needsOutboundAdopt) return entry;
-    if (fullSyncFlips || fullSyncOffFlips) {
-      // A full-sync state change. fullSync alone drives gating, so the stored
+    if (fullSyncFlips) {
+      // Adopting full mirror. fullSync alone drives gating, so the stored
       // per-category map is PRESERVED untouched — we do NOT apply the sender's
       // all-on compat overlay. That keeps the user's own selection intact so a
       // later disable restores it, exactly like the local toggle path. (Legacy
       // receivers that don't understand fullSync fall into the category branch
       // below and mirror via the all-on overlay instead — that's its purpose.)
-      entry.fullSync = fullSyncFlips; // true on adopt, false on drop
+      entry.fullSync = true;
+    } else if (fullSyncOffFlips) {
+      // Dropping full mirror: clear the flag. If this SAME reciprocal request
+      // also carries a changed per-category selection, adopt it too — otherwise
+      // (the old combined branch fell through without touching categories) the
+      // peer's intended post-full-sync set would be ignored and the stale
+      // preserved map would keep mirroring the wrong categories. With no
+      // category change in the request, the preserved map stands (restore path).
+      entry.fullSync = false;
+      if (categoriesFlip) entry.syncCategories = next;
     } else if (categoriesFlip) {
       entry.syncCategories = next;
     }
