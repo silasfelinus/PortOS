@@ -1145,6 +1145,37 @@ describe('cos.js source — agent:completed triggers perpetual refill', () => {
       'refill must pass the filtered refillTaskData to queueEligibleImprovementTasks'
     ).toBe(true);
   });
+
+  it('the refill only fires on a SUCCESSFUL completion (no back-to-back spin on failures)', () => {
+    // Perpetual completions skip the per-app cooldown, so refilling after a failed
+    // run would spin the daemon through repeated failures (the work-detector still
+    // sees the same issue as actionable). The refill must bail on a non-success
+    // result and let task-retry/backoff + the recheck cadence handle failures.
+    const fnIdx = COS_SRC.indexOf('async function refillPerpetualForCompletedAgent');
+    const fnSlice = COS_SRC.slice(fnIdx, fnIdx + 2500);
+    expect(
+      /if\s*\(\s*!agent\?\.result\?\.success\s*\)\s*return/.test(fnSlice),
+      'refill must early-return when the completed agent did not succeed'
+    ).toBe(true);
+  });
+
+  it('refill is sequenced BEFORE dequeue in the handler (perpetual task queued before slots fill)', () => {
+    // If generic dequeue ran first (or concurrently), it could claim the just-
+    // freed slot with idle/mission work before the perpetual task is queued,
+    // breaking the back-to-back drain. The handler must chain refill → dequeue.
+    const onIdx = COS_SRC.indexOf("cosEvents.on('agent:completed'");
+    const handlerSlice = COS_SRC.slice(onIdx, onIdx + 1400);
+    expect(
+      /refillPerpetualForCompletedAgent\(agent\)[\s\S]*\.then\(\s*\(\)\s*=>\s*dequeueNextTask\(\)\s*\)/.test(handlerSlice),
+      'handler must run dequeueNextTask in a .then() AFTER the refill resolves'
+    ).toBe(true);
+    // The old standalone `setImmediate(() => dequeueNextTask())` must be gone —
+    // its presence would race the refill.
+    expect(
+      handlerSlice.includes('setImmediate(() => dequeueNextTask())'),
+      'the unconditional pre-refill dequeue must be removed'
+    ).toBe(false);
+  });
 });
 
 // Shared autonomous-queuing gate (cosState.canQueueImprovementTasks). Extracted
