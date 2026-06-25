@@ -113,7 +113,7 @@ export async function getTaskById(taskId) {
  * submitted task starts instantly instead of waiting for the next evaluation
  * interval.
  */
-export async function addTask(taskData, taskType = 'user', { raw = false } = {}) {
+export async function addTask(taskData, taskType = 'user', { raw = false, ignoreTaskId = null } = {}) {
   return withStateLock(async () => {
   const state = await loadState();
   const filePath = taskType === 'user'
@@ -132,9 +132,20 @@ export async function addTask(taskData, taskType = 'user', { raw = false } = {})
   // description against two different apps is two different pieces of work
   // (e.g. "fix the failing test" in PortOS vs in BookLoom), and collapsing
   // them silently drops the second dispatch.
+  //
+  // `ignoreTaskId` excludes one specific task from the dedup scan. The perpetual
+  // drain-on-completion refill needs this: `agent:completed` fires from
+  // completeAgent BEFORE the completion flow's updateTask marks the just-finished
+  // task done, so that task is still `in_progress` on disk here. A perpetual
+  // schedule (claim-issue/claim-work) regenerates an identical first-line for the
+  // same app, so without excluding the completing task the refill is rejected as a
+  // duplicate of it and the back-to-back drain stalls until the next scheduler
+  // tick. The completing task is about to become `completed`, so ignoring it is
+  // correct, not a dedup hole.
   const normalizedDesc = firstLine(taskData.description).toLowerCase();
   const targetApp = taskData.app || null;
   const duplicate = tasks.find(t =>
+    t.id !== ignoreTaskId &&
     (t.status === 'pending' || t.status === 'in_progress') &&
     firstLine(t.description).toLowerCase() === normalizedDesc &&
     (t.metadata?.app || null) === targetApp

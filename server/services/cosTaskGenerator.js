@@ -64,6 +64,34 @@ export function exceedsMaxSpawns(task) {
 }
 
 /**
+ * A task that must BYPASS the per-app review cooldown at spawn time. Two classes
+ * qualify, for the same reason — the cooldown is not their throttle:
+ *   - **Pipeline continuations** (`metadata.pipeline.currentStage > 0`) — a
+ *     multi-stage pipeline's own stage gating sequences the work.
+ *   - **Perpetual drains** (`metadata.perpetual`) — the work-detector park is the
+ *     throttle (see `queueEligibleImprovementTasks` / agentCompletion.js). Without
+ *     this, a perpetual task the refill just *queued* (after correctly bypassing
+ *     the queue-path cooldown) would still be skipped here at the spawn gate,
+ *     because the on-demand "Run" path stamped `lastReviewedAt` and these gates
+ *     read it — so a manually-triggered perpetual drain stalls one item in.
+ *
+ * `metadata.perpetual` is a bare boolean set upstream, but it round-trips through
+ * COS-TASKS.md as the STRING `"true"` (taskParser serializes non-string/-object
+ * metadata via `String(value)`; only arrays/objects like `pipeline` get the JSON
+ * sentinel that preserves their type). So accept BOTH the in-memory boolean and
+ * the re-parsed string — a `=== true` check alone would silently miss the
+ * persisted-then-reloaded task, which is exactly the one the spawn gate sees.
+ *
+ * Shared by both spawn engines (`dequeueNextTask` in cos.js and `evaluateTasks`
+ * here) and their dry-run planners so the cooldown-exempt set can't drift.
+ */
+export function isCooldownExemptTask(task) {
+  const meta = task?.metadata;
+  if (!meta) return false;
+  return meta.pipeline?.currentStage > 0 || meta.perpetual === true || meta.perpetual === 'true';
+}
+
+/**
  * Dry-run eligibility pass over auto-approved system tasks. Walks the tasks in
  * file order applying the SAME gates execute mode uses — global slot cap,
  * max-total-spawns, app cooldown, per-project cap — while tracking virtual
@@ -558,7 +586,7 @@ async function spawnPriority2AutoApproved(ctx) {
         perProjectLimit,
         spawnProjectCounts,
         isOnCooldown: (appId) => isAppOnCooldown(appId, state.config.appReviewCooldownMs),
-        cooldownExempt: (task) => task.metadata?.pipeline?.currentStage > 0
+        cooldownExempt: isCooldownExemptTask
       });
       for (const task of wouldSpawn) {
         emitLog('info', `[dry-run] CoS auto-run would spawn system task: ${task.id}`, { taskId: task.id, domainAutonomy: 'cos' });
@@ -571,10 +599,10 @@ async function spawnPriority2AutoApproved(ctx) {
 
       if (await blockIfExceedsMaxSpawns(task, 'internal')) continue;
 
-      // Check if task's app is on cooldown (pipeline continuations bypass cooldown)
+      // Check if task's app is on cooldown (pipeline continuations AND perpetual
+      // drains bypass cooldown — see isCooldownExemptTask).
       const appId = task.metadata?.app;
-      const isPipelineContinuation = task.metadata?.pipeline?.currentStage > 0;
-      if (appId && !isPipelineContinuation) {
+      if (appId && !isCooldownExemptTask(task)) {
         const onCooldown = await isAppOnCooldown(appId, state.config.appReviewCooldownMs);
         if (onCooldown) {
           emitLog('debug', `Skipping system task ${task.id} - app ${appId} on cooldown`);
@@ -962,13 +990,19 @@ export async function generateIdleReviewTask(state) {
  * Called during every evaluation to ensure system tasks are queued even when user tasks exist
  * Tasks are queued to COS-TASKS.md and will be picked up in Priority 2
  */
-export async function queueEligibleImprovementTasks(state, cosTaskData) {
+export async function queueEligibleImprovementTasks(state, cosTaskData, { ignoreTaskId = null } = {}) {
   const { getNextTaskType, recordExecution } = await import('./taskSchedule.js');
 
   if (!isImprovementEnabled(state)) return;
 
   // Get existing pending/in_progress system tasks to avoid duplicates
   // Also skip task types where a user-terminated blocked task exists (user intentionally killed it)
+  // `ignoreTaskId` excludes one task from both the per-app "already busy" cap and
+  // the per-type dedup set — used by the perpetual drain-on-completion refill,
+  // where the just-completed task is still `in_progress` on disk (agent:completed
+  // fires before updateTask finalizes it). Without it the completing task would
+  // make its own app look busy and block the next perpetual run. The same id is
+  // forwarded to addTask below so its disk-level duplicate scan ignores it too.
   const existingTasks = cosTaskData.tasks || [];
   const existingTaskTypes = new Set();
   // Apps that already have *any* pending/in_progress improvement task. We cap each
@@ -977,6 +1011,7 @@ export async function queueEligibleImprovementTasks(state, cosTaskData) {
   const appsWithPendingImprovement = new Set();
 
   for (const task of existingTasks) {
+    if (task.id === ignoreTaskId) continue;
     const isActive = task.status === 'pending' || task.status === 'in_progress';
     const isUserTerminated = task.status === 'blocked' && task.metadata?.blockedCategory === 'user-terminated';
     if (isActive || isUserTerminated) {
@@ -1027,17 +1062,33 @@ export async function queueEligibleImprovementTasks(state, cosTaskData) {
     // would still surface here; both gates treat `undefined` as
     // "no activity yet."
     const appActivity = activitySnapshot.apps?.[app.id];
-    if (isAppActivityOnCooldown(appActivity, state.config.appReviewCooldownMs)) continue;
 
-    // Get next eligible improvement type for this app. `getNextTaskType`
-    // falls back to ROTATION when nothing is time-due, and the rotation
-    // pointer is derived from the `lastType` argument — without it, the
-    // rotation always restarts from index 0 and starves every other
-    // rotation type for the app. Mirror `generateManagedAppTask` (the
-    // legacy direct-spawn caller above) which threads the per-app
-    // `lastImprovementType` in.
+    // Perpetual (drain-until-done) tasks BYPASS the per-app review cooldown:
+    // their work-detector park IS the throttle (taskSchedule.parkPerpetual), and
+    // agentCompletion.js already skips the post-completion cooldown bump for
+    // them. But the spawn-time `markAppReviewCooldown` stamp (written by BOTH the
+    // on-demand manual-trigger path and the idle-review loop) sets
+    // `lastReviewedAt`, which `isAppActivityOnCooldown` reads — so without a
+    // bypass the back-to-back refill fired right after a perpetual run reads its
+    // OWN app as "on cooldown" and skips the re-queue, and the drain stalls.
+    //
+    // When the app IS on cooldown, constrain the pick to a due perpetual task
+    // (`perpetualOnly`). This is what makes a MIXED schedule converge: if the app
+    // also has a due cron/custom type (e.g. pr-watcher), the unconstrained
+    // `getNextTaskType` would return that higher-priority NON-exempt type first,
+    // we'd see a non-perpetual pick, and we'd skip the whole app for the cooldown
+    // window — stranding the perpetual drain behind it. Asking perpetual-only
+    // returns the due perpetual drain (or null → leave the cooled-down app
+    // alone). When NOT on cooldown, the normal full-priority pick runs.
+    const onCooldown = isAppActivityOnCooldown(appActivity, state.config.appReviewCooldownMs);
+
+    // `getNextTaskType` falls back to ROTATION when nothing is time-due, and the
+    // rotation pointer is derived from `lastType` — without it the rotation
+    // always restarts from index 0 and starves every other rotation type for the
+    // app. Mirror `generateManagedAppTask` (the legacy direct-spawn caller) which
+    // threads the per-app `lastImprovementType` in.
     const lastType = appActivity?.lastImprovementType || '';
-    const nextTypeResult = await getNextTaskType(app.id, lastType).catch(() => null);
+    const nextTypeResult = await getNextTaskType(app.id, lastType, { perpetualOnly: onCooldown }).catch(() => null);
     if (!nextTypeResult) continue;
     const nextType = nextTypeResult.taskType;
 
@@ -1085,7 +1136,7 @@ export async function queueEligibleImprovementTasks(state, cosTaskData) {
       task.description = firstLine(task.description);
     }
 
-    const newTask = await addTask(task, 'internal', { raw: true });
+    const newTask = await addTask(task, 'internal', { raw: true, ignoreTaskId });
     if (newTask?.duplicate) continue;
 
     await recordExecution(`task:${nextType}`, app.id);

@@ -127,6 +127,15 @@ export default function PipelineEditorialChecks() {
       });
   }, []);
 
+  // Inline accept/dismiss from the triage list (#1598) — replace the changed
+  // comment in place (reactive update) and re-pull the health score/trend so the
+  // panel reflects the resolved finding without a full refetch.
+  const handleCommentChange = useCallback((updated) => {
+    if (!updated?.id) return;
+    setComments((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+    setHealthRefresh((n) => n + 1);
+  }, []);
+
   useEffect(() => {
     setRunActive(false);
     if (!seriesId) { setComments([]); return; }
@@ -182,6 +191,12 @@ export default function PipelineEditorialChecks() {
   // their own row changes — not on every unrelated run/selection state tick.
   // Rollback flips only the one check (functional update) so a concurrent
   // toggle of a different check can't be clobbered. ----
+  // Per-check tail promise so rapid toggles of the SAME check apply in click
+  // order (last-click-wins) — see the serialization note in handleToggle (#1602).
+  const toggleTailsRef = useRef(new Map());
+  // Per-check count of in-flight toggle PATCHes so the saving flag (which gates
+  // the run buttons) only clears once the LAST queued PATCH settles, not the first.
+  const toggleInflightRef = useRef(new Map());
   const handleToggle = useCallback((checkId, nextEnabled) => {
     const apply = (val) => setChecks((rows) => rows.map((r) => (r.id === checkId ? { ...r, enabled: val } : r)));
     apply(nextEnabled);
@@ -192,10 +207,29 @@ export default function PipelineEditorialChecks() {
     // settings, so the run buttons must gate on this PATCH landing (and the card
     // shows its saving spinner for the toggle too).
     setSavingIds((s) => new Set(s).add(checkId));
-    patchEditorialCheck(checkId, { enabled: nextEnabled }, { silent: true })
-      .then((row) => { if (row) setChecks((rows) => rows.map((r) => (r.id === checkId ? row : r))); })
-      .catch((err) => { apply(!nextEnabled); toast.error(err.message || 'Failed to update check'); })
-      .finally(() => setSavingIds((s) => { const n = new Set(s); n.delete(checkId); return n; }));
+    toggleInflightRef.current.set(checkId, (toggleInflightRef.current.get(checkId) || 0) + 1);
+    // Serialize the PATCHes for a SINGLE check onto a per-check tail so the LAST
+    // click wins regardless of response timing (#1602): a quick disable-then-undo
+    // (or rapid double-toggle) could otherwise have the stale disable response
+    // land after the re-enable response and leave the check persisted disabled,
+    // since each response applies its own row. The tail makes the second PATCH run
+    // (and apply) only after the first settles. Returns a success boolean so the
+    // triage view can reconcile its optimistic group-hide when the PATCH fails —
+    // the catch has already reverted the optimistic enabled flip here.
+    const prev = toggleTailsRef.current.get(checkId) || Promise.resolve();
+    const result = prev.then(() => patchEditorialCheck(checkId, { enabled: nextEnabled }, { silent: true })
+      .then((row) => { if (row) setChecks((rows) => rows.map((r) => (r.id === checkId ? row : r))); return true; })
+      .catch((err) => { apply(!nextEnabled); toast.error(err.message || 'Failed to update check'); return false; }))
+      // Clear the saving flag only when the LAST queued PATCH for this check
+      // settles, so the run buttons stay gated until the final write lands.
+      .finally(() => {
+        const remaining = (toggleInflightRef.current.get(checkId) || 1) - 1;
+        if (remaining > 0) { toggleInflightRef.current.set(checkId, remaining); return; }
+        toggleInflightRef.current.delete(checkId);
+        setSavingIds((s) => { const n = new Set(s); n.delete(checkId); return n; });
+      });
+    toggleTailsRef.current.set(checkId, result.catch(() => {}));
+    return result;
   }, []);
 
   const handleConfigSave = useCallback((checkId, nextConfig) => {
@@ -536,11 +570,11 @@ export default function PipelineEditorialChecks() {
               <p className="rounded-lg border border-dashed border-port-border p-4 text-center text-xs text-gray-500">Select a series to view its findings.</p>
             ) : (
               <>
-                <EditorialHealthPanel seriesId={seriesId} refreshKey={healthRefresh} />
+                <EditorialHealthPanel seriesId={seriesId} refreshKey={healthRefresh} checksById={checksById} />
                 {loadingFindings ? (
                   <p className="flex items-center gap-2 text-sm text-gray-400"><Loader2 size={16} className="animate-spin" /> Loading findings…</p>
                 ) : (
-                  <EditorialFindingsTriage seriesId={seriesId} comments={comments} checksById={checksById} />
+                  <EditorialFindingsTriage seriesId={seriesId} comments={comments} checksById={checksById} onCommentChange={handleCommentChange} onToggleCheckEnabled={handleToggle} />
                 )}
               </>
             )}

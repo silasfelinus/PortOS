@@ -777,6 +777,44 @@ describe('chekhov.setups-payoffs — LLM check (#1299)', () => {
     expect(seenVars.authoredSetups).toBe('');
   });
 
+  it('passes the configured distant-payoff issue gap as a string var (#1595)', async () => {
+    let seenVars = null;
+    const ctx = wholeCtx({
+      config: { maxFindings: 12, distantGap: 6 },
+      callStagedLLM: async (_stage, vars) => { seenVars = vars; return { content: { findings: [] } }; },
+    });
+    await getCheck(CHEKHOV).run(ctx);
+    expect(seenVars.distantGap).toBe('6');
+  });
+
+  it('defaults the distant-payoff gap to 4 when the series omits it (#1595)', async () => {
+    let seenVars = null;
+    const ctx = wholeCtx({
+      callStagedLLM: async (_stage, vars) => { seenVars = vars; return { content: { findings: [] } }; },
+    });
+    await getCheck(CHEKHOV).run(ctx);
+    expect(seenVars.distantGap).toBe('4');
+  });
+
+  it('disables the distant-payoff section by passing an empty var when distantGap is 0 (#1595)', async () => {
+    let seenVars = null;
+    const ctx = wholeCtx({
+      config: { maxFindings: 12, distantGap: 0 },
+      callStagedLLM: async (_stage, vars) => { seenVars = vars; return { content: { findings: [] } }; },
+    });
+    await getCheck(CHEKHOV).run(ctx);
+    expect(seenVars.distantGap).toBe('');
+  });
+
+  it('accepts distantGap through the config schema and rejects out-of-range values (#1595)', () => {
+    const { configSchema } = getCheck(CHEKHOV);
+    expect(configSchema.parse({}).distantGap).toBe(4);
+    expect(configSchema.parse({ distantGap: 0 }).distantGap).toBe(0);
+    expect(configSchema.parse({ distantGap: 20 }).distantGap).toBe(20);
+    expect(() => configSchema.parse({ distantGap: 21 })).toThrow();
+    expect(() => configSchema.parse({ distantGap: -1 })).toThrow();
+  });
+
   it('marks a single-chunk run as the final part so whole-corpus "never fired" judgments are enabled', async () => {
     let seenVars = null;
     const ctx = wholeCtx({
