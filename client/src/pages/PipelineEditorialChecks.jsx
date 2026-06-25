@@ -209,23 +209,25 @@ export default function PipelineEditorialChecks() {
   // ---- Per-series config override (#1591). The override map lives on the SERIES
   // record (`editorialCheckConfig`); a save PATCHes the series and the runner
   // overlays it on the global config. Saves are NON-optimistic (mirrors
-  // handleConfigSave) and SERIALIZED on a tail promise so two quick edits to
-  // different checks can't reorder responses and clobber each other — each PATCH
-  // applies its edit onto the freshest server-confirmed map at execution time.
-  // `overrideMapRef` is the authoritative server-confirmed map for the selected
-  // series; `nextOverride === null`/`{}` clears that check. ----
+  // handleConfigSave) and SERIALIZED on a tail promise so two quick edits can't
+  // reorder responses and clobber each other — each PATCH applies its edit onto
+  // the freshest server-confirmed map at execution time. `overrideMapsRef` holds
+  // that authoritative map KEYED BY seriesId, so a save queued for series A reads
+  // and writes A's map even after the user has switched to series B (the keying is
+  // what stops a B-reseed from poisoning A's queued PATCH). `patch === null`
+  // clears the whole check. ----
   const selectedSeries = useMemo(() => series.find((s) => s.id === seriesId) || null, [series, seriesId]);
   const seriesOverrides = selectedSeries?.editorialCheckConfig && typeof selectedSeries.editorialCheckConfig === 'object'
     ? selectedSeries.editorialCheckConfig
     : null;
 
-  const overrideMapRef = useRef({});
+  const overrideMapsRef = useRef({});
   const seriesSaveTailRef = useRef(Promise.resolve());
-  // Reseed the authoritative map whenever the selected series (or its loaded
-  // record) changes — covers the async series-list load AND a server-confirmed
-  // save echo, so a later edit always composes onto the persisted overrides.
+  // Seed/refresh ONLY the selected series' entry from its loaded record (covers
+  // the async series-list load AND a server-confirmed save echo). Keying by id
+  // means it never overwrites another series' in-flight map.
   useEffect(() => {
-    overrideMapRef.current = seriesOverrides ? { ...seriesOverrides } : {};
+    if (seriesId) overrideMapsRef.current[seriesId] = seriesOverrides ? { ...seriesOverrides } : {};
   }, [seriesId, seriesOverrides]);
 
   // `patch` is a PARTIAL per-check override ({ [key]: value }) to merge, or `null`
@@ -238,8 +240,8 @@ export default function PipelineEditorialChecks() {
     setSavingSeriesIds((s) => new Set(s).add(checkId));
     seriesSaveTailRef.current = seriesSaveTailRef.current
       .then(async () => {
-        // Build at execution time from the freshest server-confirmed map.
-        const map = { ...overrideMapRef.current };
+        // Build at execution time from THIS series' freshest server-confirmed map.
+        const map = { ...(overrideMapsRef.current[sid] || {}) };
         if (patch === null) delete map[checkId];
         else map[checkId] = { ...(map[checkId] || {}), ...patch };
         const saved = await updatePipelineSeries(sid, { editorialCheckConfig: map }, { silent: true })
@@ -250,15 +252,14 @@ export default function PipelineEditorialChecks() {
             setSeriesResetNonces((m) => ({ ...m, [checkId]: (m[checkId] || 0) + 1 }));
             return null;
           });
-        // On failure `overrideMapRef` is untouched, so the UI keeps showing the
-        // last persisted overrides (no phantom). On success, sync the ref + state
-        // from the sanitized record — but only if the user hasn't switched series
-        // mid-save (a stale echo must not clobber a different series' map).
-        if (saved && activeSeriesRef.current === sid) {
-          overrideMapRef.current = (saved.editorialCheckConfig && typeof saved.editorialCheckConfig === 'object')
+        // On failure the keyed map is untouched, so the UI keeps showing the last
+        // persisted overrides (no phantom). On success, sync THIS series' map
+        // synchronously by id — keyed, so it never clobbers another series.
+        if (saved) {
+          overrideMapsRef.current[saved.id] = (saved.editorialCheckConfig && typeof saved.editorialCheckConfig === 'object')
             ? { ...saved.editorialCheckConfig } : {};
+          setSeries((rows) => rows.map((r) => (r.id === saved.id ? saved : r)));
         }
-        if (saved) setSeries((rows) => rows.map((r) => (r.id === saved.id ? saved : r)));
       })
       .finally(() => setSavingSeriesIds((s) => { const n = new Set(s); n.delete(checkId); return n; }));
   }, []);
