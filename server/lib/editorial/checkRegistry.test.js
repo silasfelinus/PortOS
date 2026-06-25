@@ -4052,6 +4052,17 @@ describe('copy-edit prose-tic bundle (#1306)', () => {
     expect(/passive/i.test(findings[0].problem)).toBe(true);
   });
 
+  it('prose.passive-voice suppresses intentional passive by default but counts it when toggled off', () => {
+    // 1 weak ("was opened") + 1 stative ("was exhausted") + 1 mood ("sky was streaked").
+    const sections = [{ number: 1, content: 'The door was opened. She was exhausted. The sky was streaked with red.' }];
+    const suppressed = getCheck(PASSIVE).run({ sections, config: { densityPer1000: 0 }, severityDefault: 'low' });
+    expect(suppressed).toHaveLength(1);
+    expect(/1 passive construction\b/.test(suppressed[0].problem)).toBe(true);
+    // With the context tuning off, the raw heuristic counts all three.
+    const raw = getCheck(PASSIVE).run({ sections, config: { densityPer1000: 0, suppressIntentional: false }, severityDefault: 'low' });
+    expect(/3 passive constructions/.test(raw[0].problem)).toBe(true);
+  });
+
   it('prose.repeated-gestures tallies a gesture across the manuscript and flags body-part autonomy', () => {
     const sections = [
       { number: 1, content: Array(5).fill('He nodded.').join(' ') + ' Her eyes followed him across the room.' },
