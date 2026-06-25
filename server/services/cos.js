@@ -978,8 +978,20 @@ async function refillPerpetualForCompletedAgent(agent) {
   const state = await loadState();
   if (!canQueueImprovementTasks(state)) return;
 
+  // `agent:completed` fires from `completeAgent` BEFORE the completion flow's
+  // `updateTask` marks this agent's task done (agentLifecycle.js: completeAgent
+  // emits, THEN updateTask persists). So the just-finished task can still read as
+  // `in_progress` here — and `queueEligibleImprovementTasks` caps each app at one
+  // pending improvement, so it would treat this app as still-busy and skip the
+  // re-queue, defeating the back-to-back drain. Drop the completed task from the
+  // snapshot we hand it so eligibility is computed as if the task is already
+  // done; this is correct regardless of whether updateTask has landed yet.
   const cosTaskData = await getCosTasks();
-  await queueEligibleImprovementTasks(state, cosTaskData);
+  const completedTaskId = agent?.taskId;
+  const refillTaskData = completedTaskId
+    ? { ...cosTaskData, tasks: (cosTaskData.tasks || []).filter(t => t.id !== completedTaskId) }
+    : cosTaskData;
+  await queueEligibleImprovementTasks(state, refillTaskData);
   setImmediate(() => dequeueNextTask());
 }
 

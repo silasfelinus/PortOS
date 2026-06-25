@@ -1124,6 +1124,27 @@ describe('cos.js source — agent:completed triggers perpetual refill', () => {
       'agent:completed handler must call refillPerpetualForCompletedAgent'
     ).toBe(true);
   });
+
+  it('the refill excludes the just-completed task from the queueEligible snapshot (avoids the completeAgent-before-updateTask race)', () => {
+    // agent:completed fires before the completion flow's updateTask marks the
+    // task done, so the just-finished task can still read as in_progress. If the
+    // refill handed the raw cosTaskData to queueEligibleImprovementTasks, its
+    // one-pending-per-app cap would skip the app and the drain would stall —
+    // exactly the bug this whole change fixes. Pin the filter so a refactor
+    // can't silently reintroduce the race.
+    const fnIdx = COS_SRC.indexOf('async function refillPerpetualForCompletedAgent');
+    expect(fnIdx, 'refillPerpetualForCompletedAgent must exist').toBeGreaterThan(-1);
+    const fnSlice = COS_SRC.slice(fnIdx, fnIdx + 2500);
+    expect(
+      /filter\(\s*t\s*=>\s*t\.id\s*!==\s*completedTaskId\s*\)/.test(fnSlice),
+      'refill must drop the completed task (agent.taskId) before queueEligibleImprovementTasks'
+    ).toBe(true);
+    // And the filtered snapshot — not the raw one — must be what is passed in.
+    expect(
+      /queueEligibleImprovementTasks\(\s*state\s*,\s*refillTaskData\s*\)/.test(fnSlice),
+      'refill must pass the filtered refillTaskData to queueEligibleImprovementTasks'
+    ).toBe(true);
+  });
 });
 
 // Shared autonomous-queuing gate (cosState.canQueueImprovementTasks). Extracted
