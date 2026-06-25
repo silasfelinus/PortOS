@@ -486,7 +486,20 @@ describe('dequeueNextTask — capacity guards', () => {
  * will fail loudly rather than silently miss matches.
  */
 function extractFnBody(src, fnStart) {
-  const openIdx = src.indexOf('{', fnStart);
+  // Skip the parameter list before locating the body brace: a destructured /
+  // defaulted param (e.g. `(state, data, { x = null } = {})`) contains `{`
+  // braces, so the body `{` is the first one AFTER the signature's closing `)`,
+  // not the first `{` after fnStart. Paren-match the signature first.
+  const parenIdx = src.indexOf('(', fnStart);
+  let searchFrom = fnStart;
+  if (parenIdx !== -1) {
+    let pdepth = 0;
+    for (let j = parenIdx; j < src.length; j++) {
+      if (src[j] === '(') pdepth++;
+      else if (src[j] === ')') { pdepth--; if (pdepth === 0) { searchFrom = j + 1; break; } }
+    }
+  }
+  const openIdx = src.indexOf('{', searchFrom);
   if (openIdx === -1) return '';
   let depth = 0;
   let i = openIdx;
@@ -854,11 +867,13 @@ describe('cos.js source — priority + capacity invariants', () => {
     // Match the call shape, not the specific variable name — `task` could
     // legitimately be renamed (e.g. `queuedTask`) in a behavior-preserving
     // refactor. The contract being pinned is "raw:true addTask call to the
-    // internal lane," not the identifier.
+    // internal lane," not the identifier. The options object may carry siblings
+    // beyond `raw:true` (e.g. `ignoreTaskId` for the perpetual refill), so don't
+    // require `}` immediately after `raw: true`.
     expect(
       fnBody,
       'queue path must persist via addTask with raw:true so the enriched task object survives serialization'
-    ).toMatch(/addTask\s*\(\s*\w+\s*,\s*['"]internal['"]\s*,\s*\{\s*raw:\s*true\s*\}/);
+    ).toMatch(/addTask\s*\(\s*\w+\s*,\s*['"]internal['"]\s*,\s*\{\s*raw:\s*true\b/);
 
     // The old buggy path called `getTaskDescription` to build a one-line
     // description and then passed app/context/approvalRequired fields to
@@ -1125,24 +1140,19 @@ describe('cos.js source — agent:completed triggers perpetual refill', () => {
     ).toBe(true);
   });
 
-  it('the refill excludes the just-completed task from the queueEligible snapshot (avoids the completeAgent-before-updateTask race)', () => {
-    // agent:completed fires before the completion flow's updateTask marks the
-    // task done, so the just-finished task can still read as in_progress. If the
-    // refill handed the raw cosTaskData to queueEligibleImprovementTasks, its
-    // one-pending-per-app cap would skip the app and the drain would stall —
-    // exactly the bug this whole change fixes. Pin the filter so a refactor
-    // can't silently reintroduce the race.
+  it('the refill passes the completed task id as ignoreTaskId (avoids the completeAgent-before-updateTask dedup race)', () => {
+    // agent:completed fires before the completion flow's updateTask marks the task
+    // done, so the just-finished task can still read as in_progress — both in the
+    // snapshot AND on disk when queueEligible's addTask re-reads COS-TASKS.md. A
+    // perpetual schedule regenerates an identical first-line per app, so without
+    // excluding the completing task the refill is rejected as a duplicate and the
+    // drain stalls. Pin the ignoreTaskId thread so a refactor can't reintroduce it.
     const fnIdx = COS_SRC.indexOf('async function refillPerpetualForCompletedAgent');
     expect(fnIdx, 'refillPerpetualForCompletedAgent must exist').toBeGreaterThan(-1);
     const fnSlice = COS_SRC.slice(fnIdx, fnIdx + 2500);
     expect(
-      /filter\(\s*t\s*=>\s*t\.id\s*!==\s*completedTaskId\s*\)/.test(fnSlice),
-      'refill must drop the completed task (agent.taskId) before queueEligibleImprovementTasks'
-    ).toBe(true);
-    // And the filtered snapshot — not the raw one — must be what is passed in.
-    expect(
-      /queueEligibleImprovementTasks\(\s*state\s*,\s*refillTaskData\s*\)/.test(fnSlice),
-      'refill must pass the filtered refillTaskData to queueEligibleImprovementTasks'
+      /queueEligibleImprovementTasks\(\s*state\s*,\s*cosTaskData\s*,\s*\{\s*ignoreTaskId:\s*agent\?\.taskId\s*\}\s*\)/.test(fnSlice),
+      'refill must forward { ignoreTaskId: agent?.taskId } to queueEligibleImprovementTasks'
     ).toBe(true);
   });
 

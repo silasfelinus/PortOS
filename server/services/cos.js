@@ -989,17 +989,14 @@ async function refillPerpetualForCompletedAgent(agent) {
   // `agent:completed` fires from `completeAgent` BEFORE the completion flow's
   // `updateTask` marks this agent's task done (agentLifecycle.js: completeAgent
   // emits, THEN updateTask persists). So the just-finished task can still read as
-  // `in_progress` here — and `queueEligibleImprovementTasks` caps each app at one
-  // pending improvement, so it would treat this app as still-busy and skip the
-  // re-queue, defeating the back-to-back drain. Drop the completed task from the
-  // snapshot we hand it so eligibility is computed as if the task is already
-  // done; this is correct regardless of whether updateTask has landed yet.
+  // `in_progress` both in this snapshot AND on disk when queueEligible's addTask
+  // re-reads COS-TASKS.md. Pass its id as `ignoreTaskId` so the per-app busy cap,
+  // the per-type dedup set, and addTask's disk-level duplicate scan all treat it
+  // as already done — otherwise a perpetual schedule (claim-issue/claim-work
+  // regenerates an identical first-line per app) is rejected as a duplicate of
+  // the completing task and the drain stalls until the next scheduler tick.
   const cosTaskData = await getCosTasks();
-  const completedTaskId = agent?.taskId;
-  const refillTaskData = completedTaskId
-    ? { ...cosTaskData, tasks: (cosTaskData.tasks || []).filter(t => t.id !== completedTaskId) }
-    : cosTaskData;
-  await queueEligibleImprovementTasks(state, refillTaskData);
+  await queueEligibleImprovementTasks(state, cosTaskData, { ignoreTaskId: agent?.taskId });
   // NOTE: the caller (the agent:completed handler) runs dequeueNextTask AFTER
   // this resolves, so the freshly-queued perpetual task is on the queue before
   // slots are filled. Do not dequeue here — that would re-introduce the ordering
