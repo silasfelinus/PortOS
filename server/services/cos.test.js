@@ -908,7 +908,7 @@ describe('cos.js source — priority + capacity invariants', () => {
     expect(
       fnBody,
       'queue path must pass the loaded lastType through to getNextTaskType so rotation advances'
-    ).toMatch(/getNextTaskType\(app\.id,\s*\w+\s*\)/);
+    ).toMatch(/getNextTaskType\(app\.id,\s*\w+\s*(?:,|\))/);
 
     // appActivity helpers must come from the file-level static import (line ~23),
     // NOT a dynamic `await import('./appActivity.js')` *inside* the per-app
@@ -942,35 +942,33 @@ describe('cos.js source — priority + capacity invariants', () => {
       'queue path must not call the disk-reading isAppOnCooldown per app'
     ).not.toMatch(/await\s+isAppOnCooldown\(/);
 
-    // Perpetual (drain-until-done) picks must BYPASS the per-app review
-    // cooldown — their work-detector park is the throttle, not the cooldown
-    // window. The spawn-time `markAppReviewCooldown` stamp (on-demand manual
-    // trigger + idle-review loop) writes `lastReviewedAt`, so without the
-    // bypass the back-to-back refill after a perpetual completion reads its own
-    // app as on-cooldown and stalls — a manually-triggered perpetual task then
-    // runs once instead of continuing the drain. Pin two halves: (a) the
-    // cooldown gate is guarded by a non-perpetual predicate, and (b) the gate
-    // is resolved AFTER getNextTaskType (so the picked type's reason is known
-    // before the cooldown decision). `getNextTaskType` tags perpetual picks
-    // with reason `perpetual-drain`.
+    // Perpetual (drain-until-done) picks must BYPASS the per-app review cooldown
+    // — their work-detector park is the throttle, not the cooldown window. The
+    // spawn-time `markAppReviewCooldown` stamp (on-demand manual trigger +
+    // idle-review loop) writes `lastReviewedAt`, so without the bypass the
+    // back-to-back refill after a perpetual completion reads its own app as
+    // on-cooldown and stalls — a manually-triggered perpetual task then runs
+    // once instead of continuing the drain. The bypass is implemented by
+    // CONSTRAINING the pick to perpetual when the app is on cooldown: the
+    // cooldown state is computed first and passed to getNextTaskType as
+    // `perpetualOnly`, so in a MIXED schedule a due higher-priority cron/custom
+    // type can't mask the perpetual drain (which would strand the whole app for
+    // the window). Pin: (a) the cooldown is resolved BEFORE getNextTaskType, and
+    // (b) getNextTaskType is asked for a perpetual-only pick gated on cooldown.
     const cooldownIdx = fnBody.indexOf('isAppActivityOnCooldown(');
     const nextTypeIdx = fnBody.indexOf('getNextTaskType(');
     expect(
-      nextTypeIdx,
-      'getNextTaskType must be resolved before the cooldown gate so perpetual picks can bypass it'
+      cooldownIdx,
+      'queue path must compute cooldown via isAppActivityOnCooldown'
     ).toBeGreaterThan(-1);
     expect(
-      cooldownIdx > nextTypeIdx,
-      'the per-app cooldown gate must come AFTER getNextTaskType so it can bypass perpetual picks'
+      cooldownIdx < nextTypeIdx,
+      'cooldown must be resolved BEFORE getNextTaskType so it can constrain the pick to perpetual'
     ).toBe(true);
     expect(
       fnBody,
-      'queue path must bypass the cooldown gate for perpetual-drain picks (reason === "perpetual-drain")'
-    ).toMatch(/perpetual-drain/);
-    expect(
-      fnBody,
-      'the cooldown gate must be guarded so it only applies to non-perpetual picks'
-    ).toMatch(/!\s*\w*[Pp]erpetual\w*\s*&&\s*isAppActivityOnCooldown\(/);
+      'queue path must constrain the pick to perpetual when on cooldown (perpetualOnly gated on cooldown)'
+    ).toMatch(/getNextTaskType\([^)]*\{\s*perpetualOnly:\s*onCooldown\s*\}/);
   });
 
   it('generateManagedAppImprovementTaskForType defers updateAppActivity until after gates', () => {

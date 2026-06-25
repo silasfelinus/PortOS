@@ -1063,34 +1063,34 @@ export async function queueEligibleImprovementTasks(state, cosTaskData, { ignore
     // "no activity yet."
     const appActivity = activitySnapshot.apps?.[app.id];
 
-    // Resolve the next eligible improvement type for this app BEFORE the
-    // per-app cooldown gate — the picked type's interval decides whether the
-    // cooldown even applies (see the perpetual bypass below). `getNextTaskType`
-    // falls back to ROTATION when nothing is time-due, and the rotation
-    // pointer is derived from the `lastType` argument — without it, the
-    // rotation always restarts from index 0 and starves every other
-    // rotation type for the app. Mirror `generateManagedAppTask` (the
-    // legacy direct-spawn caller above) which threads the per-app
-    // `lastImprovementType` in.
+    // Perpetual (drain-until-done) tasks BYPASS the per-app review cooldown:
+    // their work-detector park IS the throttle (taskSchedule.parkPerpetual), and
+    // agentCompletion.js already skips the post-completion cooldown bump for
+    // them. But the spawn-time `markAppReviewCooldown` stamp (written by BOTH the
+    // on-demand manual-trigger path and the idle-review loop) sets
+    // `lastReviewedAt`, which `isAppActivityOnCooldown` reads — so without a
+    // bypass the back-to-back refill fired right after a perpetual run reads its
+    // OWN app as "on cooldown" and skips the re-queue, and the drain stalls.
+    //
+    // When the app IS on cooldown, constrain the pick to a due perpetual task
+    // (`perpetualOnly`). This is what makes a MIXED schedule converge: if the app
+    // also has a due cron/custom type (e.g. pr-watcher), the unconstrained
+    // `getNextTaskType` would return that higher-priority NON-exempt type first,
+    // we'd see a non-perpetual pick, and we'd skip the whole app for the cooldown
+    // window — stranding the perpetual drain behind it. Asking perpetual-only
+    // returns the due perpetual drain (or null → leave the cooled-down app
+    // alone). When NOT on cooldown, the normal full-priority pick runs.
+    const onCooldown = isAppActivityOnCooldown(appActivity, state.config.appReviewCooldownMs);
+
+    // `getNextTaskType` falls back to ROTATION when nothing is time-due, and the
+    // rotation pointer is derived from `lastType` — without it the rotation
+    // always restarts from index 0 and starves every other rotation type for the
+    // app. Mirror `generateManagedAppTask` (the legacy direct-spawn caller) which
+    // threads the per-app `lastImprovementType` in.
     const lastType = appActivity?.lastImprovementType || '';
-    const nextTypeResult = await getNextTaskType(app.id, lastType).catch(() => null);
+    const nextTypeResult = await getNextTaskType(app.id, lastType, { perpetualOnly: onCooldown }).catch(() => null);
     if (!nextTypeResult) continue;
     const nextType = nextTypeResult.taskType;
-
-    // Perpetual (drain-until-done) picks BYPASS the per-app review cooldown:
-    // their work-detector park IS the throttle (taskSchedule.parkPerpetual),
-    // and agentCompletion.js already skips the post-completion cooldown bump
-    // for them. But the spawn-time `markAppReviewCooldown` stamp (written by
-    // BOTH the on-demand manual-trigger path and the idle-review loop) sets
-    // `lastReviewedAt`, which `isAppActivityOnCooldown` reads. Without this
-    // bypass, the back-to-back refill fired right after a perpetual run reads
-    // its OWN app as "on cooldown" (lastReviewedAt is minutes old, the window
-    // is 30 min) and skips the re-queue — so a manually-triggered perpetual
-    // task runs exactly once and stalls instead of continuing the drain. The
-    // cooldown still gates non-perpetual rotation types. `getNextTaskType`
-    // tags every perpetual pick with reason `perpetual-drain`.
-    const isPerpetualDrain = nextTypeResult.reason === 'perpetual-drain';
-    if (!isPerpetualDrain && isAppActivityOnCooldown(appActivity, state.config.appReviewCooldownMs)) continue;
 
     const taskKey = `app:${app.id}:${nextType}`;
     if (existingTaskTypes.has(taskKey)) {
