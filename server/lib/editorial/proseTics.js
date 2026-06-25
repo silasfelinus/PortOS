@@ -328,9 +328,13 @@ const NON_AGENT_BY = new Set([
   'daybreak', 'then', 'now', 'today', 'tonight', 'tomorrow', 'yesterday',
 ]);
 
+// Determiners skipped when reading the head noun of a "by <…>" phrase, so
+// "by the morning" resolves to the temporal "morning", not the determiner.
+const BY_DETERMINERS = new Set(['the', 'a', 'an']);
+
 // How far past the participle to look for a "by <agent>" phrase, allowing an
-// intervening adverb ("decorated elaborately by Mira").
-const PASSIVE_LOOKAHEAD = 3;
+// intervening adverb and a determiner ("decorated elaborately by the artist").
+const PASSIVE_LOOKAHEAD = 4;
 
 // Whether the subject governing a be-verb at token index `i` is a setting noun.
 // The subject is the token right before the be-verb ("the sky was", "her eyes
@@ -388,11 +392,13 @@ export function findPassiveVoice(text) {
       }
       // An explicit "by <agent>" (with an optional intervening adverb) is the
       // unambiguous agentive passive — it wins over stative/mood classification.
-      // The agent token must be inside the same-sentence window and must not be a
-      // time phrase ("by morning"), which is not an agent.
+      // The agent must be inside the same-sentence window and must not be a time
+      // phrase ("by morning", "by the dawn"), which is not an agent — so skip a
+      // leading determiner to read the head noun.
       const byPos = after.findIndex((t) => t.lower === 'by');
-      const agentTok = byPos !== -1 ? after[byPos + 1] : undefined;
-      const byAgent = !!agentTok && !NON_AGENT_BY.has(agentTok.lower);
+      const byObj = byPos === -1 ? [] : after.slice(byPos + 1);
+      const headTok = byObj[0] && BY_DETERMINERS.has(byObj[0].lower) ? byObj[1] : byObj[0];
+      const byAgent = !!headTok && !NON_AGENT_BY.has(headTok.lower);
       let classification = 'weak';
       if (!byAgent) {
         // A mood image needs BOTH a setting subject AND an atmospheric rendering

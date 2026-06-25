@@ -194,6 +194,18 @@ describe('findPassiveVoice', () => {
     expect(hit.classification).toBe('stative');
   });
 
+  it('skips a determiner to spot a "by the <time>" phrase', () => {
+    const [hit] = findPassiveVoice('She was exhausted by the morning.');
+    expect(hit.byAgent).toBe(false);
+    expect(hit.classification).toBe('stative');
+  });
+
+  it('still treats "by the <agent>" as a real agent', () => {
+    const [hit] = findPassiveVoice('She was exhausted by the climb.');
+    expect(hit.byAgent).toBe(true);
+    expect(hit.classification).toBe('weak');
+  });
+
   it('does not read a "by" from the next sentence as the agent', () => {
     // "By morning" starts a new sentence — it must not flip the stative
     // "was exhausted" into a weak by-agent passive.
