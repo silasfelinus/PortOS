@@ -41,6 +41,10 @@ import {
   canonCharacterStatesSummary,
   canonCharacterTraitsSummary,
   continuityLedgerSummary,
+  proseStageIssues,
+  renderComicForProseSync,
+  proseSyncPairs,
+  PROSE_SYNC_PROSE_CHAR_CAP,
 } from './checkRegistry.js';
 
 const NAMING = 'naming.dissimilar-names';
@@ -3452,6 +3456,169 @@ describe('visual.appearance-continuity — LLM check (#1467)', () => {
     let called = false;
     const findings = await getCheck('visual.appearance-continuity').run({
       storyboardScenes: [sceneEntry(1, { heading: 'A', shots: [{ id: 's1', description: 'alone' }] })],
+      config: {},
+      severityDefault: 'medium',
+      callStagedLLM: async () => { called = true; return { content: { findings: [] } }; },
+    });
+    expect(findings).toEqual([]);
+    expect(called).toBe(false);
+  });
+});
+
+describe('comic.prose-sync — LLM cross-media check (#1589)', () => {
+  // A hybrid issue record: a populated comicPages split AND a prose stage. Built the
+  // way production issues are (full `stages`), NOT via synthetic manuscript sections
+  // — so the prose half is read from the `prose` stage, exercising the real path.
+  const hybridIssue = (number, prose, panels, extraStages = {}) => ({
+    number,
+    stages: { prose: { output: prose }, comicPages: { pages: [{ panels }] }, ...extraStages },
+  });
+  // A comic-only issue (comic content, no prose stage).
+  const comicOnlyIssue = (number, panels) => ({ number, stages: { comicPages: { pages: [{ panels }] } } });
+  // A prose-only issue (prose stage, no comic content).
+  const proseOnlyIssue = (number, prose) => ({ number, stages: { prose: { output: prose } } });
+  const onePanel = (description) => [{ description, dialogue: [], caption: '', sfx: '' }];
+
+  describe('pure helpers', () => {
+    it('proseStageIssues reads the prose STAGE specifically, not comicScript — keyed/sorted by number', () => {
+      const rows = proseStageIssues([
+        // A hybrid issue with BOTH a comicScript stage AND a prose stage: the
+        // helper must pick the PROSE, never the comic script (the core bug guard).
+        { number: 5, stages: { comicScript: { output: 'COMIC SCRIPT — not prose' }, prose: { output: 'Issue five prose.' } } },
+        { number: 3, stages: { prose: { input: 'Issue three prose (input fallback).' } } },
+        { number: 9, stages: { prose: { output: '   ' } } },        // blank → skipped
+        { number: 7, stages: { comicScript: { output: 'comic only' } } }, // no prose → skipped
+      ]);
+      expect(rows.map((r) => r.number)).toEqual([3, 5]); // sorted, prose-bearing only
+      expect(rows.find((r) => r.number === 5).prose).toBe('Issue five prose.');
+      expect(rows.find((r) => r.number === 3).prose).toBe('Issue three prose (input fallback).');
+    });
+
+    it('renderComicForProseSync emits page/panel headers + shows/dialogue/caption/sfx, skipping empty panels', () => {
+      const out = renderComicForProseSync([
+        { panels: [
+          // Production parsed dialogue shape is { character, line } (NOT { speaker }).
+          { description: 'Anna draws the knife', dialogue: [{ character: 'ANNA', line: 'Stay back.' }], caption: 'Later', sfx: 'SHNK' },
+          { description: '', dialogue: [], caption: '', sfx: '' }, // empty → skipped
+        ] },
+      ]);
+      expect(out).toContain('Page 1 · Panel 1');
+      expect(out).toContain('Shows: Anna draws the knife');
+      expect(out).toContain('ANNA: Stay back.');
+      expect(out).toContain('Caption: Later');
+      expect(out).toContain('SFX: SHNK');
+      // The empty second panel produced no header.
+      expect(out).not.toContain('Panel 2');
+    });
+
+    it('proseSyncPairs joins only issues with BOTH prose and comic, caps prose, and uses the prose stage', () => {
+      const longProse = 'x'.repeat(PROSE_SYNC_PROSE_CHAR_CAP + 500);
+      const ctx = {
+        issues: [
+          // Hybrid: prose stage + comic. Also carries a comicScript stage to prove
+          // the prose half comes from `prose`, not the comicScript precedence.
+          hybridIssue(3, longProse, onePanel('a panel'), { comicScript: { output: 'WRONG — comic script' } }),
+          comicOnlyIssue(7, onePanel('comic but no prose')),
+          proseOnlyIssue(9, 'prose but no comic'),
+        ],
+      };
+      const pairs = proseSyncPairs(ctx);
+      expect(pairs.map((p) => p.number)).toEqual([3]); // only issue 3 has both
+      expect(pairs[0].prose).toHaveLength(PROSE_SYNC_PROSE_CHAR_CAP);
+      expect(pairs[0].prose.startsWith('x')).toBe(true); // the prose stage, not the comic script
+      expect(pairs[0].comic).toContain('Shows: a panel');
+    });
+  });
+
+  it('gates true only when an issue has both prose and comic content', () => {
+    const check = getCheck('comic.prose-sync');
+    expect(check.gate({ issues: [hybridIssue(3, 'prose', onePanel('panel'))] })).toBe(true);
+    // Comic but no prose → nothing to cross-check.
+    expect(check.gate({ issues: [comicOnlyIssue(3, onePanel('panel'))] })).toBe(false);
+    // Prose but no comic → nothing to cross-check.
+    expect(check.gate({ issues: [proseOnlyIssue(3, 'prose')] })).toBe(false);
+    expect(check.gate({ issues: [] })).toBe(false);
+  });
+
+  it('compares the PROSE stage (not the comic script) for a hybrid issue', async () => {
+    let seen = null;
+    await getCheck('comic.prose-sync').run({
+      issues: [
+        // A hybrid issue whose comicScript stage text differs from its prose stage —
+        // the check must hand the model the PROSE, never the comic script.
+        hybridIssue(3, 'Anna is stabbed and falls.', onePanel('Anna stands, unharmed'), { comicScript: { output: 'COMIC SCRIPT SOURCE — must not be sent' } }),
+      ],
+      config: {},
+      severityDefault: 'medium',
+      callStagedLLM: async (_stage, vars) => { seen = vars; return { content: { findings: [] } }; },
+    });
+    expect(seen.prose).toBe('Anna is stabbed and falls.');
+    expect(seen.prose).not.toContain('COMIC SCRIPT SOURCE');
+    expect(seen.comic).toContain('Shows: Anna stands, unharmed');
+  });
+
+  it('makes one model call per hybrid issue and forces the issue anchor on findings', async () => {
+    const seen = [];
+    const findings = await getCheck('comic.prose-sync').run({
+      issues: [
+        hybridIssue(3, 'Anna is stabbed and falls.', onePanel('Anna stands, unharmed')),
+        hybridIssue(4, 'A quiet morning.', onePanel('morning kitchen')),
+      ],
+      config: { maxFindings: 12, maxIssues: 40 },
+      severityDefault: 'medium',
+      callStagedLLM: async (_stage, vars) => {
+        seen.push(vars);
+        // Model reports a mismatch only for issue 3, and deliberately omits
+        // issueNumber to prove the check forces it.
+        return vars.issueNumber === 3
+          ? { content: { findings: [{ severity: 'medium', location: 'Issue 3 — unshown beat', problem: 'Prose stabs Anna; no panel shows it.', suggestion: 'Add a panel.', anchorQuote: 'Anna is stabbed' }] } }
+          : { content: { findings: [] } };
+      },
+    });
+    // One call per hybrid issue.
+    expect(seen.map((v) => v.issueNumber).sort()).toEqual([3, 4]);
+    expect(seen[0]).toHaveProperty('prose');
+    expect(seen[0]).toHaveProperty('comic');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].category).toBe('continuity');
+    expect(findings[0].issueNumber).toBe(3); // forced from the pair, not the model
+  });
+
+  it('respects maxIssues (caps the number of model calls)', async () => {
+    let calls = 0;
+    await getCheck('comic.prose-sync').run({
+      issues: [
+        hybridIssue(3, 'p3', onePanel('d3')),
+        hybridIssue(4, 'p4', onePanel('d4')),
+        hybridIssue(5, 'p5', onePanel('d5')),
+      ],
+      config: { maxIssues: 2 },
+      severityDefault: 'medium',
+      callStagedLLM: async () => { calls += 1; return { content: { findings: [] } }; },
+    });
+    expect(calls).toBe(2);
+  });
+
+  it('stops launching further calls once the abort signal trips', async () => {
+    let calls = 0;
+    const signal = { aborted: false };
+    await getCheck('comic.prose-sync').run({
+      issues: [
+        hybridIssue(3, 'p3', onePanel('d3')),
+        hybridIssue(4, 'p4', onePanel('d4')),
+      ],
+      config: {},
+      severityDefault: 'medium',
+      signal,
+      callStagedLLM: async () => { calls += 1; signal.aborted = true; return { content: { findings: [] } }; },
+    });
+    expect(calls).toBe(1); // second issue skipped after the signal tripped
+  });
+
+  it('returns no findings (and never calls the model) when no issue is hybrid', async () => {
+    let called = false;
+    const findings = await getCheck('comic.prose-sync').run({
+      issues: [proseOnlyIssue(3, 'prose only')], // no comic content anywhere
       config: {},
       severityDefault: 'medium',
       callStagedLLM: async () => { called = true; return { content: { findings: [] } }; },

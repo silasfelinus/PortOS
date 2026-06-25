@@ -736,6 +736,13 @@
       "model": "default",
       "returnsJson": true,
       "variables": []
+    },
+    "pipeline-editorial-comic-prose-sync": {
+      "name": "Pipeline — Editorial Check: Comic ↔ prose synchronization (hybrid issues)",
+      "description": "Editorial check (#1589): cross-media consistency for hybrid comic+prose issues. Pairs each issue's prose narration with its authoritative comic pages (description + dialogue + caption + SFX) and flags SUBSTANTIVE divergences — a plot beat the prose narrates that no panel shows, panel dialogue that contradicts the prose (different words or a different speaker), or a chronology disagreement across the two media. Tuned to ignore ordinary medium-translation compression/reordering; reads the per-issue manuscript prose + comicScript.pacing. Runs one model call per hybrid issue. Returns issue-anchored findings.",
+      "model": "default",
+      "returnsJson": true,
+      "variables": []
     }
   }
 }

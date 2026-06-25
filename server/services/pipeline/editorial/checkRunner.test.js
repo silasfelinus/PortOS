@@ -711,6 +711,50 @@ describe('getReviewWithStaleness (#1345)', () => {
     expect(review.comments.find((c) => c.checkId === 'comic.panel-rhythm').stale).toBe(true);
   });
 
+  it('runs comic.prose-sync through the runner, fetching issues and feeding the model the PROSE STAGE text (#1589)', async () => {
+    // A hybrid issue: prose stage + comic content, PLUS a comicScript stage whose
+    // text differs — the stitched manuscript would pick comicScript over prose, so
+    // this pins that the check reads the prose STAGE, not the manuscript precedence.
+    issuesState = [{
+      id: 'i1', seriesId: 's1', number: 1,
+      stages: {
+        prose: { output: 'Anna is stabbed and falls.' },
+        comicScript: { output: 'PAGE 1\nPANEL 1\nAnna stands, unharmed.' },
+        comicPages: { pages: [{ panels: [{ description: 'Anna stands, unharmed', caption: '', dialogue: [{ character: 'ANNA', line: 'Fine.' }], sfx: '' }] }] },
+      },
+    }];
+    const { findings } = await runEditorialChecks('s1', { checkIds: ['comic.prose-sync'] });
+    // needsIssues/needsProse made the runner load issues for this check.
+    expect(listIssuesForSeries).toHaveBeenCalledWith('s1');
+    expect(findings.some((f) => f.checkId === 'comic.prose-sync')).toBe(true);
+    // The model got the PROSE stage text (NOT the comicScript-precedence manuscript),
+    // and the comic block carries the panel description + the { character, line } speaker.
+    const call = runStagedLLM.mock.calls.find((c) => c[0] === 'pipeline-editorial-comic-prose-sync');
+    expect(call).toBeTruthy();
+    expect(call[1].prose).toBe('Anna is stabbed and falls.');
+    expect(call[1].comic).toContain('Shows: Anna stands, unharmed');
+    expect(call[1].comic).toContain('ANNA: Fine.');
+  });
+
+  it('stales a comic.prose-sync finding when the PROSE STAGE text drifts, even though the comic is unchanged (#1589)', async () => {
+    const hybrid = (prose) => [{
+      id: 'i1', seriesId: 's1', number: 1,
+      stages: {
+        prose: { output: prose },
+        comicPages: { pages: [{ panels: [{ description: 'a panel', caption: '', dialogue: [], sfx: '' }] }] },
+      },
+    }];
+    issuesState = hybrid('Anna is stabbed and falls.');
+    const { findings } = await runEditorialChecks('s1', { checkIds: ['comic.prose-sync'] });
+    reviewState = { comments: findings.map((f) => ({ ...f, status: 'open' })) };
+    expect(reviewState.comments.find((c) => c.checkId === 'comic.prose-sync')).toBeTruthy();
+    // Edit ONLY the prose stage — the comic content is byte-identical. The `prose`
+    // source must fingerprint the prose so the finding goes stale.
+    issuesState = hybrid('Anna walks away, unharmed.');
+    const review = await getReviewWithStaleness('s1');
+    expect(review.comments.find((c) => c.checkId === 'comic.prose-sync').stale).toBe(true);
+  });
+
   it('keeps a scene finding fresh when the manuscript changes (reverseOutline-only source)', async () => {
     outlineState = { scenes: [{ id: 'scene-001', issueNumber: 1, heading: 'Talking heads', anchorQuote: 'q', components: { narrative: false, action: false, dialogue: true } }] };
     await seedReviewFromRun();

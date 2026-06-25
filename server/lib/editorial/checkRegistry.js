@@ -159,6 +159,12 @@ export const EDITORIAL_SOURCES = Object.freeze([
   'comicScript',
   'comicScript.pacing',
   'comicScript.layout',
+  // Each issue's PROSE-stage text SPECIFICALLY (#1589) — NOT the default manuscript
+  // precedence (comicScript ▸ teleplay ▸ prose), which for a hybrid issue returns
+  // the comic script. The comic↔prose-sync check reads this to compare prose against
+  // the comic; fingerprinting it separately means a prose edit stales a sync finding
+  // without a comic-only edit doing so (and vice-versa, via comicScript.pacing).
+  'prose',
 ]);
 
 // Default per-run finding cap for user-defined checks (#1346) — mirrors the
@@ -706,6 +712,19 @@ export const EYELINE_MATCH_STAGE = 'pipeline-editorial-eyeline-match';
 // sibling the deterministic 180°/shot-type scan can't catch (the shot parser
 // matches characters by name but never diffs their free-text descriptions).
 export const APPEARANCE_CONTINUITY_STAGE = 'pipeline-editorial-appearance-continuity';
+
+// Stage name for the comic ↔ prose synchronization LLM check (#1589). Ships in
+// data.reference/prompts/stages/ + stage-config.json (fresh installs via
+// setup-data.js) and migrates to existing installs via migration 136 (boot runs
+// migrations but NOT setup-data, so the migration is required). For a hybrid
+// comic+prose issue it pairs the issue's PROSE (its prose stage) with its
+// authoritative COMIC content (description + dialogue + caption + SFX — the same
+// fields the `comicScript.pacing` source carries) and asks the model to flag
+// SUBSTANTIVE cross-media divergences: a plot beat the prose narrates that no
+// panel shows, panel dialogue that contradicts the prose, or a chronology
+// disagreement across the two media. Comics legitimately compress and cut, so the
+// prompt is tuned to ignore ordinary medium-translation trims.
+export const COMIC_PROSE_SYNC_STAGE = 'pipeline-editorial-comic-prose-sync';
 
 // Render the canon roster's names + aliases (#1412) into a compact text block the
 // unmodeled-names check passes alongside the manuscript, so the model knows which
@@ -1965,6 +1984,108 @@ function balloonAttributionFinding(v, number) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Comic ↔ prose synchronization helpers (#1589). The cross-media check pairs each
+// hybrid issue's PROSE (a manuscript section) with its authoritative COMIC content
+// and feeds the pair to the model. Pure + deterministic so they're unit-testable
+// in isolation (the LLM caller is injected via ctx.callStagedLLM).
+// ---------------------------------------------------------------------------
+
+// Per-issue prose ceiling fed to the comic↔prose check (#1589) — so a long
+// chapter can't blow a small/local provider's window. Unlike the manuscript-
+// corpus checks (which chunk the whole series), this check makes ONE call per
+// hybrid issue with that issue's prose + comic, so the bound is per-issue. The
+// comic content is the smaller, authoritative anchor; the prose is sliced to this
+// ceiling and the prompt warns the model the prose may be truncated. ~24k chars
+// ≈ 6k tokens, which fits alongside the comic block on every supported provider.
+export const PROSE_SYNC_PROSE_CHAR_CAP = 24_000;
+
+// Extract an issue's PROSE-stage text. Inlines arcPlanner's `stageTextOf` (output
+// then input) to keep the registry import-pure (no service import). Reads the
+// `prose` stage SPECIFICALLY — NOT the default manuscript precedence (comicScript ▸
+// teleplay ▸ prose), which for a hybrid comic+prose issue would return the comic
+// script, not the prose (the bug this check exists to avoid). Returns '' when the
+// issue has no prose-stage text.
+function proseStageText(issue) {
+  const stage = issue?.stages?.prose;
+  const output = typeof stage?.output === 'string' ? stage.output.trim() : '';
+  if (output) return output;
+  return typeof stage?.input === 'string' ? stage.input.trim() : '';
+}
+
+// Per-issue PROSE-stage content, as `{ number, prose }`, sorted by issue number.
+// The single source of truth for "the prose half" of the comic↔prose-sync check —
+// read by BOTH the check's `run` AND the runner's `prose` staleness resolver
+// (mirrors `comicLetteringIssues` for the comic half), so the fingerprinted text is
+// exactly what the check compares. Only issues with prose-stage text contribute.
+export function proseStageIssues(issues) {
+  return (Array.isArray(issues) ? issues : [])
+    .map((i) => ({ number: Number.isInteger(i?.number) ? i.number : null, prose: proseStageText(i) }))
+    .filter((i) => i.prose)
+    .sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
+}
+
+// Render an issue's parsed comic pages into a compact, model-readable block —
+// page/panel headers plus each panel's visual DESCRIPTION (what the panel SHOWS),
+// DIALOGUE (`speaker: line`), CAPTION, and SFX — so the model can compare what the
+// comic shows and says against the prose. Mirrors the field set in
+// `projectComicPacingContent` (the `comicScript.pacing` source this check
+// fingerprints), so the rendered content matches what staleness tracks. Returns ''
+// when no panel carries any content.
+export function renderComicForProseSync(pages) {
+  const lines = [];
+  (Array.isArray(pages) ? pages : []).forEach((p, pageIdx) => {
+    const panels = Array.isArray(p?.panels) ? p.panels : [];
+    panels.forEach((panel, panelIdx) => {
+      const block = [];
+      const desc = typeof panel?.description === 'string' ? panel.description.trim() : '';
+      if (desc) block.push(`  Shows: ${desc}`);
+      for (const d of (Array.isArray(panel?.dialogue) ? panel.dialogue : [])) {
+        // The comic-script parser keys the speaker as `character` ({ character, line }),
+        // the same field balloonAttribution/letteringDensity read — NOT `speaker`.
+        // Tolerate a `speaker` alias for robustness, but `character` is the real shape.
+        const rawSpeaker = typeof d?.character === 'string' ? d.character : (typeof d?.speaker === 'string' ? d.speaker : '');
+        const speaker = rawSpeaker.trim();
+        const line = typeof d?.line === 'string' ? d.line.trim() : '';
+        if (line) block.push(`  ${speaker ? `${speaker}: ` : ''}${line}`);
+      }
+      const caption = typeof panel?.caption === 'string' ? panel.caption.trim() : '';
+      if (caption) block.push(`  Caption: ${caption}`);
+      const sfx = typeof panel?.sfx === 'string' ? panel.sfx.trim() : '';
+      if (sfx) block.push(`  SFX: ${sfx}`);
+      // Skip an entirely empty panel — no content to cross-check against prose.
+      if (block.length) {
+        lines.push(`Page ${pageIdx + 1} · Panel ${panelIdx + 1}`, ...block);
+      }
+    });
+  });
+  return lines.join('\n');
+}
+
+// The issues that have BOTH drafted PROSE-stage text AND comic content — the
+// comparable set for the comic↔prose sync check. Returns `[{ number, prose, comic }]`
+// sorted by issue number (`comicLetteringIssues` already sorts), prose sliced to
+// PROSE_SYNC_PROSE_CHAR_CAP. An issue with comic but no prose (or prose but no
+// comic) has nothing to cross-check and is skipped. Pure: reads ctx.issues only —
+// both halves come off the already-loaded issue records (the prose STAGE, not the
+// comicScript-precedence manuscript section).
+export function proseSyncPairs(ctx) {
+  const proseByIssue = new Map();
+  for (const { number, prose } of proseStageIssues(ctx?.issues)) {
+    if (Number.isInteger(number)) proseByIssue.set(number, prose);
+  }
+  const pairs = [];
+  for (const { number, pages } of comicLetteringIssues(ctx?.issues)) {
+    if (!Number.isInteger(number)) continue;
+    const prose = proseByIssue.get(number);
+    if (!prose) continue;
+    const comic = renderComicForProseSync(pages);
+    if (!comic.trim()) continue;
+    pairs.push({ number, prose: prose.slice(0, PROSE_SYNC_PROSE_CHAR_CAP), comic });
+  }
+  return pairs;
+}
+
 export const EDITORIAL_CHECKS = [
   {
     id: 'naming.dissimilar-names',
@@ -2494,6 +2615,83 @@ export const EDITORIAL_CHECKS = [
         for (const v of analyzeBalloonAttribution(pages, { characterNames })) {
           findings.push(balloonAttributionFinding(v, number));
         }
+      }
+      return findings;
+    },
+  },
+  {
+    id: 'comic.prose-sync',
+    // Reads each issue's PROSE-stage text (`prose`) and its authoritative COMIC
+    // content (`comicScript.pacing` — description + dialogue + caption + SFX), BOTH
+    // off the already-loaded issue records. Declaring `prose` (not `manuscript`) is
+    // load-bearing: the stitched manuscript picks comicScript over prose for a hybrid
+    // issue, so a `manuscript` source would compare the comic against itself. Both
+    // tokens are fingerprinted so a finding stales when either the prose or the comic
+    // for that issue drifts; both also make the runner fetch the per-issue `issues`.
+    sources: ['prose', 'comicScript.pacing'],
+    label: 'Comic ↔ prose synchronization (hybrid issues)',
+    description:
+      'LLM cross-media check for hybrid comic+prose issues: pairs each issue\'s prose narration with its authoritative comic pages and flags SUBSTANTIVE divergences — a plot beat the prose narrates that no panel shows, panel dialogue that contradicts the prose (different words or a different speaker), or a chronology disagreement (events ordered differently across the two media). Comics legitimately compress and cut, so it flags only material mismatches, not ordinary medium-translation trims. Runs one model call per issue that has both prose and comic content, anchoring every finding to its issue.',
+    scope: 'issue',
+    kind: 'llm',
+    category: 'continuity',
+    severityDefault: 'medium',
+    defaultEnabled: true,
+    configSchema: z.object({
+      // Cap findings per issue so a long issue can't flood the review.
+      maxFindings: z.number().int().min(1).max(50).default(12),
+      // Cap how many hybrid issues are cross-checked per run (one LLM call each),
+      // so a long series can't fan out into an unbounded number of calls. 0 = no cap.
+      maxIssues: z.number().int().min(0).max(500).default(40),
+    }),
+    configFields: [
+      {
+        key: 'maxFindings',
+        label: 'Max findings per issue',
+        type: 'number',
+        min: 1,
+        max: 50,
+        step: 1,
+        help: 'Cap findings per issue so a long issue can not flood the review.',
+      },
+      {
+        key: 'maxIssues',
+        label: 'Max issues cross-checked per run',
+        type: 'number',
+        min: 0,
+        max: 500,
+        step: 1,
+        help: 'Cap how many hybrid issues are compared per run (one model call each). 0 disables the cap.',
+      },
+    ],
+    // Skip the LLM entirely unless at least one issue has BOTH prose and comic
+    // content to cross-check.
+    gate: (ctx) => proseSyncPairs(ctx).length > 0,
+    run: async (ctx) => {
+      const pairs = proseSyncPairs(ctx);
+      if (!pairs.length) return [];
+      const maxIssues = ctx.config?.maxIssues ?? 40;
+      const scanned = maxIssues > 0 ? pairs.slice(0, maxIssues) : pairs;
+      const maxFindings = ctx.config?.maxFindings ?? 12;
+      const findings = [];
+      for (const { number, prose, comic } of scanned) {
+        // The runner only checks the abort signal before/after each check.run, so a
+        // multi-issue loop honors it between issues to stop launching further calls.
+        if (ctx.signal?.aborted) break;
+        const { content } = await ctx.callStagedLLM(
+          COMIC_PROSE_SYNC_STAGE,
+          { issueNumber: number, prose, comic },
+          { returnsJson: true, source: COMIC_PROSE_SYNC_STAGE },
+        );
+        // We KNOW which issue is under comparison, so force the issue anchor — a
+        // model that omits or garbles issueNumber still attributes correctly.
+        const mapped = mapLlmFindings(content?.findings, {
+          severityDefault: ctx.severityDefault,
+          category: 'continuity',
+          max: maxFindings,
+          withIssueNumber: true,
+        }).map((f) => ({ ...f, issueNumber: number }));
+        findings.push(...mapped);
       }
       return findings;
     },
