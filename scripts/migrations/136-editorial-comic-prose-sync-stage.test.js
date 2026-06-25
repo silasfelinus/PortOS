@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
-import migration from './135-editorial-comic-prose-sync-stage.js';
+import migration from './136-editorial-comic-prose-sync-stage.js';
 
 // scripts/migrations/<this> → ../.. is the repo root (matches _testHelpers.js).
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -16,7 +16,7 @@ const FILENAME = 'pipeline-editorial-comic-prose-sync.md';
 const STAGE_KEY = 'pipeline-editorial-comic-prose-sync';
 const BODY = '# Comic ↔ prose synchronization\n\nshipped body\n';
 
-describe('migration 135 — seed editorial-comic-prose-sync stage', () => {
+describe('migration 136 — seed editorial-comic-prose-sync stage', () => {
   let rootDir;
   let stagesDir;
   let refStagesDir;
@@ -34,7 +34,7 @@ describe('migration 135 — seed editorial-comic-prose-sync stage', () => {
   };
 
   beforeEach(() => {
-    rootDir = mkdtempSync(join(tmpdir(), 'migration-135-'));
+    rootDir = mkdtempSync(join(tmpdir(), 'migration-136-'));
     stagesDir = join(rootDir, 'data', 'prompts', 'stages');
     refStagesDir = join(rootDir, 'data.reference', 'prompts', 'stages');
     installedConfigPath = join(rootDir, 'data', 'prompts', 'stage-config.json');

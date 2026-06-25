@@ -715,9 +715,9 @@ export const APPEARANCE_CONTINUITY_STAGE = 'pipeline-editorial-appearance-contin
 
 // Stage name for the comic ↔ prose synchronization LLM check (#1589). Ships in
 // data.reference/prompts/stages/ + stage-config.json (fresh installs via
-// setup-data.js) and migrates to existing installs via migration 135 (boot runs
+// setup-data.js) and migrates to existing installs via migration 136 (boot runs
 // migrations but NOT setup-data, so the migration is required). For a hybrid
-// comic+prose issue it pairs the issue's PROSE (a manuscript section) with its
+// comic+prose issue it pairs the issue's PROSE (its prose stage) with its
 // authoritative COMIC content (description + dialogue + caption + SFX — the same
 // fields the `comicScript.pacing` source carries) and asks the model to flag
 // SUBSTANTIVE cross-media divergences: a plot beat the prose narrates that no
