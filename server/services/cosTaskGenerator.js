@@ -962,13 +962,19 @@ export async function generateIdleReviewTask(state) {
  * Called during every evaluation to ensure system tasks are queued even when user tasks exist
  * Tasks are queued to COS-TASKS.md and will be picked up in Priority 2
  */
-export async function queueEligibleImprovementTasks(state, cosTaskData) {
+export async function queueEligibleImprovementTasks(state, cosTaskData, { ignoreTaskId = null } = {}) {
   const { getNextTaskType, recordExecution } = await import('./taskSchedule.js');
 
   if (!isImprovementEnabled(state)) return;
 
   // Get existing pending/in_progress system tasks to avoid duplicates
   // Also skip task types where a user-terminated blocked task exists (user intentionally killed it)
+  // `ignoreTaskId` excludes one task from both the per-app "already busy" cap and
+  // the per-type dedup set — used by the perpetual drain-on-completion refill,
+  // where the just-completed task is still `in_progress` on disk (agent:completed
+  // fires before updateTask finalizes it). Without it the completing task would
+  // make its own app look busy and block the next perpetual run. The same id is
+  // forwarded to addTask below so its disk-level duplicate scan ignores it too.
   const existingTasks = cosTaskData.tasks || [];
   const existingTaskTypes = new Set();
   // Apps that already have *any* pending/in_progress improvement task. We cap each
@@ -977,6 +983,7 @@ export async function queueEligibleImprovementTasks(state, cosTaskData) {
   const appsWithPendingImprovement = new Set();
 
   for (const task of existingTasks) {
+    if (task.id === ignoreTaskId) continue;
     const isActive = task.status === 'pending' || task.status === 'in_progress';
     const isUserTerminated = task.status === 'blocked' && task.metadata?.blockedCategory === 'user-terminated';
     if (isActive || isUserTerminated) {
@@ -1085,7 +1092,7 @@ export async function queueEligibleImprovementTasks(state, cosTaskData) {
       task.description = firstLine(task.description);
     }
 
-    const newTask = await addTask(task, 'internal', { raw: true });
+    const newTask = await addTask(task, 'internal', { raw: true, ignoreTaskId });
     if (newTask?.duplicate) continue;
 
     await recordExecution(`task:${nextType}`, app.id);

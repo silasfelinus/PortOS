@@ -32,7 +32,7 @@ import { normalizeDomainBudgets, remainingActionBudget } from '../lib/domainBudg
 import { getDomainBudgetStatus } from './domainUsage.js';
 
 // Shared state management (extracted to avoid circular deps)
-import { loadState, saveState, withStateLock, ensureDirectories, isImprovementEnabled, AGENTS_DIR, REPORTS_DIR, SCRIPTS_DIR, ROOT_DIR, isDaemonRunning, setDaemonRunning } from './cosState.js';
+import { loadState, saveState, withStateLock, ensureDirectories, isImprovementEnabled, canQueueImprovementTasks, AGENTS_DIR, REPORTS_DIR, SCRIPTS_DIR, ROOT_DIR, isDaemonRunning, setDaemonRunning } from './cosState.js';
 
 // Events and logging (canonical source: cosEvents.js)
 import { cosEvents, emitLog } from './cosEvents.js';
@@ -357,9 +357,8 @@ export async function start() {
     if (!isDaemonRunning()) return;
     loadState().then(async (state) => {
       // Gate on the CoS auto-run domain (parity with evaluateTasks and the
-      // cos-improvement-check timer): queueing improvement tasks mutates
-      // COS-TASKS.md with autonomous internal work, so off/dry-run must not queue.
-      if (!state.config.idleReviewEnabled || getDomainMode(state.config, 'cos') !== 'execute') return;
+      // cos-improvement-check timer) — see canQueueImprovementTasks.
+      if (!canQueueImprovementTasks(state)) return;
       const cosTaskData = await getCosTasks();
       await queueEligibleImprovementTasks(state, cosTaskData);
       setImmediate(() => dequeueNextTask());
@@ -936,15 +935,98 @@ async function dequeueNextTask() {
 }
 
 /**
+ * Pure gate: did the just-completed agent belong to an *enabled perpetual*
+ * schedule (e.g. claim-issue)? Perpetual tasks are documented as "drain
+ * actionable work back-to-back (re-queue on completion)" (taskSchedule.js), but
+ * `dequeueNextTask` above only drains already-queued tasks — it never
+ * regenerates perpetual work. Without an explicit refill on completion the next
+ * run waits for the ~hourly `cos-improvement-check` timer (a "ready" perpetual
+ * task doesn't even shorten that timer — cosJobScheduler gates the delay on
+ * `status:'scheduled'` tasks only). This gate lets the completion handler decide
+ * whether to refill the perpetual queue immediately instead of idling. Reads
+ * the analysis type the same way `queueEligibleImprovementTasks` /
+ * `isDisabledAnalysisType` do, and never throws on partial inputs.
+ */
+export function isPerpetualRefillCandidate(agent, schedule) {
+  const analysisType = agent?.metadata?.taskAnalysisType
+    || agent?.metadata?.analysisType
+    || agent?.metadata?.selfImprovementType;
+  if (!analysisType) return false;
+  const taskDef = schedule?.tasks?.[analysisType];
+  return Boolean(taskDef?.enabled) && taskDef.type === 'perpetual';
+}
+
+/**
+ * When a perpetual-schedule agent finishes, re-queue the next eligible
+ * improvement task right away so the backlog drains back-to-back rather than
+ * stalling until the next improvement-check tick. Mirrors the gates the
+ * improvement-check timer applies (daemon running, not paused, idle-review on,
+ * CoS auto-run = execute) and reuses the same `queueEligibleImprovementTasks`
+ * path — which already enforces per-app cooldown, the one-pending-per-app cap,
+ * and the perpetual work-detector park, so this converges (when no actionable
+ * work remains the task parks and nothing is re-queued) and can't fan out past
+ * the concurrency limits in `dequeueNextTask`.
+ */
+async function refillPerpetualForCompletedAgent(agent) {
+  if (!isDaemonRunning()) return;
+  // Only a SUCCESSFUL perpetual run drains to the next item immediately. A failed
+  // run (provider/setup/test failure) must NOT refill back-to-back: perpetual
+  // completions skip the per-app cooldown, and the work-detector will usually
+  // still see the same issue as actionable — so an immediate refill would spin
+  // the daemon through repeated failures. On failure, fall back to the task
+  // retry/backoff and the improvement-check recheck cadence (the park IS the
+  // throttle only once work genuinely runs out, not when a run errors).
+  if (!agent?.result?.success) return;
+  if (await isPaused()) return;
+
+  const taskScheduleMod = await import('./taskSchedule.js');
+  const schedule = await taskScheduleMod.loadSchedule();
+  if (!isPerpetualRefillCandidate(agent, schedule)) return;
+
+  const state = await loadState();
+  if (!canQueueImprovementTasks(state)) return;
+
+  // `agent:completed` fires from `completeAgent` BEFORE the completion flow's
+  // `updateTask` marks this agent's task done (agentLifecycle.js: completeAgent
+  // emits, THEN updateTask persists). So the just-finished task can still read as
+  // `in_progress` both in this snapshot AND on disk when queueEligible's addTask
+  // re-reads COS-TASKS.md. Pass its id as `ignoreTaskId` so the per-app busy cap,
+  // the per-type dedup set, and addTask's disk-level duplicate scan all treat it
+  // as already done — otherwise a perpetual schedule (claim-issue/claim-work
+  // regenerates an identical first-line per app) is rejected as a duplicate of
+  // the completing task and the drain stalls until the next scheduler tick.
+  const cosTaskData = await getCosTasks();
+  await queueEligibleImprovementTasks(state, cosTaskData, { ignoreTaskId: agent?.taskId });
+  // NOTE: the caller (the agent:completed handler) runs dequeueNextTask AFTER
+  // this resolves, so the freshly-queued perpetual task is on the queue before
+  // slots are filled. Do not dequeue here — that would re-introduce the ordering
+  // race where generic dequeue claims the freed slot with idle/mission work.
+}
+
+/**
  * Wire event listeners, load state, and auto-start the daemon when configured.
  * Called once from `server/index.js` during boot.
  */
 export async function init() {
   await ensureDirectories();
 
-  // When an agent completes, immediately try to dequeue the next pending task
+  // When an agent completes, refill perpetual work then dequeue the next task
   cosEvents.on('agent:completed', (agent) => {
-    setImmediate(() => dequeueNextTask());
+    // Refill the perpetual backlog FIRST, THEN dequeue — in one async task so the
+    // generic dequeue can't fill the just-freed slot with idle/mission work ahead
+    // of the perpetual re-queue. Perpetual schedules (e.g. claim-issue) drain
+    // back-to-back: regenerate the next eligible task now instead of waiting for
+    // the ~hourly improvement check (dequeueNextTask only spawns ALREADY-queued
+    // work, so on its own a perpetual backlog stalls between ticks). The refill
+    // early-returns fast for non-perpetual or failed completions, so for those
+    // this stays a thin wrapper around the dequeue. Both steps are .catch-guarded
+    // because this runs outside the request lifecycle.
+    setImmediate(() => {
+      refillPerpetualForCompletedAgent(agent)
+        .catch(err => console.error(`❌ Perpetual refill after ${agent?.id} failed: ${err.message}`))
+        .then(() => dequeueNextTask())
+        .catch(err => console.error(`❌ Dequeue after ${agent?.id} completion failed: ${err.message}`));
+    });
 
     // Create notification when a daily briefing completes
     if (agent?.metadata?.jobId === 'job-daily-briefing' && agent?.result?.success) {

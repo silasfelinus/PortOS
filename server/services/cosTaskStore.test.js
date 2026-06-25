@@ -176,6 +176,21 @@ describe('cosTaskStore.addTask', () => {
     expect(tasks).toHaveLength(2);
   });
 
+  it('ignoreTaskId excludes one in-flight task from the dedup scan (perpetual drain-on-completion)', async () => {
+    // The just-completed perpetual task is still in_progress on disk when the
+    // refill re-queues an identical first-line for the same app. Passing its id
+    // as ignoreTaskId must let the new task through instead of colliding with it.
+    const first = await addTask({ description: 'claim issue', app: 'portos', id: 'sys-old' }, 'internal');
+    // Without ignoreTaskId the identical task collides...
+    const blocked = await addTask({ description: 'claim issue', app: 'portos' }, 'internal');
+    expect(blocked.duplicate).toBe(true);
+    // ...but excluding the still-in-flight task lets the refill queue the next one.
+    const allowed = await addTask({ description: 'claim issue', app: 'portos' }, 'internal', { raw: false, ignoreTaskId: first.id });
+    expect(allowed.duplicate).toBeUndefined();
+    const { tasks } = await getCosTasks();
+    expect(tasks.filter(t => firstLine(t.description) === 'claim issue')).toHaveLength(2);
+  });
+
   it('persists boolean override flags (true and false) into metadata', async () => {
     const task = await addTask({ description: 'flagged', useWorktree: false, openPR: true }, 'user');
     expect(task.metadata.useWorktree).toBe(false);
