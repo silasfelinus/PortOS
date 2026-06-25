@@ -388,6 +388,27 @@ describe('manuscriptReview — authoritative severity override re-grade (#1596)'
     expect(second.comments[0].severity).toBe('low');
   });
 
+  it('re-grades a NON-resurfaced open comment back to native when a pin is cleared', async () => {
+    // Mirror the runner's stamp for a pinned finding: effective high, native low.
+    await seedReviewFromFindings('ser-sev-clearmerge', [
+      { problem: 'adverb density', anchorQuote: 'quickly', checkId: 'prose.adverb-density', severity: 'high', nativeSeverity: 'low' },
+    ], { severityOverrides: { 'prose.adverb-density': 'high' } });
+    // Pin cleared, and a later merge run produces NO finding for this check — the
+    // lingering open must still drop from the old pin back to its stored native.
+    const second = await seedReviewFromFindings('ser-sev-clearmerge', [], { mode: 'merge' });
+    expect(second.comments).toHaveLength(1); // preserved in merge mode
+    expect(second.comments[0].severity).toBe('low'); // restored from stored nativeSeverity
+  });
+
+  it('does NOT churn a never-pinned non-resurfaced comment (native == severity)', async () => {
+    const first = await seedReviewFromFindings('ser-sev-stable', [finding('high')]);
+    const stamp = first.comments[0].updatedAt;
+    expect(first.comments[0].nativeSeverity).toBe('high'); // defaults to severity
+    const second = await seedReviewFromFindings('ser-sev-stable', [], { mode: 'merge' });
+    expect(second.comments[0].severity).toBe('high'); // unchanged
+    expect(second.comments[0].updatedAt).toBe(stamp); // no rewrite
+  });
+
   it('does NOT churn updatedAt when the pinned level already matches', async () => {
     const first = await seedReviewFromFindings('ser-sev-nochurn', [finding('high')]);
     const stamp = first.comments[0].updatedAt;

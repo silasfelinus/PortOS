@@ -91,12 +91,20 @@ function sanitizeComment(raw) {
   const problem = clampStr(raw.problem, 2000);
   if (!problem) return null;
   const category = clampStr(raw.category, 40) || 'other';
+  const severity = ['high', 'medium', 'low'].includes(raw.severity) ? raw.severity : 'medium';
   return {
     id: typeof raw.id === 'string' && raw.id ? raw.id : `mrc-${randomUUID()}`,
     issueNumber: Number.isInteger(raw.issueNumber) ? raw.issueNumber : null,
     issueId: typeof raw.issueId === 'string' ? raw.issueId : null,
     stageId: typeof raw.stageId === 'string' ? raw.stageId : null,
-    severity: ['high', 'medium', 'low'].includes(raw.severity) ? raw.severity : 'medium',
+    severity,
+    // The check's NATIVE per-finding level (#1596), independent of any per-check
+    // severity override. Carried so that clearing an override re-grades the
+    // finding back to its true native level (not a guessed default). Defaults to
+    // `severity` for legacy/older-peer comments written before this field (all of
+    // which predate overrides, so native == severity is correct). Optional +
+    // additive → the synced review doc stays backward-compatible.
+    nativeSeverity: ['high', 'medium', 'low'].includes(raw.nativeSeverity) ? raw.nativeSeverity : severity,
     category,
     location: clampStr(raw.location, 200),
     problem,
@@ -268,24 +276,28 @@ export async function seedReviewFromFindings(seriesId, findings, { runId = null,
       const match = candidateByKey.get(findingKey(c));
       // Effective-severity re-grade (#1596), in priority order:
       //  1. A RE-SURFACED finding carries the run's EFFECTIVE severity in
-      //     `match.severity` — the pin when one is set (the runner force-stamps
-      //     it), else the check's native/default level. Adopting it keeps BOTH
-      //     setting AND clearing a pin authoritative: clearing a pin re-grades the
-      //     re-surfaced open back down to the native level (the findingKey ignores
-      //     severity, so the comment is carried, not re-appended).
-      //  2. NOT re-surfaced but the check is still pinned → force the pinned level
+      //     `match.severity` (the pin when set, else the native level). Adopt it.
+      //  2. NOT re-surfaced but the check is still PINNED → force the pinned level
       //     so a pin reaches lingering opens too (LLM 'merge' mode preserves a
-      //     non-resurfaced open; a pinned check can also produce zero findings in a
-      //     run). A cleared pin has no map entry, so a non-resurfaced open keeps
-      //     its level until it next re-surfaces (then case 1 re-grades it) — the
-      //     inherent merge-mode lag, not specific to severity.
+      //     non-resurfaced open; a pinned check can also produce zero findings).
+      //  3. NOT re-surfaced and NOT pinned → fall back to the comment's stored
+      //     `nativeSeverity`, so CLEARING a pin re-grades even a non-resurfaced
+      //     open back to its true native level (not a guessed default). For a
+      //     never-pinned comment native == severity, so this is a no-op (no churn).
       const pin = pins && c.checkId && ['high', 'medium', 'low'].includes(pins[c.checkId]) ? pins[c.checkId] : null;
-      const nextSeverity = (match && match.severity) ? match.severity : pin;
+      const carriedNative = ['high', 'medium', 'low'].includes(c.nativeSeverity) ? c.nativeSeverity : null;
+      const nextSeverity = (match && match.severity) ? match.severity : (pin || carriedNative);
       if (nextSeverity && nextSeverity !== c.severity) {
         patch.severity = nextSeverity;
         refreshedCount += 1;
       }
       if (match) {
+        // Keep the stored native level current so a future pin-clear restores the
+        // latest run's native severity, not a stale one.
+        if (match.nativeSeverity && match.nativeSeverity !== (c.nativeSeverity ?? null)) {
+          patch.nativeSeverity = match.nativeSeverity;
+          refreshedCount += 1;
+        }
         if (!c.fix) {
           const section = c.issueNumber != null ? byNumber.get(c.issueNumber) : null;
           const fix = match.replace ? buildSeedFix({ ...c, replace: match.replace }, section) : null;

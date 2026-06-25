@@ -165,6 +165,8 @@ describe('runEditorialChecks', () => {
     const infoDump = result.findings.filter((f) => f.checkId === 'prose.info-dumping');
     expect(infoDump.length).toBeGreaterThan(0);
     expect(infoDump.every((f) => f.severity === 'high')).toBe(true);
+    // The native (LLM-emitted) level is preserved so clearing the pin can restore it.
+    expect(infoDump.every((f) => f.nativeSeverity === 'medium')).toBe(true);
   });
 
   it('keeps the native per-finding severity when a check has no severity override', async () => {
@@ -172,6 +174,7 @@ describe('runEditorialChecks', () => {
     const infoDump = result.findings.filter((f) => f.checkId === 'prose.info-dumping');
     expect(infoDump.length).toBeGreaterThan(0);
     expect(infoDump.every((f) => f.severity === 'medium')).toBe(true); // the LLM's own level
+    expect(infoDump.every((f) => f.nativeSeverity === 'medium')).toBe(true); // native == effective
   });
 
   it('passes active severity overrides to the seed so existing open findings re-grade', async () => {

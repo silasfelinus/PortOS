@@ -552,14 +552,16 @@ export async function runEditorialChecks(seriesId, options = {}) {
   // must dismiss their now-stale prior open comments.
   const deterministicRanIds = new Set();
   let canceled = false;
-  for (const { check, config, severity, severityOverride } of enabledResolved) {
+  for (const { check, config, severityOverride } of enabledResolved) {
     if (signal?.aborted) { canceled = true; break; }
     onProgress?.({ type: 'check:start', checkId: check.id, label: check.label });
-    // `severity` is the effective per-check level (#1596): the user's stored
-    // override or the registry default. It seeds `ctx.severityDefault` so checks
-    // that escalate FROM the default honor the override. Fall back to the
-    // registry default if a pair somehow arrives without one (defensive).
-    const ctx = { ...baseCtx, config, severityDefault: severity || check.severityDefault };
+    // Run every check with its NATIVE default severity (#1596). A per-check
+    // override is applied AUTHORITATIVELY as a post-stamp below rather than via
+    // ctx, so escalation / LLM per-finding severities are computed natively and
+    // preserved as `nativeSeverity` — which lets a later "reset to Default"
+    // restore the true native level on carried findings (even ones that don't
+    // re-surface).
+    const ctx = { ...baseCtx, config, severityDefault: check.severityDefault };
     // Boundary try/catch: a check's run() calls into arbitrary logic / LLM
     // providers — one bad check must not abort the whole pass (mirrors the
     // per-comment fix guard in seriesAutopilot.runEditorial).
@@ -571,18 +573,21 @@ export async function runEditorialChecks(seriesId, options = {}) {
       }
       const raw = (await check.run(ctx)) || [];
       const sourceContentHash = fingerprintForCheck(check, resolvedSources);
-      // A pinned per-check severity (#1596) is AUTHORITATIVE: force every finding
-      // to the chosen level so the pin is consistent across all check kinds —
-      // including LLM checks (which emit their own per-finding severity) and
-      // explicit-severity deterministic checks (e.g. lettering's overflowSeverity),
-      // not just escalation-from-default ones. No override → keep the emitted
-      // severity untouched, preserving each check's native per-finding nuance.
-      const stamped = raw.map((f) => ({
-        ...f,
-        ...(severityOverride ? { severity: severityOverride } : {}),
-        checkId: check.id,
-        sourceContentHash,
-      }));
+      // Stamp each finding with its NATIVE severity (the check's own escalated /
+      // LLM-emitted level, or the registry default fallback) AND its EFFECTIVE
+      // severity: a pin (#1596) is authoritative across every check kind, else
+      // the native level stands. Carrying `nativeSeverity` lets the review-seed
+      // layer re-grade a carried finding back to native when a pin is cleared.
+      const stamped = raw.map((f) => {
+        const nativeSeverity = ['high', 'medium', 'low'].includes(f.severity) ? f.severity : check.severityDefault;
+        return {
+          ...f,
+          nativeSeverity,
+          severity: severityOverride || nativeSeverity,
+          checkId: check.id,
+          sourceContentHash,
+        };
+      });
       findings.push(...stamped);
       // A deterministic check is a pure function of its sources, so a finding it
       // no longer produces is genuinely resolved (not provider variance) — mark it

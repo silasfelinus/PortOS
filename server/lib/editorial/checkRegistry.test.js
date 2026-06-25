@@ -334,8 +334,8 @@ describe('per-check severity override (#1596)', () => {
   it('getEnabledChecks threads the effective severity AND the raw override for the runner', () => {
     const target = flip(NAMING);
     const pinned = getEnabledChecks(checksSettings(NAMING, target), [NAMING])[0];
-    expect(pinned.severity).toBe(target); // effective → ctx.severityDefault base
-    expect(pinned.severityOverride).toBe(target); // raw → authoritative force-stamp
+    expect(pinned.severity).toBe(target); // effective level (used by the catalog UI)
+    expect(pinned.severityOverride).toBe(target); // raw → authoritative force-stamp in the runner
     const unpinned = getEnabledChecks({}, [NAMING])[0];
     expect(unpinned.severity).toBe(getCheck(NAMING).severityDefault);
     expect(unpinned.severityOverride).toBeNull(); // no override → no force-stamp
