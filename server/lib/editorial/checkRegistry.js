@@ -4759,9 +4759,10 @@ export const EDITORIAL_CHECKS = [
     run: (ctx) => {
       // Authored hooks/payoffs are fixed per-call overhead (re-sent on each chunk).
       const authoredSetups = authoredSetupPayoffSummary(ctx.series?.arc?.readerMap);
-      // 0 disables the distant sub-check; >=1 is the issue-gap threshold. Pass a
+      // 0 disables the distant sub-check; >0 is the issue-gap threshold. Pass a
       // string so the prompt's `{{#distantGap}}` section renders only when enabled.
       const distantGap = ctx.config?.distantGap ?? 4;
+      const distantEnabled = distantGap > 0;
       return runManuscriptLlmCheck(ctx, {
         stage: CHEKHOV_STAGE,
         category: 'continuity',
@@ -4776,7 +4777,7 @@ export const EDITORIAL_CHECKS = [
           manuscript,
           authoredSetups: c.authoredSetups,
           finalPart: meta?.isFinal ? 'true' : '',
-          distantGap: distantGap >= 1 ? String(distantGap) : '',
+          distantGap: distantEnabled ? String(distantGap) : '',
         }),
         // A setup planted in chapter 2 and paid off (or NOT) in chapter 9 spans
         // chunks — the cross-chunk digest keeps prior findings in view so a later
@@ -4785,11 +4786,13 @@ export const EDITORIAL_CHECKS = [
         // "no setup" and a never-fired plant is caught at the end.
         crossChunkDigest: true,
         crossChunkSetup: true,
-        // Track the issue each element is planted in so a later part can measure the
-        // setup→payoff issue gap for the distant-payoff judgment (#1595).
+        // Only ask the cross-chunk setup digest to track each element's plant issue
+        // when distant detection is on — that issue number is used solely to measure
+        // the setup→payoff gap (#1595), so tracking it with the distant check
+        // disabled is wasted digest work.
         setupFocus: 'Planted elements that a later scene should pay off — weapons/objects/clues, '
           + 'secrets, stated fears, promises/vows, threats, and notable skills — and, for each, '
-          + 'the issue number it was first planted in, and '
+          + (distantEnabled ? 'the issue number it was first planted in, and ' : '')
           + 'whether it has already been paid off (fired, spilled, confronted, kept) or is still open.',
       });
     },
