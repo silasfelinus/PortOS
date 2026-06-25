@@ -364,10 +364,13 @@ export async function runPromptThroughProvider(args) {
   }
 
   try {
-    // Gate on the requested provider; a proactive createRun swap to a local
-    // backend is still covered because executeProviderRunOnce dispatches by the
-    // provider it actually runs and the gate is a no-op for non-local providers.
-    return await withLocalConcurrencyGate(args.provider, () => executeProviderRunOnce(args));
+    // The local-endpoint concurrency gate lives INSIDE executeProviderRunOnce,
+    // keyed on the EFFECTIVE provider after createRun's proactive swap — so a
+    // remote/CLI primary that swaps to a local backend is still serialized.
+    // Gating here on the requested provider would miss that swap (the gate
+    // would no-op for a remote primary and the swapped-in local run would
+    // dispatch ungated).
+    return await executeProviderRunOnce(args);
   } catch (firstError) {
     // Only retry when the failure came from the execution layer (annotated
     // by safeReject with effectiveProvider). Pre-execution throws —
@@ -429,15 +432,16 @@ export async function runPromptThroughProvider(args) {
     // doesn't exist on the fallback.
     let fallbackResult;
     try {
-      // Gate the fallback too: a remote/CLI primary that fails over to a local
-      // backend must still serialize against that endpoint (the failure-storm
-      // case the outer stageRunner wrap used to miss).
-      fallbackResult = await withLocalConcurrencyGate(fallback, () => executeProviderRunOnce({
+      // The fallback is gated inside executeProviderRunOnce on its effective
+      // provider, so a fail-over that lands on a local backend still serializes
+      // against that endpoint (the failure-storm case) — with no double-gate
+      // (wrapping here too would deadlock at MAX_CONCURRENCY=1).
+      fallbackResult = await executeProviderRunOnce({
         ...args,
         provider: fallback,
         model: picked.model ?? undefined,
         runId: undefined, // fresh runId so the failed primary's record stays intact
-      }));
+      });
     } catch (fallbackError) {
       // Both failed — release the primary's suppression (the fallback's own
       // failure already queued its investigation task) and rethrow.
@@ -664,7 +668,13 @@ async function executeProviderRunOnce({ provider, prompt, source, model, runId: 
   // intended cap.
   const effectiveTimeout = timeoutOverride ?? effectiveProvider?.timeout ?? DEFAULT_TIMEOUT_MS;
 
-  return new Promise((resolve, reject) => {
+  // Gate concurrent in-flight calls to a LOCAL endpoint on the EFFECTIVE
+  // provider — the one that ACTUALLY runs after createRun's proactive swap
+  // (above) and any retry-fallback. This is the single chokepoint the
+  // module comment promises: gating the *requested* provider at the call
+  // site missed a remote/CLI primary that swaps/fails over to a local
+  // backend, defeating the VRAM/OOM serialization. No-op for cloud/CLI/TUI.
+  return withLocalConcurrencyGate(effectiveProvider, () => new Promise((resolve, reject) => {
     let text = '';
     let settled = false;
     let apiTimeoutHandle = null;
@@ -759,5 +769,5 @@ async function executeProviderRunOnce({ provider, prompt, source, model, runId: 
     } else {
       safeReject(new Error(`Unsupported provider type: ${effectiveProvider.type}`));
     }
-  });
+  }));
 }
