@@ -120,7 +120,13 @@ when present, else the generated `stages.comicScript.output` (derived from the
 already-loaded `ctx.issues`, no extra fetch). The `comic.lettering-density` check
 reads the same content (via the shared `comicLetteringIssues`) to count
 balloon/panel/page word load, so a finding stales exactly when the comic text the
-check read changes — not when an unrelated image renders. When a new check reads a
+check read changes — not when an unrelated image renders. The LLM check
+`comic.prose-sync` (#1589) is the CROSS-MEDIA sibling: for a hybrid comic+prose
+issue it pairs that issue's prose (a `manuscript` section, via `needsManuscript`)
+with its comic content (`comicScript.pacing`) and flags substantive divergences —
+an unshown beat, contradicted dialogue, or a chronology disagreement — making one
+model call per hybrid issue and fingerprinting both the prose and the comic so a
+finding stales when either drifts. When a new check reads a
 `ctx.series` field (or another artifact) that isn't yet a token, add the token to
 `EDITORIAL_SOURCES` and a matching resolver in the runner's `SOURCE_RESOLVERS`.
 
