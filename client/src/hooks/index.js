@@ -29,7 +29,6 @@ export { default as useMediaJobProgress } from './useMediaJobProgress.js';
 export * from './useMediaJobSse.js';
 export { default as useMoltworldWs } from './useMoltworldWs.js';
 export { default as useMounted } from './useMounted.js';
-export { default as useNextEvalCountdown } from './useNextEvalCountdown.js';
 export { default as usePendingListRows } from './usePendingListRows.js';
 export { default as usePopoverPosition } from './usePopoverPosition.js';
 export { default as useLocalModels } from './useLocalModels.js';

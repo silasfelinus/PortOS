@@ -33,7 +33,6 @@ export const DEFAULT_CONFIG = {
   userTasksFile: 'data/TASKS.md',
   cosTasksFile: 'data/COS-TASKS.md',
   goalsFile: 'GOALS.md',
-  evaluationIntervalMs: 60000,
   healthCheckIntervalMs: 900000,
   maxConcurrentAgents: 3,
   maxConcurrentAgentsPerProject: 2,

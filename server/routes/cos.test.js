@@ -200,8 +200,7 @@ describe('CoS Routes', () => {
   describe('GET /api/cos/config', () => {
     it('should return configuration', async () => {
       const mockConfig = {
-        maxConcurrentAgents: 3,
-        evaluationIntervalMs: 60000
+        maxConcurrentAgents: 3
       };
       cos.getConfig.mockResolvedValue(mockConfig);
 
