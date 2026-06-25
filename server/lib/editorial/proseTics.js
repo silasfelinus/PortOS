@@ -304,10 +304,22 @@ function isPastParticiple(lower) {
   return lower.length >= 4 && lower.endsWith('ed');
 }
 
+// Atmospheric prepositions that introduce the "what it was rendered into/with"
+// complement of a mood image ("the sky was streaked WITH red", "the room was
+// bathed IN light"). A setting subject ALONE is not enough — "the room was
+// searched" shares the subject but is a genuine action passive — so `mood`
+// classification additionally requires one of these right after the participle.
+const MOOD_PREPOSITIONS = new Set(['with', 'in']);
+
+// How far past the participle to look for a "by <agent>" phrase (allowing an
+// intervening adverb/complement, "decorated elaborately by Mira") and for the
+// mood-image preposition ("streaked faintly with red").
+const PASSIVE_LOOKAHEAD = 3;
+
 // Whether the subject governing a be-verb at token index `i` is a setting noun.
 // The subject is the token right before the be-verb ("the sky was", "her eyes
-// were" → "sky"/"eyes"), so a known setting/atmosphere noun there marks the
-// construction as an intentional mood image.
+// were" → "sky"/"eyes"), so a known setting/atmosphere noun there is one of the
+// two signals (with an atmospheric complement) for an intentional mood image.
 function hasSettingSubject(tokens, i) {
   return i > 0 && SETTING_SUBJECTS.has(tokens[i - 1].lower);
 }
@@ -323,9 +335,12 @@ function hasSettingSubject(tokens, i) {
  *                   `'weak'` when a "by <agent>" phrase follows the participle.
  *   - `'stative'` — a predicate-adjective state of being ("she was exhausted"),
  *                   not an action done to the subject — the dominant FP class.
- *   - `'mood'`    — a setting/weather/atmosphere image ("the sky was streaked"),
- *                   intentional passive for mood rather than weak prose.
- * `byAgent` is true when an explicit "by <agent>" follows the participle.
+ *   - `'mood'`    — a setting/weather/atmosphere image: a setting subject AND an
+ *                   atmospheric complement ("the sky was streaked WITH red", "the
+ *                   room was bathed IN light"). A setting subject alone is not
+ *                   enough ("the room was searched" stays `'weak'`).
+ * `byAgent` is true when an explicit "by <agent>" follows the participle (allowing
+ * an intervening adverb, "decorated elaborately by Mira").
  *
  * @param {string} text
  * @returns {Array<{ index: number, anchor: string, be: string, participle: string, classification: ('weak'|'stative'|'mood'), byAgent: boolean }>}
@@ -345,12 +360,22 @@ export function findPassiveVoice(text) {
       const start = tokens[i].index;
       const end = tokens[j].index + tokens[j].word.length;
       const participle = tokens[j].lower;
-      // An explicit "by <agent>" right after the participle is the unambiguous
-      // agentive passive — it wins over stative/mood classification.
-      const byAgent = j + 2 < tokens.length && tokens[j + 1].lower === 'by';
+      // Small window just past the participle, where a "by <agent>" or an
+      // atmospheric "with/in <…>" complement would sit.
+      const after = tokens.slice(j + 1, j + 1 + PASSIVE_LOOKAHEAD);
+      // An explicit "by <agent>" (with an optional intervening adverb) is the
+      // unambiguous agentive passive — it wins over stative/mood classification.
+      const byPos = after.findIndex((t) => t.lower === 'by');
+      const byAgent = byPos !== -1 && j + 1 + byPos + 1 < tokens.length;
       let classification = 'weak';
       if (!byAgent) {
-        if (hasSettingSubject(tokens, i)) classification = 'mood';
+        // A mood image needs BOTH a setting subject and an atmospheric complement
+        // ("with/in <…>") right after the participle, allowing one intervening
+        // adverb ("streaked faintly with red") — a setting subject alone
+        // over-suppresses real action passives ("the room was searched").
+        const moodComplement = after.some((t, k) =>
+          MOOD_PREPOSITIONS.has(t.lower) && (k === 0 || isLyAdverb(after[k - 1].lower)));
+        if (moodComplement && hasSettingSubject(tokens, i)) classification = 'mood';
         else if (STATIVE_PARTICIPLES.has(participle)) classification = 'stative';
       }
       out.push({ index: start, anchor: text.slice(start, end), be: tokens[i].lower, participle, classification, byAgent });

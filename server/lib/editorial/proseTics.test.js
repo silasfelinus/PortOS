@@ -174,6 +174,17 @@ describe('findPassiveVoice', () => {
     expect(hit.byAgent).toBe(true);
     expect(hit.classification).toBe('weak');
   });
+
+  it('detects a "by <agent>" with an intervening adverb', () => {
+    const [hit] = findPassiveVoice('The room was decorated elaborately by Mira.');
+    expect(hit.byAgent).toBe(true);
+    expect(hit.classification).toBe('weak');
+  });
+
+  it('keeps an action passive with a setting subject but no atmospheric complement as weak', () => {
+    const [hit] = findPassiveVoice('The room was searched.');
+    expect(hit.classification).toBe('weak');
+  });
 });
 
 describe('filterPassiveVoice', () => {
