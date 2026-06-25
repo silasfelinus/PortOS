@@ -86,7 +86,8 @@ Declare every input the check's `run(ctx)` reads in its `sources` array (a
 non-empty subset of `EDITORIAL_SOURCES`: `manuscript`, `canon`,
 `series.styleGuide`, `series.arc.tickingClock`, `series.arc.readerMap`,
 `series.arc.themes`, `reverseOutline`, `reverseOutline.plotlines`,
-`editorialArcs`, `series.characterArcs`, `storyboard.shots`, `comicScript`).
+`editorialArcs`, `series.characterArcs`, `storyboard.shots`, `comicScript`,
+`prose`).
 The `series.arc.themes` token (#1317) fingerprints the AUTHORED arc themes the
 `theme.coherence` check reconciles the prose against (lives on the already-loaded
 series record, no extra I/O — adding/editing a declared theme stales its findings).
@@ -122,11 +123,14 @@ reads the same content (via the shared `comicLetteringIssues`) to count
 balloon/panel/page word load, so a finding stales exactly when the comic text the
 check read changes — not when an unrelated image renders. The LLM check
 `comic.prose-sync` (#1589) is the CROSS-MEDIA sibling: for a hybrid comic+prose
-issue it pairs that issue's prose (a `manuscript` section, via `needsManuscript`)
-with its comic content (`comicScript.pacing`) and flags substantive divergences —
-an unshown beat, contradicted dialogue, or a chronology disagreement — making one
-model call per hybrid issue and fingerprinting both the prose and the comic so a
-finding stales when either drifts. When a new check reads a
+issue it pairs that issue's **`prose`-stage** text with its comic content
+(`comicScript.pacing`) and flags substantive divergences — an unshown beat,
+contradicted dialogue, or a chronology disagreement — making one model call per
+hybrid issue and fingerprinting both the prose and the comic so a finding stales
+when either drifts. It declares the `prose` source (not `manuscript`) on purpose:
+the stitched manuscript picks `comicScript` over `prose` for a hybrid issue, so a
+`manuscript` source would compare the comic against itself; both halves are read off
+the already-loaded `ctx.issues` (the `prose` stage via `proseStageIssues`). When a new check reads a
 `ctx.series` field (or another artifact) that isn't yet a token, add the token to
 `EDITORIAL_SOURCES` and a matching resolver in the runner's `SOURCE_RESOLVERS`.
 

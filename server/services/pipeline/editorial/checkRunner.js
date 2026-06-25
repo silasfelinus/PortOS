@@ -19,7 +19,7 @@ import { randomUUID, createHash } from 'crypto';
 import { createSseRunner } from '../../../lib/sseUtils.js';
 import { runStagedLLM, runInlineLLM, runStageScopedInlineLLM, resolveStageContext } from '../../../lib/stageRunner.js';
 import { planManuscriptPass, fitContextToManuscriptFloor, estimateTokens, MANUSCRIPT_FLOOR_TOKENS } from '../../../lib/contextBudget.js';
-import { getEnabledChecks, getEnabledCheckRows, getAllChecks, EDITORIAL_SOURCES, comicLetteringIssues } from '../../../lib/editorial/index.js';
+import { getEnabledChecks, getEnabledCheckRows, getAllChecks, EDITORIAL_SOURCES, comicLetteringIssues, proseStageIssues } from '../../../lib/editorial/index.js';
 import { getSettings } from '../../settings.js';
 import { getSeries } from '../series.js';
 import { listIssuesForSeries } from '../issues.js';
@@ -141,6 +141,14 @@ const SOURCE_RESOLVERS = {
   // the verdict cannot have changed. Distinct from `comicScript.pacing` (which
   // hashes the text the page-turn LLM reads).
   'comicScript.layout': ({ comicLayoutContent }) => canonicalStringify(comicLayoutContent ?? null),
+  // Each issue's PROSE-stage text the comic↔prose-sync check compares against the
+  // comic (#1589). Its own token (NOT `manuscript`): the stitched manuscript picks
+  // comicScript over prose for a hybrid issue, so a `manuscript` fingerprint would
+  // track comic edits, not prose. `proseContent` is built off the SAME
+  // `proseStageIssues` projection the check reads (per-issue prose keyed by number),
+  // so a finding stales exactly when the prose it compared changes — and a comic-only
+  // edit doesn't stale it.
+  prose: ({ proseContent }) => canonicalStringify(proseContent ?? null),
 };
 
 // Flatten the storyboard scenes across every issue into the `{ issueNumber, scene }`
@@ -373,7 +381,8 @@ export async function runEditorialChecks(seriesId, options = {}) {
     return sources.includes('storyboard.shots')
       || sources.includes('comicScript')
       || sources.includes('comicScript.pacing')
-      || sources.includes('comicScript.layout');
+      || sources.includes('comicScript.layout')
+      || sources.includes('prose');
   });
   const [sections, canon, issues, outline, editorial, bible] = await Promise.all([
     needsManuscript ? collectManuscriptSections(seriesId) : Promise.resolve([]),
@@ -414,10 +423,13 @@ export async function runEditorialChecks(seriesId, options = {}) {
   const comicScripts = projectComicLetteringContent(comicIssues);
   const comicPacingContent = projectComicPacingContent(comicIssues);
   const comicLayoutContent = projectComicLayoutContent(comicIssues);
+  // The per-issue PROSE-stage content the comic↔prose-sync check compares against the
+  // comic (#1589) — built off the same already-loaded issues, keyed by issue number.
+  const proseContent = proseStageIssues(issues);
   // Resolve every source token once — each finding's fingerprint reads from this
   // so the editor flags it `stale` when the content that check actually read (its
   // declared `sources`) drifts (#1345, #1387).
-  const resolvedSources = resolveSources({ manuscript, canon, continuityBible, series, reverseOutline, reverseOutlinePlotlines, editorialArcs, editorialArcsComplete, storyboardScenes, comicScripts, comicPacingContent, comicLayoutContent });
+  const resolvedSources = resolveSources({ manuscript, canon, continuityBible, series, reverseOutline, reverseOutlinePlotlines, editorialArcs, editorialArcsComplete, storyboardScenes, comicScripts, comicPacingContent, comicLayoutContent, proseContent });
   const baseCtx = {
     seriesId,
     series,
@@ -694,7 +706,10 @@ export async function getReviewWithStaleness(seriesId) {
     const s = checkSources(checkFor(c.checkId));
     return s.includes('comicScript') || s.includes('comicScript.pacing') || s.includes('comicScript.layout');
   });
-  const needsIssues = needsStoryboards || needsComicScript;
+  // The prose source (#1589) reads the per-issue prose stage off the same `issues`
+  // fetch, so it gates the issues load too — a prose-only check still loads issues.
+  const needsProse = evaluable.some((c) => checkSources(checkFor(c.checkId)).includes('prose'));
+  const needsIssues = needsStoryboards || needsComicScript || needsProse;
   const series = await getSeries(seriesId);
   const [sections, canon, outline, editorial, issues, bible] = await Promise.all([
     needsManuscript ? collectManuscriptSections(seriesId) : Promise.resolve([]),
@@ -715,7 +730,8 @@ export async function getReviewWithStaleness(seriesId) {
   const comicScripts = projectComicLetteringContent(comicIssues);
   const comicPacingContent = projectComicPacingContent(comicIssues);
   const comicLayoutContent = projectComicLayoutContent(comicIssues);
-  const resolvedSources = resolveSources({ manuscript: sectionsCorpus(sections), canon, continuityBible, series, reverseOutline, reverseOutlinePlotlines, editorialArcs, editorialArcsComplete, storyboardScenes, comicScripts, comicPacingContent, comicLayoutContent });
+  const proseContent = proseStageIssues(issues);
+  const resolvedSources = resolveSources({ manuscript: sectionsCorpus(sections), canon, continuityBible, series, reverseOutline, reverseOutlinePlotlines, editorialArcs, editorialArcsComplete, storyboardScenes, comicScripts, comicPacingContent, comicLayoutContent, proseContent });
   return {
     ...review,
     comments: review.comments.map((c) => {

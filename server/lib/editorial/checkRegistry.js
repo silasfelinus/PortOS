@@ -159,6 +159,12 @@ export const EDITORIAL_SOURCES = Object.freeze([
   'comicScript',
   'comicScript.pacing',
   'comicScript.layout',
+  // Each issue's PROSE-stage text SPECIFICALLY (#1589) — NOT the default manuscript
+  // precedence (comicScript ▸ teleplay ▸ prose), which for a hybrid issue returns
+  // the comic script. The comic↔prose-sync check reads this to compare prose against
+  // the comic; fingerprinting it separately means a prose edit stales a sync finding
+  // without a comic-only edit doing so (and vice-versa, via comicScript.pacing).
+  'prose',
 ]);
 
 // Default per-run finding cap for user-defined checks (#1346) — mirrors the
@@ -1994,17 +2000,29 @@ function balloonAttributionFinding(v, number) {
 // ≈ 6k tokens, which fits alongside the comic block on every supported provider.
 export const PROSE_SYNC_PROSE_CHAR_CAP = 24_000;
 
-// Per-issue prose keyed by issue number, from the collected manuscript sections
-// (`ctx.sections` — `collectManuscriptSections` emits ONE section per issue, see
-// arcPlanner/context.js). Skips sections with no usable number or empty content.
-export function proseByIssueNumber(sections) {
-  const map = new Map();
-  for (const s of (Array.isArray(sections) ? sections : [])) {
-    if (!Number.isInteger(s?.number)) continue;
-    const content = typeof s?.content === 'string' ? s.content : '';
-    if (content.trim()) map.set(s.number, content);
-  }
-  return map;
+// Extract an issue's PROSE-stage text. Inlines arcPlanner's `stageTextOf` (output
+// then input) to keep the registry import-pure (no service import). Reads the
+// `prose` stage SPECIFICALLY — NOT the default manuscript precedence (comicScript ▸
+// teleplay ▸ prose), which for a hybrid comic+prose issue would return the comic
+// script, not the prose (the bug this check exists to avoid). Returns '' when the
+// issue has no prose-stage text.
+function proseStageText(issue) {
+  const stage = issue?.stages?.prose;
+  const output = typeof stage?.output === 'string' ? stage.output.trim() : '';
+  if (output) return output;
+  return typeof stage?.input === 'string' ? stage.input.trim() : '';
+}
+
+// Per-issue PROSE-stage content, as `{ number, prose }`, sorted by issue number.
+// The single source of truth for "the prose half" of the comic↔prose-sync check —
+// read by BOTH the check's `run` AND the runner's `prose` staleness resolver
+// (mirrors `comicLetteringIssues` for the comic half), so the fingerprinted text is
+// exactly what the check compares. Only issues with prose-stage text contribute.
+export function proseStageIssues(issues) {
+  return (Array.isArray(issues) ? issues : [])
+    .map((i) => ({ number: Number.isInteger(i?.number) ? i.number : null, prose: proseStageText(i) }))
+    .filter((i) => i.prose)
+    .sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
 }
 
 // Render an issue's parsed comic pages into a compact, model-readable block —
@@ -2040,14 +2058,18 @@ export function renderComicForProseSync(pages) {
   return lines.join('\n');
 }
 
-// The issues that have BOTH drafted prose AND comic content — the comparable set
-// for the comic↔prose sync check. Returns `[{ number, prose, comic }]` sorted by
-// issue number (`comicLetteringIssues` already sorts), prose sliced to
+// The issues that have BOTH drafted PROSE-stage text AND comic content — the
+// comparable set for the comic↔prose sync check. Returns `[{ number, prose, comic }]`
+// sorted by issue number (`comicLetteringIssues` already sorts), prose sliced to
 // PROSE_SYNC_PROSE_CHAR_CAP. An issue with comic but no prose (or prose but no
-// comic) has nothing to cross-check and is skipped. Pure: reads ctx.issues +
-// ctx.sections only.
+// comic) has nothing to cross-check and is skipped. Pure: reads ctx.issues only —
+// both halves come off the already-loaded issue records (the prose STAGE, not the
+// comicScript-precedence manuscript section).
 export function proseSyncPairs(ctx) {
-  const proseByIssue = proseByIssueNumber(ctx?.sections);
+  const proseByIssue = new Map();
+  for (const { number, prose } of proseStageIssues(ctx?.issues)) {
+    if (Number.isInteger(number)) proseByIssue.set(number, prose);
+  }
   const pairs = [];
   for (const { number, pages } of comicLetteringIssues(ctx?.issues)) {
     if (!Number.isInteger(number)) continue;
@@ -2595,12 +2617,14 @@ export const EDITORIAL_CHECKS = [
   },
   {
     id: 'comic.prose-sync',
-    // Reads each issue's PROSE (manuscript sections, via needsManuscript) and its
-    // authoritative COMIC content (`comicScript.pacing` — description + dialogue +
-    // caption + SFX). Fingerprints BOTH so a finding stales when either the prose
-    // or the comic for that issue drifts. comicScript.pacing also makes the runner
-    // fetch the per-issue `issues` this check parses for comic pages.
-    sources: ['manuscript', 'comicScript.pacing'],
+    // Reads each issue's PROSE-stage text (`prose`) and its authoritative COMIC
+    // content (`comicScript.pacing` — description + dialogue + caption + SFX), BOTH
+    // off the already-loaded issue records. Declaring `prose` (not `manuscript`) is
+    // load-bearing: the stitched manuscript picks comicScript over prose for a hybrid
+    // issue, so a `manuscript` source would compare the comic against itself. Both
+    // tokens are fingerprinted so a finding stales when either the prose or the comic
+    // for that issue drifts; both also make the runner fetch the per-issue `issues`.
+    sources: ['prose', 'comicScript.pacing'],
     label: 'Comic ↔ prose synchronization (hybrid issues)',
     description:
       'LLM cross-media check for hybrid comic+prose issues: pairs each issue\'s prose narration with its authoritative comic pages and flags SUBSTANTIVE divergences — a plot beat the prose narrates that no panel shows, panel dialogue that contradicts the prose (different words or a different speaker), or a chronology disagreement (events ordered differently across the two media). Comics legitimately compress and cut, so it flags only material mismatches, not ordinary medium-translation trims. Runs one model call per issue that has both prose and comic content, anchoring every finding to its issue.',
@@ -2609,10 +2633,6 @@ export const EDITORIAL_CHECKS = [
     category: 'continuity',
     severityDefault: 'medium',
     defaultEnabled: true,
-    // Pairs each issue's comic with its prose section, so the manuscript sections
-    // must be collected (the runner only pays that I/O when a needsManuscript check
-    // is enabled).
-    needsManuscript: true,
     configSchema: z.object({
       // Cap findings per issue so a long issue can't flood the review.
       maxFindings: z.number().int().min(1).max(50).default(12),
