@@ -1034,9 +1034,10 @@ export async function queueEligibleImprovementTasks(state, cosTaskData, { ignore
     // would still surface here; both gates treat `undefined` as
     // "no activity yet."
     const appActivity = activitySnapshot.apps?.[app.id];
-    if (isAppActivityOnCooldown(appActivity, state.config.appReviewCooldownMs)) continue;
 
-    // Get next eligible improvement type for this app. `getNextTaskType`
+    // Resolve the next eligible improvement type for this app BEFORE the
+    // per-app cooldown gate — the picked type's interval decides whether the
+    // cooldown even applies (see the perpetual bypass below). `getNextTaskType`
     // falls back to ROTATION when nothing is time-due, and the rotation
     // pointer is derived from the `lastType` argument — without it, the
     // rotation always restarts from index 0 and starves every other
@@ -1047,6 +1048,21 @@ export async function queueEligibleImprovementTasks(state, cosTaskData, { ignore
     const nextTypeResult = await getNextTaskType(app.id, lastType).catch(() => null);
     if (!nextTypeResult) continue;
     const nextType = nextTypeResult.taskType;
+
+    // Perpetual (drain-until-done) picks BYPASS the per-app review cooldown:
+    // their work-detector park IS the throttle (taskSchedule.parkPerpetual),
+    // and agentCompletion.js already skips the post-completion cooldown bump
+    // for them. But the spawn-time `markAppReviewCooldown` stamp (written by
+    // BOTH the on-demand manual-trigger path and the idle-review loop) sets
+    // `lastReviewedAt`, which `isAppActivityOnCooldown` reads. Without this
+    // bypass, the back-to-back refill fired right after a perpetual run reads
+    // its OWN app as "on cooldown" (lastReviewedAt is minutes old, the window
+    // is 30 min) and skips the re-queue — so a manually-triggered perpetual
+    // task runs exactly once and stalls instead of continuing the drain. The
+    // cooldown still gates non-perpetual rotation types. `getNextTaskType`
+    // tags every perpetual pick with reason `perpetual-drain`.
+    const isPerpetualDrain = nextTypeResult.reason === 'perpetual-drain';
+    if (!isPerpetualDrain && isAppActivityOnCooldown(appActivity, state.config.appReviewCooldownMs)) continue;
 
     const taskKey = `app:${app.id}:${nextType}`;
     if (existingTaskTypes.has(taskKey)) {
