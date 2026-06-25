@@ -3497,7 +3497,8 @@ describe('comic.prose-sync — LLM cross-media check (#1589)', () => {
     it('renderComicForProseSync emits page/panel headers + shows/dialogue/caption/sfx, skipping empty panels', () => {
       const out = renderComicForProseSync([
         { panels: [
-          { description: 'Anna draws the knife', dialogue: [{ speaker: 'ANNA', line: 'Stay back.' }], caption: 'Later', sfx: 'SHNK' },
+          // Production parsed dialogue shape is { character, line } (NOT { speaker }).
+          { description: 'Anna draws the knife', dialogue: [{ character: 'ANNA', line: 'Stay back.' }], caption: 'Later', sfx: 'SHNK' },
           { description: '', dialogue: [], caption: '', sfx: '' }, // empty → skipped
         ] },
       ]);

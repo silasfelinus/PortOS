@@ -2041,7 +2041,11 @@ export function renderComicForProseSync(pages) {
       const desc = typeof panel?.description === 'string' ? panel.description.trim() : '';
       if (desc) block.push(`  Shows: ${desc}`);
       for (const d of (Array.isArray(panel?.dialogue) ? panel.dialogue : [])) {
-        const speaker = typeof d?.speaker === 'string' ? d.speaker.trim() : '';
+        // The comic-script parser keys the speaker as `character` ({ character, line }),
+        // the same field balloonAttribution/letteringDensity read — NOT `speaker`.
+        // Tolerate a `speaker` alias for robustness, but `character` is the real shape.
+        const rawSpeaker = typeof d?.character === 'string' ? d.character : (typeof d?.speaker === 'string' ? d.speaker : '');
+        const speaker = rawSpeaker.trim();
         const line = typeof d?.line === 'string' ? d.line.trim() : '';
         if (line) block.push(`  ${speaker ? `${speaker}: ` : ''}${line}`);
       }
