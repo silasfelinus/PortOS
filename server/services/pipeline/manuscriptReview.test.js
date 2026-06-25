@@ -349,30 +349,49 @@ describe('manuscriptReview — sourceContentHash staleness fingerprint (#1345)',
   });
 });
 
-describe('manuscriptReview — severity refresh on re-surface (#1596)', () => {
+describe('manuscriptReview — authoritative severity override re-grade (#1596)', () => {
   beforeEach(() => { fileStore.clear(); });
+  const finding = (severity) => ({ problem: 'adverb density', anchorQuote: 'quickly', checkId: 'prose.adverb-density', severity });
 
-  it('re-grades an existing open comment when a re-surfaced finding carries a new severity', async () => {
-    await seedReviewFromFindings('ser-sev', [
-      { problem: 'adverb density', anchorQuote: 'quickly', checkId: 'prose.adverb-density', severity: 'low' },
-    ]);
-    // Same finding key (severity is NOT part of the key) re-surfaces from a run
-    // whose check now carries a `high` per-check severity override.
-    const second = await seedReviewFromFindings('ser-sev', [
-      { problem: 'adverb density', anchorQuote: 'quickly', checkId: 'prose.adverb-density', severity: 'high' },
-    ]);
+  it('re-grades a re-surfaced open comment to the pinned level via severityOverrides', async () => {
+    await seedReviewFromFindings('ser-sev', [finding('low')]);
+    // Same finding key (severity is NOT part of the key) re-surfaces while the
+    // check is now pinned to `high`.
+    const second = await seedReviewFromFindings('ser-sev', [finding('high')], {
+      severityOverrides: { 'prose.adverb-density': 'high' },
+    });
     expect(second.comments).toHaveLength(1); // deduped, not appended
-    expect(second.comments[0].severity).toBe('high'); // re-graded to the override level
+    expect(second.comments[0].severity).toBe('high'); // re-graded to the pinned level
   });
 
-  it('does NOT churn updatedAt when the re-surfaced finding has the same severity', async () => {
-    const first = await seedReviewFromFindings('ser-sev-nochurn', [
-      { problem: 'adverb density', anchorQuote: 'quickly', checkId: 'prose.adverb-density', severity: 'high' },
-    ]);
+  it('re-grades a NON-resurfaced open comment of a pinned check (merge mode)', async () => {
+    await seedReviewFromFindings('ser-sev-merge', [finding('low')]);
+    // A later merge-mode run finds nothing for this check (LLM variance), but the
+    // check is pinned to `high` — the lingering open comment must still re-grade.
+    const second = await seedReviewFromFindings('ser-sev-merge', [], {
+      mode: 'merge',
+      severityOverrides: { 'prose.adverb-density': 'high' },
+    });
+    expect(second.comments).toHaveLength(1); // not dismissed in merge mode
+    expect(second.comments[0].severity).toBe('high');
+  });
+
+  it('leaves severity untouched (no churn) when the check has no override', async () => {
+    const first = await seedReviewFromFindings('ser-sev-nopin', [finding('low')]);
     const stamp = first.comments[0].updatedAt;
-    const second = await seedReviewFromFindings('ser-sev-nochurn', [
-      { problem: 'adverb density', anchorQuote: 'quickly', checkId: 'prose.adverb-density', severity: 'high' },
-    ]);
+    // A re-surface carrying a different native severity but NO override must not
+    // flip the persisted level (avoids run-to-run LLM-variance churn).
+    const second = await seedReviewFromFindings('ser-sev-nopin', [finding('high')]);
+    expect(second.comments[0].severity).toBe('low'); // unchanged
+    expect(second.comments[0].updatedAt).toBe(stamp); // no rewrite
+  });
+
+  it('does NOT churn updatedAt when the pinned level already matches', async () => {
+    const first = await seedReviewFromFindings('ser-sev-nochurn', [finding('high')]);
+    const stamp = first.comments[0].updatedAt;
+    const second = await seedReviewFromFindings('ser-sev-nochurn', [finding('high')], {
+      severityOverrides: { 'prose.adverb-density': 'high' },
+    });
     expect(second.comments[0].updatedAt).toBe(stamp); // unchanged — no rewrite
   });
 });

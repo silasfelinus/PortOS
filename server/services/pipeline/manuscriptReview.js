@@ -194,8 +194,14 @@ const findingKey = (c) => `${c.checkId ?? ''}|${c.issueNumber ?? ''}|${c.anchorQ
  * New findings resolve their issueId/stageId from the current manuscript
  * sections by issueNumber.
  */
-export async function seedReviewFromFindings(seriesId, findings, { runId = null, mode = 'merge', checkId = null } = {}) {
+export async function seedReviewFromFindings(seriesId, findings, { runId = null, mode = 'merge', checkId = null, severityOverrides = null } = {}) {
   const scopeCheckId = checkId ?? null;
+  // Per-check severity overrides (#1596): a pinned check's level is authoritative
+  // for EVERY open comment of that check, so we re-grade carried open comments
+  // (re-surfaced or not) to the pinned level below. Tolerant of a junk/hand-edited
+  // value — only a valid level forces a re-grade.
+  const pins = severityOverrides && typeof severityOverrides === 'object' && !Array.isArray(severityOverrides)
+    ? severityOverrides : null;
   const sections = await collectManuscriptSections(seriesId);
   const byNumber = new Map(sections.map((s) => [s.number, s]));
   return queueReviewWrite(seriesId, async () => {
@@ -258,27 +264,31 @@ export async function seedReviewFromFindings(seriesId, findings, { runId = null,
         return sanitizeComment({ ...c, status: 'dismissed', updatedAt: now });
       }
       if (c.status !== 'open') return c;
-      const match = candidateByKey.get(findingKey(c));
-      if (!match) return c;
       const patch = {};
-      if (!c.fix) {
-        const section = c.issueNumber != null ? byNumber.get(c.issueNumber) : null;
-        const fix = match.replace ? buildSeedFix({ ...c, replace: match.replace }, section) : null;
-        if (fix) { patch.fix = fix; backfilledCount += 1; }
-      }
-      if (match.sourceContentHash && match.sourceContentHash !== (c.sourceContentHash ?? null)) {
-        patch.sourceContentHash = match.sourceContentHash;
+      // Authoritative per-check severity override (#1596): re-grade this open
+      // comment to its check's pinned level even if it did NOT re-surface this
+      // pass. LLM checks seed in 'merge' mode (a non-resurfaced open is preserved,
+      // not dismissed), and a pinned check can produce zero findings in a run, so
+      // the override would otherwise never reach those lingering opens — leaving
+      // the health score + severity gating on the stale level. Skipped when the
+      // check has no override (severity left exactly as persisted — no churn from
+      // run-to-run LLM severity variance on un-pinned checks).
+      const pinned = pins && c.checkId ? pins[c.checkId] : null;
+      if (pinned && ['high', 'medium', 'low'].includes(pinned) && pinned !== c.severity) {
+        patch.severity = pinned;
         refreshedCount += 1;
       }
-      // Refresh the persisted severity to the current run's level (#1596): the
-      // findingKey ignores severity, so a re-surfaced finding whose check now
-      // carries a different per-check severity override would otherwise keep its
-      // stale level — leaving the health score + severity gating reading the old
-      // value. Mirrors the sourceContentHash refresh: the latest run's view of an
-      // open finding wins.
-      if (match.severity && match.severity !== c.severity) {
-        patch.severity = match.severity;
-        refreshedCount += 1;
+      const match = candidateByKey.get(findingKey(c));
+      if (match) {
+        if (!c.fix) {
+          const section = c.issueNumber != null ? byNumber.get(c.issueNumber) : null;
+          const fix = match.replace ? buildSeedFix({ ...c, replace: match.replace }, section) : null;
+          if (fix) { patch.fix = fix; backfilledCount += 1; }
+        }
+        if (match.sourceContentHash && match.sourceContentHash !== (c.sourceContentHash ?? null)) {
+          patch.sourceContentHash = match.sourceContentHash;
+          refreshedCount += 1;
+        }
       }
       if (Object.keys(patch).length === 0) return c;
       return sanitizeComment({ ...c, ...patch, updatedAt: now });

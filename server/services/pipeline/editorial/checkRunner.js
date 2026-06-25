@@ -621,17 +621,30 @@ export async function runEditorialChecks(seriesId, options = {}) {
   // accepted/dismissed comments are untouched by either mode.
   if (!canceled) {
     let lastReview = null;
+    // Per-check severity overrides active this run (#1596). A pinned check's
+    // level is authoritative for ALL its open comments, so the seed re-grades
+    // even open comments that didn't re-surface this pass — crucial for LLM
+    // checks (merge mode preserves a non-resurfaced open finding) and for a
+    // pinned check that produced zero findings this run.
+    const severityOverrides = {};
+    for (const { check, severityOverride } of enabledResolved) {
+      if (severityOverride) severityOverrides[check.id] = severityOverride;
+    }
     // Fresh-reconcile each deterministic check that ran, scoped to its checkId —
     // passing only that check's findings so the scoped 'fresh' pass dismisses the
     // stale opens it no longer produces.
     for (const checkId of deterministicRanIds) {
       const own = findings.filter((f) => f.checkId === checkId);
-      lastReview = await seedReviewFromFindings(seriesId, own, { runId, mode: 'fresh', checkId });
+      lastReview = await seedReviewFromFindings(seriesId, own, { runId, mode: 'fresh', checkId, severityOverrides });
     }
-    // Seed the remaining (non-deterministic) findings in merge mode.
+    // Seed the remaining (non-deterministic) findings in merge mode. Also run
+    // when there are active overrides but no merged findings, so a pinned check
+    // that produced ZERO findings this pass still re-grades its lingering open
+    // comments (#1596) — merge mode never dismisses, so an empty seed is a safe
+    // no-op aside from the authoritative severity re-grade.
     const merged = findings.filter((f) => !deterministicRanIds.has(f.checkId));
-    if (merged.length) {
-      lastReview = await seedReviewFromFindings(seriesId, merged, { runId, mode: 'merge' });
+    if (merged.length || Object.keys(severityOverrides).length) {
+      lastReview = await seedReviewFromFindings(seriesId, merged, { runId, mode: 'merge', severityOverrides });
     }
     // Record a revision-trend snapshot for EVERY non-canceled run (#1316) — a run
     // is a revision boundary, and a CLEAN run (0 new findings, or a reconciliation

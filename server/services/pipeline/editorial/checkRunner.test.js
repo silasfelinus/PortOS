@@ -174,6 +174,25 @@ describe('runEditorialChecks', () => {
     expect(infoDump.every((f) => f.severity === 'medium')).toBe(true); // the LLM's own level
   });
 
+  it('passes active severity overrides to the seed so existing open findings re-grade', async () => {
+    await runEditorialChecks('s1', {
+      checkIds: ['prose.info-dumping'],
+      settings: { pipelineEditorialChecks: { checks: { 'prose.info-dumping': { severity: 'high' } } } },
+    });
+    // The merge seed (info-dump is an LLM check) carries the override map so the
+    // seeding layer can re-grade lingering open comments authoritatively (#1596).
+    const mergeCall = seedReviewFromFindings.mock.calls.find((c) => c[2]?.mode === 'merge');
+    expect(mergeCall).toBeTruthy();
+    expect(mergeCall[2].severityOverrides).toMatchObject({ 'prose.info-dumping': 'high' });
+  });
+
+  it('omits the override map from the seed when no check is pinned', async () => {
+    await runEditorialChecks('s1', { checkIds: ['prose.info-dumping'] });
+    const mergeCall = seedReviewFromFindings.mock.calls.find((c) => c[2]?.mode === 'merge');
+    expect(mergeCall).toBeTruthy();
+    expect(mergeCall[2].severityOverrides).toEqual({}); // empty → nothing to re-grade
+  });
+
   // #1578 — the runner emits check:start / check:complete progress frames so the
   // autopilot SSE stream can show per-check progress mid-pass, not just a total.
   it('emits check:start and check:complete progress frames with a severity breakdown', async () => {
