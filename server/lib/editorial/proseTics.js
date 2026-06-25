@@ -319,6 +319,15 @@ const MOOD_PARTICIPLES = new Set([
   'soaked', 'coated', 'covered', 'wrapped', 'softened', 'muffled', 'hushed',
 ]);
 
+// Temporal/deictic nouns that follow "by" as a time phrase, not an agent ("she
+// was exhausted BY MORNING"). When one of these follows "by", the construction
+// is not an agentive passive, so it does not override stative/mood suppression.
+const NON_AGENT_BY = new Set([
+  'morning', 'noon', 'midday', 'afternoon', 'evening', 'night', 'nightfall',
+  'midnight', 'dawn', 'dusk', 'sunrise', 'sunset', 'sundown', 'twilight',
+  'daybreak', 'then', 'now', 'today', 'tonight', 'tomorrow', 'yesterday',
+]);
+
 // How far past the participle to look for a "by <agent>" phrase, allowing an
 // intervening adverb ("decorated elaborately by Mira").
 const PASSIVE_LOOKAHEAD = 3;
@@ -379,9 +388,11 @@ export function findPassiveVoice(text) {
       }
       // An explicit "by <agent>" (with an optional intervening adverb) is the
       // unambiguous agentive passive — it wins over stative/mood classification.
-      // The agent token must be inside the same-sentence window.
+      // The agent token must be inside the same-sentence window and must not be a
+      // time phrase ("by morning"), which is not an agent.
       const byPos = after.findIndex((t) => t.lower === 'by');
-      const byAgent = byPos !== -1 && after.length > byPos + 1;
+      const agentTok = byPos !== -1 ? after[byPos + 1] : undefined;
+      const byAgent = !!agentTok && !NON_AGENT_BY.has(agentTok.lower);
       let classification = 'weak';
       if (!byAgent) {
         // A mood image needs BOTH a setting subject AND an atmospheric rendering
