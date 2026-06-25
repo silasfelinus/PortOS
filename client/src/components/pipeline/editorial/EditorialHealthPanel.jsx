@@ -178,10 +178,17 @@ export default function EditorialHealthPanel({
   const onGateChange = (gate) => {
     setSavingGate(true);
     // Optimistic — reflect the picked gate, re-derive readiness on the refetch.
+    // Capture the prior gate so a failed PATCH reverts instead of leaving the
+    // dropdown showing a value the server never accepted (it also feeds the
+    // autopilot convergence gate, so a stale display misrepresents the live setting).
+    const prevGate = health?.gate;
     setHealth((h) => (h ? { ...h, gate } : h));
     setEditorialReadinessGate(gate, { silent: true })
       .then(() => load(seriesId))
-      .catch((err) => toast.error(err.message || 'Failed to update readiness gate'))
+      .catch((err) => {
+        setHealth((h) => (h ? { ...h, gate: prevGate } : h));
+        toast.error(err.message || 'Failed to update readiness gate');
+      })
       .finally(() => setSavingGate(false));
   };
 
