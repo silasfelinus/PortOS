@@ -138,6 +138,121 @@ has_native_pg() {
   command -v psql >/dev/null 2>&1
 }
 
+# Find the systemctl service name for PostgreSQL on this system
+find_pg_service() {
+  for svc in "postgresql@17-main" "postgresql-17" "postgresql"; do
+    if systemctl list-unit-files --type=service 2>/dev/null | grep -q "^${svc}\\.service"; then
+      echo "$svc"
+      return 0
+    fi
+  done
+  echo "postgresql"
+}
+
+# Add the PGDG APT repository (idempotent — skips if already configured)
+_add_pgdg_apt_repo() {
+  if [ -f /etc/apt/sources.list.d/pgdg.list ] || [ -f /usr/share/keyrings/postgresql.gpg ]; then
+    return 0
+  fi
+  info "Adding PGDG APT repository..."
+  sudo apt-get install -y curl gnupg lsb-release >/dev/null 2>&1 || true
+  curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    | sudo gpg --dearmor -o /usr/share/keyrings/postgresql.gpg 2>/dev/null
+  local codename
+  if command -v lsb_release >/dev/null 2>&1; then
+    codename=$(lsb_release -cs)
+  else
+    codename=$(. /etc/os-release 2>/dev/null && echo "${VERSION_CODENAME:-$ID}")
+  fi
+  echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt ${codename}-pgdg main" \
+    | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+  sudo apt-get update -q
+}
+
+# Full native setup for Debian/Ubuntu systems
+_setup_native_debian() {
+  local pg_version=17
+
+  if command -v psql >/dev/null 2>&1; then
+    local detected_ver
+    detected_ver=$(psql --version 2>/dev/null | sed 's/.*PostgreSQL \([0-9]*\).*/\1/' || echo "")
+    [ -n "$detected_ver" ] && pg_version="$detected_ver"
+    info "PostgreSQL $pg_version detected"
+
+    # Check if pgvector is loadable; install it if missing
+    if ! sudo -u postgres psql -d postgres -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1; then
+      info "Installing pgvector for PostgreSQL $pg_version..."
+      _add_pgdg_apt_repo
+      sudo apt-get install -y "postgresql-${pg_version}-pgvector" || {
+        err "Could not install postgresql-${pg_version}-pgvector — install it manually then re-run."
+        exit 1
+      }
+    fi
+  else
+    info "Installing PostgreSQL $pg_version and pgvector..."
+    _add_pgdg_apt_repo
+    sudo apt-get install -y "postgresql-${pg_version}" "postgresql-${pg_version}-pgvector" || {
+      err "PostgreSQL install failed. Try: sudo apt-get install postgresql-17 postgresql-17-pgvector"
+      exit 1
+    }
+  fi
+
+  # Ensure the service is running
+  local pg_svc
+  pg_svc=$(find_pg_service)
+  if ! pg_isready -h "$PGHOST" -p 5432 >/dev/null 2>&1; then
+    info "Starting PostgreSQL ($pg_svc)..."
+    sudo systemctl enable "$pg_svc" 2>/dev/null || true
+    sudo systemctl start "$pg_svc" 2>/dev/null || true
+    for i in $(seq 1 15); do
+      if pg_isready -h "$PGHOST" -p 5432 >/dev/null 2>&1; then break; fi
+      sleep 1
+    done
+    if ! pg_isready -h "$PGHOST" -p 5432 >/dev/null 2>&1; then
+      err "PostgreSQL did not start. Check: sudo systemctl status $pg_svc"
+      exit 1
+    fi
+  fi
+  log "PostgreSQL ready on port 5432"
+  PGPORT=5432
+
+  # Create the portos role if missing
+  if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$PGUSER'" 2>/dev/null | grep -q 1; then
+    info "Creating database user: $PGUSER"
+    sudo -u postgres psql \
+      -c "CREATE ROLE $PGUSER WITH LOGIN PASSWORD '$PGPASSWORD' CREATEDB SUPERUSER;"
+    log "User $PGUSER created"
+  else
+    log "User $PGUSER already exists"
+    sudo -u postgres psql \
+      -c "ALTER USER $PGUSER WITH PASSWORD '$PGPASSWORD' SUPERUSER;" 2>/dev/null || true
+  fi
+
+  # Create the portos database if missing
+  if ! sudo -u postgres psql -lqt 2>/dev/null | cut -d\| -f1 | grep -qw "$PGDATABASE"; then
+    info "Creating database: $PGDATABASE"
+    sudo -u postgres createdb "$PGDATABASE" -O "$PGUSER"
+    log "Database $PGDATABASE created"
+  else
+    log "Database $PGDATABASE already exists"
+  fi
+
+  # Enable extensions (as postgres superuser) then apply schema (as portos via TCP)
+  info "Applying schema..."
+  sudo -u postgres psql -d "$PGDATABASE" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1 || true
+  sudo -u postgres psql -d "$PGDATABASE" -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;" >/dev/null 2>&1 || true
+  PGPASSWORD="$PGPASSWORD" psql -h "$PGHOST" -p 5432 -U "$PGUSER" -d "$PGDATABASE" \
+    -v ON_ERROR_STOP=1 --single-transaction -f "$ROOT_DIR/server/scripts/init-db.sql"
+  log "Schema applied"
+
+  set_mode native
+
+  echo ""
+  log "Native PostgreSQL is ready!"
+  info "Database: $PGDATABASE (user: $PGUSER, port: 5432)"
+  info "To migrate data from Docker: scripts/db.sh migrate"
+}
+
 # Detect an already-running system PostgreSQL and its port
 detect_system_pg() {
   # Check standard port 5432 first
@@ -314,7 +429,26 @@ start_native() {
     fi
   fi
 
-  err "Could not start PostgreSQL. Try: brew services start postgresql@17"
+  # Linux: try systemctl
+  if [ "$(uname)" != "Darwin" ] && command -v systemctl >/dev/null 2>&1; then
+    local pg_svc
+    pg_svc=$(find_pg_service)
+    info "Starting PostgreSQL via systemctl ($pg_svc)..."
+    sudo systemctl start "$pg_svc" 2>/dev/null || true
+    for i in $(seq 1 15); do
+      if pg_isready -h "$PGHOST" -p "$PGPORT" >/dev/null 2>&1; then
+        log "Native PostgreSQL ready on port $PGPORT"
+        return
+      fi
+      sleep 1
+    done
+  fi
+
+  if [ "$(uname)" = "Darwin" ]; then
+    err "Could not start PostgreSQL. Try: brew services start postgresql@17"
+  else
+    err "Could not start PostgreSQL. Try: sudo systemctl start postgresql"
+  fi
   exit 1
 }
 
@@ -340,13 +474,21 @@ stop_docker() {
 
 stop_native() {
   info "Stopping native PostgreSQL..."
-  # Stop via Homebrew services (macOS)
+  # macOS: Homebrew services
   if [ "$(uname)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
     brew services stop postgresql@17 2>/dev/null || true
     log "Stopped"
     return
   fi
-  # Fallback: pg_ctl
+  # Linux: systemctl
+  if [ "$(uname)" != "Darwin" ] && command -v systemctl >/dev/null 2>&1; then
+    local pg_svc
+    pg_svc=$(find_pg_service)
+    sudo systemctl stop "$pg_svc" 2>/dev/null || true
+    log "Stopped"
+    return
+  fi
+  # Fallback: pg_ctl (macOS non-Homebrew)
   if command -v pg_ctl >/dev/null 2>&1; then
     local datadir=""
     if [ "$(uname)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
@@ -403,10 +545,18 @@ fix_docker() {
 
 fix_native() {
   info "Fixing native PostgreSQL..."
-  # Restart via Homebrew services
+  # macOS: Homebrew services
   if [ "$(uname)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
     brew services restart postgresql@17 2>/dev/null || true
     log "PostgreSQL restarted via Homebrew"
+    return
+  fi
+  # Linux: systemctl
+  if [ "$(uname)" != "Darwin" ] && command -v systemctl >/dev/null 2>&1; then
+    local pg_svc
+    pg_svc=$(find_pg_service)
+    sudo systemctl restart "$pg_svc" 2>/dev/null || true
+    log "PostgreSQL restarted via systemctl"
     return
   fi
   warn "Manual fix may be needed — check PostgreSQL logs"
@@ -415,6 +565,25 @@ fix_native() {
 # Setup native PostgreSQL — detects and reuses existing system installation
 cmd_setup_native() {
   info "Setting up native PostgreSQL for PortOS..."
+
+  # Linux: Debian/Ubuntu — fully automated via apt + PGDG
+  if [ "$(uname)" != "Darwin" ] && command -v apt-get >/dev/null 2>&1; then
+    _setup_native_debian
+    return
+  fi
+
+  # Linux: RHEL/Fedora — provide PGDG instructions (no automated install)
+  if [ "$(uname)" != "Darwin" ] && { command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; }; then
+    err "RHEL/Fedora: install PostgreSQL 17 + pgvector from PGDG, then re-run setup-native"
+    echo ""
+    echo "  sudo dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
+    echo "  sudo dnf -qy module disable postgresql"
+    echo "  sudo dnf install -y postgresql17-server pgvector_17"
+    echo "  sudo /usr/pgsql-17/bin/postgresql-17-setup initdb"
+    echo "  sudo systemctl enable --now postgresql-17"
+    echo "  scripts/db.sh setup-native"
+    exit 1
+  fi
 
   # Step 1: Ensure PostgreSQL is installed
   if [ "$(uname)" = "Darwin" ]; then
