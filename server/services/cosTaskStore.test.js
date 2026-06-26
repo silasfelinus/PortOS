@@ -211,6 +211,12 @@ describe('cosTaskStore.addTask', () => {
     const { tasks } = await getUserTasks();
     expect(tasks[0].description).toBe('second');
   });
+
+  it('stamps a content-edit timestamp (updatedAt) from the injectable clock (#1714)', async () => {
+    const NOW = Date.parse('2026-06-25T12:00:00.000Z');
+    const created = await addTask({ description: 'stamped', id: 'task-stamp' }, 'user', { now: NOW });
+    expect(created.metadata.updatedAt).toBe(new Date(NOW).toISOString());
+  });
 });
 
 describe('cosTaskStore.updateTask', () => {
@@ -260,6 +266,51 @@ describe('cosTaskStore.updateTask', () => {
     expect(renewed.metadata.leaseExpiresAt).toBe('2026-01-01T01:00:00.000Z');
   });
 
+  it('bumps updatedAt on a content edit from the injectable clock (#1714)', async () => {
+    const T0 = Date.parse('2026-06-25T00:00:00.000Z');
+    const T1 = Date.parse('2026-06-25T06:00:00.000Z');
+    await addTask({ description: 'edit me', id: 'task-edit' }, 'user', { now: T0 });
+    const updated = await updateTask('task-edit', { priority: 'HIGH' }, 'user', { now: T1 });
+    expect(updated.metadata.updatedAt).toBe(new Date(T1).toISOString());
+  });
+
+  it('does NOT bump updatedAt on a lease-renewal heartbeat that re-includes existing metadata (#1714)', async () => {
+    const T0 = Date.parse('2026-06-25T00:00:00.000Z');
+    const T1 = Date.parse('2026-06-25T06:00:00.000Z');
+    const T2 = Date.parse('2026-06-25T12:00:00.000Z');
+    // Task carries real non-claim content (context) so the heartbeat spread below
+    // actually re-includes a content key — the shape that broke the naive detector.
+    await addTask({ description: 'beat', id: 'task-beat', context: 'working on it' }, 'user', { now: T0 });
+    // Claiming the task is a content edit (status change) → stamp advances to T1.
+    await updateTask('task-beat', {
+      status: 'in_progress',
+      metadata: { claimedBy: 'a', claimedAt: '2026-01-01T00:00:00.000Z', leaseExpiresAt: '2026-01-01T00:30:00.000Z' }
+    }, 'user', { now: T1 });
+    // Real heartbeat shape (cos.js processOrphanedTasks once spread the whole
+    // metadata): { ...existing, ...freshLease }. The re-included unchanged keys
+    // (context, updatedAt) must NOT count as an edit — else every ~15min heartbeat
+    // bumps the stamp and a lease-renewing peer spuriously wins content ties.
+    const current = await getTaskById('task-beat');
+    const renewed = await updateTask('task-beat', {
+      metadata: { ...current.metadata, claimedBy: 'a', claimedAt: '2026-01-01T00:00:00.000Z', leaseExpiresAt: '2026-01-01T01:00:00.000Z' }
+    }, 'user', { now: T2 });
+    expect(renewed.metadata.leaseExpiresAt).toBe('2026-01-01T01:00:00.000Z');
+    expect(renewed.metadata.updatedAt).toBe(new Date(T1).toISOString()); // NOT bumped to T2
+  });
+
+  it('DOES bump updatedAt when a spread metadata patch actually changes a non-claim value (#1714)', async () => {
+    const T0 = Date.parse('2026-06-25T00:00:00.000Z');
+    const T1 = Date.parse('2026-06-25T06:00:00.000Z');
+    await addTask({ description: 'meta edit', id: 'task-meta', context: 'old' }, 'user', { now: T0 });
+    const current = await getTaskById('task-meta');
+    // Same spread shape as the heartbeat, but context genuinely changes → real edit.
+    const updated = await updateTask('task-meta', {
+      metadata: { ...current.metadata, context: 'new' }
+    }, 'user', { now: T1 });
+    expect(updated.metadata.context).toBe('new');
+    expect(updated.metadata.updatedAt).toBe(new Date(T1).toISOString());
+  });
+
   it('returns an error object when the file is missing', async () => {
     const result = await updateTask('task-x', { status: 'completed' }, 'user');
     expect(result.error).toBe('Task file not found');
@@ -307,6 +358,14 @@ describe('cosTaskStore.approveTask', () => {
     expect(approved.approvalRequired).toBe(false);
     expect(approved.autoApproved).toBe(true);
     expect(mock.events.some(e => e.name === 'tasks:changed' && e.payload.action === 'approved')).toBe(true);
+  });
+
+  it('bumps the updatedAt LWW stamp on approval (approval is content) (#1714)', async () => {
+    const T0 = Date.parse('2026-06-25T00:00:00.000Z');
+    const T1 = Date.parse('2026-06-25T06:00:00.000Z');
+    await addTask({ description: 'need approve', id: 'sys-ap2', approvalRequired: true }, 'internal', { now: T0 });
+    const approved = await approveTask('sys-ap2', { now: T1 });
+    expect(approved.metadata.updatedAt).toBe(new Date(T1).toISOString());
   });
 
   it('rejects a task that does not require approval', async () => {
