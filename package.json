@@ -10,7 +10,7 @@
     "dev": "node scripts/dev-start.js",
     "dev:stop": "node ./node_modules/pm2/bin/pm2 stop ecosystem.config.cjs",
     "build": "npm run build --prefix client",
-    "start": "node scripts/ensure-deps.js && npm run build && node scripts/setup-db.js && node scripts/setup-cert.js && node scripts/launch-ollama.js --detach && (node ./node_modules/pm2/bin/pm2 delete ecosystem.config.cjs --silent || echo pm2 delete skipped) && node ./node_modules/pm2/bin/pm2 start ecosystem.config.cjs && node ./node_modules/pm2/bin/pm2 save",
+    "start": "node scripts/ensure-deps.js && npm run build && node scripts/setup-db.js && node scripts/setup-cert.js && (node scripts/launch-ollama.js --detach || echo ollama launch skipped) && (node ./node_modules/pm2/bin/pm2 delete ecosystem.config.cjs --silent || echo pm2 delete skipped) && node ./node_modules/pm2/bin/pm2 start ecosystem.config.cjs && node ./node_modules/pm2/bin/pm2 save",
     "pm2:start": "node ./node_modules/pm2/bin/pm2 start ecosystem.config.cjs",
     "pm2:stop": "node ./node_modules/pm2/bin/pm2 stop ecosystem.config.cjs",
     "pm2:restart": "node ./node_modules/pm2/bin/pm2 restart ecosystem.config.cjs",
