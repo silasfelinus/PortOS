@@ -36,6 +36,17 @@ execFileSync(process.execPath, [join(__dirname, 'setup-db.js')], {
   windowsHide: true
 });
 
+// Ensure Ollama is running when configured. PortOS can still boot if local
+// Ollama is not installed; setup:llm / doctor:ai will print repair hints.
+try {
+  execFileSync(process.execPath, [join(__dirname, 'launch-ollama.js'), '--detach'], {
+    stdio: 'inherit',
+    windowsHide: true
+  });
+} catch {
+  console.warn('⚠️  Ollama launch skipped — run `npm run doctor:ai` for details.');
+}
+
 // Stop and delete existing PortOS processes (ignore errors if none exist)
 try { pm2('stop', ECO); } catch {}
 try { pm2('delete', ECO); } catch {}
