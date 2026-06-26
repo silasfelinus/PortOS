@@ -536,7 +536,12 @@ async function resetOrphanedTasks() {
           : (owner === null ? buildClaim(instanceId) : null);
         if (renewal) {
           const taskType = task.taskType || (isInternalTaskId(task.id) ? 'internal' : 'user');
-          await updateTask(task.id, { metadata: { ...task.metadata, ...renewal } }, taskType).catch(() => {});
+          // Pass ONLY the renewal claim keys — updateTask merges them over the
+          // CURRENT persisted metadata, so spreading {...task.metadata} (this
+          // scan's possibly-stale copy) is redundant and would risk clobbering a
+          // concurrent content edit. It also keeps the heartbeat a claim-only
+          // patch so it never bumps the updatedAt LWW stamp (#1714).
+          await updateTask(task.id, { metadata: renewal }, taskType).catch(() => {});
         }
         continue;
       }

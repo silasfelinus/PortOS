@@ -41,18 +41,38 @@ const CLAIM_KEY_SET = new Set(CLAIM_METADATA_KEYS);
 // content-edit detector and the normalizer below can't drift apart.
 const LEGACY_DIRECT_FIELDS = ['context', 'model', 'provider', 'app'];
 
+// Equality for metadata values across a fresh markdown re-parse: primitives by
+// ===, arrays/objects (reviewers[], screenshots[], …) by JSON since the two
+// sides are independent parses with different references but equal content.
+const metaValueEqual = (a, b) => {
+  if (a === b) return true;
+  if (a && b && typeof a === 'object' && typeof b === 'object') {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  return false;
+};
+
 /**
  * Does an `updateTask` patch change a task's EDITABLE CONTENT (vs only its
  * claim/lease metadata)? Used to decide whether to bump the `updatedAt` LWW stamp
  * (#1714). A claim-only write — most importantly the periodic lease-renewal
- * heartbeat (`buildRenewal`, which passes only claim keys and no status) — must
- * NOT bump the stamp: a heartbeat is not a content edit, and letting it advance
- * `updatedAt` would make a lease-renewing peer spuriously win same-status content
- * ties over the other peer's genuine edit. Status transitions, priority/description
- * changes, approval flags, legacy `context`/`app`/… fields, and any non-claim
- * metadata key all count as content edits.
+ * heartbeat — must NOT bump the stamp: a heartbeat is not a content edit, and
+ * letting it advance `updatedAt` would make a lease-renewing peer spuriously win
+ * same-status content ties over the other peer's genuine edit.
+ *
+ * Crucially, the heartbeat does NOT pass a claim-only patch — `cos.js`
+ * `processOrphanedTasks` spreads the WHOLE existing metadata plus the fresh lease
+ * (`{ ...task.metadata, ...renewal }`). So presence of a non-claim key is not
+ * enough to call it an edit; we must compare VALUES against the task's current
+ * metadata and treat a key as content only when it actually changed. The edit
+ * stamp itself is never content. Status/priority/description/approval changes and
+ * legacy direct fields are always edits when present (callers only pass those
+ * with intent).
+ *
+ * @param {object} updates           the updateTask patch
+ * @param {object} existingMetadata  the task's current persisted metadata
  */
-function isContentEdit(updates) {
+function isContentEdit(updates, existingMetadata = {}) {
   if (!updates || typeof updates !== 'object') return false;
   if (updates.status !== undefined) return true;
   if (updates.description !== undefined) return true;
@@ -60,8 +80,10 @@ function isContentEdit(updates) {
   if (updates.approvalRequired !== undefined || updates.autoApproved !== undefined) return true;
   if (LEGACY_DIRECT_FIELDS.some(f => updates[f] !== undefined)) return true;
   if (updates.metadata && typeof updates.metadata === 'object') {
-    for (const key of Object.keys(updates.metadata)) {
-      if (!CLAIM_KEY_SET.has(key)) return true;
+    const existing = (existingMetadata && typeof existingMetadata === 'object') ? existingMetadata : {};
+    for (const [key, value] of Object.entries(updates.metadata)) {
+      if (CLAIM_KEY_SET.has(key) || key === 'updatedAt') continue; // claim keys + the stamp never count
+      if (!metaValueEqual(value, existing[key])) return true;      // a non-claim key counts only if it CHANGED
     }
   }
   return false;
@@ -328,10 +350,11 @@ export async function updateTask(taskId, updates, taskType = 'user', { now = Dat
   }
 
   // Bump the content-edit stamp (#1714) on a genuine content change so the peer's
-  // claim-aware merge can resolve a same-status edit by newest-edit-wins. Skipped
-  // for claim-only writes (lease-renewal heartbeats) — see isContentEdit. `now` is
+  // claim-aware merge can resolve a same-status edit by newest-edit-wins. Compared
+  // against the task's CURRENT metadata so a lease-renewal heartbeat that re-includes
+  // unchanged metadata doesn't read as an edit (see isContentEdit). `now` is
   // injectable for deterministic test output.
-  if (isContentEdit(updates)) {
+  if (isContentEdit(updates, tasks[taskIndex].metadata)) {
     updatedMetadata.updatedAt = new Date(now).toISOString();
   }
 
