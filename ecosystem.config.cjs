@@ -2,57 +2,76 @@
 // PM2 Ecosystem Configuration - shared constants and app definitions
 // =============================================================================
 const path = require('path');
+const fs = require('fs');
+
 const LOG_DATE_FORMAT = 'YYYY-MM-DDTHH:mm:ss.SSS[Z]';
 const IS_WIN = process.platform === 'win32';
 
-// Shared env inherited by all apps (merged into each app's env)
 const BASE_ENV = {
   NODE_ENV: 'development',
-  TZ: 'UTC'  // All log timestamps and Date operations in UTC
+  TZ: 'UTC'
 };
 
-// Read a couple of machine-local settings from .env (pm2 doesn't auto-load it
-// here): PGMODE → PostgreSQL port; PORTOS_SERVER_MAX_MEMORY → the restart ceiling
-// below. An explicit process.env wins over the .env file so a one-off shell
-// override still works.
-const fs = require('fs');
-const envFile = path.join(__dirname, '.env');
-let pgMode = 'docker';
-let envMaxMemory = null;
-try {
-  const envContent = fs.readFileSync(envFile, 'utf8');
-  const modeMatch = envContent.match(/^PGMODE=(\w+)/m);
-  if (modeMatch) pgMode = modeMatch[1];
-  const memMatch = envContent.match(/^PORTOS_SERVER_MAX_MEMORY=(\S+)/m);
-  if (memMatch) envMaxMemory = memMatch[1];
-} catch { /* no .env file — default to docker */ }
+function readDotEnv(filePath) {
+  const result = {};
+  let content = '';
+  try { content = fs.readFileSync(filePath, 'utf8'); } catch { return result; }
 
-// pm2 restarts portos-server when its RSS crosses this — originally a memory-leak
-// safety valve. The committed default stays modest so the guard still fires on a
-// small install (a fork on an 8 GB box), but it's overridable per-machine via
-// PORTOS_SERVER_MAX_MEMORY (.env or shell env; e.g. '32G' on a 128 GB
-// workstation) since a too-low ceiling causes spurious restarts that disrupt SSE
-// streams and long jobs. (Training is no longer collateral damage from these
-// restarts — it's spawned detached into its own process group — but fewer
-// restarts is still better.)
-const SERVER_MAX_MEMORY = process.env.PORTOS_SERVER_MAX_MEMORY || envMaxMemory || '4G';
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const idx = trimmed.indexOf('=');
+    if (idx === -1) continue;
+    const key = trimmed.slice(0, idx).trim();
+    let value = trimmed.slice(idx + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    result[key] = value;
+  }
+
+  return result;
+}
+
+const envFile = path.join(__dirname, '.env');
+const dotEnv = readDotEnv(envFile);
+const envValue = (key, fallback = null) => process.env[key] || dotEnv[key] || fallback;
+
+const pgMode = envValue('PGMODE', 'docker');
+const envMaxMemory = envValue('PORTOS_SERVER_MAX_MEMORY', null);
+const pgHost = envValue('PGHOST', 'localhost');
+const pgUser = envValue('PGUSER', 'portos');
+const pgDatabase = envValue('PGDATABASE', 'portos');
+const pgPassword = envValue('PGPASSWORD', 'portos');
+const pgDockerPort = envValue('PGPORT_DOCKER', '5561');
+const pgPort = envValue('PGPORT', pgMode === 'docker' ? pgDockerPort : '5432');
+
+const SERVER_MAX_MEMORY = envValue('PORTOS_SERVER_MAX_MEMORY', envMaxMemory || '4G');
 
 const PORTS = {
-  API: 5555,           // Express API server (HTTPS when Tailscale cert is active)
-  API_LOCAL: 5553,     // Loopback-only HTTP mirror of API — only binds when HTTPS is active on :API.
-                       // Lets http://localhost work without cert warnings. Override w/ PORTOS_HTTP_PORT.
-  UI: 5554,            // Vite dev server (client)
-  CDP: 5556,           // Chrome DevTools Protocol (browser automation)
-  CDP_HEALTH: 5557,    // Browser health check endpoint
-  COS: 5558,           // Chief of Staff agent runner
-  AUTOFIXER: 5559,     // Autofixer API
-  AUTOFIXER_UI: 5560,  // Autofixer UI
-  POSTGRES_DOCKER: 5561, // PostgreSQL Docker container (host port mapping)
-  POSTGRES: pgMode === 'native' ? 5432 : 5561 // Active PostgreSQL port (unused in file mode)
+  API: 5555,
+  API_LOCAL: 5553,
+  UI: 5554,
+  CDP: 5556,
+  CDP_HEALTH: 5557,
+  COS: 5558,
+  AUTOFIXER: 5559,
+  AUTOFIXER_UI: 5560,
+  POSTGRES_DOCKER: 5561,
+  POSTGRES: Number.parseInt(pgPort, 10) || (pgMode === 'native' || pgMode === 'network' ? 5432 : 5561)
+};
+
+const PG_ENV = {
+  PGHOST: pgHost,
+  PGPORT: String(PORTS.POSTGRES),
+  PGDATABASE: pgDatabase,
+  PGUSER: pgUser,
+  PGPASSWORD: pgPassword
 };
 
 module.exports = {
-  PORTS, // Export for other configs to reference
+  PORTS,
 
   apps: [
     {
@@ -64,42 +83,15 @@ module.exports = {
       windowsHide: IS_WIN,
       env: {
         ...BASE_ENV,
+        ...PG_ENV,
         PORT: PORTS.API,
-        PORTOS_HTTP_PORT: PORTS.API_LOCAL, // Loopback HTTP mirror when HTTPS is active
+        PORTOS_HTTP_PORT: PORTS.API_LOCAL,
         HOST: '0.0.0.0',
-        PGPORT: PORTS.POSTGRES,
-        PGPASSWORD: process.env.PGPASSWORD || 'portos',
         ...(pgMode === 'file' ? { MEMORY_BACKEND: 'file' } : {}),
-        PATH: process.env.PATH // Inherit PATH for git/node access in child processes
+        PATH: process.env.PATH
       },
-      // Filewatch is OFF for portos-server. The image gen path (codex / local
-      // MLX / external) writes lots of files: the rendered PNG, a sidecar
-      // metadata JSON, atomic-renamed media-jobs.json, plus per-job temp
-      // scratch. Even with `watch: ['server']` + a broad ignore_watch list,
-      // chokidar occasionally races on the atomic rename target (write to
-      // tmp → rename onto final path) and fires a change event for a path
-      // that the ignore globs *should* have excluded. The symptom in the
-      // wild is "SIGINT received" 5–30s after an image render completes,
-      // killing in-flight jobs.
-      //
-      // Code edits are picked up by a manual `pm2 restart ecosystem.config.cjs`
-      // — that's the documented workflow anyway (pm2 restart doesn't rebuild
-      // the client; you need npm run build / npm start). So losing the
-      // auto-restart-on-save behavior costs nothing in practice.
-      //
-      // To re-enable for ad-hoc dev work: flip this to `watch: ['server']`
-      // and add `'**/data/**'` (plus `'**/node_modules'`, `'**/logs/**'`,
-      // `'**/.cache/**'`, `'**/portos-stepwise-*/**'`) to `ignore_watch`.
       watch: false,
       max_memory_restart: SERVER_MAX_MEMORY
-      // NOTE: do NOT set `treekill: false` here to protect long media jobs from
-      // restart-SIGINT. Tried 2026-06-14: pm2 then fails to reap the old node
-      // process on restart, so it lingers holding :5555 and the new instance
-      // EADDRINUSE-crash-loops. The right place to isolate a multi-hour trainer
-      // from pm2's parent-tree kill is the spawn side (double-fork / reparent to
-      // launchd so it leaves the ppid tree), NOT disabling treekill server-wide.
-      // Raising max_memory_restart (above) already removes the most common
-      // restart trigger; full isolation is tracked in PLAN.
     },
     {
       name: 'portos-cos',
@@ -108,9 +100,6 @@ module.exports = {
       interpreter: 'node',
       log_date_format: LOG_DATE_FORMAT,
       windowsHide: IS_WIN,
-      // CoS Agent Runner - isolated process for spawning Claude CLI agents
-      // Does NOT restart when portos-server restarts, preventing orphaned agents
-      // Security: Binds to localhost only - not exposed externally
       env: {
         ...BASE_ENV,
         PORT: PORTS.COS,
@@ -122,8 +111,6 @@ module.exports = {
       min_uptime: '30s',
       restart_delay: 10000,
       max_memory_restart: '2G',
-      // Important: This process manages long-running agent processes
-      // Keep kill_timeout high to allow graceful shutdown of agents
       kill_timeout: 30000
     },
     {
@@ -149,7 +136,7 @@ module.exports = {
       env: {
         ...BASE_ENV,
         PORT: PORTS.AUTOFIXER,
-        PATH: process.env.PATH // Inherit PATH for nvm/node access in child processes
+        PATH: process.env.PATH
       },
       watch: false,
       autorestart: true,
@@ -181,8 +168,6 @@ module.exports = {
       interpreter: 'node',
       log_date_format: LOG_DATE_FORMAT,
       windowsHide: IS_WIN,
-      // Security: CDP binds to 127.0.0.1 by default (set CDP_HOST=0.0.0.0 to expose)
-      // Remote access should go through portos-server proxy with authentication
       env: {
         ...BASE_ENV,
         CDP_PORT: PORTS.CDP,
