@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
+import { EventEmitter } from 'events';
 
 // vi.mock factories are hoisted above the module body, so the mutable holder
 // and the mock objects must come from vi.hoisted (which runs first). The
@@ -44,6 +45,7 @@ const mocks = vi.hoisted(() => ({
   },
   providers: {
     getProviderById: vi.fn(async () => ({ id: 'ollama', enabled: false })),
+    getAllProviders: vi.fn(async () => ({ providers: [] })),
     updateProvider: vi.fn(async () => ({}))
   }
 }));
@@ -51,11 +53,49 @@ vi.mock('./ollamaManager.js', () => mocks.ollama);
 vi.mock('./lmStudioManager.js', () => mocks.lmstudio);
 vi.mock('./providers.js', () => mocks.providers);
 
+// child_process is mocked so the install/upgrade paths (spawn-based streaming +
+// execFile-based presence checks) are drivable. Defaults are benign for the rest
+// of the suite: spawn closes clean, execFile rejects (→ commandExists() false).
+const cp = vi.hoisted(() => ({
+  defaults: {
+    spawn: () => {
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = () => {};
+      setImmediate(() => child.emit('close', 0));
+      return child;
+    },
+    execFile: (_cmd, _args, _opts, cb) => cb(new Error('ENOENT')),
+  },
+  spawn: null,
+  execFile: null,
+}));
+vi.mock('child_process', () => ({
+  spawn: (...a) => cp.spawn(...a),
+  execFile: (cmd, args, opts, cb) => cp.execFile(cmd, args, opts, cb),
+}));
+
+// Build a fake `brew` child that streams `lines`, then closes with `code`.
+const fakeChild = ({ code = 0, lines = [] } = {}) => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = () => {};
+  setImmediate(() => {
+    for (const l of lines) child.stdout.emit('data', Buffer.from(`${l}\n`));
+    child.emit('close', code);
+  });
+  return child;
+};
+
 const writeEnv = (content) => fs.writeFileSync(path.join(state.root, '.env'), content);
 
 let svc;
 beforeEach(async () => {
   vi.clearAllMocks(); // clears calls, keeps the default impls defined above
+  cp.spawn = cp.defaults.spawn; // reset child_process drivers to benign defaults
+  cp.execFile = cp.defaults.execFile;
   delete process.env.LLM_BACKEND;
   state.root = fs.mkdtempSync(path.join(os.tmpdir(), 'portos-llm-svc-'));
   vi.resetModules();
@@ -300,6 +340,40 @@ describe('localLlm', () => {
         Object.defineProperty(process, 'platform', orig);
       }
     });
+
+    it('treats a non-zero `brew install` exit as success when the package is actually on disk', async () => {
+      // Repro of the real Ollama install failure: `brew install ollama` poured
+      // the formula but exited 1 (mlx dep + cleanup/env-hint noise), so PortOS
+      // wrongly reported failure for a successful install.
+      const orig = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      cp.spawn = () => fakeChild({ code: 1, lines: ['Pouring ollama…', '🍺 ollama installed', 'brew cleanup hint'] });
+      // `brew --version` (gate) and `brew list --versions ollama` (presence) succeed.
+      cp.execFile = (_cmd, _args, _opts, cb) => cb(null, { stdout: 'ollama 0.30.10', stderr: '' });
+      try {
+        const r = await svc.installBackend('ollama');
+        expect(r.success).toBe(true);
+        expect(r.backend).toBe('ollama');
+      } finally {
+        Object.defineProperty(process, 'platform', orig);
+      }
+    });
+
+    it('still reports failure when `brew install` exits non-zero AND the package is absent', async () => {
+      const orig = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+      cp.spawn = () => fakeChild({ code: 1, lines: ['Error: download failed'] });
+      // brew --version succeeds (gate passes); brew list rejects (not installed).
+      cp.execFile = (_cmd, args, _opts, cb) =>
+        args.includes('--version') ? cb(null, { stdout: 'Homebrew 4', stderr: '' }) : cb(new Error('not installed'));
+      try {
+        const r = await svc.installBackend('ollama');
+        expect(r.success).toBe(false);
+        expect(r.error).toMatch(/Homebrew install failed/);
+      } finally {
+        Object.defineProperty(process, 'platform', orig);
+      }
+    });
   });
 
   describe('listVisionModels', () => {
@@ -327,6 +401,26 @@ describe('localLlm', () => {
       const models = await svc.listVisionModels();
       expect(models.map((m) => m.id)).toEqual(['qwen2.5-vl:7b']);
       expect(mocks.ollama.getModelCapabilities).not.toHaveBeenCalled();
+    });
+
+    it('appends vision-capable CLI providers (codex / claude), one entry per model', async () => {
+      mocks.providers.getAllProviders.mockResolvedValueOnce({
+        providers: [
+          { id: 'codex', type: 'cli', command: 'codex', enabled: true, models: ['gpt-5'], defaultModel: 'gpt-5' },
+          { id: 'claude-code', type: 'cli', command: 'claude', enabled: true, name: 'Claude Code', models: ['claude-opus-4-8', 'claude-sonnet-4-6'] },
+          { id: 'antigravity-cli', type: 'cli', command: 'agy', enabled: true, models: ['x'] }, // not vision-capable → excluded
+          { id: 'lmstudio', type: 'api', enabled: true, models: [] }, // api handled elsewhere → excluded here
+          { id: 'codex-off', type: 'cli', command: 'codex', enabled: false, models: ['gpt-5'] }, // disabled → excluded
+        ],
+      });
+
+      const models = await svc.listVisionModels();
+      const cli = models.filter((m) => m.backend === 'cli');
+      expect(cli).toEqual([
+        { providerId: 'codex', backend: 'cli', id: 'gpt-5', name: 'codex / gpt-5', vision: true },
+        { providerId: 'claude-code', backend: 'cli', id: 'claude-opus-4-8', name: 'Claude Code / claude-opus-4-8', vision: true },
+        { providerId: 'claude-code', backend: 'cli', id: 'claude-sonnet-4-6', name: 'Claude Code / claude-sonnet-4-6', vision: true },
+      ]);
     });
   });
 });

@@ -18,8 +18,10 @@ import { randomUUID, createHash } from 'crypto';
 import { readFile, rm } from 'fs/promises';
 import { atomicWrite, ensureDir } from '../../lib/fileUtils.js';
 import { WORK_KINDS, WORK_STATUSES } from '../../lib/writersRoomPresets.js';
+import { emitRecordUpdated, emitRecordDeleted, autoSubscribeRecordToAllPeers } from '../sharing/recordEvents.js';
 import { nowIso, badRequest, notFound, wrWorkDir, wrDraftPath } from './_shared.js';
 import { writersRoomStore } from './store.js';
+import { WRITERS_ROOM_WORK_KIND, WRITERS_ROOM_FOLDER_KIND, WRITERS_ROOM_EXERCISE_KIND } from './syncLogic.js';
 
 const store = () => writersRoomStore();
 
@@ -106,6 +108,9 @@ export async function createFolder({ name, parentId = null, sortOrder = 0 }) {
     updatedAt: nowIso(),
   };
   await store().writeFolder(folder);
+  // Auto-subscribe every writersRoomFolders-enabled peer so brand-new folders
+  // (and their later tombstones) propagate without waiting for a reconnect (#1645).
+  autoSubscribeRecordToAllPeers(WRITERS_ROOM_FOLDER_KIND, folder.id).catch(() => {});
   return folder;
 }
 
@@ -120,7 +125,40 @@ export async function deleteFolder(id) {
     throw badRequest('Folder has subfolders — delete or reparent them first');
   }
   await store().deleteFolder(id);
+  // Push the tombstone so subscribed peers learn of the deletion (the LWW merge
+  // never propagates a hard delete — an omitted record gets resurrected) (#1645).
+  emitRecordDeleted(WRITERS_ROOM_FOLDER_KIND, id);
   return { ok: true };
+}
+
+// Conflict-restore entry point (#1645) for a body-less Writers Room record
+// (folder / exercise): re-apply a journaled local snapshot after a sync LWW
+// overwrite. Merges only the RESTORABLE_FIELDS the resolver passes, bumps
+// updatedAt so the restore wins the next LWW + re-pushes (the exercise wire
+// sanitizer prefers a stored updatedAt over its finishedAt/startedAt-derived
+// key), and emits so subscribed peers converge. A missing/tombstoned record
+// throws notFound (→ translateGone → ERR_TARGET_GONE in the resolver). Mirrors
+// moodBoard's restoreBoard.
+async function restoreBodylessRecord(id, patch, { read, write, kind, fields, label }) {
+  const current = await read(id, { includeDeleted: false });
+  if (!current) throw notFound(label);
+  const next = { ...current };
+  for (const key of fields) {
+    if (patch[key] !== undefined) next[key] = patch[key];
+  }
+  next.updatedAt = nowIso();
+  await write(next);
+  emitRecordUpdated(kind, id);
+  return next;
+}
+
+const FOLDER_RESTORABLE = ['name', 'parentId', 'sortOrder'];
+export async function restoreFolder(id, patch) {
+  return restoreBodylessRecord(id, patch, {
+    read: (rid, opts) => store().readFolder(rid, opts),
+    write: (f) => store().writeFolder(f),
+    kind: WRITERS_ROOM_FOLDER_KIND, fields: FOLDER_RESTORABLE, label: 'Folder',
+  });
 }
 
 // ---------- work CRUD ----------
@@ -136,9 +174,20 @@ async function loadManifest(workId) {
   return store().readWork(workId);
 }
 
-async function saveManifest(workId, manifest) {
+// Announce a persisted work change to the per-record peer-sync pipeline (#1565)
+// so any existing subscription pushes the new state (+ its draft-body manifest).
+// Routed through the recordEvents subscription adapter (a no-op until peerSync
+// registers it at boot) so this store doesn't import peerSync — peerSync
+// statically imports mergeWorksFromSync from writersRoom/sync.js, so importing
+// it back would close a load-order cycle. Mirrors creativeDirector/local.js.
+//
+// `announce: false` opts the hot-path live-mode usage-counter writes out of a
+// push (they fire once per suggest call) — the bumped counter rides the next
+// structural push, exactly as Creative Director's recordRun does NOT emit.
+async function saveManifest(workId, manifest, { announce = true } = {}) {
   await ensureDir(`${wrWorkDir(workId)}/drafts`);
   await store().writeWork(manifest);
+  if (announce) emitRecordUpdated(WRITERS_ROOM_WORK_KIND, workId);
 }
 
 // Lazy-import to break a circular dep (mediaCollections doesn't import us, but
@@ -245,6 +294,9 @@ export async function createWork({ folderId = null, title, kind = 'short-story' 
     updatedAt: now,
   };
   await saveManifest(id, manifest);
+  // Auto-subscribe every writersRoomWorks-enabled peer so brand-new works (and
+  // their later tombstones) propagate without waiting for a reconnect (#1565).
+  autoSubscribeRecordToAllPeers(WRITERS_ROOM_WORK_KIND, id).catch(() => {});
   return manifest;
 }
 
@@ -384,7 +436,12 @@ export async function recordLiveModeUsage(id) {
   const today = utcDayKey();
   const count = live.usage.date === today ? live.usage.count + 1 : 1;
   const nextLive = { ...live, usage: { date: today, count } };
-  await saveManifest(id, { ...manifest, liveMode: nextLive, updatedAt: nowIso() });
+  // Do NOT bump updatedAt: this counter is a local-only daily budget (never
+  // announced, #1565). updatedAt is the federation LWW key, so advancing it here
+  // would let a local counter bump on one peer win LWW over a real manuscript
+  // edit pushed from another — silently dropping the edit. Preserving updatedAt
+  // keeps the counter local without disturbing the merge order.
+  await saveManifest(id, { ...manifest, liveMode: nextLive }, { announce: false });
   return nextLive;
 }
 
@@ -402,7 +459,9 @@ export async function recordLiveModeRenderUsage(id) {
   const today = utcDayKey();
   const count = live.renderUsage.date === today ? live.renderUsage.count + 1 : 1;
   const nextLive = { ...live, renderUsage: { date: today, count } };
-  await saveManifest(id, { ...manifest, liveMode: nextLive, updatedAt: nowIso() });
+  // Same as recordLiveModeUsage above: a local-only render-budget bump must not
+  // advance the federation LWW key (updatedAt) and risk dropping a peer's edit.
+  await saveManifest(id, { ...manifest, liveMode: nextLive }, { announce: false });
   return nextLive;
 }
 
@@ -411,18 +470,32 @@ export async function deleteWork(id) {
   // silently succeed on a non-existent dir and the user gets no signal.
   // Tolerate CORRUPTED_MANIFEST so a user can recover from on-disk corruption
   // by deleting the work via the API/UI instead of resorting to `rm -rf`.
+  let corrupt = false;
   await getWork(id).catch((err) => {
     if (err?.code === 'CORRUPTED_MANIFEST') {
       console.warn(`⚠️  wr: deleting work ${id} despite corrupted manifest`);
+      corrupt = true;
       return;
     }
     throw err;
   });
-  // Drop the metadata rows (no-op on the file backend, where the manifest lives
-  // in the work dir the rm below removes) AND rm the on-disk dir holding the
-  // file-primary draft .md bodies.
+  if (corrupt) {
+    // A tombstone needs a parseable manifest to soft-delete + federate, but a
+    // corrupt manifest can't be sanitized for the wire anyway (sanitizeWorkForSync
+    // would drop it), so it was never syncable. Hard-remove the dir so the API's
+    // "delete a broken work to recover" path still works (the soft-delete store
+    // call would otherwise no-op on the unreadable manifest and strand it).
+    await rm(wrWorkDir(id), { recursive: true, force: true });
+    return { ok: true };
+  }
+  // Soft-delete tombstone (#1565) so the deletion federates and an out-of-date
+  // peer can't resurrect the work via the LWW merge. The work row/manifest + its
+  // draft rows + the on-disk .md bodies all stay until tombstone GC hard-prunes
+  // them (sync.js pruneTombstonedWorks). The record drops out of every user-facing
+  // read immediately (readWork/listWorks filter `deleted`).
   await store().deleteWork(id);
-  await rm(wrWorkDir(id), { recursive: true, force: true });
+  // Push the tombstone to subscribed peers immediately.
+  emitRecordDeleted(WRITERS_ROOM_WORK_KIND, id);
   return { ok: true };
 }
 
@@ -528,8 +601,12 @@ export async function createExercise({ workId = null, prompt = '', durationSecon
     status: 'running',
     startedAt: nowIso(),
     finishedAt: null,
+    updatedAt: nowIso(),
   };
   await store().writeExercise(exercise);
+  // Auto-subscribe every writersRoomExercises-enabled peer so brand-new sprints
+  // propagate; later finish/discard transitions ride emitRecordUpdated (#1645).
+  autoSubscribeRecordToAllPeers(WRITERS_ROOM_EXERCISE_KIND, exercise.id).catch(() => {});
   return exercise;
 }
 
@@ -544,15 +621,23 @@ export async function finishExercise(id, { endingWords, appendedText = null } = 
   const startingWords = existing.startingWords || 0;
   const resolvedEnding = endingWords ?? startingWords;
   const wordsAdded = Math.max(0, resolvedEnding - startingWords);
+  const now = nowIso();
   const finished = {
     ...existing,
     endingWords: resolvedEnding,
     wordsAdded,
     appendedText: appendedText ?? null,
     status: 'finished',
-    finishedAt: nowIso(),
+    finishedAt: now,
+    updatedAt: now,
   };
   await store().writeExercise(finished);
+  // The settle transition stamps a fresh updatedAt (the LWW key) — push it so
+  // subscribed peers converge on the finished state. updatedAt must be bumped
+  // explicitly (not left to the finishedAt-derived fallback): a sync-seeded
+  // exercise already carries a stored updatedAt the sanitizer would otherwise
+  // prefer over the new finishedAt, so the finish wouldn't advance the key (#1645).
+  emitRecordUpdated(WRITERS_ROOM_EXERCISE_KIND, id);
   return finished;
 }
 
@@ -561,7 +646,19 @@ export async function discardExercise(id) {
   const existing = all.find((e) => e.id === id);
   if (!existing) throw notFound('Exercise');
   if (settled(existing)) throw badRequest('Exercise is already settled');
-  const discarded = { ...existing, status: 'discarded', finishedAt: nowIso() };
+  const now = nowIso();
+  const discarded = { ...existing, status: 'discarded', finishedAt: now, updatedAt: now };
   await store().writeExercise(discarded);
+  emitRecordUpdated(WRITERS_ROOM_EXERCISE_KIND, id);
   return discarded;
+}
+
+// Conflict-restore for an exercise sprint — see restoreBodylessRecord above.
+const EXERCISE_RESTORABLE = ['workId', 'prompt', 'durationSeconds', 'startingWords', 'endingWords', 'wordsAdded', 'appendedText', 'status', 'finishedAt'];
+export async function restoreExercise(id, patch) {
+  return restoreBodylessRecord(id, patch, {
+    read: (rid, opts) => store().readExercise(rid, opts),
+    write: (e) => store().writeExercise(e),
+    kind: WRITERS_ROOM_EXERCISE_KIND, fields: EXERCISE_RESTORABLE, label: 'Exercise',
+  });
 }

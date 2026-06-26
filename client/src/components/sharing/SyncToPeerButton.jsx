@@ -94,13 +94,14 @@ export default function SyncToPeerButton({
     // Inbound-only direction → outbound pushes silently dropped.
     if (Array.isArray(peer.directions) && peer.directions.length > 0
         && !peer.directions.includes('outbound')) return false;
+    // A full-sync peer mirrors every category, so it can always receive.
+    if (peer.fullSync === true) return true;
     const cats = peer.syncCategories;
     return !!cats && typeof cats === 'object' && cats[requiredCategory] === true;
   };
 
   useEffect(() => {
     if (open) refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   // Anchor the portaled menu to the trigger while open, and keep it pinned as

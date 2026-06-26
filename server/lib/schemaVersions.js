@@ -35,7 +35,32 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // Type-level (storage layout) version for `data/universes/{id}/index.json`.
   // v5 = post-split. Migration 034 introduced it. The per-record-shape version
   // stays at 4 (stamped inside each record by `sanitizeTemplate`).
-  universes: 5,
+  // v6 = canon characters gained `relationshipLinks[]` (structured
+  // character-to-character links + opposing-force tags, #1287). Additive +
+  // gracefully degrading, but version-gated for the same reason as
+  // `pipelineIssues`/`pipelineSeries` v2: a not-yet-upgraded peer that receives
+  // and re-sanitizes a universe through its relationshipLinks-unaware
+  // `sanitizeCharacter` would silently strip the field and last-writer-wins the
+  // loss back onto the newer peer. Bumping makes the older peer reject the
+  // ahead-version universe transfer instead. Per-category gate → only universe
+  // sync pauses with old peers; pipeline/catalog/etc keep flowing.
+  // v7 = canon objects gained `attachments[]` (structured object↔character
+  // emotional-attachment links — emotion/significance/origin/role, #1288).
+  // Same rationale as v6: additive + gracefully degrading, but version-gated so
+  // a not-yet-upgraded peer that re-sanitizes a universe through its
+  // attachments-unaware `sanitizeObject` can't silently strip the field and
+  // LWW the loss back onto the newer peer.
+  //
+  // NOTE — `catalog` is intentionally NOT bumped for this field (matches the
+  // #1287 relationshipLinks precedent). A bible object promoted to the catalog
+  // carries `attachments` in `catalog_ingredients.payload`; an older peer's
+  // `updateIngredient` → `sanitizeObject` would drop it on a local edit and a
+  // catalog sync back could clobber the newer copy. We accept that graceful
+  // degradation rather than gate `catalog` — bumping it would pause ALL catalog
+  // sync with version-mismatched peers for one additive field, the heavier
+  // tradeoff this project has chosen against for additive bible fields. The
+  // `universes` gate above already protects the canonical (embedded) copy.
+  universes: 7,
   // v1 = post-split. Migrations 035/036 introduced the pipeline collection
   // layout for issues and series.
   // v2 = `stages.audio.audioMode` + `stages.audio.cues[]` added (whole-episode
@@ -52,7 +77,54 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // round-trip a series through its readerMap-unaware sanitizer and LWW-strip
   // the field back onto a newer peer. Per-category gate → only series sync
   // pauses with old peers; issues/universes keep flowing.
-  pipelineSeries: 2,
+  // v3 = `series.arc.tickingClock` added (#1289). Same situation as readerMap:
+  // an additive field INSIDE the series.arc payload, so a ≤v2 peer that receives
+  // and re-sanitizes a series through its tickingClock-unaware `sanitizeArc`
+  // would silently strip the countdown and last-writer-wins the loss back onto
+  // the newer peer. Bump makes the older peer reject the ahead-version series
+  // transfer instead. Per-category gate → only series sync pauses with old peers.
+  // v4 = `series.styleGuide` added (#1303) — a top-level series house-style
+  // field (tense/POV/audience/rating/reading-level/tone/conventions). Same
+  // silent-strip-then-LWW corruption as readerMap/tickingClock, just one level
+  // up: a ≤v3 peer re-sanitizes a series through its styleGuide-unaware
+  // `sanitizeSeries`, drops the guide, and last-writer-wins the loss back onto
+  // the newer peer. Bump makes the older peer reject the ahead-version series
+  // transfer instead. Per-category gate → only series sync pauses with old peers.
+  // v5 = `series.coverImage` added — a top-level derived field holding the
+  // filename of a rendered volume/issue cover, shown as a thumbnail on the
+  // pipeline series list. Derived (any peer can recompute it from its own
+  // seasons/issues), but it's only recomputed on cover-render or the one-time
+  // boot backfill — never on every read — so a ≤v4 peer that re-sanitizes a
+  // series through its coverImage-unaware `sanitizeSeries` would drop the
+  // pointer and LWW the loss back onto the newer peer, where it may never
+  // recompute (a finished series renders no new cover). Gate so the older peer
+  // rejects the ahead-version transfer instead. Per-category gate → only series
+  // sync pauses with old peers.
+  // v6 = `series.characterArcs[]` added (#1293) — per-character story arcs
+  // (want/need, start → end state, transition beats). Same silent-strip-then-LWW
+  // corruption as readerMap/tickingClock/styleGuide: a ≤v5 peer that re-sanitizes
+  // a series through its characterArcs-unaware `sanitizeSeries` would drop the
+  // arcs and last-writer-wins the loss back onto the newer peer. Bump makes the
+  // older peer reject the ahead-version series transfer instead. Per-category
+  // gate → only series sync pauses with old peers.
+  // v7 = `series.factCritical` + `series.factReference` added (#1588) — the
+  // opt-in flag + author-supplied real-world fact reference the gated
+  // `research.fact-accuracy` editorial check reconciles the prose against. Same
+  // silent-strip-then-LWW corruption as styleGuide/characterArcs: a ≤v6 peer
+  // that re-sanitizes a series through its factReference-unaware `sanitizeSeries`
+  // would drop the reference (and reset the flag) and last-writer-wins the loss
+  // back onto the newer peer. Bump makes the older peer reject the ahead-version
+  // series transfer instead. Per-category gate → only series sync pauses with old peers.
+  // v8 = `series.editorialCheckConfig` added (#1591) — a per-series map of
+  // editorial-check config overrides ({ [checkId]: { [key]: value } }) that tune a
+  // check's thresholds (e.g. comic lettering density) for one series without
+  // touching the global catalog. Same silent-strip-then-LWW corruption as
+  // styleGuide/characterArcs: a ≤v7 peer that re-sanitizes a series through its
+  // editorialCheckConfig-unaware `sanitizeSeries` would drop the overrides and
+  // last-writer-wins the loss back onto the newer peer. Bump makes the older peer
+  // reject the ahead-version series transfer instead. Per-category gate → only
+  // series sync pauses with old peers.
+  pipelineSeries: 8,
   // NOT bumped for the manuscript-review sibling doc now bundled on series
   // pushes/exports (`data/pipeline-series/{id}/manuscript-review.json`).
   // Unlike `readerMap` (v2), the review is NOT a field inside the series
@@ -72,6 +144,18 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // SCHEMA_VERSION 1→2, where an older peer's sanitizer would strip a field and
   // LWW it back) MUST introduce a gate then — mirroring the catalog
   // payloadSchemaVersion lockstep note below.
+  // ALSO not bumped for the reverse-outline sibling doc (#1348), bundled on
+  // series pushes/exports as `data/pipeline-series/{id}/reverse-outline.json`
+  // via a dedicated `reverseOutline` payload key. Identical reasoning to the
+  // manuscript-review note above: it's a separate doc (not a series field), so
+  // an older peer never round-trips it through `sanitizeSeries`; it's additive +
+  // gracefully degrading (a pre-#1348 receiver ignores the unknown key and ships
+  // none back, so the newer peer's `if (reverseOutline)` receive guard is a
+  // no-op and the local outline is preserved); and the sender's legacy-strip
+  // retry drops the key so the record/issues still land. Whole-doc LWW on
+  // `generatedAt` means there's no per-field strip-then-LWW-back corruption to
+  // gate against. The FIRST incompatible outline-doc shape change (reverseOutline.js
+  // SCHEMA_VERSION 1→2) MUST introduce a gate then, same as the review above.
   mediaCollections: 1,
   // v1 = author personas (PostgreSQL `authors` table) federated via the
   // per-record peer-sync push pipeline (record kind `author`, sync category
@@ -86,6 +170,24 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // MUST bump this to 2 then (where a v1 peer would round-trip the new shape
   // through an unaware sanitizer).
   authors: 1,
+  // v1 = music artists/albums/tracks (PostgreSQL `artists`, `albums`, and
+  // `tracks` tables) federated via the per-record peer-sync push pipeline.
+  // Each kind gets its own category gate so an older peer can reject only the
+  // music record type it cannot parse while unrelated categories keep flowing.
+  artists: 1,
+  albums: 1,
+  // tracks v2 = `track.renders[]` render-history added (every generated/uploaded
+  // take, so the studio shows each render as a card + can re-select an earlier
+  // one). Additive + gracefully degrading, but version-gated for the same reason
+  // as the universes relationshipLinks/attachments fields: a ≤v1 peer that
+  // receives and re-sanitizes a track through its renders-unaware `sanitizeTrack`
+  // would silently strip the history (keeping only the active pointer) and
+  // last-writer-wins the loss back onto the newer peer. Bumping makes the older
+  // peer reject the ahead-version track transfer instead. Per-category gate →
+  // only track sync pauses with old peers; artists/albums keep flowing. The
+  // backfill itself needs no migration — `sanitizeTrack` synthesizes a render
+  // from the legacy active pointer on read (see services/tracks/logic.js).
+  tracks: 2,
   // v1 = creative ingredients catalog (Postgres tables: catalog_scraps,
   // catalog_ingredients, catalog_ingredient_sources, catalog_ingredient_refs).
   // v2 = `catalog_ingredients.search_tsv` expanded to also index the
@@ -178,6 +280,104 @@ export const PORTOS_SCHEMA_VERSIONS = Object.freeze({
   // to 2 then (where a v1 peer would round-trip the new shape through an
   // unaware sanitizer).
   storyBuilder: 1,
+  // v1 = Creative Director projects (PostgreSQL `creative_director_projects`)
+  // federated via the per-record peer-sync push pipeline (record kind
+  // `creativeDirectorProject`, sync category `creativeDirectorProjects`, #1564).
+  // A brand-NEW synced record type like `authors`/`storyBuilder`, so it gets its
+  // own per-category gate: a v1 sender pushing to a ≤v0 (pre-feature) receiver is
+  // sender-ahead on `creativeDirectorProjects` and gets a 412 — only that
+  // category pauses; every other keeps flowing (per-category gate via
+  // scopeVersionDiff). A v1 receiver still accepts a ≤v0 sender (sender-behind):
+  // pre-feature peers never push a `creativeDirectorProject` at all, so there's
+  // nothing to gate. The FIRST incompatible project-shape change MUST bump this
+  // to 2 then (where a v1 peer would round-trip the new shape through an unaware
+  // sanitizer). The project body is LWW-overwritten whole; scene video renders
+  // ride the project's linked media collection (federated separately).
+  creativeDirectorProjects: 1,
+  // v1 = Mood boards (PostgreSQL `mood_boards`) federated via the per-record
+  // peer-sync push pipeline (record kind `moodBoard`, sync category `moodBoards`,
+  // #1564). Same posture as `creativeDirectorProjects` above: a brand-NEW synced
+  // record type with its own per-category gate — a v1 sender pushing to a ≤v0
+  // (pre-feature) receiver is sender-ahead on `moodBoards` and gets a 412 (only
+  // that category pauses); a v1 receiver still accepts a ≤v0 sender (pre-feature
+  // peers never push a `moodBoard`). The FIRST incompatible board-shape change
+  // MUST bump this to 2 then. The board body (name/description/items) is
+  // LWW-overwritten whole; referenced image bytes ride the asset manifest.
+  moodBoards: 1,
+  // v1 = Writers Room works (PostgreSQL `writers_room_works` + decomposed
+  // `writers_room_draft_versions`) federated via the per-record peer-sync push
+  // pipeline (record kind `writersRoomWork`, sync category `writersRoomWorks`,
+  // #1565). Same posture as `creativeDirectorProjects`/`moodBoards`: a brand-NEW
+  // synced record type with its own per-category gate — a v1 sender pushing to a
+  // ≤v0 (pre-feature) receiver is sender-ahead on `writersRoomWorks` and gets a
+  // 412 (only that category pauses); a v1 receiver still accepts a ≤v0 sender
+  // (pre-feature peers never push a `writersRoomWork`). The FIRST incompatible
+  // work-shape change MUST bump this to 2 then. The work manifest (metadata +
+  // decomposed draft-version metadata in drafts[]) is LWW-overwritten whole; the
+  // file-primary `.md` draft prose bodies ride a separate body manifest (SHA256
+  // diff + receiver-pull), never round-tripped through the record.
+  writersRoomWorks: 1,
+  // v1 = Writers Room folders (PostgreSQL `writers_room_folders`) federated via
+  // the per-record peer-sync push pipeline (record kind `writersRoomFolder`,
+  // #1645 — follow-up to #1565). Same posture as `writersRoomWorks`: a brand-NEW
+  // synced record type with its own per-category gate, so a v1 sender pushing to
+  // a ≤v0 (pre-feature) receiver is sender-ahead on `writersRoomFolders` and gets
+  // a 412 (only that category pauses); a v1 receiver still accepts a ≤v0 sender.
+  // Folders are body-less (no file-primary `.md`, no asset manifest) and
+  // LWW-overwritten whole. The FIRST incompatible folder-shape change MUST bump
+  // this to 2. Federating folders requires the soft-delete tombstone columns
+  // (deleted/deleted_at) added in the same change — the LWW merge never
+  // propagates a hard delete.
+  writersRoomFolders: 1,
+  // v1 = Writers Room exercises (PostgreSQL `writers_room_exercises`) federated
+  // via the per-record peer-sync push pipeline (record kind `writersRoomExercise`,
+  // #1645). Body-less + LWW-overwritten whole, same per-category gate semantics as
+  // `writersRoomFolders`. Exercises predate federation and carry no
+  // `updatedAt`/`createdAt` — the wire sanitizer derives a stable LWW key from
+  // their existing `startedAt`/`finishedAt` (see sanitizeExerciseForSync). The
+  // FIRST incompatible exercise-shape change MUST bump this to 2.
+  writersRoomExercises: 1,
+  // v1 = standalone media-library federation (#1566). NOT a record kind — it's
+  // the wire contract for the library-level asset manifest a full-sync peer
+  // advertises at GET /api/peer-sync/library-manifest. The receiver-pull sweep
+  // (syncMediaLibraryFromPeer) reads the sender's advertised `schemaVersion` and
+  // GENTLY SKIPS (logs, no reject) a sender ahead of its local `mediaLibrary` —
+  // unlike the push gate's hard 412, because a library sweep is best-effort
+  // background convergence, not an authoritative record transfer. The asset
+  // BYTES themselves are version-agnostic (an image is an image); only the
+  // MANIFEST envelope shape is gated, so the FIRST incompatible manifest-shape
+  // change (new required field, kind semantics) MUST bump this to 2. Adding a
+  // new media KIND to the manifest is additive — the receiver ignores kinds it
+  // can't route (directoryForAssetKind returns null) — and does NOT require a
+  // bump on its own.
+  mediaLibrary: 1,
+  // v1 = completed-agent CoS history federation (#1650, part of epic #1561). NOT
+  // a record kind — it's the wire contract for the archive manifest a full-sync
+  // peer advertises at GET /api/peer-sync/cos-history-manifest. The receiver-pull
+  // sweep (syncCosHistoryFromPeer) reads the sender's advertised `schemaVersion`
+  // and GENTLY SKIPS (logs, no reject) a sender ahead of its local `cosHistory` —
+  // same posture as `mediaLibrary` above, because a history sweep is best-effort
+  // background convergence, not an authoritative record transfer. The archive
+  // BYTES (metadata.json / output.txt / prompt.txt) are version-agnostic; only
+  // the MANIFEST envelope shape is gated, so the FIRST incompatible
+  // manifest-shape change (new required entry field, segment semantics) MUST bump
+  // this to 2.
+  cosHistory: 1,
+  // v1 = live CoS task-list + claim-metadata federation (#1712, second half of
+  // #1650, part of epic #1561). NOT a record kind — it's the wire contract for
+  // the task payload a full-sync peer advertises at GET /api/peer-sync/cos-tasks.
+  // Unlike the immutable, append-only `cosHistory` archives (pure byte
+  // replication), the task files (data/COS-TASKS.md / data/TASKS.md) are mutated
+  // live by BOTH peers and carry `claimedBy`/`claimedAt`/`leaseExpiresAt` (#1563),
+  // so they ride a claim-aware per-task LWW merge (syncCosTasksFromPeer →
+  // cosTaskStore.mergePeerTasks), not the asset path. The receiver reads the
+  // sender's advertised `schemaVersion` and GENTLY SKIPS (logs, no reject) a
+  // sender ahead of its local `cosTasks` — same posture as `mediaLibrary` /
+  // `cosHistory`, because a task sweep is best-effort background convergence, not
+  // an authoritative record transfer. Only the payload envelope + task-entry
+  // shape is gated; the FIRST incompatible change (new required entry field, new
+  // claim semantics) MUST bump this to 2.
+  cosTasks: 1,
   // NOTE: `videoHistory` is intentionally NOT listed here. The version gate
   // rejects the ENTIRE snapshot/push payload on ANY ahead-mismatch (the
   // comparator walks the union of keys), so declaring a brand-new key would
@@ -215,10 +415,45 @@ export const RECORD_KIND_SCHEMA_CATEGORIES = Object.freeze({
   issue: Object.freeze(['pipelineIssues']),
   mediaCollection: Object.freeze(['mediaCollections']),
   author: Object.freeze(['authors']),
+  artist: Object.freeze(['artists']),
+  album: Object.freeze(['albums']),
+  track: Object.freeze(['tracks']),
   'cat-ingredient': Object.freeze(['catalog']),
   'cat-scrap': Object.freeze(['catalog']),
   storyBuilder: Object.freeze(['storyBuilder']),
+  creativeDirectorProject: Object.freeze(['creativeDirectorProjects']),
+  moodBoard: Object.freeze(['moodBoards']),
+  writersRoomWork: Object.freeze(['writersRoomWorks']),
+  writersRoomFolder: Object.freeze(['writersRoomFolders']),
+  writersRoomExercise: Object.freeze(['writersRoomExercises']),
 });
+
+/**
+ * Schema-version categories that are versioned but NOT reachable from a record
+ * push — they ride their OWN transport with their OWN compatibility gate, not the
+ * per-record push gate that `RECORD_KIND_SCHEMA_CATEGORIES` drives. Listing one
+ * here is the explicit, reviewed way to say "this version is gated elsewhere, so
+ * the gate-map-completeness guard should not require a record-kind mapping."
+ *
+ * - `mediaLibrary` (#1566): the standalone media-library manifest a full-sync
+ *   peer advertises at GET /api/peer-sync/library-manifest. The RECEIVER pulls
+ *   it and GENTLY SKIPS a sender ahead of its local version (see
+ *   syncMediaLibraryFromPeer) — there is no push to gate, so it has no entry in
+ *   RECORD_KIND_SCHEMA_CATEGORIES by design.
+ * - `cosHistory` (#1650): the completed-agent CoS history archive manifest a
+ *   full-sync peer advertises at GET /api/peer-sync/cos-history-manifest. Same
+ *   receiver-pull shape as `mediaLibrary` (see syncCosHistoryFromPeer) — no push
+ *   to gate, so no RECORD_KIND_SCHEMA_CATEGORIES entry.
+ * - `cosTasks` (#1712): the live CoS task-list + claim-metadata payload a
+ *   full-sync peer advertises at GET /api/peer-sync/cos-tasks. Receiver-pull +
+ *   claim-aware per-task merge (see syncCosTasksFromPeer) — no push to gate, so
+ *   no RECORD_KIND_SCHEMA_CATEGORIES entry.
+ *
+ * Do NOT add a real record-push category here to silence the guard — that would
+ * leave its push transfers ungated (silent cross-install corruption). Only
+ * genuinely non-push categories belong.
+ */
+export const NON_RECORD_SCHEMA_CATEGORIES = Object.freeze(new Set(['mediaLibrary', 'cosHistory', 'cosTasks']));
 
 /**
  * Lazy-read the current PortOS version from the ROOT package.json so a

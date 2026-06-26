@@ -11,12 +11,12 @@ import { runStagedLLM } from '../../../lib/stageRunner.js';
 import { ServerError } from '../../../lib/errorHandler.js';
 import { stripAnsi } from '../../../lib/ansiStrip.js';
 import { ARC_LOCKABLE_FIELDS, getSeries, updateSeries } from '../series.js';
-import { listIssues, recomputeIssueNumbersForSeries, updateIssue } from '../issues.js';
+import { listIssues, recomputeIssueNumbersForSeries, updateIssue, updateStageWithLatest } from '../issues.js';
 import { emitRecordUpdated, withReexportSuppressed } from '../../sharing/recordEvents.js';
 import { getSeason } from '../seasons.js';
 import { READER_MAP_BEAT_KINDS, buildSeason, cleanThemes, renderArcShapeGuidance, renderArcShapePositionSummary, sanitizeArc, sanitizeReaderMap, sanitizeSeason, sanitizeSeasonList } from '../../../lib/storyArc.js';
 import { runPromptRefineRaw, trimChanges } from '../refineHelpers.js';
-import { ERR_VALIDATION, SHAPE_GUIDANCE_NONE, buildArcBaseContext, buildArcOverviewContext, buildNeighborVolumes, buildReaderMapContext, buildResolveContext, buildVerifyContext, compareIssuesByPosition, makeErr, renderVolumeIssue, resolveWorldContext, shapeFindings, shapeSeasonOutlines, shapeVerifyIssues } from './context.js';
+import { ERR_VALIDATION, SHAPE_GUIDANCE_NONE, appendTickingClock, buildArcBaseContext, buildArcOverviewContext, buildNeighborVolumes, buildReaderMapContext, buildResolveContext, buildVerifyContext, compareIssuesByPosition, makeErr, matchIssueForEpisodeEdit, renderVolumeIssue, resolveWorldContext, seasonIdByNumberOf, shapeEpisodeResolutions, shapeFindings, shapeSeasonOutlines, shapeVerifyIssues } from './context.js';
 
 export async function generateArcOverview(seriesId, options = {}) {
   const series = await getSeries(seriesId);
@@ -32,7 +32,9 @@ export async function generateArcOverview(seriesId, options = {}) {
     ctx,
     {
       providerOverride: options.providerOverride,
+      providerDefault: options.providerDefault,
       modelOverride: options.modelOverride,
+      modelDefault: options.modelDefault,
       returnsJson: true,
       source: 'pipeline-arc-overview',
     },
@@ -53,6 +55,9 @@ export async function generateArcOverview(seriesId, options = {}) {
     // existing one (like `shape`) so regenerating the arc never silently wipes
     // a reader map the user already built on the next step.
     readerMap: series.arc?.readerMap ?? null,
+    // Same for the ticking clock — the overview prompt doesn't author it, so
+    // preserve any existing countdown across a regenerate.
+    tickingClock: series.arc?.tickingClock ?? null,
     status: 'draft',
   });
   const seasons = shapeSeasonOutlines(content?.seasonOutlines);
@@ -91,7 +96,9 @@ export async function generateReaderMap(seriesId, options = {}) {
     ctx,
     {
       providerOverride: options.providerOverride,
+      providerDefault: options.providerDefault,
       modelOverride: options.modelOverride,
+      modelDefault: options.modelDefault,
       returnsJson: true,
       source: 'story-builder-reader-map',
     },
@@ -128,7 +135,7 @@ export async function refineReaderMap(seriesId, feedback, options = {}) {
       feedback: typeof feedback === 'string' ? feedback.trim().slice(0, 4000) : '',
       arcSummary: arc.summary || '',
       protagonistArc: arc.protagonistArc || '',
-      shapeGuidance: renderArcShapeGuidance(arc.shape) || SHAPE_GUIDANCE_NONE,
+      shapeGuidance: appendTickingClock(renderArcShapeGuidance(arc.shape) || SHAPE_GUIDANCE_NONE, arc),
       beatKindsCsv: READER_MAP_BEAT_KINDS.join(', '),
     },
     options,
@@ -184,7 +191,7 @@ export async function refineArc(seriesId, feedback, options = {}) {
       currentSummary: arc.summary || '',
       currentProtagonistArc: arc.protagonistArc || '',
       currentThemesCsv: Array.isArray(arc.themes) ? arc.themes.join(', ') : '',
-      shapeGuidance: renderArcShapeGuidance(arc.shape) || SHAPE_GUIDANCE_NONE,
+      shapeGuidance: appendTickingClock(renderArcShapeGuidance(arc.shape) || SHAPE_GUIDANCE_NONE, arc),
       series: { name: series.name, premise: series.premise },
       feedback: typeof feedback === 'string' ? feedback.trim().slice(0, 4000) : '',
     },
@@ -217,6 +224,9 @@ export async function refineArc(seriesId, feedback, options = {}) {
     themes: refinedThemes,
     shape: arc.shape ?? null,
     readerMap: arc.readerMap ?? null,
+    // The arc-refine prompt edits the narrative fields only — preserve the
+    // ticking clock (like readerMap/shape) so a refine never wipes it.
+    tickingClock: arc.tickingClock ?? null,
     status: 'draft',
   });
   // sanitizeArc returns null only when every identifying field is empty — which,
@@ -242,7 +252,9 @@ export async function verifyArc(seriesId, options = {}) {
     ctx,
     {
       providerOverride: options.providerOverride,
+      providerDefault: options.providerDefault,
       modelOverride: options.modelOverride,
+      modelDefault: options.modelDefault,
       returnsJson: true,
       source: 'pipeline-arc-verify',
     },
@@ -304,7 +316,9 @@ export async function verifyVolume(seriesId, seasonId, options = {}) {
     ctx,
     {
       providerOverride: options.providerOverride,
+      providerDefault: options.providerDefault,
       modelOverride: options.modelOverride,
+      modelDefault: options.modelDefault,
       returnsJson: true,
       source: 'pipeline-volume-verify',
     },
@@ -356,7 +370,9 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
     ctx,
     {
       providerOverride: options.providerOverride,
+      providerDefault: options.providerDefault,
       modelOverride: options.modelOverride,
+      modelDefault: options.modelDefault,
       returnsJson: true,
       source: 'pipeline-arc-resolve',
     },
@@ -372,6 +388,8 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
     // one so auto-resolve never silently wipes a reader map the user already
     // built on the next step. Mirrors `generateArcOverview` above.
     readerMap: series.arc?.readerMap ?? null,
+    // Same for the ticking clock — auto-resolve must not wipe the countdown.
+    tickingClock: series.arc?.tickingClock ?? null,
     status: 'draft',
   });
 
@@ -419,16 +437,81 @@ export async function resolveVerifyIssues(seriesId, options = {}) {
 
   const { series: updated } = await commitSeasonsWithRemap(series, { arc, seasons });
 
+  // Apply any episode-level synopsis corrections the resolver returned. This is
+  // the heal capability that lets episode-scoped findings converge: when a
+  // contradiction originates inside one episode's planning synopsis (e.g. it
+  // stages an event a later volume reserves as its own "first"), the only fix is
+  // to rewrite that episode — the volume/arc layer can't make it go away. Done
+  // here (after the arc+season commit) against the freshest issue set.
+  const episodesResolved = await applyEpisodeResolutions(
+    seriesId,
+    updated,
+    shapeEpisodeResolutions(content?.episodes),
+  );
+
   const notes = typeof content?.notes === 'string' ? content.notes.trim().slice(0, 2000) : '';
   return {
     series: updated,
     applied: true,
     notes,
     findings,
+    episodesResolved,
     runId,
     providerId,
     model,
   };
+}
+
+/**
+ * Apply the auto-resolve pass's episode-synopsis corrections to the canonical
+ * issue records. Each correction targets one issue by its series-global episode
+ * number (with `seasonNumber` as a disambiguating cross-check). Writes the new
+ * synopsis to the issue's `idea.input` seed. If that issue already has expanded
+ * beats (`idea.output`) — only possible on a resume where beats ran in a prior
+ * pass — they are cleared and the stage reset to `empty` so the beat-sheet step
+ * regenerates them from the corrected synopsis instead of leaving stale beats
+ * that still encode the contradiction.
+ *
+ * A locked `idea` stage is left untouched (the user froze it) and reported as
+ * skipped. Returns `[{ issueId, number, seasonNumber, clearedBeats, skipped }]`
+ * for the conductor to surface; never throws — a bad match is dropped, not fatal.
+ */
+export async function applyEpisodeResolutions(seriesId, series, episodes) {
+  if (!Array.isArray(episodes) || episodes.length === 0) return [];
+  const issues = await listIssues({ seriesId });
+  const seasonIdByNumber = seasonIdByNumberOf(series);
+  const applied = [];
+  for (const edit of episodes) {
+    // Season match required when the named season resolves, else series-global
+    // number; fail-safe to no-match on a numbering-scheme mismatch (see
+    // matchIssueForEpisodeEdit). A bad match is logged below, never fatal.
+    const issue = matchIssueForEpisodeEdit(issues, seasonIdByNumber, edit);
+    if (!issue) {
+      // A correction we can't land is a silent path to non-convergence — log it
+      // so a number-scheme mismatch (per-season vs series-global) is diagnosable.
+      console.log(`⚠️ arc-resolve: no issue matched episode correction (season ${edit.seasonNumber}, episode ${edit.episodeNumber})`);
+      applied.push({ seasonNumber: edit.seasonNumber, episodeNumber: edit.episodeNumber, skipped: 'no-match' });
+      continue;
+    }
+    if (issue.stages?.idea?.locked === true) {
+      applied.push({ issueId: issue.id, number: issue.number, seasonNumber: edit.seasonNumber, skipped: 'locked' });
+      continue;
+    }
+    const hadBeats = !!(issue.stages?.idea?.output && issue.stages.idea.output.trim());
+    await updateStageWithLatest(issue.id, 'idea', (current) => (
+      hadBeats
+        ? { input: edit.synopsis, output: '', status: 'empty', errorMessage: '' }
+        : { input: edit.synopsis }
+    )).catch((err) => {
+      console.log(`⚠️ arc-resolve: episode ${edit.episodeNumber} synopsis edit failed: ${err.message}`);
+    });
+    applied.push({ issueId: issue.id, number: issue.number, seasonNumber: edit.seasonNumber, clearedBeats: hadBeats });
+  }
+  if (applied.length) {
+    const fixed = applied.filter((a) => !a.skipped).length;
+    console.log(`📝 arc-resolve: corrected ${fixed} episode synopsis(es) for series ${seriesId.slice(0, 12)}`);
+  }
+  return applied;
 }
 
 // Preserve per-field arc locks. When `currentSeries.locked.arcFields[k]` is

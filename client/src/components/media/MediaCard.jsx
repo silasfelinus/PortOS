@@ -1,6 +1,9 @@
+import { useState } from 'react';
 import { Trash2, Download, Film, Image as ImageIcon, Sparkles, Eye, EyeOff, Maximize2, Wand2, Star, MessageSquare } from 'lucide-react';
 import MediaImage from '../MediaImage';
 import AddToCollectionMenu from './AddToCollectionMenu';
+import PinToMoodBoardMenu from './PinToMoodBoardMenu';
+import InlineConfirmRow from '../ui/InlineConfirmRow';
 import { loraDisplayName } from './normalize';
 
 // Single card used everywhere a generated image/video appears in a grid:
@@ -24,6 +27,7 @@ export default function MediaCard({
   disabled = false,
   hideActions = false,
   showCollectionMenu = true,
+  showMoodBoardMenu = true,
   starred = false,
   hasNote = false,
   onToggleStar,
@@ -31,6 +35,7 @@ export default function MediaCard({
   const { kind, prompt, modelId, previewUrl, downloadUrl } = item;
   const isVideo = kind === 'video';
   const handleTileClick = onClick || (() => onPreview?.(item));
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   return (
     <div className={`bg-port-card border rounded-xl ${selected ? 'border-port-accent' : 'border-port-border'}`}>
@@ -109,7 +114,16 @@ export default function MediaCard({
             )}
           </div>
         )}
-        {!hideActions && (
+        {!hideActions && confirmingDelete && onDelete && (
+          <InlineConfirmRow
+            question={`Delete this ${isVideo ? 'video' : 'image'}?`}
+            confirmText="Delete"
+            confirmTitle="Permanently delete"
+            onConfirm={() => { setConfirmingDelete(false); onDelete(item); }}
+            onCancel={() => setConfirmingDelete(false)}
+          />
+        )}
+        {!hideActions && !confirmingDelete && (
           <div className="flex flex-wrap gap-1">
             {!isVideo && onRemix && (
               <button
@@ -163,6 +177,7 @@ export default function MediaCard({
               </button>
             )}
             {showCollectionMenu && <AddToCollectionMenu item={item} />}
+            {showMoodBoardMenu && <PinToMoodBoardMenu item={item} />}
             <a
               href={downloadUrl}
               download
@@ -184,7 +199,7 @@ export default function MediaCard({
             {onDelete && (
               <button
                 type="button"
-                onClick={() => onDelete(item)}
+                onClick={() => setConfirmingDelete(true)}
                 className="shrink-0 px-1.5 py-1 bg-port-error/20 hover:bg-port-error/40 text-port-error text-[10px] rounded flex items-center justify-center"
                 title="Delete"
               >

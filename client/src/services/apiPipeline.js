@@ -221,6 +221,20 @@ export const generatePipelineComicPage = (issueId, pageIndex, opts = {}) =>
     body: JSON.stringify(opts),
   });
 
+// AI prompt-refine + image-to-image re-render for a small correction to an
+// already-rendered comic page (issue #1534). `opts.instruction` is the user's
+// free-text change; the server adjusts the page's stored render prompt and
+// re-renders i2i from the page's existing image, persisting the new jobId +
+// adjusted prompt on the matching variant slot. Pass `target` ('proof'|'final')
+// to force a variant; absent → server refines the final render when present,
+// else the proof. Returns { jobId, mode, prompt, pageIndex, variant, changes,
+// runId, providerId, issue, stage }.
+export const refinePipelineComicPageRender = (issueId, pageIndex, opts = {}) =>
+  request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/comicPages/pages/${encodeURIComponent(pageIndex)}/refine-render`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+  });
+
 // Render the issue's front cover. Pass `coverScript` to render a not-yet-
 // saved concept (the route persists it back to stages.comicPages.cover so
 // the next reload reflects what was rendered). Server folds in series
@@ -341,6 +355,24 @@ export const refinePipelineComicPanelPrompt = (issueId, pageIndex, panelIndex, o
 // richer image-gen prompt. Mirror of refinePipelineComicPanelPrompt.
 export const refinePipelineSceneImagePrompt = (issueId, sceneIndex, opts = {}) =>
   request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/storyboards/scenes/${encodeURIComponent(sceneIndex)}/refine-prompt`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+  });
+
+// Non-destructive N-candidate variant of the panel refine: returns
+// `count` alternative image-gen prompts WITHOUT mutating the panel
+// description (issue #904). Resolves to { candidates, requested, pageIndex,
+// panelIndex } where each candidate is { prompt, changes, runId, ... }.
+export const generatePipelineComicPanelImagePrompts = (issueId, pageIndex, panelIndex, opts = {}) =>
+  request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/comicPages/pages/${encodeURIComponent(pageIndex)}/panels/${encodeURIComponent(panelIndex)}/image-prompts`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+  });
+
+// Non-destructive N-candidate variant for a storyboard scene (issue #904).
+// Resolves to { candidates, requested, sceneIndex }.
+export const generatePipelineSceneImagePrompts = (issueId, sceneIndex, opts = {}) =>
+  request(`/pipeline/issues/${encodeURIComponent(issueId)}/stages/storyboards/scenes/${encodeURIComponent(sceneIndex)}/image-prompts`, {
     method: 'POST',
     body: JSON.stringify(opts),
   });
@@ -477,6 +509,15 @@ export const getPipelineManuscript = (seriesId, type) =>
 export const getPipelineManuscriptReview = (seriesId) =>
   request(`/pipeline/series/${encodeURIComponent(seriesId)}/manuscript/review`);
 
+// Resolve a finding by its comment id alone (series-agnostic deep-link, #1608).
+// Finder semantics: resolves `{ seriesId, comment }` when a series owns the id,
+// or `null` when it doesn't (the route 404s) or the lookup fails — the deep-link
+// page renders the same "not found" fallback either way, so it owns the error UI
+// and we stay silent.
+export const locatePipelineFinding = (commentId) =>
+  request(`/pipeline/findings/${encodeURIComponent(commentId)}/locate`, { silent: true })
+    .catch(() => null);
+
 // Patch one comment: { status } flip and/or { fix } attach/clear. Returns { comment }.
 export const patchPipelineManuscriptComment = (seriesId, commentId, patch, options = {}) =>
   request(`/pipeline/series/${encodeURIComponent(seriesId)}/manuscript/review/comments/${encodeURIComponent(commentId)}`, {
@@ -498,6 +539,16 @@ export const acceptPipelineManuscriptFix = (seriesId, commentId, { find, replace
   request(`/pipeline/series/${encodeURIComponent(seriesId)}/manuscript/review/comments/${encodeURIComponent(commentId)}/accept`, {
     method: 'POST',
     body: JSON.stringify({ find, replace, edits }),
+    ...options,
+  });
+
+// Undo a previously-accepted fix — restores the captured pre-edit manuscript
+// text and re-opens the finding. No body (the snapshot lives on the comment).
+// Returns { comment, section, sections } like accept, so callers reapply through
+// the same path.
+export const undoPipelineManuscriptFix = (seriesId, commentId, options = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/manuscript/review/comments/${encodeURIComponent(commentId)}/undo`, {
+    method: 'POST',
     ...options,
   });
 
@@ -595,6 +646,175 @@ export const getSeriesEditorialStatus = (seriesId, options = {}) =>
 export const pipelineEditorialSseUrl = (seriesId) =>
   `/api/pipeline/series/${encodeURIComponent(seriesId)}/editorial/analyze/progress`;
 
+// ---- Perspective rewrite (#1290 — rewrite a passage in another POV + analyze) ----
+// Stored alternate-POV rewrites + cast (for the picker) + per-rewrite stale flags:
+// { issueId, seriesId, cast[], hasContent, rewrites[] }
+export const getPipelinePerspectiveRewrites = (issueId, options = {}) =>
+  request(`/pipeline/issues/${encodeURIComponent(issueId)}/pov-rewrites`, options);
+
+// Generate one alternate-POV rewrite + analysis (synchronous; returns { status, rewrite }).
+export const createPipelinePerspectiveRewrite = (issueId, opts = {}, options = {}) =>
+  request(`/pipeline/issues/${encodeURIComponent(issueId)}/pov-rewrites`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+    ...options,
+  });
+
+// Remove one stored rewrite artifact ({ removed }).
+export const deletePipelinePerspectiveRewrite = (issueId, rewriteId, options = {}) =>
+  request(`/pipeline/issues/${encodeURIComponent(issueId)}/pov-rewrites/${encodeURIComponent(rewriteId)}`, {
+    method: 'DELETE',
+    ...options,
+  });
+
+// ---- Editorial checks (#1284 registry-driven review) ----
+// The full check catalog merged with persisted enable/config state:
+// { checks: [{ id, label, description, scope, kind, category, severityDefault,
+//             enabled, config, configFields }] }. The catalog is GLOBAL (settings-
+// backed); only the run + findings are series-scoped.
+export const getEditorialChecks = (options = {}) =>
+  request('/pipeline/editorial/checks', options);
+
+// Enable/disable a check or update its config. `patch` is { enabled?, config? };
+// `config` is validated against the check's own schema server-side. Returns the
+// updated resolved-state row. Pass { silent: true } when you own the error UI.
+export const patchEditorialCheck = (checkId, patch, options = {}) =>
+  request(`/pipeline/editorial/checks/${encodeURIComponent(checkId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+    ...options,
+  });
+
+// User-defined checks (#1346): author an LLM check (name + prompt + scope) with
+// no code change. Create/update return the new check's resolved catalog row (the
+// same shape getEditorialChecks rows carry, with `isCustom: true` + `prompt`).
+export const createEditorialCustomCheck = (def, options = {}) =>
+  request('/pipeline/editorial/custom-checks', {
+    method: 'POST',
+    body: JSON.stringify(def),
+    ...options,
+  });
+
+export const updateEditorialCustomCheck = (checkId, patch, options = {}) =>
+  request(`/pipeline/editorial/custom-checks/${encodeURIComponent(checkId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+    ...options,
+  });
+
+export const deleteEditorialCustomCheck = (checkId, options = {}) =>
+  request(`/pipeline/editorial/custom-checks/${encodeURIComponent(checkId)}`, {
+    method: 'DELETE',
+    ...options,
+  });
+
+// Dry-run a DRAFT custom check (#1607) against a series WITHOUT saving it: runs
+// the unsaved definition transiently and returns { findings, skipped, invalid }
+// (sample findings only — never seeded into the review). `def` carries the same
+// authored fields as create, plus an optional maxFindings cap. Pass
+// { silent: true } when the caller owns its own error UI.
+export const previewEditorialCustomCheck = (seriesId, def, options = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/editorial/custom-checks/preview`, {
+    method: 'POST',
+    body: JSON.stringify(def),
+    ...options,
+  });
+
+// Start a series-wide checks run (or a named subset). { runId, alreadyRunning,
+// sseUrl } — subscribe via editorialChecksRunSseUrl, then re-fetch the manuscript
+// review on `complete` (the runner seeds findings into the review store).
+export const startEditorialChecksRun = (seriesId, opts = {}, options = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/editorial/checks/run`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+    ...options,
+  });
+
+// { active: boolean } — lets a (re)mounting view re-attach to an in-flight run.
+export const getEditorialChecksRunStatus = (seriesId, options = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/editorial/checks/run/status`, options);
+
+export const cancelEditorialChecksRun = (seriesId, options = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/editorial/checks/run/cancel`, {
+    method: 'POST',
+    ...options,
+  });
+
+export const editorialChecksRunSseUrl = (seriesId) =>
+  `/api/pipeline/series/${encodeURIComponent(seriesId)}/editorial/checks/run/progress`;
+
+// ---- Editorial health score + revision trend (#1316) ----
+// The transparent severity-weighted health score (per series + per issue), the
+// readiness signal, and the revision trend + per-category regressions:
+// { seriesId, score, ready, open, openBySeverity, openByCategory, gate, weights,
+//   perIssue: [...], trend: { points, regressions, latest, previous, delta } }.
+export const getEditorialHealth = (seriesId, options = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/editorial/health`, options);
+
+// Set the editorial-health readiness gate ('noOpenHigh' | 'noOpenHighOrMedium' |
+// 'none') the autopilot loop + UI read as "manuscript clean". Returns the
+// persisted { readinessGate }.
+export const setEditorialReadinessGate = (readinessGate, options = {}) =>
+  request('/pipeline/editorial/readiness-gate', {
+    method: 'PATCH',
+    body: JSON.stringify({ readinessGate }),
+    ...options,
+  });
+
+// ---- Reverse Outline (scene segmentation + plotline tagging) ----
+// The stored outline: { plotlines, scenes, stale, status }. `status:'none'`
+// when never generated, `'no-content'` shell while nothing is drafted yet.
+export const getReverseOutline = (seriesId, options = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/reverse-outline`, options);
+
+// Kick off a (re)generation. { runId, alreadyRunning, sseUrl } — subscribe via
+// pipelineReverseOutlineSseUrl to stream progress, then re-fetch on `complete`.
+export const generateReverseOutline = (seriesId, opts = {}, options = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/reverse-outline/generate`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+    ...options,
+  });
+
+export const cancelReverseOutline = (seriesId) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/reverse-outline/generate/cancel`, {
+    method: 'POST',
+  });
+
+// { active: boolean } — lets a (re)mounting view re-attach to an in-flight run.
+export const getReverseOutlineStatus = (seriesId, options = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/reverse-outline/generate/status`, options);
+
+export const pipelineReverseOutlineSseUrl = (seriesId) =>
+  `/api/pipeline/series/${encodeURIComponent(seriesId)}/reverse-outline/generate/progress`;
+
+// ---- Continuity Bible (established-facts ledger) ----
+// The stored ledger: { facts, stale, status }. `status:'none'` when never
+// generated, `'no-content'` shell while there's no canon and nothing drafted.
+export const getContinuityBible = (seriesId, options = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/continuity-bible`, options);
+
+// Kick off a (re)generation. { runId, alreadyRunning, sseUrl } — subscribe via
+// pipelineContinuityBibleSseUrl to stream progress, then re-fetch on `complete`.
+export const generateContinuityBible = (seriesId, opts = {}, options = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/continuity-bible/generate`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+    ...options,
+  });
+
+export const cancelContinuityBible = (seriesId) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/continuity-bible/generate/cancel`, {
+    method: 'POST',
+  });
+
+// { active: boolean } — lets a (re)mounting view re-attach to an in-flight run.
+export const getContinuityBibleStatus = (seriesId, options = {}) =>
+  request(`/pipeline/series/${encodeURIComponent(seriesId)}/continuity-bible/generate/status`, options);
+
+export const pipelineContinuityBibleSseUrl = (seriesId) =>
+  `/api/pipeline/series/${encodeURIComponent(seriesId)}/continuity-bible/generate/progress`;
+
 // ---- Series Autopilot (full autonomous mode) ----
 // Drives a series from its current state to story-ready (+ draft visuals) by
 // composing every pipeline pass. SSE-backed; gated on the cos autonomy domain
@@ -645,6 +865,19 @@ export const previewPipelineTtsVoice = (voiceId, text) =>
     body: JSON.stringify(text ? { voiceId, text } : { voiceId }),
     responseType: 'arraybuffer',
     silent: true,
+  });
+
+// Narrate manuscript prose for read-aloud proofing (#1304). Splits the text
+// into sentence segments, synthesizes each via the local TTS engines, and
+// returns `{ segments: [{ index, text, start, end, filename, durationMs,
+// readability }], voiceId, engine }` so the manuscript editor can play a
+// karaoke-style read-along. Non-destructive. `options` lets the caller opt into
+// silent mode when it owns its own error UI.
+export const narratePipelineProse = (text, voiceId, options = {}) =>
+  request('/pipeline/tts/narrate', {
+    method: 'POST',
+    body: JSON.stringify(voiceId ? { text, voiceId } : { text }),
+    ...options,
   });
 
 // Walks storyboards.scenes[].dialogue and populates stages.audio.lines[].

@@ -94,6 +94,12 @@ export const ISSUE_AUTHOR_FILTER_OPTIONS = [
   { value: 'any', label: 'Any author', description: 'Claim the next eligible open issue regardless of who filed it' }
 ];
 
+// Task types that claim from a forge issue tracker and therefore expose the
+// issueAuthorFilter control. `claim-work` resolves to a concrete claim flow
+// (github/gitlab) at dispatch but configures the filter here too. Add any new
+// issue-claiming task type here rather than OR-ing literals across components.
+export const ISSUE_AUTHOR_FILTER_TASK_TYPES = new Set(['claim-issue', 'claim-work']);
+
 export const DEFAULT_REVIEWER = 'copilot';
 export const DEFAULT_REVIEWERS = ['copilot'];
 
@@ -242,7 +248,6 @@ export const AUTONOMY_LEVELS = [
     color: 'green',
     description: 'Only processes user-defined tasks from TASKS.md',
     params: {
-      evaluationIntervalMs: 300000,      // 5 min
       maxConcurrentAgents: 1,
       maxConcurrentAgentsPerProject: 1,
       improvementEnabled: false,
@@ -257,7 +262,6 @@ export const AUTONOMY_LEVELS = [
     color: 'blue',
     description: 'Processes user tasks plus improvement tasks on schedule',
     params: {
-      evaluationIntervalMs: 120000,      // 2 min
       maxConcurrentAgents: 2,
       maxConcurrentAgentsPerProject: 1,
       improvementEnabled: true,
@@ -272,7 +276,6 @@ export const AUTONOMY_LEVELS = [
     color: 'yellow',
     description: 'Full task processing with app improvements, no proactive mode',
     params: {
-      evaluationIntervalMs: 60000,       // 1 min
       maxConcurrentAgents: 3,
       maxConcurrentAgentsPerProject: 2,
       improvementEnabled: true,
@@ -285,9 +288,8 @@ export const AUTONOMY_LEVELS = [
     id: 'yolo',
     label: 'YOLO',
     color: 'red',
-    description: 'Maximum autonomy with proactive task creation and frequent checks',
+    description: 'Maximum autonomy with proactive task creation',
     params: {
-      evaluationIntervalMs: 30000,       // 30 sec
       maxConcurrentAgents: 5,
       maxConcurrentAgentsPerProject: 3,
       improvementEnabled: true,

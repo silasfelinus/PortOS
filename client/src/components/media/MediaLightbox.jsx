@@ -5,9 +5,11 @@ import {
 } from 'lucide-react';
 import PromptRefineModal from './PromptRefineModal';
 import AddToCollectionMenu from './AddToCollectionMenu';
+import PinToMoodBoardMenu from './PinToMoodBoardMenu';
 import MediaImage from '../MediaImage';
 import { useScrollLock } from '../../hooks/useScrollLock';
 import { useSwipeNav } from '../../hooks/useSwipeNav';
+import { isEditableTarget } from '../../hooks/useKeyboardShortcuts';
 import { copyToClipboard } from '../../lib/clipboard';
 import { IMAGE_GEN_MODE } from '../../lib/imageGenBackends';
 
@@ -35,11 +37,8 @@ const SAVED_INDICATOR_MS = 1500;
 // Window-level shortcuts (f, s, arrows) must skip editable targets — otherwise
 // typing in the note textarea triggers fullscreen / favorite / nav instead of
 // inserting text or moving the caret. Window listeners fire after the target,
-// so preventDefault here still cancels the browser's default text behavior.
-const isEditableTarget = (e) => {
-  const t = e.target;
-  return !!(t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.isContentEditable));
-};
+// so preventDefault here still cancels the browser's default text behavior. The
+// editable-target check is shared with useKeyboardShortcuts (imported above).
 
 const CLEAN_TOOLTIP = 'Re-encode and denoise: removes the C2PA metadata chunk (when present) and reduces visible AI-generation artifacts. Does NOT defeat SynthID — gpt-image / Imagen / Gemini renders remain detectable by their vendor watermark checkers. Saves a new image alongside the original.';
 
@@ -142,7 +141,7 @@ export default function MediaLightbox({
         cb.onClose();
         return;
       }
-      const inEditable = isEditableTarget(e);
+      const inEditable = isEditableTarget(e.target);
       if (e.key === 'f' || e.key === 'F') {
         if (inEditable) return;
         setFullScreen((v) => !v);
@@ -770,6 +769,7 @@ function SettingsPane({
           </button>
         )}
         <AddToCollectionMenu item={item} size="md" />
+        <PinToMoodBoardMenu item={item} size="md" />
         <a
           href={item.downloadUrl}
           download
