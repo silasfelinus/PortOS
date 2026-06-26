@@ -76,7 +76,7 @@ vi.mock('../reverseOutline.js', () => ({ getReverseOutline: vi.fn(async () => ou
 let editorialState = { characters: [] };
 vi.mock('../editorialAnalysis.js', () => ({ getSeriesEditorial: vi.fn(async () => editorialState) }));
 
-const { runEditorialChecks, buildEditorialCheckPlan, getReviewWithStaleness, enabledChecksConsumeReverseOutline, summarizeCheckErrors, previewCustomCheck, buildScopedPriorFindings } = await import('./checkRunner.js');
+const { runEditorialChecks, buildEditorialCheckPlan, getReviewWithStaleness, enabledChecksConsumeReverseOutline, summarizeCheckErrors, previewCustomCheck, buildScopedPriorFindings, effectiveCheckSources } = await import('./checkRunner.js');
 const { runStagedLLM, resolveStageContext } = await import('../../../lib/stageRunner.js');
 const { collectManuscriptSections } = await import('../arcPlanner.js');
 const { getSeriesCanon } = await import('../seriesCanon.js');
@@ -1069,5 +1069,72 @@ describe('runEditorialChecks — ctx.priorFindings injection (#1627)', () => {
     expect(ctx).toBeTruthy();
     expect(ctx.priorFindings).toEqual([]);
     expect(ctx.findingsByCheck('naming.dissimilar-names')).toEqual([]);
+  });
+});
+
+// Dependency-aware staleness fingerprint (#1627, codex review): a check that
+// declares dependsOn must fingerprint its dependencies' sources too, so a compound
+// finding goes stale when the DEPENDENCY's content drifts (not only its own).
+describe('effectiveCheckSources (#1627)', () => {
+  const map = (...checks) => new Map(checks.map((c) => [c.id, c]));
+  const A = { id: 'a', sources: ['canon'] };
+  const B = { id: 'b', sources: ['manuscript'], needsManuscript: true, dependsOn: ['a'] };
+  const C = { id: 'c', sources: ['reverseOutline'], dependsOn: ['b'] };
+
+  it('returns a check\'s own sources unchanged when it declares no dependencies', () => {
+    expect(effectiveCheckSources(A, map(A, B, C)).sort()).toEqual(['canon']);
+  });
+  it('returns own sources unchanged when no checkById map is provided (opt-out)', () => {
+    expect(effectiveCheckSources(B, null).sort()).toEqual(['manuscript']);
+  });
+  it('folds a declared dependency\'s sources into the effective set', () => {
+    expect(effectiveCheckSources(B, map(A, B, C)).sort()).toEqual(['canon', 'manuscript']);
+  });
+  it('folds transitively (c→b→a) so the whole dependency chain\'s sources count', () => {
+    expect(effectiveCheckSources(C, map(A, B, C)).sort()).toEqual(['canon', 'manuscript', 'reverseOutline']);
+  });
+  it('tolerates a dependency cycle without looping', () => {
+    const X = { id: 'x', sources: ['canon'], dependsOn: ['y'] };
+    const Y = { id: 'y', sources: ['manuscript'], needsManuscript: true, dependsOn: ['x'] };
+    expect(effectiveCheckSources(X, map(X, Y)).sort()).toEqual(['canon', 'manuscript']);
+  });
+  it('ignores a dependency absent from the registry map', () => {
+    const Z = { id: 'z', sources: ['canon'], dependsOn: ['missing'] };
+    expect(effectiveCheckSources(Z, map(Z)).sort()).toEqual(['canon']);
+  });
+});
+
+describe('runEditorialChecks — dependency-aware staleness (#1627)', () => {
+  // Stamp a finding via a real run with naming declaring a dependency on a
+  // manuscript-reading check, then flip ONLY the manuscript and confirm the
+  // dependent's finding is re-fingerprinted as stale (its own source is canon).
+  it('marks a dependency-consuming finding stale when the dependency\'s source drifts', async () => {
+    const naming = getCheck('naming.dissimilar-names');     // deterministic, sources: ['canon']
+    const infoDump = getCheck('prose.info-dumping');        // LLM, sources: ['manuscript']
+    const hadDeps = Object.prototype.hasOwnProperty.call(naming, 'dependsOn');
+    const originalDeps = naming.dependsOn;
+    naming.dependsOn = ['prose.info-dumping'];              // naming now depends on a manuscript reader
+    try {
+      // Seed: stamp findings with manuscript content fingerprinted into naming's hash.
+      await runEditorialChecks('s1');
+      const seeded = seedStore.find((f) => f.checkId === 'naming.dissimilar-names' && f.sourceContentHash);
+      expect(seeded, 'naming finding was seeded with a source hash').toBeTruthy();
+      reviewState = { comments: seedStore.map((f) => ({ ...f })) };
+
+      // No drift → naming finding reads fresh.
+      let annotated = await getReviewWithStaleness('s1');
+      let namingComment = annotated.comments.find((c) => c.checkId === 'naming.dissimilar-names');
+      expect(namingComment.stale).toBe(false);
+
+      // Drift ONLY the manuscript (naming's dependency's source, not naming's own).
+      collectManuscriptSections.mockResolvedValueOnce([
+        { number: 1, title: 'Pilot', stageId: 'prose', content: 'Entirely different manuscript text now.' },
+      ]);
+      annotated = await getReviewWithStaleness('s1');
+      namingComment = annotated.comments.find((c) => c.checkId === 'naming.dissimilar-names');
+      expect(namingComment.stale, 'compound finding stales on its dependency\'s source drift').toBe(true);
+    } finally {
+      if (hadDeps) naming.dependsOn = originalDeps; else delete naming.dependsOn;
+    }
   });
 });

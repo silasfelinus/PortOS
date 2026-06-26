@@ -287,6 +287,37 @@ function checkSources(check) {
   return declared.filter((token) => SOURCE_RESOLVERS[token]);
 }
 
+// The source tokens a check's findings EFFECTIVELY depend on for staleness: its
+// OWN declared sources PLUS, transitively, the sources of every check it lists in
+// `dependsOn` (#1627). A dependency-consuming check reads its dependency's findings
+// via ctx.priorFindings, so its compound finding can change when the DEPENDENCY's
+// source content drifts even though the dependent's own sources didn't. Folding the
+// dependencies' sources in keeps getReviewWithStaleness from marking such a finding
+// falsely fresh — and the matching I/O gates fetch that content so it isn't falsely
+// stale either. Resolved against the full registry (`checkById`) and cycle-guarded
+// so it's identical at seed-time and read-time. With no checkById (or no dependsOn)
+// it returns the check's own sources unchanged, so a check that opts out is untouched.
+export function effectiveCheckSources(check, checkById) {
+  const own = checkSources(check);
+  const deps = Array.isArray(check?.dependsOn) ? check.dependsOn : [];
+  if (!deps.length || !(checkById instanceof Map)) return own;
+  const tokens = new Set(own);
+  const seen = new Set([check?.id]);
+  const stack = [...deps];
+  while (stack.length) {
+    const id = stack.pop();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const dep = checkById.get(id);
+    if (!dep) continue;
+    for (const token of checkSources(dep)) tokens.add(token);
+    for (const next of (Array.isArray(dep.dependsOn) ? dep.dependsOn : [])) {
+      if (!seen.has(next)) stack.push(next);
+    }
+  }
+  return [...tokens];
+}
+
 // Resolve every source token's content ONCE for a given inputs object
 // (`{ manuscript, canon, series }`), so fingerprinting many checks/comments doesn't
 // re-stringify the canon per call. Returns a token→string map the fingerprint reads.
@@ -301,8 +332,8 @@ function resolveSources(inputs) {
 // independent of declaration order; each segment is prefixed with its token so two
 // source sets can't collide on equal content. NUL joins segments (it can't appear
 // in the JSON the resolvers emit) so they can't run together ambiguously.
-function fingerprintForCheck(check, resolved) {
-  const segments = [...new Set(checkSources(check))]
+function fingerprintForCheck(check, resolved, checkById = null) {
+  const segments = [...new Set(effectiveCheckSources(check, checkById))]
     .sort()
     .map((token) => `${token}=${resolved[token]}`);
   // A custom check's run logic IS its authored prompt (user data, not code), so a
@@ -357,23 +388,29 @@ const EDITORIAL_OUTPUT_RESERVE_TOKENS = 2_000;
  * @param {object} [opts] — providerOverride/Default, modelOverride/Default, signal
  * @returns {Promise<{ series, baseCtx, resolvedSources }>}
  */
-export async function buildEditorialContext(seriesId, enabled, { providerOverride, providerDefault, modelOverride, modelDefault, signal } = {}) {
+export async function buildEditorialContext(seriesId, enabled, { providerOverride, providerDefault, modelOverride, modelDefault, signal, checkById = null } = {}) {
   const series = await getSeries(seriesId);
-  const needsManuscript = enabled.some(({ check }) => check.needsManuscript);
+  // Gate each fetch on EFFECTIVE sources — a check's own sources plus its declared
+  // dependencies' (#1627) — so a dependency-consuming check pulls (and fingerprints)
+  // its dependency's inputs even when that dependency is disabled this run, keeping
+  // the seed-time and read-time hashes symmetric. With no deps this is exactly the
+  // check's own sources, so a run with no dependency declarations is unchanged.
+  const sourcesOf = (check) => effectiveCheckSources(check, checkById);
+  const needsManuscript = enabled.some(({ check }) => check.needsManuscript || sourcesOf(check).includes('manuscript'));
   // Reverse-outline fetch is gated on the declared source (#1296) so a run with no
   // scene-segmentation check pays no extra I/O — mirrors the needsManuscript gate.
   // Either the scenes (`reverseOutline`) OR the plotline list (`reverseOutline.plotlines`,
   // #1310) is served by the same single outline fetch.
   const needsReverseOutline = enabled.some(({ check }) => {
-    const sources = checkSources(check);
+    const sources = sourcesOf(check);
     return sources.includes('reverseOutline') || sources.includes('reverseOutline.plotlines');
   });
   // Editorial-arc fetch is gated on the declared source (#1295) so a run with no
   // POV/arc check pays no extra snapshot I/O — mirrors the needsReverseOutline gate.
-  const needsEditorialArcs = enabled.some(({ check }) => checkSources(check).includes('editorialArcs'));
+  const needsEditorialArcs = enabled.some(({ check }) => sourcesOf(check).includes('editorialArcs'));
   // Continuity-bible ledger fetch is gated on the declared source (#1581) so a run
   // with no contradiction check pays no extra ledger I/O — mirrors the other gates.
-  const needsContinuityBible = enabled.some(({ check }) => checkSources(check).includes('continuityBible'));
+  const needsContinuityBible = enabled.some(({ check }) => sourcesOf(check).includes('continuityBible'));
   // Issues are fetched only when an enabled check declares an issue-derived source
   // — storyboard.shots (#1315), comicScript (#1313, served via the comic.lettering
   // check's ctx.issues), or the comic-pacing tokens comicScript.pacing /
@@ -383,7 +420,7 @@ export async function buildEditorialContext(seriesId, enabled, { providerOverrid
   // comic page past the 1000th issue. Mirrors the gate + fetch on the
   // getReviewWithStaleness path below.
   const needsIssues = enabled.some(({ check }) => {
-    const sources = checkSources(check);
+    const sources = sourcesOf(check);
     return sources.includes('storyboard.shots')
       || sources.includes('comicScript')
       || sources.includes('comicScript.pacing')
@@ -572,10 +609,15 @@ export async function runEditorialChecks(seriesId, options = {}) {
     return { runId, findings: [], perCheck: [], canceled: false };
   }
 
+  // Every registered check by id (built-ins + custom), so a dependency-consuming
+  // check's I/O gates + staleness fingerprint can fold in its declared
+  // dependencies' sources (#1627). Resolved against the FULL registry so it matches
+  // the read-time map in getReviewWithStaleness even when a dependency is disabled.
+  const checkById = new Map(getAllChecks(settings).map((c) => [c.id, c]));
   // Build the shared context once — every check reads from this (extracted to
   // buildEditorialContext so the dry-run preview path reuses the exact same
   // provider-sized chunking + source resolution as a real run, #1607).
-  const { series, baseCtx, resolvedSources } = await buildEditorialContext(seriesId, enabled, { providerOverride, providerDefault, modelOverride, modelDefault, signal });
+  const { series, baseCtx, resolvedSources } = await buildEditorialContext(seriesId, enabled, { providerOverride, providerDefault, modelOverride, modelDefault, signal, checkById });
   // Overlay this series' per-check config overrides (#1591) onto the global
   // resolved config. The `needs*` gates inside the builder read only `check`
   // (config-independent); only the run loop consumes the merged config here.
@@ -634,7 +676,7 @@ export async function runEditorialChecks(seriesId, options = {}) {
         continue;
       }
       const raw = (await check.run(ctx)) || [];
-      const sourceContentHash = fingerprintForCheck(check, resolvedSources);
+      const sourceContentHash = fingerprintForCheck(check, resolvedSources, checkById);
       // Stamp each finding with its NATIVE severity (the check's own escalated /
       // LLM-emitted level, or the registry default fallback) AND its EFFECTIVE
       // severity: a pin (#1596) is authoritative across every check kind, else
@@ -835,31 +877,36 @@ export async function getReviewWithStaleness(seriesId) {
   // still-registered check — a pure completeness review pays no extra I/O.
   const evaluable = review.comments.filter((c) => c.checkId && c.sourceContentHash && checkFor(c.checkId));
   if (!evaluable.length) return review;
+  // Re-fingerprint each finding against its check's EFFECTIVE sources — own plus
+  // declared-dependency sources (#1627) — exactly as the seed path stamped it, so a
+  // dependency-consuming finding's hash is computed against the same content on read
+  // as on seed. With no deps this is the check's own sources, unchanged.
+  const sourcesFor = (id) => effectiveCheckSources(checkFor(id), byId);
   // Only pay the manuscript-collection I/O when an evaluable check declares it as
   // a source (mirrors the run path's gate, now source-derived rather than the bare
   // needsManuscript flag so it stays correct as the source vocabulary grows).
-  const needsManuscript = evaluable.some((c) => checkSources(checkFor(c.checkId)).includes('manuscript'));
+  const needsManuscript = evaluable.some((c) => sourcesFor(c.checkId).includes('manuscript'));
   const needsReverseOutline = evaluable.some((c) => {
-    const sources = checkSources(checkFor(c.checkId));
+    const sources = sourcesFor(c.checkId);
     return sources.includes('reverseOutline') || sources.includes('reverseOutline.plotlines');
   });
-  const needsEditorialArcs = evaluable.some((c) => checkSources(checkFor(c.checkId)).includes('editorialArcs'));
+  const needsEditorialArcs = evaluable.some((c) => sourcesFor(c.checkId).includes('editorialArcs'));
   // Continuity-bible ledger re-fingerprint, gated like the others (#1581) — must
   // mirror the run path's fetch so a timeline/canon finding's hash is computed
   // against the SAME ledger content on read as on seed (else it always reads stale).
-  const needsContinuityBible = evaluable.some((c) => checkSources(checkFor(c.checkId)).includes('continuityBible'));
+  const needsContinuityBible = evaluable.some((c) => sourcesFor(c.checkId).includes('continuityBible'));
   // Issues are fetched here only when a storyboard-shots (#1315) OR comic-script
   // (#1313 lettering / #1314 pacing) finding needs re-fingerprinting — all derive
   // from the issue records, so a single gated fetch serves them. Mirrors the other
   // per-source I/O gates.
-  const needsStoryboards = evaluable.some((c) => checkSources(checkFor(c.checkId)).includes('storyboard.shots'));
+  const needsStoryboards = evaluable.some((c) => sourcesFor(c.checkId).includes('storyboard.shots'));
   const needsComicScript = evaluable.some((c) => {
-    const s = checkSources(checkFor(c.checkId));
+    const s = sourcesFor(c.checkId);
     return s.includes('comicScript') || s.includes('comicScript.pacing') || s.includes('comicScript.layout');
   });
   // The prose source (#1589) reads the per-issue prose stage off the same `issues`
   // fetch, so it gates the issues load too — a prose-only check still loads issues.
-  const needsProse = evaluable.some((c) => checkSources(checkFor(c.checkId)).includes('prose'));
+  const needsProse = evaluable.some((c) => sourcesFor(c.checkId).includes('prose'));
   const needsIssues = needsStoryboards || needsComicScript || needsProse;
   const series = await getSeries(seriesId);
   const [sections, canon, outline, editorial, issues, bible] = await Promise.all([
@@ -888,7 +935,7 @@ export async function getReviewWithStaleness(seriesId) {
     comments: review.comments.map((c) => {
       const check = c.checkId && c.sourceContentHash ? checkFor(c.checkId) : null;
       if (!check) return c;
-      const current = fingerprintForCheck(check, resolvedSources);
+      const current = fingerprintForCheck(check, resolvedSources, byId);
       return { ...c, stale: c.sourceContentHash !== current };
     }),
   };

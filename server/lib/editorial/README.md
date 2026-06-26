@@ -100,6 +100,14 @@ its declared `sources` (order-independent):
   dependency **cycle** is a registry bug — it's logged and the cycle's members fall
   back to registry order. The dependent must therefore tolerate missing prior
   findings. `dependsOn` shape (string-array, no self-reference) is enforced at load.
+- **Staleness is dependency-aware.** Because a dependency-consuming finding can
+  change when its *dependency's* source content drifts (not only its own), the
+  staleness fingerprint and the per-source I/O gates fold in each check's transitive
+  declared-dependency sources (`effectiveCheckSources` in the runner). So a compound
+  finding goes stale exactly when any source it transitively depended on changes —
+  never falsely fresh, never falsely stale — computed identically at seed-time and
+  read-time. A check with no `dependsOn` is fingerprinted on its own `sources` as
+  before.
 
 ## Discovery rule
 
