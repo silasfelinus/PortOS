@@ -26,6 +26,10 @@ const QUICK_COMMANDS = [
   { label: 'git pull', command: 'git pull --rebase --autostash' },
   { label: 'npm test', command: 'npm test' },
   { label: 'npm run dev', command: 'npm run dev' },
+  // Claude Code slash-command shortcuts — typed + submitted into an interactive
+  // `claude` session. The flags are double-dash (`--`); keep them verbatim.
+  { label: '/do:pr', command: '/do:pr --issues --review-with=claude,codex --merge' },
+  { label: '/remote-control', command: '/remote-control' },
 ];
 
 // Hot buttons for arrow / Enter entry — handy on touch devices and for driving TUI
