@@ -55,6 +55,14 @@ inplace_sed() {
   mv "$tmp" "$file"
 }
 
+# True when running under Git Bash / MSYS2 / Cygwin on Windows
+_is_windows() {
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Detect current mode from .env or default to docker
 get_mode() {
   if [ -f "$ENV_FILE" ]; then
@@ -133,6 +141,17 @@ if [ "$(uname)" = "Darwin" ]; then
   done
 fi
 
+# Auto-detect PostgreSQL on Windows (Git Bash / MINGW) and add to PATH
+if _is_windows; then
+  for _ver in 17 16 15 14; do
+    _pg_win="/c/Program Files/PostgreSQL/$_ver/bin"
+    if [ -x "$_pg_win/psql.exe" ]; then
+      export PATH="$_pg_win:$PATH"
+      break
+    fi
+  done
+fi
+
 # Check if native PostgreSQL is installed
 has_native_pg() {
   command -v psql >/dev/null 2>&1
@@ -147,6 +166,17 @@ find_pg_service() {
     fi
   done
   echo "postgresql"
+}
+
+# Find the Windows service name for PostgreSQL (e.g. postgresql-x64-17)
+_find_windows_pg_service() {
+  for _svc in "postgresql-x64-17" "postgresql-x64-16" "postgresql-x64-15" "postgresql-x64-14" "postgresql"; do
+    if sc.exe query "$_svc" 2>/dev/null | grep -qi "SERVICE_NAME"; then
+      echo "$_svc"
+      return 0
+    fi
+  done
+  echo ""
 }
 
 # Add the PGDG APT repository (idempotent — skips if already configured)
@@ -241,6 +271,109 @@ _setup_native_debian() {
   info "Applying schema..."
   sudo -u postgres psql -d "$PGDATABASE" -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1 || true
   sudo -u postgres psql -d "$PGDATABASE" -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;" >/dev/null 2>&1 || true
+  PGPASSWORD="$PGPASSWORD" psql -h "$PGHOST" -p 5432 -U "$PGUSER" -d "$PGDATABASE" \
+    -v ON_ERROR_STOP=1 --single-transaction -f "$ROOT_DIR/server/scripts/init-db.sql"
+  log "Schema applied"
+
+  set_mode native
+
+  echo ""
+  log "Native PostgreSQL is ready!"
+  info "Database: $PGDATABASE (user: $PGUSER, port: 5432)"
+  info "To migrate data from Docker: scripts/db.sh migrate"
+}
+
+# Full native setup for Windows (Git Bash / MINGW)
+# Uses the 'postgres' superuser because Windows installs don't use OS peer auth.
+# Set PGPASSWORD_SUPERUSER in your environment to override the superuser password
+# (defaults to empty then 'postgres' for common dev installs).
+_setup_native_windows() {
+  info "Setting up native PostgreSQL on Windows..."
+
+  if ! command -v psql >/dev/null 2>&1; then
+    err "PostgreSQL not found. Install from https://www.postgresql.org/download/windows/"
+    echo "  After installing, re-run: scripts/db.sh setup-native  (from Git Bash)"
+    exit 1
+  fi
+
+  # Start the service if not already listening
+  if ! pg_isready -h "$PGHOST" -p 5432 >/dev/null 2>&1; then
+    local pg_svc
+    pg_svc=$(_find_windows_pg_service)
+    if [ -n "$pg_svc" ]; then
+      info "Starting PostgreSQL service ($pg_svc)..."
+      net.exe start "$pg_svc" 2>/dev/null || true
+      for i in $(seq 1 15); do
+        if pg_isready -h "$PGHOST" -p 5432 >/dev/null 2>&1; then break; fi
+        sleep 1
+      done
+    fi
+    if ! pg_isready -h "$PGHOST" -p 5432 >/dev/null 2>&1; then
+      err "PostgreSQL is not running. Start it via Services (services.msc) or run as Administrator:"
+      echo "  net start postgresql-x64-17"
+      exit 1
+    fi
+  fi
+  log "PostgreSQL ready on port 5432"
+  PGPORT=5432
+
+  # Resolve the postgres superuser password.
+  # Windows installs use a password set during installation; peer auth is not available.
+  local pg_admin_pass="${PGPASSWORD_SUPERUSER:-}"
+  local admin_ok=0
+  if PGPASSWORD="$pg_admin_pass" psql -h "$PGHOST" -p 5432 -U postgres -d postgres \
+       -c "SELECT 1" >/dev/null 2>&1; then
+    admin_ok=1
+  elif [ -z "$pg_admin_pass" ] && PGPASSWORD="postgres" psql -h "$PGHOST" -p 5432 \
+       -U postgres -d postgres -c "SELECT 1" >/dev/null 2>&1; then
+    pg_admin_pass="postgres"
+    admin_ok=1
+  fi
+  if [ "$admin_ok" -ne 1 ]; then
+    err "Cannot connect as the PostgreSQL superuser (postgres)."
+    echo "  Set the password via: export PGPASSWORD_SUPERUSER=<your-postgres-password>"
+    echo "  Then re-run: scripts/db.sh setup-native"
+    exit 1
+  fi
+
+  # pgvector — warn if missing (Stack Builder or manual install required on Windows)
+  if ! PGPASSWORD="$pg_admin_pass" psql -h "$PGHOST" -p 5432 -U postgres -d postgres \
+       -c "CREATE EXTENSION IF NOT EXISTS vector;" >/dev/null 2>&1; then
+    warn "pgvector not available — AI memory features need it."
+    warn "Install via Stack Builder (Start menu > PostgreSQL > Application Stack Builder)"
+    warn "or download from https://github.com/pgvector/pgvector/releases"
+  fi
+
+  # Create portos role if missing
+  if ! PGPASSWORD="$pg_admin_pass" psql -h "$PGHOST" -p 5432 -U postgres -d postgres \
+       -tAc "SELECT 1 FROM pg_roles WHERE rolname='$PGUSER'" 2>/dev/null | grep -q 1; then
+    info "Creating database user: $PGUSER"
+    PGPASSWORD="$pg_admin_pass" psql -h "$PGHOST" -p 5432 -U postgres -d postgres \
+      -c "CREATE ROLE $PGUSER WITH LOGIN PASSWORD '$PGPASSWORD' CREATEDB SUPERUSER;"
+    log "User $PGUSER created"
+  else
+    log "User $PGUSER already exists"
+    PGPASSWORD="$pg_admin_pass" psql -h "$PGHOST" -p 5432 -U postgres -d postgres \
+      -c "ALTER USER $PGUSER WITH PASSWORD '$PGPASSWORD' SUPERUSER;" 2>/dev/null || true
+  fi
+
+  # Create portos database if missing
+  if ! PGPASSWORD="$pg_admin_pass" psql -h "$PGHOST" -p 5432 -U postgres -d postgres -lqt \
+       2>/dev/null | cut -d\| -f1 | grep -qw "$PGDATABASE"; then
+    info "Creating database: $PGDATABASE"
+    PGPASSWORD="$pg_admin_pass" psql -h "$PGHOST" -p 5432 -U postgres -d postgres \
+      -c "CREATE DATABASE $PGDATABASE OWNER $PGUSER;"
+    log "Database $PGDATABASE created"
+  else
+    log "Database $PGDATABASE already exists"
+  fi
+
+  # Enable extensions (as postgres superuser) then apply schema (as portos via TCP)
+  info "Applying schema..."
+  PGPASSWORD="$pg_admin_pass" psql -h "$PGHOST" -p 5432 -U postgres -d "$PGDATABASE" \
+    -c "CREATE EXTENSION IF NOT EXISTS vector;" 2>/dev/null || true
+  PGPASSWORD="$pg_admin_pass" psql -h "$PGHOST" -p 5432 -U postgres -d "$PGDATABASE" \
+    -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;" 2>/dev/null || true
   PGPASSWORD="$PGPASSWORD" psql -h "$PGHOST" -p 5432 -U "$PGUSER" -d "$PGDATABASE" \
     -v ON_ERROR_STOP=1 --single-transaction -f "$ROOT_DIR/server/scripts/init-db.sql"
   log "Schema applied"
@@ -429,6 +562,25 @@ start_native() {
     fi
   fi
 
+  # Windows: net start
+  if _is_windows; then
+    local pg_svc
+    pg_svc=$(_find_windows_pg_service)
+    if [ -n "$pg_svc" ]; then
+      info "Starting PostgreSQL service ($pg_svc)..."
+      net.exe start "$pg_svc" 2>/dev/null || true
+      for i in $(seq 1 15); do
+        if pg_isready -h "$PGHOST" -p "$PGPORT" >/dev/null 2>&1; then
+          log "Native PostgreSQL ready on port $PGPORT"
+          return
+        fi
+        sleep 1
+      done
+    fi
+    err "Could not start PostgreSQL. Run as Administrator or open Services (services.msc)."
+    exit 1
+  fi
+
   # Linux: try systemctl
   if [ "$(uname)" != "Darwin" ] && command -v systemctl >/dev/null 2>&1; then
     local pg_svc
@@ -477,6 +629,16 @@ stop_native() {
   # macOS: Homebrew services
   if [ "$(uname)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
     brew services stop postgresql@17 2>/dev/null || true
+    log "Stopped"
+    return
+  fi
+  # Windows: net stop
+  if _is_windows; then
+    local pg_svc
+    pg_svc=$(_find_windows_pg_service)
+    if [ -n "$pg_svc" ]; then
+      net.exe stop "$pg_svc" 2>/dev/null || true
+    fi
     log "Stopped"
     return
   fi
@@ -551,6 +713,21 @@ fix_native() {
     log "PostgreSQL restarted via Homebrew"
     return
   fi
+  # Windows: net stop + net start
+  if _is_windows; then
+    local pg_svc
+    pg_svc=$(_find_windows_pg_service)
+    if [ -n "$pg_svc" ]; then
+      info "Restarting PostgreSQL service ($pg_svc)..."
+      net.exe stop "$pg_svc" 2>/dev/null || true
+      sleep 2
+      net.exe start "$pg_svc" 2>/dev/null || true
+      log "PostgreSQL restarted"
+    else
+      warn "No PostgreSQL Windows service found — check Services (services.msc)"
+    fi
+    return
+  fi
   # Linux: systemctl
   if [ "$(uname)" != "Darwin" ] && command -v systemctl >/dev/null 2>&1; then
     local pg_svc
@@ -565,6 +742,12 @@ fix_native() {
 # Setup native PostgreSQL — detects and reuses existing system installation
 cmd_setup_native() {
   info "Setting up native PostgreSQL for PortOS..."
+
+  # Windows (Git Bash / MINGW): use Windows service manager + postgres superuser
+  if _is_windows; then
+    _setup_native_windows
+    return
+  fi
 
   # Linux: Debian/Ubuntu — fully automated via apt + PGDG
   if [ "$(uname)" != "Darwin" ] && command -v apt-get >/dev/null 2>&1; then

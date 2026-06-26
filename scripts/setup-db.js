@@ -293,6 +293,11 @@ function exitNativeSetupFailed() {
     console.error('   Ubuntu/Debian: sudo apt-get install postgresql-17 postgresql-17-pgvector');
     console.error('   RHEL/Fedora:   see https://www.postgresql.org/download/linux/redhat/');
     console.error('   Then re-run:   scripts/db.sh setup-native');
+  } else if (process.platform === 'win32') {
+    console.error('❌ Native PostgreSQL setup failed.');
+    console.error('   Download the installer: https://www.postgresql.org/download/windows/');
+    console.error('   Install pgvector via Application Stack Builder (included with the installer).');
+    console.error('   Then re-run (from Git Bash): scripts/db.sh setup-native');
   } else {
     console.error('❌ Native PostgreSQL setup failed — install and start PostgreSQL');
   }
